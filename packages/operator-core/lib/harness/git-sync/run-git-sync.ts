@@ -2721,9 +2721,43 @@ export function isPathspecBeyondSymbolicLinkFailure(output: string): boolean {
   return /fatal:\s+pathspec .* is beyond a symbolic link/i.test(output);
 }
 
+/**
+ * WI-6554700010018683: the stable fatal Git emits when a pathspec names a path
+ * INSIDE a submodule (`fatal: Pathspec '<spec>' is in submodule '<sub>'`), from
+ * `check-ignore` and from `add` alike. A superproject `add -A` never stages a
+ * submodule's own files (only its gitlink), so such an exclusion is redundant
+ * there, but Git rejects the whole command for it and the tick stages nothing.
+ * Exported so a Git wording change fails a focused test.
+ */
+export function isPathspecInSubmoduleFailure(output: string): boolean {
+  return /fatal:\s+pathspec .* is in submodule/i.test(output);
+}
+
+/**
+ * The exclusion paths an `add` failure proves redundant because they lie strictly
+ * inside a submodule Git named. Git reports only the FIRST offending pathspec, so
+ * every exclusion under that same submodule is returned at once; a later retry
+ * catches any other submodule. The gitlink path itself stays excluded: that
+ * pathspec is valid and protects a held pointer bump.
+ */
+export function inSubmoduleProtectedExclusions(output: string, excludePaths: readonly string[]): string[] {
+  const submodules = new Set<string>();
+  for (const match of output.matchAll(/fatal:\s+pathspec '.*?' is in submodule '([^']+)'/gi)) {
+    const submodule = match[1].replace(/^\.\/+/, '').replace(/\/+$/, '');
+    if (submodule) submodules.add(submodule);
+  }
+  if (submodules.size === 0) return [];
+  return excludePaths.filter((excludePath) => {
+    const normalized = excludePath.replace(/^\.\/+/, '').replace(/\/+$/, '');
+    return [...submodules].some((submodule) => normalized.startsWith(`${submodule}/`));
+  });
+}
+
 export type ProtectedPathExclusionPreflight = {
   ignoredUntracked: Set<string>;
   beyondSymlink: Set<string>;
+  /** WI-6554700010018683: paths inside a submodule; redundant and fatal as exclusions here. */
+  inSubmodule: Set<string>;
 };
 
 /**
@@ -2762,6 +2796,7 @@ export async function classifyProtectedPathExclusions(
   paths: readonly string[],
 ): Promise<ProtectedPathExclusionPreflight> {
   const beyondSymlink = new Set<string>();
+  const inSubmodule = new Set<string>();
   const { ignored: ignoredUntracked, unresolved: singles } = await checkIgnoreVerbatimBatches(runGit, repoPath, paths);
   // Bound concurrency instead of serializing one git process per remaining path.
   let next = 0;
@@ -2774,12 +2809,15 @@ export async function classifyProtectedPathExclusions(
         if (result.code === 0) ignoredUntracked.add(path);
         else if (result.code === 1) continue;
         else if (isPathspecBeyondSymbolicLinkFailure(`${result.stdout}\n${result.stderr}`)) beyondSymlink.add(path);
+        else if (isPathspecInSubmoduleFailure(`${result.stdout}\n${result.stderr}`)) inSubmodule.add(path);
         else failed = true;
       }
     }),
   );
-  if (failed) return { ignoredUntracked: new Set<string>(), beyondSymlink: new Set<string>() };
-  return { ignoredUntracked, beyondSymlink };
+  if (failed) {
+    return { ignoredUntracked: new Set<string>(), beyondSymlink: new Set<string>(), inSubmodule: new Set<string>() };
+  }
+  return { ignoredUntracked, beyondSymlink, inSubmodule };
 }
 
 /** The `git add`/`git commit` fatal for a held index lock ("Unable to create
@@ -6437,7 +6475,12 @@ async function commitOneRepoWithScratch(
     await o.yieldIfRequested?.('before-superproject-stage');
     const ignoredUntrackedExcludes = protectedPathPreflight.ignoredUntracked;
     const beyondSymlinkExcludes = protectedPathPreflight.beyondSymlink;
-    const omittedPreflightExcludes = new Set([...ignoredUntrackedExcludes, ...beyondSymlinkExcludes]);
+    const inSubmoduleExcludes = protectedPathPreflight.inSubmodule;
+    const omittedPreflightExcludes = new Set([
+      ...ignoredUntrackedExcludes,
+      ...beyondSymlinkExcludes,
+      ...inSubmoduleExcludes,
+    ]);
     let stagingExcludePaths = excludePaths.filter((path) => !omittedPreflightExcludes.has(path));
     if (ignoredUntrackedExcludes.size > 0) {
       o.log(
@@ -6449,6 +6492,13 @@ async function commitOneRepoWithScratch(
       o.log(
         `[git-sync] ${repoPath}: pre-filtering protected path(s) beyond a symbolic link ` +
           `[${[...beyondSymlinkExcludes].join(', ')}] from staging pathspecs — Git cannot traverse the symlink in a pathspec and add -A does not traverse its target`,
+      );
+    }
+    if (inSubmoduleExcludes.size > 0) {
+      o.log(
+        `[git-sync] ${repoPath}: pre-filtering protected path(s) inside a submodule ` +
+          `[${[...inSubmoduleExcludes].join(', ')}] from staging pathspecs — this repo's add -A stages only the gitlink, ` +
+          'and Git rejects the whole add for an in-submodule pathspec (WI-6554700010018683)',
       );
     }
     let committedAny = false;
@@ -6628,6 +6678,23 @@ async function commitOneRepoWithScratch(
         o.log(
           `[git-sync] ${repoPath}: 'git add -A' rejected ignored protected path(s) [${ignored.join(', ')}] — ` +
             'omitting those redundant exclusion pathspecs and retrying without force-adding ignored files',
+        );
+        addRes = await stageGit(buildAddArgs([], omittedIgnoredExcludes), repoPath);
+      }
+      // WI-6554700010018683: an exclusion added after the preflight (a deferred attributed
+      // path, a refused migration) can still name a file inside a submodule. Git names one
+      // submodule per failure, so drop that submodule's exclusions and retry; the bound is
+      // the number of exclusions, since each round removes at least one.
+      for (let round = 0; addRes.code !== 0 && round < stagingExcludePaths.length; round++) {
+        const inSubmodule = inSubmoduleProtectedExclusions(
+          `${addRes.stdout}\n${addRes.stderr}`,
+          stagingExcludePaths,
+        ).filter((path) => !omittedIgnoredExcludes.includes(path));
+        if (inSubmodule.length === 0) break;
+        omittedIgnoredExcludes = [...omittedIgnoredExcludes, ...inSubmodule];
+        o.log(
+          `[git-sync] ${repoPath}: 'git add -A' rejected protected path(s) inside a submodule [${inSubmodule.join(', ')}] — ` +
+            'omitting those redundant exclusion pathspecs and retrying (this repo stages only the gitlink)',
         );
         addRes = await stageGit(buildAddArgs([], omittedIgnoredExcludes), repoPath);
       }

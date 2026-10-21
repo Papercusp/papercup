@@ -42,6 +42,8 @@ import {
   isIndexLockFailure,
   isConfigLockFailure,
   isPathspecBeyondSymbolicLinkFailure,
+  isPathspecInSubmoduleFailure,
+  inSubmoduleProtectedExclusions,
   isTransientStatFailure,
   preflightInvalidIndex,
   MIN_VALID_GIT_INDEX_BYTES,
@@ -2163,6 +2165,82 @@ describe('runGitSync (real git, no submodule)', () => {
         `fatal: pathspec '${protectedPath}' is beyond a symbolic link`,
       ),
     ).toBe(true);
+  });
+
+  /** A real submodule at apps/sub with one dirty file inside it (WI-6554700010018683). */
+  function addDirtySubmodule(): { subPath: string; insidePath: string } {
+    const subSource = join(root, 'sub-source');
+    git(root, 'init', '-q', '-b', 'main', subSource);
+    configUser(subSource);
+    writeFileSync(join(subSource, 'route.ts'), 'export {};\n');
+    git(subSource, 'add', '-A');
+    git(subSource, 'commit', '--no-verify', '-q', '-m', 'sub init');
+    git(repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subSource, 'apps/sub');
+    git(repo, 'commit', '--no-verify', '-q', '-m', 'add submodule');
+    writeFileSync(join(repo, 'apps', 'sub', 'route.ts'), 'export const held = 1;\n');
+    return { subPath: 'apps/sub', insidePath: 'apps/sub/route.ts' };
+  }
+
+  it('WI-6554700010018683: classifies a protected path inside a submodule instead of failing the preflight', async () => {
+    const { insidePath } = addDirtySubmodule();
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const runGit: RunGit = async (args, cwd) => {
+      try {
+        const stdout = execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+        return { code: 0, stdout, stderr: '' };
+      } catch (error) {
+        const e = error as { status?: number; stdout?: string; stderr?: string };
+        return { code: e.status ?? 1, stdout: String(e.stdout ?? ''), stderr: String(e.stderr ?? '') };
+      }
+    };
+
+    const result = await classifyProtectedPathExclusions(runGit, repo, [insidePath, 'file.txt']);
+
+    // Before the fix the 128 was unclassified, so the whole preflight failed open and
+    // returned NO classification at all.
+    expect(result.inSubmodule).toEqual(new Set([insidePath]));
+    expect(result.ignoredUntracked).toEqual(new Set());
+    expect(result.beyondSymlink).toEqual(new Set());
+  });
+
+  it('WI-6554700010018683: a held path inside a submodule does not abort the superproject add', async () => {
+    const { insidePath } = addDirtySubmodule();
+    writeFileSync(join(repo, 'file.txt'), 'deliberately-protected mutation\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const logs: string[] = [];
+
+    // submodulePaths: [] models any exclusion source that does not know the path is in
+    // a submodule, so the in-submodule pathspec reaches this repo's own stage.
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      submodulePaths: [],
+      excludePaths: [insidePath, 'file.txt'],
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('line1');
+    expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
+    expect(logs.join('\n')).toContain('pre-filtering protected path(s) inside a submodule');
+    expect(logs.join('\n')).not.toMatch(/is in submodule/);
+  });
+
+  it('WI-6554700010018683: an add failure drops every exclusion under the submodule Git named, and only those', () => {
+    const output = "fatal: Pathspec ':(exclude,literal)apps/sub/app/api/quotes/route.ts' is in submodule 'apps/sub'\n";
+    expect(isPathspecInSubmoduleFailure(output)).toBe(true);
+    expect(isPathspecInSubmoduleFailure("fatal: pathspec 'x' is beyond a symbolic link")).toBe(false);
+    expect(
+      inSubmoduleProtectedExclusions(output, [
+        'apps/sub/app/api/quotes/route.ts',
+        'apps/sub/other.ts',
+        'apps/sub',
+        'apps/subway/x.ts',
+        'file.txt',
+      ]),
+    ).toEqual(['apps/sub/app/api/quotes/route.ts', 'apps/sub/other.ts']);
+    expect(inSubmoduleProtectedExclusions('fatal: something else', ['apps/sub/x.ts'])).toEqual([]);
   });
 
   it('EI-21371380265465702: git-sync ignores in-progress dependency-generation build markers', async () => {
