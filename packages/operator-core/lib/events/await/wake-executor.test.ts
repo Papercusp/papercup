@@ -47,6 +47,7 @@ import { PtyError } from '../../pty-bridge';
 import type { CarryBrief } from '../../carry-brief';
 import { renderColdWakeInjection } from '../../su-cold-loop';
 import type { DeliveryWork, WakeHandle } from './types';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { getLoopStatus } from '../../harness/routines/loop';
 import {
   codexFreshDefaultAuthPreflight,
@@ -484,6 +485,11 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     readGradingAuditTasks: vi.fn(async () => []) as never,
     readGradingAuditTarget: vi.fn(async () => null) as never,
     cancelGradingAuditAwait: vi.fn(async () => undefined) as never,
+    // WI-6554700010018677: delivery-time tenant resolution reads adv_sessions for a
+    // 'default'-namespace delivery. Hermetic by default (null = unknown tenant, the same
+    // fail-soft answer the production reader gives without a database); the tenant cases
+    // override it.
+    workspaceForCoordOwnerFn: vi.fn(async () => null) as never,
     // WI-6554700010018536: hermetic by default — the production reader queries the
     // recipient's held work-items, modes and loop. Only the dedicated seam cases override.
     prepareInboxWakeHeldWorkReminder: vi.fn(async () => ''),
@@ -1303,6 +1309,61 @@ describe('executeWake — delivery-time fleet context-critical member actionabil
     expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
     expect(findPty).toHaveBeenCalled();
     expect(write).toHaveBeenCalled();
+  });
+
+  // WI-6554700010018677: real delivery rows are pinned to DEFAULT_COORD_WORKSPACE, while the
+  // roster is keyed by the member's tenant. Reading it under the delivery workspace returned
+  // no rows, so a live member was retracted as "no current fleet presence".
+  it('reads the roster under the member tenant when the delivery is in the coordination namespace', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-current' }));
+    const write = vi.fn(() => true);
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const getCurrentFleetContextAssignments = vi.fn(async (opts: { workspaceId?: string }) =>
+      opts.workspaceId === 'tenant-ws' ? [presenceRow] : [],
+    );
+    const workspaceForCoordOwnerFn = vi.fn(async () => 'tenant-ws');
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      sendCoordMessage: sendCoordMessage as never,
+      getCurrentFleetContextAssignments: getCurrentFleetContextAssignments as never,
+      workspaceForCoordOwnerFn: workspaceForCoordOwnerFn as never,
+      resolveMemberLiveness: liveness('live', true) as never,
+      getCurrentContextPressure: vi.fn(async () => 'critical') as never,
+      getCurrentContextEpoch: vi.fn(async () => 18),
+    });
+
+    const out = await executeWake(contextCriticalWork({ workspaceId: DEFAULT_COORD_WORKSPACE }), d);
+
+    expect(workspaceForCoordOwnerFn).toHaveBeenCalledWith('su-worker');
+    expect(getCurrentFleetContextAssignments).toHaveBeenCalledWith({
+      workspaceId: 'tenant-ws', fleet: 'pui-cockpit', agent: 'su-worker',
+    });
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(write).toHaveBeenCalled();
+    for (const call of sendCoordMessage.mock.calls as unknown as Array<[unknown, { summary?: string }]>) {
+      expect(call[1]?.summary ?? '').not.toContain('no current fleet presence or active claim');
+    }
+  });
+
+  it('treats an unresolvable member tenant as an unknown roster and preserves the wake', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-current' }));
+    const write = vi.fn(() => true);
+    const getCurrentFleetContextAssignments = vi.fn(async () => []);
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      getCurrentFleetContextAssignments: getCurrentFleetContextAssignments as never,
+      workspaceForCoordOwnerFn: vi.fn(async () => null) as never,
+      resolveMemberLiveness: liveness('live', true) as never,
+      getCurrentContextPressure: vi.fn(async () => 'critical') as never,
+      getCurrentContextEpoch: vi.fn(async () => 18),
+    });
+
+    const out = await executeWake(contextCriticalWork({ workspaceId: DEFAULT_COORD_WORKSPACE }), d);
+
+    expect(getCurrentFleetContextAssignments).not.toHaveBeenCalled();
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
   });
 });
 
@@ -3979,6 +4040,37 @@ describe('executeWake — the liveness ladder', () => {
       });
       expect(f.claimResume).toHaveBeenCalledTimes(1);
       expect(f.cancelGradingAuditAwait).not.toHaveBeenCalled();
+    });
+
+    // WI-6554700010018677: delivery rows sit in the coordination namespace ('default',
+    // WI-3575) while task_ledger rows and issues are keyed by the tenant. Reading under the
+    // delivery workspace found no binding, so the guard proceeded on every real delivery.
+    it("reads the binding and target under the subscriber's TENANT when the delivery is in the coordination namespace", async () => {
+      const f = fixture({ state: 'passed' });
+      f.task.workspaceId = 'tenant-ws';
+      const workspaceForCoordOwnerFn = vi.fn(async () => 'tenant-ws');
+      const out = await executeWake(
+        { ...f.delivery, workspaceId: 'default' },
+        { ...f.common, workspaceForCoordOwnerFn: workspaceForCoordOwnerFn as never },
+      );
+      expect(workspaceForCoordOwnerFn).toHaveBeenCalledWith('su-abc');
+      expect(f.readGradingAuditTasks).toHaveBeenCalledWith({
+        workspaceId: 'tenant-ws', subscriberId: 'su-abc', sessionId: nativeSessionId,
+      });
+      expect(f.readGradingAuditTarget).toHaveBeenCalledWith({ workspaceId: 'tenant-ws', issueId });
+      expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('settled (passed)') });
+      expect(f.claimResume).not.toHaveBeenCalled();
+    });
+
+    it('an unresolvable tenant keeps the fail-open contract and reads nothing', async () => {
+      const f = fixture({ state: 'passed' });
+      const out = await executeWake(
+        { ...f.delivery, workspaceId: 'default' },
+        { ...f.common, workspaceForCoordOwnerFn: vi.fn(async () => null) as never },
+      );
+      expect(f.readGradingAuditTasks).not.toHaveBeenCalled();
+      expect(f.readGradingAuditTarget).not.toHaveBeenCalled();
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
     });
 
     it('drops a settled target and cancels only this delivery await before claiming resume', async () => {
@@ -6736,6 +6828,38 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(data).toContain('Fleet: you are in "bug-drain" as leader');
     expect(data.indexOf('resume the wiring')).toBeLessThan(data.indexOf('WI-3319'));
     expect(data.indexOf('WI-3319')).toBeLessThan(data.indexOf('Before you END this turn'));
+  });
+
+  // WI-6554700010018677: a real delivery row carries DEFAULT_COORD_WORKSPACE. The adv-session path
+  // re-scopes it to the session's workspace first; the HANDLE-LESS socket path does not, and a
+  // brief built under the coordination namespace read every tenant-keyed leg empty.
+  it('builds a handle-less cold-wake carry brief under the subscriber tenant, not the coordination namespace', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const workspaceForCoordOwnerFn = vi.fn(async () => 'tenant-ws');
+    const buildCarryBriefFn = vi.fn(
+      async (ownerId: string): Promise<CarryBrief> => ({
+        ownerId,
+        workspaceId: 'tenant-ws',
+        loop: null,
+        heldItems: [],
+        directives: [],
+        directivesTotalOpen: 0,
+        walls: [],
+        facts: [],
+        awaits: [],
+        fleet: null,
+      }),
+    );
+    await executeWake(
+      work({ workspaceId: DEFAULT_COORD_WORKSPACE, wakeHandle: undefined, payload: coldPayload({ wakeCount: 1 }) }),
+      coldDeps({
+        injectPsuHost: injectPsuHost as never,
+        buildCarryBriefFn: buildCarryBriefFn as never,
+        workspaceForCoordOwnerFn: workspaceForCoordOwnerFn as never,
+      }),
+    );
+    expect(buildCarryBriefFn).toHaveBeenCalledWith('su-abc', { workspaceId: 'tenant-ws' });
+    expect(workspaceForCoordOwnerFn).toHaveBeenCalledWith('su-abc');
   });
 
   it('EI-19362981097884026: annotates a terminal cited item on the carried Next action itself', async () => {

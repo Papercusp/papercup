@@ -5207,6 +5207,76 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(await subjectClauses(subject)).toEqual(clausesBefore);
   });
 
+  // SPEC-P-003 (acceptance-bar-atomic-retirement-2026-10-15): a refused or rolled-back
+  // amendment leaves the plan source unchanged. Both new source paths are covered: the
+  // retirement of a dropped-only BAR (P-001) and the explicit map move (P-002). Each fault
+  // fires AFTER the subject-source rewrite inside the amendment transaction (rubrics.ts:
+  // 'after-projection', then 'after-rebind'). The subject row's content, content_hash and
+  // version are compared before the outcome is checked, so a fault that is swallowed and
+  // committed fails on the source itself. The unfaulted apply at the end calibrates the
+  // fixture: the same approved input DOES rewrite the source.
+  async function subjectRow(subject: string) {
+    const [row] = await db.adminSql<{ content: string; content_hash: string; version: number | string }[]>`
+      SELECT content, content_hash, version FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp' AND plan_slug = ${subject}`;
+    return { content: row!.content, contentHash: row!.content_hash, version: Number(row!.version) };
+  }
+
+  it('SPEC-P-003: a refused or rolled-back retirement or map move leaves the plan source, content hash and revision unchanged', async () => {
+    const retire = await seedDroppedOnlyBar('spec-p003-rollback-retire-subject');
+    const move = await seedDroppedOnlyBar('spec-p003-rollback-move-subject');
+    const cases = [
+      {
+        seeded: retire,
+        amendment: {
+          rubricId: retire.rubricSlug,
+          actorId: 'amendment-actor',
+          reason: 'Retire R-2: the only work that discharged it was dropped.',
+          criteria: retire.before.criteria.filter((criterion) => criterion.barKey !== 'R-2'),
+        },
+      },
+      {
+        seeded: move,
+        amendment: {
+          rubricId: move.rubricSlug,
+          actorId: 'amendment-actor',
+          reason: 'Move R-2 off the dropped P-002 onto P-001; R-2 meaning is unchanged.',
+          barMappingDelta: [moveR2(['P-001'])],
+        },
+      },
+    ];
+    const settle = (call: Promise<unknown>) => call.then(() => 'committed', (error: Error) => error.message);
+    for (const { seeded, amendment } of cases) {
+      const rowBefore = await subjectRow(seeded.subject);
+      const clausesBefore = await subjectClauses(seeded.subject);
+      expect(rowBefore.contentHash).toBe(hashPlanContent(rowBefore.content));
+
+      // Refused: no outside approval.
+      const refused = await settle(rubrics.amendRubric(amendment));
+      expect(await subjectRow(seeded.subject)).toEqual(rowBefore);
+      expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.before.revision);
+      expect(refused).toMatch(/acceptance_bar_approval_required/);
+
+      // Rolled back: approved, but a fault fires after the source rewrite.
+      const approvalRef = await postApproval(amendment);
+      for (const stage of ['after-projection', 'after-rebind'] as const) {
+        const outcome = await settle(rubrics.amendRubric({ ...amendment, approvalRef, faultInjection: stage }));
+        expect(await subjectRow(seeded.subject)).toEqual(rowBefore);
+        expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.before.revision);
+        expect(await subjectClauses(seeded.subject)).toEqual(clausesBefore);
+        expect(outcome).toMatch(new RegExp(`acceptance_bar_amendment_fault_injected:${stage}`));
+      }
+
+      // Calibration: the same approved input, unfaulted, rewrites the source.
+      await rubrics.amendRubric({ ...amendment, approvalRef });
+      const applied = await subjectRow(seeded.subject);
+      expect(applied.version).toBeGreaterThan(rowBefore.version);
+      expect(applied.contentHash).not.toBe(rowBefore.contentHash);
+      expect(applied.contentHash).toBe(hashPlanContent(applied.content));
+      expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.before.revision! + 1);
+    }
+  });
+
   /** Read the rubric's stored template_data straight off the row, so a resubmission is
    *  schema-valid by construction rather than by a hand-written fixture that can drift. */
   async function storedTemplateData(slug: string): Promise<{ criteria: { key: string }[] }> {

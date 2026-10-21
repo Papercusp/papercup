@@ -43,6 +43,9 @@ import {
   readLatestActivationAuditAnchor,
   type VerificationLoweringRefusal,
 } from '../../plan-verification-escape';
+import { withVerificationResolver } from '../../plan-verification-profile';
+import { loadTypeRegistry } from '../../plan-types/registry';
+import { createRegistryVerificationResolver } from '../../plan-types/resolve-verification';
 import { summarizeForcedPast } from './forced-past-stamp';
 import {
   invalidPlanDependenciesValue,
@@ -786,19 +789,23 @@ export async function withPlanLock<T>(
       const nextParsed = parsePlan(newBody, { filePath });
       const planTypeBefore = priorParsed.frontmatter.type ?? null;
       const planTypeAfter = nextParsed.frontmatter.type ?? null;
-      const lowerings = declaredDeliverablesChanged(priorParsed.items, nextParsed.items) || planTypeBefore !== planTypeAfter
-        ? deliverableLowerings(priorParsed.items, nextParsed.items, {
-            profile: effectivePlanProfile(
-              (
-                await tx<{ verification_profile: string | null }[]>`
-                  SELECT verification_profile FROM harness_shared.harness_plans
-                   WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}`
-              )[0]?.verification_profile,
-            ),
+      // Both sides resolve through the WORKSPACE registry, so a swap between two registered
+      // third-party types is judged on their real module sets. The built-in-only default
+      // would fail both safe to the full catalog and see no lowering at all.
+      let lowerings: ReturnType<typeof deliverableLowerings> = [];
+      if (declaredDeliverablesChanged(priorParsed.items, nextParsed.items) || planTypeBefore !== planTypeAfter) {
+        const [profileRow] = await tx<{ verification_profile: string | null }[]>`
+          SELECT verification_profile FROM harness_shared.harness_plans
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}`;
+        const registry = await loadTypeRegistry(tx as never, { workspaceId });
+        lowerings = withVerificationResolver(createRegistryVerificationResolver(registry), () =>
+          deliverableLowerings(priorParsed.items, nextParsed.items, {
+            profile: effectivePlanProfile(profileRow?.verification_profile),
             planTypeBefore,
             planTypeAfter,
-          })
-        : [];
+          }),
+        );
+      }
       if (lowerings.length > 0) {
         const profile = lowerings[0]!.profile;
         const audit = await readLatestActivationAuditAnchor(tx as never, { workspaceId, harnessSlug, planSlug: slug });

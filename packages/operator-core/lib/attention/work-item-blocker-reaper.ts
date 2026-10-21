@@ -577,3 +577,138 @@ export async function sweepWorkItemBlockerDefaults(opts?: {
   result.repaired = await repairStrandedItems(deps, limit, dryRun);
   return result;
 }
+
+/** event-wait-settlement-2026-10-20 P-006 (R-12): who stamped a backfilled re-check date. */
+export const UNPROVABLE_WAIT_BACKFILL_ACTOR = 'system:unprovable-wait-backfill';
+
+/**
+ * `plan-lane:<plan>#<item>` gate rows are the plan-item lane's own marker, written and cleared
+ * by the plan reconcile (plan-items/reconcile-linked-work-items.ts), never by an event — they
+ * are not an agent's event wait, so the backfill leaves them alone.
+ */
+const PLAN_LANE_REF_RE = /^plan-lane:/;
+
+export interface UnprovableWaitBackfillDeps {
+  /** Non-terminal items carrying an active event/gate row with no recheckAt (plan-lane excluded). */
+  listUnstampedWaits(limit: number): Promise<BlockerReapCandidate[]>;
+  readPayload: BlockerReapDeps['readPayload'];
+  writeBlockers: BlockerReapDeps['writeBlockers'];
+  /** The releasing paths' own predicate: readEventConditionReachability with requireSpecificCondition. */
+  classify(ref: string): Promise<ExternalConditionReachability>;
+}
+
+export interface UnprovableWaitBackfillResult {
+  /** Items examined. */
+  items: number;
+  /** Active event/gate rows with no recheckAt that were classified. */
+  examined: number;
+  /** Of those, rows no fire can prove (broad, change notification, uncatalogued, free text). */
+  unprovable: number;
+  /** Rows given a recheckAt (0 on a dry run). */
+  stamped: number;
+  /** Rows a fire can prove — left alone. */
+  provable: number;
+  /** Rows the backfill never touches, by reason. */
+  skipped: Partial<Record<'unmeasured' | 'lost-race' | 'read-failed', number>>;
+  /** Unprovable rows by reason, for the before/after record (R-12). */
+  byReason: Partial<Record<string, number>>;
+  truncatedByLimit: boolean;
+}
+
+export const defaultUnprovableWaitBackfillDeps: UnprovableWaitBackfillDeps = {
+  async listUnstampedWaits(limit) {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ id: string; harness: string; payload: unknown }>>`
+      SELECT w.feature_id AS id, w.harness_slug AS harness, w.payload AS payload
+        FROM harness_shared.work_items w
+       WHERE w.workspace_id = ${activeWorkspaceId()}
+         AND NOT (w.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+         AND jsonb_typeof(w.payload->'externalBlockers') = 'array'
+         AND EXISTS (
+               SELECT 1 FROM jsonb_array_elements(w.payload->'externalBlockers') b
+                WHERE b->>'status' = 'active' AND b->>'kind' IN ('event', 'gate')
+                  AND b->>'recheckAt' IS NULL AND b->>'ref' !~ '^plan-lane:')
+       ORDER BY w.feature_id
+       LIMIT ${limit}
+    `;
+    return rows.map((r) => ({ id: r.id, harness: r.harness, payload: r.payload }));
+  },
+  readPayload: defaultBlockerReapDeps.readPayload,
+  writeBlockers: defaultBlockerReapDeps.writeBlockers,
+  classify: (ref) => readEventConditionReachability(ref, { requireSpecificCondition: true }),
+};
+
+/**
+ * event-wait-settlement-2026-10-20 P-006 (D-001 item 1, R-12): give every pre-existing active
+ * event/gate wait that no fire can prove a re-check date of `now`, so the next re-check sweep
+ * (sweepWorkItemBlockerDefaults above) escalates it to its holder. It CLEARS NOTHING — the
+ * owner ruled these are neither cleared nor left silent — and never touches a row that
+ * already has a recheckAt, a provable row, or a row whose classification failed. New
+ * unprovable waits are refused at write (wait-ref-admission.ts), so this is a backfill of the
+ * existing population; it is idempotent (a stamped row is no longer a candidate).
+ *
+ * Compare-and-set on the raw history, like every reaper write: unknown/legacy fields on a
+ * row are preserved, and a concurrent set/clear makes this item a counted lost race.
+ */
+export async function backfillUnprovableWaitRecheckDates(opts?: {
+  now?: Date;
+  limit?: number;
+  dryRun?: boolean;
+  deps?: UnprovableWaitBackfillDeps;
+}): Promise<UnprovableWaitBackfillResult> {
+  const deps = opts?.deps ?? defaultUnprovableWaitBackfillDeps;
+  const now = opts?.now ?? new Date();
+  const limit = opts?.limit ?? 500;
+  const dryRun = opts?.dryRun === true;
+  const rows = await deps.listUnstampedWaits(limit + 1);
+  const truncatedByLimit = rows.length > limit;
+  const batch = truncatedByLimit ? rows.slice(0, limit) : rows;
+  const result: UnprovableWaitBackfillResult = {
+    items: batch.length, examined: 0, unprovable: 0, stamped: 0, provable: 0,
+    skipped: {}, byReason: {}, truncatedByLimit,
+  };
+  const skip = (why: keyof UnprovableWaitBackfillResult['skipped']) => {
+    result.skipped[why] = (result.skipped[why] ?? 0) + 1;
+  };
+  const verdicts = new Map<string, Promise<ExternalConditionReachability>>();
+  for (const row of batch) {
+    try {
+      const fresh = await deps.readPayload(row.id, row.harness);
+      const raw = (fresh?.payload as { externalBlockers?: unknown } | null | undefined)?.externalBlockers;
+      if (!fresh || !Array.isArray(raw)) { skip('read-failed'); continue; }
+      const next = JSON.parse(JSON.stringify(raw)) as Array<Record<string, unknown>>;
+      let changed = 0;
+      for (const entry of next) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+        const ref = typeof entry.ref === 'string' ? entry.ref : null;
+        if (entry.status !== 'active' || (entry.kind !== 'event' && entry.kind !== 'gate')) continue;
+        if (!ref || entry.recheckAt != null || PLAN_LANE_REF_RE.test(ref)) continue;
+        result.examined += 1;
+        let verdict = verdicts.get(ref);
+        if (!verdict) { verdict = deps.classify(ref); verdicts.set(ref, verdict); }
+        const reachability = await verdict;
+        if (!reachability.uncertifiedReason) {
+          if (reachability.basis === 'unmeasured') skip('unmeasured');
+          else result.provable += 1;
+          continue;
+        }
+        result.unprovable += 1;
+        result.byReason[reachability.uncertifiedReason] = (result.byReason[reachability.uncertifiedReason] ?? 0) + 1;
+        entry.recheckAt = now.toISOString();
+        entry.recheckSource = UNPROVABLE_WAIT_BACKFILL_ACTOR;
+        entry.reachability = reachability;
+        changed += 1;
+      }
+      if (changed === 0 || dryRun) continue;
+      if (!(await deps.writeBlockers(row.id, row.harness, next as unknown as ExternalBlockerRecord[], raw))) {
+        skip('lost-race');
+        continue;
+      }
+      result.stamped += changed;
+    } catch (err) {
+      console.warn(`[unprovable-wait-backfill] ! ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
+      skip('read-failed');
+    }
+  }
+  return result;
+}
