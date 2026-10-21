@@ -546,6 +546,52 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
     ).toThrow(/stored criteria are not a list of records/);
   });
 
+  // WI-6554700010018513 — the incoming document was parsed by THIS build's strict schema,
+  // so it cannot carry a field a newer build added. The skewed write must carry those
+  // stored fields forward instead of silently dropping them.
+  it('carries forward a stored top-level field this build cannot represent on a skewed METHOD-only write', () => {
+    const result = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: writtenByNewerBuild(),
+      nextTemplateData: started({ method: 'A METHOD fill on an older build.' }),
+    });
+    expect(result.data.fieldFromANewerBuild).toEqual({ all: [] });
+    expect(result.data.criteria).toMatchObject([{ method: 'A METHOD fill on an older build.' }]);
+  });
+
+  it('carries forward a stored per-criterion field this build cannot represent, matched by barKey', () => {
+    const storedR1 = criterion({ criterionFieldFromANewerBuild: { runtime: 'bg-host' } });
+    const storedR2 = criterion({
+      key: 'r-2',
+      barKey: 'R-2',
+      barHash: 'e'.repeat(64),
+      criterionFieldFromANewerBuild: { runtime: 'release' },
+    });
+    const nextR1 = criterion({ method: 'R-1 method fill.' });
+    const nextR2 = criterion({ key: 'r-2', barKey: 'R-2', barHash: 'e'.repeat(64) });
+    const result = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: { ...started(), criteria: [storedR1, storedR2] },
+      // Reordered on purpose: carry-forward follows the bar, not the array position.
+      nextTemplateData: { ...started(), criteria: [nextR2, nextR1] },
+    });
+    expect(result.data.criteria).toMatchObject([
+      { barKey: 'R-2', criterionFieldFromANewerBuild: { runtime: 'release' } },
+      { barKey: 'R-1', method: 'R-1 method fill.', criterionFieldFromANewerBuild: { runtime: 'bg-host' } },
+    ]);
+    expect(result.changes).toEqual([]);
+  });
+
+  it('never resurrects a stored field this build DOES know that a skewed write omits', () => {
+    const result = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: { ...writtenByNewerBuild(), classRef: 'plan-class-feature-ship' },
+      nextTemplateData: started(),
+    });
+    expect(result.data).not.toHaveProperty('classRef');
+    expect(result.data.fieldFromANewerBuild).toEqual({ all: [] });
+  });
+
   it('corrects a pre-implementation label through an authenticated amendment without rewriting its declaration', () => {
     const stored = started();
     const corrected = guardAcceptanceBarTemplateDataWrite({

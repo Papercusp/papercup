@@ -779,6 +779,16 @@ export const rubricCriterionSchema = rubricCriterionObjectSchema.superRefine((in
 });
 
 /**
+ * The criterion field names THIS build's criterion schema knows. A stored criterion key
+ * outside this set was written by a different (newer) build. Shared by the read-side
+ * strip below and the write-side carry-forward in rubric-loss-guard.ts
+ * (WI-6554700010018513), so both agree on what "unknown to this build" means.
+ */
+export function knownRubricCriterionKeys(): ReadonlySet<string> {
+  return new Set(Object.keys(rubricCriterionObjectSchema.shape));
+}
+
+/**
  * READ-side forward compatibility for stored criteria (acceptance-runtime-plane P-002).
  *
  * The criterion schema is `.strict()` on purpose — a typo'd field must fail loud on WRITE.
@@ -799,7 +809,7 @@ export function stripUnknownCriterionKeys(templateData: unknown): { data: unknow
   }
   const record = templateData as Record<string, unknown>;
   if (!Array.isArray(record.criteria)) return { data: templateData, stripped: [] };
-  const known = new Set(Object.keys(rubricCriterionObjectSchema.shape));
+  const known = knownRubricCriterionKeys();
   const stripped = new Set<string>();
   const criteria = record.criteria.map((criterion) => {
     if (!criterion || typeof criterion !== 'object' || Array.isArray(criterion)) return criterion;

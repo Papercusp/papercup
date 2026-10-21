@@ -23,7 +23,7 @@
  * rubrics.ts (which imports withPlanLock — the cycle this file exists to avoid).
  */
 
-import { rubricTemplateDataSchema } from './rubric-template';
+import { knownRubricCriterionKeys, rubricTemplateDataSchema } from './rubric-template';
 import type { AcceptanceBarContract, AcceptanceBarProvenance } from './rubric-template';
 import { hashPlanContent } from './content-hash';
 import { pgTimestampToIso } from '../../pg-timestamp';
@@ -527,11 +527,38 @@ function assertAmendmentAuthenticated(args: AcceptanceBarWriteGuardInput): void 
  * - The final document is NOT re-parsed with this build's schema: it carries stored
  *   values this build cannot represent, which is the premise of this branch. Every
  *   value in it is either from `next` (validated above) or copied from the stored row.
+ * - Stored fields this build's schema does not know are CARRIED FORWARD, not dropped
+ *   (WI-6554700010018513): see `unknownStoredFields`.
  *
  * The federated whole-plan replay (sync/hyperbee/projections/harness-plans.ts) passes no
  * amendment, so a replayed meaning change is now refused here exactly as it already is
  * on the parsed path; an unchanged replay still passes.
  */
+/**
+ * WI-6554700010018513 — the stored fields a skewed write must carry forward.
+ *
+ * Under version skew `next` was parsed by THIS build's strict schema, so it cannot carry
+ * a field a newer build added; spreading `next` alone silently dropped every such stored
+ * field. This build is not the authority on fields it cannot read (the same reason the
+ * stored barSetHash is preserved), so they are copied from the raw stored row: top-level
+ * keys the template schema does not know, and per bar (matched by barKey) criterion keys
+ * the criterion schema does not know. A key this build DOES know is never carried: its
+ * absence from `next` is the writer's choice, judged by the checks in the caller. The
+ * alternative policy, refusing the write, would block every METHOD fill (D-002) through
+ * an older build for as long as any newer build had written to the row.
+ *
+ * Only the started-contract skew path may use this. The guard runs on EVERY plan's
+ * template_data write, and on a non-rubric template every key is "unknown" to the rubric
+ * schema, so the unstarted path must keep returning `next` unchanged.
+ */
+function unknownStoredFields(
+  stored: Record<string, unknown> | undefined,
+  known: ReadonlySet<string>,
+): Record<string, unknown> {
+  if (!stored) return {};
+  return Object.fromEntries(Object.entries(stored).filter(([key, value]) => !known.has(key) && value !== undefined));
+}
+
 function guardSkewedStartedContractWrite(
   args: AcceptanceBarWriteGuardInput,
   next: Record<string, unknown>,
@@ -565,6 +592,7 @@ function guardSkewedStartedContractWrite(
     args.subjectPlan,
     next.barContract as AcceptanceBarContract | undefined,
   );
+  const knownCriterionKeys = knownRubricCriterionKeys();
   const canonicalCriteria = nextCriteria.map((criterion) => {
     const prior = priorByKey.get(barKeyOf(criterion));
     const provenance = deriveProvenance(
@@ -577,12 +605,13 @@ function guardSkewedStartedContractWrite(
       false,
       criterion.barProvenance as AcceptanceBarProvenance | undefined,
     );
-    return { ...criterion, barProvenance: provenance };
+    return { ...unknownStoredFields(prior, knownCriterionKeys), ...criterion, barProvenance: provenance };
   });
   const storedSetHash = typeof stored.barSetHash === 'string' ? stored.barSetHash : undefined;
   const setHash = storedSetHash ?? barSetHash(canonicalCriteria);
   return {
     data: {
+      ...unknownStoredFields(stored, new Set(Object.keys(rubricTemplateDataSchema.shape))),
       ...next,
       kind: 'acceptance',
       subjectPlan: stored.subjectPlan,
