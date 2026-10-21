@@ -473,7 +473,8 @@ describe('native sync-batch slot accounting (R-17, WI-6554700010018392)', () => 
     const persist = vi.fn(async (_params: Parameters<RecordOperationalRunDeps['persist']>[0]) => ({ written: 1, ids: [77] }));
     const execution = { sourceRoot: vi.fn(async () => process.cwd()),
       snapshot: vi.fn(() => ({ commit: 'b'.repeat(40), porcelain: '' })),
-      readRuntime: vi.fn(async () => 'c'.repeat(64)), verifyDefinition: vi.fn(async () => true), persist };
+      readRuntime: vi.fn(async (_units: string[], _workspaceId: string) => 'c'.repeat(64)),
+      verifyDefinition: vi.fn(async () => true), persist };
     const readDefinition = vi.fn(async (path: string) => `SELECT 1 /* ${path} */;`);
     const query = vi.fn(async (statements: string[]) =>
       ({ database: 'papercusp', port: 5432, results: statements.map((_, i) => rows[i] ?? []) }));
