@@ -66,6 +66,7 @@ import runTool, {
   shouldIngestVitestLedgerInProcess,
   type TestingRunPhaseTimings,
   TEST_RUN_ID_READBACK_TIMEOUT_MS,
+  withInProcessTestingRunForegroundCeiling,
 } from '../run';
 import { cancelRun, getRun, type HarnessTestRunEvidence } from '../../../testing-run-store';
 import { listDirtyFilesRecursive, readRestrictedWindowHoldings, type HoldRunGit } from '../../../personal-vault/git-sync-hold';
@@ -83,12 +84,22 @@ import type { TestRunArtifactPaths, TestRunDeadline } from '../run-artifacts';
  * overrides it with a fake `projectDir` to exercise the wrong-tree path.
  */
 function call(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
-  return (
+  const invoke = () => (
     runTool as unknown as {
       handler: (a: unknown, c: unknown) => Promise<unknown>;
     }
   ).handler(args, ctx);
+  // WI-6554700010018388: this call is in-process, so no MCP transport cap applies. A case that
+  // authors no timeoutMs is checking verdict CLASSIFICATION, so it gets a ceiling that box load
+  // cannot push a ~20s vitest cold start past. A case that passes timeoutMs is testing the budget
+  // itself, so it keeps the transport clamp.
+  return args.timeoutMs === undefined
+    ? withInProcessTestingRunForegroundCeiling(IN_PROCESS_CLASSIFICATION_CEILING_MS, invoke)
+    : invoke();
 }
+
+/** Below every classification case's own vitest timeout (>=120s) minus the handler's 20s phase headroom. */
+const IN_PROCESS_CLASSIFICATION_CEILING_MS = 90_000;
 
 /** The envelope testing:run returns (success and error shapes together). */
 interface RunResult {
@@ -173,7 +184,15 @@ const GREEN_TARGET_TEST_NAME_FRAGMENT = 'computeFlakiness';
  * Chosen for being a pure readFileSync text guard: fast, PG-free, no Tauri/Xvfb.
  */
 const CROSS_WORKSPACE_GREEN_TARGET = 'apps/operator/lib/verify-tauri-headless-port-straggler.test.ts';
-const NODE_TEST_TARGET = 'papercusp-desktop/test/mac-vm-health.test.js';
+/**
+ * A real node:test file the router runs with `node --test`. It must stay FAST: every case
+ * using it goes through the public handler, whose foreground budget is about 25s. The previous
+ * target, mac-vm-health.test.js, grew to 33 cases of about 1.4s each (24.9s for the bare
+ * `node --test` on 2026-10-20), so the distill and byFile cases timed out on every run and
+ * reported `timeout` instead of their real verdict (WI-6554700010018388). This one is 4 pure
+ * in-process cases (~0.3s) with no child processes.
+ */
+const NODE_TEST_TARGET = 'papercusp-desktop/test/docs-search-server-terminal-state.test.js';
 
 // The real SideStage checkout is the measured external-Hive case. Keep the target discovery
 // dynamic so this suite remains portable to boxes that do not have a local Hive seed; the test
