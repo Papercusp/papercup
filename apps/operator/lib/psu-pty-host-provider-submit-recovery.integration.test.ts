@@ -117,8 +117,15 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
     const f = await fixture('claude', 'API Error: 502 Bad Gateway');
     try {
       f.recover();
+      const interruptedAt = Date.now();
       f.stdin.emit('data', Buffer.from(interrupt));
       await until(() => f.output().includes('INTERRUPTED'));
+      // The loop reconciler reads this field before another fire exists. A
+      // false standing hold here would prevent that fresh wake being created.
+      await until(() => {
+        const { execution } = JSON.parse(readFileSync(metaPathFor(f.envelope.ownerId), 'utf8'));
+        return execution?.observedAt > interruptedAt && execution.ownerStopRequested === false;
+      });
       expect(await injectIntoHostWithConfirmation(f.sock, f.envelope))
         .toMatchObject({ ok: true, reason: 'accepted' });
       await until(() => f.rows().some(row => row.kind === 'native-turn-start-confirmed' &&

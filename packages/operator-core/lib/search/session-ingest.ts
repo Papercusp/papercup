@@ -55,8 +55,8 @@ import { PAPERCUSP_MCP_SERVER_NAMES } from '../papercusp-mcp-servers';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { cooperativeYield } from '../event-loop-lag-monitor';
-import { blockPayloadText, codexToolCallArgsRaw, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES } from '../transcript-wire';
-import { classifyRecordedTurn, OWNER_DIALOG_TURN_MARKER } from '../turn-provenance/turn-ref';
+import { blockPayloadText, codexToolCallArgsRaw, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES, dialogAnswerText, claudeDialogProvenanceAttachment } from '../transcript-wire';
+import { classifyRecordedTurn } from '../turn-provenance/turn-ref';
 import { closeTruncatedWholePaste } from '../turn-provenance/envelope-grammar';
 import {
   MACHINE_SURFACE_CATALOGUE_VERSION,
@@ -428,6 +428,12 @@ export function parseClaudeLine(line: string, options: TurnTextParseOptions = {}
   } catch {
     return null;
   }
+  const dialogProvenance = claudeDialogProvenanceAttachment(obj);
+  if (dialogProvenance) return {
+    ts: parseTs(obj.timestamp), speaker: 'user', text: cleanMessageText(dialogProvenance, 'user', options),
+    cwd: typeof obj.cwd === 'string' ? obj.cwd : null,
+    sessionId: typeof obj.sessionId === 'string' ? obj.sessionId : null,
+  };
   const queuedCommand = parseClaudeQueuedCommand(obj, options);
   if (queuedCommand) return queuedCommand;
   if (obj.type !== 'user' && obj.type !== 'assistant') return null;
@@ -448,7 +454,7 @@ export function parseClaudeLine(line: string, options: TurnTextParseOptions = {}
       if (part.type !== 'tool_result') continue;
       const payload = partPayloadText(part.content).trim();
       if (!CLAUDE_OWNER_DIALOG_RESULT_PREFIXES.some((prefix) => payload.startsWith(prefix))) continue;
-      rawText = `${OWNER_DIALOG_TURN_MARKER}\n${payload}`;
+      rawText = dialogAnswerText(payload);
       break;
     }
   }

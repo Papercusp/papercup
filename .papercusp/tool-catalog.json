@@ -31285,7 +31285,7 @@
           "POST"
         ]
       },
-      "description": "Search workspace prose (escalations, brainstorm notes, older operator turns, and — with scope:[\"work_item\"] — bug/change/task issue titles+bodies) by keyword match (BM25-style). Ranked by relevance. Returns excerpts.",
+      "description": "Search workspace prose by keyword (BM25-style). Use scope:[\"plan\",\"work_item\",\"decisions\"] for planned-work discovery, including draft plan items; the default prose scope excludes plans and work-items. Returns ranked excerpts and unsearched-corpus disclosure.",
       "capabilities": [
         "search:read"
       ],
@@ -31358,7 +31358,7 @@
       "guidance": {
         "when": "User asks about a concept by paraphrase rather than the exact keyword used in the recorded text. Examples: \"when did we talk about authentication strategy\" (could match \"login flow\", \"auth approach\", \"JWT decision\"). Prefer mode=hybrid for best recall.",
         "notWhen": "When the user knows the exact keyword they want. `search:fulltext` is faster + cheaper there (no embedding API call). For structured queries (tasks/goals/projects rows by title), use `search:query`.",
-        "chaining": "Pair with `harness:escalation` or `harness:plan_reviews` to fetch the full row of a hit."
+        "chaining": "For planned-work discovery include scope:[\"plan\",\"work_item\",\"decisions\"]; defaults exclude plans/work-items. Read scope_residue before any absence claim. Fetch plan hits with plans:get."
       }
     },
     {
@@ -36498,7 +36498,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You want to find existing work-items by free text (e.g. dedup before filing, or locate a known issue/feature).",
-        "chaining": "work_items:search (dedup) → work_items:create, or → work_items:get { id } for detail."
+        "chaining": "Before claiming no planned work covers a topic, also run plans:search {query,harness} with scope omitted (includes items and decisions). Draft/unstarted P-NNN items are not work-items. Then work_items:get for detail or work_items:create after dedup."
       }
     },
     {

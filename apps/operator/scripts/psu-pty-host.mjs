@@ -79,6 +79,7 @@ import {
 } from 'node:fs';
 import net from 'node:net';
 import { createTerminalOutput } from './psu-terminal-output.mjs';
+import { observeClaudeDialogWrites } from './hooks/cc/dialog-answer-provenance.mjs';
 
 /**
  * Serialize atomic discovery-file writes without blocking the PTY host's event
@@ -11627,7 +11628,10 @@ export function hostThroughPty(o) {
       ownerId, hostPid: process.pid, childPid: child.pid ?? null,
       childGeneration, receivedAtMs,
       ownerInputPending: Boolean(ownerComposerGate?.hasPending()),
-      ownerStopRequested,
+      // Loop reconciliation must not treat an idle/menu Escape as a standing
+      // owner stop. Execution remains explicitly unknown when no native record
+      // exists; only positive work can retain this per-turn interruption hold.
+      ownerStopRequested: ownerStopRequested && nativeExecutionBlocksInjection(execution),
     };
   }
   // WI-1941: recycle carry-inject retry budget + backoff (per-session tunable,
@@ -15517,7 +15521,7 @@ export function hostThroughPty(o) {
       // commitment; keep every ID in this coalesced waiter pending until the
       // detached pipeline reaches its write/recycle commitment, or clear the
       // complete set when the attempt is terminally refused.
-      if (msg.deliveryId) deliveryDedup.markPending(msg.deliveryId, msg.mode === 'turn' || msg.mode === 'reset');
+      if (msg.deliveryId) deliveryDedup.markPending(msg.deliveryId, msg.mode === 'turn');
       // Fire the gated pipeline and forget it (from the ACK's point of view) —
       // its own try/catch/finally above already handles every expected outcome
       // and durably records it; this outer .catch exists only so a genuinely
@@ -15671,7 +15675,11 @@ export function hostThroughPty(o) {
   // RECYCLE (P-004b) spawns a fresh child and re-wires this bridge to it (node-pty
   // listeners are per-process). onStdin/onResize below read the live `child`
   // closure, so they need no re-wiring.
+  let writeOwnerPtyInput = (data) => child.write(data);
   wireChildData = () => {
+    writeOwnerPtyInput = String(env.PAPERCUSP_AGENT ?? '').toLowerCase() === 'claude'
+      ? observeClaudeDialogWrites(child, ownerId, env, bridgeTty)
+      : (data) => child.write(data);
     // Congestion belongs to the outer terminal, not the child. A recycled or
     // unparked child must inherit it until the same writer emits drain.
     if (terminalOutput.blocked) child.pause?.();
@@ -16079,7 +16087,7 @@ export function hostThroughPty(o) {
     try {
       quotaBlockDetector.observeInput(input);
       authBlockDetector.observeInput(input);
-      child.write(input);
+      writeOwnerPtyInput(input);
     } catch {
       /* ignore */
     }
