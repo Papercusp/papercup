@@ -27,7 +27,7 @@
  *     this a separate leg rather than a fourth mem0 pool — see D-037.
  */
 
-import { getOrgPg, pgResultDiagnosticSnapshot } from '@papercusp/db-org';
+import { acquireSnapshot, acquireTicketSnapshot, getOrgPg, pgResultDiagnosticSnapshot } from '@papercusp/db-org';
 import { runHybridSearch, type SearchHit, type SearchLegs, type SourceCallInstrumentation } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../agent-tools/search/sources';
 import { createDocSearchSource, createPlanSearchSource } from '../agent-tools/search/knowledge-sources';
@@ -79,7 +79,19 @@ function createCorpusSourceCallInstrumentation(): SourceCallInstrumentation {
   return {
     run: action => withStageAttempt(attempt, action),
     finish: outcome => {
-      attempt.finish(outcome);
+      attempt.finish(outcome === 'timed-out' ? 'expired' : outcome);
+      let acquisitionAtTimeout: NonNullable<ReturnType<SourceCallInstrumentation['finish']>>['acquisitionAtTimeout'];
+      if (outcome === 'timed-out') {
+        try {
+          acquisitionAtTimeout = {
+            timing: 'source-timeout-before-abort',
+            counters: acquireSnapshot('org-admin'),
+            tickets: acquireTicketSnapshot('org-admin'),
+          };
+        } catch {
+          // The bounded acquisition view is diagnostic-only; it cannot block recall.
+        }
+      }
       try {
         const snapshot = pgResultDiagnosticSnapshot('org-admin', 32);
         const queries = snapshot.results
@@ -94,6 +106,7 @@ function createCorpusSourceCallInstrumentation(): SourceCallInstrumentation {
           snapshotCapacity: snapshot.capacity,
           snapshotDropped: snapshot.dropped,
           queries,
+          ...(acquisitionAtTimeout ? { acquisitionAtTimeout } : {}),
         };
       } catch {
         return undefined;
