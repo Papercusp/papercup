@@ -2106,6 +2106,10 @@ export async function writeWithScratchQuota(
   // reservation still does not fit after that pass, refuse it instead of
   // repeatedly rescanning an unreclaimable tree forever.
   let quotaRecoveryAttempted = false;
+  // The reservation's own refusal carries the measured cause (used + bytes > quota). Keep the
+  // latest one so a write that still does not fit after recovery reports those numbers rather
+  // than a generic "still over quota".
+  let lastQuotaRefusal: ScratchQuotaError | undefined;
   try {
     for (;;) {
       const outcome = await withScratchWorkspaceMutex(opts.workspaceId, 'write', async () => {
@@ -2157,6 +2161,7 @@ export async function writeWithScratchQuota(
           });
         } catch (err) {
           if (!(err instanceof ScratchQuotaError)) throw err;
+          lastQuotaRefusal = err;
           return SCRATCH_QUOTA_RECOVERY_REQUIRED;
         }
 
@@ -2191,7 +2196,7 @@ export async function writeWithScratchQuota(
       }
       if (outcome === SCRATCH_QUOTA_RECOVERY_REQUIRED) {
         if (quotaRecoveryAttempted) {
-          throw new ScratchQuotaError(
+          throw lastQuotaRefusal ?? new ScratchQuotaError(
             `scratch reservation: workspace ${opts.workspaceId} remains over quota after recovery`,
           );
         }

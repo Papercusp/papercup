@@ -1231,10 +1231,11 @@ function compactReleaseRepairQueueDiagnostic(value: unknown): JsonObject | null 
   compact.signatureComplete = signature.length === priorSignatureCount;
 
   if (Array.isArray(source.failingTests)) {
+    const shownFailingTests = source.failingTests.slice(0, RELEASE_REPAIR_QUEUE_SIGNATURE_DISPLAY_CAP);
     compact.failingTestsCount = source.failingTests.length;
-    compact.failingTests = source.failingTests.slice(0, RELEASE_REPAIR_QUEUE_SIGNATURE_DISPLAY_CAP);
-    if (source.failingTests.length > compact.failingTests.length) {
-      compact.failingTestsOmittedCount = source.failingTests.length - compact.failingTests.length;
+    compact.failingTests = shownFailingTests;
+    if (source.failingTests.length > shownFailingTests.length) {
+      compact.failingTestsOmittedCount = source.failingTests.length - shownFailingTests.length;
     }
   }
 
