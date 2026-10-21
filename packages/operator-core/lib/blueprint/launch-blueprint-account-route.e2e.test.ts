@@ -117,15 +117,16 @@ it.for(['primary', 'capacity-failover'] as const)('records the exact real %s blu
       expect(receipt.firstRequest.model).toBe(receipt.route.launchedModel);
       expect(receipt.firstRequest.effort).toBe(receipt.route.launchedEffort);
       const [model, effort] = CODEX_SAFE_DEFAULT_MODEL.split(':');
-      const launchedModel = mode === 'capacity-failover' ? ONE_MILLION_MODEL_ALIASES.sonnet : model;
+      const gatewayModel = mode === 'capacity-failover' ? ONE_MILLION_MODEL_ALIASES.sonnet : model;
+      const launchSpecModel = mode === 'capacity-failover' ? `${gatewayModel}[1m]` : gatewayModel;
       const launchedEffort = mode === 'capacity-failover' ? 'high' : effort;
       expect(receipt.route).toMatchObject({ ownerId: receipt.spawnId, accountRoute: 'auto',
         requestedBackend: 'codex', launchedBackend: mode === 'capacity-failover' ? 'claude-code' : 'codex', requestedModel: model,
-        launchedModel, requestedEffort: effort, launchedEffort });
+        launchedModel: launchSpecModel, requestedEffort: effort, launchedEffort });
       expect(receipt).toMatchObject({ mode, injectedPrimaryWall: mode === 'capacity-failover' });
       expect(receipt.route.reason ?? null).toBe(mode === 'capacity-failover' ? 'capacity' : null);
-      expect(receipt.upstream).toMatchObject({ requestShape: { model: launchedModel, effort: launchedEffort }, error: null });
-      expect(receipt.childConfig).toMatchObject({ model: launchedModel, effort: launchedEffort });
+      expect(receipt.upstream).toMatchObject({ requestShape: { model: gatewayModel, effort: launchedEffort }, error: null });
+      expect(receipt.childConfig).toMatchObject({ model: launchSpecModel, effort: launchedEffort });
       expect(receipt.bundleSha256).toMatch(/^[a-f0-9]{64}$/);
       expect(receipt.runtimeInputs.invoke).toBe(join(root, 'libs/papercusp/packages/orchestrator/bin/invoke-once.ts'));
       expect(receipt.privateGateUnchanged).toBe(true);

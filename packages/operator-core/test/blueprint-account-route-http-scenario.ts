@@ -70,7 +70,10 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
   const failover = source.mode === 'capacity-failover';
   assert.ok(source.mode === 'primary' || failover, 'explicit primary/failover mode required');
   const launchedBackend = failover ? 'claude-code' : 'codex';
-  const launchedModel = failover ? backupModel : primaryModel;
+  const gatewayModel = failover ? backupModel : primaryModel;
+  // Claude CLI needs the client-side [1m] selector; the Anthropic gateway body
+  // uses the bare API model id.
+  const launchSpecModel = failover ? `${gatewayModel}[1m]` : gatewayModel;
   const launchedEffort = failover ? backupEffort : primaryEffort;
   assert.ok(source.accounts.length > 0, 'private pool requires real configured account references');
   for (const account of source.accounts.filter((row: any) => accountProvider(row) === 'claude'))
@@ -283,15 +286,16 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       assert.equal(spawnObservedGatewayModel(row.first_gateway_request), spawnRouteGatewayModel(row.account_route));
       assert.equal(row.first_gateway_request.effort, row.account_route.launchedEffort);
       assert.equal(childConfig.model, row.account_route.launchedModel);
+      assert.equal(childConfig.model, launchSpecModel);
       assert.equal(childConfig.effort, row.account_route.launchedEffort);
       assert.equal(row.account_route.requestedBackend, 'codex');
       assert.equal(row.account_route.launchedBackend, launchedBackend);
       assert.equal(row.account_route.requestedModel, primaryModel);
-      assert.equal(row.account_route.launchedModel, launchedModel);
+      assert.equal(row.account_route.launchedModel, launchSpecModel);
       assert.equal(row.account_route.requestedEffort, primaryEffort);
       assert.equal(row.account_route.launchedEffort, launchedEffort);
       assert.equal(row.account_route.reason ?? null, failover ? 'capacity' : null);
-      assert.equal(upstream?.requestShape.model, launchedModel);
+      assert.equal(upstream?.requestShape.model, gatewayModel);
       assert.equal(upstream?.requestShape.effort, launchedEffort);
       // Host exit closes admission. Descendant reaping then closes inherited
       // pipes; waiting for pipe-close before reaping would deadlock this order.
