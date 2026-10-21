@@ -32,6 +32,7 @@ import { resolvePlanScope } from './source';
 import { trackDetached } from '../../detached-imports';
 import { measurePackagedArtifactEnvironment } from './packaged-artifact-evidence';
 import { measureNativeColdEnvironment, nativeColdInstrumentKeySchema } from '../../storage/cold-tier-evidence';
+import { foldTreeInstrumentFingerprint, measureTreeInstrumentAtCommit, treeInstrumentKeySchema, type TreeInstrumentKey } from './tree-instruments';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 import {
   createCommittedTreeDiagnostics,
@@ -189,6 +190,12 @@ export const repoFilesEvidenceMeasurementSchema = z
     artifactReceiptPath: repoMeasurementPathSchema.optional(),
     /** Native physical storage observations re-run their registered instrument on this host. */
     nativeInstrumentKey: nativeColdInstrumentKeySchema.optional(),
+    /**
+     * A whole-tree test (a shrink-only census) re-runs its registered tree instrument over the
+     * files committed at the measurement commit; the output's digest joins the source
+     * fingerprint (tree-instruments.ts, WI-6554700010018633). Committed measurements only.
+     */
+    treeInstrumentKey: treeInstrumentKeySchema.optional(),
     /** Completed isolated tests certify retained source/lifecycle artifacts, not a live deployment. */
     completedRuntime: z.discriminatedUnion('kind', [z.object({
       kind: z.literal('verification-harness'),
@@ -442,15 +449,16 @@ async function readCommittedMeasurementText(
 
 /**
  * A tree-plane repo-files measurement must name the files its test-side tree walk can see.
- * Without explicit sourceGlobs, the normal first-ring source derivation is a false witness
- * for a broad scanner, so the read path fails closed instead of reporting current proof.
+ * Without explicit sourceGlobs or a registered tree instrument (which re-runs the scan over
+ * the committed tree), the normal first-ring source derivation is a false witness for a
+ * broad scanner, so the read path fails closed instead of reporting current proof.
  */
 async function broadRepoTreeScanGuard(
   root: string,
   recipe: RepoFilesEvidenceMeasurement,
   commit: string | null,
 ): Promise<string | null> {
-  if (recipe.sourceGlobs?.length || !recipe.testPaths?.length) return null;
+  if (recipe.sourceGlobs?.length || recipe.treeInstrumentKey || !recipe.testPaths?.length) return null;
   for (const path of recipe.testPaths) {
     const source = await (commit
       ? readCommittedMeasurementText(root, commit, path)
@@ -762,8 +770,15 @@ export async function measureRepoFilesEvidenceDetailedAtCommit(
   ]);
   if (fixtureIsWorkingTree) await refuseMutationProbePaths(fixtureRoot, fixturePaths);
   const fixtureIdentity = fixtureRootHarnessSlug ? { rootHarnessSlug: fixtureRootHarnessSlug } : {};
+  let sourceFingerprint = source.fingerprint;
+  if (parsed.treeInstrumentKey) {
+    // The instruments scan superproject roots; a submodule's own commit has no such tree.
+    if (prefix) throw new Error(`repo_measurement_tree_instrument_requires_root_repository:${parsed.treeInstrumentKey}`);
+    const output = await measureTreeInstrumentAtCommit(parsed.treeInstrumentKey, root, commit, deps);
+    sourceFingerprint = foldTreeInstrumentFingerprint(source.fingerprint, parsed.treeInstrumentKey, output);
+  }
   return {
-    sourceFingerprint: source.fingerprint,
+    sourceFingerprint,
     testFingerprint: test?.fingerprint ?? null,
     ...(fixture ? { fixtureFingerprint: fixture.fingerprint } : {}),
     files: [
@@ -772,6 +787,11 @@ export async function measureRepoFilesEvidenceDetailedAtCommit(
       ...(fixture?.files ?? []).map((file) => ({ ...file, ...fixtureIdentity, dimension: 'fixture' as const })),
     ],
   };
+}
+
+/** A working-tree read cannot reproduce a tree instrument's basis: refuse instead of under-measuring. */
+function refuseWorkingTreeInstrument(key: TreeInstrumentKey | undefined): void {
+  if (key) throw new Error(`repo_measurement_tree_instrument_requires_commit:${key}`);
 }
 
 async function repoFilesPrimaryPathsAtRoot(root: string, parsed: RepoFilesEvidenceMeasurement): Promise<string[]> {
@@ -787,6 +807,7 @@ async function fingerprintRepoFilesMeasurement(
   fixtureRootHarnessSlug?: string,
   expandedFixturePaths?: readonly string[],
 ): Promise<DetailedRepoEvidenceMeasurement> {
+  refuseWorkingTreeInstrument(parsed.treeInstrumentKey);
   const sourcePaths = expandedSourcePaths ?? (await expandedRepoSourcePathsAtRoot(root, parsed));
   const fixturePaths = expandedFixturePaths ?? (await expandedRepoFixturePathsAtRoot(fixtureRoot, parsed));
   const [source, test, fixture] = await Promise.all([

@@ -1092,6 +1092,82 @@ export const census = () => REPO_ROOTS.map(walk);
     }
   });
 
+  it('measures a broad census test through its tree instrument: current across unrelated commits, stale on a planted module', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'spec-evidence-tree-instrument-'));
+    const previousRoot = h.measurementRoot;
+    const treeTest = `import { readdirSync } from 'node:fs';
+const APP_ROOTS = ['packages/operator-core'];
+function walk(dir: string): string[] { return readdirSync(dir); }
+export const census = () => APP_ROOTS.map(walk);
+`;
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['packages/operator-core/lib/integrations/provider-census.ts'],
+      testPaths: ['test/census.test.ts'],
+      treeInstrumentKey: 'provider-specific-census' as const,
+    };
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, '-c', 'user.name=Spec test',
+      '-c', 'user.email=spec-test@example.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8' }).trim();
+    const commitFiles = async (files: Record<string, string>) => {
+      for (const [path, body] of Object.entries(files)) {
+        await mkdir(dirname(join(root, path)), { recursive: true });
+        await writeFile(join(root, path), body);
+      }
+      git('add', '-A');
+      git('commit', '-qm', 'step');
+    };
+    const read = async () => {
+      const [row] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+      return row!;
+    };
+    try {
+      git('init', '-q');
+      await commitFiles({
+        'packages/operator-core/lib/integrations/provider-census.ts': 'export const census = 1;\n',
+        'packages/operator-core/lib/integrations/provider-options.ts': 'export const a = 1;\n',
+        'test/census.test.ts': treeTest,
+      });
+      expect(detectBroadRepoTreeScan(treeTest)).toBe(true);
+      const baseline = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, git('rev-parse', 'HEAD'));
+      expect(baseline.sourceFingerprint).toMatch(/^sha256-tree-instrument-v1:/);
+      h.measurementRoot = root;
+      h.rows = [{
+        id: 3203, work_item_id: 'WI-tree-instrument', plan_slug: 'plan-one', spec_id: 'SPEC-tree-instrument',
+        source_val_id: null, spec_revision: 1, current_revision: 1, spec_fingerprint: 'sha256:tree-instrument',
+        evidence_kind: 'test', evidence_ref: 'test/census.test.ts', source_fingerprint: baseline.sourceFingerprint,
+        test_fingerprint: baseline.testFingerprint, fixture_fingerprint: null, rubric_fingerprint: null,
+        environment_fingerprint: null, coverage_evidence_ref: null, coverage_evidence_present: false,
+        test_run_id: null, test_run_present: false, details: { currentMeasurement: recipe },
+        observed_at: '2026-10-21T00:00:00.000Z', created_at: '2026-10-21T00:00:00.000Z',
+        created_by: 'su-test', binding_fingerprint: 'tree-instrument-binding', spec_is_current: true,
+      }];
+
+      await commitFiles({
+        'packages/operator-core/lib/integrations/provider-options.ts': 'export const a = 2;\n',
+        'packages/operator-core/lib/integrations/new-helper.ts': 'export const helper = 1;\n',
+      });
+      expect((await read()).currentness.dimensions.source).toBe('current');
+
+      await commitFiles({ 'packages/operator-core/lib/integrations/whatsapp-bridge.ts': 'export {};\n' });
+      expect((await read()).currentness.dimensions.source).toBe('stale');
+
+      // Without the instrument the same recipe still fails closed.
+      const { treeInstrumentKey: _key, ...bare } = recipe;
+      h.rows = [{ ...h.rows[0]!, details: { currentMeasurement: bare } }];
+      expect((await read()).currentness.unknownReasons).toContain(
+        'server-measurement-unavailable:repo_measurement_broad_tree_scan_requires_source_globs:test/census.test.ts',
+      );
+      // A working-tree read cannot reproduce the instrument's basis.
+      await expect(measureRepoFilesEvidenceAtRoot(root, recipe))
+        .rejects.toThrow('repo_measurement_tree_instrument_requires_commit:provider-specific-census');
+    } finally {
+      h.measurementRoot = previousRoot;
+      h.rows = [];
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('measures fixture calibration files as an independent fingerprint and pin dimension', async () => {
     const fixturePath = 'fixture/server-envelope.ts';
     await mkdir(join(measurementRoot, 'fixture'), { recursive: true });

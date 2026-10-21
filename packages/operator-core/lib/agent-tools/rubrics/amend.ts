@@ -39,6 +39,7 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { lintAcceptanceCriterionMethods } from '../../rubrics-method-lint';
 import { runtimeVettingFindings } from '../../acceptance-runtime-citation';
 import { openAcceptanceBarAmendmentReview } from '../../consult/acceptance-bar-amendment-review';
+import { acceptanceBarMappingDeltaEntrySchema } from '../../acceptance-bar-amendment';
 
 /** P-006: the requirement this dry run still owes when nobody has opened its review. */
 const REVIEW_NOT_REQUESTED_NEXT =
@@ -146,7 +147,7 @@ function reviewerModelNotAllowedRefusal(error: unknown): {
 
 /** The amendment fields exactly as requested, so a routed reviewer can reproduce the preview. */
 function amendmentPatch(args: z.infer<typeof rubricsAmendArgs>): Record<string, unknown> {
-  const fields = ['requirement', 'criteria', 'criterion', 'criterionClass', 'criterionEvidencePlane', 'methodRef', 'classRef', 'composes', 'restoreOrphanedBarContract'] as const;
+  const fields = ['requirement', 'criteria', 'criterion', 'criterionClass', 'criterionEvidencePlane', 'methodRef', 'classRef', 'composes', 'restoreOrphanedBarContract', 'barMappingDelta'] as const;
   return Object.fromEntries(fields.filter((field) => args[field] !== undefined).map((field) => [field, args[field]]));
 }
 
@@ -416,6 +417,12 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .literal(true)
       .optional()
       .describe('BAR recovery: restore an orphaned started contract from the subject-pinned rubric revision snapshot'),
+    barMappingDelta: z
+      .array(acceptanceBarMappingDeltaEntrySchema)
+      .min(1)
+      .max(50)
+      .optional()
+      .describe('move an unchanged BAR\'s Bar-to-work row: {barKey, prior:{planItemIds,evidencePlane} = locked row, next}; needs outside approval'),
     approvalRef: z
       .string()
       .min(1)
@@ -467,7 +474,8 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       args.methodRef !== undefined ||
       args.classRef !== undefined ||
       args.composes !== undefined ||
-      args.restoreOrphanedBarContract !== undefined;
+      args.restoreOrphanedBarContract !== undefined ||
+      args.barMappingDelta !== undefined;
     if (!hasPatch) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -611,6 +619,7 @@ export default defineTool({
         : {}),
       ...(args.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
       ...(args.restoreOrphanedBarContract ? { restoreOrphanedBarContract: true } : {}),
+      ...(args.barMappingDelta ? { barMappingDelta: args.barMappingDelta } : {}),
       ...(args.approvalRef !== undefined ? { approvalRef: args.approvalRef } : {}),
       ...(args.approvedBy !== undefined ? { approvedBy: args.approvedBy } : {}),
       ...(args.approvedAt !== undefined ? { approvedAt: args.approvedAt } : {}),
