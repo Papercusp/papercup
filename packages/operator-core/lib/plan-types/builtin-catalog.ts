@@ -16,13 +16,16 @@
  * stand alone. Until then the parity test in `registry-seed-census.integration.test.ts`
  * (R-3 falsifier 4) pins each entry to today's mapping: drift either way fails the build.
  */
+// Leaf imports only: plan-verification-profile.ts loads this module (through the registry
+// resolver) while it is still evaluating, so values read at module-evaluation time here must
+// not come from it.
 import {
   DELIVERABLE_KINDS,
   VERIFICATION_PROFILES,
   type DeliverableKind,
-  type VerificationModule,
   type VerificationProfile,
-} from '../plan-verification-profile';
+} from '@papercusp/plan-parser';
+import type { VerificationModule } from './verification-modules';
 import {
   FIRST_PARTY_NAMESPACE,
   TYPE_DEFINITION_SCHEMA_VERSION,

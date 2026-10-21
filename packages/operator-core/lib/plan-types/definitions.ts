@@ -23,7 +23,7 @@
  * it, so a stored definition can never resolve without it.
  */
 import { z } from 'zod';
-import { VERIFICATION_MODULES, type VerificationModule } from '../plan-verification-profile';
+import { VERIFICATION_MODULES, type VerificationModule } from './verification-modules';
 
 export const TYPE_DEFINITION_SCHEMA_VERSION = 1 as const;
 
