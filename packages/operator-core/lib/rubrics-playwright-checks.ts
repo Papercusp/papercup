@@ -1,5 +1,6 @@
 /** Maintained Portal executor for structured rubric checks. Never import a spec into Vitest. */
 import { readFileSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import ts from 'typescript';
 import { parseTestRunExecutionDetails, type TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
@@ -14,6 +15,14 @@ import type { RecordedTestCase } from './testing-case-filter';
 export interface PortalPlaywrightRoute { kind: 'portal-playwright'; root: string; file: string }
 export type CriterionTestRoute = { kind: 'vitest' } | PortalPlaywrightRoute | { kind: 'unsupported'; reason: string };
 const PLAYWRIGHT_IMPORT_RE = /(?:from\s*|require\(\s*|import\(\s*)['"]@playwright\/test['"]/;
+
+/** Pin both the selected specs and the files that select their maintained executor. */
+function portalInputSnapshot(root: string, files: string[]): string {
+  return JSON.stringify(['package.json', 'playwright.config.ts', ...files].map(file => {
+    const path = resolve(root, file);
+    return { file, realPath: realpathSync(path), sha256: createHash('sha256').update(readFileSync(path)).digest('hex') };
+  }));
+}
 
 /** Read literal config ownership without executing app code in the operator. Dynamic configs refuse. */
 function portalConfigMatches(config: string, file: string): boolean {
@@ -181,10 +190,17 @@ export async function runPortalPlaywrightChecks(opts: {
     return refuse('route_error', 'Playwright executor ownership changed or is ambiguous');
   const files = routes.map(route => (route as PortalPlaywrightRoute).file);
   if (new Set(files).size !== files.length) return refuse('route_error', 'duplicate Playwright file identity');
+  let sourceSnapshot: string;
+  try { sourceSnapshot = portalInputSnapshot(root, files); }
+  catch { return refuse('route_error', 'Playwright spec/config source could not be pinned'); }
+  const sourceUnchanged = (): boolean => {
+    try { return portalInputSnapshot(root, files) === sourceSnapshot; } catch { return false; }
+  };
   for (const fence of [deps.mutationFence ?? mutationProbeRefusal, deps.restrictedFence ?? restrictedHoldRefusal]) {
     const refusal = await fence(root, files);
     if (refusal) return { ok: false, root, runId, ...refusal };
   }
+  if (!sourceUnchanged()) return refuse('route_error', 'Playwright spec/config source changed before execution');
   const env = { ...process.env, CI: '1', PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '0',
     PAPERCUSP_SID: opts.actorId, PAPERCUSP_WORKSPACE: opts.workspaceId,
     PAPERCUSP_TEST_RUN_GROUP: runId, PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug,
@@ -200,6 +216,10 @@ export async function runPortalPlaywrightChecks(opts: {
       `Playwright process did not finish successfully: code=${outcome.code} signal=${outcome.signal}; ${outcome.spawnError ?? ''}`),
       routerOutput: outcome.output.slice(-2000), ...(outcome.taskId ? { taskId: outcome.taskId } : {}),
       ...(outcome.terminationUnconfirmed ? { terminationUnconfirmed: true } : {}) };
+  if (!sourceUnchanged()) return refuse('route_error', 'Playwright spec/config source changed during execution');
+  const rows = await (deps.readRows ?? readHarnessTestRunEvidence)({ workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug, runGroupId: runId, filePaths: files });
+  if (!sourceUnchanged()) return refuse('route_error', 'Playwright spec/config source changed while reading reporter evidence');
   return judgePortalPlaywrightRows({ route: { root, files }, runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
-    rows: await (deps.readRows ?? readHarnessTestRunEvidence)({ workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, runGroupId: runId, filePaths: files }) });
+    rows });
 }

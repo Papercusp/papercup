@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION, parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
@@ -142,6 +142,57 @@ describe('governed Playwright invocation', () => {
     injected.restrictedFence.mockResolvedValue({ error: 'restricted_write_held' });
     expect((await runPortalPlaywrightChecks(options, injected)).error).toBe('restricted_write_held');
     expect(injected.process).not.toHaveBeenCalled();
+  });
+  it.each([file, 'playwright.config.ts', 'package.json'])('refuses changed input bytes despite successful execution and green rows: %s', async input => {
+    const path = join(root, input);
+    const original = readFileSync(path);
+    const injected = deps();
+    injected.process.mockImplementation(async () => {
+      writeFileSync(path, Buffer.concat([original, Buffer.from('\n ')]));
+      return success;
+    });
+    try {
+      expect(await runPortalPlaywrightChecks(options, injected)).toMatchObject({ error: 'route_error',
+        hint: 'Playwright spec/config source changed during execution' });
+      expect(injected.readRows).not.toHaveBeenCalled();
+    } finally { writeFileSync(path, original); }
+  });
+  it('refuses source drift during fence admission before spawning', async () => {
+    const original = readFileSync(absolute);
+    const injected = deps();
+    injected.mutationFence.mockImplementation(async () => {
+      writeFileSync(absolute, Buffer.concat([original, Buffer.from('\n ')]));
+      return null;
+    });
+    try {
+      expect(await runPortalPlaywrightChecks(options, injected)).toMatchObject({ error: 'route_error',
+        hint: 'Playwright spec/config source changed before execution' });
+      expect(injected.process).not.toHaveBeenCalled();
+    } finally { writeFileSync(absolute, original); }
+  });
+  it('refuses an input removed during execution', async () => {
+    const path = join(root, 'playwright.config.ts');
+    const original = readFileSync(path);
+    const injected = deps();
+    injected.process.mockImplementation(async () => { rmSync(path); return success; });
+    try {
+      expect(await runPortalPlaywrightChecks(options, injected)).toMatchObject({ error: 'route_error',
+        hint: 'Playwright spec/config source changed during execution' });
+      expect(injected.readRows).not.toHaveBeenCalled();
+    } finally { writeFileSync(path, original); }
+  });
+  it('refuses source drift while resolving green reporter rows', async () => {
+    const path = join(root, 'playwright.config.ts');
+    const original = readFileSync(path);
+    const injected = deps();
+    injected.readRows.mockImplementation(async () => {
+      writeFileSync(path, Buffer.concat([original, Buffer.from('\n ')]));
+      return [row()];
+    });
+    try {
+      expect(await runPortalPlaywrightChecks(options, injected)).toMatchObject({ error: 'route_error',
+        hint: 'Playwright spec/config source changed while reading reporter evidence' });
+    } finally { writeFileSync(path, original); }
   });
 });
 
