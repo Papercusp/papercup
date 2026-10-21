@@ -25,6 +25,27 @@ describe('nestedPotCheckoutPaths (WI-6554700010018602)', () => {
     expect(nestedPotCheckoutPaths('papercusp', ROOT, PROJECTS, new Set(['sibling']))).toEqual([]);
   });
 
+  it("keeps the pot's OWN qualified submodule installs (`<slug>/<rel>`) — a commit-only sub-sync has no publisher but the enclosing pot (WI-6554700010018697)", () => {
+    const projects = [
+      ...PROJECTS,
+      { slug: 'papercusp/libs/papercusp', path: `${ROOT}/libs/papercusp` },
+      { slug: 'papercusp/libs/generic/cache', path: `${ROOT}/libs/generic/cache` },
+      // Same path shape, but a different pot's namespace: still an independent publisher.
+      { slug: 'other/libs/vendored', path: `${ROOT}/libs/vendored` },
+    ];
+    const active = new Set([
+      'papercusp',
+      'slack-asana-bug-drill',
+      'papercusp/libs/papercusp',
+      'papercusp/libs/generic/cache',
+      'other/libs/vendored',
+    ]);
+    expect(nestedPotCheckoutPaths('papercusp', ROOT, projects, active)).toEqual([
+      'apps/slack-asana-bug-drill',
+      'libs/vendored',
+    ]);
+  });
+
   it('never treats the pot itself as nested in its own tree', () => {
     expect(nestedPotCheckoutPaths('slack-asana-bug-drill', `${ROOT}/apps/slack-asana-bug-drill`, PROJECTS, new Set(['slack-asana-bug-drill']))).toEqual([]);
   });

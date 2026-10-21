@@ -258,7 +258,7 @@ describe('substitution verdict fold (P-015)', () => {
   });
 
   it('uses the handler cwd to exempt an install in an independent tree', async () => {
-    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
+    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as CheckVerdict);
     rowsM.mockResolvedValue([dependencyRow]);
 
     const out = body((await tool.handler(

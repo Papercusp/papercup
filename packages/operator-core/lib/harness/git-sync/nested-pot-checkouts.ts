@@ -31,9 +31,14 @@ function strictlyInside(root: string, child: string): string | null {
 
 /**
  * Repo-relative POSIX paths of every OTHER project whose checkout sits strictly inside
- * `repoPath` and which runs its own active git-sync. A nested project with no git-sync of
- * its own is NOT returned: the enclosing pot stays its only publisher, so skipping it
- * would strand its commits.
+ * `repoPath` and which runs its own active git-sync. Two kinds of nested project are NOT
+ * returned, because the enclosing pot stays their only publisher and skipping them would
+ * strand their commits:
+ *  - a nested project with no git-sync of its own;
+ *  - this pot's OWN submodule entry, qualified `${slug}/${rel}` by classify-tree
+ *    (e.g. `papercusp/libs/papercusp`). Its git-sync install is a commit-only sub-sync
+ *    with no delivery route of its own, so treating it as an independent pot left
+ *    nobody pushing its origin and froze its gitlink (WI-6554700010018697).
  */
 export function nestedPotCheckoutPaths(
   slug: string,
@@ -45,7 +50,8 @@ export function nestedPotCheckoutPaths(
   for (const project of projects) {
     if (project.slug === slug || !project.path || !ownGitSyncSlugs.has(project.slug)) continue;
     const rel = strictlyInside(repoPath, project.path);
-    if (rel) out.add(rel);
+    if (!rel || project.slug === `${slug}/${rel}`) continue;
+    out.add(rel);
   }
   return [...out].sort();
 }
