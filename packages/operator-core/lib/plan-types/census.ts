@@ -250,12 +250,31 @@ export function diffPlanVerdictCensus(
 
 /**
  * Every input the built-in vocabulary can produce: each profile (and none), each kind (and
- * none, and an unknown string), each non-code signal, and each domain-module subset. A
+ * none, and an unparseable string), each non-code signal, and each domain-module subset. A
  * resolver that equals the legacy one on all of these equals it everywhere the gates reach.
+ *
+ * A namespaced type slug is deliberately NOT here: the legacy resolver ignores it, while the
+ * registry resolver holds an unregistered one to the strictest module set (R-6). That is an
+ * intended divergence, so it is enumerated separately by `enumerateUnregisteredTypeInputs`.
  */
 export function enumerateResolverInputs(): Array<{ plan: VerificationPlanInput; item: VerificationItemInput }> {
+  return enumerateInputsOver([...DELIVERABLE_KINDS, null, 'Not A Kind!']);
+}
+
+/**
+ * The same input grid with every item declaring `deliverable` (default: an unregistered
+ * namespaced item type). The registry resolver must hold each to the strictest module set.
+ */
+export function enumerateUnregisteredTypeInputs(
+  deliverable = 'acme/legal-review',
+): Array<{ plan: VerificationPlanInput; item: VerificationItemInput }> {
+  return enumerateInputsOver([deliverable]);
+}
+
+function enumerateInputsOver(
+  deliverables: Array<string | null>,
+): Array<{ plan: VerificationPlanInput; item: VerificationItemInput }> {
   const profiles: Array<string | null> = [...VERIFICATION_PROFILES, null, 'not-a-profile'];
-  const deliverables: Array<string | null> = [...DELIVERABLE_KINDS, null, 'acme/legal-review'];
   const auditVerdicts: Array<string | null> = [null, 'not-code', 'implemented', 'dropped'];
   const workItemKinds: Array<string | null> = [null, 'task', 'feature', 'bug'];
   const domainSets = [[], ...DOMAIN_MODULES.map((m) => [m]), [...DOMAIN_MODULES]];
