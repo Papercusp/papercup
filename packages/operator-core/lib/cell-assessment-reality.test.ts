@@ -81,6 +81,8 @@ import { roleLaunchVerdict } from './agent-tools/config/role-launch';
 import type { RoleLaunch } from './fleet/role-launch';
 import { assessWorkScope } from './work-scope-policy';
 import { assessVerificationHealth } from './verification-health';
+import { BUG_INFLOW_STALE_AFTER_MS, shapeBugInflow, type BugInflowRow } from './harness/improvements/bug-inflow';
+import { bugInflowPayload } from './agent-tools/improvements/bug-inflow';
 import {
   assessDirectiveStatus,
   deriveDirectiveStatus,
@@ -188,6 +190,24 @@ const LSP_ADMISSION_CELLS = BUILTIN_CELLS.filter(
 const VERIFICATION_HEALTH_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'plans:verification-health',
 );
+const WORK_BUG_INFLOW_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'improvements:bug-inflow',
+);
+
+// bug-inflow-one-problem-one-row-2026-10-18 P-007: work.bugInflow's real pure assessor
+// (shapeBugInflow) over stored bug_inflow_daily rows, at a fixed clock so "today" and the
+// newest row's age are exact rather than whatever the wall clock says.
+const BUG_INFLOW_NOW = new Date('2026-10-20T12:00:00.000Z');
+const bugInflowRow = (day: string, computedAgoMs: number): BugInflowRow => ({
+  day,
+  filed_total: 5,
+  filed_by_source: { watchdog: 3, agent: 2 },
+  closed_total: 2,
+  closed_by_status: { done: 2 },
+  computed_at: new Date(BUG_INFLOW_NOW.getTime() - computedAgoMs),
+});
+const BUG_INFLOW = (rows: readonly BugInflowRow[]) => shapeBugInflow(rows, { now: BUG_INFLOW_NOW, windowDays: 7 });
+const BUG_INFLOW_FRESH = [bugInflowRow('2026-10-20', 10 * 60_000), bugInflowRow('2026-10-19', 10 * 60_000)];
 
 // Exercise the actual daemon controller and state lens. A hand-authored code list
 // cannot detect a constant/inverted snapshot or an unavailable read becoming idle.
@@ -1190,6 +1210,20 @@ const CONTROLS: Record<string, readonly Control[]> = {
       expect: assessVerificationHealth({ breaches: 0, unmeasuredCodes: [] }),
     },
   ],
+  // bug-inflow-one-problem-one-row-2026-10-18 P-007. Both stale reasons get a row: a missing
+  // today and an over-age newest row are separate ways the writer falls behind.
+  'work.bugInflow': [
+    { label: 'today is stored and the newest row is fresh', expect: BUG_INFLOW(BUG_INFLOW_FRESH).assessment },
+    {
+      label: 'stored days exist but today has no row',
+      expect: BUG_INFLOW([bugInflowRow('2026-10-19', 10 * 60_000)]).assessment,
+    },
+    {
+      label: "today's row is older than the staleness bound",
+      expect: BUG_INFLOW([bugInflowRow('2026-10-20', BUG_INFLOW_STALE_AFTER_MS + 60_000)]).assessment,
+    },
+    { label: 'no stored row anywhere in the window', expect: BUG_INFLOW([]).assessment },
+  ],
 };
 
 /**
@@ -1367,6 +1401,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'settled',
   ],
   'verification.health': ['breached', 'breached', 'unmeasured', 'healthy'],
+  'work.bugInflow': ['measured', 'stale', 'stale', 'unmeasured'],
 };
 
 describe('P-004: the built-in partition — every cell is assessed, with no residue', () => {
@@ -1382,7 +1417,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
   // they must stay hardcoded so adding a cell forces an author through this file — but the
   // TITLE must not carry a second copy of them.
   it('registers every built-in cell and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(31);
+    expect(BUILTIN_CELLS).toHaveLength(32);
     expect(
       PIPELINE_CELLS.length +
         GOAL_CELLS.length +
@@ -1396,7 +1431,8 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
         DIRECTIVE_CELLS.length +
         GATE_OWNERSHIP_CELLS.length +
         LSP_ADMISSION_CELLS.length +
-        VERIFICATION_HEALTH_CELLS.length,
+        VERIFICATION_HEALTH_CELLS.length +
+        WORK_BUG_INFLOW_CELLS.length,
     ).toBe(BUILTIN_CELLS.length);
     expect(PIPELINE_CELLS).toHaveLength(11);
     expect(GOAL_CELLS).toHaveLength(1);
@@ -1411,6 +1447,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
     expect(GATE_OWNERSHIP_CELLS).toHaveLength(1);
     expect(LSP_ADMISSION_CELLS).toHaveLength(3);
     expect(VERIFICATION_HEALTH_CELLS).toHaveLength(1);
+    expect(WORK_BUG_INFLOW_CELLS).toHaveLength(1);
   });
 
   /**
@@ -1953,6 +1990,13 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       assessVerificationHealth({ breaches: 0, unmeasuredCodes: [] }),
       'a breached threshold must not read as healthy',
     ],
+    [
+      'work.bugInflow',
+      'inflow.days',
+      BUG_INFLOW(BUG_INFLOW_FRESH).assessment,
+      BUG_INFLOW([]).assessment,
+      'a writer that never ran must not read as measured',
+    ],
   ];
 
   /** Every cell gets an inversion probe — the same ten-of-ten partition, no residue. */
@@ -2264,6 +2308,11 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
     ...GOVERNOR_CELLS.map((c) => [c.cell, c, liveGovernorPayload] as const),
     ...LSP_ADMISSION_CELLS.map((c) => [c.cell, c, async () =>
       c.cell === 'lsp.admission' ? lspPayloads.pressure : lspRuntimePayloads.healthy] as const),
+    // P-007: the payload builder is pure, so the sweep reads the real payload shape
+    // (bugInflowPayload over shapeBugInflow) without a live bug_inflow_daily read.
+    ...WORK_BUG_INFLOW_CELLS.map(
+      (c) => [c.cell, c, async () => bugInflowPayload(BUG_INFLOW(BUG_INFLOW_FRESH), BUG_INFLOW_NOW)] as const,
+    ),
   ];
   const PAYLOADLESS = [
     ...GOAL_CELLS,
