@@ -983,6 +983,13 @@ export const CC_HOOK_FILES = [
   // pings journal:record-turn at each Stop; the server extracts the agent's
   // ⟦journal⟧ line (mechanical first-line fallback, flagged).
   'stop-turn-journal.sh',
+  // client-native-features-adoption-2026-10-21 P-002 (R-2): a Claude turn that dies
+  // on an API error fires StopFailure INSTEAD of Stop, so the Stop hooks never saw it.
+  'stop-failure-record.mjs',
+  // client-native-features-adoption-2026-10-21 P-003 (R-3): a native tool call that
+  // FAILS fires PostToolUseFailure INSTEAD of PostToolUse, so the activity hook never
+  // saw it.
+  'posttooluse-failure-record.mjs',
   // EI-21844056581395228 (a repeat of EI-19944806095285549): an artifact URL was
   // twice reported to the owner as delivered when no artifact existed. The prompt
   // rail was present both times, so this is the mechanical layer under it —
@@ -1334,6 +1341,10 @@ export const CC_HOOK_FILES = [
   // (stop-owner-directive-check, precompact-managed-carry, schedule-wakeup provenance) and
   // by the inject dispatcher. Imported, never executed, so 0644.
   'pc_nested_cli.mjs',
+  // client-native-features-adoption-2026-10-21 P-003 (D-011): the shared activity:report
+  // POST plumbing imported by posttooluse-failure-record.mjs. Imported, never executed,
+  // so 0644. Omit it and that hook fails to load: no failed tool call is recorded.
+  'pc_activity_report.mjs',
 ] as const;
 
 /** Hook files that are LIBRARIES, not executables — installed 0644, never chmod +x.
@@ -1346,6 +1357,7 @@ export const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set([
   'pc_nested_cli.py',
   'pc_nested_cli.sh',
   'pc_nested_cli.mjs',
+  'pc_activity_report.mjs',
 ]);
 
 /** Match the runtime-vintage unit label used by host-bootstrap in install evidence. */
@@ -3326,6 +3338,22 @@ export function mergeClaudeHookSettings(
     hooks.Stop = replaceOurHookEntries(ev('Stop'), ours('stop-turn-journal.sh'), {
       hooks: cmd('stop-turn-journal.sh'),
     });
+  // merge_stop_failure_record_hook — StopFailure, no matcher (every API-error kind:
+  // Claude matches StopFailure on the error kind). client-native-features-adoption-
+  // 2026-10-21 P-002 (R-2): records the failed turn as one agent_activity row.
+  if (has('stop-failure-record.mjs'))
+    hooks.StopFailure = replaceOurHookEntries(ev('StopFailure'), ours('stop-failure-record.mjs'), {
+      hooks: cmd('stop-failure-record.mjs'),
+    });
+  // merge_posttooluse_failure_record_hook — PostToolUseFailure, no matcher (every
+  // tool's failure counts). client-native-features-adoption-2026-10-21 P-003 (R-3,
+  // D-011): records the failed call as one post-phase agent_activity tool row.
+  if (has('posttooluse-failure-record.mjs'))
+    hooks.PostToolUseFailure = replaceOurHookEntries(
+      ev('PostToolUseFailure'),
+      ours('posttooluse-failure-record.mjs'),
+      { hooks: cmd('posttooluse-failure-record.mjs') },
+    );
   // merge_artifact_url_delivery_guard_hook — EI-21844056581395228 (prose) and
   // EI-21890940999877469 (durable surfaces). THREE branches of ONE script:
   // PostToolUse (matcher scoped to the Artifact tool) harvests the ids that
