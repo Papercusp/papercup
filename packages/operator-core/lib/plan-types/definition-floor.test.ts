@@ -21,7 +21,7 @@ import {
 } from './definitions';
 import { buildTypeRegistrySnapshot, type DefinitionRow } from './registry';
 import { STRICTEST_MODULES, createRegistryVerificationResolver, holdToFloor } from './resolve-verification';
-import { VERIFICATION_MODULES, type VerificationModule } from './verification-modules';
+import { DOMAIN_MODULES, type DomainModule } from './verification-modules';
 
 /** Module sets that leave generic-core out: each must be refused wherever it enters. */
 const BAD_MODULE_SETS: ReadonlyArray<readonly string[]> = [[], ['code'], ['design-evidence'], ['code', 'design-evidence']];
@@ -121,7 +121,7 @@ describe('definition floor — R-9 every resolved module set includes generic-co
     });
     const resolve = createRegistryVerificationResolver(registry);
     const deliverables = [undefined, 'acme/code-only', 'acme/missing', ...BUILTIN_CATALOG.itemTypes.map((def) => def.id)];
-    const domainSets: VerificationModule[][] = [[], ...VERIFICATION_MODULES.map((module) => [module])];
+    const domainSets: DomainModule[][] = [[], ...DOMAIN_MODULES.map((module) => [module])];
     let checked = 0;
     for (const planType of [...BUILTIN_CATALOG.planTypes.map((def) => def.id), 'acme/missing-plan']) {
       for (const deliverable of deliverables) {

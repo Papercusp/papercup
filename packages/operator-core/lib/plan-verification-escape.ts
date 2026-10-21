@@ -28,6 +28,7 @@ import {
   INFERRED_PLAN_PROFILE,
   isVerificationProfile,
   resolveVerification,
+  type DeliverableKind,
   type VerificationPlanInput,
   type VerificationProfile,
 } from './plan-verification-profile';
@@ -63,7 +64,7 @@ export function droppedModules(
 }
 
 /** The modules an item that declares no deliverable resolves to under `profile`. */
-function profileDefaultModules(profile: VerificationProfile): VerificationModule[] {
+function profileDefaultModules(profile: VerificationProfile): readonly VerificationModule[] {
   return resolveVerification({ verificationProfile: profile }, { deliverable: null }).modules;
 }
 
