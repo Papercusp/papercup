@@ -379,6 +379,8 @@ describe('mintBlindGapReviewer', () => {
     expect(confinement.denyOutside).not.toContain('plans:items');
     expect(args.brief).toContain(`${result.scratchPrefix}probe`);
     expect(args.brief).toContain('dryRun: true');
+    // A refused call is still ledgered with its arguments, and the door's probe counts it.
+    expect(args.brief).toContain('voids your review');
     const second = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, deps().deps);
     expect(second.ok && second.scratchPrefix).not.toBe(result.scratchPrefix);
   });

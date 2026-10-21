@@ -13720,14 +13720,15 @@ export function hostThroughPty(o) {
   // child).
   const parkIdleMs = parkIdleMsFromEnv(env);
   const parkResumeWaitMs = positiveNumber(env.PAPERCUSP_PSU_PARK_RESUME_WAIT_MS, 60_000);
+  /** @typedef {{ fromGeneration: number, toGeneration: number }} ParkResumeTransition */
   let parked = false;
   /** @type {Promise<boolean> | null} */
   let parkPromise = null;
-  /** @type {Promise<{ unparked: boolean, reason: string }> | null} */
+  /** @type {Promise<{ unparked: boolean, reason: string, transition?: ParkResumeTransition }> | null} */
   let unparkPromise = null;
   let parkedAtMs = 0;
   let lastUnparkAtMs = 0;
-  /** @type {{ args: string[], nativeId: string } | null} */
+  /** @type {{ args: string[], nativeId: string, parkedGeneration: number } | null} */
   let parkResume = null;
   let deliveriesInFlight = 0;
   let lastParkDeferReason = null;
@@ -13741,7 +13742,7 @@ export function hostThroughPty(o) {
   // resume. A retry timer (backing off from PAPERCUSP_PSU_PARK_UNPARK_RETRY_MS)
   // keeps trying while anything is held; the host ending releases them as
   // undeliverable so the sender's dedup slot clears.
-  /** @type {Array<(outcome: { ok: boolean, reason: string }) => void>} */
+  /** @type {Array<(outcome: { ok: boolean, reason: string, transition?: ParkResumeTransition }) => void>} */
   const heldDeliveryWaiters = [];
   const HELD_DELIVERY_CAP = 64;
   const parkUnparkRetryMs = positiveNumber(env.PAPERCUSP_PSU_PARK_UNPARK_RETRY_MS, 5_000);
@@ -13756,7 +13757,7 @@ export function hostThroughPty(o) {
   // Only PAPERCUSP_PSU_PARK_RESUME_EXIT_MAX consecutive such exits end the
   // session (with `child-unpark-abandoned`), since an agent that cannot be
   // resumed would otherwise retry forever behind a live-looking host.
-  /** @type {{ child: unknown, resume: { args: string[], nativeId: string }, trigger: string } | null} */
+  /** @type {{ child: unknown, resume: { args: string[], nativeId: string, parkedGeneration: number }, trigger: string } | null} */
   let resumeAwaitingPrompt = null;
   let resumedChildExitStreak = 0;
   const parkResumeExitMax = positiveNumber(env.PAPERCUSP_PSU_PARK_RESUME_EXIT_MAX, 3);
@@ -13862,8 +13863,9 @@ export function hostThroughPty(o) {
     writeMeta();
   };
   const parkChild = async (verdict) => {
-    const resume = mintResumeForPark();
-    if (!resume) return false;
+    const minted = mintResumeForPark();
+    if (!minted) return false;
+    const resume = { ...minted, parkedGeneration: childGeneration };
     const parkedChild = child;
     const childPid = Number.isInteger(parkedChild?.pid) ? parkedChild.pid : null;
     // `recycling` makes the child-exit handler ignore THIS kill: a park is not
@@ -14050,7 +14052,7 @@ export function hostThroughPty(o) {
   const unparkChild = (trigger) => {
     if (unparkPromise) return unparkPromise;
     if (!parked && !parkPromise) return Promise.resolve({ unparked: false, reason: 'not-parked' });
-    /** @type {Promise<{ unparked: boolean, reason: string }>} */
+    /** @type {Promise<{ unparked: boolean, reason: string, transition?: ParkResumeTransition }>} */
     let attempt;
     // The single-flight slot is cleared by IDENTITY, after the assignment below.
     // A `finally` inside the async body is not enough: a resume that fails
@@ -14091,6 +14093,7 @@ export function hostThroughPty(o) {
           return { unparked: false, reason: 'spawn-failed' };
         }
         cancelUnparkRetry();
+        const transition = { fromGeneration: resume.parkedGeneration, toGeneration: childGeneration };
         child = resumed;
         stopStartupTrace = startCodexStartupProcessTrace({
           agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
@@ -14137,8 +14140,8 @@ export function hostThroughPty(o) {
         // Deliveries held by an earlier failed resume run now, in arrival order
         // (each re-enters the inject mutex). If the resumed child already died,
         // the host is ending and cleanup releases them as undeliverable.
-        if (child === resumed) releaseHeldDeliveries({ ok: true, reason: 'resumed' });
-        return { unparked: true, reason: 'resumed' };
+        if (child === resumed) releaseHeldDeliveries({ ok: true, reason: 'resumed', transition });
+        return { unparked: true, reason: 'resumed', transition };
       } catch (error) {
         // Anything unexpected past the spawn (writeMeta, wiring) must not leave
         // a rejected promise in callers that only branch on `unparked`.
@@ -14177,8 +14180,10 @@ export function hostThroughPty(o) {
   const deliverAfterUnpark = async (mode, run) => {
     deliveriesInFlight++;
     try {
+      let transition;
       if (mode !== 'osc' && parkInProgress()) {
         const resume = await unparkChild(`control:${mode}`);
+        transition = resume.transition;
         if (!resume.unparked && parked) {
           if (resume.reason === 'host-ending' || hostCleanedUp || shuttingDown) {
             return { ok: false, reason: 'host-ending' };
@@ -14191,7 +14196,7 @@ export function hostThroughPty(o) {
             });
             return { ok: false, reason: 'unpark-failed' };
           }
-          /** @type {Promise<{ ok: boolean, reason: string }>} */
+          /** @type {Promise<{ ok: boolean, reason: string, transition?: ParkResumeTransition }>} */
           const released = new Promise((res) => heldDeliveryWaiters.push(res));
           appendHostEvent(ownerId, 'parked-delivery-held', {
             mode,
@@ -14201,9 +14206,10 @@ export function hostThroughPty(o) {
           scheduleUnparkRetry();
           const outcome = await released;
           if (!outcome.ok) return outcome;
+          transition = outcome.transition;
         }
       }
-      return await run();
+      return await run(transition);
     } finally {
       deliveriesInFlight--;
     }
@@ -14747,7 +14753,7 @@ export function hostThroughPty(o) {
       // that need detailed evidence record it locally; the detached settlement
       // below also records every refusal uniformly, so an early accepted ACK
       // never leaves a later negative outcome unexplained.
-      const runGatedDelivery = async () => {
+      const runGatedDelivery = async (unparkTransition = null) => {
       // EI-8822: hold the per-host inject mutex across the ENTIRE gated
       // critical section (gate wait → pty write → submit verify) so a wake
       // `turn` and a session:request-compaction `/compact` freed at the SAME
@@ -15283,6 +15289,14 @@ export function hostThroughPty(o) {
         if (msg.mode === 'turn') {
           if (ownerStopRequested) return { ok: false, reason: 'deferred-owner-stop' };
           if (reconcileNativeStartPending()) return { ok: false, reason: 'deferred-native-turn-start' };
+          // A wake addressed the parked child before THIS delivery resumed the
+          // same conversation. Bind it to that exact replacement, including a
+          // shared/held resume, without accepting an unrelated host or recycle.
+          if (deliver.requireNativeTurnStart && unparkTransition &&
+            deliver.expectedHostStartedAt === baseMeta.startedAt &&
+            deliver.expectedChildGeneration === unparkTransition.fromGeneration) {
+            deliver = { ...deliver, expectedChildGeneration: unparkTransition.toGeneration };
+          }
           if (deliver.requireNativeTurnStart &&
             (deliver.expectedHostStartedAt !== baseMeta.startedAt || deliver.expectedChildGeneration !== childGeneration)) {
             return { ok: false, reason: 'stale-execution-generation' };

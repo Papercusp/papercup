@@ -110,29 +110,51 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
 }
 
 describe('pending submission after provider recovery (EI-25878022553042846)', () => {
-  it('records the generation refusal after unpark, when the host already ACKed acceptance', async () => {
+  it.each(['agent message', 'awaited event'])('starts a guarded %s wake after unpark on its first delivery', async (source) => {
     const f = await fixture('claude', 'API Error: 502 Bad Gateway', true, {
       env: { PAPERCUSP_PSU_PARK_IDLE_MS: '300', PAPERCUSP_PSU_PARK_RESUME_WAIT_MS: '3000' },
     });
     try {
       await until(() => f.rows().some(row => row.kind === 'child-parked'), 6_000,
         () => JSON.stringify({ output: f.output(), events: f.rows() }));
+      f.recover();
+      f.envelope.data += ` (${source})`;
       expect(await injectIntoHostWithConfirmation(f.sock, f.envelope))
         .toMatchObject({ ok: true, reason: 'accepted' });
       await until(() => f.rows().some(row => row.kind === 'child-unparked'), 6_000,
         () => JSON.stringify({ output: f.output(), events: f.rows() }));
       const resumedMeta = JSON.parse(readFileSync(metaPathFor(f.envelope.ownerId), 'utf8'));
       expect(resumedMeta.execution.childGeneration).toBe(f.envelope.expectedChildGeneration! + 1);
-      await until(() => f.rows().some(row => row.kind === 'gated-delivery-refused' &&
+      await until(() => f.rows().some(row => row.kind === 'native-turn-start-confirmed' &&
         row.deliveryId === f.envelope.deliveryId), 6_000,
       () => JSON.stringify({ output: f.output(), events: f.rows() }));
+      expect(f.rows().filter(row => row.kind === 'gated-delivery-refused' &&
+        row.deliveryId === f.envelope.deliveryId)).toEqual([]);
+      const prompts = readFileSync(f.transcript, 'utf8').split('\n').filter(Boolean)
+        .map(line => JSON.parse(line)).filter(row => row.type === 'user');
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0].message.content).toContain(source);
+      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope))
+        .toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
+    } finally { await f.close(); }
+  }, 20_000);
+
+  it.each(['child', 'host'])('still refuses a guarded wake with a stale %s binding after unpark', async (binding) => {
+    const f = await fixture('claude', 'API Error: 502 Bad Gateway', true, {
+      env: { PAPERCUSP_PSU_PARK_IDLE_MS: '300', PAPERCUSP_PSU_PARK_RESUME_WAIT_MS: '3000' },
+    });
+    try {
+      await until(() => f.rows().some(row => row.kind === 'child-parked'));
+      f.recover();
+      if (binding === 'child') f.envelope.expectedChildGeneration! -= 1;
+      else f.envelope.expectedHostStartedAt! -= 1;
+      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope))
+        .toMatchObject({ ok: true, reason: 'accepted' });
+      await until(() => f.rows().some(row => row.kind === 'gated-delivery-refused' &&
+        row.deliveryId === f.envelope.deliveryId));
       expect(f.rows()).toContainEqual(expect.objectContaining({
-        kind: 'gated-delivery-refused',
-        mode: 'turn',
-        deliveryId: f.envelope.deliveryId,
+        kind: 'gated-delivery-refused', deliveryId: f.envelope.deliveryId,
         reason: 'stale-execution-generation',
-        expectedChildGeneration: f.envelope.expectedChildGeneration,
-        childGeneration: f.envelope.expectedChildGeneration! + 1,
       }));
       expect(f.output()).not.toContain('SUBMITTED:');
     } finally { await f.close(); }
