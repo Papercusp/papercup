@@ -4,11 +4,11 @@
   "name": "P-004 / R-31 independently assigned acceptance verdict distinguishing the positive control from each negative control (acceptance-bar-atomic-retirement-2026-10-15), re-read after a3c70e7517",
   "framework": "operational",
   "command": [
-    "work_items:get { id: 'WI-6554700010018644', harness: 'papercusp', detail: true, threadLimit: 30 }"
+    "work_items:get { id: 'WI-6554700010018644', harness: 'papercusp' } (state read only; thread posts carried from the 08:31Z read, see postsReadAt)"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-21T13:01:00.000Z",
-  "finishedAt": "2026-10-21T13:01:10.000Z",
+  "startedAt": "2026-10-21T13:02:09.000Z",
+  "finishedAt": "2026-10-21T13:02:10.897Z",
   "plan": "acceptance-bar-atomic-retirement-2026-10-15",
   "planItem": "P-004",
   "workItemId": "WI-6554700010018644",
@@ -29,7 +29,7 @@
   "verdictRecord": {
     "workItem": "WI-6554700010018644",
     "state": "done",
-    "stateReadAt": "2026-10-21T13:01Z (re-read for this file)",
+    "stateReadAt": "2026-10-21T13:02:10Z (re-read for this file: state=done, assignee null, updatedAt 07:42:10Z)",
     "evidencePackagePost": "thread-post:1192731 (implementer su-1622829b; lists the POSITIVE control and the negative controls for an independent reviewer; the implementer explicitly declines to accept)",
     "independentReviewers": [
       { "agent": "su-9213b07f", "verdict": "ACCEPT", "post": "thread-post:1192751" },
@@ -40,7 +40,7 @@
     "caveatOwnership": "non-blocking caveats b/c -> WI-6554700010018824, d -> WI-6554700010018783, e -> WI-6554700010018754"
   },
   "assertions": [
-    { "id": "verdict:item-closed", "passed": true, "evidence": "WI-6554700010018644 state=done (re-read 13:01Z)" },
+    { "id": "verdict:item-closed", "passed": true, "evidence": "WI-6554700010018644 state=done (re-read 13:02:10Z)" },
     { "id": "verdict:independent", "passed": true, "evidence": "ACCEPT verdicts by su-9213b07f and su-f65dd3bd; the implementer su-1622829b did not accept (post 1192731 states it cannot)" },
     { "id": "verdict:controls-named", "passed": true, "evidence": "post 1192731 lists a POSITIVE control (authorized change applies) and negative controls; grader confirms each reviewer distinguishes them" },
     { "id": "source:change-disclosed", "passed": true, "evidence": "sourceChange above names the a3c70e7517 diff and states that the verdicts predate it" }
