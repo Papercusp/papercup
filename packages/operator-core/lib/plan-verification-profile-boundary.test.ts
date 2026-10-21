@@ -385,11 +385,6 @@ const kindFindingKey = (f: Pick<KindBranchFinding, 'file' | 'shape' | 'text'>) =
  * is not (yet) routed.
  */
 const KIND_BRANCH_BASELINE: readonly string[] = [
-  // REAL BRANCH, owned by plan-item-types-registry-cupboard-2026-10-20#P-003 (anti-escape over module
-  // sets): a `not-code` verdict on an item declaring a code item type must be refused, judged by the
-  // DECLARED type's resolved modules, not this literal. audit.ts is bound proof source for other
-  // unshipped plans, so P-003 routes it.
-  "packages/operator-core/lib/agent-tools/plans/audit.ts :: literal-equality :: itemDeliverable === 'code'",
   // Not a branch: a doc-claim pin comparing the documented default kind with the resolver's own answer.
   'packages/operator-core/lib/doc-claims/verification-profiles-doc.ts :: kind-comparison :: deliverable[0] !== expected.deliverable',
 ];

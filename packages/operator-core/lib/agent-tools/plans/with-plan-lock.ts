@@ -779,21 +779,25 @@ export async function withPlanLock<T>(
     // A content write cannot change the profile column, so only a changed `deliverable:`
     // keyword can lower anything; the profile is read (in its own query) only then, which
     // keeps this off the common write path and away from fixtures that predate the column.
+    // plan-item-types-registry-cupboard P-003 (R-8, D-005): lowering is judged on the resolved
+    // module SET, so a plan-level `type:` swap is checked here too, not only a deliverable swap.
     if (newBody !== null && cur) {
       const priorParsed = parsePlan(cur.content, { filePath });
       const nextParsed = parsePlan(newBody, { filePath });
-      const lowerings = declaredDeliverablesChanged(priorParsed.items, nextParsed.items)
-        ? deliverableLowerings(
-            priorParsed.items,
-            nextParsed.items,
-            effectivePlanProfile(
+      const planTypeBefore = priorParsed.frontmatter.type ?? null;
+      const planTypeAfter = nextParsed.frontmatter.type ?? null;
+      const lowerings = declaredDeliverablesChanged(priorParsed.items, nextParsed.items) || planTypeBefore !== planTypeAfter
+        ? deliverableLowerings(priorParsed.items, nextParsed.items, {
+            profile: effectivePlanProfile(
               (
                 await tx<{ verification_profile: string | null }[]>`
                   SELECT verification_profile FROM harness_shared.harness_plans
                    WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}`
               )[0]?.verification_profile,
             ),
-          )
+            planTypeBefore,
+            planTypeAfter,
+          })
         : [];
       if (lowerings.length > 0) {
         const profile = lowerings[0]!.profile;
@@ -806,6 +810,7 @@ export async function withPlanLock<T>(
           priorDecisions: priorParsed.decisions,
           priorContentHash: hashPlanContent(cur.content),
           latestActivationAudit: audit,
+          authorizingRefs: planTypeAfter && planTypeAfter !== planTypeBefore ? [planTypeAfter] : [],
         });
         if (lowering) {
           return {
