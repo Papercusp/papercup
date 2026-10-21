@@ -114,6 +114,15 @@ describe('EI-26026769968837603 requested-ID completeness', () => {
     const out = applyResultProjection(textResult(JSON.stringify(payload)), spec({ pick: ['results[].workItem.title'] }), { toolName: 'other:get' });
     expect(JSON.parse(bodyText(out))).not.toHaveProperty('receipt');
   });
+
+  it('does not claim receipt retention after line operators reduce it to fragments', () => {
+    const out = applyResultProjection(textResult(JSON.stringify(payload)),
+      spec({ pick: ['results[].workItem.title'], pipe: [{ op: 'grep', pattern: 'Found' }] }),
+      { toolName: 'work_items:get' });
+    expect(footerOf(out)).toContain('per-ID delivery is unverified');
+    expect(footerOf(out)).not.toContain('requested-ID receipt retained');
+    expect(bodyText(out)).toContain('Found');
+  });
 });
 
 describe('projection materialization format', () => {

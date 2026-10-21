@@ -1158,7 +1158,7 @@ export function applyResultProjection<T extends ProjectableResult>(
               false,
             );
           }
-          if (implicitReceiptPaths.length > 0) {
+          if (implicitReceiptPaths.length > 0 && !spec.pipe?.length) {
             note('requested-ID receipt retained with row IDs and completeness qualifiers.', false);
           }
           working = JSON.stringify(picked, null, 2);
@@ -1175,6 +1175,11 @@ export function applyResultProjection<T extends ProjectableResult>(
     }
     const linesOut = current.length;
     const projectedText = current.join('\n') + (trailingNewline && current.length > 0 ? '\n' : '');
+    if (spec.pipe?.length && projectedText !== working &&
+        workItemsGetReceiptPickPaths(json?.parsed, opts.toolName).length > 0) {
+      note('Line operators reduced a requested-ID receipt: per-ID delivery is unverified in this text view. ' +
+        'Use a JSON pick without pipe to retain the manifest and completeness qualifiers.');
+    }
 
     // Decided BEFORE the footer is rendered: a note appended afterwards would
     // live only in _meta, and the in-band footer is the copy the agent actually
