@@ -233,7 +233,7 @@ export function comparePermissionPopulations(
   const unknown = (reason: string): PermissionChangeComparison => ({ kind: 'unknown', added: [], removed: [], reason });
   for (const proof of [before, after]) {
     if (!proof || !Array.isArray(proof.population) || !Array.isArray(proof.allowed) ||
-        !proof.complete || !validText(proof.populationRevision) || proof.population.length === 0 ||
+        proof.complete !== true || !validText(proof.populationRevision) || proof.population.length === 0 ||
         proof.population.some(atom => !validText(atom)) || !unique(proof.population) || !unique(proof.allowed) ||
         proof.allowed.some(atom => !proof.population.includes(atom))) return unknown('incomplete or invalid authority population');
   }

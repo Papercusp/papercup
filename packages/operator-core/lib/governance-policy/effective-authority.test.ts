@@ -203,4 +203,9 @@ describe('permission-change proof (D-024)', () => {
       { ...proof([]), population: ['read', 'read'] },
     ]) expect(comparePermissionPopulations(proof(['read', 'send']), after).kind).toBe('unknown');
   });
+  it.each(['false', 'true', 1, {}, []])('nonboolean completeness %j cannot prove an authority change', complete => {
+    const malformed = { ...proof(['read']), complete } as unknown as PermissionPopulationProof;
+    expect(comparePermissionPopulations(malformed, proof(['read']))).toMatchObject({ kind: 'unknown' });
+    expect(comparePermissionPopulations(proof(['read', 'send']), malformed)).toMatchObject({ kind: 'unknown' });
+  });
 });
