@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Live sidecar forks are delegated to its forkserver",
+  "framework": "operational",
+  "command": [
+    "python3",
+    "docs/evidence/sidecar-forkserver-live-probe.py"
+  ],
+  "startedAt": "2026-10-22T13:44:31.987388+00:00",
+  "finishedAt": "2026-10-22T13:44:37.568410+00:00",
+  "exitCode": 0,
+  "summary": "Three-second live bg-host trace; forkserver syscall activity is the positive control for zero sidecar fork calls.",
+  "assertions": [
+    {
+      "id": "stable-live-runtime",
+      "passed": true,
+      "evidence": "bg-host MainPID before=2138906, after=2138906; sidecar=2158514."
+    },
+    {
+      "id": "trace-instrument-available",
+      "passed": true,
+      "evidence": "[{\"label\": \"sidecar\", \"traceLineCount\": 548, \"instrumentErrors\": []}, {\"label\": \"forkserver\", \"traceLineCount\": 410, \"instrumentErrors\": []}]"
+    },
+    {
+      "id": "forkserver-positive-control",
+      "passed": true,
+      "evidence": "[{\"label\": \"sidecar\", \"pid\": 2158514, \"forkCallCount\": 0}, {\"label\": \"forkserver\", \"pid\": 2166935, \"forkCallCount\": 70}]"
+    },
+    {
+      "id": "sidecar-no-child-forks",
+      "passed": true,
+      "evidence": "sidecar=2158514, windowSeconds=3.000171, forkCalls=0, forkSeconds=0."
+    }
+  ],
+  "traces": [
+    {
+      "label": "sidecar",
+      "pid": 2158514,
+      "startTicks": "146495161",
+      "forkCallCount": 0,
+      "forkSeconds": 0,
+      "traceLineCount": 548,
+      "instrumentErrors": [],
+      "rawEvidence": "/tmp/sidecar-forkserver-live-ssb1tq8h/sidecar.strace",
+      "rawSha256": "6ae467716b324b42d3e27f980595e03b176ce43eb3ad7eb43dbae9cd23e7eced"
+    },
+    {
+      "label": "forkserver",
+      "pid": 2166935,
+      "startTicks": "146496225",
+      "forkCallCount": 70,
+      "forkSeconds": 0.371133,
+      "traceLineCount": 410,
+      "instrumentErrors": [],
+      "rawEvidence": "/tmp/sidecar-forkserver-live-ssb1tq8h/forkserver.strace",
+      "rawSha256": "6842461631fc8d8df75683891f40cd33e914380836860cc223bec24b7b9b9ca4"
+    }
+  ],
+  "windowSeconds": 3.0001713291276246,
+  "runtime": {
+    "bgHostPid": 2138906,
+    "sidecarPid": 2158514,
+    "forkserverPids": [
+      2166935
+    ]
+  },
+  "limitations": [
+    "Fork-related syscall counts include failed clone3 attempts, not only created children.",
+    "This checks fork blocking, not total event-loop or admission latency.",
+    "Compare admission distributions only at similar sidecar ages."
+  ]
+}
