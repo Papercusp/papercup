@@ -635,16 +635,19 @@ describe('completed isolated runtime certification', () => {
     await save();
     return { ...state, basis, journey, dir, save };
   }
-  it('certifies the original operator-e2e-isolated driver at its maintained evidence root without a native manifest', async () => {
-    await setupOperatorE2e();
+  it.each(['live', 'tree'] as const)('certifies the original operator-e2e-isolated driver on the %s plane without a native manifest', async plane => {
+    const state = await setupOperatorE2e();
+    state.row.details.evidencePlane = plane;
     expect((await read()).currentness).toMatchObject({ overall: 'current',
       dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
   });
+  describe.each(['live', 'tree'] as const)('operator-e2e-isolated %s custody', plane => {
   it.each(['missing-source', 'wrong-source', 'untested-input', 'unqualified-source', 'missing-witness', 'reused-driver',
     'wrong-driver', 'missing-suite', 'duplicate-suite', 'suite-before-verifier', 'suite-after-verifier',
     'reversed-suite', 'reversed-driver', 'driver-outside-root'])(
     'rejects operator-e2e-isolated custody or lifetime failure: %s', async failure => {
       const state = await setupOperatorE2e();
+      state.row.details.evidencePlane = plane;
       if (failure === 'wrong-source') state.receipt.files[0].sha256 = 'b'.repeat(64);
       if (failure === 'untested-input') state.receipt.testedInputs = [];
       if (failure === 'unqualified-source') state.receipt.testedInputs = state.receipt.files.filter(file => file.dimension === 'test');
@@ -666,6 +669,7 @@ describe('completed isolated runtime certification', () => {
       }
       expect((await read()).currentness.dimensions.environment).toBe('unknown');
     });
+  });
   it('retains the original operator driver receipt through pruning and rejects changed retained custody', async () => {
     const state = await setupOperatorE2e();
     await measureAndPinRepoFilesEvidenceAtRoot(root, state.basis);

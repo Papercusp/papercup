@@ -3573,6 +3573,8 @@ export async function measureCompletedTestRuntime(
   if (selector?.kind === 'isolated-integration') return measureCompletedIntegrationRuntime(row, recipe, currentFiles, scope, root);
   const directVerifier = selector?.kind === 'verification-harness'
     && selector.journeyHarness === 'verify-tauri-headless';
+  const operatorE2e = selector?.kind === 'verification-harness'
+    && selector.journeyHarness === 'operator-e2e-isolated';
   // The maintained verifier can execute a Vitest assertion directly. Its
   // original native witness and its own source/lifecycle receipts are the
   // journey; shared staging receipts cannot acquire that provenance later.
@@ -3595,9 +3597,9 @@ export async function measureCompletedTestRuntime(
       && row.test_run_present
       && (row.test_run_source === 'local' || row.test_run_source === 'mutation-probe'));
   if (!selector || !recipe.runtimeUnits || !(certifiesCompletedTestRow(row.evidence_kind) || mutationCalibration)
-    // Direct native assertions can support tree clauses too. Their recorded
+    // Owned verifier executions can support tree clauses too. Their recorded
     // witness, immutable source and complete lifecycle must still certify them.
-    || (row.details.evidencePlane !== 'live' && !(directVerifier && row.details.evidencePlane === 'tree'))
+    || (row.details.evidencePlane !== 'live' && !((directVerifier || operatorE2e) && row.details.evidencePlane === 'tree'))
     || (row.test_run_status !== 'pass' && !mutationCalibration)
     || !(selector.kind === 'llm-in-process' ? row.test_run_framework === 'llm-test'
       : selector.kind === 'verification-harness' ? ['vitest', 'playwright'].includes(row.test_run_framework ?? '')
@@ -3655,7 +3657,6 @@ export async function measureCompletedTestRuntime(
     } catch { return null; }
   }
   try {
-    const operatorE2e = selector.journeyHarness === 'operator-e2e-isolated';
     const verifierSourceJourney = operatorE2e || directVerifier;
     const [verifier, receipt, journeyArtifact, manifest] = await Promise.all(
       completedRuntimeArtifactRefs(selector).map(async ([harness, runId, file]) =>
