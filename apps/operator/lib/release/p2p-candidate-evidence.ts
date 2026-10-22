@@ -313,7 +313,9 @@ export function validateEndgameShipmentLedger(value: unknown, pins: EndgameEvide
       errors.push(`${label}: code-truth audit is absent or does not cover this plan`);
     const grade = isRecord(row.independentGrade) ? row.independentGrade : {};
     if (grade.rubricRef !== `acceptance-${label}` || !Number.isSafeInteger(grade.rubricRevision)
-      || Number(grade.rubricRevision) < 1 || !/^EI-\d+$/.test(String(grade.scorecardId ?? ''))
+      || Number(grade.rubricRevision) < 1 || grade.rubricRevision !== row.acceptanceRubricRevision
+      || !SHA256_HEX.test(String(row.acceptanceCriteriaHash ?? '')) || grade.criteriaHash !== row.acceptanceCriteriaHash
+      || !/^EI-\d+$/.test(String(grade.scorecardId ?? ''))
       || !nonempty(grade.graderId) || !nonempty(grade.gradingAuditRef))
       errors.push(`${label}: current independently audited acceptance grade is absent`);
     const eligibility = isRecord(grade.eligibility) ? grade.eligibility : {};
@@ -321,6 +323,7 @@ export function validateEndgameShipmentLedger(value: unknown, pins: EndgameEvide
     if (!nonempty(eligibility.ref) || eligibility.graderId !== grade.graderId
       || !nonempty(eligibility.rubricAuthorId) || !implementers.length || !implementers.every(nonempty)
       || grade.graderId === eligibility.rubricAuthorId || implementers.includes(grade.graderId)
+      || eligibility.liveAtGrading !== true || eligibility.outsideRubricAuthorLineage !== true
       || eligibility.outsideImplementationLineage !== true || eligibility.soleVettingCritic !== false
       || eligibility.launchedByImplementer !== false)
       errors.push(`${label}: grader lineage/critic/launcher eligibility is absent or refused`);

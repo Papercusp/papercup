@@ -60,12 +60,13 @@ describe('endgame R-17 exact six-plan shipment ledger', () => {
   const pins = { artifactDigest: h('private-candidate'), sourceSha: SRC };
   const valid = () => ENDGAME_SHIPMENT_PLANS.map((planSlug, i) => ({
     ...pins, planSlug: String(planSlug), status: 'shipped', forcedPast: null as unknown,
+    acceptanceRubricRevision: 1, acceptanceCriteriaHash: h(`criteria:${planSlug}`),
     codeTruthAudit: { ref: `plan-audit:${i + 1}`, planSlug: String(planSlug), verdict: 'implemented' },
     independentGrade: {
-      rubricRef: `acceptance-${planSlug}`, rubricRevision: 1, scorecardId: `EI-${i + 1}`,
+      rubricRef: `acceptance-${planSlug}`, rubricRevision: 1, criteriaHash: h(`criteria:${planSlug}`), scorecardId: `EI-${i + 1}`,
       graderId: 'independent-grader', gradingAuditRef: `EI-${i + 100}`,
       eligibility: { ref: `lineage:${i + 1}`, graderId: 'independent-grader', rubricAuthorId: 'implementer',
-        implementerIds: ['implementer'], outsideImplementationLineage: true,
+        implementerIds: ['implementer'], outsideImplementationLineage: true, outsideRubricAuthorLineage: true, liveAtGrading: true,
         soleVettingCritic: false, launchedByImplementer: false },
     },
     authorVerdict: { ref: `EI-${i + 200}`, verdict: 'accept', acceptanceOf: `EI-${i + 1}`, authorId: 'implementer' },
@@ -75,7 +76,8 @@ describe('endgame R-17 exact six-plan shipment ledger', () => {
   });
   it.each(['missing', 'extra', 'duplicate', 'foreign-slug', 'not-shipped', 'foreign-bytes', 'forced',
     'missing-audit', 'wrong-rubric', 'missing-grade-audit', 'implementer-grader', 'related-lineage',
-    'sole-critic', 'implementer-launch', 'wrong-author-card', 'missing-lineage-evidence'])
+    'sole-critic', 'implementer-launch', 'wrong-author-card', 'missing-lineage-evidence',
+    'stale-rubric-revision', 'foreign-criteria-hash', 'rubric-author-lineage', 'not-live-at-grade'])
   ('rejects %s while the other five rows remain valid', fault => {
     const rows = valid();
     const row = rows[0]!;
@@ -95,6 +97,10 @@ describe('endgame R-17 exact six-plan shipment ledger', () => {
     if (fault === 'implementer-launch') row.independentGrade.eligibility.launchedByImplementer = true;
     if (fault === 'wrong-author-card') row.authorVerdict.acceptanceOf = 'EI-999';
     if (fault === 'missing-lineage-evidence') row.independentGrade.eligibility.ref = '';
+    if (fault === 'stale-rubric-revision') row.independentGrade.rubricRevision = 2;
+    if (fault === 'foreign-criteria-hash') row.independentGrade.criteriaHash = h('old-criteria');
+    if (fault === 'rubric-author-lineage') row.independentGrade.eligibility.outsideRubricAuthorLineage = false;
+    if (fault === 'not-live-at-grade') row.independentGrade.eligibility.liveAtGrading = false;
     expect(validateEndgameShipmentLedger(rows, pins).length).toBeGreaterThan(0);
   });
 });
