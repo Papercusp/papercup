@@ -79,7 +79,9 @@ describe.runIf(linux)('sidecar forkserver', () => {
   });
 
   it('every child has the forkserver, not this process, as its parent', async () => {
-    const r = await viaForkserver('sh', ['-c', 'echo $PPID']);
+    const r = await viaForkserver(process.execPath, ['-e', 'process.stdout.write(String(process.ppid))']);
+    expect(r).toMatchObject({ code: 0, stderr: '' });
+    expect(r.stdout).toMatch(/^[1-9]\d*$/);
     const ppid = Number(r.stdout.trim());
     expect(ppid).toBe(currentForkserverProcess()?.pid);
     expect(ppid).not.toBe(process.pid);
@@ -90,6 +92,15 @@ describe.runIf(linux)('sidecar forkserver', () => {
     expect(a.error?.code).toBe('ENOENT');
     expect(String(a.error)).toBe(String(b.error));
     expect(a.events).toEqual(b.events);
+  });
+
+  it('rejects a synchronous spawn validation failure before returning a child', async () => {
+    const before = forkserverStats().inFlight;
+    await expect(spawnSidecarChild({
+      command: process.execPath, args: ['\0'], env, detached: true,
+    })).rejects.toMatchObject({ code: 'ERR_INVALID_ARG_VALUE' });
+    expect(forkserverStats().inFlight).toBe(before);
+    expect((await viaForkserver('true', [])).code).toBe(0);
   });
 
   it('reads stdin from and writes stdout to the handoff files by path', async () => {
