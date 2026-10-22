@@ -412,7 +412,7 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
         begin: <T>(callback: (tx: postgres.TransactionSql) => T | Promise<T>) => db.sql.begin(async (tx) => {
           const unsafe = tx.unsafe.bind(tx);
           const readTransactionInfo = async () => {
-            const rows = await unsafe<{ statement_timeout: string; backend_pid: number }>(
+            const rows = await unsafe<{ statement_timeout: string; backend_pid: number }[]>(
               "SELECT current_setting('statement_timeout') AS statement_timeout, pg_backend_pid() AS backend_pid",
             );
             return { statementTimeout: rows[0].statement_timeout, backendPid: rows[0].backend_pid };
@@ -470,9 +470,10 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
       const outcome = await read;
       const elapsedMs = performance.now() - startedAt;
 
-      expect(timeoutSetting?.statementTimeout).toBe(`${timeoutMs}ms`);
+      if (!timeoutSetting) throw new Error('Transaction-local statement timeout was not observed');
+      expect(timeoutSetting.statementTimeout).toBe(`${timeoutMs}ms`);
       expect(candidateConnection?.statementTimeout).toBe(`${timeoutMs}ms`);
-      expect(candidateConnection?.backendPid).toBe(timeoutSetting?.backendPid);
+      expect(candidateConnection?.backendPid).toBe(timeoutSetting.backendPid);
       expect(reportedTransactionInfo).toMatchObject(timeoutSetting);
       expect(outcome.error).toMatchObject({ code: '57014' });
       expect(elapsedMs).toBeGreaterThanOrEqual(100);
