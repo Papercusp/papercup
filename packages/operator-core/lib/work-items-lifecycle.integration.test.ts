@@ -896,7 +896,7 @@ describe('blueprint direct-item revision pin', () => {
         ${workerClaims.operationWorkerEffectWhereSql(db.sql, activeWorker, {
           payload: 'payload', id: 'feature_id', harness: 'harness_slug', holder: 'taken_by',
         })} AS worker
-      FROM harness_shared.harness_features_consolidated WHERE harness_slug = 'papercup' AND feature_id = ${itemId}`;
+      FROM harness_shared.work_items WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${itemId}`;
     expect(sqlFences).toEqual({ actor: true, claim: true, stamp: true, payload: true, deadline: true, worker: true });
     const settlements = await Promise.all([settleDeferredOperationCompletions(db.sql, 'default'),
       settleDeferredOperationCompletions(db.sql, 'default')]);
@@ -905,7 +905,9 @@ describe('blueprint direct-item revision pin', () => {
     expect(settlements.reduce((sum, r) => sum + r.refused, 0), JSON.stringify(settlements)).toBe(0);
     expect(await wi.getWorkItem(itemId, 'papercup')).toMatchObject({ state: 'done', payload: { out: {}, blueprintResult: { output: {} } } });
     expect(await settleDeferredOperationCompletions(db.sql, 'default')).toMatchObject({ completed: 0, pending: 0, refused: 0, errors: [] });
-    expect(catchup).toHaveBeenCalledTimes(1);
+    // The intentionally stale SQL write and the successful settlement each
+    // perform their own bounded canonical verification.
+    expect(catchup).toHaveBeenCalledTimes(2);
     // The origin proof lives on the operation receipt, not the diagnostic
     // outcome retention window. A later result read must remain verifiable.
     await db.sql`DELETE FROM harness_shared.gateway_request_outcomes`;
