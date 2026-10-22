@@ -54,10 +54,17 @@ function collect(child: Pick<SidecarChild, 'on' | 'once' | 'stdout' | 'stderr'>)
       retainText: false,
       onDecodedText: (text) => { out.stdout += text; },
     });
-    child.stderr?.on('data', (d: Buffer) => { out.stderr += d.toString('utf8'); });
+    const stderrCollector = createTextCollector(child.stderr, {
+      retainText: false,
+      onDecodedText: (text) => { out.stderr += text; },
+    });
     child.once('spawn', () => out.events.push('spawn'));
-    child.on('error', (e: NodeJS.ErrnoException) => { out.events.push('error'); out.error = e; if (e.code === FORKSERVER_LOST_CODE) resolve(out); });
+    child.on('error', (e: NodeJS.ErrnoException) => {
+      out.events.push('error'); out.error = e;
+      if (e.code === FORKSERVER_LOST_CODE) { stderrCollector.text(); resolve(out); }
+    });
     child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
+      stderrCollector.text();
       out.events.push('close'); out.code = code; out.signal = signal; resolve(out);
     });
   });
