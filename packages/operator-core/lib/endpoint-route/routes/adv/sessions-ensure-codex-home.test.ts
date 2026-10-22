@@ -204,6 +204,43 @@ describe('resumable archived backend identity', () => {
 });
 
 describe('ensure-codex-home pinned-source recovery', () => {
+  it('overlaps independent preparation but waits for policy and budget before writing', async () => {
+    let resolvePolicy!: (value: boolean) => void;
+    let resolveBudget!: (value: { compactionLimit: number; fleetRole: string }) => void;
+    mocks.allowsAmbient.mockReturnValue(new Promise<boolean>((resolve) => { resolvePolicy = resolve; }));
+    mocks.presence.mockReturnValue(new Promise((resolve) => { resolveBudget = resolve; }));
+    mocks.rebuild.mockResolvedValue({
+      spec: { mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' },
+      promptText: 'PINNED V1 INSTRUCTIONS',
+      artifact: { stack: savedRecord.stack, specificationRevision: REVISION },
+    });
+    const pending = call();
+    let response!: Response;
+    try {
+      await vi.waitFor(() => {
+        expect(mocks.rebuild).toHaveBeenCalledTimes(1);
+        expect(mocks.presence).toHaveBeenCalledWith(OWNER);
+      }, { timeout: 500 });
+      expect(mocks.ensureHome).not.toHaveBeenCalled();
+    } finally {
+      resolvePolicy(false);
+      resolveBudget({ compactionLimit: 200_000, fleetRole: 'member' });
+      response = await pending;
+    }
+    expect(response.status).toBe(200);
+    expect(mocks.ensureHome).toHaveBeenCalledWith(expect.objectContaining({
+      denyAmbientContext: true, compactionLimit: 200_000,
+    }));
+  });
+
+  it('prevents a home write when policy preparation fails', async () => {
+    mocks.allowsAmbient.mockRejectedValue(new Error('policy unavailable'));
+    mocks.rebuild.mockRejectedValue(new Error('render unavailable'));
+    await expect(call()).rejects.toThrow('policy unavailable');
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+    expect(mocks.recordLaunchSpec).not.toHaveBeenCalled();
+  });
+
   it('repairs from the SQLite receipt pinned to the requested ADV session', async () => {
     mocks.readRecord.mockResolvedValue({ ...savedRecord, codexSqliteHome: '/original-state/session-123' });
     mocks.rebuild.mockResolvedValue({
