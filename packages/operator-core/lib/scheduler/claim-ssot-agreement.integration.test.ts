@@ -160,19 +160,23 @@ async function seed(
     swarmAffinity?: string | null;
     redundancy?: number | null;
     createdTs?: number;
+    sourcePlanSlug?: string | null;
+    sourcePlanItemIds?: string[] | null;
   } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id,
        created_ts, updated_ts, payload, origin, author_pubkey, title,
-       terminal_owner, terminal_completion_ref, swarm_affinity, redundancy)
+       terminal_owner, terminal_completion_ref, swarm_affinity, redundancy,
+       source_plan_slug, source_plan_item_ids)
     VALUES (
       ${o.harnessSlug ?? H}, ${id}, ${o.kind ?? 'bug'}, ${o.status ?? 'open'}, ${o.takenBy ?? null}, ${WS},
       ${o.createdTs ?? 0}, 0,
       ${o.payload ? db.sql.json(o.payload as Parameters<typeof db.sql.json>[0]) : null},
       ${o.origin ?? 'local'}, ${o.authorPubkey ?? null}, ${o.title ?? id},
-      ${o.terminalOwner ?? null}, ${o.terminalCompletionRef ?? null}, ${o.swarmAffinity ?? null}, ${o.redundancy ?? null})`;
+      ${o.terminalOwner ?? null}, ${o.terminalCompletionRef ?? null}, ${o.swarmAffinity ?? null}, ${o.redundancy ?? null},
+      ${o.sourcePlanSlug ?? null}, ${o.sourcePlanItemIds ?? null})`;
 }
 
 /** A blocks edge (issue blocked_ref is BARE; feature blocker_ref is harness-qualified). */
@@ -439,6 +443,8 @@ beforeAll(async () => {
   // WI-10006417: Route A is plan-wide even when an owner answer's itemRefs list
   // only the separate implementation details and omits the linked plan item.
   await db.sql.unsafe(readMigration('1389-plan-wide-route-a-claim-floor.sql')).simple();
+  // WI20092: source-only route reservations use the maintained compatible wrapper.
+  await db.sql.unsafe(readMigration('1556-source-plan-route-claim-floor.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
@@ -490,6 +496,82 @@ describe('WI-10006159 solo decision reservations', () => {
       : await wi.claimNextWorkItem({ harness: H, assignee: 'generic-drainer' });
     expect(claimed?.id).toBe('WI-10006072');
     expect((await wi.claimWorkItem('WI-10006071', 'route-owner', { harness: H }))?.id).toBe('WI-10006071');
+  });
+
+  it.each(['task', 'feature'])('WI20092 reserves source-only plan-wide direct routes for %s', async (kind) => {
+    await decision('Self-only execution route',
+      'This session implements the plan directly; generic fleet self-selection must not claim its work.');
+    await seed('WI-200092', { kind, sourcePlanSlug: 'solo-route-plan' });
+    await seed('WI-200093', { kind });
+
+    expect(await floors('WI-200092')).toContain('reserved-plan-lane');
+    expect(await floors('WI-200093')).not.toContain('reserved-plan-lane');
+    const ids = ['WI-200092', 'WI-200093'];
+    const predicate = wi.reservedPlanLaneExclusionSql(db.sql, 'generic-drainer', 'wi.payload', {
+      decisionCandidates: { workspaceId: WS, ids },
+    });
+    const admitted = await db.sql<{ feature_id: string }[]>`
+      SELECT wi.feature_id FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ${WS} AND wi.feature_id = ANY(${ids}::text[]) AND ${predicate}
+       ORDER BY wi.feature_id`;
+    expect(admitted.map(row => row.feature_id)).toEqual(['WI-200093']);
+    if (kind === 'task') {
+      expect(await viewClaimableIds()).toEqual(['WI-200093']);
+      const attribution = await wi.explainIssueClaimFloors(H, ids, {
+        assignee: 'generic-drainer', includeAllFloors: true,
+      });
+      expect(attribution.find(row => row.id === 'WI-200092')?.failedFloors).toContain('plan-lane-reserved');
+    } else {
+      expect((await wi.listWorkItems({ harness: H, kind: 'feature', admissibleOnly: true }))
+        .map(row => row.id)).toEqual(['WI-200093']);
+    }
+    const claim = () => kind === 'task'
+      ? wi.claimNextIssueWorkItem({ harness: H, assignee: 'generic-drainer' }, WS)
+      : wi.claimNextWorkItem({ harness: H, assignee: 'generic-drainer' });
+    expect((await claim())?.id).toBe('WI-200093');
+    expect(await claim()).toBeNull();
+    expect((await wi.claimWorkItem('WI-200092', 'route-owner', { harness: H }))?.id).toBe('WI-200092');
+  });
+
+  it.each(['task', 'feature'])('WI20092 preserves source item scope and unrelated controls for %s', async (kind) => {
+    await decision('Self-only execution route', 'This session implements the plan directly.', ['P-007']);
+    await seed('WI-200092', { kind, sourcePlanSlug: 'solo-route-plan', sourcePlanItemIds: ['P-006', 'P-007'] });
+    await seed('WI-200093', { kind, sourcePlanSlug: 'solo-route-plan', sourcePlanItemIds: ['P-008'] });
+    await seed('WI-200094', { kind, sourcePlanSlug: 'solo-route-plan' });
+    await seed('WI-200095', { kind, sourcePlanSlug: 'unreserved-plan' });
+    // A pre-existing payload lane retains its authority; a conflicting provenance
+    // source does not broaden this source-only repair to legacy lane reassignment.
+    await seed('WI-200096', { kind, sourcePlanSlug: 'solo-route-plan', sourcePlanItemIds: ['P-007'],
+      payload: { plan_item: { plan_slug: 'unreserved-plan', item_id: 'P-007' } } });
+    expect(await floors('WI-200092')).toContain('reserved-plan-lane');
+    for (const id of ['WI-200093', 'WI-200094', 'WI-200095', 'WI-200096']) {
+      expect(await floors(id)).not.toContain('reserved-plan-lane');
+    }
+    const expected = ['WI-200093', 'WI-200094', 'WI-200095', 'WI-200096'];
+    if (kind === 'task') {
+      expect(await viewClaimableIds()).toEqual(expected);
+      expect(await drainInlineClaimIds()).toEqual(expected);
+    } else {
+      expect((await wi.listWorkItems({ harness: H, kind: 'feature', admissibleOnly: true }))
+        .map(row => row.id).sort()).toEqual(expected);
+    }
+    await db.sql`UPDATE harness_shared.plan_decisions SET workspace_id = 'foreign-tenant'`;
+    expect(await floors('WI-200092')).not.toContain('reserved-plan-lane');
+    const predicate = wi.reservedPlanLaneExclusionSql(db.sql, 'generic-drainer');
+    expect((await db.sql`SELECT wi.feature_id FROM harness_shared.work_items wi
+      WHERE wi.feature_id = 'WI-200092' AND ${predicate}`)).toHaveLength(1);
+  });
+
+  it.each(['task', 'feature'])('WI20092 reserves source-only Route A despite unrelated item refs for %s', async (kind) => {
+    await decision('Owner selected direct implementation',
+      'Route A: this session (su-dab96471) implements the plan.', ['P-other']);
+    await seed('WI-200092', { kind, sourcePlanSlug: 'solo-route-plan' });
+    expect(await floors('WI-200092')).toContain('reserved-plan-lane');
+    const predicate = wi.reservedPlanLaneExclusionSql(db.sql, 'generic-drainer', 'wi.payload', {
+      decisionCandidates: { workspaceId: WS, ids: ['WI-200092'] },
+    });
+    expect(await db.sql`SELECT wi.feature_id FROM harness_shared.work_items wi
+      WHERE wi.feature_id = 'WI-200092' AND ${predicate}`).toEqual([]);
   });
 
   it.each(['task', 'feature'])('reserves an unbound explicit execution master for %s without reserving other mentions', async (kind) => {
