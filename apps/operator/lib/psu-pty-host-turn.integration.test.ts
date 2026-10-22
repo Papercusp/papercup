@@ -855,8 +855,13 @@ it(
       const respawnDeadline = Date.now() + 5000;
       while (mintedAddenda.length === 0 && Date.now() < respawnDeadline) await sleep(20);
       expect(mintedAddenda).toEqual([freshAddendum]);
-      expect(await waitForOutput(captured, `ECHO:${freshText}`, 3000),
-        hostTestDiagnostics(ownerId, captured)).toBe(true);
+      await vi.waitFor(() => {
+        const row = JSON.parse(readFileSync(freshNativeFile, 'utf8').trim());
+        const delivered = row.payload.content[0].text;
+        expect(delivered).toContain(freshText);
+        expect(delivered).not.toContain(staleText);
+        expect(leadingTurnOriginMarker(delivered)).toMatch(/^⟦turn-origin:host-control nonce:/);
+      }, { timeout: 3000 });
       expect(captured()).not.toContain(`ECHO:${staleText}`);
     } finally {
       if (existsSync(sock)) await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
@@ -2732,7 +2737,8 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_IDLE_MS: '60',
-          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
+          // Force the cap-expiry branch without relying on repaint scheduling.
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '600',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
