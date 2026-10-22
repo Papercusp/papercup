@@ -130,8 +130,10 @@ describe.runIf(linux)('sidecar forkserver', () => {
 
   it('when the forkserver is killed mid-exec, execProcess settles an infrastructure fault before the timeout and the next exec succeeds', async () => {
     const started = Date.now();
-    const pending = execProcess({ command: 'sh', args: ['-c', 'sleep 30'], timeoutMs: 20_000 }, { beginExecution: async () => governedStub() });
+    const effectPath = join(dir, 'crash-exec-effects');
+    const pending = execProcess({ command: 'sh', args: ['-c', 'printf once >> "$1"; sleep 30', 'sh', effectPath], timeoutMs: 20_000 }, { beginExecution: async () => governedStub() });
     expect(await waitFor(() => forkserverStats().inFlight === 1, 5_000)).toBe(true);
+    await vi.waitFor(async () => expect(await readFile(effectPath, 'utf8')).toBe('once'));
     const before = currentForkserverProcess();
     before!.kill('SIGKILL');
     const result = await pending;
@@ -142,6 +144,9 @@ describe.runIf(linux)('sidecar forkserver', () => {
     const next = await execProcess({ command: 'sh', args: ['-c', 'echo again'] }, { beginExecution: async () => governedStub() });
     expect(next).toMatchObject({ code: 0, stdout: 'again\n' });
     expect(currentForkserverProcess()?.pid).not.toBe(before!.pid);
+    // A replay could retain the fault message. The command's durable effect
+    // independently proves it ran once across settlement and the next exec.
+    expect(await readFile(effectPath, 'utf8')).toBe('once');
   });
 
   it('during a burst of 50 concurrent execs this process keeps its event-loop delay p99 under 20 ms', async () => {
