@@ -3344,5 +3344,126 @@
     "operationalAcceptance": false,
     "fullPlan": "unshipped"
   },
-  "next": "Collector child0084 is automatically settled with committed authority. Preserve the historical original-command evidence and the current configuration-only probe within their recorded scopes. currentOriginalFixtureParent20261022 now captures the actual original fixture npm command with the committed collector,72pass/12skip, native reporter identity/lifecycle binding and verified worker artifacts. It still does not produce the ordered reader's per-step receipts or complete runtime/source/dependency/finaltransform/population/containment closure. Continue those concrete producer gaps using existing collectors; do not synthesize historical reports or rerun unchanged expensive proof. Preserve mandatory engine archive review, D020/P006 hold, six forms, P018, P028, P031/D045 and final shipment obligations. Full plan remains unshipped."
+  "currentNativeReporterArchiveBinding20261022": {
+    "workItemId": "WI-6554700010020132",
+    "admission": "green-main-cycle-time-2026-10-08#D-087; exact claim succeeded with changeKinds logic before implementation.",
+    "status": "current-local-writer-and-saved-capture-replay-verified",
+    "implementation": "Existing processTrace.reporter retains bounded content-addressed OUT bytes only after schema, unique process/parent identity and interval checks. Nested reporters require one matching observed child spawn/close interval. Missing, malformed, redirected, oversized, stale, unrelated or ambiguous output remains an explicit gap while good process trace survives. Failed and incomplete reporter outcomes are retained without pass qualification.",
+    "verification": {
+      "testCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts --testNamePattern='native affected-task parent receipt transport'",
+      "tests": {
+        "ref": "~/.papercusp/scratch/c0523-native-out-binding-tests-20261022.log",
+        "sha256": "9386d660bf70970dec76cd4a1e17ecd85a29fdbe571f0873e6c2b031736de8bb",
+        "byteLength": 104147
+      },
+      "selectedPassed": 23,
+      "explicitUnselected": 264,
+      "requestedFiles": 1,
+      "executedFiles": 1,
+      "childSubstituted": 0,
+      "nativeExitCode": 0,
+      "provenance": "Stamped HEAD9a10e4035a; named test path dirty. Exact three current-local source pins are recorded separately; no complete committed import/runtime provenance inferred.",
+      "typecheckCommand": "node scripts/lint-tsc.mjs --files=scripts/lib/budgeted-task-scheduler.d.mts,packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+      "typecheck": {
+        "ref": "~/.papercusp/scratch/c0523-native-out-binding-tsc-20261022.log",
+        "sha256": "92dc15327cd269097ff4f1c693093b8fc62fbd8e89857bdfa84866a3b9d62deb",
+        "byteLength": 13827
+      },
+      "typecheckExitCode": 0,
+      "typecheckScope": "Requested declaration and test file; routed scripts and operator-core verdicts clean against maintained baseline. Not a zero-error whole-repository assertion."
+    },
+    "replay": {
+      "kind": "saved-original-inputs-archive-replay",
+      "newNativeExecution": false,
+      "readback": {
+        "ref": "~/.papercusp/scratch/c0523-native-out-binding-replay-20261022-v1.json",
+        "sha256": "e27be077f0c0ed2cc21a65c4077ca25bd5578dedad434d2c55721e2e015aa718",
+        "byteLength": 5315
+      },
+      "root": "~/.papercusp/scratch/c0523-native-out-binding-replay-20261022-v1-artifacts",
+      "receipt": {
+        "ref": "a1ea8cf68205159e03a8efa4cf89504f46348fe225e9c877ae0916b1db771093.receipt.json",
+        "sha256": "a1ea8cf68205159e03a8efa4cf89504f46348fe225e9c877ae0916b1db771093",
+        "byteLength": 2842075
+      },
+      "sourceMap": {
+        "ref": "~/.papercusp/scratch/c0523-fixture-original-parent-20261022-v1.source.json",
+        "sha256": "170613269d286cc06606e4c8b2bc75c25c13ad2240e9e9e5fe8d504d218a32cf",
+        "byteLength": 156713
+      },
+      "reporter": {
+        "status": "bound",
+        "artifact": {
+          "ref": "170613269d286cc06606e4c8b2bc75c25c13ad2240e9e9e5fe8d504d218a32cf.native-vitest-out.json",
+          "sha256": "170613269d286cc06606e4c8b2bc75c25c13ad2240e9e9e5fe8d504d218a32cf",
+          "byteLength": 156713
+        },
+        "process": {
+          "pid": 2024667,
+          "ppid": 2024658,
+          "processIdentity": "8cc45e79-3c9f-4609-a3d0-0f4de77cb070",
+          "entry": {
+            "ref": "1359b2e8b0ae088be9aa7c1491387815b0d30c3962760acca60745dad5201cc4.process-event.json",
+            "sha256": "1359b2e8b0ae088be9aa7c1491387815b0d30c3962760acca60745dad5201cc4",
+            "byteLength": 724
+          },
+          "exit": {
+            "ref": "3e6337f1459fec559f2fbe9cb82aaf57d50a3d6e4d5449ba6298788bf1485517.process-event.json",
+            "sha256": "3e6337f1459fec559f2fbe9cb82aaf57d50a3d6e4d5449ba6298788bf1485517",
+            "byteLength": 769
+          },
+          "lifecycle": {
+            "spawn": {
+              "ref": "61d07e5a95251fccf7bfb979b4624730dba8f91ae2344cf41a66a62216a6175e.process-event.json",
+              "sha256": "61d07e5a95251fccf7bfb979b4624730dba8f91ae2344cf41a66a62216a6175e",
+              "byteLength": 587
+            },
+            "close": {
+              "ref": "7c5887b9454c18cc84cd58cd6118e40ab7f9dbdc390e75abc42dd7185a4617d6.process-event.json",
+              "sha256": "7c5887b9454c18cc84cd58cd6118e40ab7f9dbdc390e75abc42dd7185a4617d6",
+              "byteLength": 280
+            },
+            "childPid": 2024658,
+            "childIdentity": "91a13d4a-b327-4109-9045-1ba43fb2a428"
+          },
+          "startedAtMs": 1792659970609,
+          "finishedAtMs": 1792659984688
+        },
+        "gaps": [
+          "reporter-evaluator-sidecars-not-retained"
+        ]
+      },
+      "processEvents": 4683,
+      "processStreams": 24,
+      "archiveReferencesVerified": 4715,
+      "distinctArtifactsVerified": 4699,
+      "verificationScope": "Explicit archive pins: receipt, parent logs, event/stream artifacts and reporter process/lifecycle bindings. Raw event source pins and OUT evaluator sidecars are outside this archive verification."
+    },
+    "sourcePins": [
+      {
+        "path": "scripts/lib/budgeted-task-scheduler.mjs",
+        "sha256": "7241b04ea210bf75e8453d808abb9cad1a95cbd78d65f2f80aed690662c62d2f"
+      },
+      {
+        "path": "scripts/lib/budgeted-task-scheduler.d.mts",
+        "sha256": "84779079d04bae1247f47299bfa3640f844b5a91008afc7e84a2405f2793dc7a"
+      },
+      {
+        "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "sha256": "ee03f1f1bf3d6e4080b6a70ababa2fc23a0ef7aecb97efae9a5aace8881d1e5d"
+      }
+    ],
+    "limits": [
+      "Saved-input re-archive verifies transport and identity binding; it is not a new native test execution.",
+      "The original fixture remains 72 passed/12 conditional skips. Per-step receipts, distinct step logs/reports, original config/main-process source proof and complete runtime closure remain unqualified.",
+      "Raw event source pins and evaluator sidecars are not made archive-local by retaining OUT; the reporter records evaluator-sidecars-not-retained explicitly.",
+      "No acceptance, engine archive, comparison, live gate or shipment qualification."
+    ],
+    "steps": [],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "next": "Archive-binding child0132 now locally retains/binds the existing native reporter OUT and its observed original process/lifecycle interval; 23 focused cases and scoped declaration/test TSC pass. Saved-input replay verified explicit archive pins in a new root, not a new native execution. Let automatic git settle these exact source pins, then reuse this proof and continue the original ordered reader producer gaps through the existing fleet. Original fixture remains72pass/12skip,steps[],config/main-process source unknown and fullruntime/source/dependency/finaltransform/population/containment unmeasured. Preserve mandatory engine archive review, D020/P006 hold, six forms, P018, P028, P031/D045 and final shipment obligations. Full plan remains unshipped."
 }
