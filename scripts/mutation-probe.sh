@@ -999,7 +999,11 @@ finish() {
   if [ "$measurement_failed" -eq 1 ]; then
     RESTORE_STATUS="integrity-unverified"
     log "source integrity UNVERIFIED: the digest command or scratch write failed; no source change has been measured."
-    log "Preserving recovery snapshots at $SCRATCH; no restore was attempted."
+    if [ -d "$SCRATCH" ]; then
+      log "Preserving recovery snapshots at $SCRATCH; no restore was attempted."
+    else
+      log "Recovery scratch is unavailable at $SCRATCH; snapshot custody is unverified and no restore was attempted."
+    fi
     printf 'MUTATION_PROBE_TREE_RESULT status=integrity-unverified target=%s source_sha=%s current_sha=unknown\n' \
       "${TARGET_MODE:-unknown}" "$ORIG_SUM"
     printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s phase=integrity reason=digest-unavailable\n' \
@@ -1774,7 +1778,7 @@ NODE
 }
 
 mutation_descriptor_reader_ready() {
-  local url sha repo link parser_entry
+  local url sha repo link parser_entry reader_http reader_curl_exit=0
   case "${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT:-auto}" in
     always) MUTATION_DESCRIPTOR_GATE="forced on (PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=always)"; return 0 ;;
     never) MUTATION_DESCRIPTOR_GATE="forced off (PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=never)"; return 1 ;;
@@ -1782,7 +1786,29 @@ mutation_descriptor_reader_ready() {
     *) die "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT must be auto, always or never (got: '${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT}')" ;;
   esac
   url="$MUTATION_DESCRIPTOR_READER_HEALTH_URL"
-  sha="$(curl -s -m 3 "$url" 2>/dev/null | tr -d '\n' | sed -n 's/.*"sha":"\([0-9a-f]\{7,40\}\)".*/\1/p')"
+  reader_http="$(curl -sS -m 3 --max-filesize 65536 -o "$SCRATCH/reader-health.body" \
+    -w '%{http_code}\t%{time_total}' "$url" 2>"$SCRATCH/reader-health.err")" || reader_curl_exit=$?
+  sha="$(MPD_READER_BODY="$SCRATCH/reader-health.body" MPD_READER_HTTP="$reader_http" \
+    MPD_READER_CURL_EXIT="$reader_curl_exit" node --input-type=module - <<'NODE'
+import { readFileSync } from 'node:fs';
+const [httpStatus, elapsedSeconds] = (process.env.MPD_READER_HTTP ?? '').split('\t');
+const curlExit = Number(process.env.MPD_READER_CURL_EXIT);
+let reason = curlExit === 0 ? null : 'curl-error';
+let sha = null;
+if (!reason && !/^2\d\d$/.test(httpStatus ?? '')) reason = 'http-error';
+if (!reason) {
+  try {
+    const health = JSON.parse(readFileSync(process.env.MPD_READER_BODY, 'utf8'));
+    if (typeof health.sha === 'string' && /^[0-9a-f]{7,64}$/.test(health.sha)) sha = health.sha;
+    else reason = 'invalid-sha';
+  } catch { reason = 'invalid-json'; }
+}
+console.error('MUTATION_PROBE_READER_HTTP_JSON=' + JSON.stringify({
+  curlExit, httpStatus: httpStatus || null, elapsedSeconds: elapsedSeconds || null, reason, sha,
+}));
+if (sha) process.stdout.write(sha);
+NODE
+  )"
   if [ -z "$sha" ]; then
     MUTATION_DESCRIPTOR_GATE="withheld: the deployed reader's build sha is unreadable at $url"
     return 1
@@ -1931,7 +1957,7 @@ mutation_descriptor_subject_path() {
 # production command shape; it is also useful to test that the baseline and
 # mutant really went through the same invocation path.
 run_guard() {
-  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed npm_lock_wrapper guard_cwd guard_repo_root
+  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed npm_lock_wrapper guard_cwd guard_repo_root guard_output custody_reason
   guard_cwd="$(pwd -P)" || die "could not resolve the guard working directory"
   guard_repo_root="$(git -C "$guard_cwd" rev-parse --show-toplevel 2>/dev/null || true)"
   guard_repo_root="${guard_repo_root:-$RUNNER_ROOT}"
@@ -1949,6 +1975,9 @@ run_guard() {
       contain_stamp="$SCRATCH/contain-stamp.$phase"
       : > "$contain_stamp"
     fi
+    # Hold the actual output inode across the child lifetime. A pathname that
+    # vanished or was replaced cannot certify the guard's result, even exit 0.
+    exec {guard_output}>"$output" || die "could not open the $label output"
     (
       export PAPERCUSP_MUTATION_PHASE="$phase"
       export PAPERCUSP_TEST_RUN_RECEIPT_FILE="$(test_run_receipt_file "$phase")"
@@ -2084,13 +2113,25 @@ run_guard() {
         exec "${guard_prefix[@]}" bash -c "$cmd"
       fi
       eval "$cmd"
-    ) >"$output" 2>&1 &
+    ) >&"$guard_output" 2>&1 &
     CHILD=$!
     guard_started="$SECONDS"
     wait "$CHILD"
     rc=$?
     CHILD=""
     guard_elapsed=$(( SECONDS - guard_started ))
+    custody_reason=""
+    if [ ! -d "$SCRATCH" ]; then
+      custody_reason="scratch-unavailable"
+    elif [ ! -r "$output" ] || [ ! "$output" -ef "/dev/fd/$guard_output" ]; then
+      custody_reason="output-unavailable"
+    fi
+    exec {guard_output}>&-
+    if [ -n "$custody_reason" ]; then
+      printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s guard_exit=%d phase=%s reason=%s\n' \
+        "$EXPECT" "${TARGET_MODE:-pre-mutation}" "$rc" "$phase" "$custody_reason"
+      die "the $label run lost its scratch or captured output identity; its exit status cannot establish a guard verdict. The deletion or replacement origin is unverified."
+    fi
     # WI-6554700010018048: the containment setup never reached the guard, so rc
     # is the setup's failure, not a measurement. Refuse before it can score.
     if [ -e "$SCRATCH/contain-abort" ]; then

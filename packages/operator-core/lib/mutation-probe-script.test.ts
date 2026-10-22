@@ -402,6 +402,37 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(record.environment.PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO).toBe(resolve(__dirname, '../../..'));
   });
 
+  it.each([
+    { name: 'curl timeout', exit: 28, status: '000', body: '', reason: 'curl-error' },
+    { name: 'HTTP failure with a misleading SHA', exit: 0, status: '503', body: '{"sha":"abcdef0123"}', reason: 'http-error' },
+    { name: 'malformed JSON', exit: 0, status: '200', body: '<html>unavailable</html>', reason: 'invalid-json' },
+    { name: 'JSON without a SHA', exit: 0, status: '200', body: '{"ok":true}', reason: 'invalid-sha' },
+    { name: 'valid whitespace-formatted JSON', exit: 0, status: '200', body: '{\n  "sha": "abcdef0123"\n}', reason: null },
+  ])('reports $name before refusing an unreadable descriptor reader', ({ exit, status, body, reason }) => {
+    const bin = join(dir, 'reader-bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'curl'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.writeFileSync(args[args.indexOf('-o') + 1], ${JSON.stringify(body)});
+process.stdout.write(${JSON.stringify(status + '\t0.125')});
+process.stderr.write('bounded reader diagnostic fixture');
+process.exit(${exit});
+`, { mode: 0o755 });
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', "grep -q '^beta$' {}",
+    ], { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:3170/api/health',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '1', PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto' }, dir);
+    expect(code, out).toBe(2);
+    const diagnostic = JSON.parse(out.match(/^MUTATION_PROBE_READER_HTTP_JSON=(.+)$/m)![1]!);
+    expect(diagnostic).toEqual({ curlExit: exit, httpStatus: status, elapsedSeconds: '0.125', reason,
+      sha: reason === null ? 'abcdef0123' : null });
+    expect(out).toContain(reason === null ? 'has no resolvable libs/test-config gitlink' : 'build sha is unreadable');
+    expect(out).not.toContain('running baseline guard');
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('preserves UTF-8 guard arguments in the exact replay receipt', () => {
     const unicodeSubject = join(dir, 'subject-é-東京-🧪.txt');
     writeFileSync(unicodeSubject, ORIGINAL);
@@ -833,6 +864,33 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
   });
 
   describe('scratch failure classification (EI-25433151376112553)', () => {
+    it.each(['scratch', 'output', 'replacement'])('refuses lost %s custody after a successful copy-baseline guard', loss => {
+      const scratchRoot = join(dir, 'scratch');
+      mkdirSync(scratchRoot);
+      const guard = join(dir, 'lose-probe-custody.mjs');
+      writeFileSync(guard, [
+        "import { readFileSync, rmSync, writeFileSync } from 'node:fs';",
+        "import { dirname, join } from 'node:path';",
+        "const healthy = readFileSync(process.argv[2], 'utf8').includes('beta');",
+        "if (process.env.PAPERCUSP_MUTATION_PHASE === 'copy-baseline') {",
+        "  const scratch = dirname(process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE);",
+        "  rmSync(process.env.PROBE_TEST_LOSS === 'scratch' ? scratch : join(scratch, 'copy-baseline.log'), { recursive: true, force: true });",
+        "  if (process.env.PROBE_TEST_LOSS === 'replacement') writeFileSync(join(scratch, 'copy-baseline.log'), 'unrelated replacement output');",
+        "}",
+        "process.exitCode = healthy ? 0 : 1;",
+      ].join('\n'));
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/', '--relocation', 'mirror',
+        '--test', `node ${JSON.stringify(guard)} {}`,
+      ], { ...process.env, TMPDIR: scratchRoot, PROBE_TEST_LOSS: loss });
+      expect(code, out).toBe(2);
+      expect(out).toContain(`phase=copy-baseline reason=${loss === 'scratch' ? 'scratch' : 'output'}-unavailable`);
+      expect(out).not.toContain('this is the NAMESPACE');
+      expect(out).not.toContain('verdict=caught');
+      if (loss === 'scratch') expect(out).not.toContain('Preserving recovery snapshots at');
+      expect(read()).toBe(ORIGINAL);
+    });
+
     it.skipIf(!existsSync('/dev/full'))('reports an unmeasured digest as a harness error when its scratch write gets ENOSPC', () => {
       const scratchRoot = join(dir, 'scratch');
       mkdirSync(scratchRoot);
