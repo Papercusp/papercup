@@ -36,6 +36,76 @@ afterEach(async () => {
   await m._resetCpuWorker();
 });
 
+describe('cpu-task-worker — repository census guard', () => {
+  it('packages the parser in the shipped worker without repository node_modules', async () => {
+    const { build } = await import('esbuild');
+    const dir = mkdtempSync(join(tmpdir(), 'cpu-worker-package-'));
+    const output = join(dir, 'cpu-task-worker.script.mjs');
+    let worker: Worker | undefined;
+    try {
+      await build({
+        entryPoints: [resolve(__dirname, 'cpu-task-worker.script.mjs')],
+        outfile: output, bundle: true, platform: 'node', format: 'esm', target: 'node22',
+        banner: { js: "import{createRequire as __cpuRequire}from'node:module';const require=__cpuRequire(import.meta.url);" },
+      });
+      const verdict = await new Promise<unknown>((resolveReply, reject) => {
+        worker = new Worker(output);
+        worker.on('error', reject);
+        worker.on('message', (message) => {
+          if (message.kind === 'ready') worker!.postMessage({
+            kind: 'broad_tree_scan', id: 1,
+            source: "const APP_ROOTS = []; function walk() { return readdir(APP_ROOTS); }",
+          });
+          else resolveReply(message);
+        });
+      });
+      expect(verdict).toMatchObject({ kind: 'broad_tree_scan_ok', id: 1, broadTreeScan: true });
+    } finally {
+      await worker?.terminate();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects traversal identifiers and calls but ignores comments and string fixtures', async () => {
+    const m = await mod();
+    expect(await m.detectBroadRepoTreeScanOffThread(
+      "const REPO_ROOTS = ['src']; function walk() { return fs.readdirSync(REPO_ROOTS[0]); }",
+    )).toBe(true);
+    expect(await m.detectBroadRepoTreeScanOffThread(
+      "// REPO_ROOTS walk readdirSync()\nconst fixture = 'REPO_ROOTS walk readdirSync()';",
+    )).toBe(false);
+    expect(await m.detectBroadRepoTreeScanOffThread(
+      "const FIXTURE_DIRS = ['fixtures']; fs.readdirSync(FIXTURE_DIRS[0]);",
+    )).toBe(false);
+  });
+
+  it('serves a main-thread heartbeat while parsing a large source and still returns the guard verdict', async () => {
+    const m = await mod();
+    await m.detectBroadRepoTreeScanOffThread('const small = 1;');
+    const source = Array.from({ length: 30_000 }, (_, i) => `const value${i} = ${i};`).join('\n')
+      + "\nconst APP_ROOTS = ['src']; function walk() { return readdir(APP_ROOTS[0]); }";
+    let settled = false;
+    const scan = m.detectBroadRepoTreeScanOffThread(source).finally(() => { settled = true; });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    expect(await scan).toBe(true);
+    expect(m.getCpuWorkerState().pendingCount).toBe(0);
+  });
+
+  it('rejects unavailable analysis instead of falling back to main-thread parsing', async () => {
+    const m = await mod();
+    await m.detectBroadRepoTreeScanOffThread('const small = 1;');
+    const spawn = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(() => {
+      throw new Error('analysis transport unavailable');
+    });
+    try {
+      await expect(m.detectBroadRepoTreeScanOffThread('const small = 1;'))
+        .rejects.toThrow('analysis transport unavailable');
+      expect(m.getCpuWorkerState().pendingCount).toBe(0);
+    } finally { spawn.mockRestore(); }
+  });
+});
+
 describe('cpu-task-worker — API surface', () => {
   it('exports the expected functions', async () => {
     const m = await mod();

@@ -26,6 +26,7 @@
  * (tool-call-batching-wrappers D-008): a wrapper that dumped raw concatenated sub-results
  * would re-introduce the very token cost it exists to remove.
  */
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, deriveFleetMembership } from '../identity';
@@ -1341,8 +1342,14 @@ export async function composeOrient(
     work: Promise<T> | ((signal: AbortSignal) => Promise<T>),
     fallback: T,
     label: string,
+    correlationId?: string,
   ): Promise<T> =>
-    withBoundedTimeout(work, { fallback, timeoutMs: ORIENT_CORE_LEG_TIMEOUT_MS, label }).then((r) => r.value);
+    withBoundedTimeout(work, {
+      fallback,
+      timeoutMs: ORIENT_CORE_LEG_TIMEOUT_MS,
+      label,
+      ...(correlationId ? { correlationId } : {}),
+    }).then((r) => r.value);
   let list: unknown;
   /** EI-20113865649946366 — the AUTHORITATIVE issue-family claimable population, taken
    *  from the oracle's own `claimableCount` (work_items/claimable.ts: "rows passing
@@ -1439,16 +1446,19 @@ export async function composeOrient(
   // EI-20287600163306401: callers that already consumed the inbox can pass zero
   // to suppress this duplicate fold. The nested coord:inbox tool requires a
   // positive limit, so do not forward an explicit zero as an invalid call.
+  const inboxCorrelationId = inboxLimit === 0 ? null : randomUUID();
   const inbox =
-    inboxLimit === 0
+    inboxCorrelationId === null
       ? undefined
       : ((await boundedCore(
           (signal) => call('coord:inbox', {
             limit: inboxLimit,
             max_body_chars: args.afterCompaction ? 800 : 300,
+            __correlationId: inboxCorrelationId,
           }, signal),
           undefined,
           'orient:coord:inbox',
+          inboxCorrelationId,
         )) as { summary?: unknown; entries?: unknown } | undefined);
 
   // work_items:list returns the bare array (its `result` schema), but be defensive

@@ -1059,7 +1059,7 @@ export const census = () => Promise.all(APP_ROOTS.map(walk));
         created_by: 'su-test', binding_fingerprint: 'tree-working-binding', spec_is_current: true,
       }];
 
-      expect(detectBroadRepoTreeScan(treeTest)).toBe(true);
+      expect(await detectBroadRepoTreeScan(treeTest)).toBe(true);
       const [row] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
       expect(row).toHaveProperty('serverMeasurement.status', 'unavailable');
       expect(row.currentness.overall).toBe('unknown');
@@ -1165,7 +1165,7 @@ export const census = () => APP_ROOTS.map(walk);
         'packages/operator-core/lib/integrations/provider-options.ts': 'export const a = 1;\n',
         'test/census.test.ts': treeTest,
       });
-      expect(detectBroadRepoTreeScan(treeTest)).toBe(true);
+      expect(await detectBroadRepoTreeScan(treeTest)).toBe(true);
       const baseline = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, git('rev-parse', 'HEAD'));
       expect(baseline.sourceFingerprint).toMatch(/^sha256-tree-instrument-v1:/);
       h.measurementRoot = root;

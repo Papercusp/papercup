@@ -3832,6 +3832,8 @@ export type AmendableCriterionField = (typeof AMENDABLE_CRITERION_FIELDS)[number
 
 export interface AmendRubricInput {
   rubricId: string;
+  /** Internal, synchronous diagnostics only; never perform IO from this observer. */
+  onPhase?: (phase: string) => void;
   /** Target one requirement while preserving every other criterion and its history. */
   requirement?: {
     key: string;
@@ -4441,7 +4443,7 @@ export const ACCEPTANCE_BAR_AMENDMENT_REFUSAL_BUDGET = Object.freeze({
   maxMessageChars: 2_560,
 });
 
-type AmendmentSourceProblem = { code: string; barKey?: string; planItemId?: string; detail?: string };
+type AmendmentSourceProblem = { code: string; barKey?: string; planItemId?: string; source?: string; detail?: string };
 
 function clipRefusalText(text: string, max: number): string {
   const oneLine = text.replace(/\s*\n\s*/g, ' ').trim();
@@ -4456,6 +4458,7 @@ export function amendmentSourceRefusal(prefix: string, problems: readonly Amendm
       problem.code,
       problem.barKey,
       problem.planItemId,
+      problem.source,
       problem.detail === undefined ? undefined : clipRefusalText(problem.detail, budget.maxDetailChars),
     ].filter(Boolean).join(': '),
   );
@@ -4916,6 +4919,7 @@ async function amendAcceptanceBarRubric(
   rubricScope: { workspaceId: string; harnessSlug: string },
   preview = false,
 ): Promise<AcceptanceAmendmentResult | null> {
+  input.onPhase?.('acceptance-routing');
   const rubricHint = await getRubric(input.rubricId);
   const subjectPlanHint = rubricHint?.subjectPlan;
   if (!subjectPlanHint) return null;
@@ -4931,6 +4935,7 @@ async function amendAcceptanceBarRubric(
     preview,
   );
   if (preLockReplay) return preLockReplay;
+  input.onPhase?.('acceptance-transaction-acquire');
   const txResult = await withAcceptanceBarAmendmentTransaction(
     {
       plans: [
@@ -4940,6 +4945,7 @@ async function amendAcceptanceBarRubric(
       mode: preview ? 'preview' : 'write',
     },
     async (tx) => {
+      input.onPhase?.('acceptance-locked-plan-read');
       const rubricRows = preview
         ? await tx<AcceptanceAmendmentPlanRow[]>`
             SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
@@ -5045,6 +5051,7 @@ async function amendAcceptanceBarRubric(
               ...applyRubricAmendment(stored, { rubricId: input.rubricId, criteria: stored.criteria }),
               criteria: stored.criteria.map(normalizeAcceptanceBarCriterion),
             }).data);
+      input.onPhase?.('acceptance-composition-links');
       await assertRubricCompositionLinksResolve(amended);
       // EI-24372605712471072: before the subject plan starts, its BARs may name proof
       // files the plan's own items will write. Those are accepted as planned (and named on
@@ -5230,6 +5237,7 @@ async function amendAcceptanceBarRubric(
       const shouldResolveApproval =
         approvalBars.length > 0 &&
         (input.approvalRef !== undefined || (!preview && approvalRequired));
+      input.onPhase?.('acceptance-approval');
       const approval = shouldResolveApproval
         ? await resolveAcceptanceBarApproval(tx as never, {
             workspaceId: subjectScope.workspaceId,
@@ -5239,6 +5247,7 @@ async function amendAcceptanceBarRubric(
           })
         : null;
       if (approval) {
+        input.onPhase?.('acceptance-approver-lineage');
         const implementers = await resolvePlanImplementerIdentities(subjectPlanHint, {
           sql: tx as never,
           workspaceId: subjectScope.workspaceId,
@@ -5289,6 +5298,7 @@ async function amendAcceptanceBarRubric(
         };
       }
 
+      input.onPhase?.('acceptance-projection-source');
       const clauses = await tx<AcceptanceAmendmentClauseRow[]>`
         SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key,
                r.plan_item_id, r.behavior, r.behavior_class, r.required_evidence,
@@ -5406,6 +5416,7 @@ async function amendAcceptanceBarRubric(
         barRequiresAutomatedProof,
       } = await import('./acceptance-bar-contract-snapshot');
       const { evaluateAcceptanceBarLifecycle } = await import('./acceptance-bar-lifecycle-evaluator');
+      input.onPhase?.('acceptance-contract-snapshot');
       const snapshot = await readAcceptanceBarContractSnapshot(subjectPlanHint, {}, {
         harnessSlug: subjectScope.harnessSlug,
       });
@@ -5414,7 +5425,11 @@ async function amendAcceptanceBarRubric(
         (snapshot.completeness.truncated ||
           snapshot.completeness.problems.some((problem) => problem.code === 'bar_snapshot_source_unavailable'))
       ) {
-        throw new Error('acceptance_bar_amendment_preview_source_incomplete');
+        throw new Error(amendmentSourceRefusal(
+          'acceptance_bar_amendment_preview_source_incomplete',
+          snapshot.completeness.problems.filter((problem) =>
+            problem.code === 'bar_snapshot_source_unavailable' || problem.code === 'bar_snapshot_source_truncated'),
+        ));
       }
       const nextCriteria = guard.data.criteria as unknown as RubricCriterion[];
       const itemStatusById = new Map(itemRows.map((row) => [row.item_id, row.status]));
@@ -5813,6 +5828,7 @@ async function amendAcceptanceBarRubric(
       });
       const rubricIdx = deriveIndexFromContent(rubricBody);
       const rubricForcedPast = summarizeForcedPast(rubricBody);
+      input.onPhase?.('acceptance-write-rubric');
       const rubricTemplateJson = JSON.stringify(guard.data);
       const rubricHash = hashPlanContent(rubricBody);
       await tx`
@@ -5838,6 +5854,7 @@ async function amendAcceptanceBarRubric(
       );
       injectAmendmentFault(input, 'after-rubric');
 
+      input.onPhase?.('acceptance-write-subject');
       const subjectIdx = deriveIndexFromContent(subjectBody);
       const subjectForcedPast = summarizeForcedPast(subjectBody);
       const subjectHash = hashPlanContent(subjectBody);
@@ -5870,6 +5887,7 @@ async function amendAcceptanceBarRubric(
 
       // Every projection pins the GLOBAL rubric revision and BAR-set hash,
       // including BARs whose individual meaning did not change.
+      input.onPhase?.('acceptance-synchronize-projections');
       const newClauseRevisions = await synchronizeAcceptanceBarRevision(tx as never, {
         ...subjectScope,
         rubricSlug: input.rubricId,
@@ -5904,6 +5922,7 @@ async function amendAcceptanceBarRubric(
       const sourceBarKeyBySpec = new Map(clauses.map((clause) => [clause.spec_id, clause.source_bar_key]));
       let evidenceCarriedForward = 0;
       let reboundContracts = 0;
+      input.onPhase?.('acceptance-rebind-contracts');
       for (const clause of currentClauses) {
         const revision = newClauseRevisions.get(clause.spec_id) ?? Number(clause.current_revision);
         const priorRevision = priorRevisionBySpec.get(clause.spec_id);
@@ -6243,6 +6262,7 @@ export async function resolveAcceptanceBarApproverScreen(input: {
 }
 
 export async function amendRubric(input: AmendRubricInput): Promise<Rubric | null> {
+  input.onPhase?.('rubric-write-scope');
   const scope = await resolveRubricWriteScope(input.rubricId);
   let methodOnlyRevision: number | undefined;
   // A started acceptance BAR is a cross-plan contract. Route every amendment

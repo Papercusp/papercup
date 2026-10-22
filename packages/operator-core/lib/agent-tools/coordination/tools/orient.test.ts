@@ -31,6 +31,7 @@ import type { GoalPortfolioBrief } from '../../../goal-launch-settings';
 import { lookupByMcpName, runToolOrchestration, type ProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { createPhaseTracker } from '@papercusp/tooldef';
 import { MCP_TRANSPORT_CAP_MS } from '../../capability/foreground-transport-cap';
+import * as fallbackObservations from '../../../degradation/fallback-observations';
 
 // Unit handler cases do not own an org PG pool. Keep the new root SU receipt's
 // targeted presence read at the module seam; dedicated tests inject a value.
@@ -2258,6 +2259,26 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     await composeOrient({ claimableState: 'wip', claimableLimit: 5, inboxLimit: 3 }, call, 'me');
     expect(calls[1].args).toMatchObject({ state: 'wip', limit: 5 });
     expect(calls[2].args).toMatchObject({ limit: 3 });
+  });
+
+  it('joins the orient inbox fallback observation to the nested inbox correlation id', async () => {
+    const observed = vi.spyOn(fallbackObservations, 'observeFallback').mockReturnValue(true);
+    try {
+      const { call, calls } = fakeCall({ ...CORE });
+      await composeOrient({}, call, 'me');
+
+      const inboxArgs = calls.find(({ name }) => name === 'coord:inbox')?.args as Record<string, unknown>;
+      expect(inboxArgs.__correlationId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      );
+      expect(observed).toHaveBeenCalledWith(
+        'bounded-operation',
+        expect.objectContaining({ scope: 'orient:coord:inbox', reason: 'applied' }),
+        expect.objectContaining({ correlationId: inboxArgs.__correlationId }),
+      );
+    } finally {
+      observed.mockRestore();
+    }
   });
 
   it('accepts claimableLimit=0 and skips backlog legs without a false truncation', async () => {

@@ -78,6 +78,7 @@ interface PendingRequest {
 
 interface WorkerResult {
   json: string | null;
+  broadTreeScan?: boolean;
 }
 
 let _worker: Worker | null = null;
@@ -409,6 +410,7 @@ function ensureWorker(): Promise<void> {
         kind: string;
         id?: number;
         json?: string | null;
+        broadTreeScan?: boolean;
         error?: string;
       }) => {
         if (msg.kind === 'ready') {
@@ -435,6 +437,10 @@ function ensureWorker(): Promise<void> {
           _lastEligibleServed = true;
           if (_halfOpen) closeBreakerOnServe();
           p.resolve({ json: msg.json ?? null });
+        } else if (msg.kind === 'broad_tree_scan_ok' && typeof msg.broadTreeScan === 'boolean') {
+          _consecutiveCrashes = 0;
+          if (_halfOpen) closeBreakerOnServe();
+          p.resolve({ json: null, broadTreeScan: msg.broadTreeScan });
         } else {
           p.reject(new Error(msg.error ?? 'cpu-task worker error'));
         }
@@ -589,6 +595,29 @@ export async function serializeJsonResponse(
 
   // Sync fallback (small batch or worker unavailable).
   return JSON.stringify(value, bigIntReplacer);
+}
+
+/** AST evidence guard: worker failure is unknown evidence, never an inline fallback. */
+export async function detectBroadRepoTreeScanOffThread(source: string): Promise<boolean> {
+  if (_breakerAdmitsProbe({
+    disabled: _workerDisabled, halfOpen: _halfOpen, trippedAt: _breakerTrippedAt,
+    reArmFailures: _reArmFailures, now: Date.now(),
+  })) _halfOpen = true;
+  await ensureWorker();
+  const id = _nextId++;
+  const result = await new Promise<WorkerResult>((resolve, reject) => {
+    _pending.set(id, { resolve, reject });
+    syncWorkerRef();
+    try {
+      _worker!.postMessage({ kind: 'broad_tree_scan', id, source });
+    } catch (error) {
+      _pending.delete(id);
+      syncWorkerRef();
+      reject(error);
+    }
+  });
+  if (typeof result.broadTreeScan !== 'boolean') throw new Error('cpu-task worker returned no tree-scan verdict');
+  return result.broadTreeScan;
 }
 
 /** Test seam — terminate the worker and reset module state. */
