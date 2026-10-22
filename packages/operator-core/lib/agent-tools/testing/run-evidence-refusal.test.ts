@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -14,7 +14,12 @@ const phases = vi.hoisted(() => ({
   retract: vi.fn(),
   buildRemeasure: vi.fn(),
   detach: vi.fn(),
+  snapshot: vi.fn(),
 }));
+// This suite owns refusal/deadline behavior. The provenance collector uses
+// governed subprocesses and the loop gate reads live claims; their own suites
+// cover those dependencies. Neither belongs under this suite's virtual clock.
+vi.mock('../../verification-attempts/loop-gate', () => ({ loopLaunchRefusal: vi.fn(async () => null) }));
 vi.mock('./mutation-probe-fence', () => ({ mutationProbeRefusal: phases.fence }));
 // The restricted-write fence (WI-10005634) reads the fence module's closure exports, which the
 // factory above omits; its reach logic has its own suite (restricted-hold-fence.test.ts).
@@ -22,6 +27,7 @@ vi.mock('./restricted-hold-fence', () => ({ restrictedHoldRefusal: phases.restri
 vi.mock('../../testing-run-store', async (original) => ({
   ...(await original<typeof import('../../testing-run-store')>()),
   startRunDurable: phases.detach,
+  captureWorktreeSnapshotAsync: phases.snapshot,
 }));
 vi.mock('./evidence', async (original) => ({
   ...(await original<typeof import('./evidence')>()),
@@ -36,6 +42,9 @@ import * as runArtifacts from './run-artifacts';
 
 const refusal = { error: 'mutation_probe_active' as const, hint: 'active mutation probe on src/feature.ts' };
 const roots: string[] = [];
+beforeEach(() => {
+  phases.snapshot.mockResolvedValue({ commit: null, porcelain: null });
+});
 afterEach(async () => {
   vi.restoreAllMocks();
   for (const [request] of phases.detach.mock.calls) {
@@ -139,6 +148,7 @@ it.each([21_000, 31_000])('retains the requested task budget when preparation re
     cleanupReserveMs: 20_000, childCutoffAtMs: 41_000 });
   expect(manifest.cleanup.complete).toBe(true);
   expect(phases.detach).toHaveBeenCalledOnce();
+  expect(phases.snapshot).toHaveBeenCalledExactlyOnceWith(root);
   if (preparationEnd < 26_000) {
     expect(runRouterFn).toHaveBeenCalledOnce();
     expect(runRouterFn.mock.calls[0]![3]).toBe(26_000 - preparationEnd);
