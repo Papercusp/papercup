@@ -3449,6 +3449,19 @@ export function ensureClaudePluginRails(env: any, { settingsPath, readFile, repa
     repair?: typeof repairCcHooksViaInstallRoute | undefined;
     log?: ((line: any) => void) | undefined;
 }): import("../../../packages/operator-core/lib/claude-plugin/plugin-rails.mjs").ClaudeHookCarrierVerdict | null;
+export function ensureCcHookEnrollment(env: any, { event, hookName, label, degradedNote, readFile, scriptExists, repair, log }: {
+    event: any;
+    hookName: any;
+    label: any;
+    degradedNote: any;
+    readFile?: typeof readTextOrNull | undefined;
+    scriptExists?: typeof existsSync | undefined;
+    repair?: typeof repairCcHooksViaInstallRoute | undefined;
+    log?: {
+        (...data: any[]): void;
+        (message?: any, ...optionalParams: any[]): void;
+    } | undefined;
+}): void;
 /** Terminate a plain-launch process group, retaining a direct-child fallback.
  * `spawnInherit` uses `detached:true`, making the wrapper the leader of its own
  * process group on POSIX. The wrapper can leave a native backend descendant
@@ -3667,15 +3680,22 @@ export function procAncestorPids(startPid: any, { readStat, maxDepth }?: {
     readStat?: ((pid: any) => string) | undefined;
     maxDepth?: number | undefined;
 }): Set<any>;
+/** Ask the existing hash-bound container wrapper about its exact live exec.
+ * The host-private generation receipt and Docker daemon, not agent transcripts,
+ * connect the container PID to this wrapper PTY. */
+export function codexContainerProcessForPty(env: any, ptyPid: any): any;
 /** The startup native id of THIS PTY, never a sibling/nested writer in its home.
  * Reuses Codex's writer-lock oracle and the existing native-process reader.
  * @param {string | undefined} codexHome
  * @param {number} ptyPid
- * @param {{readHolder?: typeof codexThreadWriterHolder, readStartupPid?: typeof resolveLinuxCodexStartupPid}} [options]
+ * @param {{readHolder?: typeof codexThreadWriterHolder, readStartupPid?: typeof resolveLinuxCodexStartupPid,
+ * env?: NodeJS.ProcessEnv, readContainerProcess?: typeof codexContainerProcessForPty}} [options]
  */
-export function codexNativeIdForPty(codexHome: string | undefined, ptyPid: number, { readHolder, readStartupPid, }?: {
+export function codexNativeIdForPty(codexHome: string | undefined, ptyPid: number, { readHolder, readStartupPid, env, readContainerProcess, }?: {
     readHolder?: typeof codexThreadWriterHolder;
     readStartupPid?: typeof resolveLinuxCodexStartupPid;
+    env?: NodeJS.ProcessEnv;
+    readContainerProcess?: typeof codexContainerProcessForPty;
 }): string | null;
 /**
  * Is any live process (outside the caller's own ancestor chain) carrying this
@@ -5441,7 +5461,7 @@ declare function readTextOrNull(path: any): string | null;
 /** Re-run the operator's idempotent hook install (the same merge every operator
  *  boot runs). Loopback-only; short timeout; failure is left to the caller's
  *  re-verify. */
-declare function repairCcHooksViaInstallRoute(): void;
+declare function repairCcHooksViaInstallRoute(settingsPath: any, env: any): void;
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 import { resolveLinuxCodexStartupPid } from "./psu-pty-host.mjs";
 declare function defaultListProcPids(): number[];

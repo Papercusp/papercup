@@ -4014,6 +4014,22 @@ describe('failure reporting', () => {
     );
   });
 
+  it('preserves a retired headless kickoff receipt without reporting an opened task', async () => {
+    const kickoffProof = {
+      persisted: false, nativeRef: null, reason: 'kickoff-not-submitted:role-mcp-unavailable',
+    };
+    spawnHeadlessMock.mockResolvedValue({
+      status: 'error', code: 502, error: 'headless kickoff was not submitted',
+      taskId: 'task-retired', logPath: '/tmp/retired-judge.log', kickoffProof,
+    });
+    const result = await launchAgent.handler({ brief: 'grade', headless: true }, ctx);
+    expect(isError(result)).toBe(true);
+    expect(dataOf(result)?.launch).toMatchObject({
+      opened: 0, failed: 1, tasks: [],
+      failures: [{ taskId: 'task-retired', logPath: '/tmp/retired-judge.log', kickoffProof }],
+    });
+  });
+
   it('returns machine-readable per-member failure details when a spawn fails', async () => {
     spawnConsoleMock.mockResolvedValue({
       status: 'error',

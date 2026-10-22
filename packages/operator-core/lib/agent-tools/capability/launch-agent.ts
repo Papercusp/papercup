@@ -2660,6 +2660,9 @@ export default defineTool({
               label: memberLabels[memberIndex],
               code: result.code,
               reason: result.error,
+              ...(result.taskId ? { taskId: result.taskId } : {}),
+              ...(result.logPath ? { logPath: result.logPath } : {}),
+              ...(result.kickoffProof ? { kickoffProof: result.kickoffProof } : {}),
             },
           ]
         : [],

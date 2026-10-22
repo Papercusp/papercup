@@ -22,6 +22,18 @@
  */
 import { join } from "node:path";
 
+// Minimum managed-session contract. The installer tests this against its full
+// enrollment map; optional advisory hooks do not weaken these safety rails.
+export const REQUIRED_CLAUDE_HOOKS = {
+  PreToolUse: ["pretooluse-locks-acquire.sh"],
+  PostToolUse: ["posttooluse-locks-release.sh", "posttooluse-activity-report.sh"],
+  SessionStart: ["lifecycle-report.sh"],
+  SessionEnd: ["lifecycle-report.sh"],
+  UserPromptSubmit: ["userpromptsubmit-memory.sh"],
+  StopFailure: ["stop-failure-record.mjs"],
+  PostToolUseFailure: ["posttooluse-failure-record.mjs"],
+};
+
 export const PAPERCUSP_CLAUDE_PLUGIN_NAME = "papercusp";
 export const PAPERCUSP_CLAUDE_MARKETPLACE_NAME = "papercusp-local";
 export const PAPERCUSP_CLAUDE_PLUGIN_ID = `${PAPERCUSP_CLAUDE_PLUGIN_NAME}@${PAPERCUSP_CLAUDE_MARKETPLACE_NAME}`;
@@ -145,6 +157,23 @@ export function claudeHookCarrierVerdict({ settings, readFile } = {}) {
 
   const livePluginHooks = pluginState === "enabled" && pluginHooks ? pluginHooks : null;
   const inlineHooks = asObject(cfg.hooks) ?? {};
+  if (cfg.disableAllHooks === true) problems.push("hooks-disabled: disableAllHooks is true");
+  for (const [event, required] of Object.entries(REQUIRED_CLAUDE_HOOKS)) {
+    const names = scriptNamesForEvent(livePluginHooks ?? inlineHooks, event);
+    for (const name of required) {
+      if (!names.has(name)) problems.push(`hook-missing: ${event}:${name}`);
+    }
+    // Failure hooks must cover every error/tool, as the enrollment source does.
+    if (event === "StopFailure" || event === "PostToolUseFailure") {
+      const groups = (livePluginHooks ?? inlineHooks)[event] ?? [];
+      for (const name of required) {
+        if (names.has(name) && !groups.some((g) => !g.matcher &&
+          (g.hooks ?? []).some((h) => h.type === "command" && commandScriptNames(h.command).has(name)))) {
+          problems.push(`hook-incomplete: ${event}:${name} must have no matcher`);
+        }
+      }
+    }
+  }
   const doubleEnrolled = [];
   if (livePluginHooks) {
     for (const event of Object.keys(livePluginHooks).sort()) {

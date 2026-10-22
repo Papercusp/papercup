@@ -98,9 +98,8 @@ async function main() {
   try {
     const env = process.env;
     if (!env.PAPERCUSP_SID) return;
-    const token = readSuperuserToken(env);
-    if (!token) return;
     if (nestedCliCached({ env })) return;
+    const token = readSuperuserToken(env);
     const raw = await readHookStdin(STDIN_TIMEOUT_MS);
     const hook = raw.trim() ? JSON.parse(raw) : null;
     await postActivityReport(buildToolFailureReport(hook, env), { env, token });

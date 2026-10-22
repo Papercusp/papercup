@@ -123,6 +123,34 @@ const timedOutRouter = () => vi.fn(async (_args: string[], _root: string,
 const callerDeadline = { startedAtMs: 1_000, taskDeadlineAtMs: 46_000,
   cleanupReserveMs: 10_000, childCutoffAtMs: 36_000 };
 
+it.each([21_000, 31_000])('retains the requested task budget when preparation reaches %ims beyond the foreground reserve', async preparationEnd => {
+  let now = 1_000;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const root = await makeTestRoot(true);
+  phases.restricted.mockImplementation(async () => { now = preparationEnd; return null; });
+  phases.detach.mockResolvedValue({ snapshot: { runId: 'preparation-replay' }, durable: true });
+  const runRouterFn = timedOutRouter();
+  const result = await runTestFilesCore({ root, files: ['feature.test.ts'], timeoutMs: 25_000,
+    recoveryTimeoutMs: 60_000, harnessSlug: 'refusal-harness', workspaceId: 'refusal-workspace' },
+  { runRouterFn, artifactBaseDir: root });
+  expect(result).toMatchObject({ error: 'timeout', detachedRunId: 'preparation-replay', detachedDurable: true });
+  const manifest = JSON.parse(await readFile(result.artifacts!.manifest, 'utf8'));
+  expect(manifest.deadline).toEqual({ startedAtMs: 1_000, taskDeadlineAtMs: 61_000,
+    cleanupReserveMs: 20_000, childCutoffAtMs: 41_000 });
+  expect(manifest.cleanup.complete).toBe(true);
+  expect(phases.detach).toHaveBeenCalledOnce();
+  if (preparationEnd < 26_000) {
+    expect(runRouterFn).toHaveBeenCalledOnce();
+    expect(runRouterFn.mock.calls[0]![3]).toBe(26_000 - preparationEnd);
+    expect(runRouterFn.mock.calls[0]![2]).toMatchObject({
+      PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: '61000', PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: '41000',
+      PAPERCUSP_TEST_CLEANUP_RESERVE_MS: '20000',
+    });
+  } else {
+    expect(runRouterFn).not.toHaveBeenCalled();
+  }
+});
+
 it('R5 replays a caller-bound foreground timeout with the identical deadline and reserve', async () => {
   vi.spyOn(Date, 'now').mockReturnValue(1_000);
   const root = await makeTestRoot(true);
