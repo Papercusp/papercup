@@ -984,6 +984,31 @@ async function liveRuntimeEnvironment(
   };
 }
 
+/**
+ * A working-tree bind must be reproducible by listSpecEvidence, which reads committed files
+ * whenever the measurement root has a HEAD. buildMeasurementPin records whether each
+ * fingerprinted file matches that HEAD; refuse instead of storing a dirty-tree digest that
+ * can become falsely current as soon as the dirty bytes are committed.
+ */
+function refuseUnreproducibleWorkingTreeMeasurement(
+  pin: MeasurementPin,
+  measurement: RepoFilesEvidenceMeasurement,
+  harnessSlug: string,
+): void {
+  const repoByKey = new Map(pin.repos.map((repo) => [`${repo.rootHarnessSlug ?? ''}\0${repo.repo}`, repo]));
+  const mismatched = pin.files.filter((file) => {
+    const repo = repoByKey.get(`${file.rootHarnessSlug ?? ''}\0${file.repo}`);
+    return repo?.head != null && file.clean !== true;
+  });
+  if (mismatched.length === 0) return;
+  const paths = mismatched.map((file) => {
+    const rootHarnessSlug = file.rootHarnessSlug ?? measurement.rootHarnessSlug ?? harnessSlug;
+    const state = file.clean === false ? 'dirty' : 'clean-state-unavailable';
+    return `${rootHarnessSlug}:${file.path}:${state}`;
+  }).sort();
+  throw new Error(`repo_measurement_not_clean_at_head:${paths.join(',')}`);
+}
+
 /** Resolve both registered roots when fixture calibration lives outside the tested checkout. */
 export async function measureAndPinRepoFilesEvidence(
   workspaceId: string,
@@ -1000,6 +1025,7 @@ export async function measureAndPinRepoFilesEvidence(
     ...options,
     ...(hasRepoFixturePaths(measurement) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
   });
+  refuseUnreproducibleWorkingTreeMeasurement(measured.pin, measurement, harnessSlug);
   // Spread last: like the read path, named runtimes take precedence over an artifact receipt.
   return { ...measured, ...(await liveRuntimeEnvironment(workspaceId, harnessSlug, measurement)) };
 }

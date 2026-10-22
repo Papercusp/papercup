@@ -1235,6 +1235,44 @@ export const census = () => APP_ROOTS.map(walk);
     }
   });
 
+  it('refuses repo-files evidence measured from a dirty sibling checkout', async () => {
+    const siblingRoot = await mkdtemp(join(tmpdir(), 'spec-evidence-sibling-root-'));
+    const previousRoot = h.measurementRoot;
+    const previousFixtureRoot = h.fixtureMeasurementRoot;
+    h.measurementRoot = siblingRoot;
+    h.fixtureMeasurementRoot = '';
+    const sourcePath = 'src/sibling.ts';
+    const testPath = 'test/sibling.test.ts';
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      rootHarnessSlug: 'papercup-rust-mobile',
+      sourcePaths: [sourcePath],
+      testPaths: [testPath],
+    };
+    try {
+      await mkdir(join(siblingRoot, 'src'), { recursive: true });
+      await mkdir(join(siblingRoot, 'test'), { recursive: true });
+      await writeFile(join(siblingRoot, sourcePath), 'export const sibling = 1;\n');
+      await writeFile(join(siblingRoot, testPath), 'expect(sibling).toBe(1);\n');
+      execFileSync('git', ['init', '-q', siblingRoot]);
+      execFileSync('git', ['-C', siblingRoot, 'add', sourcePath, testPath]);
+      execFileSync('git', ['-C', siblingRoot, '-c', 'user.name=Spec test', '-c', 'user.email=spec@example.invalid',
+        'commit', '-qm', 'clean sibling root']);
+
+      await expect(measureAndPinEvidenceForScope('workspace-test', 'papercusp', recipe)).resolves.toHaveProperty('pin');
+      await writeFile(join(siblingRoot, sourcePath), 'export const sibling = 2;\n');
+
+      await expect(measureAndPinEvidenceForScope('workspace-test', 'papercusp', recipe)).rejects.toThrow(
+        'repo_measurement_not_clean_at_head:papercup-rust-mobile:src/sibling.ts:dirty',
+      );
+    } finally {
+      h.measurementRoot = previousRoot;
+      h.fixtureMeasurementRoot = previousFixtureRoot;
+      await rm(siblingRoot, { recursive: true, force: true });
+    }
+  });
+
   it('binds and independently rechecks native host proof, rejecting unavailable or changed observations', async () => {
     const native = vi.spyOn(coldEnvironment, 'measureNativeColdEnvironment');
     const fingerprint = 'sha256-native-storage-environment-v1:' + 'a'.repeat(64);
