@@ -25,6 +25,7 @@ import type { GovernedExecution } from '../../resource-governor/execution';
 import { captureSidecarContainment, observeSidecarExit } from '../sidecar-exec-lifetime';
 import { execFileViaSidecar, isSidecarInfrastructureFault } from '../git-via-sidecar';
 import { readFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
 
 // Keep the production launcher and real kernel scopes; only the unrelated
 // durable ledger/flag stores are hermetic in this process integration suite.
@@ -165,9 +166,9 @@ describe.runIf(linux)('sidecar forkserver', () => {
       expect(containment).not.toBeNull();
       const effect = join(dir, `effect-${boundary}`);
       const pids = join(dir, `pids-${boundary}`);
-      const emit = server.emit.bind(server);
+      const emit = EventEmitter.prototype.emit.bind(server);
       let stopped = false;
-      const messages = vi.spyOn(server, 'emit').mockImplementation((event, ...args) => {
+      const messages = vi.spyOn(server, 'emit').mockImplementation((event: string | symbol, ...args: unknown[]) => {
         const m = args[0] as { t?: string };
         if (event === 'message' && m?.t === 'spawned' && boundary === 'before-ack') {
           // The fork has happened but the caller never learns its PID. Let it
@@ -203,7 +204,7 @@ describe.runIf(linux)('sidecar forkserver', () => {
             process.kill(Number(await readFile(pids, 'utf8')), 'SIGKILL');
             process.kill(-childPid, 'SIGKILL');
             messages.mockRestore();
-            vi.spyOn(server, 'emit').mockImplementation((event, ...args) => {
+            vi.spyOn(server, 'emit').mockImplementation((event: string | symbol, ...args: unknown[]) => {
               const returned = emit(event, ...args);
               if (event === 'message' && (args[0] as { t?: string })?.t === 'close') server.kill('SIGKILL');
               return returned;

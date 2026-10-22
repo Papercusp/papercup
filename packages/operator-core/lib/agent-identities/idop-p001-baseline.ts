@@ -8,8 +8,8 @@
  */
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 
@@ -29,6 +29,50 @@ type Observation = {
   outputRef?: string;
   refusal?: string;
 };
+
+type CoverageInput = {
+  population: {
+    roles: Array<{ id: string }>;
+    builtInIdentities: Array<{ id: string }>;
+  };
+  observations: Array<Pick<Observation, 'identity' | 'status' | 'ownerId' | 'observedAt' |
+    'toolInvocationId' | 'activationEventId' | 'refusal'>>;
+};
+
+/** A row-count floor cannot establish coverage of an independently enumerated population. */
+export function inspectIdopP001Coverage(baseline: CoverageInput) {
+  const population = [
+    ...baseline.population.roles.map(({ id }) => `role:${id}`),
+    ...baseline.population.builtInIdentities.map(({ id }) => `identity:${id}`),
+  ].sort();
+  const roles = new Set(baseline.population.roles.map(({ id }) => id));
+  const expected = new Set(population);
+  const checked = new Set<string>();
+  const invalid: string[] = [];
+  for (const row of baseline.observations) {
+    const key = `${roles.has(row.identity) ? 'role' : 'identity'}:${row.identity}`;
+    const receipt = row.status === 'launch-refused'
+      ? Boolean(row.refusal?.trim())
+      : /^su-/.test(row.ownerId) && Number.isSafeInteger(row.toolInvocationId) &&
+        Number(row.toolInvocationId) > 0 && (row.status === 'observed' ||
+          (row.status === 'tool-refused' && Boolean(row.refusal?.trim())));
+    // Activation proves a worn layer, but does not by itself prove its effective tool set.
+    if (!expected.has(key) || !receipt || !Number.isFinite(Date.parse(row.observedAt))) {
+      invalid.push(key);
+      continue;
+    }
+    checked.add(key);
+  }
+  const missing = population.filter((key) => !checked.has(key));
+  return {
+    complete: missing.length === 0 && invalid.length === 0 && expected.size === population.length,
+    population,
+    checked: [...checked].sort(),
+    missing,
+    invalid: [...new Set(invalid)].sort(),
+    duplicatePopulation: population.filter((key, index) => population.indexOf(key) !== index),
+  };
+}
 
 export const RUNTIME_OBSERVATIONS: Observation[] = [
   { identity: 'su.mode-auto', stackRefs: ['autonomy:su.mode-auto'], ownerId: 'su-7a61b3ed-841b-4d7c-b177-f87c76073391', nativeSessionId: '01a16441-1bb3-7882-8c8f-69bfe2cddb16', activationEventId: 87801, observedAt: '2026-10-22T15:35:51.100747Z', principal: 'system:superuser', status: 'observed' },
@@ -112,5 +156,10 @@ export function buildIdopP001Baseline(promptsDir: string) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const promptsDir = process.argv[2];
   if (!promptsDir) throw new Error('usage: tsx idop-p001-baseline.ts <launched-codex-prompts-dir>');
-  writeFileSync(join(root, IDOP_P001_BASELINE_REL), `${JSON.stringify(buildIdopP001Baseline(promptsDir), null, 2)}\n`);
+  const target = join(root, IDOP_P001_BASELINE_REL);
+  if (existsSync(target)) throw new Error('The pre-implementation baseline is frozen; append receipt evidence separately instead of overwriting it');
+  const baseline = buildIdopP001Baseline(promptsDir);
+  const coverage = inspectIdopP001Coverage(baseline);
+  if (!coverage.complete) throw new Error(`Incomplete baseline coverage: ${JSON.stringify(coverage)}`);
+  writeFileSync(target, `${JSON.stringify(baseline, null, 2)}\n`, { flag: 'wx' });
 }
