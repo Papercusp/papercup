@@ -46,6 +46,14 @@ vi.mock('./draft-item-start-gate', () => ({ checkDraftItemStartGateLive: vi.fn(a
 vi.mock('./revisions', () => ({
   planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
 }));
+const planDrainMocks = vi.hoisted(() => ({
+  planDrainTransitionMutationGated: vi.fn<
+    typeof import('./plan-drain-transition').planDrainTransitionMutationGated
+  >(async () => ({ newBody: null, value: { applied: false } })),
+}));
+vi.mock('./plan-drain-transition', () => ({
+  planDrainTransitionMutationGated: planDrainMocks.planDrainTransitionMutationGated,
+}));
 vi.mock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => reconcileMocks.resolveAgentIdentity(),

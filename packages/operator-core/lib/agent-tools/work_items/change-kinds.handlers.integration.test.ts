@@ -37,6 +37,9 @@ vi.mock('../../memory/recall-stats', async (original) => ({
   ...await original<typeof import('../../memory/recall-stats')>(),
   recordRecallStats: async () => {},
 }));
+vi.mock('../../memory/claim-port', () => ({
+  buildClaimRecallBlock: async () => null,
+}));
 vi.mock('../../grading-integrity', async (original) => ({
   ...await original<typeof import('../../grading-integrity')>(),
   dispatchPendingGradingAudits: async () => ({ requestedTargetIds: [], receipts: [] }),
