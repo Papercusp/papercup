@@ -139,7 +139,10 @@ export const BASH_TEST_MEMORY_MAX_BYTES = 16 * 1024 ** 3;
 // envelope keeps one high-fanout suite at a time inside it.
 export const BASH_TEST_TASKS_MAX = 8_192;
 
-const TEST_SEGMENT_PREFIX = String.raw`(?:^|(?:&&|\|\||;|\n)\s*)(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*`;
+// An assignment value is one shell word: quoted spaces, escaped spaces and
+// adjacent quoted/unquoted fragments must not hide the executable that follows.
+const TEST_ENV_ASSIGNMENT = String.raw`[A-Za-z_][A-Za-z0-9_]*=(?:[^\s"'\\;&|]+|\\[^\r\n]|"(?:[^"\\]|\\.)*"|'[^']*')*\s+`;
+const TEST_SEGMENT_PREFIX = String.raw`(?:^|(?:&&|\|\||;|\n)\s*)(?:${TEST_ENV_ASSIGNMENT})*`;
 const DIRECT_TEST_RUNNER_RE = new RegExp(
   `${TEST_SEGMENT_PREFIX}(?:(?:npx|bunx|pnpm\\s+exec|yarn\\s+dlx)\\s+)?` +
     String.raw`(?:vitest|jest|mocha|ava|pytest|playwright\s+test|cargo\s+test|go\s+test)(?:\s|$)`,
@@ -152,7 +155,7 @@ const PACKAGE_TEST_SCRIPT_RE = new RegExp(
 // Maintained verification scripts are test launchers too. Confinement alone
 // supplies a deadline; these entrypoints also need the finite copy-memory budget.
 const MAINTAINED_VERIFIER_RE = new RegExp(
-  `${TEST_SEGMENT_PREFIX}(?:env\\s+(?:--\\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\\S+\\s+)*)?` +
+  `${TEST_SEGMENT_PREFIX}(?:env\\s+(?:--\\s+)?(?:${TEST_ENV_ASSIGNMENT})*)?` +
     String.raw`(?:bash\s+(?:--\s+)?)?(?:\./|(?:\.\./)+|/(?:[^\s"';&|]+/)*)?scripts/(?:run-operator-e2e-isolated|verify-tauri-headless)\.sh(?:\s|$)`,
   'i',
 );

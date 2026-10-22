@@ -22,6 +22,7 @@ import { buildCarryBrief, type CarryBrief } from './carry-brief';
 import { buildOwnerRespawnLaunchSpec, type RespawnLaunchSpec } from './carry-respawn';
 import {
   DEFAULT_SUFFICIENCY_PARAMS,
+  classifyRecoveryLookup,
   extractRecoveryLookups,
   gradeColdBootDrills,
   type CarrySufficiencyReport,
@@ -928,4 +929,108 @@ export async function verifyColdBootDrill(
   ];
   const sessionClass = registered?.sessionClass || rows[0]?.sessionClass || input.sessionClass || 'unknown';
   return { ok: true, drillId, sessionClass, pass: assertions.every((a) => a.pass), assertions };
+}
+
+export interface CarryDrillMeasurementInput {
+  ownerId: string;
+  drillId: string;
+  windowStart: string;
+  windowEnd: string;
+}
+
+export interface CarryDrillMeasurement {
+  verdict: 'pass' | 'fail' | 'unknown';
+  reason: string;
+  /** This detector covers the lifecycle, never the whole shipment contract. */
+  scope: 'selected-codex-interactive-drill';
+  drillId: string;
+  ownerId: string;
+  nativeId?: string;
+  transcriptRef?: string;
+  gaps?: number;
+  surfacingGaps?: number;
+}
+
+/**
+ * Reuse the drill's ledger, exact successor transcript, carry reader and verifier.
+ * No start/grade/retire is invoked here. In particular, a failed terminal outcome
+ * satisfies verify's liveness diagnostic but MUST NOT satisfy this instrument.
+ * Deployment identity, independent acceptance, class-wide sufficiency, report and
+ * supported cleanup remain separate R-7 evidence obligations.
+ */
+export async function measureCarryDrillLifecycle(
+  input: CarryDrillMeasurementInput,
+  overrides: Partial<Pick<GradeColdBootDrillDeps, 'readLedger' | 'readHostEvents' | 'readCarry' | 'loadTranscript'> &
+    Pick<VerifyColdBootDrillDeps, 'socketExists'>> = {},
+): Promise<CarryDrillMeasurement> {
+  const result = (verdict: CarryDrillMeasurement['verdict'], reason: string,
+    extra: Partial<CarryDrillMeasurement> = {}): CarryDrillMeasurement => ({
+    verdict, reason, scope: 'selected-codex-interactive-drill', ownerId: input.ownerId, drillId: input.drillId, ...extra,
+  });
+  const start = Date.parse(input.windowStart), end = Date.parse(input.windowEnd);
+  if (!input.ownerId?.trim() || !input.drillId?.trim() || !Number.isFinite(start) || !Number.isFinite(end) || start >= end)
+    return result('unknown', 'An exact owner, drill and non-empty observation window are required.');
+  try {
+    const readLedger = overrides.readLedger ?? (() => readColdBootDrillLedger(PSU_PTY_DIR, { requireComplete: true }));
+    const readHostEvents = overrides.readHostEvents ?? ((ownerId: string) => readOwnerHostEvents(ownerId, PSU_PTY_DIR, { requireComplete: true }));
+    const ledger = await readLedger();
+    const rows = ledger.filter(row => row.drillId === input.drillId);
+    if (!rows.length) return result('unknown', 'No native ledger evidence for the selected drill.');
+    if (rows.some(row => row.ownerId !== input.ownerId || row.sessionClass !== 'codex-interactive'))
+      return result('fail', 'The selected drill has a foreign owner or unsupported session class.');
+    const requested = rows.filter(row => row.kind === 'carry-drill-requested');
+    if (requested.length !== 1) return result('fail', 'Exactly one durable request is required.');
+    if (rows.some(row => !Number.isFinite(Date.parse(row.ts)) || Date.parse(row.ts) < start || Date.parse(row.ts) > end))
+      return result('unknown', 'Drill evidence is incomplete or outside the selected window.');
+    const failed = new Set(['carry-drill-request-failed', 'carry-drill-respawn-failed', 'carry-drill-carry-dropped']);
+    if (rows.some(row => failed.has(row.kind))) return result('fail', 'The selected drill recorded a failed or dropped outcome.');
+    const host = (await readHostEvents(input.ownerId)).filter(row => row.drillId === input.drillId);
+    if (host.some(row => !row.ts || !Number.isFinite(Date.parse(row.ts)) || Date.parse(row.ts) < start || Date.parse(row.ts) > end))
+      return result('unknown', 'Host evidence is incomplete or outside the selected window.');
+    if (host.some(row => failed.has(row.kind ?? ''))) return result('fail', 'The owner host recorded a failed or dropped outcome.');
+    const respawns = host.filter(row => row.kind === 'carry-drill-respawned');
+    const grades = rows.filter(row => row.kind === 'carry-drill-graded');
+    if (respawns.length > 1 || grades.length > 1) return result('fail', 'Duplicate respawn or durable grade.');
+    const respawn = respawns[0], grade = grades[0];
+    if (!respawn?.nativeId || !respawn.launchContextPath || !grade || !Array.isArray(grade.lookups) ||
+        !rows.some(row => row.kind === 'carry-drill-queued') ||
+        !host.some(row => row.kind === 'carry-drill-carry-delivered'))
+      return result('unknown', 'Queued, delivered, exact successor and durable grade evidence are required.');
+    if (grade.gradedByOwnerId !== input.ownerId) return result('fail', 'The grade was not recorded by the addressed owner.');
+    const verified = await verifyColdBootDrill(input.ownerId, { drillId: input.drillId }, {
+      readLedger: async () => ledger, readHostEvents: async () => host,
+      socketExists: overrides.socketExists ?? verifyDeps({}).socketExists,
+    });
+    if (!verified.ok || !verified.pass) return result('fail', 'The selected drill failed its maintained lifecycle verifier.');
+    const carry = await (overrides.readCarry ?? safeReadCarry)(respawn.launchContextPath);
+    const loadTranscript = overrides.loadTranscript ?? (async (ownerId: string, nativeId: string | null) => {
+      // Never borrow the current session when this exact native successor is missing.
+      const resolved = nativeId ? await resolveOwnerIsolatedSessionByPrefix(ownerId, nativeId) : null;
+      return resolved?.sourceKind === 'codex'
+        ? parseTranscriptJsonl(await fs.readFile(resolved.filePath, 'utf8'), resolved.filePath) : null;
+    });
+    const transcript = await loadTranscript(input.ownerId, respawn.nativeId);
+    if (!carry || !transcript || transcript.backend !== 'codex') return result('unknown', 'The exact Codex successor transcript and carry must be readable.');
+    const markerAt = transcript.turns.findIndex(turn => turn.role === 'user' && turn.text.includes(`⟦carry-drill:${input.drillId}⟧`));
+    if (markerAt < 0 || !carry.includes(input.ownerId)) return result('fail', 'The exact addressed carry and drill marker are absent.');
+    const calls = transcript.turns.map((turn, index) => ({ turn, index })).filter(({ turn, index }) => index > markerAt &&
+      turn.role === 'tool_use' && (turn.toolName ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').endsWith('sessioncarrydrill'));
+    const operation = (text: string, op: string) => new RegExp(`["']?op["']?\\s*:\\s*["']${op}["']`).test(text);
+    const gradesCalled = calls.filter(({ turn }) => turn.text.includes(input.drillId) && operation(turn.text, 'grade'));
+    if (gradesCalled.length > 1) return result('fail', 'The successor invoked grade more than once.');
+    const gradeAt = gradesCalled[0]?.index;
+    if (gradeAt === undefined) return result('unknown', 'The native transcript has no direct drill-grade boundary; do not infer one from prose.');
+    if (!calls.some(({ turn, index }) => index > gradeAt && operation(turn.text, 'verify') && turn.text.includes(input.drillId)) ||
+        !calls.some(({ turn, index }) => index > gradeAt && operation(turn.text, 'report')))
+      return result('unknown', 'The successor must record verify and report after its single grade.');
+    const lookups = extractRecoveryLookups(transcript.turns.slice(markerAt + 1, gradeAt + 1), carry);
+    if (JSON.stringify(lookups) !== JSON.stringify(grade.lookups)) return result('fail', 'The saved grade differs from the exact native recovery window.');
+    const gaps = lookups.filter(lookup => classifyRecoveryLookup(lookup) === 'gap').length;
+    const surfacingGaps = lookups.filter(lookup => classifyRecoveryLookup(lookup) === 'surfacing-gap').length;
+    return result(gaps || surfacingGaps ? 'fail' : 'pass', gaps || surfacingGaps
+      ? 'The selected successor has recovery gaps.' : 'Selected drill lifecycle and zero recovery gaps verified; shipment obligations remain separate.',
+    { nativeId: respawn.nativeId, transcriptRef: transcript.ref, gaps, surfacingGaps });
+  } catch (error) {
+    return result('unknown', `Native drill evidence unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
