@@ -461,6 +461,25 @@ beforeEach(async () => {
 // title and an execution master with no plan_item back-pointer. No hold, lease,
 // assignment, active plan or spec exclusion supplies the answer in these cases.
 describe('WI-10006159 solo decision reservations', () => {
+  it('WI20092 preserves the public nine-argument SQL claim-floor signature', async () => {
+    const signature = await db.sql`
+      SELECT oidvectortypes(p.proargtypes) AS argument_types,
+             p.proargnames AS argument_names,
+             pg_get_function_result(p.oid) AS return_type
+        FROM pg_proc p
+       WHERE p.oid = to_regprocedure(
+         'harness_shared.work_item_claim_floors(text,text,text,text,text,text,text,jsonb,text)'
+       )`;
+    expect(signature).toEqual([{
+      argument_types: 'text, text, text, text, text, text, text, jsonb, text',
+      argument_names: [
+        'p_workspace_id', 'p_status', 'p_taken_by', 'p_origin', 'p_title',
+        'p_terminal_owner', 'p_terminal_completion_ref', 'p_payload', 'p_feature_id',
+      ],
+      return_type: 'text[]',
+    }]);
+  });
+
   const decision = async (title: string, body: string, refs: string[] = [], id = 'D-005') => {
     await seedPlan('solo-route-plan', 'ready');
     await db.sql.begin(async (tx) => {
@@ -543,7 +562,10 @@ describe('WI-10006159 solo decision reservations', () => {
     // source does not broaden this source-only repair to legacy lane reassignment.
     await seed('WI-200096', { kind, sourcePlanSlug: 'solo-route-plan', sourcePlanItemIds: ['P-007'],
       payload: { plan_item: { plan_slug: 'unreserved-plan', item_id: 'P-007' } } });
+    await seed('WI-200097', { kind, sourcePlanSlug: 'unreserved-plan', sourcePlanItemIds: ['P-008'],
+      payload: { plan_item: { plan_slug: 'solo-route-plan', item_id: 'P-007' } } });
     expect(await floors('WI-200092')).toContain('reserved-plan-lane');
+    expect(await floors('WI-200097')).toContain('reserved-plan-lane');
     for (const id of ['WI-200093', 'WI-200094', 'WI-200095', 'WI-200096']) {
       expect(await floors(id)).not.toContain('reserved-plan-lane');
     }
@@ -554,6 +576,8 @@ describe('WI-10006159 solo decision reservations', () => {
     } else {
       expect((await wi.listWorkItems({ harness: H, kind: 'feature', admissibleOnly: true }))
         .map(row => row.id).sort()).toEqual(expected);
+      expect((await wi.claimNextWorkItem({ harness: H, assignee: 'generic-drainer' }))?.id)
+        .not.toBe('WI-200097');
     }
     await db.sql`UPDATE harness_shared.plan_decisions SET workspace_id = 'foreign-tenant'`;
     expect(await floors('WI-200092')).not.toContain('reserved-plan-lane');
