@@ -362,7 +362,7 @@ describe.runIf(linux)('sidecar forkserver', () => {
     await viaForkserver('true', []); // warm: the forkserver is running before measuring
     const fallbacks = forkserverStats().fallbacks;
     const measured = await measuredExecBurst();
-    expect(measured.p99Ms).toBeLessThan(20);
+    expect(measured.p99Ms, JSON.stringify(measured)).toBeLessThan(20);
     expect(forkserverStats().fallbacks).toBe(fallbacks);
   });
 
