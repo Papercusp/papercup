@@ -66,7 +66,8 @@ export function finishToolTrace(input: Invocation) {
 }
 
 export function beginGatewayTrace(key: string, provider: string, headers: Record<string, string>) {
-  try { runtime().begin(key, 'papercusp.model', { 'gen_ai.operation.name': 'chat', 'gen_ai.provider.name': provider }, headers); }
+  try { runtime().begin(key, 'papercusp.model', { 'gen_ai.operation.name': 'chat', 'gen_ai.provider.name': provider,
+    'papercusp.request_id': key }, headers); }
   catch { state.observerFailures++; }
 }
 

@@ -630,4 +630,101 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
     expect(state.pending).toBeNull();
     expect(state.committed.judgedCandidate).toBe(rejoined.candidate);
   }, 180_000);
+
+  it("a joined qualification retains its selected candidate and attempt identity", async () => {
+    const f = await lineage();
+    f.deps.qualificationAttemptId = "independent-joined-attempt";
+    f.deps.runId = "independent-joined-run";
+    const options: CheckpointOpts = { candidate: f.knownGood, candidateSource: "tip", noPush: true };
+    const prepared = await f.prepare(options);
+    expect(prepared.candidate).toBe(f.knownGood);
+    expect(prepared.prewarmedDependencyGeneration).toMatchObject({ candidate: f.knownGood,
+      identity: f.knownGoodGeneration.identity, inputFingerprint: f.knownGoodGeneration.inputFingerprint });
+    expect(f.deps.qualificationAttemptId).toBe("independent-joined-attempt");
+    expect(options).toEqual({ candidate: f.knownGood, candidateSource: "tip", noPush: true });
+    expect(f.events).not.toContain("select-known-good");
+  }, 180_000);
+
+  it("a known-good point already at the green pin cannot replace the unjudged tip", async () => {
+    const f = await lineage();
+    f.deps.resolveKnownGoodRecutTarget = async () => f.ready;
+    const prepared = await f.prepare({ noPush: true });
+    expect(prepared.candidate).toBe(f.tip);
+    expect(prepared.prewarmedDependencyGeneration.inputFingerprint).toBe(f.tipGeneration.inputFingerprint);
+  }, 180_000);
+
+  it.each(["queue", "carry"] as const)("unreadable %s authority refuses before acquiring or consuming", async (authority) => {
+    const f = await lineage();
+    let consumed = 0;
+    f.deps.consumeFrozenRepairCarry = async () => { consumed += 1; return true; };
+    if (authority === "queue") f.deps.readFrozenRepairQueue = async () => { throw new Error("fixture queue unavailable"); };
+    else f.deps.readFrozenRepairPendingCarry = async () => { throw new Error("fixture carry unavailable"); };
+    const observed = await f.prepare({ noPush: true }).then(result => {
+      if (result.lock.acquired) result.lock.release();
+      return { kind: "ready", error: "" };
+    }, error => ({ kind: "refused", error: String(error) }));
+    expect(observed.kind).toBe("refused");
+    expect(observed.error).toMatch(/authority|queue|carry|unavailable/i);
+    expect(consumed).toBe(0);
+    expect(existsSync(f.lockDir)).toBe(false);
+  }, 180_000);
+
+  it("a refused carry CAS cannot publish a runnable proposal or leak the serializer", async () => {
+    const f = await lineage();
+    const pending = f.carry();
+    let consumed = 0;
+    f.deps.readFrozenRepairPendingCarry = async () => {
+      if (consumed > 0) throw new Error("fixture authority unavailable after rejected CAS");
+      return pending;
+    };
+    f.deps.consumeFrozenRepairCarry = async () => {
+      expect(existsSync(f.lockDir)).toBe(true);
+      consumed += 1;
+      return false;
+    };
+    const observed = await f.prepare({ noPush: true }).then(result => {
+      if (result.lock.acquired) result.lock.release();
+      return "ready";
+    }, () => "refused");
+    expect(observed).toBe("refused");
+    expect(consumed).toBe(1);
+    expect(existsSync(f.lockDir)).toBe(false);
+    expect(pending).toEqual(f.carry());
+  }, 180_000);
+
+  it("a crash after selection publication rejoins the committed proposal before any suite effect", async () => {
+    const f = await lineage();
+    let pending: FrozenRepairPendingCarry | null = f.carry();
+    let consumed = 0;
+    let suites = 0;
+    let published: string | null = null;
+    f.deps.runId = "independent-publication-rejoin";
+    f.deps.qualificationAttemptId = "independent-publication-rejoin";
+    f.deps.readFrozenRepairPendingCarry = async () => pending;
+    f.deps.consumeFrozenRepairCarry = async () => { pending = null; consumed += 1; return true; };
+    const prepared = await f.prepare({ noPush: true });
+    expect(consumed).toBe(1);
+    const real = realCheckpointDeps(f.cfg, f.exec, f.deps.runId, undefined, undefined, undefined,
+      prepared.prewarmedDependencyGeneration);
+    let crashed = false;
+    try {
+      await runGreenCheckpoint(f.cfg, { ...f.deps, prepareSource: real.prepareSource,
+        setupTree: real.setupTree, runGreen: async () => { suites += 1; throw new Error("suite must not start"); },
+        recordInFlightCandidate: async info => { published = info.candidate; throw new Error("crash after selection publication"); },
+      }, { noPush: true, preparedSelection: Reflect.get(prepared, "preparedSelection") } as PreparedOpts);
+    } catch (error) {
+      expect(String(error)).toContain("crash after selection publication");
+      crashed = true;
+    } finally {
+      if (prepared.lock.acquired) prepared.lock.release();
+    }
+    expect(crashed).toBe(true);
+    expect(suites).toBe(0);
+    expect(published).toBe(f.tip);
+    expect(existsSync(f.lockDir)).toBe(false);
+    const rejoined = await f.prepare({ noPush: true });
+    expect(rejoined.candidate).toBe(published);
+    expect(rejoined.prewarmedDependencyGeneration.inputFingerprint).toBe(f.tipGeneration.inputFingerprint);
+    expect(consumed).toBe(1);
+  }, 180_000);
 });

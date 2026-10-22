@@ -192,9 +192,9 @@ import {
 import { SU_TIER_ROLES } from "../../../packages/operator-core/lib/su-tier-roles.mjs";
 import {
   claudeHookCarrierVerdict,
-  commandScriptNames,
+  enrollPapercuspClaudePlugin,
   effectiveClaudeHookCommands,
-  hookCommandsForEvent,
+  stripPluginCarriedInlineHooks,
 } from "../../../packages/operator-core/lib/claude-plugin/plugin-rails.mjs";
 // P-021/D-013: the ONE local-model predicate, shared with the server-side
 // OMP_NATIVE_LSP_BUILTIN tier gate in bootstrap-{su,role}.ts. This file used to
@@ -12510,7 +12510,10 @@ export function ensureClaudePluginRails(
         ? "   This session has NO papercusp hooks: no file-lock arbitration, no coord delivery, no guards."
         : verdict.carrier === "double"
           ? "   Every hook listed above fires twice in this session."
-          : "   Hooks still run, from settings.json.",
+          : verdict.carrier === "inline"
+            ? "   Hooks still run, from settings.json."
+            : "   The enabled plugin is missing required hook coverage.",
+      `   Effective settings: ${settingsPath}`,
       `   Fix: curl -X POST ${launcherOperatorTarget().url}/api/desktop/install/papercusp-files`,
       "   Launching anyway.",
       "",
@@ -12522,40 +12525,29 @@ export function ensureClaudePluginRails(
 /** Re-run the operator's idempotent hook install (the same merge every operator
  *  boot runs). Loopback-only; short timeout; failure is left to the caller's
  *  re-verify. */
-function repairCcHooksViaInstallRoute(settingsPath, env) {
+export function repairCcHooksViaInstallRoute(settingsPath, env, {
+  globalPath = join(homedir(), ".claude", "settings.json"),
+  install = () => spawnSync("curl",
+    ["-fsS", "-m", "4", "-X", "POST", `${launcherOperatorTarget().url}/api/desktop/install/papercusp-files`],
+    { encoding: "utf8", timeout: 6000 }),
+} = {}) {
   try {
-    spawnSync(
-      "curl",
-      ["-fsS", "-m", "4", "-X", "POST", `${launcherOperatorTarget().url}/api/desktop/install/papercusp-files`],
-      { encoding: "utf8", timeout: 6000 },
-    );
+    install();
   } catch {
     /* unreachable operator → the caller's banner */
   }
   // The child already has a settings COPY. Repair that same effective file,
   // keeping its session-only keys and foreign hooks/plugins intact.
-  const globalPath = join(homedir(), ".claude", "settings.json");
   if (!settingsPath || resolvePath(settingsPath) === resolvePath(globalPath)) return;
   try {
-    if (!isIsolatedClaudeSettings(settingsPath)) return;
+    if (!isIsolatedClaudeSettings(settingsPath, dirname(globalPath))) return;
     const source = JSON.parse(readFileSync(globalPath, "utf8"));
     const verdict = claudeHookCarrierVerdict({ settings: source, readFile: readTextOrNull });
     if (verdict.problems.length || !verdict.pluginHooks) return;
     const cfg = JSON.parse(readFileSync(settingsPath, "utf8"));
-    const pluginId = "papercusp@papercusp-local";
-    cfg.enabledPlugins = { ...cfg.enabledPlugins, [pluginId]: true };
-    cfg.extraKnownMarketplaces = { ...cfg.extraKnownMarketplaces,
-      "papercusp-local": source.extraKnownMarketplaces["papercusp-local"] };
+    enrollPapercuspClaudePlugin(cfg, verdict.marketplaceRoot);
     cfg.disableAllHooks = false;
-    for (const [event, groups] of Object.entries(cfg.hooks ?? {})) {
-      const carried = new Set(hookCommandsForEvent(verdict.pluginHooks, event)
-        .flatMap((command) => [...commandScriptNames(command)]));
-      if (!Array.isArray(groups)) continue;
-      cfg.hooks[event] = groups.map((group) => ({ ...group,
-        hooks: (group.hooks ?? []).filter((hook) =>
-          ![...commandScriptNames(hook.command)].some((name) => carried.has(name)))
-      })).filter((group) => group.hooks.length);
-    }
+    stripPluginCarriedInlineHooks(cfg, verdict.pluginHooks);
     const tmp = `${settingsPath}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(cfg, null, 2));
     renameSync(tmp, settingsPath);

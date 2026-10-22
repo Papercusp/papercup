@@ -3,9 +3,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import { once } from 'node:events';
 import { trace, propagation } from '@opentelemetry/api';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
-const fixture = vi.hoisted(() => ({ host: '', consent: true, since: 0,
-  inserts: [] as Array<{ query: string; params: unknown[] }> }));
+const fixture = vi.hoisted(() => ({ host: '', consent: true, since: 0, db: null as OrgTestDb | null }));
 vi.mock('../operator-state-pg', async original => ({
   ...(await original<object>()),
   readOperatorState: async () => ({ telemetry_enabled: fixture.consent, telemetry_consent_since: fixture.since }),
@@ -23,11 +23,7 @@ vi.mock('../agent-tools/coordination/identity', async original => ({
   ...(await original<object>()), resolveAgentIdentity: () => ({ ownerId: 'su-observability-fixture', ownerLabel: 'synthetic' }),
 }));
 vi.mock('@papercusp/db-org', async original => ({
-  ...(await original<object>()), getOrgPg: () => ({ sql: {
-    begin: async (work: (tx: unknown) => Promise<void>) => work({ unsafe: async (query: string, params: unknown[]) => {
-      fixture.inserts.push({ query, params });
-    } }),
-  } }),
+  ...(await original<object>()), getOrgPg: () => ({ sql: fixture.db!.adminSql }),
 }));
 
 import { PROJECTED_DEPS, flushPendingTelemetry } from '../projected-tool-deps';
@@ -46,6 +42,7 @@ describe('production observability composition', () => {
     } } } as never;
 
   beforeAll(async () => {
+    fixture.db = await createOrgTestDb();
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('PAPERCUSP_INTERNAL_BUILD', 'false');
     vi.stubEnv('PAPERCUSP_POSTHOG_HOST', '');
@@ -70,13 +67,16 @@ describe('production observability composition', () => {
     await once(server, 'listening');
     fixture.host = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     initializeRuntimeObservability();
-  });
+  }, 120_000);
   afterAll(async () => {
     await shutdownRuntimeObservability();
     trace.disable(); propagation.disable();
     vi.unstubAllEnvs();
-    server.closeAllConnections();
-    await new Promise<void>(resolve => server.close(() => resolve()));
+    if (server) {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+    await fixture.db?.cleanup();
   });
 
   async function invoke(callId: string, fail = false) {
@@ -95,7 +95,7 @@ describe('production observability composition', () => {
         input: { prompt: 'SECRET' }, ctx, callId, invoke: handler } as never);
     } catch (error) { result = error; }
     await PROJECTED_DEPS.recordInvocation!({ ctx, callId, toolName: 'synthetic:observe', pluginName: 'synthetic',
-      status: fail ? 'error' : 'ok', durationMs: 1, args: { prompt: 'SECRET' },
+      windowKey: 'synthetic-window', status: fail ? 'error' : 'ok', durationMs: 1, args: { prompt: 'SECRET' },
       ...(fail ? { errorCode: 'handler_error' } : {}) } as never);
     await flushPendingTelemetry();
     expect(handler).toHaveBeenCalledOnce();
@@ -112,11 +112,13 @@ describe('production observability composition', () => {
     expect(model!.properties.$ai_trace_id).toBe(tool!.properties.$ai_trace_id);
     expect(outboundParents[0]).toMatch(/^00-12345678901234567890123456789012-[0-9a-f]{16}-01$/);
     expect(model!.properties.$ai_parent_id).toBe(outboundParents[0]!.split('-')[2]);
-    const insert = fixture.inserts.find(row => row.query.includes('INSERT INTO harness_shared.tool_invocations'));
-    expect(insert).toBeDefined();
-    const metadata = insert!.params.map(p => typeof p === 'string' && p.startsWith('{') ? JSON.parse(p) : p)
-      .find(p => p && typeof p === 'object' && 'otel' in p);
-    expect(metadata).toMatchObject({ otel: { traceId: tool!.properties.$ai_trace_id } });
+    expect(model!.properties['papercusp.request_id']).toBe('synthetic-model');
+    const rows = await fixture.db!.adminSql`
+      SELECT metadata_json FROM harness_shared.tool_invocations
+      WHERE workspace_id = 'synthetic-workspace' AND tool_name = 'synthetic:observe'
+      ORDER BY id DESC LIMIT 1`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.metadata_json).toMatchObject({ otel: { traceId: tool!.properties.$ai_trace_id } });
     expect(JSON.stringify(captured)).not.toContain('SECRET');
     const before = captured.length;
     await flushRuntimeObservability();

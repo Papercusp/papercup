@@ -3449,6 +3449,13 @@ export function ensureClaudePluginRails(env: any, { settingsPath, readFile, repa
     repair?: typeof repairCcHooksViaInstallRoute | undefined;
     log?: ((line: any) => void) | undefined;
 }): import("../../../packages/operator-core/lib/claude-plugin/plugin-rails.mjs").ClaudeHookCarrierVerdict | null;
+/** Re-run the operator's idempotent hook install (the same merge every operator
+ *  boot runs). Loopback-only; short timeout; failure is left to the caller's
+ *  re-verify. */
+export function repairCcHooksViaInstallRoute(settingsPath: any, env: any, { globalPath, install, }?: {
+    globalPath?: string | undefined;
+    install?: (() => import("child_process").SpawnSyncReturns<string>) | undefined;
+}): void;
 export function ensureCcHookEnrollment(env: any, { event, hookName, label, degradedNote, readFile, scriptExists, repair, log }: {
     event: any;
     hookName: any;
@@ -5458,10 +5465,6 @@ import { fireSessionCompactedEvent } from "./psu-pty-host.mjs";
  */
 /** A file's text, or null when it cannot be read. */
 declare function readTextOrNull(path: any): string | null;
-/** Re-run the operator's idempotent hook install (the same merge every operator
- *  boot runs). Loopback-only; short timeout; failure is left to the caller's
- *  re-verify. */
-declare function repairCcHooksViaInstallRoute(settingsPath: any, env: any): void;
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 import { resolveLinuxCodexStartupPid } from "./psu-pty-host.mjs";
 declare function defaultListProcPids(): number[];

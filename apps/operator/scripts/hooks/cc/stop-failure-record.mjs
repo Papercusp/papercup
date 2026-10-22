@@ -21,11 +21,12 @@
  * lifecyclePhase → null), and a report with no tool_name stores `tool_input` as the
  * row's structured `detail` (activity-bridge summariseActivity).
  *
- * FAIL-OPEN + SILENT: stdout is always empty and the exit always 0. Scope guard:
+ * FAIL-OPEN: stdout is always empty and the exit always 0. Unconfirmed reports
+ * are preserved by the shared helper with a stderr recovery-path diagnostic. Scope guard:
  * psu sessions only (PAPERCUSP_SID + the superuser token), and never a CLI nested
  * inside another agent (it inherited the su's PAPERCUSP_SID).
  */
-import { clip, operatorBase, postActivityReport, readHookStdin, readSuperuserToken, str } from './pc_activity_report.mjs';
+import { clip, postActivityReport, readHookStdin, readSuperuserToken, str } from './pc_activity_report.mjs';
 export { operatorBase } from './pc_activity_report.mjs';
 import { nestedCliCached } from './pc_nested_cli.mjs';
 

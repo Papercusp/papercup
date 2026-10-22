@@ -88,12 +88,50 @@ export function commandScriptNames(command) {
   return names;
 }
 
+/** Enroll the generated plugin, preserving other plugins and marketplaces. */
+export function enrollPapercuspClaudePlugin(cfg, root) {
+  for (const key of ["extraKnownMarketplaces", "enabledPlugins"]) {
+    if (!asObject(cfg[key])) cfg[key] = {};
+  }
+  cfg.extraKnownMarketplaces[PAPERCUSP_CLAUDE_MARKETPLACE_NAME] = {
+    source: { source: "directory", path: root },
+  };
+  cfg.enabledPlugins[PAPERCUSP_CLAUDE_PLUGIN_ID] = true;
+  return cfg;
+}
+
+/** Strip only commands the plugin carries under the same event, preserving
+ * foreign commands even when they share a group. Shared by install + preflight. */
+export function stripPluginCarriedInlineHooks(cfg, pluginHooks) {
+  const inline = asObject(cfg.hooks);
+  if (!inline) return 0;
+  let removed = 0;
+  for (const event of Object.keys(pluginHooks)) {
+    const carried = scriptNamesForEvent(pluginHooks, event);
+    if (!carried.size || !Array.isArray(inline[event])) continue;
+    const kept = [];
+    for (const group of inline[event]) {
+      if (!Array.isArray(group?.hooks)) { kept.push(group); continue; }
+      const hooks = group.hooks.filter((hook) => {
+        const ours = [...commandScriptNames(hook?.command)].some((name) => carried.has(name));
+        if (ours) removed += 1;
+        return !ours;
+      });
+      if (hooks.length) kept.push({ ...group, hooks });
+    }
+    if (kept.length) inline[event] = kept;
+    else delete inline[event];
+  }
+  if (!Object.keys(inline).length) delete cfg.hooks;
+  return removed;
+}
+
 /** Every hook command string registered under `event` in a hooks map. */
 export function hookCommandsForEvent(hooks, event) {
   const groups = Array.isArray(asObject(hooks)?.[event]) ? hooks[event] : [];
   return groups
     .flatMap((group) => (Array.isArray(group?.hooks) ? group.hooks : []))
-    .map((hook) => (typeof hook?.command === "string" ? hook.command : ""))
+    .map((hook) => (hook?.type === "command" && typeof hook.command === "string" ? hook.command : ""))
     .filter(Boolean);
 }
 
@@ -165,7 +203,8 @@ export function claudeHookCarrierVerdict({ settings, readFile } = {}) {
     }
     // Failure hooks must cover every error/tool, as the enrollment source does.
     if (event === "StopFailure" || event === "PostToolUseFailure") {
-      const groups = (livePluginHooks ?? inlineHooks)[event] ?? [];
+      const entries = (livePluginHooks ?? inlineHooks)[event];
+      const groups = Array.isArray(entries) ? entries : [];
       for (const name of required) {
         if (names.has(name) && !groups.some((g) => !g.matcher &&
           (g.hooks ?? []).some((h) => h.type === "command" && commandScriptNames(h.command).has(name)))) {

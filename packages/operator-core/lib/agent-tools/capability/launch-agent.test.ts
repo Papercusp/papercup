@@ -2999,10 +2999,13 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain('Applied canonical saved fleet launch spec');
   });
 
-  it("preserves a same-owner resume's target loop carry over a stale saved fleet carry", async () => {
+  it.each([
+    { active: true, expectedCarry: 'cold' },
+    { active: false, expectedCarry: 'warm' },
+  ])("uses active loop carry without applying an inactive loop's stale carry ($active)", async ({ active, expectedCarry }) => {
     resolveResumeTargetMock.mockResolvedValue(dead);
     latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
-    getLoopStatusMock.mockResolvedValue({ ownerId: 'su-a1a71', carry: 'cold' });
+    getLoopStatusMock.mockResolvedValue({ ownerId: 'su-a1a71', active, carry: 'cold' });
     getFleetHeadcountTargetMock.mockResolvedValueOnce({
       workspaceId: 'ws-test',
       fleetSlug: 'target-fleet',
@@ -3026,9 +3029,9 @@ describe('resume + fork (D-004/D-007)', () => {
 
     expect(isError(res)).toBe(false);
     expect(getLoopStatusMock).toHaveBeenCalledWith('su-a1a71');
-    expect(spawnedCommand(spawnHeadlessMock)).toContain('--carry=cold');
-    expect(spawnedCommand(spawnHeadlessMock)).not.toContain('--carry=warm');
-    expect(textOf(res)).toContain("Applied target loop carry 'cold'");
+    expect(spawnedCommand(spawnHeadlessMock)).toContain(`--carry=${expectedCarry}`);
+    expect(spawnedCommand(spawnHeadlessMock)).toContain('--headless');
+    expect(textOf(res).includes("Applied target loop carry 'cold'")).toBe(active);
   });
 
   it('fails closed before resume when a caller conflicts with the canonical saved placement', async () => {
