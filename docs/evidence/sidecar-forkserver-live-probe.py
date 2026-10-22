@@ -37,6 +37,16 @@ GIT_SYNC_MARKER = 'PAPERCUSP_GIT_SYNC_PUSH=1'
 GIT_PROGRESS_COUNTERS = ('cpuTicks', 'rchar', 'wchar', 'syscr', 'syscw')
 
 
+def trace_instrument_available(traces, attached):
+    # Only the sidecar's read/fork duration enters the blocking budget. A
+    # forkserver waiting in an unfinished IPC read is normal, not missing
+    # timing for the measured sidecar. Its trace still must be present/error-free.
+    return attached and bool(traces) and all(
+        not trace['instrumentErrors'] and trace['traceLineCount'] > 0
+        and (trace['label'] != 'sidecar' or trace['unmeasuredCallCount'] == 0)
+        for trace in traces)
+
+
 def read_git_sync_samples(forkservers, window_start, proc_root=Path('/proc')):
     """Read only marked Git children of the traced forkserver; never emit env/argv."""
     samples = []
@@ -111,6 +121,8 @@ def measure():
     sidecar = sidecars[0]
     forkservers = [pid for pid, row in rows.items()
                    if row['ppid'] == sidecar and b'-e' in row['args']]
+    if len(forkservers) != 1:
+        raise RuntimeError(f'Expected one stable live forkserver, found {forkservers}')
     jobs = []
     traces = []
     witness = None
@@ -125,6 +137,20 @@ def measure():
                 'trace=clone,clone3,fork,vfork,read', '-p', str(pid),
             ], stdout=subprocess.DEVNULL, stderr=output)
             jobs.append((label, pid, path, output, process))
+        # Popen returning is not proof that sudo/strace has attached yet.
+        # Start the workload-witness clock only after every target is traced.
+        attach_deadline = time.monotonic() + 2
+        attached = False
+        while time.monotonic() < attach_deadline:
+            try:
+                attached = all(process.poll() is None and int(next(
+                    line.split(':', 1)[1] for line in Path(f'/proc/{pid}/status').read_text().splitlines()
+                    if line.startswith('TracerPid:'))) > 0 for _, pid, _, _, process in jobs)
+            except (OSError, ValueError, StopIteration):
+                attached = False
+            if attached:
+                break
+            time.sleep(0.01)
         window_start = time.monotonic()
         while time.monotonic() - window_start < 3:
             for sample in read_git_sync_samples(forkservers, window_start):
@@ -132,7 +158,7 @@ def measure():
                 before = first_git_samples.setdefault(identity, sample)
                 if witness is None and git_sync_progress(before, sample, 3):
                     witness = {'before': before, 'after': sample}
-            time.sleep(0.05)
+            time.sleep(0.01)
         window_seconds = time.monotonic() - window_start
     finally:
         for label, pid, path, output, process in jobs:
@@ -151,12 +177,18 @@ def measure():
         '-p', 'MainPID', '--value',
     ], text=True).strip())
     main = next(trace for trace in traces if trace['label'] == 'sidecar')
+    identities_stable = after == root
+    for trace in traces:
+        try:
+            current_ticks = Path(f"/proc/{trace['pid']}/stat").read_text().rsplit(')', 1)[1].split()[19]
+            identities_stable = identities_stable and current_ticks == trace['startTicks']
+        except (OSError, IndexError):
+            identities_stable = False
     assertions = [
-        {'id': 'stable-live-runtime', 'passed': after == root,
+        {'id': 'stable-live-runtime', 'passed': identities_stable,
          'evidence': f'bg-host MainPID before={root}, after={after}; sidecar={sidecar}.'},
         {'id': 'trace-instrument-available',
-         'passed': bool(traces) and all(not t['instrumentErrors'] and t['traceLineCount'] > 0
-                                       and t['unmeasuredCallCount'] == 0 for t in traces),
+         'passed': trace_instrument_available(traces, attached),
          'evidence': json.dumps([{k: t[k] for k in ('label', 'traceLineCount', 'instrumentErrors', 'unmeasuredCallCount')} for t in traces])},
         {'id': 'forkserver-positive-control',
          'passed': any(t['label'] == 'forkserver' and t['forkCallCount'] > 0 for t in traces),
@@ -179,6 +211,7 @@ def measure():
         'exitCode': 0 if all(a['passed'] for a in assertions) else 1,
         'summary': 'Three-second live bg-host trace with forkserver activity and marked git-sync child CPU/I/O progress overlapping the trace.',
         'assertions': assertions, 'traces': traces, 'windowSeconds': window_seconds,
+        'traceAttachedBeforeWindow': attached,
         'gitSyncWitness': witness,
         'sidecarBlockedPercent': 100 * (main['forkSeconds'] + main['readSeconds']) / window_seconds,
         'runtime': {'bgHostPid': root, 'sidecarPid': sidecar, 'forkserverPids': forkservers},

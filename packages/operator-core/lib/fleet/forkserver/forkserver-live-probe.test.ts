@@ -71,6 +71,18 @@ describe('live forkserver trace instrument', () => {
     expect(summarize('09:00:00 read(4,  <unfinished ...>\n')).toMatchObject({ unmeasuredCallCount: 1 });
   });
 
+  it('requires complete sidecar timing while allowing the forkserver to wait in IPC', () => {
+    const sidecar = { label: 'sidecar', instrumentErrors: [], traceLineCount: 1, unmeasuredCallCount: 0 };
+    const forkserver = { label: 'forkserver', instrumentErrors: [], traceLineCount: 2, unmeasuredCallCount: 1 };
+    const script = 'import json,runpy,sys; m=runpy.run_path(sys.argv[1]); p=json.load(sys.stdin); print(json.dumps(m["trace_instrument_available"](p["traces"],p["attached"])))';
+    const available = (traces: object[], attached = true) => JSON.parse(execFileSync('python3',
+      ['-c', script, instrument], { input: JSON.stringify({ traces, attached }), encoding: 'utf8' }));
+    expect(available([sidecar, forkserver])).toBe(true);
+    expect(available([{ ...sidecar, unmeasuredCallCount: 1 }, forkserver])).toBe(false);
+    expect(available([sidecar, { ...forkserver, instrumentErrors: ['ptrace refused'] }])).toBe(false);
+    expect(available([sidecar, forkserver], false)).toBe(false);
+  });
+
   it('observes only git-sync marked Git children and requires progress inside the trace window', () => {
     const script = `import json,runpy,sys,tempfile,time
 from pathlib import Path

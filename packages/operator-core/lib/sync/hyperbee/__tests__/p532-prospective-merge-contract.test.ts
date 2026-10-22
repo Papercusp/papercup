@@ -9,7 +9,7 @@ import {
   type TableProjection,
 } from '../projection';
 import type { OpEnvelope } from '../op-envelope-types';
-import { encodeHlc } from '@papercusp/locks-core/hlc';
+import { encodeHlc } from '@papercusp/locks-core';
 
 afterEach(() => _clearRegistryForTests());
 

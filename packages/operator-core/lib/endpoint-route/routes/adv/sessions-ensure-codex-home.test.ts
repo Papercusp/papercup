@@ -207,7 +207,10 @@ describe('ensure-codex-home pinned-source recovery', () => {
   it('overlaps independent preparation but waits for policy and budget before writing', async () => {
     let resolvePolicy!: (value: boolean) => void;
     let resolveBudget!: (value: { compactionLimit: number; fleetRole: string }) => void;
-    mocks.allowsAmbient.mockReturnValue(new Promise<boolean>((resolve) => { resolvePolicy = resolve; }));
+    let markPolicyStarted!: () => void;
+    const policyStarted = new Promise<void>((resolve) => { markPolicyStarted = resolve; });
+    const policy = new Promise<boolean>((resolve) => { resolvePolicy = resolve; });
+    mocks.allowsAmbient.mockImplementation(() => { markPolicyStarted(); return policy; });
     mocks.presence.mockReturnValue(new Promise((resolve) => { resolveBudget = resolve; }));
     mocks.rebuild.mockResolvedValue({
       spec: { mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' },
@@ -217,10 +220,13 @@ describe('ensure-codex-home pinned-source recovery', () => {
     const pending = call();
     let response!: Response;
     try {
+      // Dynamic module initialization is outside the concurrency assertion.
+      // Start observing only after the handler has entered the held policy read.
+      await policyStarted;
       await vi.waitFor(() => {
         expect(mocks.rebuild).toHaveBeenCalledTimes(1);
         expect(mocks.presence).toHaveBeenCalledWith(OWNER);
-      }, { timeout: 500 });
+      }, { timeout: 3000 });
       expect(mocks.ensureHome).not.toHaveBeenCalled();
     } finally {
       resolvePolicy(false);
