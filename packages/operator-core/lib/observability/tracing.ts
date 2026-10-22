@@ -47,9 +47,15 @@ export function createTracing(options: { exporter?: SpanExporter; processor?: Sp
   const maxQueued = options.maxQueued ?? 2048;
   let queuedSpans = 0;
   let queueDroppedSpans = 0;
+  let drained = Promise.resolve();
+  let resolveDrained = () => {};
   const trackedExporter: SpanExporter | undefined = options.exporter ? {
     export(spans, callback) {
-      options.exporter!.export(spans, result => { queuedSpans -= spans.length; callback(result); });
+      options.exporter!.export(spans, result => {
+        queuedSpans -= spans.length;
+        if (queuedSpans === 0) resolveDrained();
+        callback(result);
+      });
     },
     shutdown: () => options.exporter!.shutdown(),
   } : undefined;
@@ -67,6 +73,7 @@ export function createTracing(options: { exporter?: SpanExporter; processor?: Sp
         // Include in-flight exports in the cap. Account for loss before the SDK's
         // internal queue can silently drop a span.
         if (queuedSpans >= maxQueued) { queueDroppedSpans++; return; }
+        if (queuedSpans === 0) drained = new Promise<void>(resolve => { resolveDrained = resolve; });
         queuedSpans++;
       }
       for (const processor of processors) processor.onEnd(span);
@@ -140,7 +147,18 @@ export function createTracing(options: { exporter?: SpanExporter; processor?: Sp
     },
     health: () => ({ active: active.size, skipped, expired, maxActive: options.maxActive ?? 1024,
       queuedSpans, queueDroppedSpans, maxQueued }),
-    flush: () => provider.forceFlush(),
+    async flush() {
+      await provider.forceFlush();
+      // SDK forceFlush may finish while a previously triggered batch is still
+      // exporting. Join that batch too, without extending the delivery budget.
+      if (!queuedSpans) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([drained, new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('trace_flush_timeout')), 3_000);
+        })]);
+      } finally { if (timer) clearTimeout(timer); }
+    },
     async shutdown() {
       for (const id of active.keys()) this.finish(id, 'shutdown');
       await provider.shutdown();

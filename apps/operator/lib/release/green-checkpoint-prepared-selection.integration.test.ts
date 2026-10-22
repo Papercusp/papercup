@@ -7,6 +7,7 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -29,6 +30,7 @@ import {
 import { releaseConfig } from "./release-config";
 import { advanceReady } from "./git-ops";
 import type { FrozenRepairPendingCarry } from "@papercusp/operator-core/lib/release/frozen-repair-carry";
+import type { FrozenCandidateRepairQueue } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 
 type SelectionInput = NonNullable<
   Parameters<typeof beginCheckpointPreflight>[3]
@@ -172,12 +174,12 @@ async function lineage() {
       return knownGood;
     },
   };
-  const prepare = async (opts: CheckpointOpts = {}) => {
+  const prepare = async (opts: CheckpointOpts = {}, execute = exec) => {
     const input: SelectionInput = {
       target: null,
       checkpointSelection: { deps, opts },
     };
-    const result = await beginCheckpointPreflight(cfg, tip, exec, input);
+    const result = await beginCheckpointPreflight(cfg, tip, execute, input);
     if (result.kind !== "ready")
       throw new Error("fixture candidate must be applicable");
     onTestFinished(() => {
@@ -215,6 +217,40 @@ async function lineage() {
     exec,
     carry,
   };
+}
+
+type Lineage = Awaited<ReturnType<typeof lineage>>;
+
+function liveQueue(f: Lineage): FrozenCandidateRepairQueue {
+  return {
+    schemaVersion: 4,
+    phase: "awaiting-fixer",
+    candidate: f.knownGood,
+    repairHead: f.knownGood,
+    base: f.ready,
+    attempts: 1000,
+    openedAtMs: 1,
+    updatedAtMs: 1,
+    fixerSpawnId: null,
+    failingTests: ["fixture.test.ts"],
+    signature: [],
+  };
+}
+
+async function consumePrepared(f: Lineage, prepared: Awaited<ReturnType<Lineage["prepare"]>>) {
+  const real = realCheckpointDeps(f.cfg, f.exec, "independent-prepared-identity", undefined,
+    undefined, undefined, prepared.prewarmedDependencyGeneration);
+  let materialized = 0;
+  let executed = 0;
+  const outcome = await runGreenCheckpoint(f.cfg, {
+    ...f.deps,
+    prepareSource: real.prepareSource,
+    setupTree: async (...args) => { materialized += 1; return real.setupTree(...args); },
+    runGreen: async () => { executed += 1; return { green: true, failingTests: [], summary: "fixture" }; },
+  }, { noPush: true, candidate: f.tip, candidateSource: "pinned",
+    preparedSelection: Reflect.get(prepared, "preparedSelection") } as PreparedOpts).then(
+    result => ({ result, error: "" }), error => ({ result: null, error: String(error) }));
+  return { ...outcome, materialized, executed };
 }
 
 describe("fresh candidate preparation: independent production-boundary acceptance", () => {
@@ -438,4 +474,160 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
     },
     180_000,
   );
+
+  it.each(["token", "root", "input fingerprint"] as const)(
+    "refuses same-SHA %s replacement before materialization",
+    async (replacement) => {
+      const f = await lineage();
+      const prepared = await f.prepare({ candidate: f.tip, candidateSource: "pinned", noPush: true });
+      const generation = prepared.prewarmedDependencyGeneration;
+      expect(generation.candidate).toBe(f.tip);
+      if (replacement === "token") {
+        const marker = join(f.root, "generations", generation.identity, ".papercusp-dependency-generation");
+        const before = readFileSync(marker, "utf8");
+        expect(before).toContain(`publication_token=${generation.token}`);
+        chmodSync(marker, 0o600);
+        writeFileSync(marker, before.replace(/^publication_token=.*$/m,
+          `publication_token=v3:${"0".repeat(64)}`));
+      } else if (replacement === "root") {
+        const other = join(f.root, "replacement-store");
+        mkdirSync(other);
+        vi.stubEnv("PAPERCUSP_DEPENDENCY_GENERATION_ROOT", other);
+      } else {
+        // The public dependency handoff is untrusted at the consumer boundary.
+        // Its SHA alone must not authorize a different input fingerprint.
+        generation.inputFingerprint = "0".repeat(64);
+      }
+      const observed = await consumePrepared(f, prepared);
+      expect(observed.materialized).toBe(0);
+      expect(observed.executed).toBe(0);
+      expect(observed.result?.green).not.toBe(true);
+      expect(observed.error || observed.result?.summary || "").toMatch(/generation|token|root|input|identity|prepar|invalid/i);
+    }, 180_000,
+  );
+
+  it("preserves an aged exhausted live repair queue without automatic retirement or a fresh cut", async () => {
+    const f = await lineage();
+    const queue = liveQueue(f);
+    const before = structuredClone(queue);
+    let retirements = 0;
+    let writes = 0;
+    f.deps.readFrozenRepairQueue = async () => queue;
+    f.deps.readFrozenRepairBoundedLifeState = async () => ({ schemaVersion: 1,
+      lastRetire: null, lastRateLimitedEscalation: null, history: [] });
+    f.deps.retireFrozenRepairQueueForBoundedLife = async () => { retirements += 1; return { retired: true }; };
+    f.deps.writeFrozenRepairQueue = async () => { writes += 1; };
+    const prepared = await f.prepare({ noPush: true });
+    expect(prepared.candidate).toBe(queue.repairHead);
+    expect(prepared.prewarmedDependencyGeneration.inputFingerprint).toBe(f.knownGoodGeneration.inputFingerprint);
+    expect(retirements).toBe(0);
+    expect(writes).toBe(0);
+    expect(queue).toEqual(before);
+    expect(f.events).not.toContain("select-known-good");
+  }, 180_000);
+
+  it.each(["queue", "carry"] as const)(
+    "revalidates same-SHA %s ABA after unlocked publication before consuming authority",
+    async (authority) => {
+      const f = await lineage();
+      let queue = liveQueue(f);
+      let pending = f.carry();
+      let version = 1;
+      const observed: number[] = [];
+      f.deps.readFrozenRepairQueue = async () => { observed.push(version); return authority === "queue" ? queue : null; };
+      f.deps.readFrozenRepairPendingCarry = async () => { observed.push(version); return authority === "carry" ? pending : null; };
+      let consumed = 0;
+      f.deps.consumeFrozenRepairCarry = async (expected) => {
+        expect(existsSync(f.lockDir)).toBe(true);
+        expect(expected).toEqual(pending);
+        consumed += 1;
+        return true;
+      };
+      let changed = false;
+      const exec: typeof runCmd = async (cmd, args, opts) => {
+        const result = await f.exec(cmd, args, opts);
+        if (!changed && args.includes("--ensure-ref")) {
+          expect(existsSync(f.lockDir)).toBe(false);
+          changed = true;
+          // The value returns to the same candidate/head; the durable version does not.
+          queue = { ...queue, updatedAtMs: 3 };
+          pending = { ...pending, retiredAtMs: 3 };
+          version = 3;
+        }
+        return result;
+      };
+      const prepared = await f.prepare({ noPush: true }, exec);
+      expect(changed).toBe(true);
+      expect(observed).toContain(1);
+      expect(observed).toContain(3);
+      expect(prepared.candidate).toBe(authority === "queue" ? queue.repairHead : f.tip);
+      expect(consumed).toBe(authority === "carry" ? 1 : 0);
+    }, 180_000,
+  );
+
+  it("two concurrent proposals permit only the serialized winner to consume the carry", async () => {
+    const f = await lineage();
+    let pending: FrozenRepairPendingCarry | null = f.carry();
+    let consumed = 0;
+    f.deps.readFrozenRepairPendingCarry = async () => pending;
+    f.deps.consumeFrozenRepairCarry = async (expected) => {
+      expect(existsSync(f.lockDir)).toBe(true);
+      if (!pending || JSON.stringify(expected) !== JSON.stringify(pending)) return false;
+      pending = null;
+      consumed += 1;
+      return true;
+    };
+    let arrivals = 0;
+    let open!: () => void;
+    const barrier = new Promise<void>(resolve => { open = resolve; });
+    const exec: typeof runCmd = async (cmd, args, opts) => {
+      const result = await f.exec(cmd, args, opts);
+      if (args.includes("--ensure-ref")) {
+        if (++arrivals === 2) open();
+        await barrier;
+      }
+      return result;
+    };
+    const results = await Promise.allSettled([f.prepare({ noPush: true }, exec), f.prepare({ noPush: true }, exec)]);
+    const winners = results.filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<Lineage["prepare"]>>> =>
+      r.status === "fulfilled" && r.value.lock.acquired);
+    expect(arrivals).toBe(2);
+    expect(winners).toHaveLength(1);
+    expect(consumed).toBe(1);
+    expect(pending).toBeNull();
+    expect(winners[0].value.candidate).toBe(f.tip);
+  }, 180_000);
+
+  it("rejoins after a crash immediately after carry consumption without losing or consuming the carry twice", async () => {
+    const f = await lineage();
+    const durable = join(f.root, "carry-authority.json");
+    writeFileSync(durable, JSON.stringify({ pending: f.carry(), committed: null }));
+    f.deps.runId = "independent-crash-rejoin";
+    f.deps.qualificationAttemptId = "independent-crash-rejoin";
+    f.deps.readFrozenRepairPendingCarry = async () => JSON.parse(readFileSync(durable, "utf8")).pending;
+    let consumed = 0;
+    f.deps.consumeFrozenRepairCarry = async (expected, record) => {
+      expect(existsSync(f.lockDir)).toBe(true);
+      const state = JSON.parse(readFileSync(durable, "utf8"));
+      if (JSON.stringify(state.pending) !== JSON.stringify(expected)) return false;
+      writeFileSync(durable, JSON.stringify({ pending: null, committed: record }));
+      consumed += 1;
+      throw new Error("injected crash after durable carry consumption");
+    };
+    const first = await f.prepare({ noPush: true }).then(result => {
+      if (result.lock.acquired) result.lock.release();
+      return "ready";
+    }, () => "crashed");
+    expect(consumed).toBe(1);
+    expect(first).toBe("crashed");
+    expect(existsSync(f.lockDir)).toBe(false);
+    const rejoined = await f.prepare({ noPush: true });
+    expect(rejoined.lock.acquired).toBe(true);
+    expect(rejoined.candidate).toBe(f.tip);
+    expect(rejoined.prewarmedDependencyGeneration.inputFingerprint).toBe(f.tipGeneration.inputFingerprint);
+    expect(consumed).toBe(1);
+    const state = JSON.parse(readFileSync(durable, "utf8"));
+    expect(state.pending).toBeNull();
+    expect(state.committed.judgedCandidate).toBe(rejoined.candidate);
+  }, 180_000);
 });

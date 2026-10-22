@@ -75,6 +75,11 @@ function summarizeDocsLexicalTiming(value: unknown): string | undefined {
       ? [`${phase}=${Math.max(0, Math.round(duration))}ms`]
       : [];
   });
+  const active = timing.active && typeof timing.active === 'object' && !Array.isArray(timing.active)
+    ? timing.active as Record<string, unknown>
+    : {};
+  const activePhase = active.phase;
+  const activeElapsedMs = active.elapsedMs;
   const pages = timing.pages && typeof timing.pages === 'object' && !Array.isArray(timing.pages)
     ? timing.pages as Record<string, unknown>
     : {};
@@ -86,10 +91,22 @@ function summarizeDocsLexicalTiming(value: unknown): string | undefined {
   if (typeof timing.totalElapsedMs === 'number' && Number.isFinite(timing.totalElapsedMs)) {
     fields.push(`total=${Math.max(0, Math.round(timing.totalElapsedMs))}ms`);
   }
-  if (timing.outcome === 'complete' || timing.outcome === 'cancelled' || timing.outcome === 'failed') {
+  if (
+    timing.outcome === 'running' ||
+    timing.outcome === 'complete' ||
+    timing.outcome === 'cancelled' ||
+    timing.outcome === 'failed'
+  ) {
     fields.push(`outcome=${timing.outcome}`);
   }
   if (phases.length > 0) fields.push(`phases=${phases.join(',')}`);
+  if (
+    typeof activePhase === 'string' &&
+    DOCS_LEXICAL_TIMING_PHASES.includes(activePhase as typeof DOCS_LEXICAL_TIMING_PHASES[number]) &&
+    typeof activeElapsedMs === 'number' && Number.isFinite(activeElapsedMs)
+  ) {
+    fields.push(`active=${activePhase}:${Math.max(0, Math.round(activeElapsedMs))}ms`);
+  }
   if (pageCounts.length === 3) fields.push(`pages=${pageCounts.join('/')}`);
   return fields.length > 0 ? `docsLexicalTiming ${fields.join(' ')}` : undefined;
 }
@@ -431,7 +448,13 @@ export default defineTool({
       const timer = setTimeout(() => {
         if (!docsSearchActivePhases.has(phase)) return;
         warned = true;
-        ctxAny.log?.('[docs:search timing] ' + phase + ' still pending after at least ' + DOCS_SEARCH_PHASE_WARN_MS + 'ms');
+        const lexicalDetails = phase === 'lexicalSearch'
+          ? summarizeDocsLexicalTiming(innerMeta.docsLexicalTiming)
+          : undefined;
+        ctxAny.log?.(
+          '[docs:search timing] ' + phase + ' still pending after at least ' + DOCS_SEARCH_PHASE_WARN_MS + 'ms' +
+          (lexicalDetails ? '; ' + lexicalDetails : ''),
+        );
       }, DOCS_SEARCH_PHASE_WARN_MS);
       try {
         return await operation();
