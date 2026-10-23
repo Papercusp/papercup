@@ -8,6 +8,8 @@ const probePath = fileURLToPath(new URL('./lib/runtime-compatibility-probes.mjs'
 const candidate = { sourceSha: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64),
   configurationSha256: 'c'.repeat(64), dependencyGeneration: 'runtime-source-test-fixture' };
 
+// These exercise the actual builtin implementations in bounded child processes.
+// Candidate Bun failures belong in receipts; source tests retain Node controls.
 describe('isolated runtime protocol semantics', () => {
   it.each(Object.keys(RUNTIME_EXPECTATIONS))('%s completes with the measured interpreter', async id => {
     const runtime = await measureRuntime(process.execPath);

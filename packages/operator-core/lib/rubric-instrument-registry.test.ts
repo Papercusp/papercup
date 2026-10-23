@@ -240,6 +240,8 @@ describe('the registry seed set', () => {
   it('registers exactly the keys scorecards resolves as platform-computed', () => {
     const expected = [
       DREAM_CONTROL_LIVE_INSTRUMENT_KEY,
+      'observability:configured-project-delivery',
+      'observability:staging-runtime-journey',
       'session:carry-drill-lifecycle',
       'woe.goal-mode-base-scorecard',
       ...TOOL_DELIVERY_INSTRUMENTS,
@@ -285,6 +287,10 @@ describe('the registry seed set', () => {
                 ? 24 * 60 * 60_000 : 72 * 60 * 60_000);
             expect(instrument.rescore?.unit).toBe('count');
             if (harnessFamilies.includes(key)) expect(instrument.rescore?.scope).toBe('harness');
+          } else if (key.startsWith('observability:')) {
+            expect(instrument.rescore?.windowMs).toBe(120_000);
+            expect(instrument.rescore?.scope).toBe('harness');
+            expect(await instrument.rescore!.resolve(window)).toMatchObject({ verdict: 'unknown' });
           } else if (key === SILENT_HALT_STRANDED_INSTRUMENT_KEY) {
             expect(instrument.rescore?.windowMs).toBe(60 * 60_000);
             expect(instrument.rescore?.unit).toBe('count');

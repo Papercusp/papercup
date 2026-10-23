@@ -3,7 +3,7 @@
  * opens application data, inherits service credentials, or starts a bg owner.
  */
 import { createRequire } from 'node:module';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { once } from 'node:events';
@@ -25,10 +25,98 @@ export const RUNTIME_EXPECTATIONS = Object.freeze({
   'process-ipc-exit': { reply: 42, exitCode: 0 },
   'http-stream-roundtrip': { status: 200, body: 'first\nsecond\n' },
   'http2-stream-roundtrip': { status: 200, body: 'first\nsecond\n' },
+  'node-sqlite-wal-checkpoint': { rows: ['committed'], busy: 0, walBytes: 0 },
+  'inspector-callback-profile': { profileTree: true, timestampsOrdered: true },
+  'inspector-promises-profile': { profileTree: true, timestampsOrdered: true },
+  'worker-terminate-restart': { replies: ['first', 'replacement'], terminated: true },
+  'worker-terminate-after-exit': { settled: true, exitCode: 0 },
 });
 
 export async function performRuntimeCapability(id) {
   if (!Object.hasOwn(RUNTIME_EXPECTATIONS, id)) throw new Error(`Unknown runtime capability: ${id}`);
+  if (id === 'node-sqlite-wal-checkpoint') {
+    // Match the API used by localstorage-wal-guard, rather than substituting
+    // better-sqlite3 or bun:sqlite. The only database is this private fixture.
+    const { DatabaseSync } = await import('node:sqlite');
+    const directory = await mkdtemp(join(tmpdir(), 'papercusp-runtime-wal-'));
+    let db;
+    try {
+      const path = join(directory, 'probe.sqlite');
+      db = new DatabaseSync(path);
+      db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE probe(value TEXT);');
+      db.prepare('INSERT INTO probe VALUES (?)').run('committed');
+      if ((await stat(path + '-wal')).size === 0) throw new Error('WAL fixture did not create frames');
+      const checkpoint = db.prepare('PRAGMA wal_checkpoint(TRUNCATE);').get();
+      const walBytes = (await stat(path + '-wal')).size;
+      db.close(); db = new DatabaseSync(path);
+      return { rows: db.prepare('SELECT value FROM probe ORDER BY rowid').all().map(row => row.value),
+        busy: checkpoint.busy, walBytes };
+    } finally {
+      try { db?.close(); }
+      finally { await rm(directory, { recursive: true, force: true }); }
+    }
+  }
+  if (id === 'inspector-callback-profile' || id === 'inspector-promises-profile') {
+    const promised = id === 'inspector-promises-profile';
+    const { Session } = await import(promised ? 'node:inspector/promises' : 'node:inspector');
+    const session = new Session();
+    const post = (method, params = {}) => promised ? session.post(method, params)
+      : new Promise((resolve, reject) => session.post(method, params,
+        (error, result) => error ? reject(error) : resolve(result)));
+    try {
+      session.connect();
+      // Use the application's profiler methods. Runtime.evaluate support is
+      // unrelated to the event-loop recorder and cannot qualify this contract.
+      await post('Profiler.enable');
+      await post('Profiler.setSamplingInterval', { interval: 10_000 });
+      await post('Profiler.start');
+      await new Promise(resolve => setTimeout(resolve, 25));
+      const { profile } = await post('Profiler.stop');
+      await post('Profiler.disable');
+      return { profileTree: Array.isArray(profile.nodes) && profile.nodes.length > 0,
+        timestampsOrdered: Number.isFinite(profile.startTime) && Number.isFinite(profile.endTime)
+          && profile.endTime >= profile.startTime };
+    } finally { session.disconnect(); }
+  }
+  if (id === 'worker-terminate-restart' || id === 'worker-terminate-after-exit') {
+    const { Worker } = await import('node:worker_threads');
+    const directory = await mkdtemp(join(tmpdir(), 'papercusp-runtime-worker-lifecycle-'));
+    const workers = new Set();
+    const liveWorker = script => {
+      const worker = new Worker(script, { execArgv: [] });
+      workers.add(worker);
+      worker.once('exit', () => workers.delete(worker));
+      return worker;
+    };
+    try {
+      const script = join(directory, 'worker.mjs');
+      await writeFile(script, id === 'worker-terminate-after-exit'
+        ? "import { parentPort } from 'node:worker_threads'; parentPort.close();\n"
+        : "import { parentPort } from 'node:worker_threads'; parentPort.on('message', value => parentPort.postMessage(value));\n");
+      if (id === 'worker-terminate-after-exit') {
+        const worker = liveWorker(script);
+        const [exitCode] = await once(worker, 'exit');
+        // Intentionally exercise this API after exit. The bounded receipt
+        // runner records a runtime that leaves this promise pending as failed.
+        await worker.terminate();
+        return { settled: true, exitCode };
+      }
+      const first = liveWorker(script), firstReply = once(first, 'message');
+      first.postMessage('first');
+      const [value] = await firstReply;
+      const exited = once(first, 'exit');
+      await first.terminate();
+      await exited;
+      const replacement = liveWorker(script), secondReply = once(replacement, 'message');
+      replacement.postMessage('replacement');
+      const [next] = await secondReply;
+      await replacement.terminate();
+      return { replies: [value, next], terminated: workers.size === 0 };
+    } finally {
+      try { await Promise.all([...workers].map(worker => worker.terminate())); }
+      finally { await rm(directory, { recursive: true, force: true }); }
+    }
+  }
   if (id === 'async-context-isolation') {
     const { AsyncLocalStorage } = await import('node:async_hooks');
     const { setImmediate } = await import('node:timers/promises');

@@ -5,6 +5,7 @@ import { ticketFilingIntegrationInstrument } from './capability-verbs/ticket-fil
 import { liveForkserverInstrument } from './fleet/forkserver/live-instrument';
 import { CARRY_DRILL_LIFECYCLE_INSTRUMENT_KEY } from './cold-boot-drill';
 import { DREAM_CONTROL_LIVE_INSTRUMENT_KEY } from './dream/dream-control-live-instrument';
+import { OBSERVABILITY_INSTRUMENT_KEYS } from './observability/instrument-keys';
 /**
  * Rubric instrument registry (test-rubric-unification-2026-10-12 P-005 / R-5, plan D-006).
  *
@@ -771,6 +772,7 @@ export function platformComputedInstrumentKeys(): string[] {
   return [
     CARRY_DRILL_LIFECYCLE_INSTRUMENT_KEY,
     DREAM_CONTROL_LIVE_INSTRUMENT_KEY,
+    ...Object.values(OBSERVABILITY_INSTRUMENT_KEYS),
     ...TOOL_DELIVERY_INSTRUMENTS,
     'woe.goal-mode-base-scorecard',
     ...Object.values(PROVIDER_PACKAGE_INSTRUMENT_KEYS),
@@ -817,7 +819,13 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
       evaluator: 'platform',
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
-      ...(key === POSTGRES_RETENTION_INSTRUMENT_KEY ? { rescore: {
+      ...(Object.values(OBSERVABILITY_INSTRUMENT_KEYS).some(value => value === key) ? { rescore: {
+        windowMs: 120_000, unit: 'count' as const, scope: 'harness' as const,
+        resolve: async window => {
+          const { measureOperationalObservability } = await import('./observability/operational-check');
+          return measureOperationalObservability(key === OBSERVABILITY_INSTRUMENT_KEYS.project ? 'project' : 'staging', window);
+        },
+      } } : key === POSTGRES_RETENTION_INSTRUMENT_KEY ? { rescore: {
         windowMs: 30 * 24 * 60 * 60_000,
         unit: 'count' as const,
         scope: 'harness' as const,
