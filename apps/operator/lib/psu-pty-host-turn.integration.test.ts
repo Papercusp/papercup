@@ -193,6 +193,14 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
     const rearmed = scenario.startsWith('rearmed-');
     const replaced = scenario.includes('replaced');
     const { io, captured } = fakeIo();
+    const startedAt = Date.now();
+    const outputTimeline: Array<{ ms: number; text: string }> = [];
+    const milestones: Array<{ ms: number; phase: string; confirmation?: unknown }> = [];
+    const writeOutput = io.stdout.write;
+    io.stdout.write = (chunk: Buffer | string) => {
+      outputTimeline.push({ ms: Date.now() - startedAt, text: chunk.toString().slice(0, 100) });
+      writeOutput(chunk);
+    };
     const childCode = [
       "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
       "let line='',crs=0;process.stdout.write('READY\\n');",
@@ -211,10 +219,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
       "if(c==='\\x04'){process.exit(0);return;}if(c==='\\r'){process.stdout.write('FRESH_SUBMIT:'+line+'\\n');line='';}else{line+=c;}}});",
       'setTimeout(()=>process.exit(0),12000);',
     ].join('');
-    const done = hostThroughPty({
-      command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
-      bridgeTty: false, onExit: () => {},
-      env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
+    const fixtureEnv = hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
         CLAUDE_CONFIG_DIR: root, TEST_TRANSCRIPT: transcript, TEST_ACCEPT: scenario,
         TEST_BUSY_RELEASE: releaseBusy,
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
@@ -224,7 +229,10 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '6',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '40',
-      }),
+      });
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
+      bridgeTty: false, onExit: () => {}, env: fixtureEnv,
       mintCarryRespawnArgs: () => ({ args: ['-e', freshCode], nativeId: null }),
     });
     const events = () => existsSync(log)
@@ -232,6 +240,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
       : [];
     try {
       expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      milestones.push({ ms: Date.now() - startedAt, phase: 'ready-observed' });
       if (rearmed) {
         expect(await waitForOutput(captured, 'BUSY', CHILD_START_OUTPUT_TIMEOUT_MS),
           hostTestDiagnostics(ownerId, captured)).toBe(true);
@@ -242,7 +251,10 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
       const envelope = { mode: 'turn' as const, ownerId, data, deliveryId };
       // Acceptance remains immediate even though the real submit pipeline is
       // pending. The child's first Enter only repaints its unchanged composer.
-      expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'accepted' });
+      milestones.push({ ms: Date.now() - startedAt, phase: 'inject-started' });
+      const firstConfirmation = await injectIntoHostWithConfirmation(sock, envelope);
+      milestones.push({ ms: Date.now() - startedAt, phase: 'inject-returned', confirmation: firstConfirmation });
+      expect(firstConfirmation).toMatchObject({ ok: true, reason: 'accepted' });
       if (rearmed) {
         await vi.waitFor(() => {
           expect(events(), hostTestDiagnostics(ownerId, captured))
@@ -296,6 +308,12 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
       expect((captured().match(/REPAINT:/g) ?? []).length).toBe(2);
       expect(existsSync(sock)).toBe(true);
     } finally {
+      console.info('TAGGED_WAKE_OBSERVATION', JSON.stringify({ scenario, milestones,
+        observedAtMs: Date.now() - startedAt, outputTimeline: outputTimeline.slice(-60),
+        events: events().slice(-12),
+        nativeCompleted: nativeLatestTurnCompleted({ agent: 'claude', env: fixtureEnv, completedAtOrAfterMs: startedAt }),
+        nativeExecution: nativeLatestExecution({ agent: 'claude', env: fixtureEnv, receivedAtMs: startedAt }),
+      }));
       await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
       await done;
       rmSync(root, { recursive: true, force: true });
@@ -3608,6 +3626,14 @@ describe(
           completed: nativeLatestTurnCompleted({ agent: 'claude', env: fixtureEnv, completedAtOrAfterMs: startedAt }),
           execution: nativeLatestExecution({ agent: 'claude', env: fixtureEnv, receivedAtMs: startedAt }),
         });
+        let injectAtMs: number | null = null;
+        let nativeBeforeInject: ReturnType<typeof nativeObservation> | null = null;
+        let injectionConfirmation: Awaited<ReturnType<typeof injectIntoHostWithConfirmation>> | null = null;
+        const fixtureDiagnostics = () => JSON.stringify({
+          protocol: JSON.parse(hostTestDiagnostics(ownerId, captured)),
+          injectAtMs, observedAtMs: Date.now() - startedAt, injectionConfirmation,
+          nativeBeforeInject, nativeAtObservation: nativeObservation(), outputTimeline,
+        });
 
         let exitCode: number | null = null;
         const done = hostThroughPty({
@@ -3632,9 +3658,13 @@ describe(
           },
         });
 
-        onTestFinished(async () => { writeFileSync(releaseBusy, 'release\n'); await done; });
+        onTestFinished(async () => {
+          console.info('RESET_BOUNDARY_OBSERVATION', fixtureDiagnostics());
+          writeFileSync(releaseBusy, 'release\n');
+          await done;
+        });
 
-        await waitForHost(ownerId);
+        expect(await waitForHost(ownerId), fixtureDiagnostics()).not.toBeNull();
         expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true); // genuinely busy now
 
         expect([...captured().matchAll(/RESET-BOOT:/g)]).toHaveLength(1);
@@ -3642,21 +3672,15 @@ describe(
         // even after the former 900 ms timer would have expired.
         await sleep(1100);
         expect(existsSync(releaseBusy), hostTestDiagnostics(ownerId, captured)).toBe(false);
-        const injectAtMs = Date.now() - startedAt;
-        const nativeBeforeInject = nativeObservation();
-        const ok = await injectIntoHost(sock, { mode: 'reset', data: 'midturn-reset-carry' });
-        expect(ok).toBe(true);
+        injectAtMs = Date.now() - startedAt;
+        nativeBeforeInject = nativeObservation();
+        injectionConfirmation = await injectIntoHostWithConfirmation(sock, { mode: 'reset', data: 'midturn-reset-carry' });
+        expect(injectionConfirmation.ok, fixtureDiagnostics()).toBe(true);
 
         // Before explicit release, the /clear + carry must be HELD — nothing
         // written into the busy child yet.
         await sleep(400);
-        const heldDiagnostics = JSON.stringify({
-          protocol: JSON.parse(hostTestDiagnostics(ownerId, captured)),
-          injectAtMs, heldAtMs: Date.now() - startedAt,
-          nativeBeforeInject, nativeAtAssertion: nativeObservation(),
-          outputTimeline,
-        });
-        console.info('RESET_BOUNDARY_OBSERVATION', heldDiagnostics);
+        const heldDiagnostics = fixtureDiagnostics();
         expect(existsSync(releaseBusy), heldDiagnostics).toBe(false);
         expect(captured(), heldDiagnostics).not.toContain('ECHO:midturn-reset-carry');
         expect(captured(), heldDiagnostics).not.toContain('midturn-reset-carry');
