@@ -31,7 +31,11 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
 import { readAndEvaluateAcceptanceBarLifecycle, type AcceptanceBarLifecycleVerdict } from './acceptance-bar-lifecycle-evaluator';
-import { nextRepair as acceptanceBarNextRepair, readAcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
+import {
+  nextRepair as acceptanceBarNextRepair,
+  projectAcceptanceBarContractSnapshot,
+  readAcceptanceBarContractSnapshot,
+} from './acceptance-bar-contract-snapshot';
 import {
   areAcceptanceLineageRelated,
   resolvePlanImplementerIdentities,
@@ -219,7 +223,13 @@ const scorecard = (over: Partial<ScorecardRow> = {}): ScorecardRow => ({
 
 beforeEach(() => {
   vi.resetAllMocks();
-  mockBarSnapshot.mockResolvedValue({} as never);
+  const emptyRows = { rows: [], limit: 1, truncated: false };
+  mockBarSnapshot.mockResolvedValue(projectAcceptanceBarContractSnapshot({
+    planRows: emptyRows, rubrics: emptyRows, planItems: emptyRows, clauses: emptyRows,
+    workContracts: emptyRows, evidence: emptyRows, scorecards: emptyRows, vettingScorecards: emptyRows,
+    lineage: { identities: [], workItemRowsRead: 0, auditRowsRead: 0, rowLimit: 1, truncated: false },
+    partyByIdentity: new Map(), graderSelectionVia: new Map(),
+  }));
   vi.mocked(planDesignEvidenceGate).mockResolvedValue([]);
   mockBarLifecycle.mockResolvedValue({ phase: 'ship', applicable: false, satisfied: true,
     codes: [], blockingBars: [], contractCodes: [], codeAttribution: [], nextRepair: null,
