@@ -82,7 +82,10 @@ const unique = (values: readonly string[]) => new Set(values).size === values.le
 
 /** An unambiguous resource selector using the same policy pattern engine. */
 export function resourcePermissionValue(resource: ScopedResource): string {
-  return `${resource.kind}:${encodeURIComponent(resource.operation)}:${encodeURIComponent(resource.target)}`;
+  // encodeURIComponent leaves '*' intact, but the policy matcher treats it as
+  // a wildcard. Literal resource names must never create a broader grant.
+  const literal = (value: string) => encodeURIComponent(value).replace(/\*/g, '%2A');
+  return `${resource.kind}:${literal(resource.operation)}:${literal(resource.target)}`;
 }
 
 function policyLayer(policy: AuthorityPolicy): PolicyLayer {

@@ -65,6 +65,19 @@ describe('effective authority contract (P-024)', () => {
     });
   });
 
+  it.each(['/safe/*', '/safe/name*', '/safe/%2A'])('an exact resource grant for %s cannot grant a sibling', target => {
+    const snapshot = fixture();
+    const literal: PermissionRequest = {
+      ...request, resource: { kind: 'filesystem', operation: 'read', target },
+    };
+    snapshot.policies[0].rules!.resources = { allow: [resourcePermissionValue(literal.resource)] };
+    expect(evaluateEffectivePermission(snapshot, literal).allowed).toBe(true);
+    expect(evaluateEffectivePermission(snapshot, {
+      ...literal, resource: { ...literal.resource, target: '/safe/name-secret' },
+    })).toMatchObject({ allowed: false, code: 'denied', decidingAuthority: { kind: 'identity' } });
+    expect(resourcePermissionValue(literal.resource)).not.toContain('*');
+  });
+
   it('verified no-vault context is neutral but an omitted retained vault fails closed', () => {
     const snapshot = fixture();
     const noVault: AuthoritySnapshot = {
