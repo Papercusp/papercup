@@ -1113,7 +1113,7 @@ if (roots.size) {
   const { retainCommittedWorkRoot } = await import(pathToFileURL(helper).href);
   for (const root of roots) {
     const marker = JSON.parse(readFileSync(join(root, '.git', 'lint-as-committed-owner.json'), 'utf8'));
-    retainCommittedWorkRoot(root, marker.sha, scratch);
+    await retainCommittedWorkRoot(root, marker.sha, scratch);
     process.stdout.write(`MUTATION_PROBE_SOURCE_RETAINED ${JSON.stringify({ root, sha: marker.sha })}\n`);
   }
 }
