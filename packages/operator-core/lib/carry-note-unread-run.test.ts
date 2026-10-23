@@ -180,6 +180,25 @@ describe('describeUnreadRun', () => {
     expect(describeUnreadRun(body, 0)?.signals.inFlight).toEqual(['launched', 'not yet read']);
   });
 
+  it.each([
+    'No agent is still running',
+    'No agents still running',
+    'No fleet is still running',
+    'Zero fleets were still running',
+    'No agents or fleets still running',
+    'No jobs still running',
+  ])('does not infer an unread run from a negated status beside a retained receipt: %s', (status) => {
+    expect(describeUnreadRun(`${status}; receipt /tmp/read.log is retained.`, 0)).toBeNull();
+  });
+
+  it.each([
+    'No agents still running; a separate suite is still running',
+    'No fleets are still running, but a separate suite is still running',
+  ])('preserves a separate affirmative status after a negated subject: %s', (status) => {
+    expect(describeUnreadRun(`${status}; output at /tmp/current.log.`, 0)?.signals.inFlight)
+      .toEqual(['still running']);
+  });
+
   it('does not infer an active run from a negated inventory and a proposed scenario (EI-26699409305176974)', () => {
     const body = '## Did\nNo product code or runtime launched this unit.\n' +
       'Read-only inventory at /tmp/papercusp-focus-449b1-current.\n' +
