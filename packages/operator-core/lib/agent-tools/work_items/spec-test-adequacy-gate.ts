@@ -883,7 +883,11 @@ export async function specTestAdequacyCompletionGate(
     });
     if (!cards.some((card) => scorecardMatches(card, result, clauseEvidence))) {
       const failedAuditsForLabel: FailedGradingAudit[] = [];
+      const pendingAuditsForLabel: string[] = [];
       for (const card of cards) {
+        // A clause can retain audits of earlier evidence. Only the selected
+        // proof cohort can explain or unblock this completion attempt.
+        if (!scorecardProofCohortMatches(card, result, clauseEvidence)) continue;
         const needsIdentityReopen = gradingAuditNeedsIdentityReopen(card);
         if (
           (card.gradingAudit?.state === 'pending' || card.gradingAudit?.state === 'failed' || needsIdentityReopen) &&
@@ -893,6 +897,7 @@ export async function specTestAdequacyCompletionGate(
         ) {
           if (card.gradingAudit?.state === 'pending' || needsIdentityReopen) {
             pendingGradingAuditTargetIds.add(card.issueId);
+            pendingAuditsForLabel.push(card.issueId);
           } else {
             failedGradingAuditTargetIds.add(card.issueId);
             // WI-10002063 (1/2): carry the handle that actually reaches the findings.
@@ -923,15 +928,17 @@ export async function specTestAdequacyCompletionGate(
                     : `(no audit card recorded for graded card ${entry.issueId})`,
                 )
                 .join(', ')}`
-          : (() => {
-              const movedCohort = cards.some((card) =>
-                card.rerunRecipe?.current.supplied && ratingVerdictsMatch(card, result) &&
-                !scorecardProofCohortMatches(card, result, clauseEvidence));
-              const detail = verdictChangeDetail(cards, result);
-              return movedCohort
-                ? `${label}: audited scorecard proof cohort differs from current bound evidence; certify the current cohort and settle its independent audit`
-                : `${label}: no current terminal complete scorecard matches the exact evaluator verdicts${detail ? ` — ${detail}` : ''}`;
-            })(),
+          : pendingAuditsForLabel.length
+            ? `${label}: current proof cohort is awaiting a settled independent grading audit: ${pendingAuditsForLabel.join(', ')}`
+            : (() => {
+                const movedCohort = cards.some((card) =>
+                  card.rerunRecipe?.current.supplied && ratingVerdictsMatch(card, result) &&
+                  !scorecardProofCohortMatches(card, result, clauseEvidence));
+                const detail = verdictChangeDetail(cards, result);
+                return movedCohort
+                  ? `${label}: audited scorecard proof cohort differs from current bound evidence; certify the current cohort and settle its independent audit`
+                  : `${label}: no current terminal complete scorecard matches the exact evaluator verdicts${detail ? ` — ${detail}` : ''}`;
+              })(),
       );
       continue;
     }

@@ -677,7 +677,9 @@ describe('specTestAdequacyCompletionGate', () => {
     const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
 
     expect(result).toMatchObject({ ok: false, applicable: true, retryable: true, checked: [] });
-    if (!result.ok) expect(result.reason).toContain('no current terminal complete scorecard');
+    if (!result.ok) expect(result.reason).toContain(_label === 'pending grading audit'
+      ? 'current proof cohort is awaiting a settled independent grading audit'
+      : 'no current terminal complete scorecard');
   });
 
   it('returns only current pending scorecard issue ids for auditor dispatch', async () => {
@@ -1700,6 +1702,35 @@ describe('P-043: adequacy cards across an evaluator rule revision', () => {
     expect(result).toMatchObject({
       ok: false, applicable: true, pendingGradingAuditTargetIds: ['EI-refreshed'],
     });
+  });
+
+  it('reports the current pending audit instead of a failed audit for an older proof cohort', async () => {
+    const original = passingEvidence();
+    const moved = original.map((row) => row.evidenceKind === 'test'
+      ? { ...row, fingerprints: { ...row.fingerprints, sourceFingerprint: 'git:new-source' } }
+      : row);
+    const prior = stampedCard(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION);
+    const deps = passingDeps();
+    deps.listEvidence.mockResolvedValue(moved);
+    deps.listCards.mockResolvedValue([
+      { ...prior, issueId: 'EI-historical-failed',
+        rerunRecipe: { ...prior.rerunRecipe!, current: { supplied: true, fingerprints: proofCohort(original) } },
+        gradingAudit: { ...PASSED_AUDIT, state: 'failed', auditIssueId: 'EI-historical-audit' } },
+      { ...prior, issueId: 'EI-current-pending',
+        rerunRecipe: { ...prior.rerunRecipe!, current: { supplied: true, fingerprints: proofCohort(moved) } },
+        gradingAudit: { ...PASSED_AUDIT, state: 'pending' } },
+    ]);
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+
+    if (result.ok) throw new Error('expected the current pending audit to block completion');
+    expect(result.pendingGradingAuditTargetIds).toEqual(['EI-current-pending']);
+    expect(result.failedGradingAuditTargetIds).toBeUndefined();
+    expect(result.failedGradingAudits).toBeUndefined();
+    expect(result.reason).toContain('current proof cohort is awaiting a settled independent grading audit');
+    expect(result.reason).toContain('EI-current-pending');
+    expect(result.reason).not.toContain('EI-historical-audit');
+    expect(result.reason).not.toContain('grading audit FAILED');
   });
 
   it('accepts richer criterion explanations for the same independently audited proof cohort', async () => {
