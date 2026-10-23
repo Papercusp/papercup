@@ -4098,6 +4098,9 @@ describe('shell-write guard: `#` comments are not shell syntax (EI-1938544851643
   // agent then works around it, so the cost is silent and recurring. This was
   // one of at least five filed false-positive reports against this guard.
   it('allows the filed repro: an arrow inside a trailing `#` comment', () => {
+    // Keep the search operand real so this test isolates shell-comment parsing;
+    // the separate false-absence guard must still reject a missing `bar.ts`.
+    writeFileSync(join(CANON, 'bar.ts'), 'foo\n');
     expectAllow(
       runGate(bashCmd('grep -n foo bar.ts # payload->x is the field', { cwd: CANON }), CANON_ENV),
     );
@@ -5894,6 +5897,12 @@ describe('interpreter write-guard advisory for a COMPUTED path (EI-1882886649768
     expectComputedAdvisory(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
   });
 
+  it('does not resolve a suffix fragment as a target in an absolute scratch-path concatenation', () => {
+    const command = `python3 -c "for tag in ('quality','specs'): open('/tmp/iphone-85b00-prefixed-' + tag + '3271.json', 'w').write('x')"`;
+    const context = expectComputedAdvisory(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(context).not.toContain('3271.json');
+  });
+
   it('stays SILENT for a LITERAL out-of-tree write — the advisory is not "no in-tree hit", only "no literal at all"', () => {
     const command = `python3 -c "open('/tmp/scratch.log', 'w').write('x')"`;
     expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
@@ -5968,6 +5977,12 @@ describe('interpreter literal scan — only WRITE-CALL ARGUMENTS are candidates 
   it('still denies a real in-tree write via open(...,\'w\') — the recurrence guard for the fix itself', () => {
     const command = `python3 -c "open('apps/operator/generated.ts', 'w').write('x')"`;
     expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('fails closed for an unresolved concat with a relative in-tree prefix', () => {
+    const command = `python3 -c "for tag in ('quality','specs'): open('apps/operator/generated-' + tag + '.ts', 'w').write('x')"`;
+    const reason = expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('apps/operator/generated-');
   });
 
   it('masking control: still denies a real in-tree write in a script that ALSO prints a slash-bearing label', () => {

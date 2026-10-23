@@ -6174,7 +6174,16 @@ def _first_call_arg_has_no_literal(span):
 
 
 def _has_computed_write_path(body):
-    return any(_first_call_arg_has_no_literal(_span) for _span in _write_call_arg_spans(body))
+    _variables = _literal_var_assignments(body)
+    for _span in _write_call_arg_spans(body):
+        if _first_call_arg_has_no_literal(_span):
+            return True
+        _first_arg = _first_call_arg_text(_span)
+        if (_first_arg is not None
+                and _static_path_expression(_first_arg, _variables) is None
+                and _unresolved_concat_parts(_first_arg) is not None):
+            return True
+    return False
 
 
 # EI-19327302389409134 — the guard already denies `open('literal/tree/path', 'w')`
@@ -6295,6 +6304,24 @@ def _literal_var_assignments(body):
     return out
 
 
+def _unresolved_concat_parts(expr):
+    """Return top-level `+` components when they are not one static path."""
+    _expr = expr.strip()
+    _parts = _split_static_expression(_expr, '+')
+    return _parts if len(_parts) > 1 else None
+
+
+def _static_concat_prefix(parts, variables):
+    """Resolve the known leading pieces of a concatenation, stopping at dynamics."""
+    _values = []
+    for _part in parts:
+        _value = _static_path_expression(_part, variables)
+        if _value is None:
+            break
+        _values.append(_value)
+    return ''.join(_values) if _values else None
+
+
 def _first_call_arg_bare_ident(span):
     """The first top-level argument of a write-call span, IF it is nothing but a
     single bare identifier (`open(p, 'w')` -> `'p'`); None for anything else
@@ -6350,6 +6377,22 @@ def _payload_literal_tree_path(body, canon, cwd):
                         and not _is_sanctioned_scratch(resolved, canon)):
                     return _static_target
             continue  # resolve the whole known expression, never its pieces
+        _concat_parts = _unresolved_concat_parts(_first_arg)
+        if _concat_parts is not None:
+            # EI-26728454859527400: fragments are not independent targets. A
+            # suffix such as '3271.json' must not be joined to cwd when the
+            # complete expression starts with an absolute /tmp prefix. Resolve
+            # a known leading prefix conservatively; otherwise leave the target
+            # unresolved for the computed-path advisory below.
+            _prefix = _static_concat_prefix(_concat_parts, _var_literals or {})
+            if _prefix:
+                _resolved_prefix = _resolve_write_target(_prefix, cwd)
+                if (_resolved_prefix and
+                        (_resolved_prefix == canon or _resolved_prefix.startswith(canon + os.sep))):
+                    # The dynamic tail could escape an ignored scratch path, so
+                    # do not apply the scratch exemption without a full target.
+                    return _prefix
+            continue
         for _m in _QUOTED_LITERAL_RE.finditer(_first_arg):
             raw = _m.group(1) if _m.group(1) is not None else _m.group(2)
             if any(ch in raw for ch in ('$', '`', '{', '}')):
