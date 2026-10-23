@@ -60,7 +60,7 @@ function runScriptArgs(
 function runFn(
   fns: string[],
   call: string,
-  opts: { env?: Record<string, string>; input?: string } = {},
+  opts: { env?: NodeJS.ProcessEnv; input?: string } = {},
 ): { status: number | null; stdout: string; stderr: string } {
   const sourced = fns
     .map((f) => `source <(sed -n "/^${f}()/,/^}/p" "$SYNC_SCRIPT")`)
@@ -2538,6 +2538,73 @@ describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)'
     expect(dropIn).toContain('RuntimeMaxSec=90min');
     expect(dropIn).toContain('TimeoutStartSec=15min');
     expect(readFileSync(SCRIPT_PATH, 'utf8')).toContain('trap finish_staging_sync EXIT');
+  });
+});
+
+describe('failed candidate cleanup deadline (EI-26814541123294753)', () => {
+  it.each(['git', 'rm'])('releases the publication lease when %s cleanup stalls and retries later', (slow) => {
+    const fixture = mkdtempSync(join(tmpdir(), 'staging-failed-cleanup-'));
+    const candidate = join(fixture, '.candidate-failed');
+    const checkout = join(candidate, 'checkout');
+    const bin = join(fixture, 'bin');
+    const lock = join(fixture, 'publication.lock');
+    mkdirSync(checkout, { recursive: true });
+    mkdirSync(bin);
+    writeFileSync(join(checkout, 'retained-source'), 'source');
+    writeFileSync(join(bin, 'git'), '#!/bin/bash\nif [[ "$TEST_SLOW" == git ]]; then exec sleep 30; fi\nexit 0\n', { mode: 0o700 });
+    writeFileSync(join(bin, 'rm'), [
+      '#!/bin/bash',
+      'last=; for arg; do last="$arg"; done',
+      'if [[ "$TEST_SLOW" == rm && "$last" == "$STAGING_CANDIDATE_HOME" ]]; then exec sleep 30; fi',
+      'exec /bin/rm "$@"',
+    ].join('\n'), { mode: 0o700 });
+    const env = {
+      ...process.env, PATH: bin + ':' + (process.env.PATH ?? ''), SYNC_SCRIPT: SCRIPT_PATH,
+      STAGING_CANDIDATE_HOME: candidate, STAGING_CANDIDATE_ROOT: checkout,
+      STAGING_CANDIDATE_PUBLISHED: '0', INTEGRATION_ROOT: fixture,
+      TEST_SLOW: slow, TEST_LOCK: lock,
+    };
+    const sourced = 'source <(sed -n "/^cleanup_staging_candidate()/,/^}/p" "$SYNC_SCRIPT")';
+    try {
+      // The outer deadline also kills the fixture's descendants on the broken
+      // implementation; the real cleanup has a one-second shared budget here.
+      const result = spawnSync('timeout', ['--signal=KILL', '6s', 'bash', '-c', [
+        'set -uo pipefail', sourced, 'log() { echo "$*"; }',
+        'exec 7>"$TEST_LOCK"; flock -x 7',
+        'cleanup_staging_candidate 1',
+        'flock -u 7; exec 7>&-',
+        'echo CLEANUP_RETURNED_AND_LEASE_RELEASED',
+      ].join('\n')], { env, encoding: 'utf8', timeout: 8_000 });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('CLEANUP_RETURNED_AND_LEASE_RELEASED');
+      expect(existsSync(checkout)).toBe(true);
+      expect(existsSync(candidate + '.prune-pending')).toBe(slow === 'rm');
+      expect(spawnSync('flock', ['-n', lock, 'true']).status).toBe(0);
+
+      const retry = runFn(['cleanup_staging_candidate'],
+        'log() { echo "$*"; }; cleanup_staging_candidate 1',
+        { env: { ...env, TEST_SLOW: 'none' } });
+      expect(retry.status, retry.stderr).toBe(0);
+      expect(existsSync(candidate)).toBe(false);
+      expect(existsSync(candidate + '.prune-pending')).toBe(false);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it('retains a published generation without invoking cleanup', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'staging-published-cleanup-'));
+    const checkout = join(fixture, 'checkout');
+    mkdirSync(checkout);
+    try {
+      const result = runFn(['cleanup_staging_candidate'], [
+        'git() { echo UNEXPECTED_GIT; exit 91; }',
+        'rm() { echo UNEXPECTED_RM; exit 92; }',
+        'cleanup_staging_candidate 1',
+      ].join('\n'), { env: { STAGING_CANDIDATE_HOME: fixture,
+        STAGING_CANDIDATE_ROOT: checkout, STAGING_CANDIDATE_PUBLISHED: '1' } });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(existsSync(checkout)).toBe(true);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
   });
 });
 
