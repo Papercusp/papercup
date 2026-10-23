@@ -28,9 +28,10 @@ import {
   closeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import {
   runGitSync,
+  SOURCE_CUSTODY_REF_PREFIX,
   commitAttributedGroups,
   defaultRunToolCatalogGenerator,
   defaultRunGeneratedDeclarationsGenerator,
@@ -3844,6 +3845,239 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(subjects).toMatch(/auto-commit test/);
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
+
+  it.each(['blob', 'empty', 'manifest', 'payload', 'tree', 'ref', 'readback', 'env'])(
+    'source custody %s failure aborts before attributed/catch-all consumers (real outer pipeline)', async (failure) => {
+      const path = 'vanished-authored.ts';
+      writeFileSync(join(repo, path), 'available staged authored bytes\n');
+      git(repo, 'add', '--', path);
+      rmSync(join(repo, path));
+      writeFileSync(join(repo, 'unrelated.ts'), 'unrelated work\n');
+      const index = git(repo, 'ls-files', '--stage');
+      const head = git(repo, 'rev-parse', 'HEAD');
+      const remote = git(originDir, 'rev-parse', 'main');
+      let failed = false;
+      const afterFailure: string[][] = [];
+      const runGit: RunGit = async (args, cwd, options) => {
+        if (failed) afterFailure.push(args);
+        const privateCustody = options?.env?.GIT_INDEX_FILE?.includes('source-custody');
+        const match = failure === 'blob' && args[0] === 'cat-file' && args[1] === '-t'
+          || failure === 'empty' && privateCustody && args[0] === 'read-tree'
+          || failure === 'manifest' && args[0] === 'hash-object'
+          || failure === 'payload' && privateCustody && args[0] === 'update-index'
+          || failure === 'tree' && privateCustody && args[0] === 'write-tree'
+          || failure === 'ref' && args[0] === 'update-ref' && args[1].startsWith(SOURCE_CUSTODY_REF_PREFIX)
+          || failure === 'readback' && args[0] === 'cat-file' && args[1] === 'blob';
+        if (match) {
+          failed = true;
+          return { code: 1, stdout: 'RAW_SOURCE_MUST_NOT_LEAK', stderr: 'RAW_SOURCE_MUST_NOT_LEAK' };
+        }
+        const dropEnv = failure === 'env' && Boolean(options?.env?.GIT_INDEX_FILE);
+        if (dropEnv) failed = true;
+        const r = spawnSync('git', args, {
+          cwd, encoding: 'utf8', env: { ...process.env, ...(dropEnv ? {} : options?.env) },
+        });
+        return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+      };
+      const logs: string[] = [];
+      const out = await runGitSync('test', {
+        repoPath: repo, config: cfg, runGit, log: (m) => logs.push(m),
+        loadRoster: async () => [{ agent: 'author', files: [path, 'unrelated.ts'] }],
+      });
+      expect(failed).toBe(true);
+      expect(out.status).toBe('error');
+      if (out.status === 'error') expect(out.errors.some((e) => e.message.includes('source-custody-refused:'))).toBe(true);
+      expect(afterFailure.some((args) => ['add', 'reset', 'read-tree', 'update-index', 'commit', 'commit-tree'].includes(args[0]))).toBe(false);
+      expect(git(repo, 'ls-files', '--stage')).toBe(index);
+      expect(git(repo, 'rev-parse', 'HEAD')).toBe(head);
+      expect(git(originDir, 'rev-parse', 'main')).toBe(remote);
+      expect(logs.join('\n')).not.toContain('RAW_SOURCE_MUST_NOT_LEAK');
+    },
+  );
+
+  it.each([
+    ['same', 'deleted-snapshot'], ['different', 'deleted-snapshot'],
+    ['same', 'after-capture'], ['different', 'after-capture'],
+    ['same', 'attributed-stage'], ['different', 'attributed-stage'],
+    ['same', 'attributed-refresh'], ['different', 'attributed-refresh'],
+    ['same', 'catch-all-stage'], ['different', 'catch-all-stage'],
+    ['same', 'catch-all-refresh'], ['different', 'catch-all-refresh'],
+  ])('source custody keeps %s-byte restoration pending at %s (real outer pipeline)', async (kind, point) => {
+    const path = 'vanished-authored.ts';
+    const original = 'export const staged = true;\n';
+    const restored = kind === 'same' ? original : 'export const peer = true;\n';
+    writeFileSync(join(repo, path), original);
+    git(repo, 'add', '--', path);
+    const oid = git(repo, 'rev-parse', `:${path}`);
+    rmSync(join(repo, path));
+    writeFileSync(join(repo, 'unrelated.ts'), 'export const unrelated = true;\n');
+    let hit = false;
+    const runGit: RunGit = async (args, cwd, options) => {
+      const capture = args[0] === 'update-ref' && args[1].startsWith(SOURCE_CUSTODY_REF_PREFIX);
+      const pathspecRefresh = args.some((a) => a.startsWith('--pathspec-from-file='));
+      const refresh = args[0] === 'reset' && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(args[2] ?? '');
+      const match = point === 'after-capture' && capture
+        || point === 'attributed-stage' && args[0] === 'add' && args[1] === '--'
+        || point === 'catch-all-stage' && args[0] === 'add' && args[1] === '-A'
+        || point === 'attributed-refresh' && refresh && !pathspecRefresh
+        || point === 'catch-all-refresh' && refresh && pathspecRefresh;
+      const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...options?.env } });
+      const deletedSnapshot = point === 'deleted-snapshot' && args[0] === 'ls-files' && args.includes('--deleted');
+      if (!hit && (match || deletedSnapshot)) {
+        hit = true;
+        writeFileSync(join(repo, path), restored);
+      }
+      return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    };
+    const out = await runGitSync('test', {
+      repoPath: repo, config: cfg, runGit,
+      loadRoster: async () => point.startsWith('catch-all') ? [] : [{ agent: 'author', files: [path, 'unrelated.ts'] }],
+      refreshLiveLockHoldings: async () => [],
+    });
+    expect(hit).toBe(true);
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:unrelated.ts')).toBe('export const unrelated = true;');
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(path);
+    expect(readFileSync(join(repo, path), 'utf8')).toBe(restored);
+    expect(git(repo, 'status', '--porcelain', '--', path)).not.toBe('');
+    const refs = git(repo, 'for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX).split('\n');
+    expect(refs).toHaveLength(1);
+    const manifest = JSON.parse(git(repo, 'show', `${refs[0]}:manifest.json`));
+    expect(manifest).toMatchObject({ path, oid, owner: point.startsWith('catch-all') ? 'unknown' : 'author' });
+    expect(git(repo, 'show', `${refs[0]}:payload`)).toBe(original.trim());
+    expect(git(originDir, 'for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+  });
+
+  it.each(['100644', '100755', '120000'].flatMap((mode) => ['known', 'unknown'].map((ownership) => [mode, ownership])))(
+    'source custody preserves %s with %s owner through normal branch publication', async (mode, ownership) => {
+      const path = 'vanished-mode.txt';
+      const payload = mode === '120000' ? Buffer.from('missing-symlink-target') : Buffer.from([255, 0, 128, 10]);
+      const oid = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: repo, input: payload, encoding: 'utf8' }).trim();
+      git(repo, 'update-index', '--add', '--cacheinfo', mode, oid, path);
+      writeFileSync(join(repo, 'unrelated.txt'), 'unrelated work\n');
+      const out = await runGitSync('test', {
+        repoPath: repo, config: cfg,
+        loadRoster: async () => ownership === 'known' ? [{ agent: 'author', files: [path, 'unrelated.txt'] }] : [],
+      });
+      expect(out.status).toBe('synced');
+      const ref = git(repo, 'for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX);
+      expect(execFileSync('git', ['cat-file', 'blob', `${ref}:payload`], { cwd: repo })).toEqual(payload);
+      expect(JSON.parse(git(repo, 'show', `${ref}:manifest.json`))).toMatchObject({ path, mode, oid, owner: ownership === 'known' ? 'author' : 'unknown' });
+      expect(git(originDir, 'show', 'main:unrelated.txt')).toBe('unrelated work');
+      expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(path);
+      expect(git(originDir, 'for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+    },
+  );
+
+  it.each(['known', 'unknown'].flatMap((ownership) => ['gitlink', 'unmerged'].map((mode) => [ownership, mode])))(
+    'source custody refuses %s-owner %s in the outer pipeline', async (ownership, mode) => {
+      const path = 'vanished-unsupported.txt';
+      const oid = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: repo, input: 'staged\n', encoding: 'utf8' }).trim();
+      if (mode === 'gitlink') git(repo, 'update-index', '--add', '--cacheinfo', '160000', git(repo, 'rev-parse', 'HEAD'), path);
+      else execFileSync('git', ['update-index', '--index-info'], { cwd: repo, input: `100644 ${oid} 1\t${path}\n100644 ${oid} 2\t${path}\n100644 ${oid} 3\t${path}\n` });
+      const index = git(repo, 'ls-files', '--stage');
+      const head = git(repo, 'rev-parse', 'HEAD');
+      writeFileSync(join(repo, 'unrelated.txt'), 'unrelated work\n');
+      const out = await runGitSync('test', {
+        repoPath: repo, config: cfg,
+        loadRoster: async () => ownership === 'known' ? [{ agent: 'author', files: [path] }] : [],
+      });
+      expect(out.status).toBe('error');
+      expect(git(repo, 'ls-files', '--stage')).toBe(index);
+      expect(git(repo, 'rev-parse', 'HEAD')).toBe(head);
+      expect(git(originDir, 'rev-parse', 'main')).toBe(head);
+    },
+  );
+
+  it.each(['tracked-deletion', 'generated-phantom', 'no-index-entry'])(
+    'source custody retains the ordinary %s control in the outer pipeline', async (kind) => {
+      const path = kind === 'tracked-deletion' ? 'tracked-delete.txt'
+        : kind === 'generated-phantom' ? '.papercusp/dependency-exact-ref/example/.live-inputs' : 'already-gone.txt';
+      if (kind !== 'no-index-entry') {
+        mkdirSync(dirname(join(repo, path)), { recursive: true });
+        writeFileSync(join(repo, path), 'ordinary\n');
+        git(repo, 'add', '-f', '--', path);
+        if (kind === 'tracked-deletion') {
+          git(repo, 'commit', '-m', 'tracked deletion control');
+          git(repo, 'push', 'origin', 'main');
+        }
+        rmSync(join(repo, path));
+      }
+      writeFileSync(join(repo, 'unrelated.txt'), 'unrelated work\n');
+      const out = await runGitSync('test', {
+        repoPath: repo, config: cfg, loadRoster: async () => [{ agent: 'author', files: [path, 'unrelated.txt'] }],
+      });
+      expect(out.status).toBe('synced');
+      expect(git(originDir, 'show', 'main:unrelated.txt')).toBe('unrelated work');
+      expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(path);
+      expect(git(repo, 'for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+    },
+  );
+
+  it.each(['wrong-payload', 'unrooted-manifest'])(
+    'source custody rejects the %s mutation in the outer pipeline', async (mutation) => {
+      const path = 'vanished-mutated.txt';
+      writeFileSync(join(repo, path), 'original staged bytes\n');
+      git(repo, 'add', '--', path);
+      const oid = git(repo, 'rev-parse', `:${path}`);
+      rmSync(join(repo, path));
+      const index = git(repo, 'ls-files', '--stage');
+      const wrong = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: repo, input: 'wrong bytes\n', encoding: 'utf8' }).trim();
+      let hit = false;
+      const runGit: RunGit = async (args, cwd, options) => {
+        if (options?.env?.GIT_INDEX_FILE?.includes('source-custody') && args[0] === 'update-index') {
+          hit = true;
+          args = [...args];
+          if (mutation === 'wrong-payload') args[4] = wrong;
+          else args.splice(6);
+        }
+        const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...options?.env } });
+        return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+      };
+      const out = await runGitSync('test', { repoPath: repo, config: cfg, runGit });
+      expect(hit).toBe(true);
+      expect(out.status).toBe('error');
+      expect(git(repo, 'ls-files', '--stage')).toBe(index);
+      expect(git(repo, 'rev-parse', `:${path}`)).toBe(oid);
+      expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(path);
+    },
+  );
+
+  it.each(['success', 'refusal'])(
+    'source custody handles a late staged disappearance before catch-all (%s)', async (outcome) => {
+      const path = 'late-vanished.txt';
+      writeFileSync(join(repo, 'unrelated.txt'), 'unrelated work\n');
+      let arrived = false;
+      let refused = false;
+      let consumedAfterRefusal = false;
+      const runGit: RunGit = async (args, cwd, options) => {
+        if (refused && ['add', 'reset', 'commit', 'commit-tree', 'update-index'].includes(args[0])) consumedAfterRefusal = true;
+        if (arrived && outcome === 'refusal' && args[0] === 'update-ref' && args[1].startsWith(SOURCE_CUSTODY_REF_PREFIX)) {
+          refused = true;
+          return { code: 1, stdout: '', stderr: 'injected custody refusal' };
+        }
+        const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...options?.env } });
+        if (!arrived && args[0] === 'update-ref' && args[3] === 'HEAD' && r.status === 0) {
+          arrived = true;
+          writeFileSync(join(repo, path), 'late staged bytes\n');
+          git(repo, 'add', '--', path);
+          rmSync(join(repo, path));
+        }
+        return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+      };
+      const out = await runGitSync('test', {
+        repoPath: repo, config: cfg, runGit, loadRoster: async () => [{ agent: 'author', files: ['unrelated.txt'] }],
+      });
+      expect(arrived).toBe(true);
+      expect(out.status).toBe(outcome === 'success' ? 'synced' : 'error');
+      expect(consumedAfterRefusal).toBe(false);
+      expect(git(repo, 'show', `:${path}`)).toBe('late staged bytes');
+      expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(path);
+      const ref = git(repo, 'for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX);
+      if (outcome === 'success') expect(git(repo, 'show', `${ref}:payload`)).toBe('late staged bytes');
+      else expect(ref).toBe('');
+    },
+  );
 
   it('returns "nothing" on a clean, up-to-date tree', async () => {
     const out = await runGitSync('test', { repoPath: repo, config: cfg });

@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { commitAttributedGroups, dirtyFiles, guardStagedIndexBeforeCommit, type RunGit } from './run-git-sync';
+import { commitAttributedGroups, dirtyFiles, guardStagedIndexBeforeCommit, preserveVanishedStagedSources, SOURCE_CUSTODY_REF_PREFIX, type RunGit } from './run-git-sync';
 import type { FileAttribution } from './git-sync-attribution';
 
 type GitResult = { code: number; stdout: string; stderr: string };
@@ -75,6 +75,239 @@ function fakeGit(opts: {
 }
 
 const MSG = 'chore(git-sync): auto-commit papercup [skip ci]';
+
+describe('source custody through real attributed commits', () => {
+  const source = 'source [literal]\twith\nnewline.ts';
+  const original = Buffer.from([0, 255, 128, 65, 10]);
+  const owner = new Map<string, FileAttribution>([[source, { agent: 'author', intent: 'preserve source' }]]);
+
+  async function vanished(mode = '100644', format = 'sha1'): Promise<string> {
+    const repo = await mkdtemp(join(tmpdir(), 'gs-source-custody-'));
+    tmpDirs.push(repo);
+    await git(repo, 'init', '-q', `--object-format=${format}`);
+    await writeFile(join(repo, 'base.ts'), 'base\n');
+    await git(repo, 'add', 'base.ts');
+    await git(repo, ...ID, 'commit', '-qm', 'base');
+    if (mode === '120000') await symlink('missing-target', join(repo, source));
+    else {
+      await writeFile(join(repo, source), original);
+      if (mode === '100755') await chmod(join(repo, source), 0o755);
+    }
+    await git(repo, 'add', '--', source);
+    await rm(join(repo, source));
+    return repo;
+  }
+
+  for (const format of ['sha1', 'sha256']) {
+    it.each(['100644', '100755', '120000'].flatMap((mode) => ['known', 'unknown'].map((ownership) => [mode, ownership])))(`roots exact bytes, mode, metadata and an idempotent GC-safe receipt (%s, %s owner, ${format})`, async (mode, ownership) => {
+      const repo = await vanished(mode, format);
+      const attribution = ownership === 'known' ? owner : new Map();
+      const before = await git(repo, 'rev-parse', 'HEAD');
+      const staged = await git(repo, 'ls-files', '--stage');
+      const result = await preserveVanishedStagedSources(realRunGit, repo, attribution);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.error);
+      expect(result.protectedPaths).toEqual([source]);
+      expect(result.refs).toHaveLength(1);
+      const ref = result.refs[0];
+      expect(ref).toMatch(/^refs\/papercusp\/source-custody\/[a-f0-9]{64}$/);
+      const manifest = JSON.parse(await git(repo, 'show', `${ref}:manifest.json`));
+      expect(manifest).toMatchObject({ path: source, owner: ownership === 'known' ? 'author' : 'unknown', mode, base: before });
+      expect((await git(repo, 'ls-tree', ref)).split('\n')).toHaveLength(2);
+      const expected = mode === '120000' ? Buffer.from('missing-target') : original;
+      expect(execFileSync('git', ['cat-file', 'blob', `${ref}:payload`], { cwd: repo })).toEqual(expected);
+      expect(await git(repo, 'rev-parse', 'HEAD')).toBe(before);
+      expect(await git(repo, 'ls-files', '--stage')).toBe(staged);
+      expect(await preserveVanishedStagedSources(realRunGit, repo, attribution)).toEqual(result);
+      expect((await git(repo, 'for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).split('\n')).toEqual([ref]);
+      await git(repo, 'update-index', '--force-remove', '--', source);
+      await git(repo, 'reflog', 'expire', '--expire=now', '--all');
+      await git(repo, 'gc', '--prune=now');
+      expect(execFileSync('git', ['cat-file', 'blob', `${ref}:payload`], { cwd: repo })).toEqual(expected);
+      expect(JSON.parse(await git(repo, 'show', `${ref}:manifest.json`))).toEqual(manifest);
+    });
+  }
+
+  it('preserves unknown ownership while allowing an unrelated attribution group to commit', async () => {
+    const repo = await vanished();
+    await writeFile(join(repo, 'other.ts'), 'unrelated\n');
+    const result = await commitAttributedGroups(realRunGit, repo, new Map([
+      ['other.ts', { agent: 'other', intent: 'unrelated' }],
+    ]), [], MSG);
+    expect(result.error).toBeUndefined();
+    expect(result.committedAny).toBe(true);
+    expect(await git(repo, 'show', 'HEAD:other.ts')).toBe('unrelated');
+    expect((await realRunGit(['cat-file', '-e', `HEAD:${source}`], repo)).code).not.toBe(0);
+    const ref = await git(repo, 'for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX);
+    expect(JSON.parse(await git(repo, 'show', `${ref}:manifest.json`)).owner).toBe('unknown');
+  });
+
+  it.each(['blob', 'empty', 'manifest', 'payload', 'tree', 'ref', 'readback', 'env', 'throw'])(
+    'refuses the whole attributed phase on %s failure without consuming the shared blob', async (failure) => {
+      const repo = await vanished();
+      await writeFile(join(repo, 'other.ts'), 'unrelated\n');
+      const index = await git(repo, 'ls-files', '--stage');
+      const head = await git(repo, 'rev-parse', 'HEAD');
+      let hit = false;
+      const calls: string[][] = [];
+      const injected: RunGit = async (args, cwd, options) => {
+        calls.push(args);
+        const privateIndex = options?.env?.GIT_INDEX_FILE?.includes('source-custody');
+        const fail = failure === 'blob' && args[0] === 'cat-file' && args[1] === '-t'
+          || failure === 'empty' && privateIndex && args[0] === 'read-tree'
+          || failure === 'manifest' && args[0] === 'hash-object'
+          || failure === 'payload' && privateIndex && args[0] === 'update-index'
+          || failure === 'tree' && privateIndex && args[0] === 'write-tree'
+          || failure === 'ref' && args[0] === 'update-ref' && args[1].startsWith(SOURCE_CUSTODY_REF_PREFIX)
+          || failure === 'readback' && args[0] === 'cat-file' && args[1] === 'blob'
+          || failure === 'throw' && args[0] === 'cat-file';
+        if (fail) {
+          hit = true;
+          if (failure === 'throw') throw new Error('RAW_SOURCE_MUST_NOT_LEAK');
+          return { code: 1, stdout: 'RAW_SOURCE_MUST_NOT_LEAK', stderr: 'RAW_SOURCE_MUST_NOT_LEAK' };
+        }
+        if (failure === 'env' && options?.env?.GIT_INDEX_FILE) {
+          hit = true;
+          return realRunGit(args, cwd);
+        }
+        return realRunGit(args, cwd, options);
+      };
+      const result = await commitAttributedGroups(injected, repo, owner, [], MSG);
+      expect(hit).toBe(true);
+      expect(result.custodyFatal).toBe(true);
+      expect(result.error).toMatch(/^source-custody-refused:/);
+      expect(Buffer.byteLength(result.error!)).toBeLessThanOrEqual(1024);
+      expect(result.error).not.toContain('RAW_SOURCE');
+      expect(calls.some((args) => args[0] === 'add' || args[0] === 'reset' || args.includes('commit-tree'))).toBe(false);
+      expect(await git(repo, 'ls-files', '--stage')).toBe(index);
+      expect(await git(repo, 'rev-parse', 'HEAD')).toBe(head);
+    },
+  );
+
+  it('refuses a mismatched existing recovery ref instead of overwriting it', async () => {
+    const repo = await vanished();
+    const result = await preserveVanishedStagedSources(realRunGit, repo, owner);
+    if (!result.ok) throw new Error(result.error);
+    const wrong = await git(repo, 'rev-parse', 'HEAD^{tree}');
+    await git(repo, 'update-ref', result.refs[0], wrong);
+    expect(await preserveVanishedStagedSources(realRunGit, repo, owner)).toEqual({ ok: false, error: 'source-custody-refused:existing-ref-mismatch' });
+    expect(await git(repo, 'rev-parse', result.refs[0])).toBe(wrong);
+  });
+
+  it('refuses a commit object masquerading as the exact custody tree', async () => {
+    const repo = await vanished();
+    const result = await preserveVanishedStagedSources(realRunGit, repo, owner);
+    if (!result.ok) throw new Error(result.error);
+    const tree = await git(repo, 'rev-parse', result.refs[0]);
+    const commit = await git(repo, ...ID, 'commit-tree', tree, '-p', 'HEAD', '-m', 'wrong object type');
+    await git(repo, 'update-ref', result.refs[0], commit);
+    expect(await preserveVanishedStagedSources(realRunGit, repo, owner)).toEqual({ ok: false, error: 'source-custody-refused:existing-ref-mismatch' });
+    expect(await git(repo, 'rev-parse', result.refs[0])).toBe(commit);
+  });
+
+  it.each(['known', 'unknown'].flatMap((ownership) => ['gitlink', 'unmerged'].map((mode) => [ownership, mode])))(
+    'refuses %s-owner %s entries before any consuming write', async (ownership, mode) => {
+      const repo = await vanished();
+      const blob = await git(repo, 'rev-parse', `:${source}`);
+      await git(repo, 'update-index', '--force-remove', '--', source);
+      if (mode === 'gitlink') {
+        await git(repo, 'update-index', '--add', '--cacheinfo', '160000', await git(repo, 'rev-parse', 'HEAD'), source);
+      } else {
+        execFileSync('git', ['update-index', '-z', '--index-info'], {
+          cwd: repo, input: `100644 ${blob} 1\t${source}\0` + `100644 ${blob} 2\t${source}\0` + `100644 ${blob} 3\t${source}\0`,
+        });
+      }
+      const staged = await git(repo, 'ls-files', '--stage', '-z');
+      const calls: string[][] = [];
+      const runner: RunGit = async (args, cwd, options) => {
+        calls.push(args);
+        return realRunGit(args, cwd, options);
+      };
+      const result = await commitAttributedGroups(runner, repo, ownership === 'known' ? owner : new Map(), [], MSG);
+      expect(result.custodyFatal).toBe(true);
+      expect(result.error).toBe(`source-custody-refused:${mode === 'gitlink' ? 'unsupported-index-mode' : 'unmerged-index-entry'}`);
+      expect(calls.some((args) => ['add', 'reset', 'commit-tree'].includes(args[0]))).toBe(false);
+      expect(await git(repo, 'ls-files', '--stage', '-z')).toBe(staged);
+    },
+  );
+
+  it.each(['tracked-deletion', 'generated-phantom', 'no-index-entry'])(
+    'keeps the ordinary %s behavior without claiming custody', async (kind) => {
+      const repo = await vanished();
+      await git(repo, 'update-index', '--force-remove', '--', source);
+      const path = kind === 'tracked-deletion' ? 'base.ts'
+        : kind === 'generated-phantom' ? '.papercusp/dependency-exact-ref/example/.live-inputs' : source;
+      if (kind === 'tracked-deletion') await rm(join(repo, path));
+      if (kind === 'generated-phantom') {
+        await mkdir(join(repo, '.papercusp/dependency-exact-ref/example'), { recursive: true });
+        await writeFile(join(repo, path), 'generated\n');
+        await git(repo, 'add', '-f', '--', path);
+        await rm(join(repo, path));
+      }
+      const logs: string[] = [];
+      expect(await preserveVanishedStagedSources(realRunGit, repo, new Map([[path, { agent: 'author' }]]), (m) => logs.push(m)))
+        .toEqual({ ok: true, protectedPaths: [], refs: [] });
+      expect(logs).toEqual([]);
+      expect(await git(repo, 'for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+      await writeFile(join(repo, 'other.ts'), 'export const other = true;\n');
+      const result = await commitAttributedGroups(realRunGit, repo, new Map([
+        [path, { agent: 'author' }], ['other.ts', { agent: 'other' }],
+      ]), [], MSG);
+      expect(result.error).toBeUndefined();
+      expect(result.committedAny).toBe(true);
+      expect(await git(repo, 'show', 'HEAD:other.ts')).toBe('export const other = true;');
+      if (kind === 'tracked-deletion') expect((await realRunGit(['cat-file', '-e', 'HEAD:base.ts'], repo)).code).not.toBe(0);
+    },
+  );
+
+  it.each(['wrong-payload', 'unrooted-manifest'])(
+    'detects the %s persistence mutation before consuming shared evidence', async (mutation) => {
+      const repo = await vanished();
+      const staged = await git(repo, 'ls-files', '--stage');
+      const wrong = await git(repo, 'rev-parse', 'HEAD:base.ts');
+      let hit = false;
+      const runner: RunGit = async (args, cwd, options) => {
+        if (options?.env?.GIT_INDEX_FILE?.includes('source-custody') && args[0] === 'update-index') {
+          hit = true;
+          const changed = [...args];
+          if (mutation === 'wrong-payload') changed[4] = wrong;
+          else changed.splice(6);
+          return realRunGit(changed, cwd, options);
+        }
+        return realRunGit(args, cwd, options);
+      };
+      const result = await commitAttributedGroups(runner, repo, owner, [], MSG);
+      expect(hit).toBe(true);
+      expect(result.custodyFatal).toBe(true);
+      expect(result.error).toBe('source-custody-refused:recovery-ref-readback');
+      expect(await git(repo, 'ls-files', '--stage')).toBe(staged);
+    },
+  );
+
+  it.each(['same', 'different'].flatMap((kind) => ['deleted-snapshot', 'after-capture'].map((point) => [kind, point])))('leaves a %s-byte %s restoration pending without writing the worktree', async (kind, point) => {
+    const repo = await vanished();
+    await writeFile(join(repo, 'other.ts'), 'unrelated\n');
+    const restored = kind === 'same' ? original : Buffer.from('a peer restored different bytes\n');
+    let hit = false;
+    const runner: RunGit = async (args, cwd, options) => {
+      const r = await realRunGit(args, cwd, options);
+      if (!hit && (point === 'after-capture' && args[0] === 'update-ref' && args[1].startsWith(SOURCE_CUSTODY_REF_PREFIX)
+        || point === 'deleted-snapshot' && args[0] === 'ls-files' && args.includes('--deleted'))) {
+        hit = true;
+        await writeFile(join(repo, source), restored);
+      }
+      return r;
+    };
+    const result = await commitAttributedGroups(runner, repo, new Map([
+      ...owner, ['other.ts', { agent: 'other', intent: 'unrelated' }],
+    ]), [], MSG);
+    expect(result.error).toBeUndefined();
+    expect(hit).toBe(true);
+    expect(await readFile(join(repo, source))).toEqual(restored);
+    expect(await git(repo, 'status', '--porcelain', '--', source)).not.toBe('');
+    expect((await realRunGit(['cat-file', '-e', `HEAD:${source}`], repo)).code).not.toBe(0);
+  });
+});
 
 const tmpDirs: string[] = [];
 afterEach(async () => {
