@@ -34,6 +34,15 @@ const acceptance = (): ApplicationRuntimeAcceptance => ({ verdict: 'accepted', e
   entrypointSha256: candidate.entrypointSha256, validUntil: Date.now() + 60_000 });
 
 describe('pinned application runtime selection', () => {
+  it('checks pinned bytes before running even an identity probe', async () => {
+    const untrusted = join(root, 'changed-node');
+    await writeFile(untrusted, '#!/bin/sh\n: > "$0.executed"\nexit 5\n', { mode: 0o755 });
+    candidate.node = { ...candidate.node, executable: untrusted };
+    await expect(resolveApplicationRuntimeLaunch({ candidate, role: 'request' }))
+      .rejects.toThrow('Runtime binary digest mismatch');
+    await expect(readFile(`${untrusted}.executed`)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('defaults to pinned Node and passes arguments literally through a real process', async () => {
     const args = ['--eval', '$(do-not-run)', 'one two', 'quote"and\\slash'];
     const launch = await resolveApplicationRuntimeLaunch({ candidate, role: 'request', args,

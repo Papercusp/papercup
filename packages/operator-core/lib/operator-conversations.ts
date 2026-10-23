@@ -14,6 +14,7 @@
  */
 
 import { getOrgPg, generated } from '@papercusp/db-org';
+import { randomUUID } from 'node:crypto';
 import { and, desc, eq, lt as dlt, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
 import type { ParsedReport } from './operator-converse-tags';
@@ -328,8 +329,14 @@ export async function listTurnsRecent(args: {
   return { turns, hasMoreEarlier };
 }
 
+export class OperatorTurnIdentityConflict extends Error {
+  constructor() { super('turn identity conflict'); }
+}
+
 export async function appendTurn(input: {
   conversationId: string;
+  /** Stable request identity. A retry may acknowledge only this exact scoped payload. */
+  turnId?: string;
   role: TurnRole;
   text: string;
   source?: TurnSource;
@@ -357,6 +364,8 @@ export async function appendTurn(input: {
     );
   }
   const { sql: rawSql } = getOrgPg();
+  const turnId = input.turnId ?? randomUUID();
+  const workspaceId = activeWorkspaceId();
 
   // Drizzle has a known jsonb auto-conversion bug (commit 98cfffb7 — three
   // ui:* routes reverted from drizzle to raw sql for the same reason). The
@@ -382,11 +391,12 @@ export async function appendTurn(input: {
       const inserted = (await rawSql.unsafe(
         `INSERT INTO harness_shared.operator_turns
            (conversation_id, seq, role, text, source, el_conv_id,
-            audio_url, created_at, tools, report, workspace_id)
+            audio_url, created_at, tools, report, workspace_id, id)
          SELECT $1,
                 COALESCE((SELECT MAX(seq) FROM harness_shared.operator_turns
                            WHERE conversation_id = $1), -1) + 1,
-                $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10
+                $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11
+         ON CONFLICT (id) DO NOTHING
          RETURNING id, conversation_id, seq, role, text, source,
                    el_conv_id, audio_url, created_at, tools, report`,
         [
@@ -399,10 +409,29 @@ export async function appendTurn(input: {
           Date.now(),
           toolsJson,
           reportJson,
-          activeWorkspaceId(),
+          workspaceId,
+          turnId,
         ],
       )) as Array<Record<string, unknown>>;
-      return rowToTurn(inserted[0]);
+      if (inserted[0]) return rowToTurn(inserted[0]);
+      // Commit/ack-loss and concurrent identical submissions reconcile to the
+      // original row. An id from another scope or a competing payload grants
+      // neither an acknowledgement nor permission to replace its contents.
+      const prior = await rawSql.unsafe<Record<string, unknown>[]>(
+        `SELECT id, conversation_id, seq, role, text, source,
+                el_conv_id, audio_url, created_at, tools, report
+           FROM harness_shared.operator_turns
+          WHERE id=$1 AND conversation_id=$2 AND workspace_id=$3
+            AND role=$4 AND text=$5 AND source=$6
+            AND el_conv_id IS NOT DISTINCT FROM $7
+            AND audio_url IS NOT DISTINCT FROM $8
+            AND tools IS NOT DISTINCT FROM $9::jsonb
+            AND report IS NOT DISTINCT FROM $10::jsonb`,
+        [turnId, input.conversationId, workspaceId, input.role, input.text,
+          input.source ?? 'text_typed', input.elConvId ?? null,
+          input.audioUrl ?? null, toolsJson, reportJson]);
+      if (!prior[0]) throw new OperatorTurnIdentityConflict();
+      return rowToTurn(prior[0]);
     } catch (err) {
       const code = (err as { code?: string }).code;
       if (code !== '23505') throw err; // not a unique violation

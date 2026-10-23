@@ -4,6 +4,7 @@ import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { HarnessRegistry } from '../harness-registry';
 import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
 import type { EngineeringExecution } from '../observability/engineering-execution';
+import type { ExecutionBoundaryReceipt } from '@papercusp/test-config/execution-details';
 
 export const ENGINEERING_EVIDENCE_LIMITS = Object.freeze({
   nodes: 128, edges: 256, depth: 6, items: 8, specs: 16, proofs: 8, decisions: 16, cases: 20,
@@ -78,8 +79,11 @@ export interface EngineeringToolQuery {
 export interface EngineeringQueryReport {
   status: 'measured' | 'unknown'; error: string | null;
   evidence: EngineeringEvidence | null; recovery: EngineeringRef | null;
+  /** This request's boundary receipt; it is not a recorded test/execution join. */
+  boundaryObservation?: ExecutionBoundaryReceipt;
+  boundaryObservationGap?: string;
 }
-type QueryContext = Pick<UnifiedToolContext, 'principal' | 'workspaceId' | 'harnessSlug' | 'role'>;
+type QueryContext = Pick<UnifiedToolContext, 'principal' | 'workspaceId' | 'harnessSlug' | 'role' | 'isSuperuser' | 'gateBypass'>;
 export interface EngineeringQueryEffects {
   registry(workspaceId: string): Promise<HarnessRegistry>;
   read: typeof readEngineeringEvidence;
@@ -95,8 +99,14 @@ export async function engineeringEvidenceQuery(args: EngineeringToolQuery, ctx: 
   const refuse = (error: string, recovery: EngineeringRef | null = null): EngineeringQueryReport =>
     ({ status: 'unknown', error, evidence: null, recovery });
   const workspace = ctx.principal?.workspaceId;
+  // Native SU transport intentionally leaves capabilities empty and carries
+  // its authenticated authority in the dispatch context. Preserve that existing
+  // contract without letting ordinary or caller-declared principals acquire it.
+  const nativeSuperuser = ctx.isSuperuser === true && ctx.gateBypass?.capability === true
+    && ctx.principal?.kind === 'system' && ctx.principal.trust === 'trusted'
+    && ctx.principal.authMethod === 'bearer-token';
   if (!workspace || workspace === '*' || !ctx.principal?.slug
-    || (!ctx.principal.capabilities.has('intel:read') && !ctx.principal.capabilities.has('*')))
+    || (!nativeSuperuser && !ctx.principal.capabilities.has('intel:read') && !ctx.principal.capabilities.has('*')))
     return refuse('evidence requires an authenticated concrete workspace principal with intel:read.');
   if ((ctx.workspaceId && ctx.workspaceId !== '*' && ctx.workspaceId !== workspace)
     || (args.workspace && args.workspace !== workspace)) return refuse('evidence workspace is outside the authenticated scope.');

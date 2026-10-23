@@ -189,6 +189,123 @@ describe("OperatorConversationProvider streamed say projection", () => {
     );
   });
 
+  it.each([true, false])("P010 actual converse fetch preserves card call identities and legacy calls (identified=%s)", async identified => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    const tools = ["first", "second"].map(id => ({
+      name: "chat:ask_choice",
+      input: { question: id, options: [{ id: "keep", label: "Keep" }] },
+      ...(identified ? { callId: `choice-${id}` } : {}),
+    }));
+    const frames = tools.map(tool => `event: tool_call\ndata: ${JSON.stringify(tool)}\n\n`).join("")
+      + 'event: done\ndata: {}\n\n';
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      String(input) === "/api/agent-mcp/operator-converse"
+        ? new Response(frames, { headers: { "content-type": "text/event-stream" } })
+        : fallback(input, init));
+    const events: unknown[] = [];
+    const listener = (event: Event) => events.push((event as CustomEvent).detail);
+    window.addEventListener("papercusp:operatorToolCall", listener);
+    try {
+      render(<OperatorConversationProvider><Probe /></OperatorConversationProvider>);
+      fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+      await waitFor(() => {
+        const bodies = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")
+          .map(([, init]) => JSON.parse(String(init?.body)));
+        expect(bodies.find(body => body.role === "assistant")?.tools).toEqual(tools);
+      });
+      expect(events).toEqual(tools.map(tool => expect.objectContaining(tool)));
+    } finally {
+      window.removeEventListener("papercusp:operatorToolCall", listener);
+    }
+  });
+
+  it("P010 actual converse fetch rejects mismatched shared event discriminants", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    const tool = { name: "chat:ask_choice", input: { question: "Valid card" } };
+    const frames = 'event: tool_call\ndata: {"type":"delta","name":"wrong-card"}\n\n'
+      + `event: tool_call\ndata: ${JSON.stringify(tool)}\n\n`
+      + 'event: done\ndata: {}\n\n';
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      String(input) === "/api/agent-mcp/operator-converse"
+        ? new Response(frames, { headers: { "content-type": "text/event-stream" } })
+        : fallback(input, init));
+    render(<OperatorConversationProvider><Probe /></OperatorConversationProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+    await waitFor(() => {
+      const bodies = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")
+        .map(([, init]) => JSON.parse(String(init?.body)));
+      expect(bodies.find(body => body.role === "assistant")?.tools).toEqual([tool]);
+    });
+  });
+
+  it("P010 browser persistence reuses one turn identity after a lost acknowledgement", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    const writes: Record<string, unknown>[] = [];
+    let acknowledged = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (init?.method === "POST" && String(input).includes("/turns")) {
+        const body = JSON.parse(String(init.body));
+        if (body.role === "assistant") {
+          writes.push(body);
+          if (!acknowledged) { acknowledged = true; throw new Error("Committed but acknowledgement lost"); }
+        }
+      }
+      return fallback(input, init);
+    });
+    const generationFn: GenerationFn = async () => ({ chunks: (async function* () { yield "<say>One reply</say>"; })() });
+    render(<OperatorConversationProvider generationFn={generationFn}><Probe /></OperatorConversationProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+    await waitFor(() => expect(writes).toHaveLength(2), { timeout: 3000 });
+    expect(writes[0].turnId).toEqual(expect.any(String));
+    expect(writes[1]).toEqual(writes[0]);
+  });
+
+  it("P010 browser adopts the server committed row without posting a duplicate assistant", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    const persistedTurn = { conversationId: "conversation-1", turnId: "11111111-2222-4333-8444-555555555555", seq: 104 };
+    const frames = 'event: delta\ndata: {"text":"<say>Server saved</say>"}\n\n'
+      + `event: done\ndata: ${JSON.stringify({ persistedTurn })}\n\n`;
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === "/api/agent-mcp/operator-converse"
+      ? new Response(frames, { headers: { "content-type": "text/event-stream" } }) : fallback(input, init));
+    render(<OperatorConversationProvider><Probe /></OperatorConversationProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+    await waitFor(() => expect(screen.getByTestId("busy").textContent).toBe("false"));
+    expect(screen.getByText("Server saved").getAttribute("data-seq")).toBe("104");
+    const writes = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(writes.filter(body => body.role === "assistant")).toEqual([]);
+    expect(screen.getByTestId("error").textContent).toBe("");
+  });
+
+  it("P010 browser rejects an invalid committed receipt without falling back to a new assistant write", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    const frames = 'event: delta\ndata: {"text":"<say>Partial</say>"}\n\n'
+      + 'event: done\ndata: {"persistedTurn":{"conversationId":"conversation-1","turnId":"invalid","seq":104}}\n\n';
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === "/api/agent-mcp/operator-converse"
+      ? new Response(frames, { headers: { "content-type": "text/event-stream" } }) : fallback(input, init));
+    render(<OperatorConversationProvider><Probe /></OperatorConversationProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+    await waitFor(() => expect(screen.getByTestId("error").textContent).toContain("acknowledgement"));
+    const writes = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(writes.filter(body => body.role === "assistant")).toEqual([]);
+  });
+
+  it.each(["disconnect", "provider-error"])("P010 server managed %s keeps the partial refusal local and never appends a second row", async failure => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    const frames = 'event: run-meta\ndata: {"runId":"run-a","turnPersistence":1,"conversationId":"conversation-1"}\n\n'
+      + 'event: delta\ndata: {"text":"<say>Partial</say>"}\n\n'
+      + (failure === "provider-error" ? 'event: error\ndata: {"message":"provider-failed"}\n\n' : '');
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === "/api/agent-mcp/operator-converse"
+      ? new Response(frames, { headers: { "content-type": "text/event-stream" } }) : fallback(input, init));
+    render(<OperatorConversationProvider><Probe /></OperatorConversationProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+    await waitFor(() => expect(screen.getByTestId("error").textContent).toContain(failure === "provider-error" ? "provider-failed" : "recovery"));
+    const writes = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(writes.filter(body => body.role === "assistant")).toEqual([]);
+  });
+
   it("renders the first safe say delta before completion, then finalizes one assistant row", async () => {
     let releaseFinal!: () => void;
     const waitForFinal = new Promise<void>((resolve) => {

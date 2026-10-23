@@ -1,6 +1,6 @@
 /** Per-clause spec-test-adequacy evaluator (P-006 / D-004..D-006, D-009). */
 import { getBuildInfo } from '../../build-info';
-import { EXECUTABLE_PROOF_CRITERIA, executableProofExemption } from '../../plan-verification-profile';
+import { EXECUTABLE_PROOF_CRITERIA, executableProofExemption, isNonAutomatedBehaviorClass } from '../../plan-verification-profile';
 import type { PlanClassRubricRef } from '../../plan-class-refs';
 import {
   hasMatchingDeclaredCaseTitle,
@@ -1398,6 +1398,7 @@ function scorecardBindingEvidence(
   ratings: Record<AdequacyCriterion, AdequacyRatingEntry>,
   rows: SpecEvidenceForAdequacy[],
   rerunRecipe: SpecTestAdequacyRerunRecipe,
+  disclosedGapPopulation: { raw: SpecEvidenceForAdequacy[]; active: SpecEvidenceForAdequacy[] },
 ): { ratings: typeof ratings; table: string } {
   // One immutable binding can reach this presentation layer through multiple
   // evidence projections. Their rendered descriptions may differ, but they must
@@ -1417,7 +1418,7 @@ function scorecardBindingEvidence(
         rating.evidence,
       ).replace(
         ratingRerunProbeText(criterion as AdequacyCriterion, rerunRecipe),
-        ratingRerunProbeReference(criterion as AdequacyCriterion, rerunRecipe),
+        ratingRerunProbeReference(criterion as AdequacyCriterion, rerunRecipe, disclosedGapPopulation),
       ),
     }])) as typeof ratings,
     table: references.length > 0
@@ -2585,18 +2586,33 @@ function ratingRerunProbeText(
 function ratingRerunProbeReference(
   criterion: AdequacyCriterion,
   rerunRecipe: SpecTestAdequacyRerunRecipe,
+  disclosedGapPopulation: { raw: SpecEvidenceForAdequacy[]; active: SpecEvidenceForAdequacy[] },
 ): string {
   // A shared recipe alone is not an executable criterion-local probe. Reuse the
   // judge-readable evidence instrument with the SAME immutable row selectors,
   // rather than repeating the large replay fingerprint payload in every rating.
   const { harness, slug, specIds, bindingIds, evidenceRefs } = rerunRecipe.args;
+  // The universal gap check reads beyond the selected proof, including older
+  // metadata rows whose disclosures remain attached to the active logical proof.
+  // Pin that raw population for this criterion and explain its active projection;
+  // neither the selected row count nor the raw history count is the active census.
+  const population = criterion === 'disclosed-gap' ? disclosedGapPopulation : undefined;
+  const ids = population?.raw.map((row) => row.id);
+  const probeBindingIds = population
+    ? ids!.every((id) => Number.isSafeInteger(id) && id! > 0)
+      ? [...new Set(ids as number[])].sort((a, b) => a - b)
+      : undefined
+    : bindingIds;
+  const probeEvidenceRefs = population
+    ? [...new Set(population.raw.map((row) => row.evidenceRef))].sort()
+    : evidenceRefs;
   const args = {
     ...(harness !== undefined ? { harness } : {}),
     slug,
     specIds,
-    ...(bindingIds !== undefined
-      ? { bindingIds, ...(bindingIds.length > 0 ? { includeRetracted: true } : {}) }
-      : { evidenceRefs }),
+    ...(probeBindingIds !== undefined
+      ? { bindingIds: probeBindingIds, ...(probeBindingIds.length > 0 ? { includeRetracted: true } : {}) }
+      : { evidenceRefs: probeEvidenceRefs }),
     detail: 'full',
     limit: 1_000,
   };
@@ -2606,6 +2622,11 @@ function ratingRerunProbeReference(
     `specFingerprint=${JSON.stringify(rerunRecipe.selection.specFingerprint)}; ` +
     'compare details, fingerprints, currentness, testRunExecution and testRunProvenance with this criterion\'s claim. ' +
     'Require bounded.truncatedByLimit=false before treating the read as complete. ' +
+    (population
+      ? `Apply activeSpecEvidence to these clause rows: ${population.raw.length} raw binding(s), ${population.active.length} active logical binding(s); ` +
+        `active bindingIds=${JSON.stringify(population.active.map((row) => row.id).filter((id) => Number.isSafeInteger(id)).sort((a, b) => a! - b!))}. ` +
+        'Retain raw history when checking disclosures attached to the same proof or an unverified replacement; do not equate raw row count with the active census. '
+      : '') +
     `Replay result: rows[0].ratings[${JSON.stringify(criterion)}] via rerunRecipe.`
   );
 }
@@ -3252,7 +3273,7 @@ export function evaluateSpecTestAdequacy(input: {
     (row) =>
       row.evidenceKind !== 'operational' &&
       !(row.evidenceKind === 'coverage-census' &&
-        clause.behaviorClass === 'non-automated' && clause.requiredTestLayers.length === 0 &&
+        isNonAutomatedBehaviorClass(clause.behaviorClass) && clause.requiredTestLayers.length === 0 &&
         !fixtureUseRequired && row.testRunId === null && row.testRunExecution == null &&
         row.fingerprints.testFingerprint === null &&
         row.currentness?.provenance === 'server-measured' &&
@@ -4262,7 +4283,7 @@ export function evaluateSpecTestAdequacy(input: {
     ...exactEvidence,
     ...disclosedGapRows,
     ...freeFormNoteRows,
-  ], rerunRecipe);
+  ], rerunRecipe, { raw: exactDisclosedGapMatches, active: activeDisclosedGapEvidence });
   const replayInstructions =
     `Replay instructions: execute the card-level rerunRecipe (${rerunRecipe.evaluator}) once with its stored args. ` +
     'Compare each returned criterion rating with this card and the current evidence. Replay remeasures currentness at replay time, so freshness-dependent ratings can differ after evidence changes. ' +

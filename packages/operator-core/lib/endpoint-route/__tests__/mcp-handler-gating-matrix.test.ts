@@ -48,6 +48,7 @@ import { AGENT_MCP_AUTH_META, startAgentMcpServer } from '../routes/transport/_m
 import type { Principal, UnifiedToolContext } from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS, setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
+import { mintConverseChatBinding } from '../../agent-tools/operator/converse-chat-binding';
 import { resetResultDoorAggregatesForTests } from '../../result-door';
 import { parseScratchReference } from '../../scratch-reference';
 import { MAX_PICK_PATHS, NAMED_VIEWS } from '../../result-projection';
@@ -1550,6 +1551,73 @@ describe('public Papercup PI card transport (EI-22679615443261276)', () => {
     `${MCP}?principal=pi&workspace=${workspace}&tools=chat%3Aask_choice`,
     { authorization: 'Bearer test-pi-card-bearer' },
   );
+
+  it('verifies a signed parent while minting independent PI child runs and retaining current credential checks', async () => {
+    h.signingRows = [{ value_b64: Buffer.alloc(32, 9).toString('base64'), rotated_at: '2026-01-01' }];
+    const actual = h.realSpawnSigning!;
+    actual._resetSpawnSigningKeyCache();
+    h.verifySpawnParams.mockImplementation((input, options) => actual.verifySpawnParams(input as URL, options));
+    h.resolveBearer.mockResolvedValue(principal);
+    try {
+      const parent = { workspaceId: principal.workspaceId, conversationId: 'conv-parent', turnId: 'turn-parent', runId: 'parent-run',
+        authority: { kind: 'system' as const, principalId: 'system:operator', credentialSha256: 'a'.repeat(64) } };
+      const token = await mintConverseChatBinding(parent, 'test-pi-card-bearer');
+      const request = () => extraFor(`${MCP}?principal=pi&workspace=${parent.workspaceId}&chat_binding=${encodeURIComponent(token)}`,
+        { authorization: 'Bearer test-pi-card-bearer' });
+      const first = await tryBuildSpawnContext(request());
+      const second = await tryBuildSpawnContext(request());
+      expect(first.kind).toBe('ok');
+      expect(second.kind).toBe('ok');
+      if (first.kind !== 'ok' || second.kind !== 'ok') throw new Error('parent-positive-control-failed');
+      expect(first.ctx.chatParent).toMatchObject(parent);
+      expect(second.ctx.chatParent).toEqual(first.ctx.chatParent);
+      expect(first.ctx.runId).not.toBe(parent.runId);
+      expect(second.ctx.runId).not.toBe(first.ctx.runId);
+      expect(first.ctx.isSuperuser).not.toBe(true);
+      expect(await tryBuildSpawnContext(extraFor(`${MCP}?principal=pi&workspace=${parent.workspaceId}&chat_binding=${encodeURIComponent(token)}`,
+        { authorization: 'Bearer another-valid-pi-bearer' }))).toMatchObject({ kind: 'failed', reason: 'chat_parent_invalid_binding' });
+      h.resolveBearer.mockResolvedValue({ ...principal, capabilities: new Set() });
+      const denied = await callTool('chat:ask_choice', cardInput, request());
+      expect(denied.isError).toBe(true);
+      expect(textOf(denied)).toContain('chat:write');
+      h.resolveBearer.mockResolvedValue(null);
+      expect(await tryBuildSpawnContext(request())).toMatchObject({ kind: 'failed', reason: 'pi_principal_invalid_bearer' });
+    } finally { h.signingRows = null; actual._resetSpawnSigningKeyCache(); }
+  });
+
+  it('carries the signed parent through owner dispatch without trusting raw run or conversation parameters', async () => {
+    h.signingRows = [{ value_b64: Buffer.alloc(32, 9).toString('base64'), rotated_at: '2026-01-01' }];
+    const actual = h.realSpawnSigning!;
+    actual._resetSpawnSigningKeyCache();
+    h.verifySpawnParams.mockImplementation((input, options) => actual.verifySpawnParams(input as URL, options));
+    try {
+      const parent = { workspaceId: 'ws-test', conversationId: 'conv-owner', turnId: 'turn-owner', runId: 'parent-owner',
+        authority: { kind: 'system' as const, principalId: 'system:operator', credentialSha256: 'a'.repeat(64) } };
+      const token = await mintConverseChatBinding(parent, 'test-su-bearer');
+      const raw = '&workspace=ws-test&run=forged-child&conversationId=forged&turnId=forged';
+      const unsigned = await tryBuildSpawnContext(superuserExtra(raw));
+      expect(unsigned.kind).toBe('ok');
+      if (unsigned.kind !== 'ok') throw new Error('owner-positive-control-failed');
+      expect(unsigned.ctx.chatParent).toBeUndefined();
+      expect(unsigned.ctx.interactiveCardCapability).toBeUndefined();
+      const query = `${raw}&chat_binding=${encodeURIComponent(token)}`;
+      for (let index = 0; index < 2; index++) {
+        const result = await callTool('gatingtest:scoped', {}, superuserExtra(query));
+        expect(result.isError, textOf(result)).not.toBe(true);
+      }
+      expect(seen).toHaveLength(2);
+      for (const call of seen) {
+        expect(call.ctx.chatParent).toMatchObject(parent);
+        expect(call.ctx.interactiveCardCapability).toBe(true);
+        expect(call.ctx.askUser).toEqual(expect.any(Function));
+        expect(call.ctx.runId).not.toBe(parent.runId);
+        expect(call.ctx.runId).not.toBe('forged-child');
+      }
+      expect(seen[0].ctx.runId).not.toBe(seen[1].ctx.runId);
+      expect(await tryBuildSpawnContext(superuserExtra(`${query}&chat_binding=${encodeURIComponent(token)}`)))
+        .toMatchObject({ kind: 'failed', reason: 'chat_parent_invalid_transport' });
+    } finally { h.signingRows = null; actual._resetSpawnSigningKeyCache(); }
+  });
 
   it('displays and answers an actual ask_choice through authenticated tools/call', async () => {
     h.resolveBearer.mockResolvedValue(principal);

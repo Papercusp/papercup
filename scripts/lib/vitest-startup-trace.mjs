@@ -5,12 +5,15 @@ import { createHash, randomUUID } from 'node:crypto';
 import { linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
-/** Reuse the OUT channel and this preload without enabling stderr diagnostics. */
-export function nativeProcessTraceEnv(env = process.env) {
-  if (!env.PC_EXECUTED_SOURCE_MAP_OUT?.trim()) return env;
+/** Reuse the OUT channel and this preload without enabling stderr diagnostics.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{ enabled?: boolean }} [options] Source-owned prediction before the OUT path is allocated.
+ */
+export function nativeProcessTraceEnv(env = process.env, options = {}) {
+  if (!(options.enabled ?? Boolean(env.PC_EXECUTED_SOURCE_MAP_OUT?.trim()))) return env;
   const preload = `--import=${JSON.stringify(new URL('./vitest-startup-trace.mjs', import.meta.url).href)}`;
-  const options = env.NODE_OPTIONS ?? '';
-  return { ...env, NODE_OPTIONS: options.includes(preload) ? options : `${options} ${preload}`.trim() };
+  const nodeOptions = env.NODE_OPTIONS ?? '';
+  return { ...env, NODE_OPTIONS: nodeOptions.includes(preload) ? nodeOptions : `${nodeOptions} ${preload}`.trim() };
 }
 
 // These are observations, not a shell parser or a complete execution census.

@@ -17,7 +17,8 @@
  * In a PACKAGED Tauri build `process.execPath` is the Tauri/sidecar binary, not
  * node — handing it to something that expects a node interpreter breaks exactly
  * the installs this resolver exists to serve. It is only a valid candidate when
- * it really is a node binary, which the basename check establishes.
+ * it really is a node binary. The basename filters candidates; an interpreter
+ * probe establishes identity, including when a Bun executable is named node.
  *
  * The returned binary is always a plain node (never a tsx/loader wrapper), so a
  * caller whose stdout is a binary protocol can rely on it booting quietly —
@@ -50,9 +51,12 @@ export async function resolveBundledNode(): Promise<string | null> {
   const candidates = [
     sidecarBin ? path.join(sidecarBin, 'node') : '',
     execIsNode ? process.execPath : '',
-  ].filter(Boolean);
+  ].filter(Boolean).map(candidate => path.resolve(candidate));
   for (const c of candidates) {
-    if (await pathExists(c)) return c;
+    if (!(await pathExists(c))) continue;
+    try {
+      if ((await measureRuntimePin(c)).name === 'node') return c;
+    } catch { /* Unusable or unidentified runtimes never become a Node boundary. */ }
   }
   return null;
 }
@@ -120,9 +124,11 @@ function assertRuntimePin(pin: ApplicationRuntimePin, name: ApplicationRuntimeNa
   }
 }
 
-async function verifyRuntimePin(pin: ApplicationRuntimePin): Promise<ApplicationRuntimePin> {
-  const executable = await realpath(pin.executable);
-  if (sha256(await readFile(executable)) !== pin.binarySha256) throw new Error('Runtime binary digest mismatch');
+async function measureRuntimePin(candidate: string, expectedSha256?: string): Promise<ApplicationRuntimePin> {
+  const executable = await realpath(candidate);
+  const binarySha256 = sha256(await readFile(executable));
+  // A pinned executable must be checked before any identity subprocess can run.
+  if (expectedSha256 && binarySha256 !== expectedSha256) throw new Error('Runtime binary digest mismatch');
   // Identity probes must not inherit credentials, preloads, or a loader from the host.
   const env: NodeJS.ProcessEnv = {};
   for (const key of ['SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'LANG']) {
@@ -132,14 +138,24 @@ async function verifyRuntimePin(pin: ApplicationRuntimePin): Promise<Application
     env, timeout: 5000, maxBuffer: 8192, windowsHide: true,
   });
   const measured = JSON.parse(stdout);
+  const pin = { ...measured, executable, binarySha256 } as ApplicationRuntimePin;
+  if (!['node', 'bun'].includes(measured.name)) throw new Error('Unknown runtime interpreter');
+  assertRuntimePin(pin, measured.name);
+  if (await realpath(measured.executable) !== executable
+    || sha256(await readFile(executable)) !== binarySha256) {
+    throw new Error('Runtime binary changed during measurement');
+  }
+  return pin;
+}
+
+async function verifyRuntimePin(pin: ApplicationRuntimePin): Promise<ApplicationRuntimePin> {
+  const measured = await measureRuntimePin(pin.executable, pin.binarySha256);
+  if (measured.binarySha256 !== pin.binarySha256) throw new Error('Runtime binary digest mismatch');
   if (measured.name !== pin.name || measured.version !== pin.version
-    || measured.platform !== pin.platform || measured.arch !== pin.arch
-    || await realpath(measured.executable) !== executable
-    || await realpath(pin.executable) !== executable
-    || sha256(await readFile(executable)) !== pin.binarySha256) {
+    || measured.platform !== pin.platform || measured.arch !== pin.arch) {
     throw new Error('Runtime identity does not match its pin');
   }
-  return { ...pin, executable };
+  return measured;
 }
 
 /**

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { classifyLanes, isUnitTestFile } from '@papercusp/test-config/lane-split';
+import { captureCurrentRuntimeProofIdentity, runtimeProofFingerprint } from '../../../../scripts/lib/runtime-compatibility.mjs';
 
 // The subject module is overridable (TEST_PASS_REUSE_SUBJECT = an absolute path to a copy) so
 // scripts/mutation-probe.sh can run this suite against a frozen historical or mutated snapshot
@@ -365,7 +366,9 @@ describe('P-001 (gate-test-reuse-yield-2026-10-01): nested vitest configs are pe
     expect(reuseRunnerIdentity(' v25.9.0 linux x64\n')).toBe(`${REUSE_PROOF_FORMAT} v25.9.0 linux x64`);
     expect(reuseRunnerIdentity('')).toBeNull();
     expect(reuseRunnerIdentity(null)).toBeNull();
-    expect(reuseRunnerIdentity(`${process.version} ${process.platform} ${process.arch}`)).toBe(executedSourceRunnerIdentity());
+    const root = fileURLToPath(new URL('../../../../', import.meta.url));
+    expect(reuseRunnerIdentity(runtimeProofFingerprint(captureCurrentRuntimeProofIdentity({ root }))))
+      .toBe(executedSourceRunnerIdentity());
   });
 
   it('an older-format proof (no config input recorded) is never judged under the narrowed rule', () => {

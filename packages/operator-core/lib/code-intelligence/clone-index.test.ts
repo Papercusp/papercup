@@ -39,6 +39,75 @@ describe('incremental TS/TSX clone index', () => {
     expect(() => new CloneIndex({ minMass: 0 })).toThrow('positive integer');
   });
 
+  it('finds inserted, removed and reordered near copies through the selected engine at the default floor', () => {
+    const statements = ['let total = input;', 'if (input < 0) { total = -input; }',
+      ...Array.from({ length: 20 }, (_, i) => `total += input * ${i + 1};`), 'return total;'];
+    const wrap = (body: string[]) => `export function calculate(input: number) { ${body.join('\n')} }`;
+    const base = wrap(statements);
+    const variants = [
+      { path: 'added.ts', source: wrap([...statements.slice(0, -1), 'total += 42;', 'return total;']) },
+      { path: 'removed.ts', source: wrap(statements.filter((_, i) => i !== 5)) },
+      { path: 'reordered.ts', source: wrap([statements[0], statements[2], statements[1], ...statements.slice(3)]) },
+    ];
+    const index = buildCloneIndex([{ path: 'base.ts', source: base }, ...variants,
+      { path: 'renamed.ts', source: base.replaceAll('total', 'sum') },
+      { path: 'exact.ts', source: base },
+      { path: 'negative.ts', source: `function render() { ${'if (document.body) { throw new Error("bad"); }'.repeat(20)} }` },
+    ]);
+    const target = index.getFile('base.ts')!.functions[0];
+    expect(target.mass).toBeGreaterThanOrEqual(CLONE_MIN_MASS);
+    const near = index.near(target);
+    expect(near.map(hit => hit.member.path).sort()).toEqual(['added.ts', 'removed.ts', 'reordered.ts']);
+    expect(near.every(hit => hit.score >= 0.8 && hit.score < 1)).toBe(true);
+    expect(index.lookup('exact', target.exact).map(fn => fn.path)).toEqual(['base.ts', 'exact.ts']);
+    expect(index.lookup('renamed', target.renamed).map(fn => fn.path)).toEqual(['base.ts', 'exact.ts', 'renamed.ts']);
+    const snippet = extractCloneFile({ path: 'snippet.ts', source: base }).functions[0];
+    expect(index.near(snippet)).toEqual(near);
+    expect(index.near(JSON.parse(JSON.stringify(target)))).toEqual([]);
+    expect(Object.keys(target)).not.toContain('tree');
+  });
+
+  it('prunes near LSH memberships on changed blobs, syntax errors, unavailability and deletion', async () => {
+    const base = `function f(input: number) { let total = input; ${'total += input * 2;'.repeat(24)} return total; }`;
+    const changed = base.replace('return total;', 'total += 42; return total;');
+    const index = buildCloneIndex([{ path: 'base.ts', source: base }, { path: 'copy.ts', source: changed }]);
+    const target = index.getFile('base.ts')!.functions[0];
+    const version = index.version;
+    expect(index.near(target).map(hit => hit.member.path)).toEqual(['copy.ts']);
+    expect(index.update({ path: 'copy.ts', source: changed }).changed).toBe(false);
+    expect(index.version).toBe(version);
+    for (const operation of [
+      () => index.update({ path: 'copy.ts', source: 'function f( {' }),
+      () => index.update({ path: 'copy.ts', source: 'const tiny = () => 1;' }),
+      () => index.unavailable('copy.ts'),
+      () => index.remove('copy.ts'),
+    ]) {
+      operation(); expect(index.near(target)).toEqual([]);
+      index.update({ path: 'copy.ts', source: changed });
+      expect(index.near(target)).toHaveLength(1);
+    }
+    await refreshCloneIndex(index, { changedPaths: ['copy.ts'], readSource: async () => null });
+    expect(index.near(target)).toEqual([]);
+    index.update({ path: 'copy.ts', source: changed });
+    index.update({ path: 'base.ts', source: changed });
+    expect(index.near(target)).toEqual([]); // stale caller-owned target
+  });
+
+  it('filters classified near copies and deduplicates candidates that share several bands', () => {
+    const base = `function f(input: number) { let total = input; ${'total += input * 2;'.repeat(24)} return total; }`;
+    const changed = base.replace('return total;', 'total += 42; return total;');
+    const paths = ['src/copy.ts', 'src/copy.test.ts', 'templates/copy.ts', '_retired/copy.ts'];
+    const index = buildCloneIndex([{ path: 'src/base.ts', source: base }, ...paths.map(path => ({ path, source: changed }))]);
+    const target = index.getFile('src/base.ts')!.functions[0];
+    expect(index.near(target).map(hit => hit.member.path)).toEqual(['src/copy.ts']);
+    expect(index.near(target, { includeTests: true }).map(hit => hit.member.path)).toEqual(['src/copy.test.ts', 'src/copy.ts']);
+    expect(index.near(target, { includeClassified: true })).toHaveLength(paths.length);
+    const reverse = buildCloneIndex(index.getFiles().slice().reverse().map(file => ({
+      path: file.path, source: file.path === 'src/base.ts' ? base : changed,
+    })));
+    expect(reverse.near(reverse.getFile('src/base.ts')!.functions[0])).toEqual(index.near(target));
+  });
+
   it('classifies test/vendor/retired members while excluding them from ordinary families', () => {
     const paths = ['src/a.ts', 'src/b.ts', 'tests/a.spec.ts', 'templates/a.ts', 'libs/a/template-kit/a.ts', '_retired/a.ts', 'apps/operator/app/a.ts'];
     const index = buildCloneIndex(paths.map(path => ({ path, source })), lowFloor);

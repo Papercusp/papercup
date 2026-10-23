@@ -36,6 +36,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { captureRuntimeProofIdentity, runtimeProofFingerprint } from "./runtime-compatibility.mjs";
+import { captureNpmTaskRuntimeIdentity } from "./passing-task-verdict-cache.mjs";
 import {
   EXECUTED_MAP_NO_PERSIST_ENV,
   EXECUTED_MAP_OUT_ENV,
@@ -150,23 +152,15 @@ function defaultGit(root, args) {
  * @param {string} root
  * @param {NodeJS.ProcessEnv} env
  * @param {string} [proofFormat] the JUDGED tree's recorder format (judgedTreeProofFormat)
+ * @param {{ workspaceRoot: string, scriptText: string, preScript?: string, postScript?: string }} [task]
+ *   Required for npm tasks; without it this measures only a direct PATH-node launch.
  * @returns {string | null}
  */
-export function defaultRunnerIdentity(root, env, proofFormat = REUSE_PROOF_FORMAT) {
-  try {
-    return reuseRunnerIdentity(
-      execFileSync("node", ["-p", "process.version + ' ' + process.platform + ' ' + process.arch"], {
-        cwd: root,
-        env,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 30_000,
-      }),
-      proofFormat,
-    );
-  } catch {
-    return null;
-  }
+export function defaultRunnerIdentity(root, env, proofFormat = REUSE_PROOF_FORMAT, task) {
+  const identity = task
+    ? captureNpmTaskRuntimeIdentity({ root, environment: env, ...task })
+    : captureRuntimeProofIdentity({ root, environment: env });
+  return reuseRunnerIdentity(runtimeProofFingerprint(identity), proofFormat);
 }
 
 const defaultDeps = {
@@ -464,7 +458,10 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   // its skip-list consumer both use that format; on a frozen lineage older than a format bump the
   // constant made every proof `otherRunner` (gate run 762a13a6: 0 of 7,689 reused).
   const proofFormat = (typeof d.proofFormat === "function" ? d.proofFormat(root) : null) ?? REUSE_PROOF_FORMAT;
-  const runnerIdentity = d.runnerIdentity(root, out, proofFormat);
+  const runnerIdentity = d.runnerIdentity(root, out, proofFormat, {
+    workspaceRoot: path.join(root, pkg.dirRel), scriptText: pkg.scripts[script],
+    preScript: pkg.scripts[`pre${script}`], postScript: pkg.scripts[`post${script}`],
+  });
   if (!runnerIdentity) return off("no-runner-identity");
   let client;
   try {
@@ -475,7 +472,7 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   let loaded;
   try {
     loaded = await withTimeout(
-      d.loadProofs({ client, workspaceName: workspace, runContext }),
+      d.loadProofs({ client, workspaceName: workspace, runContext, runnerIdentity }),
       TARGETED_REUSE_PROOF_READ_TIMEOUT_MS,
       "reuse-proof read",
     );

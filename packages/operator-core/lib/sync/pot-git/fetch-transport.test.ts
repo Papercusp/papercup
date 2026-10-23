@@ -7,7 +7,7 @@
  * fetch-transport.integration.test.ts — this file only exercises the guard.)
  */
 import { describe, expect, it, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Duplex, PassThrough } from 'node:stream';
@@ -300,7 +300,7 @@ describe('extNodeCommand — the ext:: interpreter token (EI-20078551747038927)'
 
   function touch(p: string): string {
     mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, '');
+    symlinkSync(origExecPath, p);
     return p;
   }
 

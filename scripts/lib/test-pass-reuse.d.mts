@@ -3,9 +3,10 @@
 // scripts/lib/test-pass-reuse.mjs and regenerate.
 /**
  * The runner identity a selector compares proofs against: the proof format plus the
- * `process.version process.platform process.arch` of the node the task will spawn.
+ * complete runtime fingerprint of the interpreter the task will spawn. Legacy
+ * version strings cannot equal the fingerprint measured by current consumers.
  *
- * @param {string | null | undefined} nodeIdentity
+ * @param {string | null | undefined} nodeIdentity complete runtime fingerprint
  * @param {string} [proofFormat] the judged tree's recorder format; defaults to this selector's
  * @returns {string | null} null when the node probe produced nothing (reuse then switches off)
  */

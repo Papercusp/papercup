@@ -1939,7 +1939,7 @@ it('quota wall during launch kickoff preserves the host and publishes recovery t
   expect(existsSync(sock)).toBe(false);
 }, 25000);
 
-it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'interactive-replay', 'owner-edit', 'automatic', 'automatic-transient', 'automatic-unavailable'] as const)('Codex quota recovery verifies its auto route before replacing the child (%s)', async (repair) => {
+it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'interactive-replay', 'owner-edit', 'automatic', 'automatic-transient', 'automatic-unavailable', 'explicit', 'explicit-generation', 'explicit-native', 'explicit-episode', 'explicit-expired', 'explicit-owner-edit'] as const)('Codex quota recovery verifies its auto route before replacing the child (%s)', async (repair) => {
   const root = mkdtempSync(join(tmpdir(), 'psu-quota-recovery-'));
   const codexHome = join(root, 'codex');
   const originalNativeId = '12345678-1234-1234-1234-123456789abc';
@@ -1950,11 +1950,12 @@ it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'inter
   const sock = socketPathFor(ownerId);
   const eventPath = eventLogPathForOwner(ownerId);
   const automatic = repair.startsWith('automatic');
-  const fixture = ['interactive', 'interactive-replay', 'owner-edit'].includes(repair) || automatic ? bridgedIo() : fakeIo();
+  const explicit = repair.startsWith('explicit');
+  const fixture = ['interactive', 'interactive-replay', 'owner-edit'].includes(repair) || automatic || explicit ? bridgedIo() : fakeIo();
   const { io, captured } = fixture;
   const operationId = String(9_000_000 + Math.floor(performance.now()));
   const marker = '⟦turn-origin:wake-pump nonce:0123456789abcdef⟧';
-  const preservesConversation = ['interactive', 'interactive-replay', 'owner-edit'].includes(repair) || automatic;
+  const preservesConversation = ['interactive', 'interactive-replay', 'owner-edit'].includes(repair) || automatic || explicit;
   const childCode = [
     "const fs=require('node:fs'),path=require('node:path');",
     "const recycled=process.argv[1]==='RECYCLED';",
@@ -2014,7 +2015,7 @@ it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'inter
       if (repair === 'unavailable' || repair === 'automatic-unavailable' ||
           (repair === 'automatic-transient' && routeRepairs === 1)) return null;
       if (repair === 'repaired' || preservesConversation) applyCodexGatewayRoute(codexHome, { mode: 'auto', ownerId });
-      if (repair === 'owner-edit' && 'type' in fixture) fixture.type('unfinished owner input');
+      if ((repair === 'owner-edit' || repair === 'explicit-owner-edit') && 'type' in fixture) fixture.type('unfinished owner input');
       return { ok: true };
     },
     mintRecycleArgs: (a: string[]) => {
@@ -2054,6 +2055,46 @@ it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'inter
       await sleep(20);
     }
     expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.quotaBlocked).toBe(true);
+
+    if (explicit) {
+      const host = findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)!;
+      expect(host.caps).toContain('quota-recovery-reroute');
+      expect(routeRepairs).toBe(0); // default never switches automatically
+      const startedAtMs = Date.now();
+      const accepted = await injectIntoHostWithConfirmation(sock, {
+        mode: 'recycle', data: '', ownerId, deliveryId: operationId,
+        quotaRecovery: { operationId, ownerId, startedAtMs, cause: 'quota', defaultToAuto: {
+          hostStartedAt: host.startedAt,
+          childGeneration: host.childGeneration! + (repair === 'explicit-generation' ? 1 : 0),
+          nativeSessionId: repair === 'explicit-native' ? 'different-native' : originalNativeId,
+          quotaBlockedSinceMs: host.quotaBlockedSinceMs! + (repair === 'explicit-episode' ? 1 : 0),
+          expiresAtMs: repair === 'explicit-expired' ? startedAtMs - 1 : startedAtMs + 30_000,
+        } },
+      });
+      expect(accepted.ok).toBe(true);
+      const deadline = Date.now() + 8_000;
+      let events: Array<Record<string, unknown>> = [];
+      while (Date.now() < deadline) {
+        events = readFileSync(eventPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        if (events.some(event => ['quota-recovery-resumed', 'quota-recovery-dropped'].includes(String(event.kind)))) break;
+        await sleep(20);
+      }
+      expect(captured()).not.toContain('RECOVERED-TURN'); // never replay a queued/owner prompt
+      if (repair === 'explicit') {
+        expect(events).toContainEqual(expect.objectContaining({ kind: 'quota-recovery-resumed', nativeId: originalNativeId }));
+        expect(await waitForOutput(captured, 'RECYCLED-ROUTE:auto:true', 5_000)).toBe(true);
+        expect(recycleMints).toBe(1);
+        expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.accountRoutingMode).toBe('auto');
+      } else {
+        expect(events).toContainEqual(expect.objectContaining({ kind: 'quota-recovery-dropped',
+          reason: repair === 'explicit-owner-edit' ? 'owner-input-or-native-work' : 'stale-quota-reroute' }));
+        expect(recycleMints).toBe(0);
+        expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.accountRoutingMode).toBe('default');
+        expect(events.some(event => event.kind === 'respawn-predecessor-stop-started')).toBe(false);
+      }
+      expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.ownerId).toBe(ownerId);
+      return;
+    }
 
     const startedAtMs = Date.now();
     const accepted = await injectIntoHostWithConfirmation(sock, {

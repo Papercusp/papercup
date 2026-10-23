@@ -222,7 +222,10 @@ export {
 export {
   registerCard,
   resolveCardResponse,
+  resolveCardResponseAsync,
+  deliverCommittedCardResponse,
   cancelPendingCardsForRun,
+  cancelPendingCardsForRunAsync,
   cancelPendingCardsForWorkspaceSwitch,
   _resetCardCorrelatorForTests,
 } from '@papercusp/tooldef';

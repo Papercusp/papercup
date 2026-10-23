@@ -72,7 +72,9 @@ import {
   PUBLIC_MANUAL_TOOLS,
   type ConverseHostTrust,
 } from './converse-toolset';
-import type { ChatEvent } from '@papercusp/chat-protocol';
+import type { ChatEvent, ChatTurnToolCall } from '@papercusp/chat-protocol';
+import { getOrgPg } from '@papercusp/db-org';
+import { admitConverseTurn } from './converse-turn';
 import {
   buildOperatorPrompt,
   type ConverseSessionUser,
@@ -485,30 +487,56 @@ export default defineTool({
     // never copied from the operator's '*' principal.
     const customerPiToolNames = operatorTools.map((name) => name.replace(/^mcp__agentmcp__/, ''));
     let customerPiSession: Awaited<ReturnType<typeof startPiSession>> | null = null;
-    if (hostedCustomerIdentity && principalOk && customerPiToolNames.length > 0) {
-      const unknownTool = customerPiToolNames.find((name) => !lookupByMcpName(name));
-      if (unknownTool) throw new Error(`operator converse customer tool is not registered: ${unknownTool}`);
-      const capabilities = [...new Set(
-        customerPiToolNames.flatMap((name) => lookupByMcpName(name)!.capabilities),
-      )].sort();
-      customerPiSession = await startPiSession({
-        workspaceId,
-        sessionId: `operator-converse-${globalThis.crypto.randomUUID()}`,
-        capabilities,
-        allowedTools: customerPiToolNames,
-        expiresAt: new Date(Date.now() + CONVERSE_PI_SESSION_TTL_MS),
-      });
-    }
     const revokeCustomerPiSession = async (): Promise<void> => {
       if (!customerPiSession) return;
+      const session = customerPiSession;
+      customerPiSession = null;
       try {
-        await endPiSession(workspaceId, customerPiSession.sessionId);
+        await endPiSession(workspaceId, session.sessionId);
       } catch (err) {
         // The durable expires_at is the crash/revocation backstop; a cleanup
         // failure must not erase the completed chat result.
         console.warn('[operator:converse] PI session cleanup failed:', err instanceof Error ? err.message : err);
       }
     };
+    const credential = hostTrust === 'owner' && ownerPrincipal
+      ? { kind: 'system' as const, name: ownerPrincipal.name, bearer: ownerPrincipal.bearer }
+      : publicPrincipal?.kind === 'pi' && input.principalToken
+        ? { kind: 'pi' as const, sessionId: publicPrincipal.slug.replace(/^pi:/, ''), bearer: input.principalToken.trim() }
+        : null;
+    let durableTurn: Awaited<ReturnType<typeof admitConverseTurn>> | null = null;
+    if (!input.lessonContext && input.conversationId) {
+      if (!principalOk || !credential) throw new Error('unauthorized');
+      const principalId = credential.kind === 'system' ? `system:${credential.name}` : `pi:${credential.sessionId}`;
+      durableTurn = await admitConverseTurn({ options: { sql: getOrgPg().sql, workspaceId,
+        turn: { conversationId: input.conversationId, turnId: globalThis.crypto.randomUUID() },
+        scope: { principalId, tenantId: workspaceId, customerId: principalId, publicOwnerId: principalId } },
+      // The existing operator provisioner grants chat:write for persisted chat
+      // and decisions. The outer converse dispatcher remains its own gate.
+      credential, capability: 'chat:write', toolName: 'chat:ask_choice',
+      runId: ctx.runId || globalThis.crypto.randomUUID(), source: turnModality === 'voice' ? 'voice_tts' : 'text_typed' });
+    }
+    let totalCost = 0;
+    let assembled = '';
+    const collectedTools: ChatTurnToolCall[] = [];
+    let finalizationAttempted = false;
+    let persistedTurn: { conversationId: string; turnId: string; seq: number } | undefined;
+    const finishTurn = async (status: 'completed' | 'failed' | 'cancelled') => {
+      if (!durableTurn) return;
+      finalizationAttempted = true;
+      const parsed = parseOperatorTurn(assembled);
+      persistedTurn = await durableTurn.finalize({ status, text: parsed.say ?? '', tools: collectedTools,
+        report: parsed.report ?? null });
+    };
+    try {
+    if (hostedCustomerIdentity && principalOk && customerPiToolNames.length > 0) {
+      const unknownTool = customerPiToolNames.find((name) => !lookupByMcpName(name));
+      if (unknownTool) throw new Error(`operator converse customer tool is not registered: ${unknownTool}`);
+      const capabilities = [...new Set(customerPiToolNames.flatMap((name) => lookupByMcpName(name)!.capabilities))].sort();
+      customerPiSession = await startPiSession({ workspaceId,
+        sessionId: `operator-converse-${globalThis.crypto.randomUUID()}`, capabilities, allowedTools: customerPiToolNames,
+        expiresAt: new Date(Date.now() + CONVERSE_PI_SESSION_TTL_MS) });
+    }
 
     // The agentmcp HTTP MCP mount (converse-toolset.ts) — one set feeds BOTH the
     // `?tools=` allowlist and `--allowed-tools`, so the listed surface and the
@@ -530,7 +558,7 @@ export default defineTool({
     // PendingCardsBar (registers under '*', surface subscribed to the real
     // workspaceId — no overlap). Plan ref: bespoke-card-improvements-2026-05-13
     // §4.4 wire shape.
-    const mount = buildConverseMcpMount({
+    let mount = buildConverseMcpMount({
       hostTrust,
       baseUrl: selfUrl(),
       workspaceId,
@@ -542,6 +570,7 @@ export default defineTool({
         ? (input.principalToken ?? null)
         : (customerPiSession?.bearer ?? null),
     });
+    if (mount && durableTurn) mount = await durableTurn.bindMount(mount);
     const mcpConfig =
       principalOk && mount
         ? {
@@ -569,8 +598,6 @@ export default defineTool({
       promptHash: hashSystemPrompt(systemPromptText),
     } : undefined;
 
-    let totalCost = 0;
-    let assembled = '';
     let unreportedFrames = 0;
     let emittedToolCall = false;
     let firstEventAt: number | null = null;
@@ -712,6 +739,7 @@ export default defineTool({
               // ask_choice gates match on; without it the card silently never
               // renders and the user sees a "pick one" with nothing to pick.
               const name = canonicalToolName(ev.name);
+              collectedTools.push({ name, input: ev.input, ...(ev.callId ? { callId: ev.callId } : {}) });
               emitChatEvent(ctx, { type: 'tool_call', name, input: ev.input,
                 ...(ev.callId ? { callId: ev.callId } : {}) });
             } else if (ev.type === 'result') {
@@ -798,6 +826,7 @@ export default defineTool({
       );
       throw new Error(brainNoOutputMessage({ attempts: emptyAttempts, skippedFailover }));
     }
+    await finishTurn(ctx.signal.aborted ? 'cancelled' : 'completed');
 
     // WI-5071: output committed on a session-backed turn — bump the marker so
     // the NEXT turn resumes (turnCount 0 → 1 is what flips `resumed` on).
@@ -843,7 +872,6 @@ export default defineTool({
 
     // Post-stream side-effects. All fire-and-forget so transient
     // failures don't fail the user-visible response.
-    void recordSpend(totalCost);
 
     // Rolling-summary compaction pass (operator-context-compaction-2026-06-05):
     // fold turns that aged out of the verbatim window into the conversation's
@@ -991,8 +1019,20 @@ export default defineTool({
       data: {
         totalCost,
         assembled,
+        ...(persistedTurn ? { persistedTurn } : {}),
         ...(unreportedFrames > 0 ? { unreportedFrames } : {}),
       },
     };
+    } catch (error) {
+      // An uncertain final acknowledgement never authorizes a second terminal
+      // write with a different result. Recovery must reconcile that execution.
+      if (!finalizationAttempted) await finishTurn(ctx.signal.aborted ? 'cancelled' : 'failed');
+      throw error;
+    } finally {
+      // Provider usage survives a failed/cancelled stream or uncertain PG
+      // finalization. Keep the existing host accounting hook, exactly once.
+      void recordSpend(totalCost);
+      await revokeCustomerPiSession();
+    }
   },
 });

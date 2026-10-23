@@ -130,7 +130,7 @@ const OP_VALUES = [
 export default defineTool({
   name: 'graph:query',
   description:
-    'Code topology and reuse: evidence | symbol | context | callers | callees | impact | trace | contracts | sql-lineage | cochange | provenance | communities | flows | concept-search | similar | clones | health. evidence joins one authorized harness to exact intent, decisions, spec revisions and recorded proof using plan+item or file_path+name/line1; gaps and history remain explicit. similar accepts name, file_path+line1, or snippet; clones returns bounded path families. Exact/renamed matches use AST equality; near/semantic remain unknown until calibrated. cochange measures 90-day first-parent associations; provenance joins edits to sessions/items for file_path and one harnesses entry, never git authorship. sql-lineage takes table, bounded paths and optional column; maps static SQL/migration/sync sites. Callers prefer hash-checked snapshots then compiler. Read coverage: static retrieval and paths are lower bounds, not runtime proof. contracts joins scoped HTTP/RPC/event evidence. Native topology supports JS/TS; reuse supports TS/TSX.',
+    'Code topology and reuse: evidence | symbol | context | callers | callees | impact | trace | contracts | sql-lineage | cochange | provenance | communities | flows | concept-search | similar | clones | health. evidence joins authorized intent, decisions, specs and recorded proof using plan+item or file_path+name/line1; gaps remain explicit. similar accepts name, file_path+line1, or snippet; clones returns bounded families. Exact/renamed use AST equality; near uses calibrated shape similarity; semantic uses calibrated relevance or unknown. cochange measures 90-day first-parent associations; provenance joins edits to sessions/items for file_path and one harnesses entry, never git authorship. sql-lineage takes table, bounded paths and optional column; maps static SQL/migration/sync sites. Callers prefer hash-checked snapshots then compiler. Static retrieval and paths are lower bounds, not runtime proof. contracts joins scoped HTTP/RPC/event evidence. Native topology supports JS/TS; reuse supports TS/TSX.',
   guidance: {
     when: 'Who calls X: callers; what X calls: callees. Reuse: similar with name, file_path/line1 or snippet; clones with bounded paths. Read coverage and freshness.',
     notWhen:
@@ -221,17 +221,19 @@ export default defineTool({
       // Capture one callable for both hashing and execution, including on a hot reload.
       const handler = engineeringEvidenceQuery;
       const observed = await observeEngineeringBoundary(loadedHandlerFingerprint(handler), () => handler(args, ctx));
-      return { data: observed.result, boundaryObservation: observed.boundaryObservation,
+      // ToolResponse serialization owns `data`; unknown outer siblings do not
+      // cross MCP/HTTP. Keep this invocation's optional receipt in that payload.
+      return { data: { ...observed.result,
+        ...(observed.boundaryObservation ? { boundaryObservation: observed.boundaryObservation } : {}),
+        ...(observed.boundaryObservationGap ? { boundaryObservationGap: observed.boundaryObservationGap } : {}),
+      }, boundaryObservation: observed.boundaryObservation,
         boundaryObservationGap: observed.boundaryObservationGap };
     }
     if (op === 'similar' || op === 'clones') {
       const root = resolveAgentWorkspaceRoot(ctx);
-      const answer = await reuseGraphQuery(root, { ...args, op }, ctx.signal);
-      if (op === 'clones' || answer.status !== 'ok') return { data: answer };
-      const target = 'target' in answer ? answer.target : null;
-      return { data: { ...answer, semantic: await semanticSimilarQuery(root,
-        ctx.workspaceId ?? ctx.principal?.workspaceId,
-        { ...args, ...(target ? { file_path: target.path, line1: target.line1 } : {}) }, ctx.signal) } };
+      return { data: await reuseGraphQuery(root, { ...args, op }, ctx.signal,
+        op === 'similar' ? (input, signal) => semanticSimilarQuery(root,
+          ctx.workspaceId ?? ctx.principal?.workspaceId, input, signal) : undefined) };
     }
     if (op === 'cochange') {
       const paths = args.paths ?? (args.file_path ? [args.file_path] : []);

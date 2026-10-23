@@ -34,6 +34,7 @@ import { sharedUtilityPoolMax } from '../resource-profile';
 import { resolveGitContext } from '../testing-branch-resolve';
 import { resolveTestRunSource } from '../testing-run-source';
 import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from '../testing-worktree';
+import { toolDeliveryBlockLedgerIdentity, type ToolDeliveryCleanBlock } from '../tool-delivery-clean-runtime';
 
 export interface LlmScenarioLedgerRow {
   filePath: string;
@@ -298,6 +299,7 @@ export async function recordLlmScenarioTestRun(
   report: RunReport,
   scenarioFilePath: string | undefined,
   before: LlmScenarioLedgerStart | null,
+  cleanBlock?: { experimentId: string; blockIndex: number; block: ToolDeliveryCleanBlock },
 ): Promise<number | null> {
   try {
     // The scenario's executed source owns this receipt. An inherited integration
@@ -326,6 +328,12 @@ export async function recordLlmScenarioTestRun(
       runtimeEnvironmentBeforeCaptureStatus: before?.runtime.status ?? 'not-configured',
       runtimeEnvironmentAfterCaptureStatus: runtimeAfter.status,
     });
+    if (cleanBlock) {
+      const { block, blockIndex, experimentId } = cleanBlock;
+      if (report.scenarioId !== block.scenario || JSON.stringify(report.runs.map(run => run.summary.runId)) !== JSON.stringify(block.runIds)
+          || report.runs.some(run => run.summary.variantId !== block.variantId)) throw new Error('Clean block differs from original scenario report.');
+      row.executionDetails.llmBlockCustody = toolDeliveryBlockLedgerIdentity(experimentId, blockIndex, block);
+    }
 
     // Same pool + options as ./storage, so the two writers share one connection budget.
     const sql = getLongLivedAdminPool('llm-testing-storage', { max: sharedUtilityPoolMax(), prepare: false });

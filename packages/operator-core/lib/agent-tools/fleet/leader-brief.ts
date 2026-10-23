@@ -44,6 +44,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   readFleetLaneHealthDiagnosed,
+  readClaimSpecLaneHealthDiagnosed,
   type FleetLaneHealthReadResult,
   type FleetLaneHealthUnavailable,
 } from '../../fleet/lane-health';
@@ -52,7 +53,7 @@ import { canonicalExecutableWidth, exactPositiveSinglePlanSlugFromFilter } from 
 import { computeFleetUnderStaffedAlert, type FleetUnderStaffedEvaluation } from '../../fleet/under-staffed-alert';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { buildClaimableNowAggregate } from './leader-brief-aggregate';
+import { buildClaimableNowAggregate, type ClaimableNowAggregate } from './leader-brief-aggregate';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
 import type { AgentIdentity } from '../coordination/identity';
@@ -208,6 +209,7 @@ import {
   type LeaderBlockerStallView,
 } from '../../leader-blocker-stall-alert';
 import { computeStalledItemRotation, type StalledItemRotation } from './stalled-item-rotation';
+import type { ClaimConcurrencyVerdict, ClaimSpecRecord } from '../../scheduler/claim-spec-store';
 
 // EI-20226510994156306: a 50-member leader brief previously serialized ~66KB
 // before the transport's own result cap. Keep the detailed, verbose rows small;
@@ -630,6 +632,121 @@ export async function readLeaderBriefLaneHealth(
   });
 }
 
+/** A quiet idle alert is not a health verdict when its queue measurement failed. */
+export function computeClaimabilitySupervision(claimable: ClaimableNowAggregate): {
+  status: 'measured' | 'degraded';
+  fleet: string;
+  harness: string | null;
+  value: number | null;
+  reason: string;
+  recoverVia: string | null;
+} {
+  const measured = claimable.value != null && claimable.interpretation.exactness.status === 'exact';
+  return {
+    status: measured ? 'measured' : 'degraded',
+    fleet: claimable.population.fleet,
+    harness: claimable.population.harness,
+    value: claimable.value,
+    reason: claimable.unknown?.detail ?? claimable.interpretation.exactness.reason,
+    recoverVia: measured
+      ? null
+      : claimable.unknown?.recoverVia ??
+        leaderBriefClaimabilityRecovery(claimable.population.fleet, claimable.population.harness),
+  };
+}
+
+export interface ParkedMemberCapacity {
+  status: 'eligible' | 'protected' | 'at-capacity' | 'no-work' | 'unknown';
+  reason: string;
+  claimable: number | null;
+  activeClaims: number | null;
+  maxConcurrentClaims: number | null;
+  heldIds: string[];
+  blockerParkedIds: string[];
+  specRef: string | null;
+  recoverVia: string;
+}
+
+/** A wait is not a capacity verdict. Only the member's own admission oracle is. */
+export function computeParkedMemberCapacity(input: {
+  member: Pick<DecoratedAgent, 'sessionState' | 'wakeable' | 'fleetRole' | 'contextPressure' | 'parkedOn'> & { intent?: string | null };
+  fleetPaused: boolean | null;
+  evidence?: {
+    concurrency: ClaimConcurrencyVerdict;
+    claimable: number | null;
+    specRef: string;
+    unavailable?: string | null;
+  } | null;
+  unavailable?: string;
+}): ParkedMemberCapacity {
+  const evidence = input.evidence;
+  const result: ParkedMemberCapacity = {
+    status: 'unknown',
+    reason: input.unavailable ?? evidence?.unavailable ?? 'Member admission evidence was not measured.',
+    claimable: evidence?.claimable ?? null,
+    activeClaims: evidence?.concurrency.activeClaims ?? null,
+    maxConcurrentClaims: evidence?.concurrency.maxConcurrentClaims ?? null,
+    heldIds: evidence?.concurrency.heldIds ?? [],
+    blockerParkedIds: evidence?.concurrency.blockerParkedIds ?? [],
+    specRef: evidence?.specRef ?? null,
+    recoverVia: 'Read scheduler:get_claim_spec for this member; reconcile its owner restrictions and wait, then resume its managed continuation for scheduler:get_next. Preserve blocker ownership and completion wakes.',
+  };
+  const protect = (reason: string): ParkedMemberCapacity => ({ ...result, status: 'protected', reason });
+  if (input.fleetPaused === true) return protect('Fleet is paused; retain its resume gate.');
+  if (input.member.fleetRole === 'leader') return protect('Leader supervision is not a worker seat.');
+  if (input.member.contextPressure === 'critical') return protect('Recover context before admitting additional work.');
+  // Intent is not an authorization grant. A stated restriction is a reason to
+  // preserve the seat until the leader reads its saved authority, even when the
+  // member's inherited scheduler spec still admits unrelated work.
+  if (/\b(?:owner|held[ -]item)[ -]only\b|\bresume only\b|\bdo not (?:pull|claim|advance).{0,40}\b(?:new|other|more)\b/i.test(input.member.intent ?? '')) {
+    return protect('Member states a held-item-only or owner-only restriction; read its saved authority before any recovery.');
+  }
+  if (input.member.sessionState !== 'parked' || input.member.wakeable !== true) {
+    return protect('Member is not a confirmed parked, wakeable runtime; active and historical holders are not idle capacity.');
+  }
+  if (input.fleetPaused == null) return { ...result, reason: 'Fleet permission state was not measured.' };
+  if (!evidence) return result;
+  if (evidence.concurrency.blocked) return { ...result, status: 'at-capacity', reason: 'Exact counted claims reach this member’s effective limit.' };
+  const waits = input.member.parkedOn ?? [];
+  // Arbitrary gates (including owner-only waits and unresolved composed waits) are
+  // protected. A typed blocker-parked claim can retain its completion wake while
+  // the member pulls independent work; a plain wait alone never frees a slot.
+  const pullWait = (key: string) => key === 'work-item:claimable' ||
+    result.blockerParkedIds.some((id) => key === `work-item:done:${id}`);
+  if (waits.length === 0 || !waits.every(pullWait)) return protect('Wait includes a protected gate; reconcile its owner authorization before recovery.');
+  if (result.claimable == null) return result;
+  if (result.claimable === 0) return { ...result, status: 'no-work', reason: 'This member’s effective spec and claim floors admit no work.' };
+  return { ...result, status: 'eligible', reason: 'This parked member has spare counted capacity and work admitted by its own effective spec and claim floors. Verify owner restrictions, then resume its managed pull; do not launch a replacement.' };
+}
+
+/** Reuse member-spec inheritance and the same concurrency/floor readers as pull. */
+export async function readParkedMemberAdmission(
+  input: { member: string; fleet: string; harness?: string; workspaceId: string },
+  deps?: {
+    getSpec: (member: string) => Promise<ClaimSpecRecord>;
+    concurrency: (limit: number | undefined) => Promise<ClaimConcurrencyVerdict>;
+    lane: typeof readClaimSpecLaneHealthDiagnosed;
+  },
+): Promise<NonNullable<Parameters<typeof computeParkedMemberCapacity>[0]['evidence']>> {
+  const store = deps ? null : await import('../../scheduler/claim-spec-store');
+  const record = await (deps?.getSpec(input.member) ?? store!.getClaimSpecRecord({ cupId: input.member, workspaceId: input.workspaceId }));
+  const harness = record.harnessSlug ?? input.harness;
+  if (!harness || record.source === 'default') throw new Error('Member effective spec/harness is unresolved; no fleet-wide substitute was used.');
+  const concurrency = await (deps?.concurrency(record.spec.limits?.maxConcurrentClaims) ?? store!.readClaimConcurrency({ cupId: input.member, workspaceId: input.workspaceId, maxConcurrentClaims: record.spec.limits?.maxConcurrentClaims }));
+  if (concurrency.blocked) return { concurrency, claimable: null, specRef: `${record.spec.specId}@${record.revision ?? 'unknown'}` };
+  const read = await (deps?.lane ?? readClaimSpecLaneHealthDiagnosed)({
+    spec: record.spec, record, fleet: input.fleet, harness,
+    workspaceId: input.workspaceId, assignee: input.member, matchedBy: record.source,
+    issueFamilyTotalBudgetMs: FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS,
+  });
+  return {
+    concurrency,
+    claimable: read.unavailable ? null : read.laneHealth?.effective.claimable ?? null,
+    specRef: read.laneHealth?.spec.ref ?? `${record.spec.specId}@${record.revision ?? 'unknown'}`,
+    unavailable: read.unavailable?.detail,
+  };
+}
+
 /** PURE: keep an unavailable admission read distinct from a measured zero. */
 export function projectFleetAdmissionBlockRead(read: FleetAdmissionBlockRead): {
   blocks: FleetAdmissionBlock[];
@@ -954,6 +1071,7 @@ export interface LeaderBriefMember {
    *  `ComposedParkEntry` (its any/all/k-of-n mode + its OWN deadline), never as
    *  flat sibling strings alongside its own leaves — see resolveComposedParkedOn. */
   parkedOn?: Array<string | ComposedParkEntry>;
+  parkedCapacity?: ParkedMemberCapacity;
   /** Authoritative verified-wait failures that require owner wake/takeover. */
   verifiedWaitTakeovers?: VerifiedWaitTakeoverAlert[];
   /** EI-9943: this member is alive/speaking (burning real turns) but its work
@@ -1389,14 +1507,14 @@ export function prioritizeBenchSuggestedMembers<T extends { benchSuggestion?: un
  * identity indexes remain complete; this only makes their richer reasons likely
  * to survive the common payload tier. */
 export function prioritizeActionableMembers<
-  T extends { benchSuggestion?: unknown; intentAttention?: unknown; repeatedRecovery?: unknown },
+  T extends { benchSuggestion?: unknown; intentAttention?: unknown; repeatedRecovery?: unknown; parkedCapacity?: { status: string } },
 >(members: readonly T[]): T[] {
   return [
     ...members.filter(
-      (member) => member.benchSuggestion != null || member.intentAttention != null || member.repeatedRecovery != null,
+      (member) => member.benchSuggestion != null || member.intentAttention != null || member.repeatedRecovery != null || member.parkedCapacity?.status === 'eligible' || member.parkedCapacity?.status === 'unknown',
     ),
     ...members.filter(
-      (member) => member.benchSuggestion == null && member.intentAttention == null && member.repeatedRecovery == null,
+      (member) => member.benchSuggestion == null && member.intentAttention == null && member.repeatedRecovery == null && member.parkedCapacity?.status !== 'eligible' && member.parkedCapacity?.status !== 'unknown',
     ),
   ];
 }
@@ -4523,6 +4641,25 @@ export async function buildLeaderBrief(
     [grouped, grouped, grouped, grouped, grouped, grouped] as const,
     'decorations',
   );
+  // Start the member diagnostic alongside the existing fleet reads, so its
+  // 12s bound shares the overall 25s brief allowance instead of adding to it.
+  // This population excludes old holders and never substitutes fleet supply
+  // for a member override. Unmeasured members remain explicitly unknown.
+  const parkedCapacityByOwner = new Map<string, ParkedMemberCapacity>();
+  const parkedCandidates = grouped.filter((a) => a.sessionState === 'parked' && a.wakeable === true && (a.parkedOn?.length ?? 0) > 0);
+  for (const a of parkedCandidates) parkedCapacityByOwner.set(a.agentId, computeParkedMemberCapacity({ member: a, fleetPaused: fleetPause.paused }));
+  const parkedCapacityRead = boundedLeaderBriefRead('parked-member-admission', async () => {
+    await mapWithConcurrency(parkedCandidates.slice(0, 12), 4, async (a) => {
+      const base = computeParkedMemberCapacity({ member: a, fleetPaused: fleetPause.paused });
+      if (base.status === 'protected' || fleetPause.paused == null) return;
+      try {
+        const evidence = await readParkedMemberAdmission({ member: a.agentId, fleet, harness: args.harness, workspaceId });
+        parkedCapacityByOwner.set(a.agentId, computeParkedMemberCapacity({ member: a, fleetPaused: fleetPause.paused, evidence }));
+      } catch (error) {
+        parkedCapacityByOwner.set(a.agentId, computeParkedMemberCapacity({ member: a, fleetPaused: fleetPause.paused, unavailable: error instanceof Error ? error.message : String(error) }));
+      }
+    });
+  }, undefined, FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS);
   // P-005: a fired one-shot wait disappears from parkedOn, but its
   // authoritative stalled/absent verdict is durable. Surface that evidence
   // beside the member that must own the wake/takeover remedy.
@@ -4645,6 +4782,7 @@ export async function buildLeaderBrief(
     unavailable: fleetLaneHealthRead.unavailable,
     fleetPaused: fleetPause.paused,
   });
+  const claimabilitySupervision = computeClaimabilitySupervision(claimableNow);
   // P-005 / D-001: hydrate the rich, replace-full fleet snapshot through the
   // canonical scope resolver + burn-down builder. A missing harness or a slow
   // optional leg remains an explicit unavailable result with recoverVia;
@@ -4741,6 +4879,7 @@ export async function buildLeaderBrief(
       LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
     ),
   ]);
+  await parkedCapacityRead;
   const members = grouped.map((a) =>
     projectMember(
       a,
@@ -4755,6 +4894,10 @@ export async function buildLeaderBrief(
       repeatedRecoveryByOwner.get(a.agentId) ?? null,
     ),
   );
+  for (const member of members) {
+    const capacity = parkedCapacityByOwner.get(member.agentId);
+    if (capacity) member.parkedCapacity = capacity;
+  }
   // `self` now arrives on the caller bag (see LeaderBriefCaller): a viewer has
   // no row of its own in the fleet, so nothing is marked for it.
   const markedMembers = markSelfRows(members, self, 'agentId');
@@ -4848,6 +4991,15 @@ export async function buildLeaderBrief(
     high_context: members.filter((m) => m.contextPressure === 'high').length,
     critical_context: members.filter((m) => m.contextPressure === 'critical').length,
     parked: members.filter((m) => (m.parkedOn?.length ?? 0) > 0).length,
+    parked_capacity: {
+      population: 'current parked wakeable runtimes in this fleet; historical holders excluded',
+      eligible: members.filter((m) => m.parkedCapacity?.status === 'eligible').map((m) => m.agentId),
+      unknown: members.filter((m) => m.parkedCapacity?.status === 'unknown').map((m) => m.agentId),
+      protected: members.filter((m) => m.parkedCapacity?.status === 'protected').map((m) => m.agentId),
+      atCapacity: members.filter((m) => m.parkedCapacity?.status === 'at-capacity').map((m) => m.agentId),
+      noWork: members.filter((m) => m.parkedCapacity?.status === 'no-work').map((m) => m.agentId),
+    },
+    parkedCapacityAlert: members.some((m) => m.parkedCapacity?.status === 'eligible'),
     // P-012: raw intent signals already existed; this is the count of members
     // with a resolving action in `intentAttention` below.
     intent_attention: members.filter((m) => m.intentAttention != null).length,
@@ -4896,6 +5048,7 @@ export async function buildLeaderBrief(
     // are one wire value. A caller cannot retain the numeral while silently
     // dropping its fleet/spec/harness, and null carries an in-band reason.
     claimable_now: claimableNow,
+    claimability_supervision: claimabilitySupervision,
     // WI-3818: make any incomplete canonical roster read explicit to callers
     // instead of silently presenting a partial membership list.
     degraded_roster_legs: rosterResult.degradedLegs,
@@ -5486,6 +5639,7 @@ export async function buildLeaderBrief(
         // describes a scope you have not ratified.
         specAuthorshipAlert: specAuthorshipAlert != null,
         idleWithClaimableAlert: idleWithClaimableAlert != null,
+        claimabilitySupervisionDegraded: claimabilitySupervision.status === 'degraded',
         floorStarvedAlert: floorStarvedAlert != null,
         ...(customInvariants ? { customInvariantAlert: customInvariantAlert != null } : {}),
       },

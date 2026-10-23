@@ -6,8 +6,10 @@
  * Ported from app/api/operator/conversations/[id]/card-response/route.ts.
  * `auth: 'loopback'` (auth-tier Wave 1) — session check inline.
  */
-import { resolveCardResponse } from '@papercusp/agent-mcp';
-import { getSessionUserOrLocalDefault } from '../../session-or-local';
+import { deliverCommittedCardResponse, resolveCardResponseAsync } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@papercusp/db-org';
+import { getSessionUserOrLocalDefaultAuthority } from '../../session-or-local';
+import { findConverseCard } from '../../../agent-tools/operator/converse-card';
 import { cardResponseRateAllow } from '../../../card-response-rate-limit';
 import { getConversationById } from '../../../operator-conversations';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -28,10 +30,11 @@ export default defineTool({
     // WI-5044: session user OR (loopback-only) the seeded default user — the
     // desktop webview has no session cookie; a strict cookie check made every
     // card pick un-postable on the shipping product.
-    const user = await getSessionUserOrLocalDefault(req);
-    if (!user) {
+    const responder = await getSessionUserOrLocalDefaultAuthority(req);
+    if (!responder) {
       return Response.json({ error: 'unauthorized' }, { status: 401 });
     }
+    const { user } = responder;
 
     const body = (await req.json().catch(() => null)) as Body | null;
     if (
@@ -60,12 +63,34 @@ export default defineTool({
       return Response.json({ error: 'conversation not found' }, { status: 404 });
     }
 
-    const r = resolveCardResponse({
+    // A worker need not hold the original deferred or child mount. Locate
+    // the exact persisted binding within this authenticated URL scope, then
+    // commit under current parent, child AND human authority in storage.
+    try {
+      const card = await findConverseCard({ sql: getOrgPg().sql,
+        workspaceId: conversation.workspaceId, conversationId: conversation.id,
+        correlationId: body.correlationId, authorizeAdditional: responder.authorize });
+      if (card) {
+        const response = body.action === 'submit' ? { action: 'submit' as const, payload: body.payload }
+          : { action: body.action };
+        const receipt = await card.commitResponse(response, card.info(), 'response');
+        deliverCommittedCardResponse({ ...card.info(), response: receipt.response });
+        return receipt.accepted ? Response.json({ ok: true })
+          : Response.json({ error: 'card already decided' }, { status: 409 });
+      }
+    } catch (error) {
+      const code = error instanceof Error ? error.message : '';
+      const status = code === 'unauthorized' ? 403 : code === 'invalid-answer' ? 400
+        : ['already-decided', 'cancelled', 'expired'].includes(code) ? 409 : 503;
+      return Response.json({ error: status === 503 ? 'card decision needs reconciliation' : code }, { status });
+    }
+    const r = await resolveCardResponseAsync({
       correlationId: body.correlationId,
       action: body.action,
       payload: body.payload,
       reason: body.reason,
       expectedWorkspaceId: conversation.workspaceId,
+      legacyOnly: true,
     });
 
     if (!r.ok) {

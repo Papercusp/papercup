@@ -3,8 +3,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import type { CardResponse } from '@papercusp/agent-mcp';
 
-vi.mock('../../auth', () => ({ getSessionUser: vi.fn() }));
+vi.mock('../../auth', () => ({ getSessionUser: vi.fn(), resolveSessionToken: vi.fn(async () => 'current') }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('../../agent-tools/operator/converse-card', () => ({ findConverseCard: vi.fn(async () => null) }));
 vi.mock('../../operator-conversations', () => ({ getConversationById: vi.fn() }));
 vi.mock('../telemetry', () => ({
   recordRouteInvocation: vi.fn(async () => {}),
@@ -13,6 +16,7 @@ vi.mock('../telemetry', () => ({
 import { Hono } from 'hono';
 import { getSessionUser } from '../../auth';
 import { getConversationById } from '../../operator-conversations';
+import { findConverseCard } from '../../agent-tools/operator/converse-card';
 import {
   _resetCardCorrelatorForTests,
   registerCard,
@@ -46,6 +50,8 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
       workspace_id: ws, capabilities: ['*'],
     });
     vi.mocked(getConversationById).mockReset();
+    vi.mocked(findConverseCard).mockReset();
+    vi.mocked(findConverseCard).mockResolvedValue(null);
     vi.mocked(getConversationById).mockImplementation(async (id, workspaceId) =>
       id === 'c1' && workspaceId === ws ? { id, workspaceId } as never : null);
     app = new Hono().basePath('/api');
@@ -86,6 +92,44 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     expect(await reg.result).toEqual({ action: 'submit', payload: { picks: ['a'] } });
   });
 
+  it('awaits the host decision commit before HTTP success and waiter delivery', async () => {
+    openRun({ workspaceId: ws, runId: 'durable-http' });
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const commitResponse = vi.fn(async (response: CardResponse) => { await gate; return { accepted: true, response }; });
+    const reg = registerCard({ workspaceId: ws, runId: 'durable-http',
+      spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
+    vi.mocked(findConverseCard).mockResolvedValue({ commitResponse,
+      info: () => ({ correlationId: reg.correlationId, runId: 'durable-http', workspaceId: ws }) } as never);
+    let acknowledged = false;
+    let delivered = false;
+    void reg.result.then(() => { delivered = true; });
+    const running = Promise.resolve(post({ correlationId: reg.correlationId, workspaceId: ws, action: 'submit', payload: { picks: ['a'] } }))
+      .then(res => { acknowledged = true; return res; });
+    await vi.waitFor(() => expect(commitResponse).toHaveBeenCalledOnce());
+    expect(acknowledged).toBe(false);
+    expect(delivered).toBe(false);
+    finish();
+    expect((await running).status).toBe(200);
+    expect(await reg.result).toEqual({ action: 'submit', payload: { picks: ['a'] } });
+  });
+
+  it('refuses HTTP success when the host decision commit is uncertain', async () => {
+    openRun({ workspaceId: ws, runId: 'uncertain-http' });
+    const commitResponse = vi.fn(async () => { throw new Error('commit-ack-lost'); });
+    const reg = registerCard({ workspaceId: ws, runId: 'uncertain-http',
+      spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
+    vi.mocked(findConverseCard).mockResolvedValue({ commitResponse,
+      info: () => ({ correlationId: reg.correlationId, runId: 'uncertain-http', workspaceId: ws }) } as never);
+    let delivered = false;
+    void reg.result.then(() => { delivered = true; });
+    const res = await post({ correlationId: reg.correlationId, workspaceId: ws,
+      action: 'submit', payload: { picks: ['a'] } });
+    expect(res.status).toBe(503);
+    expect(delivered).toBe(false);
+    expect(commitResponse).toHaveBeenCalledOnce();
+  });
+
   it('submit validation failure returns 400 with Zod details', async () => {
     const reg = pendingCard();
     const res = await post({
@@ -96,6 +140,45 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     const j = (await res.json()) as { error: string; details?: unknown };
     expect(j.error).toMatch(/dataSchema/);
     expect(j.details).toBeDefined();
+  });
+
+  it('commits a recovered scoped card without a process-local waiter', async () => {
+    const commitResponse = vi.fn(async (response: CardResponse) => ({ accepted: true, response }));
+    vi.mocked(findConverseCard).mockResolvedValue({ commitResponse,
+      info: () => ({ correlationId: 'recovered', runId: 'child', workspaceId: ws }) } as never);
+    expect((await post({ correlationId: 'recovered', workspaceId: ws, action: 'submit',
+      payload: { picks: ['a'] } })).status).toBe(200);
+    expect(findConverseCard).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: ws,
+      conversationId: 'c1', correlationId: 'recovered', authorizeAdditional: expect.any(Function) }));
+    expect(commitResponse).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a revoked responder and never falls back to its live durable hook', async () => {
+    openRun({ workspaceId: ws, runId: 'revoked' });
+    const commitResponse = vi.fn(async (response: CardResponse) => ({ accepted: true, response }));
+    const reg = registerCard({ workspaceId: ws, runId: 'revoked',
+      spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
+    vi.mocked(findConverseCard).mockRejectedValue(new Error('unauthorized'));
+    expect((await post({ correlationId: reg.correlationId, workspaceId: ws,
+      action: 'submit', payload: { picks: ['a'] } })).status).toBe(403);
+    expect(commitResponse).not.toHaveBeenCalled();
+    vi.mocked(findConverseCard).mockResolvedValue(null);
+    expect((await post({ correlationId: reg.correlationId, workspaceId: ws,
+      action: 'submit', payload: { picks: ['a'] } })).status).toBe(409);
+    expect(commitResponse).not.toHaveBeenCalled();
+  });
+
+  it('returns conflict for a losing proposal while delivering the committed winner', async () => {
+    openRun({ workspaceId: ws, runId: 'winner' });
+    const winner = { action: 'submit' as const, payload: { picks: ['b'] } };
+    const commitResponse = vi.fn(async () => ({ accepted: false, response: winner }));
+    const reg = registerCard({ workspaceId: ws, runId: 'winner',
+      spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
+    vi.mocked(findConverseCard).mockResolvedValue({ commitResponse,
+      info: () => ({ correlationId: reg.correlationId, runId: 'winner', workspaceId: ws }) } as never);
+    expect((await post({ correlationId: reg.correlationId, workspaceId: ws,
+      action: 'submit', payload: { picks: ['a'] } })).status).toBe(409);
+    expect(await reg.result).toEqual(winner);
   });
 
   it('decline path resolves with action:decline', async () => {

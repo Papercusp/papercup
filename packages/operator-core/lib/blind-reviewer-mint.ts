@@ -127,6 +127,8 @@ export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: st
       '## Your scratch plans',
       `To exercise plan-tool behaviour, create plans of your own. Every slug must start with ${scratchPlans.scratchPrefix}, for example ${scratchPlans.scratchPrefix}probe.`,
       'plans:new, plans:add-item, plans:set-status, plans:audit and plans:get accept those slugs only, and plans:set-plan-status accepts them only with dryRun: true.',
+      'Use force: true on plans:new for an independent scratch rehearsal; it is permitted only under your own minted prefix and cannot bypass another plan\'s boundary.',
+      `Browse product definitions with plan-types:list or plan-types:get using harness: '${scratchPlans.harness}'. Public Cupboard browsing is limited to cupboard:search { kind: 'pack', q: '<your product search>' }; plan and rubric listings remain refused.`,
       'Never name the reviewed plan in a scratch call. Such a call is refused, and the attempt is recorded as reading the plan, which voids your review.',
       'Your scratch plans are archived when you post your gaps.',
     ] : []),

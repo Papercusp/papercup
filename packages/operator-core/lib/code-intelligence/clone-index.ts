@@ -3,6 +3,7 @@ import * as ts from 'typescript';
 import { AST_FINGERPRINT_VERSION, fingerprintTree, type TreeAdapter } from '../../../../libs/generic/ast-fingerprint/src/index';
 import type { PushSnapshot } from './push-snapshot';
 import type { CodeWorkingSet } from './working-set';
+import { CLONE_NEAR_POLICY, compareCloneNear, fingerprintCloneNear, type CloneNearFingerprint } from './clone-near';
 
 export const CLONE_MIN_MASS = 80;
 export const CLONE_MAX_SOURCE_BYTES = 1_500_000;
@@ -31,6 +32,12 @@ export interface CloneFilter {
    */
   includeTests?: boolean;
 }
+
+// Instance-owned function records carry private shapes without serializing AST
+// trees in public source inventories or retaining them in a global cache.
+const nearFingerprint = Symbol('clone-near');
+type NearFunction = CloneFunction & { [nearFingerprint]?: CloneNearFingerprint };
+export interface CloneNearMatch { member: CloneFunction; score: number }
 
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const byLocation = (a: CloneFunction, b: CloneFunction) => compare(a.path, b.path) || a.line - b.line || a.column - b.column || compare(a.name, b.name);
@@ -93,10 +100,12 @@ export function extractCloneFile(input: CloneSource, minMass = CLONE_MIN_MASS): 
         if (!name && (ts.isVariableDeclaration(node.parent) || ts.isPropertyAssignment(node.parent))
           && ts.isIdentifier(node.parent.name)) name = node.parent.name.text;
         const start = node.getStart(source), position = source.getLineAndCharacterOfPosition(start);
-        functions.push({ id: `${path}:${start}`, path, start, end: node.end,
+        const fn: CloneFunction = { id: `${path}:${start}`, path, start, end: node.end,
           line: position.line + 1, column: position.character + 1, name: name || '<anon>',
           signature: input.source.slice(start, body.getStart(source)).replace(/\s+/g, ' ').trim().slice(0, 300),
-          mass: fp.mass, exact: fp.exact, renamed: fp.normalized, blobSha, classification });
+          mass: fp.mass, exact: fp.exact, renamed: fp.normalized, blobSha, classification };
+        Object.defineProperty(fn, nearFingerprint, { value: fingerprintCloneNear(body) });
+        functions.push(fn);
       }
     }
     ts.forEachChild(node, visit);
@@ -112,6 +121,7 @@ export class CloneIndex {
   readonly minMass: number;
   private readonly files = new Map<string, CloneFile>();
   private readonly buckets = { exact: new Map<string, Map<string, CloneFunction>>(), renamed: new Map<string, Map<string, CloneFunction>>() };
+  private readonly nearBands = new Map<string, Map<string, CloneFunction>>();
   private generation = 0;
 
   constructor(options: { minMass?: number } = {}) {
@@ -135,10 +145,17 @@ export class CloneIndex {
   remove(path: string): boolean {
     const previous = this.files.get(checkedPath(path));
     if (!previous) return false;
-    for (const fn of previous.functions) for (const kind of ['exact', 'renamed'] as const) {
-      const bucket = this.buckets[kind].get(fn[kind]);
-      bucket?.delete(fn.id);
-      if (!bucket?.size) this.buckets[kind].delete(fn[kind]);
+    for (const fn of previous.functions) {
+      for (const kind of ['exact', 'renamed'] as const) {
+        const bucket = this.buckets[kind].get(fn[kind]);
+        bucket?.delete(fn.id);
+        if (!bucket?.size) this.buckets[kind].delete(fn[kind]);
+      }
+      for (const band of (fn as NearFunction)[nearFingerprint]!.bands) {
+        const bucket = this.nearBands.get(band);
+        bucket?.delete(fn.id);
+        if (!bucket?.size) this.nearBands.delete(band);
+      }
     }
     this.files.delete(path); this.generation++;
     return true;
@@ -150,9 +167,15 @@ export class CloneIndex {
   private replace(file: CloneFile): void {
     this.remove(file.path);
     this.files.set(file.path, file);
-    for (const fn of file.functions) for (const kind of ['exact', 'renamed'] as const) {
-      const bucket = this.buckets[kind].get(fn[kind]) ?? new Map<string, CloneFunction>();
-      bucket.set(fn.id, fn); this.buckets[kind].set(fn[kind], bucket);
+    for (const fn of file.functions) {
+      for (const kind of ['exact', 'renamed'] as const) {
+        const bucket = this.buckets[kind].get(fn[kind]) ?? new Map<string, CloneFunction>();
+        bucket.set(fn.id, fn); this.buckets[kind].set(fn[kind], bucket);
+      }
+      for (const band of (fn as NearFunction)[nearFingerprint]!.bands) {
+        const bucket = this.nearBands.get(band) ?? new Map<string, CloneFunction>();
+        bucket.set(fn.id, fn); this.nearBands.set(band, bucket);
+      }
     }
     this.generation++;
   }
@@ -161,6 +184,27 @@ export class CloneIndex {
     return [...(this.buckets[kind].get(fingerprint)?.values() ?? [])]
       .filter(fn => options.includeClassified || (!fn.classification.vendored && !fn.classification.retired
         && (options.includeTests || !fn.classification.test))).sort(byLocation);
+  }
+  /** Precomputed LSH candidates, then ordered subtree rescoring. Exact/renamed
+   * copies keep their existing lookup semantics and are not relabelled near.
+   * Detached/deserialized records have no measured shape and return no matches.
+   */
+  near(target: CloneFunction, options: CloneFilter = {}): readonly CloneNearMatch[] {
+    const fingerprint = (target as NearFunction)[nearFingerprint];
+    if (!fingerprint || (this.files.has(target.path) && this.files.get(target.path)!.blobSha !== target.blobSha)) return [];
+    const candidates = new Map<string, CloneFunction>();
+    for (const band of fingerprint.bands)
+      for (const [id, fn] of this.nearBands.get(band) ?? []) candidates.set(id, fn);
+    const matches: CloneNearMatch[] = [];
+    for (const fn of candidates.values()) {
+      if (fn.id === target.id || fn.renamed === target.renamed) continue;
+      if (!options.includeClassified && (fn.classification.vendored || fn.classification.retired
+        || (!options.includeTests && fn.classification.test))) continue;
+      if (Math.min(fn.mass, target.mass) / Math.max(fn.mass, target.mass) < CLONE_NEAR_POLICY.threshold) continue;
+      const score = compareCloneNear(fingerprint, (fn as NearFunction)[nearFingerprint]!).similarity;
+      if (score !== null && score >= CLONE_NEAR_POLICY.threshold) matches.push({ member: fn, score });
+    }
+    return matches.sort((a, b) => b.score - a.score || byLocation(a.member, b.member));
   }
   families(kind: CloneKind = 'renamed', options: CloneFilter & { crossFile?: boolean } = {}): CloneFamily[] {
     const families: CloneFamily[] = [];

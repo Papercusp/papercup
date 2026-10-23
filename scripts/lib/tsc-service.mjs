@@ -899,7 +899,7 @@ export async function typecheckViaService({
     if (response.ok) return response;
     log(`⚠ TSC_SERVICE declined (${response.reason}${response.detail ? `: ${response.detail}` : ''}) — running the full ${label} compile instead.`);
   } catch (error) {
-    log(`⚠ TSC_SERVICE unreachable at ${socketPath} (${error instanceof Error ? error.message : String(error)}) — running the full ${label} compile instead.`);
+    log(`⚠ TSC_SERVICE request failed at ${socketPath} (${error instanceof Error ? error.message : String(error)}) — running the full ${label} compile instead.`);
   }
   return null;
 }

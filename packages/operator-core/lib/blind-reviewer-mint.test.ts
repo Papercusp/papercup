@@ -282,6 +282,39 @@ describe('blind reviewer scratch plans (D-050)', () => {
     for (const [tool, args] of ADMITTED) expect(plan(tool, args).allowed, tool).toBe(true);
   });
 
+  it('admits product registry reads and pack browsing without opening plan artifacts', () => {
+    for (const [tool, args] of [
+      ['plan-types:list', { harness: 'papercusp', kind: 'item-type' }],
+      ['plan-types:get', { harness: 'papercusp', kind: 'plan-type', typeId: 'acme/checklist', revision: 1 }],
+      ['cupboard:search', { kind: 'pack', q: 'checklist', limit: 10 }],
+    ] as const) expect(plan(tool, args).allowed, tool).toBe(true);
+
+    for (const [tool, args] of [
+      ['plan-types:list', {}],
+      ['plan-types:list', { harness: 'other' }],
+      ['plan-types:get', { harness: 'papercusp', kind: 'plan-type', typeId: 'acme/checklist', slug: SLUG }],
+      ['plan-types:list', { harness: 'papercusp', workItemId: 'WI-1' }],
+      ['cupboard:search', {}],
+      ['cupboard:search', { kind: 'all' }],
+      ['cupboard:search', { kind: 'plan' }],
+      ['cupboard:search', { kind: 'rubric' }],
+      ['cupboard:search', { kind: 'pack', q: SLUG }],
+      ['cupboard:search', { kind: 'pack', workspaceId: 'other' }],
+    ] as const) expect(plan(tool, args).allowed, `${tool} ${JSON.stringify(args)}`).toBe(false);
+
+    for (const tool of ['plan-types:define', 'plan-types:pin', 'plan-types:retire', 'cupboard:install-plugin'])
+      expect(plan(tool, {}).allowed, tool).toBe(false);
+  });
+
+  it('allows duplicate-detection bypass only when creating its own isolated scratch plan', () => {
+    const create = { slug: MINE, title: 'Independent product rehearsal', harness: 'papercusp', force: true };
+    expect(plan('plans:new', create).allowed).toBe(true);
+    for (const args of [{ ...create, slug: SLUG }, { ...create, slug: 'other-plan' },
+      { ...create, harness: 'other' }, { ...create, force: 'true' }, { ...create, force: {} },
+      { ...create, force: false }]) expect(plan('plans:new', args).allowed).toBe(false);
+    expect(evaluateSessionConfinement({ toolName: 'plans:new', args: create, confinement: CONFINEMENT }).allowed).toBe(false);
+  });
+
   it('refuses the reviewed plan, an unprefixed slug, a bare prefix and a missing slug on every scratch verb', () => {
     for (const [tool, args] of ADMITTED) {
       for (const slug of [SLUG, 'other-plan-2026-10-20', PREFIX, `${PREFIX}${SLUG}`, `x${MINE}`, undefined]) {
@@ -307,7 +340,6 @@ describe('blind reviewer scratch plans (D-050)', () => {
       ['plans:get', { slug: MINE, decisionId: 'other-plan#D-001' }],
       ['plans:get', { slug: MINE, harness: 'other' }],
       ['plans:new', { slug: MINE, title: 'x', workspaceId: 'default' }],
-      ['plans:new', { slug: MINE, title: 'x', force: true }],
       ['plans:add-item', { slug: MINE, text: 'x', items: [{ slug: 'other-plan-2026-10-20', text: 'y' }] }],
       ['plans:add-item', { slug: MINE, text: 'x', items: [{ text: 'y', harness: 'other' }] }],
       ['plans:add-item', { slug: MINE, text: 'x', blockedBy: ['other#P-001'] }],

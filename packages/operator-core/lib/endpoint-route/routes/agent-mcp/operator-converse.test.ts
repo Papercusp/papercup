@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../../operator-conversations', () => ({
+  getConversationById: vi.fn(async (id: string) => ({ id, workspaceId: 'default' })),
+  getOrCreateActiveConversation: vi.fn(async () => ({ id: 'active-conversation', workspaceId: 'default' })),
+}));
+
 const budgetMocks = vi.hoisted(() => ({
   checkBudget: vi.fn(),
   shouldBypassOperatorBudget: vi.fn((uiClientId?: string | null) =>
@@ -60,6 +65,10 @@ const handler = (body: unknown) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  dispatchMocks.dispatch.mockReset();
+  dispatchMocks.dispatch.mockImplementation(async function* (_tool, _name, _args, ctx) {
+    dispatchMocks.captured = ctx;
+  });
   dispatchMocks.captured = null;
   budgetMocks.checkBudget.mockResolvedValue({
     state: { dailyCapUsd: 5, spend: [] },
@@ -81,6 +90,16 @@ describe('operator-converse route watchdog (EI-110)', () => {
 });
 
 describe('operator-converse isolated tutorial transport', () => {
+  it('P010 forwards the committed assistant receipt and supplies the current scoped conversation on first owner use', async () => {
+    const persistedTurn = { conversationId: 'active-conversation', turnId: 'admitted-turn', seq: 4 };
+    dispatchMocks.dispatch.mockImplementationOnce(async function* () {
+      yield { kind: 'done', result: { content: [{ type: 'text', text: JSON.stringify({ assembled: '<say>Saved</say>', persistedTurn }) }] } } as never;
+    });
+    const response = await handler({ uiClientId: 'llm-testing/receipt', messages: [] });
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(dispatchMocks.done).toHaveBeenCalledWith({ costUsd: 0, persistedTurn }));
+    expect(dispatchMocks.dispatch.mock.calls[0][2]).toMatchObject({ conversationId: 'active-conversation' });
+  });
   it.each([
     { hostTrust: 'owner' }, { principalToken: 'borrowed' }, { conversationId: 'private' },
     { role: 'papercup' }, { lessonContext: { version: 3, step: 'billing', transcript: 'private' } },

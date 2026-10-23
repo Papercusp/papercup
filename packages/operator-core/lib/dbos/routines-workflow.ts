@@ -1306,7 +1306,13 @@ async function routinesTickImpl(): Promise<void> {
         );
         if (verdict.state === 'unclaimable') {
           console.warn(`[routines-tick] UNCLAIMABLE ROUTINE — ${verdict.reason}`);
-          void recordUnclaimableRoutine(sql, r.id, verdict);
+          void recordUnclaimableRoutine(sql, {
+            id: r.id,
+            name: r.name,
+            installSlug: r.installSlug,
+            nextFireAt: r.nextFireAt ?? null,
+            lastFiredAt: r.lastFiredAt ?? null,
+          }, verdict);
         }
       } catch (e) {
         console.warn(`[routines-tick] claim-skip classifier failed for '${r.name}' (non-fatal): ${String(e)}`);

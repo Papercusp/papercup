@@ -126,6 +126,8 @@ export interface PsuPtyHost {
    *  absent means unknown; never fall back to the requested argv UUID. */
   nativeSessionId?: string | null;
   childGeneration?: number;
+  /** Route loaded by the current child, updated only after a successful spawn. */
+  accountRoutingMode?: string | null;
   startedAt: number;
   // ── Activity annotation (liveness-hardening P-006; ADDITIVE — absent on
   //    files written by older hosts). The pty stream is a true mid-turn
@@ -1530,6 +1532,13 @@ export async function injectIntoHostWithConfirmation(
       ownerId: string;
       startedAtMs: number;
       cause?: 'quota' | 'auth';
+      defaultToAuto?: {
+        hostStartedAt: number;
+        childGeneration: number;
+        nativeSessionId: string;
+        quotaBlockedSinceMs: number;
+        expiresAtMs: number;
+      };
     };
   },
   timeoutMs = 2000,

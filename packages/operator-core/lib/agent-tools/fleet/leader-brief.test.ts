@@ -11,6 +11,9 @@ import {
   buildLeaderBlockerStallBriefView,
   buildLeaderDependencyBottleneckView,
   computeBenchSuggestion,
+  computeClaimabilitySupervision,
+  computeParkedMemberCapacity,
+  readParkedMemberAdmission,
   computeDarkFleetAlert,
   computeDormantAlert,
   computeFleetBlockVerdict,
@@ -91,10 +94,95 @@ import type { AgentObligationAgenda } from '../../agent-obligations';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import * as fallbackObservations from '../../degradation/fallback-observations';
 import type { FleetLaneHealth } from '../../fleet/lane-health';
+import type { ClaimConcurrencyVerdict } from '../../scheduler/claim-spec-store';
 import { buildClaimableNowAggregate } from './leader-brief-aggregate';
 import { shapeLeaderBrief } from './leader-brief-shape';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
+
+describe('parked member capacity beside a partially working fleet', () => {
+  const member: Parameters<typeof computeParkedMemberCapacity>[0]['member'] = { sessionState: 'parked', wakeable: true, fleetRole: 'member', contextPressure: null, parkedOn: ['work-item:claimable'] };
+  const concurrency: ClaimConcurrencyVerdict = { blocked: false, activeClaims: 0, maxConcurrentClaims: 2, heldIds: [], blockerParkedIds: ['WI-blocked'] };
+  const evidence = { concurrency, claimable: 3, specRef: 'member-override@4' };
+  const assess = (m = member, e: typeof evidence | null = evidence, paused: boolean | null = false) => computeParkedMemberCapacity({ member: m, evidence: e, fleetPaused: paused });
+
+  it('finds an eligible parked seat while distinguishing working, capped, restricted and unread seats', () => {
+    const mixed = [
+      assess(),
+      assess({ ...member, sessionState: 'live' }),
+      assess(member, { ...evidence, concurrency: { ...concurrency, blocked: true, activeClaims: 2, heldIds: ['WI-1', 'WI-2'] } }),
+      assess(member, { ...evidence, claimable: 0 }),
+      assess(member, null),
+    ];
+    expect(mixed.map((m) => m.status)).toEqual(['eligible', 'protected', 'at-capacity', 'no-work', 'unknown']);
+    expect(mixed[0]).toMatchObject({ activeClaims: 0, maxConcurrentClaims: 2, blockerParkedIds: ['WI-blocked'], specRef: 'member-override@4' });
+    expect(mixed[2].heldIds).toEqual(['WI-1', 'WI-2']);
+    expect(mixed[4].claimable).toBeNull();
+  });
+
+  it('retains genuine and owner gates, fleet pauses, context recovery, and historical holders', () => {
+    expect(assess({ ...member, parkedOn: ['fleet:alpha:owner-only'] }).status).toBe('protected');
+    expect(assess({ ...member, parkedOn: ['work-item:claimable', 'composed-root:42'] }).status).toBe('protected');
+    expect(assess(member, evidence, true).status).toBe('protected');
+    expect(assess(member, evidence, null).status).toBe('unknown');
+    expect(assess({ ...member, wakeable: false }).status).toBe('protected');
+    expect(assess({ ...member, contextPressure: 'critical' }).status).toBe('protected');
+    expect(assess({ ...member, parkedOn: ['work-item:done:WI-blocked'] }).status).toBe('eligible');
+    expect(assess({ ...member, parkedOn: ['work-item:done:WI-untyped'] }).status).toBe('protected');
+    expect(assess({ ...member, intent: 'Resume only held WI-blocked; do not pull new work.', parkedOn: ['work-item:done:WI-blocked'] }).status).toBe('protected');
+    expect(assess({ ...member, intent: 'Owner-only approval is pending.' }).status).toBe('protected');
+  });
+
+  it('uses the member override and assignee in the shared floor reader, including its own cap', async () => {
+    const record = { source: 'cup', harnessSlug: 'fixture', revision: 4, spec: { specId: 'restricted', limits: { maxConcurrentClaims: 1 }, view: { filter: { field: 'kind', op: 'eq', value: 'bug' } } } } as any;
+    const getSpec = vi.fn().mockResolvedValue(record);
+    const capacity = vi.fn().mockResolvedValue({ ...concurrency, maxConcurrentClaims: 1 });
+    const lane = vi.fn().mockResolvedValue({ laneHealth: { effective: { claimable: 0 }, spec: { ref: 'restricted@4' } }, unavailable: null });
+    const input = { member: 'member-owner', fleet: 'alpha', workspaceId: 'workspace' };
+    const result = await readParkedMemberAdmission(input, { getSpec, concurrency: capacity, lane });
+    expect(getSpec).toHaveBeenCalledWith('member-owner');
+    expect(capacity).toHaveBeenCalledWith(1);
+    expect(lane).toHaveBeenCalledWith(expect.objectContaining({ spec: record.spec, record, assignee: 'member-owner', harness: 'fixture', issueFamilyTotalBudgetMs: 12000 }));
+    expect(result.claimable).toBe(0);
+    capacity.mockResolvedValueOnce({ ...concurrency, blocked: true, activeClaims: 1, maxConcurrentClaims: 1 });
+    lane.mockClear();
+    expect((await readParkedMemberAdmission(input, { getSpec, concurrency: capacity, lane })).concurrency.blocked).toBe(true);
+    expect(lane).not.toHaveBeenCalled();
+  });
+});
+
+describe('claimability supervision when idle alerts cannot be evaluated', () => {
+  const unavailable = () => buildClaimableNowAggregate({
+    fleet: 'alpha',
+    requestedHarness: 'papercusp',
+    laneHealth: null,
+    unavailable: leaderBriefLaneHealthUnavailable({ fleet: 'alpha', harness: 'papercusp' }).unavailable,
+    fleetPaused: false,
+  });
+
+  it('reports degraded supervision and a scoped recovery read instead of a healthy zero', () => {
+    const result = computeClaimabilitySupervision(unavailable());
+    expect(result).toMatchObject({ status: 'degraded', fleet: 'alpha', harness: 'papercusp', value: null });
+    expect(result.reason).toBeTruthy();
+    expect(result.recoverVia).toContain('work_items:claimable');
+    expect(result.recoverVia).toContain('alpha');
+  });
+
+  it('distinguishes a measured empty lane from an unread lane', () => {
+    const input = unavailable();
+    input.value = 0;
+    input.interpretation.exactness = { status: 'exact', reason: 'the complete lane is empty' };
+    delete input.unknown;
+    expect(computeClaimabilitySupervision(input)).toMatchObject({ status: 'measured', value: 0, recoverVia: null });
+  });
+
+  it('keeps a positive partial measurement degraded until the scope is fully measured', () => {
+    const input = unavailable();
+    input.value = 4;
+    input.interpretation.exactness = { status: 'partial', reason: 'one family was unavailable' };
+    expect(computeClaimabilitySupervision(input)).toMatchObject({ status: 'degraded', value: 4 });
+  });
+});
 
 describe('P-004 identity binding at the existing fleet brief sink', () => {
   it('uses the one producer result unchanged and records its compiled contribution in existing metadata', async () => {

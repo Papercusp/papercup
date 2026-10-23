@@ -1,15 +1,22 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { z } from 'zod';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { TurnRecovery, type TurnIdentity } from '@papercusp/chat-protocol/recovery';
 import { InteractionResolver, type InteractionRecord, type InteractionScope } from '@papercusp/chat-protocol/interactions';
 import type { ChatEventEnvelope } from '@papercusp/chat-protocol';
-import { OperatorChatStore, operatorChatSessionAuthority, operatorChatTurnWorkflow } from './operator-chat-store';
+import { openRun, registerCard, _resetCardCorrelatorForTests, _resetStateChannelForTests } from '@papercusp/agent-mcp';
+import { OperatorChatStore, operatorChatChildAuthority, operatorChatParentAuthority,
+  operatorChatSessionAuthority, operatorChatTurnWorkflow, operatorChatTurnChannel } from './operator-chat-store';
+import { admitConverseTurn } from './agent-tools/operator/converse-turn';
+import { createConverseCard, findConverseCard, findConverseRunCards } from './agent-tools/operator/converse-card';
 
 let first: postgres.Sql;
 let second: postgres.Sql;
@@ -20,7 +27,7 @@ const scope: InteractionScope = { principalId: 'owner', tenantId: 'tenant',
   customerId: 'customer', publicOwnerId: 'public-owner' };
 const capabilities = { connectionReplay: true, persistedHistory: true, persistedInteractionDecisions: true,
   completedToolCheckpoints: true, interruptedTurnRecovery: true };
-const migration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/1569-operator-chat-durable-state.sql.DRAFT', import.meta.url));
+const migration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/1569-operator-chat-durable-state.sql', import.meta.url));
 
 beforeAll(async () => {
   const uri = await getTestPg();
@@ -40,10 +47,10 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.operator_turns (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), conversation_id uuid NOT NULL,
       workspace_id text NOT NULL, tools jsonb NOT NULL DEFAULT '[]', seq integer NOT NULL DEFAULT 0,
       role text NOT NULL DEFAULT 'assistant', text text NOT NULL DEFAULT '', source text,
-      created_at bigint, UNIQUE(conversation_id,seq));
+      created_at bigint, report jsonb, UNIQUE(conversation_id,seq));
     CREATE TABLE harness_shared.user_sessions (token text PRIMARY KEY, workspace_id text NOT NULL,
       user_id text NOT NULL, expires_at timestamptz NOT NULL, capabilities jsonb NOT NULL DEFAULT '["*"]');
-    CREATE TABLE harness_shared.users (id text PRIMARY KEY, is_active boolean NOT NULL DEFAULT true);
+    CREATE TABLE harness_shared.users (id text PRIMARY KEY, username text NOT NULL DEFAULT 'default', is_active boolean NOT NULL DEFAULT true);
     CREATE TABLE harness_shared.system_principals (workspace_id text NOT NULL, name text NOT NULL,
       bearer_hash text NOT NULL, capabilities jsonb NOT NULL, PRIMARY KEY(workspace_id,name));
     CREATE TABLE harness_shared.pi_sessions (workspace_id text NOT NULL, session_id text NOT NULL,
@@ -52,7 +59,7 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.token_index (token text PRIMARY KEY, kind text NOT NULL,
       harness_slug text NOT NULL, workspace_id text NOT NULL);
   `);
-  // Apply the exact additive draft twice: legacy turn bytes remain untouched.
+  // Apply the exact additive migration twice: legacy turn bytes remain untouched.
   await first.unsafe(readFileSync(migration, 'utf8'));
   await first.unsafe(readFileSync(migration, 'utf8'));
 }, 90_000);
@@ -106,6 +113,618 @@ const envelope = (sequence: number): ChatEventEnvelope => ({ schemaVersion: 1, .
   eventId: `event-${sequence}`, sequence, event: { type: 'delta', text: `delta-${sequence}` } });
 
 describe('P010 durable PG turn ports (independent connections; no actual-host claim)', () => {
+  async function concreteCard() {
+    await first.unsafe('DELETE FROM harness_shared.operator_turns');
+    const parentBearer = 'concrete-parent-credential';
+    const childBearer = 'concrete-child-credential';
+    const authority = { kind: 'system' as const, principalId: 'system:parent',
+      credentialSha256: createHash('sha256').update(parentBearer).digest('hex') };
+    const binding = { dispatchCallId: 'concrete-dispatch', childRunId: 'concrete-child-run',
+      credentialSha256: createHash('sha256').update(childBearer).digest('hex') };
+    await first.unsafe(`INSERT INTO harness_shared.system_principals VALUES ($1,'parent',$2,'["chat:write"]');`,
+      [workspaceId, authority.credentialSha256]);
+    await first.unsafe(`INSERT INTO harness_shared.pi_sessions
+      (workspace_id,session_id,bearer_hash,capabilities,allowed_tools,expires_at)
+      VALUES ($1,'concrete-child',$2,'["chat:write"]','["chat:ask_choice"]',clock_timestamp()+interval '1 hour')`,
+    [workspaceId, binding.credentialSha256]);
+    await first.unsafe("INSERT INTO harness_shared.token_index VALUES ($1,'system','system:parent',$3),($2,'pi','pi:concrete-child',$3)",
+      [parentBearer, childBearer, workspaceId]);
+    const boundScope = { principalId: authority.principalId, tenantId: workspaceId,
+      customerId: authority.principalId, publicOwnerId: authority.principalId };
+    const s = store(first, { scope: boundScope });
+    await s.beginTurn('concrete-parent-run', 'text_typed', authority);
+    const parent = { workspaceId, ...turn, runId: 'concrete-parent-run', authority };
+    const options = [{ id: 'yes', label: 'Proceed' }, { id: 'no', label: 'Stop' }];
+    const tool = { name: 'chat:ask_choice', callId: binding.dispatchCallId,
+      input: { question: 'Proceed?', options } };
+    const spec = { prompt: 'Proceed?', presentation: { kind: 'radio' as const, options },
+      dataSchema: z.object({ picks: z.tuple([z.enum(['yes', 'no'])]) }) };
+    const info = { correlationId: 'concrete-card', runId: binding.childRunId, workspaceId };
+    const card = createConverseCard({ sql: first, parent, binding, tool });
+    const hooks = card.hooks(spec);
+    await hooks.beforeCard!(info, new AbortController().signal);
+    return { card, hooks, parent, binding, tool, spec, info, boundScope, s };
+  }
+
+  it('adapts exact host card preparation, decision and late native association through the real PG ports', async () => {
+    const { card, hooks, parent, binding, tool, info, s } = await concreteCard();
+    expect(await card.read()).toMatchObject({ ok: true, value: { status: 'pending', revision: 0 } });
+    const picked = { action: 'submit' as const, payload: { picks: ['yes'] } };
+    expect(await hooks.commitResponse!(picked, info, 'response')).toEqual({ accepted: true, response: picked });
+    expect(await hooks.commitResponse!({ action: 'submit', payload: { picks: ['no'] } }, info, 'response'))
+      .toEqual({ accepted: false, response: picked });
+    const recovered = createConverseCard({ sql: second, parent, binding, tool, correlationId: info.correlationId });
+    expect(await recovered.read()).toMatchObject({ ok: true, value: { status: 'resolved', revision: 1 } });
+    expect(await recovered.associateNative('late-native')).toBe(true);
+    await s.finalizeTurn({ runId: parent.runId, status: 'completed', text: 'Proceed', tools: [{ ...tool, callId: 'late-native' }] });
+    const rows = await first.unsafe('SELECT tools FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows[0].tools).toEqual([{ ...tool, callId: 'late-native', answered: {
+      picks: [{ option_id: 'yes', label: 'Proceed' }], at: expect.any(Number) } }]);
+    expect(await first.unsafe("SELECT id FROM harness_shared.operator_turns WHERE role='user'")).toHaveLength(1);
+  });
+
+  it('keeps host card reads and decisions bound to exact dispatch child parent and additional responder authority', async () => {
+    const { card, hooks, parent, binding, tool, info } = await concreteCard();
+    const mutable = { sql: second, parent, binding, tool, correlationId: info.correlationId,
+      authorizeAdditional: async () => false };
+    const captured = createConverseCard(mutable);
+    mutable.authorizeAdditional = async () => true;
+    const refused = [
+      captured,
+      createConverseCard({ sql: second, parent, binding: { ...binding, dispatchCallId: 'other-dispatch' }, tool, correlationId: info.correlationId }),
+      createConverseCard({ sql: second, parent, binding: { ...binding, childRunId: 'other-child-run' }, tool, correlationId: info.correlationId }),
+      createConverseCard({ sql: second, parent: { ...parent, runId: 'other-parent-run' }, binding, tool, correlationId: info.correlationId }),
+      createConverseCard({ sql: second, parent, binding, tool, correlationId: info.correlationId, authorizeAdditional: async () => false }),
+    ];
+    for (const foreign of refused) expect(await foreign.read()).toEqual({ ok: false, code: 'unauthorized' });
+    await expect(hooks.commitResponse!({ action: 'submit', payload: { picks: ['no'] } },
+      { ...info, runId: 'other-run' }, 'response')).rejects.toThrow('unauthorized');
+    await first.unsafe("UPDATE harness_shared.pi_sessions SET ended_at=clock_timestamp() WHERE session_id='concrete-child'");
+    expect(await card.read()).toEqual({ ok: false, code: 'unauthorized' });
+    await expect(hooks.commitResponse!({ action: 'cancel' }, info, 'timeout')).rejects.toThrow('unauthorized');
+    await first.unsafe("UPDATE harness_shared.pi_sessions SET ended_at=NULL WHERE session_id='concrete-child'");
+    await first.unsafe("UPDATE harness_shared.system_principals SET capabilities='[]' WHERE name='parent'");
+    expect(await card.read()).toEqual({ ok: false, code: 'unauthorized' });
+    const rows = await second.unsafe('SELECT chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows[0].chat_state.interactions[info.correlationId].status).toBe('pending');
+    expect(await first.unsafe("SELECT id FROM harness_shared.operator_turns WHERE role='user'")).toHaveLength(0);
+  });
+
+  it('recovers and commits an exact scoped card on another worker without a local waiter', async () => {
+    const { info, parent, binding } = await concreteCard();
+    const authorizeAdditional = operatorChatSessionAuthority({ workspaceId, principalId: scope.principalId,
+      credential: { kind: 'user-session', token: 'current', userId: scope.principalId },
+      capability: 'chat:write', toolName: 'chat:ask_choice' });
+    const input = { sql: second, workspaceId, conversationId: turn.conversationId,
+      correlationId: info.correlationId, authorizeAdditional };
+    const found = await OperatorChatStore.findInteraction({ ...input, authorize: authorizeAdditional });
+    expect(found).toMatchObject({ parent, binding });
+    const recovered = await findConverseCard(input);
+    expect(recovered).not.toBeNull();
+    expect(await recovered!.commitResponse({ action: 'submit', payload: { picks: ['no'] } }, info, 'response'))
+      .toEqual({ accepted: true, response: { action: 'submit', payload: { picks: ['no'] } } });
+    expect(await first.unsafe("SELECT text FROM harness_shared.operator_turns WHERE role='user'"))
+      .toEqual([{ text: 'Stop' }]);
+    expect(await findConverseCard({ ...input, conversationId: randomUUID() })).toBeNull();
+    expect(await findConverseCard({ ...input, correlationId: 'foreign' })).toBeNull();
+    expect(await findConverseCard({ ...input, workspaceId: 'foreign' })).toBeNull();
+  });
+
+  it.each(['session', 'capability', 'user'] as const)('rechecks responder %s after lookup before deciding', async revoke => {
+    const { info } = await concreteCard();
+    const authorizeAdditional = operatorChatSessionAuthority({ workspaceId, principalId: scope.principalId,
+      credential: { kind: 'user-session', token: 'current', userId: scope.principalId },
+      capability: 'chat:write', toolName: 'chat:ask_choice' });
+    const recovered = await findConverseCard({ sql: second, workspaceId, conversationId: turn.conversationId,
+      correlationId: info.correlationId, authorizeAdditional });
+    expect(recovered).not.toBeNull();
+    if (revoke === 'session') await first.unsafe("DELETE FROM harness_shared.user_sessions WHERE token='current'");
+    if (revoke === 'capability') await first.unsafe("UPDATE harness_shared.user_sessions SET capabilities='[]' WHERE token='current'");
+    if (revoke === 'user') await first.unsafe('UPDATE harness_shared.users SET is_active=false');
+    await expect(recovered!.commitResponse({ action: 'submit', payload: { picks: ['yes'] } }, info, 'response'))
+      .rejects.toThrow('unauthorized');
+    expect(await first.unsafe("SELECT id FROM harness_shared.operator_turns WHERE role='user'")).toHaveLength(0);
+    const state = (await first.unsafe('SELECT chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]))[0].chat_state;
+    expect(state.interactions[info.correlationId].status).toBe('pending');
+  });
+
+  it('fences trusted desktop decisions by the current active seeded account', async () => {
+    const { info } = await concreteCard();
+    const authorizeAdditional = operatorChatSessionAuthority({ workspaceId, principalId: scope.principalId,
+      credential: { kind: 'local-desktop', userId: scope.principalId },
+      capability: 'chat:write', toolName: 'chat:ask_choice' });
+    const input = { sql: second, workspaceId, conversationId: turn.conversationId,
+      correlationId: info.correlationId, authorizeAdditional };
+    const recovered = await findConverseCard(input);
+    expect(await recovered!.read()).toMatchObject({ ok: true, value: { status: 'pending' } });
+    await first.unsafe("UPDATE harness_shared.users SET username='other'");
+    await expect(recovered!.commitResponse({ action: 'submit', payload: { picks: ['yes'] } }, info, 'response'))
+      .rejects.toThrow('unauthorized');
+    await first.unsafe("UPDATE harness_shared.users SET username='default'");
+    expect(await recovered!.commitResponse({ action: 'submit', payload: { picks: ['yes'] } }, info, 'response'))
+      .toMatchObject({ accepted: true });
+    expect(await first.unsafe("SELECT text FROM harness_shared.operator_turns WHERE role='user'"))
+      .toEqual([{ text: 'Proceed' }]);
+  });
+
+  it('publishes scoped decision wakes only after commit and never after workflow rollback', async () => {
+    const s = store();
+    const ports = resolver(s);
+    await s.seedInteraction(record());
+    const channel = operatorChatTurnChannel(workspaceId, turn);
+    expect(channel).not.toBe(operatorChatTurnChannel('foreign', turn));
+    expect(channel).not.toBe(operatorChatTurnChannel(workspaceId, { ...turn, turnId: randomUUID() }));
+    const wakes: string[] = [];
+    let wake!: () => void;
+    const notified = new Promise<void>(resolve => { wake = resolve; });
+    const listener = postgres(databaseUrl, { max: 1, onnotice: () => {} });
+    const handle = await listener.listen(channel, payload => { wakes.push(payload); wake(); });
+    try {
+      // Fail at COMMIT, after save has actually queued NOTIFY. A failure in
+      // advance before save would not exercise PG's notification boundary.
+      await first.unsafe(`CREATE FUNCTION harness_shared.reject_chat_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'reject-chat-commit'; END $$;
+        CREATE CONSTRAINT TRIGGER reject_chat_commit AFTER UPDATE ON harness_shared.operator_turns
+          DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_chat_commit()`);
+      expect(await ports.make().resolve(record(), scope, answer('rollback')))
+        .toEqual({ ok: false, code: 'needs-reconciliation' });
+      expect(await ports.make().read(record(), scope)).toMatchObject({ ok: true, value: { status: 'pending' } });
+      await first.unsafe('DROP TRIGGER reject_chat_commit ON harness_shared.operator_turns; DROP FUNCTION harness_shared.reject_chat_commit()');
+      expect(await resolver(store(second)).make().resolve(record(), scope, answer('commit')))
+        .toMatchObject({ ok: true });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try { await Promise.race([notified, new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error('committed notification missing')), 5000);
+      })]); } finally { clearTimeout(timeout); }
+      expect(wakes).toEqual(['changed']);
+    } finally {
+      await first.unsafe('DROP TRIGGER IF EXISTS reject_chat_commit ON harness_shared.operator_turns; DROP FUNCTION IF EXISTS harness_shared.reject_chat_commit()');
+      await handle.unlisten(); await listener.end({ timeout: 5 });
+    }
+  });
+
+  it('recovers cancellation by exact parent or child run within the authenticated conversation', async () => {
+    const { info, parent, binding } = await concreteCard();
+    const authorizeAdditional = operatorChatSessionAuthority({ workspaceId, principalId: scope.principalId,
+      credential: { kind: 'user-session', token: 'current', userId: scope.principalId },
+      capability: 'chat:write', toolName: 'chat:ask_choice' });
+    const input = { sql: second, workspaceId, conversationId: turn.conversationId, authorizeAdditional };
+    expect(await findConverseRunCards({ ...input, runId: 'foreign-run' })).toBeNull();
+    expect(await findConverseRunCards({ ...input, runId: binding.childRunId, conversationId: randomUUID() })).toBeNull();
+    const child = await findConverseRunCards({ ...input, runId: binding.childRunId });
+    const original = await findConverseRunCards({ ...input, runId: parent.runId });
+    expect(child?.map(card => card.info())).toEqual([info]);
+    expect(original?.map(card => card.info())).toEqual([info]);
+    expect(await child![0].commitResponse({ action: 'cancel' }, child![0].info(), 'run-end'))
+      .toEqual({ accepted: true, response: { action: 'cancel' } });
+    expect(await original![0].read()).toMatchObject({ ok: true, value: { status: 'cancelled' } });
+    expect(await first.unsafe("SELECT id FROM harness_shared.operator_turns WHERE role='user'")).toHaveLength(0);
+  });
+
+  it.each(['registration-gap', 'reconnect', 'publication-gap'] as const)(
+    'reauthorizes and delivers the durable winner after a %s without replaying a decision', async gap => {
+      const { card, hooks, parent, binding, tool, info, spec } = await concreteCard();
+      _resetCardCorrelatorForTests();
+      _resetStateChannelForTests();
+      let reconnect!: () => void;
+      let stopped = false;
+      const errors: unknown[] = [];
+      const picked = { action: 'submit' as const, payload: { picks: ['yes'] } };
+      const other = createConverseCard({ sql: second, parent, binding, tool, correlationId: info.correlationId });
+      openRun({ workspaceId, runId: binding.childRunId });
+      const register = () => registerCard({ workspaceId, runId: binding.childRunId,
+        correlationId: info.correlationId, spec: { ...spec, ...hooks } });
+      let registered = gap === 'publication-gap' ? undefined : register();
+      const watcher = await card.listen(error => { errors.push(error); }, async (channel, _notify, onListen) => {
+        expect(channel).toBe(operatorChatTurnChannel(workspaceId, turn));
+        reconnect = onListen!;
+        if (gap === 'registration-gap') await other.commitResponse(picked, info, 'response');
+        return () => { stopped = true; };
+      });
+      try {
+        if (gap !== 'registration-gap') {
+          await other.commitResponse(picked, info, 'response');
+          if (gap === 'publication-gap') registered = register();
+          else reconnect();
+          await watcher.refresh();
+        }
+        expect(await registered!.result).toEqual(picked);
+        await watcher.refresh();
+        expect(errors).toEqual([]);
+        expect(await first.unsafe("SELECT id FROM harness_shared.operator_turns WHERE role='user'")).toHaveLength(1);
+      } finally {
+        watcher.stop();
+        expect(stopped).toBe(true);
+        _resetCardCorrelatorForTests();
+        _resetStateChannelForTests();
+      }
+    });
+
+  it('validates persisted choice schema and cancels expiry without advancing the host answer workflow', async () => {
+    const { card, hooks, info, spec } = await concreteCard();
+    expect(() => card.hooks({ ...spec, prompt: 'Substituted question' })).toThrow('interaction-binding-conflict');
+    for (const picks of [['foreign'], ['yes', 'yes'], ['yes', 'no'], []]) {
+      await expect(hooks.commitResponse!({ action: 'submit', payload: { picks } }, info, 'response'))
+        .rejects.toThrow('invalid-answer');
+    }
+    await first.unsafe("UPDATE harness_shared.operator_turns SET chat_state=jsonb_set(chat_state,ARRAY['interactions',$2,'expiresAt'],'0') WHERE id=$1",
+      [turn.turnId, info.correlationId]);
+    expect(await hooks.commitResponse!({ action: 'cancel' }, info, 'timeout'))
+      .toEqual({ accepted: true, response: { action: 'cancel' } });
+    expect(await card.read()).toMatchObject({ ok: true, value: { status: 'cancelled', revision: 1 } });
+    const rows = await second.unsafe('SELECT tools FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows[0].tools[0].answered).toBeUndefined();
+    expect(await first.unsafe("SELECT id FROM harness_shared.operator_turns WHERE role='user'")).toHaveLength(0);
+  });
+
+  it('persists expired cancellation across connections without invoking the answer workflow', async () => {
+    const s = store();
+    const expired = { ...record(), expiresAt: 0 };
+    await s.seedInteraction(expired);
+    const make = (s: OperatorChatStore) => new InteractionResolver({
+      store: s.interactions(async () => { throw new Error('cancellation-must-not-advance'); }),
+      validate: async () => { throw new Error('cancellation-must-not-validate'); },
+    });
+    const identity = { conversationId: turn.conversationId, correlationId: 'choice' };
+    const [a, b] = await Promise.all([make(s).cancel(identity, scope, 0), make(store(second)).cancel(identity, scope, 0)]);
+    expect(a).toMatchObject({ ok: true, value: { status: 'cancelled', revision: 1 } });
+    expect(b).toEqual(a);
+    expect(await make(store(second)).read(identity, scope)).toEqual(a);
+    const rows = await first.unsafe('SELECT tools,chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows[0].chat_state.interactions.choice).toEqual({ ...expired, status: 'cancelled', revision: 1 });
+    expect(rows[0].tools).toEqual([]);
+    expect(await first.unsafe("SELECT id FROM harness_shared.operator_turns WHERE role='user'")).toHaveLength(0);
+  });
+
+  it('serializes an answer against cancellation and keeps the winning transition intact', async () => {
+    await store().seedInteraction(record());
+    const a = resolver(store()).make();
+    const b = resolver(store(second)).make();
+    const identity = { conversationId: turn.conversationId, correlationId: 'choice' };
+    const [answerResult, cancelResult] = await Promise.all([
+      a.resolve(identity, scope, answer('racing-answer')), b.cancel(identity, scope, 0),
+    ]);
+    const state = await a.read(identity, scope);
+    expect(state.ok).toBe(true);
+    if (!state.ok) throw new Error('unreadable-state');
+    if (state.value.status === 'resolved') {
+      expect(answerResult.ok).toBe(true);
+      expect(cancelResult).toEqual({ ok: false, code: 'already-decided' });
+      expect((await first.unsafe('SELECT tools FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]))[0].tools)
+        .toHaveLength(1);
+    } else {
+      expect(state.value.status).toBe('cancelled');
+      expect(cancelResult.ok).toBe(true);
+      expect(answerResult).toEqual({ ok: false, code: 'cancelled' });
+      expect((await first.unsafe('SELECT tools FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]))[0].tools)
+        .toEqual([]);
+    }
+    expect(state.value.revision).toBe(1);
+  });
+
+  it('rechecks live session authority before cancellation and rolls back cancelled state on storage failure', async () => {
+    await store().seedInteraction(record());
+    const identity = { conversationId: turn.conversationId, correlationId: 'choice' };
+    await first.unsafe("DELETE FROM harness_shared.user_sessions WHERE token='current'");
+    expect(await resolver(store()).make().cancel(identity, scope, 0)).toEqual({ ok: false, code: 'unauthorized' });
+    const pending = (await second.unsafe('SELECT chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]))[0];
+    expect(pending.chat_state.interactions.choice.status).toBe('pending');
+    await first.unsafe("INSERT INTO harness_shared.user_sessions (token,workspace_id,user_id,expires_at) VALUES ('current',$1,$2,clock_timestamp()+interval '1 hour')",
+      [workspaceId, scope.principalId]);
+    await first.unsafe("ALTER TABLE harness_shared.operator_turns ADD CONSTRAINT cancellation_fault CHECK (chat_state->'interactions'->'choice'->>'status' != 'cancelled')");
+    try {
+      expect(await resolver(store()).make().cancel(identity, scope, 0)).toEqual({ ok: false, code: 'needs-reconciliation' });
+      expect(await resolver(store(second)).make().read(identity, scope))
+        .toMatchObject({ ok: true, value: { status: 'pending', revision: 0 } });
+    } finally { await first.unsafe('ALTER TABLE harness_shared.operator_turns DROP CONSTRAINT cancellation_fault'); }
+  });
+
+  async function boundChoice() {
+    await first.unsafe('DELETE FROM harness_shared.operator_turns');
+    const authority = { kind: 'system' as const, principalId: 'system:owner', credentialSha256: 'a'.repeat(64) };
+    const boundScope = { ...scope, principalId: authority.principalId };
+    const s = store(first, { scope: boundScope });
+    await s.beginTurn('parent-run', 'text_typed', authority);
+    const parent = { workspaceId, ...turn, runId: 'parent-run', authority };
+    const binding = { dispatchCallId: 'dispatch-choice', childRunId: 'child-run', credentialSha256: 'b'.repeat(64) };
+    const tool = { name: 'chat:ask_choice', callId: binding.dispatchCallId,
+      input: { question: 'Proceed?', options: [{ id: 'yes', label: 'Proceed' }] } };
+    const pending = { ...record(), scope: boundScope };
+    return { s, parent, binding, tool, pending, boundScope };
+  }
+
+  it('atomically prepares the exact dispatch binding, card and history before publication', async () => {
+    const { s, parent, binding, tool, pending, boundScope } = await boundChoice();
+    expect(await s.prepareInteraction({ record: pending, parent, binding, tool })).toBe(true);
+    const other = store(second, { scope: boundScope });
+    expect(await other.prepareInteraction({ record: pending, parent, binding, tool })).toBe(false);
+    const row = (await second.unsafe('SELECT tools,chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]))[0];
+    expect(row.tools).toEqual([tool]);
+    expect(row.chat_state.interactions.choice).toEqual(pending);
+    expect(row.chat_state.interactionBindings.choice).toEqual(binding);
+    await expect(other.prepareInteraction({ record: pending, parent, binding,
+      tool: { ...tool, input: { question: 'A different payload' } } })).rejects.toThrow('interaction-binding-conflict');
+    await expect(other.prepareInteraction({ record: { ...pending, correlationId: 'non-json' }, parent,
+      binding: { ...binding, dispatchCallId: 'non-json-dispatch' },
+      tool: { ...tool, callId: 'non-json-dispatch', input: { value: NaN } } })).rejects.toThrow('invalid-state');
+    for (const invalid of [{ ...binding, childRunId: 'foreign' }, { ...binding, credentialSha256: 'c'.repeat(64) },
+      { ...binding, dispatchCallId: 'other-call' }]) {
+      await expect(other.prepareInteraction({ record: pending, parent, binding: invalid,
+        tool: { ...tool, callId: invalid.dispatchCallId } })).rejects.toThrow('interaction-binding-conflict');
+    }
+    await expect(other.prepareInteraction({ record: { ...pending, correlationId: 'foreign-parent' },
+      parent: { ...parent, runId: 'foreign' }, binding, tool })).rejects.toThrow('unauthorized');
+    // Equal names and arguments do not join two calls. Only exact host IDs do.
+    const nextBinding = { ...binding, dispatchCallId: 'second-dispatch' };
+    expect(await other.prepareInteraction({ record: { ...pending, correlationId: 'second-card' }, parent,
+      binding: nextBinding, tool: { ...tool, callId: nextBinding.dispatchCallId } })).toBe(true);
+    await expect(other.prepareInteraction({ record: { ...pending, correlationId: 'aliased-card' }, parent,
+      binding, tool })).rejects.toThrow('interaction-binding-conflict');
+    expect((await first.unsafe('SELECT tools FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]))[0].tools)
+      .toEqual([tool, { ...tool, callId: 'second-dispatch' }]);
+  });
+
+  it('rolls back the card and binding when the prepared history write fails', async () => {
+    const { s, parent, binding, tool, pending } = await boundChoice();
+    await first.unsafe("ALTER TABLE harness_shared.operator_turns ADD CONSTRAINT preparation_fault CHECK (jsonb_array_length(tools)=0)");
+    try {
+      await expect(s.prepareInteraction({ record: pending, parent, binding, tool })).rejects.toMatchObject({ code: '23514' });
+      const row = (await second.unsafe('SELECT tools,chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]))[0];
+      expect(row.tools).toEqual([]);
+      expect(row.chat_state.interactions).toEqual({});
+      expect(row.chat_state.interactionBindings ?? {}).toEqual({});
+    } finally { await first.unsafe('ALTER TABLE harness_shared.operator_turns DROP CONSTRAINT preparation_fault'); }
+    expect(await s.prepareInteraction({ record: pending, parent, binding, tool })).toBe(true);
+  });
+
+  it('associates a late native call explicitly and preserves the committed answer at finalization', async () => {
+    const { s, parent, binding, tool, pending, boundScope } = await boundChoice();
+    await s.prepareInteraction({ record: pending, parent, binding, tool });
+    const other = store(second, { scope: boundScope });
+    const resolver = new InteractionResolver({ store: other.interactions(operatorChatTurnWorkflow({ workspaceId, turn })),
+      validate: async (_schema, value) => ({ ok: true, value }) });
+    expect(await resolver.resolve({ conversationId: turn.conversationId, correlationId: 'choice' }, boundScope,
+      { submissionId: 'pick', revision: 0, response: { action: 'submit', correlationId: 'choice', value: { picks: ['yes'] } } }))
+      .toMatchObject({ ok: true });
+    const terminal = { runId: 'parent-run', status: 'completed' as const, text: 'Proceed',
+      tools: [{ ...tool, callId: 'native-call' }] };
+    await expect(s.finalizeTurn(terminal)).rejects.toThrow('interaction-call-unassociated');
+    const association = { ...binding, parent, correlationId: 'choice', nativeCallId: 'native-call' };
+    for (const invalid of [{ ...association, childRunId: 'foreign' },
+      { ...association, credentialSha256: 'c'.repeat(64) }, { ...association, dispatchCallId: 'foreign' },
+      { ...association, parent: { ...parent, runId: 'foreign' } }]) {
+      await expect(other.associateInteractionCall(invalid)).rejects.toThrow('unauthorized');
+    }
+    expect(await other.associateInteractionCall(association)).toBe(true);
+    expect(await s.associateInteractionCall(association)).toBe(false);
+    await expect(s.associateInteractionCall({ ...association, nativeCallId: 'other-native' }))
+      .rejects.toThrow('interaction-binding-conflict');
+    await expect(s.finalizeTurn({ ...terminal, tools: [...terminal.tools, { name: 'read', callId: 'native-call' }] }))
+      .rejects.toThrow('invalid-turn-result');
+    await expect(s.finalizeTurn({ ...terminal, tools: [{ ...tool, callId: 'native-call', input: { foreign: true } }] }))
+      .rejects.toThrow('turn-result-conflict');
+    await s.finalizeTurn(terminal);
+    const row = (await second.unsafe('SELECT tools,chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]))[0];
+    expect(row.tools).toEqual([{ ...tool, callId: 'native-call', answered: {
+      picks: [{ option_id: 'yes', label: 'Proceed' }], at: expect.any(Number) } }]);
+    expect(row.chat_state.interactionBindings.choice.nativeCallId).toBe('native-call');
+    expect(await first.unsafe("SELECT id FROM harness_shared.operator_turns WHERE role='user'")).toHaveLength(1);
+    await s.finalizeTurn(terminal);
+    expect(await first.unsafe("SELECT id FROM harness_shared.operator_turns WHERE role='user'")).toHaveLength(1);
+  });
+
+  it('serializes competing native associations without joining identical tool inputs', async () => {
+    const { s, parent, binding, tool, pending, boundScope } = await boundChoice();
+    await s.prepareInteraction({ record: pending, parent, binding, tool });
+    const secondBinding = { ...binding, dispatchCallId: 'second-dispatch' };
+    await s.prepareInteraction({ record: { ...pending, correlationId: 'second-card' }, parent,
+      binding: secondBinding, tool: { ...tool, callId: secondBinding.dispatchCallId } });
+    const other = store(second, { scope: boundScope });
+    const results = await Promise.allSettled([
+      s.associateInteractionCall({ ...binding, parent, correlationId: 'choice', nativeCallId: 'same-native' }),
+      other.associateInteractionCall({ ...secondBinding, parent, correlationId: 'second-card', nativeCallId: 'same-native' }),
+    ]);
+    expect(results.filter(result => result.status === 'fulfilled' && result.value === true)).toHaveLength(1);
+    const loser = results.find(result => result.status === 'rejected');
+    expect(loser).toMatchObject({ status: 'rejected', reason: new Error('interaction-binding-conflict') });
+    const state = (await second.unsafe('SELECT chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]))[0].chat_state;
+    expect(Object.values(state.interactionBindings).filter((value: any) => value.nativeCallId === 'same-native')).toHaveLength(1);
+    expect(Object.keys(state.interactions)).toEqual(['choice', 'second-card']);
+  });
+
+  it.each(['failed', 'cancelled'] as const)('retains prepared identity and closes pending cards when %s precedes a native completion', async status => {
+    const { s, parent, binding, tool, pending } = await boundChoice();
+    await s.prepareInteraction({ record: pending, parent, binding, tool });
+    const receipt = await s.finalizeTurn({ runId: 'parent-run', status, text: 'Partial', tools: [] });
+    expect(receipt).toMatchObject(turn);
+    const row = (await second.unsafe('SELECT tools,chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]))[0];
+    expect(row.tools).toEqual([tool]);
+    expect(row.chat_state.interactions.choice.status).toBe('cancelled');
+    expect(row.chat_state.interactionBindings.choice).toEqual(binding);
+    await expect(s.associateInteractionCall({ ...binding, parent, correlationId: 'choice', nativeCallId: 'late-native' }))
+      .rejects.toThrow('turn-result-conflict');
+    await s.finalizeTurn({ runId: 'parent-run', status, text: 'Partial', tools: [] });
+  });
+
+  it('persists original parent authority and fences card registration against a different run or credential', async () => {
+    await first.unsafe('DELETE FROM harness_shared.operator_turns');
+    const authority = { kind: 'system' as const, principalId: 'system:owner',
+      credentialSha256: createHash('sha256').update('original-parent').digest('hex') };
+    const boundScope = { ...scope, principalId: authority.principalId };
+    const pending = (id: string) => ({ ...record(id), scope: boundScope });
+    const s = store(first, { scope: boundScope });
+    await s.beginTurn('parent-run', 'text_typed', authority);
+    const parent = { workspaceId, ...turn, runId: 'parent-run', authority };
+    const rows = await second.unsafe('SELECT chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows[0].chat_state.execution.parentAuthority).toEqual(authority);
+    expect(JSON.stringify(rows)).not.toContain('original-parent');
+    const other = store(second, { scope: boundScope });
+    await expect(other.seedInteraction(pending('missing-parent'))).rejects.toThrow('unauthorized');
+    for (const invalid of [{ ...parent, runId: 'child-run' }, { ...parent, turnId: randomUUID() },
+      { ...parent, workspaceId: 'foreign' },
+      { ...parent, authority: { ...authority, credentialSha256: 'a'.repeat(64) } }]) {
+      await expect(other.seedInteraction(pending('foreign-binding'), invalid)).rejects.toThrow('unauthorized');
+    }
+    expect(await other.seedInteraction(pending('authorized'), parent)).toBe(true);
+    expect(await other.seedInteraction(pending('authorized'), parent)).toBe(false);
+    const state = (await second.unsafe('SELECT chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]))[0].chat_state;
+    expect(Object.keys(state.interactions)).toEqual(['authorized']);
+    await expect(other.beginTurn('parent-run', 'text_typed', { ...authority, credentialSha256: 'b'.repeat(64) }))
+      .rejects.toThrow('turn-run-conflict');
+    expect(await other.beginTurn('parent-run', 'text_typed', authority)).toBe(false);
+  });
+
+  it.each(['system', 'pi'] as const)('P010 converse adapter admits and finalizes with current %s authority, denying duplicate launch and revoked finalization', async kind => {
+    await first.unsafe('DELETE FROM harness_shared.operator_turns');
+    const bearer = `adapter-${kind}-credential`;
+    const hash = createHash('sha256').update(bearer).digest('hex');
+    const principalId = `${kind}:adapter`;
+    if (kind === 'system') {
+      await first.unsafe(`INSERT INTO harness_shared.system_principals VALUES ($1,'adapter',$2,'["chat:write"]')`, [workspaceId, hash]);
+    } else {
+      await first.unsafe(`INSERT INTO harness_shared.pi_sessions
+        (workspace_id,session_id,bearer_hash,capabilities,allowed_tools,expires_at)
+        VALUES ($1,'adapter',$2,'["chat:write"]','["chat:ask_choice"]',clock_timestamp()+interval '1 hour')`, [workspaceId, hash]);
+    }
+    await first.unsafe('INSERT INTO harness_shared.token_index VALUES ($1,$2,$3,$4)', [bearer, kind, principalId, workspaceId]);
+    const args = { options: { sql: first, workspaceId, turn, scope: { ...scope, principalId } },
+      credential: kind === 'system' ? { kind, name: 'adapter', bearer } : { kind, sessionId: 'adapter', bearer },
+      capability: 'chat:write', toolName: 'chat:ask_choice', runId: 'adapter-run', source: 'text_typed' as const };
+    const admitted = await admitConverseTurn(args);
+    await expect(admitConverseTurn({ ...args, options: { ...args.options, sql: second } })).rejects.toThrow('needs-reconciliation');
+    expect(await second.unsafe('SELECT id FROM harness_shared.operator_turns')).toHaveLength(1);
+    await admitted.finalize({ status: 'completed', text: 'Durable reply', tools: [{ name: 'read', callId: 'call-a' }] });
+    expect((await second.unsafe('SELECT text,chat_state FROM harness_shared.operator_turns'))[0]).toMatchObject({
+      text: 'Durable reply', chat_state: { scope: { principalId }, execution: { runId: 'adapter-run', status: 'completed' } } });
+    await first.unsafe('DELETE FROM harness_shared.token_index WHERE token=$1', [bearer]);
+    await expect(admitted.finalize({ status: 'completed', text: 'Durable reply', tools: [{ name: 'read', callId: 'call-a' }] }))
+      .rejects.toThrow('unauthorized');
+    await expect(admitConverseTurn({ ...args, options: { ...args.options, turn: { ...turn, turnId: randomUUID() } } }))
+      .rejects.toThrow('unauthorized');
+    expect(await second.unsafe('SELECT id FROM harness_shared.operator_turns')).toHaveLength(1);
+  });
+
+  it('P010 pre-stream admission reserves one scoped row and never grants a duplicate provider launch', async () => {
+    await first.unsafe('DELETE FROM harness_shared.operator_turns');
+    const runId = randomUUID();
+    expect(runId).not.toBe(turn.turnId);
+    const admissions = await Promise.all([store().beginTurn(runId, 'text_typed'), store(second).beginTurn(runId, 'text_typed')]);
+    expect(admissions.sort()).toEqual([false, true]);
+    const rows = await second.unsafe('SELECT id,seq,text,chat_state FROM harness_shared.operator_turns');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: turn.turnId, seq: 0, text: '',
+      chat_state: { execution: { runId, status: 'running', finalDigest: null }, scope } });
+    await expect(store(second).beginTurn(randomUUID(), 'text_typed')).rejects.toThrow('turn-run-conflict');
+    await expect(store().beginTurn(runId, 'voice_tts')).rejects.toThrow('turn-run-conflict');
+  });
+
+  it('P010 admission denies revoked credentials, foreign conversations and existing legacy rows', async () => {
+    await expect(store().beginTurn('run', 'text_typed')).rejects.toThrow('turn-run-conflict');
+    await first.unsafe('DELETE FROM harness_shared.operator_turns');
+    await expect(store(first, { workspaceId: 'other-workspace' }).beginTurn('run', 'text_typed'))
+      .rejects.toThrow('unauthorized');
+    await first.unsafe('DELETE FROM harness_shared.user_sessions');
+    await expect(store().beginTurn('run', 'text_typed')).rejects.toThrow('unauthorized');
+    expect(await first.unsafe('SELECT id FROM harness_shared.operator_turns')).toHaveLength(0);
+  });
+
+  it('P010 terminal ack loss reconciles on a fresh connection without erasing a later card answer', async () => {
+    await first.unsafe('DELETE FROM harness_shared.operator_turns');
+    const runId = randomUUID();
+    await store().beginTurn(runId, 'text_typed');
+    expect((await worker().start(turn, ['provider'])).ok).toBe(true);
+    const result = { runId, status: 'completed' as const, text: 'Choose next',
+      tools: [{ name: 'chat:ask_choice', callId: 'stable-call', input: { a: 1, b: 2 } }] };
+    // Lose the acknowledgement after the real commit, then replace the worker.
+    await expect((async () => { await store().finalizeTurn(result); throw new Error('ack-lost'); })()).rejects.toThrow('ack-lost');
+    await first.unsafe(`UPDATE harness_shared.operator_turns SET tools=jsonb_set(tools,'{0,answered}','{"picks":[]}'::jsonb) WHERE id=$1`, [turn.turnId]);
+    await store(second).finalizeTurn({ ...result, tools: [{ ...result.tools[0], input: { b: 2, a: 1 } }] });
+    expect(await store(second).beginTurn(runId, 'text_typed')).toBe(false);
+    const rows = await second.unsafe('SELECT text,tools,chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows[0]).toMatchObject({ text: 'Choose next', tools: [{ answered: { picks: [] } }],
+      chat_state: { execution: { status: 'completed' }, checkpoint: { state: { phase: 'completed' } } } });
+    await expect(store(second).finalizeTurn({ ...result, text: 'Different' })).rejects.toThrow('turn-result-conflict');
+    await expect(store(second).finalizeTurn({ ...result, runId: 'other-run' })).rejects.toThrow('turn-run-conflict');
+  });
+
+  it('P010 competing final results admit one exact winner and preserve its text', async () => {
+    await first.unsafe('DELETE FROM harness_shared.operator_turns');
+    await store().beginTurn('run', 'voice_tts');
+    const results = await Promise.allSettled([
+      store().finalizeTurn({ runId: 'run', status: 'completed', text: 'First' }),
+      store(second).finalizeTurn({ runId: 'run', status: 'completed', text: 'Second' }),
+    ]);
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(r => r.status === 'rejected')).toHaveLength(1);
+    const rows = await first.unsafe('SELECT text FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(['First', 'Second']).toContain(rows[0].text);
+  });
+
+  it('P010 finalization preserves an answer committed before stream completion and rejects replacing its call', async () => {
+    await first.unsafe('DELETE FROM harness_shared.operator_turns');
+    const s = store();
+    await s.beginTurn('run', 'text_typed');
+    const tool = { name: 'chat:ask_choice', callId: 'choice', input: { prompt: 'Pick', options: [{ id: 'yes', label: 'Yes' }] } };
+    await first.unsafe('UPDATE harness_shared.operator_turns SET tools=$1::jsonb WHERE id=$2',
+      [first.json([tool]), turn.turnId]);
+    await s.seedInteraction({ ...record(), schema: { id: 'choice-schema', revision: 1 } });
+    const port = s.interactions(operatorChatTurnWorkflow({ workspaceId, turn }));
+    const choice = new InteractionResolver({ store: port,
+      validate: async (_schema, value) => ({ ok: true, value }) });
+    expect((await choice.resolve({ conversationId: turn.conversationId, correlationId: 'choice' }, scope,
+      { submissionId: 'answer', revision: 0,
+        response: { action: 'submit', correlationId: 'choice', value: { picks: ['yes'] } } })).ok).toBe(true);
+    await expect(s.finalizeTurn({ runId: 'run', status: 'completed', text: 'Changed',
+      tools: [{ ...tool, input: { ...tool.input, prompt: 'Other' } }] })).rejects.toThrow('turn-result-conflict');
+    await s.finalizeTurn({ runId: 'run', status: 'completed', text: 'Done', tools: [tool] });
+    const rows = await second.unsafe('SELECT tools FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows[0].tools[0].answered.picks).toEqual([{ option_id: 'yes', label: 'Yes' }]);
+    expect(await second.unsafe("SELECT id FROM harness_shared.operator_turns WHERE source='card_pick'")).toHaveLength(1);
+    expect(await s.seedInteraction(record('late'))).toBe(false);
+    expect(await s.compareAndSwap(turn, null, { state: { schemaVersion: 1, ...turn, revision: 0,
+      phase: 'running', lastSequence: 0, capabilities }, effects: {} })).toBe(false);
+  });
+
+  it.each(['cancelled', 'failed'] as const)('P010 %s finalization preserves partial output and fences pending cards and dispatch', async status => {
+    await first.unsafe('DELETE FROM harness_shared.operator_turns');
+    const s = store();
+    await s.beginTurn('run', 'text_typed');
+    await worker(s).start(turn, ['effect']);
+    await s.seedInteraction(record());
+    await s.finalizeTurn({ runId: 'run', status, text: 'Partial' });
+    expect((await s.read(turn))?.state.phase).toBe(status);
+    const rows = await first.unsafe('SELECT text,chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows[0]).toMatchObject({ text: 'Partial', chat_state: { interactions: { choice: { status: 'cancelled' } } } });
+    expect((await s.admitDispatch(turn, 'effect', 0, async () => 'must not launch')).admitted).toBe(false);
+    await expect(s.finalizeTurn({ runId: 'run', status: 'completed', text: 'Resurrected' })).rejects.toThrow('turn-result-conflict');
+  });
+
+  it('P010 finalization rechecks current authority and rejects lossy JSON before any history mutation', async () => {
+    await first.unsafe('DELETE FROM harness_shared.operator_turns');
+    await store().beginTurn('run', 'text_typed');
+    await expect(store().finalizeTurn({ runId: 'run', status: 'completed', text: 'Lost',
+      tools: [{ name: 'read', input: { count: NaN } }] })).rejects.toThrow('invalid-turn-result');
+    await first.unsafe('DELETE FROM harness_shared.user_sessions');
+    await expect(store(second).finalizeTurn({ runId: 'run', status: 'completed', text: 'Forbidden' }))
+      .rejects.toThrow('unauthorized');
+    const rows = await first.unsafe('SELECT text,chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows[0]).toMatchObject({ text: '', chat_state: { execution: { status: 'running', finalDigest: null } } });
+  });
+
+  it('P010 terminal digest distinguishes parsed prototype-looking tool payloads', async () => {
+    await first.unsafe('DELETE FROM harness_shared.operator_turns');
+    await store().beginTurn('run', 'text_typed');
+    const input = JSON.parse('{"__proto__":{"value":"one"},"safe":1}');
+    const changed = JSON.parse('{"__proto__":{"value":"two"},"safe":1}');
+    const result = { runId: 'run', status: 'completed' as const, text: 'Done', tools: [{ name: 'read', input }] };
+    await store().finalizeTurn(result);
+    await expect(store(second).finalizeTurn({ ...result, tools: [{ name: 'read', input: changed }] }))
+      .rejects.toThrow('turn-result-conflict');
+    await store(second).finalizeTurn(result);
+    const rows = await first.unsafe('SELECT tools FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows[0].tools[0].input).toEqual(input);
+  });
+
   it('P010 durable worker recovery reads a completed tool without re-execution on a new connection', async () => {
     const a = worker();
     const dispatch = () => Promise.resolve({ ref: 'document:retained', text: 'Stored result' });
@@ -320,6 +939,67 @@ describe('P010 durable PG turn ports (independent connections; no actual-host cl
 });
 
 describe('P010 production session authority and existing persisted card workflow', () => {
+  it('resolves a signed owner child against the live SU token file without borrowing a token_index identity', async () => {
+    const priorHome = process.env.PAPERCUSP_HOME;
+    const home = mkdtempSync(join(tmpdir(), 'p010-child-authority-'));
+    const bearer = 'owned-fixture-superuser-credential';
+    process.env.PAPERCUSP_HOME = home;
+    try {
+      writeFileSync(join(home, 'superuser-token'), bearer, { mode: 0o600 });
+      const input = { workspaceId, credentialSha256: createHash('sha256').update(bearer).digest('hex'),
+        capability: 'chat:write', toolName: 'chat:ask_choice' };
+      const authorize = operatorChatChildAuthority(input);
+      expect(await first.begin(tx => authorize(tx))).toBe(true);
+      expect(await first.unsafe('SELECT token FROM harness_shared.token_index')).toHaveLength(0);
+      // The same closure must observe rotation at the same path immediately.
+      writeFileSync(join(home, 'superuser-token'), 'rotated-fixture-superuser-credential');
+      expect(await first.begin(tx => authorize(tx))).toBe(false);
+      writeFileSync(join(home, 'superuser-token'), bearer);
+      expect(await first.begin(tx => authorize(tx))).toBe(true);
+      for (const invalid of [{ ...input, workspaceId: '*' }, { ...input, credentialSha256: 'malformed' },
+        { ...input, capability: '' }, { ...input, toolName: '' }]) {
+        expect(await first.begin(tx => operatorChatChildAuthority(invalid)(tx))).toBe(false);
+      }
+      rmSync(join(home, 'superuser-token'));
+      expect(await first.begin(tx => authorize(tx))).toBe(false);
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = priorHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('rechecks a signed PI child capability, allowlist and identity under the current session lock', async () => {
+    const bearer = 'mounted-child-pi-credential';
+    const fingerprint = createHash('sha256').update(bearer).digest('hex');
+    await first.unsafe(`INSERT INTO harness_shared.pi_sessions
+      (workspace_id,session_id,bearer_hash,capabilities,allowed_tools,expires_at)
+      VALUES ($1,'child',$2,'["chat:write"]','["chat:ask_choice"]',clock_timestamp()+interval '1 hour')`,
+    [workspaceId, fingerprint]);
+    await first.unsafe("INSERT INTO harness_shared.token_index VALUES ($1,'pi','pi:child',$2)", [bearer, workspaceId]);
+    const authorize = operatorChatChildAuthority({ workspaceId, credentialSha256: fingerprint,
+      capability: 'chat:write', toolName: 'chat:ask_choice' });
+    expect(await first.begin(async tx => {
+      const allowed = await authorize(tx);
+      for (const mutation of ["UPDATE harness_shared.pi_sessions SET ended_at=clock_timestamp()",
+        "DELETE FROM harness_shared.token_index WHERE kind='pi'"]) {
+        await expect(second.begin(async other => {
+          await other.unsafe("SET LOCAL lock_timeout='30ms'");
+          await other.unsafe(mutation);
+        })).rejects.toMatchObject({ code: '55P03' });
+      }
+      return allowed;
+    })).toBe(true);
+    for (const mutation of ["UPDATE harness_shared.pi_sessions SET allowed_tools='[\"chat:*\"]'",
+      "UPDATE harness_shared.pi_sessions SET capabilities='[]'", "UPDATE harness_shared.pi_sessions SET ended_at=clock_timestamp()",
+      "UPDATE harness_shared.pi_sessions SET bearer_hash='rotated'", "DELETE FROM harness_shared.token_index WHERE kind='pi'"]) {
+      await first.unsafe(mutation);
+      expect(await first.begin(tx => authorize(tx))).toBe(false);
+      await first.unsafe(`UPDATE harness_shared.pi_sessions SET allowed_tools='["chat:ask_choice"]',
+        capabilities='["chat:write"]',ended_at=NULL,bearer_hash=$1`, [fingerprint]);
+    }
+  });
+
   const cookie = () => operatorChatSessionAuthority({ workspaceId, principalId: scope.principalId,
     credential: { kind: 'user-session', token: 'current', userId: scope.principalId },
     capability: 'chat:write', toolName: 'chat:ask_choice' });
@@ -402,6 +1082,48 @@ describe('P010 production session authority and existing persisted card workflow
     await expect(s.read(turn)).rejects.toThrow('unauthorized');
     await second.unsafe('UPDATE harness_shared.system_principals SET bearer_hash=$1', [hash]);
     expect(await s.read(turn)).toBeNull();
+  });
+
+  it.each(['system', 'pi'] as const)('parent %s revocation refuses a still-valid child and keeps the existing authority locks', async kind => {
+    const bearer = `parent-${kind}-credential`;
+    const hash = createHash('sha256').update(bearer).digest('hex');
+    const principalId = `${kind}:parent`;
+    if (kind === 'system') {
+      await first.unsafe("INSERT INTO harness_shared.system_principals VALUES ($1,'parent',$2,'[\"chat:write\"]')", [workspaceId, hash]);
+    } else {
+      await first.unsafe(`INSERT INTO harness_shared.pi_sessions
+        (workspace_id,session_id,bearer_hash,capabilities,allowed_tools,expires_at)
+        VALUES ($1,'parent',$2,'["chat:write"]','["chat:ask_choice"]',clock_timestamp()+interval '1 hour')`, [workspaceId, hash]);
+    }
+    const child = 'independently-valid-child';
+    await first.unsafe(`INSERT INTO harness_shared.pi_sessions
+      (workspace_id,session_id,bearer_hash,capabilities,allowed_tools,expires_at)
+      VALUES ($1,'child',$2,'["chat:write"]','["chat:ask_choice"]',clock_timestamp()+interval '1 hour')`,
+    [workspaceId, createHash('sha256').update(child).digest('hex')]);
+    await first.unsafe('INSERT INTO harness_shared.token_index VALUES ($1,$2,$3,$4),($5,\'pi\',\'pi:child\',$4)',
+      [bearer, kind, principalId, workspaceId, child]);
+    const authority = { kind, principalId, credentialSha256: hash };
+    const parent = operatorChatParentAuthority({ workspaceId, authority, capability: 'chat:write', toolName: 'chat:ask_choice' });
+    const childAuthority = operatorChatSessionAuthority({ workspaceId, principalId: 'pi:child',
+      credential: { kind: 'pi', sessionId: 'child', bearer: child }, capability: 'chat:write', toolName: 'chat:ask_choice' });
+    const s = store(first, { scope: { ...scope, principalId }, authorize: parent });
+    expect(await s.read(turn)).toBeNull();
+    expect(await first.begin(tx => childAuthority(tx))).toBe(true);
+    const guarded = store(first, { scope: { ...scope, principalId }, authorize: async tx => {
+      const allowed = await parent(tx);
+      await expect(second.begin(async other => {
+        await other.unsafe("SET LOCAL lock_timeout='30ms'");
+        await other.unsafe('DELETE FROM harness_shared.token_index WHERE token=$1', [bearer]);
+      })).rejects.toMatchObject({ code: '55P03' });
+      return allowed;
+    } });
+    expect(await guarded.read(turn)).toBeNull();
+    if (kind === 'system') await second.unsafe("UPDATE harness_shared.system_principals SET bearer_hash='rotated' WHERE name='parent'");
+    else await second.unsafe("UPDATE harness_shared.pi_sessions SET ended_at=clock_timestamp() WHERE session_id='parent'");
+    expect(await first.begin(tx => childAuthority(tx))).toBe(true);
+    await expect(s.read(turn)).rejects.toThrow('unauthorized');
+    const rows = await first.unsafe('SELECT tools FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows[0].tools).toEqual([]);
   });
 
   it.each(['system', 'pi'] as const)('bearer identity %s must still exist and stay locked in the current transaction', async kind => {

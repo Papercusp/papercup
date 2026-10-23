@@ -3854,6 +3854,19 @@ async function completeOne(
     Boolean(effectiveState) &&
     ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.some((state) => state === String(effectiveState).trim().toLowerCase());
 
+  if (closeIntentRequested && successfulClose &&
+      (existing.payload as { ownerDirectiveRecovery?: unknown } | null)?.ownerDirectiveRecovery) {
+    const { directiveRecoveryClosureError } = await import('../../owner-directive-recovery');
+    try {
+      const error = await directiveRecoveryClosureError(existing.payload,
+        ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId());
+      if (error) return { ok: false, id: it.id, error: 'owner_directive_still_open', message: error };
+    } catch (error) {
+      return { ok: false, id: it.id, error: 'owner_directive_verification_unavailable', retryable: true,
+        message: `Recovery directive could not be verified: ${String(error)}` };
+    }
+  }
+
   // EI-22410970761779199: the behavior-contract resolver correctly classifies a
   // `kind:'change'` item, but a completion close also knows whether this particular
   // disposition actually claims remediation. Discard/duplicate closes and closes with

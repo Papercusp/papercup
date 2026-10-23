@@ -195,6 +195,39 @@ describe('native engineering evidence public admission', () => {
     expect(report.evidence?.nodes.find(n => n.kind === 'spec')?.data).toMatchObject({ id: spec.id, revision: spec.revision });
     expect(report.evidence?.execution.status).toBe('unobserved');
   });
+  it('ee.query-native-su: accepts the actual trusted SU transport principal with its existing capability bypass', async () => {
+    const { synthesizeDispatchPrincipal } = await import('../endpoint-route/routes/transport/role-principal-caps');
+    const nativePrincipal = await synthesizeDispatchPrincipal(undefined as never, {
+      workspaceId: scope.workspaceId, role: 'operator', isSuperuser: true,
+    });
+    expect(nativePrincipal.capabilities.size).toBe(0);
+    const io = effects();
+    const report = await engineeringEvidenceQuery(args, { ...ctx, principal: nativePrincipal,
+      isSuperuser: true, gateBypass: { capability: true } }, io);
+    expect(report.status).toBe('measured');
+    expect(io.read).toHaveBeenCalledWith(expect.anything(), scope);
+  });
+  it('ee.query-native-su-controls: keeps the native bypass bound to trusted authentication and concrete scope', async () => {
+    const { synthesizeDispatchPrincipal } = await import('../endpoint-route/routes/transport/role-principal-caps');
+    const nativePrincipal = await synthesizeDispatchPrincipal(undefined as never, {
+      workspaceId: scope.workspaceId, role: 'operator', isSuperuser: true,
+    });
+    const nativeContext = { ...ctx, principal: nativePrincipal,
+      isSuperuser: true, gateBypass: { capability: true } };
+    for (const context of [
+      { ...nativeContext, isSuperuser: false },
+      { ...nativeContext, gateBypass: { capability: false } },
+      { ...nativeContext, principal: { ...nativePrincipal, kind: 'harness' as const } },
+      { ...nativeContext, principal: { ...nativePrincipal, trust: 'unverified-loopback' as const } },
+      { ...nativeContext, principal: { ...nativePrincipal, authMethod: 'spawn-url' as const } },
+      { ...nativeContext, principal: { ...nativePrincipal, workspaceId: '*' } },
+      { ...nativeContext, workspaceId: 'foreign-workspace' },
+    ]) {
+      const io = effects();
+      expect((await engineeringEvidenceQuery(args, context, io)).status).toBe('unknown');
+      expect(io.registry).not.toHaveBeenCalled(); expect(io.read).not.toHaveBeenCalled();
+    }
+  });
   it('ee.query-operator: keeps the existing operator/oracle cross-harness scope', async () => {
     const io = effects();
     expect((await engineeringEvidenceQuery({ ...args, harnesses: [scope.harness] },

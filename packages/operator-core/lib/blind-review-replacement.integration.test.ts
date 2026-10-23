@@ -120,7 +120,12 @@ describe('same-activation replacement on private PostgreSQL', () => {
     const launch = vi.fn(async (args, ctx) => { entered(); await gate; return nativeLaunch(s.input, args, ctx, key); });
     s.deps.launcher = async () => ({ handler: launch, confinementKey: key });
     const first = replaceBlindGapReviewer(s.input, s.deps);
-    await started;
+    // A refusal before launch must fail its assertion, rather than waiting on
+    // a launcher barrier that can no longer open.
+    await Promise.race([
+      started,
+      first.then(result => expect(result).toMatchObject({ ok: true })),
+    ]);
     const second = await replaceBlindGapReviewer({ ...s.input }, s.deps);
     expect(second).toMatchObject({ ok: true, deduped: true, attempt: { attemptSeq: 1, status: 'launching' } });
     release();

@@ -350,6 +350,9 @@ export interface CloseTaskEffects {
   nudgeLoop?: typeof nudgeOnNewLoop;
 }
 
+/** Preserve per-task close diagnostics when a reconciler closes a batch. */
+export type CloseTaskEffectsForTask = (taskId: string) => CloseTaskEffects;
+
 function terminalExitCode(terminal: TaskTerminalProvenance, fallback: number | null): number | null {
   if (terminal.execMainStatus == null) return fallback;
   // systemd exposes wait(2) si_code: CLD_EXITED=1; CLD_KILLED=2;
@@ -775,10 +778,11 @@ export async function touchAlive(
 export async function markStranded(
   verdicts: readonly { taskId: string; reason: string }[],
   inject?: Sql,
+  effectsForTask?: CloseTaskEffectsForTask,
 ): Promise<number> {
   let n = 0;
   for (const v of verdicts) {
-    if (await closeTask(v.taskId, { state: 'stranded', exitReason: v.reason }, inject)) n++;
+    if (await closeTask(v.taskId, { state: 'stranded', exitReason: v.reason }, inject, effectsForTask?.(v.taskId))) n++;
   }
   return n;
 }
@@ -796,6 +800,7 @@ export async function markEndedUnobserved(
     terminalProvenance?: TaskTerminalProvenance | null;
   }[],
   inject?: Sql,
+  effectsForTask?: CloseTaskEffectsForTask,
 ): Promise<number> {
   let n = 0;
   for (const v of verdicts) {
@@ -808,6 +813,7 @@ export async function markEndedUnobserved(
           terminalProvenance: v.terminalProvenance,
         },
         inject,
+        effectsForTask?.(v.taskId),
       )
     ) {
       n++;
@@ -834,6 +840,7 @@ export async function markRecoveredFromJobLog(
     terminalProvenance?: TaskTerminalProvenance | null;
   }[],
   inject?: Sql,
+  effectsForTask?: CloseTaskEffectsForTask,
 ): Promise<number> {
   let n = 0;
   for (const v of verdicts) {
@@ -847,6 +854,7 @@ export async function markRecoveredFromJobLog(
           terminalProvenance: v.terminalProvenance,
         },
         inject,
+        effectsForTask?.(v.taskId),
       )
     ) {
       n++;

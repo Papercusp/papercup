@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { closeTask, getTask, listTasks, reopenStrandedTask } from './store';
+import { closeTask, getTask, listTasks, markEndedUnobserved, markRecoveredFromJobLog, markStranded,
+  reopenStrandedTask, type CloseTaskEffectsForTask } from './store';
 
 function fakeSql(row: Record<string, unknown>): Sql {
   return (async () => [row]) as unknown as Sql;
@@ -86,6 +87,35 @@ describe('reopenStrandedTask', () => {
 });
 
 describe('closeTask terminal event', () => {
+  it.each(['stranded', 'unobserved', 'recovered'] as const)(
+    'retains the exact task and blocked close phase through a %s batch', async (kind) => {
+      const taskId = `batch-${kind}`;
+      const sql = fakeSql({ task_id: taskId, workspace_id: 'workspace-1', class: 'other',
+        state: 'running', ended_at: null, launched_by: 'fixture' });
+      const stages: Array<{ taskId: string; name: string }> = [];
+      const emit = vi.fn();
+      let enter!: () => void, release!: () => void;
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const effects: CloseTaskEffectsForTask = (id) => ({
+        stage: (name) => stages.push({ taskId: id, name }),
+        cleanupVerifierDirectories: async () => { enter(); await gate; },
+        emitTerminal: emit,
+      });
+      const closing = kind === 'stranded' ? markStranded([{ taskId, reason: 'gone' }], sql, effects)
+        : kind === 'unobserved' ? markEndedUnobserved([{ taskId, reason: 'released' }], sql, effects)
+          : markRecoveredFromJobLog([{ taskId, state: 'exited', exitCode: 2, reason: 'runner-log' }], sql, effects);
+      try {
+        await entered;
+        expect(stages.at(-1)).toEqual({ taskId, name: 'task-close-cleanup' });
+        expect(emit).not.toHaveBeenCalled();
+      } finally { release(); }
+      await expect(closing).resolves.toBe(1);
+      expect(stages.at(-1)).toEqual({ taskId, name: 'task-close-event-complete' });
+      expect(emit).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each(['read', 'cleanup', 'update', 'event'] as const)(
     'identifies a blocked %s phase without reporting later close phases or returning early', async (blockedPhase) => {
       const row = { task_id: 'phase-task', workspace_id: 'workspace-1', class: 'other',

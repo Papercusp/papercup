@@ -7136,7 +7136,8 @@ export function decodeQuotaRecovery(o) {
   // P-004: the same recycle recovers a dead codex login ('auth'). The cause is
   // diagnostic only; anything unrecognised is the original quota recovery.
   const cause = q.cause === 'auth' ? 'auth' : 'quota';
-  return { quotaRecovery: { operationId, ownerId: recoveryOwnerId, startedAtMs, cause } };
+  return { quotaRecovery: { operationId, ownerId: recoveryOwnerId, startedAtMs, cause,
+    ...(q.defaultToAuto !== undefined ? { defaultToAuto: q.defaultToAuto } : {}) } };
 }
 
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
@@ -11298,6 +11299,9 @@ export function hostThroughPty(o) {
   // (created before the teardown Promise) can close over them; they stay no-ops
   // until assigned, and a recycle cannot arrive before the socket is listening.
   let recycling = false;
+  let explicitQuotaRecoveryWindowAt = 0;
+  let explicitQuotaRecoveryAttempts = 0;
+  let liveAccountRoutingMode = env.PAPERCUSP_ACCOUNT_ROUTING_MODE ?? null;
   // WI-6638 SHUTDOWN state: set once a shutdown is accepted, so a duplicate/retried
   // request is an idempotent ok instead of a second kill. Unlike `recycling` this is
   // terminal — nothing clears it, because the host is on its way out.
@@ -11562,7 +11566,7 @@ export function hostThroughPty(o) {
     // agent to the carry-respawn rung instead of queueing a reconnect that no-ops.
     caps: ['carry-respawn', 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
       ...(env.PAPERCUSP_AGENT === 'codex' ? ['codex-hooks-observe-v1'] : []),
-      ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume'] : [])],
+      ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume', 'quota-recovery-reroute'] : [])],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
     // stamps `--launched-by=<caller ownerId>` onto every tool-driven psu launch, and
     // bootstrap-su re-exports it as PAPERCUSP_LAUNCHED_BY. An owner-typed `psu` never
@@ -11620,6 +11624,7 @@ export function hostThroughPty(o) {
       }
       metadataWriter.write(JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot(),
         ...authBlockDetector.snapshot(),
+        accountRoutingMode: liveAccountRoutingMode,
         ...(env.PAPERCUSP_AGENT === 'codex' ? {
           nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
           childGeneration,
@@ -16792,11 +16797,32 @@ export function hostThroughPty(o) {
         env.PAPERCUSP_AGENT === 'codex' && typeof mintQuotaResumeArgs === 'function';
       const recoveryChild = child;
       const recoveryOwnerInputGeneration = ownerInputGeneration;
+      const reroute = quotaRecovery?.defaultToAuto;
+      const routeBeforeRecovery = {
+        PAPERCUSP_ACCOUNT_ROUTING_MODE: env.PAPERCUSP_ACCOUNT_ROUTING_MODE,
+        PAPERCUSP_CODEX_GATEWAY: env.PAPERCUSP_CODEX_GATEWAY,
+        PAPERCUSP_ACCOUNT_ID: env.PAPERCUSP_ACCOUNT_ID,
+      };
+      const rerouteBoundary = () => reroute !== undefined &&
+        (!reroute || quotaRecovery.cause !== 'quota' || !resumeQuotaConversation ||
+          env.PAPERCUSP_ACCOUNT_ROUTING_MODE !== 'default' ||
+          reroute.hostStartedAt !== baseMeta.startedAt || reroute.childGeneration !== childGeneration ||
+          reroute.nativeSessionId !== currentNativeSessionId(child.pid, resolveRespawnNativeId) ||
+          !quotaBlockDetector.isBlocked() ||
+          reroute.quotaBlockedSinceMs !== quotaBlockDetector.snapshot().quotaBlockedSinceMs ||
+          !Number.isFinite(reroute.expiresAtMs) || Date.now() > reroute.expiresAtMs ||
+          reroute.expiresAtMs > quotaRecovery.startedAtMs + 30_000);
       const quotaOwnerBoundary = () => resumeQuotaConversation &&
         (child !== recoveryChild || ownerInputGeneration !== recoveryOwnerInputGeneration ||
           ownerComposerGate.hasPending() || ownerStopRequested ||
           nativeExecutionBlocksInjection(currentNativeExecution()));
       const settleQuotaRecovery = (delivered, reason, extra = {}) => {
+        if (reroute !== undefined && !delivered && child === recoveryChild) {
+          for (const [key, value] of Object.entries(routeBeforeRecovery)) {
+            if (value === undefined) delete env[key];
+            else env[key] = value;
+          }
+        }
         if (quotaRecovery) {
           appendHostEvent(
             ownerId,
@@ -16814,7 +16840,16 @@ export function hostThroughPty(o) {
         return { delivered, reason };
       };
       if (recycling) return settleQuotaRecovery(false, 'recycle-already-running');
+      if (rerouteBoundary()) return settleQuotaRecovery(false, 'stale-quota-reroute');
       if (quotaOwnerBoundary()) return settleQuotaRecovery(false, 'owner-input-or-native-work');
+      if (reroute !== undefined) {
+        if (Date.now() - explicitQuotaRecoveryWindowAt >= 3_600_000) {
+          explicitQuotaRecoveryWindowAt = Date.now();
+          explicitQuotaRecoveryAttempts = 0;
+        }
+        if (explicitQuotaRecoveryAttempts >= 2) return settleQuotaRecovery(false, 'quota-reroute-exhausted');
+        explicitQuotaRecoveryAttempts++;
+      }
       recycling = true;
       // WI-5075 observability: the drill-only rows below made a WATCHDOG-initiated
       // carry-respawn (no drillId) completely invisible in the per-owner event log
@@ -16941,6 +16976,10 @@ export function hostThroughPty(o) {
         if (!autoRouteReady) {
           recycling = false;
           return settleQuotaRecovery(false, 'codex-auto-route-unavailable');
+        }
+        if (rerouteBoundary() || quotaOwnerBoundary()) {
+          recycling = false;
+          return settleQuotaRecovery(false, 'owner-input-or-native-work');
         }
         env.PAPERCUSP_ACCOUNT_ROUTING_MODE = 'auto';
         env.PAPERCUSP_CODEX_GATEWAY = '1';
@@ -17433,6 +17472,7 @@ export function hostThroughPty(o) {
           /* keep the old pin — the respawn itself matters more */
         }
         child = spawnChild(recycleArgs);
+        liveAccountRoutingMode = env.PAPERCUSP_ACCOUNT_ROUTING_MODE ?? null;
         stopStartupTrace = startCodexStartupProcessTrace({
           agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
         });

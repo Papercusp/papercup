@@ -111,6 +111,42 @@ describe('shared adequacy-card binding evidence', () => {
     }
   });
 
+  it.each([false, true])('pins the full disclosed-gap census independently of selected proofs (historical disclosure: %s)', (disclosed) => {
+    const selected = [evidence({ id: 41001, evidenceRef: 'surface:first' }), evidence({ id: 41002, evidenceRef: 'surface:second' })];
+    const historical = evidence({ id: 41003, evidenceRef: 'surface:other' });
+    if (disclosed) {
+      historical.details.adequacy = { ...(historical.details.adequacy as Record<string, unknown>), disclosedGap: ['The failure path is not covered.'] };
+    }
+    const replacement = evidence({ id: 41004, evidenceRef: historical.evidenceRef });
+    const population = [...selected, historical, replacement];
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: selected, disclosedGapEvidence: population,
+      harness: 'papercusp', classRef: 'plan-class-feature-ship',
+    });
+    const probe = (criterion: 'disclosed-gap' | 'traceability') => {
+      const text = result.scorecardDraft.ratings[criterion].evidence;
+      const match = text.match(/Evidence probe: plans:get-spec-evidence (\{[^\n]*\})\. Inspect evidence\[\]/);
+      expect(match).not.toBeNull();
+      return getSpecEvidenceTool.args.parse(JSON.parse(match![1]!));
+    };
+    const gapProbe = probe('disclosed-gap');
+    expect(gapProbe.bindingIds).toEqual([41001, 41002, 41003, 41004]);
+    expect(gapProbe.includeRetracted).toBe(true);
+    expect(probe('traceability').bindingIds).toEqual([41001, 41002]);
+    expect(result.scorecardDraft.rerunRecipe.args.bindingIds).toEqual([41001, 41002]);
+    const fetched = population.filter(row => gapProbe.bindingIds!.includes(row.id!));
+    expect(activeSpecEvidence(fetched).map(row => row.id)).toEqual([41001, 41002, 41004]);
+    const rendered = result.scorecardDraft.ratings['disclosed-gap'].evidence;
+    expect(rendered).toContain('Apply activeSpecEvidence to these clause rows: 4 raw binding(s), 3 active logical binding(s); active bindingIds=[41001,41002,41004].');
+    if (disclosed) {
+      expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+      expect(result.wouldBlock).toContain('disclosed-gap');
+      expect(rendered).toContain('The failure path is not covered.');
+    } else {
+      expect(rendered).toContain('Checked 3 active binding(s) for the clause.');
+    }
+  });
+
   it('keeps the empty evidence probe empty after later bindings are added', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(), evidence: [], harness: 'papercusp', classRef: 'plan-class-feature-ship',

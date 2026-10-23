@@ -46,6 +46,35 @@ export class AdmissionAuthorityUnavailable extends Error {
   readonly code = 'policy-unavailable';
 }
 
+const authorityReadSourceSchema = z.enum([
+  'control-anchor-query-failed', 'verified-caller-row-unavailable',
+  'power-user-revocation-query-failed', 'authority-reader-initialization-failed',
+  'identity-policy-evaluation-failed',
+]);
+const policyReadDiagnosticSchema = z.object({
+  kernelDecision: z.object({
+    serverAudit: z.object({
+      authorityUnavailableSources: z.array(authorityReadSourceSchema).max(8).optional(),
+      authorityReadFailures: z.array(z.object({
+        source: authorityReadSourceSchema,
+        pgCode: z.string().regex(/^[0-9A-Z]{5}$/).nullable(),
+        elapsedMs: z.number().finite().nonnegative(),
+        servingPid: z.number().int().positive(),
+      })).max(8).optional(),
+    }),
+  }),
+});
+
+/** Existing run-error records keep this message. Preserve safe reader evidence
+ * there without serializing the dispatch context, SQL, parameters or credentials. */
+function policyReadDiagnosticSuffix(meta: unknown): string {
+  const parsed = policyReadDiagnosticSchema.safeParse(meta);
+  if (!parsed.success) return '';
+  const diagnostic = parsed.data.kernelDecision.serverAudit;
+  if (!diagnostic.authorityUnavailableSources?.length && !diagnostic.authorityReadFailures?.length) return '';
+  return ` [authority-read ${JSON.stringify(diagnostic)}]`;
+}
+
 /** Called on the authenticated dispatch context, never on caller-supplied args. */
 export function bindAdmissionAuthority(
   ctx: UnifiedToolContext & AdmissionAuthorityContext,
@@ -155,7 +184,7 @@ export async function authorizeAdmissionReplay(
     if (!verdict.allowed) {
       const message = `${name}: ${verdict.error?.message ?? 'current authority denied'}`;
       if (verdict.error?.meta?.kernelCode === 'policy-unavailable') {
-        throw new AdmissionAuthorityUnavailable(message);
+        throw new AdmissionAuthorityUnavailable(message + policyReadDiagnosticSuffix(verdict.error.meta));
       }
       throw new AdmissionAuthorityRefused(message);
     }

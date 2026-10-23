@@ -964,6 +964,7 @@ export interface BuiltSpawnContext {
   featureId: string | null;
   chunkId: string | null;
   runId: string;
+  chatParent?: UnifiedToolContext['chatParent'];
   spawnId: string;
   parentSpawnId: string | null;
   /** Verified adv_sessions row for this caller's native CLI incarnation. */
@@ -1653,6 +1654,32 @@ export function pinVerifiedMcpRequest(
  *      of re-rolling out a new signing scheme.
  */
 export async function tryBuildSpawnContext(
+  extra: unknown,
+  options: { allowStalePlanRecovery?: boolean } = {},
+): Promise<TrySpawnContextResult> {
+  const result = await tryBuildUnboundSpawnContext(extra, options);
+  const bindings = urlFromExtra(extra)?.searchParams.getAll('chat_binding') ?? [];
+  if (bindings.length === 0 || result.kind !== 'ok') return result;
+  if (bindings.length !== 1 || result.ctx.isPowerUser
+    || (!result.ctx.isSuperuser && result.ctx.authenticatedPrincipal?.kind !== 'pi')) {
+    return { kind: 'failed', reason: 'chat_parent_invalid_transport' };
+  }
+  try {
+    const { verifyConverseChatBinding } = await import('../../../agent-tools/operator/converse-chat-binding');
+    const parent = await verifyConverseChatBinding(bindings[0], {
+      workspaceId: result.ctx.workspaceId, bearer: bearerFromExtra(extra) ?? '',
+    });
+    if (!parent) return { kind: 'failed', reason: 'chat_parent_invalid_binding' };
+    // The verified converse association proves an interactive parent surface.
+    // A generic SU/MCP mount has no responder; its authority alone must never
+    // enable a human wait. Capability/role checks remain separate below.
+    return { kind: 'ok', ctx: { ...result.ctx, chatParent: parent, interactiveCardCapability: true } };
+  } catch {
+    return { kind: 'failed', reason: 'chat_parent_verifier_unavailable' };
+  }
+}
+
+async function tryBuildUnboundSpawnContext(
   extra: unknown,
   options: { allowStalePlanRecovery?: boolean } = {},
 ): Promise<TrySpawnContextResult> {
@@ -3093,6 +3120,7 @@ async function buildMcpToolContext(
     featureId: spawn.featureId,
     chunkId: spawn.chunkId,
     runId: spawn.runId,
+    chatParent: spawn.chatParent,
     spawnId: spawn.spawnId,
     parentSpawnId: spawn.parentSpawnId,
     advSessionId: spawn.advSessionId,
@@ -4200,6 +4228,7 @@ export function registerMcpHost(server: McpServer): void {
           idempotencyReplayPhaseTimings.errors[event.phase] = event.error;
         }
       };
+      const transportScopePhases = createPhaseTracker({ historyCap: 32 });
       const trace = (
         stage: Parameters<typeof logMcpRequestTrace>[0]['stage'],
         details: Omit<Parameters<typeof logMcpRequestTrace>[0], 'traceId' | 'toolName' | 'stage' | 'elapsedMs'> = {},
@@ -4209,6 +4238,9 @@ export function registerMcpHost(server: McpServer): void {
           toolName: toolName.slice(0, 120),
           stage,
           elapsedMs: Math.max(0, Date.now() - callStartedAt),
+          ...(transportScopePhases.toMetadata()
+            ? { transportScopePhases: transportScopePhases.toMetadata() }
+            : {}),
           ...details,
           ...(idempotencyReplayPhaseTraceEnabled
             ? {
@@ -4406,11 +4438,11 @@ export function registerMcpHost(server: McpServer): void {
         // context is the original ambient scope, while dispatch gets the
         // verified read target.
         let effectiveHarnessSlug = spawnRes.ctx.harnessSlug;
-        const boundary = await applyScopedSuperuserTransportBoundary(
+        const boundary = await transportScopePhases.track('scopedSuperuserBoundary', () => applyScopedSuperuserTransportBoundary(
           { name: toolName, crossWorkspace: projected.crossWorkspace, profile: projected.profile },
           spawnRes.ctx,
           { readForAllTools: true },
-        );
+        ));
         if (!boundary.ok) return boundary.result;
         const scopedSuperuserClamp = boundary.scopedSuperuserClamp;
         // scoped-superuser-workspace-clamp (P-008, security half): a scoped session
@@ -4477,10 +4509,13 @@ export function registerMcpHost(server: McpServer): void {
               ? ((args as Record<string, unknown>).harness as string).trim()
               : '';
           if (ah && ah !== 'all' && ah !== '*') {
-            const { resolveWorkspaceForHarnessSlugIn } = await import('../../../harness-core');
+            const { resolveWorkspaceForHarnessSlugIn } = await transportScopePhases.track(
+              'harnessWorkspaceModule', () => import('../../../harness-core'),
+            );
             let harnessWs: string | null = null;
             try {
-              harnessWs = await resolveWorkspaceForHarnessSlugIn(spawnRes.ctx.workspaceId, ah);
+              harnessWs = await transportScopePhases.track('harnessWorkspaceResolution',
+                () => resolveWorkspaceForHarnessSlugIn(spawnRes.ctx.workspaceId, ah));
             } catch {
               // Ambiguous cross-workspace collision (resolver throws) or an infra error:
               // fail OPEN — let the tool resolve/fail loud rather than block a same-name slug.
@@ -4514,14 +4549,19 @@ export function registerMcpHost(server: McpServer): void {
         // memory surfaces per-hive (P-014b) — is a separate multi-subsystem change.
         if (scopedSuperuserClamp && spawnRes.ctx.harnessSlug !== '*' &&
             (Object.keys(args ?? {}).length > 0 || toolName.startsWith('cross_harness:'))) {
-          const { potHomeSlugForHarness } = await import('../../../hive-federation');
+          const { potHomeSlugForHarness } = await transportScopePhases.track(
+            'hiveFederationModule', () => import('../../../hive-federation'),
+          );
           // EI-21910110662818467: the generic harness-arg sweep below. Kept in its
           // own module so the SAME predicate that decides "this arg names a
           // harness" is what the coverage detector
           // (scripts/check-harness-arg-coverage.ts) audits the registry with —
           // clamp and detector cannot drift apart into two opinions.
-          const { collectHarnessSlugArgs } = await import('../../hive-harness-arg-coverage');
-          const scopeHive = await potHomeSlugForHarness(spawnRes.ctx.workspaceId, spawnRes.ctx.harnessSlug);
+          const { collectHarnessSlugArgs } = await transportScopePhases.track(
+            'harnessArgCoverageModule', () => import('../../hive-harness-arg-coverage'),
+          );
+          const scopeHive = await transportScopePhases.track('callerHiveResolution',
+            () => potHomeSlugForHarness(spawnRes.ctx.workspaceId, spawnRes.ctx.harnessSlug));
           if (scopeHive) {
             if (toolName.startsWith('cross_harness:')) {
               return {
@@ -4576,7 +4616,8 @@ export function registerMcpHost(server: McpServer): void {
                 !isSelfOwnedCheckpointRead &&
                 (argHarness === 'all' ||
                   argHarness === '*' ||
-                  (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive);
+                  (await transportScopePhases.track('harnessArgumentHiveResolution',
+                    () => potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness))) !== scopeHive);
               // A resumed fleet leader can retain an ambient Hive while
               // naming the owning harness of one exact plan. Verify the row
               // in this workspace BEFORE rebinding dispatch. Keep this
@@ -4590,9 +4631,11 @@ export function registerMcpHost(server: McpServer): void {
                 (toolName === 'plans:get' ||
                   toolName === 'plans:add-decision' ||
                   toolName === 'coord:declare-intent') &&
-                (await verifyExplicitPlanHarness(spawnRes.ctx, argHarness, args));
+                (await transportScopePhases.track('explicitPlanHarnessVerification',
+                  () => verifyExplicitPlanHarness(spawnRes.ctx, argHarness, args)));
               const goalLocalPlacement =
-                escapes && (await mayUseGoalLocalPlacement(toolName, spawnRes.ctx, scopeHive, argHarness));
+                escapes && (await transportScopePhases.track('goalLocalPlacementVerification',
+                  () => mayUseGoalLocalPlacement(toolName, spawnRes.ctx, scopeHive, argHarness)));
               if (verifiedExactPlanRebind || goalLocalPlacement) {
                 effectiveHarnessSlug = argHarness;
               } else if (escapes) {
@@ -4653,7 +4696,8 @@ export function registerMcpHost(server: McpServer): void {
               const escapes =
                 argHarnessSlug === 'all' ||
                 argHarnessSlug === '*' ||
-                (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarnessSlug)) !== scopeHive;
+                (await transportScopePhases.track('harnessSlugArgumentHiveResolution',
+                  () => potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarnessSlug))) !== scopeHive;
               if (escapes) {
                 return {
                   isError: true,
@@ -4712,7 +4756,8 @@ export function registerMcpHost(server: McpServer): void {
                 const escapes =
                   scopeNamedHarness === 'all' ||
                   scopeNamedHarness === '*' ||
-                  (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, scopeNamedHarness)) !== scopeHive;
+                  (await transportScopePhases.track('scopeArgumentHiveResolution',
+                    () => potHomeSlugForHarness(spawnRes.ctx.workspaceId, scopeNamedHarness))) !== scopeHive;
                 if (escapes) {
                   return {
                     isError: true,
@@ -4788,7 +4833,8 @@ export function registerMcpHost(server: McpServer): void {
               const escapesHive =
                 slug === 'all' ||
                 slug === '*' ||
-                (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, slug)) !== scopeHive;
+                (await transportScopePhases.track('namedHarnessArgumentHiveResolution',
+                  () => potHomeSlugForHarness(spawnRes.ctx.workspaceId, slug))) !== scopeHive;
               if (escapesHive) {
                 return {
                   isError: true,

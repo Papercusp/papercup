@@ -646,6 +646,10 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
     expect(isError(res)).toBe(true);
     expect(dataOf(res)?.launchFailure).toEqual({ stage: 'pre-spawn', processesOpened: 0 });
     expect(textOf(res)).toContain('active, attributed GOAL holder');
+    expect(JSON.parse(JSON.stringify(dataOf(res)))).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('active, attributed GOAL holder'),
+    });
     expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 
@@ -3304,6 +3308,11 @@ describe('resume + fork (D-004/D-007)', () => {
 
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('Explicit `fork:false` is fail-closed');
+    expect(JSON.parse(JSON.stringify(dataOf(res)))).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('the source session is still LIVE'),
+      launchFailure: { stage: 'pre-spawn', processesOpened: 0 },
+    });
     expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
     expect(shutdownViaPtyMock).not.toHaveBeenCalled();
     expect(spawnConsoleMock).not.toHaveBeenCalled();

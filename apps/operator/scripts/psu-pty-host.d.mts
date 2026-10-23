@@ -2591,6 +2591,7 @@ export function decodeQuotaRecovery(o: any): {
     quotaRecovery?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2712,6 +2713,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2753,6 +2755,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2794,6 +2797,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2835,6 +2839,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2876,6 +2881,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2917,6 +2923,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2958,6 +2965,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2999,6 +3007,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -3040,6 +3049,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -3081,6 +3091,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -3122,6 +3133,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -3163,6 +3175,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;

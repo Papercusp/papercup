@@ -19,7 +19,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -155,5 +155,31 @@ describe('appendTurn concurrency (real PG pool, max>1)', () => {
     // Contiguous continuation: before+1 .. before+M, no dupes.
     expect(seqs).toEqual(Array.from({ length: M }, (_, i) => before + 1 + i));
     expect(await maxTurnSeq(conv.id)).toBe(before + M);
+  });
+
+  it('P010 stable turn identity reconciles concurrent writes and lost acknowledgements', async () => {
+    const conv = await getOrCreateActiveConversation();
+    const input = { conversationId: conv.id, turnId: randomUUID(), role: 'assistant' as const,
+      text: 'One completed reply', tools: [{ name: 'chat:ask_choice', callId: 'stable-choice', input: { question: 'Keep?' } }] };
+    const results = await Promise.all(Array.from({ length: 12 }, () => appendTurn(input)));
+    expect(new Set(results.map(row => row.id))).toEqual(new Set([input.turnId]));
+    expect(new Set(results.map(row => row.seq)).size).toBe(1);
+    // A new request after commit/ack-loss returns the original row unchanged.
+    expect(await appendTurn(input)).toEqual(results[0]);
+    expect((await rootSql.unsafe('SELECT id FROM harness_shared.operator_turns WHERE id=$1', [input.turnId]))).toHaveLength(1);
+  });
+
+  it('P010 stable turn identity refuses changed payloads and foreign conversations', async () => {
+    const conv = await getOrCreateActiveConversation();
+    const other = await getOrCreateActiveConversation('p010-other-workspace');
+    const input = { conversationId: conv.id, turnId: randomUUID(), role: 'assistant' as const,
+      text: 'Original reply', tools: [{ name: 'chat:ask_choice', callId: 'original-call' }] };
+    const original = await appendTurn(input);
+    for (const change of [{ text: 'Changed reply' }, { role: 'user' as const },
+      { tools: [{ name: 'chat:ask_choice', callId: 'competing-call' }] }, { conversationId: other.id }]) {
+      await expect(appendTurn({ ...input, ...change })).rejects.toThrow('turn identity conflict');
+    }
+    expect(await appendTurn(input)).toEqual(original);
+    expect((await rootSql.unsafe('SELECT id FROM harness_shared.operator_turns WHERE id=$1', [input.turnId]))).toHaveLength(1);
   });
 });

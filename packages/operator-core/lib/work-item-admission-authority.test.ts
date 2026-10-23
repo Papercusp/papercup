@@ -136,6 +136,26 @@ describe('admission replay policy fidelity', () => {
     await expect(authorize()).rejects.toBeInstanceOf(AdmissionAuthorityRefused);
   });
 
+  it('retains bounded safe reader diagnostics in retryable policy errors', async () => {
+    setKernelEnforcementResolver(() => ({
+      decision: 'deny', code: 'policy-unavailable', reason: 'policy reader unavailable',
+      serverAudit: {
+        authorityUnavailableSources: ['control-anchor-query-failed'],
+        authorityReadFailures: [{ source: 'control-anchor-query-failed', pgCode: '57014',
+          elapsedMs: 2500, servingPid: 42, sql: 'PRIVATE_SQL', parameters: ['PRIVATE_VALUE'] }],
+        credential: 'PRIVATE_CREDENTIAL',
+      },
+    }));
+    const error = await authorize().catch(error => error);
+    expect(error).toBeInstanceOf(AdmissionAuthorityUnavailable);
+    expect(error.message).toContain('control-anchor-query-failed');
+    expect(error.message).toContain('57014');
+    expect(error.message).toContain('2500');
+    expect(error.message).toContain('42');
+    expect(error.message).not.toContain('PRIVATE_');
+    expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({ decision: 'deny' }));
+  });
+
   it('does not persist the workspace-wide harness sentinel as a replay identity', () => {
     expect(bound({ harnessSlug: '*' })).toBeUndefined();
   });

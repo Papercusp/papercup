@@ -327,7 +327,7 @@
           "POST"
         ]
       },
-      "description": "Route an agent LIVE (no respawn) through the inference gateway — the dynamic account re-pin verb (WI-4402). `agent` = the TARGET agent's owner/spawn id. `account` = a pool account id, or reserved `auto` to suppress the session's launch-time static pin and restore gateway selection/failover. `hard:true` is valid only for a named account and NEVER fails over off it; named pins are soft by default. Effective on the NEXT model call and durable across gateway restarts. Reaches sessions whose launch path forwards `x-papercusp-owner` (fresh and resumed `auto`/pool-account sessions). A `--account=default` session deliberately bypasses the gateway and CANNOT be dynamically re-pinned — respawn it instead. Returns {ok, ownerId, pin}.",
+      "description": "Route an agent through the inference gateway. `agent` is the target owner id; `account` is a pool account or `auto` for selection/failover. Named pins are soft unless hard:true. Ordinary pins apply on the next model call without respawn and refuse gateway-free default sessions. Explicit account:auto + recoverQuota:true can recover a measured default-route Codex quota wall through its managed host, retaining owner and native conversation without replaying a prompt. Requires a current quota-recovery-reroute host; accepted is not verified pickup. Pins are durable across gateway restarts.",
       "capabilities": [
         "harness:write"
       ],
@@ -353,7 +353,7 @@
       ],
       "guidance": {
         "when": "Dynamically routing an agent (yourself or another) to a specific pool account without respawning it.",
-        "notWhen": "Steering which account NEW spawns get fleet-wide — that is accounts:set-session-override. Re-pinning a `--account=default` session — not reachable; respawn it instead.",
+        "notWhen": "Steering NEW spawns fleet-wide — accounts:set-session-override. A default route needs explicit account:auto + recoverQuota:true and a measured Codex quota wall; ordinary pinning still refuses it.",
         "chaining": "gateway:status (pick an account with headroom) → accounts:pin { agent, account } → gateway:owner_report { agent } (confirm it took) → accounts:unpin to revert."
       }
     },
@@ -14949,7 +14949,7 @@
           "POST"
         ]
       },
-      "description": "Code topology and reuse: evidence | symbol | context | callers | callees | impact | trace | contracts | sql-lineage | cochange | provenance | communities | flows | concept-search | similar | clones | health. evidence joins one authorized harness to exact intent, decisions, spec revisions and recorded proof using plan+item or file_path+name/line1; gaps and history remain explicit. similar accepts name, file_path+line1, or snippet; clones returns bounded path families. Exact/renamed matches use AST equality; near/semantic remain unknown until calibrated. cochange measures 90-day first-parent associations; provenance joins edits to sessions/items for file_path and one harnesses entry, never git authorship. sql-lineage takes table, bounded paths and optional column; maps static SQL/migration/sync sites. Callers prefer hash-checked snapshots then compiler. Read coverage: static retrieval and paths are lower bounds, not runtime proof. contracts joins scoped HTTP/RPC/event evidence. Native topology supports JS/TS; reuse supports TS/TSX.",
+      "description": "Code topology and reuse: evidence | symbol | context | callers | callees | impact | trace | contracts | sql-lineage | cochange | provenance | communities | flows | concept-search | similar | clones | health. evidence joins authorized intent, decisions, specs and recorded proof using plan+item or file_path+name/line1; gaps remain explicit. similar accepts name, file_path+line1, or snippet; clones returns bounded families. Exact/renamed use AST equality; near uses calibrated shape similarity; semantic uses calibrated relevance or unknown. cochange measures 90-day first-parent associations; provenance joins edits to sessions/items for file_path and one harnesses entry, never git authorship. sql-lineage takes table, bounded paths and optional column; maps static SQL/migration/sync sites. Callers prefer hash-checked snapshots then compiler. Static retrieval and paths are lower bounds, not runtime proof. contracts joins scoped HTTP/RPC/event evidence. Native topology supports JS/TS; reuse supports TS/TSX.",
       "capabilities": [
         "intel:read"
       ],

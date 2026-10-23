@@ -48,7 +48,7 @@ const journey = String.raw`
   const run = async fireId => {
     const result = await runCloneFamilySweepAction({ workspaceId, installSlug: workspaceId,
       workflowId: fireId, triggerConfig: {}, payloadTemplate: {
-        harnessSlug: workspaceId, input: { root: corpus, acceptances: [], genericEvidence: [] },
+        harnessSlug: workspaceId, input: { harness: workspaceId, clonePolicy: 'reuse-signals-v1' },
       } });
     assert.equal(result.diagnostics.status, 'launched');
     const taskId = result.diagnostics.taskId;

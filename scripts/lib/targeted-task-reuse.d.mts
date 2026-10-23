@@ -27,9 +27,16 @@ export function resolveWorkspacePackage(root: string, workspace: string): {
  * @param {string} root
  * @param {NodeJS.ProcessEnv} env
  * @param {string} [proofFormat] the JUDGED tree's recorder format (judgedTreeProofFormat)
+ * @param {{ workspaceRoot: string, scriptText: string, preScript?: string, postScript?: string }} [task]
+ *   Required for npm tasks; without it this measures only a direct PATH-node launch.
  * @returns {string | null}
  */
-export function defaultRunnerIdentity(root: string, env: NodeJS.ProcessEnv, proofFormat?: string): string | null;
+export function defaultRunnerIdentity(root: string, env: NodeJS.ProcessEnv, proofFormat?: string, task?: {
+    workspaceRoot: string;
+    scriptText: string;
+    preScript?: string;
+    postScript?: string;
+}): string | null;
 /**
  * Restore an explicitly identified, isolated checkpoint checkout before reuse.
  * The caller must supply the configured checkpoint and integration roots; this function

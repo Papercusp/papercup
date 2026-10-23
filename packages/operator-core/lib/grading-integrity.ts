@@ -66,7 +66,7 @@ import {
   type GradingAuditDispatchSuppression,
 } from './acceptance-rubric-vetting';
 import { routeSourceGradingAudit } from './grading-audit-routing';
-import { bindAgentSessionTaskToLatestNativeSession, getTask, listTasks } from './task-manager/store';
+import { bindAgentSessionTaskToLatestNativeSession, getTask, listTasks, markEndedUnobserved } from './task-manager/store';
 import { isTerminalState } from './task-manager/types';
 import type { TaskRow } from './task-manager/types';
 import { runWithWorkspaceIfConcrete } from './workspace-als';
@@ -575,6 +575,7 @@ export type GradingAuditDispatchPhase =
   | 'reservation'
   | 'reservation-confirm'
   | 'live-task-read'
+  | 'retained-task-kernel-reconciliation'
   | 'task-session-bind'
   | 'native-session-read'
   | 'task-terminal-detection'
@@ -689,6 +690,8 @@ export interface DispatchPendingGradingAuditsDeps {
   release?: typeof releasePendingGradingAudit;
   /** Check for a still-live task from an earlier reservation epoch. */
   listTasks?: typeof listTasks;
+  /** Canonical kernel/systemd terminal proofs for the exact retained task rows. */
+  readRetainedTaskKernelVerdicts?: typeof readRetainedTaskKernelVerdicts;
   /** Reconcile a legacy/late-enrolled task through the existing owner-bound session binder. */
   bindTaskNativeSession?: typeof bindAgentSessionTaskToLatestNativeSession;
   /** Exact native session bindings for the retained tasks' recorded session ids. */
@@ -708,6 +711,8 @@ export interface DispatchPendingGradingAuditsDeps {
   /** Resolve one auditor owner only after an old no-first-turn log candidate needs liveness corroboration. */
   resolveOwnerLiveness?: (ownerId: string) => Promise<Pick<LivenessVerdict, 'sessionState'> | null>;
   killTask?: typeof killTask;
+  /** Persist independently confirmed collected scopes before replacing their auditor. */
+  markEndedUnobserved?: typeof markEndedUnobserved;
   sleep?: (ms: number) => Promise<void>;
   terminalLogRecheckDelayMs?: number;
   terminalLogMaxRechecks?: number;
@@ -731,6 +736,49 @@ export interface DispatchPendingGradingAuditsDeps {
   providerEvidenceDelayMs?: number;
   /** Clock seam for the recorded backoff instant. */
   now?: () => number;
+}
+
+async function retireGradingAuditTask(
+  taskId: string,
+  options: Parameters<typeof killTask>[1],
+  deps: Pick<DispatchPendingGradingAuditsDeps, 'killTask' | 'markEndedUnobserved' | 'getTask'>,
+): ReturnType<typeof killTask> {
+  const result = await (deps.killTask ?? killTask)(taskId, options);
+  if (result.ok || result.error !== 'already_gone') return result;
+
+  // A collected scope proves absence, but killTask leaves its exit to the
+  // watcher. If that watcher was lost, raw running rows still fence the next
+  // auditor. Reconcile through the canonical ended_at CAS; an observed exit
+  // that wins the race keeps its original state and exit metadata.
+  await (deps.markEndedUnobserved ?? markEndedUnobserved)([{
+    taskId,
+    reason: 'grading auditor scope independently confirmed collected during retirement',
+  }]);
+  const persisted = await (deps.getTask ?? getTask)(taskId);
+  if (persisted && !isTerminalState(persisted.state)) {
+    return {
+      ok: false, taskId, action: 'kill', error: 'incomplete',
+      detail: 'collected grading auditor scope still has a nonterminal task-ledger row',
+    };
+  }
+  return result;
+}
+
+async function readRetainedTaskKernelVerdicts(
+  tasks: readonly TaskRow[],
+  workspaceId?: string,
+): Promise<ReadonlyMap<string, string>> {
+  if (tasks.length === 0) return new Map();
+  const { reconcileTick } = await import('./task-manager/reconcile-tick');
+  const tick = await reconcileTick({
+    workspaceId,
+    dryRun: true,
+    listLive: async () => [...tasks],
+  });
+  // Scan failure/absence is unknown. Only the existing reconciler's positive,
+  // healthy kernel + released-scope proof may retire an auditor's identity.
+  if (tick.degraded) return new Map();
+  return new Map((tick.result.endedUnobserved ?? []).map((row) => [row.taskId, row.reason]));
 }
 
 async function resolveGradingAuditorOwnerLiveness(
@@ -1983,7 +2031,8 @@ export async function dispatchPendingGradingAudits(
   const cancelStaleEvidence = deps.cancelStaleEvidence ?? cancelStaleEvidencePendingGradingAuditAtomically;
   const readEvidenceForDispatch = deps.readEvidence ?? readScorecardEvidence;
   const readTasksForCleanup = deps.listTasks ?? listTasks;
-  const terminateSupersededTask = deps.killTask ?? killTask;
+  const terminateSupersededTask = (taskId: string, options: Parameters<typeof killTask>[1]) =>
+    retireGradingAuditTask(taskId, options, deps);
   const supersededPendingCards = cards
     .filter((card) => card.gradingAudit?.state === 'pending' && card.supersededBy)
     .slice(0, GRADING_AUDIT_DISPATCH_LIMIT);
@@ -2509,7 +2558,8 @@ export async function dispatchPendingGradingAudits(
           }
         : {}),
     });
-    const terminateTask = deps.killTask ?? killTask;
+    const terminateTask = (taskId: string, options: Parameters<typeof killTask>[1]) =>
+      retireGradingAuditTask(taskId, options, deps);
     const readTask = deps.getTask ?? getTask;
     /**
      * EI-22978598482930667: a terminal QUOTA failure is futile to retry until
@@ -2625,12 +2675,51 @@ export async function dispatchPendingGradingAudits(
        * side effect.
        */
       markPhase('live-task-read');
-      const liveTasks = await readTasks({
+      let liveTasks = await readTasks({
         workspaceId: input.ctx.workspaceId,
         states: ['pending', 'running'],
         labelPrefix: idempotencyKey,
         limit: 10,
       });
+      if (liveTasks.length > 0) {
+        markPhase('retained-task-kernel-reconciliation');
+        let kernelEnded: ReadonlyMap<string, string> = new Map();
+        try {
+          kernelEnded = await (deps.readRetainedTaskKernelVerdicts ?? readRetainedTaskKernelVerdicts)(
+            liveTasks, workspaceId,
+          );
+        } catch {
+          // An unavailable oracle is not permission to replace a retained auditor.
+        }
+        const retainedTasks: typeof liveTasks = [];
+        for (const task of liveTasks) {
+          const reason = kernelEnded.get(task.taskId);
+          if (reason === undefined) {
+            retainedTasks.push(task);
+            continue;
+          }
+          await (deps.markEndedUnobserved ?? markEndedUnobserved)([{ taskId: task.taskId, reason }]);
+          const persisted = await readTask(task.taskId);
+          if (!persisted || !isTerminalState(persisted.state)) {
+            await releaseReservation(undefined, priorReservation ?? {
+              key: idempotencyKey, reservedAt: reservationReservedAt,
+            });
+            return {
+              issueId, rubricRef: card.rubricRef, state: 'failed', idempotencyKey,
+              phase,
+              reason: `kernel-ended grading auditor '${task.taskId}' still lacks a terminal task-ledger receipt`,
+              ...recoveryFields(),
+            };
+          }
+          retiredTaskIds.push(task.taskId);
+          terminalCodes.push('task_receipt_not_live');
+          if (terminalFallbacks < GRADING_AUDIT_MAX_TERMINAL_FALLBACKS) {
+            terminalFallbacks += 1;
+            currentIdempotencyKey = recoveryKeyFor(task.taskId, 'task_receipt_not_live');
+          }
+        }
+        liveTasks = retainedTasks;
+      }
       // EI-26004619150008295: older headless tasks can retain a null
       // session_id even after their owner has a tracked native transcript.
       // Repair that missing link through the enrollment binder before using
@@ -3569,7 +3658,8 @@ async function retireSettledGradingAuditTasks(
     .slice(0, GRADING_AUDIT_DISPATCH_LIMIT);
   if (oldestSettledTasks.length === 0) return;
 
-  const terminateTask = deps.killTask ?? killTask;
+  const terminateTask = (taskId: string, options: Parameters<typeof killTask>[1]) =>
+    retireGradingAuditTask(taskId, options, deps);
   const retired = await mapWithConcurrency(
     oldestSettledTasks,
     GRADING_AUDIT_DISPATCH_CONCURRENCY,

@@ -4,8 +4,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import type { CardResponse } from '@papercusp/agent-mcp';
 
-vi.mock('../../auth', () => ({ getSessionUser: vi.fn(), getSessionUserOrDefault: vi.fn() }));
+vi.mock('../../auth', () => ({ getSessionUser: vi.fn(), getSessionUserOrDefault: vi.fn(), resolveSessionToken: vi.fn() }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('../../agent-tools/operator/converse-card', () => ({ findConverseRunCards: vi.fn(async () => null) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'workspace-cancel' }));
 vi.mock('../../operator-conversations', () => ({ getConversationById: vi.fn() }));
 vi.mock('../telemetry', () => ({
@@ -15,6 +18,7 @@ vi.mock('../telemetry', () => ({
 import { Hono } from 'hono';
 import { getSessionUser, getSessionUserOrDefault } from '../../auth';
 import { getConversationById } from '../../operator-conversations';
+import { findConverseRunCards } from '../../agent-tools/operator/converse-card';
 import {
   _resetCardCorrelatorForTests,
   _resetStateChannelForTests,
@@ -49,6 +53,8 @@ describe('POST /run-cancel', () => {
       workspace_id: ws, capabilities: ['*'],
     });
     vi.mocked(getConversationById).mockReset();
+    vi.mocked(findConverseRunCards).mockReset();
+    vi.mocked(findConverseRunCards).mockResolvedValue(null);
     vi.mocked(getConversationById).mockImplementation(async (id, workspaceId) =>
       id === 'c1' && workspaceId === ws ? { id, workspaceId } as never : null);
     app = new Hono().basePath('/api');
@@ -70,6 +76,41 @@ describe('POST /run-cancel', () => {
     expect((await post({ runId: '', workspaceId: ws })).status).toBe(400);
   });
 
+  it('awaits cancellation commits before acknowledging the run', async () => {
+    openRun({ workspaceId: ws, runId: 'durable-run' });
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const commitResponse = vi.fn(async (response: CardResponse) => { await gate; return { accepted: true, response }; });
+    const card = registerCard({ workspaceId: ws, runId: 'durable-run',
+      spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
+    vi.mocked(findConverseRunCards).mockResolvedValue([{ commitResponse,
+      info: () => ({ correlationId: card.correlationId, runId: 'durable-run', workspaceId: ws }) }] as never);
+    let acknowledged = false;
+    let delivered = false;
+    void card.result.then(() => { delivered = true; });
+    const running = Promise.resolve(post({ runId: 'durable-run', workspaceId: ws })).then(res => { acknowledged = true; return res; });
+    await vi.waitFor(() => expect(commitResponse).toHaveBeenCalledOnce());
+    expect(acknowledged).toBe(false);
+    expect(delivered).toBe(false);
+    finish();
+    expect((await running).status).toBe(200);
+    expect(await card.result).toEqual({ action: 'cancel' });
+  });
+
+  it('refuses cancellation success when storage has an unknown outcome', async () => {
+    openRun({ workspaceId: ws, runId: 'uncertain-run' });
+    const commitResponse = vi.fn(async () => { throw new Error('cancel-ack-lost'); });
+    const card = registerCard({ workspaceId: ws, runId: 'uncertain-run',
+      spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
+    vi.mocked(findConverseRunCards).mockResolvedValue([{ commitResponse,
+      info: () => ({ correlationId: card.correlationId, runId: 'uncertain-run', workspaceId: ws }) }] as never);
+    let delivered = false;
+    void card.result.then(() => { delivered = true; });
+    expect((await post({ runId: 'uncertain-run', workspaceId: ws })).status).toBe(503);
+    expect(delivered).toBe(false);
+    expect(commitResponse).toHaveBeenCalledOnce();
+  });
+
   it('P010 scoped atomic decisions: the trusted local desktop can cancel without a browser cookie', async () => {
     vi.mocked(getSessionUser).mockResolvedValue(null);
     vi.mocked(getSessionUserOrDefault).mockResolvedValue({ id: 'local-owner', username: 'owner',
@@ -89,6 +130,27 @@ describe('POST /run-cancel', () => {
   it('404 when runId not present in the claimed workspace', async () => {
     const res = await post({ runId: 'unknown-run', workspaceId: ws });
     expect(res.status).toBe(404);
+  });
+
+  it('cancels a recovered durable run without a local snapshot or deferred', async () => {
+    const commitResponse = vi.fn(async () => ({ accepted: true, response: { action: 'cancel' } }));
+    vi.mocked(findConverseRunCards).mockResolvedValue([{ commitResponse,
+      info: () => ({ correlationId: 'remote-card', runId: 'remote-child', workspaceId: ws }) }] as never);
+    expect((await post({ runId: 'remote-child', workspaceId: ws })).status).toBe(200);
+    expect(findConverseRunCards).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: ws,
+      conversationId: 'c1', runId: 'remote-child', authorizeAdditional: expect.any(Function) }));
+    expect(commitResponse).toHaveBeenCalledOnce();
+  });
+
+  it('refuses durable legacy fallback after a scoped miss and never invokes a revoked responder hook', async () => {
+    openRun({ workspaceId: ws, runId: 'guarded-run' });
+    const commitResponse = vi.fn(async (response: CardResponse) => ({ accepted: true, response }));
+    registerCard({ workspaceId: ws, runId: 'guarded-run', spec: { prompt: 'choose', dataSchema: choiceSchema, commitResponse } });
+    expect((await post({ runId: 'guarded-run', workspaceId: ws })).status).toBe(409);
+    expect(commitResponse).not.toHaveBeenCalled();
+    vi.mocked(findConverseRunCards).mockRejectedValue(new Error('unauthorized'));
+    expect((await post({ runId: 'guarded-run', workspaceId: ws })).status).toBe(403);
+    expect(commitResponse).not.toHaveBeenCalled();
   });
 
   it('cancels every pending card under the run; deferreds resolve with action:cancel', async () => {

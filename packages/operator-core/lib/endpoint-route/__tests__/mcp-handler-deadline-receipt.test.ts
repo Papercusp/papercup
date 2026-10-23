@@ -113,6 +113,14 @@ const h = vi.hoisted(() => {
   };
 });
 
+// This handler fixture registers its own real projected probe tools below,
+// plus the production wrapper exercised by the nested-call cases.
+// Loading the application catalogue adds unrelated tools and their full import
+// graph before any case can execute; catalogue loading has its own suite.
+vi.mock('../../agent-tools/operator-tool-catalogue', () => ({
+  loadOperatorToolCatalogue: async () => { await import('../../agent-tools/tools/invoke'); },
+}));
+
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
@@ -286,7 +294,10 @@ const { mcpHandler } = await import('../routes/transport/_mcp-handler');
 // A LOCAL caller: a real one always sends a loopback Host, and a host-less outside request is
 // answered at the edge with the P-006 OAuth 401 before the host (and its handlers) ever load.
 await mcpHandler(new Request('http://127.0.0.1/api/mcp', { headers: { host: '127.0.0.1' } }));
-const { registerProjectedTool, unregisterProjectedToolsForPlugin } = await import('@papercusp/agent-mcp');
+const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName } = await import('@papercusp/agent-mcp');
+if (!lookupByMcpName('tools:invoke')) {
+  throw new Error('Deadline handler fixture requires the production tools:invoke wrapper');
+}
 
 /* ─── One synthetic probe: sleeps well past the deadline, then returns a
  *     result distinguishable from the timeout envelope. ────────────────── */
@@ -1238,6 +1249,14 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         stage: 'deadline',
         phase: 'pre_dispatch',
         preDispatchActivePhase: 'transportScopeSetup',
+        transportScopePhases: expect.objectContaining({
+          pending: expect.arrayContaining([
+            expect.objectContaining({ phase: 'harnessWorkspaceResolution', elapsedMs: expect.any(Number) }),
+          ]),
+          phases: expect.arrayContaining([
+            expect.objectContaining({ phase: 'scopedSuperuserBoundary', durationMs: expect.any(Number) }),
+          ]),
+        }),
       }),
     );
     await sleep(50);

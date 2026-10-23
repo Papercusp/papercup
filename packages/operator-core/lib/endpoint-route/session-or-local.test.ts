@@ -3,10 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../auth', () => ({
   getSessionUser: vi.fn(),
   getSessionUserOrDefault: vi.fn(),
+  resolveSessionToken: vi.fn(),
 }));
-vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-local' }));
-import { getSessionUser, getSessionUserOrDefault } from '../auth';
-import { getSessionUserOrLocalDefault } from './session-or-local';
+vi.mock('../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-local') }));
+vi.mock('../operator-chat-store', () => ({ operatorChatSessionAuthority: vi.fn(() => vi.fn(async () => true)) }));
+import { getSessionUser, getSessionUserOrDefault, resolveSessionToken } from '../auth';
+import { activeWorkspaceId } from '../workspace-registry';
+import { operatorChatSessionAuthority } from '../operator-chat-store';
+import { getSessionUserOrLocalDefault, getSessionUserOrLocalDefaultAuthority } from './session-or-local';
 
 const user = (id: string) => ({
   id,
@@ -28,6 +32,9 @@ describe('getSessionUserOrLocalDefault (WI-5044)', () => {
   beforeEach(() => {
     vi.mocked(getSessionUser).mockReset();
     vi.mocked(getSessionUserOrDefault).mockReset();
+    vi.mocked(resolveSessionToken).mockReset();
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-local');
+    vi.mocked(operatorChatSessionAuthority).mockClear();
   });
 
   it('returns the session user when a session cookie resolves', async () => {
@@ -63,5 +70,46 @@ describe('getSessionUserOrLocalDefault (WI-5044)', () => {
     vi.mocked(getSessionUserOrDefault).mockRejectedValue(new Error('pg down'));
     const got = await getSessionUserOrLocalDefault(reqWithHost('127.0.0.1:3070'));
     expect(got).toBeNull();
+  });
+
+  it('captures cookie authority and delegates current permissions to the decision transaction', async () => {
+    vi.mocked(resolveSessionToken).mockResolvedValue('opaque-session');
+    vi.mocked(getSessionUser).mockResolvedValue(user('real'));
+    const result = await getSessionUserOrLocalDefaultAuthority(reqWithHost('example.com'));
+    expect(operatorChatSessionAuthority).toHaveBeenLastCalledWith({ workspaceId: 'ws-session',
+      principalId: 'real', credential: { kind: 'user-session', token: 'opaque-session', userId: 'real' },
+      capability: 'chat:write', toolName: 'chat:ask_choice' });
+    const tx = {} as Parameters<NonNullable<typeof result>['authorize']>[0];
+    expect(await result!.authorize(tx)).toBe(true);
+    expect(vi.mocked(operatorChatSessionAuthority).mock.results.at(-1)!.value).toHaveBeenCalledWith(tx);
+  });
+
+  it('never promotes a presented expired cookie into desktop authority', async () => {
+    vi.mocked(resolveSessionToken).mockResolvedValue('revoked');
+    vi.mocked(getSessionUser).mockResolvedValue(null);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValue(user('default'));
+    await getSessionUserOrLocalDefaultAuthority(reqWithHost('localhost'));
+    expect(operatorChatSessionAuthority).toHaveBeenLastCalledWith(expect.objectContaining({
+      credential: { kind: 'user-session', token: 'revoked', userId: 'default' },
+    }));
+  });
+
+  it('captures desktop authority only inside the perimeter and refuses a later workspace switch', async () => {
+    vi.mocked(getSessionUser).mockResolvedValue(null);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValue(user('default'));
+    const result = await getSessionUserOrLocalDefaultAuthority(reqWithHost('tauri.localhost'));
+    const tx = {} as Parameters<NonNullable<typeof result>['authorize']>[0];
+    expect(operatorChatSessionAuthority).toHaveBeenLastCalledWith(expect.objectContaining({
+      workspaceId: 'ws-local', credential: { kind: 'local-desktop', userId: 'default' },
+    }));
+    expect(await result!.authorize(tx)).toBe(true);
+    vi.mocked(activeWorkspaceId).mockReturnValue('different-workspace');
+    expect(await result!.authorize(tx)).toBe(false);
+  });
+
+  it('does not construct desktop authority for an off-box unauthenticated request', async () => {
+    vi.mocked(getSessionUser).mockResolvedValue(null);
+    expect(await getSessionUserOrLocalDefaultAuthority(reqWithHost('example.com'))).toBeNull();
+    expect(operatorChatSessionAuthority).not.toHaveBeenCalled();
   });
 });

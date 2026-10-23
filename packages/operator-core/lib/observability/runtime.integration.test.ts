@@ -43,6 +43,7 @@ import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-
 import graphQuery from '../agent-tools/gitnexus/query';
 import { readEngineeringExecution } from './engineering-execution';
 import type { ExecutionBoundaryReceipt } from '@papercusp/test-config/execution-details';
+import { serializeToolResponse } from '@papercusp/tooldef';
 
 describe('production observability composition', () => {
   let server: http.Server;
@@ -218,6 +219,9 @@ describe('production observability composition', () => {
     expect(response.data.status).toBe('measured');
     const receipt = response.boundaryObservation!;
     expect(receipt).toMatchObject({ boundary: 'graph:query:evidence', callId: 'ee-observed', outcome: 'ok' });
+    const wire = serializeToolResponse(response, { defaultCompact: false, includeStructured: true });
+    expect(wire.structuredContent).toMatchObject({ status: 'measured', boundaryObservation: receipt });
+    expect(JSON.parse((wire.content[0] as { text: string }).text)).toMatchObject({ boundaryObservation: receipt });
     expect(receipt.spanId).not.toBe(receipt.parentSpanId);
     const { loadedHandlerFingerprint } = await import('./runtime');
     const { engineeringEvidenceQuery } = await import('../code-intelligence/engineering-evidence');

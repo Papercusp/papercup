@@ -34,7 +34,8 @@ export function interfaceSignatureEdits(input: PushInput) {
 export async function readInterfacePeerContext(input: PushInput, snapshot: PushSnapshot,
   deps: InterfacePeerDeps = { locks: liveLockHoldingsStrict, sql: getOrgPg().sql }): Promise<InterfacePeerContext> {
   const result: InterfacePeerContext = { byPath: {} };
-  if (!input.root || !input.harness) return result;
+  const harness = input.harness;
+  if (!input.root || !harness) return result;
   for (const edit of interfaceSignatureEdits(input)) {
     const unknown = (reason: string) => { result.byPath[edit.path] = { status: 'unknown', peers: [], reason }; };
     const pin = edit.sourceChange;
@@ -65,7 +66,7 @@ export async function readInterfacePeerContext(input: PushInput, snapshot: PushS
           JOIN LATERAL (SELECT a.ended_at FROM harness_shared.adv_sessions a
             WHERE a.workspace_id = p.workspace_id AND a.coord_owner_id = p.owner_id
             ORDER BY a.started_at DESC, a.session_id DESC LIMIT 1) a ON a.ended_at IS NULL
-          WHERE p.workspace_id = ${input.workspace} AND p.pot_slug = ${input.harness}
+          WHERE p.workspace_id = ${input.workspace} AND p.pot_slug = ${harness}
             AND p.owner_id <> ${input.owner} AND p.heartbeat_at <= now()
             AND p.heartbeat_at >= now() - ${`${PRESENCE_STALE_MS} milliseconds`}::interval
             AND (p.owner_id = ANY(${locks.map(l => l.owner)}::text[]) OR p.current_files ?| ${paths}::text[])

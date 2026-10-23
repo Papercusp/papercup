@@ -14,12 +14,15 @@ const store = vi.hoisted(() => ({
   recovered: [] as { taskId: string; state: string; exitCode: number | null; reason: string }[],
   upserted: [] as { taskId: string; metrics?: unknown }[],
   cleared: [] as string[][],
+  touchGate: null as null | (() => Promise<void>),
+  closeGate: null as null | (() => Promise<void>),
 }));
 
 vi.mock('./store', () => ({
   listLiveTasks: async () => [] as TaskRow[],
   touchAlive: async (u: unknown[]) => {
     store.touched.push(...u);
+    await store.touchGate?.();
     return u.length;
   },
   markStranded: async (v: { taskId: string; reason: string }[]) => {
@@ -30,8 +33,13 @@ vi.mock('./store', () => ({
     store.endedUnobserved.push(...v);
     return v.length;
   },
-  markRecoveredFromJobLog: async (v: { taskId: string; state: string; exitCode: number | null; reason: string }[]) => {
+  markRecoveredFromJobLog: async (v: { taskId: string; state: string; exitCode: number | null; reason: string }[],
+    _inject?: unknown, effectsForTask?: (taskId: string) => { stage?: (name: string) => void }) => {
     store.recovered.push(...v);
+    for (const row of v) {
+      effectsForTask?.(row.taskId).stage?.('task-close-update');
+      await store.closeGate?.();
+    }
     return v.length;
   },
   upsertUnaccounted: async (g: { taskId: string; metrics?: unknown }[]) => {
@@ -45,7 +53,7 @@ vi.mock('./store', () => ({
   residueTaskId: (p: string) => `u${p.replace(/[^a-z0-9]/g, '').slice(0, 12)}`,
 }));
 
-const { reconcileTick, resetNotifyDebounce, cleanupEndedBrowserDirectory } = await import('./reconcile-tick');
+const { reconcileTick, resetNotifyDebounce, cleanupEndedBrowserDirectory, createReconcileStageReporter } = await import('./reconcile-tick');
 const { scanProcesses } = await import('./scan');
 
 describe('dead managed browser directory receipts', () => {
@@ -170,7 +178,55 @@ beforeEach(() => {
   store.recovered.length = 0;
   store.upserted.length = 0;
   store.cleared.length = 0;
+  store.touchGate = null;
+  store.closeGate = null;
   resetNotifyDebounce();
+});
+
+describe('slow reconciliation phase evidence', () => {
+  it.each(['touch', 'close'] as const)('identifies a blocked %s without inventing a later phase', async (blocked) => {
+    vi.useFakeTimers();
+    const warn = vi.fn();
+    const reporter = createReconcileStageReporter({ workspaceId: 'w', harnessSlug: 'papercusp' }, warn);
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const pause = async () => { enter(); await gate; };
+    if (blocked === 'touch') store.touchGate = pause;
+    else store.closeGate = pause;
+    const task = row({ taskId: 'slow888', pid: 12345, processIdentity: 'ended-identity', logPath: '/tmp/slow888.log' });
+    const tick = reconcileTick({ stage: reporter.stage, scan: () => scanResult([]),
+      listLive: async () => [task], checkScopesReleased: async () => new Set([task.scopeUnit!]),
+      readJobLogTerminal: () => ({ status: 'failed', exitCode: 2 }), notify: async () => {} });
+    try {
+      await entered;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(warn).toHaveBeenCalledOnce();
+      const warning = JSON.parse(warn.mock.calls[0]![0].split('slow phase ')[1]);
+      expect(warning).toMatchObject({ phase: blocked === 'touch' ? 'reconcile-touch-alive' : 'task-close-update',
+        taskId: blocked === 'touch' ? null : task.taskId });
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(warn).toHaveBeenCalledOnce();
+      if (blocked === 'touch') expect(store.recovered).toEqual([]);
+    } finally {
+      release();
+      try { await tick; }
+      finally { reporter.stop(); vi.useRealTimers(); }
+    }
+  });
+
+  it('cancels its warning when the pass finishes promptly', async () => {
+    vi.useFakeTimers();
+    const warn = vi.fn();
+    const reporter = createReconcileStageReporter({ workspaceId: 'w', harnessSlug: 'papercusp' }, warn);
+    try {
+      await reconcileTick({ stage: reporter.stage, scan: () => scanResult([]),
+        listLive: async () => [], notify: async () => {} });
+      reporter.stop();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(warn).not.toHaveBeenCalled();
+    } finally { reporter.stop(); vi.useRealTimers(); }
+  });
 });
 
 describe('reconcileTick — happy path', () => {

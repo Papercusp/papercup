@@ -14,7 +14,7 @@
  * final assertion reads testing_surface_depth, so a green result proves the
  * evidence is persistent and capable of moving the ladder above depth zero.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import postgres, { type Sql } from 'postgres';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +32,7 @@ import { toWorkspaceRel } from '@papercusp/test-config/admin-test-runs-reporter'
 import {
   ATTRIBUTION_ENV,
   resetAttributionArmingForTests,
+  setAmbientTestContext,
 } from './context';
 import {
   attributionStatus,
@@ -67,6 +68,7 @@ const CHANGE_QUEUE_SURFACES = [
 ] as const;
 
 let sql: Sql;
+let runGroup: string;
 const savedEnv = new Map<string, string | undefined>();
 const PINNED_ENV = [
   ATTRIBUTION_ENV,
@@ -116,6 +118,9 @@ async function dispatchTool(toolName: string, args: Record<string, unknown>): Pr
 }
 
 beforeAll(() => {
+  const configuredRunGroup = process.env.PAPERCUSP_TEST_RUN_GROUP;
+  if (!configuredRunGroup) throw new Error('Persistent attribution requires PAPERCUSP_TEST_RUN_GROUP');
+  runGroup = configuredRunGroup;
   for (const key of PINNED_ENV) savedEnv.set(key, process.env[key]);
   process.env[ATTRIBUTION_ENV] = '1';
   process.env.PAPERCUSP_WORKSPACE_ID = WORKSPACE;
@@ -134,8 +139,13 @@ beforeAll(() => {
 beforeEach(() => {
   resetAttributionSinkForTests();
   resetAttributionArmingForTests();
+  // This fixture arms in beforeAll, after shared setup may have skipped its
+  // hooks. Publish the same ambient identity explicitly for this fixture's calls.
+  setAmbientTestContext({ file: TEST_FILE, case: expect.getState().currentTestName ?? null });
   setEvidenceStoreForTests(createPgEvidenceStore({ getSql: () => sql }));
 });
+
+afterEach(() => setAmbientTestContext(null));
 
 afterAll(async () => {
   resetAttributionSinkForTests();
@@ -193,6 +203,7 @@ describe('persistent coverage-attribution venue', () => {
          AND d.surface_id = ANY(${[...EXPECTED_SURFACES]}::text[])
          AND e.evidence_kind = 'traffic'
          AND e.test_file = ${TEST_FILE}
+         AND e.details->>'runGroupId' = ${runGroup}
     `;
 
     expect(new Set(rows.map((row) => row.surface_id))).toEqual(new Set(EXPECTED_SURFACES));
@@ -299,6 +310,7 @@ describe('persistent coverage-attribution venue', () => {
          AND e.evidence_kind = 'traffic'
          AND e.test_file = ${TEST_FILE}
          AND e.test_case LIKE '%non-mutating change-queue intake%'
+         AND e.details->>'runGroupId' = ${runGroup}
     `;
 
     expect(new Set(rows.map((row) => row.surface_id))).toEqual(new Set(CHANGE_QUEUE_SURFACES));
@@ -367,6 +379,7 @@ describe('persistent coverage-attribution venue', () => {
          AND e.evidence_kind = 'traffic'
          AND e.test_file = ${TEST_FILE}
          AND e.test_case LIKE '%Learning observations REST transport%'
+         AND e.details->>'runGroupId' = ${runGroup}
     `;
 
     expect(rows).toHaveLength(1);
@@ -384,8 +397,8 @@ describe('persistent coverage-attribution venue', () => {
     // Fail before compiler/fixture work if the measuring instrument cannot
     // attribute this run or resolve the live registry population.
     expect(attributionStatus().armed).toBe(true);
-    expect(process.env.PAPERCUSP_TEST_RUN_GROUP).toBeTruthy();
-    expect(expect.getState().currentTestName).toBeTruthy();
+    const testCase = expect.getState().currentTestName;
+    if (typeof testCase !== 'string') throw new Error('Persistent attribution query requires the current test name');
     const surfaces = await sql`SELECT id FROM harness_shared.testing_surfaces
       WHERE workspace_id=${WORKSPACE} AND harness_slug=${HARNESS}
         AND kind='mcp-tool' AND surface_id='graph:query' AND retired_at IS NULL`;
@@ -449,8 +462,8 @@ describe('persistent coverage-attribution venue', () => {
           JOIN harness_shared.testing_surface_depth d ON d.id=e.surface_ref
          WHERE d.workspace_id=${WORKSPACE} AND d.harness_slug=${HARNESS}
            AND d.surface_id='graph:query' AND e.evidence_kind='traffic'
-           AND e.test_file=${TEST_FILE} AND e.test_case=${expect.getState().currentTestName}
-           AND e.details->>'runGroupId'=${process.env.PAPERCUSP_TEST_RUN_GROUP}`;
+           AND e.test_file=${TEST_FILE} AND e.test_case=${testCase}
+           AND e.details->>'runGroupId'=${runGroup}`;
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ meets_l3: true, verdict: 'pass', generated: false });
     } finally {

@@ -12,10 +12,13 @@ const candidate = { sourceSha: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64),
 // generation by P-001, alongside the same probes exercised here.
 const sourceCapabilities = ['sodium-secretbox-roundtrip', 'sharp-png-roundtrip',
   'udx-loopback', 'rocksdb-reopen', 'pty-input-exit', 'onnx-worker-inference-restart',
-  'onnx-cpu-inference', 'onnx-worker-inference'];
+  'onnx-cpu-inference', 'onnx-worker-inference'] as const;
+const interpreters = [process.execPath,
+  ...(process.env.PAPERCUSP_RUNTIME_TEST_BUN ? [process.env.PAPERCUSP_RUNTIME_TEST_BUN] : [])];
 describe('bounded native operations available in the source dependency closure', () => {
-  it.each(sourceCapabilities)('%s completes its actual operation in a child interpreter', async (id) => {
-    const runtime = await measureRuntime(process.execPath);
+  it.each(interpreters.flatMap(executable => sourceCapabilities.map(id => ({ executable, id }))))
+    ('$id completes its actual operation with $executable', async ({ executable, id }) => {
+    const runtime = await measureRuntime(executable);
     const result = await runCapability({ capabilityId: id, expected: NATIVE_EXPECTATIONS[id],
       runtime, candidate, probePath }, { timeoutMs: 8_000, env: {
       PAPERCUSP_PROBE_CAPABILITY: id, PAPERCUSP_PROBE_REQUIRE_FROM: manifest,

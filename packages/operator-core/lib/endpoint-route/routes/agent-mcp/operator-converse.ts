@@ -15,7 +15,7 @@ import {
 import '../../../agent-tools/index';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { checkBudget, shouldBypassOperatorBudget } from '../../../operator-budget';
-import { getConversationById } from '../../../operator-conversations';
+import { getConversationById, getOrCreateActiveConversation } from '../../../operator-conversations';
 import { UI_CONTEXT_MAX_CHARS } from '../../../chat-context-sections';
 import { defineTool } from '@papercusp/agent-mcp';
 import { tutorialHelpContextSchema, type TutorialHelpContext } from '../../../onboarding/cloud-tutorial-help';
@@ -189,6 +189,8 @@ export default defineTool({
         );
       }
       body.conversationId = conversation.id;
+    } else if (!lessonContext && hostTrust === 'owner') {
+      body.conversationId = (await getOrCreateActiveConversation(workspaceId)).id;
     }
 
     return sseResponse({
@@ -206,7 +208,8 @@ export default defineTool({
         // needs the same runId to scope that subscription to its own turn)
         // correlate without widening what THIS stream forwards.
         const runId = globalThis.crypto.randomUUID();
-        sink.event('run-meta', { runId });
+        sink.event('run-meta', { runId,
+          ...(!lessonContext && body.conversationId ? { turnPersistence: 1, conversationId: body.conversationId } : {}) });
 
         let offStateChannel: (() => void) | null = null;
         // Owner text chat already consumes the workspace-wide
@@ -227,7 +230,8 @@ export default defineTool({
           sink.onClose(offStateChannel);
         }
 
-        if (body.conversationId && body.uiClientId) {
+        if (body.conversationId && body.uiClientId
+          && ['continue', 'user_says_ready', 'user_message'].includes(body.trigger ?? '')) {
           const { recordChainEvent } = await import('../../../operator-continue-chains');
           if (body.trigger === 'continue') {
             void recordChainEvent({
@@ -271,6 +275,7 @@ export default defineTool({
         let totalCost = 0;
         let unreportedFrames = 0;
         let lessonAnswer: string | undefined;
+        let persistedTurn: { conversationId: string; turnId: string; seq: number } | undefined;
         try {
           for await (const ev of dispatchProjectedToolStream(
             operatorConverseTool,
@@ -306,7 +311,9 @@ export default defineTool({
             } else if (ev.kind === 'done') {
               try {
                 const text = (ev.result.content[0] as { text?: string })?.text ?? '{}';
-                const out = JSON.parse(text) as { totalCost?: number; assembled?: string; unreportedFrames?: number };
+                const out = JSON.parse(text) as { totalCost?: number; assembled?: string; unreportedFrames?: number;
+                  persistedTurn?: { conversationId: string; turnId: string; seq: number } };
+                if (out.persistedTurn) persistedTurn = out.persistedTurn;
                 if (lessonContext && typeof out.assembled === 'string') lessonAnswer = out.assembled.trim().slice(0, 2000);
                 if (typeof out.totalCost === 'number' && Number.isFinite(out.totalCost)) totalCost = out.totalCost;
                 if (typeof out.unreportedFrames === 'number' && Number.isSafeInteger(out.unreportedFrames) && out.unreportedFrames > 0) {
@@ -322,6 +329,7 @@ export default defineTool({
             }
           }
           sink.done({ costUsd: totalCost, ...(unreportedFrames > 0 ? { unreportedFrames } : {}),
+            ...(persistedTurn ? { persistedTurn } : {}),
             ...(lessonContext ? { answer: lessonAnswer ?? '' } : {}) });
         } catch (err) {
           if (!ctrl.signal.aborted) {

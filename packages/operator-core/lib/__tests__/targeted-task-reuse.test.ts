@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   armTargetedTaskReuse,
+  defaultRunnerIdentity,
   isUnitVitestTaskScript,
   LANE_SCRIPTS,
   resolveWorkspacePackage,
@@ -216,6 +217,27 @@ afterEach(() => {
 });
 
 describe('isUnitVitestTaskScript / LANE_SCRIPTS', () => {
+  it('binds npm proof identity to the actual workspace PATH and refuses composite or hooked launchers', () => {
+    fixture();
+    const workspaceRoot = join(root, 'packages/lane-ws');
+    const bin = join(workspaceRoot, 'node_modules/.bin');
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(join(root, 'node_modules'));
+    writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3}');
+    writeFileSync(join(root, 'node_modules/.papercusp-dependency-generation'),
+      `identity=v1-${'a'.repeat(64)}\nsource=${'a'.repeat(64)}\n`);
+    writeFileSync(join(bin, 'vitest'), '#!/usr/bin/env node\n', { mode: 0o755 });
+    const actualExecutable = process.env.PAPERCUSP_RUNTIME_TEST_BUN || process.execPath;
+    symlinkSync(actualExecutable, join(bin, 'node'));
+    const task = { workspaceRoot, scriptText: 'vitest run' };
+    const identity = defaultRunnerIdentity(root, process.env, 'proof-v3', task);
+    expect(identity).toMatch(/^proof-v3 runtime-v1 [a-f0-9]{64}$/);
+    expect(defaultRunnerIdentity(root, process.env, 'proof-v3', { ...task, scriptText: 'vitest run && bun other.ts' })).toBeNull();
+    expect(defaultRunnerIdentity(root, process.env, 'proof-v3', { ...task, preScript: 'bun setup.ts' })).toBeNull();
+    writeFileSync(join(bin, 'vitest'), '#!/usr/bin/env bun\n');
+    expect(defaultRunnerIdentity(root, process.env, 'proof-v3', task)).toBeNull();
+  });
+
   it('names the unit tasks affected-tests arms reuse on, and nothing else', () => {
     expect([...LANE_SCRIPTS]).toEqual(['test:lane-pure', 'test:lane-stateful']);
     expect(isUnitVitestTaskScript('test')).toBe(true);
@@ -468,7 +490,14 @@ describe('armTargetedTaskReuse', () => {
     fixture('vitest run');
     const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
     const wsRoot = join(root, 'packages/lane-ws');
-    symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+    // Own the fixture's generation marker: writing through a shared node_modules
+    // symlink would falsely publish a generation for the real mutable checkout.
+    mkdirSync(join(root, 'node_modules'));
+    symlinkSync(join(repoRoot, 'node_modules/vitest'), join(root, 'node_modules/vitest'), 'dir');
+    mkdirSync(join(root, '.git'));
+    writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3}');
+    writeFileSync(join(root, 'node_modules/.papercusp-dependency-generation'),
+      `identity=v1-${'a'.repeat(64)}\nsource=${'a'.repeat(64)}\n`);
     mkdirSync(join(wsRoot, 'src'));
     const skipConsumer = join(repoRoot, 'libs/test-config/src/test-pass-reuse-skip.ts');
     writeFileSync(join(wsRoot, 'vitest.config.mts'),
@@ -485,6 +514,7 @@ describe('armTargetedTaskReuse', () => {
         cwd: wsRoot, env, encoding: 'utf8', timeout: 30_000,
       });
       expect(result.error, result.stderr).toBeUndefined();
+      expect(result.stdout.trim(), `Vitest status=${result.status} signal=${result.signal}\n${result.stderr}`).not.toBe('');
       return { status: result.status, report: JSON.parse(result.stdout) };
     };
     const runGroupId = '64eab084-4e87-4e2b-99bd-3be2eb7c191f';
@@ -495,7 +525,8 @@ describe('armTargetedTaskReuse', () => {
     const first = run(env);
     expect(first.status).toBe(0);
     expect(first.report.testResults.map((r: { name: string }) => r.name.split('/').at(-1)).sort()).toEqual(['a.test.ts', 'b.test.ts']);
-    const identity = `proof-v3 ${process.version} ${process.platform} ${process.arch}`;
+    const identity = defaultRunnerIdentity(root, env);
+    expect(identity).toMatch(/^proof-v3 runtime-v1 [a-f0-9]{64}$/);
     const loadProofs = async () => ({ rows: 2, proofs: new Map(
       ['a', 'b'].map(name => [`packages/lane-ws/${name}.test.ts`, {
         ...proof(OLD, [`packages/lane-ws/${name}.test.ts`, `packages/lane-ws/src/${name}.ts`]), runnerIdentity: identity,

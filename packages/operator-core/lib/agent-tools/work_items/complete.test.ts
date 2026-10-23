@@ -29,6 +29,10 @@ const hiveMocks = vi.hoisted(() => ({
   potHomeSlugForHarness: vi.fn(),
 }));
 const parkReachability = vi.hoisted(() => ({ read: vi.fn() }));
+const directiveRecovery = vi.hoisted(() => ({ closureError: vi.fn(async (..._args: unknown[]): Promise<string | null> => null) }));
+vi.mock('../../owner-directive-recovery', () => ({
+  directiveRecoveryClosureError: (...args: unknown[]) => directiveRecovery.closureError(...args),
+}));
 const contentIdentityPreview = vi.hoisted(() => ({ stamp: vi.fn() }));
 vi.mock('./completion-freshness', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./completion-freshness')>();
@@ -406,6 +410,7 @@ function okState(workItem: Record<string, unknown>) {
 }
 
 beforeEach(() => {
+  directiveRecovery.closureError.mockReset().mockResolvedValue(null);
   contentIdentityPreview.stamp.mockReset();
   completionBriefPort.read.mockReset();
   completionBriefPort.read.mockResolvedValue(null);
@@ -512,6 +517,30 @@ describe('P039 completion source brief delivery', () => {
 // byte-identical single-gate invariant that keeps every pre-existing caller valid, and the
 // CALIBRATION proves the accumulator still lets a good completion through (without it, a
 // gate that refused unconditionally would pass the first two tests).
+describe('owner directive recovery must settle its directive before completing', () => {
+  const recovery = { id: 'WI-recovery', kind: 'task', family: 'issue', state: 'open', harness: 'papercup',
+    payload: { ownerDirectiveRecovery: { directiveId: 42 } } };
+  it('refuses success before a directive disposition and writes no terminal transition', async () => {
+    getWorkItem.mockResolvedValue(recovery);
+    directiveRecovery.closureError.mockResolvedValue('Directive #42 is still open');
+    const result = await one({ id: recovery.id, state: 'done', completion: { summary: 'Finished recovery' } });
+    expect(result).toMatchObject({ ok: false, error: 'owner_directive_still_open' });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+  it('fails closed on an unreadable directive rather than treating it as settled', async () => {
+    getWorkItem.mockResolvedValue(recovery);
+    directiveRecovery.closureError.mockRejectedValue(new Error('database unavailable'));
+    const result = await one({ id: recovery.id, state: 'done', completion: { summary: 'Finished recovery' } });
+    expect(result).toMatchObject({ ok: false, error: 'owner_directive_verification_unavailable', retryable: true });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+  it('does not impose a directive check on ordinary work', async () => {
+    getWorkItem.mockResolvedValue(item);
+    await one({ id: item.id, completion: { summary: 'Ordinary progress' } });
+    expect(directiveRecovery.closureError).not.toHaveBeenCalled();
+  });
+});
+
 describe('EI-20286699547467039 — unmet completion gates accumulate into one refusal', () => {
   const bug = { id: 'WI-acc', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
 

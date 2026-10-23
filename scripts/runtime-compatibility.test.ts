@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateCapability } from './lib/runtime-compatibility.mjs';
+import { evaluateCapability, runtimeProofFingerprint, validRuntimeProofIdentity } from './lib/runtime-compatibility.mjs';
 
 const runtime = { name: 'node', version: '25.9.0', executable: '/pinned/node',
   binarySha256: 'a'.repeat(64), platform: 'linux', arch: 'x64' };
@@ -9,6 +9,26 @@ const request = { capabilityId: 'sqlite-roundtrip', expected: { rows: [42] }, ru
 const observation = () => ({ nonce: 'challenge', pid: 123, exitCode: 0, signal: null, timedOut: false,
   overflow: false, binarySha256: runtime.binarySha256, receipts: [{ nonce: 'challenge', pid: 123,
     capabilityId: request.capabilityId, completed: true, runtime: { ...runtime }, actual: { rows: [42] } }] });
+
+describe('complete runtime proof fingerprint', () => {
+  const identity = { ...runtime, nativeDependencyGeneration: '1'.repeat(64),
+    lockfileSha256: '2'.repeat(64), configurationSha256: '3'.repeat(64) };
+  it('is independent of object insertion order and unrelated diagnostic fields', () => {
+    const reordered = Object.fromEntries(Object.entries(identity).reverse());
+    expect(runtimeProofFingerprint({ ...reordered, pid: 42 })).toBe(runtimeProofFingerprint(identity));
+    expect(runtimeProofFingerprint(identity)).toMatch(/^runtime-v1 [a-f0-9]{64}$/);
+  });
+  it.each(Object.keys(identity))('invalidates a proof when %s changes or disappears', (key) => {
+    const changed = { ...identity, [key]: key.endsWith('Sha256') || key === 'nativeDependencyGeneration'
+      ? '9'.repeat(64) : key === 'executable' ? '/other/runtime' : key === 'name' ? 'bun' : 'different' };
+    expect(runtimeProofFingerprint(changed)).not.toBe(runtimeProofFingerprint(identity));
+    expect(runtimeProofFingerprint({ ...identity, [key]: undefined })).toBeNull();
+  });
+  it('rejects a Node-compatible version string without an actual interpreter and generation', () => {
+    expect(runtimeProofFingerprint(`${process.version} ${process.platform} ${process.arch}`)).toBeNull();
+    expect(validRuntimeProofIdentity({ ...identity, name: 'unknown' })).toBe(false);
+  });
+});
 
 describe('semantic compatibility report admission', () => {
   it('admits the completed operation with its complete candidate and runtime identity', () => {

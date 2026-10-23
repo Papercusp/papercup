@@ -158,6 +158,31 @@ describe('durable clone sweep', () => {
     expect(expired.rows[0].itemId).toBeTruthy();
   });
 
+  it('resolves the approved nightly policy through the workspace harness registry and rejects unrelated input', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'clone-sweep-schedule-')); dirs.push(root);
+    mkdirSync(join(root, 'scripts'), { recursive: true }); mkdirSync(join(root, 'node_modules/tsx/dist'), { recursive: true });
+    writeFileSync(join(root, 'scripts/clone-family-sweep.mts'), ''); writeFileSync(join(root, 'node_modules/tsx/dist/loader.mjs'), '');
+    const spawn = vi.fn(async (_cmd, _args, _spec, options) => ({ taskId: options.taskId, confined: true }));
+    const loadRegistry = vi.fn(async () => ({ projects: [{ slug: H, path: root, harness_kind: 'hive' as const }] }));
+    const ctx = { installSlug: H, workspaceId: WS, workflowId: 'scheduled-fire', triggerConfig: {},
+      payloadTemplate: { harnessSlug: H, input: { harness: H, clonePolicy: 'reuse-signals-v1' } } };
+    const deps = { spawn: spawn as never, loadRegistry, logDir: join(root, 'logs'), inFlight: async () => [] };
+    const result = await runCloneFamilySweepAction(ctx, deps);
+    expect(loadRegistry).toHaveBeenCalledWith(WS, { fresh: true });
+    expect(JSON.parse(readFileSync(String(result.diagnostics!.configPath), 'utf8'))).toMatchObject({
+      workspaceId: WS, harness: H, input: { root, acceptances: [], genericEvidence: [] },
+    });
+    await expect(runCloneFamilySweepAction({ ...ctx, payloadTemplate: {
+      ...ctx.payloadTemplate, input: { harness: H, clonePolicy: 'unknown-policy' },
+    } }, deps)).rejects.toThrow();
+    await expect(runCloneFamilySweepAction({ ...ctx, payloadTemplate: {
+      ...ctx.payloadTemplate, input: { harness: 'another-harness', clonePolicy: 'reuse-signals-v1' },
+    } }, deps)).rejects.toThrow('schedule harness mismatch');
+    await expect(runCloneFamilySweepAction(ctx, { ...deps, loadRegistry: async () => ({ projects: [] }) }))
+      .rejects.toThrow('schedule harness is not registered');
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
   it('registers the exact schedulable action and dispatches a ledgered bounded child, skipping overlap', async () => {
     expect(getSystemActionEntry(CLONE_FAMILY_SWEEP_ACTION)?.planSchedulable).toBe(true);
     const root = mkdtempSync(join(tmpdir(), 'clone-sweep-action-')); dirs.push(root);

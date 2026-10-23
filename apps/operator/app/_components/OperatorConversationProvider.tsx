@@ -74,6 +74,7 @@ import {
 import { useSyncQuery } from "@papercusp/sync";
 import { useWorkspaceId } from "@/lib/use-workspace-id";
 import type { ChatMessage, ChatToolCall } from "./chat/chat-types";
+import { parseChatEvent } from "@papercusp/chat-protocol";
 import { useStateSnapshots } from "@/lib/use-state-snapshots";
 import { selectFocusedCard } from "@/lib/chat-cards/select-focused-card";
 import { composeAmbiguityPrompt } from "@papercusp/operator-core/lib/voice-cards/compose-ambiguity-prompt";
@@ -636,13 +637,15 @@ export interface GenerationRequest {
 }
 
 export interface GenerationStream {
+  /** Filled only by a server acknowledgement of the committed assistant row. */
+  persistence?: { serverOwned?: boolean; turn: { conversationId: string; turnId: string; seq: number } | null };
   /** Async iterator yielding raw turn-output chunks. The caller buffers
    *  the chunks, parses with parseOperatorTurn(), then dispatches. */
   chunks: AsyncIterable<string>;
   /** Mutated by the chunks iterator as tool_call SSE events arrive.
    *  Read by the caller after `chunks` exhausts; attached to the
    *  resulting assistant message so the sidebar can render chips. */
-  tools?: { name: string; input?: unknown }[];
+  tools?: ChatToolCall[];
 }
 
 /**
@@ -729,10 +732,12 @@ const defaultGenerationFn: GenerationFn = async (req) => {
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
-  const tools: { name: string; input?: unknown }[] = [];
+  const tools: ChatToolCall[] = [];
+  const persistence: NonNullable<GenerationStream["persistence"]> = { turn: null };
 
   return {
     tools,
+    persistence,
     chunks: (async function* () {
       let buf = "";
       while (true) {
@@ -748,6 +753,17 @@ const defaultGenerationFn: GenerationFn = async (req) => {
           const dataMatch = frame.match(/^data:\s*(.+)$/m);
           if (!eventMatch || !dataMatch) continue;
           const event = eventMatch[1].trim();
+          if (event === "run-meta") {
+            const meta = JSON.parse(dataMatch[1]) as { turnPersistence?: unknown; conversationId?: unknown };
+            if (meta.turnPersistence !== undefined) {
+              if (meta.turnPersistence !== 1 || typeof meta.conversationId !== "string" || !meta.conversationId
+                || (req.conversationId && meta.conversationId !== req.conversationId)) {
+                throw new Error("The reply persistence protocol does not match this conversation.");
+              }
+              persistence.serverOwned = true;
+            }
+            continue;
+          }
           if (
             event !== "delta" &&
             event !== "done" &&
@@ -762,41 +778,52 @@ const defaultGenerationFn: GenerationFn = async (req) => {
             continue;
           }
 
-          if (event === "delta") {
-            const text = (data as { text?: unknown })?.text;
-            if (typeof text === "string") yield text;
-          } else if (event === "tool_call") {
-            const d = data as { name?: unknown; input?: unknown };
-            if (typeof d?.name === "string") {
-              tools.push({ name: d.name, input: d.input });
-              // Surface tool_call to listeners in real time so the
-              // voice-card router (plan §C.1a) can arm `pending` the
-              // moment the brain emits chat:ask_choice — before the
-              // state-snapshot lands. Without this signal the
-              // provider only sees the card AFTER the snapshot
-              // arrives, opening a race where a fast STT answer
-              // would be dispatched as user_message instead of
-              // resolving the card.
-              if (typeof window !== "undefined") {
-                try {
-                  window.dispatchEvent(
-                    new CustomEvent("papercusp:operatorToolCall", {
-                      detail: {
-                        name: d.name,
-                        input: d.input,
-                        tsMs: Date.now(),
-                      },
-                    }),
-                  );
-                } catch {
-                  /* ignore */
-                }
+          const parsed = parseChatEvent(event, data);
+          if (!parsed) continue;
+          if (parsed.type === "delta") {
+            yield parsed.text;
+          } else if (parsed.type === "tool_call") {
+            const { type: _type, ...call } = parsed;
+            tools.push(call);
+            // Surface tool_call to listeners in real time so the
+            // voice-card router (plan §C.1a) can arm `pending` the
+            // moment the brain emits chat:ask_choice — before the
+            // state-snapshot lands. Without this signal the
+            // provider only sees the card AFTER the snapshot
+            // arrives, opening a race where a fast STT answer
+            // would be dispatched as user_message instead of
+            // resolving the card.
+            if (typeof window !== "undefined") {
+              try {
+                window.dispatchEvent(
+                  new CustomEvent("papercusp:operatorToolCall", {
+                    detail: {
+                      ...call,
+                      tsMs: Date.now(),
+                    },
+                  }),
+                );
+              } catch {
+                /* ignore */
               }
             }
-          } else if (event === "error") {
-            const msg = (data as { message?: unknown })?.message;
-            throw new Error(typeof msg === "string" ? msg : "stream error");
-          } else if (event === "done") {
+          } else if (parsed.type === "error") {
+            throw new Error(parsed.message);
+          } else if (parsed.type === "done") {
+            const receipt = data && typeof data === "object" && "persistedTurn" in data
+              ? (data as { persistedTurn: unknown }).persistedTurn : undefined;
+            if (receipt !== undefined) {
+              persistence.serverOwned = true;
+              if (!receipt || typeof receipt !== "object"
+                || !("conversationId" in receipt) || typeof receipt.conversationId !== "string" || !receipt.conversationId
+                || (req.conversationId && receipt.conversationId !== req.conversationId)
+                || !("turnId" in receipt) || typeof receipt.turnId !== "string"
+                || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(receipt.turnId)
+                || !("seq" in receipt) || typeof receipt.seq !== "number" || !Number.isSafeInteger(receipt.seq) || receipt.seq < 0) {
+                throw new Error("The saved reply acknowledgement does not match this conversation.");
+              }
+              persistence.turn = { conversationId: receipt.conversationId, turnId: receipt.turnId, seq: receipt.seq };
+            }
             return;
           }
         }
@@ -1413,7 +1440,9 @@ export function OperatorConversationProvider({
       // local message; together they're robust.
       // `tools` (added 2026-05-11 for chat:ask_choice) is omitted when
       // undefined so the server route can default to NULL.
-      const body: Record<string, unknown> = { role, text, source };
+      // Allocate once, outside the retry loop: a committed POST with a lost
+      // acknowledgement must reconcile to the same PG row on every retry.
+      const body: Record<string, unknown> = { role, text, source, turnId: crypto.randomUUID() };
       if (tools && tools.length > 0) body.tools = tools;
       if (report) body.report = report;
       const payload = JSON.stringify(body);
@@ -1830,6 +1859,7 @@ export function OperatorConversationProvider({
       const sayProjector = new OperatorSayStreamProjector();
       let streamedAssistantId: string | null = null;
       let streamedAssistantCommitted = false;
+      let streamPersistence: GenerationStream["persistence"];
 
       const snapshot = stateRef.current;
       const history = opts?.messagesOverride ?? snapshot.messages;
@@ -1848,6 +1878,7 @@ export function OperatorConversationProvider({
           isAutoFire: opts?.isAutoFire,
           audienceMode: audienceModeRef.current,
         });
+        streamPersistence = stream.persistence;
 
         let buf = "";
         for await (const chunk of stream.chunks) {
@@ -1870,6 +1901,20 @@ export function OperatorConversationProvider({
           }
         }
         if (ctrl.signal.aborted) return;
+
+        const persistedTurn = stream.persistence?.turn;
+        if (stream.persistence?.serverOwned && !persistedTurn) {
+          throw new Error("The saved reply acknowledgement was lost; this turn needs recovery.");
+        }
+        if (persistedTurn) {
+          if (conversationIdRef.current && conversationIdRef.current !== persistedTurn.conversationId) {
+            throw new Error("The saved reply belongs to a different conversation.");
+          }
+          if (!conversationIdRef.current) {
+            conversationIdRef.current = persistedTurn.conversationId;
+            setConvId(persistedTurn.conversationId);
+          }
+        }
 
         const parsed = parseOperatorTurn(buf);
 
@@ -1948,7 +1993,12 @@ export function OperatorConversationProvider({
           // tool/report-only turns; persistTurn writes whatever we send.
           // The server-side turns route accepts tools + report alongside
           // text (POST /api/operator/conversations/:id/turns).
-          persistTurn(
+          if (persistedTurn) {
+            newestLoadedSeqRef.current = Math.max(newestLoadedSeqRef.current ?? -1, persistedTurn.seq);
+            oldestLoadedSeqRef.current ??= persistedTurn.seq;
+            dispatch({ type: "replace_message_id", oldId: assistantMessageId,
+              newId: persistedTurn.turnId, seq: persistedTurn.seq });
+          } else persistTurn(
             "assistant",
             sayContent,
             isGlobalTarget && opts?.spokenReply ? "voice_tts" : "text_typed",
@@ -2189,7 +2239,7 @@ export function OperatorConversationProvider({
               ts: new Date().toISOString(),
             },
           });
-          persistTurn(
+          if (!streamPersistence?.serverOwned) persistTurn(
             "assistant",
             refusalText,
             isGlobalTarget && opts?.spokenReply ? "voice_tts" : "text_typed",

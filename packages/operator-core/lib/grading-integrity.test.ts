@@ -204,6 +204,8 @@ function deps() {
     confirmReservation,
     release,
     listTasks,
+    readRetainedTaskKernelVerdicts: vi.fn(async (_tasks: readonly TaskRow[], _workspaceId?: string) =>
+      new Map<string, string>()),
     bindTaskNativeSession: vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['bindTaskNativeSession']>>()
       .mockResolvedValue(null),
     getTask,
@@ -2078,6 +2080,130 @@ describe('dispatchPendingGradingAudits', () => {
       },
     });
     expect(d.notifyRetainedAuditor).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { after: 'ended_unobserved', changed: 1, routes: true },
+    { after: 'exited', changed: 0, routes: true },
+    { after: 'running', changed: 0, routes: false },
+  ] as const)('persists collected auditor retirement before routing: $after', async ({ after, changed, routes }) => {
+    const d = deps();
+    const issueId = 'EI-collected-auditor';
+    const taskId = 'task-collected-auditor';
+    const prior = { key: `grading-audit:${issueId}`, reservedAt: '2026-10-08T07:00:00.000Z' };
+    d.reserve.mockResolvedValue({ status: 'claimed', reservation: prior, prior });
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+    d.listTasks.mockResolvedValue([{
+      taskId, state: 'running', detail: { label: prior.key, coordOwnerId: 'su-old-answerer' },
+      logPath: '/tmp/collected-auditor.log',
+    } as unknown as TaskRow]);
+    let storedState: TaskRow['state'] = 'running';
+    const markEndedUnobserved = vi.fn(async () => {
+      // An exit observer may win the store's ended_at CAS; its observed exit
+      // remains authoritative instead of being overwritten by reconciliation.
+      storedState = after;
+      return changed;
+    });
+    d.getTask.mockImplementation(async () => ({ state: storedState } as TaskRow));
+    d.route.mockImplementation(async () => {
+      expect(storedState).not.toBe('running');
+      return { state: 'routed', conversationId: 'replacement-audit' };
+    });
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, {
+      ...d,
+      markEndedUnobserved,
+      killTask: vi.fn(async () => ({ ok: false as const, taskId, action: 'kill', error: 'already_gone' as const })),
+      isCurrentSourceAuditResponder: vi.fn(async () => false),
+      readLogTail: async () => 'Auditor is working',
+      readLogMtimeMs: () => Date.parse('2026-10-08T07:19:30.000Z'),
+    });
+
+    expect(markEndedUnobserved).toHaveBeenCalledWith([{
+      taskId, reason: expect.stringContaining('collected'),
+    }]);
+    if (routes) {
+      expect(d.route).toHaveBeenCalledOnce();
+      expect(result.receipts[0]).toMatchObject({
+        state: 'routed', terminalRecovery: { retiredTaskIds: [taskId] },
+      });
+    } else {
+      expect(d.route).not.toHaveBeenCalled();
+      expect(d.launch).not.toHaveBeenCalled();
+      expect(result.receipts[0]).toMatchObject({ state: 'failed', phase: 'task-termination' });
+    }
+  });
+
+  it.each([
+    { after: 'ended_unobserved', changed: 1, routes: true },
+    { after: 'exited', changed: 0, routes: true },
+    { after: 'running', changed: 0, routes: false },
+  ] as const)('reconciles a kernel-ended auditor before the live-task guard: $after', async ({ after, changed, routes }) => {
+    const d = deps();
+    const issueId = 'EI-kernel-ended-auditor';
+    const taskId = 'task-kernel-ended-auditor';
+    const prior = { key: `grading-audit:${issueId}`, reservedAt: '2026-10-08T07:00:00.000Z' };
+    const task = {
+      taskId, state: 'running', detail: { label: prior.key, coordOwnerId: 'su-missing-owner' },
+      logPath: '/tmp/kernel-ended-auditor.log',
+    } as unknown as TaskRow;
+    d.reserve.mockResolvedValue({ status: 'claimed', reservation: prior, prior });
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+    d.listTasks.mockResolvedValue([task]);
+    d.readRetainedTaskKernelVerdicts.mockResolvedValueOnce(new Map([[taskId, 'exact process identity gone; scope collected']]));
+    let storedState: TaskRow['state'] = 'running';
+    const markEndedUnobserved = vi.fn(async () => {
+      storedState = after;
+      return changed;
+    });
+    d.getTask.mockImplementation(async () => ({ state: storedState } as TaskRow));
+    d.route.mockImplementation(async () => {
+      expect(storedState).not.toBe('running');
+      return { state: 'routed', conversationId: 'replacement-audit' };
+    });
+
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, {
+      ...d,
+      markEndedUnobserved,
+      resolveOwnerLiveness: async () => null,
+      readLogTail: async () => 'Auditor is working',
+      readLogMtimeMs: () => Date.parse('2026-10-08T07:19:30.000Z'),
+    });
+
+    expect(d.readRetainedTaskKernelVerdicts).toHaveBeenCalledWith([task], 'ws-test');
+    expect(markEndedUnobserved).toHaveBeenCalledWith([{
+      taskId, reason: 'exact process identity gone; scope collected',
+    }]);
+    expect(d.notifyRetainedAuditor).not.toHaveBeenCalled();
+    if (routes) {
+      expect(d.route).toHaveBeenCalledOnce();
+      expect(result.receipts[0]).toMatchObject({
+        state: 'routed', terminalRecovery: { retiredTaskIds: [taskId] },
+      });
+    } else {
+      expect(d.route).not.toHaveBeenCalled();
+      expect(d.launch).not.toHaveBeenCalled();
+      expect(result.receipts[0]).toMatchObject({ state: 'failed', phase: 'retained-task-kernel-reconciliation' });
+    }
+  });
+
+  it('preserves the retained auditor when kernel reconciliation is unavailable', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-kernel-unknown')]);
+    d.listTasks.mockResolvedValue([{
+      taskId: 'task-kernel-unknown', state: 'running',
+      detail: { label: 'grading-audit:EI-kernel-unknown', coordOwnerId: 'su-unknown' },
+    } as unknown as TaskRow]);
+    d.readRetainedTaskKernelVerdicts.mockRejectedValueOnce(new Error('kernel scan unavailable'));
+    const markEndedUnobserved = vi.fn(async () => 0);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-kernel-unknown'], ctx }, {
+      ...d, markEndedUnobserved,
+    });
+
+    expect(result.receipts[0]).toMatchObject({ state: 'deduped', launch: { mode: 'live-task-guard' } });
+    expect(markEndedUnobserved).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
   });
 
   it('hands the live auditor its own expired lease back instead of deleting it (WI-10005273)', async () => {
