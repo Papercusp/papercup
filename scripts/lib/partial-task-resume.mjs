@@ -8,6 +8,7 @@ import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, rena
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { selectReusablePasses } from "./test-pass-reuse.mjs";
+import { expandSelectionCommands } from "./related-tests.mjs";
 
 export const PARTIAL_TASK_CHECKPOINT_SCHEMA = 1;
 export const PARTIAL_TASK_SKIP_LIST_SCHEMA = 1;
@@ -141,6 +142,59 @@ function validNativeSpecifications(specifications) {
     files.add(spec.testFile);
   }
   return true;
+}
+
+/** Select one native producer without treating pending npm hooks as test-selection
+ * gaps. Hooks remain independent command obligations; this grants no pass or custody.
+ * Ordered multi-run scripts still require distinct native output channels.
+ */
+export function preparePartialNativeProducerSelection(selection, task, root) {
+  const refused = reason => ({ status: "refused", reason, selectedSpecifications: null });
+  if (selection?.schemaVersion !== 1 || selection.kind !== "full-gate" ||
+      selection.phase !== "selection-preparation" || selection.executed !== false ||
+      !Array.isArray(selection.tasks) || selection.tasks.length !== 1 ||
+      !Array.isArray(selection.unenumerated) || !Array.isArray(selection.commandObligations) ||
+      !Array.isArray(selection.overlaps) || selection.overlaps.length)
+    return refused("native-producer-selection-unmeasured");
+  const entry = selection.tasks[0];
+  if (!validIdentity(task?.id) || entry?.id !== task.id || entry.dir !== task.dir ||
+      entry.command !== task.command || entry.runner !== "vitest" ||
+      !validNativeSpecifications(entry.selectedSpecifications) ||
+      !Array.isArray(entry.files) || new Set(entry.files).size !== entry.files.length ||
+      entry.selectedSpecifications.length !== entry.files.length ||
+      entry.selectedSpecifications.some(spec => !entry.files.includes(spec.testFile)) ||
+      !isDeepStrictEqual(selection.files, entry.files))
+    return refused("native-producer-selection-mismatch");
+  const hooks = entry.lifecycleCommands;
+  const commands = entry.commandObligations ?? [];
+  if (!Array.isArray(hooks) || !Array.isArray(commands) || commands.length !== hooks.length ||
+      selection.commandObligations.some(value => !value || typeof value !== "object") ||
+      !isDeepStrictEqual(commands, selection.commandObligations.map(({ task: id, ...command }) =>
+        id === task.id ? command : null)) ||
+      selection.unenumerated.some(value => value?.task !== task.id ||
+        value.reason !== "unexecuted-lifecycle-command") ||
+      (selection.unenumerated.length > 0 && hooks.length === 0))
+    return refused("native-producer-command-population-unmeasured");
+  for (const [index, command] of commands.entries()) {
+    const inputs = command?.inputs, discovery = command?.discovery;
+    const files = discovery?.repositoryFiles ?? discovery?.files;
+    if (command?.kind !== "npm-lifecycle" || command.executed !== false ||
+        command.script !== hooks[index]?.script || command.command !== hooks[index]?.command ||
+        !validIdentity(command.script) || !validIdentity(command.command) ||
+        !isAbsolute(root ?? "") || !Array.isArray(inputs) || !inputs.length ||
+        new Set(inputs.map(input => input?.path)).size !== inputs.length ||
+        inputs.some(input => !repoPath(input?.path) || !/^[a-f0-9]{64}$/.test(input.sha256)) ||
+        discovery?.executed !== false || discovery.runtimeClosure !== "unmeasured" ||
+        discovery.operationalAcceptance !== false || !isDeepStrictEqual(discovery.inputs, inputs) ||
+        !Array.isArray(files) || new Set(files).size !== files.length ||
+        files.some(file => !repoPath(file) || !inputs.some(input => input.path === file)))
+      return refused("native-producer-command-inputs-unmeasured");
+    try {
+      if (inputs.some(input => createHash("sha256").update(readFileSync(resolve(root, input.path)))
+        .digest("hex") !== input.sha256)) return refused("native-producer-command-inputs-changed");
+    } catch { return refused("native-producer-command-inputs-unreadable"); }
+  }
+  return { status: "ready", reason: null, selectedSpecifications: structuredClone(entry.selectedSpecifications) };
 }
 
 /** Enroll the independent selection and actual command before its native child can start.
@@ -358,8 +412,92 @@ export function preparePartialContinuationManifest({ tasks, selection, postSuite
         path: task.dir === "." ? "package.json" : `${task.dir}/package.json` });
       continue;
     }
-    if (!entry || !Array.isArray(entry.files) || (!entry.files.length && entry.runner !== "command-check") ||
-        !["vitest", "node-test", "astro-check", "command-check"].includes(entry.runner) ||
+    if (entry?.runner === "command-chain") {
+      // Reconstruct the ordered inventory from the actual npm scripts before
+      // trusting the prepared leaves. A file union cannot reveal an omitted or
+      // reordered hook. Keep a separate whole-chain execution obligation too:
+      // individual leaf passes do not prove that npm ran the original chain.
+      if (!isAbsolute(root ?? "") || !Array.isArray(entry.steps) || entry.steps.length < 2 ||
+          entry.steps.some(step => !step || !validIdentity(step.script) || !validIdentity(step.command) ||
+            !Array.isArray(step.files) || !Array.isArray(step.commandObligations) || !Array.isArray(step.unenumerated)) ||
+          !validIdentity(entry.script) || !validIdentity(entry.workspace) ||
+          id !== `${entry.workspace} :: ${entry.script}`)
+        return refused("chain-population-unmeasured");
+      let sourceSteps;
+      try {
+        const scripts = JSON.parse(readFileSync(resolve(root, task.dir, "package.json"), "utf8")).scripts;
+        if (scripts?.[entry.script] !== task.command) return refused("chain-source-changed");
+        sourceSteps = expandSelectionCommands(scripts, entry.script);
+      } catch { return refused("chain-source-unmeasured"); }
+      if (!isDeepStrictEqual(sourceSteps, entry.steps.map(step => ({ script: step?.script,
+          command: step?.command, ...(step?.lifecycle === true ? { lifecycle: true } : {}) }))))
+        return refused("chain-population-mismatch");
+      const chainCommands = entry.steps.flatMap((step, index) =>
+        (Array.isArray(step.commandObligations) ? step.commandObligations : [])
+          .map(command => ({ ...command, step: index })));
+      const declared = selection.commandObligations.filter(value => value.task === id)
+        .map(({ task: _task, ...value }) => value);
+      // Leaf selector envelopes carry their local task id. The top-level
+      // envelope replaces it with the original chain id.
+      if (!isDeepStrictEqual(chainCommands, entry.commandObligations) ||
+          !isDeepStrictEqual(chainCommands.map(({ task: _task, ...command }) => command), declared))
+        return refused("command-population-mismatch");
+      const chainFiles = [], chainResidues = [];
+      const leafUnits = [];
+      for (const [index, step] of entry.steps.entries()) {
+        if (!Array.isArray(step.files) || !Array.isArray(step.commandObligations) ||
+            !Array.isArray(step.unenumerated)) return refused("chain-population-unmeasured");
+        const leafId = `${id}:step:${index}`;
+        let leaf;
+        if (step.lifecycle === true) {
+          if (step.files.length || step.commandObligations.length !== 1 ||
+              step.commandObligations[0]?.kind !== "npm-lifecycle")
+            return refused("chain-population-mismatch");
+          leaf = { runner: "lifecycle-command", files: [],
+            lifecycleCommands: [{ script: step.script, command: step.command }] };
+        } else {
+          if (!Array.isArray(step.discovery) || step.discovery.length !== 1 ||
+              step.discovery[0]?.runner === "command-chain" ||
+              step.discovery[0]?.command !== step.command ||
+              !isDeepStrictEqual(step.discovery[0]?.files, step.files))
+            return refused("chain-population-mismatch");
+          leaf = step.discovery[0];
+        }
+        const commands = step.commandObligations.map(({ task: _task, ...command }) => command);
+        if (!step.lifecycle && !isDeepStrictEqual(commands, leaf.commandObligations ?? []))
+          return refused("command-population-mismatch");
+        const residues = step.unenumerated.map(({ task: _task, ...value }) => value);
+        chainResidues.push(...residues.map(value => ({ task: id, step: index,
+          command: step.command, reason: value.reason })));
+        const prepared = preparePartialContinuationManifest({ root, postSuite,
+          tasks: [{ id: leafId, dir: task.dir, command: step.command }], selection: {
+            schemaVersion: 1, kind: "full-gate", phase: "selection-preparation", executed: false,
+            tasks: [{ ...leaf, id: leafId, dir: task.dir, command: step.command, commandObligations: commands }],
+            commandObligations: commands.map(command => ({ ...command, task: leafId })),
+            unenumerated: residues.map(value => ({ ...value, task: leafId })),
+          } });
+        if (prepared.status !== "ready") return refused(prepared.reason);
+        leafUnits.push(...prepared.manifest.units.filter(unit => unit.kind !== "post-suite"));
+        chainFiles.push(...step.files);
+      }
+      if (!Array.isArray(entry.files) ||
+          !isDeepStrictEqual([...new Set(chainFiles)].sort(), entry.files.slice().sort()) ||
+          !isDeepStrictEqual(chainResidues, selection.unenumerated.filter(value => value.task === id)))
+        return refused("chain-population-mismatch");
+      for (const unit of leafUnits) {
+        if (unit.kind === "test") {
+          if (testPaths.has(unit.path)) return refused("test-population-overlapping-or-invalid");
+          testPaths.add(unit.path);
+        }
+        units.push(unit);
+      }
+      units.push({ id: `chain:${id}`, kind: "guard",
+        path: task.dir === "." ? "package.json" : `${task.dir}/package.json` });
+      continue;
+    }
+    if (!entry || !Array.isArray(entry.files) || (!entry.files.length &&
+        !["command-check", "lifecycle-command"].includes(entry.runner)) ||
+        !["vitest", "node-test", "astro-check", "command-check", "lifecycle-command"].includes(entry.runner) ||
         entry.files.some(file => !repoPath(file)) || new Set(entry.files).size !== entry.files.length)
       return refused("task-selection-unmeasured");
     // Discovery is not execution. Keep each explicit command as a separate required
@@ -378,6 +516,9 @@ export function preparePartialContinuationManifest({ tasks, selection, postSuite
       return refused("task-selection-unmeasured");
     if (["astro-check", "command-check"].includes(entry.runner) &&
         !commands.some(command => command.kind === "command-check")) return refused("command-population-unmeasured");
+    if (entry.runner === "lifecycle-command" && (commands.length !== 1 ||
+        commands[0]?.kind !== "npm-lifecycle" || commands[0]?.command !== task.command))
+      return refused("command-population-unmeasured");
     if (entry.lifecycleCommands !== undefined && (!Array.isArray(entry.lifecycleCommands) ||
         entry.lifecycleCommands.some(step => !step || commands.filter(command => command.kind === "npm-lifecycle" &&
           command.script === step.script && command.command === step.command).length !== 1)))

@@ -10,6 +10,19 @@ export function partialTaskSkipListPath(dir: any, checkpoint: any): {
     digest: string;
     count: any;
 };
+/** Select one native producer without treating pending npm hooks as test-selection
+ * gaps. Hooks remain independent command obligations; this grants no pass or custody.
+ * Ordered multi-run scripts still require distinct native output channels.
+ */
+export function preparePartialNativeProducerSelection(selection: any, task: any, root: any): {
+    status: string;
+    reason: any;
+    selectedSpecifications: null;
+} | {
+    status: string;
+    reason: null;
+    selectedSpecifications: any;
+};
 /** Enroll the independent selection and actual command before its native child can start.
  * Extends the existing OUT artifact; the environment is stored only as a digest.
  * Enrollment is immutable and does not authorize reuse or establish runner custody.
@@ -70,28 +83,7 @@ export function preparePartialContinuationManifest({ tasks, selection, postSuite
     postSuite: any;
     exclusions?: any[];
     root?: string;
-}): {
-    status: string;
-    reason: any;
-    manifest: null;
-    operationalAcceptance: boolean;
-} | {
-    status: string;
-    reason: null;
-    manifest: {
-        schemaVersion: number;
-        units: {
-            exclusion?: {
-                reason: any;
-                policyRef: any;
-            } | undefined;
-            id: any;
-            kind: any;
-            path: any;
-        }[];
-    };
-    operationalAcceptance: boolean;
-};
+}): any;
 /**
  * Grade the existing checkpoint's full, independently selected population. The caller
  * must own the existing qualification runner before executing `run`; this pure read

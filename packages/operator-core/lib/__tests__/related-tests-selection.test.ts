@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { preparePartialContinuationManifest } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { preparePartialContinuationManifest, preparePartialNativeProducerSelection,
+  registerPartialNativeProducer, readPartialNativeProducer } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 
 import {
@@ -160,7 +161,9 @@ describe('original gate selection preparation', () => {
       const ws = { name: '@bug-drill/fixture', dir: relativeDir,
         scripts: { test: 'vitest run', pretest: 'node scripts/build.mjs' } };
       const discover = () => enumerateAffectedTaskSelection([{ ws, script: 'test' }],
-        { root: repo, runResolver: () => [resolved(['a.test.ts'])] });
+        { root: repo, enumerateSpecifications: true, runResolver: () => [{ ...resolved(['a.test.ts']),
+          selectedSpecifications: [{ testFile: `${relativeDir}/a.test.ts`, pool: 'forks', projectName: null,
+            testNamePattern: null, testLines: null, testIds: null, testTagsFilter: null }] }] });
       const result = discover();
       expect(result.files).toEqual([`${relativeDir}/a.test.ts`]);
       expect(result.unenumerated).toMatchObject([{ reason: 'unexecuted-lifecycle-command' }]);
@@ -168,6 +171,34 @@ describe('original gate selection preparation', () => {
       expect(obligation).toMatchObject({ kind: 'npm-lifecycle', script: 'pretest',
         command: 'node scripts/build.mjs', executed: false,
         discovery: { check: 'fixture-build', files: [], dependencyClosure: 'unmeasured', runtimeClosure: 'unmeasured' } });
+      const originalTask = { id: '@bug-drill/fixture :: test', dir: relativeDir, command: ws.scripts.test };
+      const native = preparePartialNativeProducerSelection(result, originalTask, repo);
+      expect(native.status).toBe('ready');
+      const enrolled = registerPartialNativeProducer(join(dir, 'native.json'), {
+        attemptId: 'lifecycle-selection', runGroupId: 'physical-run', root: repo,
+        taskKey: originalTask.id, workspaceName: ws.name, sourceCommit: 'f'.repeat(40),
+        registeredAtMs: Date.now(), selectedSpecifications: native.selectedSpecifications,
+        command: { cmd: 'npm', argv: ['run', 'test'], cwd: dir },
+      }, {});
+      expect(readPartialNativeProducer(enrolled.path, { taskKey: originalTask.id }))
+        .toMatchObject({ selectedSpecifications: native.selectedSpecifications });
+      expect(preparePartialContinuationManifest({ root: repo, selection: result, tasks: [originalTask],
+        postSuite: { schemaVersion: 1, coverage: 'complete', units: [{ id: 'post:lint', kind: 'post-suite', path: 'package.json' }] } }))
+        .toMatchObject({ status: 'ready', operationalAcceptance: false, manifest: { units: [
+          { id: `command:${originalTask.id}:0`, kind: 'guard' }, { id: 'post:lint' },
+          { id: `test:${relativeDir}/a.test.ts` },
+        ] } });
+      for (const change of [
+        (value: typeof result) => { value.unenumerated.push({ task: originalTask.id, reason: 'unknown-native-config', command: ws.scripts.test }); },
+        (value: typeof result) => { Object.assign(value.tasks[0], { selectedSpecifications: [] }); },
+        (value: typeof result) => { value.commandObligations = []; },
+        (value: typeof result) => { value.commandObligations = [null]; },
+        (value: typeof result) => { Object.assign(value.tasks[0], { commandObligations: [{ ...obligation, inputs: null }] }); },
+      ]) {
+        const changed = structuredClone(result);
+        change(changed);
+        expect(preparePartialNativeProducerSelection(changed, originalTask, repo).status).toBe('refused');
+      }
       const paths = obligation.inputs.map((input: { path: string }) => input.path);
       expect(paths).toEqual(expect.arrayContaining(['scripts/build.mjs', 'scripts/source-identity.mjs',
         'scripts/dependency-preflight.mjs', 'app/page.tsx', 'packages/data/src/index.ts',
@@ -177,6 +208,8 @@ describe('original gate selection preparation', () => {
         .toBe(createHash('sha256').update(readFileSync(join(repo, input.path))).digest('hex'));
       const before = obligation.inputs.find((input: { path: string }) => input.path.endsWith('/public/logo.svg'))!.sha256;
       writeFileSync(join(dir, 'public/logo.svg'), '<svg>changed asset</svg>');
+      expect(preparePartialNativeProducerSelection(result, originalTask, repo))
+        .toMatchObject({ status: 'refused', reason: 'native-producer-command-inputs-changed' });
       expect(discover().commandObligations[0].inputs.find((input: { path: string }) => input.path.endsWith('/public/logo.svg'))!.sha256)
         .not.toBe(before);
       expect(readFileSync(join(dir, '.next/fixture-build.json'), 'utf8')).toBe('unchanged build sentinel');
@@ -187,8 +220,37 @@ describe('original gate selection preparation', () => {
       const chained = enumerateAffectedTaskSelection([{ ws: { ...ws,
         scripts: { ...ws.scripts, test: 'npm run first && npm run second', first: 'vitest run', second: 'vitest run' } }, script: 'test' }],
         { root: repo, runResolver: () => [resolved(['a.test.ts'])] });
+      expect(preparePartialNativeProducerSelection(chained, originalTask, repo).status).toBe('refused');
       expect(chained.commandObligations[0]).toMatchObject({ step: 0, script: 'pretest',
         discovery: { check: 'fixture-build' }, executed: false });
+      const chainScripts = { ...ws.scripts, test: 'npm run first && npm run second',
+        first: 'vitest run --config first.config.mjs', second: 'vitest run --config second.config.mjs' };
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'module', scripts: chainScripts }));
+      let leaf = 0;
+      const completeChain = enumerateAffectedTaskSelection([{ ws: { ...ws, scripts: chainScripts }, script: 'test' }], {
+        root: repo, enumerateSpecifications: true, runResolver: () => {
+          const file = `${++leaf}.test.ts`;
+          return [{ ...resolved([file]), selectedSpecifications: [{ testFile: `${relativeDir}/${file}`,
+            pool: 'forks', projectName: null, testNamePattern: null, testLines: null, testIds: null, testTagsFilter: null }] }];
+        },
+      });
+      const prepareChain = (selection = completeChain) => preparePartialContinuationManifest({ root: repo, selection,
+        tasks: [{ id: '@bug-drill/fixture :: test', dir: relativeDir, command: chainScripts.test }],
+        postSuite: { schemaVersion: 1, coverage: 'complete', units: [
+          { id: 'post:lint', kind: 'post-suite', path: 'package.json' },
+        ] } });
+      expect(prepareChain()).toMatchObject({ status: 'ready', manifest: { units: [
+        { id: 'chain:@bug-drill/fixture :: test', kind: 'guard' },
+        { id: 'command:@bug-drill/fixture :: test:step:0:0', kind: 'guard' },
+        { id: 'post:lint' }, { id: `test:${relativeDir}/1.test.ts` }, { id: `test:${relativeDir}/2.test.ts` },
+      ] } });
+      expect(prepareChain({ ...completeChain, commandObligations: [] }))
+        .toMatchObject({ status: 'refused', reason: 'command-population-mismatch' });
+      const missingHook = structuredClone(completeChain);
+      const chain = missingHook.tasks[0];
+      if (!chain || !('steps' in chain)) throw new Error('Ordered lifecycle inventory missing');
+      chain.steps.shift();
+      expect(prepareChain(missingHook)).toMatchObject({ status: 'refused', reason: 'chain-population-mismatch' });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -454,6 +516,103 @@ describe('original gate selection preparation', () => {
       { task: '@probe/core :: test', step: 0, command: 'vitest run', file: 'packages/core/a.test.ts', kind: 'test-file' },
       { task: '@probe/core :: test', step: 1, command: 'vitest run', file: 'packages/core/a.test.ts', kind: 'test-file' },
     ]);
+  });
+
+  function orderedFixture(command = 'npm run one && npm run two') {
+    const root = mkdtempSync(join(tmpdir(), 'ordered-manifest-'));
+    const dir = 'packages/core';
+    mkdirSync(join(root, dir), { recursive: true });
+    const scripts = { test: command, one: 'vitest run --config one.config.mjs',
+      two: 'vitest run --config two.config.mjs' };
+    writeFileSync(join(root, dir, 'package.json'), JSON.stringify({ scripts }));
+    const files = ['a.test.ts', 'b.test.ts'];
+    for (const file of files) writeFileSync(join(root, dir, file), 'throw new Error("discovery executed a test");');
+    let index = 0;
+    const selection = enumerateAffectedTaskSelection([{ ws: { name: '@probe/core', dir, scripts }, script: 'test' }], {
+      root, enumerateSpecifications: true, runResolver: () => {
+        const file = files[index++ % files.length]!;
+        return [{ ...resolved([file]), selectedSpecifications: [{ testFile: `${dir}/${file}`,
+          pool: 'forks', projectName: null, testNamePattern: null, testLines: null, testIds: null, testTagsFilter: null }] }];
+      },
+    });
+    return { root, selection, tasks: [{ id: '@probe/core :: test', dir, command }],
+      postSuite: { schemaVersion: 1, coverage: 'complete', units: [
+        { id: 'post:lint', kind: 'post-suite', path: 'package.json' },
+      ] } };
+  }
+
+  it('freezes ordered native leaves and a distinct original-chain execution obligation', () => {
+    const fixture = orderedFixture();
+    try {
+      expect(preparePartialContinuationManifest(fixture)).toMatchObject({ status: 'ready', operationalAcceptance: false,
+        manifest: { units: [
+          { id: 'chain:@probe/core :: test', kind: 'guard', path: 'packages/core/package.json' },
+          { id: 'post:lint' }, { id: 'test:packages/core/a.test.ts', kind: 'test' },
+          { id: 'test:packages/core/b.test.ts', kind: 'test' },
+        ] } });
+      expect(fixture.selection.executed).toBe(false);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it.each(['omitted-step', 'reordered-step', 'omitted-native-file', 'omitted-specification',
+    'unknown-step', 'omitted-residue', 'changed-script', 'duplicate-test', 'null-step'])(
+    'refuses an ordered population with %s before claiming any execution', mutation => {
+      const fixture = orderedFixture();
+      try {
+        const chain = fixture.selection.tasks[0] as any;
+        if (mutation === 'omitted-step') chain.steps.pop();
+        if (mutation === 'reordered-step') chain.steps.reverse();
+        if (mutation === 'omitted-native-file') chain.steps[0].files = [];
+        if (mutation === 'omitted-specification') chain.steps[0].discovery[0].selectedSpecifications = [];
+        if (mutation === 'unknown-step') {
+          chain.steps[0].unenumerated.push({ reason: 'unsupported-task-command' });
+          fixture.selection.unenumerated.push({ task: chain.id, step: 0,
+            command: chain.steps[0].command, reason: 'unsupported-task-command' });
+        }
+        if (mutation === 'omitted-residue') fixture.selection.unenumerated.push({ task: chain.id,
+          step: 0, command: chain.steps[0].command, reason: 'unexecuted-command-obligations' });
+        if (mutation === 'changed-script') writeFileSync(join(fixture.root, 'packages/core/package.json'),
+          JSON.stringify({ scripts: { test: 'vitest run' } }));
+        if (mutation === 'duplicate-test') {
+          chain.steps[1].files = chain.steps[0].files;
+          chain.steps[1].discovery[0].files = chain.steps[0].files;
+          chain.steps[1].discovery[0].selectedSpecifications = chain.steps[0].discovery[0].selectedSpecifications;
+          chain.files = chain.steps[0].files;
+        }
+        if (mutation === 'null-step') chain.steps[0] = null;
+        expect(preparePartialContinuationManifest(fixture)).toMatchObject({ status: 'refused', manifest: null });
+      } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+    });
+
+  it('keeps an Astro guard and a native test of the same path distinct inside the original chain', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ordered-astro-manifest-'));
+    try {
+      const dir = 'packages/core', file = `${dir}/a.test.ts`, command = 'astro check && vitest run';
+      mkdirSync(join(root, dir), { recursive: true });
+      writeFileSync(join(root, dir, 'package.json'), JSON.stringify({ scripts: { test: command } }));
+      writeFileSync(join(root, file), 'throw new Error("selection ran a test");');
+      const selection = enumerateAffectedTaskSelection([task('test', command)], {
+        root, syncAstro: true, enumerateSpecifications: true,
+        runResolver: (requests: Array<{ runner?: string }>) => requests.map(request => request.runner === 'astro-check' ? {
+          ok: true, enumerated: true, repositoryFiles: [file],
+          inputs: [{ path: file, sha256: createHash('sha256').update(readFileSync(join(root, file))).digest('hex') }],
+          sync: { status: 'completed', beforePopulation: true }, executed: false,
+          runtimeClosure: 'unmeasured', operationalAcceptance: false,
+        } : { ...resolved(['a.test.ts']), selectedSpecifications: [{ testFile: file, pool: 'forks',
+          projectName: null, testNamePattern: null, testLines: null, testIds: null, testTagsFilter: null }] }),
+      });
+      // Astro's check input is a separate occurrence, not a second native test.
+      expect(selection.unenumerated.map(row => row.reason)).toEqual(['unexecuted-command-obligations']);
+      const prepared = preparePartialContinuationManifest({ root, selection,
+        tasks: [{ id: '@probe/core :: test', dir, command }],
+        postSuite: { schemaVersion: 1, coverage: 'complete', units: [
+          { id: 'post:lint', kind: 'post-suite', path: 'package.json' },
+        ] } });
+      expect(prepared).toMatchObject({ status: 'ready', manifest: { units: [
+        { id: 'chain:@probe/core :: test' }, { id: 'command:@probe/core :: test:step:0:0', kind: 'guard' },
+        { id: 'post:lint' }, { id: `test:${file}`, kind: 'test' },
+      ] } });
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('retains both the Astro check input and Vitest execution occurrence of one source path', () => {
