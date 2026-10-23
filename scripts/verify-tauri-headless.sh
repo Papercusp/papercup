@@ -428,7 +428,7 @@ export VERIFY_TAURI_TRACE_SESSION_CHAT_CSS
 VERIFY_TAURI_SOURCE_SNAPSHOT_PATH="${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH:-}"
 cleanup_verifier_source_snapshot() {
   if [ -n "${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH:-}" ]; then
-    rm -f -- "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH" 2>/dev/null || true
+    rm -f -- "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH" "${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH}.budget.jsonl" 2>/dev/null || true
     VERIFY_TAURI_SOURCE_SNAPSHOT_PATH=""
   fi
 }
@@ -563,6 +563,18 @@ DESKTOP_DIR="$REPO_DIR/papercusp-desktop"
 # Share source-preview's absolute task admission before dependencies or native
 # capacity are allocated. Recheck the real clock at each expensive boundary;
 # elapsed preparation is deducted from an optional prior phase forecast.
+snapshot_verifier_budget_input() {
+  [ -n "${VERIFY_TAURI_BUDGET_FROM:-}" ] || return 0
+  # vh_init prunes completed runs, including the run supplying this forecast.
+  # Freeze validated bytes beside the wrapper before any retention can run,
+  # and reuse its cleanup lifecycle for early failures and normal teardown.
+  VERIFY_TAURI_BUDGET_ORIGINAL_PATH="$VERIFY_TAURI_BUDGET_FROM"
+  local snapshot="${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH}.budget.jsonl"
+  node "$REPO_DIR/scripts/lib/verify-tauri-deadline.mjs" --snapshot-budget \
+    "$VERIFY_TAURI_BUDGET_FROM" "$snapshot" || return $?
+  export VERIFY_TAURI_BUDGET_FROM="$snapshot"
+}
+snapshot_verifier_budget_input || exit $?
 VERIFIER_TASK_PREPARE_STARTED_SECONDS=$SECONDS
 preflight_verifier_task_deadline() {
   node "$REPO_DIR/scripts/lib/verify-tauri-deadline.mjs" "${1:-prepare}" \
@@ -1024,6 +1036,9 @@ if [ -f "$VH_SH" ]; then
   if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ]; then
     verifier_retained_args+=(--retain-artifact phases/prepare/verifier-source-receipt.json)
   fi
+  if [ -n "${VERIFY_TAURI_BUDGET_FROM:-}" ]; then
+    verifier_retained_args+=(--retain-artifact phases/prepare/budget-calibration.jsonl)
+  fi
   # Resolve the placement once, before the first phase writer. The shared helper
   # rejects a stale implicit home-state root when /mnt/data/offload is mounted.
   VERIFY_TAURI_EVIDENCE_ROOT="${VERIFY_TAURI_EVIDENCE_ROOT:-$(vh_default_root verify-tauri-headless)}"
@@ -1031,8 +1046,11 @@ if [ -f "$VH_SH" ]; then
   vh_init verify-tauri-headless "$VERIFY_TAURI_EVIDENCE_ROOT" \
     ${verifier_retained_args[@]+"${verifier_retained_args[@]}"}
   verifier_begin_phase prepare
-  trap 'vh_capture_phase_stop' EXIT
+  trap 'vh_capture_phase_stop; cleanup_verifier_source_snapshot' EXIT
   vh_capture_phase_start
+  if [ -n "${VERIFY_TAURI_BUDGET_FROM:-}" ]; then
+    cp -- "$VERIFY_TAURI_BUDGET_FROM" "$VH_PHASE_DIR/budget-calibration.jsonl" || exit $?
+  fi
   vh_step prepare-start
   vh_bracket_trap   # finalizes an exit before `trap teardown EXIT`; teardown calls vh_exit itself
 else
