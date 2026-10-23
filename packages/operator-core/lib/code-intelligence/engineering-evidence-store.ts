@@ -41,7 +41,10 @@ export function engineeringEvidenceStore(options: StoreOptions = {}): Engineerin
     },
     async symbol(scope, query) {
       const answer = await worker(scope, query);
-      if (answer.error || !answer.evidence) return [];
+      // The compiler reports ambiguity as an error WITH captured declaration
+      // sites. Keep independently source-backed candidates so the reader can
+      // distinguish an ambiguous selector from a missing symbol.
+      if (!answer.evidence || (answer.error && answer.sites.length < 2)) return [];
       const sources = answer.evidence.sourceScope.supportingFiles;
       const snapshot = peekPushSnapshot(scope.harness);
       const found: EngineeringSymbol[] = [];
@@ -62,7 +65,7 @@ export function engineeringEvidenceStore(options: StoreOptions = {}): Engineerin
         found.push({ path: site.path, name, line1: site.line1, versionedSymbolId: identity.versionedSymbolId,
           fileFingerprint: source.contentHash, declarationFingerprint: anchor?.resolution === 'resolved' ? anchor.contentHash : null });
       }
-      return found;
+      return answer.error && found.length < 2 ? [] : found;
     },
     async sourceCurrent(scope, symbol) {
       try {

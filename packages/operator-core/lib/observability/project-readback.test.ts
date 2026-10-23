@@ -63,6 +63,31 @@ describe('configured project evidence acquisition', () => {
       .mockResolvedValueOnce(json({ results: [] })).mockResolvedValueOnce(json({ results: [] }));
     expect(await readConfiguredTraceProject([trace])).toMatchObject({ status: 'available', events: [] });
   });
+  it.each([300_000, 86_400_000])('retains delivered model and error events from a selected trace aged %sms', async age => {
+    const now = Date.now();
+    const delivered = [
+      ['old-model', '$ai_generation', now - age, trace, span, null, 'old-call', false, false, 'papercusp.model'],
+      ['old-error', '$exception', now - age + 10, trace, 'a'.repeat(16), null, 'old-call', true, false, 'papercusp.tool'],
+      ['fresh-control', '$ai_generation', now, trace, 'b'.repeat(16), null, 'fresh-call', false, false, 'papercusp.model'],
+    ];
+    request.mockReset().mockImplementation(async (_url, init) => {
+      if (!init.body) return json({ results: [{ id: 7, api_token: 'capture-secret' }], next: null });
+      const query = JSON.parse(init.body).query.query as string;
+      if (query.includes('WHERE uuid =')) return json({ results: [] });
+      // Model the server's age predicate, rather than returning rows that the
+      // real query would discard. Fresh delivery cannot replace the old rows.
+      const window = /timestamp\s*>=\s*now\(\)\s*-\s*INTERVAL\s+(\d+)\s+SECOND/i.exec(query);
+      const since = window ? now - Number(window[1]) * 1000 : -Infinity;
+      expect(query).toContain(`IN ('${trace}')`);
+      return json({ results: delivered.filter(row => Number(row[2]) >= since) });
+    });
+    const result = await readConfiguredTraceProject([trace]);
+    expect(result).toMatchObject({ status: 'available', events: [
+      { uuid: 'old-model', timestamp: now - age, event: '$ai_generation' },
+      { uuid: 'old-error', timestamp: now - age + 10, event: '$exception' },
+      { uuid: 'fresh-control', timestamp: now },
+    ] });
+  });
   it('rejects unbounded or injectable selectors before making a query', async () => {
     expect(await readConfiguredTraceProject(["' OR 1=1"])).toMatchObject({ status: 'unknown' });
     expect(request).not.toHaveBeenCalled();

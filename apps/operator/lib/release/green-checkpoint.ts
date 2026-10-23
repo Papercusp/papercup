@@ -195,6 +195,7 @@ import {
   probeRunnerLiveness,
   readStoredQualification,
   composeStoredQualificationWork,
+  recordStoredQualificationWorkProgress,
   recordStoredQualificationRunnerProgress,
   recordStoredQualificationNativeProducer,
   recoverStoredQualificationNativeCompletions,
@@ -210,6 +211,8 @@ import {
   type StoredQualificationMutation,
 } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import { executedSourceRunnerIdentity } from "@papercusp/test-config/test-pass-reuse-skip";
+import { evaluatePartialTaskContinuation, partialTaskCheckpointPath, preparePartialContinuationManifest, preparePartialNativeProducerSelection,
+  preparePartialRemainingSelection, writePartialTaskCheckpointAtomic } from "../../../../scripts/lib/partial-task-resume.mjs";
 // eslint-disable-next-line import/no-relative-packages -- share the native reporter's maintained input classifier
 import { classifyReadPaths } from "../../../../libs/test-config/src/executed-source-map-reporter";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
@@ -4294,11 +4297,100 @@ export function createCheckpointQualificationNativeObserver(
   };
 }
 
+/** Recheck the frozen population and runner custody before attaching native output
+ * to a production suite. Unsupported remaining selections stop before execution. */
+export async function prepareCheckpointQualificationNativeRun(
+  input: { target: GateVerdictTarget; attemptId: string; candidate: string; runId: string; root: string;
+    select: () => Promise<unknown> },
+  deps = {
+    read: readStoredQualification, record: recordStoredQualificationWorkProgress,
+    recover: recoverStoredQualificationNativeCompletions,
+    pidIdentity: () => checkpointPidIdentity(process.pid), runnerIdentity: executedSourceRunnerIdentity,
+    classify: checkpointQualificationInputClassifier,
+    observe: createCheckpointQualificationNativeObserver,
+  },
+): Promise<{ status: 'legacy' } | { status: 'refused'; reason: string } |
+  { status: 'ready'; observer: ReturnType<typeof createCheckpointQualificationNativeObserver>;
+    checkpoint: { root: string; taskKey: string; sourceCommit: string; sourceDigest: string;
+      selectedFiles: string[]; passedFiles: string[]; state: string;
+      continuation: NonNullable<Extract<StoredQualificationMutation, { status: 'updated' | 'idempotent' }>['transaction']['continuation']> } }> {
+  const refuse = (reason: string) => ({ status: 'refused' as const, reason });
+  const stored = await deps.read(input.target);
+  if (stored.status !== 'present') return refuse(`qualification-${stored.status}`);
+  const current = stored.transaction;
+  if (current.attemptId !== input.attemptId || current.candidate !== input.candidate || current.runId !== input.runId)
+    return refuse('qualification-lineage-mismatch');
+  const work = current.continuation;
+  if (!work) return { status: 'legacy' };
+  const runner = current.currentPhysicalRunner, pidIdentity = deps.pidIdentity();
+  if (!runner || !pidIdentity || runner.pidIdentity !== pidIdentity || work.root !== input.root)
+    return refuse('qualification-runner-fence-mismatch');
+  // This query runs the maintained selector in the candidate tree, before any
+  // suite child. Neither its stdout outcomes nor saved producer samples select work.
+  const raw = await input.select();
+  const selection = raw as { taskInventory?: unknown[]; tasks: Array<{
+    id: string; workspace: string; dir: string; command: string; runner: string;
+    files: string[]; commandObligations?: unknown[];
+  }>; unenumerated: Array<{ task: string }>; commandObligations: Array<{ task: string }> };
+  const prepared = preparePartialContinuationManifest({ root: input.root, selection,
+    tasks: selection?.taskInventory, postSuite: postSuiteContinuationPopulation(),
+    exclusions: work.manifest.units.filter(unit => unit.exclusion).map(unit => ({ unitId: unit.id, ...unit.exclusion })),
+  });
+  if (prepared.status !== 'ready') return refuse(`qualification-selection-${prepared.reason}`);
+  if (!isDeepStrictEqual(prepared.manifest, work.manifest)) return refuse('qualification-selection-manifest-mismatch');
+  const progress: QualificationWorkProgressInput = {
+    attemptId: input.attemptId, candidate: input.candidate, repairHead: current.repairHead,
+    runnerId: runner.id, runId: input.runId, pidIdentity, root: input.root, taskKey: work.taskKey,
+    manifest: work.manifest, retryStates: work.retryStates, runContext: 'ci',
+    runnerIdentity: deps.runnerIdentity(), updates: [],
+  };
+  const classifier = await deps.classify(input.root);
+  const frozen = await deps.record(input.target, progress);
+  if (frozen.status !== 'updated' && frozen.status !== 'idempotent') return refuse(`qualification-custody-${frozen.status}`);
+  const recovered = frozen.transaction.continuation?.nativeProducers?.length
+    ? await deps.recover(input.target, progress, classifier, { recoverMissingSnapshots: true }) : frozen;
+  if (recovered.status !== 'updated' && recovered.status !== 'idempotent')
+    return refuse(`qualification-native-recovery-${recovered.status}`);
+  const remaining = preparePartialRemainingSelection({ root: input.root, taskKey: work.taskKey,
+    continuation: recovered.transaction.continuation }, { ...progress, sourceCommit: input.candidate },
+  { selection, postSuite: postSuiteContinuationPopulation() });
+  if (remaining.status !== 'ready') return refuse(`qualification-${remaining.reason}`);
+  const tasks = new Map<string, { workspaceName: string; selectedSpecifications: unknown[];
+    supersedesCompletionIds: Record<string, string> }>();
+  for (const task of remaining.tasks) {
+    if (!task.files.length) continue;
+    // Until ordered scripts expose distinct native channels, preserve npm's
+    // original lifecycle and refuse the unsupported continuation before spawn.
+    if (task.runner !== 'vitest') return refuse('qualification-native-task-unsupported');
+    const native = preparePartialNativeProducerSelection({ ...selection, tasks: [task], files: task.files,
+      unenumerated: selection.unenumerated.filter(value => value.task === task.id),
+      commandObligations: selection.commandObligations.filter(value => value.task === task.id),
+    }, task, input.root);
+    if (native.status !== 'ready') return refuse(`qualification-native-selection-${native.reason}`);
+    const predecessors = Object.fromEntries((recovered.transaction.continuation?.receipts ?? [])
+      .filter(receipt => task.files.some((file: string) => receipt.unitId === `test:${file}`))
+      .map(receipt => [receipt.unitId, receipt.completionId]));
+    tasks.set(task.id, { workspaceName: task.workspace, selectedSpecifications: native.selectedSpecifications!,
+      supersedesCompletionIds: predecessors });
+  }
+  return { status: 'ready', observer: deps.observe({ target: input.target, progress, tasks, classifyReadPaths: classifier }),
+    checkpoint: { root: input.root, taskKey: work.taskKey, sourceCommit: input.candidate,
+      sourceDigest: createHash('sha256').update(progress.runnerIdentity).digest('hex'),
+      selectedFiles: work.manifest.units.filter(unit => unit.kind === 'test').map(unit => unit.path),
+      passedFiles: [], state: 'partial', continuation: recovered.transaction.continuation! } };
+}
+
+async function checkpointQualificationInputClassifier(root: string) {
+  const tracked = new Set((await git(root, ['ls-files', '-z', '--recurse-submodules'])).split('\0').filter(Boolean));
+  return (reads: unknown, repoRoot: string) => {
+    if (!Array.isArray(reads) || reads.some(read => typeof read !== 'string'))
+      throw new Error('qualification-read-paths-unmeasured');
+    return classifyReadPaths(reads, { repoRoot, isTracked: rel => tracked.has(rel), exists: existsSync });
+  };
+}
+
 /** The production suite's final green barrier, after absorption and exclusions.
- * A legacy attempt has no frozen continuation. Once a population is frozen on
- * the existing row, no successful child exit can bypass its full composer.
- * Composition deliberately leaves custody and terminal settlement untouched.
- */
+ * Composition leaves custody and terminal settlement untouched. */
 export async function composeCheckpointQualificationBeforePromotion(
   input: { target: GateVerdictTarget; attemptId: string; candidate: string; runId: string; root: string },
   deps: { read: typeof readStoredQualification; compose: typeof composeStoredQualificationWork;
@@ -4307,11 +4399,7 @@ export async function composeCheckpointQualificationBeforePromotion(
       Promise<NonNullable<Parameters<typeof composeStoredQualificationWork>[2]>['classifyReadPaths']> } = {
     read: readStoredQualification, compose: composeStoredQualificationWork,
     pidIdentity: () => checkpointPidIdentity(process.pid), runnerIdentity: executedSourceRunnerIdentity,
-    async classify(root) {
-      const tracked = new Set((await git(root, ['ls-files', '-z', '--recurse-submodules'])).split('\0').filter(Boolean));
-      return (reads, repoRoot) => classifyReadPaths(reads as string[], { repoRoot,
-        isTracked: rel => tracked.has(rel), exists: existsSync });
-    },
+    classify: checkpointQualificationInputClassifier,
   },
 ): Promise<{ status: 'legacy' | 'ready' } | { status: 'refused'; reason: string }> {
   const stored = await deps.read(input.target);
@@ -23223,6 +23311,40 @@ export function realCheckpointDeps(
         greenCheckpointCapacityEvidence(cfg.greenCheckpointCapacityMode, env),
       );
       const resolvedHeadAtStart = resolveCandidateSha(treeDir);
+      const qualificationAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim();
+      let nativeObserver: ReturnType<typeof createCheckpointQualificationNativeObserver> | undefined;
+      let nativeRefusal: string | undefined;
+      if (repairTarget && qualificationAttemptId) {
+        const prepared = await prepareCheckpointQualificationNativeRun({
+          target: repairTarget, attemptId: qualificationAttemptId,
+          candidate: execution?.candidate ?? resolvedHeadAtStart ?? '', runId, root: treeDir,
+          async select() {
+            if (cfg.greenCmd !== 'npm run test:affected') throw new Error('qualification-green-command-unsupported');
+            const selected = await exec('node', ['scripts/affected-tests.mjs', '--print-selection', '--enumerate-specifications'], {
+              cwd: treeDir, env, allowNonZero: true, timeoutMs: SETUP_TREE_TIMEOUT_MS,
+            });
+            if (!commandCompletedSuccessfully(selected)) throw new Error('qualification-selection-command-failed');
+            const lines = selected.stdout.split(/\r?\n/).filter(line => line.startsWith('AFFECTED_TESTS_SELECTION='));
+            if (lines.length !== 1) throw new Error('qualification-selection-output-unmeasured');
+            return JSON.parse(lines[0]!.slice('AFFECTED_TESTS_SELECTION='.length)) as unknown;
+          },
+        }).catch(() => ({ status: 'refused' as const, reason: 'qualification-native-preparation-unreadable' }));
+        if (prepared.status === 'refused') {
+          const summary = `QUALIFICATION_NATIVE status=refused reason=${prepared.reason}`;
+          log(summary);
+          return { green: false, summary, failingTests: ['qualification-native-preparation'] };
+        }
+        if (prepared.status === 'ready') {
+          nativeObserver = prepared.observer;
+          // Reuse the integrity-sealed partial checkpoint transport. The child
+          // independently reselects the full inventory and regrades the proofs
+          // before applying task-local file filters to original npm invocations.
+          const workPath = partialTaskCheckpointPath(os.tmpdir(), treeDir,
+            `${prepared.checkpoint.taskKey}:${runId}:${randomUUID()}`);
+          writePartialTaskCheckpointAtomic(workPath, prepared.checkpoint);
+          args.push('--', '--qualification-work', workPath);
+        }
+      }
       const postSuiteIdentity: NonNullable<PostSuiteRunOptions["identity"]> = {
         runId,
         candidate: execution?.candidate ?? resolvedHeadAtStart ?? "unknown",
@@ -23277,9 +23399,16 @@ export function realCheckpointDeps(
         allowNonZero: true,
         heavy: true,
         relayAffectedProgress: true,
-      }).then((result) => {
+        ...(nativeObserver ? { onOutput: nativeObserver.onOutput } : {}),
+      }).then(async (result) => {
         // Measure the child completion itself, before a slower concurrent repair leg.
         suiteCompletedAtMs = Date.now();
+        // runCmd treats diagnostic observers as best-effort. The durable bridge's
+        // asynchronous refusal must be awaited and remain a hard green barrier.
+        if (nativeObserver) {
+          const native = await nativeObserver.finish();
+          if (native.status === 'refused') nativeRefusal = native.reason;
+        }
         return result;
       });
       // P-004 (green-gate-zero-wait-convergence-2026-09-08): a frozen repair
@@ -23949,7 +24078,15 @@ export function realCheckpointDeps(
       }
       // P-008 (#D-015): what quarantine and downgrades removed from this run's count. The repair
       // round records it, so the convergence trajectory compares rounds over one population.
-      const qualificationAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim();
+      if (nativeRefusal) {
+        green = false;
+        failingTests.push('qualification-native-completion');
+        const note = `QUALIFICATION_NATIVE status=refused reason=${nativeRefusal}`;
+        summary = `${summary}\n\n${note}`;
+        fullOutput += `\n${note}\n`;
+        log(note);
+        if (logPath) appendFileSync(logPath, `\n${note}\n`);
+      }
       if (green && repairTarget && qualificationAttemptId) {
         // This must follow every absorption/downgrade/inheritance path that can
         // turn the suite green, and precede returning green to the advance path.

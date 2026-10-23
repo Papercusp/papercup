@@ -28,7 +28,7 @@ vi.mock('../git-pipeline-position', () => ({ gitPipelinePosition: async () => ({
 }) }));
 vi.mock('./project-readback', () => ({ readConfiguredTraceProject: vi.fn() }));
 import { measureOperationalObservability } from './operational-check';
-import { readConfiguredTraceProject } from './project-readback';
+import { readConfiguredTraceProject, type ObservedProjectEvent } from './project-readback';
 
 describe('release writer population with real PostgreSQL null semantics', () => {
   let db: FreshPgDb;
@@ -62,7 +62,7 @@ describe('release writer population with real PostgreSQL null semantics', () => 
 
   it.each(['$ai_generation', '$exception'] as const)('retains expired %s expectations in actual SQL ahead of healthy new rows', async kind => {
     const now = Date.now();
-    const events: Array<Record<string, unknown>> = [];
+    const events: ObservedProjectEvent[] = [];
     for (const [digit, age, status, expectedModel] of [
       ['1', 300_000, kind === '$ai_generation' ? 'ok' : 'error', kind === '$ai_generation'],
       ['2', 100, 'ok', true], ['3', 100, 'error', false], ['4', 300_000, 'ok', false],
@@ -84,7 +84,7 @@ describe('release writer population with real PostgreSQL null semantics', () => 
         spanId: String(Number(digit) + 6).repeat(16), parentSpanId: http, callId: null, spanName: 'papercusp.model' });
     }
     vi.mocked(readConfiguredTraceProject).mockResolvedValue({ status: 'available', queriedAt: now,
-      projectId: '7', evidenceRef: 'authenticated-exact-id-query', events } as never);
+      projectId: '7', evidenceRef: 'authenticated-exact-id-query', events });
     expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'fail',
       detail: expect.stringContaining('Expected ' + kind + ' absent after ingestion bound') });
     expect(readConfiguredTraceProject).toHaveBeenLastCalledWith(['1'.repeat(32), '2'.repeat(32), '3'.repeat(32)]);

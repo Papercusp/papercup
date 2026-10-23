@@ -106,7 +106,7 @@ function fixture(paths = ['a.ts']) {
   const commit = () => { git('add', '.'); git('-c', 'user.name=Clone Fixture', '-c', 'user.email=clone@example.invalid', 'commit', '--quiet', '-m', 'fixture'); };
   commit();
   const lint = (...args: string[]) => spawnSync(process.execPath,
-    [resolve(repo, 'node_modules/tsx/dist/cli.mjs'), resolve(repo, 'scripts/check-new-clones.ts'), '--root', root, ...args],
+    [resolve(repo, 'node_modules/tsx/dist/cli.mjs'), resolve(repo, 'scripts/check-new-clones.mts'), '--root', root, ...args],
     { encoding: 'utf8', timeout: 30_000 });
   const seeded = lint('--seed', '--json');
   expect(seeded.status, seeded.stderr).toBe(0);
@@ -180,7 +180,7 @@ describe('real lint:new-clones CLI', () => {
   it('registers the advisory in affected guards with changed paths and the same base', () => {
     const registry = readFileSync(resolve(repo, 'scripts/affected-tests.mjs'), 'utf8');
     expect(registry).toMatch(/script: "lint:new-clones",\s+forwardChangedPaths: true,\s+forwardBase: true/);
-    expect(JSON.parse(readFileSync(resolve(repo, 'package.json'), 'utf8')).scripts['lint:new-clones']).toBe('tsx scripts/check-new-clones.ts');
-    expect(JSON.parse(readFileSync(resolve(repo, 'packages/operator-core/package.json'), 'utf8')).scripts['lint:new-clones']).toContain('../../scripts/check-new-clones.ts');
+    expect(JSON.parse(readFileSync(resolve(repo, 'package.json'), 'utf8')).scripts['lint:new-clones']).toBe('tsx scripts/check-new-clones.mts');
+    expect(JSON.parse(readFileSync(resolve(repo, 'packages/operator-core/package.json'), 'utf8')).scripts['lint:new-clones']).toContain('../../scripts/check-new-clones.mts');
   });
 });

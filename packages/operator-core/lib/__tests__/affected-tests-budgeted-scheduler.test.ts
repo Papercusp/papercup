@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
 import { appendFileSync, closeSync, constants, cpSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
 import { createHash } from 'node:crypto';
@@ -757,6 +758,95 @@ describe('native affected-task parent receipt transport', () => {
       expect(readFileSync(path, 'utf8')).toBe('overwritten');
       rmSync(path); symlinkSync(join(root, first.logs.stderr.ref), path);
       expect(() => writeBudgetedTaskNativeExecutionReceipt(root, input)).toThrow('redirected');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it.each([
+    ['stream', 'growth'], ['event', 'growth'], ['persist', 'growth'],
+    ['stream', 'symlink'], ['event', 'symlink'], ['persist', 'symlink'],
+    ['stream', 'replacement'], ['event', 'replacement'], ['persist', 'replacement'],
+  ] as const)('bounds native artifact IO and rejects a %s %s race', (role, fault) => {
+    const root = mkdtempSync(join(tmpdir(), 'native-artifact-race-'));
+    try {
+      const out = join(root, 'out.json'), source = `${out}.native-processes`;
+      const retained = join(root, 'retained');
+      mkdirSync(source); mkdirSync(retained);
+      const publish = (bytes: Buffer, suffix: string) => {
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        const ref = `${sha256}.${suffix}`;
+        writeFileSync(join(source, ref), bytes);
+        return { ref, sha256, byteLength: bytes.length };
+      };
+      const stream = { ...publish(Buffer.from('native bytes'), 'stream'),
+        scope: 'node-writable-call-inputs', observedByteLength: 12, captureComplete: true };
+      const empty = { ...publish(Buffer.alloc(0), 'stream'),
+        scope: 'node-writable-call-inputs', observedByteLength: 0, captureComplete: true };
+      const entry = publish(Buffer.from(JSON.stringify({ schemaVersion: 1,
+        kind: 'native-node-process-event', event: 'node-entry', pid: 901, ppid: 1,
+        processIdentity: 'race-fixture', atMs: 100 })), 'json');
+      publish(Buffer.from(JSON.stringify({ schemaVersion: 1,
+        kind: 'native-node-process-event', event: 'node-exit', pid: 901, ppid: 1,
+        processIdentity: 'race-fixture', atMs: 110, exitListenersComplete: true,
+        streams: { stdout: stream, stderr: empty } })), 'json');
+      const stdout = Buffer.from('aggregate bytes');
+      const target = role === 'stream' ? join(source, stream.ref) : role === 'event' ?
+        join(source, entry.ref) : join(retained,
+          `${createHash('sha256').update(stdout).digest('hex')}.stdout`);
+      const expected = role === 'stream' ? stream.byteLength : role === 'event' ? entry.byteLength : stdout.length;
+      let injected = false, bytesRead = 0;
+      const fds = new Map<number, string>();
+      const inject = () => {
+        if (injected) return;
+        injected = true;
+        if (fault === 'growth') appendFileSync(target, Buffer.alloc(2 * 1024 * 1024));
+        else {
+          const bytes = readFileSync(target), replacement = join(root, 'replacement');
+          writeFileSync(replacement, bytes);
+          rmSync(target);
+          if (fault === 'symlink') symlinkSync(replacement, target);
+          else fs.renameSync(replacement, target);
+        }
+      };
+      // Execute the production writer with real file descriptors and only the
+      // race boundary injected; the pathname reader is measured on old source too.
+      const start = SCHEDULER_SRC.indexOf('const comparisonHash =');
+      const end = SCHEDULER_SRC.indexOf('export function prepareBudgetedTaskComparison');
+      const writer = new Script(`(() => {${SCHEDULER_SRC.slice(start, end)
+        .replace('export function writeBudgetedTaskNativeExecutionReceipt',
+          'function writeBudgetedTaskNativeExecutionReceipt')}\nreturn writeBudgetedTaskNativeExecutionReceipt;})()`)
+        .runInNewContext({ ...fs, Buffer, createHash, basename, dirname, isAbsolute, join,
+          relative, resolve, structuredClone,
+          openSync: (file: string, flags: number) => {
+            if (file === target && fault === 'symlink') inject();
+            const fd = fs.openSync(file, flags); fds.set(fd, file); return fd;
+          },
+          closeSync: (fd: number) => { fds.delete(fd); return fs.closeSync(fd); },
+          readSync: (fd: number, buffer: Buffer, offset: number, length: number, position: null) => {
+            if (fds.get(fd) === target) inject();
+            const count = fs.readSync(fd, buffer, offset, length, position);
+            if (fds.get(fd) === target) bytesRead += count;
+            return count;
+          },
+          readFileSync: (file: string) => {
+            if (file === target) inject();
+            const bytes = fs.readFileSync(file);
+            if (file === target) bytesRead += bytes.length;
+            return bytes;
+          },
+        }) as typeof writeBudgetedTaskNativeExecutionReceipt;
+      const input = { task: 'race-fixture', attempt: 'initial', cwd: REPO_ROOT,
+        command: ['node', 'fixture'], startedAtMs: 100, finishedAtMs: 110,
+        exitCode: 0, signal: null, error: null, captureComplete: true,
+        stdout, stderr: Buffer.alloc(0), processTrace: { out, rootPid: 901 } };
+      if (role === 'persist') expect(() => writer(retained, input)).toThrow('artifact bytes differ');
+      else {
+        const trace = writer(retained, input).observation.processTrace;
+        expect(trace.events).toHaveLength(0);
+        expect(trace.streams).toHaveLength(0);
+        expect(trace.gaps.some(gap => gap.startsWith('native-process-trace-unreadable:'))).toBe(true);
+      }
+      expect(injected).toBe(true);
+      expect(bytesRead).toBeLessThanOrEqual(expected + 1);
+      expect(fds.size).toBe(0);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it('executes the production OUT observation and settled journal with native binary output', () => {

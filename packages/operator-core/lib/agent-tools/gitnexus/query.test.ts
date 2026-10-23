@@ -31,6 +31,23 @@ const run = async (args: Record<string, unknown>) => {
   return out.data;
 };
 
+describe('graph:query engineering evidence admission', () => {
+  it('exposes evidence through the real schema and refuses an unauthenticated context', async () => {
+    const parsed = graphQuery.args.parse({ op: 'evidence', harnesses: ['fixture'], plan: 'ee-feature', item: 'P-001' });
+    const out = await graphQuery.handler(parsed, { projectDir: root } as never);
+    expect(out).toMatchObject({ data: { status: 'unknown', evidence: null } });
+    expect(JSON.stringify(out)).toContain('authenticated concrete workspace principal');
+  });
+  it('returns a discovery reference when an authenticated caller has only a symbol name', async () => {
+    const parsed = graphQuery.args.parse({ op: 'evidence', name: 'target' });
+    const out = await graphQuery.handler(parsed, { role: 'operator', harnessSlug: 'fixture', workspaceId: 'workspace',
+      principal: { slug: 'reader', workspaceId: 'workspace', capabilities: new Set(['intel:read']) },
+    } as never);
+    expect(out).toMatchObject({ data: { status: 'unknown', evidence: null,
+      recovery: { tool: 'graph:query', args: { op: 'symbol', name: 'target', harnesses: ['fixture'] } } } });
+  });
+});
+
 describe('graph:query callers', () => {
   it('routes a source-proven snapshot answer through the public evidence guard', async () => {
     const site: SymbolSite = { path: 'src/use.ts', line1: 2, kind: null, name: 'target' };

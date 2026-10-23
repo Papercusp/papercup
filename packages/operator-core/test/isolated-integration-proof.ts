@@ -209,9 +209,13 @@ export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount:
  */
 export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, options: {
   timeoutMs?: number; phaseTimeouts?: WorkerDeadlines; killGraceMs?: number; drainGraceMs?: number;
+  /** Throttle observed progress relayed to the encompassing file watchdog. */
+  progressIntervalMs?: number;
   cleanupFromStdout?: boolean;
 }) {
   assert.ok((options.timeoutMs === undefined) !== (options.phaseTimeouts === undefined), 'one deadline contract is required');
+  assert.ok(options.progressIntervalMs === undefined ||
+    (Number.isFinite(options.progressIntervalMs) && options.progressIntervalMs >= 0), 'invalid progress interval');
   const deadlines = options.phaseTimeouts;
   for (const ms of [options.timeoutMs, ...Object.values(deadlines ?? {}), options.killGraceMs, options.drainGraceMs]) {
     assert.ok(ms === undefined || Number.isSafeInteger(ms) && ms > 0, 'deadlines must be positive safe integers');
@@ -252,9 +256,54 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     const cleanupStages = new Set<string>();
     const cleanupIo = new Map<string, { writes: bigint; bytes: bigint }>();
     let cleanupLine = '';
+    let progressLine = '';
+    let lastProgressAt = -Infinity;
+    let completedCases = 0;
+    const caseProgress = new Set<string>();
+    const relayProgress = (stage: string, force = false) => {
+      const at = Date.now();
+      if (!force && at - lastProgressAt < (options.progressIntervalMs ?? 30_000)) return;
+      lastProgressAt = at;
+      // Only observed stage/case advances reach the parent. A repeated router
+      // heartbeat must not keep a hung inner case alive, and private output
+      // remains in worker.log rather than leaking through this progress rail.
+      process.stderr.write('ISOLATED_WORKER_PROGRESS ' + JSON.stringify({ pid: child.pid, phase, stage }) + '\n');
+    };
+    const relayTestProgress = (line: string) => {
+      if (line.startsWith('TEST_FILE_PROGRESS ')) {
+        const offset = line.indexOf(' lastOutputLine=');
+        if (offset < 0) return;
+        try { line = JSON.parse(line.slice(offset + 16))?.text ?? ''; }
+        catch { return; }
+      }
+      if (typeof line !== 'string') return;
+      const heartbeat = /^TEST_FILE_HEARTBEAT completedCases=(\d+)$/.exec(line);
+      if (heartbeat) {
+        const count = Number(heartbeat[1]);
+        if (Number.isSafeInteger(count) && count > completedCases) {
+          completedCases = count;
+          relayProgress('test-case-completed');
+        }
+      } else if (line.startsWith('TEST_FILE_CASE_TRACE ')) {
+        try {
+          const value = JSON.parse(line.slice('TEST_FILE_CASE_TRACE '.length));
+          if (!['started', 'finished'].includes(value.event) || typeof value.file !== 'string' ||
+              typeof value.name !== 'string') return;
+          const key = JSON.stringify([value.event, value.file, value.name]);
+          if (!caseProgress.has(key) && caseProgress.size < 4096) {
+            caseProgress.add(key);
+            relayProgress('test-case-' + value.event);
+          }
+        } catch { /* malformed diagnostics are not progress */ }
+      }
+    };
     const capture = (chunk: string) => {
       output += chunk; writeSync(fd, chunk);
       if (phase === 'execute') progressWatchdog?.noteProgress();
+      progressLine += chunk;
+      const progressLines = progressLine.split('\n');
+      progressLine = progressLines.pop()!.slice(-16_384);
+      for (const line of progressLines) relayTestProgress(line);
       if (options.cleanupFromStdout && deadlines) {
         cleanupLine += chunk;
         const lines = cleanupLine.split('\n');
@@ -277,6 +326,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       clearTimeout(timeout);
       progressWatchdog?.stop();
       phase = next;
+      relayProgress('phase-' + next, true);
       const ms = deadlines![next === 'bootstrap' ? 'bootstrapMs' : next === 'execute' ? 'executeMs' : 'teardownMs'];
       if (next === 'bootstrap' && deadlines!.bootstrapMaxMs) {
         progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.bootstrapMaxMs,
@@ -298,6 +348,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
           /^(initdb(?::sync)?|postmaster|database|migration:[\w.-]+|profile:[\w:-]+)$/.test(stage) && !bootStages.has(stage)) {
         bootStages.add(stage);
         progressWatchdog?.noteProgress();
+        relayProgress(stage);
       }
       // Repeated or out-of-order IPC cannot renew a phase's deadline.
       if (kind === 'isolated-runtime-start' && phase === 'bootstrap') armPhase('execute');
@@ -306,6 +357,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
         if (typeof stage === 'string' && /^(start|profile-stop|pg-stop|pg-stopped|remove-private-state|complete)$/.test(stage) && !cleanupStages.has(stage)) {
           cleanupStages.add(stage);
           progressWatchdog?.noteProgress();
+          relayProgress(stage);
         }
         if (stage === 'pg-stop-observation' && Array.isArray((value as any).processes)) {
           for (const sample of (value as any).processes) {
@@ -317,7 +369,10 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
             // New identities establish baselines; PID reuse and a replayed old
             // sample cannot manufacture progress on an already observed lifetime.
             if (previous && next.writes >= previous.writes && next.bytes >= previous.bytes &&
-                (next.writes > previous.writes || next.bytes > previous.bytes)) progressWatchdog?.noteProgress();
+                (next.writes > previous.writes || next.bytes > previous.bytes)) {
+              progressWatchdog?.noteProgress();
+              relayProgress('pg-stop-io');
+            }
             if (!previous || next.writes >= previous.writes && next.bytes >= previous.bytes) cleanupIo.set(key, next);
           }
         }

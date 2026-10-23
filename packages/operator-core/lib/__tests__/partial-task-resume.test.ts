@@ -16,6 +16,7 @@ import {
   registerPartialNativeProducer,
   readPartialNativeProducer,
   preparePartialContinuationManifest,
+  preparePartialRemainingSelection,
 } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 const ID = {
@@ -24,6 +25,89 @@ const ID = {
   sourceCommit: 'a'.repeat(40),
   sourceDigest: 'b'.repeat(64),
 };
+
+describe('remaining work preserves the original selected population', () => {
+  const fixture = () => {
+    const specifications = ['a.test.ts', 'b.test.ts'].map(testFile => ({ testFile, pool: 'forks',
+      projectName: null, testNamePattern: null, testIds: null, testTagsFilter: null, testLines: null }));
+    const task = { id: 'ws :: test', dir: '.', workspace: 'ws', command: 'vitest run', runner: 'vitest',
+      files: specifications.map(row => row.testFile), selectedSpecifications: specifications,
+      lifecycleCommands: [], commandObligations: [] };
+    const inventory = [{ id: task.id, dir: task.dir, command: task.command },
+      { id: 'ws :: guard', dir: '.', command: 'node guard.mjs', isInvariantGuard: true }];
+    const selection = { schemaVersion: 1, kind: 'full-gate', phase: 'selection-preparation', executed: false,
+      tasks: [task], taskInventory: inventory, files: task.files, unenumerated: [], commandObligations: [], overlaps: [] };
+    const postSuite = { schemaVersion: 1, coverage: 'complete',
+      units: [{ id: 'post:build', kind: 'post-suite', path: 'package.json' }] };
+    const prepared = preparePartialContinuationManifest({ tasks: inventory, selection, postSuite, root: ID.root });
+    const expected = { ...ID, attemptId: 'attempt', candidate: ID.sourceCommit, repairHead: null,
+      manifest: prepared.manifest, runnerIdentity: 'native', runContext: 'ci', retryStates: [] };
+    const receipt = (unitId: string, path: string) => ({ unitId, completionId: `done:${unitId}`, observedAtMs: 1,
+      state: 'pass', worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass', proof: {
+        recordedSha: ID.sourceCommit, executedModules: [path], readPaths: [], inputsCaptured: true,
+        opaqueReasons: [], runnerIdentity: 'native', runContext: 'ci' } });
+    const checkpoint = { ...ID, continuation: { schemaVersion: 1, ...expected,
+      receipts: [receipt('test:a.test.ts', 'a.test.ts'), receipt('guard:ws :: guard', 'package.json')] } };
+    const project = () => preparePartialRemainingSelection(checkpoint, expected, { selection, postSuite });
+    return { checkpoint, expected, selection, postSuite, project, receipt };
+  };
+
+  it('runs only the unfinished file, omits a proved guard and keeps the owed post leg', () => {
+    const { project, selection } = fixture();
+    expect(project()).toMatchObject({ status: 'ready', omitted: ['ws :: guard'],
+      tasks: [{ id: 'ws :: test', files: ['b.test.ts'], selectedSpecifications: [{ testFile: 'b.test.ts' }] }],
+      evaluation: { run: ['post:build', 'test:b.test.ts'], reused: ['guard:ws :: guard', 'test:a.test.ts'],
+        verdict: 'incomplete' } });
+    expect(selection.tasks[0]!.files).toEqual(['a.test.ts', 'b.test.ts']);
+  });
+
+  it('reruns an invalidated pass and refuses a changed full population', () => {
+    const { project, checkpoint, selection } = fixture();
+    checkpoint.continuation.receipts[0]!.proof.opaqueReasons.push('unknown' as never);
+    expect(project()).toMatchObject({ status: 'ready', tasks: [{ files: ['a.test.ts', 'b.test.ts'] }] });
+    selection.taskInventory.pop();
+    expect(project()).toMatchObject({ status: 'refused', reason: 'selection-manifest-mismatch' });
+  });
+
+  it('retains a failure until the explicit retry policy authorizes it', () => {
+    const { project, checkpoint, expected } = fixture();
+    checkpoint.continuation.receipts[0]!.state = 'fail';
+    expect(project()).toMatchObject({ status: 'refused', reason: 'retained-terminal-outcome' });
+    expected.retryStates.push('fail' as never);
+    expect(project()).toMatchObject({ status: 'ready', tasks: [{ files: ['a.test.ts', 'b.test.ts'] }],
+      evaluation: { verdict: 'red' } });
+  });
+
+  it('can omit a completely proved native task without declaring its post leg passed', () => {
+    const { project, checkpoint, receipt } = fixture();
+    checkpoint.continuation.receipts.push(receipt('test:b.test.ts', 'b.test.ts'));
+    expect(project()).toMatchObject({ status: 'ready', tasks: [], omitted: ['ws :: test', 'ws :: guard'],
+      evaluation: { run: ['post:build'], verdict: 'incomplete' } });
+  });
+
+  it('runs the actual early runner boundary before its later taskKey declaration', () => {
+    const { checkpoint, selection, project } = fixture();
+    const source = readFileSync(new URL('../../../../scripts/affected-tests.mjs', import.meta.url), 'utf8');
+    const begin = source.indexOf('if (qualificationWorkFile) {');
+    const block = source.slice(begin, source.indexOf('\nif (!tasks.length) {', begin));
+    const tasks = [{ ws: { name: 'ws', dir: '.', scripts: { test: 'vitest run' } }, script: 'test' },
+      { ws: { name: 'ws', dir: '.', scripts: { guard: 'node guard.mjs' } }, script: 'guard', isInvariantGuard: true }];
+    const logs: string[] = [];
+    const fail = (reason: string) => { throw new Error(reason); };
+    const fakeProcess = { env: { PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: 'attempt',
+      PAPERCUSP_TEST_RUN_GROUP: 'run' }, exit: fail };
+    const execute = new Function('qualificationWorkFile', 'tasks', 'ROOT', 'RUN_LOG_ROOT', 'partialSourceIdentity',
+      'reuseRunnerIdentity', 'execFileSync', 'createHash', 'readPartialTaskCheckpoint',
+      'enumerateAffectedTaskSelection', 'preparePartialRemainingSelection', 'outSync', 'errSync', 'process',
+      `${block}\nconst taskKey = task => task.ws.name + ' :: ' + task.script; return tasks;`);
+    Object.assign(checkpoint, { sourceDigest: createHash('sha256').update('native').digest('hex') });
+    const result = execute('/snapshot', tasks, ID.root, '/logs', () => ({ sourceCommit: ID.sourceCommit,
+      sourceDigest: createHash('sha256').update('').digest('hex') }), () => 'native', () => '', createHash,
+    () => checkpoint, () => structuredClone(selection), project, (line: string) => logs.push(line), fail, fakeProcess);
+    expect(result).toEqual([{ ws: tasks[0]!.ws, script: 'test', relatedFiles: ['b.test.ts'] }]);
+    expect(logs).toEqual(['QUALIFICATION_REMAINING tasks=1 omitted=1 files=1 verdict=incomplete']);
+  });
+});
 
 describe('partial-task-resume', () => {
   it('normalizes workspace paths and rejects paths outside the workspace', () => {

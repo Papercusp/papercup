@@ -14,6 +14,17 @@
  */
 export function resolvePtoolOperatorBase(env?: NodeJS.ProcessEnv): string;
 /**
+ * Resolve the direct staging operator as a catalog-only recovery candidate.
+ * It is available only alongside the existing launcher-managed legacy-proxy
+ * recovery and never replaces an explicit --url pin. Callers must validate the
+ * exact requested tool and its serving generation before dispatch.
+ * @param {string} operatorUrl
+ * @param {EnvironmentMap} env
+ * @param {string | null} [explicitUrl]
+ * @returns {string | null}
+ */
+export function resolveLauncherManagedStagingDirectCandidate(operatorUrl: string, env: EnvironmentMap, explicitUrl?: string | null): string | null;
+/**
  * Resolve the implicit operator candidates for ptool. An operator-host shell
  * can retain a dead PAPERCUSP_HONO_PORT after its per-session host exits; the
  * canonical green operator is still a safe recovery target in that case.
@@ -48,6 +59,14 @@ export function canDispatchOnFallbackOperator(tool: any, fallbackUsed: any): boo
  */
 export function resolvePtoolRecoveryTool(toolName: string | null | undefined, callArgs: unknown, tools?: ToolCatalogEntry[]): ToolCatalogEntry | null;
 /**
+ * Whether a catalog proves a current generation for the exact requested tool.
+ * For tools:invoke, validate its nested target rather than the wrapper.
+ * @param {string | null | undefined} toolName
+ * @param {unknown} callArgs
+ * @param {ToolCatalogEntry[]} tools
+ */
+export function hasCurrentPtoolServingGeneration(toolName: string | null | undefined, callArgs: unknown, tools?: ToolCatalogEntry[]): boolean;
+/**
  * Return whether the catalog proves that the requested named call is
  * read-only. For a `tools:invoke` wrapper this deliberately follows the
  * nested target; the generic wrapper's annotation describes the transport,
@@ -58,17 +77,15 @@ export function resolvePtoolRecoveryTool(toolName: string | null | undefined, ca
  */
 export function isReadOnlyPtoolRecoveryRequest(toolName: string | null | undefined, callArgs: unknown, tools?: ToolCatalogEntry[]): boolean;
 /**
- * Decide whether a launcher-managed same-host read recovery should be tried
- * when the initial catalog is legacy. The legacy catalog's annotations are
- * not authoritative: it can mark a read-only tool as writable while omitting
- * the serving-generation marker. The recovery candidate must still prove the
- * read-only annotation and current generation before dispatch (the caller
- * performs that check after listing the candidate).
+ * Decide whether a launcher-managed catalog recovery should be tried when the
+ * initial catalog is legacy. The legacy catalog's annotations are not
+ * authoritative; the caller must validate the candidate's exact target and
+ * serving generation before deciding whether to dispatch.
  * @param {{toolName?: string, tool?: ToolCatalogEntry | null,
  *   initialGeneration?: unknown, recoveryIndex?: number,
  *   operatorUrl?: string, operatorCandidates?: string[]}} options
  */
-export function shouldAttemptManagedReadRecovery({ toolName, tool, initialGeneration, recoveryIndex, operatorUrl, operatorCandidates, }?: {
+export function shouldAttemptManagedCatalogRecovery({ toolName, tool, initialGeneration, recoveryIndex, operatorUrl, operatorCandidates, }?: {
     toolName?: string;
     tool?: ToolCatalogEntry | null;
     initialGeneration?: unknown;
@@ -76,12 +93,13 @@ export function shouldAttemptManagedReadRecovery({ toolName, tool, initialGenera
     operatorUrl?: string;
     operatorCandidates?: string[];
 }): boolean;
+export function shouldAttemptManagedReadRecovery(options?: {}): boolean;
 /**
  * Apply the fallback safety gate to a direct call or to a nested
  * `tools:invoke` call. The outer wrapper is intentionally generic, so its
  * annotation alone must not reject a nested target already proven read-only.
  */
-export function canDispatchPtoolOnFallback(toolName: any, callArgs: any, tool: any, tools: any, fallbackUsed: any): boolean;
+export function canDispatchPtoolOnFallback(toolName: any, callArgs: any, tool: any, tools: any, fallbackUsed: any, managedCatalogValidated?: boolean): boolean;
 /**
  * Whether the operator URL came from implicit local discovery and may follow a
  * packaged operator that restarts onto a different port. Explicit CLI/env
@@ -108,10 +126,13 @@ export function ptoolConnectionRetryOptions(args?: {}, env?: NodeJS.ProcessEnv):
     totalTimeoutMs?: undefined;
 };
 export function withPtoolConnectionPhaseTrace(trace: any, phase: any, route: any, operation: any): Promise<any>;
-/** Correlate each direct HTTP request with the operator's existing MCP trace. */
+/**
+ * Correlate each direct HTTP request with the operator's existing MCP trace.
+ * @returns {typeof fetch}
+ */
 export function createPtoolHttpTraceFetch(trace: any, { fetchImpl }?: {
     fetchImpl?: typeof fetch | undefined;
-}): (input: any, init: any) => Promise<any>;
+}): typeof fetch;
 /**
  * Parse argv into the ptool invocation shape. The first non-flag positional
  * is the tool name (`group:verb`); everything else is a flag. Pure.

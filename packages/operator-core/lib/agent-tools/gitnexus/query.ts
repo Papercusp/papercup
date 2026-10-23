@@ -50,6 +50,7 @@ import { queryPushSnapshot } from '../../code-intelligence/push-snapshot';
 import { readCoChange, readSymbolProvenance } from '../../code-intelligence/change-history';
 import { postgresLineageQuery } from '../../code-intelligence/postgres-lineage-query';
 import { reuseGraphQuery } from '../../code-intelligence/reuse-graph';
+import { engineeringEvidenceQuery } from '../../code-intelligence/engineering-evidence';
 
 /**
  * WI-10006543 (plan gitnexus-deterministic-integration-2026-10-05, D-026, D-018):
@@ -111,6 +112,7 @@ async function firstPartyCallersAnswer(
 // deliberately refuses. That lets an agent receive the typed `useInstead`
 // guidance rather than a schema error with no redirect.
 const OP_VALUES = [
+  'evidence',
   'similar', 'clones',
   'cochange', 'provenance',
   'sql-lineage',
@@ -125,7 +127,7 @@ const OP_VALUES = [
 export default defineTool({
   name: 'graph:query',
   description:
-    'Code topology and reuse: symbol | context | callers | callees | impact | trace | contracts | sql-lineage | cochange | provenance | communities | flows | concept-search | similar | clones | health. similar accepts name, file_path+line1, or snippet; clones returns bounded path families. Exact/renamed matches use AST equality; near/semantic remain unknown until calibrated. cochange measures 90-day first-parent associations; provenance joins edits to sessions/items for file_path and one harnesses entry, never git authorship. sql-lineage takes table, bounded paths and optional column; maps static SQL/migration/sync sites. Callers prefer hash-checked snapshots then compiler. Read coverage: static retrieval and paths are lower bounds, not runtime proof. contracts joins scoped HTTP/RPC/event evidence. Native topology supports JS/TS; reuse supports TS/TSX.',
+    'Code topology and reuse: evidence | symbol | context | callers | callees | impact | trace | contracts | sql-lineage | cochange | provenance | communities | flows | concept-search | similar | clones | health. evidence joins one authorized harness to exact intent, decisions, spec revisions and recorded proof using plan+item or file_path+name/line1; gaps and history remain explicit. similar accepts name, file_path+line1, or snippet; clones returns bounded path families. Exact/renamed matches use AST equality; near/semantic remain unknown until calibrated. cochange measures 90-day first-parent associations; provenance joins edits to sessions/items for file_path and one harnesses entry, never git authorship. sql-lineage takes table, bounded paths and optional column; maps static SQL/migration/sync sites. Callers prefer hash-checked snapshots then compiler. Read coverage: static retrieval and paths are lower bounds, not runtime proof. contracts joins scoped HTTP/RPC/event evidence. Native topology supports JS/TS; reuse supports TS/TSX.',
   guidance: {
     when: 'Who calls X: callers; what X calls: callees. Reuse: similar with name, file_path/line1 or snippet; clones with bounded paths. Read coverage and freshness.',
     notWhen:
@@ -144,11 +146,14 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     op: z.enum(OP_VALUES).describe('Which read-only operation to run.'),
+    plan: z.string().min(1).optional().describe('evidence: exact owning plan slug; pair with item instead of symbol selectors.'),
+    item: z.string().regex(/^P-\d{3,}$/).optional().describe('evidence: exact P-NNN plan item; pair with plan.'),
+    include_context: z.boolean().optional().describe('evidence: include explicitly labelled broader/unscoped decisions; default excludes unscoped context.'),
     table: z.string().min(1).optional().describe('sql-lineage: exact parsed table name, including schema when present.'),
     column: z.string().min(1).optional().describe('sql-lineage: exact parsed column name; omitted means table relationships.'),
     harnesses: z.array(z.string().min(1)).min(1).max(8).optional()
-      .describe('contracts: explicit registered repository cohort; scoped callers may only select their own harness.'),
-    workspace: z.string().min(1).optional().describe('contracts: must equal the authenticated principal workspace; never expands authority.'),
+      .describe('contracts: explicit registered repository cohort; evidence: exactly one registered repository. Scoped callers may only select their own harness.'),
+    workspace: z.string().min(1).optional().describe('contracts/evidence: must equal the authenticated principal workspace; never expands authority.'),
     name: z
       .string()
       .min(1)
@@ -209,6 +214,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const op = args.op as string;
+    if (op === 'evidence') return { data: await engineeringEvidenceQuery(args, ctx) };
     if (op === 'similar' || op === 'clones') return { data: await reuseGraphQuery(resolveAgentWorkspaceRoot(ctx), { ...args, op }, ctx.signal) };
     if (op === 'cochange') {
       const paths = args.paths ?? (args.file_path ? [args.file_path] : []);

@@ -32,6 +32,41 @@ function freezeComparison(value) {
   return value;
 }
 
+// A pathname size check does not bound a later read. Keep the descriptor open,
+// cap even the growth probe by the caller's remaining IO budget, and reject
+// replacement of either the leaf or its directory during capture.
+function readNativeArtifactBytes(file, byteLength, byteLimit, recordRead = () => {}) {
+  if (!Number.isSafeInteger(byteLength) || byteLength < 0 ||
+      !Number.isSafeInteger(byteLimit) || byteLimit < byteLength)
+    throw new Error('native artifact byte limit');
+  const directory = dirname(file), root = lstatSync(directory);
+  if (!root.isDirectory() || root.isSymbolicLink() || realpathSync(directory) !== resolve(directory))
+    throw new Error('redirected native artifact directory');
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size !== byteLength)
+      throw new Error('native artifact length or file type mismatch');
+    const buffer = Buffer.alloc(Math.min(byteLength + 1, byteLimit));
+    let length = 0;
+    while (length < buffer.length) {
+      const count = readSync(fd, buffer, length, Math.min(64 * 1024, buffer.length - length), null);
+      if (!count) break;
+      length += count;
+      recordRead(count); // Rejected captures consume the same IO budget.
+    }
+    const after = fstatSync(fd), current = lstatSync(file), rootAfter = lstatSync(directory);
+    if (length !== byteLength || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs ||
+        after.ctimeMs !== stat.ctimeMs || !current.isFile() || current.isSymbolicLink() ||
+        current.dev !== stat.dev || current.ino !== stat.ino ||
+        !rootAfter.isDirectory() || rootAfter.isSymbolicLink() ||
+        rootAfter.dev !== root.dev || rootAfter.ino !== root.ino ||
+        realpathSync(directory) !== resolve(directory))
+      throw new Error('native artifact changed during capture');
+    return buffer.subarray(0, length);
+  } finally { closeSync(fd); }
+}
+
 // Retain only bytes referenced by the process-bound reporter protocol. This is
 // an archive of stated observations, never an enumeration of runtime inputs.
 function retainReporterEvaluatorArtifacts(payload, out, persist) {
@@ -160,8 +195,10 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
     try { writeFileSync(path, bytes, { flag: "wx", mode: 0o600 }); } catch (error) {
       if (error?.code !== "EEXIST") throw error;
     }
-    if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() ||
-        !readFileSync(path).equals(bytes)) {
+    try {
+      if (!readNativeArtifactBytes(path, bytes.length, bytes.length + 1).equals(bytes))
+        throw new Error('different bytes');
+    } catch {
       throw new Error("NATIVE_TASK_RECEIPT_REFUSAL artifact bytes differ or are redirected");
     }
     return { ref, sha256, byteLength: bytes.length };
@@ -217,8 +254,9 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
             population.truncatedBy = "event-bytes";
             break;
           }
-          const bytes = readFileSync(file);
-          population.eventBytesRead += bytes.length;
+          const bytes = readNativeArtifactBytes(file, stat.size,
+            population.eventByteLimit - population.eventBytesRead,
+            count => { population.eventBytesRead += count; });
           if (createHash("sha256").update(bytes).digest("hex") !== name.slice(0, 64))
             throw new Error("native process artifact hash mismatch");
           const row = JSON.parse(bytes.toString("utf8"));
@@ -250,7 +288,7 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
       }
       processTrace.events = selected.map(({ row, bytes }) => ({ ...row,
         artifact: persist(bytes, "process-event.json") }));
-      let retainedStreamBytes = 0;
+      let streamBytesRead = 0;
       for (const { row } of selected.filter(({ row }) => row.event === "node-exit")) {
         if (row.exitListenersComplete !== true)
           processTrace.gaps.push(`native-exit-listeners-unverified:${row.processIdentity}`);
@@ -267,12 +305,12 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
               typeof pin.captureComplete !== "boolean" ||
               pin.captureComplete && pin.observedByteLength !== pin.byteLength)
             throw new Error("malformed native stream artifact pin");
-          const file = join(sourceRoot, pin.ref), stat = lstatSync(file);
-          retainedStreamBytes += pin.byteLength;
-          if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== pin.byteLength ||
-              retainedStreamBytes > 64 * 1024 * 1024)
+          const file = join(sourceRoot, pin.ref);
+          const remaining = 64 * 1024 * 1024 - streamBytesRead;
+          if (pin.byteLength > remaining)
             throw new Error("redirected, oversized or incomplete native stream artifact");
-          const bytes = readFileSync(file);
+          const bytes = readNativeArtifactBytes(file, pin.byteLength, remaining,
+            count => { streamBytesRead += count; });
           if (createHash("sha256").update(bytes).digest("hex") !== pin.sha256)
             throw new Error("native stream artifact hash mismatch");
           processTrace.streams.push({ processIdentity: row.processIdentity, pid: row.pid, role,

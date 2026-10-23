@@ -665,3 +665,49 @@ export function evaluatePartialTaskContinuation(checkpoint, expected, options = 
       passed: reused.length, failed: retainedFailures.length, infrastructure: infrastructure.length,
       pending: run.filter(id => !retainedFailures.includes(id) && !infrastructure.includes(id)).length } };
 }
+
+/** Project eligible work onto the ORIGINAL task inventory. Rebuild the full manifest
+ * before narrowing; neither saved outcomes nor the narrowed native producer selects
+ * the required population. Atomic commands are never split into synthetic leaf runs.
+ * This grants no custody, records no completion and cannot establish a green verdict.
+ */
+export function preparePartialRemainingSelection(checkpoint, expected, { selection, postSuite }, options = {}) {
+  const refused = reason => ({ status: "refused", reason, tasks: [], omitted: [], evaluation: null });
+  const prepared = preparePartialContinuationManifest({ root: expected.root,
+    tasks: selection?.taskInventory, selection, postSuite,
+    exclusions: expected.manifest?.units?.filter(unit => unit.exclusion)
+      .map(unit => ({ unitId: unit.id, ...unit.exclusion })) });
+  if (prepared.status !== "ready") return refused(`selection-${prepared.reason}`);
+  if (!isDeepStrictEqual(prepared.manifest, expected.manifest)) return refused("selection-manifest-mismatch");
+  const evaluation = evaluatePartialTaskContinuation(checkpoint, expected, options);
+  if (evaluation.status !== "ready") return refused(`eligibility-${evaluation.reason}`);
+  const run = new Set(evaluation.run);
+  if ([...evaluation.retainedFailures, ...evaluation.infrastructure].some(id => !run.has(id)))
+    return refused("retained-terminal-outcome");
+  const tasks = [], omitted = [];
+  for (const task of selection.taskInventory) {
+    const entry = selection.tasks.find(entry => entry.id === task.id);
+    const part = preparePartialContinuationManifest({ root: expected.root, tasks: [task], postSuite,
+      selection: { ...selection, tasks: entry ? [entry] : [],
+        unenumerated: selection.unenumerated.filter(row => row.task === task.id),
+        commandObligations: selection.commandObligations.filter(row => row.task === task.id) } });
+    if (part.status !== "ready") return refused(`task-${part.reason}`);
+    const units = part.manifest.units.filter(unit => unit.kind !== "post-suite");
+    const remaining = units.filter(unit => run.has(unit.id));
+    if (!remaining.length) { omitted.push(task.id); continue; }
+    if (entry?.runner === "vitest") {
+      // npm hooks are inseparable from the original npm invocation. Never replay
+      // a banked hook just to get to another file, or silently drop an owed hook.
+      if (units.some(unit => unit.kind !== "test" && !run.has(unit.id)))
+        return refused("atomic-command-partially-complete");
+      const files = entry.files.filter(file => run.has(`test:${file}`));
+      if (!files.length) return refused("native-empty-selection-with-command-work");
+      const selectedSpecifications = entry.selectedSpecifications.filter(spec => files.includes(spec.testFile));
+      tasks.push({ ...structuredClone(entry), files, selectedSpecifications });
+    } else {
+      if (remaining.length !== units.length) return refused("atomic-task-partially-complete");
+      tasks.push(structuredClone(entry ?? { ...task, files: [] }));
+    }
+  }
+  return { status: "ready", reason: null, tasks, omitted, evaluation };
+}

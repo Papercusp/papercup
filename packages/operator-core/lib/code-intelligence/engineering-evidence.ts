@@ -1,5 +1,8 @@
 /** Derived engineering relationships. The referenced stores remain the authorities. */
 import type { PlanItemAnchor } from '../plan-items/anchors';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import type { HarnessRegistry } from '../harness-registry';
+import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
 
 export const ENGINEERING_EVIDENCE_LIMITS = Object.freeze({
   nodes: 128, edges: 256, depth: 6, items: 8, specs: 16, proofs: 8, decisions: 16, cases: 20,
@@ -64,6 +67,65 @@ export interface EngineeringEvidence {
   gaps: { code: string; at: EngineeringRef; repair?: EngineeringRef }[];
   limits: Record<keyof typeof ENGINEERING_EVIDENCE_LIMITS, number>; truncated: boolean;
   execution: { status: 'unobserved'; reason: string };
+}
+
+export interface EngineeringToolQuery {
+  workspace?: string; harnesses?: string[]; plan?: string; item?: string;
+  file_path?: string; name?: string; line1?: number; include_context?: boolean; limit?: number;
+}
+export interface EngineeringQueryReport {
+  status: 'measured' | 'unknown'; error: string | null;
+  evidence: EngineeringEvidence | null; recovery: EngineeringRef | null;
+}
+type QueryContext = Pick<UnifiedToolContext, 'principal' | 'workspaceId' | 'harnessSlug' | 'role'>;
+export interface EngineeringQueryEffects {
+  registry(workspaceId: string): Promise<HarnessRegistry>;
+  read: typeof readEngineeringEvidence;
+}
+
+/** Public admission uses the existing principal and registry, never projectDir or caller roots. */
+export async function engineeringEvidenceQuery(args: EngineeringToolQuery, ctx: QueryContext,
+  effects: EngineeringQueryEffects = {
+    registry: async workspace => (await import('../harness-registry')).loadHarnessRegistry(workspace, { fresh: true }),
+    read: readEngineeringEvidence,
+  },
+): Promise<EngineeringQueryReport> {
+  const refuse = (error: string, recovery: EngineeringRef | null = null): EngineeringQueryReport =>
+    ({ status: 'unknown', error, evidence: null, recovery });
+  const workspace = ctx.principal?.workspaceId;
+  if (!workspace || workspace === '*' || !ctx.principal?.slug
+    || (!ctx.principal.capabilities.has('intel:read') && !ctx.principal.capabilities.has('*')))
+    return refuse('evidence requires an authenticated concrete workspace principal with intel:read.');
+  if ((ctx.workspaceId && ctx.workspaceId !== '*' && ctx.workspaceId !== workspace)
+    || (args.workspace && args.workspace !== workspace)) return refuse('evidence workspace is outside the authenticated scope.');
+  const callerHarness = resolveConcreteHarnessSlug(undefined, ctx);
+  const harnesses = args.harnesses ?? (callerHarness ? [callerHarness] : []);
+  if (harnesses.length !== 1 || !harnesses[0]?.trim() || ['*', 'all'].includes(harnesses[0]))
+    return refuse('evidence requires exactly one registered harness.');
+  const harness = harnesses[0];
+  if (callerHarness ? harness !== callerHarness : ctx.role !== 'operator' && ctx.role !== 'oracle')
+    return refuse('evidence repository is outside the caller harness scope.');
+  const hasItem = args.plan !== undefined || args.item !== undefined;
+  const hasSymbol = args.file_path !== undefined || args.name !== undefined || args.line1 !== undefined;
+  const recovery: EngineeringRef = { tool: 'graph:query', args: { op: 'evidence', ...args, harnesses: [harness] } };
+  if (hasItem === hasSymbol || (hasItem && (!args.plan || !/^P-\d{3,}$/.test(args.item ?? ''))))
+    return refuse('evidence requires plan and item, or file_path with name or line1.', recovery);
+  if (hasSymbol && (!args.file_path || (!args.name && args.line1 === undefined)))
+    return refuse('Disambiguate evidence with file_path and name or line1.',
+      { tool: 'graph:query', args: { op: 'symbol', name: args.name, harnesses: [harness] } });
+  try {
+    const registry = await effects.registry(workspace);
+    const project = registry.projects.find(p => p.slug === harness);
+    if (!project?.path || (project.harness_kind === 'hive' && !project.self_repo))
+      return refuse('evidence repository is not registered as a source checkout in the authenticated workspace.');
+    const evidence = await effects.read(hasItem ? { item: { plan: args.plan!, id: args.item! },
+      includeContext: args.include_context, limit: args.limit } : {
+      symbol: { path: args.file_path!, name: args.name, line1: args.line1 }, includeContext: args.include_context, limit: args.limit,
+    }, { workspaceId: workspace, harness, root: project.path });
+    return { status: 'measured', error: null, evidence, recovery: null };
+  } catch {
+    return refuse('Engineering evidence is unavailable or its registered source scope could not be validated. Retry the scoped query.', recovery);
+  }
 }
 
 const id = (kind: string, ...parts: unknown[]) => `${kind}:${JSON.stringify(parts)}`;

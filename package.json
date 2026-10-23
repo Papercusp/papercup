@@ -106,7 +106,7 @@
     "libs/generic/ast-fingerprint"
   ],
   "scripts": {
-    "lint:new-clones": "tsx scripts/check-new-clones.ts",
+    "lint:new-clones": "tsx scripts/check-new-clones.mts",
     "preinstall": "node scripts/guard-shared-tree-install.mjs && npx --yes only-allow npm",
     "install:safe": "node scripts/npm-install-safe.mjs",
     "check:screenshot": "tsx libs/generic/image-blankness/src/cli.ts",

@@ -126,5 +126,58 @@ export function evaluatePartialTaskContinuation(checkpoint: any, expected: any, 
         pending: number;
     };
 };
+/** Project eligible work onto the ORIGINAL task inventory. Rebuild the full manifest
+ * before narrowing; neither saved outcomes nor the narrowed native producer selects
+ * the required population. Atomic commands are never split into synthetic leaf runs.
+ * This grants no custody, records no completion and cannot establish a green verdict.
+ */
+export function preparePartialRemainingSelection(checkpoint: any, expected: any, { selection, postSuite }: {
+    selection: any;
+    postSuite: any;
+}, options?: {}): {
+    status: string;
+    reason: any;
+    tasks: never[];
+    omitted: never[];
+    evaluation: null;
+} | {
+    status: string;
+    reason: null;
+    tasks: any[];
+    omitted: any[];
+    evaluation: {
+        status: string;
+        reason: any;
+        verdict: string;
+        run: never[];
+        reused: never[];
+        excluded: never[];
+        retainedFailures: never[];
+        infrastructure: never[];
+        invalidated: never[];
+    } | {
+        status: string;
+        reason: null;
+        verdict: string;
+        run: any[];
+        reused: any[];
+        excluded: any[];
+        retainedFailures: any[];
+        infrastructure: any[];
+        invalidated: {
+            id: any;
+            reason: string;
+        }[];
+        counts: {
+            selected: number;
+            required: number;
+            excluded: number;
+            passed: number;
+            failed: number;
+            infrastructure: number;
+            pending: number;
+        };
+    };
+};
 export const PARTIAL_TASK_CHECKPOINT_SCHEMA: 1;
 export const PARTIAL_TASK_SKIP_LIST_SCHEMA: 1;

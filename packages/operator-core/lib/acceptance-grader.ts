@@ -2907,7 +2907,10 @@ export async function advanceGradingCascadeOnCard(input: {
     });
     const row = rows[0];
     if (!row) return { advanced: false, reason: 'no_open_grading_cascade' };
-    if (row.responder_id !== input.graderOwnerId) {
+    // responder_id names the source expert; a fork/conversion emits its card
+    // under the answering identity stamped on this exact cascade cursor.
+    if (row.responder_id !== input.graderOwnerId &&
+        answeringOwnerAtCursor(row.routing, row.cascade_cursor) !== input.graderOwnerId) {
       return { advanced: false, reason: 'not_current_grader' };
     }
     const nowIso = new Date().toISOString();
@@ -2966,7 +2969,7 @@ export async function advanceGradingCascadeOnCard(input: {
                )
          WHERE workspace_id = ${input.workspaceId}
            AND conversation_id = ${row.conversation_id}
-           AND (${walked !== null}::boolean OR responder_id = ${input.graderOwnerId})
+           AND (${walked !== null}::boolean OR responder_id = ${row.responder_id})
            AND cascade_cursor = ${walked?.cascadeCursor ?? row.cascade_cursor}
            AND state IN ('awaiting_responder', 'active')
            AND (${walked === null}::boolean OR state = ${walked?.state ?? null}::text)

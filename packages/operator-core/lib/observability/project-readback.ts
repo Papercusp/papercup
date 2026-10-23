@@ -65,9 +65,12 @@ export async function readConfiguredTraceProject(traceIds: readonly string[]): P
       if (!Array.isArray(control.results)) throw Error('unreadable-query-control');
       if (control.results.length) return { status: 'broken', reason: 'absent-uuid-control-returned-event' };
       const selectors = [...new Set(traceIds)].map(id => `'${id}'`).join(',');
+      // The invocation writer owns the expected population, including expired
+      // journeys. An independent age window here would hide delivered leaves
+      // and turn a healthy old trace into a false missing-event failure.
       const query = "SELECT uuid,event,toUnixTimestamp64Milli(timestamp),properties.$ai_trace_id," +
         "properties.$ai_span_id,properties.$ai_parent_id,properties.`papercusp.call_id`,properties.$ai_is_error,properties.`papercusp.http_client`,properties.$ai_span_name " +
-        `FROM events WHERE properties.$ai_trace_id IN (${selectors}) AND timestamp >= now() - INTERVAL 240 SECOND LIMIT 501`;
+        `FROM events WHERE properties.$ai_trace_id IN (${selectors}) LIMIT 501`;
       const result = await request(endpoint, query);
       if (!Array.isArray(result.results) || result.results.length > 500 || result.hasMore === true || result.next) throw Error('incomplete-event-query');
       const events: ObservedProjectEvent[] = [];

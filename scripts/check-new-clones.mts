@@ -1,5 +1,6 @@
 #!/usr/bin/env -S tsx
-/** Advisory only. Baseline writes are explicit; ordinary lint never edits it.
+/** Explicit ESM keeps the CLI on the committed-source loader's ESM path.
+ * Advisory only. Baseline writes are explicit; ordinary lint never edits it.
  * --seed creates the first CURRENT-tree baseline; --shrink can only remove debt.
  * --base binds both change reconstruction and shrink-only validation to git.
  */

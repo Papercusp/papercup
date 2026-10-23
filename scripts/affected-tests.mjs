@@ -206,6 +206,7 @@ import {
   readPartialTaskCheckpoint,
   registerPartialNativeProducer,
   preparePartialNativeProducerSelection,
+  preparePartialRemainingSelection,
   writePartialTaskCheckpointAtomic,
 } from "./lib/partial-task-resume.mjs";
 import { ensurePapercuspTmpdir } from "../libs/test-config/src/tmpdir-guard.ts";
@@ -1026,6 +1027,7 @@ const runIntegration = has("--integration") || integrationOnly;
 // rail (the same `AFFECTED_PARTIAL_RESUME=1` marker the integration vitest config checks).
 const partialResumeRequested =
   has("--partial-resume") || process.env.AFFECTED_PARTIAL_RESUME === "1";
+const qualificationWorkFile = arg("--qualification-work", null);
 const runAll = has("--all");
 // EI-19463337855465369: `--dry-run` is the more common CLI convention (npm,
 // git, rsync, kubectl all use it) and this repo's own agent guidance points
@@ -1216,6 +1218,7 @@ const KNOWN_FLAGS = [
   "--integration",
   "--integration-only",
   "--partial-resume",
+  "--qualification-work",
   "--all",
   "--dry",
   "--dry-run",
@@ -2139,7 +2142,7 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     script: "lint:new-clones",
     forwardChangedPaths: true,
     forwardBase: true,
-    appliesTo: (f) => /\.tsx?$/.test(f) ||
+    appliesTo: (f) => /\.tsx?$/.test(f) || f === "scripts/check-new-clones.mts" ||
       f === "scripts/new-clones-baseline.json" || f === "scripts/affected-tests.mjs" ||
       f === "package.json" || f === "packages/operator-core/package.json",
   },
@@ -5994,7 +5997,51 @@ if (printAffected) {
   process.exit(0);
 }
 
+if (qualificationWorkFile) {
+  try {
+    const identity = partialSourceIdentity();
+    const runnerIdentity = reuseRunnerIdentity(execFileSync('node',
+      ['-p', "process.version + ' ' + process.platform + ' ' + process.arch"],
+      { cwd: ROOT, encoding: 'utf8', timeout: 30_000 }));
+    if (!identity || !runnerIdentity || identity.sourceDigest !== createHash('sha256').update('').digest('hex'))
+      throw new Error('qualification-source-unmeasured-or-dirty');
+    const checkpoint = readPartialTaskCheckpoint(qualificationWorkFile);
+    if (!checkpoint?.continuation || checkpoint.root !== ROOT || checkpoint.sourceCommit !== identity.sourceCommit ||
+        checkpoint.sourceDigest !== createHash('sha256').update(runnerIdentity).digest('hex') ||
+        !process.env.PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID?.trim() ||
+        !process.env.PAPERCUSP_TEST_RUN_GROUP) throw new Error('qualification-work-unmeasured');
+    const selection = enumerateAffectedTaskSelection(tasks, { root: ROOT, filterDir: RUN_LOG_ROOT,
+      enumerateSpecifications: true });
+    selection.taskInventory = tasks.map(task => ({ id: `${task.ws.name} :: ${task.script}`, dir: task.ws.dir,
+      command: task.ws.scripts[task.script], isInvariantGuard: task.isInvariantGuard === true }));
+    const remaining = preparePartialRemainingSelection(checkpoint, { root: ROOT, taskKey: checkpoint.taskKey,
+      attemptId: process.env.PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID.trim(),
+      candidate: identity.sourceCommit, sourceCommit: identity.sourceCommit,
+      repairHead: checkpoint.continuation.repairHead, manifest: checkpoint.continuation.manifest,
+      retryStates: checkpoint.continuation.retryStates, runContext: 'ci', runnerIdentity },
+    { selection, postSuite: { schemaVersion: 1, coverage: 'complete',
+      units: checkpoint.continuation.manifest.units.filter(unit => unit.kind === 'post-suite') } });
+    if (remaining.status !== 'ready') throw new Error(remaining.reason);
+    const planned = new Map(remaining.tasks.map(task => [task.id, task]));
+    for (let index = tasks.length - 1; index >= 0; index--) {
+      const task = tasks[index], plan = planned.get(`${task.ws.name} :: ${task.script}`);
+      if (!plan) tasks.splice(index, 1);
+      else if (plan.runner === 'vitest') task.relatedFiles = plan.files;
+    }
+    outSync(`QUALIFICATION_REMAINING tasks=${tasks.length} omitted=${remaining.omitted.length} ` +
+      `files=${remaining.tasks.reduce((count, task) => count + task.files.length, 0)} verdict=incomplete`);
+  } catch (error) {
+    errSync(`QUALIFICATION_REMAINING status=refused reason=${JSON.stringify(String(error?.message ?? error))}`);
+    process.exit(1);
+  }
+}
+
 if (!tasks.length) {
+  if (qualificationWorkFile) {
+    outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0 reason=qualification-work-bank-complete');
+    terminalEmitted = true;
+    process.exit(0);
+  }
   // Two genuinely different empty outcomes, kept as DISTINCT reasons (EI-19454727576364875).
   // Collapsing them would hide the more interesting one: "workspaces were selected but none of
   // them declares a test script" is a coverage smell worth noticing, whereas "this change routes
@@ -6083,14 +6130,14 @@ outSync(
 );
 
 // Before the dry-run exit on purpose: `--dry` then shows what WOULD be reused (it only reads).
-await armTestPassReuse(tasks);
+if (!qualificationWorkFile) await armTestPassReuse(tasks);
 // Partial integration resume is opt-in and prepared before any child is spawned. The list
 // preflight establishes the exact manifest that the checkpoint is allowed to name; failures in
 // this optional rail fail open to the ordinary full integration task.
 const PARTIAL_TASK_CACHE_DIR =
   process.env.AFFECTED_PARTIAL_RESUME_CACHE_DIR || join(homedir(), ".papercusp", "cache");
 const PARTIAL_TEST_PATH_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
-preparePartialResumes(tasks);
+if (!qualificationWorkFile) preparePartialResumes(tasks);
 
 if (dry) {
   outSync(
@@ -6809,8 +6856,8 @@ function preparePartialResumes(taskList) {
 // series receives AFFECTED_TASK_VERDICT_PROOF_GROUP; only the CACHE identity substitutes that
 // initial group while the real child keeps this process's own run group.
 const TASK_VERDICT_CACHE_ENABLED =
-  process.env.GREEN_CHECKPOINT === "1" ||
-  process.env.AFFECTED_TASK_VERDICT_RESUME === "1";
+  !qualificationWorkFile && (process.env.GREEN_CHECKPOINT === "1" ||
+  process.env.AFFECTED_TASK_VERDICT_RESUME === "1");
 // Ordinary local `npm test` has no gate-supplied proof group. It may use the existing stable
 // cross-run proof only when the caller explicitly opted into resumable execution, and never
 // while GREEN_CHECKPOINT is active (a gate without proof state must stay fail-closed).

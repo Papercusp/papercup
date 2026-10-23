@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readEngineeringEvidence, type EngineeringEvidenceDeps, type EngineeringItem,
+import { engineeringEvidenceQuery, readEngineeringEvidence, type EngineeringQueryEffects, type EngineeringEvidenceDeps, type EngineeringItem,
   type EngineeringProof, type EngineeringScope, type EngineeringSpec, type EngineeringSymbol } from './engineering-evidence';
 
 const scope: EngineeringScope = { workspaceId: 'ee-owner', harness: 'ee-repo', root: '/fixture/ee-repo' };
@@ -126,5 +126,72 @@ describe('native engineering evidence contract', () => {
     const deps = fixture();
     await expect(readEngineeringEvidence({ symbol: { path } }, scope, deps)).rejects.toThrow('selector_invalid');
     expect(deps.authorize).not.toHaveBeenCalled();
+  });
+});
+
+describe('native engineering evidence public admission', () => {
+  const principal = { slug: 'ee-reader', workspaceId: scope.workspaceId, capabilities: new Set(['intel:read']) };
+  const ctx = { principal, workspaceId: scope.workspaceId, harnessSlug: scope.harness, role: 'operator' as const };
+  const args = { plan: 'ee-feature', item: 'P-001' };
+  const effects = () => ({ registry: vi.fn(async () => ({ projects: [{ slug: scope.harness, path: scope.root }] })),
+    read: vi.fn((query, admitted) => readEngineeringEvidence(query, admitted, fixture())) }) satisfies EngineeringQueryEffects;
+  it.each([
+    { ...ctx, principal: undefined },
+    { ...ctx, principal: { ...principal, workspaceId: '*' } },
+    { ...ctx, principal: { ...principal, capabilities: new Set<string>() } },
+    { ...ctx, workspaceId: 'foreign-workspace' },
+  ])('ee.query-principal: rejects absent, wildcard, ungranted and conflicting principals before IO', async context => {
+    const io = effects();
+    const report = await engineeringEvidenceQuery(args, context, io);
+    expect(report).toMatchObject({ status: 'unknown', evidence: null }); expect(report.error).toBeTruthy();
+    expect(io.registry).not.toHaveBeenCalled(); expect(io.read).not.toHaveBeenCalled();
+  });
+  it.each([
+    { ...args, workspace: 'foreign-workspace' },
+    { ...args, harnesses: ['foreign-repo'] },
+    { ...args, harnesses: ['ee-repo', 'foreign-repo'] },
+    { ...args, harnesses: ['*'] },
+    { ...args, harnesses: ['all'] },
+  ])('ee.query-scope: rejects an expanding selector before registry or evidence reads', async selector => {
+    const io = effects();
+    expect((await engineeringEvidenceQuery(selector, ctx, io)).evidence).toBeNull();
+    expect(io.registry).not.toHaveBeenCalled(); expect(io.read).not.toHaveBeenCalled();
+  });
+  it('ee.query-selector: requires an exact item or disambiguated symbol and returns a recovery reference', async () => {
+    for (const selector of [{ name: 'evidenceFeature' }, { plan: 'ee-feature' },
+      { ...args, file_path: symbol.path, name: symbol.name }]) {
+      const io = effects(); const report = await engineeringEvidenceQuery(selector, ctx, io);
+      expect(report.error).toBeTruthy(); expect(report.recovery?.tool).toBe('graph:query');
+      expect(io.registry).not.toHaveBeenCalled(); expect(io.read).not.toHaveBeenCalled();
+    }
+  });
+  it('ee.query-registered: refuses an absent registry entry without reading evidence', async () => {
+    const io = effects(); io.registry.mockResolvedValue({ projects: [] });
+    expect((await engineeringEvidenceQuery(args, ctx, io)).error).toContain('not registered');
+    expect(io.read).not.toHaveBeenCalled();
+  });
+  it('ee.query-authority: takes the root only from the registry and preserves exact scoped records', async () => {
+    const io = effects();
+    const report = await engineeringEvidenceQuery(args, ctx, io);
+    expect(io.read).toHaveBeenCalledWith({ item: { plan: 'ee-feature', id: 'P-001' },
+      includeContext: undefined, limit: undefined }, scope);
+    expect(report.status).toBe('measured');
+    expect(report.evidence?.nodes.find(n => n.kind === 'spec')?.data).toMatchObject({ id: spec.id, revision: spec.revision });
+    expect(report.evidence?.execution.status).toBe('unobserved');
+  });
+  it('ee.query-operator: keeps the existing operator/oracle cross-harness scope', async () => {
+    const io = effects();
+    expect((await engineeringEvidenceQuery({ ...args, harnesses: [scope.harness] },
+      { ...ctx, harnessSlug: '*', role: 'worker' as never }, io)).error).toBeTruthy();
+    expect(io.registry).not.toHaveBeenCalled();
+    expect((await engineeringEvidenceQuery({ ...args, harnesses: [scope.harness] },
+      { ...ctx, harnessSlug: '*' }, io)).status).toBe('measured');
+  });
+  it('ee.query-recovery: returns a scoped retry when an authority cannot be reached', async () => {
+    const io = effects(); io.registry.mockRejectedValue(new Error('private database details'));
+    const report = await engineeringEvidenceQuery(args, ctx, io);
+    expect(report).toMatchObject({ status: 'unknown', evidence: null,
+      recovery: { tool: 'graph:query', args: { op: 'evidence', plan: args.plan, item: args.item, harnesses: [scope.harness] } } });
+    expect(JSON.stringify(report)).not.toContain('private database details');
   });
 });

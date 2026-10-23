@@ -39,10 +39,13 @@ import {
   resolvePtoolOperatorBase,
   resolvePtoolOperatorCandidates,
   resolvePtoolInvocationCandidates,
+  resolveLauncherManagedStagingDirectCandidate,
+  hasCurrentPtoolServingGeneration,
   canDispatchOnFallbackOperator,
   resolvePtoolRecoveryTool,
   isReadOnlyPtoolRecoveryRequest,
   shouldAttemptManagedReadRecovery,
+  shouldAttemptManagedCatalogRecovery,
   canDispatchPtoolOnFallback,
   shouldRediscoverOperatorUrl,
   resolveTokenPath,
@@ -700,6 +703,28 @@ describe('ptool operator routing', () => {
     expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: false } }, true)).toBe(false);
   });
 
+  it('derives direct staging recovery only for an unpinned managed legacy-proxy route', () => {
+    const managed = {
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
+    };
+
+    expect(resolveLauncherManagedStagingDirectCandidate('http://127.0.0.1:9071', managed))
+      .toBe('http://127.0.0.1:3170');
+    expect(resolveLauncherManagedStagingDirectCandidate(
+      'http://127.0.0.1:9071', managed, 'http://127.0.0.1:3170',
+    )).toBeNull();
+    expect(resolveLauncherManagedStagingDirectCandidate('http://127.0.0.1:9071', {
+      ...managed,
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'caller',
+    })).toBeNull();
+    expect(resolveLauncherManagedStagingDirectCandidate('http://127.0.0.1:9071', {
+      ...managed,
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3070',
+    })).toBeNull();
+  });
+
   it('uses psu-launcher’s default staging proxy when the child omits its port override', () => {
     expect(resolvePtoolOperatorCandidates({
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
@@ -738,6 +763,36 @@ describe('ptool operator routing', () => {
     )).toBe(false);
   });
 
+  it('validates the exact direct or nested target generation before managed recovery', () => {
+    const generation = 'serving-generation-v1:current';
+    const catalog = [
+      { name: 'tools:invoke', _meta: { 'papercusp/servingGeneration': generation } },
+      { name: 'coord:declare-intent', _meta: { 'papercusp/servingGeneration': generation } },
+      { name: 'work_items:complete', _meta: { 'papercusp/servingGeneration': '  ' } },
+    ];
+
+    expect(hasCurrentPtoolServingGeneration('coord:declare-intent', {}, catalog)).toBe(true);
+    expect(hasCurrentPtoolServingGeneration(
+      'tools:invoke', { name: 'coord:declare-intent', args: {} }, catalog,
+    )).toBe(true);
+    expect(hasCurrentPtoolServingGeneration(
+      'tools:invoke', { name: 'missing:tool', args: {} }, catalog,
+    )).toBe(false);
+    expect(hasCurrentPtoolServingGeneration('work_items:complete', {}, catalog)).toBe(false);
+  });
+
+  it('allows a mutating fallback only after direct managed catalog validation', () => {
+    const writeTool = { name: 'coord:declare-intent', annotations: { readOnlyHint: false } };
+    const catalog = [writeTool];
+
+    expect(canDispatchPtoolOnFallback(
+      'coord:declare-intent', {}, writeTool, catalog, true,
+    )).toBe(false);
+    expect(canDispatchPtoolOnFallback(
+      'coord:declare-intent', {}, writeTool, catalog, true, true,
+    )).toBe(true);
+  });
+
   it('tries the current managed candidate when the legacy catalog mislabels a read', () => {
     expect(shouldAttemptManagedReadRecovery({
       toolName: 'loop:status',
@@ -762,6 +817,24 @@ describe('ptool operator routing', () => {
       operatorUrl: 'http://127.0.0.1:9071',
       operatorCandidates: ['http://127.0.0.1:9071', 'http://127.0.0.1:9171'],
     })).toBe(false);
+  });
+
+  it('attempts direct catalog recovery only when the initial named target lacks a generation', () => {
+    const options = {
+      toolName: 'coord:declare-intent',
+      tool: { name: 'coord:declare-intent', annotations: { readOnlyHint: false } },
+      recoveryIndex: 1,
+      operatorUrl: 'http://127.0.0.1:9071',
+      operatorCandidates: ['http://127.0.0.1:9071', 'http://127.0.0.1:3170'],
+    };
+
+    expect(shouldAttemptManagedCatalogRecovery(options)).toBe(true);
+    expect(shouldAttemptManagedCatalogRecovery({
+      ...options,
+      initialGeneration: 'serving-generation-v1:current',
+    })).toBe(false);
+    expect(shouldAttemptManagedCatalogRecovery({ ...options, toolName: 'tools:find' })).toBe(false);
+    expect(shouldAttemptManagedCatalogRecovery({ ...options, tool: null })).toBe(false);
   });
 
   it('does not infer a staging recovery route when the launcher supplied a target hint', () => {

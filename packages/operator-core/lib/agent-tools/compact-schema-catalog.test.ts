@@ -61,8 +61,6 @@ import {
   compactInputSchema,
   compactWireBytes,
   COMPACT_DROPPED_KEYS,
-  isFormatImpliedPattern,
-  isVacuousPropertyNames,
   type ProjectedTool,
 } from '@papercusp/tooldef';
 import { MIN_PLAUSIBLE_CATALOG_SIZE } from './tool-guidance-budget';
@@ -115,13 +113,12 @@ function nameSegment(key: string): string {
 
 /**
  * Project a schema onto its CONTRACT: the sorted set of `path=value` leaves,
- * with prose keywords excluded at every non-name-keyed position, and the two
- * RESTATEMENTS the reducer may drop normalized away: a `type` its enum/const
- * already entails, and a `pattern` that is zod's own regex for its `format`.
+ * with only the five approved prose/advisory keywords excluded at schema
+ * positions. Explicit types, patterns and propertyNames remain in the check.
  *
  * Prose is excluded from BOTH sides on purpose — the contract is what remains
  * once prose is disregarded, so equality of these two projections is exactly
- * the claim "compaction removed only prose and restatements".
+ * the claim "compaction removed only the approved keywords".
  */
 function contractLines(node: unknown, path: string, inNameKeyedMap: boolean, out: string[]): void {
   if (node === null || typeof node !== 'object') {
@@ -143,26 +140,8 @@ function contractLines(node: unknown, path: string, inNameKeyedMap: boolean, out
   // live catalog produces, and every instance was an `added` `{}`, never a
   // `missing` constraint.
   const schema = node as Record<string, unknown>;
-  const omitType = !inNameKeyedMap && typeIsImplied(schema);
-  // A `pattern` that is exactly zod's regex for the sibling `format` restates the
-  // format; the reducer drops it (lever 1). Normalize it away on BOTH sides by the
-  // reducer's OWN exported rule so the two cannot drift. The `format` line survives
-  // on both sides, so dropping the format, or a pattern the format does NOT imply,
-  // still shows as `missing`. Without this, the 60 catalog tools with uuid /
-  // date-time / email fields failed on a drop that is not a contract change
-  // (measured 2026-10-13, WI-6554700010009813).
-  const omitPattern = !inNameKeyedMap && isFormatImpliedPattern(schema);
-  // A `propertyNames` every JSON key satisfies (zod's `{ type: 'string' }` beside a
-  // z.record) constrains nothing; the reducer drops it (WI-10006197). Same move as
-  // the pattern rule above: normalize by the reducer's OWN exported predicate, so a
-  // CONSTRAINING propertyNames dropped by mistake still shows as `missing`.
   const entries = Object.entries(schema).filter(
-    ([key, value]) =>
-      inNameKeyedMap ||
-      (!PROSE_KEYS.has(key) &&
-        !(key === 'type' && omitType) &&
-        !(key === 'pattern' && omitPattern) &&
-        !(key === 'propertyNames' && isVacuousPropertyNames(value))),
+    ([key]) => inNameKeyedMap || !PROSE_KEYS.has(key),
   );
   if (entries.length === 0) out.push(`${path}={}`);
   for (const [key, value] of entries) {
@@ -424,7 +403,7 @@ describe('compact schema projection — live catalog (AUTO-BAR-R-3-P-001 / AUTO-
     ).toEqual([]);
   });
 
-  it('removes every redundant type constraint from real compact schemas', () => {
+  it('retains explicit types even when enum or const already implies them', () => {
     const redundant: string[] = [];
     const visit = (node: unknown, path: string, inNameKeyedMap: boolean): void => {
       if (node === null || typeof node !== 'object') return;
@@ -439,8 +418,12 @@ describe('compact schema projection — live catalog (AUTO-BAR-R-3-P-001 / AUTO-
       }
     };
 
-    for (const row of rows) visit(compactInputSchema(row.inputSchema ?? {}), row.name, false);
-    expect(redundant.slice(0, 8), `${redundant.length} real compact schema(s) retained an implied type`).toEqual([]);
+    for (const row of rows) visit(row.inputSchema ?? {}, row.name, false);
+    const full = [...redundant].sort();
+    expect(full.length, 'the real catalog must exercise explicit implied types').toBeGreaterThan(0);
+    redundant.length = 0;
+    for (const row of rows) visit(inlineHoisted(compactInputSchema(row.inputSchema ?? {}), row.inputSchema ?? {}), row.name, false);
+    expect(redundant.sort()).toEqual(full);
   });
 
   it('removes every prose keyword at every depth, and keeps prose-NAMED properties', () => {
