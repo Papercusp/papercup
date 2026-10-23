@@ -352,7 +352,7 @@ describe('original npm native channel preparation', () => {
         expect(existsSync(`${input.outPath}.producer.json`)).toBe(false);
       } else {
         run();
-        expect(readPartialNativeProducer(`${input.outPath}.producer.json`))
+        expect(readPartialNativeProducer(`${input.outPath}.producer.json`, {}))
           .toMatchObject({ selectedSpecifications: [{ testFile: 'b.test.ts' }] });
       }
       expect(messages).toHaveLength(1);
