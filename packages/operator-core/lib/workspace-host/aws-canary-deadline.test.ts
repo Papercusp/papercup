@@ -20,6 +20,8 @@ describe('AWS finite trial deadline foundation', () => {
 
   it.each([
     { accountId: 'wrong' }, { region: 'cn-north-1' }, { workspaceId: 'production' },
+    { workspaceId: 'test-runtime-' }, { workspaceId: 'test-runtime-private/production' },
+    { workspaceId: 'test-runtime-PRIVATE' },
     { cleanupRoleArn: 'arn:aws:iam::123456789012:role/Other' },
     { workloadDeadlineAt: '2026-10-23T02:59:00.000Z' },
     { workloadDeadlineAt: '2026-10-23T03:30:00-04:00' },

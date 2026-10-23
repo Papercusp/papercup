@@ -147,7 +147,11 @@ export function planAwsCanaryDeadline(input: AwsCanaryDeadlineInput, nowMs = Dat
   if (!/^\d{12}$/.test(input.accountId) || !HOSTED_AWS_REGION.test(input.region)) {
     throw new Error('AWS canary account or region invalid');
   }
-  if (!/^[a-zA-Z0-9_-]{8,120}$/.test(input.runId) || !/^hosted-fixture-[a-zA-Z0-9_-]{8,120}$/.test(input.workspaceId)) {
+  // with-test-pg owns the isolated runtime identity used by the genuine hosted
+  // fixture. Keep that exact private namespace alongside the standalone fixture.
+  const privateWorkspace = /^hosted-fixture-[a-zA-Z0-9_-]{8,120}$/.test(input.workspaceId) ||
+    /^test-runtime-[a-z0-9-]+$/.test(input.workspaceId);
+  if (!/^[a-zA-Z0-9_-]{8,120}$/.test(input.runId) || !privateWorkspace) {
     throw new Error('AWS canary requires a run id and dedicated private fixture workspace');
   }
   if (!new RegExp(`^arn:aws:iam::${input.accountId}:role/[a-zA-Z0-9_+=,.@/-]+$`).test(input.cleanupRoleArn)) {

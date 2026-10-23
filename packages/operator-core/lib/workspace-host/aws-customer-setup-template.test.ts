@@ -51,6 +51,19 @@ function referencedLogicalIds(value: unknown, into: Set<string> = new Set()): Se
 }
 
 describe('finite AWS qualification foundation in the existing customer stack', () => {
+  it('binds the genuine isolated runtime workspace into cleanup and launcher confinement', () => {
+    const workspaceId = 'test-runtime-p544-private-20261023';
+    const f = awsCanaryDeadlineStackFragment({ ...CANARY, workspaceId,
+      accountId: ACCOUNT, region: REGION, principalArn: `arn:aws:iam::${ACCOUNT}:role/admin` }, CANARY_NOW);
+    expect(f.plan.document.mainSteps[1].inputs.InputPayload.filters).toContainEqual({
+      Name: 'tag:papercusp:workspace-id', Values: [workspaceId] });
+    expect(f.plan.cleanupPolicy.Statement[1].Condition.StringEquals).toMatchObject({
+      'ec2:ResourceTag/papercusp:workspace-id': workspaceId });
+    expect(f.Resources.CanaryLauncherRole.Properties.Policies[0].PolicyDocument.Statement).toContainEqual({
+      Effect: 'Deny', Action: 'ec2:CreateSnapshot', Resource: [`arn:aws:ec2:${REGION}::snapshot/*`],
+      Condition: { StringNotEquals: { 'aws:RequestTag/papercusp:workspace-id': workspaceId } } });
+  });
+
   it('adds dedicated roles and a versioned SSM document without changing the ordinary operator policy', () => {
     const ordinary = doc();
     const finite = awsCustomerSetupTemplate({ accountId: ACCOUNT, region: REGION, finiteCanary: CANARY }, CANARY_NOW).document as unknown as Doc;
