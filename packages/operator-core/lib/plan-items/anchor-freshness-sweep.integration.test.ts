@@ -6,6 +6,10 @@ import { applyPlanItemAnchorMigrationsForTest, createFreshPgDb, type FreshPgDb }
 import { writePlanItemAnchors } from './anchor-store';
 import { declarationContentHash, unknownAnchor, type PlanItemAnchor } from './anchors';
 import { sweepPlanItemAnchors, type PlanAnchorNotice, type PlanAnchorSweepOptions } from './anchor-freshness-sweep';
+import { runPlanAnchorFreshnessAction } from '../harness/routines/plan-anchor-freshness-action';
+import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
+import { getMessageById } from '../agent-tools/coordination/messages';
+import { runWithWorkspace } from '../workspace-als';
 
 const WS = 'anchor-sweep-fixture';
 const HARNESS = 'anchor-sweep';
@@ -38,6 +42,60 @@ beforeEach(async () => {
   sent = [];
   await db.sql`TRUNCATE harness_shared.plan_item_anchors,harness_shared.plan_anchor_notices,harness_shared.plan_items RESTART IDENTITY`;
   await writeFile(join(root, 'code.ts'), source);
+});
+
+describe('default freshness notice delivery on the migrated coordination schema', () => {
+  let fx: BaselineCoordFixture;
+  const privateWs = 'anchor-default-notice-fixture';
+  const privatePlan = 'default-notice-fixture';
+  const privateScope = { workspaceId: privateWs, harnessSlug: HARNESS, planSlug: privatePlan };
+  beforeAll(async () => { fx = await setupBaselineCoordFixture(); }, 180_000);
+  afterAll(async () => {
+    if (!fx) return;
+    try {
+      await fx.admin`DELETE FROM harness_shared.coord_event_log WHERE workspace_id=${privateWs}`;
+      await fx.admin`DELETE FROM harness_shared.plan_anchor_notices WHERE workspace_id=${privateWs}`;
+      await fx.admin`DELETE FROM harness_shared.harness_plans WHERE workspace_id=${privateWs}`;
+      await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id IN (${privateWs},'anchor-other-workspace')`;
+    } finally { await fx.dispose(); }
+  });
+  it('uses the explicit workspace, finds real open holders, persists one coord message and replays its stable id', async () => {
+    await fx.admin`INSERT INTO harness_shared.harness_plans(workspace_id,harness_slug,plan_slug,title,content,content_hash)
+      VALUES (${privateWs},${HARNESS},${privatePlan},'Private default notice fixture','',md5(''))`;
+    for (const [seq,itemId] of ['P-001','P-002'].entries()) {
+      await fx.admin`INSERT INTO harness_shared.plan_items(workspace_id,harness_slug,plan_slug,item_id,seq,status)
+        VALUES (${privateWs},${HARNESS},${privatePlan},${itemId},${seq},'todo')`;
+      await fx.admin.begin(tx => writePlanItemAnchors(tx, privateScope, { itemId, anchors: [anchor] }, 'fixture'));
+    }
+    for (const [id,ws,status,holder] of [
+      ['WI-900000001',privateWs,'open','holder-open-default'],
+      ['WI-900000002',privateWs,'done','holder-closed-default'],
+      ['WI-900000003','anchor-other-workspace','open','holder-other-workspace'],
+    ]) await fx.admin`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,title,status,taken_by,source_plan_slug,item_kind)
+      VALUES (${ws},${HARNESS},${id},'Private holder fixture',${status},${holder},${privatePlan},'feature')`;
+    await writeFile(join(root, 'code.ts'), source.replace('return 1', 'return 2'));
+    const input = { ...privateScope, root, sql: fx.admin, budgetMs: 5000 };
+    // Deliberately run under a different ambient workspace. The explicit scope
+    // must drive both the holder query and the coordination writer/readback.
+    const first = await runWithWorkspace('anchor-other-workspace', () => sweepPlanItemAnchors(input));
+    expect(first).toMatchObject({ checked: 2, noticesCreated: 1, noticesDelivered: 1 });
+    const [notice] = await fx.admin`SELECT id::text,audience,coord_message_id FROM harness_shared.plan_anchor_notices
+      WHERE workspace_id=${privateWs} AND plan_slug=${privatePlan}`;
+    expect(notice!.audience).toEqual([`@plan:${privatePlan}`,'holder-open-default']);
+    const msgId = `plan-anchor-notice:${HARNESS}:${notice!.id}`;
+    expect(notice!.coord_message_id).toBe(msgId);
+    const message = await runWithWorkspace(privateWs, () => getMessageById(msgId));
+    expect(message).toMatchObject({ msg_id: msgId, from: 'system:plan-anchor-freshness',
+      plan_slug: privatePlan, to: ['holder-open-default'] });
+    // Model the crash window after send but before the outbox acknowledgement.
+    await fx.admin`UPDATE harness_shared.plan_anchor_notices SET coord_message_id=NULL
+      WHERE workspace_id=${privateWs} AND id::text=${notice!.id}`;
+    expect(await runWithWorkspace('anchor-other-workspace', () => sweepPlanItemAnchors(input)))
+      .toMatchObject({ noticesCreated: 0, noticesDelivered: 1 });
+    expect(await fx.admin`SELECT msg_id FROM harness_shared.coord_event_log
+      WHERE workspace_id=${privateWs} AND msg_id=${msgId}`).toHaveLength(1);
+  }, 30_000);
 });
 afterAll(async () => {
   if (db) await db.cleanup();
@@ -118,5 +176,24 @@ describe('bounded plan-anchor sweep on real Postgres', () => {
     expect(await sweepPlanItemAnchors(options({ cap: 1, root: join(root, 'unavailable') })))
       .toMatchObject({ scanned: 1, checked: 0, deferred: 1, noticesCreated: 0 });
     expect((await rows()).map(row => row.freshness)).toEqual(['fresh','fresh']);
+  });
+  it('the workspace routine covers a non-home harness and drains its pending outbox under a shared cap', async () => {
+    await seed('P-001');
+    await seed('P-002');
+    await writeFile(join(root, 'code.ts'), source.replace('return 1', 'return 2'));
+    const ctx = { workspaceId: WS, installSlug: 'operator-home', triggerConfig: { cap: 1 }, payloadTemplate: null };
+    const deps = { sql: db.sql,
+      loadRegistry: (async () => ({ projects: [{ slug: HARNESS, path: root }] })) as
+        NonNullable<Parameters<typeof runPlanAnchorFreshnessAction>[1]>['loadRegistry'],
+      sweep: (input: PlanAnchorSweepOptions) => sweepPlanItemAnchors({ ...input,
+        holders: options().holders, notify: options().notify, budgetMs: 5000 }) };
+    expect(await runPlanAnchorFreshnessAction(ctx, deps)).toMatchObject({ diagnostics: {
+      scanned: 1, checked: 1, noticesCreated: 1, noticesDelivered: 1, harnesses: [HARNESS], cap: 1 } });
+    expect((await rows()).filter(row => row.freshness === 'stale')).toHaveLength(1);
+    // Even with no eligible source rows left, retry an already recorded notice.
+    await db.sql`UPDATE harness_shared.plan_items SET status='done'`;
+    await db.sql`UPDATE harness_shared.plan_anchor_notices SET coord_message_id=NULL`;
+    expect(await runPlanAnchorFreshnessAction(ctx, deps)).toMatchObject({ diagnostics: {
+      scanned: 0, noticesCreated: 0, noticesDelivered: 1, harnesses: [HARNESS] } });
   });
 });

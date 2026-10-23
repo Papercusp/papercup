@@ -9,8 +9,8 @@ import {
   candidateArtifactDigest,
   p521PrecheckSubjectsMatch,
   validateP521LocalPrechecks,
-  type P521PrecheckSubject,
-} from './p2p-candidate-manifest';
+} from './p521-local-precheck.mts';
+import type { P521PrecheckSubject } from './p2p-candidate-manifest';
 
 function fileHash(path: unknown): string {
   if (typeof path !== 'string' || !isAbsolute(path) || !statSync(path).isFile()) {

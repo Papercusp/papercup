@@ -17,7 +17,7 @@ function fixture() {
   const entry = join(root, 'apps/operator/dist-host/hono-host.mjs');
   mkdirSync(dirname(entry), { recursive: true }); mkdirSync(dirname(join(root, rel)), { recursive: true });
   writeFileSync(join(root, rel), source); writeFileSync(entry, 'bundled tracing runtime');
-  writeFileSync(entry + '.meta.json', JSON.stringify({ inputs: { ['../../' + rel]: { bytes: source.length } } }));
+  writeFileSync(entry + '.meta.json', JSON.stringify({ inputs: { [rel]: { bytes: source.length } } }));
   const sourceBlob = createHash('sha1').update(`blob ${Buffer.byteLength(source)}\0${source}`).digest('hex');
   let dirty = '', head = sourceSha;
   const git = (_root: string, args: string[]) => {
@@ -68,7 +68,7 @@ describe('operator release artifact provenance', () => {
     const f = fixture(); const rel = 'libs/tracing/runtime.ts';
     mkdirSync(dirname(join(f.root, rel)), { recursive: true });
     writeFileSync(join(f.root, rel), readFileSync(join(f.root, f.rel)));
-    writeFileSync(f.entry + '.meta.json', JSON.stringify({ inputs: { ['../../' + rel]: {} } }));
+    writeFileSync(f.entry + '.meta.json', JSON.stringify({ inputs: { [rel]: {} } }));
     const git = (root: string, args: string[]) => args[0] !== 'ls-tree' ? f.git(root, args) :
       root === f.root ? `160000 commit ${'c'.repeat(40)}\tlibs/tracing\0` : `100644 blob ${f.sourceBlob}\truntime.ts\0`;
     expect(writeOperatorArtifactManifest(f, git)).toMatchObject({ status: 'measured', sourceBlobs: { [rel]: f.sourceBlob } });

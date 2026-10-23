@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import type {
   P2pCandidateProvenance,
   P2pJourneyResult,
@@ -67,6 +72,40 @@ function buildP2pCandidateManifest(options: Parameters<typeof buildManifest>[0])
 }
 
 describe('P-521 candidate manifest', () => {
+  it('runs local admission as guarded ESM and refuses changed installer bytes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'p521-local-cli-'));
+    try {
+      const installer = join(root, 'candidate.deb');
+      writeFileSync(installer, 'local installer fixture');
+      const sha256 = createHash('sha256').update('local installer fixture').digest('hex');
+      const artifacts = [{ name: 'candidate.deb', sha256 }];
+      const subject = { artifactDigest: candidateArtifactDigest(artifacts), installerSha256: sha256 };
+      const bundle = join(root, 'prechecks.json');
+      writeFileSync(bundle, JSON.stringify({ candidate: { ...candidate, artifacts }, artifactDir: root,
+        precheckSubject: subject, bytePaths: { installer }, localPrechecks: [{
+          journey: 'delegated-seat-lifecycle', check: 'p521-local-precheck:delegated-seat-lifecycle',
+          verdict: 'pass', startedAt: '2026-09-23T00:56:00.000Z', finishedAt: '2026-09-23T00:57:00.000Z',
+          subject, command: ['local-fixture'], evidence: [{ ref: 'local-fixture' }],
+        }] }));
+      const run = () => spawnSync(process.execPath, [
+        '--import', resolve('../../scripts/lib/committed-source-loader.mjs'),
+        '--import', resolve('../../node_modules/tsx/dist/esm/index.mjs'),
+        resolve('lib/release/run-p521-local-precheck.mts'),
+        '--bundle', bundle, '--journey', 'delegated-seat-lifecycle',
+      ], { encoding: 'utf8', timeout: 30_000 });
+      const valid = run();
+      expect(valid.error).toBeUndefined();
+      expect(valid.status, valid.stdout + valid.stderr).toBe(0);
+      writeFileSync(installer, 'changed installer bytes');
+      const changed = run();
+      expect(changed.error).toBeUndefined();
+      expect(changed.status, changed.stdout + changed.stderr).toBe(2);
+      expect(changed.stderr).toContain('candidate artifact bytes mismatch');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 90_000);
+
   it('admits ISO offset receipts and evidence refs with an omitted optional kind', async () => {
     const digest = candidateArtifactDigest(candidate.artifacts);
     const manifest = await buildP2pCandidateManifest({

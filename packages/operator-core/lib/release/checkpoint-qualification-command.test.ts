@@ -16,7 +16,10 @@ const setup = () => {
     calls.push(change.operation);
     return { status: 'updated', transaction: {} } as Awaited<ReturnType<typeof recordStoredQualificationChildScope>>;
   }) as unknown as typeof recordStoredQualificationChildScope;
-  const kill = vi.fn<typeof killScopeUnit>(async () => { calls.push('kill'); return { ok: true } as Awaited<ReturnType<typeof killScopeUnit>>; });
+  const kill = vi.fn<typeof killScopeUnit>(async () => {
+    calls.push('kill'); child.emit('close', null, 'SIGKILL');
+    return { ok: true } as Awaited<ReturnType<typeof killScopeUnit>>;
+  });
   const spawn = vi.fn<typeof managedSpawn>(async (_cmd, _args, _spec, options) => {
     calls.push('fork'); options!.onSpawn!(child, 'child123');
     return { child, confined: true, scopeUnit: 'pc-child123.scope', waitForCompletion: async () => {
@@ -122,6 +125,39 @@ describe('qualification confined command custody', () => {
     await vi.advanceTimersByTimeAsync(100); await rejected;
     expect(deps.kill).toHaveBeenCalledWith('pc-child123.scope', { signal: 'SIGKILL' });
     expect(deps.record).toHaveBeenLastCalledWith(input.target, expect.objectContaining({ operation: 'release' }));
+  });
+
+  it('retains custody through a late launch handoff after an early empty-scope kill', async () => {
+    const { child, input, deps, calls } = setup(); input.timeoutMs = 100;
+    vi.mocked(deps.kill).mockImplementation(async () => {
+      calls.push('kill');
+      return { ok: false, scopeUnit: 'pc-child123.scope', action: 'kill', error: 'already_gone' };
+    });
+    let settled = false;
+    const pending = runQualificationCommand('npm', [], input, deps);
+    const rejected = expect(pending).rejects.toThrow('worker-timeout');
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(settled).toBe(false);
+    expect(deps.record).toHaveBeenCalledTimes(1);
+    // The cleanup reservation outlives the idle bound, without moving the
+    // immutable caller cutoff. A late exact-client close permits a new probe.
+    await vi.advanceTimersByTimeAsync(500);
+    expect(deps.record).toHaveBeenCalledTimes(1);
+    child.emit('close', null, 'SIGKILL');
+    await rejected;
+    expect(calls.slice(-2)).toEqual(['kill', 'release']);
+    expect(deps.kill).toHaveBeenCalledTimes(3);
+  });
+
+  it('retains custody at the absolute cleanup cutoff when the launch client never closes', async () => {
+    const { input, deps } = setup(); input.timeoutMs = 100;
+    vi.mocked(deps.kill).mockResolvedValue({ ok: false, scopeUnit: 'pc-child123.scope', action: 'kill', error: 'already_gone' });
+    const pending = runQualificationCommand('npm', [], input, deps);
+    const rejected = expect(pending).rejects.toThrow('worker-timeout');
+    await vi.advanceTimersByTimeAsync(10_000);
+    await rejected;
+    expect(deps.record).toHaveBeenCalledTimes(1);
   });
 
   it('does not move the absolute cutoff when output refreshes an idle timer', async () => {

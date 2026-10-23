@@ -1,8 +1,9 @@
 /** P-005: bounded, replay-safe freshness and notice persistence on the D-014 tables. */
-import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { checkPlanItemAnchorFreshness, type AnchorFreshnessCheck, type AnchorFreshnessOptions } from './anchor-freshness';
 import type { PlanItemAnchor } from './anchors';
+import { runWithWorkspace } from '../workspace-als';
 
 export const PLAN_ANCHOR_SWEEP_CAP = 50;
 export const PLAN_ANCHOR_FRESHNESS_CRON = '15 */15 * * * *';
@@ -24,7 +25,7 @@ type Candidate = PlanItemAnchor & { id: string; planSlug: string; itemId: string
 
 async function defaultHolders(options: PlanAnchorSweepOptions, planSlug: string): Promise<string[]> {
   const { listWorkItems } = await import('../work-items');
-  const items = await withWorkspace(options.workspaceId, () => listWorkItems({ harness: options.harnessSlug,
+  const items = await runWithWorkspace(options.workspaceId, () => listWorkItems({ harness: options.harnessSlug,
     sourcePlanSlug: planSlug, notTerminal: true, includeChildren: true, limit: 1001 }));
   if (items.length > 1000) throw new Error('Plan-anchor notice audience exceeds its bounded holder census');
   return [...new Set(items.flatMap(item => item.assignee ? [item.assignee] : []))];
@@ -35,14 +36,15 @@ async function defaultNotify(options: PlanAnchorSweepOptions, notice: PlanAnchor
   const msgId = `plan-anchor-notice:${options.harnessSlug}:${notice.id}`;
   // The durable notice is an outbox: a crash after send but before acknowledgement
   // must not duplicate the message when the system action replays.
-  if (!await getMessageById(msgId)) {
+  await runWithWorkspace(options.workspaceId, async () => {
+    if (await getMessageById(msgId)) return;
     await sendMessage({ ownerId: 'system:plan-anchor-freshness', ownerLabel: 'Plan anchor freshness',
       source: 'static-client', workspaceId: options.workspaceId, userId: null }, {
       msgId, to: notice.audience, harnessSlug: options.harnessSlug, plan_slug: notice.planSlug,
       summary: `Code links need review in ${notice.planSlug}`,
       body: `${notice.anchorIds.length} code link(s) changed or no longer resolve. Review the plan's code links before using them.`,
     });
-  }
+  });
   return msgId;
 }
 

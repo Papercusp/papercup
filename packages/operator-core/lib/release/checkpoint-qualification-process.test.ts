@@ -37,7 +37,7 @@ const payload = `
 `;
 
 describe.runIf(process.platform === 'linux' && userManagerBusReachable())('qualification real process bounds', () => {
-  it('kills a hung worker and its detached descendant before releasing custody', async () => {
+  it.each(['inherited', 'builtin-only'])('kills a hung worker and its detached descendant before releasing custody (%s)', async variant => {
     const taskId = newTaskId(), unit = scopeUnitForTask(taskId), pids: number[] = [], operations: string[] = [];
     const kills: Awaited<ReturnType<typeof killScopeUnit>>[] = [];
     const identity = (pid: number) => {
@@ -48,21 +48,29 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
     let launched: ReturnType<typeof identity>[] = [];
     const record = vi.fn<typeof recordStoredQualificationChildScope>(async (_target, change) => {
       operations.push(change.operation);
-      if (change.operation === 'release') expect(pids.every(pid => !running(pid)),
-        JSON.stringify({ unit, kills, launched, releasing: pids.map(identity) })).toBe(true);
+      if (change.operation === 'release') {
+        expect(pids, JSON.stringify({ unit, kills, launched })).toHaveLength(2);
+        expect(pids.every(pid => !running(pid)),
+          JSON.stringify({ unit, kills, launched, releasing: pids.map(identity) })).toBe(true);
+      }
       return { status: 'updated', transaction: {} } as Awaited<ReturnType<typeof recordStoredQualificationChildScope>>;
     });
     let output = '';
+    let failure: unknown;
     try {
-      await expect(runQualificationCommand(process.execPath, ['-e', payload], {
+      try { await runQualificationCommand(process.execPath, ['-e', payload], {
         target: { workspaceId: 'test-process-bounds', installSlug: 'test-process-bounds' },
         progress: { attemptId: 'test', candidate: 'test', runnerId: 'test', runId: 'test', pidIdentity: 'test',
           repairHead: null, root: process.cwd(), taskKey: 'test', runnerIdentity: 'test', updates: [],
           manifest: { schemaVersion: 1, units: [{ id: 'test:worker', kind: 'test', path: 'worker' }] },
           retryStates: [], runContext: 'green-checkpoint' },
-        // This builtin-only payload does not need the parent test runner's repo
-        // loaders. Keep their startup work outside the measured hang interval.
-        cwd: process.cwd(), env: { ...process.env, NODE_OPTIONS: '' }, deadlineEpochMs: Date.now() + 10_000, timeoutMs: 750,
+        // Keep inherited startup hooks in the reproduction; the builtin-only
+        // variant distinguishes startup-hook behavior without replacing it.
+        cwd: process.cwd(), env: { ...process.env, ...(variant === 'builtin-only' ? { NODE_OPTIONS: '' } : {}) },
+        // Inherited hooks took longer than 750ms in the measured controls.
+        // Give that fixture the independently fixed 4s worker bound used by the
+        // stalled-process fixture; the death-before-release predicate is exact.
+        deadlineEpochMs: Date.now() + 10_000, timeoutMs: variant === 'builtin-only' ? 750 : 4000,
         onOutput(stream, chunk) {
           if (stream !== 'stdout') return;
           output += chunk;
@@ -74,7 +82,10 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
       }, { spawn: (cmd, args, spec, options) => managedSpawn(cmd, args, spec, { ...options, scopeAvailable: true }),
         record, kill: async (...args: Parameters<typeof killScopeUnit>) => {
           const outcome = await killScopeUnit(...args); kills.push(outcome); return outcome;
-        }, taskId: () => taskId, now: Date.now })).rejects.toThrow('qualification-worker-timeout');
+        }, taskId: () => taskId, now: Date.now }); } catch (error) { failure = error; }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message, JSON.stringify({ variant, unit, kills, launched, releasing: pids.map(identity) }))
+        .toContain('qualification-worker-timeout');
       expect(pids, JSON.stringify({ unit, kills, output })).toHaveLength(2);
       expect(pids.every(pid => !running(pid))).toBe(true);
       expect(operations).toEqual(['enroll', 'release']);

@@ -97,8 +97,9 @@ export function writeOperatorArtifactManifest(input: {
       if (!trees.has(prefix)) trees.set(prefix, treeObjects(resolve(root, prefix), nested[1].sha, git));
     }
   };
-  // esbuild runs from apps/operator, as specified by deploy-deps.bundleHost.
-  const buildRoot = resolve(root, 'apps/operator');
+  // bundle_host_esbuild's package-cache reader executes at the repository
+  // root, including when deploy-deps starts bundle-host.sh in apps/operator.
+  const buildRoot = root;
   for (const name of Object.keys(meta.inputs).sort()) {
     if (name.startsWith('<') || name.startsWith('node:')) continue;
     const path = resolve(buildRoot, name);

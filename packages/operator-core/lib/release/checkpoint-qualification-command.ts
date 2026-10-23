@@ -148,7 +148,16 @@ export async function runQualificationCommand(command: string, args: string[], i
       if (enrolled && launchSettled) {
         if (child) {
           markManagedSpawnTeardown(child);
+          const awaitingHandoff = !closed;
           await bounded(deps.kill(unit, { signal: 'SIGKILL' }), true);
+          if (awaitingHandoff) {
+            // The systemd-run client can still be attaching a payload when an
+            // early kill observes an empty/collected scope. Keep custody until
+            // that exact client's close, then drain the scope again. The fixed
+            // cleanup deadline remains armed across both barriers.
+            await bounded(completion, true);
+            await bounded(deps.kill(unit, { signal: 'SIGKILL' }), true);
+          }
         }
         const released = await bounded(deps.record(options.target, { ...fence, operation: 'release' }), true);
         if (released.status !== 'updated' && released.status !== 'idempotent')
