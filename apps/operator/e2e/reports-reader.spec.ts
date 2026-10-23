@@ -5,6 +5,7 @@ import { reportFullFixture, reportSummaryFixture } from '../../operator-vite/src
 import { captureReportClipboard, navigateToPublishedReport, observeReportReadiness, readPublishedReportProof, verifyPublishedReportAndOfflineExport, waitForReportRenderer } from './_reports-proof';
 import type { Page } from '@playwright/test';
 import { runInNewContext } from 'node:vm';
+import { POSTHOG_PUBLIC_DEFAULTS } from '../../../packages/operator-core/lib/posthog-public-defaults';
 
 const report = {
   ...reportFullFixture,
@@ -123,6 +124,12 @@ test('report query readiness still enforces the navigation deadline', async ({ p
   await expect(navigateToPublishedReport(page, report, 250)).rejects.toThrow('page.waitForResponse: Timeout 250ms');
 });
 
+test.describe('published report proof', () => {
+// The real owner session retains its consented first-party flag client. Declare
+// that exact maintained origin; fixture runs still forbid every foreign origin.
+test.use({ egressAllowedOrigins: process.env.OPERATOR_REPORT_PROOF_JSON
+  ? [new URL(POSTHOG_PUBLIC_DEFAULTS.host).origin] : [] });
+
 test('published report text and standalone HTML stay identical', async ({ page }, testInfo) => {
   const input = process.env.OPERATOR_REPORT_PROOF_JSON;
   const expected = input ? await readPublishedReportProof(input) : report;
@@ -138,6 +145,7 @@ test('published report text and standalone HTML stay identical', async ({ page }
   }
   await navigateToPublishedReport(page, expected, testInfo.project.use.navigationTimeout ?? 30_000);
   await verifyPublishedReportAndOfflineExport(page, expected, testInfo);
+});
 });
 
 test('report proof rejects a successful HTTP response with an unrelated route', async ({ page }, testInfo) => {
