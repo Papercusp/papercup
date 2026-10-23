@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { zstdDecompressSync } from 'node:zlib';
 import { getBuildInfo } from './build-info';
 import candidatePreregistration from './llm-testing/fixtures/tool-delivery-full-after-use-20261021.json';
+import diagnosticPreregistration from './llm-testing/fixtures/tool-delivery-diagnostic-candidate-20261023.json';
 import { buildOracleSchemaIndex, r6PrimaryVerdict, type OracleToolCall } from './llm-testing/r6-malformed-call-oracle';
 
 export const TOOL_DELIVERY_PLAN = 'deterministic-tool-definition-delivery-2026-09-21';
@@ -46,11 +47,36 @@ export interface ToolDeliveryExperiment {
 export const HISTORICAL_TOOL_DELIVERY_EXPERIMENT: ToolDeliveryExperiment = {
   id: 'session-tool-delivery-ab-20261021', arms: TOOL_DELIVERY_ARMS, scenarios: TOOL_DELIVERY_SCENARIOS,
 };
+interface Preregistration {
+  experiment: ToolDeliveryExperiment & { manifestContract: ToolDeliveryManifestContract };
+  createdAt: string;
+  configuration: Omit<NonNullable<ToolDeliveryExperiment['executionContract']>, 'registeredAt'>;
+  variants: Record<'compact' | 'full', { id: string; configDelta: Record<string, unknown>; systemPromptTextSha256: string }>;
+  sourcePins: { head: string; files: Record<string, string>; scenarioPaths: Record<string, string>; submodules?: Record<string, string> };
+  capture: { privateCapture: { originalSha256: string } };
+  custodyPaths?: { privateCaptureFile: string; receiptDirectory: string; catalogSource: 'current-build' };
+  measurementAmendment?: {
+    decisionRef: string; registeredAt: string;
+    sourceReplacements: Record<string, { originalSha256: string; sha256: string }>;
+    addedFiles: Record<string, string>;
+  };
+}
+const preregistrations: Readonly<Record<string, Preregistration>> = {
+  [candidatePreregistration.experiment.id]: candidatePreregistration as unknown as Preregistration,
+  [diagnosticPreregistration.experiment.id]: diagnosticPreregistration as unknown as Preregistration,
+};
+export function toolDeliveryPreregistration(id: string): Preregistration {
+  const registration = preregistrations[id];
+  if (!registration) throw new Error(`Unregistered tool-delivery custody: ${id}`);
+  return registration;
+}
 /** Add a distinct candidate only AFTER transport proof and plan preregistration. */
 export const TOOL_DELIVERY_EXPERIMENTS: Readonly<Record<string, ToolDeliveryExperiment>> = {
   [HISTORICAL_TOOL_DELIVERY_EXPERIMENT.id]: HISTORICAL_TOOL_DELIVERY_EXPERIMENT,
-  [candidatePreregistration.experiment.id]: { ...candidatePreregistration.experiment,
-    executionContract: { registeredAt: candidatePreregistration.createdAt, ...candidatePreregistration.configuration } } as unknown as ToolDeliveryExperiment,
+  ...Object.fromEntries(Object.values(preregistrations).map(registration => [registration.experiment.id, {
+    ...registration.experiment,
+    executionContract: { registeredAt: registration.createdAt, ...registration.configuration },
+  }])),
 };
 
 export function toolDeliveryExperiment(id = HISTORICAL_TOOL_DELIVERY_EXPERIMENT.id): ToolDeliveryExperiment {
@@ -195,11 +221,6 @@ function validateExecutionOrder(rows: readonly ToolDeliveryRun[], experiment: To
   }
 }
 
-type Preregistration = typeof candidatePreregistration & { measurementAmendment?: {
-  decisionRef: string; registeredAt: string;
-  sourceReplacements: Record<string, { originalSha256: string; sha256: string }>;
-  addedFiles: Record<string, string>;
-} };
 /** Private capture remains immutable. Only separately preregistered measurement source can be repinned. */
 export function verifyToolDeliverySourceCustody(input: {
   registration?: Preregistration;
@@ -207,7 +228,7 @@ export function verifyToolDeliverySourceCustody(input: {
   readSource: (path: string, ref?: string) => Buffer;
   buildSha: string | null;
 }): NonNullable<ToolDeliveryMeasurement['custody']> {
-  const registration: Preregistration = input.registration ?? candidatePreregistration;
+  const registration = input.registration ?? toolDeliveryPreregistration(candidatePreregistration.experiment.id);
   const sha = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
   const privateOriginalSha256 = sha(input.privateCapture);
   const sourceFiles: string[] = [];
@@ -229,17 +250,21 @@ export function verifyToolDeliverySourceCustody(input: {
       if (!String(frozen.sourcePins.scenarioPaths[scenario]).endsWith(`/${path}`) && frozen.sourcePins.scenarioPaths[scenario] !== path) {
         return bad('Portable scenario source differs from the private original.');
       }
-      if (sha(input.readSource(path)) !== registration.experiment.manifestContract.scenarioHashes[scenario as keyof typeof registration.experiment.manifestContract.scenarioHashes]) {
+      const expected = registration.experiment.manifestContract.scenarioHashes[scenario];
+      if (sha(input.readSource(path)) !== expected || (registration.custodyPaths &&
+          (!input.buildSha || sha(input.readSource(path, input.buildSha)) !== expected))) {
         return bad(`Scenario source custody mismatch: ${path}`);
       }
     }
     const amendment = registration.measurementAmendment;
     const allowed = ['packages/operator-core/lib/tool-delivery-acceptance.ts', 'packages/operator-core/lib/scorecards.ts'];
-    if (!amendment || !amendment.addedFiles['packages/operator-core/lib/llm-testing/r6-malformed-call-oracle.ts'] ||
+    const oraclePath = 'packages/operator-core/lib/llm-testing/r6-malformed-call-oracle.ts';
+    const allowedAdditions = [oraclePath, 'packages/operator-core/lib/tool-delivery-acceptance.test.ts'];
+    if (!amendment || !(amendment.addedFiles[oraclePath] || (registration.custodyPaths && registration.sourcePins.files[oraclePath])) ||
         !amendment.sourceReplacements['packages/operator-core/lib/tool-delivery-acceptance.ts'] ||
         !/^deterministic-tool-definition-delivery-2026-09-21#D-\d+$/.test(amendment.decisionRef) || !Number.isFinite(Date.parse(amendment.registeredAt)) ||
         Object.keys(amendment.sourceReplacements).some(path => !allowed.includes(path)) ||
-        Object.keys(amendment.addedFiles).some(path => path !== 'packages/operator-core/lib/llm-testing/r6-malformed-call-oracle.ts')) {
+        Object.keys(amendment.addedFiles).some(path => !allowedAdditions.includes(path))) {
       return bad('Missing or invalid measurement-only amendment; original treatment remains frozen.');
     }
     if (!input.buildSha || !/^[a-f0-9]{7,40}$/.test(input.buildSha)) return bad('Loaded measurement build identity is unavailable.');
@@ -248,7 +273,7 @@ export function verifyToolDeliverySourceCustody(input: {
       if (replacement && replacement.originalSha256 !== originalSha256) return bad(`Original measurement source pin changed: ${path}`);
       const expected = replacement?.sha256 ?? originalSha256;
       // The runner's generated catalog is intentionally loaded from the frozen commit.
-      const frozenModule = path === 'apps/operator/scripts/tool-delivery.generated.mjs';
+      const frozenModule = !registration.custodyPaths && path === 'apps/operator/scripts/tool-delivery.generated.mjs';
       if (sha(input.readSource(path, frozenModule ? registration.sourcePins.head : undefined)) !== expected ||
           (!frozenModule && sha(input.readSource(path, input.buildSha)) !== expected)) return bad(`Source custody mismatch: ${path}`);
       sourceFiles.push(path);
@@ -263,7 +288,7 @@ export function verifyToolDeliverySourceCustody(input: {
 
 /** The once-only runner's durable marker and complete receipt bind this population to its first execution. */
 export function validateToolDeliveryBatchReceipt(rows: readonly ToolDeliveryRun[], started: unknown, receipt: unknown,
-  registration: Preregistration = candidatePreregistration): string | undefined {
+  registration: Preregistration = toolDeliveryPreregistration(candidatePreregistration.experiment.id)): string | undefined {
   const marker = object(started), amendment = registration.measurementAmendment;
   const markerAt = typeof marker.at === 'string' ? Date.parse(marker.at) : NaN;
   if (!amendment || !Number.isFinite(markerAt) || markerAt < Date.parse(amendment.registeredAt) ||
@@ -285,6 +310,17 @@ export function validateToolDeliveryBatchReceipt(rows: readonly ToolDeliveryRun[
     ids.push(...block.ids);
   }
   if (new Set(ids).size !== 30 || digest([...ids].sort()) !== digest(rows.map(row => row.id).sort())) return 'Candidate receipt omits or replaces attempts.';
+}
+
+/** A superproject gitlink selects the runner actually loaded, not the submodule's current HEAD. */
+export function readToolDeliveryCommittedSource(path: string, ref: string, submodules: Readonly<Record<string, string>>,
+  git: (args: string[], directory?: string) => Buffer): Buffer {
+  const submodule = Object.entries(submodules).find(([directory]) => path.startsWith(`${directory}/`));
+  if (!submodule) return git(['show', `${ref}:${path}`]);
+  const [directory, pinnedCommit] = submodule;
+  const loadedCommit = git(['rev-parse', `${ref}:${directory}`]).toString().trim();
+  if (loadedCommit !== pinnedCommit) throw new Error('Loaded submodule differs from the registered gitlink.');
+  return git(['show', `${loadedCommit}:${path.slice(directory.length + 1)}`], directory);
 }
 
 /** Unknown is deliberate: an empty, errored, asymmetric, or confounded sample cannot be green. */
@@ -412,15 +448,23 @@ export async function measureToolDeliveryAcceptance(window: { workspaceId: strin
     const result = evaluateToolDeliveryRuns(rows, buildOracleSchemaIndex(tools, new Map(contract.canonicalBySanitized)), experiment);
     let receiptError: string | undefined;
     try {
+      const registration = toolDeliveryPreregistration(experiment.id);
       const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 5000 }).trim();
       result.custody = verifyToolDeliverySourceCustody({
-        privateCapture: readFileSync(resolve(homedir(), '.papercusp/experiments/tool-delivery-full-after-use-original-20261021.json')),
+        registration,
+        privateCapture: readFileSync(resolve(homedir(), '.papercusp/experiments',
+          registration.custodyPaths?.privateCaptureFile ?? 'tool-delivery-full-after-use-original-20261021.json')),
         buildSha: getBuildInfo().sha,
-        readSource: (path, ref) => ref ? execFileSync('git', ['show', `${ref}:${path}`], { cwd: root, timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }) : readFileSync(resolve(root, path)),
+        readSource: (path, ref) => {
+          if (!ref) return readFileSync(resolve(root, path));
+          const options = { cwd: root, timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'] };
+          return readToolDeliveryCommittedSource(path, ref, registration.sourcePins.submodules ?? {},
+            (args, directory) => execFileSync('git', args, { ...options, cwd: directory ? resolve(root, directory) : root }));
+        },
       });
-      const directory = resolve(homedir(), '.papercusp/experiments/d062-once-20261022');
+      const directory = resolve(homedir(), '.papercusp/experiments', registration.custodyPaths?.receiptDirectory ?? 'd062-once-20261022');
       receiptError = validateToolDeliveryBatchReceipt(rows, JSON.parse(readFileSync(resolve(directory, 'started.json'), 'utf8')),
-        JSON.parse(readFileSync(resolve(directory, 'receipt.json'), 'utf8')));
+        JSON.parse(readFileSync(resolve(directory, 'receipt.json'), 'utf8')), registration);
     } catch { result.custody = { verified: false, reason: 'Private original source custody is unavailable.' }; }
     const outsideWindow = rows.some(row => !row.started_at || !row.finished_at ||
       new Date(row.started_at).getTime() < Date.parse(window.windowStart) || new Date(row.finished_at).getTime() > Date.parse(window.windowEnd));
