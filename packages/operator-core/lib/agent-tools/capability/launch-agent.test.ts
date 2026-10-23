@@ -362,7 +362,7 @@ const { goalHolderPlanFleetBypass, INTERNAL_LOOP_FIRE_ORIGIN, INTERNAL_SCOPED_IN
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
 const textOf = (res: unknown): string => (res as { content: Array<{ text: string }> }).content[0].text;
-const dataOf = (res: unknown) => (res as { data?: { deduped?: boolean; launch?: Record<string, unknown> } }).data;
+const dataOf = (res: unknown) => (res as { data?: { deduped?: boolean; launch?: Record<string, unknown>; launchFailure?: { stage: string; processesOpened: number } } }).data;
 const isError = (res: unknown): boolean => !!(res as { isError?: boolean }).isError;
 /** The command the tool actually handed to the spawner. */
 const spawnedCommand = (mock = spawnConsoleMock): string =>
