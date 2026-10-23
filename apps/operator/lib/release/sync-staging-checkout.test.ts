@@ -34,7 +34,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, symlinkSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createServer, connect, type Server, type Socket } from 'node:net';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
@@ -954,7 +954,7 @@ describe('sync-staging-checkout.sh generation admission (EI-26746441745558411)',
         'require_exclusive() { if flock -s -n "$TEST_LOCK" -c true; then echo "barrier missing during $1" >&2; return 92; fi; echo "exclusive:$1"; }',
         'staging_alias_bootstrap() { require_exclusive bootstrap; }',
         'prune_staging_generations() { require_exclusive gc; }',
-        'forward_compat_review_warnings() { :; }; assert_staging_unit_loopback() { :; }; assert_staging_unit_checkout() { :; }',
+        'forward_compat_review_warnings() { :; }; assert_staging_unit_loopback() { :; }; assert_staging_unit_checkout() { :; }; staging_preparation_has_headroom() { :; }',
         'staging_health_source_sha() { echo "$TEST_CURRENT"; }; paths_require_restart() { return 0; }; staging_live_client_count() { echo 0; }',
         'prepare_staging_candidate() { require_shared candidate; STAGING_CANDIDATE_ROOT="$TEST_ROOT/candidate/checkout"; STAGING_CANDIDATE_HOME="$TEST_ROOT/candidate"; }',
         'preflight_staging_migrations() { require_shared migrations; }; prebuild_staging_host_bundle() { require_shared bundle; }; prepare_staging_schema() { require_shared schema; }',
@@ -1275,6 +1275,36 @@ describe('sync-staging-checkout.sh immutable staging generations (WI-10003262)',
 
 describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)', () => {
   const PRUNE_FNS = ['collect_staging_generation_refs', 'staging_generation_in_use', 'staging_generation_holder_evidence', 'prune_staging_generations'];
+
+  it.each([
+    ['critical', '1000000', '0.000001', 75],
+    ['healthy', '0.000001', '0.000001', 0],
+  ] as const)('uses the shared writer reserve before preparing a %s-capacity candidate', (_state, gb, pct, status) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-headroom-'));
+    try {
+      const result = runFn(['staging_preparation_has_headroom'], 'staging_preparation_has_headroom', {
+        env: {
+          INTEGRATION_ROOT: resolve(dirname(SCRIPT_PATH), '../../../..'),
+          STAGING_GENERATIONS_ROOT: root,
+          PAPERCUSP_DISK_ALARM_CRITICAL_GB: gb,
+          PAPERCUSP_DISK_ALARM_CRITICAL_PCT: pct,
+        },
+      });
+      expect(result.status, result.stderr).toBe(status);
+      if (status === 75) expect(result.stderr).toContain('retaining the serving generation while cleanup continues');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('runs cleanup before admission and checks capacity before allocating a candidate', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const cleanup = script.indexOf('\nprune_staging_generations\n');
+    const admission = script.indexOf('\n  if staging_preparation_has_headroom; then', cleanup);
+    const prepare = script.indexOf('\n  prepare_staging_candidate "$target"', admission);
+    expect(cleanup).toBeGreaterThan(0);
+    expect(admission).toBeGreaterThan(cleanup);
+    expect(prepare).toBeGreaterThan(admission);
+    expect(script.slice(admission, prepare)).toContain('exit 0');
+  });
 
   it('defers slow retired-generation cleanup within its budget so runtime preparation can continue', () => {
     const root = mkdtempSync(join(tmpdir(), 'staging-prune-budget-'));

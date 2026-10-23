@@ -298,6 +298,30 @@ staging_alias_bootstrap() {
   fi
 }
 
+# Cleanup is bounded, but candidate preparation can allocate gigabytes after
+# that budget expires. Reuse the writers' reserve so a cleanup backlog cannot
+# keep growing while shared PostgreSQL and Git already refuse new writes.
+staging_preparation_has_headroom() {
+  (
+    cd "$INTEGRATION_ROOT" || exit 1
+    timeout --kill-after=2s 10s node --experimental-strip-types --input-type=module - "$STAGING_GENERATIONS_ROOT" <<'NODE'
+import { statfsSync } from 'node:fs';
+import { criticalWriteHeadroomBytes, diskPolicyFromEnv } from './packages/operator-core/lib/storage/disk-space-policy.ts';
+const snapshot = statfsSync(process.argv[2]);
+const total = Number(snapshot.blocks) * Number(snapshot.bsize);
+const available = Number(snapshot.bavail) * Number(snapshot.bsize);
+if (!Number.isSafeInteger(total) || total <= 0 || !Number.isSafeInteger(available) || available < 0 || available > total) {
+  throw new Error('staging source preparation: filesystem capacity is unmeasured');
+  }
+const reserve = criticalWriteHeadroomBytes(total, diskPolicyFromEnv());
+if (available < reserve) {
+  console.error(`staging source preparation deferred: ${available} available bytes below ${reserve} required on ${process.argv[2]}; retaining the serving generation while cleanup continues`);
+  process.exitCode = 75;
+  }
+NODE
+  )
+}
+
 create_staging_candidate() {
   local expected_sha="$1"
   mkdir -p "$STAGING_GENERATIONS_ROOT" || return 1
@@ -1388,6 +1412,17 @@ fi
 
 SYNC_ROOT="$(realpath -e "$STAGING_ROOT" 2>/dev/null || printf '%s' "$STAGING_ROOT")"
 if [ "$checkout_needs_advance" = 1 ]; then
+  if staging_preparation_has_headroom; then
+    :
+  else
+    headroom_status=$?
+    if [[ "$headroom_status" -eq 75 ]]; then
+      log "deferring candidate preparation until critical disk headroom recovers; the next tick retries cleanup"
+      exit 0
+    fi
+    log "FATAL: could not verify candidate filesystem headroom (exit $headroom_status); preserving the serving generation"
+    exit 1
+  fi
   log "preparing isolated staging candidate for ${target:0:10}"
   prepare_staging_candidate "$target"
   staging_sync_checkpoint "candidate checkout and SPA prepared"
