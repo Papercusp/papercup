@@ -706,14 +706,28 @@ describe('native affected-task parent receipt transport', () => {
       const observationStart = AFFECTED_TESTS_SRC.indexOf('const nativeReceiptArmed =');
       const observationEnd = AFFECTED_TESTS_SRC.indexOf('const stdout = [];', observationStart);
       expect(observationStart).toBeGreaterThan(0); expect(observationEnd).toBeGreaterThan(observationStart);
-      const observe = (out: string | null) => new Script(
+      const observe = (out: string | null, integrationOut: string | null = null,
+        qualificationOut: string | null = null) => new Script(
         `${AFFECTED_TESTS_SRC.slice(observationStart, observationEnd)}\nnativeObservation;`,
-      ).runInNewContext({ inheritedExecutedMapOut: out, integrationSourceMapOut: null,
+      ).runInNewContext({ inheritedExecutedMapOut: out, integrationSourceMapOut: integrationOut,
+        qualificationNativeOut: qualificationOut,
         ROOT: REPO_ROOT, spawnTask: task, spawnTaskKey: input.task, journalLabel: input.attempt,
         startedAt: input.startedAtMs, cwd: input.cwd, cmd: input.command[0], argv: input.command.slice(1),
         relative: (a: string, b: string) => resolve(b).slice(resolve(a).length + 1),
         join, readFileSync, createHash, Date, Set });
       expect(observe(null)(0, null, null, input.stdout, input.stderr)).toBeNull();
+      for (const [inheritedOut, integrationOut, qualificationOut, expectedOut] of [
+        ['inherited.json', null, null, 'inherited.json'],
+        [null, 'integration.json', null, 'integration.json'],
+        [null, null, 'qualification.json', 'qualification.json'],
+        ['inherited.json', 'integration.json', null, 'integration.json'],
+        ['inherited.json', 'integration.json', 'qualification.json', 'qualification.json'],
+      ] as const) {
+        const captured = observe(inheritedOut, integrationOut, qualificationOut)(
+          0, null, null, input.stdout, input.stderr, 321,
+        );
+        expect(captured.processTrace).toEqual({ out: expectedOut, rootPid: 321 });
+      }
       const observation = observe('requested.json')(0, null, null, input.stdout, input.stderr);
       expect(observation.command).toEqual(input.command);
       expect(observation.before).toHaveLength(2);
