@@ -38,6 +38,8 @@ vi.mock('./loop-transition-log', () => ({ recordLoopTransition: vi.fn() }));
 
 const { claimDueRoutine } = await import('./claim');
 const { listDueCronRoutines } = await import('@papercusp/db-org');
+const { classifyClaimSkip, recordUnclaimableRoutine, clearUnclaimableRoutine } =
+  await import('./unclaimable-routine-detector');
 
 let rootSql: postgres.Sql;
 
@@ -69,6 +71,7 @@ beforeAll(async () => {
       active boolean DEFAULT true NOT NULL,
       last_fired_at timestamptz, next_fire_at timestamptz,
       updated_at timestamptz DEFAULT now() NOT NULL,
+      metadata jsonb,
       reschedule_interval_sec integer, target_owner_id text
     )`);
 });
@@ -202,5 +205,27 @@ describe('claimDueRoutine — timestamp precision (WI-40883)', () => {
     const routine = await readDue('off');
     await rootSql`UPDATE harness_shared.routines SET active = FALSE WHERE id = 'off'`;
     await expect(claimDueRoutine(rootSql as any, routine as any)).resolves.toBe(false);
+  });
+
+  it('does not restore an old unclaimable alarm after another tick claims and clears it', async () => {
+    await seed('late-alarm', rootSql`now() - interval '90 minutes'`);
+    const stale = await readDue('late-alarm');
+    expect(stale).toBeDefined();
+    const verdict = classifyClaimSkip(stale as any, Date.now());
+    expect(verdict.state).toBe('unclaimable');
+    if (verdict.state !== 'unclaimable') throw new Error('expected overdue fixture');
+
+    // The losing tick can finish its fire-and-forget diagnostic AFTER the winner's
+    // claim and clear. Exercise that order against real PG, without timer sleeps.
+    await expect(claimDueRoutine(rootSql as any, stale as any)).resolves.toBe(true);
+    await clearUnclaimableRoutine(rootSql, 'late-alarm');
+    await recordUnclaimableRoutine(rootSql, 'late-alarm', verdict);
+
+    const [row] = await rootSql`
+      SELECT metadata, next_fire_at, last_fired_at
+        FROM harness_shared.routines WHERE id = 'late-alarm'`;
+    expect(new Date(row.next_fire_at).getTime()).toBeGreaterThan(Date.now());
+    expect(row.last_fired_at).not.toBeNull();
+    expect(row.metadata?.unclaimable).toBeUndefined();
   });
 });
