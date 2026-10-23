@@ -1282,28 +1282,35 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
   ] as const)('uses the shared writer reserve before preparing a %s-capacity candidate', (_state, gb, pct, status) => {
     const root = mkdtempSync(join(tmpdir(), 'staging-headroom-'));
     try {
-      const result = runFn(['staging_preparation_has_headroom'], 'staging_preparation_has_headroom', {
+      const script = readFileSync(SCRIPT_PATH, 'utf8');
+      const start = script.indexOf('\nSYNC_ROOT="');
+      const end = script.indexOf('\nif [ "$restart_required" = 1 ]; then', start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const allocation = join(root, 'candidate-allocated');
+      const result = runFn(['staging_preparation_has_headroom'], [
+        'log() { printf "%s\\n" "$*"; }',
+        'staging_sync_checkpoint() { :; }',
+        'prepare_staging_candidate() { touch "$TEST_ALLOCATION"; STAGING_CANDIDATE_ROOT="$STAGING_ROOT"; }',
+        'checkout_needs_advance=1; target=0123456789abcdef',
+        script.slice(start, end),
+      ].join('\n'), {
         env: {
           INTEGRATION_ROOT: resolve(dirname(SCRIPT_PATH), '../../../..'),
           STAGING_GENERATIONS_ROOT: root,
+          STAGING_ROOT: root,
+          TEST_ALLOCATION: allocation,
           PAPERCUSP_DISK_ALARM_CRITICAL_GB: gb,
           PAPERCUSP_DISK_ALARM_CRITICAL_PCT: pct,
         },
       });
-      expect(result.status, result.stderr).toBe(status);
-      if (status === 75) expect(result.stderr).toContain('retaining the serving generation while cleanup continues');
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(allocation)).toBe(status === 0);
+      if (status === 75) {
+        expect(result.stderr).toContain('retaining the serving generation while cleanup continues');
+        expect(result.stdout).toContain('the next tick retries cleanup');
+      }
     } finally { rmSync(root, { recursive: true, force: true }); }
-  });
-
-  it('runs cleanup before admission and checks capacity before allocating a candidate', () => {
-    const script = readFileSync(SCRIPT_PATH, 'utf8');
-    const cleanup = script.indexOf('\nprune_staging_generations\n');
-    const admission = script.indexOf('\n  if staging_preparation_has_headroom; then', cleanup);
-    const prepare = script.indexOf('\n  prepare_staging_candidate "$target"', admission);
-    expect(cleanup).toBeGreaterThan(0);
-    expect(admission).toBeGreaterThan(cleanup);
-    expect(prepare).toBeGreaterThan(admission);
-    expect(script.slice(admission, prepare)).toContain('exit 0');
   });
 
   it('defers slow retired-generation cleanup within its budget so runtime preparation can continue', () => {
