@@ -4,6 +4,7 @@ vi.mock('../auth', () => ({
   getSessionUser: vi.fn(),
   getSessionUserOrDefault: vi.fn(),
 }));
+vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-local' }));
 import { getSessionUser, getSessionUserOrDefault } from '../auth';
 import { getSessionUserOrLocalDefault } from './session-or-local';
 
@@ -33,6 +34,7 @@ describe('getSessionUserOrLocalDefault (WI-5044)', () => {
     vi.mocked(getSessionUser).mockResolvedValue(user('real'));
     const got = await getSessionUserOrLocalDefault(reqWithHost('example.com'));
     expect(got?.id).toBe('real');
+    expect(got).toHaveProperty('workspace_id', 'ws-session');
     expect(getSessionUserOrDefault).not.toHaveBeenCalled();
   });
 
@@ -42,6 +44,7 @@ describe('getSessionUserOrLocalDefault (WI-5044)', () => {
     for (const host of ['127.0.0.1:33700', 'localhost:3270', 'tauri.localhost', '[::1]:3070']) {
       const got = await getSessionUserOrLocalDefault(reqWithHost(host));
       expect(got?.id, host).toBe('default');
+      expect(got).toHaveProperty('workspace_id', 'ws-local');
     }
   });
 

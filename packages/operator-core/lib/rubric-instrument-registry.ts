@@ -698,6 +698,7 @@ export function parseGateSentinelHealth(stdout: string): number | null {
 
 const COMMAND_INSTRUMENTS: readonly CommandInstrument[] = Object.freeze([
   engineeringEvidenceReleaseInstrument(resolveAgentWorkspaceRoot({})),
+  engineeringEvidenceReleaseInstrument(resolveAgentWorkspaceRoot({}), 'current-build'),
   ...p544QualificationInstruments(resolveAgentWorkspaceRoot({})),
   ticketFilingIntegrationInstrument(resolveAgentWorkspaceRoot({})),
   {

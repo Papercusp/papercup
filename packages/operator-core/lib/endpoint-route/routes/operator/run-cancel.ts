@@ -11,8 +11,9 @@ import {
   cancelPendingCardsForRun,
   snapshotWorkspace,
 } from '@papercusp/agent-mcp';
-import { getSessionUser } from '../../../auth';
+import { getSessionUserOrLocalDefault } from '../../session-or-local';
 import { cardResponseRateAllow } from '../../../card-response-rate-limit';
+import { getConversationById } from '../../../operator-conversations';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface Body {
@@ -24,8 +25,8 @@ export default defineTool({
   method: 'POST',
   path: '/operator/conversations/:id/run-cancel',
   auth: 'loopback',
-  async handler(req) {
-    const user = await getSessionUser(req.headers);
+  async handler(req, ctx) {
+    const user = await getSessionUserOrLocalDefault(req);
     if (!user) return Response.json({ error: 'unauthorized' }, { status: 401 });
 
     const body = (await req.json().catch(() => null)) as Body | null;
@@ -43,7 +44,11 @@ export default defineTool({
       return Response.json({ error: 'rate limit: 30 RPS per user' }, { status: 429 });
     }
 
-    const runs = snapshotWorkspace(body.workspaceId);
+    const conversation = await getConversationById(ctx.params.id as string, user.workspace_id);
+    if (!conversation || body.workspaceId !== conversation.workspaceId) {
+      return Response.json({ error: 'conversation not found' }, { status: 404 });
+    }
+    const runs = snapshotWorkspace(conversation.workspaceId);
     const ownsRun = runs.some((vs) => vs.runId === body.runId);
     if (!ownsRun) {
       return Response.json({ error: 'run not found in workspace' }, { status: 404 });

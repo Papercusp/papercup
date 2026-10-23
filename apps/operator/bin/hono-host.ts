@@ -65,6 +65,7 @@ import {
   gracefulHostRecycle,
   installGracefulShutdown,
   installFatalDiagnostics,
+  describeFatalPgError,
 } from '@papercusp/operator-core/lib/host-recycle';
 import { markShuttingDown } from '@papercusp/operator-core/lib/shutdown-state';
 // infra-fail-fast P-015 / D2 — canonical loopback-default bind host (locks P-027).
@@ -251,6 +252,8 @@ process.on('unhandledRejection', (reason) => {
     return;
   }
   console.error('[hono-host] fatal unhandledRejection — exiting:', reason);
+  const pgError = describeFatalPgError(reason);
+  if (pgError) console.error('[hono-host] fatal postgres attribution:', pgError);
   process.exit(1);
 });
 process.on('uncaughtException', (err) => {
@@ -262,6 +265,8 @@ process.on('uncaughtException', (err) => {
     return;
   }
   console.error('[hono-host] fatal uncaughtException — exiting:', err);
+  const pgError = describeFatalPgError(err);
+  if (pgError) console.error('[hono-host] fatal postgres attribution:', pgError);
   process.exit(1);
 });
 

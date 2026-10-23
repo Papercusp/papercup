@@ -9795,9 +9795,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
           );
           return;
         }
+        const responseStatus = failure.code === 'ttfb-timeout' && failure.retryable === false
+          ? failure.status ?? 504
+          : 502;
         sendJson(
           res,
-          502,
+          responseStatus,
           {
             type: 'error',
             error: {

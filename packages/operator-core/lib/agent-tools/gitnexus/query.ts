@@ -28,6 +28,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { loadedHandlerFingerprint, observeEngineeringBoundary } from '../../observability/runtime';
 
 import {
   GITNEXUS_FACADE_OPS,
@@ -50,7 +51,9 @@ import { queryPushSnapshot } from '../../code-intelligence/push-snapshot';
 import { readCoChange, readSymbolProvenance } from '../../code-intelligence/change-history';
 import { postgresLineageQuery } from '../../code-intelligence/postgres-lineage-query';
 import { reuseGraphQuery } from '../../code-intelligence/reuse-graph';
+import { semanticConceptQuery, semanticSimilarQuery } from '../../code-intelligence/semantic-code-runtime';
 import { engineeringEvidenceQuery } from '../../code-intelligence/engineering-evidence';
+
 
 /**
  * WI-10006543 (plan gitnexus-deterministic-integration-2026-10-05, D-026, D-018):
@@ -214,8 +217,22 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const op = args.op as string;
-    if (op === 'evidence') return { data: await engineeringEvidenceQuery(args, ctx) };
-    if (op === 'similar' || op === 'clones') return { data: await reuseGraphQuery(resolveAgentWorkspaceRoot(ctx), { ...args, op }, ctx.signal) };
+    if (op === 'evidence') {
+      // Capture one callable for both hashing and execution, including on a hot reload.
+      const handler = engineeringEvidenceQuery;
+      const observed = await observeEngineeringBoundary(loadedHandlerFingerprint(handler), () => handler(args, ctx));
+      return { data: observed.result, boundaryObservation: observed.boundaryObservation,
+        boundaryObservationGap: observed.boundaryObservationGap };
+    }
+    if (op === 'similar' || op === 'clones') {
+      const root = resolveAgentWorkspaceRoot(ctx);
+      const answer = await reuseGraphQuery(root, { ...args, op }, ctx.signal);
+      if (op === 'clones' || answer.status !== 'ok') return { data: answer };
+      const target = 'target' in answer ? answer.target : null;
+      return { data: { ...answer, semantic: await semanticSimilarQuery(root,
+        ctx.workspaceId ?? ctx.principal?.workspaceId,
+        { ...args, ...(target ? { file_path: target.path, line1: target.line1 } : {}) }, ctx.signal) } };
+    }
     if (op === 'cochange') {
       const paths = args.paths ?? (args.file_path ? [args.file_path] : []);
       if (!paths.length) return { data: { status: 'unknown', error: 'cochange requires bounded exact paths.' } };
@@ -310,6 +327,15 @@ export default defineTool({
 
     if (native) {
       const answer = scoped(await firstPartyCallersAnswer(args, ctx));
+      if (op === 'concept-search') {
+        const semantic = await semanticConceptQuery(resolveAgentWorkspaceRoot(ctx),
+          ctx.workspaceId ?? ctx.principal?.workspaceId, args.name ?? '',
+          { paths: args.paths, limit: args.limit, signal: ctx.signal,
+            graphIds: answer.sites.filter(site => site.line1 !== null).map(site => `${site.path}:${site.line1}`) });
+        // Keep native evidence intact. The separately versioned hybrid matches
+        // carry their own source identities and may not inherit compiler proof.
+        return { data: { ...answer, semantic } };
+      }
       if (!args.runtime) return { data: answer };
       const runtimeProvenance = await sourceRuntimeProvenance(answer, args.runtime,
         resolveAgentWorkspaceRoot(ctx), ctx.dispatchTool, args.runtime_limit);

@@ -13,6 +13,7 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { interfaceSignatureEdits, readInterfacePeerContext, type InterfacePeerContext } from './peer-edit-impact';
 import type { TaskBrief } from './task-brief';
 import { shellSearchPatterns } from './native-adoption';
 import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushProofSource, type PushSnapshot, type SnapshotSymbol } from './push-snapshot';
@@ -50,6 +51,7 @@ export interface PushInput {
   resumeContext?: ResumeContext;
   /** Code notes anchored to first-touched files, read before the notes leg runs. */
   notesContext?: NotesContext;
+  interfacePeerContext?: InterfacePeerContext;
   calls: readonly PushCall[];
 }
 export interface FirstTouchContext {
@@ -743,8 +745,18 @@ export const snapshotInterfaceLeg: PushLeg = (input, snapshot) => {
     }
     const consumers = snapshot.importers.get(edit.path) ?? [];
     const suggestedCall = tests.length ? `testing:run ${JSON.stringify({ files: tests.slice(0, 2), harness: input.harness })}` : undefined;
-    facts.push({ leg: 'interface', subject: `${edit.path}:${changes.join('|')}`, citedPaths: [edit.path, ...consumers.slice(0, 2), ...tests.slice(0, 2)], suggestedCall,
+    const peerContext = input.interfacePeerContext?.byPath[edit.path];
+    const peerText = changes.some(s => /^signature /.test(s))
+      ? peerContext?.status === 'measured' && peerContext.peers.length
+        ? '\nLive caller peers (static candidates): ' + peerContext.peers.slice(0, 2)
+          .map(p => `${p.owner.slice(0, 80)} ${p.path.slice(0, 180)} (${p.via})`).join('; ') + '.'
+        : '\nLive caller peers: unknown' + (peerContext?.reason ? ` (${peerContext.reason})` : ' (no matched live peer measured)') + '.'
+      : '';
+    facts.push({ leg: 'interface', subject: `${edit.path}:${changes.join('|')}`,
+      citedPaths: [...new Set([edit.path, ...consumers.slice(0, 2), ...tests.slice(0, 2),
+        ...(peerContext?.status === 'measured' ? peerContext.peers.slice(0, 2).map(p => p.path) : [])])], suggestedCall,
       text: `${edit.path}: ${changes.join('; ')}.\nStatic consumers: ${consumers.slice(0, 2).join(', ') || 'unknown'}.`
+        + peerText
         + `\nTests with static import reach${queue.length ? ' (bounded)' : ''}: ${suggestedCall ?? 'unknown'}.`
         + `\nPinned strand checks (advisory; run typecheck in background):\n${checks.join('\n')}`
         + '\nSnapshot reach predates this edit; affected consumers are candidates, not proven failures. Dynamic dispatch, new imports, source completeness and runtime execution remain unknown.' });
@@ -936,6 +948,7 @@ export interface PushChannelDeps {
   incidentContext?(input: PushInput, paths: string[]): Promise<IncidentAttribution>;
   resumeContext?(input: PushInput, diagnostics?: ResumeReadDiagnostics): Promise<ResumeContext>;
   notesContext?(input: PushInput, paths: readonly string[]): Promise<NotesContext>;
+  interfaceContext?(input: PushInput, snapshot: PushSnapshot): Promise<InterfacePeerContext>;
   /** `dropped`: facts the request already found too big for `requestBudget`; the commit
    * classifies and records them with its own budget drops (WI-6554700010018440). */
   commit(input: PushInput, snapshot: PushSnapshot, facts: readonly PushFact[], requestBudget: number, signal: AbortSignal,
@@ -1094,6 +1107,7 @@ const defaults: PushChannelDeps = {
   },
   commit: commitPushFacts,
   incidentContext: readPushIncidentAttribution,
+  interfaceContext: readInterfacePeerContext,
   resumeContext: (input, diagnostics) => readPushResumeContext(input, undefined, diagnostics),
   notesContext: (input, paths) => readPushNotesContext(input, paths),
 };
@@ -1147,6 +1161,11 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
     for (const [id, leg] of [...deps.legs()].sort(([a], [b]) => Number(b === 'interface') - Number(a === 'interface'))) {
       if (signal.aborted || !await deps.enabled(PUSH_LEG_FLAGS[id])) continue;
       try {
+        if (id === 'interface' && deps.interfaceContext && interfaceSignatureEdits(input).length) {
+          const context = await withBoundedTimeout(() => deps.interfaceContext!(input, snapshot),
+            { timeoutMs: 100, fallback: undefined, label: 'code-intel-interface-peers' });
+          input.interfacePeerContext = context.value;
+        }
         if (id === 'first-touch' && deps.context && touchedPaths.length) {
           const diagnostics: ResumeReadDiagnostics = {
             readId: randomUUID(), startedAtMs: Date.now(), phaseMs: {},

@@ -8,6 +8,8 @@ import { createFreshPgDb, applyEventSubstrateMigrationsForTest, type FreshPgDb }
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { buildCloneIndex } from './clone-index';
+import { extractSemanticFunctions } from './semantic-code';
+import { judgeSemanticPair } from './semantic-code-judge';
 
 const WS = 'clone-sweep-test', H = 'papercup';
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -21,7 +23,7 @@ vi.mock('../modes/goal-context', async orig => ({ ...(await orig<Record<string, 
 vi.mock('../blueprint/operation-worker-binding', async orig => ({ ...(await orig<Record<string, unknown>>()),
   readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' }) }));
 
-const { cloneFamilyConditionKey, cloneSweepInputSchema, fileCloneSweep, rankCloneSweep } = await import('./clone-sweep');
+const { cloneFamilyConditionKey, cloneSweepInputSchema, fileCloneSweep, rankCloneSweep, rankSemanticSweep } = await import('./clone-sweep');
 const { runCloneFamilySweepAction, CLONE_FAMILY_SWEEP_ACTION } = await import('../harness/routines/clone-family-sweep-action');
 const { getSystemActionEntry } = await import('../harness/routines/system-actions');
 let db: FreshPgDb;
@@ -70,6 +72,35 @@ afterAll(async () => {
 });
 
 describe('durable clone sweep', () => {
+  it('P012 judges Type-4 pairs before the existing deduplicated filing path and rejects stale or missing provenance', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'semantic-sweep-')); dirs.push(root);
+    const sources = [
+      { path: 'a.ts', source: 'export function f(xs: number[]) { return xs.reduce((a,b) => a+b, 0); }' },
+      { path: 'b.ts', source: 'export function g(xs: number[]) { let n = 0; for (const x of xs) n += x; return n; }' },
+    ];
+    for (const row of sources) writeFileSync(join(root, row.path), row.source);
+    const index = buildCloneIndex(sources, { minMass: 1 });
+    const pair = sources.map(row => extractSemanticFunctions(row)[0]) as [ReturnType<typeof extractSemanticFunctions>[number], ReturnType<typeof extractSemanticFunctions>[number]];
+    const output = { verdict: 'duplicate', duplicate: true, confidence: .95, reason: 'Same sum including empty arrays.',
+      leftEvidence: 'reduce', rightEvidence: 'n += x' };
+    const judgment = await judgeSemanticPair(pair, { model: 'controlled-replay-v1', harness: H,
+      call: async () => ({ text: JSON.stringify(output), raw: {}, inputTokens: 1, outputTokens: 1, costUsd: 0,
+        execution: { model: 'controlled-replay-v1', codeHash: null, loadedCode: { llmClient: 'fixture' } } }) });
+    const ranked = rankSemanticSweep(index, [{ pair, judgment }], empty);
+    expect(ranked).toHaveLength(1);
+    const first = await fileCloneSweep(ranked, { ...scope('semantic-first'), root });
+    expect(first.created).toBe(1);
+    expect((await fileCloneSweep(ranked, { ...scope('semantic-replay'), root })).rows[0].itemId).toBe(first.rows[0].itemId);
+    const [item] = await db.sql`SELECT payload FROM harness_shared.work_items WHERE feature_id=${first.rows[0].itemId}`;
+    expect(item.payload.cloneFamily.semantic.judgment).toEqual(judgment);
+    expect(rankSemanticSweep(index, [{ pair, judgment: { ...judgment, status: 'abstain' } }], empty)).toEqual([]);
+    expect(rankSemanticSweep(index, [{ pair, judgment: { ...judgment, execution: null } }], empty)).toEqual([]);
+    const unverified = { ...ranked[0], semantic: { pair, judgment: { ...judgment, output: '{}' } } };
+    expect((await fileCloneSweep([unverified], { ...scope('tampered'), root })).rows[0].disposition).toBe('unverified');
+    writeFileSync(join(root, 'b.ts'), 'export function g() { return 1; }');
+    expect((await fileCloneSweep(ranked, { ...scope('stale'), root })).rows[0].disposition).toBe('unverified');
+    expect(await countKey(cloneFamilyConditionKey(ranked[0].family))).toEqual([first.rows[0].itemId]);
+  }, 60000);
   it('REUSE-P-008-01 files once across simultaneous, repeated, restarted and terminal-history sweeps', async () => {
     const ranked = rankCloneSweep(indexFor('once'), empty);
     expect(ranked).toHaveLength(1);

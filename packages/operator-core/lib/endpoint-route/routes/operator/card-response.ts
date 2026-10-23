@@ -9,6 +9,7 @@
 import { resolveCardResponse } from '@papercusp/agent-mcp';
 import { getSessionUserOrLocalDefault } from '../../session-or-local';
 import { cardResponseRateAllow } from '../../../card-response-rate-limit';
+import { getConversationById } from '../../../operator-conversations';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface Body {
@@ -23,7 +24,7 @@ export default defineTool({
   method: 'POST',
   path: '/operator/conversations/:id/card-response',
   auth: 'loopback',
-  async handler(req) {
+  async handler(req, ctx) {
     // WI-5044: session user OR (loopback-only) the seeded default user — the
     // desktop webview has no session cookie; a strict cookie check made every
     // card pick un-postable on the shipping product.
@@ -54,12 +55,17 @@ export default defineTool({
       );
     }
 
+    const conversation = await getConversationById(ctx.params.id as string, user.workspace_id);
+    if (!conversation || body.workspaceId !== conversation.workspaceId) {
+      return Response.json({ error: 'conversation not found' }, { status: 404 });
+    }
+
     const r = resolveCardResponse({
       correlationId: body.correlationId,
       action: body.action,
       payload: body.payload,
       reason: body.reason,
-      expectedWorkspaceId: body.workspaceId,
+      expectedWorkspaceId: conversation.workspaceId,
     });
 
     if (!r.ok) {

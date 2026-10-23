@@ -33,6 +33,8 @@ export interface NativeNpmLifecycleDiagnostics {
 
 export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, input: {
   task: string; attempt: string; cwd: string; command: string[]; originalCommand?: string | null;
+  /** Requested command and environment before diagnostic preload/wrapper additions. Values are never retained. */
+  invocation?: { command: string[]; environmentSha256: string };
   startedAtMs: number; finishedAtMs: number; exitCode: number | null; signal: string | null;
   error: string | null; captureComplete: boolean; stdout: Buffer; stderr: Buffer;
   before?: Array<{ path: string; sha256: string }> | null;

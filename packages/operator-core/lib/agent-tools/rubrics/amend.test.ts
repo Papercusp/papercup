@@ -26,7 +26,7 @@ const rubricsMocks = vi.hoisted(() => ({
 const reviewMocks = vi.hoisted(() => ({ openAcceptanceBarAmendmentReview: vi.fn() }));
 const planMocks = vi.hoisted(() => ({ getPlanRow: vi.fn() }));
 vi.mock('../plans/source', () => ({ getPlanRow: planMocks.getPlanRow }));
-const workItemMocks = vi.hoisted(() => ({ commentWorkItem: vi.fn() }));
+const workItemMocks = vi.hoisted(() => ({ commentWorkItem: vi.fn(), getWorkItemsByIds: vi.fn() }));
 const receiptDb = vi.hoisted(() => {
   type Row = { idempotency_key: string; rubric_ref: string; state: string; started_at: Date; finished_at: Date | null; result_json: Record<string, unknown> | null; error: string | null };
   const rows = new Map<string, Row>();
@@ -80,7 +80,10 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../../consult/acceptance-bar-amendment-review', () => ({
   openAcceptanceBarAmendmentReview: reviewMocks.openAcceptanceBarAmendmentReview,
 }));
-vi.mock('../../work-items', () => ({ commentWorkItem: workItemMocks.commentWorkItem }));
+vi.mock('../../work-items', () => ({
+  commentWorkItem: workItemMocks.commentWorkItem,
+  getWorkItemsByIds: workItemMocks.getWorkItemsByIds,
+}));
 vi.mock('../../rubrics', () => ({
   AMENDABLE_CRITERION_FIELDS: ['title', 'model', 'method', 'driftMarkers', 'replication'],
   amendRubric: rubricsMocks.amendRubric,
@@ -703,6 +706,29 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     expect(workItemMocks.commentWorkItem).not.toHaveBeenCalled();
     expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
     expect(rubricsMocks.amendRubric).not.toHaveBeenCalled();
+  });
+
+  it('surfaces terminal dependency scope mismatch after amendment and accepts the owned pending correction', async () => {
+    rubricsMocks.rubricCompleteness.mockReturnValue({ complete: true });
+    for (const [dependencyId, state, shouldWarn] of [
+      ['WI-6554700010014915', 'done', true],
+      ['WI-6554700010023061', 'open', false],
+    ] as const) {
+      const method = `Missing detector branches remain unknown. Their implementation dependency is ${dependencyId}, assigned to the leader.`;
+      const item = { ...criterion, key: 'r-6', barKey: 'R-6', method };
+      workItemMocks.getWorkItemsByIds.mockResolvedValue([{
+        id: dependencyId, state,
+        terminalCompletionEvidence: state === 'done' ? { coverage: { checked: ['R1 scope detector', 'R9 deployment detector'] } } : null,
+      }]);
+      rubricsMocks.amendRubric.mockResolvedValue({
+        rubricId: 'acceptance-example', kind: 'acceptance', subjectHarnessSlug: 'papercusp', criteria: [item], methodRef: null,
+      });
+      const result = await body({ rubricRef: 'acceptance-example', criteria: [item], reason: 'Correct implementation dependency.', idempotencyKey: `dependency-${dependencyId}` });
+      expect(result.ok).toBe(true);
+      expect(result.methodLint).toEqual(shouldWarn ? [expect.objectContaining({
+        code: 'acceptance-method-dependency-coverage', criterionKey: 'r-6', dependencyId,
+      })] : []);
+    }
   });
 
   it('returns a non-blocking methodLint advisory for native-shell acceptance methods', async () => {

@@ -36,7 +36,7 @@ import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import { trackDetached } from '../../detached-imports';
 import { requirementCriterionInputSchema, requirementAmendmentSchema } from '../plans/rubric-template';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
-import { lintAcceptanceCriterionMethods } from '../../rubrics-method-lint';
+import { lintAcceptanceMethods } from '../../rubrics-method-lint';
 import { runtimeVettingFindings } from '../../acceptance-runtime-citation';
 import { openAcceptanceBarAmendmentReview } from '../../consult/acceptance-bar-amendment-review';
 import { acceptanceBarMappingDeltaEntrySchema } from '../../acceptance-bar-amendment';
@@ -855,7 +855,7 @@ async function executeAmend(input: AmendRubricInput, rubricRef: string): Promise
   const completeness = rubricCompleteness(rubric);
   // EI-10514: schema-validate embedded replication-drill SQL against live PG (non-blocking).
   const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
-  const methodLint = rubric.kind === 'acceptance' ? lintAcceptanceCriterionMethods(rubric.criteria) : [];
+  const methodLint = rubric.kind === 'acceptance' ? await lintAcceptanceMethods(rubric.criteria, rubric.subjectHarnessSlug ?? undefined) : [];
   // acceptance-runtime-plane P-004: same non-blocking vetting finding as rubrics:propose.
   const runtimeFindings = rubric.kind === 'acceptance' ? runtimeVettingFindings(rubric.criteria) : [];
   // Push-on-write (push-audit 2026-07-26): the Rubrics pane + trend read these.

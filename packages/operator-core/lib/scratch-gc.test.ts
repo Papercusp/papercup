@@ -660,6 +660,74 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
     }
   });
 
+  it('remeasures cached over-target usage outside the data lease and reuses that scan for eviction', async () => {
+    const workspaceId = 'ws-cached-over-target-refresh';
+    const oldest = makeSparseRun(workspaceId, UUID(30), 2 * 1024 ** 3, 10_000);
+    await refreshScratchUsage(workspaceId);
+    const newest = makeSparseRun(workspaceId, UUID(31), 3 * 1024 ** 3);
+    _setScratchUsageForTests(
+      workspaceId,
+      WORKSPACE_QUOTA_BYTES + 100,
+      Date.now(),
+      true,
+    );
+
+    const workspaceRoot = scratchRootForWorkspace(workspaceId);
+    const mutexDigest = createHash('sha256')
+      .update(resolve(workspaceRoot))
+      .digest('hex')
+      .slice(0, 40);
+    const dataMutexName = 'papercusp-scratch-data-' + mutexDigest;
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseScan!: () => void;
+    let reachedRoot!: () => void;
+    const scanGate = new Promise<void>((resolve) => { releaseScan = resolve; });
+    const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
+    let rootReads = 0;
+    readdirMock.mockClear();
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (String(path) === workspaceRoot && ++rootReads === 1) {
+        reachedRoot();
+        await scanGate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+
+    let refresh: Promise<void> | undefined;
+    let probe: Promise<void> | undefined;
+    try {
+      refresh = refreshScratchUsage(workspaceId);
+      await atRoot;
+
+      let probeEntered = false;
+      probe = withFsMutex(dataMutexName, async () => { probeEntered = true; }, {
+        timeoutMs: 500,
+        retryMs: 5,
+      });
+      const enteredDuringScan = await probe.then(() => true, () => false);
+      expect(enteredDuringScan).toBe(true);
+      expect(probeEntered).toBe(true);
+
+      releaseScan();
+      await refresh;
+      await probe;
+
+      expect(existsSync(oldest)).toBe(false);
+      expect(existsSync(newest)).toBe(true);
+      expect(scratchUsageBytes(workspaceId)).toBeLessThanOrEqual(
+        WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES,
+      );
+      expect(readdirMock.mock.calls.filter(([path]) => String(path) === newest)).toHaveLength(1);
+    } finally {
+      releaseScan();
+      readdirMock.mockImplementation(originalRead);
+      await Promise.allSettled([...(refresh ? [refresh] : []), ...(probe ? [probe] : [])]);
+    }
+  });
+
   it('does not wait for a stale but valid shared ledger before publishing a spill', async () => {
     const workspaceId = 'ws-stale-ledger-write';
     const runDir = makeRunDir(workspaceId, 'result-door', UUID(7), 8);
@@ -1510,8 +1578,10 @@ describe('deferred scratch quota recovery', () => {
       expect(JSON.stringify(result.content)).toContain(spillPath);
       expect(scansAtWrite).toEqual([1, 1, 1]);
       expect(rootReads).toBe(1);
-      expect(phaseRows[0]).toMatchObject({ quotaWaitMs: 0, refreshWaitMs: 25, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 });
-      expect(phaseRows.slice(1)).toMatchObject(Array(2).fill({ quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 }));
+      const completedPhases = phaseRows.filter((row) => !row.progress);
+      expect(completedPhases).toHaveLength(3);
+      expect(completedPhases[0]).toMatchObject({ quotaWaitMs: 0, refreshWaitMs: 25, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 });
+      expect(completedPhases.slice(1)).toMatchObject(Array(2).fill({ quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 }));
       expect(doorPhases.filter((row) => !row.progress)).toMatchObject([
         { quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 },
       ]);

@@ -5377,6 +5377,9 @@ async function completeOne(
         : {}),
       completionAuthority,
       countsTowardBurnDown: countsTowardBurnDown(completionAuthority, true, isAbandonedClose),
+      // Match the real close's computed diagnostics before the persistence boundary.
+      ...(changeKindWarning ? { changeKindWarning } : {}),
+      ...(changeKindMismatchReason ? { changeKindMismatchReason } : {}),
       ...(contentIdentityPreviewWarning ? { authorityWarning: contentIdentityPreviewWarning } : {}),
       ...(completionEvidenceFindings ? { completionEvidenceFindings } : {}),
       ...(ephemeralDeliverableWarning ? { ephemeralDeliverableWarning } : {}),
@@ -6253,7 +6256,10 @@ async function completeOne(
       const { getCompletionTimeBrief } = await import('../../code-intelligence/task-brief');
       if (signal.aborted) return null;
       return getCompletionTimeBrief({ workspaceId: ctx.workspaceId ?? activeWorkspaceId(),
-        harness: it.harness ?? existing.harness ?? '', paths: completionEvidenceForGate.filesChanged ?? [] }, {
+        harness: it.harness ?? existing.harness ?? '', paths: completionEvidenceForGate.filesChanged ?? [],
+        subject: { id: it.id, harness: it.harness ?? existing.harness,
+          payload: existing.payload, sourcePlanSlug: existing.sourcePlanSlug,
+          sourcePlanItemIds: existing.sourcePlanItemIds } }, {
         runs: async paths => {
           const run = await latestTestingRunForOwner(ident.ownerId, it.id, ctx.workspaceId ?? null,
             it.harness ?? existing.harness ?? null);

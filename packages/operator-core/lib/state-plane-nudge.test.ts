@@ -11,8 +11,8 @@ const T0 = 1_700_000_000_000;
 const S = 'sess-1';
 
 /** Feed one call into the nudge plane and return whatever it wanted to say. */
-function call(toolName: string, offsetMs: number, sessionKey = S): string | null {
-  return maybeStatePlaneNudge({ sessionKey, toolName, now: T0 + offsetMs });
+function call(toolName: string, offsetMs: number, sessionKey = S, args?: unknown): string | null {
+  return maybeStatePlaneNudge({ sessionKey, toolName, args, now: T0 + offsetMs });
 }
 
 beforeEach(() => {
@@ -91,6 +91,29 @@ describe('state-plane nudge — WAIT/POLL rule', () => {
     expect(DOOR_POLL_TURN_THRESHOLD).toBe(3);
     expect(hint).toBeTruthy();
     expect(hint).toContain('state:subscribe');
+  });
+
+  it('does NOT count distinct pipeline source-containment probes as polling one predicate', () => {
+    const probes = [
+      { path: 'packages/operator-core/lib/dao-hr/native.e2e.test.ts', sourceRuntimeOnly: true },
+      { path: 'packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts',
+        marker: 'synchronizeAcceptanceBarSubjectRevision', sourceRuntimeOnly: true },
+      { path: 'packages/operator-core/lib/acceptance-bar-pin-reconcile.ts', sourceRuntimeOnly: true },
+    ];
+    for (const [index, args] of probes.entries()) {
+      expect(call('dev:pipeline_position', index * 60_000, S, args)).toBeNull();
+    }
+  });
+
+  it('still nudges when the same exact source-containment predicate repeats across turns', () => {
+    const args = {
+      path: 'packages/operator-core/lib/dao-hr/native.e2e.test.ts',
+      expectedSourceSha256: 'a'.repeat(64),
+      sourceRuntimeOnly: true,
+    };
+    expect(call('dev:pipeline_position', 0, S, args)).toBeNull();
+    expect(call('dev:pipeline_position', 60_000, S, args)).toBeNull();
+    expect(call('dev:pipeline_position', 120_000, S, args)).toContain('same dev:pipeline_position check');
   });
 
   it('does NOT treat calls batched into ONE turn as a poll loop', () => {

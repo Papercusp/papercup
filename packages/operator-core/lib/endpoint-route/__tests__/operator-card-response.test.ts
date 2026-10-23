@@ -5,12 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 vi.mock('../../auth', () => ({ getSessionUser: vi.fn() }));
+vi.mock('../../operator-conversations', () => ({ getConversationById: vi.fn() }));
 vi.mock('../telemetry', () => ({
   recordRouteInvocation: vi.fn(async () => {}),
 }));
 
 import { Hono } from 'hono';
 import { getSessionUser } from '../../auth';
+import { getConversationById } from '../../operator-conversations';
 import {
   _resetCardCorrelatorForTests,
   registerCard,
@@ -18,7 +20,8 @@ import {
   openRun,
 } from '@papercusp/agent-mcp';
 import { _resetCardResponseRateLimitForTests } from '../../card-response-rate-limit';
-import { registerAllRoutes } from '../register';
+import { registerRoute } from '../define-route';
+import cardResponse from '../routes/operator/card-response';
 
 const ws = 'workspace-T';
 const choiceSchema = z.object({ picks: z.array(z.string()).min(1) });
@@ -42,8 +45,11 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
       id: 'u1', username: 'alice', display_name: 'Alice', has_password: true,
       workspace_id: ws, capabilities: ['*'],
     });
+    vi.mocked(getConversationById).mockReset();
+    vi.mocked(getConversationById).mockImplementation(async (id, workspaceId) =>
+      id === 'c1' && workspaceId === ws ? { id, workspaceId } as never : null);
     app = new Hono().basePath('/api');
-    registerAllRoutes(app);
+    registerRoute(app, cardResponse);
   });
   afterEach(() => {
     _resetCardCorrelatorForTests();
@@ -109,6 +115,52 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
       action: 'submit', payload: { picks: ['a'] },
     });
     expect(res.status).toBe(404);
+  });
+
+  it('P010 scoped atomic decisions: a foreign card workspace supplied by the caller grants no authority', async () => {
+    openRun({ workspaceId: 'foreign-ws', runId: 'foreign-run' });
+    const foreign = registerCard({ workspaceId: 'foreign-ws', runId: 'foreign-run',
+      spec: { prompt: 'foreign choice', dataSchema: choiceSchema } });
+    let resolved = false;
+    void foreign.result.then(() => { resolved = true; });
+    const denied = await post({ correlationId: foreign.correlationId, workspaceId: 'foreign-ws',
+      action: 'submit', payload: { picks: ['a'] } });
+    expect(denied.status).toBe(404);
+    expect(resolved).toBe(false);
+
+    const own = pendingCard();
+    expect((await post({ correlationId: own.correlationId, workspaceId: ws,
+      action: 'submit', payload: { picks: ['a'] } })).status).toBe(200);
+    expect(await own.result).toEqual({ action: 'submit', payload: { picks: ['a'] } });
+    expect(resolved).toBe(false);
+  });
+
+  it('P010 scoped atomic decisions: missing or foreign conversation refuses before resolving a card', async () => {
+    const own = pendingCard();
+    let resolved = false;
+    void own.result.then(() => { resolved = true; });
+    vi.mocked(getConversationById).mockResolvedValueOnce(null);
+    const denied = await post({ correlationId: own.correlationId, workspaceId: ws,
+      action: 'submit', payload: { picks: ['a'] } });
+    expect(denied.status).toBe(404);
+    expect(getConversationById).toHaveBeenCalledWith('c1', ws);
+    expect(resolved).toBe(false);
+    expect((await post({ correlationId: own.correlationId, workspaceId: ws,
+      action: 'submit', payload: { picks: ['a'] } })).status).toBe(200);
+    expect(await own.result).toEqual({ action: 'submit', payload: { picks: ['a'] } });
+  });
+
+  it('P010 scoped atomic decisions: failed scope storage never acknowledges or resolves an answer', async () => {
+    const own = pendingCard();
+    let resolved = false;
+    void own.result.then(() => { resolved = true; });
+    vi.mocked(getConversationById).mockRejectedValueOnce(new Error('scope-storage-unavailable'));
+    expect((await post({ correlationId: own.correlationId, workspaceId: ws,
+      action: 'submit', payload: { picks: ['a'] } })).status).toBe(500);
+    expect(resolved).toBe(false);
+    expect((await post({ correlationId: own.correlationId, workspaceId: ws,
+      action: 'submit', payload: { picks: ['a'] } })).status).toBe(200);
+    expect(await own.result).toEqual({ action: 'submit', payload: { picks: ['a'] } });
   });
 
   it('429 after 30 RPS for the same session user (H3)', async () => {

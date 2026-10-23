@@ -46,4 +46,32 @@ describe('exact shipped engineering evidence detector', () => {
     expect(verifyEngineeringRelease(changed.args).status).toBe('unknown');
     expect(engineeringEvidenceReleaseInstrument('/repository').parse(JSON.stringify({ status: 'pass' }), { now: Date.now() })).toBeNull();
   });
+  it('runs the existing integration/UI suite before the current-build browser and retains both receipts', () => {
+    const f = fixture();
+    const receipt = JSON.stringify({ plane: 'current-build', buildSha: f.proof.buildSha, manifestSha256: f.proof.manifestSha256, nonce: f.nonce });
+    const proof = { ...f.proof, plane: 'current-build', receiptSha256: hash(receipt) };
+    f.read.mockImplementation(path => path === '/fixture/inputs.json' ? f.bytes : receipt);
+    f.run.mockReturnValueOnce({ status: 0, stdout: 'TEST_FILE_RESULT requested=4 executed=4 matched=4 status=passed head=fixture uncommittedPaths=0/4 childSubstituted=0 skippedTests=0' })
+      .mockReturnValueOnce({ status: 0, stdout: 'ENGINEERING_EVIDENCE_JOURNEY_VERIFIED ' + JSON.stringify(proof) });
+    const write = vi.fn();
+    const result = verifyEngineeringRelease({ ...f.args, plane: 'current-build', write });
+    expect(result.status).toBe('pass');
+    expect(f.run.mock.calls[0]?.[1]).toContain('/repository/scripts/with-test-pg.mjs');
+    expect(f.run.mock.calls[0]?.[1]).toContain('--ref=' + f.proof.buildSha);
+    expect(f.run.mock.calls[0]?.[1]).toContain('lint:as-committed');
+    expect(f.run.mock.calls[1]?.[2]).toMatchObject({ env: { PAPERCUSP_ENGINEERING_PLANE: 'current-build', OPERATOR_E2E_BASE_URL: 'http://127.0.0.1:3170' } });
+    expect(write).toHaveBeenCalledOnce();
+    expect(engineeringEvidenceReleaseInstrument('/repository', 'current-build').parse(JSON.stringify(result), { now: Date.now() })).toBe(0);
+    expect(engineeringEvidenceReleaseInstrument('/repository').parse(JSON.stringify(result), { now: Date.now() })).toBeNull();
+  });
+  it('refuses a failed, skipped, substituted or dirty integration run before the browser starts', () => {
+    for (const receipt of ['0 tests',
+      'TEST_FILE_RESULT requested=4 executed=4 matched=4 status=passed uncommittedPaths=1/4 childSubstituted=0 skippedTests=0',
+      'TEST_FILE_RESULT requested=4 executed=4 matched=4 status=passed uncommittedPaths=0/4 childSubstituted=1 skippedTests=0',
+      'TEST_FILE_RESULT requested=4 executed=4 matched=4 status=passed uncommittedPaths=0/4 childSubstituted=0 skippedTests=2']) {
+      const f = fixture(); f.run.mockReturnValue({ status: 0, stdout: receipt });
+      expect(verifyEngineeringRelease({ ...f.args, plane: 'current-build', write: vi.fn() }).status).toBe('unknown');
+      expect(f.run).toHaveBeenCalledOnce();
+    }
+  });
 });

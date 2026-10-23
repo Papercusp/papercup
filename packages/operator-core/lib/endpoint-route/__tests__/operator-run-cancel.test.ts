@@ -5,13 +5,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
-vi.mock('../../auth', () => ({ getSessionUser: vi.fn() }));
+vi.mock('../../auth', () => ({ getSessionUser: vi.fn(), getSessionUserOrDefault: vi.fn() }));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'workspace-cancel' }));
+vi.mock('../../operator-conversations', () => ({ getConversationById: vi.fn() }));
 vi.mock('../telemetry', () => ({
   recordRouteInvocation: vi.fn(async () => {}),
 }));
 
 import { Hono } from 'hono';
-import { getSessionUser } from '../../auth';
+import { getSessionUser, getSessionUserOrDefault } from '../../auth';
+import { getConversationById } from '../../operator-conversations';
 import {
   _resetCardCorrelatorForTests,
   _resetStateChannelForTests,
@@ -19,7 +22,8 @@ import {
   registerCard,
 } from '@papercusp/agent-mcp';
 import { _resetCardResponseRateLimitForTests } from '../../card-response-rate-limit';
-import { registerAllRoutes } from '../register';
+import { registerRoute } from '../define-route';
+import runCancel from '../routes/operator/run-cancel';
 
 const ws = 'workspace-cancel';
 const choiceSchema = z.object({ picks: z.array(z.string()).min(1) });
@@ -39,12 +43,16 @@ describe('POST /run-cancel', () => {
     _resetStateChannelForTests();
     _resetCardResponseRateLimitForTests();
     vi.mocked(getSessionUser).mockReset();
+    vi.mocked(getSessionUserOrDefault).mockReset();
     vi.mocked(getSessionUser).mockResolvedValue({
       id: 'u1', username: 'alice', display_name: 'Alice', has_password: true,
       workspace_id: ws, capabilities: ['*'],
     });
+    vi.mocked(getConversationById).mockReset();
+    vi.mocked(getConversationById).mockImplementation(async (id, workspaceId) =>
+      id === 'c1' && workspaceId === ws ? { id, workspaceId } as never : null);
     app = new Hono().basePath('/api');
-    registerAllRoutes(app);
+    registerRoute(app, runCancel);
   });
   afterEach(() => {
     _resetCardCorrelatorForTests();
@@ -60,6 +68,22 @@ describe('POST /run-cancel', () => {
 
   it('400 on invalid body', async () => {
     expect((await post({ runId: '', workspaceId: ws })).status).toBe(400);
+  });
+
+  it('P010 scoped atomic decisions: the trusted local desktop can cancel without a browser cookie', async () => {
+    vi.mocked(getSessionUser).mockResolvedValue(null);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValue({ id: 'local-owner', username: 'owner',
+      display_name: 'Owner', has_password: false });
+    openRun({ workspaceId: ws, runId: 'desktop-run' });
+    const own = registerCard({ workspaceId: ws, runId: 'desktop-run',
+      spec: { prompt: 'desktop choice', dataSchema: choiceSchema } });
+    const response = await app.request('http://localhost/api/operator/conversations/c1/run-cancel', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ runId: 'desktop-run', workspaceId: ws }),
+    });
+    expect(response.status).toBe(200);
+    expect(getConversationById).toHaveBeenCalledWith('c1', ws);
+    expect(await own.result).toEqual({ action: 'cancel' });
   });
 
   it('404 when runId not present in the claimed workspace', async () => {
@@ -101,5 +125,36 @@ describe('POST /run-cancel', () => {
     });
     const res = await post({ runId: 'r-x', workspaceId: 'other-ws' });
     expect(res.status).toBe(404);
+  });
+
+  it('P010 scoped atomic decisions: a caller cannot cancel a foreign run using its real workspace', async () => {
+    openRun({ workspaceId: 'foreign-ws', runId: 'foreign-run' });
+    const foreign = registerCard({ workspaceId: 'foreign-ws', runId: 'foreign-run',
+      spec: { prompt: 'foreign choice', dataSchema: choiceSchema } });
+    let resolved = false;
+    void foreign.result.then(() => { resolved = true; });
+    expect((await post({ runId: 'foreign-run', workspaceId: 'foreign-ws' })).status).toBe(404);
+    expect(resolved).toBe(false);
+
+    openRun({ workspaceId: ws, runId: 'own-run' });
+    const own = registerCard({ workspaceId: ws, runId: 'own-run',
+      spec: { prompt: 'own choice', dataSchema: choiceSchema } });
+    expect((await post({ runId: 'own-run', workspaceId: ws })).status).toBe(200);
+    expect(await own.result).toEqual({ action: 'cancel' });
+    expect(resolved).toBe(false);
+  });
+
+  it('P010 scoped atomic decisions: a missing conversation leaves its pending run intact', async () => {
+    openRun({ workspaceId: ws, runId: 'own-run' });
+    const own = registerCard({ workspaceId: ws, runId: 'own-run',
+      spec: { prompt: 'own choice', dataSchema: choiceSchema } });
+    let resolved = false;
+    void own.result.then(() => { resolved = true; });
+    vi.mocked(getConversationById).mockResolvedValueOnce(null);
+    expect((await post({ runId: 'own-run', workspaceId: ws })).status).toBe(404);
+    expect(getConversationById).toHaveBeenCalledWith('c1', ws);
+    expect(resolved).toBe(false);
+    expect((await post({ runId: 'own-run', workspaceId: ws })).status).toBe(200);
+    expect(await own.result).toEqual({ action: 'cancel' });
   });
 });

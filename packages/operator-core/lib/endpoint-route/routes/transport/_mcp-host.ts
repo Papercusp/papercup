@@ -5915,6 +5915,7 @@ export function registerMcpHost(server: McpServer): void {
                 const planeHint = maybeStatePlaneNudge({
                   sessionKey: nudgeSessionKey,
                   toolName,
+                  args,
                 });
                 if (planeHint && canAttachAdvisory && (await readAdvisoryFlag(FLAGS.STATE_PLANE_NUDGE))) {
                   result.content = [...result.content, { type: 'text' as const, text: `\n[nudge] ${planeHint}` }];

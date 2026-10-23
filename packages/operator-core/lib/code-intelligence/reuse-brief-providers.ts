@@ -11,6 +11,7 @@ export const REUSE_PROVIDER_POLICY = {
   provenance: { priority: 30, cap: 400, section: 'whatChangedSincePlanning' },
   sql: { priority: 40, cap: 450, section: 'impact' },
   coverage: { priority: 50, cap: 400, section: 'tests' },
+  semantic: { priority: 60, cap: 450, section: 'impact' },
 } as const;
 export type ReuseProviderId = keyof typeof REUSE_PROVIDER_POLICY;
 export type ReuseBriefSurface = 'claim' | 'authoring' | 'completion';
@@ -25,6 +26,8 @@ export interface ReuseProviderContext {
   planItems?: readonly string[];
   paths: readonly string[];
   sourceVersion: string | null;
+  /** Actual item text supplied by the authoring/anchorless-claim entry. */
+  itemText?: string;
   /** Authority and hashes from the mandatory brief capture, never the operator cwd. */
   repository?: { workspaceId: string; rootPath: string };
   sourceFiles?: readonly { path: string; sha256: string }[];
@@ -85,12 +88,17 @@ const sqlProvider = postgresLineageProvider(async (context, signal) => {
 });
 export const registeredReuseBriefProviders = (): readonly ReuseBriefProvider[] =>
   [...registry.values(), ...(registry.has('sql') ? [] : [sqlProvider]),
-    ...(registry.has('coverage') ? [] : [coverageProvider])];
+    ...(registry.has('coverage') ? [] : [coverageProvider]),
+    ...(registry.has('semantic') ? [] : [semanticProvider])];
 /** Optional producer packages can publish later than the shared registry. Their
  * absence must remain an unknown provider result, never a mandatory brief import failure. */
 const coverageProvider: ReuseBriefProvider = { id: 'coverage', async read(context, signal) {
   const { nativeCoverageBriefProvider } = await import('./test-coverage-map');
   return nativeCoverageBriefProvider.read(context, signal);
+} };
+const semanticProvider: ReuseBriefProvider = { id: 'semantic', async read(context, signal) {
+  const { semanticCodeProvider } = await import('./semantic-code-runtime');
+  return semanticCodeProvider().read(context, signal);
 } };
 export const briefCodePoints = (value: string): number => Array.from(value).length;
 

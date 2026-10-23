@@ -219,6 +219,10 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
       !Array.isArray(input.command) || !input.command.length || !input.command[0] ||
       !input.command.every(word => typeof word === "string") ||
       !(input.originalCommand == null || typeof input.originalCommand === "string") ||
+      !(input.invocation === undefined || input.invocation &&
+        Array.isArray(input.invocation.command) && input.invocation.command.length > 0 &&
+        input.invocation.command.every(word => typeof word === "string") &&
+        /^[a-f0-9]{64}$/.test(input.invocation.environmentSha256)) ||
       !Number.isSafeInteger(input.startedAtMs) || !Number.isSafeInteger(input.finishedAtMs) ||
       input.finishedAtMs < input.startedAtMs ||
       !(input.exitCode === null || Number.isSafeInteger(input.exitCode)) ||
@@ -560,6 +564,8 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
   const receipt = { schemaVersion: 1, kind: "affected-task-native-execution", task: input.task,
     attempt: input.attempt, originalCommand: input.originalCommand ?? null,
     execution: { command: input.command.slice(), cwd: input.cwd,
+      ...(input.invocation ? { invocation: { command: input.invocation.command.slice(),
+        environmentSha256: input.invocation.environmentSha256 } } : {}),
       startedAtMs: input.startedAtMs, finishedAtMs: input.finishedAtMs,
       childWallMs: input.finishedAtMs - input.startedAtMs,
       exitCode: input.exitCode, signal: input.signal, error: input.error,

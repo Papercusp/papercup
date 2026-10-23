@@ -68,6 +68,7 @@
  * trigger family — telemetry records the kind verbatim, so the two stay distinguishable). The gate
  * is only consulted when a hint actually fires (rare), so the per-call cost stays the ring push.
  */
+import { posix as pathPosix } from 'node:path';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import { DEFAULT_SCRIPT_TIMEOUT_MS } from '@papercusp/tooldef';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from './agent-tools/capability/foreground-transport-cap';
@@ -446,9 +447,9 @@ interface SessionState {
   /** ms timestamp of the last state:read this session (P-008). A re-read AFTER `lastDoorAt`
    *  is what the act/quote rule is looking for; ordering is the whole point. */
   lastPlaneReadAt?: number;
-  /** turn-START timestamps of door reads, for poll-loop detection (P-008). Kept separate from
-   *  `recent`, which is trimmed to NUDGE_WINDOW_MS (90s) — far shorter than a poll loop. */
-  doorTurnStarts: number[];
+  /** Door reads observed in each turn, keyed by effective predicate. Kept separate from `recent`,
+   *  which is trimmed to NUDGE_WINDOW_MS (90s) — far shorter than a poll loop. */
+  doorPollTurns: Array<{ at: number; readKeys: Set<string> }>;
   /** ms timestamp of the last state:subscribe this session (P-008) — an agent that already
    *  subscribed inside the poll window made the RIGHT call and must not be nudged for it. */
   lastPlaneSubscribeAt?: number;
@@ -475,7 +476,7 @@ function getOrCreateSession(sessionKey: string): SessionState {
       orientDedupNudged: new Set(),
       preemptNudged: new Set(),
       preemptCount: 0,
-      doorTurnStarts: [],
+      doorPollTurns: [],
       statePlaneNudged: new Set(),
     };
     sessions.set(sessionKey, st);
@@ -1380,8 +1381,34 @@ export interface StatePlaneNudgeInput {
   sessionKey: string;
   /** The tool just SUCCESSFULLY called (MCP or verb form). */
   toolName: string;
+  /** Effective tool arguments; used to distinguish repeated checks from distinct source probes. */
+  args?: unknown;
   /** Injectable clock for tests; defaults to Date.now(). */
   now?: number;
+}
+
+/** Pipeline-position calls are one door but can ask about unrelated files, markers, and source
+ * revisions. Count only the same effective predicate across turns; generic door calls retain their
+ * previous tool-level identity. */
+function statePlaneDoorReadKey(toolName: string, args: unknown): string {
+  const normalizedTool = normalize(toolName);
+  if (normalizedTool !== 'devpipelineposition') return normalizedTool;
+  const record = args !== null && typeof args === 'object' && !Array.isArray(args)
+    ? args as Record<string, unknown>
+    : {};
+  const text = (key: string): string | null =>
+    typeof record[key] === 'string' && (record[key] as string).trim().length > 0
+      ? (record[key] as string).trim()
+      : null;
+  const rawPath = text('path');
+  return `${normalizedTool}:${JSON.stringify({
+    path: rawPath ? pathPosix.normalize(rawPath.replace(/\\/g, '/')) : null,
+    sha: text('sha')?.toLowerCase() ?? null,
+    marker: text('marker'),
+    testClass: text('testClass')?.toLowerCase() ?? null,
+    expectedSourceSha256: text('expectedSourceSha256')?.toLowerCase() ?? null,
+    sourceRuntimeOnly: record.sourceRuntimeOnly === true,
+  })}`;
 }
 
 /**
@@ -1391,8 +1418,9 @@ export interface StatePlaneNudgeInput {
  * shape as `maybeOrientDedupNudge`, which records the orient and nudges nothing.
  */
 export function maybeStatePlaneNudge(input: StatePlaneNudgeInput): string | null {
-  const { sessionKey, toolName } = input;
-  if (!sessionKey || !toolName) return null;
+  if (!input.sessionKey || !input.toolName) return null;
+  const { sessionKey } = input;
+  const { tool: toolName, args } = effectiveCall(input.toolName, input.args);
   const now = input.now ?? Date.now();
   const norm = normalize(toolName);
 
@@ -1405,14 +1433,20 @@ export function maybeStatePlaneNudge(input: StatePlaneNudgeInput): string | null
     const st = getOrCreateSession(sessionKey);
     st.lastDoorAt = now;
     st.lastDoorTool = toolName;
+    const readKey = statePlaneDoorReadKey(toolName, args);
 
     // A door read starting a NEW turn is a poll tick; several of them is a poll loop.
-    const last = st.doorTurnStarts[st.doorTurnStarts.length - 1];
-    if (last === undefined || now - last > TURN_GAP_MS) st.doorTurnStarts.push(now);
-    st.doorTurnStarts = st.doorTurnStarts.filter((t) => now - t <= DOOR_POLL_WINDOW_MS);
+    const last = st.doorPollTurns[st.doorPollTurns.length - 1];
+    if (last === undefined || now - last.at > TURN_GAP_MS) {
+      st.doorPollTurns.push({ at: now, readKeys: new Set([readKey]) });
+    } else {
+      last.readKeys.add(readKey);
+    }
+    st.doorPollTurns = st.doorPollTurns.filter((turn) => now - turn.at <= DOOR_POLL_WINDOW_MS);
+    const matchingTurns = st.doorPollTurns.filter((turn) => turn.readKeys.has(readKey)).length;
 
     if (
-      st.doorTurnStarts.length >= DOOR_POLL_TURN_THRESHOLD &&
+      matchingTurns >= DOOR_POLL_TURN_THRESHOLD &&
       !st.statePlaneNudged.has('wait')
     ) {
       // Already subscribed inside this window ⇒ the agent made the right call; stay quiet.
@@ -1421,7 +1455,7 @@ export function maybeStatePlaneNudge(input: StatePlaneNudgeInput): string | null
       }
       st.statePlaneNudged.add('wait');
       return (
-        `you've read ${toolName} across ${st.doorTurnStarts.length} separate turns in the last ` +
+        `you've repeated the same ${toolName} check across ${matchingTurns} separate turns in the last ` +
         `${Math.round(DOOR_POLL_WINDOW_MS / 60_000)}min — that's a poll loop. ` +
         `state:subscribe { cell } PUSHES the change instead: you get woken when the value moves, ` +
         `rather than paying a round-trip per check to find it unchanged. ` +

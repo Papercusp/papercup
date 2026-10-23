@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/app/harness/Button';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { Checkbox } from '@/app/harness/Checkbox';
+import { TextInput } from '@/app/harness/TextInput';
 import type { EngineeringEvidence, EngineeringNode, EngineeringRef } from '@papercusp/operator-core/lib/code-intelligence/engineering-evidence';
 
 type Invoke = (ref: EngineeringRef, harness: string, signal?: AbortSignal, confirmed?: boolean) => Promise<unknown>;
@@ -95,7 +97,7 @@ export default function PlanEngineeringEvidence({ plan, item, harness, onClose, 
   return <section className="plan-dash__card" aria-label={`Engineering evidence for ${item}`} data-testid="plan-engineering-evidence">
     <h3>Engineering evidence · {item}</h3>
     <Button onClick={onClose}>Close evidence</Button>
-    <label><input type="checkbox" checked={includeContext} onChange={event => setIncludeContext(event.target.checked)} /> Include unscoped decision context</label>
+    <label><Checkbox checked={includeContext} onChange={setIncludeContext} ariaLabel="Include unscoped decision context" /> Include unscoped decision context</label>
     <p>Declared/static links · Inferred relationships are not measured here · Observed execution names only instrumented boundaries.</p>
     {loading ? <p role="status">Loading evidence…</p> : null}
     {error ? <div role="alert">{error} <Button onClick={() => setEdition(value => value + 1)}>Retry evidence</Button></div> : null}
@@ -123,8 +125,8 @@ export default function PlanEngineeringEvidence({ plan, item, harness, onClose, 
     </> : null}
     {repair ? <form onSubmit={event => { event.preventDefault(); void bind(); }}>
       <h4>Bind recorded test evidence · {repair.id} · revision {repair.revision}</h4>
-      <label>Owning work item<input value={workItem} onChange={event => setWorkItem(event.target.value)} required pattern="WI-[A-Za-z0-9-]+" /></label>
-      <label>Recorded test run<input type="number" min="1" step="1" value={testRun} onChange={event => setTestRun(event.target.value)} required /></label>
+      <label>Owning work item<TextInput value={workItem} onChange={event => setWorkItem(event.target.value)} required pattern="WI-[A-Za-z0-9-]+" /></label>
+      <label>Recorded test run<TextInput type="number" min="1" step="1" value={testRun} onChange={event => setTestRun(event.target.value)} required /></label>
       <Button type="submit" disabled={busy}>Bind evidence</Button>
       <Button onClick={() => setRepair(null)}>Cancel repair</Button>
     </form> : null}

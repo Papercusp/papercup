@@ -10,6 +10,7 @@ import { zstdDecompressSync } from 'node:zlib';
 import { getBuildInfo } from './build-info';
 import candidatePreregistration from './llm-testing/fixtures/tool-delivery-full-after-use-20261021.json';
 import diagnosticPreregistration from './llm-testing/fixtures/tool-delivery-diagnostic-candidate-20261023.json';
+import fidelityPreregistration from './llm-testing/fixtures/tool-delivery-fidelity-candidate-20261023.json';
 import { buildOracleSchemaIndex, r6PrimaryVerdict, type OracleToolCall } from './llm-testing/r6-malformed-call-oracle';
 
 export const TOOL_DELIVERY_PLAN = 'deterministic-tool-definition-delivery-2026-09-21';
@@ -64,6 +65,7 @@ interface Preregistration {
 const preregistrations: Readonly<Record<string, Preregistration>> = {
   [candidatePreregistration.experiment.id]: candidatePreregistration as unknown as Preregistration,
   [diagnosticPreregistration.experiment.id]: diagnosticPreregistration as unknown as Preregistration,
+  [fidelityPreregistration.experiment.id]: fidelityPreregistration as unknown as Preregistration,
 };
 export function toolDeliveryPreregistration(id: string): Preregistration {
   const registration = preregistrations[id];
@@ -259,7 +261,8 @@ export function verifyToolDeliverySourceCustody(input: {
     const amendment = registration.measurementAmendment;
     const allowed = ['packages/operator-core/lib/tool-delivery-acceptance.ts', 'packages/operator-core/lib/scorecards.ts'];
     const oraclePath = 'packages/operator-core/lib/llm-testing/r6-malformed-call-oracle.ts';
-    const allowedAdditions = [oraclePath, 'packages/operator-core/lib/tool-delivery-acceptance.test.ts'];
+    const allowedAdditions = [oraclePath, 'packages/operator-core/lib/tool-delivery-acceptance.test.ts',
+      'packages/operator-core/lib/tool-delivery-fidelity-custody.test.ts'];
     if (!amendment || !(amendment.addedFiles[oraclePath] || (registration.custodyPaths && registration.sourcePins.files[oraclePath])) ||
         !amendment.sourceReplacements['packages/operator-core/lib/tool-delivery-acceptance.ts'] ||
         !/^deterministic-tool-definition-delivery-2026-09-21#D-\d+$/.test(amendment.decisionRef) || !Number.isFinite(Date.parse(amendment.registeredAt)) ||

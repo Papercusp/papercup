@@ -219,18 +219,28 @@ describe('BQL receipt authority through the close handler and real persistence',
   it('keeps expired-hold preview read-only and clears the stale lease only on the actual write', async () => {
     const holder = 'su-expired-held-open-' + Math.random();
     const fixture = await seedHeldIssue(holder, new Date(0).toISOString());
-    const preview = await runHeldOpenCompletion(fixture.id, fixture.harness, true);
-    expect(preview).toMatchObject({
-      ok: true,
-      validationOnly: true,
-      heldOpenTransition: { staleHoldOpen: true, writeWillRecheck: true },
-    });
-    expect((await getWorkItem(fixture.id))?.payload?.held_open_by).toBe(holder);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const preview = await runHeldOpenCompletion(fixture.id, fixture.harness, true);
+      expect(preview).toMatchObject({
+        ok: true,
+        validationOnly: true,
+        heldOpenTransition: { staleHoldOpen: true, writeWillRecheck: true },
+      });
+      expect(warning).not.toHaveBeenCalled();
+      expect((await getWorkItem(fixture.id))?.payload?.held_open_by).toBe(holder);
 
-    const write = await runHeldOpenCompletion(fixture.id, fixture.harness, false);
-    expect(write.ok).toBe(true);
-    const closed = await getWorkItem(fixture.id);
-    expect(closed?.state).toBe('done');
-    expect(closed?.payload?.held_open_by).toBeUndefined();
+      const write = await runHeldOpenCompletion(fixture.id, fixture.harness, false);
+      expect(write.ok).toBe(true);
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining(`[hold-open] lifted EXPIRED hold on ${fixture.id}`),
+      );
+      const closed = await getWorkItem(fixture.id);
+      expect(closed?.state).toBe('done');
+      expect(closed?.payload?.held_open_by).toBeUndefined();
+    } finally {
+      warning.mockRestore();
+    }
   }, 60_000);
 });

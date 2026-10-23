@@ -8,6 +8,7 @@ import { nativeChangeReport, type ChangeReportRequest } from './packer-facade';
 import { firstPartyCallers } from './first-party-callers';
 import type { CodeIntelAnswer } from './contracts';
 import { coChangeFromCommits } from './change-history';
+import { readEngineeringEvidence, type EngineeringEvidenceDeps } from './engineering-evidence';
 
 const dirs: string[] = [];
 describe('P039 completion pre-review briefs', () => {
@@ -185,6 +186,75 @@ function depsFor(root: string): TaskBriefDeps {
     }),
   };
 }
+describe('native engineering evidence task context', () => {
+  function engineeringFixture(patch: Partial<EngineeringEvidenceDeps> = {}) {
+    const deps: EngineeringEvidenceDeps = {
+      authorize: async scope => scope.workspaceId === 'w' && scope.harness === 'h',
+      symbol: async () => [{ path: 'target.ts', name: 'target', line1: 1, versionedSymbolId: 'target-v1',
+        fileFingerprint: 'a'.repeat(64), declarationFingerprint: null }],
+      sourceCurrent: async () => true,
+      items: async scope => [{ ...scope, plan: 'ee-feature', item: 'P-001', anchorState: 'current' }],
+      specs: async () => [{ plan: 'ee-feature', item: 'P-001', id: 'EE-1', revision: 1, currentRevision: 1,
+        fingerprint: 'b'.repeat(64), behavior: 'Return the feature', lifecycle: 'active' }],
+      spec: async () => null,
+      decisions: async () => [{ plan: 'ee-feature', id: 'D-001', title: 'Rationale', body: 'Explicit item rule',
+        itemRefs: ['P-001'], affects: [] },
+      { plan: 'broader-plan', id: 'D-002', title: 'Broader context', body: 'Affects the plan without declaring this item.',
+        itemRefs: [], affects: ['ee-feature'] }],
+      proofs: async () => [{ id: 51, plan: 'ee-feature', spec: 'EE-1', revision: 1, workItem: 'WI-ee',
+        evidenceRef: 'test-run:72101', kind: 'test', state: 'current', withdrawn: false,
+        fingerprints: {}, runId: 72101, reasons: [] }],
+      run: async () => ({ id: 72101, file: 'target.test.ts', status: 'pass', commit: 'c'.repeat(40) }),
+      cases: async () => [{ runId: 72101, key: 'ee.intent-exact', occurrence: 1, status: 'pass' }],
+      ...patch,
+    };
+    const reader: typeof readEngineeringEvidence = (query, scope) => readEngineeringEvidence(query, scope, deps);
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
+    const subject = { id: 'WI-ee', harness: 'h', sourcePlanSlug: 'ee-feature', sourcePlanItemIds: ['P-001'],
+      payload: { paths: ['target.ts'] } };
+    return { root, subject, deps: { ...depsFor(root), engineering: reader, hasClaim: async () => false } };
+  }
+  it('ee.brief-four-axes: carries exact canonical references or an explicit execution gap through claim, intent and completion', async () => {
+    const { root, subject, deps } = engineeringFixture();
+    const claim = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject }, deps))!.taskBrief;
+    expect(claim.engineering?.intent[0]?.ref).toMatchObject({ tool: 'plans:get-specs', args: { revision: 1, specIds: ['EE-1'] } });
+    expect(claim.engineering?.rationale[0]?.ref).toMatchObject({ tool: 'plans:get', args: { decisionId: 'D-001' } });
+    expect(claim.engineering?.rationale).toHaveLength(1);
+    expect(claim.engineering?.gaps).toContain('broader-plan-context-available');
+    expect(claim.engineering?.validation[0]?.ref.tool).toBe('plans:get-spec-evidence');
+    expect(claim.engineering?.execution).toEqual([]); expect(claim.engineering?.gaps.length).toBeGreaterThan(0);
+    const intent = (await getIntentTimeTaskBrief({ owner: 'su-ee', workspaceId: 'w', harness: 'h',
+      intent: 'Inspect target', paths: ['target.ts'] }, deps))!.taskBrief;
+    expect(intent.engineering?.recover.args).toMatchObject({ file_path: 'target.ts', name: 'target', harnesses: ['h'] });
+    const completion = await getCompletionTimeBrief({ workspaceId: 'w', harness: 'h', paths: [], subject },
+      { root: async () => root, engineering: deps.engineering });
+    expect(completion.engineering?.recover).toEqual(claim.engineering?.recover);
+  });
+  it('ee.brief-budget: fits the complete caller brief in 2400 characters and retains scoped recovery for omitted data', async () => {
+    const { subject, deps } = engineeringFixture();
+    const brief = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject, maxChars: 2400 }, deps))!.taskBrief;
+    expect(JSON.stringify(brief).length).toBeLessThanOrEqual(2400);
+    expect(brief.engineering?.recover).toEqual({ tool: 'graph:query', args: { op: 'evidence', harnesses: ['h'], plan: 'ee-feature', item: 'P-001' } });
+  });
+  it('ee.brief-stale: preserves stale validation and refuses a foreign scope', async () => {
+    const { subject, deps } = engineeringFixture({ proofs: async () => [{ id: 51, plan: 'ee-feature', spec: 'EE-1',
+      revision: 1, workItem: 'WI-ee', evidenceRef: 'test-run:72101', kind: 'test', state: 'stale', withdrawn: false,
+      fingerprints: {}, runId: 72101, reasons: ['changed-source'] }] });
+    const brief = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject }, deps))!.taskBrief;
+    expect(brief.engineering?.validation[0]?.state).toBe('stale');
+    const foreign = (await getClaimTimeTaskBrief({ workspaceId: 'foreign', workItem: subject }, deps))!.taskBrief;
+    expect(foreign.engineering?.intent).toEqual([]); expect(foreign.engineering?.gaps).toContain('engineering-evidence-unavailable');
+  });
+  it('ee.brief-no-trace: a missing trace or unavailable evidence cannot block ordinary task context', async () => {
+    const { subject, deps } = engineeringFixture();
+    const withoutPaths = { ...subject, payload: {} };
+    const claim = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: withoutPaths }, deps))!.taskBrief;
+    expect(claim.engineering?.intent.length).toBeGreaterThan(0); expect(claim.engineering?.execution).toEqual([]);
+    deps.engineering = async () => { throw new Error('optional trace service absent'); };
+    const fallback = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject }, deps))!.taskBrief;
+    expect(fallback.status).toBe('current'); expect(fallback.engineering?.gaps).toContain('engineering-evidence-unavailable');
+  });
+});
 describe('P012 bounded scoped task briefs', () => {
   it('captures explicit no-claim intent scope without inventing a work-item identity', async () => {
     const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return "INTENT_SOURCE"; }');

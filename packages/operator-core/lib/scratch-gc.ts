@@ -1276,15 +1276,39 @@ async function evictWorkspaceQuotaWithLock(
   targetBytes: () => number,
   diagnostics?: ScratchQuotaRecoveryDiagnostics,
   now: () => number = Date.now,
-  reconcileReservations = false,
+  options: { preserveRunIndex?: boolean; expectedSharedUpdatedAt?: number | null } = {},
 ): Promise<{ used: number; evictions: number; bytes: number }> {
+  const entry = usageEntry(workspaceId);
   const reclaimed = await withScratchWorkspaceDataMutex(workspaceId, 'quota-eviction', async () => {
-    const entry = usageEntry(workspaceId);
+    if (options.preserveRunIndex) {
+      if (!entry.runBytesValid || entry.refreshDeferred) {
+        entry.refreshDeferred = true;
+        return null;
+      }
+      const sharedNow = await withScratchWorkspaceMutex(workspaceId, 'quota-eviction-validate', () =>
+        readSharedScratchQuotaState(workspaceId));
+      if ((sharedNow?.updatedAt ?? null) !== (options.expectedSharedUpdatedAt ?? null)) {
+        entry.runBytesByPath.clear();
+        entry.runBytesValid = false;
+        entry.refreshDeferred = true;
+        if (sharedNow) {
+          entry.bytes = sharedNow.bytes;
+          entry.measuredAt = sharedNow.measuredAt;
+          entry.sharedUpdatedAt = sharedNow.updatedAt;
+        } else {
+          entry.sharedUpdatedAt = null;
+        }
+        return null;
+      }
+      return evictWorkspaceQuotaLocked(workspaceId, targetBytes, true, diagnostics, now);
+    }
+
     entry.runBytesByPath.clear();
     entry.runBytesValid = false;
     entry.refreshDeferred = false;
-    return evictWorkspaceQuotaLocked(workspaceId, targetBytes, reconcileReservations, diagnostics, now);
+    return evictWorkspaceQuotaLocked(workspaceId, targetBytes, false, diagnostics, now);
   });
+  if (!reclaimed) return { used: entry.bytes, evictions: 0, bytes: 0 };
   // Publish only after the long tree walk is complete. The exclusive data lease prevents
   // payload writers and GC from mutating the tree while the walk is in progress.
   await withScratchWorkspaceMutex(workspaceId, 'quota-eviction-state', async () => {
@@ -1439,21 +1463,14 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
   const diagnostics = newScratchQuotaRecoveryDiagnostics();
   entry.refreshDiagnostics = diagnostics;
   const targetBytes = WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES;
+  let adoptedStableRunIndex = false;
   const run = (async () => {
     try {
       const sharedAtStart = await readSharedScratchQuotaState(workspaceId);
-      // A known over-target cache needs immediate quota recovery. Keep that destructive walk
-      // inside the workspace mutex so no writer can reserve a path while FIFO candidates are
-      // being measured or deleted.
-      if (entry.bytes > targetBytes || (sharedAtStart && sharedAtStart.bytes > targetBytes)) {
-        await evictWorkspaceQuotaWithLock(workspaceId, () => targetBytes, diagnostics, now);
-        return;
-      }
-
-      // A below-target refresh is read-only until its result is reconciled. Let it overlap a
-      // writer so an ordinary size walk does not hold the quota mutex for the whole tree. The
-      // shared ledger timestamp and local generation reject a mixed snapshot before it can
-      // replace a concurrent reservation.
+      // A refresh is read-only until its result is reconciled. Let it overlap a writer so a
+      // whole-workspace size walk never holds the exclusive data lease. The shared ledger
+      // timestamp and local generation reject a mixed snapshot before it can replace a
+      // concurrent reservation.
       const writeGeneration = entry.writeGeneration;
       const hasReservedWrites = () => [...entry.writes.values()].some((write) => write.reserved);
       const runBytesByPath = new Map<string, number>();
@@ -1495,7 +1512,10 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
             if (sharedNow) {
               entry.bytes = sharedNow.bytes;
               entry.measuredAt = sharedNow.measuredAt;
+              entry.sharedUpdatedAt = sharedNow.updatedAt;
               if (sharedNow.bytes > targetBytes) entry.refreshDeferred = true;
+            } else {
+              entry.sharedUpdatedAt = null;
             }
             return;
           }
@@ -1505,12 +1525,18 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
           entry.refreshDeferred = false;
           entry.runBytesByPath = runBytesByPath;
           entry.runBytesValid = [...runBytesByPath.values()].every(Number.isFinite);
+          entry.sharedUpdatedAt = sharedAtStart?.updatedAt ?? null;
+          adoptedStableRunIndex = entry.runBytesValid && !entry.refreshDeferred;
+          if (!adoptedStableRunIndex && measuredBytes > targetBytes) entry.refreshDeferred = true;
           if (measuredBytes <= targetBytes) {
             await writeSharedScratchQuotaState(workspaceId, entry.bytes, entry.measuredAt);
           }
         }));
-      if (measuredBytes > targetBytes) {
-        await evictWorkspaceQuotaWithLock(workspaceId, () => targetBytes, diagnostics, now, true);
+      if (measuredBytes > targetBytes && adoptedStableRunIndex) {
+        await evictWorkspaceQuotaWithLock(workspaceId, () => targetBytes, diagnostics, now, {
+          preserveRunIndex: true,
+          expectedSharedUpdatedAt: sharedAtStart?.updatedAt ?? null,
+        });
       }
     } finally {
       entry.refreshDiagnostics = null;
@@ -2289,6 +2315,14 @@ export async function writeWithScratchQuota(
         continue;
       }
       if (outcome === SCRATCH_QUOTA_RECOVERY_REQUIRED) {
+        // The in-flight out-of-lock measurement is already reconciling this stale over-quota
+        // ledger. Share it instead of starting a second recovery walk from the same snapshot.
+        const refresh = entry.refreshing;
+        if (refresh) {
+          emitLockWaitProgress();
+          await timed(refreshWaitOwner ? 'refreshWaitMs' : 'quotaWaitMs', () => refresh);
+          continue;
+        }
         if (quotaRecoveryAttempted) {
           throw lastQuotaRefusal ?? new ScratchQuotaError(
             `scratch reservation: workspace ${opts.workspaceId} remains over quota after recovery`,
