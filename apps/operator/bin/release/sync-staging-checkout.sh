@@ -626,10 +626,48 @@ prune_staging_generations() {
 
 cleanup_staging_candidate() {
   if [[ -n "$STAGING_CANDIDATE_HOME" && "$STAGING_CANDIDATE_PUBLISHED" -eq 0 ]]; then
-    [[ ! -d "$STAGING_CANDIDATE_ROOT" ]] ||
-      git -C "$INTEGRATION_ROOT" worktree remove --force "$STAGING_CANDIDATE_ROOT" >/dev/null 2>&1 || true
-    rm -rf -- "$STAGING_CANDIDATE_HOME"
+    local cleanup_budget="${1:-15}" cleanup_started="$SECONDS" cleanup_remaining cleanup_status
+    local pending_cleanup="${STAGING_CANDIDATE_HOME}.prune-pending"
+    if [[ ! "$cleanup_budget" =~ ^[0-9]+$ ]] || ((cleanup_budget < 1 || cleanup_budget > 15)); then
+      cleanup_budget=15
+    fi
+    if ! command -v timeout >/dev/null 2>&1; then
+      log "ALARM: timeout is unavailable; retaining failed staging candidate for next tick: $STAGING_CANDIDATE_HOME"
+      return 0
+    fi
+    # Exit cleanup still holds the publication lease. Bound it like the normal
+    # generation pruner so a failed build cannot prevent the fixed build running.
+    if [[ -d "$STAGING_CANDIDATE_ROOT" ]]; then
+      if timeout --signal=KILL "${cleanup_budget}s" \
+        git -C "$INTEGRATION_ROOT" worktree remove --force "$STAGING_CANDIDATE_ROOT" >/dev/null 2>&1; then
+        cleanup_status=0
+      else
+        cleanup_status=$?
+        if ((cleanup_status == 124 || cleanup_status == 137)); then
+          # A remaining checkout is rediscovered by the normal pruner. If Git
+          # already removed it, preserve the existing directory-cleanup marker.
+          [[ -d "$STAGING_CANDIDATE_ROOT" ]] || : > "$pending_cleanup"
+          log "failed staging candidate cleanup budget exhausted; retaining worktree for next tick: $STAGING_CANDIDATE_HOME"
+          return 0
+        fi
+      fi
+    fi
+    if ! : > "$pending_cleanup"; then
+      log "ALARM: cannot record failed staging candidate cleanup for next tick: $STAGING_CANDIDATE_HOME"
+      return 0
+    fi
+    cleanup_remaining=$((cleanup_budget - (SECONDS - cleanup_started)))
+    if ((cleanup_remaining <= 0)); then
+      log "failed staging candidate cleanup budget exhausted; deferring directory cleanup: $STAGING_CANDIDATE_HOME"
+      return 0
+    fi
+    if timeout --signal=KILL "${cleanup_remaining}s" rm -rf -- "$STAGING_CANDIDATE_HOME"; then
+      rm -f -- "$pending_cleanup"
+    else
+      log "failed staging candidate directory cleanup deferred to next tick: $STAGING_CANDIDATE_HOME"
+    fi
   fi
+  return 0
 }
 
 copy_staging_runtime_environment() {
