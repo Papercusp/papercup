@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -79,6 +79,71 @@ function stripComments(shell: string): string {
 function defaultOf(name: string): string | null {
   const m = src.match(new RegExp(`^${name}="\\$\\{${name}:-([^}]*)\\}"`, 'm'));
   return m ? m[1] : null;
+}
+
+function producerFunction(name: string): string {
+  const start = src.indexOf(`\n${name}() {\n`);
+  expect(start, `${name} must exist`).toBeGreaterThan(-1);
+  const end = src.indexOf('\n}\n', start);
+  expect(end).toBeGreaterThan(start);
+  return src.slice(start + 1, end + 3);
+}
+
+function producerCall(label: 'whole' | 'state' | 'transcript'): string {
+  const suffix = label === 'whole' ? '' : `-${label}`;
+  const line = src.split('\n').find((line) =>
+    line.trim().startsWith(`if guarded_dump_one "$db" "$db${suffix}"`));
+  expect(line, `${label} call site must exist`).toBeDefined();
+  return line!.trim().replace(/^if /, '').replace(/; then$/, '');
+}
+
+function archiveBytes(root: string): Record<string, string> {
+  return Object.fromEntries(readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => {
+      const path = join(entry.parentPath, entry.name);
+      return [path.slice(root.length + 1), readFileSync(path).toString('base64')];
+    }));
+}
+
+/** Run the existing dump function/call sites, without reaching a database. */
+function producerHarness(extra: string[]): string {
+  return [
+    'set -uo pipefail',
+    'PGOUT="$FIXTURE_ROOT"; JOBS=4; TIMEOUT_SEC=60; TIMEOUT_MAX_SEC=120',
+    'db=fixture; BACKUP_USER=nobody; BACKUP_MIGRATION_ADVISORY_DATABASE=migration-fixture',
+    'PC_BACKUP_SPACE_SAFETY=150; PC_BACKUP_MIN_FREE_GB=0; HOST_BACKUP_APPLICATION_NAME=pcbackup',
+    src.match(/^readonly DISPOSABLE_SCHEMA_PATTERN=.*$/m)![0],
+    src.match(/^PC_BACKUP_TRANSCRIPT_TABLES=.*$/m)![0],
+    src.match(/    ex=\(\); inc=\(\)[\s\S]*?    done/)![0],
+    'fs_avail_gb() { echo 1000; }',
+    'log() { printf "LOG %s\\n" "$*"; }',
+    producerFunction('rm_tmp'),
+    producerFunction('dump_one'),
+    'guarded_dump_one() { dump_one "$@"; }',
+    ...extra,
+  ].join('\n');
+}
+
+function runArchiveReplacementFixture(root: string, failure: 'setup' | 'partial' | 'invalid-toc' | 'none') {
+  const script = producerHarness([
+    'run_bounded_watched() { shift 3; "$@"; }',
+    'sudo() { [ "$1" = -n ] && shift; if [ "$1" = -u ]; then shift 2; fi; if [ "$1" = env ]; then shift 2; fi; case "$1" in chown|chmod) return 0;; *) "$@";; esac; }',
+    'pg_dump() {',
+    '  [ "$FAILURE" != setup ] || return 9',
+    '  local target; while [ "$#" -gt 0 ]; do if [ "$1" = -f ]; then target="$2"; break; fi; shift; done',
+    '  mkdir -p "$target/nested"',
+    '  printf "candidate toc" > "$target/toc.dat"',
+    '  printf "candidate member" > "$target/nested/1.dat.zst"',
+    '  [ "$FAILURE" != partial ]',
+    '}',
+    'pg_restore() { [ "$FAILURE" != invalid-toc ] || return 1; printf "1; fixture entry\\n"; }',
+    producerCall('transcript'),
+  ]);
+  return spawnSync('bash', ['-c', script], {
+    encoding: 'utf8', timeout: 10_000,
+    env: { ...process.env, FIXTURE_ROOT: root, FAILURE: failure, PC_BACKUP_TRANSCRIPT_TABLES: '' },
+  });
 }
 
 describe('papercusp-db-backup.sh tiered dump (WI-2146225)', () => {
@@ -270,6 +335,97 @@ describe('papercusp-db-backup.sh tiered dump (WI-2146225)', () => {
     expect(src).toContain('"tierFailed"');
     expect(src).toContain('"tiersEnabled"');
     expect(src).toContain('"tierNotDue"');
+  });
+
+  describe('local transcript native compression', () => {
+    // D-004: literal baseline from commit 9c6b0e2237e5da8cba8fe8b21ef8200702a66120,
+    // producer blob 6d8fb5b55c1d4a2e3b70721128588c60909a80a0. Expected signatures
+    // must not be generated from the changed producer; changes require review.
+    const tables = [
+      'harness_shared.session_archive_files', 'harness_shared.session_turns',
+      'harness_shared.tool_invocations', 'harness_shared.session_turn_chunks',
+      'harness_shared.session_turn_parts', 'harness_shared.route_invocations',
+    ];
+
+    it('preserves complete Kopia signatures and selects Zstd only for the transcript call', () => {
+      const root = mkdtempSync(join(tmpdir(), 'backup-codec-argv-'));
+      try {
+        const oddsmithCall = src.match(/run_bounded "\$TIMEOUT_SEC" pg_dump[\s\S]*?"\$odds_db"/)?.[0];
+        expect(oddsmithCall).toBeDefined();
+        const script = producerHarness([
+          'run_bounded_watched() { shift 3; printf "CALL\\n"; printf "ARG %s\\n" "$@"; return 9; }',
+          'run_bounded() { shift; printf "CALL\\n"; printf "ARG %s\\n" "$@"; return 9; }',
+          `${producerCall('whole')} || true`,
+          `${producerCall('state')} || true`,
+          `${producerCall('transcript')} || true`,
+          'odds_host=fixture; odds_port=5432; odds_user=fixture; odds_out="$PGOUT/oddsmith"; odds_db=fixture',
+          `${oddsmithCall} || true`,
+        ]);
+        const run = spawnSync('bash', ['-c', script], {
+          encoding: 'utf8', timeout: 10_000,
+          env: { ...process.env, FIXTURE_ROOT: root, PC_BACKUP_TRANSCRIPT_TABLES: '' },
+        });
+        expect(run.status, run.stderr).toBe(0);
+        const calls = run.stdout.split('CALL\n').slice(1).map((chunk) => {
+          const all = [...chunk.matchAll(/^ARG (.*)$/gm)].map((m) => m[1]);
+          const args = all.slice(all.indexOf('pg_dump') + 1);
+          for (const option of ['-h', '-p', '-U', '-f']) {
+            const at = args.indexOf(option);
+            if (at >= 0) args[at + 1] = option === '-f' ? '<output>' : '<connection>';
+          }
+          args[args.length - 1] = '<database>';
+          return args;
+        });
+        const common = ['-h', '<connection>', '-Fd', '-j', '4', '--compress=none', '--exclude-schema=bench_memory*'];
+        const output = ['-f', '<output>', '<database>'];
+        expect(calls).toEqual([
+          [...common, ...output],
+          [...common, ...tables.map((t) => `--exclude-table-data=${t}`), ...output],
+          [...common, '--compress=zstd:level=1', ...tables.map((t) => `--table=${t}`), ...output],
+          ['-h', '<connection>', '-p', '<connection>', '-U', '<connection>', '-Fd', '-j', '4', '--compress=none', ...output],
+        ]);
+        expect(calls[2].filter((arg) => arg.startsWith('--compress=')).at(-1)).toBe('--compress=zstd:level=1');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it.each(['setup', 'partial', 'invalid-toc'])('preserves every prior archive byte after %s failure', (failure) => {
+      const root = mkdtempSync(join(tmpdir(), 'backup-codec-failure-'));
+      try {
+        const prior = join(root, 'fixture-transcript');
+        mkdirSync(join(prior, 'nested'), { recursive: true });
+        writeFileSync(join(prior, 'toc.dat'), Buffer.from([0, 1, 255]));
+        writeFileSync(join(prior, 'nested', '1.dat.zst'), 'previous compressed member');
+        const before = archiveBytes(prior);
+        const run = runArchiveReplacementFixture(root, failure as 'setup' | 'partial' | 'invalid-toc');
+        expect(run.status, run.stderr).toBe(1);
+        expect(run.stdout).toContain('previous dump left intact');
+        expect(archiveBytes(prior)).toEqual(before);
+        expect(existsSync(`${prior}.tmp`)).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('promotes a validated candidate in the same replacement fixture', () => {
+      const root = mkdtempSync(join(tmpdir(), 'backup-codec-valid-'));
+      try {
+        const prior = join(root, 'fixture-transcript');
+        mkdirSync(prior);
+        writeFileSync(join(prior, 'toc.dat'), 'previous archive');
+
+        const run = runArchiveReplacementFixture(root, 'none');
+        expect(run.status, run.stderr).toBe(0);
+        expect(archiveBytes(prior)).toEqual({
+          'nested/1.dat.zst': Buffer.from('candidate member').toString('base64'),
+          'toc.dat': Buffer.from('candidate toc').toString('base64'),
+        });
+        expect(existsSync(`${prior}.tmp`)).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('transcript-tier cadence (WI-10004603)', () => {
