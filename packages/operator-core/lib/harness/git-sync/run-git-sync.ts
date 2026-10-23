@@ -5317,20 +5317,31 @@ async function preserveVanishedStagedSourcesPass(
   attribution: ReadonlyMap<string, FileAttribution> = new Map(),
   log: (message: string) => void = () => {},
 ): Promise<SourceCustodyResult> {
-  const listed = await sharedGit(['ls-files', '--deleted', '--stage', '-z'], repoPath);
-  if (listed.code !== 0) return custodyRefused('shared-index-read');
-  if (!listed.stdout) return { ok: true, protectedPaths: [], refs: [] };
-  const entries = new Map<string, { mode: string; oid: string; stage: string }>();
-  for (const record of listed.stdout.split('\0').filter(Boolean)) {
-    const match = /^(\d{6}) ([a-f0-9]+) ([0-3])\t([\s\S]+)$/.exec(record);
-    if (!match) return custodyRefused('malformed-index-entry');
-    const [, mode, oid, stage, path] = match;
-    if (!path || isAbsolute(path) || path.split('/').some((part) => part === '..' || part === '.')) {
-      return custodyRefused('unsafe-index-path');
-    }
-    if (stage !== '0') return custodyRefused('unmerged-index-entry');
-    entries.set(path, { mode, oid, stage });
+  // Do NOT combine --deleted with --stage: --stage also enables --cached,
+  // which includes still-present staged additions in Git's output.
+  const deleted = await sharedGit(['ls-files', '--deleted', '-z'], repoPath);
+  if (deleted.code !== 0) return custodyRefused('shared-index-read');
+  const observedMissing = [...new Set(deleted.stdout.split('\0').filter(Boolean))];
+  if (observedMissing.length === 0) return { ok: true, protectedPaths: [], refs: [] };
+  if (observedMissing.some((path) => isAbsolute(path) || path.split('/').some((part) => part === '..' || part === '.'))) {
+    return custodyRefused('unsafe-index-path');
   }
+  const entries = new Map<string, { mode: string; oid: string; stage: string }>();
+  const observedSet = new Set(observedMissing);
+  for (let i = 0; i < observedMissing.length; i += VANISHED_PATH_PROBE_BATCH) {
+    const listed = await sharedGit(['ls-files', '--stage', '-z', '--', ...observedMissing.slice(i, i + VANISHED_PATH_PROBE_BATCH)], repoPath, { env: { GIT_LITERAL_PATHSPECS: '1' } });
+    if (listed.code !== 0) return custodyRefused('shared-index-read');
+    for (const record of listed.stdout.split('\0').filter(Boolean)) {
+      const match = /^(\d{6}) ([a-f0-9]+) ([0-3])\t([\s\S]+)$/.exec(record);
+      if (!match) return custodyRefused('malformed-index-entry');
+      const [, mode, oid, stage, path] = match;
+      if (!observedSet.has(path)) return custodyRefused('unexpected-index-path');
+      if (stage !== '0') return custodyRefused('unmerged-index-entry');
+      entries.set(path, { mode, oid, stage });
+    }
+  }
+  if (entries.size < observedMissing.length) log('[git-sync] source custody not-available for vanished path(s) without a shared-index entry');
+  if (entries.size === 0) return { ok: true, protectedPaths: [], refs: [] };
   // --deleted is the observed-missing snapshot. A peer may restore the path
   // immediately after that read; lstat must not revoke custody for this pass.
   const missing = [...entries.keys()];
