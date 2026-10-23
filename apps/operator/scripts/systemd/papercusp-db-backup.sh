@@ -619,6 +619,8 @@ fi
 # -Z1 writer made the first post-dump snapshot upload 6.3 GB while an unchanged
 # follow-up uploaded 0 B. Uncompressed directory members let Kopia deduplicate
 # stable COPY data while preserving the hourly recovery-point objective.
+# The local-only transcript tier is excluded from Kopia and overrides this
+# default at its call site; enrolled dumps retain the uncompressed signature.
 # INVALID databases (WI-10003455). A DROP DATABASE interrupted mid-flight (PG ≥15)
 # leaves the catalog row behind with datconnlimit = -2 — and datallowconn still
 # TRUE, so the old `AND datallowconn` filter admitted them. pg_dump then fails
@@ -1169,7 +1171,9 @@ if [ ${#TRANSCRIPT_DUE[@]} -gt 0 ]; then
   inc=()
   for t in $PC_BACKUP_TRANSCRIPT_TABLES; do inc+=("--table=$t"); done
   for db in "${TRANSCRIPT_DUE[@]}"; do
-    if guarded_dump_one "$db" "$db-transcript" "${inc[@]}"; then
+    # pg_dump uses the last compression option. Only this Kopia-excluded leg
+    # overrides dump_one's default; native pg_restore still owns the format.
+    if guarded_dump_one "$db" "$db-transcript" --compress=zstd:level=1 "${inc[@]}"; then
       TIER_DUMPED+=("$db-transcript"); DUMPED+=("$db-transcript")
     else
       TIER_FAILED+=("$db-transcript"); FAILED+=("$db-transcript")
