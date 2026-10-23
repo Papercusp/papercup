@@ -6,6 +6,12 @@ import { parseSseStream } from '@papercusp/sse';
 import { getOrCreateActiveConversation } from '../lib/operator-conversations';
 import { admitConverseTurn } from '../lib/agent-tools/operator/converse-turn';
 
+async function nextApplicationFrame(frames: ReturnType<typeof parseSseStream>) {
+  let frame = await frames.next();
+  while (!frame.done && frame.value.event === 'heartbeat') frame = await frames.next();
+  return frame;
+}
+
 export async function measureSharedChatRecovery(input: { workspace: string; base: string }) {
   const { workspace, base } = input;
   assert.match(workspace, /^test-runtime-/);
@@ -39,7 +45,7 @@ export async function measureSharedChatRecovery(input: { workspace: string; base
     const first = await post({ operation: 'reconnect', afterSequence: 0 });
     assert.equal(first.status, 200, await (first.ok ? Promise.resolve('') : first.text()));
     const firstFrames = parseSseStream(first.body);
-    const initial = await firstFrames.next();
+    const initial = await nextApplicationFrame(firstFrames);
     assert.equal(initial.value?.event, 'chat-event');
     assert.equal(JSON.parse(initial.value!.data).sequence, 1);
     controllers[0].abort();
@@ -50,7 +56,7 @@ export async function measureSharedChatRecovery(input: { workspace: string; base
     const second = await post({ operation: 'reconnect', afterSequence: 1 });
     assert.equal(second.status, 200);
     const secondFrames = parseSseStream(second.body);
-    const resumed = await secondFrames.next();
+    const resumed = await nextApplicationFrame(secondFrames);
     assert.equal(resumed.value?.event, 'chat-event');
     assert.deepEqual(JSON.parse(resumed.value!.data), { schemaVersion: 1, ...identity,
       eventId: JSON.parse(resumed.value!.data).eventId, sequence: 2, event: { type: 'delta', text: 'Second</say>' } });
