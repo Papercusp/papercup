@@ -23,6 +23,7 @@ const censusSelected = [
   'accepts the real native directory-descent disappearance',
   'refuses unproven or incomplete disappearance evidence',
   'compacts capped native file metadata',
+  'compacts uncapped native file metadata',
 ];
 const selected = [
   'discovers fresh policy roots on each pass and refuses symlink roots before reclaiming',
@@ -174,7 +175,7 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
         if (selection.census) {
           const census = rows.find(value => value.filePath === censusAssertion);
           expect(census).toMatchObject({ outcome: 'inserted', row: { status: 'pass', executionDetails: {
-            passed: 7, failed: 0, collectionFailed: false,
+            passed: 8, failed: 0, collectionFailed: false,
           } } });
           for (const title of censusSelected) expect(census.row.executionDetails.passedCaseTitles.some(
             (passed: string) => passed.includes(title))).toBe(true);

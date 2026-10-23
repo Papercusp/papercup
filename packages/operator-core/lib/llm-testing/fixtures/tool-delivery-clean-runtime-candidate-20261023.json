@@ -19771,7 +19771,7 @@
     "sourceReplacements": {
       "packages/operator-core/lib/tool-delivery-acceptance.ts": {
         "originalSha256": "16902e5d5c14331d2cbc3ce975f458ab7c387c010aca5822360859a6cb24621f",
-        "sha256": "526d79f016f8ce1e8b2fe3562338a89a28e6da79fca93e9687b8a797c2920ea6"
+        "sha256": "aa1d038d98d7caaf00fbc27682d5dcf639ad4e6430cbb0af03017a5082991778"
       },
       "packages/operator-core/lib/tool-delivery-fidelity-custody.test.ts": {
         "originalSha256": "ee1ac513ba716c54e5acb885a6a7416aaa0003ae8b2139abfe96a6bdfaccea70",
@@ -19784,7 +19784,8 @@
       "packages/operator-core/lib/llm-testing/test-run-ledger.ts": "98302c4b9eb6403cd65dbc4d408e8c02ebf0b5a8a5e209e5e368c29b88dfd11c",
       "libs/test-config/src/execution-details.ts": "57f1944aa1bc9901cbd4afa3e9fff5b696af16b88c21b4047c15b280ebbd7783",
       "libs/test-config/src/execution-details.test.ts": "b8d00620fa8b3b560b05fc4e21166686598966c0e0c9adae5767b34fb2db7d75",
-      "packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs": "bd250f9269713bb2ee0c0f1dc0202e22fd920cfd5931d12963f9b6f76824e8bb"
+      "packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs": "bd250f9269713bb2ee0c0f1dc0202e22fd920cfd5931d12963f9b6f76824e8bb",
+      "packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.d.mts": "9f187bfc8b93f70bbc7f2448a4372c2045bf2d7ec08fd0726cd51cb0b34bb7ad"
     },
     "addedSubmodules": {
       "libs/test-config": "25e2a1398af19d1a9c24fbee4fcc7a22210c43f3"

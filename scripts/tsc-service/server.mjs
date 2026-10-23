@@ -22,6 +22,7 @@ import {
   refreshProjectRootFiles,
   renderDiagnostics,
   tscServiceRequestId,
+  tscServiceIdentity,
   tscServiceSocketPath,
 } from '../lib/tsc-service.mjs';
 
@@ -38,6 +39,7 @@ const nativeDir = dirname(createRequire(import.meta.url).resolve('@typescript/na
 const { API } = await import(pathToFileURL(join(nativeDir, 'dist/api/async/api.js')).href);
 
 const log = (line) => console.log(`[tsc-service] ${line}`);
+const startedAt = Date.now();
 
 /** @type {{ api: any, snapshot: any, snapshotAt: number, open: string[] }} */
 const state = { api: null, snapshot: null, snapshotAt: 0, open: [] };
@@ -47,6 +49,41 @@ const dependencyCache = new Map();
 /** @type {{ request: any, reply: (response: object) => void, arrivedAt: number, cancelled: boolean, trace: (phase: string) => void }[]} */
 const queue = [];
 let draining = false;
+
+/**
+ * The native API runs tsgo in a child process. A client timeout closes its socket, but an
+ * in-flight `updateSnapshot` does not observe that cancellation and can otherwise hold the
+ * single-flight queue long after every caller has fallen back to the CLI. Stop that orphaned
+ * refresh only when every request sharing it has disconnected; queued requests are not in this
+ * batch and will get a fresh API after the failed refresh is reset.
+ */
+function abortRefreshIfUnobserved(batch) {
+  let abortRequested = false;
+  const abort = () => {
+    if (abortRequested || batch.some((item) => !item.cancelled)) return;
+    const child = state.api?.client?.process;
+    if (!child || child.exitCode !== null || child.signalCode !== null || child.killed) return;
+    abortRequested = true;
+    for (const item of batch) item.trace('refresh-abort-no-clients');
+    log(`terminating tsgo refresh after all ${batch.length} requesting client(s) disconnected`);
+    try {
+      // Reject the pending JSON-RPC request immediately so drain() can reset the dead API and
+      // continue with queued work instead of waiting for a response from the terminated child.
+      state.api?.client?.connection?.dispose();
+    } catch (error) {
+      log(`could not dispose unobserved tsgo connection: ${error?.message ?? error}`);
+    }
+    try {
+      child.kill('SIGTERM');
+    } catch (error) {
+      log(`could not terminate unobserved tsgo refresh: ${error?.message ?? error}`);
+    }
+  };
+  for (const item of batch) item.abortRefreshIfUnobserved = abort;
+  return () => {
+    for (const item of batch) delete item.abortRefreshIfUnobserved;
+  };
+}
 
 // mtime-keyed text cache: the checked-set scan reads every in-repo program file per request, and
 // almost none of them change between requests.
@@ -252,6 +289,9 @@ async function drain() {
       const batch = queue.splice(0).filter((item) => !item.cancelled);
       if (batch.length === 0) continue;
       const projects = [...new Set(batch.map((item) => item.request.project))];
+      const detachRefreshAbort = abortRefreshIfUnobserved(batch);
+      let refreshFailed = false;
+      let refreshError;
       try {
         for (const item of batch) item.trace('refresh');
         await refresh(projects, (phase) => {
@@ -259,8 +299,13 @@ async function drain() {
         });
         for (const item of batch) item.trace('refreshed');
       } catch (error) {
-        for (const item of batch) item.reply({ ok: false, reason: 'refresh-failed', detail: String(error?.message ?? error) });
-        await resetApi(`refresh failed: ${error?.message ?? error}`);
+        refreshFailed = true;
+        refreshError = error;
+      }
+      detachRefreshAbort();
+      if (refreshFailed) {
+        for (const item of batch) item.reply({ ok: false, reason: 'refresh-failed', detail: String(refreshError?.message ?? refreshError) });
+        await resetApi(`refresh failed: ${refreshError?.message ?? refreshError}`);
         continue;
       }
       for (let i = 0; i < batch.length; i += 1) {
@@ -327,6 +372,7 @@ const server = createServer((socket) => {
     if (item && !replied) {
       item.cancelled = true;
       item.trace('client-disconnected');
+      item.abortRefreshIfUnobserved?.();
     }
   });
   socket.on('data', (chunk) => {
@@ -337,25 +383,43 @@ const server = createServer((socket) => {
       if (buffer.length > 1024 * 1024) socket.destroy();
       return;
     }
+    let requestId = tscServiceRequestId();
+    let request;
     const reply = (response) => {
       if (!socket.destroyed) {
         replied = true;
-        socket.end(`${JSON.stringify(response)}\n`);
+        const identity = tscServiceIdentity(request ?? {});
+        if (response.ok && JSON.stringify(identity) !== JSON.stringify(request.identity)) {
+          response = { ok: false, reason: 'identity-mismatch', detail: 'source or config changed during the request' };
+        }
+        socket.end(`${JSON.stringify({ ...response, kind: 'result', requestId, identity,
+          runtime: { pid: process.pid, startedAt } })}\n`);
       }
     };
-    let request;
     try {
       request = JSON.parse(buffer.slice(0, newline));
     } catch {
       reply({ ok: false, reason: 'bad-request', detail: 'not JSON' });
       return;
     }
+    requestId = tscServiceRequestId(request.requestId);
     const invalid = validate(request);
     if (invalid) {
-      reply({ ok: false, reason: 'bad-request', detail: invalid });
+      const reason = Array.isArray(request.files) && request.files.length > MAX_REQUEST_FILES ? 'scope-too-wide'
+        : invalid.startsWith('scope must') ? 'unsupported-scope' : 'bad-request';
+      reply({ ok: false, reason, detail: invalid });
       return;
     }
-    const requestId = tscServiceRequestId(request.requestId);
+    const identity = tscServiceIdentity(request);
+    if (JSON.stringify(request.identity) !== JSON.stringify(identity)) {
+      reply({ ok: false, reason: 'identity-mismatch', detail: 'request source/compiler/config identity differs from this service' });
+      return;
+    }
+    if (identity.projectConfigSha256 === null || identity.namedSources.some(source => source.sha256 === null)) {
+      reply({ ok: false, reason: 'source-unavailable', detail: 'requested config or source cannot be read' });
+      return;
+    }
+    socket.write(`${JSON.stringify({ kind: 'progress', requestId, identity, phase: draining ? 'queued' : 'accepted' })}\n`);
     const arrivedAt = Date.now();
     const trace = (phase) => log(
       `requestId=${requestId} project=${relative(ROOT, request.project)} named=${request.files.length} ` +

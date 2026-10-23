@@ -273,7 +273,8 @@ export function verifyToolDeliverySourceCustody(input: {
       'packages/operator-core/lib/tool-delivery-fidelity-custody.test.ts',
       'packages/operator-core/lib/tool-delivery-clean-runtime.ts', 'packages/operator-core/lib/tool-delivery-clean-runtime.test.ts',
       'packages/operator-core/lib/llm-testing/test-run-ledger.ts', 'libs/test-config/src/execution-details.ts',
-      'libs/test-config/src/execution-details.test.ts', 'packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs'];
+      'libs/test-config/src/execution-details.test.ts', 'packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs',
+      'packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.d.mts'];
     if (!amendment || !(amendment.addedFiles[oraclePath] || (registration.custodyPaths && registration.sourcePins.files[oraclePath])) ||
         !amendment.sourceReplacements['packages/operator-core/lib/tool-delivery-acceptance.ts'] ||
         !/^deterministic-tool-definition-delivery-2026-09-21#D-\d+$/.test(amendment.decisionRef) || !Number.isFinite(Date.parse(amendment.registeredAt)) ||

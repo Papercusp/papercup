@@ -889,6 +889,13 @@ export function requestTscService({ socketPath, request, timeoutMs = TSC_SERVICE
             continue;
           }
           if (response.kind !== 'result' || typeof response.ok !== 'boolean') return fail(new Error('invalid terminal service response'));
+          if (!Number.isSafeInteger(response.runtime?.pid) || response.runtime.pid < 1 ||
+              !Number.isFinite(response.runtime?.startedAt) || response.runtime.startedAt <= 0 ||
+              (response.ok && (typeof response.output !== 'string' || !Number.isSafeInteger(response.errorCount) ||
+                !Array.isArray(response.checked) || !response.checked.every(file => typeof file === 'string') ||
+                !Array.isArray(response.namedNotInProgram) || !response.counts))) {
+            return fail(new Error('incomplete terminal service result'));
+          }
           settled = true;
           clearTimeout(timer);
           socket.end();

@@ -3,10 +3,11 @@
  * ids embedded in a shell greeting. Accepts only the randomUUID alphabet
  * [0-9a-f-]; throws (rather than escaping) on anything else.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { shellSafeId, buildSuperuserMcpUrl, buildConsoleEnvelope } from './console-launcher';
 import {
   SPAWN_PATH_DIRS_ENV,
@@ -122,6 +123,40 @@ describe('buildConsoleEnvelope cwd for a workspace-only launch (EI-10938)', () =
     expect(envelope.env.PAPERCUSP_REPO_ROOT).toBe(envelope.cwd);
     expect(envelope.env.PAPERCUSP_NODE_RUNTIME_DIR).toBe(dirname(process.execPath));
     expect(existsSync(join(envelope.env.PAPERCUSP_REPO_ROOT!, '.git'))).toBe(true);
+  });
+});
+
+describe('buildConsoleEnvelope retained Node boundary', () => {
+  const originalExecPath = process.execPath;
+  let root: string;
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'console-retained-node-')); });
+  afterEach(() => {
+    process.execPath = originalExecPath;
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('carries explicit retained Node to checkout CLIs from a Bun parent', async () => {
+    const bin = join(root, 'retained', 'bin');
+    mkdirSync(bin, { recursive: true });
+    symlinkSync(originalExecPath, join(bin, 'node'));
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', bin);
+    process.execPath = join(root, 'bun');
+
+    const envelope = await buildConsoleEnvelope({ workspaceId: 'default', slug: null,
+      operatorBaseUrl: 'http://localhost:3070', skipMcpJson: true });
+    expect(envelope.env.PAPERCUSP_NODE_RUNTIME_DIR).toBe(bin);
+  });
+
+  it('refuses an unidentified executable named node instead of exporting it to checkout CLIs', async () => {
+    const executable = join(root, 'node');
+    if (process.env.PAPERCUSP_RUNTIME_TEST_BUN) symlinkSync(process.env.PAPERCUSP_RUNTIME_TEST_BUN, executable);
+    else writeFileSync(executable, '', { mode: 0o755 });
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', '');
+    process.execPath = executable;
+
+    await expect(buildConsoleEnvelope({ workspaceId: 'default', slug: null,
+      operatorBaseUrl: 'http://localhost:3070', skipMcpJson: true })).rejects.toThrow(/retained Node/);
   });
 });
 
