@@ -639,6 +639,49 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     });
   });
 
+  it('retries an ACK miss when the owned delivery is parked again', async () => {
+    const fired = await store
+      .registerAwait({ subscriberId: 'su-ack-reparked', eventKey: 'ack:reparked' })
+      .then(() => store.fireAwaitsForKey({ eventKey: 'ack:reparked' }));
+    await store.insertDeliveries({ awaits: fired });
+    const [w] = (await store.claimDueDeliveries({ limit: 25 })).filter((d) => d.subscriberId === 'su-ack-reparked');
+    expect(w).toBeDefined();
+    await store.markDeliveryParked(w.id, 'test race: pump returned the row to parked', 60_000);
+
+    // Inject the race's observable sequence: the first conditional ACK write
+    // misses, then the owned-row read still sees this delivery parked.
+    const originalSql = h.sql as import('postgres').Sql;
+    let forcedMiss = false;
+    let firstAckUpdate = true;
+    h.sql = new Proxy(originalSql, {
+      apply(target, thisArg, args) {
+        const queryText = (args[0] as TemplateStringsArray).join(' ');
+        if (firstAckUpdate && queryText.includes('UPDATE harness_shared.event_wake_deliveries')) {
+          firstAckUpdate = false;
+          forcedMiss = true;
+          return [];
+        }
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+
+    try {
+      expect(await store.ackDelivery({ deliveryId: w.id, subscriberId: 'su-ack-reparked' })).toEqual({
+        acked: true,
+        alreadySettled: false,
+      });
+      expect(forcedMiss).toBe(true);
+    } finally {
+      h.sql = originalSql;
+    }
+
+    expect((await store.listRecentDeliveries('su-ack-reparked'))[0]).toMatchObject({
+      id: w.id,
+      status: 'delivered',
+      channel: 'inbox',
+    });
+  });
+
   it('does not ack a wake already being delivered by the pump', async () => {
     const fired = await store
       .registerAwait({ subscriberId: 'su-ack-delivering', eventKey: 'ack:delivering' })
