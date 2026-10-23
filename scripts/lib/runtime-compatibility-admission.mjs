@@ -11,7 +11,7 @@ export async function perform() {
   const nowMs = Number(process.env.PAPERCUSP_PROBE_NOW);
   if (!/^runtime_admission_[a-f0-9]{12}$/.test(url.pathname.slice(1))
       || !nonce || !attempt || !Number.isFinite(nowMs)
-      || !['enqueue', 'lease', 'hold', 'stale', 'complete'].includes(action)) {
+      || !['enqueue', 'lease', 'hold', 'stale', 'complete', 'gateway'].includes(action)) {
     throw new Error('An isolated runtime_admission database and explicit fixture identity are required');
   }
   const sql = postgres(url.href, { prepare: false, max: 2, connect_timeout: 5,
@@ -34,6 +34,47 @@ export async function perform() {
       namespace: 'runtime-admission', now: () => nowMs, leaseIdFactory: () => attempt,
     });
     await sql`INSERT INTO runtime_probe.attempts (attempt, pid) VALUES (${attempt}, ${process.pid})`;
+    if (action === 'gateway') {
+      const role = process.env.PAPERCUSP_PROBE_ROLE;
+      if (!['winner', 'loser'].includes(role)) throw new Error('An explicit gateway barrier role is required');
+      const waitFor = async (phase, count) => {
+        const deadline = Date.now() + 20_000;
+        while (Date.now() < deadline) {
+          const rows = await sql`SELECT attempt FROM runtime_probe.gateway_barrier WHERE phase=${phase}`;
+          if (rows.length === count) return;
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        throw new Error(`Gateway barrier timed out: ${phase}`);
+      };
+      // Both facade callers must observe the queued receipt before either can
+      // lease it. Then let the loser run only after the winner is running.
+      const enqueue = store.enqueue.bind(store);
+      store.enqueue = async (...args) => {
+        const result = await enqueue(...args);
+        await sql`INSERT INTO runtime_probe.gateway_barrier VALUES (${attempt}, 'enqueued')`;
+        await waitFor('enqueued', 2);
+        if (role === 'loser') await waitFor('running', 1);
+        return result;
+      };
+      const { createDurableGatewayAdmissionGovernor } = await load('../inference-gateway/durable-admission.ts');
+      const governor = createDurableGatewayAdmissionGovernor({ store, namespace: 'runtime-admission', owner: attempt,
+        now: () => nowMs, leaseIdFactory: () => attempt });
+      let outcome;
+      try {
+        outcome = await governor.admit({ idempotencyKey: 'same-request', admissionClass: 'inference',
+          demand: { providerRequests: 1 } });
+      } catch (error) {
+        await sql`INSERT INTO runtime_probe.gateway_barrier VALUES (${attempt}, 'rejected')`;
+        return { admitted: false, error: error.name };
+      }
+      if (outcome.kind !== 'admitted') throw new Error('Gateway did not return an admitted receipt');
+      await sql`INSERT INTO runtime_probe.effects (attempt, pid) VALUES (${attempt}, ${process.pid})`;
+      await sql`INSERT INTO runtime_probe.gateway_barrier VALUES (${attempt}, 'running')`;
+      await waitFor('rejected', 1);
+      const status = await governor.status('same-request');
+      const released = await governor.release(outcome.context);
+      return { admitted: true, stateAfterCompetitor: status.state, released: released.released };
+    }
     if (action === 'enqueue') {
       const result = await new Governor(driver, { now: () => nowMs }).admit({
         idempotencyKey: 'same-request', admissionClass: 'process', demand: { cpuWeight: 1 },

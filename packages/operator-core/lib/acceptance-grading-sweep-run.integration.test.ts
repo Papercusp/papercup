@@ -39,7 +39,7 @@ vi.mock('./acceptance-grading-sweep-observe', () => ({
 }));
 vi.mock('./dbos/primary-dbos-client', async () => {
   const { DBOSClient } = await import('@dbos-inc/dbos-sdk');
-  let client: InstanceType<typeof DBOSClient>;
+  let client: Awaited<ReturnType<typeof DBOSClient.create>>;
   return {
     primaryDbosAppVersion: () => 'grading-proof-v1',
     getPrimaryDbosClient: async () => {
@@ -218,9 +218,10 @@ if (phase) {
       sourcePaths: [filePath, 'packages/operator-core/lib/acceptance-grading-sweep-run.ts',
         'packages/operator-core/lib/acceptance-awaiting-plans.ts', 'packages/operator-core/lib/acceptance-grading-sweep-dispatch.ts',
         'packages/operator-core/lib/acceptance-grader.ts', 'packages/operator-core/lib/harness/routines/acceptance-grading-sweep-action.ts',
-        'packages/operator-core/lib/dbos/acceptance-grading-dispatch-workflow.ts', 'packages/operator-core/test/isolated-integration-proof.ts'],
+        'packages/operator-core/lib/dbos/acceptance-grading-dispatch-workflow.ts', 'packages/operator-core/test/isolated-integration-proof.ts',
+        'scripts/with-test-pg.mjs'],
       execute: async (observe, evidenceDir) => {
-        const env = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
           PAPERCUSP_TEST_RUN_GROUP: (process.env.PAPERCUSP_TEST_RUN_GROUP ?? '') + ':grading-proof' };
         for (const key of ['PC_EXECUTED_SOURCE_MAP_OUT', 'PC_EXECUTED_SOURCE_MAP_RESULT', 'PC_EXECUTED_SOURCE_MAP_WORKSPACE',
           'PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PAPERCUSP_TEST_RUNS_DB_URL', 'PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE']) delete env[key];

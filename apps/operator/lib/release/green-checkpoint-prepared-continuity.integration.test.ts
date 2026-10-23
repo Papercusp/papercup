@@ -15,6 +15,7 @@ import {
   type CheckpointOpts,
 } from "./green-checkpoint";
 import { releaseConfig } from "./release-config";
+import { advanceReady } from "./git-ops";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -78,7 +79,8 @@ async function fixture() {
     runId: "a-different-run-id-must-not-replace-the-attempt",
     setupTree: async () => { throw new Error("preparation must not materialize a tree"); },
     runGreen: async () => { throw new Error("preparation must not execute a suite"); },
-    advance: async () => {}, push: async () => {}, broadcast: async () => {},
+    advance: (candidate) => advanceReady(integration, candidate, "main"),
+    push: async () => {}, broadcast: async () => {},
     escalate: async () => {}, clearEscalation: async () => {}, emitEvent: async () => {}, log: () => {},
     readFrozenRepairQueue: async () => null,
     resolveKnownGoodRecutTarget: async () => knownGood,

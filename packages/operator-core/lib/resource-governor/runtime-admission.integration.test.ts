@@ -17,6 +17,7 @@ const sources = ['scripts/lib/runtime-compatibility-admission.mjs', 'scripts/lib
   'packages/operator-core/lib/resource-governor/runtime-admission.integration.test.ts',
   'packages/operator-core/lib/resource-governor/admission-ledger-store.ts',
   'packages/operator-core/lib/resource-governor/admission.ts', 'packages/operator-core/lib/resource-governor/queue.ts',
+  'packages/operator-core/lib/inference-gateway/durable-admission.ts',
   'packages/operator-core/test/_admission-ledger-fixture.ts',
   'libs/papercusp/libs/db/sql/1062-resource-governor-admission-ledger.sql'];
 const root = new URL('../../../../', import.meta.url);
@@ -35,7 +36,9 @@ beforeAll(async () => {
   await db.sql.unsafe(`CREATE SCHEMA runtime_probe;
     CREATE TABLE runtime_probe.guard (nonce text PRIMARY KEY);
     CREATE TABLE runtime_probe.attempts (attempt text PRIMARY KEY, pid int NOT NULL);
-    CREATE TABLE runtime_probe.effects (attempt text PRIMARY KEY, pid int NOT NULL);`).simple();
+    CREATE TABLE runtime_probe.effects (attempt text PRIMARY KEY, pid int NOT NULL);
+    CREATE TABLE runtime_probe.gateway_barrier (attempt text NOT NULL, phase text NOT NULL,
+      PRIMARY KEY (attempt, phase));`).simple();
   await db.sql`INSERT INTO runtime_probe.guard (nonce) VALUES (${nonce})`;
   runtimes = await Promise.all(executables.map(executable => measureRuntime(executable)));
 }, 90_000);
@@ -52,7 +55,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await truncateAdmissionLedgerFixture(db.sql);
-  await db.sql`TRUNCATE runtime_probe.attempts, runtime_probe.effects`;
+  await db.sql`TRUNCATE runtime_probe.attempts, runtime_probe.effects, runtime_probe.gateway_barrier`;
 });
 
 function launch(runtime: typeof runtimes[number], attempt: string, action: string,
@@ -82,6 +85,25 @@ async function enqueue(runtime = runtimes[0], attempt = 'producer') {
 }
 
 describe('admission ledger interpreter baseline', () => {
+  it('preserves the gateway winner when a competing facade loses its targeted lease in both runtime directions', async () => {
+    for (const [index, runtime] of runtimes.entries()) {
+      await truncateAdmissionLedgerFixture(db.sql);
+      await db.sql`TRUNCATE runtime_probe.attempts, runtime_probe.effects, runtime_probe.gateway_barrier`;
+      const results = await Promise.all([
+        launch(runtime, `gateway-winner-${index}`, 'gateway',
+          { admitted: true, stateAfterCompetitor: 'running', released: true }, { PAPERCUSP_PROBE_ROLE: 'winner' }),
+        launch(runtimes[(index + 1) % runtimes.length], `gateway-loser-${index}`, 'gateway',
+          { admitted: false, error: 'AdmissionPersistenceError' }, { PAPERCUSP_PROBE_ROLE: 'loser' }),
+      ]);
+      results.forEach(passed);
+      expect(await db.sql`SELECT attempt FROM runtime_probe.effects`).toEqual([{ attempt: `gateway-winner-${index}` }]);
+      const [receipt] = await db.sql`SELECT state, record FROM harness_shared.resource_governor_admissions`;
+      expect(receipt.state).toBe('completed');
+      expect(receipt.record.lease).toBeUndefined();
+      expect(await db.sql`SELECT * FROM harness_shared.work_items`).toHaveLength(0);
+    }
+  }, 120_000);
+
   it('converges same-key cross-process enqueues on one persisted receipt', async () => {
     let pending: ReturnType<typeof launch>[] = [];
     try {

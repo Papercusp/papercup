@@ -61,9 +61,6 @@ export async function executeAcceptanceGradingDispatch(
     harnessSlug: input.harnessSlug,
     ...(input.gradingLaunch ? { gradingLaunch: input.gradingLaunch } : {}),
     principal: { kind: 'system', slug: ACCEPTANCE_GRADING_SWEEP_ACTOR, workspaceId: input.workspaceId, capabilities: new Set<string>() },
-    ownerId: ACCEPTANCE_GRADING_SWEEP_ACTOR,
-    ownerLabel: 'acceptance grading sweep',
-    userId: null,
   } satisfies Parameters<typeof resolveAcceptanceGrader>[1], { dispatchEpisodeIdentity: workflowId });
   if (!['assigned', 'launched', 'deduped', 'settled'].includes(result.state)) {
     throw new Error(result.error ?? `acceptance grader resolve returned ${result.state}`);
