@@ -4,6 +4,47 @@
   "workItemId": "WI-10007524",
   "parentWorkItemId": "WI-6554700010020902",
   "status": "acceptance-and-shipment-open",
+  "qualificationCorrection": {
+    "takesPrecedenceOverEarlierCalibrationLanguage": true,
+    "finding": "Exact ledger reads show execution_details.mutation=NULL in21805373,21806124 and21806212. Their logs explicitly withheld descriptors because the reader URL was the host instead of its/api/health endpoint.",
+    "interpretation": "The controls passed and mutations were caught, and binding hashes measured current. Those facts do not establish machine-verified calibration linkage. Treat the earlier descriptor-free mutation rows as unqualified for acceptance.",
+    "adequacy": "The earlier descriptor-free R4 row failed linkage. The later requiredDescriptorRepair below restores its governing mechanical PASS; the separate lifecycle clauses remain unknown or failing.",
+    "retirements": "The31 old-row retirements applied, but stronger proof equivalence remains an open repair until required-descriptor replacements pass adequacy. No P004 acceptance or shipment was certified.",
+    "repair": "Use PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED=1 and PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL=http://127.0.0.1:3170/api/health. Preserve a fresh committed source with maintained --retain-for; refuse before tests if descriptor preflight fails.",
+    "repairState": "/tmp/gf-p004-required-proof-20261023.state.json",
+    "repairLog": "/dev/shm/get-feedback-p004-required-proof-20261023.log",
+    "repairRetentionMarker": "/tmp/gf-p004-required-proof-20261023.inflight",
+    "sourceRetentionCorrection": "A later current-HTTP rerun never started because its kept checkout had been swept (spawn node ENOENT). It supplies no new test evidence."
+  },
+  "requiredDescriptorRepair": {
+    "sourceCommit": "e1e3892922a7ecea39a5097f4496245d86e7b7f9",
+    "readerHealthUrl": "http://127.0.0.1:3170/api/health",
+    "descriptorRequired": true,
+    "agenda": { "baseline": 21807145, "copyBaseline": 21807148, "mutant": 21807150, "bindingIds": [66381, 66382, 66383, 66384] },
+    "callable": { "baseline": 21807152, "copyBaseline": 21807153, "mutant": 21807154, "bindingIds": [66388, 66389, 66390, 66391] },
+    "disposition": { "baseline": 21807160, "copyBaseline": 21807165, "mutant": 21807179, "bindingState": "not yet bound at this checkpoint" },
+    "observedDescriptorProof": "Exact canonical agenda rows have non-null matching baseline/copy-baseline/mutant descriptors and worktreeDirty:false. All three maintained probes completed their passing controls and caught mutations before the workflow advanced to HTTP.",
+    "mechanicalAdequacy": {
+      "specId": "AUTO-BAR-R-4-P-004",
+      "verdict": "pass",
+      "governing": true,
+      "evaluatorBuild": "604eb4eb4f",
+      "passingTestBindingIds": [66381, 66388, 66251, 66218],
+      "caughtMutantBindingIds": [66382, 66389],
+      "gaps": [],
+      "receipt": "/tmp/gf-p004-required-adequacy-20261023.json"
+    },
+    "remainingClauseVerdicts": {
+      "GF-P004-agenda-absence": "unknown: falsifiability and plan-class-risk-floor",
+      "GF-P004-callable-absence": "fail: falsifiability, freshness and plan-class-risk-floor",
+      "GF-P004-disposition": "unknown: falsifiability, correct-layer and plan-class-risk-floor"
+    },
+    "remainingScenarioAssociation": "The three clauses declare non-null falsifiers without requiredScenarios. Source mutationTargetScenarioMatchesMeasuredCase requires a canonical scenario; it accepts an explicit singleton adequacy.scenarioIds plus the exact measured adequacy.testCases, so test-title or production edits are unnecessary. Record/consult the decision receipt /tmp/gf-p004-scenario-decision-20261023.json before the planned metadata-only revisions. No revisions were written in this checkpoint.",
+    "workflowState": "/tmp/gf-p004-required-proof-20261023.state.json",
+    "workflowLog": "/dev/shm/get-feedback-p004-required-proof-20261023.log",
+    "retentionMarker": "/tmp/gf-p004-required-proof-20261023.inflight",
+    "http": "Running against retained current source; reconcile the structured state and actual owned process after context recovery. No final current HTTP verdict was read."
+  },
   "preservedArtifact": {
     "path": "docs/evidence/get-feedback-p004-and-rubric9-proof-2026-10-23.json",
     "sha256": "2dcfea52fbdc3e39de156871166fb4ad8526f37757ae3cd47c6dc3c5735e852d",
@@ -103,8 +144,39 @@
     "focusedAgendaBindings": [66311, 66312],
     "focusedAgendaCurrentnessReceipt": "/tmp/gf-p004-focused-current-20261023.json",
     "focusedAgendaCurrentness": "Both focused agenda bindings independently measure current in every applicable dimension.",
-    "dispositionMutationRefreshLog": "/dev/shm/get-feedback-p004-disposition-drift-probe-20261023-0700.log",
-    "limitation": "Mutation refresh and current production HTTP proof remain separate prerequisites; no final P004 adequacy or shipment verdict follows from the180 passing tests."
+    "dispositionMutationRefresh": {
+      "log": "/dev/shm/get-feedback-p004-disposition-drift-probe-20261023-0700.log",
+      "baselineTestRunId": 21807028,
+      "copyBaselineTestRunId": 21807030,
+      "mutantTestRunId": 21807034,
+      "verdict": "caught",
+      "assertion": "retired requester reporting — historical outcome preservation: confirmed > preserves the exact historical record through an answered close",
+      "bindingIds": [66330, 66331],
+      "independentCurrentnessReceipt": "/tmp/gf-p004-disposition-drift-current-20261023.json",
+      "independentCurrentness": "Both replacement rows measure current in every applicable dimension, with no stale or unknown reasons."
+    },
+    "limitation": "Current production HTTP proof remains separate; no final P004 adequacy or shipment verdict follows from the180 passing tests and caught mutation."
+  },
+  "qualifiedRetirements": {
+    "requestAndReplacementMap": "/tmp/gf-p004-qualified-replacements-20261023.json",
+    "logicalKey": "gf-p004-qualified-retire-20261023-v1",
+    "requested": 31,
+    "outcome": "Applied, reconciled from four complete authoritative evidence populations after the write response was lost. All31 exact old binding IDs are absent; no fresh write retry occurred.",
+    "readbackPrefix": "/tmp/gf-p004-after-retire-",
+    "preserved": "Historical R4 revision2 rows were not touched. Older HTTP binding39071 remains pending a qualified current replacement. No surviving mutant was removed."
+  },
+  "completedHttpSnapshot": {
+    "sourceCommit": "7267510ed07ba25599a4d6d26d0c7ed7e6f575dc",
+    "testRunId": 21807047,
+    "status": "pass",
+    "worktreeDirty": false,
+    "runtimeRunId": "20261023T070446Z-1380713",
+    "resultSha256": "2beb6992c1b9dd7e2f3b7e71bd1b933cb494e54d45f2ab918919b133732c54f2",
+    "sourceSha256": "18f681225ae585d83bd15a9cbd543fd6ac006c35a3a3e77100656097bcce9e5e",
+    "lifecycleSha256": "9cb0b7a8c88bca46ffe0d2db875123819bf8afea1d43b59ae2d5f51aa82b8bda",
+    "log": "/dev/shm/get-feedback-p004-http-private-clean-integration-20261023-0626.log",
+    "scope": "HTTP case passed and the owning command exited0. Later source changes prevent treating this older snapshot as current production proof without measurement. The private invoked-source checkout was cleaned after completion; durable ledger and isolated-runtime receipts remain.",
+    "incidentalOwnedDefect": "EI-26753429946407343 records optional org-template migration295 skipping after dict_snowball SQLSTATE58P01. Main HTTP success does not establish that optional setup is healthy."
   },
   "calibratedBindingReconciliation": {
     "writeReceipt": "/tmp/gf-p004-calibrated-bind-result-20261023.json",
