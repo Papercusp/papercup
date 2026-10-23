@@ -47,7 +47,7 @@ import { runArm, scoreRuns, type ArmResourceSample } from './fair-comparison-run
 import type { FairArm } from './fair-comparison-arms';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
-import { createFairWorkerChannel, dispatchFrozenGraphRequest, fairWorkerCompletion, freshFactory, type FrozenFairInputs } from './fair-comparison-cli';
+import { createFairWorkerChannel, dispatchFrozenGraphRequest, fairScopeKernelTasks, fairWorkerCompletion, freshFactory, type FrozenFairInputs } from './fair-comparison-cli';
 import { fairObservedScopeCosts, qualifyFairProcessWitness, startFairProcessObserver } from './fair-process-observer';
 import { absCgroupDir, readCgroupProcs, readProcessCgroupPath, sampleCgroup } from '../task-manager/cgroup-read';
 import { deriveUserManagerRoot, newTaskId, scopeCgroupRelPath, scopeUnitForTask } from '../task-manager/types';
@@ -452,7 +452,7 @@ describe('native protocol real confined worker lifecycle', () => {
     } finally { await repetition.arm.close!(); }
     expect(existsSync(identity.treeRoot)).toBe(false);
     expect(existsSync(identity.home)).toBe(false);
-    expect(sampleCgroup(absCgroupDir(identity.cgroupPath)).pidsCurrent ?? 0).toBe(0);
+    expect(fairScopeKernelTasks(identity.cgroupPath)).toBe(0);
     // close() now awaits the managed terminal receipt, so a separate polling
     // window must not be needed to observe the durable postcondition.
     const [task] = await storage.sql!`SELECT ended_at IS NOT NULL AS ended FROM harness_shared.task_ledger
@@ -507,9 +507,10 @@ describe('native protocol real confined worker lifecycle', () => {
     for (const path of new Set(samples.flatMap(sample => sample.scopeCosts!.map(scope => scope.cgroupPath)))) {
       const sample = sampleCgroup(absCgroupDir(path));
       const processCount = readCgroupProcs(absCgroupDir(path)).length;
-      const diagnostic = { cgroupPath: path, kernelTasks: sample.pidsCurrent, processCount };
+      const diagnostic = { cgroupPath: path, kernelTasks: fairScopeKernelTasks(path),
+        rawKernelTasks: sample.pidsCurrent, processCount };
       console.log('NATIVE_FRESH_LSP_CLEANUP_SCOPE=' + JSON.stringify(diagnostic));
-      expect(sample.pidsCurrent ?? 0, JSON.stringify(diagnostic)).toBe(0);
+      expect(diagnostic.kernelTasks, JSON.stringify(diagnostic)).toBe(0);
     }
   }, 300_000);
 });

@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { buildArm, createFairWorkerChannel, fairProcessCensus, fairWorkerCompletion, FAIR_ARM_IDS, frozenGraphRequest, indexFileCensus, loadFairInputs, materializeFrozenControls,
   FAIR_WORKER_RUNTIME_MAX_SEC, materializeFrozenRepositoryTask, measureFairToolPayload, prepareFrozenControl, validateFrozenInputs, verifyFrozenSource,
-  stopFairWorker, verifyFairWorkerSource, workspaceDirs, type FrozenFairInputs } from './fair-comparison-cli';
+  fairScopeKernelTasks, stopFairWorker, verifyFairWorkerSource, workspaceDirs, type FrozenFairInputs } from './fair-comparison-cli';
 
 // Transitive users can mock only their own subprocess seam. Importing the CLI's
 // helpers must not read/promisify the absent execFile before an actual CLI run.
@@ -81,7 +81,111 @@ describe('FAIR_ARM_IDS', () => {
   });
 });
 
+describe('kernel task scope reads', () => {
+  const scope = '/user.slice/pc-worker.scope';
+  const error = (code: string) => Object.assign(new Error(code), { code });
+
+  it.each(['0', '3\n'])('reads the hierarchical kernel task counter %j', text => {
+    const fs = { readFile: vi.fn(() => text), isDirectory: vi.fn(() => true) };
+    expect(fairScopeKernelTasks(scope, fs)).toBe(Number(text));
+    expect(fs.readFile).toHaveBeenCalledWith(`/sys/fs/cgroup${scope}/pids.current`);
+    expect(fs.isDirectory).not.toHaveBeenCalled();
+  });
+
+  it.each(['', '-1', '1.5', 'invalid', '9007199254740992'])('keeps an invalid counter %j unknown', text => {
+    expect(fairScopeKernelTasks(scope, { readFile: () => text, isDirectory: () => true })).toBeNull();
+  });
+
+  it('accepts collection only from positive directory ENOENT', () => {
+    const fs = { readFile: () => { throw error('ENOENT'); },
+      isDirectory: vi.fn(() => { throw error('ENOENT'); }) };
+    expect(fairScopeKernelTasks(scope, fs)).toBe(0);
+    expect(fs.isDirectory).toHaveBeenCalledWith(`/sys/fs/cgroup${scope}`);
+  });
+
+  it.each(['present', 'EACCES', 'EIO'])('keeps a missing counter in a %s directory unknown', state => {
+    expect(fairScopeKernelTasks(scope, { readFile: () => { throw error('ENOENT'); },
+      isDirectory: () => { if (state !== 'present') throw error(state); return true; } })).toBeNull();
+  });
+
+  it.each(['/', '/../foreign', '/user.slice/./foreign'])('refuses unsafe or root scope %j without reading', path => {
+    const fs = { readFile: vi.fn(), isDirectory: vi.fn() };
+    expect(fairScopeKernelTasks(path, fs)).toBeNull();
+    expect(fs.readFile).not.toHaveBeenCalled();
+  });
+});
+
 describe('fresh worker cleanup', () => {
+  it.each([1, null])('retains evidence after successful close receipts when observed kernel tasks are %s', async kernelTasks => {
+    vi.useFakeTimers();
+    const owned = mkdtempSync(join(tmpdir(), 'fair-worker-kernel-drain-'));
+    const workerScope = '/user.slice/pc-worker.scope', serverScope = '/user.slice/pc-server.scope';
+    const readKernelTasks = vi.fn((path: string) => path === workerScope ? 0 : kernelTasks);
+    try {
+      const stopped = stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        exited: Promise.resolve(), completion: async () => ({ status: 'recorded' }), owned,
+        cgroupPaths: [workerScope, serverScope] }, async () => ({
+        killTask: vi.fn().mockResolvedValue({ ok: true }), killScopeUnit: vi.fn(),
+      }), readKernelTasks);
+      const refused = expect(stopped).rejects.toThrow('kernel task drain deadline; isolated files retained');
+      await vi.advanceTimersByTimeAsync(10_000);
+      await refused;
+      expect(readKernelTasks).toHaveBeenCalledWith(serverScope);
+      expect(existsSync(owned)).toBe(true);
+    } finally { vi.useRealTimers(); rmSync(owned, { recursive: true, force: true }); }
+  });
+
+  it('keeps files until every observed scope drains without signalling an independent scope', async () => {
+    vi.useFakeTimers();
+    const owned = mkdtempSync(join(tmpdir(), 'fair-worker-kernel-drain-'));
+    const workerScope = '/user.slice/pc-worker.scope', serverScope = '/user.slice/pc-server.scope';
+    const killScopeUnit = vi.fn();
+    let kernelTasks = 3;
+    const readKernelTasks = vi.fn((path: string) => path === workerScope ? 0 : kernelTasks);
+    try {
+      const stopped = stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        exited: Promise.resolve(), completion: async () => ({ status: 'recorded' }), owned,
+        cgroupPaths: [workerScope, serverScope, serverScope] }, async () => ({
+        killTask: vi.fn().mockResolvedValue({ ok: true }), killScopeUnit,
+      }), readKernelTasks);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(readKernelTasks).toHaveBeenCalledWith(serverScope);
+      expect(existsSync(owned)).toBe(true);
+      kernelTasks = 0;
+      await vi.advanceTimersByTimeAsync(25);
+      await stopped;
+      expect(existsSync(owned)).toBe(false);
+      expect(killScopeUnit).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); rmSync(owned, { recursive: true, force: true }); }
+  });
+
+  it('shares the ten second deadline across pipe close, terminal write, and kernel drain', async () => {
+    vi.useFakeTimers();
+    const owned = mkdtempSync(join(tmpdir(), 'fair-worker-kernel-drain-'));
+    try {
+      const stopped = stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope', owned,
+        cgroupPaths: ['/user.slice/pc-worker.scope'],
+        exited: new Promise<void>(done => setTimeout(done, 6_000)),
+        completion: () => new Promise(done => setTimeout(() => done({ status: 'recorded' }), 3_000)),
+      }, async () => ({ killTask: vi.fn().mockResolvedValue({ ok: true }), killScopeUnit: vi.fn() }), () => 1);
+      const refused = expect(stopped).rejects.toThrow('kernel task drain deadline; isolated files retained');
+      await vi.advanceTimersByTimeAsync(10_000);
+      await refused;
+      expect(existsSync(owned)).toBe(true);
+    } finally { vi.useRealTimers(); rmSync(owned, { recursive: true, force: true }); }
+  });
+
+  it('retains files when a registered worker has no measured scope paths', async () => {
+    const owned = mkdtempSync(join(tmpdir(), 'fair-worker-kernel-drain-'));
+    try {
+      await expect(stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        exited: Promise.resolve(), owned }, async () => ({
+        killTask: vi.fn().mockResolvedValue({ ok: true }), killScopeUnit: vi.fn(),
+      }))).rejects.toThrow('kernel task scopes unavailable; isolated files retained');
+      expect(existsSync(owned)).toBe(true);
+    } finally { rmSync(owned, { recursive: true, force: true }); }
+  });
+
   it('accepts the exact durable terminal row when another writer wins the close', async () => {
     const completion = async () => ({ status: 'unavailable' as const, reason: 'terminal write did not update the row' });
     await expect(fairWorkerCompletion({ taskId: 'worker-task', workspaceId: 'test-workspace',
@@ -109,6 +213,7 @@ describe('fresh worker cleanup', () => {
       const killScopeUnit = vi.fn().mockResolvedValue(outcome);
       try {
         const stopped = stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+          cgroupPaths: ['/user.slice/pc-worker.scope'],
           exited: new Promise<void>(() => {}), owned }, async () => ({ killTask, killScopeUnit }));
         const completed = expect(stopped).resolves.toBeUndefined();
         await vi.advanceTimersByTimeAsync(10_000);
@@ -127,6 +232,7 @@ describe('fresh worker cleanup', () => {
     const killScopeUnit = vi.fn().mockResolvedValue({ ok: false, error: 'permission_denied' });
     try {
       const stopped = stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        cgroupPaths: ['/user.slice/pc-worker.scope'],
         exited: new Promise<void>(() => {}), owned }, async () => ({ killTask, killScopeUnit }));
       const refused = expect(stopped).rejects.toThrow('failed to drain; isolated files retained');
       await vi.advanceTimersByTimeAsync(10_000);
@@ -142,6 +248,7 @@ describe('fresh worker cleanup', () => {
     const killScopeUnit = vi.fn();
     try {
       await stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        cgroupPaths: ['/user.slice/pc-worker.scope'],
         exited: Promise.resolve(), owned }, async () => ({ killTask, killScopeUnit }));
       expect(killScopeUnit).not.toHaveBeenCalled();
       expect(existsSync(owned)).toBe(false);
@@ -155,6 +262,7 @@ describe('fresh worker cleanup', () => {
     const completion = vi.fn(() => terminal);
     try {
       const stopped = stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        cgroupPaths: ['/user.slice/pc-worker.scope'],
         exited: Promise.resolve(), completion, owned }, async () => ({
         killTask: vi.fn().mockResolvedValue({ ok: true }), killScopeUnit: vi.fn(),
       }));
@@ -170,6 +278,7 @@ describe('fresh worker cleanup', () => {
     const owned = mkdtempSync(join(tmpdir(), 'fair-worker-cleanup-'));
     try {
       await expect(stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        cgroupPaths: ['/user.slice/pc-worker.scope'],
         exited: Promise.resolve(), completion: async () => ({ status, reason: 'controlled terminal failure' }), owned },
       async () => ({ killTask: vi.fn().mockResolvedValue({ ok: true }), killScopeUnit: vi.fn() })))
         .rejects.toThrow(`terminal persistence ${status}`);
@@ -182,6 +291,7 @@ describe('fresh worker cleanup', () => {
     const owned = mkdtempSync(join(tmpdir(), 'fair-worker-cleanup-'));
     try {
       const stopped = stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        cgroupPaths: ['/user.slice/pc-worker.scope'],
         exited: Promise.resolve(), completion: () => new Promise(() => {}), owned },
       async () => ({ killTask: vi.fn().mockResolvedValue({ ok: true }), killScopeUnit: vi.fn() }));
       const refused = expect(stopped).rejects.toThrow('terminal persistence deadline; isolated files retained');

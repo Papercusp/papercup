@@ -505,15 +505,39 @@ export async function fairWorkerCompletion(
   return outcome;
 }
 
-/** Prove the payload scope is gone before removing a repetition's private files. */
+/** A missing counter is not an empty scope. Only ENOENT on the directory itself
+ * proves collection; a present but unreadable scope remains unknown. */
+export function fairScopeKernelTasks(cgroupPath: string, fs = {
+  readFile: (path: string) => readFileSync(path, 'utf8'),
+  isDirectory: (path: string) => statSync(path).isDirectory(),
+}): number | null {
+  if (!cgroupPath.startsWith('/') || cgroupPath === '/' ||
+      cgroupPath.split('/').some(part => part === '..' || part === '.')) return null;
+  const directory = absCgroupDir(cgroupPath);
+  try {
+    const text = fs.readFile(`${directory}/pids.current`).trim();
+    const value = /^\d+$/.test(text) ? Number(text) : NaN;
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  } catch {
+    try { fs.isDirectory(directory); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0; }
+    return null;
+  }
+}
+
+/** Prove every observed payload scope has drained before removing private files. */
 export async function stopFairWorker(
-  { taskId, scopeUnit, exited, completion, owned }: {
+  { taskId, scopeUnit, exited, completion, owned, cgroupPaths = [] }: {
     taskId: string | null; scopeUnit: string | null; exited: Promise<void> | null; owned: string;
+    cgroupPaths?: readonly string[];
     completion?: import('../task-manager/managed-spawn').ManagedSpawnResult['waitForCompletion'] | null;
   },
   loadControls: () => Promise<Pick<typeof import('../task-manager/control'), 'killTask' | 'killScopeUnit'>> =
     () => import('../task-manager/control'),
+  readKernelTasks: (cgroupPath: string) => number | null = fairScopeKernelTasks,
 ): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  const remaining = () => Math.max(0, deadline - Date.now());
   const { killScopeUnit, killTask } = await loadControls();
   if (taskId) {
     const outcome = await killTask(taskId, { signal: 'SIGKILL', includeSubtree: true, reapTerminalResidue: true });
@@ -529,7 +553,7 @@ export async function stopFairWorker(
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const drained = await Promise.race([exited.then(() => true),
-        new Promise<boolean>(done => { timer = setTimeout(() => done(false), 10_000); })]);
+        new Promise<boolean>(done => { timer = setTimeout(() => done(false), remaining()); })]);
       if (!drained) {
         // The transient systemd-run client can withhold its close event after
         // the registered payload scope has emptied. Verify that scope directly.
@@ -547,10 +571,24 @@ export async function stopFairWorker(
     try {
       const recorded = await Promise.race([completion(),
         new Promise<never>((_resolve, reject) => { timer = setTimeout(() =>
-          reject(new Error('fresh worker terminal persistence deadline; isolated files retained')), 10_000); })]);
+          reject(new Error('fresh worker terminal persistence deadline; isolated files retained')), remaining()); })]);
       if (recorded.status !== 'recorded') throw new Error(
         `fresh worker terminal persistence ${recorded.status}: ${recorded.reason}; isolated files retained`);
     } finally { clearTimeout(timer); }
+  }
+  const paths = [...new Set(cgroupPaths)];
+  if (taskId && paths.length === 0)
+    throw new Error('fresh worker kernel task scopes unavailable; isolated files retained');
+  for (;;) {
+    const pending = paths.flatMap(path => {
+      let kernelTasks: number | null;
+      try { kernelTasks = readKernelTasks(path); } catch { kernelTasks = null; }
+      return kernelTasks === 0 ? [] : [{ path, kernelTasks }];
+    });
+    if (pending.length === 0) break;
+    if (remaining() === 0) throw new Error(
+      `fresh worker kernel task drain deadline; isolated files retained (${JSON.stringify(pending)})`);
+    await new Promise(done => setTimeout(done, Math.min(25, remaining())));
   }
   await rm(owned, { recursive: true, force: true });
 }
@@ -576,9 +614,20 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
     let scopeUnit: string | null = null;
     let completion: import('../task-manager/managed-spawn').ManagedSpawnResult['waitForCompletion'] | null = null;
     let observer: Awaited<ReturnType<typeof startFairProcessObserver>> | null = null;
+    const observedScopes = new Set<string>();
+    const rememberScopes = (paths: readonly string[]) => {
+      for (const path of paths) if (path.startsWith('/') &&
+        !path.split('/').some(part => part === '..' || part === '.') &&
+        (path === cgroupPath || taskIdFromScopeUnit(basename(path)))) observedScopes.add(path);
+    };
     const stop = async () => {
-      try { await stopFairWorker({ taskId, scopeUnit, exited, completion, owned }); }
-      finally { await observer?.stop(); }
+      try {
+        if (observer) rememberScopes((await observer.sample()).witness?.cgroupPaths ?? []);
+      } finally {
+        try { await stopFairWorker({ taskId, scopeUnit, exited, completion, owned,
+          cgroupPaths: [...observedScopes, ...(cgroupPath ? [cgroupPath] : [])] }); }
+        finally { await observer?.stop(); }
+      }
     };
     try {
       // Copy-on-write rather than hardlinks: freshness controls must never mutate
@@ -666,6 +715,7 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
           observedChildProcessesMax = Math.max(observedChildProcessesMax ?? 0, processCensus.childProcesses);
         const indexFiles = await indexFileCensus([treeRoot, home], baseline);
         const costs = fairObservedScopeCosts(observation.witness?.cgroupPaths ?? [], confinedPath);
+        rememberScopes(costs.scopes.map(scope => scope.cgroupPath));
         const unknown: string[] = [...processCensus.unknown, ...qualified.unknown, ...costs.unknown];
         if (qualified.peakChildProcesses === null) unknown.push('descendant-process-lifetime-peak-not-measured');
         if (costs.memoryCurrentBytes === null) unknown.push('memory.current unreadable');
