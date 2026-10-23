@@ -1524,6 +1524,71 @@ describe('retention on a real fixture tree', () => {
       for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { finish(); now.mockRestore(); }
   });
+  it.each(['persisted', 'failed'] as const)('releases the real mutex while a queued-writer diagnostic is %s', async (auditOutcome) => {
+    const { root, options } = await setup();
+    const paths = [join(root, 'old-a'), join(root, 'old-b')];
+    for (const path of paths) await writeFile(path, 'expired');
+    let firstRemoval!: () => void, finishRemoval!: () => void, queued!: () => void;
+    let auditStarted!: () => void, finishAudit!: () => void, peerAcquired!: () => void;
+    const removing = new Promise<void>(resolve => { firstRemoval = resolve; });
+    const removalGate = new Promise<void>(resolve => { finishRemoval = resolve; });
+    const waiting = new Promise<void>(resolve => { queued = resolve; });
+    const auditing = new Promise<void>(resolve => { auditStarted = resolve; });
+    const auditGate = new Promise<void>(resolve => { finishAudit = resolve; });
+    const acquired = new Promise<void>(resolve => { peerAcquired = resolve; });
+    let peerEntered = false, auditFinished = false, refreshedAfterPeer = false;
+    const records: string[] = [];
+    const waitFor = async (pending: Promise<unknown>, phase: string) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([pending, new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`FIFO diagnostic fixture stalled at ${phase}`)), 10_000);
+        })]);
+      } finally { clearTimeout(timer); }
+    };
+    const reclaim = runDiskReclaimOnce({ ...options, runBudgetMs: 60_000,
+      readProtection: async () => { if (peerEntered) refreshedAfterPeer = true; return { paths: [] }; },
+      record: async (phase, details) => {
+        if (phase === 'remove-intent' || phase === 'removed') records.push(`${phase}:${(details as { path: string }).path}`);
+        if (phase === 'progress' && (details as { phase: string }).phase === 'yield-to-queued-writer') {
+          auditStarted(); await auditGate; auditFinished = true;
+          if (auditOutcome === 'failed') throw new Error('fixture handoff audit failed');
+        }
+      },
+      removeEntry: async entry => {
+        if (entry.path === paths[0]) { firstRemoval(); await removalGate; }
+        else { expect(peerEntered && auditFinished && refreshedAfterPeer).toBe(true); }
+        await rm(entry.path);
+      },
+    });
+    let peer: Promise<unknown> | undefined;
+    try {
+      await waitFor(removing, 'first removal');
+      peer = withFsMutex('papercusp-disk-retention', async () => { peerEntered = true; peerAcquired(); },
+        { timeoutMs: 30_000, retryMs: 5, onWaiting: queued });
+      await waitFor(waiting, 'peer queued');
+      expect(peerEntered).toBe(false);
+      finishRemoval();
+      await waitFor(auditing, 'diagnostic suspended');
+      await waitFor(acquired, 'peer admitted during suspended diagnostic');
+      expect(auditFinished).toBe(false);
+      expect(records).toEqual([`remove-intent:${paths[0]}`, `removed:${paths[0]}`]);
+      expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
+      finishAudit();
+      const receipt = await waitFor(reclaim, 'receipt').then(() => reclaim);
+      await peer;
+      expect(receipt.complete).toBe(auditOutcome === 'persisted');
+      if (auditOutcome === 'failed') {
+        expect(receipt.errors).toContain('fixture handoff audit failed');
+        expect(receipt.scan?.stoppedAtRoot).toBe(root);
+        expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
+      } else {
+        expect(receipt.errors).toEqual([]);
+        expect(records).toEqual(paths.flatMap(path => [`remove-intent:${path}`, `removed:${path}`]));
+        await expect(stat(paths[1]!)).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+    } finally { finishRemoval(); finishAudit(); await Promise.allSettled([reclaim, peer]); }
+  }, 45_000);
   it('attributes a failed FIFO reacquisition wait and preserves the unprocessed continuation', async () => {
     const { root, options } = await setup();
     const later = join(dirname(root), 'later'); await mkdir(later);

@@ -956,6 +956,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
   try {
     await record('started', receipt);
     let mutex: { hasWaiters: () => Promise<boolean> } | undefined;
+    let yieldProgress: { phase: string; timings: typeof phaseTimings } | undefined;
     let protectedPaths: string[] = [];
     let protectionInitialized = false;
     const refreshProtection = () => measure('protectionReadMs', async () => {
@@ -970,7 +971,9 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       if (!await measure('waiterCheckMs', async () => mutex?.hasWaiters())) return 0;
       const pausedAt = Date.now();
       try {
-        await record('progress', { phase: 'yield-to-queued-writer', timings: { ...phaseTimings } });
+        // Diagnostic persistence must not hold up the writer we are yielding to.
+        // Capture the same snapshot here; the driver records it after release.
+        yieldProgress = { phase: 'yield-to-queued-writer', timings: { ...phaseTimings } };
         yield;
         // A pin or lease writer may have changed eligibility while we released
         // the mutex. Never reuse that protection snapshot after reacquisition.
@@ -1418,6 +1421,11 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         } finally {
           if (!admitted) phaseTimings[waitPhase] += Math.max(0, performance.now() - requestedAt);
           if (callbackFinishedAt !== undefined) phaseTimings.mutexReleaseMs += Math.max(0, performance.now() - callbackFinishedAt);
+        }
+        if (yieldProgress) {
+          const progress = yieldProgress;
+          yieldProgress = undefined;
+          await record('progress', progress);
         }
         if (done) break;
       }
