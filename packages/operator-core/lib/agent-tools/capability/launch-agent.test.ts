@@ -644,6 +644,7 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
   it('refuses a GOAL verifier without holder authority before opening a process', async () => {
     const res = await launchAgent.handler({ brief: 'Grade my goal', goalVerifier: 'grade' }, ctx);
     expect(isError(res)).toBe(true);
+    expect(dataOf(res)?.launchFailure).toEqual({ stage: 'pre-spawn', processesOpened: 0 });
     expect(textOf(res)).toContain('active, attributed GOAL holder');
     expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
