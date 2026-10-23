@@ -321,7 +321,7 @@ describe('test-files router', () => {
       warning.mockRestore();
     }
   });
-  it('keeps guarded config imports native for both collection and execution', () => {
+  it('defaults guarded imports to native and permits source-attested bundles', () => {
     const guarded = { NODE_OPTIONS: '--import=/checkout/scripts/lib/committed-source-loader.mjs' };
     expect(vitestConfigLoaderPolicy(['-t', 'selected'], guarded, [])).toEqual({
       configLoaderArgs: ['--configLoader', 'native'], vitestArgs: ['-t', 'selected'] });
@@ -329,8 +329,10 @@ describe('test-files router', () => {
       configLoaderArgs: ['--configLoader', 'native'], vitestArgs: ['-t', 'selected'] });
     expect(vitestConfigLoaderPolicy(['--configLoader', 'runner'], {}, [])).toEqual({
       configLoaderArgs: ['--configLoader', 'runner'], vitestArgs: [] });
-    for (const loader of ['runner', 'bundle']) expect(() =>
-      vitestConfigLoaderPolicy(['--configLoader', loader], guarded, [])).toThrow('requires --configLoader native');
+    expect(vitestConfigLoaderPolicy(['--configLoader', 'bundle'], guarded, [])).toEqual({
+      configLoaderArgs: ['--configLoader', 'bundle'], vitestArgs: [] });
+    expect(() => vitestConfigLoaderPolicy(['--configLoader', 'runner'], guarded, []))
+      .toThrow('requires --configLoader native');
     expect(vitestConfigLoaderPolicy([], {}, ['--import', '/checkout/scripts/lib/committed-source-loader.mjs'])
       .configLoaderArgs).toEqual(['--configLoader', 'native']);
     expect(vitestConfigLoaderPolicy([], {}, []).configLoaderArgs).toEqual([]);
