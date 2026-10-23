@@ -1,11 +1,13 @@
 /** Real Postgres regression for the shared qualification/repair row. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { classifyReadPaths, writeExecutedSourceMapSnapshot } from '../../../../libs/test-config/src/executed-source-map-reporter';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
@@ -90,6 +92,221 @@ async function metadata(): Promise<Record<string, unknown>> {
 }
 
 describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
+  it.each(['SIGTERM', 'SIGKILL'] as const)('resumes the independent population after a real native %s before its first snapshot', async signal => {
+    const root = fileURLToPath(new URL('../../../../', import.meta.url));
+    const fixtureRoot = join(root, 'libs/test-config/src/__fixtures__/durable-completion');
+    const config = join(fixtureRoot, 'vitest.config.ts');
+    const argv = [join(dirname(createRequire(import.meta.url).resolve('vitest/package.json')), 'vitest.mjs'),
+      'run', '--root', fixtureRoot, '--config', config];
+    const env: NodeJS.ProcessEnv = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (!['PC_', 'VITEST', 'PAPERCUSP_TEST_', 'PAPERCUSP_CHECKPOINT_', 'PAPERCUSP_MUTATION_', 'AFFECTED_']
+        .some(prefix => key.startsWith(prefix))) env[key] = value;
+    }
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', timeout: 10_000 }).trim();
+    const owner = { attemptId: 'native-crash-attempt', candidate, runnerId: 'native-crash-one',
+      runId: 'native-crash-run-one', leaseDurationMs: 120_000 };
+    // Discovery runs BEFORE the producer; surviving OUT files never define selection.
+    const discovery = execFileSync(process.execPath, [join(root, 'scripts/resolve-vitest-config-contracts.mjs')], {
+      cwd: root, env, encoding: 'utf8', timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
+      input: JSON.stringify({ requests: [{ root: fixtureRoot, repositoryRoot: root, config,
+        enumerateFiles: true, enumerateSpecifications: true }] }),
+    });
+    const marker = 'PC_VITEST_CONFIG_CONTRACTS=';
+    const line = discovery.split(/\r?\n/).find(value => value.startsWith(marker));
+    const selected = JSON.parse(line!.slice(marker.length)).results[0];
+    expect(selected.ok, discovery).toBe(true);
+    const specifications: Array<{ testFile: string }> = selected.selectedSpecifications;
+    expect(specifications).toHaveLength(3);
+    await seed();
+    expect((await beginStoredQualification(target, owner)).status).toBe('updated');
+    const directory = mkdtempSync(join(tmpdir(), 'qualification-native-crash-'));
+    const outPath = join(directory, 'out.json');
+    Object.assign(env, {
+      PC_COMPLETION_CRASH_WINDOW: 'before-first-snapshot', PC_COMPLETION_CRASH_SIGNAL: signal,
+      PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/durable-completion-fixture',
+      PC_EXECUTED_SOURCE_MAP_OUT: outPath, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1',
+      PC_EXECUTED_INPUTS_DIR: join(directory, 'inputs'),
+      PAPERCUSP_TEST_RUN_GROUP: owner.runId,
+      PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: owner.attemptId,
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://127.0.0.1:1/native-crash-fixture',
+    });
+    const child = spawn(process.execPath, argv, { cwd: fixtureRoot, env, detached: true,
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    let output = '';
+    child.stdout!.on('data', chunk => { output += chunk; });
+    child.stderr!.on('data', chunk => { output += chunk; });
+    const stopped = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
+      child.once('close', (code, signal) => resolve({ code, signal }));
+    });
+    const stopOwnedTree = () => {
+      if (!child.pid) return;
+      try { process.kill(-child.pid, 'SIGKILL'); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+    };
+    const timer = setTimeout(stopOwnedTree, 120_000);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', () => reject(new Error(`native fixture exited before enrollment: ${output}`)));
+        child.on('message', message => {
+          if ((message as { kind?: string; pid?: number })?.kind === 'native-pre-snapshot-ready') resolve();
+        });
+      });
+      const pidIdentity = checkpointPidIdentity(child.pid!);
+      expect(pidIdentity).not.toBeNull();
+      const input: QualificationWorkProgressInput = { ...owner, pidIdentity: pidIdentity!,
+        root, taskKey: 'qualification', repairHead: null, runContext: 'clean-local',
+        runnerIdentity: `proof-v3 ${process.version} ${process.platform} ${process.arch}`,
+        retryStates: [], updates: [], manifest: { schemaVersion: 1,
+          units: specifications.map(spec => ({ id: spec.testFile, kind: 'test' as const, path: spec.testFile })) } };
+      expect((await reserveStoredQualificationRunner(target, { ...owner, pid: child.pid!, pidIdentity, started: true,
+        evidenceRefs: [`checkpoint-run:${owner.runId}`] })).status).toBe('updated');
+      const registration = registerPartialNativeProducer(outPath, { attemptId: owner.attemptId,
+        sourceCommit: candidate, runGroupId: owner.runId, root, taskKey: 'native-fixture',
+        workspaceName: env.PC_EXECUTED_SOURCE_MAP_WORKSPACE, registeredAtMs: Date.now(),
+        selectedSpecifications: specifications, command: { cmd: process.execPath, argv, cwd: fixtureRoot } }, env);
+      expect((await recordStoredQualificationNativeProducer(target, input, { path: outPath,
+        producerPath: registration.path, taskKey: 'native-fixture', workspaceName: env.PC_EXECUTED_SOURCE_MAP_WORKSPACE!,
+        selectedSpecifications: specifications })).status).toBe('updated');
+      child.send({ kind: 'native-producer-registered' });
+      expect(await stopped, output).toEqual({ code: null, signal });
+      stopOwnedTree();
+      expect(output).toContain(`REAL_COMPLETION_WRITE_INTERRUPTED phase=before-first-snapshot signal=${signal}`);
+      expect(existsSync(outPath)).toBe(false);
+      // The production prober measures the exact dead PID; no supplied liveness verdict.
+      const replacement = { ...owner, runnerId: 'native-crash-two', runId: 'native-crash-run-two',
+        pid: process.pid, pidIdentity: checkpointPidIdentity(process.pid)!, started: true };
+      expect((await reserveStoredQualificationRunner(target, replacement)).status).toBe('updated');
+      const resumed = { ...input, ...replacement };
+      expect(await recoverStoredQualificationNativeCompletions(target, resumed, undefined, { recoverMissingSnapshots: true }))
+        .toMatchObject({ status: 'updated', transaction: { continuation: { receipts: [], nativeProducers: [
+          { missingSnapshot: { runnerId: owner.runnerId } },
+        ] } } });
+      const execute = vi.fn(async (_unit: { path: string }) => { throw new Error('replacement-boundary'); });
+      await expect(continueStoredQualificationWork(target, resumed, execute)).rejects.toThrow('replacement-boundary');
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(specifications.some(spec => spec.testFile === execute.mock.calls[0]?.[0]?.path)).toBe(true);
+      expect(await readStoredQualification(target)).toMatchObject({ transaction: { attemptId: owner.attemptId,
+        candidate, runId: replacement.runId, continuation: { manifest: input.manifest, receipts: [] } } });
+    } finally {
+      clearTimeout(timer);
+      stopOwnedTree();
+      await stopped;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 150_000);
+
+  it('recovers a producer killed before its first snapshot only after a measured dead handoff', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      const observation = fixture.enroll();
+      rmSync(observation.path);
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('updated');
+      const options = { recoverMissingSnapshots: true };
+      expect(await recoverStoredQualificationNativeCompletions(target, fixture.input, observation.classifyReadPaths, options))
+        .toMatchObject({ status: 'conflict', refusalReason: 'native-producer-not-proved-dead' });
+      expect((await reserveStoredQualificationRunner(target, { ...fixture.owner, runnerId: 'runner-two', runId: 'run-two',
+        pid: 43, pidIdentity: 'boot:43', incumbentLiveness: 'dead', nowMs: 500 })).status).toBe('updated');
+      const input = { ...fixture.input, runnerId: 'runner-two', runId: 'run-two', pidIdentity: 'boot:43', nowMs: 600 };
+      for (const liveness of ['live', 'unknown'] as const) {
+        configureRunnerLivenessProber(() => liveness);
+        expect(await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths, options))
+          .toMatchObject({ status: 'conflict', refusalReason: 'native-producer-not-proved-dead' });
+      }
+      configureRunnerLivenessProber(() => 'dead');
+      // Recovery remains explicit; the default still refuses a missing artifact.
+      expect(await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths))
+        .toMatchObject({ status: 'conflict', refusalReason: 'snapshot-unreadable' });
+      expect(await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths, options))
+        .toMatchObject({ status: 'updated', transaction: { continuation: { receipts: [], nativeProducers: [
+          { missingSnapshot: { runnerId: 'runner-one', confirmedAtMs: 600 } },
+        ] } } });
+      expect((await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths, options)).status)
+        .toBe('idempotent');
+      const execute = vi.fn(async () => { throw new Error('unacknowledged replacement'); });
+      await expect(continueStoredQualificationWork(target, input, execute, options)).rejects.toThrow('unacknowledged replacement');
+      expect(execute).toHaveBeenCalledExactlyOnceWith({ id: 'native', kind: 'test', path: 'native.test.ts' });
+      const before = await readStoredQualification(target);
+      fixture.save(); // A late old writer cannot silently add evidence after retirement.
+      expect(await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths, options))
+        .toMatchObject({ status: 'conflict', refusalReason: 'retired-native-output-appeared' });
+      expect(await readStoredQualification(target)).toEqual(before);
+    } finally { configureRunnerLivenessProber(null); fixture.cleanup(); }
+  });
+
+  it.each(['banked', 'corrupt'] as const)('never retires a %s native artifact as missing', async damage => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      const observation = fixture.enroll();
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('updated');
+      if (damage === 'banked') {
+        expect((await recoverStoredQualificationNativeCompletions(target, fixture.input, observation.classifyReadPaths)).status)
+          .toBe('updated');
+        rmSync(observation.path);
+      } else writeFileSync(observation.path, '{corrupt');
+      expect((await reserveStoredQualificationRunner(target, { ...fixture.owner, runnerId: 'runner-two', runId: 'run-two',
+        pid: 43, pidIdentity: 'boot:43', incumbentLiveness: 'dead', nowMs: 500 })).status).toBe('updated');
+      const input = { ...fixture.input, runnerId: 'runner-two', runId: 'run-two', pidIdentity: 'boot:43', nowMs: 600 };
+      configureRunnerLivenessProber(() => 'dead');
+      const before = await readStoredQualification(target);
+      expect(await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths,
+        { recoverMissingSnapshots: true })).toMatchObject({ status: 'conflict', refusalReason: damage === 'banked'
+          ? 'missing-native-output-has-banked-receipts' : 'snapshot-unreadable' });
+      expect(await readStoredQualification(target)).toEqual(before);
+    } finally { configureRunnerLivenessProber(null); fixture.cleanup(); }
+  });
+
+  it('persists an admitted retry predecessor and replays its archived receipt without hiding later demotion', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      fixture.input.retryStates = ['fail'];
+      const first = fixture.enroll();
+      fixture.snapshot.nativeRun.files[0]!.state = 'failed';
+      fixture.snapshot.nativeRun.files[0]!.firstAttemptVerdict = 'fail';
+      fixture.snapshot.nativeRun.files[0]!.cases[0]!.status = 'fail';
+      Object.assign(fixture.snapshot.nativeRun, { finishedAtMs: 280, reason: 'failed', unhandledErrorCount: 0,
+        modulePopulationMatched: true });
+      fixture.save();
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, first)).status).toBe('updated');
+      expect((await recoverStoredQualificationNativeCompletions(target, fixture.input, first.classifyReadPaths)).status).toBe('updated');
+      expect((await reserveStoredQualificationRunner(target, { ...fixture.owner, runnerId: 'runner-two', runId: 'run-two',
+        pid: 43, pidIdentity: 'boot:43', incumbentLiveness: 'dead', nowMs: 500 })).status).toBe('updated');
+      const input = { ...fixture.input, runnerId: 'runner-two', runId: 'run-two', pidIdentity: 'boot:43', nowMs: 900 };
+      const out = join(fixture.directory, 'retry.json');
+      const producer = registerPartialNativeProducer(out, {
+        attemptId: input.attemptId, runGroupId: input.runId, root: input.root, taskKey: first.taskKey,
+        workspaceName: first.workspaceName, sourceCommit: input.candidate, registeredAtMs: 550,
+        selectedSpecifications: first.selectedSpecifications, command: { cwd: '/repo', cmd: 'npm', argv: ['run', 'test'] },
+      }, { NODE_ENV: 'test' });
+      const observation = { ...first, path: out, producerPath: producer.path };
+      const before = await readStoredQualification(target);
+      expect(await recordStoredQualificationNativeProducer(target, input, observation)).toMatchObject({
+        status: 'conflict', refusalReason: 'native-producer-predecessor-mismatch' });
+      expect(await readStoredQualification(target)).toEqual(before);
+      expect((await recordStoredQualificationNativeProducer(target, input, { ...observation,
+        supersedesCompletionIds: { native: 'native-completion' } })).status).toBe('updated');
+      const retry = structuredClone(fixture.snapshot);
+      retry.completionCheckpoint.runGroupId = 'run-two';
+      Object.assign(retry.nativeRun, { startedAtMs: 600, finishedAtMs: 800, reason: 'passed' });
+      Object.assign(retry.nativeRun.files[0]!, { state: 'passed', firstAttemptVerdict: 'pass',
+        completionId: 'retry-completion', observedAtMs: 700, cases: [{ status: 'pass' }] });
+      writeExecutedSourceMapSnapshot(out, retry);
+      expect(await recoverStoredQualificationNativeCompletions(target, input, first.classifyReadPaths))
+        .toMatchObject({ status: 'updated', transaction: { continuation: {
+          receipts: [{ completionId: 'retry-completion', state: 'pass' }],
+          supersededReceipts: [{ completionId: 'native-completion', state: 'fail' }],
+          nativeProducers: [{}, { supersedesCompletionIds: { native: 'native-completion' } }],
+        } } });
+      expect((await recoverStoredQualificationNativeCompletions(target, input, first.classifyReadPaths)).status).toBe('idempotent');
+      const after = await readStoredQualification(target);
+      fixture.snapshot.nativeRun.files[0]!.state = 'error';
+      fixture.save();
+      expect((await recoverStoredQualificationNativeCompletions(target, input, first.classifyReadPaths)).status).toBe('conflict');
+      expect(await readStoredQualification(target)).toEqual(after);
+    } finally { fixture.cleanup(); }
+  });
+
   it('retains enrolled task identity across JSONB and runner replacement, recovering only its recorded OUT', async () => {
     const fixture = await nativeRecoveryFixture();
     try {

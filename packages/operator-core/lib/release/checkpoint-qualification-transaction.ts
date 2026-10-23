@@ -9,11 +9,15 @@
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
+import { isCheckpointCandidateSource, type CheckpointCandidateSource } from './checkpoint-candidate-source';
+import type { FreezeCutRecord } from './known-good-freeze';
+import { FROZEN_REPAIR_CARRY_METADATA_KEY, FROZEN_REPAIR_CARRY_LAST_METADATA_KEY,
+  parseFrozenRepairPendingCarry, type FrozenRepairPendingCarry, type FrozenRepairCarryRecord } from './frozen-repair-carry';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
 import { evaluatePartialTaskContinuation, readPartialNativeCompletion, readPartialNativeProducer } from '../../../../scripts/lib/partial-task-resume.mjs';
@@ -325,6 +329,96 @@ export interface CheckpointQualificationTransaction {
   eligibilitySnapshot?: CheckpointEligibilitySnapshot | null;
   /** The full selected population and durable outcomes, under this record's existing runner fence. */
   continuation?: QualificationWorkContinuation;
+  /** Selection and carry consumption are committed together before materialization. */
+  preparedSelection?: PreparedCheckpointSelectionRecord;
+}
+
+export interface PreparedCheckpointSelectionRecord {
+  schemaVersion: 1;
+  attemptId: string;
+  integrationRoot: string;
+  checkpointRoot: string;
+  candidate: string;
+  tip: string;
+  base: string | null;
+  candidateSource: CheckpointCandidateSource;
+  quietCutApplied: boolean;
+  freezeCut: FreezeCutRecord | null;
+  generation: { candidate: string; identity: string; token: string; inputFingerprint: string; reused: boolean; root: string };
+  carry: FrozenRepairCarryRecord | null;
+  /** Captured queue authority, including its version, for restart validation. */
+  queue?: FrozenCandidateRepairQueue | null;
+}
+
+export function isPreparedCheckpointSelectionRecord(value: unknown): value is PreparedCheckpointSelectionRecord {
+  if (!value || typeof value !== 'object') return false;
+  const r = value as PreparedCheckpointSelectionRecord;
+  return r.schemaVersion === 1 && [r.attemptId, r.integrationRoot, r.checkpointRoot,
+    r.candidate, r.tip, r.candidateSource, r.generation?.root, r.generation?.identity,
+    r.generation?.token].every(v => typeof v === 'string' && v.length > 0) &&
+    isCheckpointCandidateSource(r.candidateSource) &&
+    (r.base === null || typeof r.base === 'string') && typeof r.quietCutApplied === 'boolean' &&
+    r.generation.candidate === r.candidate && /^[a-f0-9]{64}$/.test(r.generation.inputFingerprint) &&
+    typeof r.generation.reused === 'boolean' &&
+    (r.carry === null || r.carry?.judgedCandidate === r.candidate);
+}
+
+/** Read the existing qualification authority; absence is distinct from unreadability. */
+export async function readPreparedCheckpointSelection(
+  target: GateVerdictTarget,
+  input: Pick<PreparedCheckpointSelectionRecord, 'attemptId' | 'integrationRoot' | 'checkpointRoot'>,
+): Promise<PreparedCheckpointSelectionRecord | null> {
+  const read = await readStoredQualification(target);
+  if (read.status !== 'present') throw new Error('prepared selection qualification authority unavailable');
+  const current = read.transaction;
+  if (current.attemptId !== input.attemptId) throw new Error('prepared selection attempt authority mismatch');
+  const record = current.preparedSelection;
+  if (record === undefined) return null;
+  if (!isPreparedCheckpointSelectionRecord(record) || record.attemptId !== input.attemptId ||
+      record.integrationRoot !== input.integrationRoot || record.checkpointRoot !== input.checkpointRoot)
+    throw new Error('malformed or mismatched prepared selection authority');
+  return record;
+}
+
+/** The routine row serializes selection publication and carry consumption in one transaction. */
+export async function commitPreparedCheckpointSelection(
+  target: GateVerdictTarget,
+  record: PreparedCheckpointSelectionRecord,
+  expected: { queue: FrozenCandidateRepairQueue | null; pendingCarry: FrozenRepairPendingCarry | null },
+): Promise<boolean> {
+  if (!isPreparedCheckpointSelectionRecord(record)) throw new Error('invalid prepared selection authority');
+  return boundedOrgTxn(async tx => {
+    const rows = await tx<{ metadata: Record<string, unknown> }[]>`
+      SELECT metadata FROM harness_shared.routines
+      WHERE workspace_id = ${target.workspaceId} AND install_slug = ${target.installSlug}
+        AND target_role = 'system:green-checkpoint' FOR UPDATE`;
+    if (!rows[0]) throw new Error('missing prepared selection qualification authority');
+    const metadata = rows[0].metadata ?? {};
+    const current = parseCheckpointQualificationTransaction(metadata[CHECKPOINT_QUALIFICATION_METADATA_KEY]);
+    if (!current) throw new Error('unreadable prepared selection qualification authority');
+    if (current.attemptId !== record.attemptId || current.phase === 'terminal') return false;
+    const queueRaw = metadata.repair_queue ?? null;
+    const queue = queueRaw === null ? null : parseFrozenCandidateRepairQueue(queueRaw);
+    const pendingRaw = metadata[FROZEN_REPAIR_CARRY_METADATA_KEY] ?? null;
+    const pending = pendingRaw === null ? null : parseFrozenRepairPendingCarry(pendingRaw);
+    if ((queueRaw !== null && !queue) || (pendingRaw !== null && !pending))
+      throw new Error('unreadable prepared selection queue/carry authority');
+    if (!isDeepStrictEqual(queue, expected.queue) || !isDeepStrictEqual(pending, expected.pendingCarry)) return false;
+    if (current.preparedSelection) return isDeepStrictEqual(current.preparedSelection, record);
+    if (record.carry && (!pending || record.carry.fromCandidate !== pending.fromCandidate ||
+        record.carry.fromRepairHead !== pending.fromRepairHead)) return false;
+    const nextMetadata: Record<string, unknown> = { ...metadata, [CHECKPOINT_QUALIFICATION_METADATA_KEY]: {
+      ...current, preparedSelection: record, updatedAtMs: Date.now(),
+    } };
+    if (record.carry) {
+      delete nextMetadata[FROZEN_REPAIR_CARRY_METADATA_KEY];
+      nextMetadata[FROZEN_REPAIR_CARRY_LAST_METADATA_KEY] = record.carry;
+    }
+    await tx`UPDATE harness_shared.routines SET metadata = ${JSON.stringify(nextMetadata)}::jsonb, updated_at = now()
+      WHERE workspace_id = ${target.workspaceId} AND install_slug = ${target.installSlug}
+        AND target_role = 'system:green-checkpoint'`;
+    return true;
+  }, QUALIFICATION_STORE_TXN_OPTIONS);
 }
 
 export interface QualificationWorkUnit {
@@ -370,6 +464,10 @@ export interface QualificationNativeProducerReference {
   selectedSpecifications: unknown[];
   /** Binds command, environment digest and selection as well as producer identity. */
   sha256: string;
+  /** Exact retry predecessors admitted when this producer was enrolled. */
+  supersedesCompletionIds?: Record<string, string>;
+  /** No outcome existed, no receipt was banked, and the ended runner was proved dead. */
+  missingSnapshot?: { runnerId: string; confirmedAtMs: number };
 }
 
 function validNativeProducerReferences(value: unknown): value is QualificationNativeProducerReference[] {
@@ -382,6 +480,14 @@ function validNativeProducerReferences(value: unknown): value is QualificationNa
       paths.has(ref.path) || outputs.has(ref.outPath) || !Number.isSafeInteger(ref.registeredAtMs) ||
       ref.registeredAtMs <= 0 || !Array.isArray(ref.selectedSpecifications) || !ref.selectedSpecifications.length ||
       !/^[a-f0-9]{64}$/.test(ref.sha256)) return false;
+    if (ref.supersedesCompletionIds !== undefined &&
+        (!ref.supersedesCompletionIds || typeof ref.supersedesCompletionIds !== 'object' ||
+        Array.isArray(ref.supersedesCompletionIds) || Object.entries(ref.supersedesCompletionIds)
+          .some(([unit, completion]) => !unit || typeof completion !== 'string' || !completion))) return false;
+    if (ref.missingSnapshot !== undefined && (!ref.missingSnapshot ||
+        typeof ref.missingSnapshot.runnerId !== 'string' || !ref.missingSnapshot.runnerId ||
+        !Number.isSafeInteger(ref.missingSnapshot.confirmedAtMs) ||
+        ref.missingSnapshot.confirmedAtMs < ref.registeredAtMs)) return false;
     paths.add(ref.path); outputs.add(ref.outPath);
     return true;
   });
@@ -1083,6 +1189,8 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
   )
     return null;
   if (!isQualificationOutcome(row.outcome)) return null;
+  if (row.preparedSelection !== undefined && (!isPreparedCheckpointSelectionRecord(row.preparedSelection) ||
+      row.preparedSelection.attemptId !== row.attemptId)) return null;
   if (row.continuation !== undefined) {
     const work = row.continuation;
     if (!work || work.schemaVersion !== 1 || typeof work.root !== 'string' || !work.root ||
@@ -2468,7 +2576,12 @@ function recordQualificationNativeCompletion(
         cutoff === undefined || observed.origin.startedAtMs > cutoff ||
         observed.receipts.some(receipt => receipt.observedAtMs < observed.origin.startedAtMs! || receipt.observedAtMs > cutoff))
       return conflict('native-physical-run-unmeasured-or-outside-custody');
-    return recordQualificationWorkProgress(current, { ...input, updates: observed.receipts.map(receipt => ({
+    // Recovery replays the entire enrolled population, including earlier attempts.
+    // An exact archived receipt is already accounted for; a changed old artifact
+    // still reaches the conflict checks and cannot eclipse its terminal demotion.
+    const receipts = observed.receipts.filter(receipt => !(current.continuation?.supersededReceipts ?? [])
+      .some(archived => isDeepStrictEqual(archived, receipt)));
+    return recordQualificationWorkProgress(current, { ...input, updates: receipts.map(receipt => ({
       receipt: receipt as QualificationWorkReceipt,
       ...(observation.supersedesCompletionIds?.[receipt.unitId]
         ? { supersedesCompletionId: observation.supersedesCompletionIds[receipt.unitId] } : {}),
@@ -2482,7 +2595,7 @@ function recordQualificationNativeCompletion(
 export function recordStoredQualificationNativeProducer(
   target: GateVerdictTarget,
   input: QualificationWorkProgressInput,
-  observation: Pick<QualificationNativeCompletionInput, 'path' | 'taskKey' | 'workspaceName' | 'selectedSpecifications'> & {
+  observation: Pick<QualificationNativeCompletionInput, 'path' | 'taskKey' | 'workspaceName' | 'selectedSpecifications' | 'supersedesCompletionIds'> & {
     producerPath: string;
   },
 ): Promise<StoredQualificationMutation> {
@@ -2511,10 +2624,26 @@ export function recordStoredQualificationNativeProducer(
       workspaceName: producer.workspaceName, runGroupId: producer.runGroupId,
       registeredAtMs: producer.registeredAtMs, selectedSpecifications: structuredClone(producer.selectedSpecifications),
       sha256: createHash('sha256').update(JSON.stringify(producer)).digest('hex'),
+      ...(observation.supersedesCompletionIds !== undefined
+        ? { supersedesCompletionIds: structuredClone(observation.supersedesCompletionIds) } : {}),
     };
     const prior = custody.transaction.continuation!.nativeProducers ?? [];
     const existing = prior.find(value => value.path === ref.path || value.outPath === ref.outPath);
     if (existing) return isDeepStrictEqual(existing, ref) ? custody : conflict('native-producer-reference-conflict');
+    if (!validNativeProducerReferences([ref])) return conflict('native-producer-reference-invalid');
+    const selection = evaluatePartialTaskContinuation({ root: input.root, taskKey: input.taskKey,
+      continuation: custody.transaction.continuation }, { ...input, sourceCommit: input.candidate });
+    if (selection.status !== 'ready') return conflict('native-producer-eligibility-unmeasured');
+    const selectedUnits = input.manifest.units.filter(unit => unit.kind === 'test' && selected.has(unit.path));
+    const eligible = new Set<string>(selection.run);
+    for (const unit of selectedUnits) {
+      if (!eligible.has(unit.id)) return conflict('native-producer-unit-not-eligible');
+      const previous = custody.transaction.continuation!.receipts.find(receipt => receipt.unitId === unit.id);
+      if (previous?.completionId !== observation.supersedesCompletionIds?.[unit.id])
+        return conflict('native-producer-predecessor-mismatch');
+    }
+    if (Object.keys(observation.supersedesCompletionIds ?? {}).some(id => !selectedUnits.some(unit => unit.id === id)))
+      return conflict('native-producer-predecessor-outside-selection');
     const nowMs = input.nowMs ?? Date.now();
     if (!Number.isSafeInteger(nowMs) || nowMs < current.updatedAtMs) return conflict('continuation-clock-regressed');
     return { status: 'updated', transaction: { ...custody.transaction,
@@ -2531,8 +2660,9 @@ export function recoverStoredQualificationNativeCompletions(
   target: GateVerdictTarget,
   input: QualificationWorkProgressInput,
   classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths'],
+  options: { recoverMissingSnapshots?: boolean } = {},
 ): Promise<StoredQualificationMutation> {
-  return mutateStoredQualification(target, current => {
+  return mutateStoredQualification(target, async current => {
     if (!current) return { status: 'unreadable', error: 'missing attempt' };
     const conflict = (refusalReason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason });
     if (input.updates.length) return conflict('native-recovery-mixed-updates');
@@ -2548,9 +2678,38 @@ export function recoverStoredQualificationNativeCompletions(
       });
       if (!producer || createHash('sha256').update(JSON.stringify(producer)).digest('hex') !== ref.sha256)
         return conflict('native-producer-reference-mismatch');
+      // ENOENT is distinct from an unreadable/corrupt artifact. Never retire a
+      // missing OUT if this enrollment could have contributed a durable receipt.
+      const absent = () => {
+        try { lstatSync(ref.outPath); return false; }
+        catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT'; }
+      };
+      if (ref.missingSnapshot) {
+        if (!absent()) return conflict('retired-native-output-appeared');
+        continue;
+      }
+      if (options.recoverMissingSnapshots && absent()) {
+        const ended = (current.consumedPhysicalRuns ?? []).find(run =>
+          runIdBoundToRunner(run, ref.runGroupId) && run.outcome.kind === 'pre-suite-no-verdict');
+        if (ref.runGroupId === current.runId || !ended ||
+            await probeRunnerLiveness(ended, input.nowMs) !== 'dead') return conflict('native-producer-not-proved-dead');
+        const selectedPaths = new Set(ref.selectedSpecifications.map(spec => (spec as { testFile?: string })?.testFile));
+        const selectedIds = new Set(input.manifest.units.filter(unit => selectedPaths.has(unit.path)).map(unit => unit.id));
+        if ([...transaction.continuation!.receipts, ...transaction.continuation!.supersededReceipts]
+          .some(receipt => selectedIds.has(receipt.unitId))) return conflict('missing-native-output-has-banked-receipts');
+        const confirmedAtMs = input.nowMs ?? Date.now();
+        if (!Number.isSafeInteger(confirmedAtMs) || confirmedAtMs < transaction.updatedAtMs ||
+            confirmedAtMs < ended.endedAtMs || !absent()) return conflict('native-producer-retirement-unmeasured');
+        transaction = { ...transaction, updatedAtMs: confirmedAtMs, lastProgressAtMs: confirmedAtMs,
+          continuation: { ...transaction.continuation!, nativeProducers: transaction.continuation!.nativeProducers!.map(value =>
+            value.path === ref.path ? { ...value, missingSnapshot: { runnerId: ended.id, confirmedAtMs } } : value) } };
+        changed = true;
+        continue;
+      }
       const result = recordQualificationNativeCompletion(transaction, input, {
         path: ref.outPath, producerPath: ref.path, taskKey: ref.taskKey, workspaceName: ref.workspaceName,
         selectedSpecifications: ref.selectedSpecifications, classifyReadPaths,
+        ...(ref.supersedesCompletionIds ? { supersedesCompletionIds: ref.supersedesCompletionIds } : {}),
       });
       if (result.status !== 'updated' && result.status !== 'idempotent')
         return result.status === 'conflict' ? conflict(result.refusalReason ?? 'native-recovery-conflict') : result;
@@ -2572,7 +2731,7 @@ export async function continueStoredQualificationWork(
   target: GateVerdictTarget,
   input: QualificationWorkProgressInput,
   execute: (unit: QualificationWorkUnit) => Promise<QualificationWorkReceipt>,
-  options: { classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths'] } = {},
+  options: { classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths']; recoverMissingSnapshots?: boolean } = {},
 ): Promise<{
   status: 'settled'; transaction: CheckpointQualificationTransaction;
   evaluation: ReturnType<typeof evaluatePartialTaskContinuation>; executed: string[];
@@ -2587,7 +2746,7 @@ export async function continueStoredQualificationWork(
     const custody = await recordStoredQualificationWorkProgress(target, progress);
     if ((custody.status !== 'updated' && custody.status !== 'idempotent') ||
         !custody.transaction.continuation?.nativeProducers?.length) return custody;
-    return recoverStoredQualificationNativeCompletions(target, { ...progress, updates: [] }, options.classifyReadPaths);
+    return recoverStoredQualificationNativeCompletions(target, { ...progress, updates: [] }, options.classifyReadPaths, options);
   };
   const initial = await synchronize(input);
   if (initial.status !== 'updated' && initial.status !== 'idempotent') return refused(`custody-${initial.status}`);

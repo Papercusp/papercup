@@ -22,6 +22,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   mkdirSync,
   writeFileSync,
@@ -195,6 +196,10 @@ import {
   readStoredQualification,
   recordStoredQualificationRunnerProgress,
   reserveStoredQualificationRunner,
+  readPreparedCheckpointSelection,
+  commitPreparedCheckpointSelection,
+  isPreparedCheckpointSelectionRecord,
+  type PreparedCheckpointSelectionRecord,
   type QualificationPhysicalRunner,
   type RunnerLiveness,
   type StoredQualificationMutation,
@@ -507,6 +512,7 @@ export interface PrewarmedCheckpointDependencyGeneration {
    *  Missing/unparseable degrades to false (conservative: keep the exclusive barrier). */
   reused: boolean;
 }
+export type { PreparedCheckpointSelectionRecord };
 
 export interface CheckpointMaterializationSelection {
   /** Workspace directories whose tests/guards are actually selected. */
@@ -1571,6 +1577,10 @@ export interface CheckpointDeps {
     pending: FrozenRepairPendingCarry,
     record: FrozenRepairCarryRecord,
   ): Promise<boolean>;
+  readPreparedCheckpointSelection?(input: Pick<PreparedCheckpointSelectionRecord,
+    "attemptId" | "integrationRoot" | "checkpointRoot">): Promise<PreparedCheckpointSelectionRecord | null>;
+  commitPreparedCheckpointSelection?(record: PreparedCheckpointSelectionRecord,
+    expected: { queue: FrozenCandidateRepairQueue | null; pendingCarry: FrozenRepairPendingCarry | null }): Promise<boolean>;
   writeFrozenRepairQueue?(
     queue: FrozenCandidateRepairQueue | null,
     options: WriteFrozenCandidateRepairQueueOptions,
@@ -11180,6 +11190,8 @@ export function summarizeLegStreams(
 }
 
 export interface CheckpointOpts {
+  /** Exact proposal prepared and committed by preflight, never selected again in the runner. */
+  preparedSelection?: PreparedCheckpointSelectionRecord;
   /** Override the candidate (default: integration-branch HEAD). */
   candidate?: string;
   /** Internal pre-lock tip snapshot. Unlike candidate, this does not bypass quiet-cut. */
@@ -12527,6 +12539,10 @@ async function runGreenCheckpointInner(
   deps: CheckpointDeps,
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
+  if (opts.preparedSelection) await validatePreparedCheckpointSelection(cfg, opts.preparedSelection);
+  if (opts.preparedSelection && opts.candidate &&
+      await revParse(cfg.integrationRoot, opts.candidate) !== opts.preparedSelection.candidate)
+    throw new Error("prepared selection candidate changed; unlocked dependency preparation required");
   const decisionTrace = deps.decisionTrace ?? [];
   // EI-19343532231631821 — the deadline bound's two clocks. A stale-red auto-refire RECURSES into
   // this function in the SAME process, so `passStartedAtMs` restarts per pass (it predicts the next
@@ -12577,7 +12593,7 @@ async function runGreenCheckpointInner(
   }
   const transportedCandidate = await revParse(
     cfg.integrationRoot,
-    opts.candidate ?? opts.candidateHint ?? cfg.integrationBranch,
+    opts.preparedSelection?.candidate ?? opts.candidate ?? opts.candidateHint ?? cfg.integrationBranch,
   );
   let candidate = transportedCandidate;
   const lastReady = (await refExists(cfg.integrationRoot, cfg.releaseRef))
@@ -13903,7 +13919,9 @@ async function runGreenCheckpointInner(
     }
   }
 
-  const selected = await selectCheckpointFreshCandidate(cfg, deps, {
+  if (opts.preparedSelection && candidate !== opts.preparedSelection.candidate)
+    throw new Error("prepared selection invalidated by changed repair authority");
+  const selected = opts.preparedSelection ?? await selectCheckpointFreshCandidate(cfg, deps, {
     candidate, lastReady, opts, repairVerification, initialCandidateVerification,
     diagnosticOnly, repairQueue,
   });
@@ -13917,6 +13935,7 @@ async function runGreenCheckpointInner(
   // was retired must hold that queue's admitted fixes. Only a fresh cut: a live queue judges its
   // own lineage, and an explicit candidate is the caller's choice.
   if (
+    !opts.preparedSelection &&
     !opts.candidate &&
     !repairVerification &&
     !initialCandidateVerification &&
@@ -17878,6 +17897,7 @@ export async function runGreenCheckpoint(
   deps: CheckpointDeps,
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
+  if (opts.preparedSelection) opts = { ...opts, candidateSource: opts.preparedSelection.candidateSource };
   let suiteReplayCanary: CheckpointResult['suiteReplayCanary'];
   const { candidateSource, diagnostic } = checkpointCandidateProvenance(opts);
   const replayProvenance = { candidateSource, ...(diagnostic ? { diagnostic } : {}),
@@ -18341,6 +18361,7 @@ export async function ensureCheckpointDependencyGeneration(
 }
 
 export interface CheckpointDependencyPrebuildDeps {
+  checkpointSelection?: { deps: CheckpointDeps; opts?: CheckpointOpts };
   /** Host observer for the existing prebuild-state read; no new delivery path. */
   observeFallback?: typeof import("@papercusp/operator-core/lib/degradation/fallback-observations").observeFallback;
   /** Explicit null disables the state plane (old/manual launcher compatibility). */
@@ -18556,6 +18577,7 @@ export async function beginCheckpointPreflight(
       candidate: string;
       prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
       lock: CheckpointRunLock;
+      preparedSelection?: PreparedCheckpointSelectionRecord;
     }
   | {
       kind: "not-applicable";
@@ -18604,6 +18626,9 @@ export async function beginCheckpointPreflight(
     }
     throw error;
   }
+  if (dependencyPrebuildDeps.checkpointSelection) {
+    return beginPreparedCheckpointPreflight(cfg, candidate, exec, dependencyPrebuildDeps);
+  }
   let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration | null =
     null;
   const observeFallback = dependencyPrebuildDeps.observeFallback ??
@@ -18640,6 +18665,105 @@ export async function beginCheckpointPreflight(
     checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
   );
   return { kind: "ready", candidate, prewarmedDependencyGeneration, lock };
+}
+
+/** Recheck immutable inputs at BOTH the locked commit and the materialization boundary. */
+async function validatePreparedCheckpointSelection(
+  cfg: ReleaseConfig, record: PreparedCheckpointSelectionRecord, exec: CheckpointExec = runCmd,
+): Promise<void> {
+  if (!isPreparedCheckpointSelectionRecord(record) ||
+      record.integrationRoot !== path.resolve(cfg.integrationRoot) ||
+      record.checkpointRoot !== path.resolve(cfg.checkpointRoot))
+    throw new Error("invalid prepared selection authority or root mismatch");
+  const generation = record.generation;
+  const root = resolveDependencyGenerationRoot(cfg.integrationRoot);
+  if (generation.root !== root ||
+      liveDependencyGenerationToken(root, generation.identity, generation.token) !== generation.token ||
+      await checkpointDependencyInputFingerprint(cfg, record.candidate, exec) !== generation.inputFingerprint)
+    throw new Error("prepared dependency generation root, token or input identity is invalid");
+}
+
+async function readCheckpointSelectionQueue(deps: CheckpointDeps): Promise<FrozenCandidateRepairQueue | null> {
+  if (deps.readFrozenRepairQueueState) {
+    const read = await deps.readFrozenRepairQueueState();
+    if (read.status === "unreadable") throw new Error("checkpoint selection queue authority unavailable");
+    return read.status === "value" ? read.queue : null;
+  }
+  return await deps.readFrozenRepairQueue?.() ?? null;
+}
+
+/** Propose without effects, prepare unlocked, then validate and atomically commit under the serializer. */
+async function beginPreparedCheckpointPreflight(
+  cfg: ReleaseConfig, tip: string, exec: CheckpointExec, input: CheckpointDependencyPrebuildDeps,
+): ReturnType<typeof beginCheckpointPreflight> {
+  const { deps, opts = {} } = input.checkpointSelection!;
+  const { checkpointSelection: _selection, ...prebuild } = input;
+  const attemptId = deps.qualificationAttemptId ?? deps.runId ?? randomUUID();
+  const roots = { attemptId, integrationRoot: path.resolve(cfg.integrationRoot), checkpointRoot: path.resolve(cfg.checkpointRoot) };
+  const startedAt = opts.runStartedAtMs ?? Date.now();
+  const exhausted = (replans: number) => Date.now() - startedAt >= refireRunBudgetMsFromEnv() ||
+    (opts.totalRefires ?? opts.refireAttempts ?? 0) + replans >= refireAbsoluteCeiling(autoRefireCapFromEnv());
+  if (Boolean(deps.readPreparedCheckpointSelection) !== Boolean(deps.commitPreparedCheckpointSelection))
+    throw new Error("prepared selection durable authority requires both read and atomic commit hooks");
+  for (let replans = 0; ; replans++) {
+    if (exhausted(replans)) throw new Error("prepared selection authority churn exhausted run deadline/refire budget");
+    const recovered = await deps.readPreparedCheckpointSelection?.(roots);
+    if (recovered) {
+      if (recovered.attemptId !== attemptId) throw new Error("prepared selection attempt authority mismatch");
+      const lock = acquireCheckpointRunLock(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot));
+      try {
+        await validatePreparedCheckpointSelection(cfg, recovered, exec);
+        if (recovered.queue !== undefined && !isDeepStrictEqual(recovered.queue, await readCheckpointSelectionQueue(deps)))
+          throw new Error("prepared selection queue authority changed after commit");
+        return { kind: "ready", candidate: recovered.candidate, prewarmedDependencyGeneration: recovered.generation,
+          preparedSelection: recovered, lock };
+      } catch (error) { if (lock.acquired) lock.release(); throw error; }
+    }
+    const queue = structuredClone(await readCheckpointSelectionQueue(deps));
+    const pendingCarry = structuredClone(await deps.readFrozenRepairPendingCarry?.() ?? null);
+    const base = await refExists(cfg.integrationRoot, cfg.releaseRef) ? await revParse(cfg.integrationRoot, cfg.releaseRef) : null;
+    const explicit = opts.candidate ? await revParse(cfg.integrationRoot, opts.candidate) : null;
+    const provenance = checkpointCandidateProvenance(opts);
+    const selected = await selectCheckpointFreshCandidate(cfg, deps, {
+      candidate: explicit ?? queue?.repairHead ?? tip, lastReady: base, opts,
+      repairVerification: queue !== null, initialCandidateVerification: false,
+      diagnosticOnly: provenance.candidateSource === "pinned", repairQueue: queue,
+    });
+    let carry: FrozenRepairCarryRecord | null = null;
+    if (!explicit && !queue && pendingCarry) {
+      const carried = await planCheckpointCarryAtCut({ pending: pendingCarry, candidate: selected.candidate, stagingTip: tip },
+        deps.frozenRepairBlobAt ?? ((sha, file) => gitBlobAt(cfg.integrationRoot, sha, file)));
+      carry = carried.record;
+      if (carried.candidate !== selected.candidate) {
+        selected.candidate = carried.candidate; selected.quietCutApplied = false; selected.freezeCut = null;
+      }
+    }
+    // The existing preflight publishes dependencies before taking the serializer. No selection recursion.
+    const ready = await beginCheckpointPreflight(cfg, selected.candidate, exec, prebuild);
+    if (ready.kind !== "ready") return ready;
+    if (!ready.lock.acquired) return ready; // A contender never consumes authority.
+    let handoff = false;
+    try {
+      if (!isDeepStrictEqual(queue, await readCheckpointSelectionQueue(deps)) ||
+          !isDeepStrictEqual(pendingCarry, await deps.readFrozenRepairPendingCarry?.() ?? null)) continue;
+      const record: PreparedCheckpointSelectionRecord = {
+        schemaVersion: 1, ...roots, ...selected, base, candidateSource: queue && !explicit ? "frozen-repair-queue" : provenance.candidateSource,
+        generation: Object.assign(ready.prewarmedDependencyGeneration, { root: resolveDependencyGenerationRoot(cfg.integrationRoot) }),
+        carry, queue,
+      };
+      await validatePreparedCheckpointSelection(cfg, record, exec);
+      if (exhausted(replans)) throw new Error("prepared selection run deadline/refire budget exhausted before commit");
+      if (deps.commitPreparedCheckpointSelection) {
+        if (!await deps.commitPreparedCheckpointSelection(record, { queue, pendingCarry })) continue;
+      } else if (carry && pendingCarry) {
+        // Compatibility for old in-process callers. This path does not claim durable recovery.
+        if (!deps.consumeFrozenRepairCarry) throw new Error("prepared carry authority has no commit hook");
+        if (!await deps.consumeFrozenRepairCarry(pendingCarry, carry)) continue;
+      }
+      handoff = true;
+      return { ...ready, preparedSelection: record };
+    } finally { if (!handoff) ready.lock.release(); }
+  }
 }
 
 /** A signaled child is not a successful zero-exit command, even though Node reports
@@ -21885,6 +22009,13 @@ export function realCheckpointDeps(
     },
     ...(repairTarget
       ? {
+          ...(process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() ? {
+            readPreparedCheckpointSelection: (input: Pick<PreparedCheckpointSelectionRecord,
+              "attemptId" | "integrationRoot" | "checkpointRoot">) => readPreparedCheckpointSelection(repairTarget, input),
+            commitPreparedCheckpointSelection: (record: PreparedCheckpointSelectionRecord,
+              expected: { queue: FrozenCandidateRepairQueue | null; pendingCarry: FrozenRepairPendingCarry | null }) =>
+              commitPreparedCheckpointSelection(repairTarget, record, expected),
+          } : {}),
           // P-012: the per-sync batch check's newest PASSED commit (sync_delta.lastPassed). Used
           // by the fresh cut and the P-021 re-cut, each under decideKnownGoodFreezeCut's rules.
           async resolveKnownGoodRecutTarget() {
@@ -25290,6 +25421,7 @@ if (require.main === module) {
 
   const beginCheckpoint = async (): Promise<void> => {
     let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
+    let preparedSelection: PreparedCheckpointSelectionRecord | undefined;
     let lock: CheckpointRunLock;
     let qualificationProgress: ReturnType<typeof startCheckpointQualificationProgress> = {
       note: () => {},
@@ -25400,6 +25532,11 @@ if (require.main === module) {
       const preflight = await beginCheckpointPreflight(
         cfg,
         candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? cfg.integrationBranch,
+        runCmd,
+        { checkpointSelection: { deps: realCheckpointDeps(cfg, undefined, runId), opts: {
+          candidate: candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? undefined,
+          candidateSource, runStartedAtMs: processStartedAtMs,
+        } } },
       );
       if (preflight.kind === "not-applicable") {
         await emitResult({
@@ -25417,6 +25554,7 @@ if (require.main === module) {
       }
       resolvedCandidateForRun = preflight.candidate;
       prewarmedDependencyGeneration = preflight.prewarmedDependencyGeneration;
+      preparedSelection = preflight.preparedSelection;
       lock = preflight.lock;
       if (lock.acquired) {
         // The preflight may resolve the final executable candidate after dependency preparation.
@@ -25768,6 +25906,7 @@ if (require.main === module) {
         releaseAndExit,
       });
       runGreenCheckpoint(cfg, checkpointDeps, {
+        preparedSelection,
         candidate: candidateArg,
         candidateHint: prewarmedDependencyGeneration.candidate,
         candidateSource,
