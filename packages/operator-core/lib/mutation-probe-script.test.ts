@@ -424,12 +424,13 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
   });
 
   it.each([
-    { name: 'curl timeout', exit: 28, status: '000', body: '', reason: 'curl-error' },
-    { name: 'HTTP failure with a misleading SHA', exit: 0, status: '503', body: '{"sha":"abcdef0123"}', reason: 'http-error' },
-    { name: 'malformed JSON', exit: 0, status: '200', body: '<html>unavailable</html>', reason: 'invalid-json' },
-    { name: 'JSON without a SHA', exit: 0, status: '200', body: '{"ok":true}', reason: 'invalid-sha' },
-    { name: 'valid whitespace-formatted JSON', exit: 0, status: '200', body: '{\n  "sha": "abcdef0123"\n}', reason: null },
-  ])('reports $name before refusing an unreadable descriptor reader', ({ exit, status, body, reason }) => {
+    { name: 'curl timeout', exit: 28, status: '000', body: '', reason: 'curl-error', readerRequired: '1' },
+    { name: 'HTTP failure with a misleading SHA', exit: 0, status: '503', body: '{"sha":"abcdef0123"}', reason: 'http-error', readerRequired: '1' },
+    { name: 'malformed JSON', exit: 0, status: '200', body: '<html>unavailable</html>', reason: 'invalid-json', readerRequired: '1' },
+    { name: 'JSON without a SHA', exit: 0, status: '200', body: '{"ok":true}', reason: 'invalid-sha', readerRequired: '1' },
+    { name: 'valid whitespace-formatted JSON', exit: 0, status: '200', body: '{\n  "sha": "abcdef0123"\n}', reason: null, readerRequired: '1' },
+    { name: 'curl timeout with inferred requirement for an explicit reader URL', exit: 28, status: '000', body: '', reason: 'curl-error', readerRequired: null },
+  ])('reports $name before refusing an unreadable descriptor reader', ({ exit, status, body, reason, readerRequired }) => {
     const bin = join(dir, 'reader-bin');
     mkdirSync(bin);
     writeFileSync(join(bin, 'curl'), `#!/usr/bin/env node
@@ -440,17 +441,41 @@ process.stdout.write(${JSON.stringify(status + '\t0.125')});
 process.stderr.write('bounded reader diagnostic fixture');
 process.exit(${exit});
 `, { mode: 0o755 });
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:3170/api/health',
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto' };
+    if (readerRequired === null) delete env.PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED;
+    else env.PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED = readerRequired;
     const { code, out } = runProbeIO([
       '--file', subject, '--mutate', 's/beta/BETA/', '--test', "grep -q '^beta$' {}",
-    ], { ...process.env, PATH: `${bin}:${process.env.PATH}`,
-      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:3170/api/health',
-      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '1', PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto' }, dir);
+    ], env, dir);
     expect(code, out).toBe(2);
     const diagnostic = JSON.parse(out.match(/^MUTATION_PROBE_READER_HTTP_JSON=(.+)$/m)![1]!);
     expect(diagnostic).toEqual({ curlExit: exit, httpStatus: status, elapsedSeconds: '0.125', reason,
       sha: reason === null ? 'abcdef0123' : null });
     expect(out).toContain(reason === null ? 'has no resolvable libs/test-config gitlink' : 'build sha is unreadable');
     expect(out).not.toContain('running baseline guard');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('runs an explicitly unbound probe when reader health is unavailable', () => {
+    const bin = join(dir, 'reader-bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'curl'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.writeFileSync(args[args.indexOf('-o') + 1], '');
+process.exit(28);
+`, { mode: 0o755 });
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', "grep -q '^beta$' {}",
+    ], { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:3170/api/health',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0', PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto' }, dir);
+    expect(code, out).toBe(0);
+    expect(out).toContain('mutation descriptor withheld');
+    expect(out).toContain('running baseline guard');
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
     expect(read()).toBe(ORIGINAL);
   });
 

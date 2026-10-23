@@ -1759,16 +1759,16 @@ NODE
     1) MUTATION_DESCRIPTOR_READER_REQUIRED=1 ;;
     0) MUTATION_DESCRIPTOR_READER_REQUIRED=0 ;;
     '')
-      # Explicit health overrides remain the compatibility/testing escape
-      # hatch. An ambient operator selection is the intended runtime and must
-      # refuse an unbindable proof before any guard leg runs.
+      # An explicit health URL selects the intended reader just like an
+      # operator-selected runtime. If it cannot be read, durable/bindable
+      # evidence must stop before any guard leg. Only the legacy fallback keeps
+      # its compatibility behavior; READER_REQUIRED=0 is the explicit opt-out.
       # An explicit PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=never is the documented
       # override ("always|never overrides the check", above): the caller chose a
       # deliberately unbound probe, so an INFERRED requirement must not refuse it
       # (WI-6554700010017564). An explicit READER_REQUIRED=1 still wins and is
       # refused as a contradiction in build_mutation_descriptor.
       if [ "${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT:-auto}" != "never" ] &&
-         [ "$MUTATION_DESCRIPTOR_READER_SOURCE" != "override" ] &&
          [ "$MUTATION_DESCRIPTOR_READER_SOURCE" != "legacy-default" ] &&
          [ "$MUTATION_DESCRIPTOR_READER_SOURCE" != "operator-discovery" ]; then
         MUTATION_DESCRIPTOR_READER_REQUIRED=1
