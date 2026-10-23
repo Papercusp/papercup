@@ -20,7 +20,7 @@
  * (pid + perf-now + suffix) keep it from ever colliding with the live fleet, and
  * each test asserts its socket+meta are removed on child exit.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, onTestFinished } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
@@ -98,9 +98,16 @@ function uniqueOwner(suffix: string): string {
 function hostTestDiagnostics(ownerId: string, captured: () => string): string {
   const log = eventLogPathForOwner(ownerId);
   const events = existsSync(log)
-    ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).slice(-12).map((line) => JSON.parse(line))
+    ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).slice(-6).map((line) => {
+      const row = JSON.parse(line);
+      return { ts: row.ts, kind: row.kind,
+        reason: typeof row.reason === 'string' ? row.reason.slice(0, 80) : row.reason,
+        phase: row.phase };
+    })
     : [];
-  return JSON.stringify({ output: captured().slice(-2000), events });
+  // The reporter bounds assertion messages. Put protocol evidence first so a
+  // repainting child cannot fill the message and hide the refusal that matters.
+  return JSON.stringify({ log, events, output: captured().slice(-256) });
 }
 
 it('serializes a resumed launch kickoff before a concurrent wake', async () => {
@@ -752,7 +759,7 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
           expect(turns).toHaveLength(1);
           expect(JSON.parse(turns[0]).payload.content[0].text).toContain(marker);
         } else {
-          expect(terminal?.kind).toBe('respawn-carry-dropped');
+          expect(terminal?.kind, hostTestDiagnostics(ownerId, captured)).toBe('respawn-carry-dropped');
           expect(existsSync(nativePath)).toBe(false);
           if (scenario === 'owner-input') expect(terminal?.reason).toBe('fresh-child-owner-input');
         }
@@ -856,7 +863,7 @@ it(
         }
         await sleep(20);
       }
-      expect(events).toContain('"kind":"respawn-rearm-queued"');
+      expect(events, hostTestDiagnostics(ownerId, captured)).toContain('"kind":"respawn-rearm-queued"');
 
       expect(await injectIntoHostWithConfirmation(sock, {
         ...envelope,
@@ -2236,15 +2243,22 @@ function pasteAwareChildCode(ttlMs: number, pasteWindowMs: number): string {
  *  while the fixture is meant to stay busy. It also echoes 'ECHO:<line>' per
  *  newline-terminated stdin line, so a CR-submitted wake turn is observable.
  *  Self-exits after ttlMs. The output stream is what the host's mid-turn gate watches. */
-function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number): string {
+function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number, releasePath?: string): string {
+  const emitterCode = releasePath
+    ? `const fs=require('node:fs');setInterval(()=>{if(!fs.existsSync(${JSON.stringify(releasePath)}))process.stdout.write('.');},${intervalMs});`
+    : `setInterval(()=>process.stdout.write('.'),${intervalMs})`;
+  // Negative assertions own their busy window. A fixed child timer can expire
+  // before a delayed parent observes readiness and reaches the assertion.
+  const releaseCode = releasePath
+    ? `const fs=require('node:fs');const releasePoll=setInterval(()=>{if(fs.existsSync(${JSON.stringify(releasePath)})){clearInterval(releasePoll);void emitter.terminate();setTimeout(()=>process.exit(0),${ttlMs});}},${intervalMs});`
+    : `setTimeout(()=>{void emitter.terminate();},${busyMs});setTimeout(()=>process.exit(0),${ttlMs});`;
   return (
     "const {Worker}=require('node:worker_threads');" +
-    `const emitter=new Worker(${JSON.stringify(`setInterval(()=>process.stdout.write('.'),${intervalMs})`)},{eval:true});` +
-    `setTimeout(()=>{void emitter.terminate();},${busyMs});` +
+    `const emitter=new Worker(${JSON.stringify(emitterCode)},{eval:true});` +
+    releaseCode +
     "process.on('exit',()=>{void emitter.terminate();});" +
     "process.stdin.setEncoding('utf8');let b='';" +
-    "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});" +
-    `setTimeout(()=>process.exit(0),${ttlMs});`
+    "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});"
   );
 }
 
@@ -3213,6 +3227,7 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       // gates; we never type, so the HUMAN idle gate is instantly satisfied and the
       // AGENT-busy gate is the only thing holding the inject.
       const ownerId = uniqueOwner('MIDTURN');
+      const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
       const { captured, io } = bridgedIo();
@@ -3220,8 +3235,8 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       let exitCode: number | null = null;
       const done = hostThroughPty({
         command: execPath,
-        // Busy (emitting '.') for 900ms, then quiet; self-exits at 4000ms.
-        args: ['-e', busyThenIdleChildCode(900, 50, 4000)],
+        // Stay busy until the parent completes its negative assertion.
+        args: ['-e', busyThenIdleChildCode(900, 50, 4000, releaseBusy)],
         cwd: '/tmp',
         env: {
           ...hermeticEnv(),
@@ -3241,6 +3256,8 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
         },
       });
 
+      onTestFinished(async () => { writeFileSync(releaseBusy, 'release\n'); await done; });
+
        // host up; child still busy emitting
       const host = await waitForHost(ownerId);
       expect(host).not.toBeNull();
@@ -3257,10 +3274,11 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       const ok = await injectIntoHost(host!.sock, { mode: 'turn', data: 'midturn-wake' });
       expect(ok).toBe(true);
 
-      // Still within the busy window (child emits until ~900ms) → the turn is HELD,
+      // The parent has not released the busy window: the turn must be HELD,
       // never written into the busy TUI. No ECHO of the wake line yet.
       await sleep(350);
       expect(captured()).not.toContain('ECHO:midturn-wake');
+      writeFileSync(releaseBusy, 'release\n');
 
       // After the agent goes quiet (≥900ms) + the 200ms output-quiet window, the
       // gate releases and the turn is CR-submitted — a CLEAN re-invoke once the
@@ -3272,9 +3290,8 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       // the gate writes and the echo round-trips — against a 350+900ms wall
       // clock. Under fleet load that margin is gone. Polling asserts the SAME
       // thing (the turn DOES land once the agent is quiet) without pinning WHEN.
-      // The negative check above stays a fixed sleep on purpose: it proves the
-      // turn is HELD during the busy window, and a slow box only makes that
-      // direction more likely to hold, never less.
+      // The explicit release above keeps the negative check independent of
+      // how long the parent took to reach it.
       expect(await waitForOutput(captured, 'ECHO:midturn-wake', 6000)).toBe(true);
 
       const code = await done;
@@ -3295,13 +3312,14 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       // becomes the waiter, later same-key arrivals FOLD into it (newest text
       // wins), and exactly ONE annotated turn lands.
       const ownerId = uniqueOwner('COALESCE');
+      const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
       const { captured, io } = bridgedIo();
 
       let exitCode: number | null = null;
       const done = hostThroughPty({
         command: execPath,
-        // Busy (emitting '.') for 900ms, then quiet; self-exits at 5000ms.
-        args: ['-e', busyThenIdleChildCode(900, 50, 5000)],
+        // Keep every same-source wake inside one parent-owned busy window.
+        args: ['-e', busyThenIdleChildCode(900, 50, 5000, releaseBusy)],
         cwd: '/tmp',
         env: {
           ...hermeticEnv(),
@@ -3321,6 +3339,8 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
         },
       });
 
+      onTestFinished(async () => { writeFileSync(releaseBusy, 'release\n'); await done; });
+
       const host = await waitForHost(ownerId);
       expect(host).not.toBeNull();
       // EI-7662: only inject once the child has GENUINELY started emitting.
@@ -3336,7 +3356,8 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
         expect(ok).toBe(true);
       }
 
-      // After the busy window (~900ms) + quiet gate (200ms), ONE delivery lands.
+      writeFileSync(releaseBusy, 'release\n');
+      // After the explicit release + quiet gate, ONE delivery lands.
       // WI-785151: anchor on the delivery being OBSERVED rather than on a flat
       // 1600ms. The settle AFTER the anchor is what gives a (wrongly) duplicated
       // delivery time to show up, so the "exactly one" assertion below keeps its
@@ -3519,6 +3540,7 @@ describe(
         // carry) must not land into a still-generating TUI — it would corrupt the
         // busy turn AND drop whatever that turn hadn't yet committed.
         const ownerId = uniqueOwner('RESET-MIDTURN');
+        const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
         const sock = socketPathFor(ownerId);
         const meta = metaPathFor(ownerId);
         const { captured, io } = fakeIo(); // bridgeTty:false — the exact gap closed
@@ -3526,12 +3548,12 @@ describe(
         let exitCode: number | null = null;
         const done = hostThroughPty({
           command: execPath,
-          // Busy (emitting '.') for 900ms, then quiet; self-exits at 4000ms.
+          // Stay busy until the parent has checked predecessor protection.
           // Keep a persona flag so Claude follows the in-place clear path;
           // without it coldResetModeForAgent correctly selects hard recycle.
           args: [
             '-e',
-            "process.stdout.write('RESET-BOOT:'+process.pid+'\\n');" + busyThenIdleChildCode(900, 50, 4000),
+            "process.stdout.write('RESET-BOOT:'+process.pid+'\\n');" + busyThenIdleChildCode(900, 50, 4000, releaseBusy),
             '--',
             '--system-prompt-file',
             'fixture.md',
@@ -3555,18 +3577,27 @@ describe(
           },
         });
 
+        onTestFinished(async () => { writeFileSync(releaseBusy, 'release\n'); await done; });
+
         await waitForHost(ownerId);
         expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true); // genuinely busy now
 
         expect([...captured().matchAll(/RESET-BOOT:/g)]).toHaveLength(1);
+        // Regression control: a delayed parent must still own the busy window,
+        // even after the former 900 ms timer would have expired.
+        await sleep(1100);
+        expect(existsSync(releaseBusy), hostTestDiagnostics(ownerId, captured)).toBe(false);
         const ok = await injectIntoHost(sock, { mode: 'reset', data: 'midturn-reset-carry' });
         expect(ok).toBe(true);
 
-        // Still within the busy window: the /clear + carry must be HELD — nothing
+        // Before explicit release, the /clear + carry must be HELD — nothing
         // written into the busy child yet.
         await sleep(400);
-        expect(captured()).not.toContain('ECHO:midturn-reset-carry');
-        expect(captured()).not.toContain('midturn-reset-carry');
+        const heldDiagnostics = hostTestDiagnostics(ownerId, captured);
+        expect(existsSync(releaseBusy), heldDiagnostics).toBe(false);
+        expect(captured(), heldDiagnostics).not.toContain('ECHO:midturn-reset-carry');
+        expect(captured(), heldDiagnostics).not.toContain('midturn-reset-carry');
+        writeFileSync(releaseBusy, 'release\n');
 
         // After the agent goes quiet (≥900ms) + the output-quiet window, the gate
         // releases: /clear submits, settles, then the carry lands.
@@ -3575,9 +3606,8 @@ describe(
         // measurably flaked — a positive assertion whose budget is the slack
         // left over after two load-sensitive windows (busy ≥900ms + the 200ms
         // output-quiet gate) — so it is the same bug whether or not it has been
-        // observed failing yet. The negative check above stays a fixed sleep on
-        // purpose: it proves the carry is HELD while the child is busy, and a
-        // slow box only makes that direction more likely to hold.
+        // observed failing yet. The explicit release also protects the negative
+        // assertion from a delayed readiness observation or parent callback.
         expect(await waitForOutput(captured, 'ECHO:midturn-reset-carry', 6000)).toBe(true);
         expect([...captured().matchAll(/RESET-BOOT:/g)]).toHaveLength(1);
 
