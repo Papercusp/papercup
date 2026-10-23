@@ -316,6 +316,19 @@ describe('outbox-drain (Stage 3, real PG)', () => {
     }
   });
 
+  it('uses the full batch when only coordination traffic is pending', async () => {
+    for (let i = 0; i < 5; i++) {
+      const key = `only-coord-${i}`;
+      await seedOutbox(db.sql, {
+        table_name: 'coord_event_log', op: 'put', key,
+        row: { workspace_id: WS, harness_slug: SLUG, msg_id: key, surface: 'test', body: {}, ts: Date.now() },
+      });
+    }
+    const { handle } = makeFakeHandle();
+    expect(await drainOutboxOnce(handle, db.sql, { batch: 4 })).toBe(4);
+    expect(await drainOutboxOnce(handle, db.sql, { batch: 4 })).toBe(1);
+  });
+
   // ── EI-22138988923269437: priority lane + starvation guard ─────────────────
   // Regression test for the measured incident: a bulk backfill of a
   // non-priority table (enqueued FIRST, so its ids are numerically smallest)
