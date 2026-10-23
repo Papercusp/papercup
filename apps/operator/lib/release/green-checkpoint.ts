@@ -27,6 +27,7 @@ import {
   mkdirSync,
   closeSync,
   fsyncSync,
+  globSync,
   openSync,
   writeFileSync,
   appendFileSync,
@@ -214,7 +215,8 @@ import {
   type StoredQualificationMutation,
 } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import { executedSourceRunnerIdentity } from "@papercusp/test-config/test-pass-reuse-skip";
-import { writeBudgetedTaskNativeExecutionReceipt } from "../../../../scripts/lib/budgeted-task-scheduler.mjs";
+import { readNativeArtifactBytes, writeBudgetedTaskNativeExecutionReceipt } from "../../../../scripts/lib/budgeted-task-scheduler.mjs";
+import { nativeProcessTraceEnv } from "../../../../scripts/lib/vitest-startup-trace.mjs";
 import { evaluatePartialTaskContinuation, partialTaskCheckpointPath, preparePartialContinuationManifest,
   preparePartialNativeProducerChannels, preparePartialNativeProducerSelection,
   preparePartialRemainingSelection, writePartialTaskCheckpointAtomic } from "../../../../scripts/lib/partial-task-resume.mjs";
@@ -4364,7 +4366,7 @@ export async function prepareCheckpointQualificationNativeRun(
   const tasks = new Map<string, { workspaceName: string; selectedSpecifications: unknown[];
     supersedesCompletionIds: Record<string, string> }>();
   for (const task of remaining.tasks) {
-    if (!task.files.length) continue;
+    if (!task.files.length && task.runner !== 'command-chain') continue;
     const localSelection = { ...selection, tasks: [task], files: task.files,
       unenumerated: selection.unenumerated.filter(value => value.task === task.id),
       commandObligations: selection.commandObligations.filter(value => value.task === task.id),
@@ -4375,16 +4377,20 @@ export async function prepareCheckpointQualificationNativeRun(
       // populations here; stdout supplies locations, never selection authority.
       const inventory = selection.taskInventory as Array<{ id: string }>;
       const native = preparePartialNativeProducerChannels({ root: input.root,
-        selection: localSelection, task: inventory.find(value => value.id === task.id),
+        selection: { ...localSelection, tasks: [selection.tasks.find(value => value.id === task.id)] },
+        task: inventory.find(value => value.id === task.id), remainingFiles: task.files,
         outPath: path.join(input.root, 'qualification-native-selection.out'),
         postSuite: postSuiteContinuationPopulation() });
       if (native.status !== 'ready') return refuse(`qualification-native-selection-${native.reason}`);
-      for (const channel of native.channels) tasks.set(channel.taskKey, { workspaceName: task.workspace,
+      for (const channel of native.channels) {
+        if (!channel.selectedSpecifications.length) continue;
+        tasks.set(channel.taskKey, { workspaceName: task.workspace,
         selectedSpecifications: channel.selectedSpecifications,
         supersedesCompletionIds: Object.fromEntries((recovered.transaction.continuation?.receipts ?? [])
           .filter(receipt => channel.selectedSpecifications.some((spec: { testFile: string }) =>
             receipt.unitId === `test:${spec.testFile}`))
           .map(receipt => [receipt.unitId, receipt.completionId])) });
+      }
       continue;
     }
     if (task.runner !== 'vitest') return refuse('qualification-native-task-unsupported');
@@ -18556,6 +18562,8 @@ export type CheckpointExec = (
      * stdout/stderr buffers. setupTree uses this to persist setup-release's stage markers in
      * the checkpoint transcript instead of losing every useful line when the 30m bound fires. */
     onOutput?: (stream: "stdout" | "stderr", text: string) => void;
+    /** Observe the actual spawn, including an optional heavy wrapper. Diagnostic only. */
+    onSpawn?: (child: { pid: number; command: string[]; cwd: string }) => void;
     /** Report that the child produced output so a progress-aware watchdog can reset its idle budget. */
     onProgress?: () => void;
     /** WI-6554700010018556: abort the child. On abort the child is SIGKILLed (its whole
@@ -19843,6 +19851,10 @@ function postSuiteCommandId(cmd: string, args: readonly string[]): string {
   return `${cmd}:${args.join(" ")}`;
 }
 
+const SPA_CONFLICT_MARKER_ARGS = [
+  'grep', '-n', '-I', '-E', '^(<{7}|>{7}|\\|{7})([ \\t]|$)', '--', '.',
+];
+
 /** Save measured post-suite outcomes through the existing qualification fence.
  * A logical leg is the bounded chunk: grouped commands bank only once every
  * member closes. Raw output uses the existing immutable native receipt store.
@@ -19856,6 +19868,56 @@ export function createCheckpointQualificationPostSuiteExecutor(
 ): CheckpointExec {
   const progress = structuredClone({ ...input.progress, updates: [] });
   const target = structuredClone(input.target);
+  const evidenceRoot = path.join(os.tmpdir(), 'papercusp-qualification-post-suite',
+    createHash('sha256').update(`${progress.root}\0${progress.attemptId}`).digest('hex'));
+  // These are wrapper inputs, not a claim about everything a command can read.
+  // Read both populations independently: adding/removing a lockfile or npmrc
+  // during execution must differ just as changing its bytes does.
+  const wrapperInputs = (command: readonly string[]) => {
+    try {
+      const files = ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', '.npmrc'];
+      const inputs: Array<{ path: string; sha256: string }> = [];
+      let scripts: Record<string, string> | undefined;
+      for (const file of files) {
+        const absolute = path.join(progress.root, file);
+        if (file !== 'package.json' && !existsSync(absolute)) continue;
+        const size = statSync(absolute).size;
+        const bytes = readNativeArtifactBytes(absolute, size, 16 * 1024 * 1024);
+        inputs.push({ path: file, sha256: createHash('sha256').update(bytes).digest('hex') });
+        if (file === 'package.json') scripts = JSON.parse(bytes.toString('utf8')).scripts;
+      }
+      if (command[0] === 'npm' && command[1] === '--workspace') {
+        if (command.length !== 5 || command[3] !== 'run' || command[4] !== 'build') return null;
+        const pkg = JSON.parse(readFileSync(path.join(progress.root, 'package.json'), 'utf8'));
+        const workspaces = Array.isArray(pkg.workspaces) ? pkg.workspaces : pkg.workspaces?.packages;
+        if (!Array.isArray(workspaces) || workspaces.some(value => typeof value !== 'string')) return null;
+        const patterns = workspaces.filter((value: string) => !value.startsWith('!'))
+          .map((value: string) => `${value.replace(/\/$/, '')}/package.json`);
+        const exclude = workspaces.filter((value: string) => value.startsWith('!'))
+          .map((value: string) => `${value.slice(1).replace(/\/$/, '')}/package.json`);
+        const candidates = globSync(patterns, { cwd: progress.root, exclude });
+        if (candidates.length > 4096) return null;
+        const matches: Array<{ file: string; scripts?: Record<string, string> }> = [];
+        for (const file of candidates) {
+          const bytes = readNativeArtifactBytes(path.join(progress.root, file), statSync(path.join(progress.root, file)).size,
+            16 * 1024 * 1024);
+          const workspace = JSON.parse(bytes.toString('utf8'));
+          if (workspace.name === command[2] || path.dirname(file) === command[2])
+            matches.push({ file, scripts: workspace.scripts });
+        }
+        if (matches.length !== 1) return null;
+        const selected = matches[0]!;
+        for (const file of [selected.file, path.join(path.dirname(selected.file), '.npmrc')]) {
+          if (file !== selected.file && !existsSync(path.join(progress.root, file))) continue;
+          const bytes = readNativeArtifactBytes(path.join(progress.root, file), statSync(path.join(progress.root, file)).size,
+            16 * 1024 * 1024);
+          inputs.push({ path: file, sha256: createHash('sha256').update(bytes).digest('hex') });
+        }
+        scripts = selected.scripts;
+      }
+      return { inputs, script: command[0] === 'npm' ? scripts?.[command[command.indexOf('run') + 1]!] ?? null : null };
+    } catch { return null; }
+  };
   type NativeReceipt = ReturnType<typeof writeBudgetedTaskNativeExecutionReceipt>;
   const observations = new Map<string, { receipt: NativeReceipt; state: 'pass' | 'fail' | 'infra'; endedAtMs: number }>();
   const started = new Set<string>();
@@ -19882,32 +19944,149 @@ export function createCheckpointQualificationPostSuiteExecutor(
   return async (cmd, args, options) => {
     if (path.resolve(options?.cwd ?? progress.root) !== path.resolve(progress.root))
       throw new Error('qualification-post-suite-root-mismatch');
+    // Snapshot before the first await. A mutable caller env must not let a
+    // saved result answer an invocation with different database/config inputs.
+    // The diagnostic OUT/preload are added afterwards and are not caller input.
+    const environment = { ...(options?.env ?? process.env) };
+    const invocation = { command: [cmd, ...args], environmentSha256: createHash('sha256')
+      .update(JSON.stringify(Object.entries(environment).filter(([, value]) => value !== undefined)
+        .sort(([a], [b]) => a.localeCompare(b)))).digest('hex') };
+    const executionOptions = { ...options };
     const commandId = postSuiteCommandId(cmd, args);
     const definition = POST_SUITE_LEG_DEFINITIONS.find(leg => (leg.commands as readonly string[]).includes(commandId));
     if (!definition || !progress.manifest.units.some(unit => unit.id === `post:${definition.id}` && unit.kind === 'post-suite'))
       throw new Error('qualification-post-suite-command-outside-manifest');
-    await serialize(async () => {
+    const replay = await serialize(async (): Promise<CheckpointExecResult | undefined> => {
       if (started.has(commandId)) throw new Error('qualification-post-suite-command-duplicate');
-      await fenced([]);
+      const transaction = await fenced([]);
+      const prior = transaction.continuation?.receipts.find(receipt => receipt.unitId === `post:${definition.id}`);
+      const previous = prior ? structuredClone(prior) : undefined;
+      if (previous) {
+        const eligibility = evaluatePartialTaskContinuation({ root: progress.root, taskKey: progress.taskKey,
+          continuation: transaction.continuation }, { ...progress, sourceCommit: progress.candidate });
+        if (eligibility.status !== 'ready') throw new Error(`qualification-post-suite-eligibility-${eligibility.reason}`);
+        if ((eligibility.reused as readonly string[]).includes(previous.unitId)) {
+          // A proof chooses whether work can be omitted. The saved original
+          // output supplies the leg result; an invented empty success cannot.
+          if ((await git(progress.root, ['rev-parse', 'HEAD'])).trim() !== progress.candidate ||
+              (await git(progress.root, ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'])).trim())
+            throw new Error('qualification-post-suite-reuse-source-drift');
+          const outcomes = previous.proof?.commandOutcomes;
+          if (!Array.isArray(outcomes) || outcomes.length !== definition.commands.length ||
+              new Set(outcomes.map(outcome => outcome?.command)).size !== outcomes.length ||
+              !definition.commands.every(command => outcomes.some(outcome => outcome?.command === command)))
+            throw new Error('qualification-post-suite-reuse-outcomes-unmeasured');
+          let bytesRead = 0;
+          const readPin = (root: string, pin: { ref: string; sha256: string; byteLength: number }) => {
+            if (root !== evidenceRoot || !pin || typeof pin.ref !== 'string' || path.basename(pin.ref) !== pin.ref ||
+                !/^[a-f0-9]{64}$/.test(pin.sha256) || !Number.isSafeInteger(pin.byteLength) || pin.byteLength < 0)
+              throw new Error('qualification-post-suite-reuse-artifact-invalid');
+            const bytes = readNativeArtifactBytes(path.join(root, pin.ref), pin.byteLength,
+              64 * 1024 * 1024 - bytesRead, count => { bytesRead += count; });
+            if (createHash('sha256').update(bytes).digest('hex') !== pin.sha256)
+              throw new Error('qualification-post-suite-reuse-artifact-digest');
+            return bytes;
+          };
+          const readRetainedArtifacts = (root: string, value: unknown): void => {
+            if (!value || typeof value !== 'object') return;
+            for (const [key, child] of Object.entries(value)) {
+              if (key === 'artifact' && child && typeof child === 'object' &&
+                  'ref' in child && 'sha256' in child && 'byteLength' in child)
+                readPin(root, child as { ref: string; sha256: string; byteLength: number });
+              else readRetainedArtifacts(root, child);
+            }
+          };
+          const results = new Map<string, CheckpointExecResult>();
+          const wrappers: Array<{ command: string[]; inputs: Array<{ path: string; sha256: string }> }> = [];
+          // Authenticate the WHOLE grouped leg before returning even its first
+          // command. A missing later member cannot turn into a partial replay.
+          for (const outcome of outcomes) {
+            const native = JSON.parse(readPin(outcome.root, outcome.receipt).toString('utf8'));
+            readRetainedArtifacts(outcome.root, native);
+            const execution = native.execution;
+            const requested = execution?.invocation?.command;
+            if (!Array.isArray(requested) || requested.some(word => typeof word !== 'string') ||
+                !/^[a-f0-9]{64}$/.test(execution?.invocation?.environmentSha256))
+              throw new Error('qualification-post-suite-reuse-command-mismatch');
+            const current = wrapperInputs(requested);
+            if (native.schemaVersion !== 1 || native.kind !== 'affected-task-native-execution' ||
+                native.task !== `post:${definition.id}:${outcome.command}` ||
+                !current ||
+                native.sourceInputsUnchanged !== true || !isDeepStrictEqual(native.before?.inputs, current.inputs) ||
+                !isDeepStrictEqual(native.after?.inputs, current.inputs) || execution?.cwd !== progress.root ||
+                execution.captureComplete !== true || execution.signal !== null || execution.error !== null ||
+                !Number.isSafeInteger(execution.exitCode))
+              throw new Error('qualification-post-suite-reuse-outcome-mismatch');
+            const canonical = outcome.command === 'spa:conflict-markers' ? ['git', ...SPA_CONFLICT_MARKER_ARGS] :
+              outcome.command === 'build' ? ['npm', '--workspace', requested[2], 'run', 'build'] : ['npm', 'run', outcome.command];
+            if (!isDeepStrictEqual(requested, canonical) ||
+                (outcome.command === commandId && (!isDeepStrictEqual(invocation.command, requested) ||
+                  execution.invocation.environmentSha256 !== invocation.environmentSha256)) ||
+                native.originalCommand !== current.script ||
+                !(isDeepStrictEqual(execution.command, requested) ||
+                  isDeepStrictEqual(execution.command, [resolveHeavyWrapper(), ...requested])))
+              throw new Error('qualification-post-suite-reuse-command-mismatch');
+            const stdout = readPin(outcome.root, execution.logs.stdout).toString('utf8');
+            const stderr = readPin(outcome.root, execution.logs.stderr).toString('utf8');
+            if (outcome.command === 'spa:conflict-markers'
+              ? !(execution.exitCode === 1 || execution.exitCode === 0 && !stdout.trim())
+              : execution.exitCode !== 0)
+              throw new Error('qualification-post-suite-reuse-outcome-not-pass');
+            wrappers.push({ command: requested, inputs: current.inputs });
+            results.set(outcome.command, { code: execution.exitCode, signal: null, stdout, stderr });
+          }
+          // Re-check custody after artifact IO, before acknowledging the replay.
+          const acknowledged = await fenced([]);
+          if (!isDeepStrictEqual(previous,
+            acknowledged.continuation?.receipts.find(receipt => receipt.unitId === previous.unitId)))
+            throw new Error('qualification-post-suite-reuse-receipt-changed');
+          if ((await git(progress.root, ['rev-parse', 'HEAD'])).trim() !== progress.candidate ||
+              (await git(progress.root, ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'])).trim() ||
+              wrappers.some(wrapper => !isDeepStrictEqual(wrapper.inputs, wrapperInputs(wrapper.command)?.inputs)))
+            throw new Error('qualification-post-suite-reuse-source-drift');
+          started.add(commandId);
+          return results.get(commandId)!;
+        }
+        if (!(eligibility.run as readonly string[]).includes(previous.unitId))
+          throw new Error('qualification-post-suite-retained-terminal-outcome');
+      }
       started.add(commandId);
+      return undefined;
     });
+    if (replay) return replay;
+    const before = wrapperInputs(invocation.command);
+    const traceOut = path.join(evidenceRoot, `${randomUUID()}.out`);
+    mkdirSync(evidenceRoot, { recursive: true, mode: 0o700 });
+    let nativeSpawn: { pid: number; command: string[]; cwd: string } | undefined;
     const startedAtMs = deps.now();
     let result: CheckpointExecResult | undefined;
     let thrown: unknown;
     let errored = false;
-    try { result = await execute(cmd, args, options); }
+    try { result = await execute(cmd, invocation.command.slice(1), { ...executionOptions,
+      env: nativeProcessTraceEnv({ ...environment, PC_EXECUTED_SOURCE_MAP_OUT: traceOut }),
+      onSpawn: child => {
+        // Copy before notifying another observer; caller mutation is not evidence.
+        nativeSpawn = structuredClone(child);
+        try { executionOptions.onSpawn?.(child); }
+        catch { /* Caller diagnostics cannot alter the command outcome. */ }
+      },
+    }); }
     catch (error) { errored = true; thrown = error; }
     const endedAtMs = deps.now();
+    const after = wrapperInputs(invocation.command);
     const state = !result || result.signal ? 'infra' :
       commandId === 'spa:conflict-markers'
         ? (result.code === 1 || result.code === 0 && !result.stdout.trim() ? 'pass' : 'fail')
         : result.code === 0 ? 'pass' : 'fail';
     await serialize(async () => {
-      const receipt = writeBudgetedTaskNativeExecutionReceipt(path.join(os.tmpdir(),
-        'papercusp-qualification-post-suite', createHash('sha256')
-          .update(`${progress.root}\0${progress.attemptId}`).digest('hex')), {
+      const receipt = writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, {
         task: `post:${definition.id}:${commandId}`, attempt: progress.runId,
-        cwd: options?.cwd ?? progress.root, command: [cmd, ...args],
+        cwd: nativeSpawn?.cwd ?? options?.cwd ?? progress.root,
+        command: nativeSpawn?.command ?? [cmd, ...args],
+        invocation,
+        originalCommand: before?.script ?? null,
+        before: before?.inputs ?? null, after: after?.inputs ?? null,
+        ...(nativeSpawn ? { processTrace: { out: traceOut, rootPid: nativeSpawn.pid } } : {}),
         startedAtMs, finishedAtMs: endedAtMs, exitCode: result?.code ?? null,
         signal: result?.signal ?? null, error: errored ? String(thrown) : null,
         captureComplete: !errored, stdout: Buffer.from(result?.stdout ?? ''),
@@ -19925,6 +20104,21 @@ export function createCheckpointQualificationPostSuiteExecutor(
         const saved = observations.get(command)!.receipt;
         for (const pin of [saved.receipt, saved.logs.stdout, saved.logs.stderr])
           syncPath(path.join(saved.root, pin.ref));
+        // The receipt now retains process events, streams and loader sources.
+        // Flush their archived bytes too; syncing only the JSON reference would
+        // acknowledge an input observation that could disappear after a crash.
+        const syncRetainedArtifacts = (value: unknown): void => {
+          if (!value || typeof value !== 'object') return;
+          for (const [key, child] of Object.entries(value)) {
+            if (key === 'artifact' && child && typeof child === 'object' && 'ref' in child) {
+              const ref = child.ref;
+              if (typeof ref !== 'string' || path.basename(ref) !== ref)
+                throw new Error('qualification-post-suite-artifact-reference-invalid');
+              syncPath(path.join(saved.root, ref));
+            } else syncRetainedArtifacts(child);
+          }
+        };
+        syncRetainedArtifacts(saved.observation);
         syncPath(saved.root);
         syncPath(path.dirname(saved.root));
         syncPath(path.dirname(path.dirname(saved.root)));
@@ -21036,7 +21230,7 @@ export async function runPostSuiteLegs(
     // separator is excluded as FP-prone). git grep exit 0 = match found, 1 = clean.
     const markers = await exec(
       "git",
-      ["grep", "-n", "-I", "-E", "^(<{7}|>{7}|\\|{7})([ \\t]|$)", "--", "."],
+      [...SPA_CONFLICT_MARKER_ARGS],
       {
         cwd: treeDir,
         env,
@@ -25452,6 +25646,8 @@ export function runCmd(
     /** Observe every child-output chunk without changing the retained stdout/stderr result.
      * Diagnostic only: observer failures are swallowed so they cannot change a command verdict. */
     onOutput?: (stream: "stdout" | "stderr", text: string) => void;
+    /** Observe the actual spawn; observer failures cannot change its verdict. */
+    onSpawn?: (child: { pid: number; command: string[]; cwd: string }) => void;
     /** Report every stdout/stderr chunk as real child-process progress. The callback is
      *  diagnostic/liveness-only; failures in it must never change the command verdict. */
     onProgress?: () => void;
@@ -25513,6 +25709,10 @@ export function runCmd(
       env,
       detached: detach,
     });
+    if (child.pid !== undefined) {
+      try { opts.onSpawn?.({ pid: child.pid, command: [cmdToRun, ...argsToRun], cwd: opts.cwd ?? process.cwd() }); }
+      catch { /* Native process observation cannot change the child verdict. */ }
+    }
     let stdout = "";
     let stderr = "";
     let settled = false;

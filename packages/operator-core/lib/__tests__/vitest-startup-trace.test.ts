@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { execFile, execFileSync, fork } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -11,8 +11,66 @@ import { createTextCollector } from '../child-output';
 import { loaderIdentity, nativeProcessTraceEnv, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 import { readPartialNativeChannelCustody, readPartialNativeCompletion,
   registerPartialNativeProducerChannels } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { writeRelatedFilterList } from '../../../../scripts/lib/related-tests.mjs';
 
 describe('focused runner startup tracing', () => {
+  it.each([0, 7])('runs an original empty native step without enrolling a producer and preserves owed guard exit %s', async guardExit => {
+    const root = fileURLToPath(new URL('../../../../', import.meta.url));
+    const dir = mkdtempSync(join(tmpdir(), 'native-banked-step-')), out = join(dir, 'out.json');
+    const command = 'vitest run --passWithNoTests --config vitest.config.mjs --configLoader native';
+    const env: NodeJS.ProcessEnv = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (!['PC_', 'VITEST', 'PAPERCUSP_TEST_', 'PAPERCUSP_CHECKPOINT_', 'PAPERCUSP_MUTATION_', 'AFFECTED_']
+        .some(prefix => key.startsWith(prefix))) env[key] = value;
+    }
+    try {
+      symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'), 'dir');
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'banked-step-fixture', scripts: {
+        test: 'npm run first && npm run owed', first: command, owed: 'node owed.cjs',
+      } }));
+      writeFileSync(join(dir, 'vitest.config.mjs'),
+        `import {defineVitestConfig} from ${JSON.stringify(pathToFileURL(join(root, 'libs/test-config/src/vitest-config.ts')).href)};\n` +
+        `export default defineVitestConfig({layer:'unit',include:['**/*.test.ts']});\n`);
+      writeFileSync(join(dir, 'a.test.ts'), "throw new Error('banked file executed again');\n");
+      writeFileSync(join(dir, 'owed.cjs'), `console.log('OWED_GUARD');process.exit(${guardExit});\n`);
+      const source = readFileSync(join(root, 'scripts/affected-tests.mjs'), 'utf8');
+      const begin = source.indexOf('  const relatedFilterList =');
+      const end = source.indexOf('  // P-008 (gate-file-level-test-reuse', begin);
+      expect(begin).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(begin);
+      const filter = new Function('extraArgs', 'spawnTask', 'RUN_LOG_ROOT', 'writeRelatedFilterList',
+        `${source.slice(begin, end)}\nreturn relatedFilterList;`)([],
+      { relatedFiles: [], qualificationSelection: {} }, dir, writeRelatedFilterList);
+      expect(JSON.parse(readFileSync(filter.path, 'utf8'))).toEqual([]);
+      const traced = nativeProcessTraceEnv({ ...env, PC_TEST_FILTER_LIST: filter.path,
+        PC_EXECUTED_SOURCE_MAP_OUT: out, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1',
+        PAPERCUSP_TEST_STARTUP_TRACE: '0' });
+      const registered = registerPartialNativeProducerChannels(out, { status: 'ready', channels: [{
+        taskKey: 'ws :: test:step:0', script: 'first', command, step: 0, outPath: `${out}.step-0`,
+        selectedSpecifications: [], bankedSpecifications: [{ testFile: 'a.test.ts', pool: 'forks',
+          projectName: null, testNamePattern: null, testIds: null, testTagsFilter: null, testLines: null }],
+      }] }, { attemptId: 'attempt', runGroupId: 'group', root: dir, workspaceName: 'ws',
+        sourceCommit: 'a'.repeat(40), registeredAtMs: Date.now(),
+        command: { cmd: 'npm', argv: ['run', '--silent', 'test'], cwd: dir } }, traced);
+      expect(registered.producers).toEqual([]);
+      const result = await promisify(execFile)('npm', ['run', '--silent', 'test'], {
+        cwd: dir, env: traced, timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
+      }).then(value => ({ ...value, code: 0 }), error => ({ stdout: error.stdout, stderr: error.stderr, code: error.code }));
+      expect(result.code, result.stderr).toBe(guardExit);
+      expect(result.stdout).toContain('OWED_GUARD');
+      expect(result.stdout + result.stderr).not.toContain('banked file executed again');
+      expect(existsSync(`${out}.step-0.producer.json`)).toBe(false);
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json'))
+        .map(name => JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+      expect(rows.find(row => row.event === 'child-spawn' && row.nativeChannel))
+        .toMatchObject({ argv: ['-c', command], nativeChannel: { step: 0, command } });
+      const owed = rows.find(row => row.event === 'child-spawn' && row.lifecycle?.event === 'owed');
+      expect(owed).toBeDefined();
+      expect(rows.find(row => row.event === 'child-close' && row.childIdentity === owed.childIdentity))
+        .toMatchObject({ code: guardExit, signal: null });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 180_000);
+
   it('binds an actual native Vitest reporter through the original npm channel before reading outcomes', async () => {
     const root = fileURLToPath(new URL('../../../../', import.meta.url));
     const fixture = join(root, 'libs/test-config/src/__fixtures__/armed-capture');

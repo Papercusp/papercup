@@ -3,10 +3,12 @@ import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
+import { CloneIndex } from './clone-index';
 import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const deadlines = isolatedWorkerOptions(360_000);
+const cloneCorpusSource = 'export function sum(xs: number[]) { let total = 0; for (const x of xs) { if (x > 0) { total += x; } else { total -= x; } if (x % 2 === 0) { total += x * 2; } else { total += x * 3; } if (x > 100) { total -= 10; } else if (x < -100) { total += 10; } } return total + xs.length; }';
 
 // The background worker loads production source and starts the actual managed
 // CLI. Its private workspace and database cannot file findings in the live pot.
@@ -34,7 +36,7 @@ const journey = String.raw`
   await mkdir(join(corpus, 'scripts'));
   await symlink(join(sourceRoot, 'node_modules'), join(corpus, 'node_modules'), 'dir');
   await symlink(join(sourceRoot, 'scripts/clone-family-sweep.mts'), join(corpus, 'scripts/clone-family-sweep.mts'));
-  const source = 'export function sum(xs: number[]) { let total = 0; for (const x of xs) { if (x > 0) { total += x; } else { total -= x; } } return total; }';
+  const source = ${JSON.stringify(cloneCorpusSource)};
   await writeFile(join(corpus, 'packages/a/a.ts'), source);
   await writeFile(join(corpus, 'apps/b/b.ts'), source.replace('sum(', 'sumAgain('));
   // This disposable corpus has no commits, remotes or shared working tree.
@@ -108,6 +110,10 @@ const journey = String.raw`
 `;
 
 it('runs two real managed sweep children against one private corpus without refiling, then tears down', async () => {
+  const calibration = new CloneIndex();
+  calibration.update({ path: 'packages/a/a.ts', source: cloneCorpusSource });
+  calibration.update({ path: 'apps/b/b.ts', source: cloneCorpusSource.replace('sum(', 'sumAgain(') });
+  expect(calibration.families('renamed'), 'native corpus must admit one family at the production mass floor').toHaveLength(1);
   await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/code-intelligence/clone-sweep.native.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'scripts/clone-family-sweep.mts',

@@ -28,14 +28,19 @@ export function preparePartialNativeProducerSelection(selection: any, task: any,
  * is offered. This does not replace npm with leaf commands, enroll a producer, or
  * settle command/post-suite work. The caller must bind each channel to its actual
  * native process before using its outcomes.
- * @param {{selection: any, task: any, root: string, outPath: string, postSuite: any}} input
+ * `remainingFiles` narrows enrollment only, after the full source population is
+ * validated. A banked empty step still runs its original command and hooks; it
+ * supplies no producer or completion, and must already tolerate an empty suite.
+ * @param {{selection: any, task: any, root: string, outPath: string, postSuite: any, remainingFiles?: string[], observedSelection?: any}} input
  */
-export function preparePartialNativeProducerChannels({ selection, task, root, outPath, postSuite }: {
+export function preparePartialNativeProducerChannels({ selection, task, root, outPath, postSuite, remainingFiles, observedSelection }: {
     selection: any;
     task: any;
     root: string;
     outPath: string;
     postSuite: any;
+    remainingFiles?: string[];
+    observedSelection?: any;
 }): {
     status: string;
     reason: any;

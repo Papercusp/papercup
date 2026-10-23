@@ -50,6 +50,24 @@ describe('original gate selection preparation', () => {
   const options = (results: unknown[]) => ({ root: '/repo', filterDir: tmpdir(), runResolver: () => results });
   const resolved = (files: string[]) => ({ ok: true, enumerated: true, files, config: { include: files, exclude: [] } });
 
+  it.each([false, true])('preserves an empty qualification filter without changing ordinary empty selectors: %s', qualification => {
+    const dir = mkdtempSync(join(tmpdir(), 'qualification-empty-selection-'));
+    try {
+      const selected = { ...task('test', 'vitest run', []),
+        ...(qualification ? { qualificationSelection: {} } : {}) };
+      const result = enumerateAffectedTaskSelection([selected], { root: '/repo', filterDir: dir,
+        enumerateSpecifications: true, runResolver: (requests: Array<{ env: Record<string, string> }>) => {
+          const filter = requests[0]!.env.PC_TEST_FILTER_LIST;
+          if (qualification) expect(JSON.parse(readFileSync(filter!, 'utf8'))).toEqual([]);
+          else expect(filter).toBeUndefined();
+          return [{ ...resolved(qualification ? [] : ['a.test.ts']), selectedSpecifications: [] }];
+        } });
+      expect(result.files).toEqual(qualification ? [] : ['packages/core/a.test.ts']);
+      expect(result.executed).toBe(false);
+      expect(result.operationalAcceptance).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('keeps wide lanes unknown until their real config enumerates files', () => {
     const result = enumerateAffectedTaskSelection([task()], options([resolved(['a.test.ts', 'b.test.ts'])]));
     expect(result.files).toEqual(['packages/core/a.test.ts', 'packages/core/b.test.ts']);

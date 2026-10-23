@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import {
   PARTIAL_TASK_CHECKPOINT_SCHEMA,
@@ -30,10 +30,11 @@ const ID = {
 };
 
 describe('remaining work preserves the original selected population', () => {
-  const fixture = () => {
-    const specifications = ['a.test.ts', 'b.test.ts'].map(testFile => ({ testFile, pool: 'forks',
+  const fixture = (dir = '.') => {
+    const files = ['a.test.ts', 'b.test.ts'].map(file => dir === '.' ? file : `${dir}/${file}`);
+    const specifications = files.map(testFile => ({ testFile, pool: 'forks',
       projectName: null, testNamePattern: null, testIds: null, testTagsFilter: null, testLines: null }));
-    const task = { id: 'ws :: test', dir: '.', workspace: 'ws', command: 'vitest run', runner: 'vitest',
+    const task = { id: 'ws :: test', dir, workspace: 'ws', command: 'vitest run', runner: 'vitest',
       files: specifications.map(row => row.testFile), selectedSpecifications: specifications,
       lifecycleCommands: [], commandObligations: [] };
     const inventory = [{ id: task.id, dir: task.dir, command: task.command },
@@ -50,7 +51,7 @@ describe('remaining work preserves the original selected population', () => {
         recordedSha: ID.sourceCommit, executedModules: [path], readPaths: [], inputsCaptured: true,
         opaqueReasons: [], runnerIdentity: 'native', runContext: 'ci' } });
     const checkpoint = { ...ID, continuation: { schemaVersion: 1, ...expected,
-      receipts: [receipt('test:a.test.ts', 'a.test.ts'), receipt('guard:ws :: guard', 'package.json')] } };
+      receipts: [receipt(`test:${files[0]}`, files[0]!), receipt('guard:ws :: guard', 'package.json')] } };
     const project = () => preparePartialRemainingSelection(checkpoint, expected, { selection, postSuite });
     return { checkpoint, expected, selection, postSuite, project, receipt };
   };
@@ -88,12 +89,12 @@ describe('remaining work preserves the original selected population', () => {
       evaluation: { run: ['post:build'], verdict: 'incomplete' } });
   });
 
-  it('runs the actual early runner boundary before its later taskKey declaration', () => {
-    const { checkpoint, selection, project } = fixture();
+  it.each(['.', 'packages/ws'])('runs the actual early runner boundary before its later taskKey declaration in %s', dir => {
+    const { checkpoint, selection, project } = fixture(dir);
     const source = readFileSync(new URL('../../../../scripts/affected-tests.mjs', import.meta.url), 'utf8');
     const begin = source.indexOf('if (qualificationWorkFile) {');
     const block = source.slice(begin, source.indexOf('\nif (!tasks.length) {', begin));
-    const tasks = [{ ws: { name: 'ws', dir: '.', scripts: { test: 'vitest run' } }, script: 'test' },
+    const tasks = [{ ws: { name: 'ws', dir, scripts: { test: 'vitest run' } }, script: 'test' },
       { ws: { name: 'ws', dir: '.', scripts: { guard: 'node guard.mjs' } }, script: 'guard', isInvariantGuard: true }];
     const logs: string[] = [];
     const fail = (reason: string) => { throw new Error(reason); };
@@ -101,13 +102,14 @@ describe('remaining work preserves the original selected population', () => {
       PAPERCUSP_TEST_RUN_GROUP: 'run' }, exit: fail };
     const execute = new Function('qualificationWorkFile', 'tasks', 'ROOT', 'RUN_LOG_ROOT', 'partialSourceIdentity',
       'reuseRunnerIdentity', 'execFileSync', 'createHash', 'readPartialTaskCheckpoint',
-      'enumerateAffectedTaskSelection', 'preparePartialRemainingSelection', 'outSync', 'errSync', 'process',
+      'enumerateAffectedTaskSelection', 'preparePartialRemainingSelection', 'outSync', 'errSync', 'process', 'relative', 'join',
       `${block}\nconst taskKey = task => task.ws.name + ' :: ' + task.script; return tasks;`);
     Object.assign(checkpoint, { sourceDigest: createHash('sha256').update('native').digest('hex') });
     const result = execute('/snapshot', tasks, ID.root, '/logs', () => ({ sourceCommit: ID.sourceCommit,
       sourceDigest: createHash('sha256').update('').digest('hex') }), () => 'native', () => '', createHash,
-    () => checkpoint, () => structuredClone(selection), project, (line: string) => logs.push(line), fail, fakeProcess);
-    expect(result).toEqual([{ ws: tasks[0]!.ws, script: 'test', relatedFiles: ['b.test.ts'] }]);
+    () => checkpoint, () => structuredClone(selection), project, (line: string) => logs.push(line), fail, fakeProcess, relative, join);
+    expect(result).toMatchObject([{ ws: tasks[0]!.ws, script: 'test', relatedFiles: ['b.test.ts'],
+      qualificationSelection: { tasks: selection.tasks, files: selection.files } }]);
     expect(logs).toEqual(['QUALIFICATION_REMAINING tasks=1 omitted=1 files=1 verdict=incomplete']);
   });
 
@@ -123,9 +125,11 @@ describe('remaining work preserves the original selected population', () => {
 });
 
 describe('original npm native channel preparation', () => {
-  const fixture = () => {
+  const fixture = (tolerateEmpty = false) => {
     const root = mkdtempSync(join(tmpdir(), 'partial-native-channels-'));
-    const scripts = { test: 'npm run first && npm run second', first: 'vitest run a.test.ts', second: 'vitest run b.test.ts' };
+    const emptyFlag = tolerateEmpty ? ' --passWithNoTests' : '';
+    const scripts = { test: 'npm run first && npm run second',
+      first: `vitest run a.test.ts${emptyFlag}`, second: `vitest run b.test.ts${emptyFlag}` };
     writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts }));
     const task = { id: 'ws :: test', dir: '.', command: scripts.test };
     const steps = ['first', 'second'].map((script, index) => {
@@ -146,9 +150,9 @@ describe('original npm native channel preparation', () => {
     return { root, scripts, input, prepare: () => preparePartialNativeProducerChannels(input) };
   };
 
-  it.each(['partial', 'empty-step', 'banked-chain', 'invalidated-pass'])(
+  it.each(['partial', 'empty-step', 'empty-pass', 'all-empty-pass', 'banked-chain', 'invalidated-pass'])(
     'retains the original npm chain while selecting its unfinished files: %s', scenario => {
-      const { root, input, scripts } = fixture();
+      const { root, input, scripts } = fixture(scenario === 'empty-pass' || scenario === 'all-empty-pass');
       try {
         const entry = input.selection.tasks[0]!;
         const leaf = entry.steps[0]!.discovery[0]!;
@@ -166,8 +170,11 @@ describe('original npm native channel preparation', () => {
           state: 'pass', worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass', proof: {
             recordedSha: ID.sourceCommit, executedModules: ['a.test.ts'], readPaths: [], inputsCaptured: true,
             opaqueReasons: [] as string[], runnerIdentity: 'native', runContext: 'ci' } }];
-        if (scenario === 'empty-step') receipts.push({ ...receipts[0]!, unitId: 'test:remaining.test.ts',
+        const emptyFirst = ['empty-step', 'empty-pass', 'all-empty-pass'].includes(scenario);
+        if (emptyFirst) receipts.push({ ...receipts[0]!, unitId: 'test:remaining.test.ts',
           completionId: 'saved-second-file', proof: { ...receipts[0]!.proof, executedModules: ['remaining.test.ts'] } });
+        if (scenario === 'all-empty-pass') receipts.push({ ...receipts[0]!, unitId: 'test:b.test.ts',
+          completionId: 'saved-last-file', proof: { ...receipts[0]!.proof, executedModules: ['b.test.ts'] } });
         if (scenario === 'banked-chain') receipts.push({ ...receipts[0]!, unitId: 'chain:ws :: test',
           completionId: 'saved-chain', proof: { ...receipts[0]!.proof, executedModules: ['package.json'] } });
         if (scenario === 'invalidated-pass') receipts[0]!.proof.opaqueReasons.push('unknown-input');
@@ -179,22 +186,60 @@ describe('original npm native channel preparation', () => {
           return;
         }
         expect(remaining).toMatchObject({ status: 'ready', tasks: [{ command: input.task.command,
-          files: scenario === 'partial' ? ['remaining.test.ts', 'b.test.ts'] : entry.files,
+          files: scenario === 'all-empty-pass' ? [] : emptyFirst ? ['b.test.ts']
+            : scenario === 'partial' ? ['remaining.test.ts', 'b.test.ts'] : entry.files,
           steps: [{ script: 'first', command: scripts.first,
-            files: scenario === 'partial' ? ['remaining.test.ts'] : ['a.test.ts', 'remaining.test.ts'] },
-          { script: 'second', command: scripts.second, files: ['b.test.ts'] }] }],
+            files: emptyFirst ? [] : scenario === 'partial' ? ['remaining.test.ts'] : ['a.test.ts', 'remaining.test.ts'] },
+          { script: 'second', command: scripts.second, files: scenario === 'all-empty-pass' ? [] : ['b.test.ts'] }] }],
           evaluation: { verdict: 'incomplete' } });
         const narrowed = remaining.tasks[0]!;
-        const channels = preparePartialNativeProducerChannels({ ...input,
-          selection: { ...input.selection, tasks: [narrowed], files: narrowed.files } });
+        const channels = preparePartialNativeProducerChannels({ ...input, remainingFiles: narrowed.files,
+          observedSelection: { ...input.selection, tasks: [narrowed] } });
         expect(channels).toMatchObject({ status: 'ready', commandUnitIds: ['chain:ws :: test'],
           postSuiteUnitIds: ['post:build'], channels: [{ taskKey: 'ws :: test:step:0',
-            selectedSpecifications: scenario === 'partial' ? [expect.objectContaining({ testFile: 'remaining.test.ts' })]
-              : leaf.selectedSpecifications }, { taskKey: 'ws :: test:step:1' }] });
+            selectedSpecifications: emptyFirst ? []
+              : scenario === 'partial' ? [expect.objectContaining({ testFile: 'remaining.test.ts' })]
+                : leaf.selectedSpecifications }, { taskKey: 'ws :: test:step:1',
+            selectedSpecifications: scenario === 'all-empty-pass' ? []
+              : entry.steps[1]!.discovery[0]!.selectedSpecifications }] });
+        expect(channels.manifest).toEqual(prepared.manifest);
+        const registered = registerPartialNativeProducerChannels(input.outPath, channels, {
+          attemptId: 'attempt', runGroupId: 'group', root, workspaceName: 'ws', sourceCommit: ID.sourceCommit,
+          registeredAtMs: 1, command: { cmd: 'npm', argv: ['run', 'test'], cwd: root },
+        }, {});
+        expect(registered.producers).toHaveLength(scenario === 'all-empty-pass' ? 0 : emptyFirst ? 1 : 2);
+        expect(JSON.parse(readFileSync(registered.path, 'utf8')).channels).toHaveLength(2);
+        expect(registered.operationalAcceptance).toBe(false);
         expect(entry.steps[0]!.files).toEqual(['a.test.ts', 'remaining.test.ts']);
         expect(checkpoint.continuation.receipts[0]!.completionId).toBe('saved-first-file');
       } finally { rmSync(root, { recursive: true, force: true }); }
     });
+
+  it('refuses an empty strict step, a fabricated remaining file and a changed full population', () => {
+    const { root, input } = fixture();
+    try {
+      expect(preparePartialNativeProducerChannels({ ...input, remainingFiles: ['b.test.ts'] }))
+        .toMatchObject({ status: 'refused', reason: 'native-empty-selection-with-command-work' });
+      expect(preparePartialNativeProducerChannels({ ...input, remainingFiles: ['foreign.test.ts'] }))
+        .toMatchObject({ status: 'refused', reason: 'native-channel-remaining-population-mismatch' });
+      input.selection.tasks[0]!.steps.shift();
+      expect(preparePartialNativeProducerChannels({ ...input, remainingFiles: ['b.test.ts'] }))
+        .toMatchObject({ status: 'refused', reason: 'native-channel-chain-population-unmeasured' });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses a native filter that widened back to banked files before enrollment', () => {
+    const { root, input } = fixture(true);
+    try {
+      expect(preparePartialNativeProducerChannels({ ...input, remainingFiles: ['b.test.ts'],
+        observedSelection: input.selection }))
+        .toMatchObject({ status: 'refused', reason: 'native-channel-remaining-selection-mismatch' });
+      expect(preparePartialNativeProducerChannels({ ...input, remainingFiles: ['b.test.ts'],
+        observedSelection: { tasks: [] } }))
+        .toMatchObject({ status: 'refused', reason: 'native-channel-remaining-selection-unmeasured' });
+      expect(existsSync(`${input.outPath}.native-channels.json`)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 
   it('enrolls original command identities immutably without granting operational acceptance', () => {
     const { root, input, prepare } = fixture();
@@ -218,8 +263,8 @@ describe('original npm native channel preparation', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('the production affected runner enrolls each original npm step before its unchanged spawn', () => {
-    const { root, input, prepare } = fixture();
+  it.each(['fresh', 'banked-step', 'all-banked', 'widened'])('the production affected runner enrolls each original npm step before its unchanged spawn: %s', scenario => {
+    const { root, input, prepare } = fixture(scenario !== 'fresh');
     try {
       const source = readFileSync(new URL('../../../../scripts/affected-tests.mjs', import.meta.url), 'utf8');
       const begin = source.indexOf('    if (qualificationNativeOut) {');
@@ -232,23 +277,85 @@ describe('original npm native channel preparation', () => {
       } });
       const messages: string[] = [];
       const task = { ws: { dir: '.', name: 'ws', scripts: input.selection.tasks[0]!.steps.reduce(
-        (scripts, step) => ({ ...scripts, [step.script]: step.command }), { test: input.task.command }) }, script: 'test' };
+        (scripts, step) => ({ ...scripts, [step.script]: step.command }), { test: input.task.command }) }, script: 'test',
+        ...(scenario === 'fresh' ? {} : { qualificationSelection: input.selection,
+          relatedFiles: scenario === 'all-banked' ? [] : ['b.test.ts'] }) };
       const scope = { qualificationNativeOut: input.outPath, ROOT: root, RUN_LOG_ROOT: root,
         qualificationWorkFile: checkpointPath, qualificationAttemptId: 'attempt',
-        enumerateAffectedTaskSelection: () => input.selection, spawnTask: task, context: { t: task },
+        enumerateAffectedTaskSelection: () => {
+          if (scenario === 'fresh' || scenario === 'widened') return input.selection;
+          const actual = structuredClone(input.selection);
+          for (const [index, step] of actual.tasks[0]!.steps.entries()) {
+            if (scenario === 'all-banked' || index === 0) {
+              step.files = []; step.discovery[0]!.files = []; step.discovery[0]!.selectedSpecifications = [];
+            }
+          }
+          return actual;
+        }, spawnTask: task, context: { t: task }, relative, join,
         taskKey: () => input.task.id, partialSourceIdentity: () => ({ sourceCommit: ID.sourceCommit }),
         governedEnv: { PAPERCUSP_TEST_RUN_GROUP: 'group' }, cmd: 'npm', argv: ['run', 'test'], cwd: root,
         readPartialTaskCheckpoint, preparePartialNativeProducerSelection, preparePartialNativeProducerChannels,
         registerPartialNativeProducer, registerPartialNativeProducerChannels,
         outSync: (line: string) => messages.push(line) };
-      new Function('scope', `const {${Object.keys(scope).join(',')}} = scope;\n${source.slice(begin, end)}`)(scope);
-      expect(messages).toHaveLength(2);
-      expect(messages[0]).toContain('task="ws :: test:step:0"');
-      expect(messages[1]).toContain('task="ws :: test:step:1"');
-      for (const step of [0, 1]) expect(readPartialNativeProducer(`${input.outPath}.step-${step}.producer.json`, {
+      const run = () => new Function('scope', `const {${Object.keys(scope).join(',')}} = scope;\n${source.slice(begin, end)}`)(scope);
+      if (scenario === 'widened') {
+        expect(run).toThrow('native-channel-remaining-selection-mismatch');
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toContain('QUALIFICATION_NATIVE_PRODUCER_REFUSED');
+        expect(existsSync(`${input.outPath}.native-channels.json`)).toBe(false);
+        return;
+      }
+      run();
+      const activeSteps = scenario === 'fresh' ? [0, 1] : scenario === 'banked-step' ? [1] : [];
+      expect(messages).toHaveLength(activeSteps.length);
+      for (const [index, step] of activeSteps.entries()) expect(messages[index]).toContain(`task="ws :: test:step:${step}"`);
+      expect(JSON.parse(readFileSync(`${input.outPath}.native-channels.json`, 'utf8')).channels).toHaveLength(2);
+      if (scenario !== 'fresh') expect(existsSync(`${input.outPath}.step-0.producer.json`)).toBe(false);
+      for (const step of activeSteps) expect(readPartialNativeProducer(`${input.outPath}.step-${step}.producer.json`, {
         taskKey: `${input.task.id}:step:${step}`,
       }))
         .toMatchObject({ taskKey: `${input.task.id}:step:${step}`, command: { cmd: 'npm', argv: ['run', 'test'] } });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['narrowed', 'widened'])('checks the real simple-native filter before spawning: %s', scenario => {
+    const { root, input, prepare } = fixture(true);
+    try {
+      input.task.command = 'vitest run --passWithNoTests';
+      const entry = input.selection.tasks[0]!;
+      const simple = { ...entry, command: input.task.command, runner: 'vitest', lifecycleCommands: [],
+        selectedSpecifications: entry.steps.flatMap(step => step.discovery[0]!.selectedSpecifications) };
+      input.selection.tasks = [simple];
+      const checkpointPath = join(root, 'work.json');
+      writePartialTaskCheckpointAtomic(checkpointPath, { ...ID, root, continuation: {
+        schemaVersion: 1, attemptId: 'attempt', manifest: prepare().manifest,
+      } });
+      const source = readFileSync(new URL('../../../../scripts/affected-tests.mjs', import.meta.url), 'utf8');
+      const begin = source.indexOf('    if (qualificationNativeOut) {');
+      const end = source.indexOf('    // Extend existing OUT diagnostics', begin);
+      const messages: string[] = [];
+      const task = { ws: { dir: '.', name: 'ws', scripts: { test: input.task.command } }, script: 'test',
+        qualificationSelection: input.selection, relatedFiles: ['b.test.ts'] };
+      const scope = { qualificationNativeOut: input.outPath, ROOT: root, RUN_LOG_ROOT: root,
+        qualificationWorkFile: checkpointPath, qualificationAttemptId: 'attempt',
+        enumerateAffectedTaskSelection: () => ({ ...input.selection, tasks: [{ ...simple,
+          selectedSpecifications: simple.selectedSpecifications.filter(spec => scenario === 'widened' || spec.testFile === 'b.test.ts'),
+        }] }), spawnTask: task, context: { t: task }, relative, join,
+        taskKey: () => input.task.id, partialSourceIdentity: () => ({ sourceCommit: ID.sourceCommit }),
+        governedEnv: { PAPERCUSP_TEST_RUN_GROUP: 'group' }, cmd: 'npm', argv: ['run', 'test'], cwd: root,
+        readPartialTaskCheckpoint, preparePartialNativeProducerSelection, preparePartialNativeProducerChannels,
+        registerPartialNativeProducer, registerPartialNativeProducerChannels,
+        outSync: (line: string) => messages.push(line) };
+      const run = () => new Function('scope', `const {${Object.keys(scope).join(',')}} = scope;\n${source.slice(begin, end)}`)(scope);
+      if (scenario === 'widened') {
+        expect(run).toThrow('native-channel-remaining-selection-mismatch');
+        expect(existsSync(`${input.outPath}.producer.json`)).toBe(false);
+      } else {
+        run();
+        expect(readPartialNativeProducer(`${input.outPath}.producer.json`))
+          .toMatchObject({ selectedSpecifications: [{ testFile: 'b.test.ts' }] });
+      }
+      expect(messages).toHaveLength(1);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

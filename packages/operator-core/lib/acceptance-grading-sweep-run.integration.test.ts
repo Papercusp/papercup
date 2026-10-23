@@ -101,6 +101,9 @@ if (phase) {
     sdk.DBOS.setConfig({ name: 'grading-proof', systemDatabaseUrl: process.env.PAPERCUSP_GRADING_PROOF_DSN!,
       systemDatabaseSchemaName: 'dbos', applicationVersion: 'grading-proof-v1', executorID: 'grading-proof',
       runAdminServer: false, listenQueues: phase === 'after-admission' ? ['unconsumed'] : ['acceptance-grading-dispatch'] });
+    // Match production bootstrap: the real grader imports the durable tool
+    // orchestration receiver, whose workflow must be registered before launch.
+    await import('./dbos/durable-orchestration-workflow');
     await import('./dbos/acceptance-grading-dispatch-workflow');
     await sdk.DBOS.launch();
   }, 120_000);

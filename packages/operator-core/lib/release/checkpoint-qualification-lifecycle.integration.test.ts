@@ -961,14 +961,20 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
   });
 
   it('persists production post-suite native output in the real row before a later command interruption', async () => {
-    const { createCheckpointQualificationPostSuiteExecutor } = await import('../../../../apps/operator/lib/release/green-checkpoint');
+    const { createCheckpointQualificationPostSuiteExecutor, runCmd } = await import('../../../../apps/operator/lib/release/green-checkpoint');
     await seed();
     const nowMs = Date.now();
     const root = mkdtempSync(join(tmpdir(), 'qualification-post-suite-output-'));
     try {
-      writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { 'lint:tsc': 'node -e "console.log(12345)"' } }));
-      await beginStoredQualification(target, { attemptId: 'attempt-post', candidate: 'candidate-post', nowMs });
-      const owner = { attemptId: 'attempt-post', candidate: 'candidate-post', runnerId: 'runner-post', runId: 'run-post',
+      const source = 'console.log(12345);\n';
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { 'lint:tsc': 'node guard.mjs' } }));
+      writeFileSync(join(root, 'guard.mjs'), source);
+      const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 10_000 }).trim();
+      git('init', '--quiet'); git('add', '.');
+      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'fixture');
+      const candidate = git('rev-parse', 'HEAD');
+      await beginStoredQualification(target, { attemptId: 'attempt-post', candidate, nowMs });
+      const owner = { attemptId: 'attempt-post', candidate, runnerId: 'runner-post', runId: 'run-post',
         pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 60_000, started: true, nowMs: nowMs + 1 };
       expect((await reserveStoredQualificationRunner(target, owner)).status).toBe('updated');
       const input: QualificationWorkProgressInput = { ...owner, nowMs: nowMs + 2, repairHead: null, root,
@@ -985,7 +991,7 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
           expect(saved.transaction.continuation!.receipts.map(row => row.unitId)).toEqual(['post:lint:tsc']);
           throw new Error('following post-suite command interrupted');
         }
-        return { code: 0, stdout: execFileSync(cmd, args, { cwd: options?.cwd, encoding: 'utf8', timeout: 10_000 }), stderr: '' };
+        return runCmd(cmd, args, { ...options, timeoutMs: 10_000 });
       });
       expect(await execute('npm', ['run', 'lint:tsc'], { cwd: root })).toMatchObject({ code: 0 });
       await expect(execute('npm', ['run', 'lint:tsc:operator'], { cwd: root }))
@@ -1002,11 +1008,44 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       expect(createHash('sha256').update(bytes).digest('hex')).toBe(pin.receipt.sha256);
       const artifact = JSON.parse(bytes.toString());
       expect(artifact.execution).toMatchObject({ command: ['npm', 'run', 'lint:tsc'], cwd: root, exitCode: 0 });
+      expect(artifact).toMatchObject({ originalCommand: 'node guard.mjs', sourceInputsUnchanged: true,
+        runtimeClosure: 'unmeasured', orderedChainQualified: false });
+      const loaded = artifact.processTrace.loaderSources.entries.find((entry: { url: string }) => entry.url.endsWith('/guard.mjs'));
+      expect(loaded, 'the acknowledged row must resolve its archived native loader bytes').toBeDefined();
+      const loadedBytes = readFileSync(join(pin.root, loaded.artifact.ref));
+      expect(loadedBytes.toString()).toBe(source);
+      expect(createHash('sha256').update(loadedBytes).digest('hex')).toBe(loaded.artifact.sha256);
       expect(readFileSync(join(pin.root, artifact.execution.logs.stdout.ref), 'utf8')).toContain('12345');
       expect(evaluatePartialTaskContinuation({ root, taskKey: input.taskKey, continuation: saved.transaction.continuation },
         { ...input, sourceCommit: input.candidate })).toMatchObject({ status: 'ready', verdict: 'incomplete', reused: [],
         invalidated: [{ id: 'post:lint:tsc', reason: 'pass-proof-invalid-or-unmeasured' }] });
       expect(saved.transaction.outcome).toEqual({ kind: 'pending' });
+      // A scoped driver fixture supplies an independently eligible proof. This
+      // does not turn production raw source observations into runtime closure.
+      const original = saved.transaction.continuation!.receipts[0]!;
+      const qualified = { ...original, completionId: 'qualified-post-fixture', worktreeDirty: false,
+        proof: { ...original.proof, recordedSha: candidate, runContext: input.runContext,
+          runnerIdentity: input.runnerIdentity, executedModules: ['package.json'],
+          inputsCaptured: true, readPaths: [], opaqueReasons: [] } };
+      expect((await recordStoredQualificationWorkProgress(target, { ...input,
+        updates: [{ receipt: qualified, supersedesCompletionId: original.completionId }] })).status).toBe('updated');
+      const child = vi.fn().mockRejectedValue(new Error('completed command reran'));
+      const resume = () => createCheckpointQualificationPostSuiteExecutor({ target, progress: input }, child);
+      expect(await resume()('npm', ['run', 'lint:tsc'], { cwd: root }))
+        .toMatchObject({ code: 0, stdout: expect.stringContaining('12345') });
+      expect(child).not.toHaveBeenCalled();
+      const resumed = await readStoredQualification(target);
+      if (resumed.status !== 'present') throw new Error('missing resumed qualification');
+      expect(resumed.transaction.continuation!.receipts[0]!.completionId).toBe(qualified.completionId);
+      expect(evaluatePartialTaskContinuation({ root, taskKey: input.taskKey, continuation: resumed.transaction.continuation },
+        { ...input, sourceCommit: candidate })).toMatchObject({ verdict: 'incomplete', reused: ['post:lint:tsc'] });
+      writeFileSync(join(pin.root, loaded.artifact.ref), 'console.log(99999);\n');
+      await expect(resume()('npm', ['run', 'lint:tsc'], { cwd: root })).rejects.toThrow('reuse-artifact-digest');
+      expect(child).not.toHaveBeenCalled();
+      const refused = await readStoredQualification(target);
+      if (refused.status !== 'present') throw new Error('missing refused qualification');
+      expect(refused.transaction.continuation!.receipts).toEqual(resumed.transaction.continuation!.receipts);
+      expect(refused.transaction.outcome).toEqual({ kind: 'pending' });
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

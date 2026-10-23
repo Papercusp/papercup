@@ -9,6 +9,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { isDeepStrictEqual } from "node:util";
 import { selectReusablePasses } from "./test-pass-reuse.mjs";
 import { expandSelectionCommands } from "./related-tests.mjs";
+import { scriptUsesPassWithNoTests, scriptSupportsPassReuse } from "./empty-suite-guard.mjs";
 import { readNativeArtifactBytes, readNativeProcessTraceArtifacts } from "./budgeted-task-scheduler.mjs";
 
 export const PARTIAL_TASK_CHECKPOINT_SCHEMA = 1;
@@ -209,9 +210,12 @@ export function preparePartialNativeProducerSelection(selection, task, root) {
  * is offered. This does not replace npm with leaf commands, enroll a producer, or
  * settle command/post-suite work. The caller must bind each channel to its actual
  * native process before using its outcomes.
- * @param {{selection: any, task: any, root: string, outPath: string, postSuite: any}} input
+ * `remainingFiles` narrows enrollment only, after the full source population is
+ * validated. A banked empty step still runs its original command and hooks; it
+ * supplies no producer or completion, and must already tolerate an empty suite.
+ * @param {{selection: any, task: any, root: string, outPath: string, postSuite: any, remainingFiles?: string[], observedSelection?: any}} input
  */
-export function preparePartialNativeProducerChannels({ selection, task, root, outPath, postSuite }) {
+export function preparePartialNativeProducerChannels({ selection, task, root, outPath, postSuite, remainingFiles, observedSelection }) {
   const refused = reason => ({ status: "refused", reason, channels: [], manifest: null,
     commandUnitIds: [], postSuiteUnitIds: [], operationalAcceptance: false });
   if (!isAbsolute(root ?? "") || !isAbsolute(outPath ?? "") ||
@@ -221,6 +225,10 @@ export function preparePartialNativeProducerChannels({ selection, task, root, ou
   const prepared = preparePartialContinuationManifest({ tasks: [task], selection, root, postSuite });
   if (prepared.status !== "ready") return refused(`native-channel-${prepared.reason}`);
   const entry = selection.tasks[0];
+  if (remainingFiles !== undefined && (!Array.isArray(remainingFiles) ||
+      new Set(remainingFiles).size !== remainingFiles.length ||
+      remainingFiles.some(file => !entry.files.includes(file))))
+    return refused("native-channel-remaining-population-mismatch");
   const channels = [];
   const add = (leaf, step, script, command, commands, residues) => {
     const taskKey = step === null ? task.id : `${task.id}:step:${step}`;
@@ -230,9 +238,14 @@ export function preparePartialNativeProducerChannels({ selection, task, root, ou
       commandObligations: commands.map(value => ({ ...value, task: taskKey })),
       unenumerated: residues.map(value => ({ ...value, task: taskKey })) }, local, root);
     if (native.status !== "ready") return native.reason;
+    const selected = native.selectedSpecifications.filter(spec =>
+      remainingFiles === undefined || remainingFiles.includes(spec.testFile));
+    if (!selected.length && !(scriptUsesPassWithNoTests(command) && scriptSupportsPassReuse(command)))
+      return "native-empty-selection-with-command-work";
     channels.push({ taskKey, sourceTask: task.id, step, script, command,
       outPath: step === null ? outPath : `${outPath}.step-${step}`,
-      selectedSpecifications: native.selectedSpecifications });
+      selectedSpecifications: selected,
+      ...(selected.length ? {} : { bankedSpecifications: native.selectedSpecifications }) });
     return null;
   };
   if (entry.runner === "vitest") {
@@ -253,6 +266,17 @@ export function preparePartialNativeProducerChannels({ selection, task, root, ou
     }
   } else if (!["command-check", "astro-check", "lifecycle-command"].includes(entry.runner)) {
     return refused("native-channel-runner-unsupported");
+  }
+  if (observedSelection !== undefined) {
+    const actual = observedSelection?.tasks;
+    if (!Array.isArray(actual) || actual.length !== 1 || actual[0]?.id !== task.id ||
+        actual[0]?.command !== entry.command || actual[0]?.runner !== entry.runner)
+      return refused("native-channel-remaining-selection-unmeasured");
+    for (const channel of channels) {
+      const leaf = channel.step === null ? actual[0] : actual[0].steps?.[channel.step]?.discovery?.[0];
+      if (!isDeepStrictEqual(leaf?.selectedSpecifications, channel.selectedSpecifications))
+        return refused("native-channel-remaining-selection-mismatch");
+    }
   }
   return { status: "ready", reason: null, channels, manifest: prepared.manifest,
     commandUnitIds: prepared.manifest.units.filter(unit => unit.kind === "guard").map(unit => unit.id),
@@ -285,9 +309,13 @@ export function registerPartialNativeProducerChannels(outPath, prepared, registr
       prepared.channels.some(channel => !validIdentity(channel.script) || !validIdentity(channel.command) ||
         !Number.isSafeInteger(channel.step) || channel.step < 0 ||
         channel.outPath !== `${outPath}.step-${channel.step}` ||
-        !validNativeSpecifications(channel.selectedSpecifications)))
+        !(validNativeSpecifications(channel.selectedSpecifications) ||
+          (Array.isArray(channel.selectedSpecifications) && channel.selectedSpecifications.length === 0 &&
+            validNativeSpecifications(channel.bankedSpecifications) &&
+            scriptUsesPassWithNoTests(channel.command) && scriptSupportsPassReuse(channel.command)))))
     throw new Error("native-channel-registration-invalid");
-  const producers = prepared.channels.map(channel => registerPartialNativeProducer(channel.outPath, {
+  const producers = prepared.channels.filter(channel => channel.selectedSpecifications.length)
+    .map(channel => registerPartialNativeProducer(channel.outPath, {
     ...registration, taskKey: channel.taskKey, selectedSpecifications: channel.selectedSpecifications,
     nativeChannel: { traceOut: outPath, script: channel.script, command: channel.command, step: channel.step },
   }, environment));
@@ -919,8 +947,8 @@ export function preparePartialRemainingSelection(checkpoint, expected, { selecti
       tasks.push({ ...structuredClone(entry), files, selectedSpecifications });
     } else if (entry?.runner === "command-chain" && remaining.length !== units.length) {
       // Keep npm's original command and every unbanked command/lifecycle guard.
-      // The maintained filter-list channel can narrow files inside each native
-      // step; it cannot skip a command or make an empty step successful.
+      // Empty steps retain their original command. Only scripts that already
+      // tolerate an empty suite can execute without re-running banked files.
       if (units.some(unit => unit.kind !== "test" && !run.has(unit.id)))
         return refused("atomic-command-partially-complete");
       const narrowed = structuredClone(entry);
@@ -933,7 +961,8 @@ export function preparePartialRemainingSelection(checkpoint, expected, { selecti
           continue;
         }
         const files = step.files.filter(file => run.has(`test:${file}`));
-        if (!files.length) return refused("native-empty-selection-with-command-work");
+        if (!files.length && !(scriptUsesPassWithNoTests(step.command) && scriptSupportsPassReuse(step.command)))
+          return refused("native-empty-selection-with-command-work");
         step.files = files;
         leaf.files = files.slice();
         leaf.selectedSpecifications = leaf.selectedSpecifications.filter(spec => files.includes(spec.testFile));

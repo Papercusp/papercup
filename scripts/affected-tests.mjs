@@ -6041,7 +6041,17 @@ if (qualificationWorkFile) {
     for (let index = tasks.length - 1; index >= 0; index--) {
       const task = tasks[index], plan = planned.get(`${task.ws.name} :: ${task.script}`);
       if (!plan) tasks.splice(index, 1);
-      else if (plan.runner === 'vitest' || plan.runner === 'command-chain') task.relatedFiles = plan.files;
+      else if (plan.runner === 'vitest' || plan.runner === 'command-chain') {
+        task.relatedFiles = plan.files.map(file => relative(join(ROOT, task.ws.dir), join(ROOT, file)));
+        // Keep the original nonempty source population for channel validation.
+        // The filter list narrows execution, never the manifest owed by this run.
+        task.qualificationSelection = {
+          ...selection, tasks: selection.tasks.filter(row => row.id === plan.id),
+          files: selection.tasks.find(row => row.id === plan.id).files,
+          unenumerated: selection.unenumerated.filter(row => row.task === plan.id),
+          commandObligations: selection.commandObligations.filter(row => row.task === plan.id),
+        };
+      }
     }
     outSync(`QUALIFICATION_REMAINING tasks=${tasks.length} omitted=${remaining.omitted.length} ` +
       `files=${remaining.tasks.reduce((count, task) => count + task.files.length, 0)} verdict=incomplete`);
@@ -7305,7 +7315,8 @@ function runCapturedTask(
   // the positional-filter form preserved them). Same scoping rule as before: only the initial,
   // complete invocation is narrowed; a targeted retry already carries its own file list.
   const relatedFilterList =
-    extraArgs.length === 0 && Array.isArray(spawnTask.relatedFiles) && spawnTask.relatedFiles.length > 0
+    extraArgs.length === 0 && Array.isArray(spawnTask.relatedFiles) &&
+      (spawnTask.relatedFiles.length > 0 || spawnTask.qualificationSelection)
       ? writeRelatedFilterList(RUN_LOG_ROOT, spawnTask.relatedFiles)
       : null;
   // P-008 (gate-file-level-test-reuse-2026-09-27): the task's per-file pass-reuse skip list, armed
@@ -7679,7 +7690,7 @@ function runCapturedTask(
     // Unsupported scripts retain ordinary execution and cannot supply continuation proof.
     if (qualificationNativeOut) {
       try {
-        const selection = enumerateAffectedTaskSelection([spawnTask], {
+        const selection = spawnTask.qualificationSelection ?? enumerateAffectedTaskSelection([spawnTask], {
           root: ROOT, filterDir: RUN_LOG_ROOT, enumerateSpecifications: true,
         });
         const task = {
@@ -7699,6 +7710,10 @@ function runCapturedTask(
               checkpoint.root !== ROOT || checkpoint.sourceCommit !== identity.sourceCommit)
             throw new Error("native-channel-work-unmeasured");
           const prepared = preparePartialNativeProducerChannels({ selection, task, root: ROOT,
+            remainingFiles: spawnTask.relatedFiles?.map(file => relative(ROOT, join(cwd, file))),
+            ...(spawnTask.qualificationSelection ? { observedSelection: enumerateAffectedTaskSelection([spawnTask], {
+              root: ROOT, filterDir: RUN_LOG_ROOT, enumerateSpecifications: true,
+            }) } : {}),
             outPath: qualificationNativeOut, postSuite: { schemaVersion: 1, coverage: "complete",
               units: checkpoint.continuation.manifest.units.filter(unit => unit.kind === "post-suite") } });
           if (prepared.status !== "ready") throw new Error(prepared.reason);
@@ -7706,7 +7721,22 @@ function runCapturedTask(
           for (const { path, producer } of enrolled.producers)
             outSync(`QUALIFICATION_NATIVE_PRODUCER task=${JSON.stringify(producer.taskKey)} path=${JSON.stringify(path)}`);
         } else {
-          const prepared = preparePartialNativeProducerSelection(selection, task, ROOT);
+          let prepared;
+          if (spawnTask.qualificationSelection) {
+            const checkpoint = qualificationWorkFile && readPartialTaskCheckpoint(qualificationWorkFile);
+            if (!checkpoint?.continuation || checkpoint.continuation.attemptId !== qualificationAttemptId ||
+                checkpoint.root !== ROOT || checkpoint.sourceCommit !== identity.sourceCommit)
+              throw new Error("native-channel-work-unmeasured");
+            const channels = preparePartialNativeProducerChannels({ selection, task, root: ROOT,
+              remainingFiles: spawnTask.relatedFiles.map(file => relative(ROOT, join(cwd, file))),
+              observedSelection: enumerateAffectedTaskSelection([spawnTask], {
+                root: ROOT, filterDir: RUN_LOG_ROOT, enumerateSpecifications: true,
+              }), outPath: qualificationNativeOut, postSuite: { schemaVersion: 1, coverage: "complete",
+                units: checkpoint.continuation.manifest.units.filter(unit => unit.kind === "post-suite") } });
+            prepared = channels.status === "ready"
+              ? { status: "ready", selectedSpecifications: channels.channels[0]?.selectedSpecifications }
+              : channels;
+          } else prepared = preparePartialNativeProducerSelection(selection, task, ROOT);
           if (prepared.status !== "ready") throw new Error(prepared.reason);
           const enrolled = registerPartialNativeProducer(qualificationNativeOut,
             { ...registration, selectedSpecifications: prepared.selectedSpecifications }, governedEnv);
@@ -7714,6 +7744,9 @@ function runCapturedTask(
         }
       } catch (error) {
         outSync(`QUALIFICATION_NATIVE_PRODUCER_REFUSED task=${JSON.stringify(taskKey(context.t))} reason=${JSON.stringify(String(error?.message ?? error))}`);
+        // Qualification must stop before spawn if its narrowed native config
+        // widened or enrollment failed. Ordinary diagnostic enrollment remains optional.
+        if (qualificationWorkFile) throw error;
       }
     }
     // Extend existing OUT diagnostics without replacing npm or its shell. The
