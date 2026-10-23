@@ -48,7 +48,7 @@ async function insertRoutine(id: string, recurring = true) {
     INSERT INTO harness_shared.routines
       (id, install_slug, name, trigger_kind, trigger_config, target_role, workspace_id, next_fire_at)
     VALUES (${id}, 'runtime-fixture', ${id}, 'schedule',
-            ${JSON.stringify(recurring ? { cron: '0 0 * * *' } : {})}::jsonb,
+            ${JSON.stringify(recurring ? { cron: '0 0 * * *' } : {})}::text::jsonb,
             'runtime-fixture', 'runtime-fixture', now() - interval '1 minute')`;
 }
 

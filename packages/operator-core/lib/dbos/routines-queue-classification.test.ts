@@ -127,12 +127,19 @@ describe('queueForRoutine — operator-home release-finalizer lane (EI-214466371
 
 describe('queueForRoutine — bounded heavy/background lane (EI-22469496587311452)', () => {
   it('routes the exact gitnexus reindex action to the serial heavy lane', () => {
-    expect([...HEAVY_ROUTINE_ACTIONS]).toEqual(['gitnexus-reindex', 'work-item-admission-bulk-dedup', 'dream-cycle']);
+    expect([...HEAVY_ROUTINE_ACTIONS]).toEqual(['gitnexus-reindex', 'work-item-admission-bulk-dedup', 'dream-cycle', 'periodic-full-run']);
     expect(queueForRoutine('system:gitnexus-reindex')).toBe(ROUTINES_HEAVY_QUEUE);
   });
 
   it('routes Dream cycles away from the shared overdue-routine cohort', () => {
     expect(queueForRoutine('system:dream-cycle')).toBe(ROUTINES_HEAVY_QUEUE);
+  });
+
+  it('isolates the six-hour full-suite and bisection job from ordinary admission work', () => {
+    expect(queueForRoutine('system:periodic-full-run')).toBe(ROUTINES_HEAVY_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-promoter')).toBe(ROUTINES_QUEUE);
+    expect(shouldFireUnderPoolShed('system:periodic-full-run')).toBe(false);
+    expect(queueForRoutine('system:periodic-full-run-status')).toBe(ROUTINES_QUEUE);
   });
 
   // D-005 (work-queue-bulk-cleanup-remediation-2026-10-01): a bulk-dedup stage held a

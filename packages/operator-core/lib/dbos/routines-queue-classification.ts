@@ -125,11 +125,14 @@ export const TRIGGERS_QUEUE_ACTIONS = new Set<string>([
  * went overdue (plan work-queue-bulk-cleanup-remediation-2026-10-01 D-005). The
  * lane is serial, so a stage and a reindex can delay each other; both are
  * background work, which is the accepted trade-off.
+ * The periodic full-suite run includes bisection and permits six hours of work;
+ * it must not hold the ordinary admission/housekeeping lane for that duration.
  */
 export const HEAVY_ROUTINE_ACTIONS = new Set<string>([
   'gitnexus-reindex',
   'work-item-admission-bulk-dedup',
   'dream-cycle',
+  'periodic-full-run',
 ]);
 
 /**

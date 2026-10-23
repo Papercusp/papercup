@@ -1,6 +1,7 @@
 /** code-intel-reuse-signals P-009: bounded composition at existing brief surfaces. */
 import { pinModuleState } from '@papercusp/module-singleton';
 import { postgresLineageProvider } from './postgres-lineage';
+import { nativeCoverageBriefProvider } from './test-coverage-map';
 
 export const REUSE_BRIEF_LIMIT = 3_000;
 export const REUSE_BRIEF_DEADLINE_MS = 6_000;
@@ -32,6 +33,9 @@ export interface ReuseProviderContext {
   checkedPaths?: readonly string[];
   /** Actual repository commit, distinct from the scoped source fingerprint. */
   commit?: string | null;
+  /** Producer adapter's exact changed-line/static reach scope; absent means unmeasured. */
+  changedLines?: Readonly<Record<string, readonly number[]>>;
+  staticTests?: readonly string[];
 }
 export interface ReuseProviderResult {
   status: 'measured' | 'unknown';
@@ -81,7 +85,8 @@ const sqlProvider = postgresLineageProvider(async (context, signal) => {
   return { report, sourceVersion: fingerprint };
 });
 export const registeredReuseBriefProviders = (): readonly ReuseBriefProvider[] =>
-  [...registry.values(), ...(registry.has('sql') ? [] : [sqlProvider])];
+  [...registry.values(), ...(registry.has('sql') ? [] : [sqlProvider]),
+    ...(registry.has('coverage') ? [] : [nativeCoverageBriefProvider])];
 export const briefCodePoints = (value: string): number => Array.from(value).length;
 
 /** One collector per dispatch: bulk claims must not overwrite earlier item outcomes. */
