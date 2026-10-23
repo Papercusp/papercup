@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { configureScheduledRegistry, managedSetInterval, resetScheduledRegistry } from '@papercusp/scheduled-registry';
 import { installManagedTickAlarm } from './managed-tick-alarm';
 
-vi.mock('./client', () => { throw new Error('DBOS unavailable'); });
+vi.mock('@dbos-inc/dbos-sdk', () => { throw new Error('DBOS unavailable'); });
 
 afterEach(() => {
   resetScheduledRegistry();

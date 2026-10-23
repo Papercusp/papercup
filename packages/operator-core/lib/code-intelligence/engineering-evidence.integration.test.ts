@@ -19,8 +19,11 @@ describe('native engineering evidence canonical PG adapters', () => {
   let root: string;
   let runId: number;
   let bindingId: number;
-  const plan = 'ee-feature';
-  const harness = `ee-reader-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const plan = `ee-feature-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // Use the operator-home plan scope, whose canonical resolver is independent
+  // of the composed suite's dispatcher DB. Every row still lives in this
+  // fixture's private database and unique plan namespace.
+  const harness = 'papercusp';
   const path = 'src/evidence-feature.ts';
   const source = 'export function evidenceFeature() { return 1; }\n';
   const digest = createHash('sha256').update(source).digest('hex');
