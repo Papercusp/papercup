@@ -210,6 +210,8 @@ import {
   type StoredQualificationMutation,
 } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import { executedSourceRunnerIdentity } from "@papercusp/test-config/test-pass-reuse-skip";
+// eslint-disable-next-line import/no-relative-packages -- share the native reporter's maintained input classifier
+import { classifyReadPaths } from "../../../../libs/test-config/src/executed-source-map-reporter";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
 import type { CheckpointVerdict } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import {
@@ -4300,9 +4302,16 @@ export function createCheckpointQualificationNativeObserver(
 export async function composeCheckpointQualificationBeforePromotion(
   input: { target: GateVerdictTarget; attemptId: string; candidate: string; runId: string; root: string },
   deps: { read: typeof readStoredQualification; compose: typeof composeStoredQualificationWork;
-    pidIdentity: () => string | null; runnerIdentity: () => string } = {
+    pidIdentity: () => string | null; runnerIdentity: () => string;
+    classify?: (root: string) => NonNullable<Parameters<typeof composeStoredQualificationWork>[2]>['classifyReadPaths'] |
+      Promise<NonNullable<Parameters<typeof composeStoredQualificationWork>[2]>['classifyReadPaths']> } = {
     read: readStoredQualification, compose: composeStoredQualificationWork,
     pidIdentity: () => checkpointPidIdentity(process.pid), runnerIdentity: executedSourceRunnerIdentity,
+    async classify(root) {
+      const tracked = new Set((await git(root, ['ls-files', '-z', '--recurse-submodules'])).split('\0').filter(Boolean));
+      return (reads, repoRoot) => classifyReadPaths(reads as string[], { repoRoot,
+        isTracked: rel => tracked.has(rel), exists: existsSync });
+    },
   },
 ): Promise<{ status: 'legacy' | 'ready' } | { status: 'refused'; reason: string }> {
   const stored = await deps.read(input.target);
@@ -4321,7 +4330,7 @@ export async function composeCheckpointQualificationBeforePromotion(
     runnerId: runner.id, runId: input.runId, pidIdentity, root: input.root, taskKey: work.taskKey,
     manifest: work.manifest, retryStates: work.retryStates, runContext: 'ci',
     runnerIdentity: deps.runnerIdentity(), updates: [],
-  });
+  }, { classifyReadPaths: await deps.classify?.(input.root) });
   return composed.status === 'updated' || composed.status === 'idempotent'
     ? { status: 'ready' }
     : { status: 'refused', reason: `qualification-composition-${composed.status}${

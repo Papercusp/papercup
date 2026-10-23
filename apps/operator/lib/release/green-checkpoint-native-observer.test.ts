@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createCheckpointQualificationNativeObserver } from './green-checkpoint';
+import { composeCheckpointQualificationBeforePromotion, createCheckpointQualificationNativeObserver } from './green-checkpoint';
 import type { QualificationWorkProgressInput } from '@papercusp/operator-core/lib/release/checkpoint-qualification-transaction';
 
 const progress: QualificationWorkProgressInput = {
@@ -18,6 +18,65 @@ const fixture = () => {
     observer: createCheckpointQualificationNativeObserver({ target: { workspaceId: 'w', installSlug: 'h' },
       progress, tasks }, { enroll, recover }) };
 };
+
+describe('the production green barrier before promotion', () => {
+  const setup = () => {
+    const transaction = { attemptId: progress.attemptId, candidate: progress.candidate,
+      repairHead: progress.repairHead, runId: progress.runId,
+      currentPhysicalRunner: { id: progress.runnerId, pidIdentity: progress.pidIdentity },
+      continuation: { root: progress.root, taskKey: progress.taskKey,
+        manifest: progress.manifest, retryStates: progress.retryStates } };
+    const read = vi.fn().mockResolvedValue({ status: 'present', transaction });
+    const compose = vi.fn().mockResolvedValue({ status: 'idempotent', transaction });
+    const classifier = vi.fn();
+    const deps = { read, compose, pidIdentity: () => progress.pidIdentity,
+      runnerIdentity: () => progress.runnerIdentity, classify: vi.fn(() => classifier) };
+    const input = { target: { workspaceId: 'w', installSlug: 'h' }, attemptId: progress.attemptId,
+      candidate: progress.candidate, runId: progress.runId, root: progress.root };
+    return { transaction, read, compose, deps, input, classifier };
+  };
+
+  it('awaits the row composer with the current fence and maintained input classifier', async () => {
+    const { deps, input, compose, classifier } = setup();
+    let release!: () => void;
+    compose.mockImplementation(() => new Promise(resolve => { release = () => resolve({ status: 'idempotent' }); }));
+    const ready = composeCheckpointQualificationBeforePromotion(input, deps);
+    await vi.waitFor(() => expect(compose).toHaveBeenCalledWith(input.target, progress, { classifyReadPaths: classifier }));
+    release();
+    expect(await ready).toEqual({ status: 'ready' });
+  });
+
+  it.each(['none', 'unreadable'])('refuses an %s row instead of falling back to child exit zero', async status => {
+    const { deps, input, read, compose } = setup();
+    read.mockResolvedValue({ status });
+    expect(await composeCheckpointQualificationBeforePromotion(input, deps)).toMatchObject({ status: 'refused' });
+    expect(compose).not.toHaveBeenCalled();
+  });
+
+  it.each(['attemptId', 'candidate', 'runId'])('refuses a different %s', async key => {
+    const { deps, input, transaction, compose } = setup();
+    Object.assign(transaction, { [key]: 'other' });
+    expect(await composeCheckpointQualificationBeforePromotion(input, deps)).toMatchObject({ status: 'refused' });
+    expect(compose).not.toHaveBeenCalled();
+  });
+
+  it('preserves a legacy attempt only when no continuation was frozen', async () => {
+    const { deps, input, read, transaction, compose } = setup();
+    read.mockResolvedValue({ status: 'present', transaction: { ...transaction, continuation: undefined } });
+    expect(await composeCheckpointQualificationBeforePromotion(input, deps)).toEqual({ status: 'legacy' });
+    expect(compose).not.toHaveBeenCalled();
+  });
+
+  it('refuses stolen custody and a missing post-suite proof', async () => {
+    const { deps, input, compose } = setup();
+    expect(await composeCheckpointQualificationBeforePromotion(input, { ...deps, pidIdentity: () => 'other' }))
+      .toMatchObject({ status: 'refused', reason: 'qualification-runner-fence-mismatch' });
+    expect(compose).not.toHaveBeenCalled();
+    compose.mockResolvedValue({ status: 'conflict', refusalReason: 'continuation-verdict-not-green' });
+    expect(await composeCheckpointQualificationBeforePromotion(input, deps)).toEqual({ status: 'refused',
+      reason: 'qualification-composition-conflict:continuation-verdict-not-green' });
+  });
+});
 
 describe('native output adoption on the qualification host', () => {
   it('waits for durable enrollment before recovering native artifacts, across chunks and streams', async () => {
