@@ -71,7 +71,7 @@ describe('plans:blind-review typed recruiter replacement', () => {
     const { op: _op, ...request } = args;
     expect(replaceBlindGapReviewer).toHaveBeenCalledWith({ ...request, harness: 'papercusp', workspaceId: 'ws-resolved',
       howToRun: undefined, ctx: { ...ctx, workspaceId: 'ws-resolved' } });
-    expect(result.isError).toBeUndefined();
+    expect('isError' in result ? result.isError : undefined).toBeUndefined();
   });
 });
 
