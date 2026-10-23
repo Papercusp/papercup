@@ -2186,11 +2186,19 @@ export async function readPendingBatch(
   // claimed rows behind ~1,800 unclaimed ones it otherwise never reached the head. Every judged
   // outcome advances lastRetryAt, so the lead lasts one turn per bound. Each fragment is built
   // fresh per use because a postgres.js fragment is bound to one query position.
-  const otherGuardBlocked = () => sql`COALESCE(
+  const otherGuardBlocked = (allowOverdueBlockedReview = false) => sql`COALESCE(
           origin = 'remote'
           OR COALESCE(claim_hold, FALSE)
           OR COALESCE(payload ->> '_claimHold', '') = 'true'
-          OR status IN ('blocked', 'needs-human')
+          OR (
+            status IN ('blocked', 'needs-human')
+            AND NOT (
+              ${allowOverdueBlockedReview}
+              AND status = 'blocked'
+              AND ${claimed()}
+              AND ${overdueReReview()}
+            )
+          )
           OR payload -> 'agentReview' ->> 'status' IN ('pending', 'revision-requested')
           OR harness_shared.work_item_status_is_terminal(status),
           FALSE)`;
@@ -2246,12 +2254,12 @@ export async function readPendingBatch(
           AND NOT ${otherGuardBlocked()}
           AND NOT (${claimed()} AND NOT ${overdueReReview()})) DESC,
        (${demote} AND NOT ${modelFree}
-          AND ${claimed()} AND ${overdueReReview()} AND NOT ${otherGuardBlocked()}
+          AND ${claimed()} AND ${overdueReReview()} AND NOT ${otherGuardBlocked(true)}
           AND COALESCE(
             ${reviewWatermark()} < now() - make_interval(mins => ${turnBoundMinutes}::int),
             TRUE)) DESC,
        (${demote} AND (
-          ${otherGuardBlocked()}
+          ${otherGuardBlocked(true)}
           OR (${claimed()} AND NOT ${overdueReReview()}))) ASC,
        (${modelFree} AND admission <> 'pending') ASC,
        (${modelFree} AND (payload -> 'dedupCandidates') IS NOT NULL) ASC,
@@ -3791,21 +3799,23 @@ function endpointProtection(
   // the terminal rules below instead: terminal-loser, or terminal-canonical-without-completion
   // (permanent), or — with applicable completion evidence — an ordinary judgeable twin.
   const terminalTwin = role !== 'promote' && ALL_TERMINAL_STATUSES.has(snapshot.state);
+  const overdueClaimedReview = options.claimedReReviewAtMs !== undefined &&
+    CLAIMED_REREVIEW_EXEMPT_ROLES.has(role) &&
+    isOverdueClaimedReReview(snapshot, options.claimedReReviewAtMs);
   if (
     !terminalTwin &&
     snapshot.assignee &&
-    !(
-      options.claimedReReviewAtMs !== undefined &&
-      CLAIMED_REREVIEW_EXEMPT_ROLES.has(role) &&
-      isOverdueClaimedReReview(snapshot, options.claimedReReviewAtMs)
-    )
+    !overdueClaimedReview
   ) {
     return { reason: 'claimed', detail: `${role} ${snapshot.id} is claimed by ${snapshot.assignee}` };
   }
   if (!terminalTwin && String(payload._claimHold) === 'true') {
     return { reason: 'claim-held', detail: `${role} ${snapshot.id} carries payload._claimHold` };
   }
-  if (snapshot.state === 'blocked' || snapshot.state === 'needs-human') {
+  if (
+    (snapshot.state === 'blocked' || snapshot.state === 'needs-human') &&
+    !(snapshot.state === 'blocked' && overdueClaimedReview)
+  ) {
     return { reason: 'blocked-state', detail: `${role} ${snapshot.id} is ${snapshot.state}` };
   }
   const review = terminalTwin ? null : readAgentReviewState(snapshot.payload);

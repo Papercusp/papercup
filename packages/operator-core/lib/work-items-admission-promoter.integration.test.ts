@@ -2267,6 +2267,55 @@ describe('work-item admission promoter (real Postgres)', () => {
       }
     });
 
+    it('re-reviews a claimed blocked overdue row without changing its blocked status', async () => {
+      // The prescreen window is three rows. These older blocked rows would fill it if the
+      // overdue blocked review lost its queue priority.
+      for (const [index, id] of ['WI-blocked-older-a', 'WI-blocked-older-b', 'WI-blocked-older-c'].entries()) {
+        await seedItem({
+          id,
+          title: `older blocked finding ${index}`,
+          admission: 'unreviewed',
+          status: 'blocked',
+          vector: null,
+          createdAtMs: NOW - 90_000 + index,
+        });
+      }
+      await seedItem({
+        id: 'WI-claimed-blocked-rereview',
+        title: 'claimed blocked overdue finding',
+        admission: 'unreviewed',
+        status: 'blocked',
+        vector: null,
+        takenBy: 'su-worker',
+        payload: overdueReview,
+        createdAtMs: NOW - 10_000,
+      });
+
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'promoter-claimed-blocked-rereview',
+        sql: db.sql,
+        llmCall: vi.fn(),
+        now: () => NOW,
+        batchSize: 1,
+      });
+
+      expect(result).toMatchObject({ batchSize: 1, promoted: 1, merged: 0, held: 0, modelCalled: false });
+      const rows = await db.sql<Array<{ feature_id: string; status: string; admission: string; taken_by: string | null; payload: Record<string, any> }>>`
+        SELECT feature_id, status, admission, taken_by, payload FROM harness_shared.work_items ORDER BY feature_id`;
+      const byId = new Map(rows.map((row) => [row.feature_id, row]));
+      expect(byId.get('WI-claimed-blocked-rereview')).toMatchObject({
+        status: 'blocked',
+        admission: 'admitted',
+        taken_by: 'su-worker',
+        payload: { admissionReview: { state: 'reviewed', retryAttempts: 1 } },
+      });
+      for (const id of ['WI-blocked-older-a', 'WI-blocked-older-b', 'WI-blocked-older-c']) {
+        expect(byId.get(id)?.admission).toBe('unreviewed');
+      }
+    });
+
     it('holds a claimed overdue row judged a duplicate: never merged, reason persisted, watermark advanced, pair left unadjudicated', async () => {
       await seedItem({ id: 'WI-canonical', admission: 'admitted', vector: '[1,0,0]', createdAtMs: NOW - 30_000 });
       await seedItem({
