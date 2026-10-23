@@ -48,6 +48,10 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { moduleRepoRoot } from '@papercusp/operator-core/lib/module-repo-root';
 import { parseGithubUrl } from '@papercusp/operator-core/lib/harness/clone-github';
+import {
+  parseDependencyGenerationReadyResult,
+  parseDependencyInputFingerprintResult,
+} from '@papercusp/operator-core/lib/release/dependency-generation-prebuild';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import {
@@ -640,6 +644,32 @@ export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Pr
     // dependencies first, including on a resumed cut. Reuse setup's validated
     // generation/cache rather than treating a marker as proof that links remain
     // intact. Independent copies also support work directories on another disk.
+    // A frozen cut must use its own dependency inputs. Capturing today's live
+    // install can fail on an unrelated new workspace, or select another graph.
+    // Reuse the checkpoint's exact-ref publisher and source-input selector.
+    const generationScript = join(plan.repoRoot, 'apps/operator/bin/release/dependency-generation.sh');
+    const fingerprintOutput = join(paths.logs, 'dependency-input.txt');
+    await runStep('dependency-input', 'bash', [
+      generationScript, '--integration', plan.repoRoot, '--fingerprint-ref', sourceSha,
+    ], { cwd: plan.repoRoot, logFile: logFor('dependency-input'), stdoutFile: fingerprintOutput });
+    const inputFingerprint = parseDependencyInputFingerprintResult(await readFile(fingerprintOutput, 'utf8'), sourceSha);
+    if (!inputFingerprint) {
+      throw new WorkspaceHostCutStepError('dependency-input', false, 'missing exact source input fingerprint');
+    }
+    await runStep('dependency-prewarm', process.execPath, [
+      join(plan.repoRoot, 'scripts/npm-install-safe.mjs'),
+      '--repo-root', plan.repoRoot, '--exec-under-lock', '--',
+      'bash', generationScript, '--integration', plan.repoRoot, '--ensure-ref', sourceSha,
+    ], { cwd: plan.repoRoot, logFile: logFor('dependency-prewarm') });
+    const selectionOutput = join(paths.logs, 'dependency-selection.txt');
+    await runStep('dependency-select', 'bash', [
+      generationScript, '--integration', plan.repoRoot, '--select-inputs-from', paths.source,
+      '--lease-owner-pid', String(process.pid),
+    ], { cwd: plan.repoRoot, logFile: logFor('dependency-select'), stdoutFile: selectionOutput });
+    const generation = parseDependencyGenerationReadyResult(await readFile(selectionOutput, 'utf8'), inputFingerprint);
+    if (!generation) {
+      throw new WorkspaceHostCutStepError('dependency-select', false, 'selected generation does not bind the exact source inputs');
+    }
     await runStep('dependency-prepare', 'bash', [
       join(plan.repoRoot, 'apps/operator/bin/release/setup-release-checkout.sh'),
       '--ref', sourceSha,
@@ -647,6 +677,8 @@ export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Pr
       '--release', paths.source,
       '--prepare-existing',
       '--node-modules-copy', 'copy',
+      '--node-modules-generation-id', generation.identity,
+      '--node-modules-generation-token', generation.token,
       '--source-integrity', 'object-sourced',
     ], { cwd: plan.repoRoot, logFile: logFor('dependency-prepare') });
     await rm(paths.sidecarTrust, { recursive: true, force: true });

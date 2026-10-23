@@ -101,7 +101,7 @@ describe('workspace host model source preflight', () => {
 });
 
 describe('workspace host source dependency preparation', () => {
-  function fixture(failPreparation: boolean) {
+  function fixture(failPreparation: boolean, selection: 'valid' | 'wrong-input' | 'failed' = 'valid') {
     const repoRoot = join(workDir, 'producer');
     const source = join(workDir, 'source');
     const cache = join(workDir, 'models');
@@ -116,19 +116,48 @@ describe('workspace host source dependency preparation', () => {
     writeFileSync(join(modelVerifier, 'transformers-models.sh'), 'exit 0\n');
     const setup = join(repoRoot, 'apps/operator/bin/release');
     mkdirSync(setup, { recursive: true });
+    const input = 'a'.repeat(64);
+    const generation = `v1-${'b'.repeat(64)}`;
+    writeFileSync(join(setup, 'dependency-generation.sh'), [
+      'set -eu',
+      'test "$1" = --integration; shift 2',
+      'case "$1" in',
+      ` --fingerprint-ref) test "$2" = "${SHA}"; echo 'DEPENDENCY_INPUT_FINGERPRINT schema=1 candidate=${SHA} input=${input}' ;;`,
+      ` --ensure-ref) test "$2" = "${SHA}"; printf exact > "$0.prewarmed" ;;`,
+      ' --select-inputs-from)',
+      '  test -f "$0.prewarmed"; test "$3" = --lease-owner-pid; test "$4" -gt 0',
+      selection === 'failed' ? '  exit 74' :
+        `  echo 'DEPENDENCY_GENERATION_RESULT schema=1 identity=${generation} input=${selection === 'wrong-input' ? 'c'.repeat(64) : input} token=selected-token reused=true'`,
+      '  ;;',
+      ' *) exit 24 ;;',
+      'esac',
+      '',
+    ].join('\n'));
+    // Preserve the real producer's reader-mutex entrypoint/argument contract.
+    mkdirSync(join(repoRoot, 'scripts'), { recursive: true });
+    writeFileSync(join(repoRoot, 'scripts/npm-install-safe.mjs'), [
+      "import { spawnSync } from 'node:child_process';",
+      "const args = process.argv.slice(2);",
+      "if (args[0] !== '--repo-root' || args[2] !== '--exec-under-lock' || args[3] !== '--') process.exit(25);",
+      "const r = spawnSync(args[4], args.slice(5), { stdio: 'inherit' });",
+      "process.exit(r.status ?? 26);",
+    ].join('\n'));
     writeFileSync(join(setup, 'setup-release-checkout.sh'), [
       'set -eu',
-      'release=; mode=; copy=',
+      'release=; mode=; copy=; generation=; token=',
       'while [ "$#" -gt 0 ]; do',
       ' case "$1" in',
       '  --release) release="$2"; shift 2 ;;',
       '  --prepare-existing) mode=prepare; shift ;;',
       '  --node-modules-copy) copy="$2"; shift 2 ;;',
+      '  --node-modules-generation-id) generation="$2"; shift 2 ;;',
+      '  --node-modules-generation-token) token="$2"; shift 2 ;;',
       '  --ref|--integration|--source-integrity) shift 2 ;;',
       '  *) exit 21 ;;',
       ' esac',
       'done',
       'test "$mode" = prepare && test "$copy" = copy || exit 22',
+      `test "$generation" = '${generation}' && test "$token" = selected-token || exit 27`,
       failPreparation ? 'exit 23' : 'printf prepared > "$release/dependencies-prepared"',
       '',
     ].join('\n'));
@@ -164,6 +193,22 @@ describe('workspace host source dependency preparation', () => {
     expect(existsSync(join(workDir, 'logs/sidecar-build.log'))).toBe(false);
     expect(existsSync(join(workDir, 'sidecar.ready.json'))).toBe(false);
     expect(readFileSync(join(source, 'unchanged-source'), 'utf8')).toBe('pinned source');
+  });
+
+  it('uses the exact source selection even when the caller inherited a different live generation', async () => {
+    vi.stubEnv('NODE_MODULES_GENERATION_ID', `v1-${'d'.repeat(64)}`);
+    vi.stubEnv('NODE_MODULES_GENERATION_TOKEN', 'live-token');
+    const { plan } = fixture(false);
+    await expect(buildWorkspaceHostBundle(plan)).rejects.toMatchObject({ step: 'sidecar-build' });
+    expect(readFileSync(join(workDir, 'logs/sidecar-build.log'), 'utf8')).toContain('SIDECAR_SAW_PREPARED_DEPENDENCIES');
+  });
+
+  it.each(['wrong-input', 'failed'] as const)('stops before preparation and sidecar on a %s exact selection', async (selection) => {
+    const { source, plan } = fixture(false, selection);
+    await expect(buildWorkspaceHostBundle(plan)).rejects.toMatchObject({ step: 'dependency-select', gating: false });
+    expect(existsSync(join(source, 'dependencies-prepared'))).toBe(false);
+    expect(existsSync(join(workDir, 'logs/sidecar-build.log'))).toBe(false);
+    expect(existsSync(join(workDir, 'sidecar.ready.json'))).toBe(false);
   });
 });
 
