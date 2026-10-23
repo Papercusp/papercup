@@ -88,6 +88,24 @@
     "replacementDeadline": "2026-10-23T06:34:26.043Z",
     "qualification": "Later authoritative scorecard and rubric reads establish independent audit pass and current vetting. The0634 timeout delivery952585 was stale; acknowledgement refused already-settled/not-found and was not retried. No duplicate reviewer launch or audit rearm. This is rubric-quality vetting, not implementation acceptance."
   },
+  "lifecycleDriftRefresh": {
+    "commit": "eeed52c58803fdf2bac550c046c17843061e52f6",
+    "reason": "Measured source/test/fixture drift, including two new dispatch-lease controls, invalidated the7267510 lifecycle proof. This refresh does not replay R2 or alter the original cohort.",
+    "log": "/dev/shm/get-feedback-p004-lifecycle-drift-refresh-20261023-0655.log",
+    "passed": 180,
+    "failed": 0,
+    "skipped": 0,
+    "testRunIds": [21806517, 21806518, 21806519],
+    "bindingIds": [66325, 66326, 66327, 66328, 66329],
+    "bindingReceipt": "/tmp/gf-p004-drift-refresh-bind-result-20261023.json",
+    "independentCurrentnessReceipt": "/tmp/gf-p004-drift-refresh-current-20261023.json",
+    "independentCurrentness": "All five replacement rows have aggregate currentness=current. The response trims some dimension detail; no missing field is interpreted as a negative result.",
+    "focusedAgendaBindings": [66311, 66312],
+    "focusedAgendaCurrentnessReceipt": "/tmp/gf-p004-focused-current-20261023.json",
+    "focusedAgendaCurrentness": "Both focused agenda bindings independently measure current in every applicable dimension.",
+    "dispositionMutationRefreshLog": "/dev/shm/get-feedback-p004-disposition-drift-probe-20261023-0700.log",
+    "limitation": "Mutation refresh and current production HTTP proof remain separate prerequisites; no final P004 adequacy or shipment verdict follows from the180 passing tests."
+  },
   "calibratedBindingReconciliation": {
     "writeReceipt": "/tmp/gf-p004-calibrated-bind-result-20261023.json",
     "request": "/tmp/gf-p004-calibrated-bind-20261023.json",

@@ -734,6 +734,54 @@ export async function runScratchGc(opts: {
     ? undefined
     : { deadlineMs: Date.now() + Math.max(0, opts.maxDurationMs), truncated: false };
 
+  // Retention comes first: marker backfill or an abandoned tree walk can exhaust a
+  // foreground caller's budget before any registered workspace reclaims expired runs.
+  for (const workspaceId of opts.workspaceRegistry) {
+    if (scratchGcBudgetExpired(budget)) break;
+    // Walk and size candidates without the workspace mutex. A retention sweep can visit many
+    // run directories, and a slow stat/readdir here must not hold up result-door reservations
+    // for the whole workspace. Each deletion still takes the mutex and revalidates the run's
+    // mtime immediately before removing it, so a cooperating writer that started after this
+    // scan keeps its run alive. Pin state is checked inside the same deletion critical section.
+    const candidates = (await runDirsOf(scratchRootForWorkspace(workspaceId), undefined, budget))
+      .filter((run) => now - run.mtimeMs > retentionMs);
+    let removed = false;
+    for (const candidate of candidates) {
+      if (scratchGcBudgetExpired(budget)) break;
+      const bytes = await sizeOfDirAsync(candidate.dir, undefined, undefined, 0, undefined, undefined, budget);
+      if (scratchGcBudgetExpired(budget)) break;
+      if (dryRun) {
+        if (!(await removeUnpinnedScratchPath(candidate.dir, true))) continue;
+        summary.retentionEvictions += 1;
+        summary.retentionEvictedBytes += bytes;
+        continue;
+      }
+
+      const evicted = await withScratchWorkspaceDataMutex(workspaceId, 'retention-gc', () =>
+        withScratchWorkspaceMutex(workspaceId, 'retention-gc', async () => {
+        let current;
+        try {
+          current = await statAsync(candidate.dir);
+        } catch {
+          return false;
+        }
+        if (!current.isDirectory() || now - current.mtimeMs <= retentionMs) return false;
+        return removeUnpinnedScratchPath(candidate.dir);
+      }));
+      if (!evicted) continue;
+      removed = true;
+      summary.retentionEvictions += 1;
+      summary.retentionEvictedBytes += bytes;
+    }
+    if (removed) {
+      await withScratchWorkspaceDataMutex(workspaceId, 'retention-gc-state', () =>
+        withScratchWorkspaceMutex(workspaceId, 'retention-gc-state', async () => {
+          await removeSharedScratchQuotaState(workspaceId);
+          invalidateLocalScratchUsage(workspaceId);
+        }));
+    }
+  }
+
   if (!dryRun) {
     // Backfill: every registered workspace root that exists gets its marker, so that once the
     // workspace leaves the registry its root is provably ours. Never creates a root.
@@ -758,7 +806,7 @@ export async function runScratchGc(opts: {
     }
   }
 
-  // Step 2 (before step 1 so we don't waste work on dead workspaces): remove PROVABLY dead
+  // Step 2: remove PROVABLY dead
   // workspace roots wholesale (WI-10006512). A missing root lists as empty.
   const candidates: Array<{ workspaceId: string; dir: string; realDir: string; bytes: number }> = [];
   for (const name of await listDir(root, undefined, budget)) {
@@ -829,53 +877,6 @@ export async function runScratchGc(opts: {
         summary.deadWorkspaces += 1;
         summary.deadWorkspaceBytes += currentTree.bytes;
       }));
-    }
-  }
-
-  // Step 1: retention sweep, per-workspace.
-  for (const workspaceId of opts.workspaceRegistry) {
-    if (scratchGcBudgetExpired(budget)) break;
-    // Walk and size candidates without the workspace mutex. A retention sweep can visit many
-    // run directories, and a slow stat/readdir here must not hold up result-door reservations
-    // for the whole workspace. Each deletion still takes the mutex and revalidates the run's
-    // mtime immediately before removing it, so a cooperating writer that started after this
-    // scan keeps its run alive. Pin state is checked inside the same deletion critical section.
-    const candidates = (await runDirsOf(scratchRootForWorkspace(workspaceId), undefined, budget))
-      .filter((run) => now - run.mtimeMs > retentionMs);
-    let removed = false;
-    for (const candidate of candidates) {
-      if (scratchGcBudgetExpired(budget)) break;
-      const bytes = await sizeOfDirAsync(candidate.dir, undefined, undefined, 0, undefined, undefined, budget);
-      if (scratchGcBudgetExpired(budget)) break;
-      if (dryRun) {
-        if (!(await removeUnpinnedScratchPath(candidate.dir, true))) continue;
-        summary.retentionEvictions += 1;
-        summary.retentionEvictedBytes += bytes;
-        continue;
-      }
-
-      const evicted = await withScratchWorkspaceDataMutex(workspaceId, 'retention-gc', () =>
-        withScratchWorkspaceMutex(workspaceId, 'retention-gc', async () => {
-        let current;
-        try {
-          current = await statAsync(candidate.dir);
-        } catch {
-          return false;
-        }
-        if (!current.isDirectory() || now - current.mtimeMs <= retentionMs) return false;
-        return removeUnpinnedScratchPath(candidate.dir);
-      }));
-      if (!evicted) continue;
-      removed = true;
-      summary.retentionEvictions += 1;
-      summary.retentionEvictedBytes += bytes;
-    }
-    if (removed) {
-      await withScratchWorkspaceDataMutex(workspaceId, 'retention-gc-state', () =>
-        withScratchWorkspaceMutex(workspaceId, 'retention-gc-state', async () => {
-          await removeSharedScratchQuotaState(workspaceId);
-          invalidateLocalScratchUsage(workspaceId);
-        }));
     }
   }
 

@@ -16,6 +16,7 @@ import {
   reserveQualificationRunner,
   reserveStoredQualificationRunner,
   recordStoredQualificationWorkProgress,
+  recordStoredQualificationVerdict,
   type QualificationWorkProgressInput,
   retargetPreSuiteAttemptToOwningRepairHead,
   recoverStoredQualificationHistoricalPreSuiteError,
@@ -62,6 +63,21 @@ describe('stored continuation uses the existing qualification row authority', ()
       .toMatchObject({ status: 'conflict', refusalReason: 'runner-fence-mismatch' });
     expect(statements.some(value => value.text.includes('UPDATE harness_shared.routines'))).toBe(false);
   });
+  it.each([{ reason: 'advanced', green: true }, { reason: 'up-to-date', green: null }])(
+    'refuses $reason without composing the frozen continuation, and emits no terminal event', async verdict => {
+      const { current, input } = fixture();
+      const continuation = { schemaVersion: 1 as const, attemptId: input.attemptId, candidate: input.candidate,
+        repairHead: null, root: input.root, taskKey: input.taskKey, manifest: input.manifest,
+        retryStates: [], receipts: [], supersededReceipts: [] };
+      const { statements } = transactionHarness({ qualificationTransaction: { ...current, continuation } });
+      expect(await recordStoredQualificationVerdict(target, { ...verdict, attemptId: input.attemptId,
+        candidate: input.candidate, runId: input.runId, nowMs: 400,
+        terminalEvent: { status: 'advanced', detail: {} } }))
+        .toMatchObject({ status: 'conflict', refusalReason: 'continuation-composition-required' });
+      expect(statements.some(value => value.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+      expect(h.appendPipelineEvent).not.toHaveBeenCalled();
+    },
+  );
 });
 
 function terminalQualification() {

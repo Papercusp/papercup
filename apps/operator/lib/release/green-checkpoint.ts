@@ -18707,7 +18707,20 @@ async function beginPreparedCheckpointPreflight(
     throw new Error("prepared selection durable authority requires both read and atomic commit hooks");
   for (let replans = 0; ; replans++) {
     if (exhausted(replans)) throw new Error("prepared selection authority churn exhausted run deadline/refire budget");
-    const recovered = await deps.readPreparedCheckpointSelection?.(roots);
+    let recovered: PreparedCheckpointSelectionRecord | null | undefined;
+    try {
+      recovered = await deps.readPreparedCheckpointSelection?.(roots);
+    } catch (error) {
+      // A rejected restart may still inherit the SIGKILLed writer's serializer.
+      // Use its existing PID/start-identity proof; a live or unknown holder is
+      // preserved. No queue/carry authority is consumed on this refusal path.
+      const lockDir = checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot);
+      if (existsSync(lockDir)) {
+        const cleanup = acquireCheckpointRunLock(lockDir);
+        if (cleanup.acquired) cleanup.release();
+      }
+      throw error;
+    }
     if (recovered) {
       if (recovered.attemptId !== attemptId) throw new Error("prepared selection attempt authority mismatch");
       const lock = acquireCheckpointRunLock(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot));
@@ -19500,6 +19513,38 @@ async function mapPostSuiteBounded<T, R>(
     ),
   );
   return results;
+}
+
+// One inventory drives both pre-execution continuation selection and measured
+// post-suite records. A result sample can never shrink the required population.
+const POST_SUITE_LEG_DEFINITIONS = [
+  { id: "lint:tsc", outcome: "typecheck", commands: ["lint:tsc"] },
+  { id: "lint:tsc:papercusp-libs", outcome: "typecheckPapercuspLibs", commands: ["lint:tsc:papercusp-libs"] },
+  { id: "lint:tsc:workspaces", outcome: "typecheckWorkspaces", commands: ["lint:tsc:workspaces"] },
+  { id: "lint:tsc:operator", outcome: "typecheckOperator", commands: ["lint:tsc:operator"] },
+  { id: "lint:tsc:orchestrator", outcome: "typecheckOrchestrator", commands: ["lint:tsc:orchestrator"] },
+  { id: "lint:tsc:scripts", outcome: "typecheckScripts", commands: ["lint:tsc:scripts"] },
+  { id: "lint:migrations", outcome: "lintMigrations", commands: ["lint:migrations"] },
+  { id: "lint:migration-forward-compat", outcome: "lintMigrationForwardCompat", commands: ["lint:migration-forward-compat"] },
+  { id: "lint:identity-leak", outcome: "lintIdentity", commands: ["lint:no-owner-name-tags", "lint:no-box-identity", "lint:no-identity-literals"] },
+  { id: "lint:design-primitives", outcome: "lintDesignPrimitives", commands: ["lint:design-primitives"] },
+  { id: "lint:no-control-bytes", outcome: "lintNoControlBytes", commands: ["lint:no-control-bytes"] },
+  { id: "lint:guard-reachability", outcome: "lintGuardReachability", commands: ["lint:guard-reachability"] },
+  { id: "lint:condition-rail", outcome: "lintConditionRail", commands: ["lint:condition-rail"] },
+  { id: "lint:mock-cast-escape", outcome: "lintMockCastEscape", commands: ["lint:mock-cast-escape"] },
+  { id: "lint:timer-classification", outcome: "lintTimerClassification", commands: ["lint:timer-classification"] },
+  { id: "lint:no-raw-setinterval", outcome: "lintNoRawSetinterval", commands: ["lint:no-raw-setinterval"] },
+  { id: "lint:plane-integrity", outcome: "lintPlane", commands: ["lint:plane-producers", "lint:declared-consumed", "lint:no-bespoke-state-read", "lint:plane-ratchet", "lint:plane-adoption", "lint:derived-signal-firings", "lint:plane-guards"] },
+  { id: "lint:vacuous-negatives", outcome: "lintVacuousNegatives", commands: ["lint:vacuous-negatives"] },
+  { id: "spa-build", outcome: "build", commands: ["spa:conflict-markers", "build"] },
+] as const;
+
+/** Independent population, before any post-suite execution or skip decision. */
+export function postSuiteContinuationPopulation() {
+  return { schemaVersion: 1 as const, coverage: "complete" as const,
+    units: POST_SUITE_LEG_DEFINITIONS.map(leg => ({
+      id: `post:${leg.id}`, kind: "post-suite" as const, path: "package.json",
+    })) };
 }
 
 function postSuiteCommandId(cmd: string, args: readonly string[]): string {
@@ -20784,63 +20829,8 @@ export async function runPostSuiteLegs(
         : {}),
     };
   };
-  legs.records = [
-    record("lint:tsc", legs.typecheck, ["lint:tsc"]),
-    record("lint:tsc:papercusp-libs", legs.typecheckPapercuspLibs, [
-      "lint:tsc:papercusp-libs",
-    ]),
-    record("lint:tsc:workspaces", legs.typecheckWorkspaces, [
-      "lint:tsc:workspaces",
-    ]),
-    record("lint:tsc:operator", legs.typecheckOperator, ["lint:tsc:operator"]),
-    record("lint:tsc:orchestrator", legs.typecheckOrchestrator, [
-      "lint:tsc:orchestrator",
-    ]),
-    record("lint:tsc:scripts", legs.typecheckScripts, ["lint:tsc:scripts"]),
-    record("lint:migrations", legs.lintMigrations, ["lint:migrations"]),
-    record("lint:migration-forward-compat", legs.lintMigrationForwardCompat, [
-      "lint:migration-forward-compat",
-    ]),
-    record("lint:identity-leak", legs.lintIdentity, [
-      "lint:no-owner-name-tags",
-      "lint:no-box-identity",
-      "lint:no-identity-literals",
-    ]),
-    record("lint:design-primitives", legs.lintDesignPrimitives, [
-      "lint:design-primitives",
-    ]),
-    record("lint:no-control-bytes", legs.lintNoControlBytes, [
-      "lint:no-control-bytes",
-    ]),
-    record("lint:guard-reachability", legs.lintGuardReachability, [
-      "lint:guard-reachability",
-    ]),
-    record("lint:condition-rail", legs.lintConditionRail, [
-      "lint:condition-rail",
-    ]),
-    record("lint:mock-cast-escape", legs.lintMockCastEscape, [
-      "lint:mock-cast-escape",
-    ]),
-    record("lint:timer-classification", legs.lintTimerClassification, [
-      "lint:timer-classification",
-    ]),
-    record("lint:no-raw-setinterval", legs.lintNoRawSetinterval, [
-      "lint:no-raw-setinterval",
-    ]),
-    record("lint:plane-integrity", legs.lintPlane, [
-      "lint:plane-producers",
-      "lint:declared-consumed",
-      "lint:no-bespoke-state-read",
-      "lint:plane-ratchet",
-      "lint:plane-adoption",
-      "lint:derived-signal-firings",
-      "lint:plane-guards",
-    ]),
-    record("lint:vacuous-negatives", legs.lintVacuousNegatives, [
-      "lint:vacuous-negatives",
-    ]),
-    record("spa-build", legs.build, ["spa:conflict-markers", "build"]),
-  ];
+  legs.records = POST_SUITE_LEG_DEFINITIONS.map(leg =>
+    record(leg.id, legs[leg.outcome], [...leg.commands]));
   const telemetry = [
     `POST_SUITE_SCHEDULER lowMemoryMode=parallel maxConcurrency=${lowMemoryConcurrency} ` +
       `memoryBudgetMb=${GREEN_CHECKPOINT_LOW_MEMORY_LINT_BUDGET_MB} ` +

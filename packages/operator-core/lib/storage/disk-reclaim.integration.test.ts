@@ -172,6 +172,33 @@ const fixtureBuildRemover = (entry: RetentionEntry, ms: number, _observe?: (timi
   }), undefined, dryRun);
 
 describe('retention on a real fixture tree', () => {
+  it('distinguishes preparation, admission, protection and audit waits in the persisted receipt', async () => {
+    const { root, options } = await setup();
+    let elapsed = 0;
+    const monotonic = vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    fixtureMutex.observe = phase => {
+      if (phase === 'mutex-request') elapsed += 11;
+      if (phase === 'mutex-callback') elapsed += 13;
+    };
+    inspectionProbe.before = path => { if (path === root) elapsed += 17; return undefined; };
+    let persisted: DiskReclaimReceipt | undefined;
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options,
+        sample: async () => { elapsed += 2; return []; },
+        readProtection: async () => { elapsed += 7; return { paths: [] }; },
+        record: async (phase, details) => {
+          if (phase === 'receipt') persisted = structuredClone(details as DiskReclaimReceipt);
+          elapsed += 5;
+        },
+      });
+      expect(receipt.complete).toBe(true);
+      expect(persisted?.timings).toMatchObject({ beforeSampleMs: 2, afterSampleMs: 2,
+        initialMutexWaitMs: 24, reacquireMutexWaitMs: 0, protectionReadMs: 7, rootPreparationMs: 17, auditMs: 5 });
+      // The receipt cannot truthfully include its own database acknowledgement.
+      expect(receipt.timings).toEqual(persisted?.timings);
+    } finally { monotonic.mockRestore(); }
+  });
+
   it('retains old evidence bound to an open acceptance item and reclaims it after terminal lease expiry', async () => {
     const { root, options } = await setup();
     const db = await createFreshPgDb('open-evidence-retention');

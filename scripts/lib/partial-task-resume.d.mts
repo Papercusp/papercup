@@ -57,6 +57,40 @@ export function readPartialNativeCompletion(file: any, expected: any, options?: 
     };
 };
 /**
+ * Freeze the qualification population from the maintained selector and its original
+ * task inventory, before any outcome is observed. Command guards remain obligations
+ * even when they have no native test files. Post-suite selection is mandatory and
+ * supplied independently by the gate; observed post-suite results cannot define it.
+ * This is preparation only: it neither enrolls a producer nor authorizes execution.
+ */
+export function preparePartialContinuationManifest({ tasks, selection, postSuite, exclusions }: {
+    tasks: any;
+    selection: any;
+    postSuite: any;
+    exclusions?: never[] | undefined;
+}): {
+    status: string;
+    reason: any;
+    manifest: null;
+    operationalAcceptance: boolean;
+} | {
+    status: string;
+    reason: null;
+    manifest: {
+        schemaVersion: number;
+        units: {
+            exclusion?: {
+                reason: any;
+                policyRef: any;
+            } | undefined;
+            id: any;
+            kind: any;
+            path: any;
+        }[];
+    };
+    operationalAcceptance: boolean;
+};
+/**
  * Grade the existing checkpoint's full, independently selected population. The caller
  * must own the existing qualification runner before executing `run`; this pure read
  * neither acquires custody nor authorizes a stale runner to write a checkpoint.

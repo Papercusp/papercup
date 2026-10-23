@@ -124,10 +124,14 @@ function validNativeProducer(value) {
       !Number.isSafeInteger(value.registeredAtMs) || value.registeredAtMs <= 0 ||
       !isAbsolute(value.command?.cwd ?? "") || !validIdentity(value.command?.cmd) ||
       !Array.isArray(value.command?.argv) || !value.command.argv.every(arg => typeof arg === "string") ||
-      !/^[a-f0-9]{64}$/.test(value.environmentDigest) ||
-      !Array.isArray(value.selectedSpecifications) || !value.selectedSpecifications.length) return false;
+      !/^[a-f0-9]{64}$/.test(value.environmentDigest)) return false;
+  return validNativeSpecifications(value.selectedSpecifications);
+}
+
+function validNativeSpecifications(specifications) {
+  if (!Array.isArray(specifications) || !specifications.length) return false;
   const files = new Set();
-  for (const spec of value.selectedSpecifications) {
+  for (const spec of specifications) {
     if (!repoPath(spec?.testFile) || files.has(spec.testFile) || !validIdentity(spec.pool) ||
         (spec.projectName !== null && typeof spec.projectName !== "string") ||
         (spec.testNamePattern !== null && typeof spec.testNamePattern !== "string") ||
@@ -237,6 +241,13 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
       return refused("native-selection-invalid");
     selectedPaths.add(spec.testFile);
   }
+  // Per-file banking may consume a partial snapshot. Final composition also
+  // requires the native runner's terminal guard over this exact population.
+  if (options.requireTerminal === true &&
+      (!Number.isSafeInteger(native.finishedAtMs) || native.finishedAtMs < native.startedAtMs ||
+        native.reason !== "passed" || native.unhandledErrorCount !== 0 || native.modulePopulationMatched !== true ||
+        native.files.length !== selectedPaths.size || native.gaps.length !== 0))
+    return refused("native-terminal-verdict-unmeasured");
   const rows = new Map();
   for (const row of snapshot.rows) {
     if (!selectedPaths.has(row?.testFile) || rows.has(row.testFile)) return refused("native-proof-population-invalid");
@@ -307,6 +318,81 @@ function continuationManifest(manifest) {
     units.push({ id: unit.id, kind: unit.kind, path: unit.path, ...(exclusion ? { exclusion } : {}) });
   }
   return units.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * Freeze the qualification population from the maintained selector and its original
+ * task inventory, before any outcome is observed. Command guards remain obligations
+ * even when they have no native test files. Post-suite selection is mandatory and
+ * supplied independently by the gate; observed post-suite results cannot define it.
+ * This is preparation only: it neither enrolls a producer nor authorizes execution.
+ */
+export function preparePartialContinuationManifest({ tasks, selection, postSuite, exclusions = [] }) {
+  const refused = reason => ({ status: "refused", reason, manifest: null, operationalAcceptance: false });
+  if (!Array.isArray(tasks) || !tasks.length || selection?.schemaVersion !== 1 ||
+      selection.kind !== "full-gate" || selection.phase !== "selection-preparation" ||
+      selection.executed !== false || !Array.isArray(selection.tasks) ||
+      !Array.isArray(selection.unenumerated) || !Array.isArray(selection.commandObligations) ||
+      [...selection.unenumerated, ...selection.commandObligations].some(value => !validIdentity(value?.task)))
+    return refused("task-population-unmeasured");
+  if (postSuite?.schemaVersion !== 1 || postSuite.coverage !== "complete" ||
+      !Array.isArray(postSuite.units) || !postSuite.units.length)
+    return refused("post-suite-population-unmeasured");
+  const units = [], ids = new Set(), testPaths = new Set(), entries = new Map();
+  for (const entry of selection.tasks) {
+    if (!validIdentity(entry?.id) || entries.has(entry.id)) return refused("task-population-invalid");
+    entries.set(entry.id, entry);
+  }
+  for (const task of tasks) {
+    const id = task?.id;
+    if (!validIdentity(id) || ids.has(id) || !validIdentity(task.command) ||
+        typeof task.dir !== "string" || (task.dir !== "." && !repoPath(task.dir)))
+      return refused("task-population-invalid");
+    ids.add(id);
+    const entry = entries.get(id);
+    if (entry && (entry.command !== task.command || entry.dir !== task.dir))
+      return refused("task-selection-mismatch");
+    if (task.isInvariantGuard === true) {
+      units.push({ id: `guard:${id}`, kind: "guard",
+        path: task.dir === "." ? "package.json" : `${task.dir}/package.json` });
+      continue;
+    }
+    if (!entry || !Array.isArray(entry.files) || !entry.files.length ||
+        !["vitest", "node-test"].includes(entry.runner) ||
+        selection.unenumerated.some(value => value.task === id) ||
+        selection.commandObligations.some(value => value.task === id))
+      return refused("task-selection-unmeasured");
+    if (entry.runner === "vitest" && (!validNativeSpecifications(entry.selectedSpecifications) ||
+        entry.selectedSpecifications.length !== entry.files.length ||
+        new Set(entry.selectedSpecifications.map(value => value?.testFile)).size !== entry.files.length ||
+        entry.selectedSpecifications.some(value => !entry.files.includes(value?.testFile))))
+      return refused("native-specifications-unmeasured");
+    for (const file of entry.files) {
+      if (!repoPath(file) || testPaths.has(file)) return refused("test-population-overlapping-or-invalid");
+      testPaths.add(file);
+      units.push({ id: `test:${file}`, kind: "test", path: file });
+    }
+  }
+  if ([...entries.keys(), ...selection.unenumerated.map(value => value.task),
+    ...selection.commandObligations.map(value => value.task)].some(id => !ids.has(id)))
+    return refused("foreign-task-selection");
+  for (const unit of postSuite.units) {
+    if (!validIdentity(unit?.id) || !repoPath(unit.path) || unit.kind !== "post-suite" ||
+        unit.exclusion !== undefined) return refused("post-suite-population-invalid");
+    units.push({ id: unit.id, kind: "post-suite", path: unit.path });
+  }
+  if (!Array.isArray(exclusions)) return refused("exclusion-population-invalid");
+  const excluded = new Set();
+  for (const exclusion of exclusions) {
+    const unit = units.find(value => value.id === exclusion?.unitId);
+    if (!unit || excluded.has(unit.id) || !validIdentity(exclusion.reason) || !validIdentity(exclusion.policyRef))
+      return refused("exclusion-population-invalid");
+    excluded.add(unit.id);
+    unit.exclusion = { reason: exclusion.reason, policyRef: exclusion.policyRef };
+  }
+  const manifest = continuationManifest({ schemaVersion: 1, units });
+  if (!manifest) return refused("manifest-population-invalid");
+  return { status: "ready", reason: null, manifest: { schemaVersion: 1, units: manifest }, operationalAcceptance: false };
 }
 
 /**

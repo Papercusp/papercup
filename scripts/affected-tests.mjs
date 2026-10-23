@@ -1134,6 +1134,11 @@ const changedPathsOverride = (() => {
 const printAffected = has("--print-affected");
 const printSelection = has("--print-selection");
 const syncAstroSelection = has("--sync-astro");
+const enumerateSelectionSpecifications = has("--enumerate-specifications");
+if (enumerateSelectionSpecifications && !printSelection) {
+  errSync('--enumerate-specifications requires --print-selection');
+  process.exit(2);
+}
 if (syncAstroSelection && !printSelection) {
   errSync('--sync-astro requires --print-selection');
   process.exit(2);
@@ -1218,6 +1223,7 @@ const KNOWN_FLAGS = [
   "--changed-paths",
   "--print-affected",
   "--print-selection",
+  "--enumerate-specifications",
   "--sync-astro",
   "--related",
   "--related-cross-root",
@@ -5873,7 +5879,9 @@ if (printSelection) {
   // Reuse the final maintained selection and native config bridge. This never emits an
   // executed-file line, loads duration history, acquires test admission, or runs a cohort.
   const selection = enumerateAffectedTaskSelection(tasks, { root: ROOT, filterDir: RUN_LOG_ROOT,
-    syncAstro: syncAstroSelection });
+    syncAstro: syncAstroSelection, enumerateSpecifications: enumerateSelectionSpecifications });
+  selection.taskInventory = tasks.map(task => ({ id: `${task.ws.name} :: ${task.script}`, dir: task.ws.dir,
+    command: task.ws.scripts[task.script], isInvariantGuard: task.isInvariantGuard === true }));
   outSync(`AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}`);
   terminalSuppressed = true;
   process.exit(0);

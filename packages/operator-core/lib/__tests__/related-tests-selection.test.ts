@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { preparePartialContinuationManifest } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 
 import {
@@ -92,6 +93,13 @@ describe('original gate selection preparation', () => {
       expect(entry.selectedSpecifications).toEqual([{ testFile: `${relativeDir}/a.test.ts`,
         projectName: 'enrollment', pool: 'forks', testNamePattern: null, testLines: null, testIds: null, testTagsFilter: null }]);
       expect(result.executed).toBe(false);
+      const manifest = preparePartialContinuationManifest({ selection: result,
+        tasks: [{ id: '@probe/native :: test', dir: relativeDir, command: 'vitest run --config vitest.config.mjs' }],
+        postSuite: { schemaVersion: 1, coverage: 'complete', units: [
+          { id: 'post:lint', kind: 'post-suite', path: 'package.json' },
+        ] } });
+      expect(manifest).toMatchObject({ status: 'ready', operationalAcceptance: false,
+        manifest: { units: [{ id: 'post:lint' }, { path: `${relativeDir}/a.test.ts`, kind: 'test' }] } });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 30_000);
 

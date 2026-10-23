@@ -15,6 +15,7 @@ import {
   readPartialNativeCompletion,
   registerPartialNativeProducer,
   readPartialNativeProducer,
+  preparePartialContinuationManifest,
 } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 const ID = {
@@ -67,6 +68,64 @@ describe('partial-task-resume', () => {
     });
     expect(parsed).not.toHaveProperty('runContext');
     expect(parsed).not.toHaveProperty('runnerIdentity');
+  });
+});
+
+describe('independent qualification manifest preparation', () => {
+  const tasks = [
+    { id: 'workspace :: test', dir: 'packages/example', command: 'vitest run' },
+    { id: 'root :: guard', dir: '.', command: 'node scripts/guard.mjs', isInvariantGuard: true },
+  ];
+  const selected = { schemaVersion: 1, kind: 'full-gate', phase: 'selection-preparation', executed: false,
+    tasks: [{ ...tasks[0], runner: 'vitest', files: ['packages/example/a.test.ts'],
+      selectedSpecifications: [{ testFile: 'packages/example/a.test.ts', pool: 'forks', projectName: null,
+        testNamePattern: null, testIds: null, testTagsFilter: null, testLines: null }] }],
+    unenumerated: [{ task: 'root :: guard', reason: 'unsupported-task-command' }], commandObligations: [] };
+  const postSuite = { schemaVersion: 1, coverage: 'complete', units: [
+    { id: 'post:lint', kind: 'post-suite', path: 'scripts/lint.mjs' },
+  ] };
+  const prepare = (overrides = {}) => preparePartialContinuationManifest({ tasks, selection: selected, postSuite, ...overrides });
+
+  it('keeps command guards and post-suite obligations in the independently selected population', () => {
+    expect(prepare()).toEqual({ status: 'ready', reason: null, operationalAcceptance: false,
+      manifest: { schemaVersion: 1, units: [
+        { id: 'guard:root :: guard', kind: 'guard', path: 'package.json' },
+        postSuite.units[0],
+        { id: 'test:packages/example/a.test.ts', kind: 'test', path: 'packages/example/a.test.ts' },
+      ] } });
+  });
+
+  it('refuses omitted or foreign tasks, unknown native selection and an absent post-suite population', () => {
+    expect(prepare({ tasks: tasks.slice(0, 1) })).toMatchObject({ status: 'refused', reason: 'foreign-task-selection' });
+    expect(prepare({ tasks: [...tasks, { id: 'missing', dir: '.', command: 'vitest run' }] }))
+      .toMatchObject({ status: 'refused', reason: 'task-selection-unmeasured' });
+    expect(prepare({ selection: { ...selected, tasks: [{ ...selected.tasks[0], selectedSpecifications: [] }] } }))
+      .toMatchObject({ status: 'refused', reason: 'native-specifications-unmeasured' });
+    expect(prepare({ selection: { ...selected, tasks: [{ ...selected.tasks[0],
+      selectedSpecifications: [{ ...selected.tasks[0]!.selectedSpecifications[0], pool: null }] }] } }))
+      .toMatchObject({ status: 'refused', reason: 'native-specifications-unmeasured' });
+    expect(prepare({ postSuite: undefined })).toMatchObject({ status: 'refused', reason: 'post-suite-population-unmeasured' });
+    expect(prepare({ selection: { ...selected, unenumerated: [null] } }))
+      .toMatchObject({ status: 'refused', reason: 'task-population-unmeasured' });
+  });
+
+  it('retains exact policy exclusions and refuses unselected, duplicate or undocumented exemptions', () => {
+    const exclusion = { unitId: 'post:lint', reason: 'candidate predates check', policyRef: 'policy:pre-ratchet' };
+    expect(prepare({ exclusions: [exclusion] })).toMatchObject({ status: 'ready', manifest: { units: [
+      { id: 'guard:root :: guard' }, { id: 'post:lint', exclusion: { reason: exclusion.reason, policyRef: exclusion.policyRef } },
+      { id: 'test:packages/example/a.test.ts' },
+    ] } });
+    for (const exclusions of [[{ ...exclusion, unitId: 'foreign' }], [exclusion, exclusion], [{ ...exclusion, policyRef: '' }]])
+      expect(prepare({ exclusions })).toMatchObject({ status: 'refused', reason: 'exclusion-population-invalid' });
+  });
+
+  it('refuses overlapping native populations and duplicate post-suite identities', () => {
+    const duplicate = { ...tasks[0], id: 'another :: test' };
+    expect(prepare({ tasks: [...tasks, duplicate], selection: { ...selected,
+      tasks: [...selected.tasks, { ...selected.tasks[0], ...duplicate }] } }))
+      .toMatchObject({ status: 'refused', reason: 'test-population-overlapping-or-invalid' });
+    expect(prepare({ postSuite: { ...postSuite, units: [...postSuite.units, ...postSuite.units] } }))
+      .toMatchObject({ status: 'refused', reason: 'manifest-population-invalid' });
   });
 });
 

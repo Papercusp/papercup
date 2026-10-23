@@ -44,6 +44,8 @@ export const CHECKPOINT_QUALIFICATION_SCHEMA_VERSION = 1 as const;
 export const CHECKPOINT_QUALIFICATION_ATTEMPT_ENV = 'PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID';
 /** The scheduled wrapper reserves this attempt before spawn; the CLI activates that same runner. */
 export const CHECKPOINT_SCHEDULED_RUN_ENV = 'PAPERCUSP_CHECKPOINT_SCHEDULED_RUN';
+// Only the row-locked composer below can authorize a continuation's green terminal.
+const COMPOSED_QUALIFICATION_GREEN = Symbol('composed-qualification-green');
 
 export function checkpointPidIdentity(pid: number): string | null {
   try {
@@ -1675,6 +1677,7 @@ export function settleQualificationTransaction(
     runId?: string | null;
     evidenceRefs?: readonly string[];
     nowMs?: number;
+    [COMPOSED_QUALIFICATION_GREEN]?: true;
   },
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
@@ -1712,6 +1715,8 @@ export function settleQualificationTransaction(
       nowMs: input.nowMs,
     });
   }
+  if (current.continuation && outcome.kind === 'green' && input[COMPOSED_QUALIFICATION_GREEN] !== true)
+    return { status: 'conflict', transaction: current, refusalReason: 'continuation-composition-required' };
   const nowMs = input.nowMs ?? Date.now();
   const released = runIdOnRelease(current, runId);
   // WI-10003215: when the incumbent run judged the pending admission handoff itself (the gate's
@@ -2536,6 +2541,7 @@ export interface QualificationNativeCompletionInput {
   workspaceName: string;
   selectedSpecifications: unknown[];
   classifyReadPaths?: (reads: unknown, root: string) => { readPaths: string[]; opaqueReasons: string[] };
+  requireTerminal?: boolean;
   supersedesCompletionIds?: Record<string, string>;
 }
 
@@ -2563,7 +2569,7 @@ function recordQualificationNativeCompletion(
       taskKey: observation.taskKey ?? input.taskKey,
       workspaceName: observation.workspaceName, selectedSpecifications: observation.selectedSpecifications,
       ...(observation.producerPath !== undefined ? { producerPath: observation.producerPath } : {}),
-    }, { classifyReadPaths: observation.classifyReadPaths });
+    }, { classifyReadPaths: observation.classifyReadPaths, requireTerminal: observation.requireTerminal });
     if (observed.status !== 'ready' || !('origin' in observed)) return conflict(observed.reason ?? 'native-observation-unmeasured');
     const group = observed.origin.runGroupId;
     const active = group === current.runId ? current.currentPhysicalRunner : null;
@@ -2842,6 +2848,77 @@ export function recordStoredQualificationVerdict(
       attemptId: input.attemptId ?? current.attemptId,
     });
   }, { terminalEvent: input.terminalEvent });
+}
+
+/**
+ * Compose and settle a green continuation in ONE existing qualification transaction.
+ * A previous evaluation is not an authorization: re-read the current fence, frozen
+ * population and enrolled native artifacts while the row is locked. No final event
+ * or terminal state is written when any obligation or source check is unknown.
+ */
+export function recordStoredQualificationComposedVerdict(
+  target: GateVerdictTarget,
+  input: QualificationWorkProgressInput,
+  verdict: Omit<Parameters<typeof recordStoredQualificationVerdict>[1], 'attemptId'>,
+  options: { classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths'] } = {},
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, async current => {
+    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    const conflict = (refusalReason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason });
+    if (input.updates.length || !current.continuation) return conflict('continuation-composition-unmeasured');
+    if (classifyQualificationVerdict(verdict).kind !== 'green') return conflict('continuation-composition-not-green');
+    if (verdict.candidate !== input.candidate || verdict.runId !== input.runId ||
+        (verdict.repairHead ?? null) !== input.repairHead) return conflict('continuation-lineage-mismatch');
+    const custody = recordQualificationWorkProgress(current, input);
+    if (custody.status !== 'updated' && custody.status !== 'idempotent') return custody;
+    let transaction = custody.transaction;
+    const nativePaths = new Set((transaction.continuation!.nativeProducers ?? []).filter(ref => !ref.missingSnapshot)
+      .flatMap(ref => ref.selectedSpecifications.map(value => (value as { testFile: string }).testFile)));
+    if (input.manifest.units.some(unit => unit.kind === 'test' && !unit.exclusion && !nativePaths.has(unit.path)))
+      return conflict('native-producer-population-incomplete');
+    for (const ref of transaction.continuation!.nativeProducers ?? []) {
+      const producer = readPartialNativeProducer(ref.path, { attemptId: input.attemptId, root: input.root,
+        taskKey: ref.taskKey, workspaceName: ref.workspaceName, runGroupId: ref.runGroupId,
+        sourceCommit: input.candidate, outPath: ref.outPath });
+      if (!producer || createHash('sha256').update(JSON.stringify(producer)).digest('hex') !== ref.sha256 ||
+          !isDeepStrictEqual(producer.selectedSpecifications, ref.selectedSpecifications))
+        return conflict('native-producer-reference-mismatch');
+      if (ref.missingSnapshot) {
+        // Retirement never excuses a late artifact, nor a pass banked against a
+        // producer whose first snapshot was proved missing during dead handoff.
+        const selected = new Set(ref.selectedSpecifications.map(value => (value as { testFile: string }).testFile));
+        const units = new Set(input.manifest.units.filter(unit => selected.has(unit.path)).map(unit => unit.id));
+        const banked = [...transaction.continuation!.receipts, ...transaction.continuation!.supersededReceipts]
+          .some(receipt => units.has(receipt.unitId) && receipt.observedAtMs <= ref.missingSnapshot!.confirmedAtMs);
+        try { lstatSync(ref.outPath); return conflict('retired-native-output-reappeared'); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return conflict('native-output-unreadable'); }
+        if (banked) return conflict('missing-native-output-has-banked-receipts');
+        continue;
+      }
+      const recovered = recordQualificationNativeCompletion(transaction, input, {
+        path: ref.outPath, producerPath: ref.path, taskKey: ref.taskKey, workspaceName: ref.workspaceName,
+        selectedSpecifications: ref.selectedSpecifications, classifyReadPaths: options.classifyReadPaths, requireTerminal: true,
+        ...(ref.supersedesCompletionIds ? { supersedesCompletionIds: ref.supersedesCompletionIds } : {}),
+      });
+      if (recovered.status !== 'updated' && recovered.status !== 'idempotent') return recovered;
+      transaction = recovered.transaction;
+    }
+    const evaluation = evaluatePartialTaskContinuation({ root: input.root, taskKey: input.taskKey,
+      continuation: transaction.continuation }, { ...input, sourceCommit: input.candidate });
+    if (evaluation.status !== 'ready' || evaluation.verdict !== 'green') return conflict('continuation-verdict-not-green');
+    try {
+      // Frozen candidates are immutable. Inspect the actual root instead of
+      // inferring present cleanliness from a receipt's historical dirty flag.
+      const git = async (...args: string[]) => (await promisify(execFile)('git', ['-C', input.root, ...args],
+        { timeout: 5_000, maxBuffer: 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout.trim();
+      if (await git('rev-parse', '--show-prefix') !== '' ||
+          await git('rev-parse', '--verify', 'HEAD') !== input.candidate ||
+          await git('status', '--porcelain', '--untracked-files=normal') !== '')
+        return conflict('continuation-source-changed');
+    } catch { return conflict('continuation-source-unmeasured'); }
+    return settleQualificationTransaction(transaction, { ...verdict, attemptId: input.attemptId,
+      [COMPOSED_QUALIFICATION_GREEN]: true });
+  }, { terminalEvent: verdict.terminalEvent });
 }
 
 export function recordStoredQualificationScheduledTerminalRecovery(

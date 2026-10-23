@@ -3846,6 +3846,62 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it.each(['success', 'refusal'] as const)(
+    'source custody preserves an active peer file lease during %s (real outer pipeline)', async (outcome) => {
+      const path = 'vanished-with-active-lease.ts';
+      const payload = 'available staged source alongside a peer lease\n';
+      const peerBytes = 'peer edit must remain unpublished\n';
+      const holding = { path: 'file.txt', owner: 'su-active-peer', intent: 'coherent edit still in progress' };
+      const originalPeer = git(repo, 'show', 'HEAD:file.txt');
+      writeFileSync(join(repo, path), payload);
+      writeFileSync(join(repo, holding.path), peerBytes);
+      git(repo, 'add', '--', path, holding.path);
+      const oid = git(repo, 'rev-parse', `:${path}`);
+      rmSync(join(repo, path));
+      writeFileSync(join(repo, 'unrelated-with-lease.ts'), 'export const completed = true;\n');
+      const index = git(repo, 'ls-files', '--stage');
+      const head = git(repo, 'rev-parse', 'HEAD');
+      const remote = git(originDir, 'rev-parse', 'main');
+      let refused = false;
+      let leaseReads = 0;
+      const runGit: RunGit = async (args, cwd, options) => {
+        if (outcome === 'refusal' && args[0] === 'cat-file' && args[1] === '-t' && args[2] === oid) {
+          refused = true;
+          return { code: 1, stdout: '', stderr: 'injected custody read refusal' };
+        }
+        return directRunGit(args, cwd, options);
+      };
+      const out = await runGitSync('test', {
+        repoPath: repo, config: cfg, runGit,
+        liveLockHoldings: [holding],
+        refreshLiveLockHoldings: async () => { leaseReads += 1; return [holding]; },
+        loadRoster: async () => [
+          { agent: 'source-author', files: [path] },
+          { agent: holding.owner, files: [holding.path] },
+        ],
+      });
+      expect(refused).toBe(outcome === 'refusal');
+      expect(readFileSync(join(repo, holding.path), 'utf8')).toBe(peerBytes);
+      expect(git(originDir, 'show', 'main:file.txt')).toBe(originalPeer);
+      if (outcome === 'refusal') {
+        expect(out.status).toBe('error');
+        expect(git(repo, 'ls-files', '--stage')).toBe(index);
+        expect(git(repo, 'rev-parse', 'HEAD')).toBe(head);
+        expect(git(originDir, 'rev-parse', 'main')).toBe(remote);
+      } else {
+        expect(out.status).toBe('synced');
+        expect(leaseReads).toBeGreaterThan(0);
+        expect(out.skippedPaths).toContainEqual({ scope: 'superproject', ...holding });
+        const ref = git(repo, 'for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX);
+        expect(git(repo, 'show', `${ref}:payload`)).toBe(payload.trimEnd());
+        expect(JSON.parse(git(repo, 'show', `${ref}:manifest.json`))).toMatchObject({ path, owner: 'source-author', oid });
+        expect(git(originDir, 'show', 'main:unrelated-with-lease.ts')).toBe('export const completed = true;');
+        expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main').split('\n')).not.toContain(path);
+        expect(git(repo, 'status', '--porcelain', '--', holding.path)).not.toBe('');
+      }
+    },
+  );
+
   it.each(['blob', 'empty', 'manifest', 'payload', 'tree', 'ref', 'readback', 'env'])(
     'source custody %s failure aborts before attributed/catch-all consumers (real outer pipeline)', async (failure) => {
       const path = 'vanished-authored.ts';

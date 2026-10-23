@@ -259,7 +259,8 @@ describe('fresh-launch tool-call attribution (real PG)', () => {
     await sql`
       INSERT INTO harness_shared.tool_invocations
         (workspace_id, coord_owner_id, status, call_origin, tool_name, invoked_at)
-      SELECT ${workspaceId}, ${ownerId}, 'ok', 'agent', 'coord:orient',
+      SELECT ${workspaceId}, ${ownerId}, 'ok', 'agent',
+             CASE WHEN n % 4 = 0 THEN 'scheduler:get_next' ELSE 'coord:orient' END,
              to_timestamp(${since / 1000}) + n * interval '1 millisecond'
         FROM generate_series(1, 8000) n
     `;
@@ -293,7 +294,7 @@ describe('fresh-launch tool-call attribution (real PG)', () => {
     try {
       const [probe] = await probeFreshLaunchSessions({ workspaceId, launcherOwnerId, since });
       expect(probe).toMatchObject({ successfulCalls: 8000,
-        workerAttestation: { stages: { schedulerPull: { calls: 1, successfulCalls: 0 } } } });
+        workerAttestation: { stages: { schedulerPull: { calls: 2001, successfulCalls: 2000 } } } });
     } finally {
       holder.sql = sql;
     }
@@ -304,6 +305,7 @@ describe('fresh-launch tool-call attribution (real PG)', () => {
         : 0) + (node.Plans ?? []).reduce((sum, child) => sum + examinedRows(child), 0);
     const examined = examinedRows(plan!);
     console.info(`FRESH_LAUNCH_PLAN examinedRows=${examined} retainedOwnerRows=8001`);
+    if (examined >= 10_000) console.info(`FRESH_LAUNCH_PLAN_DETAIL ${JSON.stringify(plan)}`);
     expect(examined).toBeLessThan(10_000);
   });
 

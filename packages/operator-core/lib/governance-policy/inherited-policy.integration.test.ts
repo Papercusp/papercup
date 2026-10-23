@@ -27,6 +27,10 @@ import {
   type UpsertLayerInput,
 } from './store';
 import { evaluateInheritedPolicy } from './inherited-policy';
+import {
+  assessPermissionChange, evaluateEffectivePermission, revalidateEffectivePermission,
+  type AuthorityPolicy, type AuthoritySnapshot, type PermissionRequest,
+} from './effective-authority';
 
 const MIGRATION = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/1497-governance-policy-layers.sql', import.meta.url),
@@ -49,6 +53,7 @@ beforeAll(async () => {
   sql = postgres(u.toString(), { max: 4, onnotice: () => {} });
   await sql.unsafe(`CREATE SCHEMA harness_shared`);
   await sql.unsafe(readFileSync(MIGRATION, 'utf8'));
+  await sql.unsafe('CREATE TABLE harness_shared.idop_test_effects (target text NOT NULL)');
 }, 60_000);
 
 afterAll(async () => {
@@ -57,7 +62,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await sql.unsafe(
-    `TRUNCATE harness_shared.governance_policy_layer_versions, harness_shared.governance_policy_layers`,
+    `TRUNCATE harness_shared.governance_policy_layer_versions, harness_shared.governance_policy_layers,
+      harness_shared.idop_test_effects`,
   );
 });
 
@@ -100,6 +106,101 @@ async function seedTree(): Promise<void> {
     sql,
   );
 }
+
+// Contract integration fixture, not the production authority loader or adapter.
+// Organization revisions and rules come from the existing store; the remaining
+// authorities are explicit fixture grants. P-005 owns the real effect boundary.
+async function sharedSnapshot(db: postgres.Sql = sql): Promise<AuthoritySnapshot> {
+  const load = await loadChainForWorkspace('ws-1', db);
+  if (load.status !== 'ok') throw new Error(`cannot construct authority snapshot: ${load.status}`);
+  const policies: AuthorityPolicy[] = [
+    { kind: 'identity', id: 'identity', revision: 'identity:1', state: 'present',
+      rules: { tools: { allow: ['*'] }, actions: { allow: ['*'] }, resources: { allow: ['*'] } } },
+    { kind: 'user', id: 'user', revision: 'user:1', state: 'present', rules: {} },
+    { kind: 'vault', id: 'vault-a', revision: 'vault-a:1', state: 'present', rules: {} },
+    { kind: 'vault', id: 'vault-b', revision: 'vault-b:1', state: 'present', rules: {} },
+    { kind: 'platform', id: 'platform', revision: 'platform:1', state: 'present', rules: {} },
+    ...load.chain.map(row => ({
+      kind: row.level, id: row.layerId, revision: `${row.version}:${row.contentHash}`,
+      state: 'present' as const, rules: row.rules,
+    })),
+  ];
+  return { required: policies.map(({ kind, id }) => ({ kind, id })), policies,
+    contextRevision: 'context:1', contextVaultIds: ['vault-a', 'vault-b'] };
+}
+
+const protectedRequest: PermissionRequest = {
+  tool: 'capability:bash', action: 'net:connect',
+  resource: { kind: 'network', operation: 'connect', target: 'https://approved.example:443' },
+};
+
+async function narrowStoredAuthority(id: string) {
+  const load = await loadChainForWorkspace('ws-1', sql);
+  if (load.status !== 'ok') throw new Error(`chain ${load.status}`);
+  const row = load.chain.find(entry => entry.layerId === id)!;
+  return upsertLayer(layer({
+    layerId: id, level: row.level, scopeRef: row.scopeRef, parentLayerId: row.parentLayerId,
+    rules: { ...row.rules, resources: { allow: [] } }, expectedVersion: row.version,
+  }), sql);
+}
+
+describe('P-024 shared evaluator with the versioned governance store', () => {
+  it.each(['org-acme', 'dept-eng', 'ws-1'])('retains the deciding stored authority and exact revision for %s', async id => {
+    await seedTree();
+    const before = await sharedSnapshot();
+    expect(evaluateEffectivePermission(before, protectedRequest).allowed).toBe(true);
+    const changed = await narrowStoredAuthority(id);
+    const decision = evaluateEffectivePermission(await sharedSnapshot(), protectedRequest);
+    const authority = { kind: changed.level, id, revision: `${changed.version}:${changed.contentHash}` };
+    expect(decision).toMatchObject({ allowed: false, code: 'denied', request: protectedRequest,
+      decidingAuthority: { kind: changed.level, id } });
+    expect(decision.revisions!.authorities).toContainEqual(authority);
+    expect(decision.trace).toContainEqual(expect.objectContaining({ authority,
+      category: 'resources', outcome: 'not-allowed' }));
+    expect((await listVersions(id, 10, sql)).map(row => row.version)).toEqual([2, 1]);
+  });
+
+  it.each([false, true])('the contract fixture writes an effect only with unchanged authority (revoke=%s)', async revoke => {
+    await seedTree();
+    const initial = evaluateEffectivePermission(await sharedSnapshot(), protectedRequest);
+    expect(initial.allowed).toBe(true);
+    // The stored revision moves after authorization and before this fixture's
+    // transaction. A pure contract cannot make the production adapter call it.
+    if (revoke) await narrowStoredAuthority('dept-eng');
+    const decision = await sql.begin(async tx => {
+      const current = await sharedSnapshot(tx as unknown as postgres.Sql);
+      const checked = revalidateEffectivePermission(current, protectedRequest, initial.revisions);
+      if (checked.allowed) await tx`INSERT INTO harness_shared.idop_test_effects (target) VALUES (${protectedRequest.resource.target})`;
+      return checked;
+    });
+    const effects = await sql<{ target: string }[]>`SELECT target FROM harness_shared.idop_test_effects`;
+    expect(effects).toEqual(revoke ? [] : [{ target: protectedRequest.resource.target }]);
+    expect(decision.allowed).toBe(!revoke);
+    if (revoke) expect(decision.decidingAuthority).toEqual({ kind: 'department', id: 'dept-eng' });
+  });
+
+  it('a complete narrowing proof cannot override a revoked editor or stale stored before-image', async () => {
+    await seedTree();
+    const before = await sharedSnapshot();
+    const expected = evaluateEffectivePermission(before, protectedRequest).revisions;
+    const proof = { populationRevision: 'permissions:1', complete: true,
+      population: ['read', 'write'], allowed: ['read', 'write'] };
+    const change = { current: before, request: protectedRequest, expected,
+      before: proof, after: { ...proof, allowed: ['read'] },
+      fixedFloors: [{ authority: { kind: 'platform' as const, id: 'platform', revision: 'platform:1' }, permissions: proof }] };
+    expect(assessPermissionChange(change).code).toBe('allowed-without-approval');
+    await narrowStoredAuthority('dept-eng');
+    expect(assessPermissionChange({ ...change, current: await sharedSnapshot() })).toMatchObject({
+      canApplyWithoutApproval: false, code: 'edit-denied', comparison: { kind: 'narrowing' },
+    });
+    // A different edit changes the revision without denying this request.
+    await upsertLayer(layer({ layerId: 'dept-eng', level: 'department', scopeRef: 'acme/eng',
+      parentLayerId: 'org-acme', rules: {} }), sql);
+    expect(assessPermissionChange({ ...change, current: await sharedSnapshot() })).toMatchObject({
+      canApplyWithoutApproval: false, code: 'stale-before-state',
+    });
+  });
+});
 
 describe('inherited governance policy over real Postgres (P-005)', () => {
   it('loads the workspace chain root first, through the department', async () => {

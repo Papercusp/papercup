@@ -27,7 +27,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, readdir: vi.fn(actual.readdir), rm: vi.fn(actual.rm), stat: vi.fn(actual.stat) };
+  return { ...actual, readdir: vi.fn(actual.readdir), rm: vi.fn(actual.rm), stat: vi.fn(actual.stat), writeFile: vi.fn(actual.writeFile) };
 });
 import {
   mkdtempSync,
@@ -925,6 +925,69 @@ describe('runScratchGc — no synchronous fs on the event loop (WI-10005135)', (
 
     expect(r.truncated).toBe(true);
     expect(r.retentionEvictions).toBe(0);
+  });
+
+  it.each([false, true])('processes registered retention before a dead-tree walk exhausts the budget (dryRun=%s)', async (dryRun) => {
+    const expired = makeRunDir('ws-A', 'tool', UUID(71), 64, RETENTION_MS + 60_000);
+    const pinned = makeRunDir('ws-A', 'tool', UUID(72), 32, RETENTION_MS + 60_000);
+    const fresh = makeRunDir('ws-A', 'tool', UUID(73), 16);
+    createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'retain evidence',
+      expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    makeRunDir('ws-DEAD', 'tool', UUID(74), 128);
+    const deadRoot = scratchRootForWorkspace('ws-DEAD');
+    ageTree(deadRoot, DEAD_WORKSPACE_QUIET_MS + 60_000);
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalReaddir = readdirMock.getMockImplementation()!;
+    let clock = Date.now();
+    const deadline = clock + 1_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    readdirMock.mockImplementation(async (...args) => {
+      const result = await originalReaddir(...args);
+      if (String(args[0]) === deadRoot) clock = deadline;
+      return result;
+    });
+    try {
+      const r = await runScratchGc({ workspaceRegistry: ['ws-A'], dryRun,
+        enforceQuota: false, maxDurationMs: 1_000, scanOpenPaths: noHolders });
+
+      expect(clock).toBe(deadline);
+      expect(r.truncated).toBe(true);
+      expect(r.retentionEvictions).toBe(1);
+      expect(r.retentionEvictedBytes).toBe(64);
+      expect(existsSync(expired)).toBe(dryRun);
+      expect(existsSync(pinned)).toBe(true);
+      expect(existsSync(fresh)).toBe(true);
+      expect(existsSync(deadRoot)).toBe(true);
+    } finally {
+      readdirMock.mockImplementation(originalReaddir);
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('processes registered retention before marker backfill exhausts the budget', async () => {
+    const expired = makeRunDir('ws-A', 'tool', UUID(75), 64, RETENTION_MS + 60_000);
+    const marker = join(scratchRootForWorkspace('ws-A'), WORKSPACE_SCRATCH_MARKER);
+    const writeMock = vi.mocked(writeFile);
+    const originalWrite = writeMock.getMockImplementation()!;
+    let clock = Date.now();
+    const deadline = clock + 1_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    writeMock.mockImplementation(async (...args) => {
+      if (String(args[0]) === marker) clock = deadline;
+      return originalWrite(...args);
+    });
+    try {
+      const r = await runScratchGc({ workspaceRegistry: ['ws-A'],
+        enforceQuota: false, maxDurationMs: 1_000 });
+
+      expect(clock).toBe(deadline);
+      expect(r.truncated).toBe(true);
+      expect(r.retentionEvictions).toBe(1);
+      expect(existsSync(expired)).toBe(false);
+    } finally {
+      writeMock.mockImplementation(originalWrite);
+      nowSpy.mockRestore();
+    }
   });
 });
 

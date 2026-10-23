@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { collectSystemdDirectives, INVENTORY_GROUPS, inventoryElfLibraryCandidates, inventoryNativePackages, inventorySources, parseElfDependencies, readCommittedSources } from './lib/runtime-compatibility-census.mjs';
+import { classifyNativeInventory, collectSystemdDirectives, INVENTORY_GROUPS, inventoryElfLibraryCandidates, inventoryNativePackages, inventorySources, parseElfDependencies, readCommittedSources } from './lib/runtime-compatibility-census.mjs';
 const require = createRequire(import.meta.url);
 const { collectImports } = require('../papercusp-desktop/bin/lib/runtime-import-census.cjs');
 const source = (path: string, text: string) => ({ path, bytes: Buffer.from(text), repository: '.', commit: 'a'.repeat(40), blobOid: 'b'.repeat(40) });
@@ -121,6 +121,44 @@ describe('native dependency byte inventory', () => {
     const second = await inventoryElfLibraryCandidates([entry], { ...options, environmentDirectories: [pkg.path] });
     expect(first.fingerprint).not.toBe(second.fingerprint);
     await expect(inventoryElfLibraryCandidates([entry], { libraryCache: [{ name: 'bad', path: 'relative' }] })).rejects.toThrow('absolute library inputs');
+  });
+});
+
+describe('native target and caller review', () => {
+  const cells = [{ id: 'server:linux:x64', os: 'linux', arch: 'x64' }, { id: 'gui:linux:arm64', os: 'linux', arch: 'arm64' }];
+  const host = { os: 'linux', arch: 'x64', libc: 'glibc' };
+  const file = (path: string, machine = 'Advanced Micro Devices X86-64') => ({ packageId: 'node_modules/addon', path,
+    realPath: '/candidate/' + path, sha256: 'a'.repeat(64), format: 'elf', elf: { machine, needed: ['libc.so.6'] } });
+  const review = (files: object[], packages: object[] = []) => classifyNativeInventory({ roots: [{ id: 'node_modules/addon' }],
+    files, unresolved: [], fingerprint: 'native-pin' }, { unresolved: [], fingerprint: 'elf-pin' }, { packages, platformCells: cells, host });
+  it('keeps Android x64 distinct from Linux x64 and retains supported foreign architectures', () => {
+    const result = review([{ ...file('prebuilds/android-x64/addon.node'), elf: { machine: 'Advanced Micro Devices X86-64', needed: ['libc.so'] } },
+      file('prebuilds/linux-arm64/addon.node', 'AArch64')]);
+    expect(result.rows[0]).toMatchObject({ hostRelation: 'different-os', candidateCells: [], target: { os: 'android', arch: 'x64', libc: 'bionic' } });
+    expect(result.rows[1]).toMatchObject({ hostRelation: 'different-arch', candidateCells: ['gui:linux:arm64'] });
+    expect(result.closureAccepted).toBe(false);
+  });
+  it('retains package optionality and separates musl targets from the glibc host', () => {
+    const result = review([{ ...file('addon.node'), packageId: 'node_modules/addon-linux-x64-musl', elf: { machine: 'Advanced Micro Devices X86-64', needed: ['libc.musl-x86_64.so.1'] } }],
+      [{ key: 'node_modules/parent', edges: [{ to: 'node_modules/addon', field: 'optionalDependencies', optional: true }] },
+        { key: 'node_modules/addon-linux-x64-musl', lock: { os: ['linux'], cpu: ['x64'] } }]);
+    expect(result.rows[0]).toMatchObject({ hostRelation: 'different-libc', operationalRole: 'node-addon-candidate', selectorVerified: false });
+    expect(result.packages[0].callerEdges).toEqual([{ from: 'node_modules/parent', field: 'optionalDependencies', optional: true }]);
+  });
+  it('does not trust target names over binary architecture or package exclusions', () => {
+    const result = review([file('prebuilds/linux-x64/addon.node', 'AArch64')],
+      [{ key: 'node_modules/addon', lock: { os: ['!linux'], cpu: ['x64'] } }]);
+    expect(result.rows[0].target.conflicts).toEqual(['path-elf-architecture-mismatch', 'package-os-mismatch', 'package-cpu-mismatch']);
+    expect(result.rows[0].hostRelation).toBe('conflicting-evidence');
+    expect(result.actualLoaderResolutionVerified).toBe(false);
+  });
+  it('retains unattributed transitive gaps and unknown target evidence', () => {
+    const result = classifyNativeInventory({ roots: [], files: [file('addon.node')], unresolved: [{ packageId: 'missing', path: 'package.json', reason: 'package-unavailable' }] },
+      { unresolved: [{ path: '/system/libfoo.so', reason: 'needed-library-unresolved', name: 'libbar.so' }] },
+      { packages: [], platformCells: cells, host });
+    expect(result.rows[0]).toMatchObject({ hostRelation: 'unknown', packageContextAvailable: false, target: { os: null } });
+    expect(result.gaps).toHaveLength(2); expect(result.gaps[1].file).toBeNull();
+    expect(result.rows[0].runtimeAcceptance).toBe('not-measured');
   });
 });
 

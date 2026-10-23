@@ -1,0 +1,216 @@
+import { createHash } from 'node:crypto';
+import * as ts from 'typescript';
+import { AST_FINGERPRINT_VERSION, fingerprintTree, type TreeAdapter } from '../../../../libs/generic/ast-fingerprint/src/index';
+import type { PushSnapshot } from './push-snapshot';
+import type { CodeWorkingSet } from './working-set';
+
+export const CLONE_MIN_MASS = 80;
+export const CLONE_MAX_SOURCE_BYTES = 1_500_000;
+export const CLONE_NORMALIZATION_VERSION = `typescript-${ts.version}:${AST_FINGERPRINT_VERSION}`;
+export type CloneKind = 'exact' | 'renamed';
+export interface CloneClassification { test: boolean; vendored: boolean; retired: boolean }
+export interface CloneFunction {
+  id: string; path: string; line: number; column: number; start: number; end: number;
+  name: string; signature: string; mass: number; exact: string; renamed: string;
+  blobSha: string; classification: CloneClassification;
+}
+export interface CloneFile {
+  path: string; blobSha: string | null; sha256: string | null;
+  status: 'indexed' | 'syntax-error' | 'excluded' | 'unavailable';
+  diagnostics: readonly { start: number; length: number; message: string }[];
+  functions: readonly CloneFunction[];
+}
+export interface CloneFamily {
+  id: string; version: string; kind: CloneKind; fingerprint: string; members: readonly CloneFunction[];
+}
+export interface CloneSource { path: string; source: string; blobSha?: string }
+export interface CloneFilter {
+  includeClassified?: boolean;
+  /** The frozen historical probe excluded test filenames, but retained rigs
+   * under __tests__. Replay its exact vendor/retired-only postfilter explicitly.
+   */
+  includeTests?: boolean;
+}
+
+const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+const byLocation = (a: CloneFunction, b: CloneFunction) => compare(a.path, b.path) || a.line - b.line || a.column - b.column || compare(a.name, b.name);
+const sha256 = (source: string) => createHash('sha256').update(source).digest('hex');
+export const cloneBlobSha = (source: string) => createHash('sha1').update(`blob ${Buffer.byteLength(source)}\0`).update(source).digest('hex');
+
+export function classifyClonePath(path: string): CloneClassification {
+  return {
+    test: /(?:\.(?:test|spec)\.tsx?$)|(?:^|\/)(?:__tests__|__fixtures__|__mocks__)(?:\/|$)/.test(path),
+    vendored: /(?:^|\/)node_modules\/|^templates\/|\/template-kit\//.test(path),
+    retired: /(?:^|\/)_retired\/|^apps\/operator\/app\//.test(path),
+  };
+}
+function checkedPath(path: string): string {
+  if (!path || path.startsWith('/') || path.includes('\\') || path.split('/').some(p => !p || p === '.' || p === '..')) {
+    throw new Error('Clone source requires a repository-relative POSIX file path');
+  }
+  return path;
+}
+const excludedSource = (path: string) => !/\.tsx?$/.test(path) || /\.d\.ts$|\.gen\.tsx?$/.test(path)
+  || /(?:^|\/)(?:dist|dist-host|build|coverage|generated|\.materialized|sidecar)(?:\/|$)/.test(path);
+const literalKinds = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NumericLiteral, ts.SyntaxKind.BigIntLiteral,
+  ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle,
+  ts.SyntaxKind.TemplateTail, ts.SyntaxKind.RegularExpressionLiteral]);
+const adapter: TreeAdapter<ts.Node> = {
+  kind: node => node.kind,
+  atom: node => ts.isIdentifier(node) || ts.isPrivateIdentifier(node)
+    ? { exact: `I:${node.text}`, normalized: 'I' }
+    : literalKinds.has(node.kind) ? { exact: `L:${node.getText()}`, normalized: 'L' } : null,
+  forEachChild: (node, visit) => { ts.forEachChild(node, visit); },
+};
+/** The archived probe's eligible bodies, intentionally versioned and unchanged.
+ * Expression-bodied arrows/overload declarations have no block and are not this population.
+ */
+function hasCloneBody(node: ts.Node): node is ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction
+  | ts.FunctionExpression | ts.ConstructorDeclaration | ts.GetAccessorDeclaration {
+  return (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isArrowFunction(node)
+    || ts.isFunctionExpression(node) || ts.isConstructorDeclaration(node) || ts.isGetAccessor(node))
+    && !!node.body && ts.isBlock(node.body);
+}
+
+export function extractCloneFile(input: CloneSource, minMass = CLONE_MIN_MASS): CloneFile {
+  const path = checkedPath(input.path), blobSha = cloneBlobSha(input.source);
+  if (input.blobSha !== undefined && input.blobSha !== blobSha) throw new Error(`Clone blob identity mismatch: ${path}`);
+  const base = { path, blobSha, sha256: sha256(input.source), diagnostics: [], functions: [] };
+  if (excludedSource(path) || Buffer.byteLength(input.source) > CLONE_MAX_SOURCE_BYTES) return { ...base, status: 'excluded' };
+  const source = ts.createSourceFile(path, input.source, ts.ScriptTarget.Latest, true, path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  const diagnostics = (source as ts.SourceFile & { parseDiagnostics: readonly ts.DiagnosticWithLocation[] }).parseDiagnostics;
+  if (diagnostics.length) return { ...base, status: 'syntax-error', diagnostics: diagnostics.map(d => ({
+    start: d.start ?? 0, length: d.length ?? 0, message: ts.flattenDiagnosticMessageText(d.messageText, '\n'),
+  })) };
+  const functions: CloneFunction[] = [];
+  const classification = classifyClonePath(path);
+  const visit = (node: ts.Node) => {
+    if (hasCloneBody(node)) {
+      const body = node.body!;
+      const fp = fingerprintTree(body, adapter);
+      if (fp.mass >= minMass) {
+        let name = node.name && ts.isIdentifier(node.name) ? node.name.text : '';
+        if (!name && (ts.isVariableDeclaration(node.parent) || ts.isPropertyAssignment(node.parent))
+          && ts.isIdentifier(node.parent.name)) name = node.parent.name.text;
+        const start = node.getStart(source), position = source.getLineAndCharacterOfPosition(start);
+        functions.push({ id: `${path}:${start}`, path, start, end: node.end,
+          line: position.line + 1, column: position.character + 1, name: name || '<anon>',
+          signature: input.source.slice(start, body.getStart(source)).replace(/\s+/g, ' ').trim().slice(0, 300),
+          mass: fp.mass, exact: fp.exact, renamed: fp.normalized, blobSha, classification });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return { ...base, status: 'indexed', functions };
+}
+
+/** Instance-scoped, off-hook index. No timers, filesystem scans or process singleton.
+ * Replacement is atomic: parse first, then remove every old contribution and publish.
+ */
+export class CloneIndex {
+  readonly minMass: number;
+  private readonly files = new Map<string, CloneFile>();
+  private readonly buckets = { exact: new Map<string, Map<string, CloneFunction>>(), renamed: new Map<string, Map<string, CloneFunction>>() };
+  private generation = 0;
+
+  constructor(options: { minMass?: number } = {}) {
+    this.minMass = options.minMass ?? CLONE_MIN_MASS;
+    if (!Number.isSafeInteger(this.minMass) || this.minMass < 1) throw new Error('Clone minMass must be a positive integer');
+  }
+  get version(): string { return `${CLONE_NORMALIZATION_VERSION}:floor-${this.minMass}:revision-${this.generation}`; }
+  get size(): number { return this.files.size; }
+  getFile(path: string): CloneFile | undefined { return this.files.get(path); }
+  getFiles(): readonly CloneFile[] { return [...this.files.values()].sort((a, b) => compare(a.path, b.path)); }
+
+  update(input: CloneSource): { changed: boolean; file: CloneFile } {
+    const path = checkedPath(input.path), blob = cloneBlobSha(input.source);
+    if (input.blobSha !== undefined && input.blobSha !== blob) throw new Error(`Clone blob identity mismatch: ${path}`);
+    const old = this.files.get(path);
+    if (old?.blobSha === blob) return { changed: false, file: old };
+    const file = extractCloneFile(input, this.minMass);
+    this.replace(file);
+    return { changed: true, file };
+  }
+  remove(path: string): boolean {
+    const previous = this.files.get(checkedPath(path));
+    if (!previous) return false;
+    for (const fn of previous.functions) for (const kind of ['exact', 'renamed'] as const) {
+      const bucket = this.buckets[kind].get(fn[kind]);
+      bucket?.delete(fn.id);
+      if (!bucket?.size) this.buckets[kind].delete(fn[kind]);
+    }
+    this.files.delete(path); this.generation++;
+    return true;
+  }
+  unavailable(path: string, reason?: string): void {
+    this.replace({ path: checkedPath(path), status: 'unavailable', blobSha: null, sha256: null,
+      diagnostics: reason ? [{ start: 0, length: 0, message: reason.slice(0, 500) }] : [], functions: [] });
+  }
+  private replace(file: CloneFile): void {
+    this.remove(file.path);
+    this.files.set(file.path, file);
+    for (const fn of file.functions) for (const kind of ['exact', 'renamed'] as const) {
+      const bucket = this.buckets[kind].get(fn[kind]) ?? new Map<string, CloneFunction>();
+      bucket.set(fn.id, fn); this.buckets[kind].set(fn[kind], bucket);
+    }
+    this.generation++;
+  }
+  /** Precomputed bucket lookup for consumers; parsing never occurs in this method. */
+  lookup(kind: CloneKind, fingerprint: string, options: CloneFilter = {}): readonly CloneFunction[] {
+    return [...(this.buckets[kind].get(fingerprint)?.values() ?? [])]
+      .filter(fn => options.includeClassified || (!fn.classification.vendored && !fn.classification.retired
+        && (options.includeTests || !fn.classification.test))).sort(byLocation);
+  }
+  families(kind: CloneKind = 'renamed', options: CloneFilter & { crossFile?: boolean } = {}): CloneFamily[] {
+    const families: CloneFamily[] = [];
+    for (const fingerprint of this.buckets[kind].keys()) {
+      const members = this.lookup(kind, fingerprint, options);
+      const locations = new Set(members.map(fn => options.crossFile === false ? `${fn.path}:${fn.line}` : fn.path));
+      if (locations.size < 2) continue;
+      families.push({ id: `${CLONE_NORMALIZATION_VERSION}:floor-${this.minMass}:${kind}:${fingerprint}`,
+        version: CLONE_NORMALIZATION_VERSION, fingerprint, kind, members });
+    }
+    return families.sort((a, b) => compare(a.id, b.id));
+  }
+}
+
+export function buildCloneIndex(sources: Iterable<CloneSource>, options: { minMass?: number } = {}): CloneIndex {
+  const index = new CloneIndex(options);
+  for (const source of sources) index.update(source);
+  return index;
+}
+
+/** Refresh from existing push hashes + carried working-set handles, outside the
+ * synchronous hook. Explicit deleted paths distinguish deletion from a failed read.
+ * Missing/stale inputs stay typed unavailable; they never retain obsolete members.
+ */
+export async function refreshCloneIndex(index: CloneIndex, input: {
+  snapshot?: Pick<PushSnapshot, 'hashes'> | null;
+  workingSet?: Pick<CodeWorkingSet, 'files'> | null;
+  changedPaths?: readonly string[];
+  deletedPaths?: readonly string[];
+  readSource: (path: string) => Promise<string | null>;
+}): Promise<{ updated: string[]; unchanged: string[]; unavailable: string[]; removed: string[] }> {
+  const result = { updated: [] as string[], unchanged: [] as string[], unavailable: [] as string[], removed: [] as string[] };
+  const deleted = new Set(input.deletedPaths ?? []), changed = new Set(input.changedPaths ?? []);
+  const paths = new Set([...(input.snapshot?.hashes.keys() ?? []), ...(input.workingSet?.files.map(file => file.path) ?? []), ...changed]);
+  for (const path of [...deleted].sort()) if (index.remove(path)) result.removed.push(path);
+  for (const path of [...paths].sort()) {
+    checkedPath(path);
+    if (deleted.has(path)) continue;
+    const previous = index.getFile(path);
+    const expectedHash = input.snapshot?.hashes.get(path);
+    if (!changed.has(path) && expectedHash && previous?.sha256 === expectedHash) { result.unchanged.push(path); continue; }
+    let source: string | null;
+    try { source = await input.readSource(path); }
+    catch (error) {
+      index.unavailable(path, `Source read failed: ${error instanceof Error ? error.message : String(error)}`);
+      result.unavailable.push(path); continue;
+    }
+    if (source === null) { index.unavailable(path); result.unavailable.push(path); continue; }
+    const update = index.update({ path, source });
+    (update.changed ? result.updated : result.unchanged).push(path);
+  }
+  return result;
+}

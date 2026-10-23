@@ -93,6 +93,13 @@ export interface DiskReclaimReceipt {
   delegates: Array<{ classId: string; ok: boolean; detail: unknown; elapsedMs?: number;
     phases?: Array<ReclaimPhaseTiming & { observedAfterMs: number }>; omittedPhases?: number }>;
   errors: string[];
+  /** Monotonic wall time at the existing await boundaries. These counters
+   * distinguish preparation from admission/protection/audit latency; delegate,
+   * census and effect timings remain separate. Audit excludes the terminal
+   * receipt write, whose completion cannot be included in its own payload. */
+  timings?: { beforeSampleMs: number; afterSampleMs: number; auditMs: number;
+    initialMutexWaitMs: number; reacquireMutexWaitMs: number; mutexReleaseMs: number;
+    waiterCheckMs: number; protectionReadMs: number; rootPreparationMs: number; rootEntriesReadMs: number };
   caps?: RetentionCapReceipt[];
   /** Physical roots actually enforced; aliases share identity, selection and holder evidence. */
   roots?: Array<{ path: string; classId: string; aliases: string[] }>;
@@ -890,6 +897,15 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
     schemaVersion: 1, id: randomUUID(), host: hostname(), startedAt: new Date(started).toISOString(), finishedAt: '',
     dryRun: options.dryRun ?? false, complete: false, policyExhausted: null, devices: [], entries: [], delegates: [], errors: [],
   };
+  const phaseTimings = receipt.timings = { beforeSampleMs: 0, afterSampleMs: 0, auditMs: 0,
+    initialMutexWaitMs: 0, reacquireMutexWaitMs: 0, mutexReleaseMs: 0, waiterCheckMs: 0,
+    protectionReadMs: 0, rootPreparationMs: 0, rootEntriesReadMs: 0 };
+  const measure = async <T>(phase: keyof typeof phaseTimings, operation: () => Promise<T>): Promise<T> => {
+    const began = performance.now();
+    try { return await operation(); }
+    finally { phaseTimings[phase] += Math.max(0, performance.now() - began); }
+  };
+  const record = (phase: string, details: unknown) => measure('auditMs', async () => { await options.record?.(phase, details); });
   const home = options.home ?? homedir();
   const policy = compilePolicy(options.policy ?? retentionPolicyForWorkspaceRoot(), home);
   const sample = options.sample ?? (() => sampleDiskSnapshots(['/', '/mnt/data']));
@@ -897,24 +913,24 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
   const snapshots = async (): Promise<DiskSnapshot[]> => {
     try { return await sample(); } catch (err) { receipt.errors.push(`device sample: ${message(err)}`); return []; }
   };
-  const before = await snapshots();
+  const before = await measure('beforeSampleMs', snapshots);
   let activeRoot: string | undefined;
   try {
-    await options.record?.('started', receipt);
+    await record('started', receipt);
     let mutex: { hasWaiters: () => Promise<boolean> } | undefined;
     let protectedPaths: string[] = [];
-    const refreshProtection = async () => {
+    const refreshProtection = () => measure('protectionReadMs', async () => {
       const protection = await options.readProtection?.();
       policy.pins = protection?.pins ?? [];
       protectedPaths = [...(options.protectedPaths ?? []), ...(protection?.paths ?? [])].map((path) => resolve(path));
-    };
+    });
     // Keep the census/effect cursor across FIFO handoffs. Ending the whole pass
     // here made a queued writer discard minutes of inspection on every tick.
     const yieldToWaiter = async function* (onPaused?: (elapsedMs: number) => void): AsyncGenerator<void, number, void> {
-      if (!await mutex?.hasWaiters()) return 0;
+      if (!await measure('waiterCheckMs', async () => mutex?.hasWaiters())) return 0;
       const pausedAt = Date.now();
       try {
-        await options.record?.('progress', { phase: 'yield-to-queued-writer' });
+        await record('progress', { phase: 'yield-to-queued-writer', timings: { ...phaseTimings } });
         yield;
         // A pin or lease writer may have changed eligibility while we released
         // the mutex. Never reuse that protection snapshot after reacquisition.
@@ -957,10 +973,10 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           // The existing release-cut observer is synchronous. Serialize its
           // bounded audit writes without delaying or cancelling safety work.
           phaseWrites = phaseWrites.then(async () => {
-            await options.record?.('progress', { ...measured, phase: 'delegate-phase', classId: delegate.classId, delegatePhase: measured.phase });
+            await record('progress', { ...measured, phase: 'delegate-phase', classId: delegate.classId, delegatePhase: measured.phase });
           }).catch(err => { receipt.errors.push(`delegate phase audit:${delegate.classId}: ${message(err)}`); });
         };
-        await options.record?.('progress', { phase: 'delegate-start', classId: delegate.classId });
+        await record('progress', { phase: 'delegate-start', classId: delegate.classId });
         let result: { ok: boolean; detail: unknown };
         try { result = await delegate.run(receipt.dryRun, onPhase, delegateDeadline); }
         catch (err) { result = { ok: false, detail: message(err) }; }
@@ -968,11 +984,12 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         const measured = { classId: delegate.classId, ...result, elapsedMs: performance.now() - delegateStarted,
           ...(phases.length ? { phases } : {}), ...(omittedPhases ? { omittedPhases } : {}) };
         receipt.delegates.push(measured);
-        await options.record?.('progress', { phase: 'delegate-finish', classId: delegate.classId,
+        await record('progress', { phase: 'delegate-finish', classId: delegate.classId,
           ok: result.ok, elapsedMs: measured.elapsedMs });
       }
       const censusPolicy = { ...policy, pins: [] };
-      const roots = await physicalRetentionRoots(options.roots ?? await policyRoots(policy, home, receipt.errors), receipt.errors);
+      const roots = await measure('rootPreparationMs', async () =>
+        physicalRetentionRoots(options.roots ?? await policyRoots(policy, home, receipt.errors), receipt.errors));
       const previous = options.previousReceipt;
       if (previous && !previous.complete && !previous.dryRun && previous.host === receipt.host) {
         const blocked = previous.scan?.stoppedAtRoot;
@@ -1018,7 +1035,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         const retainAfterMs = keep?.kind === 'max-age'
           ? started - Math.min(keep.maxAgeHours, keep.buildDirMaxAgeHours ?? keep.maxAgeHours) * HOUR : undefined;
         try {
-          const names = await readdir(root.path);
+          const names = await measure('rootEntriesReadMs', () => readdir(root.path));
           const excluded = names.map((name) => join(root.path, name)).filter((path) =>
             (!capped && root.classId === 'papercusp-scratch' && workspaceIds.includes(path.slice(root.path.length + 1))) ||
             (!capped && rootProtectedPaths().some((protectedPath) => overlap(path, protectedPath))) ||
@@ -1028,7 +1045,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             // per-root inspection allowance on every scheduled pass. Bound stalls
             // by metadata progress and the complete walk by the remaining run.
             // Cap accounting still requires a successful complete-root census.
-            await options.record?.('progress', { phase: 'census-start', root: root.path, classId: root.classId });
+            await record('progress', { phase: 'census-start', root: root.path, classId: root.classId, timings: { ...phaseTimings } });
             const censusStarted = performance.now();
             let census: Awaited<ReturnType<NonNullable<DiskReclaimOptions['inspectTrees']>>> | undefined;
             let censusError: string | undefined;
@@ -1044,7 +1061,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
                 inspectedNodes: census?.inspectedNodes ?? 0, ...(census?.timing ? { timing: census.timing } : {}),
                 ...(census?.error || censusError ? { error: census?.error ?? censusError } : {}) };
               (receipt.censuses ??= []).push(measured);
-              await options.record?.('progress', { phase: 'census-finish', ...measured });
+              await record('progress', { phase: 'census-finish', ...measured });
             }
             progress.inspectedNodes += census.inspectedNodes;
             progress.retainedRecentTrees += census.retainedRecentTrees;
@@ -1163,7 +1180,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         };
         const recordProgress = async () => {
           updateEffectProgress();
-          await measureEffect('progressRecordMs', () => outsideInspectionBudget(async () => options.record?.('progress', { ...effect })));
+          await measureEffect('progressRecordMs', () => outsideInspectionBudget(() => record('progress', { ...effect })));
           lastProgressAt = Date.now();
           effect.elapsedMs = Math.max(0, lastProgressAt - effectStarted);
         };
@@ -1204,7 +1221,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (holders.byPath.has(entry.path)) { outcome.reason = 'live process'; continue; }
             // Write the intent before the last identity/holder checks, so a
             // slow database round trip cannot widen the check-to-effect window.
-            if (!receipt.dryRun) await measureEffect('removalAuditMs', () => outsideInspectionBudget(async () => options.record?.('remove-intent', entry)));
+            if (!receipt.dryRun) await measureEffect('removalAuditMs', () => outsideInspectionBudget(() => record('remove-intent', entry)));
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
             // Rescan write activity + identity and process holders immediately before the effect.
             // A regular file's complete newest-write/identity census is one
@@ -1265,7 +1282,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
                 const childOutcome = { path: removed.path, classId: entry.classId, bytes: removed.bytes,
                   status: receipt.dryRun ? 'would-remove' as const : 'removed' as const };
                 receipt.entries.push(childOutcome);
-                if (!receipt.dryRun) await measureEffect('removalAuditMs', () => outsideInspectionBudget(async () => options.record?.('removed', childOutcome)));
+                if (!receipt.dryRun) await measureEffect('removalAuditMs', () => outsideInspectionBudget(() => record('removed', childOutcome)));
               }
               if (cap && remainingUsage) { remainingUsage.removeBuilds(entry.path, result.removed); cap.afterBytes = remainingUsage.bytes; }
               continue;
@@ -1280,7 +1297,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               : rm(entry.path, { recursive: true, force: false })));
             outcome.status = 'removed';
             if (cap && remainingUsage) { remainingUsage.remove(entry.path); cap.afterBytes = remainingUsage.bytes; }
-            await measureEffect('removalAuditMs', () => outsideInspectionBudget(async () => options.record?.('removed', outcome)));
+            await measureEffect('removalAuditMs', () => outsideInspectionBudget(() => record('removed', outcome)));
           } catch (err) {
             if (absent(err)) { outcome.status = 'changed'; outcome.reason = 'disappeared before removal'; continue; }
             outcome.status = 'failed'; outcome.reason = message(err);
@@ -1337,10 +1354,21 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         const remainingMs = runDeadline - Date.now();
         if (remainingMs <= 0) throw new Error('retention run budget exhausted');
         let done = false;
-        await withFsMutex('papercusp-disk-retention', async (held) => {
-          mutex = held;
-          done = (await cursor.next()).done === true;
-        }, { timeoutMs: Math.max(1, remainingMs) });
+        const waitPhase = mutex ? 'reacquireMutexWaitMs' : 'initialMutexWaitMs';
+        const requestedAt = performance.now();
+        let admitted = false, callbackFinishedAt: number | undefined;
+        try {
+          await withFsMutex('papercusp-disk-retention', async (held) => {
+            admitted = true;
+            phaseTimings[waitPhase] += Math.max(0, performance.now() - requestedAt);
+            mutex = held;
+            try { done = (await cursor.next()).done === true; }
+            finally { callbackFinishedAt = performance.now(); }
+          }, { timeoutMs: Math.max(1, remainingMs) });
+        } finally {
+          if (!admitted) phaseTimings[waitPhase] += Math.max(0, performance.now() - requestedAt);
+          if (callbackFinishedAt !== undefined) phaseTimings.mutexReleaseMs += Math.max(0, performance.now() - callbackFinishedAt);
+        }
         if (done) break;
       }
     } finally { await cursor.return(); }
@@ -1353,8 +1381,9 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
     const index = roots.findIndex(root => root.path === activeRoot);
     if (receipt.scan && index >= 0) {
       receipt.scan.stoppedAtRoot ??= roots[index]!.path;
+      const incompleteRoots = receipt.scan.incompleteRoots ??= [];
       for (const root of roots.slice(index)) {
-        if (!receipt.scan.incompleteRoots.includes(root.path)) receipt.scan.incompleteRoots.push(root.path);
+        if (!incompleteRoots.includes(root.path)) incompleteRoots.push(root.path);
       }
     }
   }
@@ -1362,7 +1391,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
   // normal epilogue. Report retained usage after successful effects on every
   // exit path, including a cooperative yield or a later inspection failure.
   for (const cap of receipt.caps ?? []) cap.overByBytes = Math.max(0, cap.afterBytes - cap.maxBytes);
-  const after = await snapshots();
+  const after = await measure('afterSampleMs', snapshots);
   const paths = new Set(options.expectedDevices ?? ['/', '/mnt/data']);
   receipt.devices = [...paths].map((path) => {
     const matches = (s: DiskSnapshot) => s.path === path || s.aliases?.includes(path);

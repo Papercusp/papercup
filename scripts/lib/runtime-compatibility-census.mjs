@@ -211,6 +211,87 @@ const inspectElf = (path) => execFileSync('readelf', ['--file-header', '--dynami
   { encoding: 'utf8', timeout: 10_000, maxBuffer: 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } });
 
 /**
+ * Join existing byte/ELF evidence to package declarations and caller edges.
+ * Target names are selection hints, not binary validation or reachability proof.
+ * In particular, a foreign prebuild or optional provider is never discarded.
+ */
+export function classifyNativeInventory(inventory, elfInventory, { packages, platformCells, host }) {
+  if (!Array.isArray(packages) || new Set(packages.map((pkg) => pkg.key)).size !== packages.length
+      || !Array.isArray(platformCells) || !host?.os || !host?.arch) throw new Error('Unique package contexts, platform cells and host target required');
+  const contexts = new Map(packages.map((pkg) => [pkg.key, pkg]));
+  const callers = new Map();
+  for (const pkg of packages) for (const edge of pkg.edges ?? []) {
+    if (!edge.to) continue;
+    if (!callers.has(edge.to)) callers.set(edge.to, []);
+    callers.get(edge.to).push({ from: pkg.key, field: edge.field, optional: edge.optional === true });
+  }
+  const osAliases = { windows: 'win32', macos: 'darwin' };
+  const archAliases = { aarch64: 'arm64', x86_64: 'x64', x86: 'ia32' };
+  const hints = (text, pattern, aliases) => [...text.matchAll(pattern)].map((match) => aliases[match[1]] ?? match[1]);
+  const unique = (values) => [...new Set(values)];
+  const single = (values) => values.length === 1 ? values[0] : null;
+  const osPattern = /(?:^|[\/_.-])(android|linux|darwin|win32|windows|macos|ios)(?=$|[\/_.-])/g;
+  const archPattern = /(?:^|[\/_.-])(x86_64|aarch64|arm64|x64|ia32|x86|arm|universal)(?=$|[\/_.-])/g;
+  const machineArch = { 'Advanced Micro Devices X86-64': 'x64', AArch64: 'arm64', ARM: 'arm', 'Intel 80386': 'ia32' };
+  const rows = inventory.files.map((file) => {
+    const pkg = contexts.get(file.packageId), lock = pkg?.lock ?? {};
+    const osHints = unique(hints(file.path, osPattern, osAliases));
+    const archHints = unique(hints(file.path, archPattern, archAliases));
+    const declaredOs = Array.isArray(lock.os) ? lock.os : [];
+    const declaredArch = Array.isArray(lock.cpu) ? lock.cpu : [];
+    const name = file.packageId.split('node_modules/').at(-1);
+    const os = single(osHints) ?? single(declaredOs.filter((value) => !value.startsWith('!')))
+      ?? single(unique(hints(name, osPattern, osAliases)));
+    const binaryArch = machineArch[file.elf?.machine] ?? null;
+    const arch = binaryArch ?? single(archHints) ?? single(declaredArch.filter((value) => !value.startsWith('!')))
+      ?? single(unique(hints(name, archPattern, archAliases)));
+    const text = `${file.path}/${name}`;
+    const libcHints = unique([...(lock.libc ?? []),
+      ...(/(?:^|[\/_.-])musl(?:$|[\/_.-])/.test(text) || file.elf?.needed.some((value) => value.includes('musl')) ? ['musl'] : []),
+      ...(/(?:^|[\/_.-])gnu(?:$|[\/_.-])/.test(text) || file.elf?.needed.includes('libc.so.6') ? ['glibc'] : []),
+      ...(os === 'android' ? ['bionic'] : [])]);
+    const libc = single(libcHints);
+    const conflicts = [];
+    if (osHints.length > 1 || archHints.length > 1 || libcHints.length > 1) conflicts.push('conflicting-target-hints');
+    if (binaryArch && archHints.length && !archHints.includes(binaryArch)) conflicts.push('path-elf-architecture-mismatch');
+    const allows = (values, value) => !values.includes(`!${value}`)
+      && (!values.some((entry) => !entry.startsWith('!')) || values.includes(value));
+    if (os && !allows(declaredOs, os)) conflicts.push('package-os-mismatch');
+    if (arch && !allows(declaredArch, arch)) conflicts.push('package-cpu-mismatch');
+    if (file.format === 'pe' && os && os !== 'win32') conflicts.push('format-os-mismatch');
+    if (file.format === 'elf' && ['darwin', 'win32', 'ios'].includes(os)) conflicts.push('format-os-mismatch');
+    if (file.format === 'mach-o-candidate' && os && !['darwin', 'ios'].includes(os)) conflicts.push('format-os-mismatch');
+    const portable = file.format === 'wasm';
+    const candidateCells = platformCells.filter((cell) => portable || (os === (osAliases[cell.os] ?? cell.os)
+      && (arch === cell.arch || arch === 'universal'))).map((cell) => cell.id);
+    const hostRelation = conflicts.length ? 'conflicting-evidence' : portable ? 'portable-wasm-candidate'
+      : os && os !== host.os ? 'different-os' : arch && arch !== host.arch && arch !== 'universal' ? 'different-arch'
+        : os === host.os && arch === host.arch ? (libc && host.libc && libc !== host.libc ? 'different-libc' : 'same-os-arch') : 'unknown';
+    const operationalRole = file.path.endsWith('.bare') ? 'bare-addon-candidate'
+      : file.path.endsWith('.node') ? 'node-addon-candidate' : portable ? 'wasm-candidate'
+        : /\.(?:dll|dylib|so(?:\.[\w.-]+)?)$/.test(file.path) ? 'shared-library-candidate' : 'executable-candidate';
+    return { packageId: file.packageId, path: file.path, realPath: file.realPath, sha256: file.sha256,
+      target: { os, arch, libc, osHints, archHints, declaredOs, declaredArch, binaryArch, conflicts },
+      candidateCells, hostRelation, operationalRole, packageContextAvailable: !!pkg,
+      selectorVerified: false, runtimeAcceptance: 'not-measured' };
+  });
+  const byPath = new Map(rows.map((row) => [row.realPath, row]));
+  const gaps = [...inventory.unresolved.map((gap) => ({ ...gap, evidencePlane: 'package-bytes',
+    file: rows.find((row) => row.packageId === gap.packageId && row.path === gap.path) ?? null })),
+  ...(elfInventory?.unresolved ?? []).map((gap) => ({ ...gap, evidencePlane: 'elf-candidates', file: byPath.get(gap.path) ?? null }))];
+  const result = { schema: 'papercusp-native-target-review-v1', inputFingerprints: {
+    native: inventory.fingerprint, elf: elfInventory?.fingerprint ?? null }, host, platformCells,
+  packages: inventory.roots.map((root) => ({ id: root.id, manifestSha256: root.manifestSha256 ?? null,
+    contextAvailable: contexts.has(root.id), declaration: contexts.get(root.id)?.lock ?? null,
+    callerEdges: callers.get(root.id) ?? [], seedEvidence: contexts.get(root.id)?.seedEvidence ?? [] })),
+  rows, gaps, closureAccepted: false, actualLoaderResolutionVerified: false,
+  limitations: ['Package/path target hints and static ELF metadata do not prove a loader selector or operational reachability.',
+    'Caller edges preserve optionality; missing packages and foreign targets remain obligations, not runtime failures or exclusions.',
+    'Platform candidate cells are discovery mappings only; no cell receives acceptance from this review.'] };
+  return { ...result, fingerprint: hash(JSON.stringify(result)) };
+}
+
+/**
  * Fingerprint the installed bytes under an explicit, reviewed package population.
  * Nested node_modules must be supplied as their own package roots. Symlinks that
  * escape a package stay gaps; a package walk cannot certify the system loader's
