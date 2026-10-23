@@ -42,6 +42,8 @@ describe('production observability composition', () => {
   let server: http.Server;
   const captured: Array<{ event: string; properties: Record<string, unknown> }> = [];
   const outboundParents: string[] = [];
+  const modelParents = new Map<string, string>();
+  let modelBarrier: (() => Promise<void>) | undefined;
   let captureMode: 'ok' | 'reject' | 'stall' = 'ok';
   let onCapture: (() => void) | undefined;
   const captureCloseDurations: number[] = [];
@@ -50,7 +52,7 @@ describe('production observability composition', () => {
     spawnId: 'synthetic-session', log: vi.fn(), requestOrigin: { headers: {
       traceparent: '00-12345678901234567890123456789012-1234567890123456-01',
       baggage: 'private=SECRET',
-    } } } as never;
+    } } };
 
   beforeAll(async () => {
     fixture.db = await createOrgTestDb();
@@ -59,11 +61,15 @@ describe('production observability composition', () => {
     vi.stubEnv('PAPERCUSP_POSTHOG_HOST', '');
     vi.stubEnv('PAPERCUSP_POSTHOG_KEY', '');
     server = http.createServer(async (req, res) => {
-      if (req.url === '/model') {
+      const modelUrl = new URL(req.url!, 'http://localhost');
+      if (modelUrl.pathname === '/model') {
+        const modelRequestId = modelUrl.searchParams.get('request') ?? 'synthetic-model';
         outboundParents.push(String(req.headers.traceparent));
+        modelParents.set(modelRequestId, String(req.headers.traceparent));
         expect(req.headers.baggage).toBeUndefined();
-        beginGatewayTrace('synthetic-model', 'synthetic-provider', { traceparent: String(req.headers.traceparent) });
-        finishGatewayTrace('synthetic-model', { model: 'synthetic-model', requestId: 1, attempts: 1,
+        beginGatewayTrace(modelRequestId, 'synthetic-provider', { traceparent: String(req.headers.traceparent) });
+        await modelBarrier?.();
+        finishGatewayTrace(modelRequestId, { model: 'synthetic-model', requestId: 1, attempts: 1,
           cache: { inputTokens: 10, cacheReadTokens: 2 }, durationsMs: { queueWait: 0, upstreamTtfb: 1 },
           outcome: 'ok' } as GatewayRequestTimeline);
         res.end('model-ok');
@@ -98,13 +104,18 @@ describe('production observability composition', () => {
     await fixture.db?.cleanup();
   });
 
-  async function invoke(callId: string, fail: boolean | Error = false) {
-    PROJECTED_DEPS.onDispatchStart!({ ctx, toolName: 'synthetic:observe', pluginName: 'synthetic', callId } as never);
+  async function invoke(callId: string, fail: boolean | Error = false, options: {
+    requestContext?: typeof ctx; enter?: () => Promise<void>; modelRequestId?: string; windowKey?: string;
+  } = {}) {
+    const requestContext = options.requestContext ?? ctx;
+    PROJECTED_DEPS.onDispatchStart!({ ctx: requestContext, toolName: 'synthetic:observe', pluginName: 'synthetic', callId } as never);
     const handler = vi.fn(async () => {
+      await options.enter?.();
       await Promise.resolve();
       const child = trace.getTracer('application').startSpan('SECRET child name', { attributes: { prompt: 'SECRET' } });
       child.end();
-      const response = await fetch(`${fixture.host}/model`, { headers: { authorization: 'SECRET' } });
+      const query = options.modelRequestId ? `?request=${encodeURIComponent(options.modelRequestId)}` : '';
+      const response = await fetch(`${fixture.host}/model${query}`, { headers: { authorization: 'SECRET' } });
       if (fail) throw fail instanceof Error ? fail : new Error('SECRET');
       return response.text();
     });
@@ -112,11 +123,11 @@ describe('production observability composition', () => {
     const handlerStarted = performance.now();
     try {
       result = await PROJECTED_DEPS.aroundInvoke!({ tool: { pluginName: 'synthetic' }, toolName: 'synthetic:observe',
-        input: { prompt: 'SECRET' }, ctx, callId, invoke: handler } as never);
+        input: { prompt: 'SECRET' }, ctx: requestContext, callId, invoke: handler } as never);
     } catch (error) { result = error; }
     expect(performance.now() - handlerStarted).toBeLessThan(2_000);
-    await PROJECTED_DEPS.recordInvocation!({ ctx, callId, toolName: 'synthetic:observe', pluginName: 'synthetic',
-      windowKey: 'synthetic-window', status: fail ? 'error' : 'ok', durationMs: 1, args: { prompt: 'SECRET' },
+    await PROJECTED_DEPS.recordInvocation!({ ctx: requestContext, callId, toolName: 'synthetic:observe', pluginName: 'synthetic',
+      windowKey: options.windowKey ?? 'synthetic-window', status: fail ? 'error' : 'ok', durationMs: 1, args: { prompt: 'SECRET' },
       ...(fail ? { errorCode: 'handler_error' } : {}) } as never);
     await flushPendingTelemetry();
     expect(handler).toHaveBeenCalledOnce();
@@ -144,6 +155,67 @@ describe('production observability composition', () => {
     const before = captured.length;
     await flushRuntimeObservability();
     expect(captured).toHaveLength(before); // capture requests do not recursively export
+  });
+  it('keeps two barrier-interleaved production tool, HTTP, model and PostgreSQL journeys isolated', async () => {
+    const journeys = [
+      { callId: 'concurrent-left', traceId: '11111111111111111111111111111111', parentId: '1111111111111111' },
+      { callId: 'concurrent-right', traceId: '22222222222222222222222222222222', parentId: '2222222222222222' },
+    ];
+    const barrier = () => {
+      let entered = 0;
+      let release!: () => void;
+      const ready = new Promise<void>(resolve => { release = resolve; });
+      return async () => { if (++entered === journeys.length) release(); await ready; };
+    };
+    const enter = barrier();
+    modelBarrier = barrier();
+    const before = captured.length;
+    try {
+      const results = await Promise.all(journeys.map(journey => invoke(journey.callId, false, {
+        requestContext: { ...ctx, requestOrigin: { headers: {
+          traceparent: `00-${journey.traceId}-${journey.parentId}-01`, baggage: 'private=SECRET',
+        } } },
+        enter, modelRequestId: journey.callId + '-model', windowKey: journey.callId,
+      })));
+      expect(results).toEqual(['model-ok', 'model-ok']);
+      await flushRuntimeObservability();
+      const events = captured.slice(before);
+      const rows = await fixture.db!.adminSql`
+        SELECT window_key, metadata_json FROM harness_shared.tool_invocations
+        WHERE workspace_id = 'synthetic-workspace' AND tool_name = 'synthetic:observe'
+          AND window_key IN ('concurrent-left', 'concurrent-right')`;
+      expect(rows).toHaveLength(2);
+      const toolSpanIds: unknown[] = [];
+      for (const journey of journeys) {
+        const own = events.filter(e => e.properties.$ai_trace_id === journey.traceId);
+        const tool = own.filter(e => e.properties['papercusp.call_id'] === journey.callId &&
+          e.properties.$ai_parent_id === journey.parentId);
+        const model = own.filter(e => e.event === '$ai_generation' &&
+          e.properties['papercusp.request_id'] === journey.callId + '-model');
+        expect(tool).toHaveLength(1);
+        expect(model).toHaveLength(1);
+        const toolSpanId = tool[0]!.properties.$ai_span_id;
+        toolSpanIds.push(toolSpanId);
+        const outbound = modelParents.get(journey.callId + '-model')!;
+        expect(outbound).toMatch(new RegExp(`^00-${journey.traceId}-[0-9a-f]{16}-01$`));
+        const httpSpanId = outbound.split('-')[2];
+        expect(model[0]!.properties.$ai_parent_id).toBe(httpSpanId);
+        const httpSpan = own.filter(e => e.properties.$ai_span_id === httpSpanId);
+        expect(httpSpan).toHaveLength(1);
+        expect(httpSpan[0]!.properties).toMatchObject({
+          'papercusp.call_id': journey.callId, $ai_parent_id: toolSpanId,
+        });
+        expect(own.some(e => e.properties['papercusp.call_id'] &&
+          e.properties['papercusp.call_id'] !== journey.callId)).toBe(false);
+        const row = rows.filter(row => row.window_key === journey.callId);
+        expect(row).toHaveLength(1);
+        expect(row[0]!.metadata_json).toMatchObject({ otel: { traceId: journey.traceId, spanId: toolSpanId } });
+      }
+      expect(new Set(toolSpanIds).size).toBe(2);
+      expect(events.filter(e => e.event === '$ai_generation')).toHaveLength(2);
+      expect(JSON.stringify(events)).not.toContain('SECRET');
+      expect(runtimeObservabilityHealth().tracing).toMatchObject({ active: 0, queuedSpans: 0 });
+    } finally { modelBarrier = undefined; }
   });
   it('keeps handler errors intact, exports a sanitized exception, and drops queued spans after revocation', async () => {
     expect(await invoke('synthetic-error', true)).toMatchObject({ message: 'SECRET' });
