@@ -126,18 +126,23 @@ try {
 let managedTaskSocket;
 let managedTaskBusAddress;
 let runtimeRoot = null;
+let runtimeTmpBase = null;
 async function createIsolatedRuntimeRoot() {
   // PG and Vitest may use /dev/shm, but Linux SRT replaces /dev with a
   // private device namespace and deliberately skips /dev allowWrite mounts.
   // Native HOME/TMPDIR must survive that namespace. Resolve symlinks too;
   // changing PG's capacity-selected volume would not fix this placement rule.
-  let base = await realpath(tmpdir());
+  // Nested proof wrappers need sibling private roots on the same selected
+  // volume. Recursively nesting beneath the parent's TMPDIR eventually exceeds
+  // the Unix socket address limit even for an ordinary fixture socket.
+  let base = await realpath(process.env.PAPERCUSP_TEST_RUNTIME_TMP_BASE?.trim() || tmpdir());
   const masked = path => process.platform === 'linux' && /^\/(dev|proc)(\/|$)/.test(path);
   if (masked(base)) {
     await mkdir('/tmp/pcv', { recursive: true });
     base = await realpath('/tmp/pcv');
     if (masked(base)) throw new Error('isolated native runtime temporary root resolves into the sandbox device namespace');
   }
+  runtimeTmpBase = base;
   return mkdtemp(join(base, 'papercusp-test-runtime-'));
 }
 if (managedTasks) {
@@ -538,13 +543,19 @@ if (runtimeRoot && runtimeId) {
   // Rustup shims depend on HOME/settings.toml. Capture the selected installed
   // executable while the caller's toolchain configuration is still available;
   // only its binary directory crosses into the private runtime, like rg above.
-  const rustupAsset = await resolveExecutable((process.env.PATH ?? '').split(delimiter)
-    .filter(Boolean).map(dir => resolve(ROOT, dir, 'rustup')));
-  const cargoSelection = rustupAsset ? spawnSync(rustupAsset, ['which', 'cargo'], {
-    cwd: ROOT, env: process.env, encoding: 'utf8', timeout: 5000,
-  }) : null;
-  const cargoAsset = cargoSelection?.status === 0
-    ? await resolveExecutable([cargoSelection.stdout.trim()]) : undefined;
+  // A parent wrapper already selected this executable before isolating HOME.
+  // Revalidate that input instead of consulting the now-empty Rustup settings.
+  const inheritedCargo = process.env.PAPERCUSP_TEST_CARGO?.trim();
+  let cargoAsset = inheritedCargo ? await resolveExecutable([inheritedCargo]) : undefined;
+  if (!cargoAsset) {
+    const rustupAsset = await resolveExecutable((process.env.PATH ?? '').split(delimiter)
+      .filter(Boolean).map(dir => resolve(ROOT, dir, 'rustup')));
+    const cargoSelection = rustupAsset ? spawnSync(rustupAsset, ['which', 'cargo'], {
+      cwd: ROOT, env: process.env, encoding: 'utf8', timeout: 5000,
+    }) : null;
+    cargoAsset = cargoSelection?.status === 0
+      ? await resolveExecutable([cargoSelection.stdout.trim()]) : undefined;
+  }
   const home = join(runtimeRoot, 'home');
   const papercuspHome = join(home, '.papercusp');
   const workspacesRoot = join(runtimeRoot, 'workspaces');
@@ -627,6 +638,7 @@ if (runtimeRoot && runtimeId) {
     // otherwise Playwright silently resolves an empty runtime-local cache.
     PLAYWRIGHT_BROWSERS_PATH: browserCachePath(process.env),
     PAPERCUSP_PG_SQL_DIR: sqlDir,
+    PAPERCUSP_TEST_RUNTIME_TMP_BASE: runtimeTmpBase,
     TMPDIR: join(runtimeRoot, 'tmp'),
   };
 }
