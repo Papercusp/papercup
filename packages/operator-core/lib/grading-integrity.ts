@@ -36,7 +36,7 @@ import {
   type GradingLaunchProfile,
   type AcceptanceGraderTerminalFailureCode,
 } from './acceptance-grader';
-import { getRubric } from './rubrics';
+import { getRubric, readRubric } from './rubrics';
 import {
   acquireGradingAuditSubjectMutex,
   cancelSupersededPendingGradingAuditAtomically,
@@ -1999,7 +1999,14 @@ export async function dispatchPendingGradingAudits(
   );
 
   const readCards = deps.listScorecards ?? listScorecards;
-  const resolveRubric = deps.getRubric ?? getRubric;
+  const resolveRubric = deps.getRubric ?? (async (rubricRef: string) => {
+    const lookup = await readRubric(rubricRef);
+    if (lookup.kind === 'ambiguous') throw lookup.error;
+    if (lookup.kind === 'read-failed') {
+      throw new Error('target rubric read failed; retry this audit when its backing plan is readable');
+    }
+    return lookup.kind === 'found' ? lookup.rubric : null;
+  });
   const profile = gradingLaunchProfile(input.ctx);
   const launch = withGradingLaunchProfile(deps.launch ?? launchAgentTool.handler, profile);
   const reserve = deps.reserve ?? reservePendingGradingAudit;
@@ -2456,7 +2463,18 @@ export async function dispatchPendingGradingAudits(
       reason: `exact audit endpoint unavailable: ${runtimeFailures.get(issueId)}`,
     };
     markPhase('rubric-read');
-    const rubric = await inDispatchWorkspace(() => resolveRubric(card.rubricRef));
+    let rubric: Awaited<ReturnType<typeof getRubric>>;
+    try {
+      rubric = await inDispatchWorkspace(() => resolveRubric(card.rubricRef));
+    } catch (error) {
+      return {
+        issueId,
+        rubricRef: card.rubricRef,
+        state: 'failed',
+        phase,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
     if (!rubric) {
       return { issueId, rubricRef: card.rubricRef, state: 'skipped', reason: 'target rubric not found' };
     }

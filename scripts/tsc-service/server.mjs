@@ -24,6 +24,7 @@ import {
   tscServiceRequestId,
   tscServiceIdentity,
   assertTscCompilerIdentityCurrent,
+  closeTscServiceCompiler,
   tscServiceSocketPath,
 } from '../lib/tsc-service.mjs';
 
@@ -128,15 +129,13 @@ function tsgoRssBytes() {
 async function resetApi(why) {
   log(`resetting tsgo (${why})`);
   const { api } = state;
+  // Never clear the owning handle and admit another compiler while its
+  // predecessor is still alive, even if snapshot disposal would reject.
+  await closeTscServiceCompiler(api);
   state.api = null;
   state.snapshot = null;
   state.open = [];
   dependencyCache.clear();
-  try {
-    await api?.close();
-  } catch {
-    // Already dead is the usual reason we are here.
-  }
 }
 
 /** Take a fresh snapshot covering `projects`, opening and evicting projects as needed. */

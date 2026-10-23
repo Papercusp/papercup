@@ -21,6 +21,8 @@
  *   bytes and lists the same blobs the publisher pinned.
  * - The type-pack planner and applier, the plan-template install path, the registry, the ship gate,
  *   the plan tools, the scorecard writer and the blind-review handler are the production ones.
+ * - Automatic report indexing keeps its real PostgreSQL chunk writer, with the maintained
+ *   deterministic embedding fixture so this workflow does not depend on an embedding sidecar.
  * - The activation audit is seeded as a row, as the sibling ship tests do: the real one needs the
  *   source conversation's session turns. The acceptance bars it would seed come from the real
  *   seeder (`seedAcceptanceBarsInTransaction`), so the rubric is derived from the item type's
@@ -49,6 +51,21 @@ vi.mock('../../../plan-audits', async (importOriginal) => {
     ...actual,
     repoCitationContextForHarness: (_harnessSlug: unknown, citations?: Parameters<typeof actual.repoCitationContextForHarness>[1]) =>
       actual.repoCitationContextForHarness(null, citations),
+  };
+});
+vi.mock('../../../search/embed-backfill', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../search/embed-backfill')>();
+  const [{ deterministicEmbedding }, { EMBEDDER_DIM_SPECS }] = await Promise.all([
+    import('../../../../test/_deterministic-embedder'),
+    import('@papercusp/memory'),
+  ]);
+  const profile = EMBEDDER_DIM_SPECS.gemma;
+  return {
+    ...actual,
+    resolveBackfillEmbedder: async () => ({
+      mode: 'gemma', profile,
+      embed: async (text: string) => deterministicEmbedding(text, profile.targetDims),
+    }),
   };
 });
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
@@ -781,7 +798,7 @@ describe('R-21/R-22: a plan ships in pot B with an item type installed from pot 
       coordOwnerId: BLIND_REVIEWER,
     } as never;
     const blind = (await runWithWorkspace(WS_B, () => blindReviewTool.handler(
-      { harness: HARNESS, slug, op: 'post', gaps: [] } as never, reviewerCtx,
+      { harness: HARNESS, slug, op: 'post', outcome: 'conclusive', gaps: [] } as never, reviewerCtx,
     ))) as { content?: Array<{ text: string }> };
     expect(JSON.parse(blind.content?.[0]?.text ?? '{}'), brief(blind)).toMatchObject({ ok: true, counts: true });
 

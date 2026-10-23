@@ -138,7 +138,8 @@ it('runs two real managed sweep children against one private corpus without refi
         timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
       const output = result.output.split('\n').find(line => line.startsWith('P008_NATIVE '));
       expect(output).toBeDefined();
-      await writeFile(join(evidenceDir, 'phases/execute/native-sweep.json'), output!.slice('P008_NATIVE '.length));
+      // The callback receives the execute directory; retainedArtifacts is relative to the run root.
+      await writeFile(join(evidenceDir, 'native-sweep.json'), output!.slice('P008_NATIVE '.length));
       const stages = result.output.split('\n').filter(line => line.startsWith('[with-test-pg] cleanup '))
         .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)));
       const complete = stages.find(stage => stage.stage === 'complete');

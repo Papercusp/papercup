@@ -10,6 +10,8 @@ import { runPlanAnchorFreshnessAction } from '../harness/routines/plan-anchor-fr
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
 import { getMessageById } from '../agent-tools/coordination/messages';
 import { runWithWorkspace } from '../workspace-als';
+import { seedPlanAnchorFreshnessRoutine } from '../harness/routines/seed-plan-anchor-freshness-routine';
+import { PLAN_ANCHOR_FRESHNESS_CRON } from './anchor-freshness-sweep';
 
 const WS = 'anchor-sweep-fixture';
 const HARNESS = 'anchor-sweep';
@@ -55,9 +57,30 @@ describe('default freshness notice delivery on the migrated coordination schema'
     try {
       await fx.admin`DELETE FROM harness_shared.coord_event_log WHERE workspace_id=${privateWs}`;
       await fx.admin`DELETE FROM harness_shared.plan_anchor_notices WHERE workspace_id=${privateWs}`;
+      await fx.admin`DELETE FROM harness_shared.routines WHERE workspace_id=${privateWs}`;
       await fx.admin`DELETE FROM harness_shared.harness_plans WHERE workspace_id=${privateWs}`;
       await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id IN (${privateWs},'anchor-other-workspace')`;
     } finally { await fx.dispose(); }
+  });
+  it('seeds the declared schedule active by default and preserves an explicit pause on reseed', async () => {
+    const previous = process.env.PAPERCUSP_POT_HOME_SLUG;
+    process.env.PAPERCUSP_POT_HOME_SLUG = 'anchor-freshness-private-home';
+    try {
+      await runWithWorkspace(privateWs, seedPlanAnchorFreshnessRoutine);
+      const [seeded] = await fx.admin`SELECT active,trigger_kind,trigger_config,target_role
+        FROM harness_shared.routines WHERE workspace_id=${privateWs} AND name='plan-anchor-freshness'`;
+      expect(seeded).toMatchObject({ active: true, trigger_kind: 'cron',
+        trigger_config: { cron: PLAN_ANCHOR_FRESHNESS_CRON, cap: 50 }, target_role: 'system:plan-anchor-freshness' });
+      await fx.admin`UPDATE harness_shared.routines SET active=false
+        WHERE workspace_id=${privateWs} AND name='plan-anchor-freshness'`;
+      await runWithWorkspace(privateWs, seedPlanAnchorFreshnessRoutine);
+      const [reseeded] = await fx.admin`SELECT active FROM harness_shared.routines
+        WHERE workspace_id=${privateWs} AND name='plan-anchor-freshness'`;
+      expect(reseeded!.active).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_POT_HOME_SLUG;
+      else process.env.PAPERCUSP_POT_HOME_SLUG = previous;
+    }
   });
   it('uses the explicit workspace, finds real open holders, persists one coord message and replays its stable id', async () => {
     await fx.admin`INSERT INTO harness_shared.harness_plans(workspace_id,harness_slug,plan_slug,title,content,content_hash)

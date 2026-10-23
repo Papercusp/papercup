@@ -3,6 +3,18 @@
 // scripts/lib/tsc-service.mjs and regenerate.
 /** A reset may spawn a new executable from disk. Refuse replacement until restart. */
 export function assertTscCompilerIdentityCurrent(): void;
+/** Reap the owned native child before a replacement API can be created.
+ * API.close() first disposes snapshots over RPC; a disposed connection can
+ * reject that step before Client.close() ever closes stdin. Native tsgo can
+ * remain blocked on stdin even after SIGTERM, so EOF and verified exit belong
+ * to this service, independently of snapshot cleanup.
+ * @param {any} api
+ * @param {{ graceMs?: number, killWaitMs?: number }} [options]
+ */
+export function closeTscServiceCompiler(api: any, { graceMs, killWaitMs }?: {
+    graceMs?: number;
+    killWaitMs?: number;
+}): Promise<void>;
 /** Exact loaded service/compiler identity plus the requested root config and named inputs.
  * Missing inputs remain explicit nulls; they never certify a successful focused check.
  * @param {Record<string, any>} request

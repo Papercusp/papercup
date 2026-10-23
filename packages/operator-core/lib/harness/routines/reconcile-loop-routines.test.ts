@@ -754,6 +754,19 @@ describe('reconcileLoopRoutines — strict per-fire loop-origin completion (EI-2
     expect(recordFire).not.toHaveBeenCalled();
   });
 
+  describe('indexed loop completion reconciliation', () => {
+    it.each([['current10', T0 + 5_000, true], ['stale9', null, false], ['generic pickup', T0 + 500, false]] as const)(
+      'settles only recognized current-fire completion: %s', async (_label, at, recognized) => {
+        const result = await reconcile({
+          sql: fakeSql([deliveredWarmRow({ last_loop_turn_at: at === null ? null : pgString(at) })], []),
+          nowMs: T0 + 30_000,
+        });
+        expect(result.rearmed).toBe(recognized ? 1 : 0);
+        if (recognized) expect(result.loops[0]).toMatchObject({ via: 'loop-turn', completedAt: at });
+      },
+    );
+  });
+
   it('re-arms from the delivered wake after grace when the loop-origin clock is absent or stale', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const updates: unknown[][] = [];

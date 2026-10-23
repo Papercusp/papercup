@@ -1598,6 +1598,17 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
     expect(s.fireCount).toBeGreaterThan(s.maxFires!);
   });
 
+  describe('indexed loop completion status', () => {
+    it.each([['current10', '2026-10-23T14:48:30.000Z'], ['stale9 or generic pickup', null]] as const)(
+      'preserves the exact SQL recognition result for %s', async (_label, at) => {
+        const out = await getLoopStatuses(['su-x'], {
+          sql: rowSql({ last_loop_turn_at: at, last_real_turn_at: '2026-10-23T14:49:00Z' }) as unknown as Sql,
+        });
+        expect(out.get('su-x')!.lastLoopTurnAt).toBe(at);
+      },
+    );
+  });
+
   it('exposes the wake dispatch clock separately from its later delivery-settle clock', async () => {
     const out = await getLoopStatuses(['su-x'], {
       sql: rowSql({

@@ -19785,8 +19785,8 @@
     "catalogSource": "current-build"
   },
   "measurementAmendment": {
-    "decisionRef": "deterministic-tool-definition-delivery-2026-09-21#D-093",
-    "registeredAt": "2026-10-23T22:32:44.562Z",
+    "decisionRef": "deterministic-tool-definition-delivery-2026-09-21#D-096",
+    "registeredAt": "2026-10-23T23:31:57.904Z",
     "sourceReplacements": {
       "packages/operator-core/lib/tool-delivery-acceptance.ts": {
         "originalSha256": "aa1d038d98d7caaf00fbc27682d5dcf639ad4e6430cbb0af03017a5082991778",
@@ -19801,13 +19801,13 @@
       "packages/operator-core/lib/tool-delivery-clean-runtime.ts": "c8584defa6a597faff425762fdda64008049a5af08de2cacce2edf8d02350fe2",
       "packages/operator-core/lib/tool-delivery-clean-runtime.test.ts": "355c644ada9ad05b5c4b4d1300851450c51aff1dd52ce6ba6476b208cf70611c",
       "packages/operator-core/lib/llm-testing/test-run-ledger.ts": "5591937e89ac0122befed46f837ca802f257e8acd61abb4dc986c7d43fc5af4c",
-      "libs/test-config/src/execution-details.ts": "57f1944aa1bc9901cbd4afa3e9fff5b696af16b88c21b4047c15b280ebbd7783",
-      "libs/test-config/src/execution-details.test.ts": "b8d00620fa8b3b560b05fc4e21166686598966c0e0c9adae5767b34fb2db7d75",
+      "libs/test-config/src/execution-details.ts": "846311678757c027c3ee5d9b65b3aa19522c543c3710644774a8131f53b8abe0",
+      "libs/test-config/src/execution-details.test.ts": "f7029a90928b9efd1e569890638574f3aea37b672b44d915a9e3a2890a1bd35c",
       "packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs": "4fa06605f1649fec50129bc956822d4efbb34bf0d58fcab87e143674490bd7de",
       "packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.d.mts": "cb6e4c0ccef6ec747c4e0cd5c0002f730e692488139d3cf2cc2e105da0068cf8"
     },
     "addedSubmodules": {
-      "libs/test-config": "25e2a1398af19d1a9c24fbee4fcc7a22210c43f3"
+      "libs/test-config": "a5be1e24a7ae9c577bb08d5c7a9a73eaa2043578"
     }
   }
 }

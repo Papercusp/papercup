@@ -49,6 +49,7 @@ import { homedir } from 'node:os';
 import { join, basename } from 'node:path';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { recordIndexedLoopTurnStarts, type IndexedNativeLoopTurn } from '../harness/routines/loop-turn-start-stamp';
 import { listAllProjectedTools } from '@papercusp/tooldef';
 import { papercuspPath } from '@papercusp/host-platform/home';
 import { PAPERCUSP_MCP_SERVER_NAMES } from '../papercusp-mcp-servers';
@@ -1863,16 +1864,28 @@ export async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
   }
   // ON CONFLICT DO NOTHING: idempotent re-ingest (e.g. a reset offset) can
   // never duplicate — the PK is (workspace_id, source_kind, session_id, turn_idx).
-  const r = await sql`
-    INSERT INTO harness_shared.session_turns ${sql(
-      rows as unknown as Record<string, unknown>[],
-      'workspace_id', 'source_kind', 'session_id', 'turn_idx', 'ts',
-      'owner', 'harness_slug', 'cwd', 'speaker', 'text',
-      'turn_origin', 'turn_origin_verdict', 'turn_origin_classifier_version',
-    )}
-    ON CONFLICT DO NOTHING
-  `;
-  return r.count ?? rows.length;
+  const persist = async (client: Sql): Promise<number> => {
+    const inserted = await client<IndexedNativeLoopTurn[]>`
+      INSERT INTO harness_shared.session_turns ${client(
+        rows as unknown as Record<string, unknown>[],
+        'workspace_id', 'source_kind', 'session_id', 'turn_idx', 'ts',
+        'owner', 'harness_slug', 'cwd', 'speaker', 'text',
+        'turn_origin', 'turn_origin_verdict', 'turn_origin_classifier_version',
+      )}
+      ON CONFLICT DO NOTHING
+      RETURNING workspace_id, source_kind, session_id, turn_idx, ts,
+                owner, harness_slug, cwd, speaker, text, turn_origin
+    `;
+    await recordIndexedLoopTurnStarts(client, inserted);
+    return inserted.count ?? inserted.length;
+  };
+  // A failed activity write must not commit the native row and make its retry
+  // look like an old/conflicted row. Reserve one connection for both writes;
+  // callers already in a transaction keep their exact connection/savepoint.
+  const hasLoopCandidate = rows.some(row => row.speaker === 'user' && row.turn_origin === 'loop-fire');
+  return hasLoopCandidate && typeof sql.begin === 'function'
+    ? sql.begin(tx => persist(tx as unknown as Sql))
+    : persist(sql);
 }
 
 interface PartRow {

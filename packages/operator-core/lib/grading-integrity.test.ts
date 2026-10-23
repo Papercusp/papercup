@@ -9,6 +9,7 @@ vi.mock('./degradation/fallback-observations', () => ({ observeFallback: vi.fn((
 afterAll(() => { expect(readRealPgRailBlocks().blocked).toBe(0); });
 import { poolVerdictByProvider, type AccountStatusRow } from './deployment/account-pool-store';
 import type { Rubric } from './rubrics';
+import * as rubricStore from './rubrics';
 import type { ScorecardEvidenceRow, ScorecardRow } from './scorecards';
 import type { TaskRow } from './task-manager/types';
 import type { CoordEnvelope } from '@papercusp/coordination';
@@ -395,6 +396,48 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
 });
 
 describe('dispatchPendingGradingAudits', () => {
+  it.each([
+    { kind: 'read-failed', state: 'failed', reason: 'target rubric read failed; retry this audit when its backing plan is readable' },
+    { kind: 'missing', state: 'skipped', reason: 'target rubric not found' },
+  ] as const)('distinguishes a $kind rubric lookup before reserving an auditor', async ({ kind, state, reason }) => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-rubric-lookup')]);
+    const read = vi.spyOn(rubricStore, 'readRubric').mockResolvedValue({ kind });
+    try {
+      const result = await dispatchPendingGradingAudits(
+        { targetIds: ['EI-rubric-lookup'], ctx },
+        { ...d, getRubric: undefined },
+      );
+      expect(result.receipts).toEqual([
+        expect.objectContaining({ issueId: 'EI-rubric-lookup', state, reason }),
+      ]);
+      expect(read).toHaveBeenCalledWith('standard-rubric');
+      expect(d.reserve).not.toHaveBeenCalled();
+      expect(d.launch).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('dispatches a readable rubric through the typed production lookup', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-readable-rubric')]);
+    const read = vi.spyOn(rubricStore, 'readRubric').mockResolvedValue({ kind: 'found', rubric: standardRubric() });
+    try {
+      const result = await dispatchPendingGradingAudits(
+        { targetIds: ['EI-readable-rubric'], ctx },
+        { ...d, getRubric: undefined },
+      );
+      expect(result.receipts).toEqual([
+        expect.objectContaining({ issueId: 'EI-readable-rubric', state: 'launched' }),
+      ]);
+      expect(d.reserve).toHaveBeenCalledOnce();
+      expect(d.launch).toHaveBeenCalledOnce();
+    } finally {
+      read.mockRestore();
+    }
+  });
+
   it('pins internal scorecard reads to the dispatch workspace instead of ambient ALS (EI-26052688889546507)', async () => {
     const d = deps();
     d.listScorecards.mockImplementation(async () => {

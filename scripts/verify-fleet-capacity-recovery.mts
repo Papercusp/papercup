@@ -6,49 +6,99 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { listSpecEvidence } from '../packages/operator-core/lib/agent-tools/plans/spec-evidence-store';
 import type { inspectCommittedOperationalEvidence } from '../packages/operator-core/lib/agent-tools/testing/record-run';
-import type { NativeCapacityLlmRun } from '../packages/operator-core/lib/fleet/capacity-recovery-evidence';
+import type { NativeCapacityLlmRun, NativeCapacityBriefReceipt } from '../packages/operator-core/lib/fleet/capacity-recovery-evidence';
 
 const S42_PATH = 'packages/operator-core/lib/llm-testing/scenarios/su/S42-drain-watch-recheck.ts';
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 
-/** Resolve gitlinks recursively, preserving the exact superproject pin. */
-function committedBytes(root: string, revision: string, path: string): Buffer {
-  const parts = path.split('/');
-  for (let i = 1; i < parts.length; i++) {
-    const prefix = parts.slice(0, i).join('/');
-    const entry = execFileSync('git', ['ls-tree', revision, '--', prefix], { cwd: root, encoding: 'utf8' });
-    const gitlink = /^160000 commit ([a-f0-9]{40})\t/.exec(entry);
-    if (gitlink) return committedBytes(join(root, prefix), gitlink[1], parts.slice(i).join('/'));
-  }
-  return execFileSync('git', ['show', revision + ':' + path], { cwd: root, maxBuffer: 4 * 1024 * 1024 });
+async function nativeToolReceipt(id: number): Promise<NativeCapacityBriefReceipt & { servingBuildSha: string | null }> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const [native] = await sql<Array<{ id: number; tool_name: string; status: string; workspace_id: string;
+    coord_owner_id: string | null; invoked_at: Date; duration_ms: number | null; metadata_json: unknown;
+    args_json: unknown; serving_build_sha: string | null; serving_host: string | null; serving_process_id: string | null }>>`
+    SELECT id, tool_name, status, workspace_id, coord_owner_id, invoked_at, duration_ms, metadata_json, args_json, serving_build_sha,
+           serving_host, serving_process_id
+      FROM harness_shared.tool_invocations
+     WHERE id = ${id} AND workspace_id = 'papercusp-workspace'`;
+  if (!native) throw new Error('native-tool-receipt-missing:' + id);
+  return { id: Number(native.id), toolName: native.tool_name, status: native.status, workspaceId: native.workspace_id,
+    actorId: native.coord_owner_id, invokedAt: native.invoked_at.toISOString(), durationMs: native.duration_ms,
+    metadata: native.metadata_json, args: native.args_json, servingBuildSha: native.serving_build_sha,
+    servingHost: native.serving_host, servingProcessId: native.serving_process_id };
+}
+
+async function matchesMeasuredSource(root: string, row: Awaited<ReturnType<typeof listSpecEvidence>>[number], sha: string | null) {
+  const { repoFilesEvidenceMeasurementSchema, expandRepoFilesEvidenceSourcePathsAtRoot } =
+    await import('../packages/operator-core/lib/agent-tools/plans/spec-evidence-store');
+  const recipe = repoFilesEvidenceMeasurementSchema.parse(row.details?.currentMeasurement);
+  const paths = await expandRepoFilesEvidenceSourcePathsAtRoot(root, recipe);
+  if (!paths.length || !/^[a-f0-9]{7,40}$/.test(sha ?? '')) return false;
+  // Reuse the canonical reader's gitlink pins, binary-safe batching and limits.
+  const { readCommittedFiles, REPO_FILE_SET_READ_LIMITS } =
+    await import('../packages/operator-core/lib/agent-tools/plans/committed-tree-reader');
+  try {
+    const files = await readCommittedFiles(root, sha!, paths, {}, REPO_FILE_SET_READ_LIMITS);
+    return paths.every(path => files.get(path)?.sha256 === sha256(readFileSync(join(root, path))));
+  } catch { return false; }
 }
 
 async function readBriefProof(root: string, row: Awaited<ReturnType<typeof listSpecEvidence>>[number],
   artifact: Awaited<ReturnType<typeof inspectCommittedOperationalEvidence>>['artifact']) {
-  const [{ getOrgPg }, { capacityBriefCaptureSchema, validateCapacityBriefReceipt },
+  const { capacityBriefCaptureSchema, validateCapacityBriefReceipt } =
+    await import('../packages/operator-core/lib/fleet/capacity-recovery-evidence');
+  const capture = capacityBriefCaptureSchema.parse(artifact.capacityBriefCapture);
+  const native = await nativeToolReceipt(capture.invocationId);
+  return validateCapacityBriefReceipt(artifact.capacityRecoveryProof, capture, native,
+    { now: new Date().toISOString(), startedAt: artifact.startedAt, finishedAt: artifact.finishedAt,
+      sourceMatches: await matchesMeasuredSource(root, row, native.servingBuildSha) });
+}
+
+async function readAdmissionProof(root: string, row: Awaited<ReturnType<typeof listSpecEvidence>>[number],
+  artifact: Awaited<ReturnType<typeof inspectCommittedOperationalEvidence>>['artifact']) {
+  const { capacityAdmissionCapturesSchema, recoveryProofSchema, validateCapacityAdmissionReceipt } =
+    await import('../packages/operator-core/lib/fleet/capacity-recovery-evidence');
+  const proof = recoveryProofSchema.parse(artifact.capacityRecoveryProof);
+  const captures = capacityAdmissionCapturesSchema.parse(artifact.capacityAdmissionCaptures ?? []);
+  if (captures.length !== proof.recoveries.length || new Set(captures.map(c => c.memberId)).size !== captures.length
+    || captures.some(c => !proof.recoveries.some(r => r.memberId === c.memberId))) throw new Error('native-admission-population');
+  const violations: string[] = [];
+  for (const c of captures) {
+    const native = await nativeToolReceipt(c.capture.invocationId);
+    violations.push(...validateCapacityAdmissionReceipt(proof, c.memberId, c.capture, native,
+      { now: new Date().toISOString(), startedAt: artifact.startedAt, finishedAt: artifact.finishedAt,
+        sourceMatches: await matchesMeasuredSource(root, row, native.servingBuildSha) }).violations);
+  }
+  return violations;
+}
+
+async function readDiagnosticOutputs(root: string, row: Awaited<ReturnType<typeof listSpecEvidence>>[number],
+  artifact: Awaited<ReturnType<typeof inspectCommittedOperationalEvidence>>['artifact']) {
+  const [{ capacityRuntimeCapturesSchema, capacityBriefCaptureSchema, validateCapacityDiagnosticOutputs },
     { repoFilesEvidenceMeasurementSchema, expandRepoFilesEvidenceSourcePathsAtRoot }] = await Promise.all([
-    import('@papercusp/db-org'), import('../packages/operator-core/lib/fleet/capacity-recovery-evidence'),
+    import('../packages/operator-core/lib/fleet/capacity-recovery-evidence'),
     import('../packages/operator-core/lib/agent-tools/plans/spec-evidence-store'),
   ]);
-  const capture = capacityBriefCaptureSchema.parse(artifact.capacityBriefCapture);
-  const { sql } = getOrgPg();
-  const [native] = await sql<Array<{ id: number; tool_name: string; status: string; workspace_id: string;
-    coord_owner_id: string | null; invoked_at: Date; duration_ms: number | null; metadata_json: unknown; serving_build_sha: string | null }>>`
-    SELECT id, tool_name, status, workspace_id, coord_owner_id, invoked_at, duration_ms, metadata_json, serving_build_sha
-      FROM harness_shared.tool_invocations
-     WHERE id = ${capture.invocationId} AND workspace_id = 'papercusp-workspace'`;
-  if (!native) throw new Error('native-brief-receipt-missing');
   const recipe = repoFilesEvidenceMeasurementSchema.parse(row.details?.currentMeasurement);
   const paths = await expandRepoFilesEvidenceSourcePathsAtRoot(root, recipe);
-  let sourceMatches = paths.length > 0 && /^[a-f0-9]{40}$/.test(native.serving_build_sha ?? '');
-  if (sourceMatches) {
-    try { sourceMatches = paths.every(path => sha256(committedBytes(root, native.serving_build_sha!, path))
-      === sha256(readFileSync(join(root, path)))); } catch { sourceMatches = false; }
-  }
-  return validateCapacityBriefReceipt(artifact.capacityRecoveryProof, capture, {
-    id: Number(native.id), toolName: native.tool_name, status: native.status, workspaceId: native.workspace_id,
-    actorId: native.coord_owner_id, invokedAt: native.invoked_at.toISOString(), durationMs: native.duration_ms, metadata: native.metadata_json,
-  }, { now: new Date().toISOString(), startedAt: artifact.startedAt, finishedAt: artifact.finishedAt, sourceMatches });
+  const required = ['leader-brief.ts', 'leader-brief-shape.ts', 'leader-brief-aggregate.ts']
+    .map(name => 'packages/operator-core/lib/agent-tools/fleet/' + name);
+  if (required.some(path => !paths.includes(path))) throw new Error('native-runtime-source-not-measured');
+  const qualify = async (capture: ReturnType<typeof capacityBriefCaptureSchema.parse>) => {
+    const native = await nativeToolReceipt(capture.invocationId);
+    return { capture, native, sourceMatches: await matchesMeasuredSource(root, row, native.servingBuildSha) };
+  };
+  const runtime = await Promise.all(capacityRuntimeCapturesSchema.parse(artifact.capacityRuntimeCaptures).map(qualify));
+  const caller = artifact.capacityCallerCapture == null ? null : await qualify(capacityBriefCaptureSchema.parse(artifact.capacityCallerCapture));
+  const { readCommittedFiles, REPO_FILE_SET_READ_LIMITS } =
+    await import('../packages/operator-core/lib/agent-tools/plans/committed-tree-reader');
+  const proof = (await import('../packages/operator-core/lib/fleet/capacity-recovery-evidence'))
+    .diagnosticProofSchema.parse(artifact.capacityRecoveryProof);
+  const compilerInputs = await readCommittedFiles(root, proof.candidate.commit, required, {}, REPO_FILE_SET_READ_LIMITS);
+  return validateCapacityDiagnosticOutputs(artifact.capacityRecoveryProof, runtime, caller,
+    { root, sources: required.map(path => ({ path, sha256: sha256(readFileSync(join(root, path))),
+      gitBlob: compilerInputs.get(path)?.gitBlob ?? '' })),
+      now: new Date().toISOString(), startedAt: artifact.startedAt, finishedAt: artifact.finishedAt });
 }
 
 async function readNativeLlmRuns(root: string, testRunId: number, scenarioId: string, passed: number) {
@@ -172,6 +222,8 @@ try {
     if (phase === 'recovery' || phase === 'diagnostic') {
       result.violations.push(...(await readBriefProof(root, row, artifact.artifact)).violations.map(v => row.id + ':' + v));
     }
+    if (phase === 'recovery') result.violations.push(...(await readAdmissionProof(root, row, artifact.artifact)).map(v => row.id + ':' + v));
+    if (phase === 'diagnostic') result.violations.push(...(await readDiagnosticOutputs(root, row, artifact.artifact)).violations.map(v => row.id + ':' + v));
     result.violations.push(...validateCapacityContractProof(artifact.artifact.capacityRecoveryProof,
       { specSetHash, barSetHash: rubrics[0].barSetHash, sourceFingerprint }).violations.map(v => row.id + ':' + v));
     const verdict = phase === 'recovery' ? validateCapacityRecoveryProof(artifact.artifact.capacityRecoveryProof)

@@ -41,12 +41,27 @@ async function scenario(ended: boolean) {
   const issueId = ended ? 'private-kernel-ended' : 'private-kernel-live';
   const label = `grading-audit:${issueId}`;
   const now = new Date().toISOString();
-  const argv = ['-e', ended ? 'process.exit(0)' : 'setTimeout(() => {}, 60000)'];
+  const readyMarker = 'PRIVATE_KERNEL_CHILD_READY';
+  let childReady = false;
+  let childStdout = '';
+  let childStderr = '';
+  const argv = ['-e', ended ? 'process.exit(0)'
+    : `console.log(${JSON.stringify(readyMarker)});setInterval(() => {}, 1000)`];
   const task = await managedSpawn(process.execPath, argv, { class: 'other', title: label,
     argv: [process.execPath, ...argv],
     cwd: root, launchedBy: 'system:test-private-grading-retirement',
     detail: { label } }, { workspaceId: workspace, requireRegistration: true,
-    requireConfinement: true, spawnOptions: { stdio: 'ignore' } });
+    requireConfinement: true, spawnOptions: { stdio: ['ignore', 'pipe', 'pipe'] },
+    // Observe before asynchronous ledger persistence can outlive a short child.
+    onSpawn: child => {
+      child.stdout?.on('data', chunk => {
+        childStdout = (childStdout + String(chunk)).slice(-4096);
+        childReady ||= childStdout.split('\n').includes(readyMarker);
+      });
+      child.stderr?.on('data', chunk => {
+        childStderr = (childStderr + String(chunk)).slice(-4096);
+      });
+    } });
   owned.add(task.taskId);
   assert.ok(task.confined, 'kernel proof must not degrade to an unconfined child');
   if (ended) {
@@ -61,7 +76,16 @@ async function scenario(ended: boolean) {
       WHERE task_id=${task.taskId} AND workspace_id=${workspace}
       RETURNING task_id`;
     assert.equal(changed.length, 1);
-  } else assert.equal(await scopeEmpty(task.taskId), false);
+  } else {
+    // Registration alone does not prove that the live control has executed.
+    // Keep it alive until owned teardown, and preserve scope-launch failures.
+    const readyDeadline = Date.now() + 5000;
+    while (!childReady && task.child.exitCode === null && Date.now() < readyDeadline) {
+      await new Promise(done => setTimeout(done, 20));
+    }
+    assert.ok(childReady, 'private live child did not become ready: ' + childStderr);
+    assert.equal(await scopeEmpty(task.taskId), false, 'ready live child must occupy its confined scope');
+  }
 
   const card: ScorecardRow = { issueId, createdAt: now, createdBy: 'private-fixture', rubricRef: 'private-standard',
     ratings: {}, nKeys: 0, missingKeys: [], extraKeys: [], rubricResolved: true,

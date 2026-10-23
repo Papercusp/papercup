@@ -68,6 +68,50 @@ export function assertTscCompilerIdentityCurrent() {
       { code: 'compiler-identity-changed' });
 }
 
+/** Reap the owned native child before a replacement API can be created.
+ * API.close() first disposes snapshots over RPC; a disposed connection can
+ * reject that step before Client.close() ever closes stdin. Native tsgo can
+ * remain blocked on stdin even after SIGTERM, so EOF and verified exit belong
+ * to this service, independently of snapshot cleanup.
+ * @param {any} api
+ * @param {{ graceMs?: number, killWaitMs?: number }} [options]
+ */
+export async function closeTscServiceCompiler(api, { graceMs = 1_000, killWaitMs = 5_000 } = {}) {
+  const child = api?.client?.process;
+  const isExited = () => !child || child.exitCode !== null || child.signalCode !== null;
+  let onExit;
+  const exited = isExited() ? Promise.resolve(true) : new Promise(resolve => {
+    onExit = () => resolve(true);
+    child.once('exit', onExit);
+  });
+  /** @param {number} ms */
+  const wait = async (ms) => {
+    if (isExited()) return true;
+    let timer;
+    try { return await Promise.race([exited, new Promise(resolve => { timer = setTimeout(() => resolve(false), ms); })]); }
+    finally { clearTimeout(timer); }
+  };
+  try {
+    try { await api?.client?.close(); }
+    finally { child?.stdin?.end(); }
+  } catch {
+    // The native connection may already be disposed. Its process still must
+    // exit, and the handle captured above survives Client.close clearing it.
+  }
+  try {
+    if (!await wait(graceMs)) {
+      child.kill('SIGTERM');
+      if (!await wait(graceMs)) {
+        child.kill('SIGKILL');
+        if (!await wait(killWaitMs)) throw new Error('native compiler exit could not be verified; refusing replacement');
+      }
+    }
+    api?.clearSourceFileCache?.();
+  } finally {
+    if (onExit) child.removeListener('exit', onExit);
+  }
+}
+
 /** Exact loaded service/compiler identity plus the requested root config and named inputs.
  * Missing inputs remain explicit nulls; they never certify a successful focused check.
  * @param {Record<string, any>} request

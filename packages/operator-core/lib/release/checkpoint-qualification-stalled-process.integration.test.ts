@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import postgres from 'postgres';
+import { buildConnectionOptions } from '@papercusp/db-org';
 import { createFreshTestDb } from '@papercusp/test-config/pg';
 import { managedSpawn } from '../task-manager/managed-spawn';
 import { killScopeUnit } from '../task-manager/control';
@@ -28,7 +29,9 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
     const sql = database ? postgres(database.url, { max: 1, onnotice: () => {} }) : undefined;
     const stalledId = newTaskId(), healthyId = newTaskId(), units = [stalledId, healthyId].map(id => scopeUnitForTask(id));
     const controller = new AbortController();
-    let workerPid = 0, backendPid = 0, output = '', messages = 0, spawnedAt = 0, releasedAt = 0;
+    let workerPid = 0, backendPid = 0, backendCheckInterval = '', output = '', diagnostics = '', messages = 0, spawnedAt = 0, releasedAt = 0;
+    const connection = buildConnectionOptions({ searchPath: 'public', applicationName: 'qualification-stalled-worker',
+      idleInTxMs: 2000, stmtTimeoutMs: 0, pooled: false, clientConnCheckMs: 100 });
     const release = vi.fn<typeof recordStoredQualificationChildScope>(async (_target, change) => {
       if (change.operation === 'release' && change.unit === units[0]) {
         expect(workerPid).toBeGreaterThan(0);
@@ -43,48 +46,59 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
         pidIdentity: 'test', root: process.cwd(), taskKey, runnerIdentity: 'test', updates: [],
         manifest: { schemaVersion: 1, units: [{ id: 'test:worker', kind: 'test', path: 'worker' }] },
         retryStates: [], runContext: 'green-checkpoint' },
-      cwd: process.cwd(), env: { ...process.env }, signal: controller.signal,
+      // Startup-hook coverage lives in checkpoint-qualification-process.test.ts.
+      // These fixed 4s/6s budgets measure the driver/OS path after builtin startup.
+      cwd: process.cwd(), env: { ...process.env, NODE_OPTIONS: '' }, signal: controller.signal,
       deadlineEpochMs: Date.now() + 15_000,
     });
     const deps = (id: string) => ({
-      spawn: (cmd: string, args: string[], spec: Parameters<typeof managedSpawn>[2], launch: Parameters<typeof managedSpawn>[3]) =>
+      spawn: (cmd: string, args: readonly string[], spec: Parameters<typeof managedSpawn>[2], launch: Parameters<typeof managedSpawn>[3]) =>
         managedSpawn(cmd, args, spec, { ...launch, scopeAvailable: true }),
       record: release, kill: killScopeUnit, taskId: () => id, now: Date.now,
     });
     let stalled: Promise<unknown> | undefined;
+    let cleanupCutoffEpochMs = 0;
     try {
       if (sql) await sql`SELECT pg_advisory_lock(42)`;
       const start = mode === 'database-lock' ? `
-        const { Client } = require('pg');
-        const client = new Client({ connectionString: process.env.QUALIFICATION_TEST_DB_URL });
-        client.connect().then(async () => {
-          const { rows } = await client.query('SELECT pg_backend_pid() AS pid');
-          console.log(JSON.stringify({ pid: process.pid, backendPid: rows[0].pid }));
+        const postgres = require('postgres');
+        const client = postgres(process.env.QUALIFICATION_TEST_DB_URL, { max: 1, connection: ${JSON.stringify(connection)} });
+        (async () => {
+          const rows = await client.unsafe("SELECT pg_backend_pid() AS pid, current_setting('client_connection_check_interval') AS interval");
+          console.log(JSON.stringify({ pid: process.pid, backendPid: rows[0].pid, backendCheckInterval: rows[0].interval }));
           setInterval(() => console.log('heartbeat without completed work'), 40);
-          await client.query('SELECT pg_advisory_lock(42)');
+          await client.unsafe('SELECT pg_advisory_lock(42)');
           process.exit(99);
-        }).catch(() => process.exit(98));
+        })().catch(error => { console.error('guarded worker failed', error.code ?? error.name); process.exit(98); });
       ` : `
         console.log(JSON.stringify({ pid: process.pid }));
         setInterval(() => console.log('heartbeat without completed work'), 40);
       `;
-      // The independently fixed hang budget is 4s even when output refreshes
-      // the optional 1s idle timer. Neither peer progress nor chatter moves it.
+      // The independently fixed hang budget is 4s. Neither peer progress nor
+      // chatter moves it. Optional idle expiry is tested separately: it can
+      // expire during instrumentation startup before this hard-bound scenario.
+      // D-008: the fixed 6s invocation cutoff includes 2s for guarded DB cleanup.
+      // It never moves when output, a healthy peer or the OS release completes.
+      cleanupCutoffEpochMs = Date.now() + 6000;
       stalled = runQualificationCommand(process.execPath, ['-e', start], {
-        ...options('stalled'), env: { ...process.env, ...(database ? { QUALIFICATION_TEST_DB_URL: database.url } : {}) },
-        timeoutMs: 1000, timeoutResetsOnProgress: true, hardTimeoutMs: 4000,
+        ...options('stalled'), deadlineEpochMs: cleanupCutoffEpochMs,
+        env: { ...options('stalled').env, ...(database ? { QUALIFICATION_TEST_DB_URL: database.url } : {}) },
+        hardTimeoutMs: 4000,
         onSpawn() { spawnedAt = Date.now(); },
         onOutput(stream, text) {
-          if (stream !== 'stdout') return;
+          if (stream !== 'stdout') { diagnostics += text; return; }
           output += text; messages++;
           if (!workerPid && output.includes('\n')) {
             const identity = JSON.parse(output.split('\n')[0]!);
             workerPid = identity.pid; backendPid = identity.backendPid ?? 0;
+            backendCheckInterval = identity.backendCheckInterval ?? '';
           }
         },
       }, deps(stalledId));
-      const outcome = expect(stalled).rejects.toThrow('qualification-worker-hard-timeout');
-      await vi.waitFor(() => expect(workerPid).toBeGreaterThan(0), { timeout: 3000 });
+      // Attach immediately even when an earlier readiness assertion fails.
+      const outcome = stalled.then(() => null, error => error);
+      await vi.waitFor(() => expect(workerPid, diagnostics).toBeGreaterThan(0), { timeout: 3000 });
+      if (sql) expect(backendCheckInterval).toBe('100ms');
       if (sql) await vi.waitFor(async () => {
         const rows = await sql`SELECT wait_event_type, wait_event FROM pg_stat_activity WHERE pid = ${backendPid}`;
         expect(rows[0]).toMatchObject({ wait_event_type: 'Lock', wait_event: 'advisory' });
@@ -94,12 +108,18 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
       expect(healthy).toMatchObject({ code: 0, signal: null });
       expect(healthy.stdout).toContain('completed healthy work');
       expect(running(workerPid)).toBe(true);
-      await outcome;
+      expect(await outcome).toMatchObject({ message: 'qualification-worker-hard-timeout' });
       expect(messages).toBeGreaterThan(2);
       expect(releasedAt - spawnedAt).toBeGreaterThanOrEqual(3900);
       expect(releasedAt - spawnedAt).toBeLessThan(6000);
       expect(running(workerPid)).toBe(false);
-      if (sql) expect(await sql`SELECT pid FROM pg_stat_activity WHERE pid = ${backendPid}`).toEqual([]);
+      if (sql) {
+        expect(Date.now()).toBeLessThan(cleanupCutoffEpochMs);
+        await vi.waitFor(async () => {
+          expect(await sql`SELECT pid FROM pg_stat_activity WHERE pid = ${backendPid}`).toEqual([]);
+        }, { timeout: Math.max(1, cleanupCutoffEpochMs - Date.now()), interval: 25 });
+        expect(Date.now()).toBeLessThanOrEqual(cleanupCutoffEpochMs);
+      }
     } finally {
       controller.abort();
       await Promise.allSettled(units.map(unit => killScopeUnit(unit, { signal: 'SIGKILL' })));

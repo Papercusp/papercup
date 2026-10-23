@@ -18,6 +18,8 @@ import { CELL_READ_SPAWN_ID } from '../../cell-read';
 import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { statePlaneForDoor } from '../state-plane-door';
 import { CURRENT_BUILD_TEST_CLASSES, currentBuildTestRoute } from '../../serving-runtimes';
+import { getServingHostIdentity } from '../../serving-host-identity';
+import { runtimeObservabilityHealth } from '../../observability/runtime';
 
 const TOOL_NAME = 'dev:pipeline_position';
 
@@ -926,8 +928,15 @@ export default defineTool({
       // pipeline digest can omit the root or clip nested containment fields. Keep
       // the selected test route with this evidence so native preflights can check
       // readiness without pulling in unrelated, potentially truncated gate detail.
+      const bootArtifact = runtimeObservabilityHealth().artifact;
+      // Reuse the process-boot measurement. Reading a replaced bundle from disk
+      // now would silently attribute its bytes to the older serving process.
+      const artifact = bootArtifact?.status === 'measured' ? { ...bootArtifact,
+        sourceBlobs: args.path && bootArtifact.sourceBlobs[args.path]
+          ? { [args.path]: bootArtifact.sourceBlobs[args.path] } : {} } : bootArtifact ?? null;
       const data = { ...routeHint, repoRoot: result.repoRoot, submodule: result.submodule,
-        acceptedSource: result.acceptedSource, servingRuntimes: result.servingRuntimes ?? [] };
+        acceptedSource: result.acceptedSource, servingRuntimes: result.servingRuntimes ?? [],
+        observingRuntime: { ...getServingHostIdentity(), artifact } };
       ctx.metadata?.({ operationalOutput: { schemaVersion: 1, observedAt: new Date().toISOString(),
         sha256: createHash('sha256').update(canonicalJson(data)).digest('hex') } });
       return { data };

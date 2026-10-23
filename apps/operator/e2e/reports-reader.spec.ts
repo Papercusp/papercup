@@ -47,7 +47,7 @@ for (const width of [1440, 900, 390]) {
     await page.goto('/reports?sel=edition-2');
     await sync.waitForServed(['reports.list', 'reports.get', 'reports.lineage']);
     await expect(page.locator('.reports-article-main > h2')).toHaveText(report.title);
-    await waitForReportRenderer(page);
+    await waitForReportRenderer(page, testInfo.project.use.navigationTimeout ?? 30_000);
     await expect(page.locator('.reports-body h2').first()).toHaveText('Finding 1');
     await expect(page.getByRole('navigation', { name: 'On this page' }).getByRole('link')).toHaveCount(8);
     const geometry = await page.locator('.reports-page').evaluate(root => {
@@ -122,6 +122,32 @@ test('report query readiness still enforces the navigation deadline', async ({ p
   }));
   page.setDefaultTimeout(3_000);
   await expect(navigateToPublishedReport(page, report, 250)).rejects.toThrow('page.waitForResponse: Timeout 250ms');
+});
+
+test('report renderer readiness uses its navigation budget beyond the action timeout', async ({ page }) => {
+  await page.route('**/vditor/**', route => route.fulfill({ contentType: 'application/javascript', body: '' }));
+  await page.route('**/renderer-readiness', route => route.fulfill({ contentType: 'text/html', body: `
+    <script>setTimeout(() => {
+      for (const id of ['vditorLuteScript', 'vditorI18nScripten_US', 'vditorIconScript']) {
+        const script = document.createElement('script');
+        script.id = id; script.src = '/vditor/' + id + '.js'; document.head.appendChild(script);
+      }
+    }, 500);</script>`,
+  }));
+  page.setDefaultTimeout(200);
+  await page.goto('/renderer-readiness');
+  await waitForReportRenderer(page, 3_000);
+});
+
+test('report renderer readiness still enforces its deadline when a script is missing', async ({ page }) => {
+  await page.route('**/vditor/**', route => route.fulfill({ contentType: 'application/javascript', body: '' }));
+  await page.route('**/renderer-readiness', route => route.fulfill({ contentType: 'text/html', body: `
+    <script id="vditorLuteScript" src="/vditor/lute.js"></script>
+    <script id="vditorI18nScripten_US" src="/vditor/en_US.js"></script>`,
+  }));
+  page.setDefaultTimeout(3_000);
+  await page.goto('/renderer-readiness');
+  await expect(waitForReportRenderer(page, 250)).rejects.toThrow('page.waitForFunction: Timeout 250ms');
 });
 
 test.describe('published report proof', () => {

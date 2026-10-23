@@ -6,7 +6,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -24,6 +24,7 @@ import {
   baselineWithinScope,
   checkedSetFor,
   checkedSetForCooperatively,
+  closeTscServiceCompiler,
   formatTscServiceBanner,
   lineAndCharacter,
   lineStarts,
@@ -127,6 +128,9 @@ describe('bundled typecheck service identity', () => {
     writeFileSync(join(root, 'a.ts'), 'export const a = 1;');
     writeFileSync(join(root, 'hang.ts'), 'export const hang = 1;');
     const entry = join(scoped, 'native/dist/api/async/api.js');
+    // cpSync preserves the immutable dependency snapshot's read-only mode.
+    // Fault injection owns this independent copy, never the donor inode.
+    chmodSync(entry, 0o644);
     // Fault injection stays inside this private compiler copy. Refresh and
     // normal checks use the real native API; this one diagnostic stalls until
     // the service disposes its unobserved connection.
@@ -210,6 +214,32 @@ describe('bundled typecheck service identity', () => {
       await closed;
     }
   }, 30_000);
+});
+
+describe('native compiler ownership during reset', () => {
+  it.each([false, true])('reaps the child after client disposal rejects (ignores EOF=%s)', async ignoresEof => {
+    const child = spawn(process.execPath, ['-e', ignoresEof
+      ? "process.on('SIGTERM', () => {}); process.stdin.resume(); process.stdin.on('end', () => {}); console.log('ready'); setInterval(() => {}, 1000);"
+      : "process.stdin.resume(); console.log('ready');"], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('compiler fixture did not start')), 5_000);
+        child.stdout.once('data', () => { clearTimeout(timer); resolve(); });
+        child.once('error', error => { clearTimeout(timer); reject(error); });
+      });
+      const api = { client: { process: child, close: async () => { throw new Error('snapshot connection already disposed'); } },
+        clearSourceFileCache: vi.fn() };
+      await closeTscServiceCompiler(api, { graceMs: 50, killWaitMs: 5_000 });
+      expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+      expect(child.stdin.writableEnded).toBe(true);
+      expect(api.clearSourceFileCache).toHaveBeenCalledOnce();
+      if (ignoresEof) expect(child.signalCode).toBe('SIGKILL');
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await closed;
+    }
+  });
 });
 
 describe('serviceProjectFromTscCommand', () => {

@@ -5,6 +5,16 @@ import tool, { PIPELINE_POSITION_RESPONSE_BUDGET_CHARS, shapePipelinePosition } 
 import { gitPipelinePosition, type PipelinePosition, type RuntimeOwnership } from '../../git-pipeline-position';
 import { resolveSeeAlso } from '@papercusp/agent-mcp';
 import { takeNamedViewFromArgs } from '../../result-projection';
+const boot = vi.hoisted(() => ({ host: { host: 'port-3170', processId: 'kernel-process-1', buildSha: 'c'.repeat(40) },
+  artifact: { status: 'measured', sourceSha: 'c'.repeat(40), bundleSha256: 'd'.repeat(64),
+    manifestSha256: 'e'.repeat(64), sourceBlobs: { 'target.ts': 'f'.repeat(40), 'unrelated.ts': 'a'.repeat(40) },
+    evidenceRef: 'boot-manifest' } }));
+vi.mock('../../serving-host-identity', async importOriginal => ({
+  ...await importOriginal<typeof import('../../serving-host-identity')>(), getServingHostIdentity: () => boot.host,
+}));
+vi.mock('../../observability/runtime', async importOriginal => ({
+  ...await importOriginal<typeof import('../../observability/runtime')>(), runtimeObservabilityHealth: () => ({ artifact: boot.artifact }),
+}));
 /**
  * P-010: the handler reads the LIVE cell registry, which the tool barrel populates via
  * this wiring module (agent-tools/index.ts). A test importing only the tool would see an
@@ -74,7 +84,8 @@ describe('native P017 pipeline source-runtime measurement selector', () => {
     const result = await tool.handler(args, { metadata } as never) as { data: Record<string, unknown> };
     expect(metadata).toHaveBeenCalledWith({ operationalOutput: { schemaVersion: 1,
       observedAt: expect.any(String), sha256: createHash('sha256').update(canonicalJson(result.data)).digest('hex') } });
-    expect(result.data).toEqual({ repoRoot: '/native-fixture', submodule: null, acceptedSource, servingRuntimes });
+    expect(result.data).toEqual({ repoRoot: '/native-fixture', submodule: null, acceptedSource, servingRuntimes,
+      observingRuntime: { ...boot.host, artifact: { ...boot.artifact, sourceBlobs: { 'target.ts': 'f'.repeat(40) } } } });
     expect(gitPipelinePosition).toHaveBeenLastCalledWith(expect.objectContaining({ path: 'target.ts', expectedSourceSha256: digest }));
   });
   it('keeps native readiness and exact containment together when unrelated gate detail is oversized', async () => {
