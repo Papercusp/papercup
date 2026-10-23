@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -7,14 +7,67 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import * as ts from 'typescript';
-import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privatePgStartupIdentity, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 
 const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+it('retains teardown signal evidence on a forced-exit timeout and removes its listeners', async () => {
+  vi.useFakeTimers();
+  const child = Object.assign(new EventEmitter(), {
+    pid: 12345, exitCode: null, signalCode: null, stdout: null, stderr: null,
+    kill: vi.fn(() => false),
+  }) as unknown as import('node:child_process').ChildProcess;
+  const observations: unknown[] = [];
+  const stopped = stopPrivateOperatorHost(child, undefined, 10,
+    (observation) => observations.push(observation));
+  const rejected = expect(stopped).rejects.toMatchObject({
+    message: 'Private host forced exit did not settle',
+    privateHostStop: { pid: 12345, phase: 'forced exit', sigtermAccepted: false,
+      sigkillAccepted: false, exitObserved: false, closeObserved: false },
+  });
+  await vi.advanceTimersByTimeAsync(21);
+  await rejected;
+  expect(observations).toEqual(expect.arrayContaining([
+    expect.objectContaining({ phase: 'signal', signal: 'SIGTERM', accepted: false }),
+    expect.objectContaining({ phase: 'signal', signal: 'SIGKILL', accepted: false }),
+  ]));
+  expect(child.listenerCount('exit')).toBe(0);
+  expect(child.listenerCount('close')).toBe(0);
+});
+
+it('observes real private-host exit before dependent cleanup and ignores diagnostic callback failures', async () => {
+  const child = spawn(process.execPath, ['-e',
+    "process.on('SIGTERM',()=>process.exit(0));process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
+  { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
+  const closed = once(child, 'close');
+  try {
+    await once(child.stdout!, 'data');
+    let afterExit = false;
+    const observations: Array<{ phase: string }> = [];
+    await stopPrivateOperatorHost(child, async () => {
+      expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+      afterExit = true;
+    }, 2000, (observation) => {
+      observations.push(observation);
+      if (observation.phase === 'signal') throw new Error('diagnostic sink unavailable');
+    });
+    expect(afterExit).toBe(true);
+    expect(observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'exit', exitObserved: true }),
+      expect.objectContaining({ phase: 'complete', closeObserved: true }),
+    ]));
+    expect(child.exitCode).toBe(0);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+  }
 });
 
 function privateBudgetEnvironment() {
