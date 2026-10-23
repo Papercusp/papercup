@@ -85,7 +85,7 @@ export { pidAlive, isOrphanedFromParent, resolveExpectedParentPid, startParentDe
 import { installTimestampedConsole } from "@papercusp/operator-core/lib/timestamped-console";
 import { installStdioPeerGuard } from "@papercusp/operator-core/lib/process-supervision/stdio-peer-guard";
 import {
-  assertVmReleaseRuntimePolicy,
+  assertVmReleaseApplicationRuntime,
   assertVmReleaseRuntimePort,
   isVmReleaseDistribution,
 } from "@papercusp/operator-core/lib/vm-release-runtime-policy";
@@ -1504,7 +1504,7 @@ async function main(): Promise<void> {
   // D-043 / P-050: an immutable VM package must prove its package-contained
   // manifest and one-operator network/environment contract BEFORE --ensure can
   // adopt an already-running process. Non-vm-release profiles no-op here.
-  assertVmReleaseRuntimePolicy({
+  await assertVmReleaseApplicationRuntime({
     env: process.env,
     sidecarDir: dirname(fileURLToPath(import.meta.url)),
     hostname,

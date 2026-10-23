@@ -158,6 +158,17 @@ async function verifyRuntimePin(pin: ApplicationRuntimePin): Promise<Application
   return measured;
 }
 
+/** Measure package-attested bytes before exposing them to the launch selector. */
+export async function measurePinnedApplicationRuntime(
+  executable: string,
+  binarySha256: string,
+): Promise<ApplicationRuntimePin> {
+  if (!path.isAbsolute(executable) || !SHA256.test(binarySha256)) {
+    throw new Error('An absolute runtime path and package digest are required');
+  }
+  return measureRuntimePin(executable, binarySha256);
+}
+
 /**
  * Extend bundled-runtime resolution for application launches. Node tooling above
  * retains its existing resolver. This returns an argv vector, never a shell command.

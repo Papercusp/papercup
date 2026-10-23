@@ -78,7 +78,7 @@ describe("vm-release boot ordering (D-043 / P-050)", () => {
   });
 
   it("verifies the immutable manifest before --ensure reuse and the effective port after sticky resolution", () => {
-    const policy = serveSrc.indexOf("assertVmReleaseRuntimePolicy({");
+    const policy = serveSrc.indexOf("await assertVmReleaseApplicationRuntime({");
     const ensureReuse = serveSrc.indexOf("if (ensure) {", policy);
     const sticky = serveSrc.indexOf("await resolveStickyPort", ensureReuse);
     const effectivePort = serveSrc.indexOf("assertVmReleaseRuntimePort(port", sticky);
