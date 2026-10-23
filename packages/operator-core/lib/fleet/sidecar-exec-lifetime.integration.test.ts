@@ -135,6 +135,7 @@ it.runIf(process.platform === 'linux')(
     // This deliberate server death emits correlated transport diagnostics. Assert
     // the entire chain so unrelated warnings still fail this real IPC fixture.
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const leaseWarning = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const run = runCommandViaSpawnerSidecar(process.execPath, ['-e', script], {
         timeoutMs: 5000, signal: new AbortController().signal,
@@ -168,7 +169,7 @@ it.runIf(process.platform === 'linux')(
         connectionId: expect.any(String), requestId: expect.any(Number),
       });
       expect(execution.requestId).toBeGreaterThan(0);
-      expect(warning.mock.calls).toEqual([
+      expect(warning.mock.calls.slice(0, 2)).toEqual([
         ['[spawner-ipc-client-fault]', {
           event: 'peer-eof', clientConnectionId: execution.clientConnectionId,
           serverGeneration: execution.serverGeneration, serverConnectionId: execution.connectionId,
@@ -186,15 +187,36 @@ it.runIf(process.platform === 'linux')(
           elapsedMs: expect.any(Number),
           childTimeoutMs: 5000, childIdleTimeoutMs: null, rpcTimeoutMs: 40000,
         }],
-        ['[spawner-ipc-client-fault]', {
+      ]);
+      // Kernel scope teardown may require several recovery attempts. Every
+      // attempt must be a new, empty connection to this dead server; the
+      // verified exit and no-replay assertions above still own settlement.
+      const recoveryWarnings = warning.mock.calls.slice(2);
+      expect(recoveryWarnings.length).toBeGreaterThan(0);
+      const recoveryConnections = new Set<string>();
+      for (const call of recoveryWarnings) {
+        expect(call).toEqual(['[spawner-ipc-client-fault]', {
           event: 'socket-error', clientConnectionId: expect.any(String),
           serverGeneration: null, serverConnectionId: null, requestId: null, method: null,
           relatedRequestId: null, errorCode: 'ECONNREFUSED', errorName: 'Error', activeRequests: [],
-        }],
-      ]);
-      expect(warning.mock.calls[2]?.[1].clientConnectionId).not.toBe(execution.clientConnectionId);
+        }]);
+        const connectionId = call[1].clientConnectionId as string;
+        expect(connectionId).not.toBe(execution.clientConnectionId);
+        expect(recoveryConnections.has(connectionId)).toBe(false);
+        recoveryConnections.add(connectionId);
+      }
+      for (const call of leaseWarning.mock.calls) {
+        expect(call).toEqual([
+          '[spawner-sidecar] process exit remains unverified; retaining caller lease',
+          { requestId: execution.requestId, fence: {
+            serverGeneration: execution.serverGeneration, connectionId: execution.connectionId,
+            forkserverIdentity: expect.any(String),
+          } },
+        ]);
+      }
     } finally {
       warning.mockRestore();
+      leaseWarning.mockRestore();
     }
   }, 60_000,
 );
