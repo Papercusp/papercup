@@ -1113,10 +1113,11 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     { rootDonor: true, generationHelper: false },
     { rootDonor: true, generationHelper: true },
   ])('freezes materialized committed source without cloning on root (root donor=$rootDonor, generation helper=$generationHelper)', async ({ rootDonor, generationHelper }) => {
+    const caseId = `${rootDonor}-${generationHelper}`;
     const fixtureParent = rootDonor && process.platform === 'linux'
       ? mkdtempSync('/var/tmp/source-preview-root-donor-') : tmp;
     try {
-    const fixture = makeSuperproject(join(fixtureParent, 'verifier-materialized-dependencies-' + rootDonor));
+    const fixture = makeSuperproject(join(fixtureParent, 'verifier-materialized-dependencies-' + caseId));
     const copiesDependencies = process.platform === 'linux' && statSync(fixture.repo).dev === statSync('/').dev;
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const script = 'scripts/source-preview.mjs';
@@ -1147,18 +1148,18 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
     write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
     installVerifierTsx(fixture.repo);
-    const materialized = join(tmp, 'materialized-dependency-source-' + rootDonor);
+    const materialized = join(tmp, 'materialized-dependency-source-' + caseId);
     git(fixture.repo, ['clone', '--local', '--shared', '--recurse-submodules', fixture.repo, materialized]);
     const shadow = await import(new URL('../../../scripts/lint-as-committed.mjs', import.meta.url).href);
     write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha, sourceRepoRoot: fixture.repo }));
     shadow.linkNodeModulesShadow(join(fixture.repo, 'node_modules'), join(materialized, 'node_modules'), fixture.repo, materialized);
     expect((await fsPromises.lstat(join(materialized, 'node_modules/.bin'))).isSymbolicLink()).toBe(true);
-    const receiptPath = join(tmp, 'materialized-dependency-source-receipt-' + rootDonor + '.json');
+    const receiptPath = join(tmp, 'materialized-dependency-source-receipt-' + caseId + '.json');
     const options = { repo: materialized, ref: sha, inputs: [script], receiptPath,
       command: [process.execPath, script, 'verifier-measure'] };
     // The donor must pass the ignored-source-scratch guard, not accidentally
     // be admitted because both fixture repositories are beneath OS tmpdir.
-    const restrictedTemp = join(tmp, 'materialized-source-only-temp-' + rootDonor);
+    const restrictedTemp = join(tmp, 'materialized-source-only-temp-' + caseId);
     await fsPromises.mkdir(restrictedTemp);
     vi.stubEnv('TMPDIR', restrictedTemp);
     try {
@@ -1173,9 +1174,9 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(dependencyReceipt.sourceCommit).toBe(sha);
     // The recorded donor must never make a mismatched source identity acceptable.
     write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha: '0'.repeat(40), sourceRepoRoot: fixture.repo }));
-    await expect(runVerifierCommand({ ...options, receiptPath: join(tmp, 'refused-donor-receipt-' + rootDonor + '.json') }))
+    await expect(runVerifierCommand({ ...options, receiptPath: join(tmp, 'refused-donor-receipt-' + caseId + '.json') }))
       .rejects.toThrow('retained source commit does not match');
-    expect(existsSync(join(tmp, 'refused-donor-receipt-' + rootDonor + '.json'))).toBe(false);
+    expect(existsSync(join(tmp, 'refused-donor-receipt-' + caseId + '.json'))).toBe(false);
     } finally {
       if (fixtureParent !== tmp) rmSync(fixtureParent, { recursive: true, force: true });
     }
