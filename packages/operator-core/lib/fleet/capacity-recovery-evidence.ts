@@ -70,7 +70,7 @@ export const diagnosticProofSchema = z.object({ schemaVersion: z.literal('luna-c
   runtime: z.object({ id: z.literal('staging-operator'), containsSource: z.literal(true),
     sourceDigest: digest, buildDigest: digest, observedAt: time, receiptRef: text }).strict(),
   scope: z.object({ fleet: text, harness: text, specRef: text.nullable(),
-    specRevision: z.number().int().positive().nullable(), populationBasis: text, receiptRef: text }).strict(),
+    specRevision: z.number().int().positive().nullable(), populationBasis: text.nullable(), receiptRef: text }).strict(),
   status: z.enum(['measured', 'degraded']), briefCount: z.number().int().nonnegative().nullable(),
   callerCount: z.number().int().nonnegative().nullable(),
   reconciliation: z.object({ specRef: text, specRevision: z.number().int().positive(), harness: text,
@@ -84,33 +84,45 @@ export interface CapacityProofVerdict { status: 'pass' | 'fail'; violations: str
 export const capacityBriefCaptureSchema = z.object({ invocationId: z.number().int().positive(),
   result: z.record(z.string(), z.unknown()),
 }).strict();
+export const capacityAdmissionCapturesSchema = z.array(z.object({ memberId: text,
+  capture: capacityBriefCaptureSchema }).strict()).max(100);
+export const capacityRuntimeCapturesSchema = z.array(capacityBriefCaptureSchema).min(1).max(32);
 /** Read from tool_invocations by the instrument, never from artifact-authored metadata. */
 export interface NativeCapacityBriefReceipt {
   id: number; toolName: string; status: string; workspaceId: string; actorId: string | null;
+  /** Canonical tool_invocations.invoked_at is dispatch SETTLE time (EI-7040). */
   invokedAt: string; durationMs: number | null; metadata: unknown; args?: unknown;
+  servingHost?: string | null; servingProcessId?: string | null; servingBuildSha?: string | null;
+}
+function observationWithinNativeRun(native: NativeCapacityBriefReceipt, observedAt: unknown,
+  window: { now: string; startedAt: string; finishedAt: string }): boolean {
+  const [at, settled, start, end, now] = [String(observedAt), native.invokedAt,
+    window.startedAt, window.finishedAt, window.now].map(Date.parse);
+  const duration = native.durationMs;
+  return duration !== null && Number.isFinite(duration) && duration >= 0
+    && [at, settled, start, end, now].every(Number.isFinite)
+    && start <= settled - duration && settled - duration <= at && at <= settled
+    && settled <= end && end <= now && now - at <= 15 * 60_000;
 }
 /** Source/runtime and admission producers retain this digest in the same
  * invocation ledger. The caller supplies only the row id and captured bytes. */
 export function validateCapacityOutputReceipt(capture: unknown, native: NativeCapacityBriefReceipt | null,
-  expected: { toolName: string; actorId: string; now: string; startedAt: string; finishedAt: string }): CapacityProofVerdict {
+  expected: { toolName: string; actorId: string; now: string; startedAt: string; finishedAt: string; sourceMatches: boolean }): CapacityProofVerdict {
   const c = capacityBriefCaptureSchema.safeParse(capture);
   if (!c.success || !native) return { status: 'fail', violations: ['native-output-missing'] };
   const pin = record(record(native.metadata).operationalOutput);
-  const [at, start, end, now, invoked] = [String(pin.observedAt), expected.startedAt, expected.finishedAt,
-    expected.now, native.invokedAt].map(Date.parse);
   const errors: string[] = [];
+  if (!expected.sourceMatches) errors.push('native-output-source');
   if (native.id !== c.data.invocationId || native.status !== 'ok' || native.toolName !== expected.toolName
     || native.workspaceId !== 'papercusp-workspace' || native.actorId !== expected.actorId || pin.schemaVersion !== 1
     || pin.sha256 !== createHash('sha256').update(canonicalJson(c.data.result)).digest('hex')) errors.push('native-output-custody');
-  if (native.durationMs === null || ![at, start, end, now, invoked].every(Number.isFinite)
-    || !(start <= invoked && invoked <= at && at <= invoked + (native.durationMs ?? 0)
-      && at <= end && end <= now && now - at <= 15 * 60_000)) errors.push('native-output-stale-or-outside-run');
+  if (!observationWithinNativeRun(native, pin.observedAt, expected)) errors.push('native-output-stale-or-outside-run');
   return { status: errors.length ? 'fail' : 'pass', violations: errors };
 }
 
 /** Join action-time admission to the same member/spec/item before its claim. */
 export function validateCapacityAdmissionReceipt(input: unknown, memberId: string, capture: unknown,
-  native: NativeCapacityBriefReceipt | null, window: { now: string; startedAt: string; finishedAt: string }): CapacityProofVerdict {
+  native: NativeCapacityBriefReceipt | null, window: { now: string; startedAt: string; finishedAt: string; sourceMatches: boolean }): CapacityProofVerdict {
   const p = recoveryProofSchema.safeParse(input);
   const c = capacityBriefCaptureSchema.safeParse(capture);
   if (!p.success || !c.success || !native) return { status: 'fail', violations: ['native-admission-missing'] };
@@ -125,7 +137,7 @@ export function validateCapacityAdmissionReceipt(input: unknown, memberId: strin
   const actualIds = Array.isArray(data.claimable) ? data.claimable.map(v => String(record(v).id)) : [];
   const at = record(record(native.metadata).operationalOutput).observedAt;
   if (!recovery || data.ok !== true || caller.caller !== memberId
-    || record(selector.claimSpec).fleetSlug !== p.data.snapshot.fleet
+    || (record(selector.claimSpec).fleetSlug ?? record(record(data.claimableCallerScope).fleetSpecComparison).fleetSlug) !== p.data.snapshot.fleet
     || data.harness !== record(native.args).harness
     || actualSpec.revision !== recovery.effectiveSpec.revision
     || typeof actualSpec.specId !== 'string' || formatSpecRef(String(actualSpec.specId), actualSpec.revision as number) !== recovery.effectiveSpec.ref
@@ -133,11 +145,80 @@ export function validateCapacityAdmissionReceipt(input: unknown, memberId: strin
     || !sameSet(actualIds, recovery.admission.admittedIds) || !actualIds.includes(recovery.claim.workItemId)
     || record(record(record(data.countEvidence).metrics).claimable).exactness == null
     || record(record(record(record(data.countEvidence).metrics).claimable).exactness).status !== 'exact'
-    || data.claimableCount !== actualIds.length) errors.push('native-action-admission');
+    || typeof data.claimableCount !== 'number' || data.claimableCount < actualIds.length) errors.push('native-action-admission');
   return { status: errors.length ? 'fail' : 'pass', violations: errors };
 }
 const record = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
+
+export interface NativeCapacityOutput {
+  capture: z.infer<typeof capacityBriefCaptureSchema>; native: NativeCapacityBriefReceipt; sourceMatches: boolean;
+}
+/** Resolve each source/runtime observation and the caller-only floor difference
+ * against producer rows. An internally consistent count pair is insufficient. */
+export function validateCapacityDiagnosticOutputs(input: unknown, runtime: NativeCapacityOutput[],
+  caller: NativeCapacityOutput | null, current: { root: string; sources: Array<{ path: string; sha256: string; gitBlob: string }>;
+    now: string; startedAt: string; finishedAt: string }): CapacityProofVerdict {
+  const p = diagnosticProofSchema.safeParse(input);
+  if (!p.success || !current.sources.length || !runtime.length) return { status: 'fail', violations: ['native-diagnostic-outputs-missing'] };
+  const proof = p.data, errors: string[] = [];
+  const paths: string[] = [], observed: number[] = [];
+  for (const output of runtime) {
+    const { native, capture, sourceMatches } = output;
+    errors.push(...validateCapacityOutputReceipt(capture, native,
+      { ...current, sourceMatches, toolName: 'dev:pipeline_position', actorId: native.actorId ?? '' }).violations);
+    const args = record(native.args), data = capture.result, accepted = record(data.acceptedSource);
+    const source = current.sources.find(s => s.path === args.path);
+    const entries = Array.isArray(data.servingRuntimes) ? data.servingRuntimes : record(data.servingRuntimes).entries;
+    const entry = Array.isArray(entries) ? record(entries.find(e => record(e).runtime === 'staging-operator')) : {};
+    const observer = record(data.observingRuntime), artifact = record(observer.artifact);
+    const matchesCommit = (sha: unknown) => typeof sha === 'string' && /^[a-f0-9]{7,40}$/.test(sha)
+      && proof.candidate.commit.startsWith(sha);
+    if (!source || args.sourceRuntimeOnly !== true || args.expectedSourceSha256 !== source.sha256
+      || data.repoRoot !== current.root || data.submodule != null || accepted.expectedSha256 !== source.sha256
+      || accepted.observedSha256 !== source.sha256 || accepted.matches !== true
+      || record(accepted.runtimeContainment)['staging-operator'] !== true
+      || entry.containsChange !== true || !matchesCommit(entry.buildSha)) errors.push('native-runtime-containment');
+    if (observer.host !== 'port-3170' || observer.host !== native.servingHost
+      || !native.servingProcessId || observer.processId !== native.servingProcessId
+      || observer.buildSha !== native.servingBuildSha || !matchesCommit(observer.buildSha)
+      || artifact.status !== 'measured' || artifact.sourceSha !== proof.candidate.commit
+      || artifact.bundleSha256 !== proof.candidate.buildDigest || !digest.safeParse(artifact.manifestSha256).success
+      || !text.safeParse(artifact.evidenceRef).success || !source
+      || !/^[a-f0-9]{40}$/.test(source.gitBlob) || record(artifact.sourceBlobs)[source.path] !== source.gitBlob)
+      errors.push('native-runtime-artifact');
+    paths.push(String(args.path));
+    observed.push(Date.parse(String(record(record(native.metadata).operationalOutput).observedAt)));
+  }
+  if (!sameSet(paths, current.sources.map(s => s.path)) || new Set(runtime.map(r => r.native.id)).size !== runtime.length
+    || Date.parse(proof.runtime.observedAt) !== Math.max(...observed)) errors.push('native-runtime-population');
+  const runtimeRef = 'native-runtime-file-set:' + createHash('sha256')
+    .update(canonicalJson(runtime.map(r => ({ path: record(r.native.args).path, invocationId: r.native.id }))
+      .sort((a, b) => String(a.path).localeCompare(String(b.path))))).digest('hex');
+  if (proof.runtime.receiptRef !== runtimeRef) errors.push('native-runtime-reference');
+  if (proof.status === 'degraded') {
+    if (caller !== null) errors.push('native-degraded-caller-residue');
+  } else if (!caller || !proof.reconciliation) errors.push('native-caller-missing');
+  else {
+    const { capture, native, sourceMatches } = caller;
+    errors.push(...validateCapacityOutputReceipt(capture, native,
+      { ...current, sourceMatches, toolName: 'work_items:claimable', actorId: native.actorId ?? '' }).violations);
+    const data = capture.result, actualSpec = record(data.spec), count = record(data.countEvidence);
+    const scope = record(record(count.contract).scope);
+    const sample = record(data.excludedSample);
+    const exclusions = ['cooldown', 'planLaneReserved'].flatMap(key => Array.isArray(sample[key])
+      ? (sample[key] as unknown[]).map(v => String(record(v).id ?? v)) : []);
+    const ref = 'tool-invocation:' + native.id;
+    if (data.ok !== true || data.harness !== proof.scope.harness || scope.caller !== native.actorId
+      || typeof actualSpec.specId !== 'string' || formatSpecRef(String(actualSpec.specId), actualSpec.revision as number) !== proof.scope.specRef
+      || actualSpec.revision !== proof.scope.specRevision || data.claimableCount !== proof.callerCount
+      || record(record(record(count.metrics).claimable).exactness).status !== 'exact'
+      || proof.reconciliation.receiptRef !== ref
+      || proof.reconciliation.callerFloorExclusions.some(e => e.receiptRef !== ref || !exclusions.includes(e.id)))
+      errors.push('native-caller-reconciliation');
+  }
+  return { status: errors.length ? 'fail' : 'pass', violations: errors };
+}
 
 /** The existing identity producer hashes the complete, unshaped brief. A saved
  * result is evidence only when its hash resolves to that native producer row. */
@@ -160,12 +241,7 @@ export function validateCapacityBriefReceipt(input: unknown, capture: unknown,
     || pin.identityId !== 'su.fleet-leader' || pin.contributionId !== 'fleet-leader-brief'
     || pin.outputRevision !== resultHash) errors.push('native-brief-custody');
   if (!context.sourceMatches) errors.push('native-brief-source');
-  const observedAt = typeof pin.observedAt === 'string' ? Date.parse(pin.observedAt) : NaN;
-  const invokedAt = Date.parse(native.invokedAt);
-  const [start, end, now] = [context.startedAt, context.finishedAt, context.now].map(Date.parse);
-  if (native.durationMs === null || ![observedAt, invokedAt, start, end, now].every(Number.isFinite)
-    || !(start <= invokedAt && invokedAt <= observedAt && observedAt <= invokedAt + (native.durationMs ?? 0)
-      && observedAt <= end && end <= now && now - observedAt <= 15 * 60_000)) errors.push('native-brief-stale-or-outside-run');
+  if (!observationWithinNativeRun(native, pin.observedAt, context)) errors.push('native-brief-stale-or-outside-run');
   const receiptRef = 'tool-invocation:' + native.id;
   const summary = record(data.summary);
   if (p.success) {
@@ -189,13 +265,15 @@ export function validateCapacityBriefReceipt(input: unknown, capture: unknown,
       || s.generation !== pin.specificationRevision + ':' + pin.outputRevision
       || data.membersTruncated || record(summary.population).complete === false
       || !sameSet(s.roster, members.map(m => String(m.agentId)))
-      || s.members.some(m => m.receiptRef !== receiptRef)) errors.push('native-census-registration');
+      || s.members.some(m => m.receiptRef !== receiptRef)
+      || proof.recoveries.some(r => r.leaderReceiptRef !== receiptRef)) errors.push('native-census-registration');
     for (const m of s.members) {
       const actual = members.find(a => a.agentId === m.id);
       const capacity = record(actual?.parkedCapacity);
       if (!actual || actual.sessionState !== m.runtimeState || actual.wakeable !== m.wakeable
         || (m.runtimeState === 'parked' && (capacity.status !== m.disposition
           || capacity.activeClaims !== m.activeClaims || capacity.maxConcurrentClaims !== m.effectiveSpec.maxConcurrentClaims
+          || capacity.specRef !== m.effectiveSpec.ref
           || !sameSet(Array.isArray(capacity.heldIds) ? capacity.heldIds as string[] : [], m.heldIds)
           || !sameSet(Array.isArray(capacity.blockerParkedIds) ? capacity.blockerParkedIds as string[] : [], m.blockerParkedIds))))
         errors.push('native-census-member:' + m.id);

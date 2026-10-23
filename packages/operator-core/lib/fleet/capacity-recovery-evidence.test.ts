@@ -3,11 +3,14 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { canonicalJson } from '@papercusp/hash-chain';
+import { formatSpecRef } from '../scheduler/claim-spec';
 import { BRIEF_ADMIN, computeIdentityHash, JUDGE_PROMPT_SCAFFOLD_VERSION } from '@papercusp/testing-shell/llm';
 import { S42_CASES, S42_ITEM, S42_PROMPT } from '../llm-testing/scenarios/su/S42-drain-watch-recheck';
 import { LUNA_CAPACITY_PLAN, LUNA_CAPACITY_INSTRUMENTS, lunaCapacityInstruments, validateCapacityRecoveryProof, validateCapacityShipmentProof,
   validateCapacityDiagnosticProof, validateCapacityContinuationProof, validateCapacityContractProof, validateCapacityNativeLlmRun,
-  validateCapacityBriefReceipt, validateCapacityOutputReceipt, type NativeCapacityBriefReceipt, type NativeCapacityLlmRun, type NativeCapacityLlmContext,
+  validateCapacityBriefReceipt, validateCapacityOutputReceipt, validateCapacityAdmissionReceipt,
+  validateCapacityDiagnosticOutputs, type NativeCapacityOutput,
+  type NativeCapacityBriefReceipt, type NativeCapacityLlmRun, type NativeCapacityLlmContext,
   type CapacityRecoveryProof, type CapacityShipmentProof, type CapacityDiagnosticProof } from './capacity-recovery-evidence';
 
 const hash = (value: string) => value.repeat(64);
@@ -67,7 +70,7 @@ describe('native leader-brief receipt custody', () => {
         basis: proof.scope.populationBasis, spec: { ref: proof.scope.specRef, revision: proof.scope.specRevision } },
     } } };
     const native: NativeCapacityBriefReceipt = { id: 17, toolName: 'fleet:leader-brief', status: 'ok',
-      workspaceId: 'papercusp-workspace', actorId: 'leader', invokedAt: stamp(0), durationMs: 1_000,
+      workspaceId: 'papercusp-workspace', actorId: 'leader', invokedAt: new Date(Date.parse(stamp(0)) + 1_000).toISOString(), durationMs: 1_000,
       metadata: { identityContribution: { identityId: 'su.fleet-leader', contributionId: 'fleet-leader-brief',
         status: 'bound', outputRevision: createHash('sha256').update(canonicalJson(result)).digest('hex'),
         observedAt: stamp(0), scope: { workspace: 'papercusp-workspace', fleet: 'luna', harness: 'papercusp' } } } };
@@ -79,6 +82,32 @@ describe('native leader-brief receipt custody', () => {
     const { proof, capture, native, context } = observation();
     capture.result = Object.fromEntries(Object.entries(capture.result).reverse()) as typeof capture.result;
     expect(validateCapacityBriefReceipt(proof, capture, native, context)).toEqual({ status: 'pass', violations: [] });
+  });
+  it.each(['brief', 'operational'] as const)('uses dispatch-settle time for the %s receipt window', kind => {
+    const { proof, capture, native, context } = observation();
+    const observedAt = new Date(Date.parse(stamp(0)) + 500).toISOString();
+    const pin = (native.metadata as { identityContribution: Record<string, unknown> }).identityContribution;
+    pin.observedAt = observedAt;
+    if (kind === 'operational') native.metadata = { operationalOutput: { schemaVersion: 1, observedAt,
+      sha256: createHash('sha256').update(canonicalJson(capture.result)).digest('hex') } };
+    const check = () => kind === 'brief' ? validateCapacityBriefReceipt(proof, capture, native, context)
+      : validateCapacityOutputReceipt(capture, native, { ...context, toolName: native.toolName, actorId: 'leader' });
+    expect(check().status).toBe('pass');
+    // A later capture must fail, even though the former start-time interpretation accepted it.
+    const activePin = kind === 'brief' ? pin
+      : (native.metadata as { operationalOutput: Record<string, unknown> }).operationalOutput;
+    for (const delta of [-1, 1_001]) {
+      activePin.observedAt = new Date(Date.parse(stamp(0)) + delta).toISOString();
+      expect(check().status).toBe('fail');
+    }
+    activePin.observedAt = observedAt;
+    for (const duration of [null, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      native.durationMs = duration;
+      expect(check().status).toBe('fail');
+    }
+    native.durationMs = 1_000;
+    context.finishedAt = observedAt;
+    expect(check().status).toBe('fail');
   });
   it('rejects a substituted result even when its proof count is changed consistently', () => {
     const { proof, capture, native, context } = observation();
@@ -108,6 +137,53 @@ describe('native leader-brief receipt custody', () => {
       expect(validateCapacityOutputReceipt(capture, { ...native, ...change }, expected).status).toBe('fail');
     capture.result.summary.fleet = 'foreign';
     expect(validateCapacityOutputReceipt(capture, native, expected).violations).toContain('native-output-custody');
+  });
+  it('binds the census to its registered leader, full roster and exact producer generation', () => {
+    const { native, context } = observation();
+    const proof = census(); const s = proof.snapshot;
+    s.receiptRef = 'tool-invocation:17'; s.members[0].receiptRef = s.receiptRef;
+    proof.recoveries[0].leaderReceiptRef = s.receiptRef;
+    const result = { ok: true, summary: { fleet: 'luna', population: { complete: true } },
+      members: s.members.map(m => ({ agentId: m.id, sessionState: m.runtimeState, wakeable: m.wakeable,
+        parkedCapacity: { status: m.disposition, activeClaims: m.activeClaims,
+          maxConcurrentClaims: m.effectiveSpec.maxConcurrentClaims, specRef: m.effectiveSpec.ref,
+          heldIds: m.heldIds, blockerParkedIds: m.blockerParkedIds } })) };
+    const pin = { identityId: 'su.fleet-leader', contributionId: 'fleet-leader-brief', status: 'bound',
+      outputRevision: createHash('sha256').update(canonicalJson(result)).digest('hex'), specificationRevision: hash('f'),
+      observedAt: stamp(0), scope: { workspace: 'papercusp-workspace', fleet: 'luna', harness: 'papercusp' } };
+    native.metadata = { identityContribution: pin }; s.generation = pin.specificationRevision + ':' + pin.outputRevision;
+    const capture = { invocationId: 17, result };
+    expect(validateCapacityBriefReceipt(proof, capture, native, context).status).toBe('pass');
+    for (const mutate of [
+      (p: CapacityRecoveryProof) => { p.snapshot.generation = 'stale'; },
+      (p: CapacityRecoveryProof) => { p.snapshot.fleet = 'foreign'; },
+      (p: CapacityRecoveryProof) => { p.snapshot.leaderId = 'unregistered'; },
+      (p: CapacityRecoveryProof) => { p.recoveries[0].leaderReceiptRef = 'unrelated'; },
+    ]) {
+      const changed = structuredClone(proof); mutate(changed);
+      expect(validateCapacityBriefReceipt(changed, capture, native, context).status).toBe('fail');
+    }
+  });
+  it('requires the actual member admission result while preserving overrides and a bounded nonempty page', () => {
+    const { native, context } = observation(); const proof = census();
+    proof.snapshot.members[0].effectiveSpec.ref = formatSpecRef('member-override', 4);
+    proof.recoveries[0].admission.receiptRef = 'tool-invocation:17';
+    proof.recoveries[0].admission.observedAt = stamp(3);
+    context.finishedAt = stamp(4); context.now = stamp(5); native.invokedAt = stamp(3);
+    const result = { ok: true, harness: 'papercusp', spec: { specId: 'member-override', revision: 4 },
+      claimableCallerScope: { fleetSpecComparison: { fleetSlug: 'luna' } },
+      countEvidence: { contract: { scope: { caller: 'member' }, population: { selector: { claimSpec: {} } } },
+        metrics: { claimable: { exactness: { status: 'exact' } } } },
+      claimableCount: 2, claimable: [{ id: 'WI-next' }] };
+    native.toolName = 'work_items:claimable'; native.actorId = 'member'; native.args = { harness: 'papercusp' };
+    native.metadata = { operationalOutput: { schemaVersion: 1, observedAt: stamp(3),
+      sha256: createHash('sha256').update(canonicalJson(result)).digest('hex') } };
+    const capture = { invocationId: 17, result };
+    expect(validateCapacityRecoveryProof(proof).status).toBe('pass');
+    expect(validateCapacityAdmissionReceipt(proof, 'member', capture, native, context).status).toBe('pass');
+    const withdrawn = structuredClone(proof); withdrawn.recoveries[0].admission.admittedIds = ['WI-foreign'];
+    expect(validateCapacityAdmissionReceipt(withdrawn, 'member', capture, native, context).status).toBe('fail');
+    expect(validateCapacityAdmissionReceipt(proof, 'member', capture, { ...native, actorId: 'leader' }, context).status).toBe('fail');
   });
 });
 
@@ -173,6 +249,86 @@ describe('Luna census and managed-pickup semantic proof', () => {
   it('rejects a receipt with no observed turn or no per-member disposition', () => {
     expect(validateCapacityRecoveryProof({ ...census(), recoveries: [{ control: census().recoveries[0].control }] }).status).toBe('fail');
     expect(validateCapacityRecoveryProof({ ...census(), snapshot: { ...census().snapshot, members: [{}] } }).status).toBe('fail');
+  });
+});
+
+describe('canonical diagnostic runtime and caller observations', () => {
+  function measured() {
+    const proof = diagnostic(); proof.scope.specRef = formatSpecRef('luna-spec', 4);
+    proof.reconciliation!.specRef = proof.scope.specRef;
+    const context = { root: '/native-root', sources: [{ path: 'leader-brief.ts', sha256: hash('b'), gitBlob: '9'.repeat(40) }],
+      now: stamp(4), startedAt: stamp(0), finishedAt: stamp(3) };
+    const output = (id: number, toolName: string, result: Record<string, unknown>, args: unknown): NativeCapacityOutput => ({
+      capture: { invocationId: id, result }, sourceMatches: true,
+      native: { id, toolName, status: 'ok', workspaceId: 'papercusp-workspace', actorId: 'leader',
+        servingHost: 'port-3170', servingProcessId: 'staging-process', servingBuildSha: candidate().commit,
+        invokedAt: stamp(1), durationMs: 1000, args, metadata: { operationalOutput: { schemaVersion: 1,
+          observedAt: stamp(1), sha256: createHash('sha256').update(canonicalJson(result)).digest('hex') } } },
+    });
+    const runtime = [output(17, 'dev:pipeline_position', { repoRoot: '/native-root', acceptedSource: {
+      expectedSha256: hash('b'), observedSha256: hash('b'), matches: true, runtimeContainment: { 'staging-operator': true } },
+      servingRuntimes: [{ runtime: 'staging-operator', containsChange: true, buildSha: candidate().commit }],
+      observingRuntime: { host: 'port-3170', processId: 'staging-process', buildSha: candidate().commit,
+        artifact: { status: 'measured', sourceSha: candidate().commit, bundleSha256: candidate().buildDigest,
+          manifestSha256: hash('8'), sourceBlobs: { 'leader-brief.ts': '9'.repeat(40) }, evidenceRef: 'boot-manifest' } } },
+    { path: 'leader-brief.ts', sourceRuntimeOnly: true, expectedSourceSha256: hash('b') })];
+    proof.runtime.observedAt = stamp(1);
+    proof.runtime.receiptRef = 'native-runtime-file-set:' + createHash('sha256')
+      .update(canonicalJson([{ path: 'leader-brief.ts', invocationId: 17 }])).digest('hex');
+    const caller = output(18, 'work_items:claimable', { ok: true, harness: 'papercusp',
+      spec: { specId: 'luna-spec', revision: 4 }, claimableCount: 3,
+      countEvidence: { contract: { scope: { caller: 'leader' } }, metrics: { claimable: { exactness: { status: 'exact' } } } },
+      excludedSample: { cooldown: [{ id: 'WI-cooldown' }] } }, { harness: 'papercusp' });
+    proof.reconciliation!.receiptRef = proof.reconciliation!.callerFloorExclusions[0].receiptRef = 'tool-invocation:18';
+    return { proof, runtime, caller, context };
+  }
+  it('accepts only the exact source/runtime population and native caller-floor difference', () => {
+    const o = measured();
+    expect(validateCapacityDiagnosticProof(o.proof).status).toBe('pass');
+    expect(validateCapacityDiagnosticOutputs(o.proof, o.runtime, o.caller, o.context)).toEqual({ status: 'pass', violations: [] });
+  });
+  it('rejects missing runtime sources, unrelated build/source, stale receipts and invented floor exclusions', () => {
+    const changes: Array<(o: ReturnType<typeof measured>) => void> = [
+      o => { o.context.sources.push({ path: 'missing.ts', sha256: hash('9'), gitBlob: '9'.repeat(40) }); },
+      o => { o.proof.candidate.commit = '9'.repeat(40); },
+      o => { o.runtime[0].sourceMatches = false; },
+      o => { o.context.now = stamp(20); },
+      o => { o.proof.reconciliation!.callerFloorExclusions[0].id = 'invented'; },
+      o => { o.proof.callerCount = 2; },
+      o => { o.runtime.push(o.runtime[0]); },
+    ];
+    for (const change of changes) {
+      const o = measured(); change(o);
+      expect(validateCapacityDiagnosticOutputs(o.proof, o.runtime, o.caller, o.context).status).toBe('fail');
+    }
+  });
+  it('requires the boot-measured artifact, exact serving process, and measured compiler input', () => {
+    const changes = [
+      { artifact: { status: 'unknown' } },
+      { artifact: { bundleSha256: hash('9') } },
+      { artifact: { sourceSha: '9'.repeat(40) } },
+      { artifact: { sourceBlobs: {} } },
+      { artifact: { sourceBlobs: { 'leader-brief.ts': '8'.repeat(40) } } },
+      { processId: 'other-process' },
+      { host: 'port-3070' },
+    ];
+    for (const change of changes) {
+      const o = measured(); const output = o.runtime[0];
+      const observer = output.capture.result.observingRuntime as Record<string, unknown>;
+      const artifact = observer.artifact as Record<string, unknown>;
+      Object.assign(observer, change, { artifact: { ...artifact, ...change.artifact } });
+      // Re-seal the native output so only the artifact/process join can detect the mismatch.
+      output.native.metadata = { operationalOutput: { schemaVersion: 1, observedAt: stamp(1),
+        sha256: createHash('sha256').update(canonicalJson(output.capture.result)).digest('hex') } };
+      expect(validateCapacityDiagnosticOutputs(o.proof, o.runtime, o.caller, o.context).violations).toContain('native-runtime-artifact');
+    }
+    const o = measured(); const output = o.runtime[0];
+    const observer = output.capture.result.observingRuntime as Record<string, unknown>;
+    observer.buildSha = output.native.servingBuildSha = candidate().commit.slice(0, 10);
+    (output.capture.result.servingRuntimes as Array<Record<string, unknown>>)[0].buildSha = observer.buildSha;
+    output.native.metadata = { operationalOutput: { schemaVersion: 1, observedAt: stamp(1),
+      sha256: createHash('sha256').update(canonicalJson(output.capture.result)).digest('hex') } };
+    expect(validateCapacityDiagnosticOutputs(o.proof, o.runtime, o.caller, o.context).status).toBe('pass');
   });
 });
 
