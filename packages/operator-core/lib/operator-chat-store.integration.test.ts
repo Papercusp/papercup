@@ -768,12 +768,13 @@ describe('P010 durable PG turn ports (independent connections; no actual-host cl
     expect(await findConverseTurn({ ...input, identity: { ...turn, turnId: randomUUID() } })).toBeNull();
     const listener = postgres(databaseUrl, { max: 1 });
     let cancelled = false;
+    let unlistening: Promise<unknown> | undefined;
     const errors: unknown[] = [];
     const watch = await watchConverseTurn({ store: admitted.store, workspaceId, identity: turn,
       onChange: checkpoint => { cancelled ||= checkpoint.state.phase === 'cancelled'; },
       onError: error => errors.push(error) }, async (channel, nudge, onListen) => {
       const subscription = await listener.listen(channel, nudge, onListen);
-      return () => { void subscription.unlisten(); };
+      return () => { unlistening = subscription.unlisten(); };
     });
     try {
       expect((await recovered!.recovery.cancel(turn)).ok).toBe(true);
@@ -789,7 +790,11 @@ describe('P010 durable PG turn ports (independent connections; no actual-host cl
       expect(rows[0]).toMatchObject({ text: 'Partial', chat_state: { execution: { status: 'cancelled' },
         checkpoint: { state: { phase: 'cancelled', lastSequence: 1 } } } });
       expect(await second.unsafe('SELECT id FROM harness_shared.operator_turns')).toHaveLength(1);
-    } finally { watch.stop(); await listener.end({ timeout: 5 }); }
+    } finally {
+      watch.stop();
+      await unlistening;
+      await listener.end({ timeout: 5 });
+    }
   });
 
   it('P010 pre-stream admission reserves one scoped row and never grants a duplicate provider launch', async () => {

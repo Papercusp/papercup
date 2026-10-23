@@ -81,7 +81,8 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../../consult/acceptance-bar-amendment-review', () => ({
   openAcceptanceBarAmendmentReview: reviewMocks.openAcceptanceBarAmendmentReview,
 }));
-vi.mock('../../work-items', () => ({
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../work-items')>(),
   commentWorkItem: workItemMocks.commentWorkItem,
   getWorkItemsByIds: workItemMocks.getWorkItemsByIds,
 }));
@@ -1335,7 +1336,9 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
       }),
     });
     expect(await statusBody({ rubricRef: 'acceptance-example', idempotencyKey: key }))
-      .toMatchObject({ state, source: 'receipt', ...(state === 'orphaned' ? { reclaimableAt: expect.any(Number) } : {}) });
+      .toMatchObject({ state, source: 'receipt', ...(state === 'orphaned' ? {
+        reclaimableAt: expect.any(Number), note: expect.stringContaining('dryRun:true again for a fresh preview'),
+      } : {}) });
     expect(rubricsMocks.findAmendmentDecisionByKey).not.toHaveBeenCalled();
   });
 

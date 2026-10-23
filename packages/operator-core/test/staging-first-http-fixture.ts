@@ -243,6 +243,13 @@ async function main() {
   assert.ok(hostIdentity, 'private host kernel identity required');
   const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'shared-chat-recovery') {
+    const receipt = await (await import('./shared-chat-recovery-http-scenario')).measureSharedChatRecovery({ workspace, base });
+    await stopHost();
+    await sql.end();
+    console.log('SHARED_CHAT_RECOVERY_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-home-repair') {
     const receipt = await (await import('./current-su-native-http-scenario')).measureCurrentSuHomeRepairScenario({ workspace, base });
     await stopHost();

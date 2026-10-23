@@ -277,6 +277,133 @@ describe("OperatorConversationProvider streamed say projection", () => {
     expect(screen.getByTestId("error").textContent).toBe("");
   });
 
+  it.each(["eof", "socket-error", "crlf"])("P010 browser resumes canonical events after %s without repeating text, tools or provider admission", async failure => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    const identity = { conversationId: "conversation-1", turnId: "11111111-2222-4333-8444-555555555555" };
+    const receipt = { ...identity, seq: 104 };
+    const frame = (event: string, data: unknown) => {
+      const wire = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+      return failure === "crlf" ? wire.replaceAll("\n", "\r\n") : wire;
+    };
+    const envelope = (sequence: number, event: unknown) => ({ schemaVersion: 1, ...identity,
+      eventId: `event-${sequence}`, sequence, event });
+    const first = envelope(1, { type: "delta", text: "<say>Saved " });
+    const requests: Record<string, unknown>[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) !== "/api/agent-mcp/operator-converse") return fallback(input, init);
+      const body = JSON.parse(String(init?.body)); requests.push(body);
+      if (body.operation === "reconnect") {
+        return new Response(frame("chat-event", first)
+          + frame("chat-event", envelope(2, { type: "delta", text: "once</say>" }))
+          + frame("chat-event", envelope(3, { type: "tool_call", name: "read", callId: "native-read", input: { path: "safe" } }))
+          + frame("chat-event", envelope(4, { type: "done" }))
+          + frame("done", { persistedTurn: receipt }));
+      }
+      const prefix = frame("run-meta", { chatProtocolVersion: 1, turnPersistence: 1, conversationId: identity.conversationId })
+        + frame("turn-meta", { schemaVersion: 1, ...identity }) + frame("chat-event", first)
+        + frame("delta", { text: "must ignore duplicate legacy frame" });
+      let reads = 0;
+      return new Response(new ReadableStream({ pull(controller) {
+        if (reads++ === 0) controller.enqueue(new TextEncoder().encode(prefix));
+        else if (failure === "socket-error") controller.error(new Error("socket lost"));
+        else controller.close();
+      } }));
+    });
+    const seen: unknown[] = [];
+    const listener = (event: Event) => seen.push((event as CustomEvent).detail);
+    window.addEventListener("papercusp:operatorToolCall", listener);
+    try {
+      render(<OperatorConversationProvider><Probe /></OperatorConversationProvider>);
+      fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+      await waitFor(() => expect(screen.getByTestId("busy").textContent).toBe("false"));
+      expect(screen.getByText("Saved once").getAttribute("data-seq")).toBe("104");
+      expect(requests).toHaveLength(2);
+      expect(requests[0]).toMatchObject({ chatProtocolVersion: 1, messages: expect.any(Array) });
+      expect(requests[1]).toEqual({ chatProtocolVersion: 1, operation: "reconnect", ...identity, afterSequence: 1 });
+      expect(seen).toEqual([expect.objectContaining({ callId: "native-read", name: "read" })]);
+      const writes = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")
+        .map(([, init]) => JSON.parse(String(init?.body)));
+      expect(writes.filter(body => body.role === "assistant")).toEqual([]);
+      expect(screen.getByTestId("error").textContent).toBe("");
+    } finally { window.removeEventListener("papercusp:operatorToolCall", listener); }
+  });
+
+  it.each(["foreign-turn", "sequence-gap", "conflicting-duplicate", "state-on-event-channel", "future-version"])(
+    "P010 browser refuses %s without legacy persistence or a replacement execution", async failure => {
+      const fallback = vi.mocked(fetch).getMockImplementation()!;
+      const identity = { conversationId: "conversation-1", turnId: "11111111-2222-4333-8444-555555555555" };
+      const frame = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+      const first = { schemaVersion: 1, ...identity, eventId: "first", sequence: 1,
+        event: { type: "delta", text: "<say>Partial" } };
+      const invalid = { ...first, eventId: "second", sequence: 2,
+        ...(failure === "foreign-turn" ? { turnId: "foreign" } : {}),
+        ...(failure === "sequence-gap" ? { sequence: 3 } : {}),
+        ...(failure === "conflicting-duplicate" ? { sequence: 1 } : {}),
+        ...(failure === "state-on-event-channel" ? { event: { type: "state", version: 1, snapshot: {} } } : {}),
+        ...(failure === "future-version" ? { schemaVersion: 2 } : {}),
+      };
+      const requests: unknown[] = [];
+      vi.mocked(fetch).mockImplementation(async (input, init) => {
+        if (String(input) !== "/api/agent-mcp/operator-converse") return fallback(input, init);
+        requests.push(JSON.parse(String(init?.body)));
+        return new Response(frame("turn-meta", { schemaVersion: 1, ...identity })
+          + frame("chat-event", first) + frame("chat-event", invalid));
+      });
+      render(<OperatorConversationProvider><Probe /></OperatorConversationProvider>);
+      fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+      await waitFor(() => expect(screen.getByTestId("error").textContent).not.toBe(""));
+      expect(requests).toHaveLength(1);
+      const writes = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")
+        .map(([, init]) => JSON.parse(String(init?.body)));
+      expect(writes.filter(body => body.role === "assistant")).toEqual([]);
+    });
+
+  it("P010 browser explicitly cancels the prior durable turn when a new user turn aborts its generation", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    const identity = { conversationId: "conversation-1", turnId: "11111111-2222-4333-8444-555555555555" };
+    const replacement = { ...identity, turnId: "66666666-7777-4888-8999-aaaaaaaaaaaa", seq: 106 };
+    const frame = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    const requests: Record<string, unknown>[] = [];
+    let cancelCommit!: () => void;
+    const commit = new Promise<void>(resolve => { cancelCommit = resolve; });
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) !== "/api/agent-mcp/operator-converse") return fallback(input, init);
+      const body = JSON.parse(String(init?.body)); requests.push(body);
+      if (body.operation === "cancel") {
+        // The independent cancel request must survive the aborted stream.
+        expect(init?.signal?.aborted).toBe(false);
+        await commit;
+        return Response.json({ ok: true, state: { schemaVersion: 1, ...identity, revision: 2,
+          phase: "cancelled", lastSequence: 1, capabilities: { connectionReplay: true, persistedHistory: true,
+            persistedInteractionDecisions: true, completedToolCheckpoints: false, interruptedTurnRecovery: false } } });
+      }
+      if (requests.filter(request => !request.operation).length === 1) {
+        return new Response(new ReadableStream({ start(controller) {
+          controller.enqueue(new TextEncoder().encode(frame("turn-meta", { schemaVersion: 1, ...identity })
+            + frame("chat-event", { schemaVersion: 1, ...identity, sequence: 1, eventId: "partial",
+              event: { type: "delta", text: "<say>Partial" } })));
+          init?.signal?.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError")), { once: true });
+        } }));
+      }
+      return new Response(frame("delta", { text: "<say>Replacement</say>" }) + frame("done", { persistedTurn: replacement }));
+    });
+    try {
+      render(<OperatorConversationProvider><Probe /></OperatorConversationProvider>);
+      fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+      await waitFor(() => expect(screen.getByText("Partial")).toBeTruthy());
+      fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+      await waitFor(() => expect(requests.filter(body => body.operation === "cancel")).toEqual([
+        { chatProtocolVersion: 1, operation: "cancel", ...identity },
+      ]));
+      cancelCommit();
+      await waitFor(() => expect(screen.getByText("Replacement").getAttribute("data-seq")).toBe("106"));
+      expect(requests.filter(body => body.operation === "reconnect")).toEqual([]);
+      const writes = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")
+        .map(([, init]) => JSON.parse(String(init?.body)));
+      expect(writes.filter(body => body.role === "assistant")).toEqual([]);
+    } finally { cancelCommit(); }
+  });
+
   it("P010 browser rejects an invalid committed receipt without falling back to a new assistant write", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     const frames = 'event: delta\ndata: {"text":"<say>Partial</say>"}\n\n'

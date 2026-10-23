@@ -299,6 +299,7 @@ export default defineTool({
         // correlate without widening what THIS stream forwards.
         const runId = globalThis.crypto.randomUUID();
         sink.event('run-meta', { runId,
+          ...(body.chatProtocolVersion === 1 ? { chatProtocolVersion: 1 } : {}),
           ...(!lessonContext && body.conversationId ? { turnPersistence: 1, conversationId: body.conversationId } : {}) });
 
         let offStateChannel: (() => void) | null = null;

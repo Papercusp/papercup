@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 
 const mocks = vi.hoisted(() => ({ begin: vi.fn(), finish: vi.fn(), authority: vi.fn(), mint: vi.fn(), options: vi.fn(),
-  readBinding: vi.fn(), verifyBinding: vi.fn(), associate: vi.fn(), cas: vi.fn(), append: vi.fn() }));
+  readBinding: vi.fn(), verifyBinding: vi.fn(), associate: vi.fn(), cas: vi.fn(), append: vi.fn(),
+  parentAuthority: vi.fn(), read: vi.fn() }));
 vi.mock('../../operator-chat-store', () => ({
   OperatorChatStore: class {
     constructor(options: unknown) { mocks.options(options); }
@@ -11,18 +12,90 @@ vi.mock('../../operator-chat-store', () => ({
     associateInteractionCall = mocks.associate;
     compareAndSwap = mocks.cas;
     appendEvent = mocks.append;
+    read = mocks.read;
   },
   operatorChatSessionAuthority: mocks.authority,
+  operatorChatParentAuthority: mocks.parentAuthority,
+  operatorChatTurnChannel: () => 'test-turn-channel',
 }));
 vi.mock('./converse-chat-binding', () => ({ mintConverseChatBinding: mocks.mint,
   readConverseCardBinding: mocks.readBinding, verifyConverseCardBinding: mocks.verifyBinding }));
-import { admitConverseTurn } from './converse-turn';
+import { admitConverseTurn, findConverseTurn, watchConverseTurn } from './converse-turn';
 
 const input = () => ({
   options: { sql: {} as never, workspaceId: 'ws-a', turn: { conversationId: 'conv-a', turnId: 'turn-a' },
     scope: { principalId: 'system:operator', tenantId: 'ws-a', customerId: 'ws-a', publicOwnerId: 'system:operator' } },
   credential: { kind: 'system' as const, name: 'operator', bearer: 'original-parent' },
   capability: 'operator:converse', toolName: 'operator:converse', runId: 'parent-run', source: 'text_typed' as const,
+});
+
+describe('P010 existing turn recovery', () => {
+  it('checks original parent before the current responder on every recovered store operation', async () => {
+    const order: string[] = [];
+    const original = vi.fn(async () => { order.push('parent'); return true; });
+    const responder = vi.fn(async () => { order.push('responder'); return true; });
+    mocks.parentAuthority.mockReturnValue(original);
+    mocks.read.mockResolvedValue({ state: { capabilities: {} } });
+    const tx = { unsafe: vi.fn(async () => [{ seq: 4, chat_state: { execution: {
+      runId: 'run-a', parentAuthority: { kind: 'system', principalId: 'system:operator' },
+    } } }]) };
+    const sql = { begin: async (fn: (value: unknown) => unknown) => fn(tx) } as never;
+    await findConverseTurn({ sql, workspaceId: 'ws-a', identity: input().options.turn, authorizeAdditional: responder });
+    // Initial identity lookup authenticates the responder in a separate
+    // transaction; the retained store must use the shared mutation order.
+    order.length = 0;
+    const authorize = mocks.options.mock.calls[0][0].authorize;
+    expect(await authorize(tx)).toBe(true);
+    expect(order).toEqual(['parent', 'responder']);
+    order.length = 0;
+    original.mockImplementationOnce(async () => { order.push('parent'); return false; });
+    expect(await authorize(tx)).toBe(false);
+    expect(order).toEqual(['parent']);
+  });
+
+  it('subscribes before reading, coalesces hints during a read, rereads on reconnect and stops delivery', async () => {
+    let nudge!: () => void;
+    let reconnect!: () => void;
+    let release!: () => void;
+    const order: string[] = [];
+    const checkpoint = { state: { phase: 'running' } } as never;
+    const read = vi.fn(async () => checkpoint);
+    read.mockImplementationOnce(() => new Promise(resolve => {
+      order.push('read'); release = () => resolve(checkpoint);
+    }));
+    const stop = vi.fn();
+    const onChange = vi.fn();
+    const onError = vi.fn();
+    const starting = watchConverseTurn({ store: { read }, workspaceId: 'ws-a', identity: input().options.turn,
+      onChange, onError }, async (_channel, hint, onListen) => {
+      order.push('listen'); nudge = () => hint('changed'); reconnect = onListen!; return stop;
+    });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    nudge(); nudge();
+    expect(read).toHaveBeenCalledOnce();
+    release();
+    const watch = await starting;
+    expect(order).toEqual(['listen', 'read']);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(onChange).toHaveBeenCalledTimes(2);
+    reconnect();
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(3));
+    watch.stop(); nudge(); reconnect();
+    await watch.refresh();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('releases its listener when the initial authorized read fails', async () => {
+    const stop = vi.fn();
+    const onChange = vi.fn();
+    await expect(watchConverseTurn({ store: { read: vi.fn(async () => { throw new Error('unauthorized'); }) },
+      workspaceId: 'ws-a', identity: input().options.turn, onChange, onError: vi.fn() },
+    async () => stop)).rejects.toThrow('unauthorized');
+    expect(stop).toHaveBeenCalledOnce();
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });
 beforeEach(() => {
   vi.clearAllMocks();

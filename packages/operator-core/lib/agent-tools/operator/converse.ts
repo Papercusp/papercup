@@ -533,6 +533,7 @@ export default defineTool({
     };
     let persistedTurn: { conversationId: string; turnId: string; seq: number } | undefined;
     let cancellationWatch: { stop(): void } | undefined;
+    let cancellationWatchFailure: { error: unknown } | undefined;
     const executionAbort = new AbortController();
     ctx = { ...ctx, signal: AbortSignal.any([ctx.signal, executionAbort.signal]) };
     const finishTurn = async (status: 'completed' | 'failed' | 'cancelled') => {
@@ -544,8 +545,12 @@ export default defineTool({
     };
     try {
     if (durableTurn) {
-      cancellationWatch = await durableTurn.watchCancellation(() => executionAbort.abort(), () => executionAbort.abort());
+      cancellationWatch = await durableTurn.watchCancellation(() => executionAbort.abort(), error => {
+        cancellationWatchFailure = { error };
+        executionAbort.abort(error);
+      });
       ctx.emit('turn-meta', { schemaVersion: 1, ...durableTurn.identity });
+      if (cancellationWatchFailure) throw cancellationWatchFailure.error;
       if (ctx.signal.aborted) throw new Error('cancelled');
     }
     if (hostedCustomerIdentity && principalOk && customerPiToolNames.length > 0) {
@@ -850,6 +855,7 @@ export default defineTool({
       throw new Error(brainNoOutputMessage({ attempts: emptyAttempts, skippedFailover }));
     }
     if (emission.failure) throw emission.failure.error;
+    if (cancellationWatchFailure) throw cancellationWatchFailure.error;
     await finishTurn(ctx.signal.aborted ? 'cancelled' : 'completed');
 
     // WI-5071: output committed on a session-backed turn — bump the marker so
@@ -1050,7 +1056,7 @@ export default defineTool({
     } catch (error) {
       // An uncertain final acknowledgement never authorizes a second terminal
       // write with a different result. Recovery must reconcile that execution.
-      if (!finalizationAttempted) await finishTurn(ctx.signal.aborted ? 'cancelled' : 'failed');
+      if (!finalizationAttempted) await finishTurn(ctx.signal.aborted && !cancellationWatchFailure ? 'cancelled' : 'failed');
       throw error;
     } finally {
       cancellationWatch?.stop();

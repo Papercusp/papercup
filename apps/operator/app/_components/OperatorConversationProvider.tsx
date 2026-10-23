@@ -74,7 +74,8 @@ import {
 import { useSyncQuery } from "@papercusp/sync";
 import { useWorkspaceId } from "@/lib/use-workspace-id";
 import type { ChatMessage, ChatToolCall } from "./chat/chat-types";
-import { parseChatEvent } from "@papercusp/chat-protocol";
+import { parseChatEnvelope, parseChatEvent, parseChatState, chatEventChannel } from "@papercusp/chat-protocol";
+import { parseSseStream, type ParsedSseEvent } from "@papercusp/sse";
 import { useStateSnapshots } from "@/lib/use-state-snapshots";
 import { selectFocusedCard } from "@/lib/chat-cards/select-focused-card";
 import { composeAmbiguityPrompt } from "@papercusp/operator-core/lib/voice-cards/compose-ambiguity-prompt";
@@ -707,6 +708,7 @@ const defaultGenerationFn: GenerationFn = async (req) => {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
+      chatProtocolVersion: 1,
       // WI-6508: project onto the wire shape — never ship the render model.
       messages: toConverseWireMessages(req.messages),
       trigger: req.trigger,
@@ -730,31 +732,74 @@ const defaultGenerationFn: GenerationFn = async (req) => {
     throw new Error(text || `HTTP ${res.status}`);
   }
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
+  let body = res.body;
+  let frames = parseSseStream(body);
   const tools: ChatToolCall[] = [];
   const persistence: NonNullable<GenerationStream["persistence"]> = { turn: null };
+  let identity: { conversationId: string; turnId: string } | null = null;
+  let version: 0 | 1 = 0;
+  let cursor = 0, resumes = 0;
+  let terminal = false;
+  const eventIds = new Map<number, string>();
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => {
+    if (!identity || terminal || cancellation) return;
+    cancellation = fetch("/api/agent-mcp/operator-converse", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chatProtocolVersion: 1, operation: "cancel", ...identity }),
+      signal: AbortSignal.timeout(10000),
+    }).then(async response => {
+      const result = await response.json();
+      const state = parseChatState(result.state);
+      if (!response.ok || !state.ok || state.value.phase !== "cancelled"
+        || state.value.conversationId !== identity!.conversationId || state.value.turnId !== identity!.turnId) {
+        throw new Error("The reply cancellation needs reconciliation.");
+      }
+    });
+    // Attach immediately; the iterator awaits the same receipt on exit.
+    void cancellation.catch(() => {});
+  };
+  const reconnect = async () => {
+    req.signal.throwIfAborted();
+    if (!identity || resumes++ >= 2) throw new Error("The saved reply stream needs recovery.");
+    try { await frames.return(); await body.cancel(); } catch { /* socket already closed */ }
+    const response = await fetch("/api/agent-mcp/operator-converse", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chatProtocolVersion: 1, operation: "reconnect", ...identity, afterSequence: cursor }),
+      signal: req.signal,
+    });
+    if (!response.ok || !response.body) throw new Error("The saved reply stream needs reconciliation.");
+    body = response.body;
+    frames = parseSseStream(body);
+  };
 
   return {
     tools,
     persistence,
     chunks: (async function* () {
-      let buf = "";
+      req.signal.addEventListener("abort", cancel, { once: true });
+      try {
       while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        // SSE frame parse — split on blank line.
-        let idx;
-        while ((idx = buf.indexOf("\n\n")) !== -1) {
-          const frame = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const eventMatch = frame.match(/^event:\s*(.+)$/m);
-          const dataMatch = frame.match(/^data:\s*(.+)$/m);
-          if (!eventMatch || !dataMatch) continue;
-          const event = eventMatch[1].trim();
+        let frame: IteratorResult<ParsedSseEvent, void>;
+        try { frame = await frames.next(); }
+        catch (error) {
+          if (!identity || req.signal.aborted) throw error;
+          await reconnect(); continue;
+        }
+        const { value, done } = frame;
+        if (done) {
+          if (version === 1 && !terminal) { await reconnect(); continue; }
+          break;
+        }
+          if (!value.event || !value.data) continue;
+          let event = value.event;
+          let dataText = value.data;
           if (event === "run-meta") {
-            const meta = JSON.parse(dataMatch[1]) as { turnPersistence?: unknown; conversationId?: unknown };
+            const meta = JSON.parse(dataText) as { chatProtocolVersion?: unknown; turnPersistence?: unknown; conversationId?: unknown };
+            if (meta.chatProtocolVersion !== undefined) {
+              if (meta.chatProtocolVersion !== 1) throw new Error("Unsupported reply stream version.");
+              version = 1;
+            }
             if (meta.turnPersistence !== undefined) {
               if (meta.turnPersistence !== 1 || typeof meta.conversationId !== "string" || !meta.conversationId
                 || (req.conversationId && meta.conversationId !== req.conversationId)) {
@@ -762,6 +807,53 @@ const defaultGenerationFn: GenerationFn = async (req) => {
               }
               persistence.serverOwned = true;
             }
+            continue;
+          }
+          if (event === "turn-meta") {
+            const meta = JSON.parse(dataText);
+            const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (meta.schemaVersion !== 1 || typeof meta.conversationId !== "string" || !meta.conversationId
+              || (req.conversationId && meta.conversationId !== req.conversationId)
+              || typeof meta.turnId !== "string" || !uuid.test(meta.turnId)
+              || (identity && (identity.turnId !== meta.turnId || identity.conversationId !== meta.conversationId))) {
+              throw new Error("The reply stream identity does not match this conversation.");
+            }
+            version = 1; persistence.serverOwned = true;
+            identity = { conversationId: meta.conversationId, turnId: meta.turnId };
+            if (req.signal.aborted) { cancel(); req.signal.throwIfAborted(); }
+            continue;
+          }
+          if (event === "turn-state") {
+            const state = parseChatState(JSON.parse(dataText));
+            if (!state.ok || !identity || state.value.conversationId !== identity.conversationId
+              || state.value.turnId !== identity.turnId) throw new Error("Invalid saved reply state.");
+            if (["cancelled", "failed", "interrupted", "needs-reconciliation"].includes(state.value.phase)) {
+              throw new Error(`The saved reply is ${state.value.phase}.`);
+            }
+            continue;
+          }
+          if (event === "chat-event") {
+            const parsed = parseChatEnvelope(JSON.parse(dataText));
+            if (!parsed.ok || !identity || parsed.value.conversationId !== identity.conversationId
+              || parsed.value.turnId !== identity.turnId || chatEventChannel(parsed.value.event.type) !== "event") {
+              throw new Error("Invalid saved reply event.");
+            }
+            const envelope = parsed.value;
+            if (envelope.sequence <= cursor) {
+              if (eventIds.get(envelope.sequence) !== envelope.eventId) throw new Error("Conflicting saved reply event.");
+              continue;
+            }
+            if (envelope.sequence !== cursor + 1) throw new Error("The saved reply stream has a sequence gap.");
+            cursor = envelope.sequence; eventIds.set(cursor, envelope.eventId);
+            if (eventIds.size > 5000) eventIds.delete(cursor - 5000);
+            event = envelope.event.type;
+            // Terminal execution acknowledgement comes from the separate
+            // post-commit done frame, after the last durable event.
+            if (event === "done") continue;
+            dataText = JSON.stringify(envelope.event);
+          } else if (version === 1 && event !== "done" && event !== "error") {
+            // Version 0 is selected only by a legacy host's response. Never
+            // render dual legacy frames alongside canonical replay.
             continue;
           }
           if (
@@ -773,7 +865,7 @@ const defaultGenerationFn: GenerationFn = async (req) => {
             continue;
           let data: unknown;
           try {
-            data = JSON.parse(dataMatch[1]);
+            data = JSON.parse(dataText);
           } catch {
             continue;
           }
@@ -819,14 +911,21 @@ const defaultGenerationFn: GenerationFn = async (req) => {
                 || (req.conversationId && receipt.conversationId !== req.conversationId)
                 || !("turnId" in receipt) || typeof receipt.turnId !== "string"
                 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(receipt.turnId)
+                || (identity && (receipt.turnId !== identity.turnId || receipt.conversationId !== identity.conversationId))
                 || !("seq" in receipt) || typeof receipt.seq !== "number" || !Number.isSafeInteger(receipt.seq) || receipt.seq < 0) {
                 throw new Error("The saved reply acknowledgement does not match this conversation.");
               }
               persistence.turn = { conversationId: receipt.conversationId, turnId: receipt.turnId, seq: receipt.seq };
             }
+            if (version === 1 && !persistence.turn) throw new Error("The saved reply acknowledgement was lost.");
+            terminal = true;
             return;
           }
-        }
+      }
+      } finally {
+        req.signal.removeEventListener("abort", cancel);
+        try { await frames.return(); await body.cancel(); } catch { /* already closed */ }
+        if (cancellation) await cancellation;
       }
     })(),
   };

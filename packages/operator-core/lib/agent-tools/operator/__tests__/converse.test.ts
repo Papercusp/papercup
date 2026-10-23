@@ -16,7 +16,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const durableMocks = vi.hoisted(() => ({ admit: vi.fn(), bind: vi.fn(), finish: vi.fn(), observe: vi.fn(), publish: vi.fn() }));
+const durableMocks = vi.hoisted(() => ({ admit: vi.fn(), bind: vi.fn(), finish: vi.fn(), observe: vi.fn(), publish: vi.fn(), watch: vi.fn() }));
 vi.mock('../converse-turn', () => ({ admitConverseTurn: durableMocks.admit }));
 vi.mock('../../../operator-conversation-compaction', () => ({ maybeCompactConversation: vi.fn(async () => undefined) }));
 vi.mock('@papercusp/db-org', async original => ({ ...(await original<Record<string, unknown>>()), getOrgPg: () => ({ sql: {} }) }));
@@ -218,12 +218,13 @@ let fetchMock: any;
 beforeEach(() => {
   durableMocks.admit.mockReset(); durableMocks.bind.mockReset(); durableMocks.finish.mockReset(); durableMocks.observe.mockReset();
   durableMocks.publish.mockReset();
+  durableMocks.watch.mockReset().mockResolvedValue({ stop() {} });
   durableMocks.publish.mockImplementation(async (event, emit) => emit({ event }));
   durableMocks.bind.mockImplementation(async mount => ({ ...mount, url: mount.url + '&chat_binding=signed' }));
   durableMocks.finish.mockResolvedValue({ conversationId: 'conv-a', turnId: 'durable-turn', seq: 4 });
   durableMocks.admit.mockResolvedValue({ identity: { conversationId: 'conv-a', turnId: 'durable-turn' },
     bindMount: durableMocks.bind, finalize: durableMocks.finish, observeToolResult: durableMocks.observe, publish: durableMocks.publish,
-    watchCancellation: async () => ({ stop() {} }) });
+    watchCancellation: durableMocks.watch });
   customerPiMocks.spawnTransform.mockReturnValue(false);
   customerPiMocks.start.mockClear();
   customerPiMocks.end.mockClear();
@@ -287,6 +288,26 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
     });
     await handler({ messages: [], conversationId: 'conv-a', retainSession: false }, { ...makeCtx(), signal: ctrl.signal });
     expect(durableMocks.finish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'cancelled', text: 'Partial' }));
+  });
+  it.each(['initial-read', 'during-provider'])('P010 watcher failure aborts the provider but never attests an explicit cancellation (%s)', async when => {
+    let fail!: (error: unknown) => void;
+    const stop = vi.fn();
+    durableMocks.watch.mockImplementation(async (_cancel, onError) => {
+      fail = onError;
+      if (when === 'initial-read') onError(new Error('watch-authority-unavailable'));
+      return { stop };
+    });
+    vi.mocked(runAgentChat).mockImplementation(async function* (opts): AnyGen {
+      yield { type: 'delta', text: '<say>Partial</say>' };
+      fail(new Error('watch-authority-unavailable'));
+      expect(opts.signal?.aborted).toBe(true);
+    });
+    await expect(handler({ messages: [], conversationId: 'conv-a', retainSession: false }, makeCtx()))
+      .rejects.toThrow('watch-authority-unavailable');
+    expect(runAgentChat).toHaveBeenCalledTimes(when === 'initial-read' ? 0 : 1);
+    expect(durableMocks.finish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'failed',
+      text: when === 'initial-read' ? '' : 'Partial' }));
+    expect(stop).toHaveBeenCalledOnce();
   });
   it('P010 scoped converse lifecycle cleans a customer PI mount after a signing failure and never starts the provider', async () => {
     customerPiMocks.spawnTransform.mockReturnValue(true);

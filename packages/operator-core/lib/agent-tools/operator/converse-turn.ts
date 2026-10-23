@@ -69,7 +69,9 @@ export async function findConverseTurn(input: {
   const principalId = authority.principalId;
   const store = new OperatorChatStore({ sql, workspaceId, turn: identity,
     scope: { principalId, tenantId: workspaceId, customerId: principalId, publicOwnerId: principalId },
-    authorize: async tx => await authorizeAdditional(tx) && await original(tx) });
+    // Match interaction mutation's parent -> responder lock order. A current
+    // responder never replaces the original execution's authority fence.
+    authorize: async tx => await original(tx) && await authorizeAdditional(tx) });
   const checkpoint = await store.read(identity);
   if (!checkpoint) throw new Error('invalid-state');
   const recovery = new TurnRecovery({ capabilities: checkpoint.state.capabilities, store,
