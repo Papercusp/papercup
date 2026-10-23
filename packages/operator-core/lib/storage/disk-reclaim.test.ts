@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { compilePolicy, type RetentionClass } from './retention-policy';
+import { compilePolicy, RETENTION_POLICY, retentionRootSizeCap, type RetentionClass } from './retention-policy';
 import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, policyRoots, prioritizeRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
@@ -30,6 +30,16 @@ const entry = (path: string, classId: string, ageHours: number): RetentionEntry 
 describe('per-root allocated-byte caps', () => {
   const capped = () => compilePolicy(policy.map((cls) => cls.id === 'scratch' ? { ...cls, maxBytes: 100 } : cls), '/home/test');
   const sized = (name: string, age: number, bytes: number) => ({ ...entry(`/scratch/${name}`, 'scratch', age), bytes });
+  it('keeps finite caps on the shipped generic agent classes', () => {
+    const genericAgentClasses = RETENTION_POLICY.filter((cls) =>
+      cls.origin === 'agent' && (cls.keep.kind === 'max-age' || cls.keep.kind === 'newest'));
+    expect(genericAgentClasses.length).toBeGreaterThan(0);
+    for (const cls of genericAgentClasses) {
+      const bytes = retentionRootSizeCap(cls);
+      expect(Number.isSafeInteger(bytes), cls.id).toBe(true);
+      expect(bytes, cls.id).toBeGreaterThan(0);
+    }
+  });
   it('counts recent entries and selects the oldest until within the cap', () => {
     const caps: RetentionCapReceipt[] = [];
     const selected = selectRetentionEntries([sized('new', 1, 60), sized('middle', 2, 60), sized('old', 3, 20)], capped(), now, caps);
