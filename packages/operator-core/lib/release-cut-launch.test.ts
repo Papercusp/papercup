@@ -84,11 +84,13 @@ describe('detached cut database credentials', () => {
       const result = await launchDetachedCut({ version: '0.0.27', channel: 'alpha', expectedSourceSha: 'a'.repeat(40),
         root: '/isolated/papercusp-desktop', runtime: { ownerName: 'Fixture', canonicalDesktopRoot: '/canonical/papercusp-desktop' } },
       spawnMock as unknown as SpawnLike, { PATH: '/usr/bin', HOME: '/fixture', ...explicit,
+        PAPERCUSP_TRANSFORMERS_MODEL_CACHE: "/fixture/model cache's pack",
         PRIVATE_PROVIDER_KEY: 'do-not-forward' });
       expect(result.launched).toBe(true);
       expect(readOperatorDbEnvLocalMock).toHaveBeenCalledWith('/canonical/apps/operator/.env.local');
       const selectedUrl = mode === 'canonical' ? configuredUrl : explicitUrl;
-      expect(received).toEqual({ PATH: '/usr/bin', HOME: '/fixture', HARNESS_ADMIN_DATABASE_URL: selectedUrl, DATABASE_URL: selectedUrl });
+      expect(received).toEqual({ PATH: '/usr/bin', HOME: '/fixture', HARNESS_ADMIN_DATABASE_URL: selectedUrl, DATABASE_URL: selectedUrl,
+        PAPERCUSP_TRANSFORMERS_MODEL_CACHE: "/fixture/model cache's pack" });
       expect(fs.existsSync(credentialPath)).toBe(false);
       expect(result.argv.join(' ')).not.toContain('do-not-forward');
     } finally {
@@ -689,7 +691,10 @@ describe('collectHandoff', () => {
 });
 
 const dependencySource = 'a'.repeat(64);
-const dependencyReady = { readDependencyGeneration: () => `v1-${dependencySource}` };
+const dependencyReady = {
+  readDependencyGeneration: () => `v1-${dependencySource}`,
+  runModelCachePreflight: () => ({ exitCode: 0, output: 'fixture model cache ready' }),
+};
 
 describe('preflightCut', () => {
   const root = '/root/papercusp-desktop';
@@ -730,6 +735,45 @@ describe('preflightCut', () => {
     expect(r.checks.find((c) => c.name === 'migration-lint-dependencies')!.detail).toContain(
       'before dependency preparation',
     );
+  });
+  it.each([1, null])('blocks an unavailable model cache (probe exit %s)', (exitCode) => {
+    const result = preflightCut({}, { root }, { ...dependencyReady, home,
+      exists: (p) => allPresent.has(p), isUnitActive: () => false,
+      runModelCachePreflight: () => ({ exitCode, output: 'required embedding models missing' }),
+    });
+    expect(result.go).toBe(false);
+    expect(result.blockers.join()).toContain('embedding-models');
+    expect(result.checks.find((c) => c.name === 'embedding-models')?.warnOnly).toBeUndefined();
+  });
+  it('uses the real model helper to reject absent and partial weights before admitting a complete cache', () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'cut-model-cache-'));
+    const desktop = path.join(workspace, 'papercusp-desktop');
+    const helper = path.join(desktop, 'bin', 'lib', 'transformers-models.sh');
+    const cache = path.join(workspace, "model cache's pack");
+    fs.mkdirSync(path.dirname(helper), { recursive: true });
+    fs.copyFileSync(fileURLToPath(new URL('../../../papercusp-desktop/bin/lib/transformers-models.sh', import.meta.url)), helper);
+    vi.stubEnv('PAPERCUSP_TRANSFORMERS_MODEL_CACHE', cache);
+    const check = () => preflightCut({}, { root: desktop }, {
+      ...dependencyReady, runModelCachePreflight: undefined, home,
+      exists: () => true, isUnitActive: () => false,
+      releaseToolingDrift: () => ({ state: 'current', staleFiles: [] }),
+    });
+    try {
+      expect(check().blockers.join()).toContain('embedding-models');
+      const names = spawnSync('bash', [helper, 'names'], { encoding: 'utf8' }).stdout.trim().split('\n');
+      for (const name of names) {
+        const weights = path.join(cache, 'onnx-community', name, 'onnx');
+        fs.mkdirSync(weights, { recursive: true });
+        fs.writeFileSync(path.join(weights, 'model.onnx'), 'fixture header');
+        fs.writeFileSync(path.join(weights, 'model.onnx_data.part'), 'partial');
+      }
+      expect(check().blockers.join()).toContain('embedding-models');
+      for (const name of names) fs.writeFileSync(path.join(cache, 'onnx-community', name, 'onnx', 'model.onnx_data'), 'complete');
+      expect(check().go).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
   });
   it('a missing verify script is WARN-only (cut can still run)', () => {
     const r = preflightCut({}, { root }, { ...dependencyReady, home, exists: (p) => allPresent.has(p) && p !== scripts[0], isUnitActive: () => false });
@@ -915,6 +959,7 @@ describe('preflight dependency-generation contract', () => {
         fs.writeFileSync(path.join(workspace, 'node_modules', '.papercusp-dependency-generation'), marker);
       }
       const result = preflightCut({}, { root: path.join(workspace, 'papercusp-desktop'), orchestratorRoot }, {
+        runModelCachePreflight: dependencyReady.runModelCachePreflight,
         exists: () => true,
         isUnitActive: () => false,
         releaseToolingDrift: () => ({ state: 'current', staleFiles: [] }),

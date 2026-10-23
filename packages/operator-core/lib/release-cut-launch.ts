@@ -582,7 +582,8 @@ export function launchDetachedCut(
   const operatorRoot = path.dirname(opts.runtime.canonicalDesktopRoot ?? canonicalDesktopRoot(environment));
   const configured = readOperatorDbEnvLocal(path.join(operatorRoot, 'apps', 'operator', '.env.local'));
   const childEnvironment: NodeJS.ProcessEnv = {};
-  for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'LANG']) {
+  for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'LANG',
+    'PAPERCUSP_TRANSFORMERS_MODEL_CACHE']) {
     if (environment[key] !== undefined) childEnvironment[key] = environment[key];
   }
   // Resolve precedence before merging: a configured HARNESS_ADMIN_DATABASE_URL
@@ -1353,6 +1354,8 @@ export interface PreflightDeps {
   /** Run bin/smoke-target-preflight.sh for one native smoke target (WI-10004346).
    *  Default: a bounded read-only `bash <script> --platform <p>`. Tests inject. */
   runSmokeTargetPreflight?: (scriptPath: string, platform: 'mac' | 'windows') => SmokeTargetProbe;
+  /** Run the selected product's read-only model-cache predicate before launching. */
+  runModelCachePreflight?: (desktopRoot: string) => SmokeTargetProbe;
 }
 
 /** Raw result of bin/smoke-target-preflight.sh. exitCode null = it did not finish
@@ -1360,6 +1363,30 @@ export interface PreflightDeps {
 export interface SmokeTargetProbe {
   exitCode: number | null;
   output: string;
+}
+
+function defaultRunModelCachePreflight(root: string): SmokeTargetProbe {
+  const result = spawnSync('bash', ['-c', `
+set -e
+source "$1"
+for models_root in "$2/.cache" "$2/models" "\${PAPERCUSP_TRANSFORMERS_MODEL_CACHE:-}"; do
+  [ -n "$models_root" ] || continue
+  models_root="\${models_root%/onnx-community}"
+  papercusp_transformers_models_present "$models_root" || continue
+  ready=1
+  for model in "\${PAPERCUSP_TRANSFORMERS_MODELS[@]}"; do
+    papercusp_transformers_model_has_final_weights "$models_root/onnx-community/$model" || ready=0
+  done
+  if [ "$ready" = 1 ]; then printf 'models ready: %s\\n' "$models_root"; exit 0; fi
+done
+echo 'required embedding models missing or incomplete; stage the contract-pinned model pack into the selected checkout, or configure PAPERCUSP_TRANSFORMERS_MODEL_CACHE' >&2
+exit 1
+`, 'release-model-preflight', path.join(root, 'bin', 'lib', 'transformers-models.sh'),
+  path.resolve(root, '..', 'node_modules', '@huggingface', 'transformers')], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  return { exitCode: result.status,
+    output: `${result.stdout ?? ''}${result.stderr ?? ''}${result.error ? `\n${result.error.message}` : ''}` };
 }
 
 function defaultRunSmokeTargetPreflight(scriptPath: string, platform: 'mac' | 'windows'): SmokeTargetProbe {
@@ -1525,6 +1552,14 @@ export function preflightCut(
   // immutable generation marker required by every journalled platform leg.
   // Validate its contents before launching the detached build.
   const workspace = path.resolve(root, '..');
+  const modelProbe = (deps.runModelCachePreflight ?? defaultRunModelCachePreflight)(root);
+  checks.push({
+    name: 'embedding-models',
+    ok: modelProbe.exitCode === 0,
+    detail: modelProbe.exitCode === 0
+      ? modelProbe.output.trim()
+      : `embedding models are not ready for this cut: ${modelProbe.output.trim() || 'model cache probe could not complete'}`,
+  });
   const marker = path.join(workspace, 'node_modules', '.papercusp-dependency-generation');
   try {
     const generation = (deps.readDependencyGeneration ?? readDependencyGeneration)(
