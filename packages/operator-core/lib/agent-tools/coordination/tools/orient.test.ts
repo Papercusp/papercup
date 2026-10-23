@@ -2063,15 +2063,15 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       'coord:whoami',
       'coord:plan-events',
     ]);
-    expect(calls[0].args).toMatchObject({ agent: 'me', harness: 'h' });
+    expect(calls.find(({ name }) => name === 'fleet:assignments')?.args).toMatchObject({ agent: 'me', harness: 'h' });
     // The oracle is asked for the harness lane at the same limit as the fold.
-    expect(calls[1].args).toMatchObject({ harness: 'h', limit: 20 });
+    expect(calls.find(({ name }) => name === 'work_items:claimable')?.args).toMatchObject({ harness: 'h', limit: 20 });
     // EI-7841: the feature lane must still ask work_items:list to exclude
     // G2-admission-gated items so "claimable" matches what claim will do.
     // D-002/EI-11300: 'open' is the unified claimable token (feature 'todo' retired) —
     // composeOrient's own default (orient.ts line ~518) moved to 'open'; this assertion
     // was stale (last updated for the old default), not a regression in production code.
-    expect(calls[2].args).toMatchObject({
+    expect(calls.find(({ name }) => name === 'work_items:list')?.args).toMatchObject({
       harness: 'h',
       state: 'open',
       limit: 20,
@@ -2080,11 +2080,11 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       includeBody: false,
       includePayload: false,
     });
-    expect(calls[3].args).toMatchObject({ limit: 10, max_body_chars: 300 });
-    // WI-5343: calls[4] batch-observes every fetched row for the real claim floors.
-    expect(calls[4].args).toMatchObject({ ids: ['WI-1', 'WI-2'], harness: 'h' });
-    // calls[5] is the hoisted coord:whoami (P-007); plan-events follows it.
-    expect(calls[6].args).toMatchObject({ limit: 10 });
+    expect(calls.find(({ name }) => name === 'coord:inbox')?.args).toMatchObject({ limit: 10, max_body_chars: 300 });
+    // WI-5343: observe batch-checks every fetched row for the real claim floors.
+    expect(calls.find(({ name }) => name === 'work_items:observe')?.args).toMatchObject({ ids: ['WI-1', 'WI-2'], harness: 'h' });
+    // P-007: plan-events follows the hoisted coord:whoami audience lookup.
+    expect(calls.find(({ name }) => name === 'coord:plan-events')?.args).toMatchObject({ limit: 10 });
   });
 
   // ── EI-19452326548245557: the claimable fold must BE the claim oracle ──────────
@@ -2283,7 +2283,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   it('honors claimableState / claimableLimit / inboxLimit overrides', async () => {
     const { call, calls } = fakeCall({ ...CORE });
     await composeOrient({ claimableState: 'wip', claimableLimit: 5, inboxLimit: 3 }, call, 'me');
-    expect(calls.find(({ name }) => name === 'work_items:claimable')?.args).toMatchObject({ state: 'wip', limit: 5 });
+    expect(calls.find(({ name }) => name === 'work_items:list')?.args).toMatchObject({ state: 'wip', limit: 5 });
     expect(calls.find(({ name }) => name === 'coord:inbox')?.args).toMatchObject({ limit: 3 });
   });
 
