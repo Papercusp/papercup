@@ -2238,15 +2238,16 @@ function pasteAwareChildCode(ttlMs: number, pasteWindowMs: number): string {
 
 /** A child that models a MID-TURN agent: a worker thread writes a '.' to stdout
  *  every `intervalMs` (a generating TUI repaints constantly) for `busyMs`, then
- *  goes QUIET (back at its prompt). Keeping the emitter off the agent's main
- *  event loop prevents a delayed timer from creating a false output-quiet window
- *  while the fixture is meant to stay busy. It also echoes 'ECHO:<line>' per
+ *  goes QUIET (back at its prompt). Write to the inherited PTY descriptor:
+ *  worker process.stdout forwards through the agent's main event loop and stops
+ *  delivering while that loop is blocked, creating a false quiet window.
+ *  It also echoes 'ECHO:<line>' per
  *  newline-terminated stdin line, so a CR-submitted wake turn is observable.
  *  Self-exits after ttlMs. The output stream is what the host's mid-turn gate watches. */
 function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number, releasePath?: string): string {
   const emitterCode = releasePath
-    ? `const fs=require('node:fs');setInterval(()=>{if(!fs.existsSync(${JSON.stringify(releasePath)}))process.stdout.write('.');},${intervalMs});`
-    : `setInterval(()=>process.stdout.write('.'),${intervalMs})`;
+    ? `const fs=require('node:fs');setInterval(()=>{if(!fs.existsSync(${JSON.stringify(releasePath)}))fs.writeSync(1,'.');},${intervalMs});`
+    : `const fs=require('node:fs');setInterval(()=>fs.writeSync(1,'.'),${intervalMs});`;
   // Negative assertions own their busy window. A fixed child timer can expire
   // before a delayed parent observes readiness and reaches the assertion.
   const releaseCode = releasePath
@@ -2268,10 +2269,10 @@ it('the busy fixture keeps emitting while its agent main thread is blocked', asy
   const unblockMain = join(PSU_PTY_DIR, `${ownerId}.unblock`);
   const { captured, io } = fakeIo();
   const blockCode =
-    "const fs=require('node:fs');process.stdin.on('data',d=>{if(d.includes('BLOCK\\n')){" +
-    "fs.writeSync(1,'MAIN-BLOCKED\\n');" +
-    `while(!fs.existsSync(${JSON.stringify(unblockMain)}))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,25);` +
-    "fs.writeSync(1,'MAIN-RESUMED\\n');}});";
+    "const blockFs=require('node:fs');process.stdin.on('data',d=>{if(d.includes('BLOCK\\n')){" +
+    "blockFs.writeSync(1,'MAIN-BLOCKED\\n');" +
+    `while(!blockFs.existsSync(${JSON.stringify(unblockMain)}))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,25);` +
+    "blockFs.writeSync(1,'MAIN-RESUMED\\n');}});";
   const done = hostThroughPty({
     command: execPath,
     args: ['-e', busyThenIdleChildCode(900, 50, 1000, releaseBusy) + blockCode],
@@ -2289,7 +2290,8 @@ it('the busy fixture keeps emitting while its agent main thread is blocked', asy
   expect(await waitForHost(ownerId)).not.toBeNull();
   expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
   expect(await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: 'BLOCK\n' })).toBe(true);
-  expect(await waitForOutput(captured, 'MAIN-BLOCKED')).toBe(true);
+  // Require the emitted line, not a token in Node's printed syntax-error source.
+  expect(await waitForOutput(captured, 'MAIN-BLOCKED\r\n'), hostTestDiagnostics(ownerId, captured)).toBe(true);
   const blockedOutputStart = captured().length;
   // A worker's process.stdout is forwarded through its parent's event loop.
   // The fixture promises busy output even while that event loop cannot run.
