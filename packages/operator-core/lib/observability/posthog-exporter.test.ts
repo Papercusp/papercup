@@ -21,6 +21,21 @@ const config: TraceDeliveryConfig = { allowed: true, host: 'http://127.0.0.1:123
 const exportSpans = (exporter: PosthogSpanExporter, spans: ReadableSpan[]) => new Promise<{ code: number }>(resolve => exporter.export(spans, resolve));
 
 describe('safe PostHog OpenTelemetry delivery', () => {
+  it('aborts a stalled capture with the exact two-second transport deadline', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const send = vi.fn<typeof fetch>((_input, init) => new Promise((_resolve, reject) => {
+      const signal = init!.signal!;
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }));
+    const exporter = new PosthogSpanExporter(async () => config, send);
+    try {
+      expect((await exportSpans(exporter, [span()])).code).not.toBe(0);
+      expect(timeout).toHaveBeenCalledExactlyOnceWith(2_000);
+      expect(send.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+      expect(exporter.health()).toMatchObject({ failedSpans: 1, exportedSpans: 0 });
+    } finally { timeout.mockRestore(); }
+  });
+
   it('excludes observations in the grant millisecond and admits the following millisecond', async () => {
     const consentSince = 1_700_000_000_000;
     const timed = (milliseconds: number) => Object.create(span(), { startTime: { value: [Math.floor(milliseconds / 1000), Math.round(milliseconds % 1000 * 1e6)] } }) as ReadableSpan;

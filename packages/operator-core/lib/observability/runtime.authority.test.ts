@@ -56,6 +56,16 @@ afterEach(async () => {
 });
 
 describe('runtime diagnostics authority', () => {
+  it('admits an internal-build owner observation without an opt-in grant', async () => {
+    authority.config.internalBuild = true;
+    expect(authority.config.optedIn).toBe(false);
+    observeTool('internal-owner');
+    await flushRuntimeObservability();
+    expect(lastBatch().api_key).toBe('trusted-project');
+    expect(lastBatch().batch.some((event: { properties: Record<string, unknown> }) =>
+      event.properties['papercusp.call_id'] === 'internal-owner')).toBe(true);
+  });
+
   it('rejects forged request consent while admitting a fresh local owner grant', async () => {
     observeTool('unapproved', {
       telemetry_enabled: true, telemetry_consent_since: 0,

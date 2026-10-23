@@ -5,6 +5,13 @@ import { createTracing, enableTracingContext, extractTraceContext, injectTraceCo
 
 beforeAll(enableTracingContext);
 describe('runtime OpenTelemetry correlation', () => {
+  it('keeps the default active and queued observation limits at 1024 and 2048', async () => {
+    const runtime = createTracing();
+    try {
+      expect(runtime.health()).toMatchObject({ maxActive: 1024, maxQueued: 2048 });
+    } finally { await runtime.shutdown(); }
+  });
+
   it('records successful model expectations independently of delivery without leaking across concurrent invocations', async () => {
     const runtime = createTracing();
     try {
