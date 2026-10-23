@@ -367,7 +367,7 @@ beforeEach(() => {
 });
 
 describe('finite AWS canary uses live regional IAM/SSM/STS readbacks', () => {
-  function trial() {
+  function trial(bind = false) {
     let clock = NOW;
     const state = setup(undefined, { now: () => clock });
     const input = { runId: 'p544-sdk-trial', workspaceId: 'hosted-fixture-p544-sdk-trial',
@@ -401,11 +401,18 @@ describe('finite AWS canary uses live regional IAM/SSM/STS readbacks', () => {
     state.aws.overrides.set('iam:GetRoleCommand', request => ({ Role: roles.get(request.RoleName) }));
     state.aws.overrides.set('iam:GetRolePolicyCommand', request => ({
       PolicyDocument: encodeURIComponent(JSON.stringify(policies.get(request.RoleName))) }));
+    state.aws.overrides.set('iam:ListRolePoliciesCommand', request => ({ PolicyNames: [
+      request.RoleName === launcher.RoleName ? launcher.Policies[0].PolicyName : cleanup.Policies[0].PolicyName] }));
+    state.aws.overrides.set('iam:ListAttachedRolePoliciesCommand', () => ({ AttachedPolicies: [] }));
     state.aws.overrides.set('ssm:GetDocumentCommand', () => document);
     state.aws.overrides.set('ssm:StartAutomationExecutionCommand', () => ({ AutomationExecutionId: executionId }));
     state.aws.overrides.set('ssm:GetAutomationExecutionCommand', () => ({ AutomationExecution: execution }));
-    return { ...state, input, foundation, identity, roles, policies, document, execution,
-      binding: { ...input, executionId }, setNow: (value: string) => { clock = value; } };
+    const binding = { ...input, executionId };
+    const client = bind ? createAwsSdkWorkspaceHostClient({ connection: connection(),
+      createClients: state.aws.createClients, now: () => clock, finiteCanary: binding,
+      waiter: { maxWaitTimeSec: 0.05, minDelaySec: 0.001, maxDelaySec: 0.002 } }) : state.client;
+    return { ...state, client, input, foundation, identity, roles, policies, document, execution,
+      binding, setNow: (value: string) => { clock = value; } };
   }
 
   it('arms one immutable, automatic execution with the original deterministic ClientToken on retry', async () => {
@@ -486,6 +493,56 @@ describe('finite AWS canary uses live regional IAM/SSM/STS readbacks', () => {
     t.policies.get(t.foundation.Resources.CanaryLauncherRole.Properties.RoleName).Statement = [];
     await expect(t.client.armCanaryDeadline(t.input)).rejects.toThrow(/IAM foundation/);
     expect(t.aws.commands('StartAutomationExecutionCommand')).toEqual([]);
+  });
+
+  it.each(['extra-inline', 'extra-managed', 'incomplete-inline', 'incomplete-managed', 'omitted-inventory'])
+  ('refuses %s policies that could bypass the dedicated cleanup authority boundary', async scenario => {
+    const t = trial();
+    if (scenario === 'extra-inline') t.aws.overrides.set('iam:ListRolePoliciesCommand', () => ({
+      PolicyNames: ['PapercuspCanaryLaunch', 'CanCancelCleanup'] }));
+    if (scenario === 'extra-managed') t.aws.overrides.set('iam:ListAttachedRolePoliciesCommand', () => ({
+      AttachedPolicies: [{ PolicyArn: `arn:aws:iam::${ACCOUNT}:policy/CanCancelCleanup` }] }));
+    if (scenario === 'incomplete-inline') t.aws.overrides.set('iam:ListRolePoliciesCommand', () => ({
+      PolicyNames: ['PapercuspCanaryLaunch'], IsTruncated: true }));
+    if (scenario === 'incomplete-managed') t.aws.overrides.set('iam:ListAttachedRolePoliciesCommand', () => ({
+      AttachedPolicies: [], Marker: 'another-page' }));
+    if (scenario === 'omitted-inventory') t.aws.overrides.set('iam:ListAttachedRolePoliciesCommand', () => ({}));
+    await expect(t.client.assertCanaryDeadline(t.binding)).rejects.toThrow(/policy inventory/);
+    expect(t.aws.commands('StartAutomationExecutionCommand')).toEqual([]);
+  });
+
+  it('requires the original controller identity and copies the administrative binding', async () => {
+    const t = trial(true);
+    const original = { workspaceId: t.input.workspaceId, hostId: t.input.hostId,
+      runId: t.input.runId, teardownDeadlineAt: t.input.teardownDeadlineAt };
+    await t.client.assertCanaryAdmission(original);
+    for (const change of [{ runId: 'other' }, { hostId: 'other' }, { workspaceId: 'other' },
+      { teardownDeadlineAt: '2026-10-02T20:41:00.000Z' }, { runId: undefined }]) {
+      await expect(t.client.assertCanaryAdmission({ ...original, ...change })).rejects.toThrow(/original administrative binding/);
+    }
+    // A caller retaining the options object cannot renew the original cutoff after construction.
+    t.binding.teardownDeadlineAt = '2026-10-02T20:41:00.000Z';
+    await t.client.assertCanaryAdmission(original);
+    const unbound = trial();
+    await expect(unbound.client.assertCanaryAdmission(original)).rejects.toThrow(/no original administrative/);
+  });
+
+  it.each(['volume', 'instance', 'start', 'snapshot', 'repair'])
+  ('refuses actual %s mutation when the independent execution stops sleeping', async operation => {
+    const t = trial(true);
+    t.execution.AutomationExecutionStatus = 'Cancelled';
+    const calls: Record<string, () => Promise<unknown>> = {
+      volume: () => t.client.createVolume({} as any), instance: () => t.client.runInstances({} as any),
+      start: () => t.client.startInstances(['i-1']),
+      snapshot: () => t.client.createSnapshot({ ClientToken: 'snap-trial' } as any),
+      repair: () => t.client.repairInstance('i-1'),
+    };
+    t.aws.overrides.set('ec2:DescribeInstancesCommand', () => ({ Reservations: [{ Instances: [{
+      InstanceId: 'i-1', State: { Name: 'stopped' } }] }] }));
+    await expect(calls[operation]()).rejects.toThrow(/not verified sleeping/);
+    for (const name of ['CreateVolumeCommand', 'RunInstancesCommand', 'StartInstancesCommand', 'CreateSnapshotCommand']) {
+      expect(t.aws.commands(name)).toEqual([]);
+    }
   });
 });
 

@@ -2071,6 +2071,10 @@ export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS = 60_000;
 export const PTOOL_LOCKS_LIST_TIMEOUT_MS = 90_000;
 
 const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
+  // EI-26744165425362332: pruning allows 90s for deletion/VACUUM and
+  // completion receipts, plus 5s MCP settlement. A 30s client cutoff hid a
+  // successful prune. The same budget applies through tools:invoke below.
+  ['storage:prune', 100_000],
   // EI-25679147891530264: graph:query permits a 60s compiler worker plus
   // a bounded runtime-source join inside its declared 90s handler budget.
   // Let the 95s MCP deadline return either an answer or the typed worker error;

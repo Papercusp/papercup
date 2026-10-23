@@ -482,13 +482,27 @@ test("manifest resolution includes local archives from other workspaces without 
   } finally { rmSync(fixture.tempRoot, { recursive: true, force: true }); }
 });
 
-for (const installed of ['incompatible', 'missing']) {
+for (const installed of ['incompatible', 'missing', 'lock-version-mismatch']) {
 test(`${installed} installed dependencies reserve the writer while existing readers finish`, { timeout: 25_000 }, async () => {
   const fixture = createManifestResolutionFixture({ flagOnlyDuringResolve: true });
   const packageDir = join(fixture.repoRoot, "node_modules", "fixture-pkg");
-  if (installed === 'incompatible') {
+  if (installed === 'incompatible' || installed === 'lock-version-mismatch') {
     mkdirSync(packageDir, { recursive: true });
-    writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "fixture-pkg", version: "0.1.0" }));
+    writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "fixture-pkg",
+      version: installed === 'lock-version-mismatch' ? '1.2.2' : '0.1.0' }));
+  }
+  if (installed === 'lock-version-mismatch') {
+    const manifestPath = join(fixture.repoRoot, 'packages/operator-core/package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    manifest.dependencies = { 'fixture-pkg': '^1.2.0' };
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    const lockPath = join(fixture.repoRoot, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    lock.packages['packages/operator-core'].dependencies = manifest.dependencies;
+    lock.packages['node_modules/fixture-pkg'] = { version: '1.2.3' };
+    writeFileSync(lockPath, JSON.stringify(lock));
+    // Installed1.2.2 satisfies its direct range. Only the existing exact-lock
+    // auditor can detect the repair need and prevent a new reader overtaking it.
   }
   const gate = join(fixture.tempRoot, "resolve-ready");
   const lockRootDir = fixture.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;

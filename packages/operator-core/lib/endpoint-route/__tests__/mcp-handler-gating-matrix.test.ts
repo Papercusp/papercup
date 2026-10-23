@@ -5411,6 +5411,22 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
   // assertions, through the nested path.
   const hiveScoped = () => superuserExtra('&workspace=ws-test&harness=hiveA-home');
 
+  it('avoids an unused hive-home read for argument-free local tools', async () => {
+    h.scopedClampFlag.value = true;
+    h.potHomeSlugForHarness.mockClear();
+    const res = await callTool('gatingtest:scoped', {}, hiveScoped());
+    expect(res.isError).not.toBe(true);
+    expect(h.potHomeSlugForHarness).not.toHaveBeenCalled();
+  });
+
+  it('avoids a second hive-home read for an argument-free nested target', async () => {
+    h.scopedClampFlag.value = true;
+    h.potHomeSlugForHarness.mockClear();
+    const res = await callTool('tools:invoke', { name: 'gatingtest:scoped', args: {} }, hiveScoped());
+    expect(res.isError).not.toBe(true);
+    expect(h.potHomeSlugForHarness).toHaveBeenCalledTimes(1);
+  });
+
   it('flag ON: rejects a per-call `harness` in a DIFFERENT hive via nested tools:invoke, same as direct', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool(

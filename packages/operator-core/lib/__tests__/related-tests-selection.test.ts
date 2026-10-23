@@ -57,6 +57,44 @@ describe('original gate selection preparation', () => {
     expect(result.operationalAcceptance).toBe(false);
   });
 
+  it('passes exact native specification discovery through the maintained selector without executing tests', () => {
+    const specs = [{ testFile: 'packages/core/a.test.ts', projectName: 'pure', pool: 'forks',
+      testNamePattern: null, testLines: null, testIds: null, testTagsFilter: null }];
+    let requests: Array<Record<string, unknown>> = [];
+    const result = enumerateAffectedTaskSelection([task()], { root: '/repo', enumerateSpecifications: true,
+      runResolver: (input: typeof requests) => {
+        requests = input;
+        return [{ ...resolved(['a.test.ts']), selectedSpecifications: specs }];
+      } });
+    expect(requests).toMatchObject([{ enumerateSpecifications: true, enumerateFiles: true }]);
+    const entry = result.tasks[0];
+    if (!entry || !('selectedSpecifications' in entry)) throw new Error('native specifications missing');
+    expect(entry.selectedSpecifications).toEqual(specs);
+    expect(result.executed).toBe(false);
+  });
+
+  it('discovers exact specifications with native Vitest without loading test modules', () => {
+    const repo = fileURLToPath(new URL('../../../..', import.meta.url));
+    const parent = join(repo, '.papercusp/scratch'); mkdirSync(parent, { recursive: true });
+    const dir = mkdtempSync(join(parent, 'native-selection-'));
+    try {
+      writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
+      writeFileSync(join(dir, 'vitest.config.mjs'), 'export default {test:{name:"enrollment",pool:"forks",include:["a.test.ts"]}}');
+      writeFileSync(join(dir, 'a.test.ts'), 'throw new Error("discovery must never load this test")');
+      const relativeDir = dir.slice(repo.length).replace(/^\//, '');
+      const result = enumerateAffectedTaskSelection([{ ws: { name: '@probe/native', dir: relativeDir,
+        scripts: { test: 'vitest run --config vitest.config.mjs' } }, script: 'test' }], {
+        root: repo, enumerateSpecifications: true,
+      });
+      expect(result.coverage).toBe('complete');
+      const entry = result.tasks[0];
+      if (!entry || !('selectedSpecifications' in entry)) throw new Error('native specifications missing');
+      expect(entry.selectedSpecifications).toEqual([{ testFile: `${relativeDir}/a.test.ts`,
+        projectName: 'enrollment', pool: 'forks', testNamePattern: null, testLines: null, testIds: null, testTagsFilter: null }]);
+      expect(result.executed).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 30_000);
+
   it('retains unsupported composite/guard tasks even if they supplied a file list', () => {
     const result = enumerateAffectedTaskSelection([
       task(), task('lint:guard', 'node guard.mjs', ['guard.test.ts']),

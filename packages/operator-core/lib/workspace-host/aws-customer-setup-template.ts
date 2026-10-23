@@ -180,7 +180,8 @@ export function awsCanaryDeadlineStackFragment(input: AwsCustomerFiniteCanary & 
     { Effect: 'Allow', Action: 'ssm:GetDocument', Resource: `arn:aws:ssm:${region}:${accountId}:document/${plan.documentName}` },
     { Effect: 'Allow', Action: ['ssm:GetAutomationExecution', 'ssm:DescribeAutomationStepExecutions'],
       Resource: `arn:aws:ssm:${region}:${accountId}:automation-execution/*` },
-    { Effect: 'Allow', Action: ['iam:GetRole', 'iam:GetRolePolicy'], Resource: [launcherRoleArn, cleanupRoleArn] },
+    { Effect: 'Allow', Action: ['iam:GetRole', 'iam:GetRolePolicy', 'iam:ListRolePolicies', 'iam:ListAttachedRolePolicies'],
+      Resource: [launcherRoleArn, cleanupRoleArn] },
   ] };
   const tags = [{ Key: 'papercusp:canary-run', Value: input.runId }];
   return {

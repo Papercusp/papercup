@@ -27,7 +27,7 @@
  * to prove the fix; a unit test over `parseGitmodules` alone would prove the parser
  * works and say nothing about whether the tree it feeds actually gets materialised.
  */
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -1285,7 +1285,7 @@ const { execFileSync } = require('node:child_process');
   const { retainCommittedWorkRoot } = await import(${JSON.stringify(pathToFileURL(scriptPath).href)});
   const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   fs.writeFileSync(${JSON.stringify(artifact)}, 'dependent proof');
-  retainCommittedWorkRoot(process.cwd(), sha, ${JSON.stringify(artifact)});
+  await retainCommittedWorkRoot(process.cwd(), sha, ${JSON.stringify(artifact)});
   ${removed ? `fs.rmSync(${JSON.stringify(artifact)});` : ''}
   console.log('DEPENDENT_SOURCE=' + process.cwd());
 })().catch(error => { console.error(error); process.exitCode = 1; });
@@ -1591,7 +1591,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     }
   });
 
-  it('preflights commit identity and imports before registering a dependent artifact', () => {
+  it('preflights commit identity and imports before registering a dependent artifact', async () => {
     const root = mkdtempSync(join(tmpdir(), 'lac-preflight-'));
     try {
       const source = join(root, 'source');
@@ -1612,13 +1612,48 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       expect(mod.verifyCommittedWorkRoot(source, sha, ['packages/core']).sha).toBe(sha);
       expect(() => mod.retainCommittedWorkRoot(source, sha, source)).toThrow('outside');
       expect(() => mod.retainCommittedWorkRoot(source, sha, join(root, 'missing'))).toThrow();
-      mod.retainCommittedWorkRoot(source, sha, artifact);
-      mod.retainCommittedWorkRoot(source, sha, artifact);
+      await mod.retainCommittedWorkRoot(source, sha, artifact);
+      await mod.retainCommittedWorkRoot(source, sha, artifact);
       expect(JSON.parse(readFileSync(join(source, OWNER_MARKER), 'utf8')).retainedFor).toEqual([{ path: realpathSync(artifact), sha }]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('preserves concurrent artifact holds and never exposes partially written retention JSON', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-concurrent-retention-'));
+    let monitor: ReturnType<typeof setInterval> | undefined;
+    try {
+      const source = join(root, 'source'); mkdirSync(source);
+      execFileSync('git', ['init', '--quiet', source]);
+      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'fixture'], { cwd: source });
+      const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
+      const marker = join(source, OWNER_MARKER);
+      writeFileSync(marker, JSON.stringify({ pid: process.pid, keep: true, sha, createdAtMs: Date.now() }));
+      const artifacts = Array.from({ length: 8 }, (_, i) => join(root, 'artifact-' + i));
+      for (const artifact of artifacts) mkdirSync(artifact);
+      const readErrors: string[] = [];
+      monitor = setInterval(() => { try { JSON.parse(readFileSync(marker, 'utf8')); } catch (error) { readErrors.push(String(error)); } }, 1);
+      const settled = await Promise.allSettled(artifacts.map(artifact => new Promise<void>((resolveChild, reject) => {
+        const code = `const {retainCommittedWorkRoot}=await import(${JSON.stringify(pathToFileURL(scriptPath).href)}); await retainCommittedWorkRoot(${JSON.stringify(source)},${JSON.stringify(sha)},${JSON.stringify(artifact)});`;
+        const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], {
+          cwd: repoRoot, stdio: ['ignore', 'ignore', 'pipe'],
+        });
+        let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
+        child.once('error', reject);
+        child.once('close', code => code === 0 ? resolveChild() : reject(new Error(stderr)));
+      })));
+      clearInterval(monitor); monitor = undefined;
+      expect(settled.filter(row => row.status === 'rejected')).toEqual([]);
+      expect(readErrors).toEqual([]);
+      const retained = JSON.parse(readFileSync(marker, 'utf8')).retainedFor;
+      expect(retained.map((entry: { path: string }) => entry.path).sort()).toEqual(artifacts.map(p => realpathSync(p)).sort());
+      expect(retained.every((entry: { sha: string }) => entry.sha === sha)).toBe(true);
+    } finally {
+      if (monitor) clearInterval(monitor);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it('materializes without replaying a command and explicitly retains its dependent artifact', () => {
     expect(mod.parseArgs(['--materialize-only', '--ref=recorded', '--retain-for=/tmp/release'])).toMatchObject({
@@ -1629,7 +1664,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     expect(run.stderr).toContain('cannot run or forward a command');
   });
 
-  it('requires both exact source holds before resuming a two-source artifact', () => {
+  it('requires both exact source holds before resuming a two-source artifact', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'lac-paired-custody-'));
     try {
       const sources = join(parent, 'sources');
@@ -1648,9 +1683,9 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       });
       for (const { root, sha } of roots) {
         expect(() => mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toThrow('no retention hold');
-        mod.retainCommittedWorkRoot(root, sha, unrelated);
+        await mod.retainCommittedWorkRoot(root, sha, unrelated);
         expect(() => mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toThrow('no retention hold');
-        mod.retainCommittedWorkRoot(root, sha, artifact);
+        await mod.retainCommittedWorkRoot(root, sha, artifact);
         expect(mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toEqual({ root: realpathSync(root), sha });
       }
       const swept = mod.sweepStaleWorkRoots({ root: sources, nowMs: MAX_AGE_MS + H, cwds: [], isAlive: () => false, maxIdleKept: 0 });

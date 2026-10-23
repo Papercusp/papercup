@@ -31,7 +31,8 @@ import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { applyDisclosureLedgerForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { SEARCH_SOURCES as DEFAULT_SEARCH_SOURCES, compactLiteralToken } from './sources';
 import type { SearchSource, SearchSourceParams } from '@papercusp/search';
-import { PROSE_SOURCE_BASELINES } from '../../search/surface-registry';
+import { PROSE_SOURCE_BASELINES, PROSE_FIELD_FRESHNESS_BOUNDARIES } from '../../search/surface-registry';
+import { assertSearchFieldFreshness } from '@papercusp/search-core';
 
 describe('baseline inventory reconciles the actual registered prose adapters', () => {
   it('covers each runtime source exactly once, including non-vector sources', () => {
@@ -43,6 +44,21 @@ describe('baseline inventory reconciles the actual registered prose adapters', (
       const baseline = PROSE_SOURCE_BASELINES.find(b => b.source === source.name)!;
       expect(baseline.lexical, source.name).toBe(typeof source.lexical === 'function');
       expect(baseline.vector, source.name).toBe(typeof source.embedding === 'function');
+    }
+  });
+
+  it('refuses currentness from a fresh envelope when canonical field or scope-epoch proof is absent', () => {
+    for (const source of DEFAULT_SEARCH_SOURCES) {
+      const boundaries = PROSE_FIELD_FRESHNESS_BOUNDARIES.filter(b => b.source === source.name);
+      expect(boundaries.some(b => b.policy.fieldPath === 'excerpt'), source.name).toBe(true);
+      for (const boundary of boundaries) {
+        expect(boundary.evidenceStatus).toBe('unmeasured');
+        expect(boundary.scopeEpochSource).toContain('trusted server');
+        const result = assertSearchFieldFreshness(boundary.policy, {
+          returned: { entityRef: `${source.name}:fixture`, fieldPath: boundary.policy.fieldPath, valueFingerprint: 'fresh-envelope-stale-value' },
+          requestStartedAtMs: 1000, responseAtMs: 1000, canonical: null, indexed: null });
+        expect(result.status, `${source.name}/${boundary.policy.fieldPath}`).not.toBe('current');
+      }
     }
   });
 

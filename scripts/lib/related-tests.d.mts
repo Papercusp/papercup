@@ -15,13 +15,14 @@ export function resolveRelatedWidenThreshold(env?: Record<string, string | undef
 /** Preparation only: enumerate the maintained selector's actual task configs, never executions.
  * Unsupported commands and failed config reads remain named residue, even with relatedFiles.
  * @param {Array<object>} tasks
- * @param {{root?: string, filterDir?: string, runResolver?: Function, syncAstro?: boolean}} [options]
+ * @param {{root?: string, filterDir?: string, runResolver?: Function, syncAstro?: boolean, enumerateSpecifications?: boolean}} [options]
  */
-export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, filterDir, runResolver, syncAstro }?: {
+export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, filterDir, runResolver, syncAstro, enumerateSpecifications }?: {
     root?: string;
     filterDir?: string;
     runResolver?: Function;
     syncAstro?: boolean;
+    enumerateSpecifications?: boolean;
 }): {
     schemaVersion: number;
     kind: string;
@@ -125,6 +126,7 @@ export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, fil
         script: any;
         command: any;
     } | {
+        selectedSpecifications?: any;
         projects?: any;
         sync?: any;
         commandObligations?: any[] | undefined;

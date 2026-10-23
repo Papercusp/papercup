@@ -24,7 +24,8 @@
  */
 import { createRequire } from 'node:module';
 import type { _InstanceType, Image, Instance, InstanceTypeInfo, Snapshot, Volume, EC2Client } from '@aws-sdk/client-ec2';
-import { type ContextEntry, GetRoleCommand, GetRolePolicyCommand, IAMClient, SimulatePrincipalPolicyCommand } from '@aws-sdk/client-iam';
+import { type ContextEntry, GetRoleCommand, GetRolePolicyCommand, ListRolePoliciesCommand,
+  ListAttachedRolePoliciesCommand, IAMClient, SimulatePrincipalPolicyCommand } from '@aws-sdk/client-iam';
 import { DescribeKeyCommand, KMSClient } from '@aws-sdk/client-kms';
 import { GetProductsCommand, PricingClient } from '@aws-sdk/client-pricing';
 import {
@@ -170,10 +171,14 @@ export interface AwsSdkWorkspaceHostClientOptions extends AwsSdkCredentialResolv
   now?: () => string;
   /** Accounts whose shared release AMIs the image catalog lists (default: the Papercusp publisher). */
   imagePublisherAccountIds?: readonly string[];
+  /** Server factory binding from the original administrative trial; never desired.provider. */
+  finiteCanary?: AwsCustomerFiniteCanary & { executionId: string };
 }
 
 /** Administrative arming and launcher readback share the existing regional SDK clients. */
 export interface AwsCanaryDeadlineClient {
+  assertCanaryAdmission(identity: { workspaceId: string; hostId: string;
+    runId?: string; teardownDeadlineAt?: string }): Promise<void>;
   armCanaryDeadline(input: AwsCustomerFiniteCanary): Promise<{ executionId: string }>;
   assertCanaryDeadline(input: AwsCustomerFiniteCanary & { executionId: string }): Promise<void>;
 }
@@ -613,9 +618,11 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   private readonly now: () => string;
   private readonly imagePublisherAccountIds: readonly string[];
   private accountCheck?: Promise<AwsCallerIdentityEvidence>;
+  private readonly finiteCanary?: Readonly<AwsCustomerFiniteCanary & { executionId: string }>;
 
   constructor(options: AwsSdkWorkspaceHostClientOptions) {
     this.bound = bindConnection(options.connection);
+    this.finiteCanary = options.finiteCanary ? Object.freeze({ ...options.finiteCanary }) : undefined;
     const inner = memoizeCredentials(
       createAwsSdkCredentialProvider(this.bound.plan, this.bound.region, {
         resolveExternalId: options.resolveExternalId,
@@ -707,6 +714,26 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     }
   }
 
+  async assertCanaryAdmission(identity: { workspaceId: string; hostId: string;
+    runId?: string; teardownDeadlineAt?: string }): Promise<void> {
+    const bound = this.finiteCanary;
+    if (!bound) {
+      if (identity.runId !== undefined || identity.teardownDeadlineAt !== undefined) {
+        throw new Error('AWS canary has no original administrative deadline binding');
+      }
+      return;
+    }
+    if (identity.runId !== bound.runId || identity.workspaceId !== bound.workspaceId ||
+        identity.hostId !== bound.hostId || identity.teardownDeadlineAt !== bound.teardownDeadlineAt) {
+      throw new Error('AWS canary controller identity differs from the original administrative binding');
+    }
+    await this.assertCanaryDeadline(bound);
+  }
+
+  private async assertBoundCanaryDeadline(): Promise<void> {
+    if (this.finiteCanary) await this.assertCanaryDeadline(this.finiteCanary);
+  }
+
   private async readCanaryDeadlineFoundation(input: AwsCustomerFiniteCanary) {
     if (!this.bound.accountId) throw new Error('AWS finite canary requires a bound account');
     const expected = awsCanaryDeadlineStackFragment({ ...input, accountId: this.bound.accountId,
@@ -729,6 +756,21 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
       this.call('canary-get-document', () => clients.ssm.send(new (ssmSdk().GetDocumentCommand)({
         Name: expected.plan.documentName, DocumentVersion: '1', DocumentFormat: 'JSON' }))),
     ]);
+    // Verifying one inline policy alone would miss an extra grant capable of
+    // cancelling cleanup. These dedicated roles must have exactly their single
+    // expected inline policy and no attached managed policy. Never treat a page
+    // or an omitted inventory as an empty complete policy population.
+    await Promise.all([launcher, cleanup].map(async role => {
+      const [inline, attached] = await Promise.all([
+        this.call('canary-list-role-policies', () => clients.iam.send(new ListRolePoliciesCommand({ RoleName: role.RoleName }))),
+        this.call('canary-list-attached-policies', () => clients.iam.send(new ListAttachedRolePoliciesCommand({ RoleName: role.RoleName }))),
+      ]);
+      if (inline.IsTruncated || inline.Marker || attached.IsTruncated || attached.Marker ||
+          inline.PolicyNames?.length !== 1 || inline.PolicyNames[0] !== role.Policies[0].PolicyName ||
+          !Array.isArray(attached.AttachedPolicies) || attached.AttachedPolicies.length) {
+        throw new Error('AWS canary role policy inventory is incomplete or grants extra authority');
+      }
+    }));
     if (launcherRole.Role?.Arn !== `arn:aws:iam::${this.bound.accountId}:role/${launcher.RoleName}` ||
         !launcherRole.Role.RoleId || cleanupRole.Role?.Arn !== expected.plan.input.cleanupRoleArn ||
         !equal(parsePolicy(cleanupRole.Role.AssumeRolePolicyDocument), cleanup.AssumeRolePolicyDocument) ||
@@ -1077,6 +1119,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   async createVolume(input: AwsCreateVolumeInput): Promise<AwsCreatedVolume> {
     await this.assertMutationAccount();
+    await this.assertBoundCanaryDeadline();
     const result = await this.call('create-volume', () =>
       this.ec2.send(
         new (ec2Sdk().CreateVolumeCommand)({
@@ -1167,6 +1210,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   async runInstances(input: AwsRunInstancesInput): Promise<AwsCreatedInstance> {
     await this.assertMutationAccount();
+    await this.assertBoundCanaryDeadline();
     const nic = input.NetworkInterfaces[0];
     const disk = input.BlockDeviceMappings[0];
     const result = await this.call('run-instances', () =>
@@ -1475,6 +1519,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   async startInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult> {
     await this.assertMutationAccount();
+    await this.assertBoundCanaryDeadline();
     const result = await this.call('start-instances', () =>
       this.ec2.send(new (ec2Sdk().StartInstancesCommand)({ InstanceIds: [...instanceIds] })),
     );
@@ -1514,6 +1559,8 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
         throw new Error(`aws_workspace_host_repair_stop_incomplete: ${instanceId} is '${stopped?.state ?? 'absent'}'`);
       }
     }
+    // Stop/wait can span the cutoff. Re-read the independent deadline immediately before restart.
+    await this.assertBoundCanaryDeadline();
     const started = await this.call('start-instances', () =>
       this.ec2.send(new (ec2Sdk().StartInstancesCommand)({ InstanceIds: [instanceId] })),
     );
@@ -1561,6 +1608,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     if (existing && existing.state !== 'error' && existing.state !== 'deleted') {
       return { snapshotId: existing.snapshotId };
     }
+    await this.assertBoundCanaryDeadline();
     const result = await this.call('create-snapshot', () =>
       this.ec2.send(
         new (ec2Sdk().CreateSnapshotCommand)({

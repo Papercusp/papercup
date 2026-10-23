@@ -10,6 +10,15 @@ export function partialTaskSkipListPath(dir: any, checkpoint: any): {
     digest: string;
     count: any;
 };
+/** Enroll the independent selection and actual command before its native child can start.
+ * Extends the existing OUT artifact; the environment is stored only as a digest.
+ * Enrollment is immutable and does not authorize reuse or establish runner custody.
+ */
+export function registerPartialNativeProducer(outPath: any, registration: any, environment: any): {
+    path: string;
+    producer: any;
+};
+export function readPartialNativeProducer(path: any, expected: any): any;
 /**
  * Read the reporter's existing atomic OUT channel, including a snapshot written before
  * onTestRunEnd. Selection comes from the caller, never from the observed result sample.

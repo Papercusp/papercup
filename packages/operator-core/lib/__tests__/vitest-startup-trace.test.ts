@@ -217,6 +217,39 @@ describe('focused runner startup tracing', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 25_000);
 
+  it('records exit entry before a blocked listener without claiming completion', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-blocked-exit-'));
+    const out = join(dir, 'sources.json');
+    try {
+      let entered = false, output = '';
+      await new Promise<void>((resolve, reject) => {
+        const child = execFile(process.execPath, ['-e',
+          "process.on('exit', () => { process.stdout.write('EXIT_LISTENER_ENTERED'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); }); process.exitCode = 3;"], {
+          env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+            PAPERCUSP_TEST_STARTUP_TRACE: '0' }), timeout: 10_000, killSignal: 'SIGKILL',
+        }, error => {
+          if (entered && error?.signal === 'SIGKILL') resolve();
+          else reject(error ?? new Error('blocked exit listener unexpectedly returned'));
+        });
+        createTextCollector(child.stdout, { retainText: false, onDecodedText: text => {
+          output += text;
+          if (output.includes('EXIT_LISTENER_ENTERED')) { entered = true; child.kill('SIGKILL'); }
+        } });
+      });
+      expect(entered).toBe(true);
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name => {
+        const bytes = readFileSync(join(`${out}.native-processes`, name));
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(name.slice(0, 64));
+        return JSON.parse(bytes.toString('utf8'));
+      });
+      const entry = rows.find(row => row.event === 'node-entry');
+      expect(rows.filter(row => row.event === 'node-exit-start')).toEqual([
+        expect.objectContaining({ pid: entry.pid, processIdentity: entry.processIdentity, code: 3 }),
+      ]);
+      expect(rows.filter(row => row.event === 'node-exit')).toHaveLength(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('retains binary and encoded Writable inputs without changing native output', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'native-binary-streams-'));
     const out = join(dir, 'sources.json');
@@ -229,6 +262,9 @@ describe('focused runner startup tracing', () => {
       const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
         JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
       const exit = rows.find(row => row.event === 'node-exit');
+      const exitStart = rows.find(row => row.event === 'node-exit-start');
+      expect(exitStart).toMatchObject({ pid: exit.pid, processIdentity: exit.processIdentity, code: 0 });
+      expect(exitStart.atMs).toBeLessThanOrEqual(exit.atMs);
       expect(stdout).toEqual(Buffer.from([0,255,10,255,0,108,97,116,101]));
       expect(stderr).toEqual(Buffer.from([254,13,10]));
       for (const role of ['stdout','stderr']) expect(readFileSync(join(`${out}.native-processes`,

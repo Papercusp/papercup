@@ -1422,6 +1422,10 @@ describe('retention on a real fixture tree', () => {
   });
   it('attributes a failed FIFO reacquisition wait and preserves the unprocessed continuation', async () => {
     const { root, options } = await setup();
+    const later = join(dirname(root), 'later'); await mkdir(later);
+    const laterPath = join(later, 'old'); await writeFile(laterPath, 'expired');
+    const scoped = { ...options, roots: [root, later].map(path => ({ path, classId: 'fixture' })),
+      policy: options.policy.map(cls => ({ ...cls, roots: [root, later] })) };
     const paths = [join(root, 'old-a'), join(root, 'old-b')];
     for (const path of paths) await writeFile(path, 'expired');
     let entered!: () => void, finish!: () => void, queued!: () => void, releasePeer!: () => void;
@@ -1449,7 +1453,7 @@ describe('retention on a real fixture tree', () => {
       // waiting notice cannot drive a frozen clock: it is itself time-throttled.
       if (phase === 'mutex-waiting' && requests === 3) reacquisitionQueued();
     };
-    const reclaim = runDiskReclaimOnce({ ...options, runBudgetMs: 1_000,
+    const reclaim = runDiskReclaimOnce({ ...scoped, runBudgetMs: 1_000,
       removeEntry: async entry => { entered(); await finishRemoval; await rm(entry.path); } });
     let peer: Promise<unknown> | undefined;
     try {
@@ -1472,11 +1476,22 @@ describe('retention on a real fixture tree', () => {
       expect(failedWait).toBe(true);
       expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
       expect(receipt.errors.join('; ')).toContain('waiting for fs-mutex');
+      // The next scheduled pass must rotate past this interrupted root instead
+      // of repeatedly starting at the same early roots after a FIFO timeout.
+      expect(receipt.scan?.stoppedAtRoot).toBe(root);
+      expect(receipt.scan?.incompleteRoots).toEqual([root, later]);
       expect(receipt.effects?.[0]).toMatchObject({ processed: 1, remaining: 1, nextPath: paths[1],
         elapsedMs: 2_001, timings: { yieldWaitMs: 2_000 } });
       expect(receipt.entries.filter(entry => entry.status === 'removed')).toHaveLength(1);
       await expect(stat(paths[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
       expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
+      expect(await readFile(laterPath, 'utf8')).toBe('expired');
+      releasePeer(); await peer;
+      const resumed = await runDiskReclaimOnce({ ...scoped, previousReceipt: receipt });
+      expect(resumed.roots?.map(value => value.path)).toEqual([later, root]);
+      expect(resumed.complete, resumed.errors.join('; ')).toBe(true);
+      expect(resumed.entries.filter(entry => entry.status === 'removed').map(entry => entry.path))
+        .toEqual([laterPath, paths[1]]);
     } finally { finish(); reacquisitionQueued(); releasePeer(); now.mockRestore(); await Promise.allSettled([reclaim, peer]); }
   });
   it.each(['pin', 'lease'] as const)('refreshes a new %s after a FIFO handoff without repeating the census', async (kind) => {

@@ -16,7 +16,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
-import { evaluatePartialTaskContinuation, readPartialNativeCompletion } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { evaluatePartialTaskContinuation, readPartialNativeCompletion, readPartialNativeProducer } from '../../../../scripts/lib/partial-task-resume.mjs';
 import {
   dependencyGenerationInfraCode,
   GREEN_CHECKPOINT_RESULT_MARKER,
@@ -356,6 +356,35 @@ export interface QualificationWorkContinuation {
   receipts: QualificationWorkReceipt[];
   retryStates: Array<'fail' | 'infra'>;
   supersededReceipts: QualificationWorkReceipt[];
+  /** Immutable enrollment references, retained across physical runner replacement. */
+  nativeProducers?: QualificationNativeProducerReference[];
+}
+
+export interface QualificationNativeProducerReference {
+  path: string;
+  outPath: string;
+  taskKey: string;
+  workspaceName: string;
+  runGroupId: string;
+  registeredAtMs: number;
+  selectedSpecifications: unknown[];
+  /** Binds command, environment digest and selection as well as producer identity. */
+  sha256: string;
+}
+
+function validNativeProducerReferences(value: unknown): value is QualificationNativeProducerReference[] {
+  if (!Array.isArray(value)) return false;
+  const paths = new Set<string>(), outputs = new Set<string>();
+  return value.every(ref => {
+    if (!ref || [ref.path, ref.outPath, ref.taskKey, ref.workspaceName, ref.runGroupId]
+      .some(field => typeof field !== 'string' || !field) || !ref.path.startsWith('/') ||
+      !ref.outPath.startsWith('/') || ref.path !== `${ref.outPath}.producer.json` ||
+      paths.has(ref.path) || outputs.has(ref.outPath) || !Number.isSafeInteger(ref.registeredAtMs) ||
+      ref.registeredAtMs <= 0 || !Array.isArray(ref.selectedSpecifications) || !ref.selectedSpecifications.length ||
+      !/^[a-f0-9]{64}$/.test(ref.sha256)) return false;
+    paths.add(ref.path); outputs.add(ref.outPath);
+    return true;
+  });
 }
 
 function workLineageConflicts(
@@ -446,7 +475,8 @@ export function recordQualificationWorkProgress(
     continuation: { schemaVersion: 1, attemptId: current.attemptId, candidate: input.candidate,
       repairHead: current.repairHead, root: input.root, taskKey: input.taskKey,
       manifest: structuredClone(prior?.manifest ?? input.manifest), receipts: [...receipts.values()],
-      retryStates, supersededReceipts: history } } };
+      retryStates, supersededReceipts: history,
+      ...(prior?.nativeProducers ? { nativeProducers: structuredClone(prior.nativeProducers) } : {}) } } };
 }
 
 export interface BeginQualificationInput {
@@ -1060,6 +1090,7 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
         typeof work.taskKey !== 'string' || !work.taskKey || !Array.isArray(work.receipts) ||
         !Array.isArray(work.supersededReceipts) || !Array.isArray(work.retryStates) ||
         work.retryStates.some(state => state !== 'fail' && state !== 'infra') || !row.candidate) return null;
+    if (work.nativeProducers !== undefined && !validNativeProducerReferences(work.nativeProducers)) return null;
     const expected = { root: work.root, taskKey: work.taskKey, sourceCommit: row.candidate,
       attemptId: row.attemptId, candidate: row.candidate, repairHead: row.repairHead ?? null,
       manifest: work.manifest, retryStates: work.retryStates, runContext: 'schema-check', runnerIdentity: 'schema-check' };
@@ -2391,6 +2422,9 @@ export function recordStoredQualificationWorkProgress(
 
 export interface QualificationNativeCompletionInput {
   path: string;
+  producerPath?: string;
+  /** Native task identity differs from the whole qualification's taskKey. */
+  taskKey?: string;
   workspaceName: string;
   selectedSpecifications: unknown[];
   classifyReadPaths?: (reads: unknown, root: string) => { readPaths: string[]; opaqueReasons: string[] };
@@ -2403,14 +2437,24 @@ export function recordStoredQualificationNativeCompletion(
   input: QualificationWorkProgressInput,
   observation: QualificationNativeCompletionInput,
 ): Promise<StoredQualificationMutation> {
-  return mutateStoredQualification(target, current => {
-    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+  return mutateStoredQualification(target, current => current
+    ? recordQualificationNativeCompletion(current, input, observation)
+    : { status: 'unreadable', error: 'missing attempt' });
+}
+
+function recordQualificationNativeCompletion(
+  current: CheckpointQualificationTransaction,
+  input: QualificationWorkProgressInput,
+  observation: QualificationNativeCompletionInput,
+): QualificationTransition {
     const conflict = (reason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason: reason });
     if (input.updates.length !== 0) return conflict('native-recovery-mixed-updates');
     const custody = recordQualificationWorkProgress(current, input);
     if (custody.status !== 'updated' && custody.status !== 'idempotent') return custody;
     const observed = readPartialNativeCompletion(observation.path, { ...input,
+      taskKey: observation.taskKey ?? input.taskKey,
       workspaceName: observation.workspaceName, selectedSpecifications: observation.selectedSpecifications,
+      ...(observation.producerPath !== undefined ? { producerPath: observation.producerPath } : {}),
     }, { classifyReadPaths: observation.classifyReadPaths });
     if (observed.status !== 'ready' || !('origin' in observed)) return conflict(observed.reason ?? 'native-observation-unmeasured');
     const group = observed.origin.runGroupId;
@@ -2429,6 +2473,91 @@ export function recordStoredQualificationNativeCompletion(
       ...(observation.supersedesCompletionIds?.[receipt.unitId]
         ? { supersedesCompletionId: observation.supersedesCompletionIds[receipt.unitId] } : {}),
     })) });
+}
+
+/** Register the independently selected native producer on the existing fenced row.
+ * The caller must hold the physical checkpoint lock and supply its own selection.
+ * No filesystem discovery or new coordination root is introduced.
+ */
+export function recordStoredQualificationNativeProducer(
+  target: GateVerdictTarget,
+  input: QualificationWorkProgressInput,
+  observation: Pick<QualificationNativeCompletionInput, 'path' | 'taskKey' | 'workspaceName' | 'selectedSpecifications'> & {
+    producerPath: string;
+  },
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, current => {
+    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    const conflict = (refusalReason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason });
+    if (input.updates.length) return conflict('native-recovery-mixed-updates');
+    const custody = recordQualificationWorkProgress(current, input);
+    if (custody.status !== 'updated' && custody.status !== 'idempotent') return custody;
+    const producer = readPartialNativeProducer(observation.producerPath, {
+      attemptId: input.attemptId, root: input.root, sourceCommit: input.candidate,
+      runGroupId: input.runId, outPath: observation.path, taskKey: observation.taskKey ?? input.taskKey,
+      workspaceName: observation.workspaceName,
+    });
+    const runner = current.currentPhysicalRunner!;
+    if (!producer || observation.producerPath !== `${observation.path}.producer.json` ||
+        !isDeepStrictEqual(producer.selectedSpecifications, observation.selectedSpecifications) ||
+        producer.registeredAtMs < runner.reservedAtMs || producer.registeredAtMs > (input.nowMs ?? Date.now()))
+      return conflict('native-producer-mismatch');
+    const selected = new Set(observation.selectedSpecifications.map(spec => (spec as { testFile?: string })?.testFile));
+    if ([...selected].some(path => input.manifest.units.filter(unit =>
+      unit.kind === 'test' && !unit.exclusion && unit.path === path).length !== 1))
+      return conflict('native-producer-outside-manifest');
+    const ref: QualificationNativeProducerReference = {
+      path: observation.producerPath, outPath: observation.path, taskKey: producer.taskKey,
+      workspaceName: producer.workspaceName, runGroupId: producer.runGroupId,
+      registeredAtMs: producer.registeredAtMs, selectedSpecifications: structuredClone(producer.selectedSpecifications),
+      sha256: createHash('sha256').update(JSON.stringify(producer)).digest('hex'),
+    };
+    const prior = custody.transaction.continuation!.nativeProducers ?? [];
+    const existing = prior.find(value => value.path === ref.path || value.outPath === ref.outPath);
+    if (existing) return isDeepStrictEqual(existing, ref) ? custody : conflict('native-producer-reference-conflict');
+    const nowMs = input.nowMs ?? Date.now();
+    if (!Number.isSafeInteger(nowMs) || nowMs < current.updatedAtMs) return conflict('continuation-clock-regressed');
+    return { status: 'updated', transaction: { ...custody.transaction,
+      updatedAtMs: nowMs, lastProgressAtMs: nowMs,
+      continuation: { ...custody.transaction.continuation!, nativeProducers: [...prior, ref] } } };
+  });
+}
+
+/** Re-read every enrolled OUT atomically before using any banked receipt.
+ * A missing/tampered/latest-demoted artifact refuses the entire batch; callers
+ * must stop and may not fall back to composing the previously stored passes.
+ */
+export function recoverStoredQualificationNativeCompletions(
+  target: GateVerdictTarget,
+  input: QualificationWorkProgressInput,
+  classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths'],
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, current => {
+    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    const conflict = (refusalReason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason });
+    if (input.updates.length) return conflict('native-recovery-mixed-updates');
+    const custody = recordQualificationWorkProgress(current, input);
+    if (custody.status !== 'updated' && custody.status !== 'idempotent') return custody;
+    const refs = current.continuation?.nativeProducers;
+    if (!refs?.length) return conflict('native-producers-unmeasured');
+    let transaction = custody.transaction, changed = custody.status === 'updated';
+    for (const ref of refs) {
+      const producer = readPartialNativeProducer(ref.path, {
+        attemptId: input.attemptId, root: input.root, sourceCommit: input.candidate,
+        runGroupId: ref.runGroupId, outPath: ref.outPath, taskKey: ref.taskKey, workspaceName: ref.workspaceName,
+      });
+      if (!producer || createHash('sha256').update(JSON.stringify(producer)).digest('hex') !== ref.sha256)
+        return conflict('native-producer-reference-mismatch');
+      const result = recordQualificationNativeCompletion(transaction, input, {
+        path: ref.outPath, producerPath: ref.path, taskKey: ref.taskKey, workspaceName: ref.workspaceName,
+        selectedSpecifications: ref.selectedSpecifications, classifyReadPaths,
+      });
+      if (result.status !== 'updated' && result.status !== 'idempotent')
+        return result.status === 'conflict' ? conflict(result.refusalReason ?? 'native-recovery-conflict') : result;
+      changed ||= result.status === 'updated';
+      transaction = result.transaction;
+    }
+    return { status: changed ? 'updated' : 'idempotent', transaction };
   });
 }
 
@@ -2443,6 +2572,7 @@ export async function continueStoredQualificationWork(
   target: GateVerdictTarget,
   input: QualificationWorkProgressInput,
   execute: (unit: QualificationWorkUnit) => Promise<QualificationWorkReceipt>,
+  options: { classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths'] } = {},
 ): Promise<{
   status: 'settled'; transaction: CheckpointQualificationTransaction;
   evaluation: ReturnType<typeof evaluatePartialTaskContinuation>; executed: string[];
@@ -2453,7 +2583,13 @@ export async function continueStoredQualificationWork(
     root: input.root, taskKey: input.taskKey, continuation: { ...transaction.continuation,
       attemptId: transaction.attemptId, candidate: transaction.candidate, repairHead: transaction.repairHead },
   }, { ...input, sourceCommit: input.candidate });
-  const initial = await recordStoredQualificationWorkProgress(target, input);
+  const synchronize = async (progress: QualificationWorkProgressInput): Promise<StoredQualificationMutation> => {
+    const custody = await recordStoredQualificationWorkProgress(target, progress);
+    if ((custody.status !== 'updated' && custody.status !== 'idempotent') ||
+        !custody.transaction.continuation?.nativeProducers?.length) return custody;
+    return recoverStoredQualificationNativeCompletions(target, { ...progress, updates: [] }, options.classifyReadPaths);
+  };
+  const initial = await synchronize(input);
   if (initial.status !== 'updated' && initial.status !== 'idempotent') return refused(`custody-${initial.status}`);
   let transaction = initial.transaction;
   const selection = grade(transaction);
@@ -2462,7 +2598,7 @@ export async function continueStoredQualificationWork(
   for (const id of selection.run) {
     // Re-read and validate the exact fence under the row lock immediately before
     // starting another unit, including after a slow or interrupted predecessor.
-    const ownership = await recordStoredQualificationWorkProgress(target, { ...input, updates: [] });
+    const ownership = await synchronize({ ...input, updates: [] });
     if (ownership.status !== 'updated' && ownership.status !== 'idempotent') return refused(`custody-${ownership.status}`);
     transaction = ownership.transaction;
     const eligible = grade(transaction);
@@ -2481,6 +2617,11 @@ export async function continueStoredQualificationWork(
   }
   // Include missing, retained-failure and infrastructure populations in the
   // final evaluation even when this invocation had no eligible units to run.
+  // Re-read enrolled artifacts after the final callback too: a terminal reporter
+  // error must not be eclipsed by an earlier durable per-file pass.
+  const final = await synchronize({ ...input, updates: [] });
+  if (final.status !== 'updated' && final.status !== 'idempotent') return refused(`completion-${final.status}`);
+  transaction = final.transaction;
   return { status: 'settled', transaction, evaluation: grade(transaction), executed };
 }
 

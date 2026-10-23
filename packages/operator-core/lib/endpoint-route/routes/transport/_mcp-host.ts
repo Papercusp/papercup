@@ -1211,7 +1211,12 @@ async function applyScopedSuperuserTransportClamp(
     }
   }
 
-  if (scopedSuperuserClamp && spawnCtx.harnessSlug !== '*') {
+  // An argument-free local call has no harness, hive or roster selector to
+  // validate. Cross-harness tools still need the implicit hive boundary even
+  // without arguments. Avoid a redundant home lookup for calls such as the
+  // nested mode:get used by session tool restoration.
+  if (scopedSuperuserClamp && spawnCtx.harnessSlug !== '*' &&
+      (Object.keys(args).length > 0 || toolName.startsWith('cross_harness:'))) {
     const { potHomeSlugForHarness } = await import('../../../hive-federation');
     const { collectHarnessSlugArgs } = await import('../../hive-harness-arg-coverage');
     const scopeHive = await potHomeSlugForHarness(spawnCtx.workspaceId, spawnCtx.harnessSlug);
@@ -4507,7 +4512,8 @@ export function registerMcpHost(server: McpServer): void {
         // scopeHive (the hive home AND each member resolve to the home; D-006).
         // The harder half — confining the workspace-global coord/fleet/search/
         // memory surfaces per-hive (P-014b) — is a separate multi-subsystem change.
-        if (scopedSuperuserClamp && spawnRes.ctx.harnessSlug !== '*') {
+        if (scopedSuperuserClamp && spawnRes.ctx.harnessSlug !== '*' &&
+            (Object.keys(args ?? {}).length > 0 || toolName.startsWith('cross_harness:'))) {
           const { potHomeSlugForHarness } = await import('../../../hive-federation');
           // EI-21910110662818467: the generic harness-arg sweep below. Kept in its
           // own module so the SAME predicate that decides "this arg names a

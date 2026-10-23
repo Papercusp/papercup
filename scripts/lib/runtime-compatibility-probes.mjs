@@ -8,6 +8,11 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { once } from 'node:events';
 
+// Upstream ORT v1.24.3 testdata/mul_1.onnx (MIT), reused from the
+// application's native-input trace test; SHA256:
+// 71f431c4e9321ec6fbeb158d02ed240459a7dcc98673fa79a4f439ce42efaf10
+const ONNX_MULTIPLY_GRAPH = 'CAMSBmNoZW50YTpwChUKAVgKAVcSAVkaBW11bF8xIgNNdWwSCG11bCB0ZXN0KiMIAwgCEAEiGAAAgD8AAABAAABAQAAAgEAAAKBAAADAQEIBV1oTCgFYEg4KDAgBEggKAggDCgIIAmITCgFZEg4KDAgBEggKAggDCgIIAkIECgAQBw==';
+
 export const NATIVE_EXPECTATIONS = Object.freeze({
   'sqlite-transaction-reopen': { rows: [{ value: 'committed' }], rolledBack: true },
   'sodium-secretbox-roundtrip': { plaintext: 'runtime compatibility', rejectsTampering: true },
@@ -15,6 +20,9 @@ export const NATIVE_EXPECTATIONS = Object.freeze({
   'udx-loopback': { message: 'runtime compatibility' },
   'rocksdb-reopen': { value: 'committed' },
   'pty-input-exit': { echoed: true, exitCode: 0 },
+  'onnx-worker-inference-restart': { outputs: [[1, 4, 9, 16, 25, 36], [1, 4, 9, 16, 25, 36]], terminated: true },
+  'onnx-cpu-inference': { output: [1, 4, 9, 16, 25, 36] },
+  'onnx-worker-inference': { outputs: [[1, 4, 9, 16, 25, 36]], terminated: true },
 });
 
 // Required builtins occur in the pinned host/worker source census. These
@@ -225,6 +233,62 @@ export async function performNativeCapability(id, requireFrom) {
   if (!Object.hasOwn(NATIVE_EXPECTATIONS, id)) throw new Error(`Unknown native capability: ${id}`);
   if (!requireFrom || !isAbsolute(requireFrom)) throw new Error('Absolute candidate package manifest required');
   const require = createRequire(requireFrom);
+  if (id.startsWith('onnx-')) {
+    const { Worker } = await import('node:worker_threads');
+    // Resolve as the application's transformers worker does, and retain the
+    // parent binding across worker replacement (WI-10005090). An import alone
+    // cannot prove that the native execution provider can run a graph.
+    const transformersRequire = createRequire(require.resolve('@huggingface/transformers'));
+    const ortPath = transformersRequire.resolve('onnxruntime-node');
+    const pinnedBinding = transformersRequire('onnxruntime-node');
+    if (id === 'onnx-cpu-inference') {
+      const session = await pinnedBinding.InferenceSession.create(Buffer.from(ONNX_MULTIPLY_GRAPH, 'base64'), {
+        executionProviders: ['cpu'], intraOpNumThreads: 1, interOpNumThreads: 1,
+      });
+      try {
+        const result = await session.run({ X: new pinnedBinding.Tensor('float32', Float32Array.from([1,2,3,4,5,6]), [3,2]) });
+        return { output: [...result.Y.data] };
+      } finally { await session.release(); }
+    }
+    const directory = await mkdtemp(join(tmpdir(), 'papercusp-runtime-onnx-'));
+    const workers = new Set();
+    try {
+      const script = join(directory, 'inference.mjs');
+      await writeFile(script, `
+        import { parentPort, workerData } from 'node:worker_threads';
+        import { createRequire } from 'node:module';
+        const ort = createRequire(import.meta.url)(workerData.ortPath);
+        const graph = Buffer.from(${JSON.stringify(ONNX_MULTIPLY_GRAPH)}, 'base64');
+        const session = await ort.InferenceSession.create(graph, {
+          executionProviders: ['cpu'], intraOpNumThreads: 1, interOpNumThreads: 1,
+        });
+        let output;
+        try {
+          const result = await session.run({ X: new ort.Tensor('float32', Float32Array.from([1,2,3,4,5,6]), [3,2]) });
+          output = [...result.Y.data];
+        } finally { await session.release(); }
+        // Keep this worker alive until the parent explicitly terminates it.
+        // This measures live-worker replacement, not terminate-after-exit.
+        parentPort.on('message', () => {});
+        parentPort.postMessage(output);
+      `);
+      const outputs = [];
+      for (let generation = 0; generation < (id === 'onnx-worker-inference' ? 1 : 2); generation++) {
+        const worker = new Worker(script, { execArgv: [], workerData: { ortPath } });
+        workers.add(worker);
+        worker.once('exit', () => workers.delete(worker));
+        const [output] = await once(worker, 'message');
+        outputs.push(output);
+        await worker.terminate();
+      }
+      // Keep the same native binding live until both inference workers finish.
+      if (typeof pinnedBinding.InferenceSession.create !== 'function') throw new Error('ONNX parent binding lost');
+      return { outputs, terminated: workers.size === 0 };
+    } finally {
+      try { await Promise.all([...workers].map(worker => worker.terminate())); }
+      finally { await rm(directory, { recursive: true, force: true }); }
+    }
+  }
   if (id === 'sodium-secretbox-roundtrip') {
     const sodium = require('sodium-native');
     const message = Buffer.from('runtime compatibility');

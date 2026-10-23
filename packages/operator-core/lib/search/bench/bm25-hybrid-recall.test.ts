@@ -13,6 +13,8 @@ import { mergeExactAndBm25 } from '../lexical/rank';
 import { captureCallWindow, createPrecomputedHybridQueries, startWaitSampler, statementSnapshot } from './bm25-hybrid-recall-cli';
 import {
   COLD_LATENCY_P95_CEILING_MS,
+  declareBm25Attempts,
+  reconcileBm25Attempts,
   BM25_EXECUTED_SOURCE_PATHS,
   LATENCY_P95_CEILING_MS,
   RECALL_K,
@@ -45,6 +47,7 @@ import {
   summarizeSource,
   warmQueryEmbeddings,
   type ArmObservation,
+  type Bm25AttemptReceipt,
   type ExecutedSourceSnapshot,
   type PairResult,
   type StatementStat,
@@ -119,6 +122,58 @@ describe('executed source qualification', () => {
     for (const patch of [{ profile: undefined }, { profile: { mode: 'gemma', profileId: 'another-profile' } },
       { pairsPerSource: 59 }, { sources: ['work_item'] }, { sources: ['work_item', 'work_item'] }, { explicitDatabase: false }])
       expect(qualificationConfigurationProblems(expected, { ...options, ...patch }).length).toBeGreaterThan(0);
+  });
+});
+
+describe('prospective benchmark request accounting', () => {
+  const pair = (style: 'fragment' | 'keyword' = 'fragment', targetId = 'WI-fixture'): PairResult =>
+    ({ source: 'work_item', style, targetId, query: `query ${targetId}`, arms: {} });
+  const declare = () => declareBm25Attempts({ declaredAt: '2026-10-23T04:00:00Z', sources: ['work_item', 'session_turn'],
+    pairsPerSource: 60, paired: [pair()], warmup: [pair('keyword', 'warmup')], steady: [pair('fragment', 'steady')],
+    pins: { source: 'source-pin', corpus: null, queries: 'query-pin', configuration: 'configuration-pin' } });
+  it('declares missing cells and warm-up identities without shrinking the requested denominator', () => {
+    const declaration = declare();
+    expect(declaration.cells).toHaveLength(24);
+    expect(declaration.cells.every(c => c.requestedPerSource === 60)).toBe(true);
+    expect(declaration.attempts).toHaveLength(6);
+    expect(declaration.attempts.filter(a => a.pass.endsWith('warmup'))).toHaveLength(2);
+    expect(new Set(declaration.attempts.map(a => a.id)).size).toBe(6);
+    expect(declaration.cells.find(c => c.id === 'work_item/fragment/paired/bm25')?.maxP95LatencyMs).toBe(1000);
+    expect(declaration.cells.find(c => c.id === 'work_item/fragment/warm-repeat/bm25')?.maxP95LatencyMs).toBe(200);
+  });
+  it('retains all unvisited requests after a timeout, including warm-ups and empty cells', () => {
+    const declaration = declare();
+    const receipts: Bm25AttemptReceipt[] = [{ id: declaration.attempts[0]!.id, outcome: 'timeout', executed: true,
+      latencyMs: 1200, costUsd: null, observation: null }];
+    const result = reconcileBm25Attempts(declaration, receipts);
+    expect(result.attempts).toHaveLength(6);
+    expect(result.attempts.filter(a => a.outcome === 'unknown')).toHaveLength(5);
+    expect(result.cells.reduce((n, c) => n + c.timeouts, 0)).toBe(1);
+    expect(result.cells.every(c => c.populationStatus === 'unknown')).toBe(true);
+    expect(result.qualification).toBe('unknown');
+  });
+  it('does not count observed known-item calls as labelled relevance or measured cost', () => {
+    const declaration = declare();
+    const receipts: Bm25AttemptReceipt[] = declaration.attempts.map(a => ({ id: a.id, outcome: 'success', executed: true,
+      latencyMs: 10, costUsd: null, observation: obs(null, a.arm, 10, 0) }));
+    const result = reconcileBm25Attempts(declaration, receipts);
+    expect(result.cells.reduce((n, c) => n + c.observed, 0)).toBe(6);
+    expect(result.cells.reduce((n, c) => n + c.judged, 0)).toBe(0);
+    expect(result.qualification).toBe('unknown');
+    expect(result.attempts.every(a => a.costUsd === null)).toBe(true);
+  });
+  it('refuses duplicate and undeclared receipts instead of accepting a repaired denominator', () => {
+    const declaration = declare();
+    const receipt: Bm25AttemptReceipt = { id: declaration.attempts[0]!.id, outcome: 'error', executed: true,
+      latencyMs: 1, costUsd: null, observation: null };
+    expect(() => reconcileBm25Attempts(declaration, [receipt, receipt])).toThrow('duplicate or undeclared');
+    expect(() => reconcileBm25Attempts(declaration, [{ ...receipt, id: 'unknown' }])).toThrow('duplicate or undeclared');
+  });
+  it('refuses duplicated requests and samples outside the declared source population', () => {
+    const options = { declaredAt: '2026-10-23T04:00:00Z', sources: ['work_item'], pairsPerSource: 60,
+      paired: [pair(), pair()], warmup: [], steady: [], pins: declare().pins };
+    expect(() => declareBm25Attempts(options)).toThrow('duplicate declared');
+    expect(() => declareBm25Attempts({ ...options, paired: [{ ...pair(), source: 'private_memory' }] })).toThrow('outside declared');
   });
 });
 

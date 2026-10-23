@@ -101,7 +101,7 @@ if (process.argv.includes('--astro-selection-child')) {
 
 for (const request of requests) {
   const cwd = process.cwd();
-  const keys = ['PC_TEST_LANE', 'PC_TEST_FILTER_LIST', 'PC_TEST_REUSE_SKIP_LIST', 'TEMPLATE_CHECKS_CONFIG'];
+  const keys = ['PC_TEST_LANE', 'PC_TEST_FILTER_LIST', 'PC_TEST_REUSE_SKIP_LIST', 'PC_TEST_PARTIAL_SKIP_LIST', 'TEMPLATE_CHECKS_CONFIG'];
   const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   try {
     if (request.runner === 'astro-check') {
@@ -128,7 +128,7 @@ for (const request of requests) {
       // Configs derive lane membership from cwd, exactly as npm's workspace child does.
       process.chdir(request.root);
       for (const key of keys) delete process.env[key];
-      for (const key of keys.filter(key => key !== 'PC_TEST_REUSE_SKIP_LIST')) {
+      for (const key of keys.filter(key => key !== 'PC_TEST_REUSE_SKIP_LIST' && key !== 'PC_TEST_PARTIAL_SKIP_LIST')) {
         if (request.env?.[key] !== undefined) process.env[key] = request.env[key];
       }
     }
@@ -136,15 +136,23 @@ for (const request of requests) {
       root: request.root,
       config: request.config,
     });
-    let files, repositoryFiles, projects;
+    let files, repositoryFiles, projects, selectedSpecifications;
     if (request.enumerateFiles) {
       // Project inheritance, in-source detection and typecheck pools belong to
       // Vitest itself. Its specification glob does not collect or execute tests.
-      if (vitestConfig.includeSource?.length || vitestConfig.typecheck?.enabled || vitestConfig.projects?.length) {
+      if (request.enumerateSpecifications || vitestConfig.includeSource?.length || vitestConfig.typecheck?.enabled || vitestConfig.projects?.length) {
         let context;
         try {
           context = await createVitest('test', { root: request.root, config: request.config, watch: false });
           const specifications = await context.globTestSpecifications();
+          if (request.enumerateSpecifications) selectedSpecifications = specifications.map(spec => ({
+            testFile: relative(request.repositoryRoot ?? request.root, spec.moduleId).replaceAll('\\', '/'),
+            projectName: spec.project.name ?? null, pool: spec.pool,
+            testNamePattern: spec.testNamePattern?.toString() ?? null,
+            testLines: spec.testLines ? [...spec.testLines] : null,
+            testIds: spec.testIds ? [...spec.testIds] : null,
+            testTagsFilter: spec.testTagsFilter ? [...spec.testTagsFilter] : null,
+          })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
           projects = specifications.map(spec => ({ name: spec.project.name, pool: spec.pool,
             file: relative(request.repositoryRoot ?? request.root, spec.moduleId).replaceAll('\\', '/') }));
           const absoluteFiles = [...new Set(specifications.map(spec => spec.moduleId))];
@@ -172,6 +180,7 @@ for (const request of requests) {
       ...(files ? { files, enumerated: true } : {}),
       ...(repositoryFiles ? { repositoryFiles } : {}),
       ...(projects ? { projects } : {}),
+      ...(selectedSpecifications ? { selectedSpecifications } : {}),
       config: {
         root: vitestConfig.root,
         ...(vitestConfig.dir ? { dir: vitestConfig.dir } : {}),

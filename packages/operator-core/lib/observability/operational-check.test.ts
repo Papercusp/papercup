@@ -17,11 +17,11 @@ const rows = () => ['1', '2'].map((digit, i) => ({ id: digit, callId: 'call-' + 
   startedAt: now - 1000, endedAt: now - 100 }));
 const project = () => ({ status: 'available', projectId: '7', queriedAt: now, evidenceRef: 'authenticated-project-query',
   events: rows().flatMap((row, i) => [{ uuid: 'tool-' + row.id, event: '$ai_trace', timestamp: row.startedAt,
-    traceId: row.traceId, spanId: row.spanId, parentSpanId: null, callId: row.callId, isError: !!i },
+    traceId: row.traceId, spanId: row.spanId, parentSpanId: null, callId: row.callId, isError: !!i, httpClient: false, spanName: 'papercusp.tool' },
   { uuid: 'http-' + row.id, event: '$ai_span', timestamp: row.startedAt + 10,
-    traceId: row.traceId, spanId: (i ? 'c' : 'a').repeat(16), parentSpanId: row.spanId, callId: row.callId, isError: false },
+    traceId: row.traceId, spanId: (i ? 'c' : 'a').repeat(16), parentSpanId: row.spanId, callId: row.callId, isError: false, httpClient: true, spanName: 'papercusp.http' },
   { uuid: 'model-' + row.id, event: i ? '$exception' : '$ai_generation', timestamp: row.startedAt + 20,
-    traceId: row.traceId, spanId: (i ? 'd' : 'b').repeat(16), parentSpanId: (i ? 'c' : 'a').repeat(16), callId: null, isError: !!i }]) });
+    traceId: row.traceId, spanId: (i ? 'd' : 'b').repeat(16), parentSpanId: (i ? 'c' : 'a').repeat(16), callId: null, isError: !!i, httpClient: false, spanName: 'papercusp.model' }]) });
 beforeEach(() => {
   fixture.host = { host: 'port-3170', processId: 'process-1', buildSha: 'a'.repeat(40) };
   fixture.health = { initialized: true, globalProviderRegistered: true };
@@ -77,6 +77,9 @@ describe('operational observability measurements', () => {
     const concurrent = project(); concurrent.events[5]!.event = '$ai_generation'; concurrent.events[5]!.isError = false;
     fixture.readProject.mockResolvedValue(concurrent);
     expect(await measureOperationalObservability('staging', scope)).toMatchObject({ verdict: 'pass' });
+    fixture.readProject.mockResolvedValueOnce({ ...concurrent,
+      events: concurrent.events.map(event => ({ ...event, httpClient: false })) });
+    expect(await measureOperationalObservability('staging', scope)).toMatchObject({ verdict: 'fail' });
     fixture.sql.mockResolvedValue(rows().map((row, i) => ({ ...row, status: 'ok', startedAt: now - 1000 + i * 950, endedAt: now - 100 + i * 99 })));
     fixture.readProject.mockResolvedValue({ ...concurrent,
       events: concurrent.events.map(event => ({ ...event, timestamp: event.timestamp + (event.traceId === '2'.repeat(32) ? 950 : 0) })) });
@@ -86,5 +89,29 @@ describe('operational observability measurements', () => {
     fixture.sql.mockRejectedValue(new Error('PRIVATE_DATABASE_ERROR'));
     const result = await measureOperationalObservability('project', scope);
     expect(result.verdict).toBe('unknown'); expect(result.detail).not.toContain('PRIVATE_DATABASE_ERROR');
+  });
+  it('rejects arbitrary SHA prefixes and zero persisted span identities', async () => {
+    fixture.host.buildSha = 'a';
+    expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'unknown' });
+    fixture.host.buildSha = 'a'.repeat(40);
+    fixture.sql.mockResolvedValue(rows().map(row => ({ ...row, spanId: '0'.repeat(16) })));
+    expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'unknown' });
+  });
+  it('cannot replace the canonical tool anchor with a generic same-span observation', async () => {
+    const generic = project(); generic.events[0]!.spanName = 'papercusp.span';
+    fixture.readProject.mockResolvedValue(generic);
+    expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'unknown' });
+    const ambiguous = project(); ambiguous.events.push({ ...ambiguous.events[0]!, uuid: 'other-anchor' });
+    fixture.readProject.mockResolvedValue(ambiguous);
+    expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'fail' });
+  });
+  it('rejects foreign leaf call IDs and unanchored null leaves while preserving parent-bound models', async () => {
+    const foreign = project(); foreign.events[2]!.callId = 'foreign-call';
+    fixture.readProject.mockResolvedValueOnce(foreign);
+    expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'fail' });
+    const direct = project(); direct.events[2]!.parentSpanId = '1'.repeat(16);
+    fixture.readProject.mockResolvedValueOnce(direct);
+    expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'fail' });
+    expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'pass' });
   });
 });

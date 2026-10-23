@@ -898,6 +898,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
     try { return await sample(); } catch (err) { receipt.errors.push(`device sample: ${message(err)}`); return []; }
   };
   const before = await snapshots();
+  let activeRoot: string | undefined;
   try {
     await options.record?.('started', receipt);
     let mutex: { hasWaiters: () => Promise<boolean> } | undefined;
@@ -985,7 +986,8 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       const workspaceIds = (options.registeredWorkspaces ?? (() => readRegistry().workspaces.map((x) => x.id)))();
       const progress = receipt.scan = { inspectedNodes: 0, retainedRecentTrees: 0, stoppedAtRoot: null as string | null, incompleteRoots: [] as string[] };
       for (const root of roots) {
-        if (Date.now() >= runDeadline) { receipt.errors.push('retention run budget exhausted'); break; }
+        activeRoot = root.path;
+        if (Date.now() >= runDeadline) throw new Error('retention run budget exhausted');
         yield* yieldToWaiter();
         const rootProtectedPaths = () => protectedPaths.flatMap((path) => root.aliases.map((alias) =>
           path === alias || path.startsWith(alias + '/') ? root.path + path.slice(alias.length) : path));
@@ -1342,7 +1344,20 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         if (done) break;
       }
     } finally { await cursor.return(); }
-  } catch (err) { receipt.errors.push(message(err)); }
+  } catch (err) {
+    receipt.errors.push(message(err));
+    // A FIFO timeout can terminate the generator while it is suspended, before
+    // the root's normal budget epilogue. Preserve the same continuation used
+    // for census/effect exhaustion so the next pass rotates to later roots.
+    const roots = receipt.roots ?? [];
+    const index = roots.findIndex(root => root.path === activeRoot);
+    if (receipt.scan && index >= 0) {
+      receipt.scan.stoppedAtRoot ??= roots[index]!.path;
+      for (const root of roots.slice(index)) {
+        if (!receipt.scan.incompleteRoots.includes(root.path)) receipt.scan.incompleteRoots.push(root.path);
+      }
+    }
+  }
   // A queued writer can end the callback between effects, before the root's
   // normal epilogue. Report retained usage after successful effects on every
   // exit path, including a cooperative yield or a later inspection failure.

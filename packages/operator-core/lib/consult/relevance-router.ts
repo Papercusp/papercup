@@ -510,7 +510,7 @@ export interface ConsultRouteDeps {
 
 let defaultSymbolResolver: SymbolResolver | null = null;
 function productionSymbolResolver(): SymbolResolver {
-  return (defaultSymbolResolver ??= gitGrepSymbolResolver({ cwd: process.cwd() }));
+  return (defaultSymbolResolver ??= gitGrepSymbolResolver({ cwd: process.cwd(), snapshotRepo: 'papercusp' }));
 }
 
 /** Infer source paths from filename shape or explicit path notation. An

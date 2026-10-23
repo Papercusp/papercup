@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -13,6 +13,8 @@ import {
   writePartialTaskCheckpointAtomic,
   evaluatePartialTaskContinuation,
   readPartialNativeCompletion,
+  registerPartialNativeProducer,
+  readPartialNativeProducer,
 } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 const ID = {
@@ -210,13 +212,62 @@ describe('native durable continuation outcomes', () => {
         firstAttemptVerdict: 'pass', cases: [{ status: 'pass' }],
         proof: { sourceEvidence: { schemaVersion: 'vite-collected-source-evidence-v1', status: 'stable',
           sources: [{ path: 'lib/a.test.ts', sha256: 'a'.repeat(64), currentSha256: 'a'.repeat(64) }], reasons: [] } } }] } });
-  const read = (value = snapshot(), overrides = {}, classify = true) => {
+  const read = (value = snapshot(), overrides = {}, classify = true, producerOverrides: Record<string, unknown> | null = null) => {
     const dir = mkdtempSync(join(tmpdir(), 'native-continuation-'));
     const file = join(dir, 'out.json');
     writeFileSync(file, JSON.stringify({ ...value, completionIntegrity: { schemaVersion: 1, sha256: hash(value) } }));
-    return readPartialNativeCompletion(file, { ...expected, ...overrides }, classify
-      ? { classifyReadPaths: () => ({ readPaths: ['fixtures/input.json'], opaqueReasons: [] }) } : {});
+    try {
+      const producer = producerOverrides === null ? null : registerPartialNativeProducer(file, {
+        attemptId: expected.attemptId, runGroupId: 'physical-run-one', root: ID.root, taskKey: ID.taskKey,
+        workspaceName: expected.workspaceName, sourceCommit: ID.sourceCommit, registeredAtMs: 50,
+        command: { cmd: '/node', argv: ['vitest', 'run'], cwd: ID.root }, selectedSpecifications,
+        ...producerOverrides,
+      }, { TEST_SECRET: 'credential-never-written' });
+      return readPartialNativeCompletion(file, { ...expected, ...overrides,
+        ...(producer ? { producerPath: producer.path } : {}) }, classify
+        ? { classifyReadPaths: () => ({ readPaths: ['fixtures/input.json'], opaqueReasons: [] }) } : {});
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   };
+
+  it('requires a pre-start producer with the exact independently selected native specifications', () => {
+    expect(read(snapshot(), {}, true, {})).toMatchObject({ status: 'ready' });
+    for (const producer of [
+      { attemptId: 'foreign' }, { runGroupId: 'foreign' }, { sourceCommit: 'foreign' },
+      { registeredAtMs: 101 }, { taskKey: 'foreign' },
+      { selectedSpecifications: [{ ...selectedSpecifications[0], testNamePattern: 'one case' }] },
+    ]) expect(read(snapshot(), {}, true, producer)).toMatchObject({ status: 'refused', reason: 'native-producer-mismatch' });
+  });
+
+  it('accepts selection recovered with JSONB key ordering while still checking the native manifest digest', () => {
+    const recovered = selectedSpecifications.map(spec => Object.fromEntries(Object.entries(spec).reverse()));
+    expect(read(snapshot(), { selectedSpecifications: recovered }, true, {})).toMatchObject({ status: 'ready' });
+    const damaged = snapshot();
+    damaged.nativeRun.selectedManifest.sha256 = '0'.repeat(64);
+    expect(read(damaged, { selectedSpecifications: recovered }, true, {}))
+      .toMatchObject({ status: 'refused', reason: 'native-selection-mismatch' });
+  });
+
+  it('seals immutable enrollment without persisting environment secrets and rejects altered identity', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-producer-')), out = join(dir, 'out.json');
+    const registration = { ...ID, attemptId: expected.attemptId, runGroupId: 'run-one',
+      workspaceName: expected.workspaceName, registeredAtMs: 50, selectedSpecifications,
+      command: { cmd: '/node', argv: ['vitest', 'run'], cwd: ID.root } };
+    try {
+      const saved = registerPartialNativeProducer(out, registration, { TOKEN: 'credential-never-written' });
+      expect(readFileSync(saved.path, 'utf8')).not.toContain('credential-never-written');
+      expect(readPartialNativeProducer(saved.path, { ...ID, command: registration.command })).toEqual(saved.producer);
+      expect(readPartialNativeProducer(saved.path, { environmentDigest: '0'.repeat(64) })).toBeNull();
+      expect(readPartialNativeProducer(saved.path, { command: { ...registration.command, argv: ['other'] } })).toBeNull();
+      expect(() => registerPartialNativeProducer(out, { ...registration, runGroupId: 'overwrite' }, {})).toThrow();
+      expect(readPartialNativeProducer(saved.path, { runGroupId: 'run-one' })).not.toBeNull();
+      const altered = JSON.parse(readFileSync(saved.path, 'utf8')); altered.taskKey = 'foreign';
+      writeFileSync(saved.path, JSON.stringify(altered));
+      expect(readPartialNativeProducer(saved.path, {})).toBeNull();
+      expect(() => registerPartialNativeProducer(join(dir, 'duplicate.json'), {
+        ...registration, selectedSpecifications: [...selectedSpecifications, ...selectedSpecifications],
+      }, {})).toThrow('native-producer-registration-invalid');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 
   it('recovers a committed module before the terminal hook and composes its proof with pending guards', () => {
     const recovered = read();

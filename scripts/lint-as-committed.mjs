@@ -113,6 +113,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
 import { applyEnvLocal, parseEnvFile, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
+import { withFsMutex } from './lib/fs-mutex.mjs';
 
 /** Child environment for commands executing against the isolated committed clone. */
 export function lintAsCommittedChildEnv(environment = process.env, repoRoot = null) {
@@ -301,13 +302,23 @@ export function retainCommittedWorkRoot(workRoot, expectedSha, artifactPath) {
     throw new Error('lint-as-committed: dependent artifact must be outside its source root');
   }
   const markerPath = join(root, OWNER_MARKER);
-  const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
-  const retainedFor = Array.isArray(marker.retainedFor) ? marker.retainedFor : [];
-  if (!retainedFor.some((entry) => entry.path === artifact && entry.sha === expectedSha)) {
-    retainedFor.push({ path: artifact, sha: expectedSha });
-  }
-  writeFileSync(markerPath, JSON.stringify({ ...marker, keep: true, retainedFor }));
-  return { root, sha: expectedSha, artifact };
+  const name = 'committed-source-retention-' + createHash('sha256').update(root).digest('hex').slice(0, 24);
+  return withFsMutex(name, async () => {
+    // Re-read AFTER acquiring: another process may have added its own hold.
+    verifyCommittedWorkRoot(root, expectedSha);
+    const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
+    const retainedFor = Array.isArray(marker.retainedFor) ? marker.retainedFor : [];
+    if (!retainedFor.some((entry) => entry.path === artifact && entry.sha === expectedSha)) {
+      retainedFor.push({ path: artifact, sha: expectedSha });
+    }
+    const temporary = markerPath + '.' + randomUUID() + '.tmp';
+    try {
+      writeFileSync(temporary, JSON.stringify({ ...marker, keep: true, retainedFor }), { flag: 'wx', mode: 0o600 });
+      // Readers see old or new complete JSON, never a truncation.
+      renameSync(temporary, markerPath);
+    } finally { rmSync(temporary, { force: true }); }
+    return { root, sha: expectedSha, artifact };
+  });
 }
 
 function hasDependentArtifact(workRoot, marker) {
@@ -1036,7 +1047,7 @@ export function showAtRef(repoRoot, ref, path) {
   return showAtRef(subRoot, pin, path.slice(owner.length + 1));
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.help) {
@@ -1390,7 +1401,7 @@ function main() {
 
     if (args.materializeOnly) {
       verifyCommittedWorkRoot(workRoot, sha);
-      if (args.retainFor) retainCommittedWorkRoot(workRoot, sha, args.retainFor);
+      if (args.retainFor) await retainCommittedWorkRoot(workRoot, sha, args.retainFor);
       console.log(`\nCommitted source prepared at ${workRoot}; no lint or test was run.`);
       return;
     }

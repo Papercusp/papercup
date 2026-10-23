@@ -11,7 +11,8 @@ const candidate = { sourceSha: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64),
 // Its native operation is measured in the explicit candidate dependency
 // generation by P-001, alongside the same probes exercised here.
 const sourceCapabilities = ['sodium-secretbox-roundtrip', 'sharp-png-roundtrip',
-  'udx-loopback', 'rocksdb-reopen', 'pty-input-exit'];
+  'udx-loopback', 'rocksdb-reopen', 'pty-input-exit', 'onnx-worker-inference-restart',
+  'onnx-cpu-inference', 'onnx-worker-inference'];
 describe('bounded native operations available in the source dependency closure', () => {
   it.each(sourceCapabilities)('%s completes its actual operation in a child interpreter', async (id) => {
     const runtime = await measureRuntime(process.execPath);

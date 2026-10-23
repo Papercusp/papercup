@@ -204,6 +204,7 @@ import {
   partialTaskCheckpointPath,
   partialTaskSkipListPath,
   readPartialTaskCheckpoint,
+  registerPartialNativeProducer,
   writePartialTaskCheckpointAtomic,
 } from "./lib/partial-task-resume.mjs";
 import { ensurePapercuspTmpdir } from "../libs/test-config/src/tmpdir-guard.ts";
@@ -7259,6 +7260,11 @@ function runCapturedTask(
     ? `${executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, taskKey(spawnTask))}.${createHash("sha256")
       .update(JSON.stringify([taskKey(context.t), taskKey(spawnTask), journalLabel, extraArgs])).digest("hex").slice(0, 16)}.sources.json`
     : null;
+  const qualificationAttemptId = process.env.PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID?.trim();
+  const qualificationNativeOut = recordsExecutedMap && qualificationAttemptId &&
+    process.env.PAPERCUSP_TEST_RUN_GROUP && extraArgs.length === 0 && scriptOverride == null
+    ? integrationSourceMapOut ?? `${executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, taskKey(spawnTask))}.sources.json`
+    : null;
   const {
     [TEST_REUSE_SKIP_LIST_ENV]: _inheritedReuseSkipList,
     [PC_TEST_PARTIAL_SKIP_LIST_ENV]: _inheritedPartialSkipList,
@@ -7286,6 +7292,7 @@ function runCapturedTask(
       ? { [EXECUTED_MAP_OUT_ENV]: inheritedExecutedMapOut } : {}),
     ...(integrationSourceMapOut
       ? { [EXECUTED_MAP_OUT_ENV]: integrationSourceMapOut, [EXECUTED_MAP_NO_PERSIST_ENV]: "1" } : {}),
+    ...(qualificationNativeOut ? { [EXECUTED_MAP_OUT_ENV]: qualificationNativeOut } : {}),
     ...(context.partialResume?.armed ? { AFFECTED_PARTIAL_RESUME: "1" } : {}),
     ...(context.partialResume?.skipList
       ? { [PC_TEST_PARTIAL_SKIP_LIST_ENV]: context.partialResume.skipList.path }
@@ -7585,9 +7592,34 @@ function runCapturedTask(
     governedOptions,
     (_admissionContext, governedEnv, { inherited }) => new Promise((resolveRun) => {
     const startedAt = Date.now();
+    // Register before spawn, using the maintained native config selector rather than
+    // deriving the population from whatever outcomes happen to survive interruption.
+    // Unsupported scripts retain ordinary execution and cannot supply continuation proof.
+    if (qualificationNativeOut) {
+      try {
+        const selection = enumerateAffectedTaskSelection([spawnTask], {
+          root: ROOT, filterDir: RUN_LOG_ROOT, enumerateSpecifications: true,
+        });
+        const entry = selection.tasks.find(task => task.id === taskKey(spawnTask));
+        if (selection.coverage !== "complete" || !entry?.selectedSpecifications)
+          throw new Error("native-producer-selection-unmeasured");
+        const identity = partialSourceIdentity();
+        if (!identity) throw new Error("native-producer-source-unmeasured");
+        const enrolled = registerPartialNativeProducer(qualificationNativeOut, {
+          attemptId: qualificationAttemptId, runGroupId: governedEnv.PAPERCUSP_TEST_RUN_GROUP,
+          root: ROOT, taskKey: taskKey(context.t), workspaceName: spawnTask.ws.name,
+          sourceCommit: identity.sourceCommit, registeredAtMs: Date.now(),
+          selectedSpecifications: entry.selectedSpecifications,
+          command: { cmd, argv, cwd },
+        }, governedEnv);
+        outSync(`QUALIFICATION_NATIVE_PRODUCER task=${JSON.stringify(taskKey(context.t))} path=${JSON.stringify(enrolled.path)}`);
+      } catch (error) {
+        outSync(`QUALIFICATION_NATIVE_PRODUCER_REFUSED task=${JSON.stringify(taskKey(context.t))} reason=${JSON.stringify(String(error?.message ?? error))}`);
+      }
+    }
     // Extend existing OUT diagnostics without replacing npm or its shell. The
     // selected script is metadata; command below is the actual spawn invocation.
-    const nativeReceiptArmed = Boolean(inheritedExecutedMapOut || integrationSourceMapOut);
+    const nativeReceiptArmed = Boolean(inheritedExecutedMapOut || integrationSourceMapOut || qualificationNativeOut);
     const nativeWrapperInputs = () => {
       try {
         const paths = ["package.json", relative(ROOT, join(ROOT, spawnTask.ws.dir, "package.json"))];
@@ -7604,7 +7636,7 @@ function runCapturedTask(
       error: error ? String(error.message ?? error) : null,
       captureComplete: !error, stdout: stdoutBytes, stderr: stderrBytes,
       before: nativeBefore, after: nativeWrapperInputs(),
-      processTrace: { out: integrationSourceMapOut || inheritedExecutedMapOut, rootPid: childPid },
+      processTrace: { out: qualificationNativeOut || integrationSourceMapOut || inheritedExecutedMapOut, rootPid: childPid },
     } : null;
     const stdout = [];
     const stderr = [];

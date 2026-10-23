@@ -17,6 +17,7 @@ const CONTROL_FILE = /(?:^|\/)(?:Dockerfile(?:[.-][^/]*)?|[^/]+\.Dockerfile|CMak
 // suffixes cannot disappear merely because they are not JavaScript or .service.
 const CONTROL_DIRECTORY = /(?:^|\/)(?:systemd|launchd|init\.d|rc\.d)\//;
 const JS = /\.[cm]?[jt]sx?$/;
+const SYSTEMD_UNIT = /\.(?:service|socket|timer|path|target|slice|scope)(?:\.(?:in|tmpl|template))?$/;
 export const INVENTORY_GROUPS = ['launchers', 'guards', 'capabilities', 'platforms', 'proofs', 'mutators', 'persistence'];
 const MATCHERS = {
   launchers: /child_process|worker_threads|^(?:spawn|spawnSync|execFile|execFileSync|fork|execPath|Worker|cluster|ExecStart|Command)$/,
@@ -104,6 +105,42 @@ function syntaxTokens(text, file) {
   return result;
 }
 
+/**
+ * Preserve unit assignments for launch review, including empty list resets.
+ * This is source evidence, not an effective-unit evaluator: installation paths,
+ * prefix drop-ins, environment files and manager expansion still need proof.
+ */
+export function collectSystemdDirectives(path, text) {
+  if (!SYSTEMD_UNIT.test(path) && !(CONTROL_DIRECTORY.test(path) && path.endsWith('.conf'))) return null;
+  const directives = [], unresolved = [];
+  let section = null, pending = null;
+  const lines = text.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index], trimmed = line.trim();
+    // systemd ignores comment lines even inside a continued assignment.
+    if (!trimmed || /^[#;]/.test(trimmed)) continue;
+    const firstLine = pending?.firstLine ?? index + 1;
+    const joined = (pending?.text ?? '') + line;
+    const trailing = joined.match(/\\+$/)?.[0].length ?? 0;
+    if (trailing % 2 === 1) {
+      pending = { firstLine, text: joined.slice(0, -1) + ' ' };
+      continue;
+    }
+    pending = null;
+    const statement = joined.trim(), heading = statement.match(/^\[([^\]]+)\]$/);
+    if (heading) { section = heading[1]; continue; }
+    const assignment = statement.match(/^([A-Za-z][A-Za-z0-9]*)\s*=(.*)$/);
+    if (!assignment || !section) {
+      unresolved.push({ firstLine, lastLine: index + 1, reason: 'unparsed-systemd-statement', text: joined });
+      continue;
+    }
+    directives.push({ section, key: assignment[1], value: assignment[2].trim(), firstLine, lastLine: index + 1 });
+  }
+  if (pending) unresolved.push({ firstLine: pending.firstLine, lastLine: lines.length,
+    reason: 'unterminated-systemd-continuation', text: pending.text });
+  return { format: 'systemd', directives, unresolved, effectiveConfigurationVerified: false };
+}
+
 /** Candidate leads require explicit reachability classification before the population is frozen. */
 export function inventorySources(snapshot) {
   const groups = Object.fromEntries(INVENTORY_GROUPS.map((name) => [name, []]));
@@ -115,6 +152,11 @@ export function inventorySources(snapshot) {
     files.push(file);
     if (!Buffer.from(text).equals(source.bytes) || source.bytes.length > 2 * 1024 * 1024) {
       unresolved.push({ path: source.path, reason: 'non-utf8-or-over-parser-budget' }); continue;
+    }
+    const launchControl = collectSystemdDirectives(source.path, text);
+    if (launchControl) {
+      file.launchControl = launchControl;
+      unresolved.push(...launchControl.unresolved.map((row) => ({ path: source.path, ...row })));
     }
     if (JS.test(source.path)) {
       try {

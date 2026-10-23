@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -32,6 +32,8 @@ import {
   recordStoredQualificationRunnerProgress,
   recordStoredQualificationWorkProgress,
   recordStoredQualificationNativeCompletion,
+  recordStoredQualificationNativeProducer,
+  recoverStoredQualificationNativeCompletions,
   continueStoredQualificationWork,
   type QualificationWorkProgressInput,
   recordStoredQualificationScheduledFire,
@@ -53,7 +55,7 @@ import {
 } from './gate-verdict-freshness';
 import { fireAwaitsForKey, registerAwait } from '../events/await/store';
 import { writeFrozenCandidateRepairQueue } from '../harness/routines/release-actions';
-import { evaluatePartialTaskContinuation } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { evaluatePartialTaskContinuation, registerPartialNativeProducer } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -88,6 +90,118 @@ async function metadata(): Promise<Record<string, unknown>> {
 }
 
 describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
+  it('retains enrolled task identity across JSONB and runner replacement, recovering only its recorded OUT', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      const observation = fixture.enroll();
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('updated');
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('idempotent');
+      expect((await recordStoredQualificationWorkProgress(target, fixture.input)).status).toBe('idempotent');
+      expect((await reserveStoredQualificationRunner(target, { ...fixture.owner, runnerId: 'runner-two', runId: 'run-two',
+        pid: 43, pidIdentity: 'boot:43', incumbentLiveness: 'dead', nowMs: 500 })).status).toBe('updated');
+      const input = { ...fixture.input, runnerId: 'runner-two', runId: 'run-two', pidIdentity: 'boot:43', nowMs: 600 };
+      expect((await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths)).status).toBe('updated');
+      expect((await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths)).status).toBe('idempotent');
+      const stored = await readStoredQualification(target);
+      expect(stored).toMatchObject({ status: 'present', transaction: { continuation: {
+        nativeProducers: [{ taskKey: '@fixture/native::test', runGroupId: 'run-one' }],
+        receipts: [{ unitId: 'native', completionId: 'native-completion' }],
+      } } });
+      expect(await recoverStoredQualificationNativeCompletions(target, fixture.input, observation.classifyReadPaths))
+        .toMatchObject({ status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+    } finally { fixture.cleanup(); }
+  });
+
+  it('rolls back the whole recovery batch when a later enrolled OUT is missing', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      fixture.input.manifest.units.push({ id: 'other', kind: 'test', path: 'other.test.ts' });
+      const first = fixture.enroll();
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, first)).status).toBe('updated');
+      const specifications = [{ ...first.selectedSpecifications[0]!, testFile: 'other.test.ts' }];
+      const out = join(fixture.directory, 'missing.json');
+      const producer = registerPartialNativeProducer(out, {
+        attemptId: fixture.input.attemptId, runGroupId: fixture.input.runId, root: fixture.input.root,
+        taskKey: '@fixture/other::test', workspaceName: '@fixture/other', sourceCommit: fixture.input.candidate,
+        registeredAtMs: 210, selectedSpecifications: specifications,
+        command: { cwd: '/repo', cmd: 'npm', argv: ['run', 'test'] },
+      }, { NODE_ENV: 'test' });
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, {
+        path: out, producerPath: producer.path, taskKey: '@fixture/other::test', workspaceName: '@fixture/other',
+        selectedSpecifications: specifications,
+      })).status).toBe('updated');
+      const before = await readStoredQualification(target);
+      expect(await recoverStoredQualificationNativeCompletions(target, fixture.input, first.classifyReadPaths))
+        .toMatchObject({ status: 'conflict', refusalReason: 'snapshot-unreadable' });
+      expect(await readStoredQualification(target)).toEqual(before);
+      expect(before).toMatchObject({ transaction: { continuation: { receipts: [] } } });
+    } finally { fixture.cleanup(); }
+  });
+
+  it.each(['producer-tamper', 'terminal-demotion'] as const)('refuses %s after banking a native pass', async damage => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      const observation = fixture.enroll();
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('updated');
+      expect((await recoverStoredQualificationNativeCompletions(target, fixture.input, observation.classifyReadPaths)).status).toBe('updated');
+      const before = await readStoredQualification(target);
+      if (damage === 'producer-tamper') {
+        const producer = JSON.parse(readFileSync(observation.producerPath, 'utf8'));
+        const { integrity: _seal, ...body } = producer;
+        body.environmentDigest = 'f'.repeat(64);
+        writeFileSync(observation.producerPath, JSON.stringify({ ...body, integrity: { schemaVersion: 1,
+          sha256: createHash('sha256').update(JSON.stringify(body)).digest('hex') } }));
+      } else {
+        fixture.snapshot.nativeRun.gaps.push('terminal-unhandled-error' as never);
+        fixture.save();
+      }
+      expect(await recoverStoredQualificationNativeCompletions(target, fixture.input, observation.classifyReadPaths))
+        .toMatchObject({ status: 'conflict', refusalReason: damage === 'producer-tamper'
+          ? 'native-producer-reference-mismatch' : 'continuation-completion-id-conflict' });
+      expect(await readStoredQualification(target)).toEqual(before);
+    } finally { fixture.cleanup(); }
+  });
+
+  it.each(['selection', 'clock', 'manifest'] as const)('does not enroll a native producer with mismatched %s', async damage => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      const observation = fixture.enroll();
+      const before = await readStoredQualification(target);
+      if (damage === 'selection') observation.selectedSpecifications[0]!.testNamePattern = 'only-one-case';
+      if (damage === 'clock') fixture.input.nowMs = 209;
+      if (damage === 'manifest') fixture.input.manifest.units = [{ id: 'guard', kind: 'guard', path: 'native.test.ts' }];
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('conflict');
+      expect(await readStoredQualification(target)).toEqual(before);
+    } finally { fixture.cleanup(); }
+  });
+
+  it('stops continuation before execution and before final composition when the latest native artifact is demoted', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      fixture.input.manifest.units.push({ id: 'guard', kind: 'guard', path: 'guard.mjs' });
+      const observation = fixture.enroll();
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('updated');
+      expect((await recoverStoredQualificationNativeCompletions(target, fixture.input, observation.classifyReadPaths)).status).toBe('updated');
+      const execute = vi.fn(async (unit: { id: string }) => {
+        fixture.snapshot.nativeRun.gaps.push('terminal-unhandled-error' as never);
+        fixture.save();
+        return { unitId: unit.id, completionId: 'guard-completion', observedAtMs: 275,
+          state: 'pass' as const, worktreeDirty: false, observedCount: 1,
+          proof: { recordedSha: fixture.input.candidate, runContext: fixture.input.runContext,
+            runnerIdentity: fixture.input.runnerIdentity, executedModules: ['guard.mjs'],
+            readPaths: [], inputsCaptured: true, opaqueReasons: [] } };
+      });
+      const options = { classifyReadPaths: observation.classifyReadPaths };
+      expect(await continueStoredQualificationWork(target, fixture.input, execute, options))
+        .toMatchObject({ status: 'refused', reason: 'completion-conflict', executed: ['guard'] });
+      expect(execute).toHaveBeenCalledTimes(1);
+      execute.mockClear();
+      expect(await continueStoredQualificationWork(target, fixture.input, execute, options))
+        .toMatchObject({ status: 'refused', reason: 'custody-conflict', executed: [] });
+      expect(execute).not.toHaveBeenCalled();
+    } finally { fixture.cleanup(); }
+  });
+
   it('recovers native OUT through the current fence and replays identically after JSONB key reordering', async () => {
     const fixture = await nativeRecoveryFixture();
     try {
@@ -118,6 +232,22 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       expect(after).toEqual(before);
       expect(await recordStoredQualificationNativeCompletion(target, fixture.input, fixture.observation)).toMatchObject({
         status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+    } finally { fixture.cleanup(); }
+  });
+
+  it.each(['run-error', 'config-drift', 'source-drift'] as const)('refuses %s demotion of an already banked native completion', async damage => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      expect((await recordStoredQualificationNativeCompletion(target, fixture.input, fixture.observation)).status).toBe('updated');
+      const before = await readStoredQualification(target);
+      if (damage === 'run-error') fixture.snapshot.nativeRun.gaps.push('terminal-unhandled-error' as never);
+      if (damage === 'config-drift') fixture.snapshot.configSources.status = 'changed';
+      if (damage === 'source-drift') fixture.snapshot.nativeRun.files[0]!.proof.sourceEvidence.status = 'changed';
+      fixture.save();
+      expect(await recordStoredQualificationNativeCompletion(target, fixture.input, fixture.observation)).toMatchObject({
+        status: 'conflict', refusalReason: 'continuation-completion-id-conflict' });
+      // The caller must stop on this refusal; old receipts are not a final-run verdict.
+      expect(await readStoredQualification(target)).toEqual(before);
     } finally { fixture.cleanup(); }
   });
 
@@ -683,9 +813,20 @@ async function nativeRecoveryFixture() {
   const directory = mkdtempSync(join(tmpdir(), 'native-qualification-')), file = join(directory, 'out.json');
   const save = () => writeExecutedSourceMapSnapshot(file, snapshot);
   save();
-  return { owner, input, snapshot, save, observation: { path: file, workspaceName: snapshot.workspaceName,
+  const observation = { path: file, workspaceName: snapshot.workspaceName,
     selectedSpecifications: specifications,
     classifyReadPaths: (reads: unknown, root: string) => classifyReadPaths(reads as string[], {
       repoRoot: root, isTracked: path => path === 'input.json', exists: () => false,
-    }) }, cleanup: () => rmSync(directory, { recursive: true, force: true }) };
+    }) };
+  const enroll = () => {
+    const taskKey = '@fixture/native::test';
+    const producer = registerPartialNativeProducer(file, {
+      attemptId: input.attemptId, runGroupId: input.runId, root: input.root, taskKey,
+      workspaceName: snapshot.workspaceName, sourceCommit: input.candidate, registeredAtMs: 210,
+      selectedSpecifications: structuredClone(specifications), command: { cwd: '/repo', cmd: 'npm', argv: ['run', 'test'] },
+    }, { NODE_ENV: 'test' });
+    return { ...observation, selectedSpecifications: structuredClone(specifications), taskKey, producerPath: producer.path };
+  };
+  return { owner, input, snapshot, save, observation, enroll, directory,
+    cleanup: () => rmSync(directory, { recursive: true, force: true }) };
 }

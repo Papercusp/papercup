@@ -1687,10 +1687,19 @@ async function runManifestOnlyInstall({
         const { workspaceDirs } = verificationScopeForNpmArgs({ repoRoot, npmArgs });
         const ranges = await findUnsatisfiedDeclaredDepRangesWithRetry({ repoRoot, workspaceDirs });
         const declared = await findUnextractedDepsWithRetry({ repoRoot, workspaceDirs });
+        // A transitive security override can leave every direct range satisfied
+        // while the installed runtime differs from the selected lock. Reuse the
+        // publisher's exact-path audit, as post-reify verification already does;
+        // that graph needs repair admission rather than an unbounded pre-drain.
+        const lockPath = join(repoRoot, existsSync(join(repoRoot, "npm-shrinkwrap.json"))
+          ? "npm-shrinkwrap.json" : "package-lock.json");
+        const lockTreeDefects = existsSync(lockPath) ? auditLockfile({
+          lock: JSON.parse(readFileSync(lockPath, "utf8")), lockDir: "", treeRoot: repoRoot,
+        }).defects : [];
         // A broken installed graph needs a writer reservation so sustained new
         // readers cannot starve its repair. Existing readers still drain under
         // the exclusive mutex; healthy installs retain the D-009 pre-drain.
-        value.repairInstalledGraph = ranges.invalid.length > 0 || declared.missing.length > 0;
+        value.repairInstalledGraph = ranges.invalid.length > 0 || declared.missing.length > 0 || lockTreeDefects.length > 0;
         input = createManifestOnlyTree(repoRoot, value.inputPaths);
         return value;
       });

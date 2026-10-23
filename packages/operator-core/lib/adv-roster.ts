@@ -1407,6 +1407,7 @@ export async function openAwaitsByOwner(ownerIds: string[]): Promise<Map<string,
         FROM harness_shared.event_awaits_effective
        WHERE fired_at IS NULL
          AND cancelled_at IS NULL
+         AND policy <> 'announce'
          AND superseded_at IS NULL
          AND (
            event_key NOT LIKE 'coord:inbox-wake:%'

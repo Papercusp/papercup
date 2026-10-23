@@ -55,6 +55,9 @@ import {
   ARMS,
   BM25_EXECUTED_SOURCE_PATHS,
   COLD_LATENCY_P95_CEILING_MS,
+  bm25AttemptId,
+  declareBm25Attempts,
+  reconcileBm25Attempts,
   LATENCY_P95_CEILING_MS,
   callAttribution,
   parseSchedstat,
@@ -81,6 +84,8 @@ import {
   warmQueryEmbeddings,
   type Arm,
   type ArmObservation,
+  type Bm25AttemptReceipt,
+  type Bm25Pass,
   type CallAttribution,
   type ExecutedSourceSnapshot,
   type PairResult,
@@ -440,7 +445,7 @@ async function main(): Promise<number> {
   if (sourceNames.length === 0) throw new Error(`--sources must name one of ${Object.keys(SOURCE_TABLES).join(', ')}`);
   if (replayFrom && (!Number.isInteger(replayReps) || replayReps < 1 || replayReps > 10))
     throw new Error('--replay-reps must be an integer from 1 to 10');
-  if (fs.existsSync(out) || fs.existsSync(out.replace(/\.json$/, '.md')))
+  if ([out, out.replace(/\.json$/, '.md'), `${out}.declaration.json`, `${out}.attempts.jsonl`, `${out}.ledger.json`].some(p => fs.existsSync(p)))
     throw new Error('artifact path already exists; preserve every prior result and choose a new declared path');
 
   const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
@@ -561,6 +566,20 @@ async function main(): Promise<number> {
     );
   }
   const fingerprint = sampleFingerprint(pairs);
+
+  const declaration = replayFrom ? null : declareBm25Attempts({ declaredAt: new Date().toISOString(), sources: sourceNames,
+    pairsPerSource: perSource, paired: pairs, warmup: warmupPairs, steady: steadyPairs,
+    pins: { source: createHash('sha256').update(JSON.stringify(sourceBefore)).digest('hex'),
+      // A sample fingerprint is NOT a pin of the retrieval corpus.
+      corpus: null, queries: createHash('sha256').update(JSON.stringify([pairs, warmupPairs, steadyPairs])).digest('hex'),
+      configuration: createHash('sha256').update(JSON.stringify({ queryEmbeddingProfile, workspaceId, server, waitSampleMs,
+        recallK: RECALL_K, embedding: 'precomputed', highlight: SEARCH_SEMANTIC_DEFER_HIGHLIGHT, arms: ARMS })).digest('hex') } });
+  const attemptReceipts: Bm25AttemptReceipt[] = [];
+  if (declaration) {
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(`${out}.declaration.json`, `${JSON.stringify(declaration, null, 2)}\n`, { flag: 'wx' });
+    fs.writeFileSync(`${out}.attempts.jsonl`, '', { flag: 'wx' });
+  }
 
   // ---- Embed every timed query before timing (D-021): otherwise the arm that runs first in a
   // pair also pays for the embedding, which lands in its R-18 latency. Warm-up queries are
@@ -744,6 +763,26 @@ async function main(): Promise<number> {
   }
 
   // ---- Paired pass over P: both arms per pair, alternating which goes first ----
+  const trackedMeasure = async (pass: Bm25Pass, p: PairResult, arm: Arm, attribute = true) => {
+    const id = bm25AttemptId(pass, p, arm);
+    const started = performance.now();
+    const journal = (value: object) => fs.appendFileSync(`${out}.attempts.jsonl`, `${JSON.stringify(value)}\n`);
+    journal({ id, event: 'started', at: new Date().toISOString() });
+    let receipt: Bm25AttemptReceipt;
+    try {
+      const observation = await measure(p, arm, attribute);
+      receipt = { id, outcome: 'success', executed: true, latencyMs: observation.latencyMs, costUsd: null, observation };
+      return observation;
+    } catch (error) {
+      const code = (error as { code?: string; name?: string })?.code;
+      receipt = { id, outcome: code === 'ETIMEDOUT' || (error as Error)?.name === 'TimeoutError' ? 'timeout' : 'error',
+        executed: true, latencyMs: performance.now() - started, costUsd: null, observation: null };
+      throw error;
+    } finally {
+      attemptReceipts.push(receipt!);
+      journal({ ...receipt!, event: 'settled', at: new Date().toISOString() });
+    }
+  };
   const startedAt = new Date().toISOString();
   const hostAtStart = await hostSnapshot(pg);
   const stmtBeforePaired = await statementSnapshot(pg);
@@ -759,7 +798,7 @@ async function main(): Promise<number> {
   let warmHost: { before: HostSnapshot; after: HostSnapshot } | null = null;
   try {
     for (const [i, p] of pairs.entries()) {
-      for (const arm of armOrder(i)) p.arms[arm] = await measure(p, arm);
+      for (const arm of armOrder(i)) p.arms[arm] = await trackedMeasure('paired', p, arm);
       if ((i + 1) % 10 === 0) console.log(`[r13] ${i + 1}/${pairs.length} pairs measured`);
     }
     stmtAfterPaired = await statementSnapshot(pg);
@@ -772,8 +811,8 @@ async function main(): Promise<number> {
     const stmtBeforeWarm = await statementSnapshot(pg);
     setLexicalIds(stmtBeforeWarm);
     for (const [i, p] of pairs.entries()) {
-      await measure(p, 'bm25', false);
-      warmPairs.push({ source: p.source, targetId: p.targetId, style: p.style, query: p.query, arms: { bm25: await measure(p, 'bm25') } });
+      await trackedMeasure('repeat-warmup', p, 'bm25', false);
+      warmPairs.push({ source: p.source, targetId: p.targetId, style: p.style, query: p.query, arms: { bm25: await trackedMeasure('warm-repeat', p, 'bm25') } });
       if ((i + 1) % 20 === 0) console.log(`[r18] ${i + 1}/${pairs.length} warm repeats measured`);
     }
     warmStatements = snapshotDelta(stmtBeforeWarm, await statementSnapshot(pg));
@@ -784,14 +823,14 @@ async function main(): Promise<number> {
     for (const source of sourceNames) {
       const beforeWarmup = await hostSnapshot(pg);
       for (const p of warmupPairs.filter((w) => w.source === source)) {
-        await measure(p, 'bm25', false);
+        await trackedMeasure('steady-warmup', p, 'bm25', false);
         warmupCalls += 1;
       }
       const stmtBefore = await statementSnapshot(pg);
       setLexicalIds(stmtBefore);
       const mine = steadyPairs.filter((s) => s.source === source);
       for (const [i, p] of mine.entries()) {
-        p.arms.bm25 = await measure(p, 'bm25');
+        p.arms.bm25 = await trackedMeasure('steady', p, 'bm25');
         if ((i + 1) % 20 === 0) console.log(`[r18] ${source}: ${i + 1}/${mine.length} steady calls measured`);
       }
       steadyStatements[source] = snapshotDelta(stmtBefore, await statementSnapshot(pg));
@@ -801,6 +840,9 @@ async function main(): Promise<number> {
     if (envBefore === undefined) delete process.env[envVar];
     else process.env[envVar] = envBefore;
     sampler?.release();
+    // Also runs when a call throws: unvisited declarations remain explicit UNKNOWN.
+    if (declaration) fs.writeFileSync(`${out}.ledger.json`,
+      `${JSON.stringify(reconcileBm25Attempts(declaration, attemptReceipts), null, 2)}\n`, { flag: 'wx' });
   }
   const pairedStatements = snapshotDelta(stmtBeforePaired, stmtAfterPaired);
 
@@ -829,6 +871,7 @@ async function main(): Promise<number> {
     decisions: ['D-004', 'D-006'],
     generatedAt: new Date().toISOString(),
     startedAt,
+    population: declaration ? { declaration, ledger: reconcileBm25Attempts(declaration, attemptReceipts) } : null,
     judged: !!manifest,
     qualificationManifest,
     sourceQualification: { ...qualification, before: sourceBefore, after: sourceAfter },

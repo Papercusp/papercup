@@ -121,6 +121,10 @@ function installNativeProcessTrace(out) {
   const originalEmit = process.emit;
   process.emit = function(event, ...args) {
     if (this !== process || event !== 'exit') return originalEmit.call(this, event, ...args);
+    // The program's own exit listeners can block. Preserve entry before calling
+    // them so a killed process is distinguishable from one that never emitted
+    // exit. This does not assert that shutdown or stream retention completed.
+    emit('node-exit-start', { code: args[0] }, true);
     let listenersComplete = false;
     try {
       const result = originalEmit.call(this, event, ...args);

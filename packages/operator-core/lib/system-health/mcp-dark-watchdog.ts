@@ -829,42 +829,45 @@ export interface InteractiveMcpDarkResult {
   configRepaired: string[];
 }
 
+type InteractiveToolFreeTurnRow = {
+  owner_id: string;
+  assistant_turn_count: string | number | null;
+  last_assistant_turn_ms: string | number | null;
+  last_agent_call_ms: string | number | null;
+};
+
 /** Read the assistant-turn evidence used by the interactive watchdog. */
 export async function readInteractiveToolFreeTurns(
   sql: Sql,
   hosts: ReadonlyArray<Pick<PsuPtyHost, 'ownerId' | 'startedAt'>>,
   now: number,
   assistantTurnThreshold: number,
-): Promise<Array<{
-  owner_id: string;
-  assistant_turn_count: string | number | null;
-  last_assistant_turn_ms: string | number | null;
-  last_agent_call_ms: string | number | null;
-}>> {
+): Promise<InteractiveToolFreeTurnRow[]> {
   if (!hosts.length) return [];
-  return sql`
+  // The owner/recency index can stop at the latest qualifying call. Aggregating
+  // retained history examined 8,001 rows in the regression fixture for one host.
+  return sql<InteractiveToolFreeTurnRow[]>`
     WITH live_hosts AS (
       SELECT owner_id, host_started_at
         FROM UNNEST(
           ${sql.array(hosts.map((host) => host.ownerId))}::text[],
           ${sql.array(hosts.map((host) => new Date(host.startedAt)))}::timestamptz[]
         ) AS h(owner_id, host_started_at)
-    ),
-    last_agent AS (
-      SELECT h.owner_id, max(t.invoked_at) AS invoked_at
-        FROM live_hosts h
-        JOIN harness_shared.tool_invocations t
-          ON t.coord_owner_id = h.owner_id
-         AND t.invoked_at >= h.host_started_at
-         AND ${agentToolInvocationPredicate(sql, 't')}
-       GROUP BY h.owner_id
     )
     SELECT h.owner_id,
            turns.assistant_turn_count,
            turns.last_assistant_turn_ms,
            extract(epoch from a.invoked_at) * 1000 AS last_agent_call_ms
       FROM live_hosts h
-      LEFT JOIN last_agent a ON a.owner_id = h.owner_id
+      LEFT JOIN LATERAL (
+        SELECT t.invoked_at
+          FROM harness_shared.tool_invocations t
+         WHERE t.coord_owner_id = h.owner_id
+           AND t.invoked_at >= h.host_started_at
+           AND ${agentToolInvocationPredicate(sql, 't')}
+         ORDER BY t.invoked_at DESC
+         LIMIT 1
+      ) a ON true
       CROSS JOIN LATERAL (
         SELECT count(*)::int AS assistant_turn_count,
                max(extract(epoch from recent.ts) * 1000) AS last_assistant_turn_ms

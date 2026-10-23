@@ -4,8 +4,9 @@
 // passing-verdict cache.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { selectReusablePasses } from "./test-pass-reuse.mjs";
 
 export const PARTIAL_TASK_CHECKPOINT_SCHEMA = 1;
@@ -116,6 +117,72 @@ const repoPath = value => typeof value === "string" && value.length > 0 &&
   !isAbsolute(value) && !value.includes("\\") &&
   value.split("/").every(part => part !== "" && part !== "." && part !== "..");
 
+function validNativeProducer(value) {
+  if (value?.schemaVersion !== 1 || value.kind !== "qualification-native-producer" ||
+      ![value.attemptId, value.runGroupId, value.root, value.taskKey, value.workspaceName,
+        value.sourceCommit, value.outPath].every(validIdentity) || !isAbsolute(value.root) || !isAbsolute(value.outPath) ||
+      !Number.isSafeInteger(value.registeredAtMs) || value.registeredAtMs <= 0 ||
+      !isAbsolute(value.command?.cwd ?? "") || !validIdentity(value.command?.cmd) ||
+      !Array.isArray(value.command?.argv) || !value.command.argv.every(arg => typeof arg === "string") ||
+      !/^[a-f0-9]{64}$/.test(value.environmentDigest) ||
+      !Array.isArray(value.selectedSpecifications) || !value.selectedSpecifications.length) return false;
+  const files = new Set();
+  for (const spec of value.selectedSpecifications) {
+    if (!repoPath(spec?.testFile) || files.has(spec.testFile) || !validIdentity(spec.pool) ||
+        (spec.projectName !== null && typeof spec.projectName !== "string") ||
+        (spec.testNamePattern !== null && typeof spec.testNamePattern !== "string") ||
+        ![spec.testIds, spec.testTagsFilter].every(list => list === null ||
+          (Array.isArray(list) && list.every(item => typeof item === "string"))) ||
+        !(spec.testLines === null || (Array.isArray(spec.testLines) && spec.testLines.every(Number.isSafeInteger)))) return false;
+    files.add(spec.testFile);
+  }
+  return true;
+}
+
+/** Enroll the independent selection and actual command before its native child can start.
+ * Extends the existing OUT artifact; the environment is stored only as a digest.
+ * Enrollment is immutable and does not authorize reuse or establish runner custody.
+ */
+export function registerPartialNativeProducer(outPath, registration, environment) {
+  const value = { schemaVersion: 1, kind: "qualification-native-producer", ...registration, outPath,
+    environmentDigest: createHash("sha256").update(JSON.stringify(Object.entries(environment)
+      .filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b)))).digest("hex") };
+  if (!validNativeProducer(value)) throw new Error("native-producer-registration-invalid");
+  const body = JSON.stringify(value);
+  const path = `${outPath}.producer.json`;
+  const sealed = JSON.stringify({ ...value, integrity: { schemaVersion: 1,
+    sha256: createHash("sha256").update(body).digest("hex") } });
+  mkdirSync(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}-${Date.now()}.tmp`;
+  let fd;
+  try {
+    fd = openSync(temp, "wx", 0o600);
+    writeFileSync(fd, `${sealed}\n`);
+    fsyncSync(fd);
+    closeSync(fd); fd = undefined;
+    // Unlike rename, link cannot replace another producer's enrollment.
+    linkSync(temp, path);
+    fd = openSync(dirname(path), "r");
+    fsyncSync(fd);
+    return { path, producer: value };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    try { unlinkSync(temp); } catch { /* a failed open created no temporary file */ }
+  }
+}
+
+export function readPartialNativeProducer(path, expected) {
+  try {
+    const { integrity, ...value } = JSON.parse(readFileSync(path, "utf8"));
+    if (!validNativeProducer(value) || integrity?.schemaVersion !== 1 ||
+        integrity.sha256 !== createHash("sha256").update(JSON.stringify(value)).digest("hex")) return null;
+    for (const key of ["attemptId", "runGroupId", "root", "taskKey", "workspaceName", "sourceCommit", "outPath", "environmentDigest"])
+      if (expected?.[key] !== undefined && value[key] !== expected[key]) return null;
+    if (expected?.command !== undefined && !isDeepStrictEqual(value.command, expected.command)) return null;
+    return value;
+  } catch { return null; }
+}
+
 /**
  * Read the reporter's existing atomic OUT channel, including a snapshot written before
  * onTestRunEnd. Selection comes from the caller, never from the observed result sample.
@@ -138,15 +205,24 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
       snapshot.workspaceName !== expected.workspaceName || !validIdentity(expected.root) ||
       !validIdentity(snapshot.recordedSha) || !validIdentity(context.runContext) || !validIdentity(context.runnerIdentity))
     return refused("snapshot-identity-mismatch");
+  if (expected.producerPath !== undefined) {
+    const producer = readPartialNativeProducer(expected.producerPath, { ...expected,
+      outPath: file, runGroupId: context.runGroupId, sourceCommit: snapshot.recordedSha });
+    if (!producer || !Number.isSafeInteger(native?.startedAtMs) || native.startedAtMs < producer.registeredAtMs ||
+        !isDeepStrictEqual(producer.selectedSpecifications, expected.selectedSpecifications))
+      return refused("native-producer-mismatch");
+  }
   if (native?.schemaVersion !== "native-vitest-run-v1" || !Array.isArray(native.files) ||
       !Array.isArray(native.gaps) || !Array.isArray(snapshot.rows)) return refused("native-population-unmeasured");
   const specifications = expected.selectedSpecifications;
   if (!Array.isArray(specifications) || !specifications.length ||
       !Array.isArray(native.selectedManifest?.specifications)) return refused("native-selection-unmeasured");
   const canonical = values => JSON.stringify([...values].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
-  const selection = canonical(specifications);
-  if (selection !== canonical(native.selectedManifest.specifications) ||
-      native.selectedManifest.sha256 !== createHash("sha256").update(selection).digest("hex"))
+  // JSONB may reorder object keys in the independently frozen selection. Compare
+  // values structurally, but check the native digest in its writer's own format.
+  const byFile = values => [...values].sort((a, b) => String(a?.testFile).localeCompare(String(b?.testFile)));
+  if (!isDeepStrictEqual(byFile(specifications), byFile(native.selectedManifest.specifications)) ||
+      native.selectedManifest.sha256 !== createHash("sha256").update(canonical(native.selectedManifest.specifications)).digest("hex"))
     return refused("native-selection-mismatch");
   const units = continuationManifest(expected.manifest);
   if (!units) return refused("manifest-mismatch");

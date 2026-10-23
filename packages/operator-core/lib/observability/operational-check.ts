@@ -31,14 +31,16 @@ export async function measureOperationalObservability(
   if (!scope.workspaceId || !scope.harnessSlug) return unknown('Concrete workspace and harness required.');
   try {
     const host = getServingHostIdentity();
-    if (host.host !== 'port-3170' || !host.processId || !host.buildSha) return unknown('Current-build staging process identity unavailable; run on :3170.');
+    // Git's supported short/full identities, never arbitrary text prefixes.
+    const validSha = (sha: string) => /^(?:[a-f0-9]{7,40}|[a-f0-9]{64})$/.test(sha);
+    if (host.host !== 'port-3170' || !host.processId || !host.buildSha || !validSha(host.buildSha)) return unknown('Current-build staging process identity unavailable; run on :3170.');
     const health = runtimeObservabilityHealth();
     if (!health.initialized || !health.globalProviderRegistered) return fail('Current staging process lacks the registered tracing provider.');
     // Inspect source/runtime containment, without acting on or grading the gate.
     for (const path of COMPOSITION_PATHS) {
       const position = await gitPipelinePosition({ path });
       const runtime = position.servingRuntimes.find(row => row.runtime === 'staging-operator');
-      if (!runtime || runtime.containsChange === null || !runtime.buildSha) return unknown('Source/runtime containment unreadable: ' + path);
+      if (!runtime || runtime.containsChange === null || !runtime.buildSha || !validSha(runtime.buildSha)) return unknown('Source/runtime containment unreadable: ' + path);
       if (runtime.containsChange !== true || !(runtime.buildSha.startsWith(host.buildSha) || host.buildSha.startsWith(runtime.buildSha))) {
         return fail('Serving source/build mismatch: ' + path);
       }
@@ -66,13 +68,23 @@ export async function measureOperationalObservability(
     const measured: Array<{ row: InvocationObservation; generation: boolean; error: boolean }> = [];
     for (const row of valid) {
       const events = project.events.filter(event => event.traceId === row.traceId);
-      const tools = events.filter(event => event.spanId === row.spanId && event.event !== '$exception');
+      const tools = events.filter(event => event.spanId === row.spanId && event.spanName === 'papercusp.tool' &&
+        ['$ai_trace', '$ai_span'].includes(event.event));
       if (!tools.length) {
         if (now - row.endedAt >= 120_000) return fail('Fresh tool event absent after ingestion bound; invocation=' + row.id);
         continue;
       }
       if (tools.some(event => event.callId !== row.callId)) return fail('Persisted invocation and project call identity differ; invocation=' + row.id);
+      const anchors = new Set(tools.map(event => JSON.stringify([event.uuid, event.event, event.parentSpanId, event.timestamp])));
+      if (anchors.size !== 1) return fail('Ambiguous canonical tool anchor; invocation=' + row.id);
       const reachable = (event: ObservedProjectEvent): boolean => {
+        if (event.callId !== null && event.callId !== row.callId) return false;
+        // Cross-process model spans carry standard W3C ancestry, not caller
+        // authority. A missing leaf callId is admitted only through its exact,
+        // instrumented HTTP parent bearing this persisted callId. Direct null
+        // leaves and foreign leaf IDs never satisfy the join.
+        if (event.callId === null && !events.some(parent => parent.spanId === event.parentSpanId &&
+          parent.httpClient && parent.spanName === 'papercusp.http' && parent.callId === row.callId)) return false;
         const seen = new Set<string>();
         let parent = event.parentSpanId;
         while (parent && !seen.has(parent)) {
@@ -85,11 +97,14 @@ export async function measureOperationalObservability(
         }
         return false;
       };
-      const generations = events.filter(event => event.event === '$ai_generation');
+      const generations = events.filter(event => event.event === '$ai_generation' && event.spanName === 'papercusp.model');
       if (generations.some(event => event.spanId === row.spanId || !reachable(event))) return fail('Model ancestry differs from persisted tool span; invocation=' + row.id);
-      if (mode === 'staging' && generations.some(event => event.parentSpanId === row.spanId)) return fail('Current-build model journey lacks its HTTP child span; invocation=' + row.id);
+      if (mode === 'staging' && generations.some(event => !events.some(parent =>
+        parent.spanId === event.parentSpanId && parent.httpClient && parent.spanName === 'papercusp.http' && parent.callId === row.callId))) {
+        return fail('Current-build model journey lacks its instrumented HTTP client parent; invocation=' + row.id);
+      }
       const exceptions = events.filter(event => event.event === '$exception');
-      if (exceptions.some(event => event.spanId !== row.spanId && !reachable(event))) return fail('Exception ancestry differs from persisted tool span; invocation=' + row.id);
+      if (exceptions.some(event => event.spanId === row.spanId ? event.callId !== row.callId : !reachable(event))) return fail('Exception ancestry differs from persisted tool span; invocation=' + row.id);
       if (now - row.startedAt > 120_000 || row.startedAt > now || row.endedAt > now) continue;
       if (events.some(event => event.timestamp < row.startedAt || event.timestamp > now)) return fail('Project event lies outside the measured journey; invocation=' + row.id);
       measured.push({ row, generation: row.status === 'ok' && generations.some(event => !event.isError),

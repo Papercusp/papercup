@@ -73,6 +73,8 @@
  * a ranking timestamp is NOT field-bound freshness/authority evidence. Numeric
  * budgets and corpus/query/model pins belong to the frozen benchmark manifest.
  */
+import type { SearchFieldFreshnessPolicy } from '@papercusp/search-core';
+
 export interface ProseSourceBaseline {
   source: string;
   entry: string;
@@ -129,6 +131,33 @@ export const PROSE_SOURCE_BASELINES: readonly ProseSourceBaseline[] = [
     partition: 'framework-shared OR workspace harness membership; retirement + audience exclusions',
     lexical: true, vector: true, filterKeys: [], rankingTimestamp: 'updated_at', fieldFreshness: 'unmeasured' },
 ];
+
+/**
+ * Prospective currentness contract, not a claim that today's adapters emit proof.
+ * R-3/D-012/D-013 require response-time validation for mutable fields labelled
+ * current: maxAge=0 means that canonical read boundary, not the row's event age.
+ * A historically old transcript can therefore have a current, correctly bound
+ * excerpt. Candidate freshness and omission/coverage remain independent.
+ */
+export const PROSE_FIELD_FRESHNESS_BOUNDARIES: readonly {
+  source: string;
+  policy: SearchFieldFreshnessPolicy;
+  scopeEpochSource: string;
+  versionSource: string;
+  policyRef: string;
+  staleBehavior: 'retain-as-stale-without-current-claim';
+  evidenceStatus: 'unmeasured';
+}[] = PROSE_SOURCE_BASELINES.flatMap(source => {
+  const fields = ['excerpt', 'highlight', ...(source.rankingTimestamp ? ['ts'] : []),
+    ...(source.source === 'work_item' ? ['meta.lane'] : [])];
+  return fields.map(fieldPath => ({ source: source.source,
+    policy: { fieldPath, authority: source.canonicalAuthority, clock: 'canonical-read' as const,
+      maxAgeMs: 0, maxFutureSkewMs: 0, readAfterWrite: 'not-promised' as const, onUnknown: 'degrade' as const },
+    scopeEpochSource: `trusted server reader authorization for ${source.partition}; revalidate at response`,
+    versionSource: `${source.canonicalAuthority}: bind canonical content revision and returned field fingerprint; ts alone is insufficient`,
+    policyRef: 'shared-search-restart-papercusp-2026-10-22#R-3,D-012,D-013',
+    staleBehavior: 'retain-as-stale-without-current-claim' as const, evidenceStatus: 'unmeasured' as const }));
+});
 
 /**
  * Distinct policies outside SEARCH_SOURCES. References point at the maintained

@@ -135,9 +135,9 @@ function lifecycleSelection(task, step, root, wsRoot) {
 /** Preparation only: enumerate the maintained selector's actual task configs, never executions.
  * Unsupported commands and failed config reads remain named residue, even with relatedFiles.
  * @param {Array<object>} tasks
- * @param {{root?: string, filterDir?: string, runResolver?: Function, syncAstro?: boolean}} [options]
+ * @param {{root?: string, filterDir?: string, runResolver?: Function, syncAstro?: boolean, enumerateSpecifications?: boolean}} [options]
  */
-export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runResolver, syncAstro = false } = {}) {
+export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runResolver, syncAstro = false, enumerateSpecifications = false } = {}) {
   const unenumerated = [];
   const requests = [];
   const selected = [];
@@ -171,7 +171,7 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
             lifecycleSelection(task, step, root, wsRoot)],
             unenumerated: [{ reason: 'unexecuted-lifecycle-command' }] };
           const leaf = enumerateAffectedTaskSelection([{ ...t, script: step.script,
-            ws: { ...t.ws, scripts: { [step.script]: step.command } } }], { root, filterDir, runResolver, syncAstro });
+            ws: { ...t.ws, scripts: { [step.script]: step.command } } }], { root, filterDir, runResolver, syncAstro, enumerateSpecifications });
           return { ...step, files: leaf.files, commandObligations: leaf.commandObligations,
             unenumerated: leaf.unenumerated, discovery: leaf.tasks };
         });
@@ -274,7 +274,8 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
     if (Array.isArray(t.relatedFiles) && t.relatedFiles.length > 0)
       env[RELATED_FILTER_LIST_ENV] = writeRelatedFilterList(filterDir, t.relatedFiles).path;
     selected.push(task);
-    requests.push({ root: wsRoot, repositoryRoot: root, config: route.config ?? false, enumerateFiles: true, env });
+    requests.push({ root: wsRoot, repositoryRoot: root, config: route.config ?? false, enumerateFiles: true,
+      ...(enumerateSpecifications ? { enumerateSpecifications: true } : {}), env });
   }
   const resolveRequests = runResolver ?? (requests => {
     const output = execFileSync(process.execPath, [path.join(root, 'scripts/resolve-vitest-config-contracts.mjs')], {
@@ -328,7 +329,8 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
       ...(task.runner === 'astro-check' ? { sync: result.sync, commandObligations: [{
         ...task.commandObligations[0], inputs: result.inputs, discovery: result,
       }] } : {}),
-      ...(result.projects ? { projects: result.projects } : {}) });
+      ...(result.projects ? { projects: result.projects } : {}),
+      ...(result.selectedSpecifications ? { selectedSpecifications: result.selectedSpecifications } : {}) });
     if (task.runner === 'astro-check')
       unenumerated.push({ task: task.id, reason: 'unexecuted-command-obligations', command: task.command });
   }

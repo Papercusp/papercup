@@ -106,7 +106,7 @@ describe('R-1 native declarations', () => {
       { path: 'local.ts', kind: 'match', detail: 'local()' },
       { path: 'local.ts', kind: 'declaration', detail: 'function localHelper() { local(); }' },
     ], truncation: { truncated: false }, evidence: { sourceScope: { supportingFiles: [{ path: 'local.ts' }] } } });
-    expect(await resolvers().symbol!(parsed('symbol', 'local.ts#local'))).toMatchObject({ outcome: 'not-found' });
+    expect(await resolvers().symbol!(parsed('symbol', 'local.ts#local'))).toMatchObject({ outcome: 'unavailable' });
     expect(await resolvers().symbol!(parsed('symbol', 'local.ts#Class.local'))).toMatchObject({ outcome: 'unavailable' });
   });
   it('keeps incomplete symbol evidence unverified', async () => {
@@ -116,6 +116,12 @@ describe('R-1 native declarations', () => {
     expect(await resolvers().symbol!(parsed('symbol', 'local.ts#local'))).toMatchObject({ outcome: 'unavailable' });
     nativeBackends.syntax.mockResolvedValue({ error: null, sites: [], truncation: { truncated: false } });
     expect(await resolvers().symbol!(parsed('symbol', 'local.ts#local'))).toMatchObject({ outcome: 'unavailable' });
+  });
+  it('keeps unsupported declaration forms unverified instead of certifying absence', async () => {
+    await writeFile(path.join(root, 'constant.ts'), 'export const value = 1;');
+    nativeBackends.syntax.mockResolvedValue({ error: null, sites: [], truncation: { truncated: false },
+      evidence: { sourceScope: { supportingFiles: [{ path: 'constant.ts' }] } } });
+    expect(await resolvers().symbol!(parsed('symbol', 'constant.ts#value'))).toMatchObject({ outcome: 'unavailable' });
   });
 });
 

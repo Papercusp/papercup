@@ -100,6 +100,14 @@ function assertNativeFixtureCompleted(child: ReturnType<typeof spawnSync>, out: 
     status: child.status, signal: child.signal,
     traceStatus: events.length ? 'observed' : 'unknown', traceFiles, traceReadError,
     traceTruncated: traceFiles > 2048, eventCount: events.length,
+    rootProcess: {
+      entryObserved: events.some(row => row.pid === child.pid && row.event === 'node-entry'),
+      exitStartedObserved: events.some(row => row.pid === child.pid && row.event === 'node-exit-start'),
+      exitCompletedObserved: events.some(row => row.pid === child.pid && row.event === 'node-exit'),
+      loadTraceLimited: events.some(row => row.pid === child.pid &&
+        (row.event === 'module-load-limit' || row.event === 'trace-limit')),
+      lastEvent: events.filter(row => row.pid === child.pid).at(-1)?.event ?? null,
+    },
     lastEvents: events.slice(-8).map(({ pid, event, atMs }) => ({ pid, event, atMs })),
     pendingLoads: events.filter(row => row.event === 'module-load-start' && !terminalLoads.has(`${row.pid}:${row.loadId}`))
       .slice(-8).map(({ pid, loadId, url }) => ({ pid, loadId, url: url?.slice(-512) })),

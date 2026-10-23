@@ -52,7 +52,10 @@ describe('interactive watchdog assistant-turn query', () => {
       ['explicit', 7, 'coord:inbox', null],
       ['legacy', 2, 'coord:send', null],
       ['legacy', 3, 'coord:inbox', null],
+      ['unknown', 2, 'coord:inbox', 'unknown'],
+      ['unknown', 3, 'coord:send', 'hook'],
       ['pre-start', -1, 'coord:send', 'agent'],
+      ['at-start', 0, 'coord:send', 'agent'],
     ];
     for (const [owner, minute, tool, origin] of invocations) {
       await sql`INSERT INTO harness_shared.tool_invocations VALUES
@@ -69,15 +72,18 @@ describe('interactive watchdog assistant-turn query', () => {
       ('default', 'pre-start', 'assistant', ${new Date(START - 1)}),
       ('default', 'pre-start', 'assistant', ${new Date(START)})`;
     const rows = await readInteractiveToolFreeTurns(sql,
-      ['explicit', 'legacy', 'pre-start', 'absent'].map(ownerId => ({ ownerId, startedAt: START })),
+      ['explicit', 'legacy', 'unknown', 'pre-start', 'at-start', 'absent']
+        .map(ownerId => ({ ownerId, startedAt: START })),
       NOW, 2);
     const byOwner = new Map(rows.map(row => [row.owner_id, row]));
     expect(Number(byOwner.get('explicit')?.last_agent_call_ms)).toBe(START + 2 * 60_000);
     expect(Number(byOwner.get('explicit')?.assistant_turn_count)).toBe(2);
     expect(Number(byOwner.get('explicit')?.last_assistant_turn_ms)).toBe(START + 4 * 60_000);
     expect(Number(byOwner.get('legacy')?.last_agent_call_ms)).toBe(START + 2 * 60_000);
+    expect(Number(byOwner.get('unknown')?.last_agent_call_ms)).toBe(START + 2 * 60_000);
     expect(byOwner.get('pre-start')?.last_agent_call_ms).toBeNull();
     expect(Number(byOwner.get('pre-start')?.assistant_turn_count)).toBe(1);
+    expect(Number(byOwner.get('at-start')?.last_agent_call_ms)).toBe(START);
     expect(byOwner.get('absent')?.last_agent_call_ms).toBeNull();
     expect(Number(byOwner.get('absent')?.assistant_turn_count)).toBe(0);
     expect(byOwner.get('absent')?.last_assistant_turn_ms).toBeNull();
@@ -123,6 +129,8 @@ describe('interactive watchdog assistant-turn query', () => {
       (node['Relation Name'] === 'tool_invocations'
         ? ((node['Actual Rows'] ?? 0) + (node['Rows Removed by Filter'] ?? 0)) * (node['Actual Loops'] ?? 1)
         : 0) + (node.Plans ?? []).reduce((sum, child) => sum + examinedRows(child), 0);
-    expect(examinedRows(plan!)).toBeLessThan(64);
+    const examined = examinedRows(plan!);
+    console.info(`WATCHDOG_LATEST_AGENT_PLAN examinedRows=${examined} retainedAgentRows=8000`);
+    expect(examined).toBeLessThan(64);
   });
 });

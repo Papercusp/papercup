@@ -48,6 +48,7 @@ vi.mock('../coordination/conversations', () => ({
 vi.mock('../coordination/notify-agents', () => ({ notifyAgents: h.notifyAgents }));
 vi.mock('../../consult/consult-dispatch', () => ({
   makeConsultReachDispatcher: h.makeConsultReachDispatcher,
+  continueCascadeDispatchProd: vi.fn(async () => true),
 }));
 
 import tool from './get-feedback';

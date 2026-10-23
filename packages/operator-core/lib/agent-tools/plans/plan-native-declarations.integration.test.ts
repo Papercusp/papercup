@@ -82,7 +82,11 @@ describe('native declaration audit', () => {
       await writeFile(path.join(root, 'occurrence.rs'), 'fn other() { target(); }');
       const ref = parseReuseRef('symbol', 'occurrence.rs#target');
       if (!ref.ok) throw new Error(ref.detail);
-      expect(await resolvers.symbol!(ref.parsed)).toMatchObject({ outcome: 'not-found' });
+      expect(await resolvers.symbol!(ref.parsed)).toMatchObject({ outcome: 'unavailable' });
+      await writeFile(path.join(root, 'constant.ts'), 'export const value = 1;');
+      const unsupported = parseReuseRef('symbol', 'constant.ts#value');
+      if (!unsupported.ok) throw new Error(unsupported.detail);
+      expect(await resolvers.symbol!(unsupported.parsed)).toMatchObject({ outcome: 'unavailable' });
     });
   });
 });

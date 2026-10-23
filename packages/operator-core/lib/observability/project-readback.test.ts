@@ -15,7 +15,7 @@ beforeEach(() => {
   request.mockReset(); vi.stubGlobal('fetch', request);
   request.mockResolvedValueOnce(json({ results: [{ id: 7, api_token: 'capture-secret' }, { id: 8, api_token: 'foreign' }], next: null }))
     .mockResolvedValueOnce(json({ results: [] }))
-    .mockResolvedValueOnce(json({ results: [['event-id', '$ai_generation', Date.now(), trace, span, null, 'call-id', false]] }));
+    .mockResolvedValueOnce(json({ results: [['event-id', '$ai_generation', Date.now(), trace, span, null, 'call-id', false, false, 'papercusp.model']] }));
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -70,7 +70,15 @@ describe('configured project evidence acquisition', () => {
   it('cannot treat foreign-trace rows as evidence for a selected trace', async () => {
     request.mockReset().mockResolvedValueOnce(json({ results: [{ id: 7, api_token: 'capture-secret' }], next: null }))
       .mockResolvedValueOnce(json({ results: [] }))
-      .mockResolvedValueOnce(json({ results: [['event-id', '$ai_generation', Date.now(), 'f'.repeat(32), span, null, 'call-id', false]] }));
+      .mockResolvedValueOnce(json({ results: [['event-id', '$ai_generation', Date.now(), 'f'.repeat(32), span, null, 'call-id', false, false, 'papercusp.model']] }));
+    expect(await readConfiguredTraceProject([trace])).toMatchObject({ status: 'unknown' });
+  });
+  it.each(['span', 'parent'])('rejects a zero %s ID instead of treating it as correlation', async field => {
+    request.mockReset().mockResolvedValueOnce(json({ results: [{ id: 7, api_token: 'capture-secret' }], next: null }))
+      .mockResolvedValueOnce(json({ results: [] })).mockResolvedValueOnce(json({ results: [
+        ['event-id', '$ai_generation', Date.now(), trace, field === 'span' ? '0'.repeat(16) : span,
+          field === 'parent' ? '0'.repeat(16) : null, 'call-id', false, false, 'papercusp.model'],
+      ] }));
     expect(await readConfiguredTraceProject([trace])).toMatchObject({ status: 'unknown' });
   });
 });

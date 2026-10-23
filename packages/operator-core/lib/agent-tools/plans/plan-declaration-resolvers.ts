@@ -181,7 +181,9 @@ export function defaultReuseReferenceResolvers(options: DefaultReuseResolverOpti
       if (!syntax.evidence?.sourceScope.supportingFiles?.some((source) => source.path === file)) {
         return unavailable('syntax backend did not certify this source file');
       }
-      return notFound(`${name} has no supported declaration in ${file}`);
+      // This index covers selected declaration forms, not every binding a
+      // language can express. An empty result cannot certify symbol absence.
+      return unavailable(`${name} has no uniquely certified supported declaration in ${file}`);
     },
 
     tool: async (ref) => {

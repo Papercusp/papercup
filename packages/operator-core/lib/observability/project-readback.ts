@@ -8,7 +8,7 @@ import { runtimeTraceDeliveryConfig } from './runtime';
 
 export interface ObservedProjectEvent {
   uuid: string; event: string; timestamp: number; traceId: string; spanId: string;
-  parentSpanId: string | null; callId: string | null; isError: boolean;
+  parentSpanId: string | null; callId: string | null; isError: boolean; httpClient: boolean; spanName: string;
 }
 export type ProjectReadback =
   | { status: 'available'; projectId: string; queriedAt: number; evidenceRef: string; events: ObservedProjectEvent[] }
@@ -66,18 +66,19 @@ export async function readConfiguredTraceProject(traceIds: readonly string[]): P
       if (control.results.length) return { status: 'broken', reason: 'absent-uuid-control-returned-event' };
       const selectors = [...new Set(traceIds)].map(id => `'${id}'`).join(',');
       const query = "SELECT uuid,event,toUnixTimestamp64Milli(timestamp),properties.$ai_trace_id," +
-        "properties.$ai_span_id,properties.$ai_parent_id,properties.`papercusp.call_id`,properties.$ai_is_error " +
+        "properties.$ai_span_id,properties.$ai_parent_id,properties.`papercusp.call_id`,properties.$ai_is_error,properties.`papercusp.http_client`,properties.$ai_span_name " +
         `FROM events WHERE properties.$ai_trace_id IN (${selectors}) AND timestamp >= now() - INTERVAL 240 SECOND LIMIT 501`;
       const result = await request(endpoint, query);
       if (!Array.isArray(result.results) || result.results.length > 500 || result.hasMore === true || result.next) throw Error('incomplete-event-query');
       const events: ObservedProjectEvent[] = [];
       for (const row of result.results) {
-        if (!Array.isArray(row) || row.length !== 8 || typeof row[0] !== 'string' || typeof row[1] !== 'string' ||
+        if (!Array.isArray(row) || row.length !== 10 || typeof row[0] !== 'string' || typeof row[1] !== 'string' ||
           !Number.isFinite(row[2]) || !traceIds.includes(row[3]) || !/^[a-f0-9]{16}$/.test(row[4]) ||
-          (row[5] != null && !/^[a-f0-9]{16}$/.test(row[5])) || (row[6] != null && typeof row[6] !== 'string') ||
-          typeof row[7] !== 'boolean') throw Error('unreadable-event-row');
+          /^0+$/.test(row[4]) || (row[5] != null && (!/^[a-f0-9]{16}$/.test(row[5]) || /^0+$/.test(row[5]))) ||
+          (row[6] != null && typeof row[6] !== 'string') || typeof row[7] !== 'boolean' || typeof row[8] !== 'boolean' ||
+          !['papercusp.tool', 'papercusp.model', 'papercusp.http', 'papercusp.span'].includes(row[9])) throw Error('unreadable-event-row');
         events.push({ uuid: row[0], event: row[1], timestamp: row[2], traceId: row[3], spanId: row[4],
-          parentSpanId: row[5] ?? null, callId: row[6] ?? null, isError: row[7] });
+          parentSpanId: row[5] ?? null, callId: row[6] ?? null, isError: row[7], httpClient: row[8], spanName: row[9] });
       }
       return { status: 'available', projectId, queriedAt: Date.now(),
         evidenceRef: `${host.origin}${endpoint} traceIds=${[...new Set(traceIds)].join(',')} absentUuid=${absentUuid}`, events };

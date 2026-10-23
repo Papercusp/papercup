@@ -501,6 +501,95 @@ export const COLD_LATENCY_P95_CEILING_MS: Readonly<Record<string, number>> = {
   session_turn: 1200,
 };
 
+export type Bm25Pass = 'paired' | 'repeat-warmup' | 'warm-repeat' | 'steady-warmup' | 'steady';
+export interface Bm25AttemptIdentity {
+  id: string;
+  cellId: string;
+  source: string;
+  queryClass: QueryStyle;
+  pass: Bm25Pass;
+  arm: Arm;
+  queryFingerprint: string;
+}
+
+/** The declaration is written before embedding or executing ANY selected query. */
+export function declareBm25Attempts(options: {
+  declaredAt: string;
+  sources: readonly string[];
+  pairsPerSource: number;
+  paired: readonly PairResult[];
+  warmup: readonly PairResult[];
+  steady: readonly PairResult[];
+  pins: { source: string; corpus: string | null; queries: string; configuration: string };
+}) {
+  if (!Number.isInteger(options.pairsPerSource) || options.pairsPerSource < 1 ||
+      !Number.isFinite(Date.parse(options.declaredAt)) || new Set(options.sources).size !== options.sources.length || !options.sources.length)
+    throw new Error('invalid benchmark declaration');
+  for (const p of [...options.paired, ...options.warmup, ...options.steady]) {
+    if (!options.sources.includes(p.source) || !['fragment', 'keyword'].includes(p.style) || !p.query.trim() || !p.targetId.trim())
+      throw new Error('sample outside declared benchmark population');
+  }
+  const attempts: Bm25AttemptIdentity[] = [];
+  const cells = options.sources.flatMap(source => (['fragment', 'keyword'] as const).flatMap(queryClass =>
+    (['paired', 'repeat-warmup', 'warm-repeat', 'steady-warmup', 'steady'] as const).flatMap(pass =>
+      (pass === 'paired' ? ARMS : ['bm25'] as const).map(arm => {
+        const cellId = [source, queryClass, pass, arm].join('/');
+        const selected = (pass === 'steady' ? options.steady : pass === 'steady-warmup' ? options.warmup : options.paired)
+          .filter(p => p.source === source && p.style === queryClass);
+        const identities = selected.map(p => ({ id: bm25AttemptId(pass, p, arm), cellId, source, queryClass, pass, arm,
+          queryFingerprint: createHash('sha256').update(p.query).digest('hex') }));
+        attempts.push(...identities);
+        return { id: cellId, product: 'papercusp', adapter: 'in-process/runHybridSearch', source, queryClass, pass, arm,
+          temperature: pass === 'paired' ? 'cold' : 'warm',
+          // Warm-ups are an explicit role, never censored measurement failures.
+          role: pass.endsWith('warmup') ? 'warmup' : 'measurement',
+          requestedPerSource: options.pairsPerSource, minExecuted: MIN_PAIRS_PER_SOURCE,
+          coverageSource: 'bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class',
+          attemptIds: identities.map(a => a.id),
+          maxP95LatencyMs: arm !== 'bm25' ? null : pass === 'paired' ? COLD_LATENCY_P95_CEILING_MS[source] ?? null :
+            pass === 'warm-repeat' ? LATENCY_P95_CEILING_MS[source] ?? null : null,
+          budgetSource: 'bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029',
+          quality: pass === 'paired' ? 'R-13 paired known-item recall nonregression; class-specific quality target unmeasured' : 'reported-only',
+          maxPerAttemptCostUsd: null, maxErrorRate: 0, maxDegradedRate: 0, censoring: [] };
+      }))));
+  if (new Set(attempts.map(a => a.id)).size !== attempts.length) throw new Error('duplicate declared benchmark attempt');
+  return { schemaVersion: 1 as const, declaredAt: options.declaredAt, pins: options.pins, cells, attempts };
+}
+
+export function bm25AttemptId(pass: Bm25Pass, pair: Pick<PairResult, 'source' | 'style' | 'targetId' | 'query'>, arm: Arm): string {
+  return createHash('sha256').update(JSON.stringify([pass, pair.source, pair.style, pair.targetId, pair.query, arm])).digest('hex');
+}
+
+export interface Bm25AttemptReceipt {
+  id: string;
+  outcome: 'success' | 'timeout' | 'error' | 'unknown';
+  executed: boolean;
+  latencyMs: number | null;
+  costUsd: number | null;
+  observation: ArmObservation | null;
+}
+
+/** Keep one placeholder for every request, including work not reached after a failure. */
+export function reconcileBm25Attempts(declaration: ReturnType<typeof declareBm25Attempts>, receipts: readonly Bm25AttemptReceipt[]) {
+  const ids = new Set(declaration.attempts.map(a => a.id));
+  if (new Set(receipts.map(r => r.id)).size !== receipts.length || receipts.some(r => !ids.has(r.id)))
+    throw new Error('duplicate or undeclared benchmark receipt');
+  const byId = new Map(receipts.map(r => [r.id, r]));
+  const attempts = declaration.attempts.map(a => ({ ...a, ...(byId.get(a.id) ?? {
+    outcome: 'unknown' as const, executed: false, latencyMs: null, costUsd: null, observation: null }) }));
+  return { attempts, cells: declaration.cells.map(cell => {
+    const mine = attempts.filter(a => a.cellId === cell.id);
+    return { id: cell.id, attempted: mine.length, executed: mine.filter(a => a.executed).length,
+      observed: mine.filter(a => a.outcome === 'success' && a.observation !== null).length,
+      // Per-query relevance labels are not collected by this known-item latency instrument.
+      judged: 0,
+      errors: mine.filter(a => a.outcome === 'error').length, timeouts: mine.filter(a => a.outcome === 'timeout').length,
+      unknown: mine.filter(a => a.outcome === 'unknown').length,
+      populationStatus: mine.length < cell.minExecuted || mine.some(a => a.outcome === 'unknown' || !a.executed) ? 'unknown' : 'complete' };
+  }), qualification: 'unknown' as const,
+  unknowns: ['corpus and cost require independent measurement; this ledger alone is not a qualified search baseline'] };
+}
+
 /**
  * R-18's judgment, separate from R-13's recall verdict. Both bounds time the whole
  * `runHybridSearch` call (the BM25 list, the D-016 exact list and the fusion):
