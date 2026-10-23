@@ -137,7 +137,25 @@ function runArchiveReplacementFixture(root: string, failure: 'setup' | 'partial'
     '  printf "candidate member" > "$target/nested/1.dat.zst"',
     '  [ "$FAILURE" != partial ]',
     '}',
-    'pg_restore() { [ "$FAILURE" != invalid-toc ] || return 1; printf "1; fixture entry\\n"; }',
+    'pg_restore() {',
+    '  [ "$FAILURE" != invalid-toc ] || return 1',
+    '  if [ "$FAILURE" = none ] && [ "$2" = "$PGOUT/fixture-transcript.tmp" ]; then',
+    '    cp -a -- "$2" "$FIXTURE_ROOT/validated-candidate"',
+    '    : > "$FIXTURE_ROOT/candidate-validated"',
+    '  fi',
+    '  printf "1; fixture entry\\n"',
+    '}',
+    // Observe the real installation boundary without changing the producer's rm.
+    // Recording every call also catches premature or repeated removal of the prior.
+    'rm() {',
+    '  if [ "$FAILURE" = none ] && [ "$#" = 2 ] && [ "$1" = -rf ] && [ "$2" = "$PGOUT/fixture-transcript" ]; then',
+    '    printf "%s\\n" "$2" >> "$FIXTURE_ROOT/promotion-paths"',
+    '    if [ -f "$FIXTURE_ROOT/candidate-validated" ]; then printf "validated\\n"; else printf "unvalidated\\n"; fi >> "$FIXTURE_ROOT/promotion-validation"',
+    '    cp -a -- "$2" "$FIXTURE_ROOT/prior-at-promotion" 2>/dev/null || :',
+    '    cp -a -- "$2.tmp" "$FIXTURE_ROOT/candidate-at-promotion" 2>/dev/null || :',
+    '  fi',
+    '  command rm "$@"',
+    '}',
     producerCall('transcript'),
   ]);
   return spawnSync('bash', ['-c', script], {
@@ -412,15 +430,23 @@ describe('papercusp-db-backup.sh tiered dump (WI-2146225)', () => {
       const root = mkdtempSync(join(tmpdir(), 'backup-codec-valid-'));
       try {
         const prior = join(root, 'fixture-transcript');
-        mkdirSync(prior);
+        mkdirSync(join(prior, 'nested'), { recursive: true });
         writeFileSync(join(prior, 'toc.dat'), 'previous archive');
+        writeFileSync(join(prior, 'nested', '1.dat.zst'), 'previous member');
+        const before = archiveBytes(prior);
 
         const run = runArchiveReplacementFixture(root, 'none');
         expect(run.status, run.stderr).toBe(0);
-        expect(archiveBytes(prior)).toEqual({
+        const successor = {
           'nested/1.dat.zst': Buffer.from('candidate member').toString('base64'),
           'toc.dat': Buffer.from('candidate toc').toString('base64'),
-        });
+        };
+        expect(readFileSync(join(root, 'promotion-paths'), 'utf8')).toBe(`${prior}\n`);
+        expect(readFileSync(join(root, 'promotion-validation'), 'utf8')).toBe('validated\n');
+        expect(archiveBytes(join(root, 'prior-at-promotion'))).toEqual(before);
+        expect(archiveBytes(join(root, 'validated-candidate'))).toEqual(successor);
+        expect(archiveBytes(join(root, 'candidate-at-promotion'))).toEqual(successor);
+        expect(archiveBytes(prior)).toEqual(successor);
         expect(existsSync(`${prior}.tmp`)).toBe(false);
       } finally {
         rmSync(root, { recursive: true, force: true });
