@@ -5105,15 +5105,46 @@ export function registerMcpHost(server: McpServer): void {
                     (err instanceof Error ? err.message : String(err)),
                 );
               }
-              const storedResult = normalizeStructuredReplayResult(stored, requestedStructured);
-              // P-006 / D-014: a replay is still model-facing output. Stored
-              // outcomes were already per-result-doored before persistence,
-              // but this request must consume the CURRENT aggregate cohort or
-              // retry fan-out can bypass the one-budget invariant entirely.
-              const preservePaths = resultDoorPreservePathsForDispatch(storedResult, toolName, dispatchArgs, projectionSpec?.pick);
-              const replayedResult = projected.skipResultDoor
-                ? storedResult
-              : await applyResultDoorAsync(storedResult, {
+              const { replaySource: storedReplaySource, ...storedClientResult } = stored;
+              if (
+                !storedReplaySource &&
+                stored._meta?.replaySourceUnavailable &&
+                (projectionSpec || namedView)
+              ) {
+                return withMcpDiagnosticWarnings({
+                  isError: true,
+                  content: [{
+                    type: 'text',
+                    text: 'idempotency_replay_source_unavailable: the prior write result is retained, but its original source was too large to keep for a new projection. Do not re-execute this write with a fresh key.',
+                  }],
+                  _meta: { replayed: true, replaySourceUnavailable: stored._meta.replaySourceUnavailable },
+                }, dispatchSpawnCtx);
+              }
+              const storedResult = normalizeStructuredReplayResult(
+                (storedReplaySource ?? storedClientResult) as StoredMcpResult,
+                requestedStructured,
+              );
+              const hasReplaySource = storedReplaySource !== undefined;
+              const projectedReplayResult = hasReplaySource
+                ? applyResultProjection(storedResult, projectionSpec, { toolName, effect: effectiveCallEffect })
+                : storedResult;
+              const viewedReplayResult = hasReplaySource && namedView
+                ? applyNamedViewToResult(projectedReplayResult, namedView)
+                : projectedReplayResult;
+              const doorInput = hasReplaySource
+                ? stripImplicitProjectionFullRequest(viewedReplayResult, projectionNeedsFullSource, baseCtx)
+                : viewedReplayResult;
+              const replayDoorSkipReason =
+                hasReplaySource && (projectionSpec || namedView)
+                  ? undefined
+                  : (projected.skipResultDoor ?? nestedResultDoorSkipReason(doorInput));
+              // P-006 / D-014: rebuild from a retained source when available;
+              // legacy receipts keep their original shaped outcome. Every replay
+              // still consumes the CURRENT aggregate cohort without rerunning the write.
+              const preservePaths = resultDoorPreservePathsForDispatch(doorInput, toolName, dispatchArgs, projectionSpec?.pick);
+              const replayedDoorResult = replayDoorSkipReason
+                ? doorInput
+              : await applyResultDoorAsync(doorInput, {
                   toolName,
                   nestedTargetToolName,
                   effect: effectiveCallEffect,
@@ -5139,7 +5170,11 @@ export function registerMcpHost(server: McpServer): void {
                     aggregateScope,
                     ...(preservePaths ? { preservePaths } : {}),
                   });
-              return withMcpDiagnosticWarnings(stripNestedResultDoorControls(replayedResult), dispatchSpawnCtx);
+              const cleanReplayResult = stripNestedResultDoorControls(replayedDoorResult);
+              const replayedResult = hasReplaySource
+                ? annotateStoreIdentitySuspectResult(cleanReplayResult, mayAnnotateResultText(replayDoorSkipReason))
+                : cleanReplayResult;
+              return withMcpDiagnosticWarnings(replayedResult, dispatchSpawnCtx);
             }
           } catch (err) {
             console.warn(
@@ -5187,6 +5222,8 @@ export function registerMcpHost(server: McpServer): void {
            * outcome.
           */
           toolOutcome: Promise<McpCallResult> | null;
+          /** Handler result before caller projection/result-door shaping. */
+          replaySourceResult: McpCallResult | null;
           /**
            * Set when the deadline branch wins the race — the caller has already been
            * answered, so the receipt must be persisted in the BACKGROUND rather than
@@ -5205,6 +5242,7 @@ export function registerMcpHost(server: McpServer): void {
           preDispatchPhaseTimingsMs: McpPreDispatchPhaseTimingsMs | null;
         } = {
           toolOutcome: null,
+          replaySourceResult: null,
           deadlineFired: requestDeadline?.didExpire ?? false,
           innerDispatchStarted: false,
           innerDispatchSettled: false,
@@ -5396,6 +5434,7 @@ export function registerMcpHost(server: McpServer): void {
                   return runLocalTarget();
                 },
               }).then((result) => {
+                raced.replaySourceResult = result;
                 const usedToolNames = nestedTargetToolName && nestedTargetToolName !== toolName
                   ? [toolName, nestedTargetToolName]
                   : [toolName];
@@ -6104,6 +6143,7 @@ export function registerMcpHost(server: McpServer): void {
                 toolName,
                 workspaceId: dispatchSpawnCtx.workspaceId,
                 result: result as StoredMcpResult,
+                replaySource: raced.replaySourceResult as StoredMcpResult | null,
               });
             })
             .catch((err: unknown) => {
