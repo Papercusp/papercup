@@ -10,6 +10,7 @@ import { LUNA_CAPACITY_PLAN, LUNA_CAPACITY_INSTRUMENTS, lunaCapacityInstruments,
   validateCapacityDiagnosticProof, validateCapacityContinuationProof, validateCapacityContractProof, validateCapacityNativeLlmRun,
   validateCapacityBriefReceipt, validateCapacityOutputReceipt, validateCapacityAdmissionReceipt,
   validateCapacityDiagnosticOutputs, type NativeCapacityOutput,
+  validateCapacityRecoveryOperations, capacityWriterAuditRef, type NativeCapacityRecoveryOperation,
   type NativeCapacityBriefReceipt, type NativeCapacityLlmRun, type NativeCapacityLlmContext,
   type CapacityRecoveryProof, type CapacityShipmentProof, type CapacityDiagnosticProof } from './capacity-recovery-evidence';
 
@@ -329,6 +330,73 @@ describe('canonical diagnostic runtime and caller observations', () => {
     output.native.metadata = { operationalOutput: { schemaVersion: 1, observedAt: stamp(1),
       sha256: createHash('sha256').update(canonicalJson(output.capture.result)).digest('hex') } };
     expect(validateCapacityDiagnosticOutputs(o.proof, o.runtime, o.caller, o.context).status).toBe('pass');
+  });
+});
+
+describe('native managed recovery action custody', () => {
+  const millis = (minute: number, delta: number) => new Date(Date.parse(stamp(minute)) + delta).toISOString();
+  function pickup() {
+    const proof = census(), r = proof.recoveries[0];
+    proof.snapshot.members[0].effectiveSpec.ref = formatSpecRef('member-override', 4);
+    r.control.receiptRef = r.turn.triggerReceiptRef = 'tool-invocation:21';
+    r.turn.id = 'event-wake-delivery:22'; r.claim.receiptRef = 'tool-invocation:23';
+    const context = { startedAt: stamp(0), finishedAt: stamp(6), now: stamp(7) };
+    const base = (id: number, toolName: string, actorId: string, invokedAt: string): NativeCapacityBriefReceipt => ({
+      id, toolName, actorId, invokedAt, durationMs: 1000, workspaceId: 'papercusp-workspace', status: 'ok', metadata: {},
+    });
+    const operations: NativeCapacityRecoveryOperation[] = [{ memberId: 'member', controlSourceMatches: true, claimSourceMatches: true,
+      control: { ...base(21, 'coord:wake', 'leader', millis(2, 1000)), args: { to: 'member' } },
+      claim: { ...base(23, 'scheduler:get_next', 'member', millis(4, 500)), metadata: { schedulerDisposition: {
+        kind: 'claimed', workItemId: 'WI-next', specId: 'member-override', revision: 4 } } },
+      delivery: { id: 22, workspaceId: 'papercusp-workspace', subscriberId: 'member', eventKey: 'coord:inbox-wake:member',
+        source: 'leader', status: 'delivered', turnProof: 'observed', createdAt: millis(2, 500), deliveredAt: millis(2, 1000), turnStartedAt: stamp(3) },
+      claimAudit: { id: 24, workItemId: 'WI-next', memberId: 'member', outcome: 'won', takenAt: stamp(4),
+        detail: { specId: 'member-override', revision: 4 } }, writers: [{ id: 25, actorId: 'member' }] }];
+    r.claim.writerAuditReceiptRef = capacityWriterAuditRef('WI-next', stamp(4), context.finishedAt, operations[0].writers);
+    const result = { ok: true, summary: { fleet: 'luna' } };
+    const after: NativeCapacityOutput = { sourceMatches: true, capture: { invocationId: 26, result },
+      native: { ...base(26, 'fleet:leader-brief', 'leader', millis(5, 1000)), metadata: { identityContribution: {
+        identityId: 'su.fleet-leader', contributionId: 'fleet-leader-brief', status: 'bound',
+        outputRevision: createHash('sha256').update(canonicalJson(result)).digest('hex'), observedAt: stamp(5),
+        scope: { workspace: 'papercusp-workspace', fleet: 'luna', harness: 'papercusp' } } } } };
+    return { proof, operations, after, context };
+  }
+  it('joins the exact leader action, observed member turn, claimed item/spec, writers and leader-after receipt', () => {
+    const o = pickup();
+    expect(validateCapacityRecoveryProof(o.proof).status).toBe('pass');
+    expect(validateCapacityRecoveryOperations(o.proof, o.operations, o.after, o.context)).toEqual({ status: 'pass', violations: [] });
+    o.proof.recoveries[0].control.verb = 'coord:send';
+    o.operations[0].control.toolName = 'coord:send'; o.operations[0].control.args = { to: ['member'], wake: 'required' };
+    expect(validateCapacityRecoveryOperations(o.proof, o.operations, o.after, o.context).status).toBe('pass');
+  });
+  it('still verifies registered leadership after a fully disposed census needs no wake', () => {
+    const o = pickup(); o.proof.recoveries = []; o.operations = [];
+    o.proof.snapshot.members[0].admittedIds = []; o.proof.snapshot.members[0].disposition = 'no-work';
+    expect(validateCapacityRecoveryProof(o.proof).status).toBe('pass');
+    expect(validateCapacityRecoveryOperations(o.proof, o.operations, o.after, o.context).status).toBe('pass');
+  });
+  const invalid: Array<[string, (o: ReturnType<typeof pickup>) => void, string]> = [
+    ['foreign leader action', o => { o.operations[0].control.actorId = 'other'; }, 'native-recovery-control:member'],
+    ['foreign wake target', o => { o.operations[0].control.args = { to: 'other' }; }, 'native-recovery-control:member'],
+    ['unqualified source', o => { o.operations[0].controlSourceMatches = false; }, 'native-recovery-control:member'],
+    ['failed control', o => { o.operations[0].control.status = 'error'; }, 'native-recovery-control:member'],
+    ['unobserved queued wake', o => { o.operations[0].delivery.turnProof = 'awaiting'; }, 'native-recovery-turn:member'],
+    ['different delivery source', o => { o.operations[0].delivery.source = 'other'; }, 'native-recovery-turn:member'],
+    ['different member turn', o => { o.operations[0].delivery.subscriberId = 'other'; }, 'native-recovery-turn:member'],
+    ['forged turn time', o => { o.operations[0].delivery.turnStartedAt = stamp(4); }, 'native-recovery-turn:member'],
+    ['scheduler miss', o => { o.operations[0].claim.metadata = { schedulerDisposition: { kind: 'no-claim' } }; }, 'native-recovery-claim:member'],
+    ['different claim spec', o => { o.operations[0].claimAudit.detail = { specId: 'other', revision: 4 }; }, 'native-recovery-claim:member'],
+    ['different claimed item', o => { o.operations[0].claimAudit.workItemId = 'WI-other'; }, 'native-recovery-claim:member'],
+    ['lost claim', o => { o.operations[0].claimAudit.outcome = 'lost'; }, 'native-recovery-claim:member'],
+    ['no recorded progress writer', o => { o.operations[0].writers = []; }, 'native-recovery-writers:member'],
+    ['duplicate implementation writer', o => { const w = o.operations[0].writers; w.push({ id: 27, actorId: 'other' });
+      o.proof.recoveries[0].claim.writerAuditReceiptRef = capacityWriterAuditRef('WI-next', stamp(4), o.context.finishedAt, w); }, 'native-recovery-writers:member'],
+    ['changed registered leader', o => { o.after.native.actorId = 'other'; }, 'native-recovery-leader-after'],
+    ['missing after source custody', o => { o.after.sourceMatches = false; }, 'native-brief-source'],
+  ];
+  it.each(invalid)('rejects %s', (_title, mutate, failure) => {
+    const o = pickup(); mutate(o);
+    expect(validateCapacityRecoveryOperations(o.proof, o.operations, o.after, o.context).violations).toContain(failure);
   });
 });
 

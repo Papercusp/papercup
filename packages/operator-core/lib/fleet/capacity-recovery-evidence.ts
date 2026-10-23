@@ -154,6 +154,78 @@ const record = (v: unknown): Record<string, unknown> =>
 export interface NativeCapacityOutput {
   capture: z.infer<typeof capacityBriefCaptureSchema>; native: NativeCapacityBriefReceipt; sourceMatches: boolean;
 }
+export interface NativeCapacityRecoveryOperation {
+  memberId: string;
+  control: NativeCapacityBriefReceipt; claim: NativeCapacityBriefReceipt;
+  controlSourceMatches: boolean; claimSourceMatches: boolean;
+  delivery: { id: number; workspaceId: string; subscriberId: string; eventKey: string; source: string | null;
+    status: string; turnProof: string | null; createdAt: string; deliveredAt: string | null; turnStartedAt: string | null };
+  claimAudit: { id: number; workItemId: string; memberId: string; outcome: string; takenAt: string; detail: unknown };
+  writers: Array<{ id: number; actorId: string | null }>;
+}
+/** The audited population is the bounded native write ledger for the same item
+ * and claim interval, not an artifact-authored list of purported writers. */
+export function capacityWriterAuditRef(workItemId: string, takenAt: string, finishedAt: string,
+  writers: NativeCapacityRecoveryOperation['writers']): string {
+  return 'native-writer-audit:' + createHash('sha256').update(canonicalJson({ workItemId, takenAt, finishedAt,
+    writers: [...writers].sort((a, b) => a.id - b.id) })).digest('hex');
+}
+export function validateCapacityRecoveryOperations(input: unknown, operations: NativeCapacityRecoveryOperation[],
+  after: NativeCapacityOutput, window: { now: string; startedAt: string; finishedAt: string }): CapacityProofVerdict {
+  const p = recoveryProofSchema.safeParse(input);
+  if (!p.success) return { status: 'fail', violations: ['native-recovery-proof-missing'] };
+  const proof = p.data, errors: string[] = [];
+  if (!sameSet(operations.map(o => o.memberId), proof.recoveries.map(r => r.memberId))) errors.push('native-recovery-population');
+  for (const r of proof.recoveries) {
+    const o = operations.find(o => o.memberId === r.memberId);
+    if (!o) continue;
+    const c = o.control, claim = o.claim, d = o.delivery, audit = o.claimAudit;
+    const args = record(c.args), disposition = record(record(claim.metadata).schedulerDisposition);
+    const controlStart = Date.parse(c.invokedAt) - (c.durationMs ?? NaN);
+    const claimStart = Date.parse(claim.invokedAt) - (claim.durationMs ?? NaN);
+    const target = c.toolName === 'coord:wake' ? args.to === r.memberId
+      : c.toolName === 'coord:send' && args.wake === 'required'
+        && Array.isArray(args.to) && sameSet(args.to as string[], [r.memberId]);
+    if (!o.controlSourceMatches || c.workspaceId !== 'papercusp-workspace' || c.status !== 'ok'
+      || c.actorId !== proof.snapshot.leaderId || c.toolName !== r.control.verb || !target
+      || !Number.isFinite(c.durationMs) || (c.durationMs ?? -1) < 0
+      || r.control.receiptRef !== 'tool-invocation:' + c.id || Date.parse(r.control.invokedAt) !== controlStart
+      || controlStart < Date.parse(window.startedAt) || Date.parse(c.invokedAt) > Date.parse(window.finishedAt))
+      errors.push('native-recovery-control:' + r.memberId);
+    if (d.workspaceId !== 'papercusp-workspace' || d.subscriberId !== r.memberId
+      || d.source !== proof.snapshot.leaderId || d.eventKey !== 'coord:inbox-wake:' + r.memberId
+      || d.status !== 'delivered' || !['observed', 'host-attested'].includes(d.turnProof ?? '')
+      || r.turn.id !== 'event-wake-delivery:' + d.id || d.turnStartedAt !== r.turn.startedAt
+      || !d.deliveredAt || !(controlStart <= Date.parse(d.createdAt) && Date.parse(d.createdAt) <= Date.parse(c.invokedAt)
+        && Date.parse(d.createdAt) <= Date.parse(d.deliveredAt) && Date.parse(d.deliveredAt) <= Date.parse(r.turn.startedAt)))
+      errors.push('native-recovery-turn:' + r.memberId);
+    const detail = record(audit.detail);
+    if (!o.claimSourceMatches || claim.workspaceId !== 'papercusp-workspace' || claim.status !== 'ok'
+      || claim.toolName !== 'scheduler:get_next' || claim.actorId !== r.memberId
+      || r.claim.receiptRef !== 'tool-invocation:' + claim.id || disposition.kind !== 'claimed'
+      || disposition.workItemId !== r.claim.workItemId || disposition.revision !== r.effectiveSpec.revision
+      || typeof disposition.specId !== 'string' || formatSpecRef(disposition.specId, disposition.revision as number) !== r.effectiveSpec.ref
+      || audit.workItemId !== r.claim.workItemId || audit.memberId !== r.memberId || audit.outcome !== 'won'
+      || audit.takenAt !== r.claim.takenAt || detail.specId !== disposition.specId || detail.revision !== disposition.revision
+      || !Number.isFinite(claim.durationMs) || (claim.durationMs ?? -1) < 0
+      || !(Date.parse(r.turn.startedAt) <= claimStart && claimStart <= Date.parse(audit.takenAt)
+        && Date.parse(audit.takenAt) <= Date.parse(claim.invokedAt) && Date.parse(claim.invokedAt) <= Date.parse(window.finishedAt)))
+      errors.push('native-recovery-claim:' + r.memberId);
+    const writers = [...new Set(o.writers.map(w => w.actorId))];
+    if (!o.writers.length || o.writers.length > 1000 || !unique(o.writers.map(w => String(w.id)))
+      || !sameSet(writers as string[], [r.memberId]) || !sameSet(r.claim.writers, writers as string[])
+      || r.claim.writerAuditReceiptRef !== capacityWriterAuditRef(r.claim.workItemId, r.claim.takenAt, window.finishedAt, o.writers))
+      errors.push('native-recovery-writers:' + r.memberId);
+  }
+  errors.push(...validateBriefCustody(after.capture, after.native, { ...window, sourceMatches: after.sourceMatches }));
+  const pin = record(record(after.native.metadata).identityContribution), scope = record(pin.scope);
+  if (after.native.actorId !== proof.snapshot.leaderId || proof.snapshot.leaderAfterId !== after.native.actorId
+    || scope.workspace !== 'papercusp-workspace' || scope.fleet !== proof.snapshot.fleet
+    || record(after.capture.result.summary).fleet !== proof.snapshot.fleet
+    || Date.parse(String(pin.observedAt)) < Math.max(Date.parse(proof.snapshot.observedAt),
+      ...proof.recoveries.map(r => Date.parse(r.claim.takenAt)))) errors.push('native-recovery-leader-after');
+  return { status: errors.length ? 'fail' : 'pass', violations: [...new Set(errors)] };
+}
 /** Resolve each source/runtime observation and the caller-only floor difference
  * against producer rows. An internally consistent count pair is insufficient. */
 export function validateCapacityDiagnosticOutputs(input: unknown, runtime: NativeCapacityOutput[],
@@ -222,18 +294,13 @@ export function validateCapacityDiagnosticOutputs(input: unknown, runtime: Nativ
 
 /** The existing identity producer hashes the complete, unshaped brief. A saved
  * result is evidence only when its hash resolves to that native producer row. */
-export function validateCapacityBriefReceipt(input: unknown, capture: unknown,
-  native: NativeCapacityBriefReceipt | null, context: {
-    now: string; startedAt: string; finishedAt: string; sourceMatches: boolean;
-  }): CapacityProofVerdict {
-  const p = diagnosticProofSchema.safeParse(input);
-  const r = recoveryProofSchema.safeParse(input);
+function validateBriefCustody(capture: unknown, native: NativeCapacityBriefReceipt | null,
+  context: { now: string; startedAt: string; finishedAt: string; sourceMatches: boolean }): string[] {
   const c = capacityBriefCaptureSchema.safeParse(capture);
-  if ((!p.success && !r.success) || !c.success || !native) return { status: 'fail', violations: ['native-brief-missing'] };
+  if (!c.success || !native) return ['native-brief-missing'];
   const errors: string[] = [];
   const data = c.data.result;
   const pin = record(record(native.metadata).identityContribution);
-  const scope = record(pin.scope);
   const resultHash = createHash('sha256').update(canonicalJson(data)).digest('hex');
   if (native.id !== c.data.invocationId || native.toolName !== 'fleet:leader-brief'
     || native.status !== 'ok' || native.workspaceId !== 'papercusp-workspace'
@@ -242,6 +309,18 @@ export function validateCapacityBriefReceipt(input: unknown, capture: unknown,
     || pin.outputRevision !== resultHash) errors.push('native-brief-custody');
   if (!context.sourceMatches) errors.push('native-brief-source');
   if (!observationWithinNativeRun(native, pin.observedAt, context)) errors.push('native-brief-stale-or-outside-run');
+  return errors;
+}
+export function validateCapacityBriefReceipt(input: unknown, capture: unknown,
+  native: NativeCapacityBriefReceipt | null, context: {
+    now: string; startedAt: string; finishedAt: string; sourceMatches: boolean;
+  }): CapacityProofVerdict {
+  const p = diagnosticProofSchema.safeParse(input);
+  const r = recoveryProofSchema.safeParse(input);
+  const c = capacityBriefCaptureSchema.safeParse(capture);
+  if ((!p.success && !r.success) || !c.success || !native) return { status: 'fail', violations: ['native-brief-missing'] };
+  const errors = validateBriefCustody(capture, native, context);
+  const data = c.data.result, pin = record(record(native.metadata).identityContribution), scope = record(pin.scope);
   const receiptRef = 'tool-invocation:' + native.id;
   const summary = record(data.summary);
   if (p.success) {
