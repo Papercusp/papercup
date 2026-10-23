@@ -3580,20 +3580,8 @@ async function isStaleHoldOpenAndCleared(
   /** The row's `origin` — a peer-written ('remote') row's holder is never judged here (WI-10005916). */
   origin?: string | null,
 ): Promise<boolean> {
+  if (!(await isStaleHoldOpenReadOnly(id, heldOpen, origin))) return false;
   try {
-    const [{ isHoldOpenExpired }, { readCoordLivenessConfig }] = await Promise.all([
-      import('./work-items-hold-open'),
-      import('./coord-liveness-config'),
-    ]);
-    const cfg = await readCoordLivenessConfig();
-    const { sql } = getOrgPg();
-    const expired = await isHoldOpenExpired(sql, heldOpen.by, heldOpen.at, {
-      graceMs: cfg.reclaimGraceMs,
-      parkedGraceMs: cfg.reclaimParkedGraceMs,
-      holdOpenGraceMs: cfg.holdOpenGraceMs,
-      origin,
-    });
-    if (!expired) return false;
     // Lift it for real — not just "ignore it this once". Leaving the stamp in place would keep
     // the item excluded from claim_next/scheduler self-select (the `_claimHold` half of the
     // hold), which is the other half of the same bug. leaseOnly: an automated liveness lift
@@ -3615,6 +3603,75 @@ async function isStaleHoldOpenAndCleared(
     );
     return false;
   }
+}
+
+async function isStaleHoldOpenReadOnly(
+  id: string,
+  heldOpen: { by: string; reason: string | null; at: string | null },
+  origin?: string | null,
+): Promise<boolean> {
+  try {
+    const [{ isHoldOpenExpired }, { readCoordLivenessConfig }] = await Promise.all([
+      import('./work-items-hold-open'),
+      import('./coord-liveness-config'),
+    ]);
+    const cfg = await readCoordLivenessConfig();
+    const { sql } = getOrgPg();
+    return await isHoldOpenExpired(sql, heldOpen.by, heldOpen.at, {
+      graceMs: cfg.reclaimGraceMs,
+      parkedGraceMs: cfg.reclaimParkedGraceMs,
+      holdOpenGraceMs: cfg.holdOpenGraceMs,
+      origin,
+    });
+  } catch (e: unknown) {
+    console.warn(
+      '[hold-open] liveness check for ' + id + ' (holder ' + heldOpen.by +
+      ') could not run; hold stays enforced: ' + (e instanceof Error ? e.message : String(e)),
+    );
+    return false;
+  }
+}
+
+export interface WorkItemHeldOpenTerminalAssessment {
+  allowed: boolean;
+  staleHoldOpen: boolean;
+  refusal?: string;
+}
+
+/** Read-only held-open eligibility shared by complete previews and the terminal state writer. */
+export async function assessWorkItemHeldOpenTerminalTransition(input: {
+  id: string;
+  payload: unknown;
+  currentState: string | null | undefined;
+  targetState: string;
+  by?: string | null;
+  force?: boolean;
+  origin?: string | null;
+}): Promise<WorkItemHeldOpenTerminalAssessment> {
+  const heldOpen = readWorkItemHeldOpenBy(input.payload);
+  if (
+    input.force ||
+    !heldOpen ||
+    input.by === heldOpen.by ||
+    isSettledWorkItemState(input.currentState ?? '') ||
+    !isSettledWorkItemState(input.targetState)
+  ) {
+    return { allowed: true, staleHoldOpen: false };
+  }
+  const refusal =
+    "work_item '" + input.id + "' is HELD OPEN by " + heldOpen.by +
+    (heldOpen.reason ? ' ("' + heldOpen.reason + '")' : '') +
+    " — closing it into '" + input.targetState + "' requires the holder. " +
+    "If this is your own hold, clear it first without force: " +
+    "work_items:hold_open { id: '" + input.id + "', clear: true } — no force needed, then close normally. " +
+    "If the hold is STALE (holder gone/finished), CLEAR it first: " +
+    "work_items:hold_open { id: '" + input.id + "', clear: true, force: true, reason: '<why it is stale>' } " +
+    "(leader override — audited, and the holder is notified), then close normally. " +
+    "To close PAST the hold without clearing it: work_items:set_state { id: '" + input.id +
+    "', state: '" + input.targetState + "', force: true } — NOTE work_items:complete does NOT accept a force arg, " +
+    "so passing one there is silently ignored. Otherwise coordinate with the holder (coord:send).";
+  const staleHoldOpen = await isStaleHoldOpenReadOnly(input.id, heldOpen, input.origin);
+  return { allowed: staleHoldOpen, staleHoldOpen, refusal };
 }
 
 /**
@@ -4314,8 +4371,25 @@ export async function setWorkItemState(
   // prose, so a well-meaning peer (or a dup-close audit) closed them as stale —
   // the hold is now a FIELD this chokepoint enforces (complete + set_state both
   // route through here). The holder closing their own held item is NOT gated.
+  const heldOpenTransition = await assessWorkItemHeldOpenTerminalTransition({
+    id,
+    payload: wi.payload,
+    currentState: wi.state,
+    targetState: state,
+    by: opts.by,
+    force: opts.force,
+    origin: wi.origin,
+  });
+  if (!heldOpenTransition.allowed) throw new Error(heldOpenTransition.refusal);
+  if (heldOpenTransition.staleHoldOpen) {
+    const heldOpen = readWorkItemHeldOpenBy(wi.payload)!;
+    if (!(await isStaleHoldOpenAndCleared(id, heldOpen, wi.harness ?? undefined, wi.origin))) {
+      throw new Error(heldOpenTransition.refusal);
+    }
+  }
   const heldOpen = readWorkItemHeldOpenBy(wi.payload);
   if (
+    !heldOpenTransition.staleHoldOpen &&
     !opts.force &&
     heldOpen &&
     opts.by !== heldOpen.by &&

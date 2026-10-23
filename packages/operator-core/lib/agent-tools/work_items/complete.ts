@@ -64,6 +64,7 @@ import { activeExternalBlockers, externalBlockerCapabilityPolicy } from '../../e
 import { buildDurableParkReleaseContract } from '../../durable-park-release-contract';
 import { lookupWorkItem } from './_lookup';
 import {
+  assessWorkItemHeldOpenTerminalTransition,
   getWorkItem,
   getWorkItemsByIds,
   setWorkItemStateWithAliasInfo,
@@ -5321,6 +5322,21 @@ async function completeOne(
       return { ok: false, id: it.id, error: `Cannot revalidate contribution deferral: ${String(error)}. No completion was written.` };
     }
   }
+  const heldOpenPreview =
+    it.validateOnly && effectiveState && !changeKindProofError
+      ? await assessWorkItemHeldOpenTerminalTransition({
+          id: it.id,
+          payload: existing.payload,
+          currentState: existing.state,
+          targetState: effectiveState,
+          by: ident.ownerId,
+          origin: existing.origin,
+        })
+      : undefined;
+  const heldOpenPreviewError =
+    heldOpenPreview && !heldOpenPreview.allowed
+      ? heldOpenPreview.refusal ?? 'held-open terminal transition refused'
+      : undefined;
   if (it.validateOnly) {
     // EI-26592766858681844: the content floor already lowered the authority above. Surface
     // its measured paths here too, without borrowing the real close's settlement promises.
@@ -5345,11 +5361,17 @@ async function completeOne(
       // P-002 / D-002: a preview must expose the same change-kind refusal as the real
       // close. The contract row alone is insufficient because callers use `ok` to decide
       // whether the identical terminal close is admissible.
-      ok: !changeKindProofError,
+      ok: !changeKindProofError && !heldOpenPreviewError,
       id: it.id,
       validationOnly: true,
       ...(deferredContributions?.length ? { deferredContributions } : {}),
       ...(changeKindProofError ? { error: changeKindProofError, stateError: changeKindProofError } : {}),
+      ...(!changeKindProofError && heldOpenPreviewError
+        ? { error: heldOpenPreviewError, stateError: heldOpenPreviewError }
+        : {}),
+      ...(heldOpenPreview?.staleHoldOpen
+        ? { heldOpenTransition: { staleHoldOpen: true, writeWillRecheck: true } }
+        : {}),
       ...(changeKindProofError && changeKindGate.applicable && changeKindGate.outcome === 'refuse'
         ? { changeKindProof: { kinds: changeKindGate.kinds, missing: changeKindGate.missing, problems: changeKindGate.problems } }
         : {}),

@@ -109,6 +109,7 @@ const getWorkItem = vi.fn();
 const getWorkItemsByIds = vi.fn();
 const listWorkItems = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
+const assessWorkItemHeldOpenTerminalTransition = vi.fn();
 const setWorkItemClaimHold = vi.fn();
 const mergeWorkItemOutputPayload = vi.fn();
 const resolveWorkItemRef = vi.fn();
@@ -128,6 +129,7 @@ const attachCompletionEvidenceToSettledItem = vi.fn();
 const commentWorkItem = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
+  assessWorkItemHeldOpenTerminalTransition: (...a: unknown[]) => assessWorkItemHeldOpenTerminalTransition(...a),
   getWorkItemsByIds: (...a: unknown[]) => getWorkItemsByIds(...a),
   listWorkItems: (...a: unknown[]) => listWorkItems(...a),
   // The improvement-review module is imported through complete.ts's analysis
@@ -144,6 +146,7 @@ vi.mock('../../work-items', () => ({
   readWorkItemClaimHoldProvenance: vi.fn(),
   readUnresolvedDepBlockers: vi.fn(),
   ACTIVE_FEATURE_FAMILY_KINDS: ['feature'],
+  ISSUE_FAMILY_KINDS: ['bug', 'change', 'task'],
   setWorkItemStateWithAliasInfo: (...a: unknown[]) => setWorkItemStateWithAliasInfo(...a),
   attachCompletionEvidenceToSettledItem: (...a: unknown[]) => attachCompletionEvidenceToSettledItem(...a),
   commentWorkItem: (...a: unknown[]) => commentWorkItem(...a),
@@ -428,6 +431,8 @@ beforeEach(() => {
   hiveMocks.potHomeSlugForHarness.mockReset();
   hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
   getWorkItem.mockReset();
+  assessWorkItemHeldOpenTerminalTransition.mockReset();
+  assessWorkItemHeldOpenTerminalTransition.mockResolvedValue({ allowed: true, staleHoldOpen: false });
   listWorkItems.mockReset();
   listWorkItems.mockResolvedValue([]);
   setWorkItemStateWithAliasInfo.mockReset();
@@ -1041,6 +1046,48 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(preview.authorityWarning).toBeUndefined();
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
+  });
+
+  it('refuses a nonholder held-open terminal preview with the shared writer reason', async () => {
+    const closeItem = {
+      ...item,
+      id: 'WI-held-open-preview',
+      kind: 'bug',
+      family: 'issue',
+      state: 'open',
+      payload: { held_open_by: 'su-peer', held_open_reason: 'release criterion pending' },
+    };
+    const refusal = "work_item 'WI-held-open-preview' is HELD OPEN by su-peer — closing it into 'resolved' requires the holder.";
+    getWorkItem.mockResolvedValue(closeItem);
+    assessWorkItemHeldOpenTerminalTransition.mockResolvedValue({
+      allowed: false,
+      staleHoldOpen: false,
+      refusal,
+    });
+
+    const preview = await one({
+      id: closeItem.id,
+      state: 'resolved',
+      validateOnly: true,
+      completion: { summary: 'verified', testsRun: 'complete.test.ts', testResult: 'passed' },
+    });
+
+    expect(preview).toMatchObject({
+      ok: false,
+      validationOnly: true,
+      error: refusal,
+      stateError: refusal,
+    });
+    expect(assessWorkItemHeldOpenTerminalTransition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: closeItem.id,
+        payload: closeItem.payload,
+        currentState: 'open',
+        targetState: 'resolved',
+        by: 'su-tester',
+      }),
+    );
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
   it('settles validateOnly with the same authority as the identical real close', async () => {
@@ -2939,14 +2986,18 @@ describe('work_items:complete (keyed-array)', () => {
         ...(proof ? { specAdequacy: proof } : {}),
       });
 
-      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
-        workItem: linkedTask,
-        attestation: proof,
-        changedPaths: [
-          ...('filesChanged' in completion ? (completion.filesChanged ?? []) : []),
-          ...('filesDeleted' in completion ? (completion.filesDeleted ?? []) : []),
-        ],
-      });
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItem: linkedTask,
+          attestation: proof,
+          workspaceId: 'default',
+          completion: expect.objectContaining({ summary: 'implemented', ...completion }),
+          changedPaths: [
+            ...('filesChanged' in completion ? (completion.filesChanged ?? []) : []),
+            ...('filesDeleted' in completion ? (completion.filesDeleted ?? []) : []),
+          ],
+        }),
+      );
       expect(r).toMatchObject({ ok: false, specAdequacy: { applicable: true, retryable: true } });
       expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
@@ -3211,10 +3262,14 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({ id: 'WI-101', state: 'resolved', completion, specAdequacy });
 
       expect(r.ok).toBe(true);
-      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
-        workItem: linkedIssue,
-        attestation: specAdequacy,
-      });
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItem: linkedIssue,
+          attestation: specAdequacy,
+          workspaceId: 'default',
+          completion: expect.objectContaining(completion),
+        }),
+      );
       expect(r.specAdequacy).toEqual({ applicable: true, checked: ['SPEC-003-01@1'] });
     });
 
@@ -3242,11 +3297,15 @@ describe('work_items:complete (keyed-array)', () => {
         specAdequacy,
       });
 
-      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
-        workItem: linkedFeature,
-        attestation: specAdequacy,
-        changedPaths: [behaviorChangePath],
-      });
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItem: linkedFeature,
+          attestation: specAdequacy,
+          workspaceId: 'default',
+          completion: expect.objectContaining({ summary: 'shipped', filesChanged: [behaviorChangePath] }),
+          changedPaths: [behaviorChangePath],
+        }),
+      );
       expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
         targetIds: pendingTargets,
         ctx,
@@ -3346,11 +3405,15 @@ describe('work_items:complete (keyed-array)', () => {
         specAdequacy,
       });
 
-      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
-        workItem: linkedFeature,
-        attestation: specAdequacy,
-        changedPaths: [],
-      });
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItem: linkedFeature,
+          attestation: specAdequacy,
+          workspaceId: 'default',
+          completion: expect.objectContaining({ summary: 'verification-only feature complete' }),
+          changedPaths: [],
+        }),
+      );
       expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
         targetIds: pendingTargets,
         ctx,
@@ -3383,11 +3446,15 @@ describe('work_items:complete (keyed-array)', () => {
         completion: { summary: 'read-only inventory complete', filesChanged: [inventoryPath] },
       });
 
-      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
-        workItem: linkedFeature,
-        attestation: undefined,
-        changedPaths: [inventoryPath],
-      });
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItem: linkedFeature,
+          attestation: undefined,
+          workspaceId: 'default',
+          completion: expect.objectContaining({ summary: 'read-only inventory complete', filesChanged: [inventoryPath] }),
+          changedPaths: [inventoryPath],
+        }),
+      );
       expect(r).toMatchObject({
         ok: true,
         specAdequacy: { applicable: false, checked: [], exempted },
@@ -3426,10 +3493,14 @@ describe('work_items:complete (keyed-array)', () => {
         specAdequacy,
       });
 
-      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
-        workItem: linkedIssue,
-        attestation: specAdequacy,
-      });
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItem: linkedIssue,
+          attestation: specAdequacy,
+          workspaceId: 'default',
+          completion: expect.objectContaining({ summary: 'fixed', filesChanged: [behaviorChangePath] }),
+        }),
+      );
       expect(r.specAdequacy).toEqual({ applicable: true, checked: ['SPEC-003-01@1'] });
       expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
     });
