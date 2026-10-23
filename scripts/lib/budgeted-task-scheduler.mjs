@@ -35,7 +35,7 @@ function freezeComparison(value) {
 // A pathname size check does not bound a later read. Keep the descriptor open,
 // cap even the growth probe by the caller's remaining IO budget, and reject
 // replacement of either the leaf or its directory during capture.
-function readNativeArtifactBytes(file, byteLength, byteLimit, recordRead = () => {}) {
+export function readNativeArtifactBytes(file, byteLength, byteLimit, recordRead = () => {}) {
   if (!Number.isSafeInteger(byteLength) || byteLength < 0 ||
       !Number.isSafeInteger(byteLimit) || byteLimit < byteLength)
     throw new Error('native artifact byte limit');
@@ -65,6 +65,50 @@ function readNativeArtifactBytes(file, byteLength, byteLimit, recordRead = () =>
       throw new Error('native artifact changed during capture');
     return buffer.subarray(0, length);
   } finally { closeSync(fd); }
+}
+
+/** Read the existing native OUT event protocol with the receipt writer's bounds.
+ * A truncated census is useful diagnostically but cannot establish custody.
+ */
+export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAtMs = Number.MAX_SAFE_INTEGER) {
+  const path = `${out}.native-processes`;
+  if (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink() || realpathSync(path) !== resolve(path))
+    throw new Error("redirected native process trace");
+  const sourceRoot = realpathSync(path), rows = [];
+  const population = { artifactLimit: 16384, artifactsVisited: 0,
+    eventByteLimit: 64 * 1024 * 1024, eventBytesRead: 0, complete: false, truncatedBy: null };
+  const directory = opendirSync(sourceRoot);
+  try {
+    for (let entry; (entry = directory.readSync()) !== null;) {
+      if (population.artifactsVisited === population.artifactLimit) {
+        population.truncatedBy = "artifact-count";
+        break;
+      }
+      population.artifactsVisited++;
+      const name = entry.name;
+      if (!/^[a-f0-9]{64}\.(json|stream|source)$/.test(name)) throw new Error("unexpected native process artifact");
+      if (!name.endsWith(".json")) continue;
+      const file = join(sourceRoot, name), stat = lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024)
+        throw new Error("redirected or oversized native process artifact");
+      if (population.eventBytesRead + stat.size > population.eventByteLimit) {
+        population.truncatedBy = "event-bytes";
+        break;
+      }
+      const bytes = readNativeArtifactBytes(file, stat.size, population.eventByteLimit - population.eventBytesRead,
+        count => { population.eventBytesRead += count; });
+      if (createHash("sha256").update(bytes).digest("hex") !== name.slice(0, 64))
+        throw new Error("native process artifact hash mismatch");
+      const row = JSON.parse(bytes.toString("utf8"));
+      if (row.schemaVersion !== 1 || row.kind !== "native-node-process-event" ||
+          !Number.isSafeInteger(row.pid) || !Number.isSafeInteger(row.ppid) ||
+          !Number.isSafeInteger(row.atMs) || typeof row.processIdentity !== "string")
+        throw new Error("malformed native process event");
+      if (row.atMs >= startedAtMs && row.atMs <= finishedAtMs) rows.push({ row, bytes });
+    }
+    population.complete = population.truncatedBy === null;
+  } finally { directory.closeSync(); }
+  return { sourceRoot, rows, population };
 }
 
 // Retain only bytes referenced by the process-bound reporter protocol. This is
@@ -223,52 +267,14 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
   if (input.processTrace && Number.isSafeInteger(input.processTrace.rootPid) &&
       input.processTrace.rootPid > 0 && typeof input.processTrace.out === "string") {
     try {
-      const path = `${input.processTrace.out}.native-processes`;
-      if (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink())
-        throw new Error("redirected native process trace");
-      const sourceRoot = realpathSync(path), rows = [];
       // A shared OUT directory can contain many processes' diagnostics. Keep
       // the original artifact ceiling without allocating the whole directory
       // or erasing a useful authenticated subset when the population is larger.
       // Directory order is not chronology: truncated observations certify only
       // the retained events, never the unseen suffix or an ordered chain.
-      const population = processTrace.population = { artifactLimit: 16384,
-        artifactsVisited: 0, eventByteLimit: 64 * 1024 * 1024, eventBytesRead: 0,
-        complete: false, truncatedBy: null };
-      const directory = opendirSync(sourceRoot);
-      try {
-        for (let entry; (entry = directory.readSync()) !== null;) {
-          if (population.artifactsVisited === population.artifactLimit) {
-            population.truncatedBy = "artifact-count";
-            break;
-          }
-          population.artifactsVisited++;
-          const name = entry.name;
-          if (!/^[a-f0-9]{64}\.(json|stream|source)$/.test(name))
-            throw new Error("unexpected native process artifact");
-          if (!name.endsWith(".json")) continue;
-          const file = join(sourceRoot, name), stat = lstatSync(file);
-          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024)
-            throw new Error("redirected or oversized native process artifact");
-          if (population.eventBytesRead + stat.size > population.eventByteLimit) {
-            population.truncatedBy = "event-bytes";
-            break;
-          }
-          const bytes = readNativeArtifactBytes(file, stat.size,
-            population.eventByteLimit - population.eventBytesRead,
-            count => { population.eventBytesRead += count; });
-          if (createHash("sha256").update(bytes).digest("hex") !== name.slice(0, 64))
-            throw new Error("native process artifact hash mismatch");
-          const row = JSON.parse(bytes.toString("utf8"));
-          if (row.schemaVersion !== 1 || row.kind !== "native-node-process-event" ||
-              !Number.isSafeInteger(row.pid) || !Number.isSafeInteger(row.ppid) ||
-              !Number.isSafeInteger(row.atMs) || typeof row.processIdentity !== "string")
-            throw new Error("malformed native process event");
-          if (row.atMs >= input.startedAtMs && row.atMs <= input.finishedAtMs)
-            rows.push({ row, bytes });
-        }
-        population.complete = population.truncatedBy === null;
-      } finally { directory.closeSync(); }
+      const { sourceRoot, rows, population } = readNativeProcessTraceArtifacts(input.processTrace.out,
+        input.startedAtMs, input.finishedAtMs);
+      processTrace.population = population;
       if (!population.complete)
         processTrace.gaps.push(`native-process-population-truncated:${population.truncatedBy}`);
       const pids = new Set([input.processTrace.rootPid]);

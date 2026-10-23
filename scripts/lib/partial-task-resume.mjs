@@ -4,11 +4,12 @@
 // passing-verdict cache.
 
 import { createHash } from "node:crypto";
-import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { closeSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { selectReusablePasses } from "./test-pass-reuse.mjs";
 import { expandSelectionCommands } from "./related-tests.mjs";
+import { readNativeArtifactBytes, readNativeProcessTraceArtifacts } from "./budgeted-task-scheduler.mjs";
 
 export const PARTIAL_TASK_CHECKPOINT_SCHEMA = 1;
 export const PARTIAL_TASK_SKIP_LIST_SCHEMA = 1;
@@ -334,6 +335,113 @@ export function readPartialNativeProducer(path, expected) {
   } catch { return null; }
 }
 
+/** Bind a channel to the actual original npm tree, lifecycle and reporter PID.
+ * Interrupted prefixes still need dead-run custody from the qualification host;
+ * this reader never turns a missing terminal observation into a passed run.
+ */
+export function readPartialNativeChannelCustody(producer, native, { allowInterrupted = false } = {}) {
+  const refused = reason => ({ status: "refused", reason, custody: null });
+  if (!validNativeProducer(producer) || !producer.nativeChannel) return refused("native-channel-producer-invalid");
+  const channel = producer.nativeChannel;
+  try {
+    const bindingPath = `${producer.outPath}.binding.json`, stat = lstatSync(bindingPath);
+    if (stat.size > 16 * 1024) return refused("native-channel-binding-invalid");
+    const binding = JSON.parse(readNativeArtifactBytes(bindingPath, stat.size, 16 * 1024).toString("utf8"));
+    if (binding.schemaVersion !== 1 || binding.kind !== "native-channel-binding" ||
+        binding.traceOut !== channel.traceOut || binding.outPath !== producer.outPath ||
+        binding.script !== channel.script || binding.command !== channel.command || binding.step !== channel.step ||
+        !Number.isSafeInteger(binding.parentPid) || binding.parentPid <= 0 ||
+        !validIdentity(binding.processIdentity) || !validIdentity(binding.childIdentity))
+      return refused("native-channel-binding-invalid");
+    const { rows, sourceRoot, population } = readNativeProcessTraceArtifacts(channel.traceOut);
+    if (!population.complete) return refused("native-channel-trace-incomplete");
+    const events = rows.map(value => value.row);
+    if (events.some(row => ["trace-limit", "trace-event-too-large", "native-channel-unavailable"].includes(row.event)))
+      return refused("native-channel-trace-gap");
+    const one = predicate => {
+      const matches = events.filter(predicate);
+      if (matches.length !== 1) throw new Error("native-channel-process-ambiguous");
+      return matches[0];
+    };
+    const entryFor = pid => one(row => row.event === "node-entry" && row.pid === pid);
+    const npmEntry = row => row.cwd === producer.command.cwd && Array.isArray(row.argv) &&
+      ["npm-cli.js", "npm"].includes(basename(row.argv[1] ?? ""));
+    if (!["npm", "npm.cmd"].includes(basename(producer.command.cmd))) return refused("native-channel-original-command-invalid");
+    const root = one(row => row.event === "node-entry" && npmEntry(row) &&
+      row.reporterOut === channel.traceOut && row.atMs >= producer.registeredAtMs &&
+      isDeepStrictEqual(row.argv.slice(2), producer.command.argv));
+    const observer = entryFor(binding.parentPid);
+    if (!npmEntry(observer) || observer.processIdentity !== binding.processIdentity || observer.atMs < root.atMs)
+      return refused("native-channel-observer-mismatch");
+    const spawn = one(row => row.event === "child-spawn" && row.pid === binding.parentPid &&
+      row.processIdentity === binding.processIdentity && row.childIdentity === binding.childIdentity);
+    if (!isDeepStrictEqual(spawn.nativeChannel, binding) || !Number.isSafeInteger(spawn.childPid) || spawn.childPid <= 0 ||
+        !["sh", "/bin/sh"].includes(spawn.command) || spawn.shell !== false ||
+        !isDeepStrictEqual(spawn.argv, ["-c", channel.command]) || spawn.cwd !== producer.command.cwd ||
+        spawn.lifecycle?.event !== channel.script || spawn.lifecycle?.script !== channel.command || spawn.atMs < observer.atMs)
+      return refused("native-channel-spawn-mismatch");
+    const closeFor = start => one(row => row.event === "child-close" && row.pid === start.pid &&
+      row.processIdentity === start.processIdentity && row.childIdentity === start.childIdentity && row.childPid === start.childPid);
+    const close = closeFor(spawn);
+    const interrupted = allowInterrupted && native?.finishedAtMs === null && native.terminalHook === null &&
+      native.reason === null && native.unhandledErrorCount === null && native.modulePopulationMatched === false &&
+      Array.isArray(native.files) && native.files.length > 0 && Array.isArray(native.gaps) && native.gaps.length === 0;
+    const endAtMs = interrupted ? Math.max(...native.files.map(file => file.observedAtMs)) : native?.finishedAtMs;
+    if (native?.schemaVersion !== "native-vitest-run-v1" || native.scope !== "vitest-reporter-callbacks" ||
+        !Number.isSafeInteger(native.pid) || !Number.isSafeInteger(native.ppid) ||
+        !Number.isSafeInteger(native.startedAtMs) || native.startedAtMs < spawn.atMs ||
+        !Number.isSafeInteger(endAtMs) || endAtMs < native.startedAtMs || endAtMs > close.atMs ||
+        close.atMs < spawn.atMs || !(close.code === null || Number.isSafeInteger(close.code) && close.code >= 0) ||
+        !(close.signal === null || validIdentity(close.signal)) || close.code === null && close.signal === null ||
+        !interrupted && (close.code !== 0 || close.signal !== null))
+      return refused("native-channel-close-mismatch");
+    const reporter = entryFor(native.pid);
+    if (reporter.ppid !== native.ppid || reporter.reporterOut !== producer.outPath ||
+        reporter.cwd !== producer.command.cwd || reporter.lifecycle?.event !== channel.script ||
+        reporter.lifecycle?.script !== channel.command || reporter.atMs < spawn.atMs || reporter.atMs > native.startedAtMs ||
+        !(reporter.pid === spawn.childPid || reporter.ppid === spawn.childPid))
+      return refused("native-channel-reporter-mismatch");
+    // Walk observed shell/Node parent links back to the enrolled original npm.
+    // Each hop needs its own single native spawn/close pair; PID proximity alone
+    // cannot attach a foreign npm invocation to this run.
+    const visited = new Set();
+    for (let child = observer; child.processIdentity !== root.processIdentity;) {
+      if (visited.has(child.pid)) return refused("native-channel-ancestry-cycle");
+      visited.add(child.pid);
+      const parentSpawn = one(row => row.event === "child-spawn" &&
+        (row.childPid === child.pid || row.childPid === child.ppid) && row.atMs <= child.atMs &&
+        row.atMs >= root.atMs);
+      const parentClose = closeFor(parentSpawn), parent = entryFor(parentSpawn.pid);
+      if (parent.processIdentity !== parentSpawn.processIdentity || parent.atMs > parentSpawn.atMs ||
+          parentClose.atMs < close.atMs || parentClose.atMs < parentSpawn.atMs)
+        return refused("native-channel-ancestry-mismatch");
+      child = parent;
+    }
+    const exits = events.filter(row => row.event === "node-exit" && row.pid === reporter.pid &&
+      row.processIdentity === reporter.processIdentity);
+    if (exits.length > 1 || !interrupted && exits.length !== 1) return refused("native-channel-reporter-exit-unmeasured");
+    if (!interrupted) {
+      const exit = exits[0];
+      if (exit.ppid !== reporter.ppid || exit.code !== 0 || exit.exitListenersComplete !== true ||
+          exit.atMs < endAtMs || exit.atMs > close.atMs) return refused("native-channel-reporter-exit-mismatch");
+      for (const role of ["stdout", "stderr"]) {
+        const pin = exit.streams?.[role];
+        if (pin?.scope !== "node-writable-call-inputs" || pin.captureComplete !== true || pin.artifactUnavailable ||
+            !/^[a-f0-9]{64}$/.test(pin.sha256) || pin.ref !== `${pin.sha256}.stream` ||
+            !Number.isSafeInteger(pin.byteLength) || pin.byteLength < 0 || pin.byteLength > 16 * 1024 * 1024 ||
+            pin.observedByteLength !== pin.byteLength) return refused("native-channel-reporter-stream-unmeasured");
+        const bytes = readNativeArtifactBytes(join(sourceRoot, pin.ref), pin.byteLength, 16 * 1024 * 1024);
+        if (createHash("sha256").update(bytes).digest("hex") !== pin.sha256)
+          return refused("native-channel-reporter-stream-mismatch");
+      }
+    }
+    return { status: "bound", reason: null, custody: { rootPid: root.pid,
+      reporterPid: reporter.pid, reporterProcessIdentity: reporter.processIdentity,
+      observerPid: observer.pid, childPid: spawn.childPid, childIdentity: spawn.childIdentity,
+      startedAtMs: spawn.atMs, closedAtMs: close.atMs, terminal: !interrupted } };
+  } catch (error) { return refused(`native-channel-custody-unreadable:${error?.message ?? "unknown"}`); }
+}
+
 /**
  * Read the reporter's existing atomic OUT channel, including a snapshot written before
  * onTestRunEnd. Selection comes from the caller, never from the observed result sample.
@@ -356,16 +464,13 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
       snapshot.workspaceName !== expected.workspaceName || !validIdentity(expected.root) ||
       !validIdentity(snapshot.recordedSha) || !validIdentity(context.runContext) || !validIdentity(context.runnerIdentity))
     return refused("snapshot-identity-mismatch");
+  let producer;
   if (expected.producerPath !== undefined) {
-    const producer = readPartialNativeProducer(expected.producerPath, { ...expected,
+    producer = readPartialNativeProducer(expected.producerPath, { ...expected,
       outPath: file, runGroupId: context.runGroupId, sourceCommit: snapshot.recordedSha });
     if (!producer || !Number.isSafeInteger(native?.startedAtMs) || native.startedAtMs < producer.registeredAtMs ||
         !isDeepStrictEqual(producer.selectedSpecifications, expected.selectedSpecifications))
       return refused("native-producer-mismatch");
-    // Routing preparation must not broaden acceptance. The channel's real npm
-    // spawn/close and reporter-process binding still need independent custody
-    // verification before this reader can accept its outcomes.
-    if (producer.nativeChannel) return refused("native-channel-custody-unmeasured");
   }
   if (native?.schemaVersion !== "native-vitest-run-v1" || !Array.isArray(native.files) ||
       !Array.isArray(native.gaps) || !Array.isArray(snapshot.rows)) return refused("native-population-unmeasured");
@@ -402,6 +507,12 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
   const interrupted = native.finishedAtMs === null && native.terminalHook === null && native.reason === null &&
     native.unhandledErrorCount === null && native.modulePopulationMatched === false &&
     native.gaps.length === 0 && native.files.length > 0;
+  if (producer?.nativeChannel) {
+    const custody = readPartialNativeChannelCustody(producer, native, {
+      allowInterrupted: options.allowInterrupted === true && interrupted,
+    });
+    if (custody.status !== "bound") return refused(custody.reason);
+  }
   if (options.requireTerminal === true && !terminalPassed && !(options.allowInterrupted === true && interrupted))
     return refused("native-terminal-verdict-unmeasured");
   const rows = new Map();
@@ -806,6 +917,29 @@ export function preparePartialRemainingSelection(checkpoint, expected, { selecti
       if (!files.length) return refused("native-empty-selection-with-command-work");
       const selectedSpecifications = entry.selectedSpecifications.filter(spec => files.includes(spec.testFile));
       tasks.push({ ...structuredClone(entry), files, selectedSpecifications });
+    } else if (entry?.runner === "command-chain" && remaining.length !== units.length) {
+      // Keep npm's original command and every unbanked command/lifecycle guard.
+      // The maintained filter-list channel can narrow files inside each native
+      // step; it cannot skip a command or make an empty step successful.
+      if (units.some(unit => unit.kind !== "test" && !run.has(unit.id)))
+        return refused("atomic-command-partially-complete");
+      const narrowed = structuredClone(entry);
+      for (const step of narrowed.steps) {
+        if (step.lifecycle === true) continue;
+        const leaf = step.discovery[0];
+        if (leaf.runner !== "vitest") {
+          if (step.files.some(file => !run.has(`test:${file}`)))
+            return refused("atomic-task-partially-complete");
+          continue;
+        }
+        const files = step.files.filter(file => run.has(`test:${file}`));
+        if (!files.length) return refused("native-empty-selection-with-command-work");
+        step.files = files;
+        leaf.files = files.slice();
+        leaf.selectedSpecifications = leaf.selectedSpecifications.filter(spec => files.includes(spec.testFile));
+      }
+      narrowed.files = entry.files.filter(file => run.has(`test:${file}`));
+      tasks.push(narrowed);
     } else {
       if (remaining.length !== units.length) return refused("atomic-task-partially-complete");
       tasks.push(structuredClone(entry ?? { ...task, files: [] }));

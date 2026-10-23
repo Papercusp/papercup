@@ -304,6 +304,30 @@ describe('llmCall backend selection', () => {
     expect(modelForLlmCall('chatgpt:5.5', 'anthropic-direct')).toBe('chatgpt:5.5');
   });
 
+  it('retains each successful response identity and never records a failed model request', async () => {
+    modelExpectations.mark.mockClear();
+    const ids = [1, 2].map(n => `11111111-1111-4111-8111-111111111111:${n}`);
+    const fetchMock = vi.fn();
+    for (const id of ids) fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ output_text: 'ok',
+      usage: { input_tokens: 1, output_tokens: 1 } }),
+      { status: 200, headers: { 'x-papercusp-model-request-id': id } }));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: 'failed' } }), { status: 500 }));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ output_text: 'legacy',
+      usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const { llmCall } = await import('../llm-client');
+      const opts = { model: 'chatgpt:5.5', messages: [{ role: 'user' as const, content: 'fixture' }] };
+      await llmCall(opts); await llmCall(opts);
+      await expect(llmCall(opts)).rejects.toBeDefined();
+      expect(modelExpectations.mark.mock.calls).toEqual(ids.map(id => [id]));
+      await llmCall(opts);
+      // Missing identity remains observable so the trusted writer marks the
+      // expectation incomplete instead of silently assuming no model ran.
+      expect(modelExpectations.mark.mock.calls).toEqual([...ids.map(id => [id]), [null]]);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('uses the local Codex gateway for OpenAI-family stateless calls', async () => {
     modelExpectations.mark.mockClear();
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {

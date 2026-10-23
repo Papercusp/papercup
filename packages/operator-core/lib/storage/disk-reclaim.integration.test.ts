@@ -218,6 +218,7 @@ describe('retention on a real fixture tree', () => {
       expect(receipt.complete).toBe(true);
       expect(persisted?.timings).toMatchObject({ beforeSampleMs: 2, afterSampleMs: 2,
         initialMutexWaitMs: 24, reacquireMutexWaitMs: 0, protectionReadMs: 7, rootPreparationMs: 17, auditMs: 5 });
+      expect(receipt.mutexTimeout).toBeUndefined();
       // The receipt cannot truthfully include its own database acknowledgement.
       expect(receipt.timings).toEqual(persisted?.timings);
     } finally { monotonic.mockRestore(); }
@@ -501,13 +502,27 @@ describe('retention on a real fixture tree', () => {
       await releaseGate;
     });
     await readyGate;
+    let clock = Date.now(), advanced = false;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    fixtureMutex.observe = phase => {
+      if (phase === 'mutex-waiting' && !advanced) { advanced = true; clock += 5_001; }
+    };
+    let persisted: DiskReclaimReceipt | undefined;
     try {
-      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 100 });
+      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 5_000,
+        record: async (phase, details) => {
+          if (phase === 'receipt') persisted = structuredClone(details as DiskReclaimReceipt);
+        },
+      });
       expect(receipt.complete).toBe(false);
-      expect(receipt.errors.join('; ')).toMatch(/Timed out after .*waiting for fs-mutex|retention run budget exhausted/);
+      expect(receipt.errors.join('; ')).toContain('waiting for fs-mutex');
+      expect(receipt.mutexTimeout).toMatchObject({ phase: 'initial', remainingRunBudgetMs: 5_000,
+        waitedMs: 5_001, timeoutMs: 5_000,
+        admissionSubphaseTimingsMs: { 'ticket-scan': expect.any(Number) } });
+      expect(persisted?.mutexTimeout).toEqual(receipt.mutexTimeout);
       expect(receipt.entries).toEqual([]);
       expect(await readFile(path, 'utf8')).toBe('keep');
-    } finally { release(); await holder; }
+    } finally { release(); await holder; now.mockRestore(); }
   });
 
   it('uses a held regular-file lease for file effects while directories keep host holder scans', async () => {
@@ -656,6 +671,44 @@ describe('retention on a real fixture tree', () => {
       const ignored = await runDiskReclaimOnce({ ...scoped, previousReceipt, dryRun: true });
       expect(ignored.roots?.map(value => value.path)).toEqual([blocked, ready]);
     }
+  });
+
+  it.each([false, true])('reclaims a pressured device before a healthy census consumes the run deadline (alias=%s)', async alias => {
+    const { root, options } = await setup();
+    const healthy = join(root, 'healthy-device'); await mkdir(healthy);
+    const pressured = join(root, 'pressured-device'); await mkdir(pressured);
+    const expired = join(pressured, 'expired'); await writeFile(expired, 'old root-disk data');
+    const roots = [healthy, pressured].map(path => ({ path, classId: 'fixture' }));
+    const gib = 1024 ** 3;
+    const snapshot = (path: string, freeBytes: number, aliases?: string[]) => ({
+      path, aliases, totalBytes: 3000 * gib, freeBytes, freePct: freeBytes / (3000 * gib),
+      totalInodes: 0, freeInodes: 0, freeInodesPct: 0,
+    });
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const visited: string[] = [];
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, roots, runBudgetMs: 1000,
+        policy: options.policy.map(cls => ({ ...cls, roots: [healthy, pressured] })),
+        sample: async () => [snapshot(root, (alias ? 2000 : 30) * gib), snapshot(healthy, 2000 * gib),
+          ...(alias ? [snapshot('/bound-pressure-device', 30 * gib, [pressured])] : [])],
+        inspectTrees: async (path, input) => {
+          visited.push(path);
+          if (path === healthy) {
+            clock += 2000;
+            return { entries: [], retained: [], inspectedNodes: 1, retainedRecentTrees: 0,
+              error: 'retention native census timed out' };
+          }
+          return inspectRetentionTrees(path, input);
+        },
+      });
+      expect(visited[0]).toBe(pressured);
+      expect(receipt.entries).toContainEqual(expect.objectContaining({ path: expired, status: 'removed' }));
+      await expect(stat(expired)).rejects.toMatchObject({ code: 'ENOENT' });
+      // Priority changes ordering, not coverage: the interrupted healthy root stays incomplete.
+      expect(receipt.complete).toBe(false);
+      expect(receipt.scan?.incompleteRoots).toContain(healthy);
+    } finally { now.mockRestore(); }
   });
 
   it.each(['advancing-census', 'expired-inspection', 'expired-admission', 'expired-run'] as const)
@@ -1504,7 +1557,11 @@ describe('retention on a real fixture tree', () => {
       // waiting notice cannot drive a frozen clock: it is itself time-throttled.
       if (phase === 'mutex-waiting' && requests === 3) reacquisitionQueued();
     };
+    let persisted: DiskReclaimReceipt | undefined;
     const reclaim = runDiskReclaimOnce({ ...scoped, runBudgetMs: 1_000,
+      record: async (phase, details) => {
+        if (phase === 'receipt') persisted = structuredClone(details as DiskReclaimReceipt);
+      },
       removeEntry: async entry => { entered(); await finishRemoval; await rm(entry.path); } });
     let peer: Promise<unknown> | undefined;
     try {
@@ -1527,6 +1584,10 @@ describe('retention on a real fixture tree', () => {
       expect(failedWait).toBe(true);
       expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
       expect(receipt.errors.join('; ')).toContain('waiting for fs-mutex');
+      expect(receipt.mutexTimeout).toMatchObject({ phase: 'reacquire', remainingRunBudgetMs: 999,
+        waitedMs: 2_000, timeoutMs: 999,
+        admissionSubphaseTimingsMs: { 'ticket-scan': expect.any(Number) } });
+      expect(persisted?.mutexTimeout).toEqual(receipt.mutexTimeout);
       // The next scheduled pass must rotate past this interrupted root instead
       // of repeatedly starting at the same early roots after a FIFO timeout.
       expect(receipt.scan?.stoppedAtRoot).toBe(root);

@@ -7,6 +7,7 @@ import { setupPlanPgFixture, seedPlan, type PlanPgFixture } from './agent-tools/
 import { declareSessionConfinement } from './capability-envelope/session-confinement-store';
 import { BLIND_GAP_REVIEW_ACTOR } from './blind-review-session-bindings';
 import { blindReviewerConfinement } from './blind-reviewer-mint';
+import { assertMigrationPassesPreApplyLints } from './migration-preapply-lint';
 import { replaceBlindGapReviewer, type BlindReviewReplacementDeps, type BlindReviewReplacementInput } from './blind-review-replacement';
 
 let fx: PlanPgFixture;
@@ -80,6 +81,33 @@ async function nativeLaunch(input: BlindReviewReplacementInput, args: Record<str
 }
 
 describe('same-activation replacement on private PostgreSQL', () => {
+  it('passes the maintained migration safety gate and preserves legacy targetless insert retries', async () => {
+    expect(() => assertMigrationPassesPreApplyLints({
+      filename: '1567-blind-review-replacement-attempts.sql',
+      sqlText: readMigration('1567-blind-review-replacement-attempts.sql'),
+      sqlDir: sqlRoot.pathname,
+    })).not.toThrow();
+    const s = await seed();
+    const [legacy] = await fx.admin<Array<{ id: number; attempt_seq: number; replacement_of: number | null }>>`
+      WITH original AS (DELETE FROM harness_shared.plan_blind_review_sessions WHERE id = ${s.bindingId} RETURNING *)
+      INSERT INTO harness_shared.plan_blind_review_sessions
+        (workspace_id, harness_slug, plan_slug, activation_audit_seq, reviewer_owner_id, adv_session_id,
+         native_session_id, launch_parent_owner, account_route, confinement_snapshot, status, review_id)
+      SELECT workspace_id, harness_slug, plan_slug, activation_audit_seq, reviewer_owner_id, adv_session_id,
+             native_session_id, launch_parent_owner, account_route, confinement_snapshot, status, review_id FROM original
+      ON CONFLICT DO NOTHING RETURNING id, attempt_seq, replacement_of`;
+    expect(legacy).toMatchObject({ attempt_seq: 0, replacement_of: null });
+    const repeated = await fx.admin`
+      INSERT INTO harness_shared.plan_blind_review_sessions
+        (workspace_id, harness_slug, plan_slug, activation_audit_seq, reviewer_owner_id, adv_session_id,
+         native_session_id, launch_parent_owner, account_route, confinement_snapshot, status, review_id)
+      SELECT workspace_id, harness_slug, plan_slug, activation_audit_seq, reviewer_owner_id, adv_session_id,
+             native_session_id, launch_parent_owner, account_route, confinement_snapshot, status, review_id
+        FROM harness_shared.plan_blind_review_sessions WHERE id = ${legacy!.id}
+      ON CONFLICT DO NOTHING RETURNING id`;
+    expect(repeated).toHaveLength(0);
+  });
+
   it('serializes concurrent equivalent requests, launches once, and preserves the complete original receipt', async () => {
     const s = await seed();
     const before = await fx.admin`SELECT * FROM harness_shared.plan_blind_reviews WHERE id = ${s.input.sourceReviewId}`;

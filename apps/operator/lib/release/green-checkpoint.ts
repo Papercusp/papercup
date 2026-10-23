@@ -25,6 +25,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   mkdirSync,
+  closeSync,
+  fsyncSync,
+  openSync,
   writeFileSync,
   appendFileSync,
   readdirSync,
@@ -211,7 +214,9 @@ import {
   type StoredQualificationMutation,
 } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import { executedSourceRunnerIdentity } from "@papercusp/test-config/test-pass-reuse-skip";
-import { evaluatePartialTaskContinuation, partialTaskCheckpointPath, preparePartialContinuationManifest, preparePartialNativeProducerSelection,
+import { writeBudgetedTaskNativeExecutionReceipt } from "../../../../scripts/lib/budgeted-task-scheduler.mjs";
+import { evaluatePartialTaskContinuation, partialTaskCheckpointPath, preparePartialContinuationManifest,
+  preparePartialNativeProducerChannels, preparePartialNativeProducerSelection,
   preparePartialRemainingSelection, writePartialTaskCheckpointAtomic } from "../../../../scripts/lib/partial-task-resume.mjs";
 // eslint-disable-next-line import/no-relative-packages -- share the native reporter's maintained input classifier
 import { classifyReadPaths } from "../../../../libs/test-config/src/executed-source-map-reporter";
@@ -4311,6 +4316,7 @@ export async function prepareCheckpointQualificationNativeRun(
   },
 ): Promise<{ status: 'legacy' } | { status: 'refused'; reason: string } |
   { status: 'ready'; observer: ReturnType<typeof createCheckpointQualificationNativeObserver>;
+    postSuite: { target: GateVerdictTarget; progress: QualificationWorkProgressInput };
     checkpoint: { root: string; taskKey: string; sourceCommit: string; sourceDigest: string;
       selectedFiles: string[]; passedFiles: string[]; state: string;
       continuation: NonNullable<Extract<StoredQualificationMutation, { status: 'updated' | 'idempotent' }>['transaction']['continuation']> } }> {
@@ -4359,13 +4365,30 @@ export async function prepareCheckpointQualificationNativeRun(
     supersedesCompletionIds: Record<string, string> }>();
   for (const task of remaining.tasks) {
     if (!task.files.length) continue;
-    // Until ordered scripts expose distinct native channels, preserve npm's
-    // original lifecycle and refuse the unsupported continuation before spawn.
-    if (task.runner !== 'vitest') return refuse('qualification-native-task-unsupported');
-    const native = preparePartialNativeProducerSelection({ ...selection, tasks: [task], files: task.files,
+    const localSelection = { ...selection, tasks: [task], files: task.files,
       unenumerated: selection.unenumerated.filter(value => value.task === task.id),
       commandObligations: selection.commandObligations.filter(value => value.task === task.id),
-    }, task, input.root);
+    };
+    if (task.runner === 'command-chain') {
+      // The child retains its original npm command and routes each observed
+      // lifecycle into a separate OUT. Independently derive the step keys and
+      // populations here; stdout supplies locations, never selection authority.
+      const inventory = selection.taskInventory as Array<{ id: string }>;
+      const native = preparePartialNativeProducerChannels({ root: input.root,
+        selection: localSelection, task: inventory.find(value => value.id === task.id),
+        outPath: path.join(input.root, 'qualification-native-selection.out'),
+        postSuite: postSuiteContinuationPopulation() });
+      if (native.status !== 'ready') return refuse(`qualification-native-selection-${native.reason}`);
+      for (const channel of native.channels) tasks.set(channel.taskKey, { workspaceName: task.workspace,
+        selectedSpecifications: channel.selectedSpecifications,
+        supersedesCompletionIds: Object.fromEntries((recovered.transaction.continuation?.receipts ?? [])
+          .filter(receipt => channel.selectedSpecifications.some((spec: { testFile: string }) =>
+            receipt.unitId === `test:${spec.testFile}`))
+          .map(receipt => [receipt.unitId, receipt.completionId])) });
+      continue;
+    }
+    if (task.runner !== 'vitest') return refuse('qualification-native-task-unsupported');
+    const native = preparePartialNativeProducerSelection(localSelection, task, input.root);
     if (native.status !== 'ready') return refuse(`qualification-native-selection-${native.reason}`);
     const predecessors = Object.fromEntries((recovered.transaction.continuation?.receipts ?? [])
       .filter(receipt => task.files.some((file: string) => receipt.unitId === `test:${file}`))
@@ -4374,6 +4397,7 @@ export async function prepareCheckpointQualificationNativeRun(
       supersedesCompletionIds: predecessors });
   }
   return { status: 'ready', observer: deps.observe({ target: input.target, progress, tasks, classifyReadPaths: classifier }),
+    postSuite: { target: input.target, progress },
     checkpoint: { root: input.root, taskKey: work.taskKey, sourceCommit: input.candidate,
       sourceDigest: createHash('sha256').update(progress.runnerIdentity).digest('hex'),
       selectedFiles: work.manifest.units.filter(unit => unit.kind === 'test').map(unit => unit.path),
@@ -19819,7 +19843,115 @@ function postSuiteCommandId(cmd: string, args: readonly string[]): string {
   return `${cmd}:${args.join(" ")}`;
 }
 
+/** Save measured post-suite outcomes through the existing qualification fence.
+ * A logical leg is the bounded chunk: grouped commands bank only once every
+ * member closes. Raw output uses the existing immutable native receipt store.
+ * These observations deliberately carry no input-closure proof, so they cannot
+ * authorize reuse or green composition until a proof collector qualifies them.
+ */
+export function createCheckpointQualificationPostSuiteExecutor(
+  input: { target: GateVerdictTarget; progress: QualificationWorkProgressInput },
+  execute: CheckpointExec,
+  deps = { record: recordStoredQualificationWorkProgress, now: Date.now },
+): CheckpointExec {
+  const progress = structuredClone({ ...input.progress, updates: [] });
+  const target = structuredClone(input.target);
+  type NativeReceipt = ReturnType<typeof writeBudgetedTaskNativeExecutionReceipt>;
+  const observations = new Map<string, { receipt: NativeReceipt; state: 'pass' | 'fail' | 'infra'; endedAtMs: number }>();
+  const started = new Set<string>();
+  let pending: Promise<unknown> = Promise.resolve();
+  let failed = input.progress.updates.length > 0;
+  let failure: unknown = failed
+    ? new Error('qualification-post-suite-mixed-updates') : undefined;
+  const fenced = async (updates: QualificationWorkProgressInput['updates']) => {
+    const stored = await deps.record(target, { ...progress, updates });
+    if (stored.status !== 'updated' && stored.status !== 'idempotent')
+      throw new Error(`qualification-post-suite-custody-${stored.status}`);
+    return stored.transaction;
+  };
+  const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
+    const next = pending.then(() => {
+      if (failed) throw failure;
+      return operation();
+    });
+    // Retain a rejected write as a hard barrier for concurrent/later commands,
+    // while attaching its rejection handler immediately.
+    pending = next.catch(error => { failed = true; failure = error; });
+    return next;
+  };
+  return async (cmd, args, options) => {
+    if (path.resolve(options?.cwd ?? progress.root) !== path.resolve(progress.root))
+      throw new Error('qualification-post-suite-root-mismatch');
+    const commandId = postSuiteCommandId(cmd, args);
+    const definition = POST_SUITE_LEG_DEFINITIONS.find(leg => (leg.commands as readonly string[]).includes(commandId));
+    if (!definition || !progress.manifest.units.some(unit => unit.id === `post:${definition.id}` && unit.kind === 'post-suite'))
+      throw new Error('qualification-post-suite-command-outside-manifest');
+    await serialize(async () => {
+      if (started.has(commandId)) throw new Error('qualification-post-suite-command-duplicate');
+      await fenced([]);
+      started.add(commandId);
+    });
+    const startedAtMs = deps.now();
+    let result: CheckpointExecResult | undefined;
+    let thrown: unknown;
+    let errored = false;
+    try { result = await execute(cmd, args, options); }
+    catch (error) { errored = true; thrown = error; }
+    const endedAtMs = deps.now();
+    const state = !result || result.signal ? 'infra' :
+      commandId === 'spa:conflict-markers'
+        ? (result.code === 1 || result.code === 0 && !result.stdout.trim() ? 'pass' : 'fail')
+        : result.code === 0 ? 'pass' : 'fail';
+    await serialize(async () => {
+      const receipt = writeBudgetedTaskNativeExecutionReceipt(path.join(os.tmpdir(),
+        'papercusp-qualification-post-suite', createHash('sha256')
+          .update(`${progress.root}\0${progress.attemptId}`).digest('hex')), {
+        task: `post:${definition.id}:${commandId}`, attempt: progress.runId,
+        cwd: options?.cwd ?? progress.root, command: [cmd, ...args],
+        startedAtMs, finishedAtMs: endedAtMs, exitCode: result?.code ?? null,
+        signal: result?.signal ?? null, error: errored ? String(thrown) : null,
+        captureComplete: !errored, stdout: Buffer.from(result?.stdout ?? ''),
+        stderr: Buffer.from(result?.stderr ?? ''),
+      });
+      observations.set(commandId, { receipt, state, endedAtMs });
+      if (!definition.commands.every(command => observations.has(command))) return;
+      // The row must never acknowledge a result whose content-addressed output
+      // still exists only in the kernel's write cache.
+      const syncPath = (file: string) => {
+        const fd = openSync(file, 'r');
+        try { fsyncSync(fd); } finally { closeSync(fd); }
+      };
+      for (const command of definition.commands) {
+        const saved = observations.get(command)!.receipt;
+        for (const pin of [saved.receipt, saved.logs.stdout, saved.logs.stderr])
+          syncPath(path.join(saved.root, pin.ref));
+        syncPath(saved.root);
+        syncPath(path.dirname(saved.root));
+        syncPath(path.dirname(path.dirname(saved.root)));
+      }
+      const transaction = await fenced([]);
+      const unitId = `post:${definition.id}`;
+      const previous = transaction.continuation?.receipts.find(receipt => receipt.unitId === unitId);
+      const commands = definition.commands.map(command => ({ command, ...observations.get(command)! }));
+      const unitState = commands.some(command => command.state === 'fail') ? 'fail' :
+        commands.some(command => command.state === 'infra') ? 'infra' : 'pass';
+      await fenced([{ receipt: {
+        unitId, completionId: randomUUID(), observedAtMs: Math.max(...commands.map(command => command.endedAtMs)),
+        state: unitState, observedCount: commands.length,
+        proof: { commandOutcomes: commands.map(({ command, receipt }) => ({
+          command, root: receipt.root, receipt: receipt.receipt,
+        })), opaqueReasons: ['post-suite-runtime-inputs-unmeasured'] },
+      }, ...(previous ? { supersedesCompletionId: previous.completionId } : {}) }]);
+    });
+    if (errored) throw thrown;
+    // Older injected exec seams can report code 0 alongside a signal. Preserve
+    // the measured signal and ensure the existing leg checks cannot count it green.
+    return result!.signal && result!.code === 0 ? { ...result!, code: 1 } : result!;
+  };
+}
+
 interface PostSuiteRunOptions {
+  qualification?: Parameters<typeof createCheckpointQualificationPostSuiteExecutor>[0];
   /** Deterministic test seam; production uses the monotonic-enough wall clock. */
   now?: () => number;
   /** Stable openedAtMs of the frozen queue candidate being judged, when applicable. */
@@ -19879,6 +20011,8 @@ export async function runPostSuiteLegs(
   spaWorkspace: string,
   options: PostSuiteRunOptions = {},
 ): Promise<PostSuiteLegs> {
+  const execute = options.qualification
+    ? createCheckpointQualificationPostSuiteExecutor(options.qualification, execRaw) : execRaw;
   const now = options.now ?? Date.now;
   const startedAt = now();
   const resourceDerivedLowMemoryConcurrency = Math.min(
@@ -19917,7 +20051,7 @@ export async function runPostSuiteLegs(
     let result: Awaited<ReturnType<CheckpointExec>> | undefined;
     let thrown: unknown;
     try {
-      result = await execRaw(cmd, args, opts);
+      result = await execute(cmd, args, opts);
       return result;
     } catch (error) {
       thrown = error;
@@ -23331,6 +23465,7 @@ export function realCheckpointDeps(
       const resolvedHeadAtStart = resolveCandidateSha(treeDir);
       const qualificationAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim();
       let nativeObserver: ReturnType<typeof createCheckpointQualificationNativeObserver> | undefined;
+      let postSuiteQualification: PostSuiteRunOptions['qualification'];
       let nativeRefusal: string | undefined;
       if (repairTarget && qualificationAttemptId) {
         const prepared = await prepareCheckpointQualificationNativeRun({
@@ -23354,6 +23489,7 @@ export function realCheckpointDeps(
         }
         if (prepared.status === 'ready') {
           nativeObserver = prepared.observer;
+          postSuiteQualification = prepared.postSuite;
           // Reuse the integrity-sealed partial checkpoint transport. The child
           // independently reselects the full inventory and regrades the proofs
           // before applying task-local file filters to original npm invocations.
@@ -23374,6 +23510,7 @@ export function realCheckpointDeps(
         ...(execution?.setup ? { setup: execution.setup } : {}),
       };
       const postSuiteOptions: PostSuiteRunOptions = {
+        ...(postSuiteQualification ? { qualification: postSuiteQualification } : {}),
         identity: postSuiteIdentity,
         operatorPgEnv: gateOperatorPgEnv(process.env),
         ...(execution?.frozenCandidateOpenedAtMs !== undefined

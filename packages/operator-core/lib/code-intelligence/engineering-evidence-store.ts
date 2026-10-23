@@ -7,6 +7,7 @@ import { resolvePlanItemAnchors } from '../plan-items/anchors';
 import { corroboratePushSources, peekPushSnapshot } from './push-snapshot';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
+import { readEngineeringExecution } from '../observability/engineering-execution';
 import type { CodeIntelAnswer } from './contracts';
 import type { EngineeringEvidenceDeps, EngineeringScope, EngineeringSpec, EngineeringSymbol } from './engineering-evidence';
 import type { SpecClauseRevision } from '../agent-tools/plans/spec-clauses-store';
@@ -145,6 +146,7 @@ export function engineeringEvidenceStore(options: StoreOptions = {}): Engineerin
         reasons: [...p.currentness.staleReasons, ...p.currentness.unknownReasons],
       }));
     },
+    async execution(scope, runId) { return readEngineeringExecution(scope, runId, await sql()); },
     async run(scope, runId) {
       const db = await sql();
       const [run] = await db<Array<{ id: string; file: string; status: string; commit: string | null }>>`

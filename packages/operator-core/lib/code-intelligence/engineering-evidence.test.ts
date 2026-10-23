@@ -50,6 +50,22 @@ describe('native engineering evidence contract', () => {
     expect(history.edges.filter(e => e.basis === 'unscoped-context')).toHaveLength(2);
     expect(history.gaps.filter(g => g.code === 'decision-applicability-unknown')).toHaveLength(2);
   });
+  it('ee.boundary-scope: links an observed boundary only to its recorded test case, preserving the queried symbol distinction', async () => {
+    const receipt = { boundary: 'graph:query:evidence' as const, callId: 'call-1', workspaceId: scope.workspaceId,
+      harness: scope.harness, traceId: 'a'.repeat(32), spanId: 'b'.repeat(16), parentSpanId: 'c'.repeat(16),
+      traceFlags: 1, startedAt: 1, endedAt: 2, outcome: 'ok' as const, sourceFingerprint: 'd'.repeat(64),
+      buildSha: 'e'.repeat(40), artifactFingerprint: null, environmentFingerprint: 'f'.repeat(64), workflowId: null };
+    const observation = { runId: proof.runId!, invocationId: '17', caseKey: 'ee.intent-exact', occurrence: 1, receipt };
+    const graph = await readEngineeringEvidence(query, scope, fixture({ execution: async () => ({
+      status: 'observed', scope: 'instrumented-boundaries-only', observations: [observation], gaps: [],
+    }) }));
+    expect(graph.execution).toMatchObject({ status: 'observed', scope: 'instrumented-boundaries-only', observations: [observation] });
+    const links = graph.edges.filter(edge => edge.knowledge === 'observed');
+    expect(links).toHaveLength(1);
+    expect(graph.nodes.find(node => node.id === links[0]!.from)?.kind).toBe('test-case');
+    expect(graph.nodes.find(node => node.id === links[0]!.to)?.kind).toBe('execution');
+    expect(graph.nodes.find(node => node.kind === 'symbol')?.data).not.toHaveProperty('executed');
+  });
   it('ee.homonym: requires a single resolved declaration and never queries ownership on ambiguity', async () => {
     const deps = fixture({ symbol: async () => [symbol, { ...symbol, versionedSymbolId: 'homonym' }] });
     const graph = await readEngineeringEvidence(query, scope, deps);

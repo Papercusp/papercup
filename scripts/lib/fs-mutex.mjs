@@ -621,12 +621,15 @@ async function reclaimAbandonedLock(
   staleMs,
   io = {},
   measureSubphase = (_name, operation) => operation(),
+  observeOwner = (_owner) => {},
 ) {
   let owner;
   try {
-    owner = await measureSubphase("abandoned-lock.owner-read", async () =>
-      JSON.parse(await (io.readFile ?? readFile)(join(lockDir, "owner.json"), "utf8")),
-    );
+    owner = await measureSubphase("abandoned-lock.owner-read", async () => {
+      const rawOwner = await (io.readFile ?? readFile)(join(lockDir, "owner.json"), "utf8");
+      observeOwner(rawOwner);
+      return JSON.parse(rawOwner);
+    });
   } catch {
     // The age fallback below handles unreadable and unparseable records.
   }
@@ -989,7 +992,11 @@ export async function withFsMutex(name, fn, opts = {}) {
         throwIfAdmissionTimedOut();
         const reclaimed = await measureAdmissionSubphase(
           "abandoned-lock-reclaim",
-          () => reclaimAbandonedLock(lockDir, staleMs, io, measureAdmissionSubphase),
+          () => reclaimAbandonedLock(lockDir, staleMs, io, measureAdmissionSubphase, (rawOwner) => {
+            // Reuse the required reclaim read even without a progress callback.
+            // A slow read can exhaust admission before another notice is possible.
+            lastObservedOwner = rawOwner;
+          }),
         );
         // Reclamation can itself take longer than the admission budget. Re-check
         // its completion time before retrying or sleeping so one slow reclaim

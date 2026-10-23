@@ -9,6 +9,16 @@ export interface TaskBudgetInput {
   pidsReserve?: number | string;
 }
 
+/** Bounded descriptor read shared by native receipt and continuation readers. */
+export function readNativeArtifactBytes(file: string, byteLength: number, byteLimit: number,
+  recordRead?: (count: number) => void): Buffer;
+export function readNativeProcessTraceArtifacts(out: string, startedAtMs?: number, finishedAtMs?: number): {
+  sourceRoot: string;
+  rows: Array<{ row: Record<string, any>; bytes: Buffer }>;
+  population: { artifactLimit: number; artifactsVisited: number; eventByteLimit: number;
+    eventBytesRead: number; complete: boolean; truncatedBy: string | null };
+};
+
 export interface NativeNpmLifecycleDiagnostics {
   scope: 'direct-root-npm-spawn-close'; status: 'observed' | 'unknown'; gaps: string[];
   root: { pid: number; processIdentity: string;

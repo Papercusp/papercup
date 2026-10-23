@@ -2760,19 +2760,34 @@ export function recoverStoredQualificationNativeCompletions(
  * No new runner/attempt is created here. The frozen population is committed before
  * the first callback, and every observed outcome is fenced and durable before the
  * next unit starts. The callback owns its ordinary hung-child/DB/process bounds.
- * A thrown/interrupted callback leaves that unacknowledged unit pending.
+ * A thrown/interrupted callback leaves that unacknowledged unit pending. A phase
+ * driver can name its exact unitIds without narrowing the frozen manifest or the
+ * final evaluation. This lets command/post-suite adapters retain their ordinary
+ * execution boundaries while sharing the same custody and durable receipt store.
  */
 export async function continueStoredQualificationWork(
   target: GateVerdictTarget,
   input: QualificationWorkProgressInput,
   execute: (unit: QualificationWorkUnit) => Promise<QualificationWorkReceipt>,
-  options: { classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths']; recoverMissingSnapshots?: boolean } = {},
+  options: { classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths']; recoverMissingSnapshots?: boolean;
+    unitIds?: readonly string[] } = {},
 ): Promise<{
   status: 'settled'; transaction: CheckpointQualificationTransaction;
   evaluation: ReturnType<typeof evaluatePartialTaskContinuation>; executed: string[];
 } | { status: 'refused'; reason: string; executed: string[] }> {
   const executed: string[] = [];
   const refused = (reason: string) => ({ status: 'refused' as const, reason, executed });
+  let requested: Set<string> | undefined;
+  if (options.unitIds !== undefined) {
+    if (!Array.isArray(options.unitIds) || !options.unitIds.length ||
+        options.unitIds.some(id => typeof id !== 'string' || !id) ||
+        new Set(options.unitIds).size !== options.unitIds.length) return refused('unit-selection-invalid');
+    requested = new Set(options.unitIds);
+    const population = new Set(input.manifest.units.map(unit => unit.id));
+    if ([...requested].some(id => !population.has(id))) return refused('unit-selection-outside-manifest');
+    if (input.updates.some(update => !requested!.has(update?.receipt?.unitId)))
+      return refused('unit-selection-mixed-updates');
+  }
   const grade = (transaction: CheckpointQualificationTransaction) => evaluatePartialTaskContinuation({
     root: input.root, taskKey: input.taskKey, continuation: { ...transaction.continuation,
       attemptId: transaction.attemptId, candidate: transaction.candidate, repairHead: transaction.repairHead },
@@ -2790,6 +2805,7 @@ export async function continueStoredQualificationWork(
   if (selection.status !== 'ready') return refused(`continuation-${selection.reason}`);
   const units = new Map(input.manifest.units.map(unit => [unit.id, unit]));
   for (const id of selection.run) {
+    if (requested && !requested.has(id)) continue;
     // Re-read and validate the exact fence under the row lock immediately before
     // starting another unit, including after a slow or interrupted predecessor.
     const ownership = await synchronize({ ...input, updates: [] });

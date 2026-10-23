@@ -335,7 +335,7 @@ export function evaluateToolDeliveryRuns(rows: readonly ToolDeliveryRun[], schem
     runIds: measured.map(r => r.id), unmeasuredRunIds: rows.filter(r => !measured.includes(r)).map(r => r.id),
     limits: ['Persisted calls only: a pre-recording transport rejection is invisible.',
       'The malformed-call oracle cannot detect a call the agent omitted.',
-      'AJV format keywords are not validated without ajv-formats.',
+      'Current oracle: shared AJV 2020-12 with ajv-formats validates registered formats; unknown custom formats/keywords are ignored (strict:false). Historical measurements retain their recorded validator and limits.',
       ...(experiment.manifestContract ? [] : ['Historical rows lack enforced complete tool-definition manifests; arm fairness needs separate evidence.'])],
   };
   if (new Set(rows.map(r => r.id)).size !== rows.length) {

@@ -681,9 +681,9 @@ export function kickoffMarkerPromptRow(agent: any, row: any, markerText: any): a
  *   markerEndOffset: number | null, scannedEndOffset: number | null}} KickoffMarkerAnchor
  * @param {{agent?: string, env?: EnvironmentMap, transcriptPath?: string | null,
  *   marker?: string | null, markerLostChars?: number, anchor?: KickoffMarkerAnchor | null,
- *   home?: string, maxScanBytes?: number}} options
- * @returns {{available: boolean, started: boolean}} */
-export function nativeKickoffTurnActivityAfterMarker({ agent, env, transcriptPath, marker, markerLostChars, anchor, home, maxScanBytes, }: {
+ *   home?: string, maxScanBytes?: number, includeTerminalFailure?: boolean}} options
+ * @returns {{available: boolean, started: boolean, failure?: NativeExecutionFailure}} */
+export function nativeKickoffTurnActivityAfterMarker({ agent, env, transcriptPath, marker, markerLostChars, anchor, home, maxScanBytes, includeTerminalFailure, }: {
     agent?: string;
     env?: EnvironmentMap;
     transcriptPath?: string | null;
@@ -692,9 +692,11 @@ export function nativeKickoffTurnActivityAfterMarker({ agent, env, transcriptPat
     anchor?: KickoffMarkerAnchor | null;
     home?: string;
     maxScanBytes?: number;
+    includeTerminalFailure?: boolean;
 }): {
     available: boolean;
     started: boolean;
+    failure?: NativeExecutionFailure;
 };
 /** A queued kickoff retry may wait behind the original turn. At the final
  * write boundary only positive native execution proof cancels the retry;

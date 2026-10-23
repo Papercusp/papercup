@@ -1807,8 +1807,8 @@ function kickoffModelActivityRow(agent, row) {
  *   markerEndOffset: number | null, scannedEndOffset: number | null}} KickoffMarkerAnchor
  * @param {{agent?: string, env?: EnvironmentMap, transcriptPath?: string | null,
  *   marker?: string | null, markerLostChars?: number, anchor?: KickoffMarkerAnchor | null,
- *   home?: string, maxScanBytes?: number}} options
- * @returns {{available: boolean, started: boolean}} */
+ *   home?: string, maxScanBytes?: number, includeTerminalFailure?: boolean}} options
+ * @returns {{available: boolean, started: boolean, failure?: NativeExecutionFailure}} */
 export function nativeKickoffTurnActivityAfterMarker({
   agent,
   env = process.env,
@@ -1818,6 +1818,7 @@ export function nativeKickoffTurnActivityAfterMarker({
   anchor = null,
   home = homedir(),
   maxScanBytes = NATIVE_KICKOFF_SCAN_BYTES,
+  includeTerminalFailure = false,
 }) {
   const unavailable = { available: false, started: false };
   if (!['codex', 'claude', 'omp'].includes(agent) || !marker) return unavailable;
@@ -1851,6 +1852,8 @@ export function nativeKickoffTurnActivityAfterMarker({
         if (userContent != null && !row.isMeta && !isNativeLaunchContextPrompt(nativeUserPromptText(userContent), agent)) {
           return unavailable;
         }
+        const failure = includeTerminalFailure ? nativeExecutionFromRows([row], { agent }).failure : null;
+        if (failure) return { available: true, started: false, failure };
         if (kickoffModelActivityRow(agent, row)) return { available: true, started: true };
       }
       anchor.scannedEndOffset = rest.nextOffset;
@@ -1876,6 +1879,8 @@ export function nativeKickoffTurnActivityAfterMarker({
         // Another owner/model turn cannot certify the accepted marker's turn.
         return unavailable;
       }
+      const failure = includeTerminalFailure ? nativeExecutionFromRows([row], { agent }).failure : null;
+      if (failure) return { available: true, started: false, failure };
       if (kickoffModelActivityRow(agent, row)) return { available: true, started: true };
     }
     if (anchor) anchor.scannedEndOffset = scan.nextOffset;
@@ -13665,7 +13670,7 @@ export function hostThroughPty(o) {
       marker: pending.marker, sinceMs: pending.submittedAtMs });
     if (pending.submissionOnly) return { available: true, started: Boolean(nativeRef) };
     return nativeRef ? nativeKickoffTurnActivityAfterMarker({ agent: env.PAPERCUSP_AGENT, env,
-      transcriptPath: nativeRef, marker: pending.marker, anchor: pending.anchor })
+      transcriptPath: nativeRef, marker: pending.marker, anchor: pending.anchor, includeTerminalFailure: true })
       : { available: false, started: false };
   };
   const reconcileNativeStartPending = ({ supersededOnly = false } = {}) => {
@@ -13674,10 +13679,28 @@ export function hostThroughPty(o) {
         deliveryDedup.markSuperseded(id);
         nativeStartPending.delete(id);
         appendHostEvent(ownerId, 'native-turn-start-superseded', { deliveryId: id, childGeneration });
-      } else if (!supersededOnly && nativeStartProof(pending).started) {
-        deliveryDedup.markCompleted(id);
-        nativeStartPending.delete(id);
-        appendHostEvent(ownerId, 'native-turn-start-confirmed', { deliveryId: id, childGeneration });
+      } else if (!supersededOnly) {
+        const proof = nativeStartProof(pending);
+        if (proof.started) {
+          deliveryDedup.markCompleted(id);
+          nativeStartPending.delete(id);
+          appendHostEvent(ownerId, 'native-turn-start-confirmed', { deliveryId: id, childGeneration });
+        } else if (proof.failure) {
+          // EI-26773717003971934: a submitted turn can abort before a start
+          // receipt. Bind its terminal row to this exact marker AND the current
+          // child/submit fence; another turn's failure must never free this gate.
+          const execution = currentNativeExecution();
+          if (pending.childGeneration !== childGeneration || execution.phase !== 'failed' ||
+              execution.failure?.atMs !== proof.failure.atMs || proof.failure.atMs < pending.submittedAtMs ||
+              execution.receivedAtMs !== pending.submittedAtMs || nativeExecutionBlocksInjection(execution) ||
+              Number(execution.pendingGateTools) > 0 || machineTurnActive || ownerStopRequested ||
+              ownerComposerGate.hasPending() || Number(activity.snapshot().lastInputAt ?? 0) > pending.submittedAtMs) continue;
+          if (pending.submissionRecovery) pending.submissionRecovery.stopped = true;
+          const retiredDeliveryIds = retirePendingSubmission(nativeStartPending, pending, deliveryDedup);
+          appendHostEvent(ownerId, 'native-turn-start-failed', {
+            deliveryId: id, retiredDeliveryIds, childGeneration, failure: proof.failure,
+          });
+        }
       }
     }
     return nativeStartPending.size > 0;
@@ -15762,7 +15785,7 @@ export function hostThroughPty(o) {
               return { ok: false, reason: 'native-turn-start-unavailable' };
             }
             const target = child;
-            const pending = { child: target, marker, submittedAtMs: turnWriteStartedAt,
+            const pending = { child: target, childGeneration, marker, submittedAtMs: turnWriteStartedAt,
               submissionRecovery: pendingSubmissionRecovery(turnWriteStartedAt, composerGenerationAtWrite),
               anchor: { fileIdentity: null, markerStartOffset: null, markerEndOffset: null, scannedEndOffset: null } };
             nativeStartPending.set(deliver.deliveryId, pending);

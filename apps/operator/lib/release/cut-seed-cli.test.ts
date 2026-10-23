@@ -903,12 +903,15 @@ describe('refreshCorestoreStateForSeed', () => {
 });
 
 describe('withCutSeedSingleton (workspace+hive advisory lock)', () => {
+  function lockClient(acquired = true) {
+    const session = Object.assign(vi.fn(async () => [{ acquired }]), { release: vi.fn() });
+    const client = { reserve: vi.fn(async () => session), end: vi.fn(async () => {}) };
+    return { session, client, createLockClient: () => ({ sql: client as never }) };
+  }
+
   it('refuses a second cut before its backfill/INSERT callback runs', async () => {
-    const tx = vi.fn(async () => [{ acquired: false }]) as never;
-    const begin = vi.fn(async (run: (transaction: typeof tx) => Promise<unknown>) => run(tx));
-    const pg = {
-      begin,
-    } as never;
+    const { session, client, createLockClient } = lockClient(false);
+    const pg = vi.fn() as never;
     const backfillOrInsert = vi.fn(async () => 'must-not-run');
 
     await expect(
@@ -917,75 +920,65 @@ describe('withCutSeedSingleton (workspace+hive advisory lock)', () => {
         workspaceId: 'papercusp-workspace',
         hive: 'papercusp',
         run: backfillOrInsert,
+        createLockClient,
       }),
     ).rejects.toThrow(/another seed cut is already refreshing or opening/);
     expect(backfillOrInsert).not.toHaveBeenCalled();
-    expect(begin).toHaveBeenCalledTimes(1);
-    expect(tx).toHaveBeenCalledTimes(1);
+    expect(session).toHaveBeenCalledTimes(1);
+    expect(session.release).toHaveBeenCalledTimes(1);
+    expect(client.end).toHaveBeenCalledTimes(1);
   });
 
-  it('holds the transaction around the cut callback and forwards the transaction SQL handle', async () => {
-    const tx = vi.fn(async () => [{ acquired: true }]) as never;
-    let transactionOpen = false;
-    const pg = {
-      begin: vi.fn(async (run: (transaction: typeof tx) => Promise<unknown>) => {
-        transactionOpen = true;
-        try {
-          return await run(tx);
-        } finally {
-          transactionOpen = false;
-        }
-      }),
-    } as never;
-    const run = vi.fn(async (transaction: unknown) => {
-      expect(transaction).toBe(tx);
-      expect(transactionOpen).toBe(true);
-      // The refresh performs multiple awaited PG reads. The singleton must still
-      // own its transaction when the callback resumes, not just when it starts.
-      // Two turns let an incorrectly returned array-of-promises commit first.
+  it('holds the session across the callback and forwards the ordinary data pool', async () => {
+    const { session, client, createLockClient } = lockClient();
+    const pg = vi.fn() as never;
+    const run = vi.fn(async (dataPool: unknown) => {
+      expect(dataPool).toBe(pg);
+      expect(session.release).not.toHaveBeenCalled();
       await Promise.resolve();
       await Promise.resolve();
-      expect(transactionOpen).toBe(true);
+      expect(session.release).not.toHaveBeenCalled();
+      expect(client.end).not.toHaveBeenCalled();
       return 'cut-opened';
     });
 
     await expect(
-      withCutSeedSingleton({ pg, workspaceId: 'ws-1', hive: 'papercusp', run }),
+      withCutSeedSingleton({ pg, workspaceId: 'ws-1', hive: 'papercusp', run, createLockClient }),
     ).resolves.toBe('cut-opened');
-    expect(transactionOpen).toBe(false);
-    expect(run).toHaveBeenCalledWith(tx);
+    expect(run).toHaveBeenCalledWith(pg);
+    expect(session.release).toHaveBeenCalledTimes(1);
+    expect(client.end).toHaveBeenCalledTimes(1);
   });
 
-  it('rolls back when the cut callback fails after an asynchronous pause', async () => {
-    const tx = vi.fn(async () => [{ acquired: true }]) as never;
-    const events: string[] = [];
+  it('closes the dedicated lock client when the cut callback fails', async () => {
+    const { session, client, createLockClient } = lockClient();
+    const pg = vi.fn() as never;
     const failure = new Error('backfill failed');
-    const pg = {
-      begin: vi.fn(async (run: (transaction: typeof tx) => Promise<unknown>) => {
-        try {
-          const result = await run(tx);
-          events.push('commit');
-          return result;
-        } catch (error) {
-          events.push('rollback');
-          throw error;
-        }
-      }),
-    } as never;
 
     await expect(withCutSeedSingleton({
       pg,
       workspaceId: 'ws-1',
       hive: 'papercusp',
+      createLockClient,
       run: async () => {
-        events.push('started');
         await Promise.resolve();
-        await Promise.resolve();
-        events.push('failed');
         throw failure;
       },
     })).rejects.toBe(failure);
-    expect(events).toEqual(['started', 'failed', 'rollback']);
+    expect(session.release).toHaveBeenCalledTimes(1);
+    expect(client.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes a lock client whose connection reservation fails', async () => {
+    const { client, createLockClient } = lockClient();
+    const failure = new Error('connection unavailable');
+    client.reserve.mockRejectedValueOnce(failure);
+    const run = vi.fn();
+    await expect(withCutSeedSingleton({
+      pg: vi.fn() as never, workspaceId: 'ws-1', hive: 'papercusp', run, createLockClient,
+    })).rejects.toBe(failure);
+    expect(run).not.toHaveBeenCalled();
+    expect(client.end).toHaveBeenCalledTimes(1);
   });
 });
 

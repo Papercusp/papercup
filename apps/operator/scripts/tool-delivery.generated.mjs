@@ -11,10 +11,10 @@
 //
 // Catalog measured: 986 tools.
 
-/** claude: 0 full + 64 compact = 99993 B of 100000 B. */
+/** claude: 0 full + 64 compact = 99921 B of 100000 B. */
 export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99993,
+  spentBytes: 99921,
   budgetOverrun: 0,
   counts: Object.freeze({ full: 0, compact: 64, deferred: 922 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
@@ -220,10 +220,10 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** codex: 0 full + 64 compact = 99993 B of 100000 B. */
+/** codex: 0 full + 64 compact = 99921 B of 100000 B. */
 export const CODEX_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99993,
+  spentBytes: 99921,
   budgetOverrun: 0,
   counts: Object.freeze({ full: 0, compact: 64, deferred: 922 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
@@ -429,10 +429,10 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** omp: 0 full + 64 compact = 99993 B of 100000 B. */
+/** omp: 0 full + 64 compact = 99921 B of 100000 B. */
 export const OMP_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99993,
+  spentBytes: 99921,
   budgetOverrun: 0,
   counts: Object.freeze({ full: 0, compact: 64, deferred: 922 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */

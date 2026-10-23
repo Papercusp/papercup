@@ -171,6 +171,26 @@ describe('tool-delivery acceptance instruments', () => {
     expect(result.compactAllPassed).toEqual(TOOL_DELIVERY_SCENARIOS);
     expect(result.runIds).toHaveLength(30);
   });
+  it('reports current format support, catches malformed formats, and preserves historical measurement limits', () => {
+    const formatSchemas = new Map([['work_items:list', {
+      type: 'object', properties: { email: { type: 'string', format: 'email' } },
+      required: ['email'], additionalProperties: false,
+    }]]);
+    const rows = fixture().map(row => ({ ...row,
+      transcript_norm_json: [{ toolCalls: [{ name: 'work_items:list', input: { email: 'valid@example.com' } }] }],
+    }));
+    const baseline = evaluateToolDeliveryRuns(rows, formatSchemas);
+    expect(baseline.invalidArguments.verdict).toBe('pass');
+    expect(baseline.limits.join(' ')).toContain('ajv-formats validates registered formats');
+    expect(baseline.limits.join(' ')).toContain('unknown custom formats/keywords are ignored');
+    expect(baseline.limits.join(' ')).toContain('Historical measurements retain their recorded validator and limits');
+    const malformed = rows.find(row => row.variant === TOOL_DELIVERY_ARMS.compactArm)!;
+    malformed.transcript_norm_json[0]!.toolCalls[0]!.input.email = 'invalid-email';
+    const result = evaluateToolDeliveryRuns(rows, formatSchemas);
+    expect(result.invalidArguments.verdict).toBe('fail');
+    expect(JSON.stringify(result.oracle)).toContain('format-violation');
+    expect(baseline.invalidArguments.verdict).toBe('pass');
+  });
   it('verifies immutable private treatment and fails closed on missing, altered or unregistered source custody', () => {
     expect(verifyToolDeliverySourceCustody(custodyFixture()).verified).toBe(true);
     const mutations: Array<(input: ReturnType<typeof custodyFixture>) => void> = [

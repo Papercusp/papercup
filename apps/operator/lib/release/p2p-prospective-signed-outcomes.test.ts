@@ -2,7 +2,7 @@
  * Generated private keys and witness files are unit controls, never rig evidence.
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -254,6 +254,10 @@ function outcome(result: Awaited<ReturnType<typeof compute>>, id: string, pass: 
 
 describe('D294-D296 full signed positive GO, owner recovery and default originals', () => {
   it('validates original physical packets, canonical readiness, eligibility and archived signature (fixture control)', async () => {
+    // The runnable frozen file pins its private fixture helper too: modifying
+    // imported fixture data must fail the unchanged oracle at closure.
+    expect(sha(readFileSync(join(root, 'apps/operator/lib/release/p2p-signed-physical.fixture.ts'))))
+      .toBe('9c730b7ae7987932078a7bf62f6ac9a789fcc933a70d5eee0fa2745519f690e0');
     const p = await signedPacket();
     expect(validatePhysicalDrillEvidence(p.witness.evidence, p.witness.trust)).toMatchObject({ ok: true });
     expect(validatePhysicalDrillEvidence(p.drill.evidence, p.drill.trust)).toMatchObject({ ok: true });

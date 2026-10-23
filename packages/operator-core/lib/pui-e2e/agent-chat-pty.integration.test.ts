@@ -8295,10 +8295,12 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           }),
         );
       } catch (error) {
+        const nativeState = await readOmpDiagnosticState?.().catch((stateError: Error) => ({ stateReadError: stateError.message }));
         console.info(
           'PUI_INSTALLED_NATIVE_QUESTION_FAILURE',
           JSON.stringify({
             ...pane.failureEvidence(), cardReplies, timeoutDegradations,
+            nativeState,
             // The screen can show a completed answer even when Claude routed
             // the question through a deferred MCP wrapper. Keep only event
             // identifiers here: the raw tool input may contain the owner's

@@ -71,6 +71,31 @@ export function registerPartialNativeProducerChannels(outPath: any, prepared: an
     operationalAcceptance: boolean;
 };
 export function readPartialNativeProducer(path: any, expected: any): any;
+/** Bind a channel to the actual original npm tree, lifecycle and reporter PID.
+ * Interrupted prefixes still need dead-run custody from the qualification host;
+ * this reader never turns a missing terminal observation into a passed run.
+ */
+export function readPartialNativeChannelCustody(producer: any, native: any, { allowInterrupted }?: {
+    allowInterrupted?: boolean | undefined;
+}): {
+    status: string;
+    reason: any;
+    custody: null;
+} | {
+    status: string;
+    reason: null;
+    custody: {
+        rootPid: any;
+        reporterPid: any;
+        reporterProcessIdentity: any;
+        observerPid: any;
+        childPid: any;
+        childIdentity: any;
+        startedAtMs: any;
+        closedAtMs: any;
+        terminal: boolean;
+    };
+};
 /**
  * Read the reporter's existing atomic OUT channel, including a snapshot written before
  * onTestRunEnd. Selection comes from the caller, never from the observed result sample.

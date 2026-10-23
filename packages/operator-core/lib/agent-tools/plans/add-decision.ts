@@ -642,7 +642,7 @@ export default defineTool({
   guidance: {
     returns:
       '`{ ok, results:[{ ok, slug, decisionId, ref, deduped?, propagated_to?, measurementAdvisory?, citedRuleAdvisory?, absenceLint? | error }], counts }`. Correlate each result by `decisionId`; one failure never fails the rest. Three advisories, all non-blocking: `measurementAdvisory` (names source-like paths with no `Measured:` line), `citedRuleAdvisory` (the body leans on a cited decision as authority with no `Measured:` line — a cited decision is design authority, not tree evidence; an overruling citation such as "supersedes D-003" is exempt), and `absenceLint` (an uncovered absence premise).',
-    when: "A decision-shaped output: trade-off resolved, scope ratified, or a choice made. Record it so fresh agents do not relitigate. For current-tree claims, open the tree and add `Measured: <file:line or command + result>`. Design authority is not tree evidence. Use items:[…] for bulk.",
+    when: "Trade-off resolved, scope ratified, or a choice made. Record it so fresh agents do not relitigate. For current-tree claims, open the tree and add `Measured: <file:line or command + result>`. Design authority is not tree evidence. Use items:[…] for bulk.",
     notWhen:
       'Adding work units — use plans:add-item. Flipping status — plans:set-status. Updating overall state — plans:set-now.',
     chaining:

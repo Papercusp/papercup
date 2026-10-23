@@ -11,6 +11,7 @@ import { createFailoverPool } from './account-failover';
 import { createInferenceGateway, type GatewayStats, type GatewayCarryTrialAttempt, type GatewayCarryTrialAttemptResult,
   type GatewayCarryTrialBinding } from './gateway';
 import { processMonotonicClock } from '../process-monotonic-clock';
+import { MODEL_REQUEST_ID_HEADER, isModelRequestId } from '../observability/tracing';
 import { readProcessIdentity } from '../process-identity';
 import { CACHE_POLICY_VERSION } from './cache-policy';
 import {
@@ -49,7 +50,8 @@ it.each((['bearer', 'oauth'] as const).flatMap(transport =>
       usage: { input_tokens: 10, output_tokens: 2, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } };
     upstream = http.createServer((req, res) => {
       req.resume(); req.once('end', () => {
-        res.writeHead(200, { 'content-type': framing === 'json' ? 'application/json' : 'text/event-stream' });
+        res.writeHead(200, { 'content-type': framing === 'json' ? 'application/json' : 'text/event-stream',
+          [MODEL_REQUEST_ID_HEADER]: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:999' });
         res.end(framing === 'json' ? JSON.stringify(completed)
           : `data: ${JSON.stringify({ type: 'response.completed', response: completed })}${framing === 'sse' ? '\n\n' : ''}`);
       });
@@ -77,11 +79,18 @@ it.each((['bearer', 'oauth'] as const).flatMap(transport =>
       openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`, requestAbsorbMs: 0, selfHeal: { enabled: false } });
     const port = await gateway.listen(0);
     const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-tail-proof' },
+      headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-tail-proof',
+        [MODEL_REQUEST_ID_HEADER]: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb:888' },
       body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TAIL_PROMPT', stream: transport === 'oauth' || framing !== 'json',
         reasoning: { effort: 'high' } }) });
     await response.text();
     const { timeline } = await recentTimeline(port);
+    const report = await (await fetch(`http://127.0.0.1:${port}/admin/owner-report?owner=su-tail-proof`)).json();
+    const modelRequestId = response.headers.get(MODEL_REQUEST_ID_HEADER);
+    expect(isModelRequestId(modelRequestId)).toBe(true);
+    expect(modelRequestId).toBe(`${report.process.instanceId}:${timeline.requestId}`);
+    expect(modelRequestId).not.toContain('aaaaaaaa');
+    expect(modelRequestId).not.toContain('bbbbbbbb');
     if (transport === 'oauth' && framing === 'sse-without-final-newline') {
       // The maintained OAuth kernel requires a terminated terminal SSE frame.
       // Flushing observational bytes must not make this failed send successful.

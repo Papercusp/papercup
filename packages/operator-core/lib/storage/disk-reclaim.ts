@@ -93,6 +93,10 @@ export interface DiskReclaimReceipt {
   delegates: Array<{ classId: string; ok: boolean; detail: unknown; elapsedMs?: number;
     phases?: Array<ReclaimPhaseTiming & { observedAfterMs: number }>; omittedPhases?: number }>;
   errors: string[];
+  /** One failed admission per pass. Absent on older receipts and when no
+   * mutex timeout occurred; timing gaps alone cannot identify a holder. */
+  mutexTimeout?: { phase: 'initial' | 'reacquire'; remainingRunBudgetMs: number;
+    waitedMs: number; timeoutMs: number; admissionSubphaseTimingsMs?: Record<string, number> };
   /** Monotonic wall time at the existing await boundaries. These counters
    * distinguish preparation from admission/protection/audit latency; delegate,
    * census and effect timings remain separate. Audit excludes the terminal
@@ -788,6 +792,23 @@ export async function physicalRetentionRoots(roots: Array<{ path: string; classI
   return [...groups.values()].filter((root) => !root.conflict).map(({ conflict: _conflict, ...root }) => root);
 }
 
+/** Stable urgency ordering over the existing physical-root rotation. */
+export function prioritizeRetentionRoots<T extends { path: string; aliases: string[] }>(
+  roots: readonly T[], snapshots: readonly Pick<DiskSnapshot, 'path' | 'aliases' | 'freeBytes'>[],
+): T[] {
+  const sampledPaths = snapshots.flatMap(snapshot => [snapshot.path, ...(snapshot.aliases ?? [])]
+    .map(path => ({ path: resolve(path), freeBytes: snapshot.freeBytes })))
+    .sort((a, b) => b.path.length - a.path.length);
+  const urgent = new Set(roots.filter(root => {
+    // Choose the most specific match across ALL physical aliases. A /tmp bind
+    // of /mnt/data/tmp belongs to the data sample, not the fallback / sample.
+    const device = sampledPaths.find(sample => root.aliases.some(alias => alias === sample.path ||
+      alias.startsWith(sample.path === '/' ? '/' : sample.path + '/')));
+    return device !== undefined && Number.isFinite(device.freeBytes) && device.freeBytes < DISK_HEADROOM_BYTES;
+  }));
+  return [...roots.filter(root => urgent.has(root)), ...roots.filter(root => !urgent.has(root))];
+}
+
 /** A descriptor opened through either bind alias protects the selected physical tree. */
 export async function scanRetentionRootHolders(root: { path: string; aliases: string[] }, paths: readonly string[],
   scan: (paths: readonly string[]) => Promise<OpenWriterScan>,
@@ -1017,6 +1038,10 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         // A large first root must not spend every run before its peers start.
         if (index >= 0) roots.push(...roots.splice(0, index + 1));
       }
+      // Keep that rotation within each pressure tier. A healthy data-volume
+      // census must not spend the pass before expired root-volume artifacts
+      // can relieve write admission. Every root remains enrolled and guarded.
+      roots.splice(0, roots.length, ...prioritizeRetentionRoots(roots, before));
       receipt.roots = roots;
       // A registered workspace's tool run dirs belong exclusively to scratch-gc.
       const workspaceIds = (options.registeredWorkspaces ?? (() => readRegistry().workspaces.map((x) => x.id)))();
@@ -1383,7 +1408,13 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             mutex = held;
             try { done = (await cursor.next()).done === true; }
             finally { callbackFinishedAt = performance.now(); }
-          }, { timeoutMs: Math.max(1, remainingMs) });
+          }, {
+            timeoutMs: Math.max(1, remainingMs),
+            onTimedOut: info => {
+              receipt.mutexTimeout = { phase: waitPhase === 'initialMutexWaitMs' ? 'initial' : 'reacquire',
+                remainingRunBudgetMs: remainingMs, ...info };
+            },
+          });
         } finally {
           if (!admitted) phaseTimings[waitPhase] += Math.max(0, performance.now() - requestedAt);
           if (callbackFinishedAt !== undefined) phaseTimings.mutexReleaseMs += Math.max(0, performance.now() - callbackFinishedAt);

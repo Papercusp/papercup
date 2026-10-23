@@ -3,6 +3,7 @@ import type { PlanItemAnchor } from '../plan-items/anchors';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { HarnessRegistry } from '../harness-registry';
 import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
+import type { EngineeringExecution } from '../observability/engineering-execution';
 
 export const ENGINEERING_EVIDENCE_LIMITS = Object.freeze({
   nodes: 128, edges: 256, depth: 6, items: 8, specs: 16, proofs: 8, decisions: 16, cases: 20,
@@ -52,21 +53,22 @@ export interface EngineeringEvidenceDeps {
   proofs(scope: EngineeringScope, spec: EngineeringSpec, limit: number): Promise<EngineeringProof[]>;
   run(scope: EngineeringScope, id: number): Promise<EngineeringRun | null>;
   cases(scope: EngineeringScope, runId: number, limit: number): Promise<EngineeringCase[]>;
+  execution?(scope: EngineeringScope, runId: number): Promise<EngineeringExecution>;
 }
 export interface EngineeringNode {
-  id: string; kind: 'symbol' | 'item' | 'spec' | 'decision' | 'proof' | 'work-item' | 'test-run' | 'test-case';
+  id: string; kind: 'symbol' | 'item' | 'spec' | 'decision' | 'proof' | 'work-item' | 'test-run' | 'test-case' | 'execution';
   state: EngineeringState; ref: EngineeringRef; data: Record<string, unknown>;
 }
 export interface EngineeringEdge {
   from: string; to: string; basis: 'declared-anchor' | 'item-spec' | 'decision-item-ref' | 'plan-affects'
-    | 'unscoped-context' | 'proof-binding' | 'work-item-coverage' | 'recorded-test-run' | 'recorded-case';
-  knowledge: 'explicit'; state: EngineeringState; authority: EngineeringRef;
+    | 'unscoped-context' | 'proof-binding' | 'work-item-coverage' | 'recorded-test-run' | 'recorded-case' | 'recorded-boundary';
+  knowledge: 'explicit' | 'observed'; state: EngineeringState; authority: EngineeringRef;
 }
 export interface EngineeringEvidence {
   schemaVersion: 1; scope: EngineeringScope; nodes: EngineeringNode[]; edges: EngineeringEdge[];
   gaps: { code: string; at: EngineeringRef; repair?: EngineeringRef }[];
   limits: Record<keyof typeof ENGINEERING_EVIDENCE_LIMITS, number>; truncated: boolean;
-  execution: { status: 'unobserved'; reason: string };
+  execution: EngineeringExecution & { reason: string };
 }
 
 export interface EngineeringToolQuery {
@@ -157,7 +159,8 @@ export async function readEngineeringEvidence(
     Number.isFinite(query.limit) ? Math.max(1, Math.trunc(query.limit!)) : ENGINEERING_EVIDENCE_LIMITS.nodes);
   const result: EngineeringEvidence = { schemaVersion: 1, scope, nodes: [], edges: [], gaps: [],
     limits: { ...ENGINEERING_EVIDENCE_LIMITS, nodes: nodeLimit }, truncated: false,
-    execution: { status: 'unobserved', reason: 'Static anchors and test outcomes do not establish instrumented execution.' } };
+    execution: { status: 'unobserved', scope: 'instrumented-boundaries-only', observations: [], gaps: [],
+      reason: 'Only named child boundaries are observed; static anchors, test outcomes and parent spans do not observe their callees.' } };
   const nodes = new Map<string, EngineeringNode>();
   const edgeKeys = new Set<string>();
   const gapKeys = new Set<string>();
@@ -178,12 +181,13 @@ export async function readEngineeringEvidence(
     if (nodes.size >= nodeLimit) { result.truncated = true; gap('node-limit', node.ref); return null; }
     nodes.set(node.id, node); result.nodes.push(node); return node.id;
   };
-  const edge = (from: string | null, to: string | null, basis: EngineeringEdge['basis'], state: EngineeringState, authority: EngineeringRef) => {
+  const edge = (from: string | null, to: string | null, basis: EngineeringEdge['basis'], state: EngineeringState, authority: EngineeringRef,
+    knowledge: EngineeringEdge['knowledge'] = 'explicit') => {
     if (!from || !to) return;
     const key = JSON.stringify([from, to, basis]);
     if (edgeKeys.has(key)) return;
     if (result.edges.length >= ENGINEERING_EVIDENCE_LIMITS.edges) { result.truncated = true; gap('edge-limit', authority); return; }
-    edgeKeys.add(key); result.edges.push({ from, to, basis, knowledge: 'explicit', state, authority });
+    edgeKeys.add(key); result.edges.push({ from, to, basis, knowledge, state, authority });
   };
   const read = async <T>(at: EngineeringRef, action: () => Promise<T>, fallback: T): Promise<T> => {
     try { return await action(); } catch { gap('authority-unavailable', at); return fallback; }
@@ -292,6 +296,27 @@ export async function readEngineeringEvidence(
         }
         // Run membership is an observed ledger fact, not an invented spec→case assertion.
         gap('exact-spec-case-mapping-not-measured', pref);
+        if (deps.execution) {
+          const observed = await read(rref, () => deps.execution!(scope, run.id), null);
+          for (const reason of observed?.gaps ?? ['execution-unavailable']) {
+            gap(reason, rref);
+            if (!result.execution.gaps.includes(reason)) result.execution.gaps.push(reason);
+          }
+          for (const observation of bounded(observed?.observations ?? [], ENGINEERING_EVIDENCE_LIMITS.cases, rref)) {
+            const test = cases.find(c => c.key === observation.caseKey && c.occurrence === observation.occurrence);
+            if (!test || observation.runId !== run.id) { gap('execution-case-mismatch', rref); continue; }
+            const caseId = id('test-case', scope.workspaceId, run.id, test.key, test.occurrence);
+            const execution = add({ id: id('execution', scope.workspaceId, observation.invocationId, observation.receipt.spanId),
+              kind: 'execution', state, ref: rref, data: { ...observation } });
+            edge(nodes.has(caseId) ? caseId : null, execution, 'recorded-boundary', state, rref, 'observed');
+            if (execution && result.execution.observations.length < ENGINEERING_EVIDENCE_LIMITS.cases
+              && !result.execution.observations.some(row => row.invocationId === observation.invocationId
+                && row.receipt.spanId === observation.receipt.spanId)) {
+              result.execution.observations.push(observation);
+              result.execution.status = 'observed';
+            }
+          }
+        }
       }
     }
   }

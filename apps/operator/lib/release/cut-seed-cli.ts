@@ -120,7 +120,7 @@ import { rm, readFile, writeFile, rename, cp, readdir, mkdir, mkdtemp, lstat, re
 import Corestore from 'corestore';
 import { captureSeedUuidOriginalSpan, exportSeedUuidIdempotencySource, readSeedFrozenExecution } from '@papercusp/operator-core/lib/sync/hyperbee/seed-provider-corestore';
 import type postgres from 'postgres';
-import { getOrgPg, resolvedAdminDatabaseTarget, type DatabaseUrlSource } from '@papercusp/db-org';
+import { createDedicatedOrgPg, getOrgPg, resolvedAdminDatabaseTarget, type DatabaseUrlSource } from '@papercusp/db-org';
 import {
   cutHiveSeed,
   enumerateOwnStoreCoreKeys,
@@ -215,8 +215,11 @@ export function createFilteredSeedProgressReporter(input: {
  * A Corestore fd-lock only serializes writable opens. Two live-operator cuts can
  * therefore both force-backfill the same PG projection before either opens its
  * read-only snapshot. Keep the key in PG, where both cut processes already meet,
- * and hold it transaction-scoped until refresh/drain and the final store open are
- * complete. `hashtextextended` gives us one deterministic 64-bit advisory key for
+ * on a dedicated direct session until refresh/drain and the final store open are
+ * complete. A transaction here both hides backfill from the live drainer and expires
+ * during external waits at idle_in_transaction_session_timeout. Session affinity is
+ * required: a PgBouncer transaction-pool connection cannot own a session lock safely.
+ * `hashtextextended` gives us one deterministic 64-bit advisory key for
  * the workspace+hive pair without putting user-controlled values into SQL text.
  */
 export const CUT_SEED_ADVISORY_LOCK_NAMESPACE = 'papercusp:cut-seed';
@@ -226,10 +229,15 @@ export async function withCutSeedSingleton<T>(input: {
   readonly workspaceId: string;
   readonly hive: string;
   readonly run: (pg: postgres.Sql) => Promise<T>;
+  readonly createLockClient?: () => { sql: postgres.Sql };
 }): Promise<T> {
-  const [result] = await input.pg.begin(async (tx) => {
-    const [{ acquired }] = await tx<{ acquired: boolean }[]>`
-      SELECT pg_try_advisory_xact_lock(
+  const { sql } = (input.createLockClient ?? (() =>
+    createDedicatedOrgPg('cut-seed-lock', { max: 1, sessionAffinity: true })))();
+  let session: Awaited<ReturnType<typeof sql.reserve>> | undefined;
+  try {
+    session = await sql.reserve();
+    const [{ acquired }] = await session<{ acquired: boolean }[]>`
+      SELECT pg_try_advisory_lock(
         hashtextextended(${`${CUT_SEED_ADVISORY_LOCK_NAMESPACE}:${input.workspaceId}:${input.hive}`}, 0)
       ) AS acquired
     `;
@@ -241,12 +249,17 @@ export async function withCutSeedSingleton<T>(input: {
         '--no-force-backfill rather than starting a second force-backfill.',
       );
     }
-    // Await inside the transaction callback. postgres-js receives this async
-    // callback's Promise, so its synchronous array handling cannot await a
-    // Promise nested in the returned array before committing/releasing tx.
-    return [await input.run(tx as unknown as postgres.Sql)];
-  });
-  return result;
+    // Data writes commit independently, so the operator can drain them while this
+    // dedicated session still excludes a second seed cut. Closing the dedicated
+    // client releases its advisory lock on success, error, or process exit.
+    return await input.run(input.pg);
+  } finally {
+    try {
+      session?.release();
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }
 }
 
 /**
@@ -2019,7 +2032,7 @@ async function main(): Promise<void> {
       });
     // The advisory lock must be acquired before the first Corestore open: a writable
     // open can succeed on a quiesced box while a second process is already force-
-    // backfilling the same hive through PG. Keep the transaction alive through the
+    // backfilling the same hive through PG. Keep the dedicated lock session alive through
     // refresh/drain and final read-only or writable open, then release it before the
     // immutable seed snapshot is copied.
     const opened = workspaceId

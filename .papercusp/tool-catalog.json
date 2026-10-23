@@ -22603,7 +22603,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "A decision-shaped output: trade-off resolved, scope ratified, or a choice made. Record it so fresh agents do not relitigate. For current-tree claims, open the tree and add `Measured: <file:line or command + result>`. Design authority is not tree evidence. Use items:[…] for bulk.",
+        "when": "Trade-off resolved, scope ratified, or a choice made. Record it so fresh agents do not relitigate. For current-tree claims, open the tree and add `Measured: <file:line or command + result>`. Design authority is not tree evidence. Use items:[…] for bulk.",
         "notWhen": "Adding work units — use plans:add-item. Flipping status — plans:set-status. Updating overall state — plans:set-now.",
         "chaining": "Declare refs/itemRefs:[\"P-NNN\"] for the items this decision governs; sharing a plan or mentioning an ID in prose does not establish applicability. affects:[planSlug] is broader plan context. plans:add-decision → graph:query { op:\"evidence\", plan, item } to inspect applicability; optionally plans:set-now referencing the new D-NNN in **State:**."
       }
@@ -23110,7 +23110,7 @@
           "POST"
         ]
       },
-      "description": "Bind test, fixture, coverage-census, mutation/counterexample, check, manual or operational proof to an immutable spec revision and work item. For fromTestRun, omit canonicalTestPath for local/Playwright rows; supply it only for a cargo test's defining .rs file or an unavailable mutation-probe mirror's copy-out run. Supply fixturePaths/fixtureGlobs BEFORE the first bind when calibration is needed; include the test file for inline fixtures. fixtureCalibrated run evidence adds direct relative first-party test-support imports; transitive, external and non-imported inputs need an explicit recipe. Missing recipes leave calibration unknown; adding one after binding is refused. details.adequacy.fixtureCalibrated=true requires paths; fixtureFree=true is no independent absence proof. Repository evidence uses measurement for server hashing and bounded source/test remeasurement; opaque evidence supplies caller-attested sourceFingerprint. Exact replays are idempotent; changed fingerprints append history. retract requires row id and reason; stamped history remains but default reads exclude it.",
+      "description": "Bind proof to exact workItem/spec revision. fromTestRun: canonicalTestPath only for cargo's defining .rs or unavailable copy-out mirror, never ordinary local/Playwright rows. FIRST bind must declare fixturePaths/fixtureGlobs (include inline-fixture test); calibration adds direct relative first-party support imports only, so declare transitive/external/non-imported inputs. Late recipe changes refuse; absent recipe leaves calibration unknown. fixtureCalibrated needs paths; fixtureFree alone proves no absence. Repo measurement hashes/rechecks files; opaque proof uses sourceFingerprint. Exact replays dedupe; changed fingerprints append. Retract by row id/reason; history remains, hidden by default.",
       "capabilities": [
         "plans:write"
       ],
@@ -23173,7 +23173,7 @@
       "guidance": {
         "when": "Recording execution proof for one or more plan specs before work-item completion or plan acceptance. AUTO-BAR proof: vet first (amend → vet → attest → bind → cards → grade).",
         "notWhen": "Authoring behavior — plans:set-specs. Running a test — testing:run.",
-        "chaining": "plans:get-specs exact revision → plans:bind-spec-evidence { items:[{ workItemId, specId, specRevision, fromTestRun, sourcePaths, fixturePaths }] } → plans:get-spec-evidence with current fingerprints → graph:query { op:\"evidence\", plan, item }. Declare calibration inputs on the first bind, including inline test fixtures. Qualifying newer clean runs of requirement verification.check.files refresh the authored recipe through existing autobind; a newer failure/error withdraws earlier support for that exact file. An unrelated pass never supplies the missing link."
+        "chaining": "plans:get-specs → bind exact workItemId/specId/specRevision/fromTestRun/sourcePaths/fixturePaths → plans:get-spec-evidence current → graph:query evidence. Declare calibration inputs on FIRST bind (also inline fixtures). Only qualifying newer clean verification.check.files runs autobind; newer failure/error withdraws that file’s support. Unrelated passes do not supply missing links."
       }
     },
     {
@@ -23714,7 +23714,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.",
+        "when": "During implementation or before work-item completion for spec-covered behavior.",
         "notWhen": "Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing passing cards — plans:certify-spec-clauses (certifyPassing), not a full read plus hand scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.",
         "chaining": "plans:get-specs → plans:bind-spec-evidence → plans:evaluate-spec-test-adequacy → plans:certify-spec-clauses files each passing card. P-007 consumes current emitted rows at work_items:complete."
       }

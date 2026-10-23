@@ -552,14 +552,14 @@ export default defineTool({
         .max(8000)
         .optional()
         .describe(
-          'First-turn request; REQUIRED for resume/fork except a guarded system:lineage-neutral-successor resume. Optional for fresh plan-bound or per-member briefs, or a successor with seeded carry. Delivery does not prove a turn started or claimed work; read launch verification.',
+          'First-turn brief: required for resume/fork except guarded lineage-neutral resume; optional for fresh plan/member briefs or seeded successor. Verify turn/claim pickup separately.',
         ),
       plan: z
         .string()
         .max(120)
         .optional()
         .describe(
-          'Plan slug to bind the agent to — it launches on the plan and auto-kicks-off against it (the fleet:launch-on-plan behavior, without needing a fleet).',
+          "Plan binding with automatic kickoff; no fleet required.",
         ),
       harness: z
         .string()
@@ -579,7 +579,7 @@ export default defineTool({
         .max(200)
         .optional()
         .describe(
-          'Exact work-item id that authorizes this launch under a work-scope exception (for example, the scorecard being independently audited).',
+          'Exact work-item id authorizing a work-scope exception, such as the audited scorecard.',
         ),
       feature: z
         .string()
@@ -609,7 +609,7 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Resume full context with a required non-empty brief, except a guarded system:lineage-neutral-successor resume for a dormant critical frozen-tests author. For ordinary in-place continuation, send `{ resume, brief }`. Add `fork:false` for strict in-place recovery that refuses a live source instead of auto-forking. Choose agentId (latest) OR sessionId (exact). Omitted settings use the target/saved fleet profile. Leave `carry` out because it is rejected for resume/fork. Normally omit `account` and `model` too; overrides may conflict with the saved fleet profile. Use successor for fresh context with retained identity and explicit runtime/carry.',
+          "agentId=latest, sessionId=exact. Brief required except guarded system:lineage-neutral-successor. LIVE auto-forks; fork:false refuses. For ordinary in-place continuation, send `{ resume, brief }`. Leave `carry` out because it is rejected for resume/fork. Normally omit `account` and `model` too to retain target/saved-fleet settings; overrides may conflict. Fresh context: successor.",
         ),
       successor: z
         .object({
@@ -622,13 +622,13 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Fresh context for an ENDED predecessor, preserving owner identity, claims and seeded recovery brief. Allows explicit fresh-context `account`, `model`, or `carry` settings. Visible by default when `headless` is omitted or `false`; headless:true hides the window. Cannot combine with restoreVisible. Live sources are refused; resume auto-forks them for a parallel branch.',
+          "ENDED predecessor: fresh context, same owner/claims, seeded brief; explicit fresh-context `account`, `model`, or `carry` settings and backend allowed. Visible by default when `headless` is omitted or `false`. Incompatible with restoreVisible; LIVE refuses (use resume).",
         ),
       successorLineageMode: z
         .literal('system:lineage-neutral-successor')
         .optional()
         .describe(
-          'Request the system lineage parent only for a dormant critical frozen-tests author recovered through `resume`. The handler requires an identity-preserving successor, verifies the exact non-terminal manifest author and independence, and rejects caller-authored prompt/profile overrides. Not valid for ordinary resume, fork, or explicit successor.',
+          'System lineage parent for dormant critical frozen-tests author via resume only. Requires identity-preserving successor and verified non-terminal manifest author/independence. Caller prompt/profile overrides refuse; ordinary resume/fork/explicit successor ineligible.',
         ),
       originalRouting: z.object({
         ownerId: z.string().min(1).max(120),
@@ -637,32 +637,32 @@ export default defineTool({
         codexHome: z.string().min(1).max(500),
         profileFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
       }).strict().optional().describe(
-        'Repair the provider route of an exact quiescent Codex thread using its saved gateway account. Pin its original owner, adv row, UUID, isolated home and codexOriginalRoutingFingerprint. Requires an existing healthy profile/transcript; live or changed custody refuses, without fork, successor, shutdown or profile repair. Omit all runtime/settings overrides.',
+        "Repair quiescent Codex via saved gateway; pin owner/adv/UUID/home/codexOriginalRoutingFingerprint. Requires unchanged healthy custody. LIVE or changed profile/transcript refuses. No fork/successor/shutdown/profile repair or runtime overrides.",
       ),
       fork: z
         .boolean()
         .optional()
         .describe(
-          'Resume routing: omit this for the normal protective behavior (a LIVE source is automatically forked); `true` always branches to a FRESH identity; explicit `false` requires an in-place resume and fails closed if the source is LIVE, rather than silently changing to a fork.',
+          "Resume: omitted auto-forks LIVE; true always forks with new identity; false requires non-live in-place recovery.",
         ),
       restoreVisible: z
         .boolean()
         .optional()
         .describe(
-          'Recover an exact resume.sessionId after its desktop window disappeared. No surviving host: ordinary exact resume. A surviving host is shut down gracefully ONLY with kernel cgroup proof its window is dead; alive/unknown/non-window hosts are refused. For stale headless hosts omit this flag and use ordinary exact resume. Verify the restored visible terminal.',
+          "Restore exact resume.sessionId's lost desktop window. No host: ordinary resume. Existing host: graceful shutdown only with kernel cgroup proof the window died; alive/unknown/non-window hosts refuse. For stale headless hosts use ordinary resume. Verify restored window.",
         ),
       agent: z
         .enum(['claude', 'codex', 'omp'])
         .optional()
         .describe(
-          'Which agent CLI backs a FRESH launch (default: the psu default). For resume, an explicit different backend requests a session port that retains the source identity; supply a compatible model. Live-source resumes automatically fork, so they cannot cross backends. A fork keeps the recorded backend. An identity-preserving successor may explicitly override the predecessor backend.',
+          "FRESH: psu default. On resume, an explicit different backend requests a session port that retains the source identity; model must fit. Live-source resumes automatically fork, so they cannot cross backends. A fork keeps the recorded backend; successor may override.",
         ),
       role: z
         .string()
         .max(120)
         .optional()
         .describe(
-          'psu --role: a registered persona id resolved against the target harness (the valid ids are harness-specific). Discover exact ids first with roles:list { harnessSlug: "<target>" } and read roles[].id; roles:known lists built-in ids. This is not a lane/job label; put lane direction in the brief or label.',
+          "Target persona: roles:list {harnessSlug} → roles[].id; roles:known=built-ins. Put lane direction in brief/label.",
         ),
       stack: z
         .array(z.string().min(1))
@@ -674,7 +674,7 @@ export default defineTool({
         .max(120)
         .optional()
         .describe(
-          "Fleet name or slug to JOIN (membership + the fleet's bound window colour). Optional: omit it and a FRESH launch falls back to YOUR OWN presence-fleet (WI-4234); a RESUME/FORK preserves the target session's latest durable fleet membership instead of inheriting the caller's fleet.",
+          "Fleet to JOIN, including window colour. Omitted on FRESH: caller's presence fleet; on RESUME/FORK: source's latest durable membership. See independent to suppress fresh inheritance.",
         ),
       independent: z
         .boolean()
@@ -690,7 +690,7 @@ export default defineTool({
         .boolean()
         .optional()
         .describe(
-          'Launch with no window (logs to a file under the workspace fleet-logs dir) instead of a visible desktop terminal. Default false = visible. Headless sessions stay injectable (managed pty).',
+          'No window; logs in workspace fleet-logs. Default false=visible. Headless retains injectable managed pty.',
         ),
       count: z
         .number()
@@ -698,20 +698,20 @@ export default defineTool({
         .min(1)
         .optional()
         .describe(
-          'How many agents to launch with this brief/plan (default 1 — or the length of `members` when that is given). Every actual start is independently admitted by the durable resource governor. Not allowed with an in-place resume — one session cannot be resumed N times (fork it instead).',
+          "Count (default1, or members.length). Each start needs durable resource-governor admission. In-place resume forbids multiple starts; fork instead.",
         ),
       members: z
         .array(memberSpecSchema)
         .optional()
         .describe(
-          'Index-aligned FRESH multi-launch config (entry 0 = agent 1). Set fields override top-level args, then system defaults. Registered roles only; invalid personas fail atomically before launch. Missing entries use flat args; omitted count uses members.length. Not for resume/fork. claimKinds requires a self-pulling fleet via fleet:launch-on-plan.',
+          "FRESH entries (0=agent1) override flat args/defaults; missing entries inherit, count defaults to length. Invalid roles refuse atomically. No resume/fork; claimKinds needs self-pulling fleet:launch-on-plan.",
         ),
       cwd: z
         .string()
         .max(500)
         .optional()
         .describe(
-          "Working dir for a FRESH launch (absolute, or relative to the harness project dir). A resume always lands in the session's own recorded cwd.",
+          "FRESH cwd: absolute or relative to harness project. Resume retains recorded cwd.",
         ),
       label: z.string().max(120).optional().describe('Display label (shown in /adv/sessions + the window title).'),
       display: z
@@ -719,20 +719,20 @@ export default defineTool({
         .max(40)
         .optional()
         .describe(
-          "WI-4272 (demo/recording): open the window(s) on this X display (e.g. ':110') instead of the owner's desktop seat. Linux + visible only.",
+          "X display override (e.g. ':110'); Linux visible windows only.",
         ),
       account: z
         .string()
         .max(120)
         .optional()
         .describe(
-          "Account routing for a fresh launch or successor: 'default' (the system login), 'auto' (gateway-routed), or a pool account id. Defaults to 'default' on every platform; the gateway is never selected implicitly. For ordinary in-place resume, omit it to use the target's recorded or saved-fleet account. An explicit resume override is intentional and may be refused if it conflicts with the saved fleet profile. Always resolved — a scripted launch must never block on the interactive account picker.",
+          "FRESH/successor: default=system login, auto=gateway, pool id=pin; no picker. For ordinary in-place resume, omit it to retain target/saved-fleet account; overrides may conflict.",
         ),
       model: z
         .string()
         .max(80)
         .optional()
-        .describe('Model override for a fresh launch or successor (e.g. an opus/sonnet spec). For ordinary in-place resume, omit it to use the target session model; an explicit resume override is intentional and may be refused if it conflicts with the saved fleet profile.'),
+        .describe('FRESH/successor model override. For ordinary in-place resume, omit it to retain target model; explicit overrides may conflict with saved fleet profile.'),
       effort: z.string().min(1).max(40).optional()
         .describe('Reasoning effort for every member (low|medium|high|xhigh|max); members[].effort overrides it. Human model aliases resolve through config:tiers-get launchAliases.'),
       extraArgs: z
@@ -740,7 +740,7 @@ export default defineTool({
         .max(20)
         .optional()
         .describe(
-          "Extra psu flags passed through as individually shell-quoted argv values (e.g. ['--brain', '--context-size=trimmed']) — the capability:terminal pass-through model, so a NEW psu flag or structured JSON value needs no tool change.",
+          "Extra psu flags as individually shell-quoted argv entries; structured JSON and new flags need no tool change.",
         ),
       idempotencyKey: z
         .string()
@@ -748,7 +748,7 @@ export default defineTool({
         .max(200)
         .optional()
         .describe(
-          'Dedupe key for retries: pass the SAME key when re-firing a call that may have already landed — a replay reports deduped:true (with what the original launched) instead of opening a SECOND set of agent windows.',
+          "Reuse SAME key after uncertain delivery. Replay returns deduped:true and original launch, preventing duplicate windows.",
         ),
     });
     // Keep the fresh/source distinction in the published schema, but validate it
@@ -764,7 +764,7 @@ export default defineTool({
           .enum(['warm', 'cold'])
           .optional()
           .describe(
-            "Warm/cold auto-mode carry for a FRESH launch or identity-preserving successor. `members[i].carry` overrides this flat value. Do not set it with in-place `resume`/`fork`: the schema rejects it and the target session's loop/profile carry is retained.",
+            "FRESH/successor carry; members[i].carry overrides. Do not set it with in-place `resume`/`fork`: rejected; target loop/profile retained.",
           ),
       })
       .superRefine((value, refinement) => {

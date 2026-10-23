@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { compilePolicy, type RetentionClass } from './retention-policy';
-import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, policyRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
+import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, policyRoots, prioritizeRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
@@ -231,6 +231,18 @@ describe('physical retention ownership', () => {
     expect(result.complete).toBe(false);
     expect(result.byPath.get('/mnt/data/tmp/arbitrary/task')).toEqual(['42']);
   });
+});
+
+it('keeps a healthy data bind behind pressured root storage despite its /tmp alias', () => {
+  const data = { path: '/mnt/data/tmp', aliases: ['/mnt/data/tmp', '/tmp'] };
+  const root = { path: '/home/test/scratch', aliases: ['/home/test/scratch'] };
+  const later = { path: '/mnt/data/offload/copy', aliases: ['/mnt/data/offload/copy'] };
+  const roots = [data, root, later];
+  expect(prioritizeRetentionRoots(roots, [
+    { path: '/', freeBytes: 30 * 1024 ** 3 },
+    { path: '/mnt/data', freeBytes: 2000 * 1024 ** 3 },
+  ])).toEqual([root, data, later]);
+  expect(prioritizeRetentionRoots(roots, [])).toEqual(roots);
 });
 
 describe('scheduled retention selection', () => {

@@ -4540,7 +4540,7 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
     }
     expect(result?.status, `${result?.stderr}\nholder:\n${holderOutput}`).toBe(0);
     expect(result?.stdout).toContain('ACQUIRED');
-    expect(result?.stderr).toMatch(/copy lock progress: .* advances=[1-9]/);
+    expect(result?.stderr).toMatch(/copy lock progress: .* wait=\d+:\d+ advances=[1-9]/);
     // The holder's writes land in the copy destination, never beside the source in the cwd.
     expect(statSync(join(root, 'copied-bytes')).size).toBeGreaterThan(0);
     expect(existsSync(join(root, 'ignored'))).toBe(false);

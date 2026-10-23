@@ -32,6 +32,7 @@ const selected = [
   'runs the native cargo delegate repeatedly with captured receipts and no missed completion',
   'starts effects without an all-candidate holder census',
   'starts the next pass after a root whose census spent the preceding deadline',
+  'reclaims a pressured device before a healthy census consumes the run deadline',
   'runs independent owners when a whole-root census exhausts the run deadline',
   'finishes an advancing root beyond its inspection allowance',
   'reaps an elevated census worker at its native deadline',
@@ -43,8 +44,8 @@ const selected = [
   'refreshes a new pin after a FIFO handoff without repeating the census',
   'refreshes a new lease after a FIFO handoff without repeating the census',
 ];
-// The advancing-root assertion covers four deadline modes under one title.
-const selectedCount = selected.length + 3;
+// Advancing-root covers four deadline modes; pressure priority covers two alias modes.
+const selectedCount = selected.length + 4;
 const buildSelected = [
   'expires build directories',
   'protected build sources',
@@ -82,7 +83,7 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
   const runId = await recordIsolatedIntegrationProof({
     root, filePath,
     sourcePaths: [...new Set([assertion, selectedAssertion, censusAssertion, reclaimSource, censusSource,
-      releaseSource, usageSource,
+      releaseSource, usageSource, 'packages/operator-core/lib/storage/usage.ts',
       'packages/operator-core/lib/native-bg-task-ledger.ts',
       'packages/operator-core/lib/storage/retention-policy.ts',
       'packages/operator-core/lib/storage/retention-pins.ts',
@@ -190,7 +191,8 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
 };
 it('reclaims private fixtures and reads back the exact durable receipt in the observed background runtime',
   context => runSelection({ reclaimTitles: [...selected, ...buildSelected, ...specialSelected, ...receiptSelected],
-    expectedReclaimCases: selectedCount + buildSelectedCount + specialSelectedCount + receiptSelectedCount, census: true }, context),
+    expectedReclaimCases: selectedCount + buildSelectedCount + specialSelectedCount + receiptSelectedCount, census: true,
+    observedSources: ['packages/operator-core/lib/storage/usage.ts'] }, context),
   options.testTimeoutMs);
 it('persists bounded delegate diagnostics in the observed private background runtime',
   context => runSelection({ reclaimTitles: ['persists delegate phases before the delegate ends', 'bounds delegate phase receipts and persisted writes'], expectedReclaimCases: 2, census: false }, context),

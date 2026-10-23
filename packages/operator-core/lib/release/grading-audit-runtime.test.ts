@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { TaskRow } from '../task-manager/types';
@@ -123,6 +123,8 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     const f = fixture();
     f.deps.now = () => Date.now();
     delete f.deps.spawn;
+    const logDir = join(f.root, 'persistent-task-logs');
+    f.deps.logDir = logDir;
     const unref = vi.fn();
     spawnManaged.mockResolvedValue({ taskId: 'managed-runtime', confined: true, child: { unref } });
     const runtime = await ensureGradingAuditRuntime(f.input, f.deps);
@@ -135,6 +137,12 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
         spawnOptions: expect.objectContaining({ detached: true, env: expect.objectContaining({ PAPERCUSP_BACKGROUND_WORKERS: '0' }) }) }));
     expect(spawnManaged.mock.calls.at(-1)?.[2].runtimeMaxSec).toBeLessThanOrEqual(21600);
     expect(unref).toHaveBeenCalledOnce();
+    const logPath = spawnManaged.mock.calls.at(-1)?.[2].logPath as string | undefined;
+    expect(logPath).toContain(logDir);
+    expect(logPath).not.toContain(f.source.sourceRoot);
+    writeFileSync(logPath!, 'runtime output survives candidate pruning\n');
+    rmSync(join(f.root, '.candidate-exact.first'), { recursive: true, force: true });
+    expect(readFileSync(logPath!, 'utf8')).toBe('runtime output survives candidate pruning\n');
   });
 
   it('refuses an unconfined production child and terminates it before dispatch can use it', async () => {

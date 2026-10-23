@@ -52,7 +52,8 @@ async function until(check: () => boolean, timeoutMs = 10_000) {
 }
 
 /** Real PTY and socket, sanitized native event shapes, no model or live DB. */
-async function fixture(agent: string, autoStart: boolean, failInitially: boolean | 'capacity' = false) {
+async function fixture(agent: string, autoStart: boolean, failInitially: boolean | 'capacity' | 'active-tool' = false,
+  bridgeTty = false) {
   const root = mkdtempSync(join(tmpdir(), 'loop-native-recovery-'));
   const config = join(root, '.papercusp', `session-${agent}`);
   const nativeDir = agent === 'omp' ? join(config, 'agent', 'sessions')
@@ -77,6 +78,7 @@ async function fixture(agent: string, autoStart: boolean, failInitially: boolean
     function start() {
       if (!pending) return; pending = false;
       if (${Boolean(failInitially)} && count === 1) {
+        if (${failInitially === 'active-tool'}) append({type:'response_item',payload:{type:'function_call',call_id:'unfinished',name:'exec_command'}});
         append(agent === 'codex' ? {type:'event_msg',payload: ${failInitially === 'capacity'
           ? JSON.stringify({type:'task_complete',turn_id:'capacity-turn',error:{codex_error_info:'server_overloaded',message:'Selected model is at capacity.'}})
           : "{type:'turn_aborted'}"}} :
@@ -108,7 +110,7 @@ async function fixture(agent: string, autoStart: boolean, failInitially: boolean
   const env = hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: agent,
     ...(agent === 'codex' ? { CODEX_HOME: config } : agent === 'claude' ? { CLAUDE_CONFIG_DIR: config } : { PI_CONFIG_DIR: config }),
     PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '10', PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '100',
-    PAPERCUSP_PSU_PTY_NATIVE_START_TIMEOUT_MS: '250',
+    PAPERCUSP_PSU_PTY_NATIVE_START_TIMEOUT_MS: '250', PAPERCUSP_PSU_PTY_IDLE_CAP_MS: '100',
     PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10', PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
   });
   // Fail before spawning a child when the real adapter cannot read this root.
@@ -120,7 +122,7 @@ async function fixture(agent: string, autoStart: boolean, failInitially: boolean
   expect(nativeLatestExecution({ agent, env, nativeSessionId: nativeId }).phase,
     `${agent} fixture exact native binding preflight`).toBe('settled');
   const done = hostThroughPty({ command: process.execPath, args: ['-e', code], cwd: root,
-    ownerId, env, io: { stdin, stdout }, bridgeTty: false, activityPersistMs: 25, normalizedLogPath,
+    ownerId, env, io: { stdin, stdout }, bridgeTty, activityPersistMs: 25, normalizedLogPath,
     resolveRespawnNativeId: nativeId ? () => nativeId : null, onExit: () => {} });
   await until(() => output.includes('READY') && existsSync(metaPathFor(ownerId)) && existsSync(sock));
   const meta = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
@@ -130,6 +132,7 @@ async function fixture(agent: string, autoStart: boolean, failInitially: boolean
     data: '⟦turn-origin:loop-fire nonce:1234567890abcdef⟧\nContinue approved recovery.' };
   const readHost = (): PsuPtyHost => JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
   return { message, sock, readHost, normalizedLogPath,
+    type: (data: string) => stdin.emit('data', Buffer.from(data)),
     events: () => readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map(line => JSON.parse(line)),
     output: () => output, async close() {
     await injectIntoHostWithConfirmation(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => null);
@@ -141,6 +144,54 @@ async function fixture(agent: string, autoStart: boolean, failInitially: boolean
 }
 
 describe('cross-client native recovery handshake', () => {
+  it.each(['active-tool', 'owner-input'] as const)('protects %s after a native-start abort', async guard => {
+    const f = await fixture('codex', guard !== 'owner-input',
+      guard === 'active-tool' ? 'active-tool' : true, guard === 'owner-input');
+    try {
+      await injectIntoHostWithConfirmation(f.sock, f.message);
+      if (guard === 'owner-input') {
+        await until(() => f.output().includes('SUBMIT:1'));
+        f.type('owner draft');
+        await until(() => f.readHost().execution?.ownerInputPending === true);
+        await injectIntoHostWithConfirmation(f.sock, { mode: 'raw', ownerId: f.message.ownerId, data: '\x12' });
+      }
+      await until(() => f.readHost().execution?.phase === 'failed'
+        && f.events().some(row => row.kind === 'native-turn-start-unverified'));
+      if (guard === 'active-tool') expect(f.readHost().execution?.pendingTools).toBe(1);
+      await injectIntoHostWithConfirmation(f.sock, { ...f.message, deliveryId: `protected-${guard}`,
+        data: '⟦turn-origin:coord-wake nonce:fedcba0987654321⟧\nDo not interrupt existing work.' });
+      await until(() => f.events().some(row => row.kind === (guard === 'active-tool'
+        ? 'busy-gate-expired' : 'turn-deferred-for-owner-input')));
+      expect(f.output()).not.toContain('SUBMIT:2');
+      expect(f.events().some(row => row.kind === 'native-turn-start-failed')).toBe(false);
+    } finally { await f.close(); }
+  }, 25_000);
+
+  it('releases a failed native-start gate without replaying its delivery', async () => {
+    const f = await fixture('codex', true, true);
+    try {
+      const original = f.readHost();
+      const failed = { ...f.message, deliveryId: 'aborted-before-start' };
+      expect(await injectIntoHostWithConfirmation(f.sock, failed)).toMatchObject({ ok: true, reason: 'accepted' });
+      await until(() => f.readHost().execution?.phase === 'failed'
+        && f.events().some(row => row.kind === 'native-turn-start-unverified'));
+      expect(f.readHost().execution).toMatchObject({ pendingTools: 0,
+        failure: { code: 'turn_aborted' } });
+      const retry = { ...f.message, deliveryId: 'distinct-after-abort',
+        data: '⟦turn-origin:coord-wake nonce:fedcba0987654321⟧\nContinue the same approved work.' };
+      await injectIntoHostWithConfirmation(f.sock, retry);
+      await until(() => f.output().includes('SUBMIT:2'));
+      await until(() => f.readHost().execution?.phase === 'running');
+      await until(() => f.events().some(row => row.kind === 'native-turn-start-confirmed'
+        && row.deliveryId === retry.deliveryId));
+      expect(await injectIntoHostWithConfirmation(f.sock, failed)).toMatchObject({
+        reason: 'deferred-native-turn-start-superseded' });
+      expect(f.output().match(/SUBMIT:/g)).toHaveLength(2);
+      expect(f.readHost()).toMatchObject({ pid: original.pid, ptyPid: original.ptyPid,
+        nativeSessionId: original.nativeSessionId, execution: { childGeneration: original.execution!.childGeneration } });
+    } finally { await f.close(); }
+  }, 25_000);
+
   it('surfaces a post-start capacity failure once and recovers the same non-loop native session', async () => {
     const f = await fixture('codex', true, 'capacity');
     try {

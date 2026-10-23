@@ -32,10 +32,14 @@ export function vitestConfigLoaderPolicy(args, env = process.env, execArgv = pro
     else remaining.push(arg);
   }
   const guarded = `${env.NODE_OPTIONS ?? ''} ${execArgv.join(' ')}`.includes('committed-source-loader.mjs');
-  if (guarded && selected !== null && selected !== 'native') {
-    throw new Error('committed-source config requires --configLoader native; transformed config loaders bypass its source boundary');
+  if (guarded && selected !== null && !['native', 'bundle'].includes(selected)) {
+    throw new Error('committed-source config requires --configLoader native or bundle; runner transforms bypass its source boundary');
   }
-  if (guarded) selected = 'native';
+  // Bundles retain Vite's dependency census. The committed-source loader checks
+  // every inline source-map input against HEAD and refuses dirty/unverifiable
+  // bundles; keep that guard installed. Native remains the default because it
+  // can substitute HEAD bytes in a dirty shared config.
+  if (guarded && selected === null) selected = 'native';
   return { configLoaderArgs: selected === null ? [] : ['--configLoader', selected], vitestArgs: remaining };
 }
 

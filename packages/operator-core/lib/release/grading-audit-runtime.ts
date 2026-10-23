@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { closeSync, openSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
+import { papercuspPath } from '@papercusp/host-platform/home';
 import { getBuildInfo, type BuildInfo } from '../build-info';
 import { requestOnlyIdentityGuardMarker } from '../harness/env-operator-launcher';
 import { acquireGradingAuditSubjectMutex } from '../scorecards';
@@ -42,6 +43,7 @@ export interface GradingAuditRuntimeDeps {
   currentSource?: (build: BuildInfo) => Omit<GradingAuditRuntimeLocator, 'baseUrl' | 'issueIds' | 'expiresAtSec'>;
   recoverSource?: (workspaceId: string, build: BuildInfo, nowSec: number) => GradingAuditRuntimeLocator | null;
   freePort?: () => Promise<number>;
+  logDir?: string;
   spawn?: (workspaceId: string, locator: GradingAuditRuntimeLocator) => Promise<string>;
   probe?: (baseUrl: string) => Promise<BuildInfo | null>;
   attach?: (taskId: string, workspaceId: string, issueIds: string[]) => Promise<void>;
@@ -109,8 +111,12 @@ export function gradingAuditRuntimeChildEnv(locator: GradingAuditRuntimeLocator)
   };
 }
 
-async function spawnRuntime(workspaceId: string, locator: GradingAuditRuntimeLocator): Promise<string> {
-  const logPath = join(dirname(locator.sourceRoot), 'grading-audit-runtime.log');
+async function spawnRuntime(workspaceId: string, locator: GradingAuditRuntimeLocator,
+  logDir = papercuspPath('checkpoint-logs')): Promise<string> {
+  // The task ledger owns this durable log; a candidate generation may be pruned while its row remains.
+  mkdirSync(logDir, { recursive: true, mode: 0o700 });
+  const logName = createHash('sha256').update(locator.ownerRef).digest('hex');
+  const logPath = join(logDir, `grading-audit-runtime-${logName}.log`);
   const fd = openSync(logPath, 'a', 0o600);
   try {
     const spawned = await managedSpawn(process.execPath, [locator.bundlePath], {
@@ -280,7 +286,8 @@ export async function ensureGradingAuditRuntime(input: {
       await (deps.attach ?? attach)(taskId, input.workspaceId, issueIds);
     } else {
       if (isLive) await (deps.stop ?? stopRuntime)(taskId);
-      taskId = await (deps.spawn ?? spawnRuntime)(input.workspaceId, locator);
+      taskId = await (deps.spawn ?? ((workspaceId, current) => spawnRuntime(workspaceId, current, deps.logDir)))(
+        input.workspaceId, locator);
       let ready = false;
       try {
         for (let attempt = 0; attempt < 30; attempt += 1) {

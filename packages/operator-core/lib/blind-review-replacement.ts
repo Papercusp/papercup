@@ -288,7 +288,7 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
     attempt = history.find(row => Number(row.id) === Number(attempt.id)) ?? attempt;
     return { ok: true, op: 'replace', slug: input.slug, deduped: !selected.launch,
       attempt: publicAttempt(attempt), attempts: history.map(publicAttempt),
-      next: attempt.status === 'failed' ? 'No process started. Correct the launch cause and use a new requestKey for a new ordered attempt.'
+      next: attempt.status === 'failed' ? 'The previous launch is confirmed inactive. Correct the launch cause and use a new requestKey for a new ordered attempt.'
         : attempt.status === 'launching' || attempt.status === 'uncertain'
           ? 'Launch outcome is unresolved. Retry this exact request to reconcile its ledger; no second reviewer will be started.'
           : 'The confined replacement posts its own typed product-review outcome. The original receipt remains unchanged.' };

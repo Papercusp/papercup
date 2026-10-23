@@ -12,6 +12,7 @@ vi.mock('./runtime', () => ({ runtimeObservabilityHealth: () => fixture.health,
   runtimeTraceDeliveryConfig: async () => ({ allowed: true, consentSince: fixture.consentSince }) }));
 vi.mock('./project-readback', () => ({ readConfiguredTraceProject: fixture.readProject }));
 import { measureOperationalObservability } from './operational-check';
+import type { ObservedProjectEvent } from './project-readback';
 const scope = { workspaceId: 'workspace-test', harnessSlug: 'harness-test' };
 const now = Date.now();
 const modelRequestId = (digit: string) => '11111111-1111-4111-8111-111111111111:' + digit;
@@ -19,12 +20,26 @@ const rows = () => ['1', '2'].map((digit, i) => ({ id: digit, callId: 'call-' + 
   traceId: digit.repeat(32), spanId: digit.repeat(16), status: i ? 'error' : 'ok',
   startedAt: now - 1000, endedAt: now - 100, expectedModel: !i, expectedModelRequestIds: [modelRequestId(digit)] }));
 const project = () => ({ status: 'available', projectId: '7', queriedAt: now, evidenceRef: 'authenticated-project-query',
-  events: rows().flatMap((row, i) => [{ uuid: 'tool-' + row.id, event: '$ai_trace', timestamp: row.startedAt,
+  events: rows().flatMap<ObservedProjectEvent>((row, i) => [{ uuid: 'tool-' + row.id, event: '$ai_trace', timestamp: row.startedAt,
     traceId: row.traceId, spanId: row.spanId, parentSpanId: null, callId: row.callId, isError: !!i, httpClient: false, spanName: 'papercusp.tool' },
   { uuid: 'http-' + row.id, event: '$ai_span', timestamp: row.startedAt + 10,
     traceId: row.traceId, spanId: (i ? 'c' : 'a').repeat(16), parentSpanId: row.spanId, callId: row.callId, isError: false, httpClient: true, spanName: 'papercusp.http' },
   { uuid: 'model-' + row.id, event: i ? '$exception' : '$ai_generation', timestamp: row.startedAt + 20,
     traceId: row.traceId, spanId: (i ? 'd' : 'b').repeat(16), parentSpanId: (i ? 'c' : 'a').repeat(16), callId: null, isError: !!i, httpClient: false, spanName: 'papercusp.model', requestId: modelRequestId(row.id) }]) });
+const paths = ['packages/operator-core/lib/observability/runtime.ts', 'packages/operator-core/lib/observability/tracing.ts',
+  'packages/operator-core/lib/observability/posthog-exporter.ts', 'packages/operator-core/lib/projected-tool-deps.ts',
+  'packages/operator-core/lib/inference-gateway/gateway.ts', 'apps/operator/bin/host-bootstrap.ts'];
+function release() {
+  fixture.host.host = 'port-3070';
+  Object.assign(fixture.health, { artifact: { status: 'measured', sourceSha: fixture.host.buildSha,
+    bundleSha256: 'b'.repeat(64), manifestSha256: 'c'.repeat(64),
+    sourceBlobs: Object.fromEntries(paths.map(path => [path, 'd'.repeat(40)])) } });
+  fixture.position.mockResolvedValue({ servingRuntimes: [{ runtime: 'release-operator',
+    containsChange: true, buildSha: fixture.host.buildSha }] });
+  fixture.sql.mockResolvedValueOnce([{ count: 1, manifests: 1, matches: true, ref: 'writer-1' }])
+    .mockResolvedValueOnce([{ matched: true }])
+    .mockResolvedValueOnce([{ id: 'green-1', detail: { candidate: fixture.host.buildSha, green: true, runId: 'run-1' } }]);
+}
 beforeEach(() => {
   fixture.host = { host: 'port-3170', processId: 'process-1', buildSha: 'a'.repeat(40) };
   fixture.health = { initialized: true, globalProviderRegistered: true };
@@ -36,6 +51,70 @@ beforeEach(() => {
 });
 
 describe('operational observability measurements', () => {
+  describe.each(['project', 'staging', 'release'] as const)('%s stable event UUID retry observations', mode => {
+    const observations = () => {
+      const ledger = rows();
+      const observed = project();
+      if (mode === 'staging') {
+        Object.assign(ledger[1]!, { status: 'ok', expectedModel: true });
+        Object.assign(observed.events[5]!, { event: '$ai_generation', isError: false });
+      }
+      fixture.sql.mockResolvedValue(ledger);
+      if (mode === 'release') release();
+      return { ledger, observed };
+    };
+    it.each([0, 1, 2, 3, 4, 5])('accepts an identical retry of event %s and retains its raw observation', async index => {
+      const { observed } = observations();
+      observed.events.push({ ...observed.events[index]! });
+      fixture.readProject.mockResolvedValue(observed);
+      const result = await measureOperationalObservability(mode, scope);
+      expect(result.verdict).toBe('pass');
+      expect(JSON.parse(result.detail).observedEvents).toEqual(observed.events);
+      if (mode === 'release') expect(JSON.parse(result.detail).shipment.validation.verdict).toBe('healthy');
+    });
+    it.each([
+      { event: '$exception' }, { timestamp: now - 900 }, { traceId: '9'.repeat(32) },
+      { spanId: 'e'.repeat(16) }, { parentSpanId: 'f'.repeat(16) }, { callId: 'foreign' },
+      { isError: true }, { httpClient: true }, { spanName: 'papercusp.span' },
+      { requestId: modelRequestId('99') },
+    ])('rejects a conflicting same-UUID signature %j', async changed => {
+      const { observed } = observations();
+      observed.events.push({ ...observed.events[2]!, ...changed });
+      fixture.readProject.mockResolvedValue(observed);
+      expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'fail',
+        detail: expect.stringContaining('Conflicting project event UUID') });
+    });
+    it.each([0, 1, 2])('rejects distinct UUIDs claiming the same canonical event at index %s', async index => {
+      const { observed } = observations();
+      observed.events.push({ ...observed.events[index]!, uuid: 'different-identity' });
+      fixture.readProject.mockResolvedValue(observed);
+      expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'fail' });
+    });
+    it('cannot use identical retries to replace a missing expected model sibling', async () => {
+      const { ledger, observed } = observations();
+      const first = ledger[0]!;
+      first.expectedModelRequestIds.push(modelRequestId('99'));
+      Object.assign(first, { startedAt: now - 301_000, endedAt: now - 300_000 });
+      for (const event of observed.events.filter(event => event.traceId === first.traceId)) event.timestamp = now - 300_500;
+      // Leave two fresh independent journeys so only sibling delivery controls the verdict.
+      ledger.push({ ...rows()[0]!, id: '3', callId: 'call-3', traceId: '3'.repeat(32), spanId: '3'.repeat(16) });
+      observed.events.push(...project().events.slice(0, 3).map(event => ({ ...event, uuid: 'fresh-' + event.uuid,
+        traceId: '3'.repeat(32), spanId: event.spanId === first.spanId ? '3'.repeat(16) : event.spanId,
+        parentSpanId: event.parentSpanId === first.spanId ? '3'.repeat(16) : event.parentSpanId,
+        callId: event.callId ? 'call-3' : null })));
+      observed.events.push({ ...observed.events[1]!, uuid: 'sibling-http', spanId: 'e'.repeat(16) },
+        { ...observed.events[2]!, uuid: 'sibling-model', spanId: 'f'.repeat(16),
+          parentSpanId: 'e'.repeat(16), requestId: modelRequestId('99') });
+      fixture.readProject.mockResolvedValue(observed);
+      expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'pass' });
+      if (mode === 'release') release();
+      const missing = { ...observed, events: observed.events.filter(event => event.uuid !== 'sibling-model') };
+      missing.events.push({ ...observed.events[2]! });
+      fixture.readProject.mockResolvedValue(missing);
+      expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'fail',
+        detail: expect.stringContaining('Expected $ai_generation absent') });
+    });
+  });
   it.each([0, 1])('requires each of two successful models independently when sibling %s is missing', async missing => {
     const requestIds = [1, 2].map(n => '11111111-1111-4111-8111-111111111111:' + n);
     const ledger = rows();
@@ -128,7 +207,7 @@ describe('operational observability measurements', () => {
       fixture.sql.mockResolvedValue(healthyNew ? [old, ...rows().map(row => ({ ...row,
         id: 'new-' + row.id, callId: 'new-' + row.callId, traceId: (row.id === '1' ? '3' : '4').repeat(32) }))] : [old]);
       fixture.readProject.mockResolvedValue({ ...project(), events: healthyNew ? [...missing,
-        ...project().events.map(event => ({ ...event, traceId: (event.traceId[0] === '1' ? '3' : '4').repeat(32),
+        ...project().events.map(event => ({ ...event, uuid: 'new-' + event.uuid, traceId: (event.traceId[0] === '1' ? '3' : '4').repeat(32),
           callId: event.callId ? 'new-' + event.callId : null }))] : missing });
       if (mode === 'release') {
         fixture.host.host = 'port-3070';
@@ -169,7 +248,7 @@ describe('operational observability measurements', () => {
       fixture.readProject.mockResolvedValue({ ...project(), events: [
         ...project().events.filter(event => event.traceId === old.traceId)
           .map(event => ({ ...event, timestamp: now - 121_000 })),
-        ...project().events.map(event => ({ ...event, traceId: (event.traceId[0] === '1' ? '3' : '4').repeat(32),
+        ...project().events.map(event => ({ ...event, uuid: 'new-' + event.uuid, traceId: (event.traceId[0] === '1' ? '3' : '4').repeat(32),
           callId: event.callId ? 'new-' + event.callId : null,
           ...(mode === 'staging' && event.event === '$exception' ? { event: '$ai_generation', isError: false } : {}) })),
       ] });
@@ -190,7 +269,7 @@ describe('operational observability measurements', () => {
         timestamp: old.endedAt, isError: true });
       fixture.readProject.mockResolvedValue({ ...project(), events: [
         ...oldEvents.filter(event => event.event !== missing),
-        ...project().events.map(event => ({ ...event,
+        ...project().events.map(event => ({ ...event, uuid: 'new-' + event.uuid,
           traceId: (event.traceId[0] === '1' ? '3' : '4').repeat(32),
           callId: event.callId ? 'new-' + event.callId : null,
           ...(mode === 'staging' && event.event === '$exception' ? { event: '$ai_generation', isError: false } : {}) })),
@@ -284,20 +363,6 @@ describe('operational observability measurements', () => {
     expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'pass' });
   });
   describe('release artifact acquisition', () => {
-    const paths = ['packages/operator-core/lib/observability/runtime.ts', 'packages/operator-core/lib/observability/tracing.ts',
-      'packages/operator-core/lib/observability/posthog-exporter.ts', 'packages/operator-core/lib/projected-tool-deps.ts',
-      'packages/operator-core/lib/inference-gateway/gateway.ts', 'apps/operator/bin/host-bootstrap.ts'];
-    function release() {
-      fixture.host.host = 'port-3070';
-      Object.assign(fixture.health, { artifact: { status: 'measured', sourceSha: fixture.host.buildSha,
-        bundleSha256: 'b'.repeat(64), manifestSha256: 'c'.repeat(64),
-        sourceBlobs: Object.fromEntries(paths.map(path => [path, 'd'.repeat(40)])) } });
-      fixture.position.mockResolvedValue({ servingRuntimes: [{ runtime: 'release-operator',
-        containsChange: true, buildSha: fixture.host.buildSha }] });
-      fixture.sql.mockResolvedValueOnce([{ count: 1, manifests: 1, matches: true, ref: 'writer-1' }])
-        .mockResolvedValueOnce([{ matched: true }])
-        .mockResolvedValueOnce([{ id: 'green-1', detail: { candidate: fixture.host.buildSha, green: true, runId: 'run-1' } }]);
-    }
     it('joins real acquisition seams before grading fresh release project journeys', async () => {
       release();
       const result = await measureOperationalObservability('release', scope);

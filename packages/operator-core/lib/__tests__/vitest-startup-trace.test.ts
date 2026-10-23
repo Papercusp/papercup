@@ -1,17 +1,81 @@
 import { describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
-import { execFile, fork } from 'node:child_process';
+import { execFile, execFileSync, fork } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createTextCollector } from '../child-output';
 import { loaderIdentity, nativeProcessTraceEnv, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
-import { registerPartialNativeProducerChannels } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { readPartialNativeChannelCustody, readPartialNativeCompletion,
+  registerPartialNativeProducerChannels } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 describe('focused runner startup tracing', () => {
+  it('binds an actual native Vitest reporter through the original npm channel before reading outcomes', async () => {
+    const root = fileURLToPath(new URL('../../../../', import.meta.url));
+    const fixture = join(root, 'libs/test-config/src/__fixtures__/armed-capture');
+    const config = join(fixture, 'vitest.config.ts');
+    const dir = mkdtempSync(join(tmpdir(), 'native-reporter-channel-')), out = join(dir, 'out.json');
+    const env: NodeJS.ProcessEnv = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (!['PC_', 'VITEST', 'PAPERCUSP_TEST_', 'PAPERCUSP_CHECKPOINT_', 'PAPERCUSP_MUTATION_', 'AFFECTED_']
+        .some(prefix => key.startsWith(prefix))) env[key] = value;
+    }
+    try {
+      const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', timeout: 10_000 }).trim();
+      const discovery = execFileSync(process.execPath, [join(root, 'scripts/resolve-vitest-config-contracts.mjs')], {
+        cwd: root, env, encoding: 'utf8', timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
+        input: JSON.stringify({ requests: [{ root: fixture, repositoryRoot: root, config,
+          enumerateFiles: true, enumerateSpecifications: true }] }),
+      });
+      const marker = 'PC_VITEST_CONFIG_CONTRACTS=';
+      const line = discovery.split(/\r?\n/).find(value => value.startsWith(marker));
+      const selected = JSON.parse(line!.slice(marker.length)).results[0];
+      expect(selected.ok, discovery).toBe(true);
+      expect(selected.selectedSpecifications).toHaveLength(1);
+      Object.assign(env, {
+        PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/native-channel-fixture',
+        PC_EXECUTED_SOURCE_MAP_OUT: out, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1',
+        PC_EXECUTED_INPUTS_DIR: join(dir, 'inputs'), PAPERCUSP_TEST_RUN_GROUP: 'native-channel-run',
+        PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: 'native-channel-attempt',
+        PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://127.0.0.1:1/native-channel-fixture',
+        PAPERCUSP_TEST_STARTUP_TRACE: '0',
+      });
+      const traced = nativeProcessTraceEnv(env);
+      const command = JSON.parse(readFileSync(join(fixture, 'package.json'), 'utf8')).scripts.native;
+      const enrollment = registerPartialNativeProducerChannels(out, { status: 'ready', channels: [{
+        taskKey: 'fixture :: test:step:0', script: 'native', command, step: 0, outPath: `${out}.step-0`,
+        selectedSpecifications: selected.selectedSpecifications,
+      }] }, { attemptId: 'native-channel-attempt', runGroupId: 'native-channel-run', root,
+        workspaceName: '@papercusp/native-channel-fixture', sourceCommit: candidate, registeredAtMs: Date.now(),
+        command: { cmd: 'npm', argv: ['run', '--silent', 'test'], cwd: fixture } }, traced);
+      await promisify(execFile)('npm', ['run', '--silent', 'test'], {
+        cwd: fixture, env: traced, timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
+      });
+      const { producer, path } = enrollment.producers[0]!;
+      const snapshot = JSON.parse(readFileSync(producer.outPath, 'utf8'));
+      expect(readPartialNativeChannelCustody(producer, snapshot.nativeRun)).toMatchObject({ status: 'bound',
+        custody: { terminal: true, reporterPid: snapshot.nativeRun.pid } });
+      const expected = { attemptId: producer.attemptId, root, taskKey: producer.taskKey,
+        workspaceName: producer.workspaceName, producerPath: path,
+        selectedSpecifications: selected.selectedSpecifications, manifest: { schemaVersion: 1,
+          units: selected.selectedSpecifications.map((spec: any) => ({
+            id: `test:${spec.testFile}`, kind: 'test', path: spec.testFile })) } };
+      const read = () => readPartialNativeCompletion(producer.outPath, expected, {
+        requireTerminal: true, classifyReadPaths: () => ({ readPaths: [], opaqueReasons: [] }),
+      });
+      expect(read()).toMatchObject({ status: 'ready', origin: { terminal: 'passed' },
+        receipts: [expect.objectContaining({ state: 'pass' })] });
+      const { completionIntegrity: _seal, ...foreign } = snapshot;
+      foreign.nativeRun.pid += 10_000_000;
+      writeFileSync(producer.outPath, JSON.stringify({ ...foreign, completionIntegrity: { schemaVersion: 1,
+        sha256: createHash('sha256').update(JSON.stringify(foreign)).digest('hex') } }));
+      expect(read()).toMatchObject({ status: 'refused', receipts: [] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 180_000);
+
   it.each(['clean', 'corrupt-plan', 'changed-script', 'claimed-channel'])(
     'binds original npm occurrences to distinct reporter channels, %s', async fault => {
       const dir = mkdtempSync(join(tmpdir(), 'native-npm-channels-'));
@@ -20,7 +84,13 @@ describe('focused runner startup tracing', () => {
       const scripts = { test: 'npm run first && npm run second && npm run first',
         first: command, second: command };
       writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'channel-fixture', scripts }));
-      writeFileSync(join(dir, 'leaf.cjs'), 'console.log(process.env.PC_EXECUTED_SOURCE_MAP_OUT)');
+      writeFileSync(join(dir, 'leaf.cjs'), `const fs = require('node:fs');
+        const startedAtMs = Date.now(); console.log(process.env.PC_EXECUTED_SOURCE_MAP_OUT);
+        fs.writeFileSync(process.env.PC_EXECUTED_SOURCE_MAP_OUT, JSON.stringify({
+          schemaVersion: 'native-vitest-run-v1', scope: 'vitest-reporter-callbacks',
+          pid: process.pid, ppid: process.ppid, startedAtMs, finishedAtMs: Date.now(),
+          terminalHook: 'onTestRunEnd', reason: 'passed', unhandledErrorCount: 0,
+          modulePopulationMatched: true, gaps: [], files: [] }));`);
       const env = nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
         PAPERCUSP_TEST_STARTUP_TRACE: '0' });
       const channels = ['first', 'second', 'first'].map((script, step) => ({
@@ -67,6 +137,51 @@ describe('focused runner startup tracing', () => {
         }
         if (fault === 'claimed-channel')
           expect(readFileSync(`${out}.step-0.binding.json`, 'utf8')).toBe('earlier-claim');
+        if (fault === 'clean') {
+          for (const { producer } of enrolled.producers) {
+            const native = JSON.parse(readFileSync(producer.outPath, 'utf8'));
+            expect(readPartialNativeChannelCustody(producer, native)).toMatchObject({ status: 'bound',
+              custody: { reporterPid: native.pid, terminal: true } });
+          }
+          const producer = enrolled.producers[0]!.producer;
+          const native = JSON.parse(readFileSync(producer.outPath, 'utf8'));
+          const read = () => readPartialNativeChannelCustody(producer, native);
+          const editEvent = (event: any, mutate: (row: any) => void) => {
+            const original = Buffer.from(JSON.stringify(event));
+            const file = join(`${out}.native-processes`, `${createHash('sha256').update(original).digest('hex')}.json`);
+            const changed = structuredClone(event); mutate(changed);
+            const bytes = Buffer.from(JSON.stringify(changed));
+            const replacement = join(`${out}.native-processes`, `${createHash('sha256').update(bytes).digest('hex')}.json`);
+            rmSync(file); writeFileSync(replacement, bytes);
+            try { expect(read().status).toBe('refused'); }
+            finally { rmSync(replacement); writeFileSync(file, original); }
+          };
+          const spawn = routed.find(row => row.nativeChannel.outPath === producer.outPath)!;
+          const close = rows.find(row => row.event === 'child-close' && row.childIdentity === spawn.childIdentity)!;
+          const entry = leaves.find(row => row.pid === native.pid)!;
+          const exit = rows.find(row => row.event === 'node-exit' && row.pid === native.pid)!;
+          editEvent(spawn, row => { row.argv[1] += ' # foreign'; });
+          editEvent(spawn, row => { row.nativeChannel.step++; });
+          editEvent(close, row => { row.signal = 'SIGTERM'; row.code = null; });
+          editEvent(close, row => { row.atMs = native.startedAtMs - 1; });
+          editEvent(entry, row => { row.reporterOut = out; });
+          editEvent(entry, row => { row.ppid = 1; row.pid = 1; });
+          editEvent(exit, row => { row.streams.stdout.captureComplete = false; });
+          editEvent(exit, row => { row.exitListenersComplete = false; });
+          const stream = join(`${out}.native-processes`, exit.streams.stdout.ref);
+          const bytes = readFileSync(stream);
+          writeFileSync(stream, Buffer.alloc(bytes.length, 120));
+          expect(read().status).toBe('refused');
+          writeFileSync(stream, bytes);
+          const bindingPath = `${producer.outPath}.binding.json`, binding = readFileSync(bindingPath);
+          writeFileSync(bindingPath, '{}');
+          expect(read().status).toBe('refused');
+          writeFileSync(bindingPath, binding);
+          expect(readPartialNativeChannelCustody(producer, { ...native, pid: native.pid + 10_000_000 }).status).toBe('refused');
+          expect(readPartialNativeChannelCustody({ ...producer,
+            command: { ...producer.command, argv: ['run', 'foreign'] } }, native).status).toBe('refused');
+          expect(read().status).toBe('bound');
+        }
       } finally { rmSync(dir, { recursive: true, force: true }); }
     }, 30_000);
 

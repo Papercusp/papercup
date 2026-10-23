@@ -287,14 +287,10 @@ export default defineTool({
       if (kernel.op !== 'open' && !kernel.id) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ['id'], message: 'id required for an existing kernel' });
       if (kernel.op === 'open' && kernel.id) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ['id'], message: 'open creates a new kernel; omit id' });
     }).optional().describe(
-      'Opt into a live JavaScript worker/VM: open creates an owner/workspace/harness-scoped id, run executes a cell, status inspects it, close cancels and cleans it up. ' +
-      'Use globalThis for cross-cell objects/functions/binary state; lexical locals remain cell-local. Each cell dispatches with CURRENT caller authority. ' +
-      'No Python kernel, implicit lexical-declaration persistence, or process-restart recovery is claimed. Timeout/cancel loses state; idle expires after 5 minutes. ' +
-      'Persistent kernels are refused on volatile staging :3170 because its process is recycled frequently. For restart-safe work, call store(key,value), persist the returned state, and pass it back through inputs on the next stateless or kernel call. ' +
-      'Dry-run kernel operations are refused because VM state mutations cannot be previewed safely.',
+      'JavaScript VM scoped to owner/workspace/harness: open creates id; run executes; status reads; close cancels. Persist cross-cell state on globalThis, not lexical locals. Each cell uses CURRENT authority. No Python or restart recovery; timeout/cancel loses state; idle expires in 5m. Refused on :3170 and in dryRun. For restart-safe state, persist store(key,value) output and replay it via inputs.',
     ),
     inputs: z.record(z.string().max(200), z.unknown()).optional().describe(
-      'Explicit JSON-only replay state for the sandbox inputs object. Use with store/load: a successful run returns state when store/load was used; persist that state outside the process and pass it here after an operator restart. Inputs never restore arbitrary globalThis objects or functions.',
+      'JSON replay state in inputs. Persist returned store/load state and pass it here after restart. Never restores arbitrary globalThis objects/functions.',
     ),
     work_item_id: z.string().min(1).max(120).optional().describe(
       'Default work-item attribution for nested capability:bash calls. Use the exact held WI-/EI-/F- id when this session holds multiple work-items; an explicit nested work_item_id takes precedence.',
@@ -369,13 +365,7 @@ export default defineTool({
       .max(FOREGROUND_TIMEOUT_CEILING_MS / 1000)
       .optional()
       .describe(
-        `Wall-clock budget (default ${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s). EFFECTIVE CEILING IS ` +
-          `${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s. EI-9239: code:run has no run_in_background — ` +
-          `every call is foreground, and the papercusp-su MCP transport hard-caps a foreground call ` +
-          `at ~55s. Values above ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s are rejected by the input ` +
-          `schema; the runtime clamp remains a defense for internal callers that bypass transport ` +
-          `validation. For work that genuinely needs longer, split it into multiple code:run calls ` +
-          `or fall back to individual tool calls.`,
+        `Foreground wall-clock budget: default ${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s, maximum ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s (transport cap ~55s). No run_in_background. Split longer work into cells or individual tool calls.`,
       ),
   }),
   async handler(args, ctx) {

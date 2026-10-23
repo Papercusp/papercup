@@ -648,6 +648,27 @@ describe('withFsMutex', () => {
     }
   });
 
+  it('reports the observed holder on timeout without a progress callback', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-timeout-holder-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const lockDir = join(dir, 'timeout-holder.lock');
+    const owner = { pid: process.pid, host: hostname(), startedAt: new Date().toISOString() };
+    await mkdir(lockDir);
+    await writeFile(join(lockDir, 'owner.json'), JSON.stringify(owner));
+    try {
+      await expect(withFsMutex('timeout-holder', async () => 'must not acquire', {
+        timeoutMs: 80,
+        retryMs: 5,
+      })).rejects.toMatchObject({
+        code: 'ETIMEDOUT',
+        message: expect.stringContaining(`holder (last observed): ${JSON.stringify(owner)}`),
+      });
+      expect((await lstat(lockDir)).isDirectory()).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('stops retrying a slow abandoned-lock reclaim after the deadline and reports its failed phases', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-slow-reclaim-'));
     const previousLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
@@ -681,7 +702,10 @@ describe('withFsMutex', () => {
         retryMs: 1,
         io,
         onTimedOut: (info) => { timeoutInfo = info; },
-      })).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      })).rejects.toMatchObject({
+        code: 'ETIMEDOUT',
+        message: expect.stringContaining(`"pid":${process.pid}`),
+      });
 
       expect(ownerReads).toBe(1);
       expect(performance.now() - startedAt).toBeLessThan(200);

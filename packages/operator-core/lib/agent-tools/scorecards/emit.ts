@@ -707,7 +707,7 @@ const scorecardEmitBaseShape = {
     rubricRef: z.string().min(1).max(120),
     pendingDeliveryBarKeys: scorecardEvaluateArgs.shape.pendingDeliveryBarKeys,
     gradingLaunch: scorecardRepairArgs.shape.gradingLaunch.describe(
-      'Optional existing audit launch profile: pin the newly emitted card\'s independent auditor to codex/gpt-6.1-sol/xhigh through account auto. Uses the same strict profile as scorecards:repair; does not change the scorecard author or grading authority.',
+      'Audit launch pin: codex/gpt-6.1-sol/xhigh, account auto; same strict profile as repair. Author/authority unchanged.',
     ),
     interactionReviewerHandle: OperationHandleSchema.optional()
       .describe('CRM review operation receipt. Resolves the actual terminal reviewer independently of the submitting app caller.'),
@@ -743,7 +743,7 @@ const scorecardEmitBaseShape = {
       .record(z.string().min(1), scorecardRatingEntrySchema)
       .optional()
       .describe(
-        "Complete per-criterion ratings. Required on every emit EXCEPT an acceptance author's verdict that supplies `acceptanceOf` — there the server adopts the referenced independent card's ratings verbatim, so the persisted card is still schema-complete without the author re-transcribing a grading they did not perform.",
+        "Complete ratings; acceptanceOf may adopt the exact independent card verbatim.",
       ),
     testedSha: z
       .string()
@@ -751,7 +751,7 @@ const scorecardEmitBaseShape = {
       .regex(/^[0-9a-f]{7,64}$/i)
       .optional()
       .describe(
-        'Commit SHA the supplied ratings actually tested. Required when a releaseGating rubric contains any pass-like rating; emit proves it is both the fresh green pin and current staging HEAD before filing.',
+        'Actually tested SHA; required for releaseGating pass-like ratings. Must equal fresh green pin AND staging HEAD.',
       ),
     acceptance: z
       .object({
@@ -761,7 +761,7 @@ const scorecardEmitBaseShape = {
       .strict()
       .optional()
       .describe(
-        "The acceptance-rubric AUTHOR's post-grading call. Valid only for kind:'acceptance', required when that author emits, and refused until a complete independent grading exists. The persisted card always carries complete ratings: either supply them in `ratings`, or name the exact independent card in `acceptanceOf` and the server adopts that card's ratings verbatim (no re-transcription). Independent graders omit it. Use 'accept-pending-delivery' when the graded work is accepted and the ONLY outstanding obligation is evidence on a delivery plane you cannot reach (a deployed/live BAR behind a gate or a deploy another agent owns): 'accept' would overclaim delivery and 'reject' would be false, so this records the acceptance judgment durably while leaving the delivery fact separately open. It does NOT waive the delivery-plane evidence, which keeps blocking on its own code.",
+        "Author verdict after independent grading; always carries complete ratings (supplied or acceptanceOf). Independent graders omit. accept-pending-delivery requires ONLY unreachable live/deployed proof remaining; preserves proof/blocker obligation.",
       ),
     acceptanceOf: z
       .string()
@@ -769,7 +769,7 @@ const scorecardEmitBaseShape = {
       .min(1)
       .optional()
       .describe(
-        "The EXACT independent scorecard this acceptance verdict responds to (its issue id, e.g. 'EI-123…'). Valid only alongside `acceptance`. Naming it lets you omit `ratings`: the server re-reads that card, re-checks it against the same independence, completeness and current-revision rails the scan applies, and adopts its ratings verbatim into your card, stamping ratingsProvenance so the adoption stays auditable. Prefer it over omitting the reference — without it the server accepts whatever independent card it finds first, which may not be the one you read.",
+        "With acceptance: exact independent card; server checks independence/completeness/current revision and adopts its ratings verbatim with provenance. Omitted: first qualifying card.",
       ),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
     fromLedger: z
@@ -788,7 +788,7 @@ const scorecardEmitBaseShape = {
       .max(2000)
       .optional()
       .describe(
-        'Fresh evidence fingerprints for requirements checks, identical to plans:get current. Required to establish non-code operational outcomes; omitted comparisons remain unknown.',
+        'Fresh fingerprints as plans:get current; non-code outcomes require them. Omission stays unknown.',
       ),
     rerunRecipe: specTestAdequacyRerunRecipeSchema.optional(),
     subject: z
@@ -801,7 +801,7 @@ const scorecardEmitBaseShape = {
       .strict()
       .optional()
       .describe(
-        "WHAT this scorecard grades (stored as observation.subject) — e.g. { kind:'rubric', ref:'<rubricId>' } on a vetting card. When omitted for an acceptance rubric with subjectPlan, defaults to { kind:'plan', ref:subjectPlan }; explicit subjects are preserved.",
+        "observation.subject; rubric vetting uses kind:'rubric',ref:rubricId. Acceptance default=subjectPlan; explicit wins.",
       ),
     gradingAuditReservation: z
       .object({
@@ -811,13 +811,13 @@ const scorecardEmitBaseShape = {
       .strict()
       .optional()
       .describe(
-        'For a grading-integrity audit of a pending scorecard with dispatchReservation, copy the exact key and reservedAt from your dispatch brief. The server refuses a missing, stale, or mismatched lease before filing the audit card. Omit only for legacy pending cards with no reservation or explicit corrections to an already-settled audit.',
+        "Pending audit: exact dispatchReservation key/reservedAt from brief; bad lease refuses. Omit only legacy unreserved or settled-audit corrections.",
       ),
     vettingUnanswered: z
       .boolean()
       .optional()
       .describe(
-        'Attest that the cited vetting consult received NO critique (every routed reviewer was dead/parked or it expired unanswered) and you are proceeding anyway. Requires BOTH `vettingConsult` and `vettingUnansweredReason`, and is REFUSED when the consult did receive critique — this is the recorded-waiver path, not a way to skip reading replies. Stamped visibly as observation.vetting.unanswered so a later reader can tell a vetted rubric from an un-critiqued one.',
+        "No critique assertion; needs consult+reason, refuses existing critique. Recorded as observation.vetting.unanswered waiver, not approval.",
       ),
     vettingUnansweredReason: z
       .string()
@@ -825,7 +825,7 @@ const scorecardEmitBaseShape = {
       .max(500)
       .optional()
       .describe(
-        'Why no critique was available (required with `vettingUnanswered`). Name what you actually observed — e.g. "all 3 routed reviewers ended; consult expired 19:54Z with 0 posts" — not "no reply yet".',
+        "Measured absent critique (ended reviewers/expired consult/zero posts), beyond 'no reply yet'.",
       ),
     supersedes: z
       .string()
@@ -833,16 +833,16 @@ const scorecardEmitBaseShape = {
       .max(120)
       .optional()
       .describe(
-        'Issue id of the earlier scorecard this corrected filing replaces. Changed evidence from the same author automatically supersedes their latest current terminal card for the same subject and rubric identity; pass this explicitly for other corrections.',
+        "Corrected card id. Changed evidence auto-supersedes own latest current terminal card on same subject/rubric; other corrections explicit.",
       ),
     baselineRef: z.string().min(1).max(120).optional().describe(
-      'Preserved audited pre-repair scorecard for a comparable re-grade. Unlike supersedes, this does not replace or correct the baseline; use the same target and pinned rubric revision.',
+      'Audited pre-repair baseline, preserved for comparable re-grade with same target/pinned rubric; never replaced.',
     ),
     terminal: z
       .boolean()
       .optional()
       .describe(
-        "Affirm the graded SUBJECT has terminated (P-008). Without it, rating any 'violatable'-class criterion stamps the card PROVISIONAL — a working note excluded from rubrics:trend until a terminal re-emit (terminal:true, supersedes the interim) makes the grading final.",
+        "Subject terminated. Otherwise any violatable-class rating is PROVISIONAL and excluded from rubrics:trend. Finalize with terminal:true and supersedes pointing to interim.",
       ),
     force: z
       .boolean()
@@ -852,7 +852,7 @@ const scorecardEmitBaseShape = {
       .literal(true)
       .optional()
       .describe(
-        'Acknowledge that complete independent scorecards already exist for this rubric revision. Required to append another; force:true only bypasses unchanged-evidence deduplication and never substitutes for this acknowledgement.',
+        "Required to append when complete independent cards exist at this revision. force only bypasses unchanged-evidence dedup; it never replaces acknowledgement.",
       ),
 };
 
@@ -861,7 +861,7 @@ const vettingConsultField = z
   .min(1)
   .max(120)
   .describe(
-    "Vetting consult for a meta-rubric scorecard about subject:{ kind:'rubric', ref }. The rubric must exist; the consult's opening question must identify it or its subject plan and include a third-party reply. Pass exactly one of vettingConsult or vettingWorkItem.",
+    "Meta-rubric vetting consult for subject:{kind:'rubric',ref}. Rubric must exist; opening question identifies rubric/plan and has a third-party reply. Exactly one of vettingConsult/vettingWorkItem.",
   );
 
 const vettingWorkItemField = z
@@ -869,7 +869,7 @@ const vettingWorkItemField = z
   .min(1)
   .max(120)
   .describe(
-    "Vetting work-item for a meta-rubric scorecard about subject:{ kind:'rubric', ref }. Requires a third-party comment by someone other than the emitter and rubric author. Pass exactly one of vettingConsult or vettingWorkItem; vettingUnanswered is consult-only.",
+    "Meta-rubric vetting item for subject:{kind:'rubric',ref}, with third-party comment by neither emitter nor rubric author. Exactly one of vettingConsult/vettingWorkItem. vettingUnanswered is consult-only.",
   );
 
 /**

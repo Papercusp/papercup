@@ -1,6 +1,7 @@
 import { papercuspPath } from '@papercusp/host-platform/home';
 import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
+import { engineeringEvidenceReleaseInstrument } from './code-intelligence/engineering-evidence-release-instrument';
 import { ticketFilingIntegrationInstrument } from './capability-verbs/ticket-filing-instrument';
 import { liveForkserverInstrument } from './fleet/forkserver/live-instrument';
 import { CARRY_DRILL_LIFECYCLE_INSTRUMENT_KEY } from './cold-boot-drill';
@@ -696,6 +697,7 @@ export function parseGateSentinelHealth(stdout: string): number | null {
 }
 
 const COMMAND_INSTRUMENTS: readonly CommandInstrument[] = Object.freeze([
+  engineeringEvidenceReleaseInstrument(resolveAgentWorkspaceRoot({})),
   ...p544QualificationInstruments(resolveAgentWorkspaceRoot({})),
   ticketFilingIntegrationInstrument(resolveAgentWorkspaceRoot({})),
   {

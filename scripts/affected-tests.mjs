@@ -205,6 +205,8 @@ import {
   partialTaskSkipListPath,
   readPartialTaskCheckpoint,
   registerPartialNativeProducer,
+  registerPartialNativeProducerChannels,
+  preparePartialNativeProducerChannels,
   preparePartialNativeProducerSelection,
   preparePartialRemainingSelection,
   writePartialTaskCheckpointAtomic,
@@ -6039,7 +6041,7 @@ if (qualificationWorkFile) {
     for (let index = tasks.length - 1; index >= 0; index--) {
       const task = tasks[index], plan = planned.get(`${task.ws.name} :: ${task.script}`);
       if (!plan) tasks.splice(index, 1);
-      else if (plan.runner === 'vitest') task.relatedFiles = plan.files;
+      else if (plan.runner === 'vitest' || plan.runner === 'command-chain') task.relatedFiles = plan.files;
     }
     outSync(`QUALIFICATION_REMAINING tasks=${tasks.length} omitted=${remaining.omitted.length} ` +
       `files=${remaining.tasks.reduce((count, task) => count + task.files.length, 0)} verdict=incomplete`);
@@ -7680,20 +7682,36 @@ function runCapturedTask(
         const selection = enumerateAffectedTaskSelection([spawnTask], {
           root: ROOT, filterDir: RUN_LOG_ROOT, enumerateSpecifications: true,
         });
-        const prepared = preparePartialNativeProducerSelection(selection, {
+        const task = {
           id: taskKey(spawnTask), dir: spawnTask.ws.dir, command: spawnTask.ws.scripts[spawnTask.script],
-        }, ROOT);
-        if (prepared.status !== "ready") throw new Error(prepared.reason);
+        };
         const identity = partialSourceIdentity();
         if (!identity) throw new Error("native-producer-source-unmeasured");
-        const enrolled = registerPartialNativeProducer(qualificationNativeOut, {
+        const registration = {
           attemptId: qualificationAttemptId, runGroupId: governedEnv.PAPERCUSP_TEST_RUN_GROUP,
           root: ROOT, taskKey: taskKey(context.t), workspaceName: spawnTask.ws.name,
           sourceCommit: identity.sourceCommit, registeredAtMs: Date.now(),
-          selectedSpecifications: prepared.selectedSpecifications,
           command: { cmd, argv, cwd },
-        }, governedEnv);
-        outSync(`QUALIFICATION_NATIVE_PRODUCER task=${JSON.stringify(taskKey(context.t))} path=${JSON.stringify(enrolled.path)}`);
+        };
+        if (selection.tasks[0]?.runner === "command-chain") {
+          const checkpoint = qualificationWorkFile && readPartialTaskCheckpoint(qualificationWorkFile);
+          if (!checkpoint?.continuation || checkpoint.continuation.attemptId !== qualificationAttemptId ||
+              checkpoint.root !== ROOT || checkpoint.sourceCommit !== identity.sourceCommit)
+            throw new Error("native-channel-work-unmeasured");
+          const prepared = preparePartialNativeProducerChannels({ selection, task, root: ROOT,
+            outPath: qualificationNativeOut, postSuite: { schemaVersion: 1, coverage: "complete",
+              units: checkpoint.continuation.manifest.units.filter(unit => unit.kind === "post-suite") } });
+          if (prepared.status !== "ready") throw new Error(prepared.reason);
+          const enrolled = registerPartialNativeProducerChannels(qualificationNativeOut, prepared, registration, governedEnv);
+          for (const { path, producer } of enrolled.producers)
+            outSync(`QUALIFICATION_NATIVE_PRODUCER task=${JSON.stringify(producer.taskKey)} path=${JSON.stringify(path)}`);
+        } else {
+          const prepared = preparePartialNativeProducerSelection(selection, task, ROOT);
+          if (prepared.status !== "ready") throw new Error(prepared.reason);
+          const enrolled = registerPartialNativeProducer(qualificationNativeOut,
+            { ...registration, selectedSpecifications: prepared.selectedSpecifications }, governedEnv);
+          outSync(`QUALIFICATION_NATIVE_PRODUCER task=${JSON.stringify(taskKey(context.t))} path=${JSON.stringify(enrolled.path)}`);
+        }
       } catch (error) {
         outSync(`QUALIFICATION_NATIVE_PRODUCER_REFUSED task=${JSON.stringify(taskKey(context.t))} reason=${JSON.stringify(String(error?.message ?? error))}`);
       }

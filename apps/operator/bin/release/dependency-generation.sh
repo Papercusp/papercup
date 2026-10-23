@@ -2222,7 +2222,7 @@ dependency_generation_subtree_io() {
 dependency_generation_acquire_copy_lock() {
   local op="$1" lock fd timeout_sec max_sec started now waited next_notice holder
   local holder_pid io last_io last_progress next_sample idle reason
-  local holder_record holder_identity last_holder='' lock_progress last_lock_progress='' advances=0
+  local holder_record holder_identity last_holder='' lock_progress last_lock_progress='' advances=0 wait_id
   if [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -gt 0 ]; then
     DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=$((DEPENDENCY_GENERATION_COPY_LOCK_DEPTH + 1))
     return 0
@@ -2243,6 +2243,10 @@ dependency_generation_acquire_copy_lock() {
     return 76
   }
   started="$(date +%s)"
+  # Each acquire invocation resets advances, including admission retries in the
+  # same verifier process group. Namespace its counter so the parent watchdog
+  # does not compare fresh progress with the previous wait's larger maximum.
+  wait_id="${BASHPID:-$$}:$(dependency_generation_now_ns)"
   next_notice=30
   last_io=''
   last_progress="$started"
@@ -2267,7 +2271,7 @@ dependency_generation_acquire_copy_lock() {
          { [ -n "$lock_progress" ] && [ "$lock_progress" != "$last_lock_progress" ]; }; then
         last_progress="$now"
         advances=$((advances + 1))
-        dependency_generation_log "copy lock progress: $lock advances=$advances"
+        dependency_generation_log "copy lock progress: $lock wait=$wait_id advances=$advances"
       fi
       last_io="$io"
       last_lock_progress="$lock_progress"

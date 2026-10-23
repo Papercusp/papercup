@@ -4212,7 +4212,7 @@ export default defineTool({
       .max(50)
       .optional()
       .describe(
-        'Test file paths (repo-root-relative, absolute, or relative to exactly one declared npm workspace). Each is routed to its owning workspace + Vitest config; ambiguous workspace-relative paths and paths matching zero tests fail the call rather than passing vacuously.',
+        'Test paths: repo-relative, absolute, or relative to exactly one npm workspace. Routes to owner workspace/config; ambiguous paths or zero matches refuse.',
       ),
     rootHarnessSlug: z
       .string()
@@ -4229,7 +4229,7 @@ export default defineTool({
       .max(100)
       .optional()
       .describe(
-        'SOURCE paths you edited (not test files) — returns the `npm run test:affected` PLAN and runs NOTHING (`mode:"plan"`, no pass/fail counts). ~0.4s, no admission ticket, where the real sweep can queue for minutes and be SIGTERMed having measured zero files. Gives the affected workspaces, each exact runnable task command, and the attached guards, so you can pick: run specific test files via `files`, run one `taskCommands[].command` verbatim, or accept the queue. Mutually exclusive with `files`.',
+        'SOURCE paths, not tests: returns test:affected PLAN only (mode:"plan"; no execution, admission or verdict). Gives affected workspaces, exact taskCommands[].command and guards. Run a returned command or choose files separately; incompatible with files.',
       ),
     testNamePattern: z
       .string()
@@ -4237,7 +4237,7 @@ export default defineTool({
       .max(200)
       .optional()
       .describe(
-        "Run only tests whose full name matches — a REGEX (Vitest `-t`), never literal text. To re-run ONE failing test from a previous result's `failures[].test`, regex-escape it first: a name containing `(`, `+` or `[` does not match itself. A pattern matching ZERO tests is REFUSED (`name_filter_no_match`) and hands back the escaped form to retry, never reported as a pass — vitest merely skips them all and exits 0.",
+        'Vitest -t REGEX over full test names. Escape literal names (including parentheses, + and [). Zero matches refuse with name_filter_no_match and return an escaped retry; skipped tests never count as a pass.',
       ),
     timeoutMs: z
       .number()

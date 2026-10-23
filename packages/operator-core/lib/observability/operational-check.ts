@@ -178,11 +178,26 @@ export async function measureOperationalObservability(
     }
     if (!project) return unknown('Expected invocation population unavailable.');
     if (project.status !== 'available') return { verdict: project.status === 'broken' ? 'fail' : 'unknown', detail: project.reason };
+    // A stable event UUID identifies a retry, not another span or model call.
+    // Compare every field acquired by the reader before collapsing observations;
+    // a conflicting copy must not disappear in a trace/ancestry filter. Keep the
+    // raw project rows below as evidence, and use this canonical graph for joins.
+    const canonicalEvents = new Map<string, ObservedProjectEvent>();
+    const signatures = new Map<string, string>();
+    for (const event of project.events) {
+      const signature = JSON.stringify([event.event, event.timestamp, event.traceId, event.spanId,
+        event.parentSpanId, event.callId, event.isError, event.httpClient, event.spanName, event.requestId ?? null]);
+      const prior = signatures.get(event.uuid);
+      if (prior !== undefined && prior !== signature) return fail('Conflicting project event UUID observations.');
+      signatures.set(event.uuid, signature);
+      canonicalEvents.set(event.uuid, event);
+    }
+    const canonical = [...canonicalEvents.values()];
     const now = project.queriedAt;
     let pending = false;
     const measured: Array<{ row: InvocationObservation; generation: boolean; error: boolean }> = [];
     for (const row of valid) {
-      const events = project.events.filter(event => event.traceId === row.traceId);
+      const events = canonical.filter(event => event.traceId === row.traceId);
       const tools = events.filter(event => event.spanId === row.spanId && event.spanName === 'papercusp.tool' &&
         ['$ai_trace', '$ai_span'].includes(event.event));
       if (!tools.length) {
@@ -280,7 +295,7 @@ export async function measureOperationalObservability(
             event: generation ? '$ai_generation' : '$exception', eventUuid: event.uuid, startedAt: row.startedAt,
             invocation: { callId: row.callId, traceId: row.traceId, spanId: row.spanId,
               evidenceRef: 'tool_invocations:' + row.id },
-            ancestry: observedEvents.filter(edge => edge.traceId === row.traceId && edge.event !== '$exception')
+            ancestry: canonical.filter(edge => edge.traceId === row.traceId && edge.event !== '$exception')
               .map(edge => ({ traceId: edge.traceId, spanId: edge.spanId, parentSpanId: edge.parentSpanId,
                 evidenceRef: project.evidenceRef + ' uuid=' + edge.uuid })),
           };

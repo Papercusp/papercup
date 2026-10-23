@@ -13,7 +13,7 @@
  *   - modality + trigger + may_ask_active hint sections
  */
 
-import { selectHistoryWithinBudget } from '../../operator-converse-history';
+import { estimateTokens, renderOperatorHistorySections, selectHistoryWithinBudget } from '../../operator-converse-history';
 import { loadVoicePrefs } from '../../voice-prefs';
 import { ALL_AGENT_MCP_TOOLS } from '../../operator-mcp-tools';
 import {
@@ -134,11 +134,8 @@ export async function buildOperatorPrompt(
   // is smaller on a live voice turn, while prior decisions remain in summary.
   const configuredBudget = prefs?.operatorHistoryTokenBudget ?? 40000;
   const budget = slimVoice ? Math.min(configuredBudget, 8000) : configuredBudget;
-  const messages = selectHistoryWithinBudget(
-    (input.messages ?? []).filter(
-      (m) => m && typeof m.role === 'string' && typeof m.content === 'string',
-    ),
-    budget,
+  const rawMessages = (input.messages ?? []).filter(
+    (m) => m && typeof m.role === 'string' && typeof m.content === 'string',
   );
 
   // Rolling conversation summary (operator-context-compaction-2026-06-05).
@@ -234,6 +231,8 @@ export async function buildOperatorPrompt(
       );
     }
   }
+  const messages = selectHistoryWithinBudget(rawMessages, budget, undefined, selected =>
+    estimateTokens(renderOperatorHistorySections(selected, compactedSummary).join('\n\n---\n\n')));
   const tHistSummary = Date.now();
   const modality: 'voice' | 'text' = input.modality === 'voice' ? 'voice' : 'text';
   const trigger = input.trigger ?? 'user_message';
@@ -462,25 +461,8 @@ export async function buildOperatorPrompt(
   // transcript window). A RESUMED claude session already holds those turns
   // natively, so the delta prompt (userPromptTextDelta) omits exactly this
   // list and nothing else (WI-5071).
-  const historySections: string[] = [];
+  const historySections = renderOperatorHistorySections(messages, compactedSummary);
   const userSections: string[] = [];
-
-  if (compactedSummary) {
-    historySections.push(
-      `## Earlier conversation (compacted)\n\n` +
-        `The verbatim transcript below covers only recent turns. Everything ` +
-        `earlier was compacted into this rolling summary — treat it as your ` +
-        `memory of the older conversation (decisions, preferences, named ` +
-        `artifacts, open threads):\n\n${compactedSummary}`,
-    );
-  }
-
-  if (messages.length > 0) {
-    const transcript = messages
-      .map((m) => `[${m.role}]\n${m.content}`)
-      .join('\n\n');
-    historySections.push(`## Conversation history (oldest first; last ${messages.length} turns)\n\n${transcript}`);
-  }
 
   // WI-5071 delta-only tail: the CURRENT user utterance reaches the brain via
   // the history transcript above (its last [user] entries) — the trigger

@@ -811,8 +811,7 @@ describe('native affected-task parent receipt transport', () => {
       const start = SCHEDULER_SRC.indexOf('const comparisonHash =');
       const end = SCHEDULER_SRC.indexOf('export function prepareBudgetedTaskComparison');
       const writer = new Script(`(() => {${SCHEDULER_SRC.slice(start, end)
-        .replace('export function writeBudgetedTaskNativeExecutionReceipt',
-          'function writeBudgetedTaskNativeExecutionReceipt')}\nreturn writeBudgetedTaskNativeExecutionReceipt;})()`)
+        .replaceAll('export function ', 'function ')}\nreturn writeBudgetedTaskNativeExecutionReceipt;})()`)
         .runInNewContext({ ...fs, Buffer, createHash, basename, dirname, isAbsolute, join,
           relative, resolve, structuredClone,
           openSync: (file: string, flags: number) => {

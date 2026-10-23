@@ -2019,7 +2019,10 @@ export function isPaletteUiPollRead(input: {
 
 async function recordInvocationImpl(input: RecordInvocationInput): Promise<void> {
   const otel = finishToolTrace(input);
-  if (otel) input = { ...input, metadataJson: { ...input.metadataJson, otel } };
+  // OTel identity and child receipts are host-owned, including when tracing was
+  // unavailable. Caller metadata must never survive as a guessed observation.
+  const { otel: _untrustedOtel, ...metadata } = input.metadataJson ?? {};
+  input = { ...input, metadataJson: { ...metadata, ...(otel ? { otel } : {}) } };
   // Close this call's in-flight entry FIRST — before every early return below.
   // Placement is load-bearing: the palette-poll drop and the buildTelemetryRow bail
   // both `return` without writing a row, and settling after either of them would
