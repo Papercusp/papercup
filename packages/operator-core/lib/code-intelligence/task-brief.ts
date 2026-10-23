@@ -12,13 +12,32 @@ import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
 import type { CodeIntelAnswer } from './contracts';
 import { getClaimTimePlanDecisions, type ClaimTimePlanDecisionsBrief } from '../plan-decisions-claim-port';
+import { pinModuleState } from '@papercusp/module-singleton';
+import { composeReuseBrief, type ReuseBriefDestination, type ReuseBriefProvider,
+  type ReuseContribution, type ReuseProviderContext, type ReuseProviderObservation } from './reuse-brief-providers';
+import { recordReuseBriefIssued, type ReuseIssuedRecord } from './reuse-brief-ledger';
 
 export const TASK_BRIEF_BUDGET_MS = 6_000;
 export const TASK_BRIEF_MAX_CHARS = 3_000;
 const MAX_FILES = 12;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 type Ref = { workItem?: ClaimTimeEnrichmentSubject | null; harness?: string | null; workspaceId?: string | null;
-  intent?: string; paths?: readonly string[] };
+  intent?: string; paths?: readonly string[]; reuse?: ClaimBriefReuseIdentity };
+export interface ClaimBriefReuseIdentity {
+  owner: string;
+  invocation: string;
+  observe?: (outcome: { context: ReuseProviderContext; observations: ReuseProviderObservation[];
+    recover: TaskBrief['recover']; ledger: 'not-needed' | 'recorded' | 'unknown' }) => void;
+}
+export type TaskBriefReuseAdapter = (base: TaskBrief, value: ReuseContribution) => TaskBrief;
+const reuseAdapters = pinModuleState('operator-core.task-brief-reuse-adapters.v1',
+  () => new Map<ReuseBriefDestination, TaskBriefReuseAdapter>());
+/** The upstream section owner installs a representation adapter once that slot exists. */
+export function registerTaskBriefReuseAdapter(section: ReuseBriefDestination, adapter: TaskBriefReuseAdapter): () => void {
+  if (reuseAdapters.has(section)) throw new Error(`Task brief destination already registered: ${section}`);
+  reuseAdapters.set(section, adapter);
+  return () => { if (reuseAdapters.get(section) === adapter) reuseAdapters.delete(section); };
+}
 export interface TaskFailureSignal {
   testRunId: number;
   path: string;
@@ -65,6 +84,11 @@ export interface TaskBriefDeps {
   decisions?: (ref: Ref) => Promise<ClaimTimePlanDecisionsBrief | null>;
   failures?: (scope: { workspaceId: string; harness: string; root: string; paths: string[] }) => Promise<TaskFailureSignal[]>;
   hasClaim?: (workspaceId: string, owner: string) => Promise<boolean>;
+  reuse?: {
+    providers?: readonly ReuseBriefProvider[];
+    adapters?: Partial<Record<ReuseBriefDestination, TaskBriefReuseAdapter>>;
+    recordIssued?: (input: ReuseIssuedRecord, signal: AbortSignal) => Promise<boolean>;
+  };
 }
 const defaults: TaskBriefDeps = {
   hasClaim: async (workspaceId, owner) => {
@@ -166,7 +190,8 @@ export type TaskBriefPhase = 'setup' | 'repository-root' | 'plan-decisions' | 's
 
 /** Root authority is the workspace registry, never payload.rootPath or operator cwd. */
 export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
-  phase: { current: TaskBriefPhase } = { current: 'setup' }): Promise<TaskBrief> {
+  phase: { current: TaskBriefPhase } = { current: 'setup' },
+  deadline = Date.now() + TASK_BRIEF_BUDGET_MS): Promise<TaskBrief> {
   const wi = ref.workItem;
   const harness = wi?.harness ?? ref.harness ?? null;
   const payload = wi?.payload as { paths?: unknown } | null;
@@ -200,7 +225,6 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
     brief.exclusions.push('No identified work item, registered harness, or stored payload.paths; no repository scope was inferred.');
     return finish();
   }
-  const deadline = Date.now() + TASK_BRIEF_BUDGET_MS;
   const remaining = () => {
     const ms = deadline - Date.now();
     if (ms <= 0) throw new Error('task brief deadline exceeded');
@@ -382,7 +406,8 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
   const phaseTimings = () => [...spent, [current, Date.now() - enteredAt] as [TaskBriefPhase, number]]
     .map(([name, ms]) => `${name} ${ms}ms`).join(', ');
   try {
-    return { taskBrief: await Promise.race([buildTaskBrief(ref, deps, phase), new Promise<TaskBrief>(resolve => {
+    const deadline = started + TASK_BRIEF_BUDGET_MS;
+    const base = await Promise.race([buildTaskBrief(ref, deps, phase, deadline), new Promise<TaskBrief>(resolve => {
       timer = setTimeout(() => resolve({ status: 'unknown', scope: { harness: ref.workItem?.harness ?? ref.harness ?? null, paths: [] },
         sourceFingerprint: null, commit: null, files: [], excerpts: [],
         graph: { status: 'unknown', consumers: [], relationships: [] },
@@ -391,8 +416,60 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
         recover: ref.workItem?.id ? { tool: 'work_items:get', args: { id: ref.workItem.id } }
           : { tool: 'coord:declare-intent', args: { intent: ref.intent!.slice(0, 500), current_files: [...ref.paths!].slice(0, 8),
             ...(ref.harness ? { harness: ref.harness } : {}) } } }), TASK_BRIEF_BUDGET_MS);
-    })]) };
+    })]);
+    clearTimeout(timer);
+    return { taskBrief: await enrichTaskBriefWithReuse(base, ref, deps, deadline) };
   } finally { clearTimeout(timer); }
+}
+
+/** Only additive edits to existing fields are allowed: no replacement of mandatory evidence,
+ * and no invention of top-level destinations while anchors P-008 is still upstream. */
+function preservesBriefBase(base: unknown, next: unknown): boolean {
+  if (Array.isArray(base)) return Array.isArray(next) && next.length >= base.length
+    && base.every((value, index) => JSON.stringify(value) === JSON.stringify(next[index]));
+  if (base && typeof base === 'object') return Boolean(next && typeof next === 'object'
+    && Object.keys(next).every(key => Object.hasOwn(base, key))
+    && Object.entries(base).every(([key, value]) => preservesBriefBase(value, (next as Record<string, unknown>)[key])));
+  return Object.is(base, next);
+}
+
+export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: TaskBriefDeps,
+  deadline: number): Promise<TaskBrief> {
+  if (!ref.reuse?.owner || !ref.reuse.invocation) return base;
+  const context: ReuseProviderContext = { surface: 'claim', workspaceId: ref.workspaceId ?? activeWorkspaceId(),
+    owner: ref.reuse.owner, invocation: ref.reuse.invocation, workItem: ref.workItem?.id ?? undefined,
+    plan: ref.workItem?.sourcePlanSlug ?? undefined, planItems: ref.workItem?.sourcePlanItemIds ?? [],
+    paths: base.scope.paths, sourceVersion: base.sourceFingerprint, commit: base.commit };
+  const adapters = deps.reuse?.adapters ?? Object.fromEntries(reuseAdapters);
+  const result = await composeReuseBrief({ base, context, deadline: deadline - 150,
+    providers: deps.reuse?.providers,
+    available: section => base.status === 'current' && Boolean(adapters[section]),
+    append: (brief, value) => {
+      const next = adapters[value.section]!(brief, value);
+      if (!preservesBriefBase(base, next)) throw new Error('Reuse adapter replaced mandatory task evidence');
+      return next;
+    } });
+  let ledger: 'not-needed' | 'recorded' | 'unknown' = 'not-needed';
+  if (result.observations.some(row => row.status === 'issued')) {
+    ledger = 'unknown';
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const remaining = Math.max(0, deadline - Date.now());
+      if (remaining) {
+        const recorded = await Promise.race([
+          Promise.resolve().then(() => (deps.reuse?.recordIssued ?? recordReuseBriefIssued)(
+            { context, observations: result.observations, recover: base.recover }, controller.signal)),
+          new Promise<false>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(false); }, remaining); }),
+        ]);
+        if (recorded) ledger = 'recorded';
+      }
+    } catch { /* Ledger outages do not remove mandatory or independently issued evidence. */ }
+    finally { clearTimeout(timer); controller.abort(); }
+  }
+  // The dispatcher persists these outcomes in tool_invocations, not the issued-only table.
+  try { ref.reuse.observe?.({ context, observations: result.observations, recover: base.recover, ledger }); } catch { /* advisory */ }
+  return result.brief;
 }
 
 /** P-039: explicit transient scope uses the same safe capture as claims. A failed

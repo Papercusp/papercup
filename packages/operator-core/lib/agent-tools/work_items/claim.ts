@@ -11,6 +11,7 @@
  * item (D-007).
  */
 import { z } from 'zod';
+import { createReuseBriefIdentity } from '../../code-intelligence/reuse-brief-providers';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   resolveAgentIdentity,
@@ -338,6 +339,7 @@ async function claimOne(
   reader: CellReader | null,
   verifiedCallerAlias: string | null,
   declaredById: ReadonlyMap<string, DeclaredChangeKinds>,
+  reuse?: import('../../code-intelligence/task-brief').ClaimBriefReuseIdentity,
 ): Promise<BulkItemResult> {
   const claimerDefault = identity.ownerId;
   // EI-9274: a literal `'self'` assignee is treated identically to an OMITTED one
@@ -942,6 +944,7 @@ async function claimOne(
         .catch(() => null),
       import('../../code-intelligence/task-brief').then(m => m.getClaimTimeTaskBrief({
         workItem, harness: workItem.harness ?? it.harness, workspaceId: identity.workspaceId,
+        reuse,
       })).catch(() => null),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
@@ -1419,6 +1422,8 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    const reuse = createReuseBriefIdentity(ident.ownerId, ctx.dispatchCallId,
+      outcomes => ctx.metadata?.({ reuseBriefProviders: outcomes }));
     // P-027: resolved ONCE for the whole batch — the advisory is reader-relative,
     // and every item in this call shares one reader. Guarded, so an
     // unattributable caller gets no advisory rather than a failed claim.
@@ -1467,7 +1472,7 @@ export default defineTool({
           }))
         : list.map((it) => ({ id: it.id, changeKinds: args.changeKinds, changeKindReason: args.changeKindReason })),
     );
-    const claimed = await runBulk(list, (it) => claimOne(it, ident, reader, verifiedCallerAlias, declaredById), {
+    const claimed = await runBulk(list, (it) => claimOne(it, ident, reader, verifiedCallerAlias, declaredById, reuse), {
       keyOf: (it) => ({ id: it.id }),
     });
     const env = declaredById.size

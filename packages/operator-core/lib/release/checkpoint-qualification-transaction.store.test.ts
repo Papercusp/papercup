@@ -15,6 +15,8 @@ import {
   cancelStoredQualification,
   reserveQualificationRunner,
   reserveStoredQualificationRunner,
+  recordStoredQualificationWorkProgress,
+  type QualificationWorkProgressInput,
   retargetPreSuiteAttemptToOwningRepairHead,
   recoverStoredQualificationHistoricalPreSuiteError,
   settleQualificationTransaction,
@@ -31,6 +33,36 @@ import {
 type QueryResult = Record<string, unknown>[];
 
 const target = { workspaceId: 'workspace-1', installSlug: 'papercusp' };
+
+describe('stored continuation uses the existing qualification row authority', () => {
+  const fixture = () => {
+    const current = reserveQualificationRunner(beginQualificationTransaction(null, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: 100,
+    }).transaction, { attemptId: 'attempt-1', candidate: 'candidate-1', runnerId: 'runner-1',
+      runId: 'run-1', pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 }).transaction;
+    const input: QualificationWorkProgressInput = { attemptId: 'attempt-1', candidate: 'candidate-1',
+      repairHead: null, runnerId: 'runner-1', runId: 'run-1', pidIdentity: 'boot:42', root: '/repo',
+      taskKey: 'qualification', manifest: { schemaVersion: 1, units: [{ id: 'a', kind: 'test', path: 'a.test.ts' }] },
+      retryStates: [], runContext: 'ci', runnerIdentity: 'proof-v3 node', updates: [], nowMs: 300 };
+    return { current, input };
+  };
+  it('locks and updates the same qualification record before acknowledging progress', async () => {
+    const { current, input } = fixture();
+    const { statements } = transactionHarness({ qualificationTransaction: current });
+    expect(await recordStoredQualificationWorkProgress(target, input)).toMatchObject({ status: 'updated' });
+    expect(statements[0]!.text).toContain('FOR UPDATE');
+    const update = statements.find(value => value.text.includes('UPDATE harness_shared.routines'))!;
+    expect(update.values).toContainEqual(expect.stringContaining('"continuation"'));
+    expect(update.values).toContain('qualificationTransaction');
+  });
+  it('performs no write for an old physical fence', async () => {
+    const { current, input } = fixture();
+    const { statements } = transactionHarness({ qualificationTransaction: current });
+    expect(await recordStoredQualificationWorkProgress(target, { ...input, runnerId: 'old-runner' }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+    expect(statements.some(value => value.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+  });
+});
 
 function terminalQualification() {
   const begun = beginQualificationTransaction(null, {

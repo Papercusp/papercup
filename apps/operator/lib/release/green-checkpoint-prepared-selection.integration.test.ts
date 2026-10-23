@@ -5,7 +5,7 @@
  * dependency publication/materialization. Selection itself is never replaced.
  */
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   closeSync,
@@ -82,6 +82,7 @@ async function lineage() {
   };
   vi.stubEnv("PC_HEAVY_DIR", join(root, "pc-heavy"));
   vi.stubEnv("PAPERCUSP_DEPENDENCY_GENERATION_ROOT", join(root, "generations"));
+  vi.stubEnv("DEPENDENCY_GENERATION_COPY_LOCK_FILE", join(root, "dependency-copy.lock"));
   vi.stubEnv("PAPERCUSP_QUIET_CUT", "0");
   const forward = console.error.bind(console);
   const narration = vi
@@ -653,6 +654,40 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
       tip: f.tip,
     });
     expect(result.green).toBe(true);
+  }, 180_000);
+
+  it("publishes private fixture dependencies while an unrelated inherited copy lock stays held", async () => {
+    const unrelated = mkdtempSync(join(tmpdir(), "p023-unrelated-copy-"));
+    const lock = join(unrelated, "copy.lock");
+    const holder = spawn("flock", ["--no-fork", "--exclusive", lock, process.execPath, "-e",
+      "process.stdout.write('COPY_LOCK_HELD\\n'); process.stdin.resume();"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    onTestFinished(async () => {
+      const closed = new Promise<void>(resolve => holder.once("close", () => resolve()));
+      holder.stdin.end();
+      if (holder.exitCode === null && holder.signalCode === null) await closed;
+      rmSync(unrelated, { recursive: true, force: true });
+    });
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("unrelated copy-lock holder did not become ready")), 5_000);
+      holder.once("error", error => { clearTimeout(timer); reject(error); });
+      holder.once("exit", code => { clearTimeout(timer); reject(new Error(`copy-lock holder exited early: ${code}`)); });
+      holder.stdout.once("data", chunk => {
+        clearTimeout(timer);
+        if (String(chunk).trim() === "COPY_LOCK_HELD") resolve();
+        else reject(new Error("copy-lock holder returned an unexpected readiness signal"));
+      });
+    });
+    const stillHeld = () => spawnSync("flock", ["--nonblock", lock, "true"], {
+      encoding: "utf8", timeout: 2_000,
+    }).status;
+    expect(stillHeld()).toBe(1);
+    vi.stubEnv("DEPENDENCY_GENERATION_COPY_LOCK_FILE", lock);
+    const f = await lineage();
+    expect(existsSync(join(f.root, "generations", f.knownGoodGeneration.identity))).toBe(true);
+    expect(existsSync(join(f.root, "generations", f.tipGeneration.identity))).toBe(true);
+    expect(stillHeld()).toBe(1);
   }, 180_000);
 
   it("dependency publication occurs before acquiring the serializer", async () => {

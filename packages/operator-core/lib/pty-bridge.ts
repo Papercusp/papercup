@@ -29,7 +29,7 @@ import {
 import { resolveClusterWorkers } from './cluster-fork';
 import { getResourceProfile } from './resource-profile';
 import type { AdmissionContext, ResourceDemand } from './resource-governor/admission';
-import { beginGovernedExecution, governedExecutionRuntime } from './resource-governor/execution';
+import { beginGovernedExecution, governedExecutionRuntime, settleGovernedExecutionInBackground } from './resource-governor/execution';
 
 // @xterm/headless + @xterm/addon-serialize are CJS; their named exports aren't
 // statically visible to ESM named-import LINKING (cjs-module-lexer) under tsx now
@@ -270,7 +270,7 @@ export async function spawnGovernedPty(
     throw error;
   }
   handle.onExit.add(() => {
-    void execution.finish();
+    settleGovernedExecutionInBackground(execution, { kind: 'release' });
   });
   return handle;
 }

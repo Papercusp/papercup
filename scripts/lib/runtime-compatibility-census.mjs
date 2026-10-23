@@ -10,7 +10,8 @@ const require = createRequire(import.meta.url);
 const { collectImports } = require('../../papercusp-desktop/bin/lib/runtime-import-census.cjs');
 const ts = require('typescript');
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const SOURCE = /\.(?:[cm]?[jt]sx?|json|sh|bash|ps1|rs|toml|lock|sql|ya?ml|service)$/;
+const SOURCE = /\.(?:[cm]?[jt]sx?|json|sh|bash|ps1|py|cmd|bat|desktop|plist|nsh|wxs|gyp|gypi|rs|toml|lock|sql|ya?ml|service)$/;
+const CONTROL_FILE = /(?:^|\/)(?:Dockerfile(?:[.-][^/]*)?|[^/]+\.Dockerfile|CMakeLists\.txt)$/;
 const JS = /\.[cm]?[jt]sx?$/;
 export const INVENTORY_GROUPS = ['launchers', 'guards', 'capabilities', 'platforms', 'proofs', 'mutators', 'persistence'];
 const MATCHERS = {
@@ -47,7 +48,10 @@ export function readCommittedSources(root, revision = 'HEAD', { runGit = git } =
       return;
     }
     repositories.push({ path: prefix || '.', commit });
-    const candidates = entries.filter((entry) => entry.type === 'blob' && SOURCE.test(entry.path));
+    // Installed commands often have no extension. The executable mode is part
+    // of the committed tree, so include it without inspecting mutable disk bytes.
+    const candidates = entries.filter((entry) => entry.type === 'blob'
+      && (entry.mode === '100755' || SOURCE.test(entry.path) || CONTROL_FILE.test(entry.path)));
     const selected = candidates.filter((entry) => /^(?:100644|100755)$/.test(entry.mode)
       && Number.isSafeInteger(entry.size) && entry.size <= 2 * 1024 * 1024);
     for (const entry of candidates.filter((entry) => !selected.includes(entry))) {
@@ -118,7 +122,9 @@ export function inventorySources(snapshot) {
     const parsed = JS.test(source.path);
     const candidates = parsed ? syntaxTokens(text, source.path) : text.split('\n').map((value, index) => ({ value, line: index + 1 }));
     for (const [group, matcher] of Object.entries(MATCHERS)) {
-      const signals = candidates.filter((item) => matcher.test(item.value));
+      const signals = candidates.filter((item) => matcher.test(item.value)
+        || (group === 'launchers' && !parsed
+          && /\b(?:exec|spawn|node|bun|tsx|npx|npm|python[23]?|ExecStart(?:Pre|Post)?|ENTRYPOINT|CMD|Command)\b/.test(item.value)));
       // Every value import is a capability discovery lead, including packages
       // with no native name. Native addon seeds never establish completeness.
       if (group === 'capabilities') signals.push(...file.imports.filter((site) => !site.typeOnly).map((site) => ({ specifier: site.specifier, byteStart: site.byteStart })));

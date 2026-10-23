@@ -1,6 +1,10 @@
 /** Real Postgres regression for the shared qualification/repair row. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
 const db = vi.hoisted(() => ({ sql: null as Sql | null }));
@@ -24,6 +28,9 @@ import {
   probeRunnerLiveness,
   readStoredQualification,
   recordStoredQualificationRunnerProgress,
+  recordStoredQualificationWorkProgress,
+  continueStoredQualificationWork,
+  type QualificationWorkProgressInput,
   recordStoredQualificationScheduledFire,
   recordStoredQualificationVerdict,
   reserveQualificationRunner,
@@ -43,6 +50,7 @@ import {
 } from './gate-verdict-freshness';
 import { fireAwaitsForKey, registerAwait } from '../events/await/store';
 import { writeFrozenCandidateRepairQueue } from '../harness/routines/release-actions';
+import { evaluatePartialTaskContinuation } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -77,6 +85,112 @@ async function metadata(): Promise<Record<string, unknown>> {
 }
 
 describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
+  it('executes only remaining eligible units after an unacknowledged callback interruption', async () => {
+    await seed();
+    await beginStoredQualification(target, { attemptId: 'attempt-execute', candidate: 'candidate-execute', nowMs: 100 });
+    const owner = { attemptId: 'attempt-execute', candidate: 'candidate-execute', runnerId: 'runner-one', runId: 'run-one',
+      pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 };
+    expect((await reserveStoredQualificationRunner(target, owner)).status).toBe('updated');
+    const units = [
+      { id: 'finished', kind: 'test' as const, path: 'finished.test.ts' },
+      { id: 'guard', kind: 'guard' as const, path: 'guard.mjs' },
+      { id: 'pending', kind: 'test' as const, path: 'pending.test.ts' },
+      { id: 'post', kind: 'post-suite' as const, path: 'post.mjs' },
+    ];
+    const receipt = (unit: typeof units[number]) => ({ unitId: unit.id, completionId: `completion:${unit.id}`,
+      observedAtMs: 250, state: 'pass' as const, firstAttemptVerdict: 'pass' as const,
+      worktreeDirty: false, observedCount: 1, proof: { recordedSha: owner.candidate,
+        runContext: 'ci', runnerIdentity: 'proof-v3 node', executedModules: [unit.path],
+        readPaths: [], inputsCaptured: true, opaqueReasons: [] } });
+    const input: QualificationWorkProgressInput = { ...owner, repairHead: null, root: '/repo', taskKey: 'qualification',
+      runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [], nowMs: 300,
+      manifest: { schemaVersion: 1, units }, updates: [{ receipt: receipt(units[0]!) }] };
+    const dir = mkdtempSync(join(tmpdir(), 'qualification-starts-')), starts = join(dir, 'starts.jsonl');
+    const observe = (id: string) => execFileSync(process.execPath, ['-e',
+      'require("node:fs").appendFileSync(process.argv[1], JSON.stringify({id:process.argv[2],pid:process.pid})+"\\n")',
+      starts, id], { timeout: 5_000, maxBuffer: 64 * 1024 });
+    try {
+      await expect(continueStoredQualificationWork(target, input, async unit => {
+        observe(unit.id);
+        if (unit.id === 'pending') throw new Error('unacknowledged-worker-stop');
+        return receipt(unit);
+      })).rejects.toThrow('unacknowledged-worker-stop');
+      const interrupted = await readStoredQualification(target);
+      expect(interrupted.status).toBe('present');
+      if (interrupted.status !== 'present') throw new Error('missing durable progress');
+      expect(interrupted.transaction.continuation!.receipts.map(value => value.unitId).sort()).toEqual(['finished', 'guard']);
+      const result = await continueStoredQualificationWork(target, { ...input, updates: [] }, async unit => {
+        observe(unit.id); return receipt(unit);
+      });
+      expect(result).toMatchObject({ status: 'settled', executed: ['pending', 'post'], evaluation: {
+        verdict: 'green', run: [], counts: { selected: 4, passed: 4, pending: 0 } } });
+      const actual = readFileSync(starts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(actual.map(row => row.id)).toEqual(['guard', 'pending', 'pending', 'post']);
+      expect(new Set(actual.map(row => row.pid)).size).toBe(4);
+      expect(await continueStoredQualificationWork(target, { ...input, runnerId: 'other', updates: [] }, async () => {
+        throw new Error('a losing runner must not start');
+      })).toMatchObject({ status: 'refused', executed: [] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('recovers exact pending test, guard and post-suite units from durable JSONB after runner replacement', async () => {
+    await seed();
+    await beginStoredQualification(target, { attemptId: 'attempt-work', candidate: 'candidate-work', nowMs: 100 });
+    const owner = { attemptId: 'attempt-work', candidate: 'candidate-work', runnerId: 'runner-one', runId: 'run-one',
+      pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 };
+    expect((await reserveStoredQualificationRunner(target, owner)).status).toBe('updated');
+    const input: QualificationWorkProgressInput = { ...owner, repairHead: null, root: '/repo', taskKey: 'qualification',
+      runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [], nowMs: 300,
+      manifest: { schemaVersion: 1, units: [
+        { id: 'finished', kind: 'test', path: 'finished.test.ts' },
+        { id: 'pending', kind: 'test', path: 'pending.test.ts' },
+        { id: 'guard', kind: 'guard', path: 'guard.mjs' },
+        { id: 'post', kind: 'post-suite', path: 'post.mjs' },
+      ] }, updates: [{ receipt: { unitId: 'finished', completionId: 'durable-completion', observedAtMs: 250,
+        state: 'pass', firstAttemptVerdict: 'pass', worktreeDirty: false, observedCount: 1,
+        proof: { recordedSha: 'candidate-work', runContext: 'ci', runnerIdentity: 'proof-v3 node',
+          executedModules: ['finished.test.ts'], readPaths: [], inputsCaptured: true, opaqueReasons: [] } } }] };
+    expect((await recordStoredQualificationWorkProgress(target, input)).status).toBe('updated');
+    const replacement = { ...owner, runnerId: 'runner-two', runId: 'run-two', pid: 43, pidIdentity: 'boot:43',
+      incumbentLiveness: 'dead' as const, nowMs: 50_000 };
+    expect((await reserveStoredQualificationRunner(target, replacement)).status).toBe('updated');
+    const recovered = await readStoredQualification(target);
+    expect(recovered.status).toBe('present');
+    if (recovered.status !== 'present') throw new Error('missing recovered qualification');
+    const checkpoint = { root: input.root, taskKey: input.taskKey, continuation: { ...recovered.transaction.continuation,
+      attemptId: input.attemptId, candidate: input.candidate, repairHead: null } };
+    // Independent population established before reading the production evaluator's answer.
+    const pending = ['guard', 'pending', 'post'];
+    expect(evaluatePartialTaskContinuation(checkpoint, { ...input, sourceCommit: input.candidate }))
+      .toMatchObject({ status: 'ready', verdict: 'incomplete', run: pending, reused: ['finished'],
+        counts: { selected: 4, passed: 1, pending: 3 } });
+    const beforeLateWrite = JSON.stringify(recovered.transaction);
+    expect(await recordStoredQualificationWorkProgress(target, { ...input, nowMs: 50_100 })).toMatchObject({
+      status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+    const afterLateWrite = await readStoredQualification(target);
+    expect(afterLateWrite.status).toBe('present');
+    if (afterLateWrite.status === 'present') expect(JSON.stringify(afterLateWrite.transaction)).toBe(beforeLateWrite);
+  });
+
+  it('serializes competing continuation custody requests and refuses the losing writer', async () => {
+    await seed();
+    await beginStoredQualification(target, { attemptId: 'attempt-race', candidate: 'candidate-race', nowMs: 100 });
+    const reserve = (number: number) => ({ attemptId: 'attempt-race', candidate: 'candidate-race',
+      runnerId: `runner-${number}`, runId: `run-${number}`, pid: number + 40, pidIdentity: `boot:${number + 40}`,
+      leaseDurationMs: 1000, started: true, incumbentLiveness: 'unknown' as const, nowMs: 200 });
+    const requests = [reserve(1), reserve(2)];
+    const results = await Promise.all(requests.map(input => reserveStoredQualificationRunner(target, input)));
+    expect(results.map(result => result.status).sort()).toEqual(['conflict', 'updated']);
+    const loser = requests[results.findIndex(result => result.status === 'conflict')]!;
+    expect(await recordStoredQualificationWorkProgress(target, { ...loser, repairHead: null, root: '/repo',
+      taskKey: 'qualification', runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [],
+      updates: [], manifest: { schemaVersion: 1, units: [{ id: 'a', kind: 'test', path: 'a.test.ts' }] }, nowMs: 300 }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+    const stored = await readStoredQualification(target);
+    expect(stored.status).toBe('present');
+    if (stored.status === 'present') expect(stored.transaction.continuation).toBeUndefined();
+  });
+
   it.each(['skipped-locked', 'migrations-pending'])(
     'persists %s as a pre-suite no-verdict outcome',
     async (reason) => {

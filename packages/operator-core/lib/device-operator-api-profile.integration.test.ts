@@ -367,6 +367,21 @@ describe('disposable operator-api device lifecycle', () => {
         }
         await request('other-workspace-survives-revocation', '/device/heartbeat', 200,
           { method: 'POST', token: foreignToken });
+        const repairMint = await request('mint-fresh-pair-after-revocation', '/device/desktop/mint-pair-token', 200,
+          { method: 'POST', body: { workspaceId: id } });
+        const repaired = await request('re-pair-after-revocation', '/device/pair', 200,
+          { method: 'POST', body: { pairToken: repairMint.qrPayload.pairToken } });
+        assert.equal(repaired.workspaceId, id);
+        assert.equal(typeof repaired.deviceId, 'string');
+        assert.notEqual(repaired.deviceId, pair.deviceId);
+        assert.equal(typeof repaired.deviceToken, 'string');
+        const repairedConfig = await request('re-paired-device-reads-own-workspace', '/device/runtime-config', 200,
+          { token: repaired.deviceToken, workspace: other });
+        assert.equal(repairedConfig.workspaceId, id);
+        await request('re-paired-device-heartbeat-authorized', '/device/heartbeat', 200,
+          { method: 'POST', token: repaired.deviceToken });
+        await request('old-device-still-revoked-after-re-pair', '/device/heartbeat', 403,
+          { method: 'POST', token: pair.deviceToken });
         console.log('PRIVATE_DEVICE_LIFECYCLE_PROOF=' + JSON.stringify({
           workspace: id, otherWorkspace: other, home: e.HOME, transport: 'real-loopback-http',
           database: 'disposable-migrated-postgres', checks,
@@ -401,6 +416,9 @@ describe('disposable operator-api device lifecycle', () => {
       ...['/device/runtime-config', '/device/heartbeat', '/device/workspace/switch']
         .map(path => 'revoked-device-refused:' + path),
       'other-workspace-survives-revocation',
+      'mint-fresh-pair-after-revocation', 're-pair-after-revocation',
+      're-paired-device-reads-own-workspace', 're-paired-device-heartbeat-authorized',
+      'old-device-still-revoked-after-re-pair',
     ]);
     expect(proof.transport).toBe('real-loopback-http');
     expect(proof.database).toBe('disposable-migrated-postgres');

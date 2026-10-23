@@ -96,6 +96,31 @@ async function waitFor(predicate: () => boolean, ms: number): Promise<boolean> {
   return predicate();
 }
 
+async function killIdleForkserver(): Promise<void> {
+  const previous = currentForkserverProcess();
+  if (!previous) return;
+  const events: string[] = [];
+  const onExit = () => { events.push('exit'); };
+  const onDisconnect = () => { events.push('disconnect'); };
+  previous.once('exit', onExit);
+  previous.once('disconnect', onDisconnect);
+  const before = { pid: previous.pid, kernel: kernelState(previous.pid!),
+    exitCode: previous.exitCode, signalCode: previous.signalCode, killed: previous.killed,
+    exitListeners: previous.listenerCount('exit'), disconnectListeners: previous.listenerCount('disconnect') };
+  const sent = previous.kill('SIGKILL');
+  try {
+    const retired = await waitFor(() => currentForkserverProcess() === null, 2000);
+    expect(retired, JSON.stringify({ before, sent, events, after: {
+      pid: currentForkserverProcess()?.pid, kernel: kernelState(previous.pid!),
+      exitCode: previous.exitCode, signalCode: previous.signalCode, killed: previous.killed,
+      connected: previous.connected, stats: forkserverStats(),
+    } })).toBe(true);
+  } finally {
+    previous.removeListener('exit', onExit);
+    previous.removeListener('disconnect', onDisconnect);
+  }
+}
+
 function governedStub(): GovernedExecution {
   return {
     receiptId: 'forkserver-it', context: {}, lease: { leaseId: 'l', generation: 1, admissionClass: 'process', expiresAtMs: 2, owner: 'test' },
@@ -130,8 +155,7 @@ describe.runIf(linux)('sidecar forkserver', () => {
     expect(snapshot).not.toBeNull();
     const token = forkserverContainmentIdentity(snapshot);
     const previous = currentForkserverProcess()!;
-    previous.kill('SIGKILL');
-    expect(await waitFor(() => currentForkserverProcess() === null, 2000)).toBe(true);
+    await killIdleForkserver();
     expect((await viaForkserver('true', [])).code).toBe(0);
     const effect = join(dir, 'stale-fence-effect');
     await expect(spawnSidecarChild({ command: 'sh', args: ['-c', 'echo once > "$1"', 'sh', effect],
@@ -140,9 +164,7 @@ describe.runIf(linux)('sidecar forkserver', () => {
   });
 
   it.each(['abort', 'deadline'] as const)('bounds %s during startup without dispatching or leaking a late generation', async (control) => {
-    const previous = currentForkserverProcess();
-    previous?.kill('SIGKILL');
-    if (previous) expect(await waitFor(() => currentForkserverProcess() === null, 2000)).toBe(true);
+    await killIdleForkserver();
     const launcher = await import('../../task-manager/managed-spawn');
     const launch = launcher.managedSpawn;
     let release!: () => void;
@@ -189,6 +211,7 @@ describe.runIf(linux)('sidecar forkserver', () => {
       const pids = join(dir, `pids-${boundary}`);
       const emit = EventEmitter.prototype.emit.bind(server);
       let stopped = false;
+      let closeBoundaryObserved = false;
       const messages = vi.spyOn(server, 'emit').mockImplementation((event: string | symbol, ...args: unknown[]) => {
         const m = args[0] as { t?: string };
         if (event === 'message' && m?.t === 'spawned' && boundary === 'before-ack') {
@@ -220,19 +243,24 @@ describe.runIf(linux)('sidecar forkserver', () => {
           if (boundary === 'after-ack') expect(await waitFor(() => childPid > 0, 2000)).toBe(true);
           if (boundary === 'close') {
             expect(await waitFor(() => childPid > 0, 2000)).toBe(true);
-            // Exercise a terminal reply racing loss: kill the command's group
-            // and detached descendant, so a close message is genuinely produced.
-            process.kill(Number(await readFile(pids, 'utf8')), 'SIGKILL');
-            process.kill(-childPid, 'SIGKILL');
+            // Observe before producing close. Kill the waiting shell first:
+            // killing its last descendant first can let wait finish and the
+            // shell's group disappear before we signal it.
             messages.mockRestore();
             vi.spyOn(server, 'emit').mockImplementation((event: string | symbol, ...args: unknown[]) => {
               const returned = emit(event, ...args);
-              if (event === 'message' && (args[0] as { t?: string })?.t === 'close') server.kill('SIGKILL');
+              if (event === 'message' && (args[0] as { t?: string })?.t === 'close') {
+                closeBoundaryObserved = true;
+                server.kill('SIGKILL');
+              }
               return returned;
             });
+            process.kill(-childPid, 'SIGKILL');
+            process.kill(Number(await readFile(pids, 'utf8')), 'SIGKILL');
           } else server.kill('SIGKILL');
         }
         const outcome = await result;
+        if (boundary === 'close') expect(closeBoundaryObserved).toBe(true);
         expect(outcome).toBeInstanceOf(Error);
         expect(local).not.toHaveBeenCalled();
         if (boundary !== 'close') expect((outcome as { stderr: string }).stderr).toContain('not re-run');

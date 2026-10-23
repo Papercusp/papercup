@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { readFile, realpath } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { withFsMutex } from "./fs-mutex.mjs";
@@ -680,6 +680,34 @@ function evaluateResolvedBudgetedTaskComparison(manifest, cohorts) {
     repeatRatios, operationalAcceptance: false, fileSetSha256: pinned ? prepared.fileSetSha256 : null };
 }
 
+// Bound actual IO and allocation, including rejected inputs. Read only the size
+// observed on one regular descriptor, then reject mutation or path replacement.
+async function readBoundedComparisonFile(path) {
+  const byteLimit = 64 * 1024 * 1024;
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile()) throw new Error("Comparison input must be a regular file");
+    if (before.size > BigInt(byteLimit)) throw new Error("Original artifact exceeded read budget");
+    const bytes = Buffer.alloc(Number(before.size));
+    let length = 0;
+    while (length < bytes.length) {
+      const result = await handle.read(bytes, length, Math.min(64 * 1024, bytes.length - length), null);
+      if (!result.bytesRead) break;
+      length += result.bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    const current = await lstat(path, { bigint: true });
+    if (length !== bytes.length || after.size !== before.size ||
+        after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs ||
+        !current.isFile() || current.dev !== before.dev || current.ino !== before.ino ||
+        current.size !== before.size || current.mtimeNs !== before.mtimeNs ||
+        current.ctimeNs !== before.ctimeNs || await realpath(path) !== path)
+      throw new Error("Comparison input changed during read");
+    return bytes;
+  } finally { await handle.close(); }
+}
+
 /** Resolve pinned ORIGINAL files before evaluation; never accepts caller-loaded receipts. */
 export async function readBudgetedTaskComparisonArtifacts(evidenceRoot, pins) {
   const root = await realpath(evidenceRoot);
@@ -689,8 +717,7 @@ export async function readBudgetedTaskComparisonArtifacts(evidenceRoot, pins) {
     const within = relative(root, path);
     if (!within || isAbsolute(within) || within === ".." || within.startsWith("../"))
       throw new Error("Original artifact escaped evidence root");
-    const bytes = await readFile(path);
-    if (bytes.length > 64 * 1024 * 1024) throw new Error("Original artifact exceeded read budget");
+    const bytes = await readBoundedComparisonFile(path);
     if (createHash("sha256").update(bytes).digest("hex") !== sha256)
       throw new Error(`Original artifact hash mismatch: ${ref}`);
     return json ? JSON.parse(bytes.toString("utf8")) : bytes;
@@ -778,17 +805,18 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
     pins.commands.length <= 64,
     "bounded original command pins required");
   const sourceRoot = await realpath(pins.repositoryRoot);
-  const matchCurrentInputs = async inputs => {
-    for (const input of inputs) {
-      const path = await realpath(join(sourceRoot, input.path));
-      const within = relative(sourceRoot, path);
-      require(within && !isAbsolute(within) && within !== ".." && !within.startsWith("../"),
-        "command source escaped repository root");
-      const bytes = await readFile(path);
-      require(bytes.length <= 64 * 1024 * 1024 &&
-        createHash("sha256").update(bytes).digest("hex") === input.sha256,
+  const readCurrentInput = async input => {
+    const path = await realpath(join(sourceRoot, input.path));
+    const within = relative(sourceRoot, path);
+    require(within && !isAbsolute(within) && within !== ".." && !within.startsWith("../"),
+      "command source escaped repository root");
+    const bytes = await readBoundedComparisonFile(path);
+    require(createHash("sha256").update(bytes).digest("hex") === input.sha256,
       `current command input differs: ${input.path}`);
-    }
+    return bytes;
+  };
+  const matchCurrentInputs = async inputs => {
+    for (const input of inputs) await readCurrentInput(input);
   };
   const qualified = [];
   const identities = new Set();
@@ -965,7 +993,7 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
     if (astro) {
       const packagePath = `${task.dir}/package.json`;
       require(inputs.some(input => input.path === packagePath), "pinned original Astro wrapper script required");
-      const pkg = JSON.parse(await readFile(join(sourceRoot, packagePath), "utf8"));
+      const pkg = JSON.parse((await readCurrentInput(inputs.find(input => input.path === packagePath))).toString("utf8"));
       require(pkg.scripts?.check === obligation.command, "original npm check wrapper mapping differs");
       const stdout = logs.stdout.toString("utf8");
       const summaries = [...stdout.matchAll(/^Result \((\d+) files\):[ \t]*\r?$/gm)];
@@ -1126,7 +1154,7 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
       new Set(parentInputs.map(row => row.path)).size === parentInputs.length,
     "original parent wrapper inputs required");
     await matchCurrentInputs(parentInputs);
-    const pkg = JSON.parse(await readFile(join(sourceRoot, packagePath), "utf8"));
+    const pkg = JSON.parse((await readCurrentInput(parentInputs.find(input => input.path === packagePath))).toString("utf8"));
     require(pkg.scripts?.[task.script] === task.command &&
       lifecycle.every(row => pkg.scripts?.[row.script] === row.command) &&
       ["pre", "post"].every(phase => !pkg.scripts?.[`${phase}${task.script}`] ||

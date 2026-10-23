@@ -1,10 +1,29 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { admitTaskDeadline } from './task-deadline.mjs';
 
-const [phase = 'prepare', prepareOnly = '0', assertionMode = '0', attemptsDone = '0', elapsedSec = '0'] = process.argv.slice(2);
-try {
+function readCalibration(path) {
+  const body = readFileSync(path, 'utf8');
+  const rows = body.trim().split('\n').map(line => JSON.parse(line));
+  const completed = rows.filter(row => row.phase === 'prepare');
+  if (completed.length !== 1 || completed[0].status !== 'passed' ||
+      !Number.isSafeInteger(completed[0].elapsedMs) || completed[0].elapsedMs < 0)
+    throw new Error('Verifier budget requires one completed prepare phase');
+  return { body, elapsedMs: completed[0].elapsedMs };
+}
+
+function main() {
+  if (process.argv[2] === '--snapshot-budget') {
+    const [, , , input, output] = process.argv;
+    if (!input || !output || process.argv.length !== 5) throw new Error('Expected calibration input and snapshot output');
+    const { body } = readCalibration(input);
+    writeFileSync(output, body, { flag: 'wx', mode: 0o600 });
+    console.error(`VERIFY_TAURI_BUDGET_SNAPSHOT original=${input} snapshot=${output} sha256=${createHash('sha256').update(body).digest('hex')}`);
+    return;
+  }
+  const [phase = 'prepare', prepareOnly = '0', assertionMode = '0', attemptsDone = '0', elapsedSec = '0'] = process.argv.slice(2);
   if (!['prepare', 'boot', 'assert'].includes(phase)) throw new Error('Invalid verifier budget phase');
   const integer = (key, fallback, minimum = 0) => {
     const raw = process.env[key];
@@ -14,13 +33,8 @@ try {
   };
   let prepareMs = null;
   if (process.env.VERIFY_TAURI_BUDGET_FROM) {
-    const rows = readFileSync(process.env.VERIFY_TAURI_BUDGET_FROM, 'utf8').trim()
-      .split('\n').map(line => JSON.parse(line));
-    const completed = rows.filter(row => row.phase === 'prepare');
-    if (completed.length !== 1 || completed[0].status !== 'passed' ||
-        !Number.isSafeInteger(completed[0].elapsedMs) || completed[0].elapsedMs < 0)
-      throw new Error('Verifier budget requires one completed prepare phase');
-    prepareMs = Math.max(0, Math.ceil(completed[0].elapsedMs * 1.25) - Number(elapsedSec) * 1000);
+    const { elapsedMs } = readCalibration(process.env.VERIFY_TAURI_BUDGET_FROM);
+    prepareMs = Math.max(0, Math.ceil(elapsedMs * 1.25) - Number(elapsedSec) * 1000);
   }
   const attempts = Math.max(0, integer('VERIFY_TAURI_MAX_BOOT_ATTEMPTS', 2, 1) - Number(attemptsDone));
   const bootMs = prepareOnly === '1' || phase === 'assert' ? 0 : attempts * 1000 *
@@ -58,6 +72,9 @@ try {
   console.error(`VERIFY_TAURI_TASK_BUDGET phase=${phase} deadlineEpochMs=${admission.deadlineEpochMs ?? 'unknown'} ` +
     `remainingMs=${admission.remainingMs ?? 'unknown'} knownEstimateMs=${admission.knownEstimateMs} ` +
     `unknownTasks=${unknownTasks} assertionEstimateMs=${assertionMs} childCutoffEpochMs=${admission.childCutoffEpochMs ?? 'unknown'}`);
+}
+try {
+  main();
 } catch (error) {
   console.error(error.message);
   process.exitCode = 2;

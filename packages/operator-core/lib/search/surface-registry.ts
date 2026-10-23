@@ -67,6 +67,101 @@
  *     is now the sole registered surface entering `work-items.ts`.)
  */
 
+/**
+ * Source-level baseline inventory for the existing prose surface registry.
+ * These are observations of adapters, not advertised guarantees. In particular,
+ * a ranking timestamp is NOT field-bound freshness/authority evidence. Numeric
+ * budgets and corpus/query/model pins belong to the frozen benchmark manifest.
+ */
+export interface ProseSourceBaseline {
+  source: string;
+  entry: string;
+  relation: string;
+  canonicalAuthority: string;
+  partition: string;
+  lexical: boolean;
+  vector: boolean;
+  /** SearchFilters keys read by this source; scopeFilter/workspace are separate. */
+  filterKeys: readonly string[];
+  /** Exact field used for ranking, or null when the returned hit has no ts. */
+  rankingTimestamp: string | null;
+  /** Baseline adapters do not yet return field/value/version/authority-epoch proof. */
+  fieldFreshness: 'unmeasured';
+}
+
+const proseEntry = 'agent-tools/search/sources.ts';
+const knowledgeEntry = 'agent-tools/search/knowledge-sources.ts';
+export const PROSE_SOURCE_BASELINES: readonly ProseSourceBaseline[] = [
+  { source: 'escalations', entry: proseEntry, relation: 'harness_shared.harness_escalations',
+    canonicalAuthority: 'harness_shared.harness_escalations', partition: 'workspace + harness',
+    lexical: true, vector: true, filterKeys: [], rankingTimestamp: null, fieldFreshness: 'unmeasured' },
+  { source: 'brainstorm', entry: proseEntry, relation: 'harness_shared.harness_brainstorm',
+    canonicalAuthority: 'harness_shared.harness_brainstorm', partition: 'workspace + harness',
+    lexical: true, vector: true, filterKeys: [], rankingTimestamp: null, fieldFreshness: 'unmeasured' },
+  { source: 'turns', entry: proseEntry, relation: 'harness_shared.operator_turns',
+    canonicalAuthority: 'harness_shared.operator_turns', partition: 'operator_conversations.workspace_id join',
+    lexical: true, vector: true, filterKeys: [], rankingTimestamp: null, fieldFreshness: 'unmeasured' },
+  { source: 'decisions', entry: proseEntry, relation: 'harness_shared.harness_decisions',
+    canonicalAuthority: 'harness_shared.harness_decisions', partition: 'workspace + harness',
+    lexical: true, vector: true, filterKeys: [], rankingTimestamp: null, fieldFreshness: 'unmeasured' },
+  { source: 'work_item', entry: proseEntry, relation: 'harness_shared.engineer_issues',
+    canonicalAuthority: 'harness_shared.work_items via engineer_issues view', partition: 'workspace + derived scope',
+    lexical: true, vector: true, filterKeys: [], rankingTimestamp: 'coalesce(updated_at, created_at)', fieldFreshness: 'unmeasured' },
+  { source: 'session_turn', entry: proseEntry, relation: 'harness_shared.session_turns',
+    canonicalAuthority: 'registered session transcript + ingest/provenance ledger',
+    partition: 'workspace OR host-global default; harness and disclosure reader fence',
+    lexical: true, vector: true,
+    filterKeys: ['owners', 'speaker', 'turnOrigin', 'ownerOnly', 'ownerCandidates', 'sessionId', 'sourceKind', 'since', 'until', 'readerIds'],
+    rankingTimestamp: 'ts', fieldFreshness: 'unmeasured' },
+  { source: 'coord_message', entry: proseEntry, relation: 'harness_shared.coord_event_log',
+    canonicalAuthority: 'harness_shared.coord_event_log', partition: 'workspace OR host-global default; harness',
+    lexical: true, vector: false, filterKeys: ['owners', 'since', 'until', 'sessionId'],
+    rankingTimestamp: null, fieldFreshness: 'unmeasured' },
+  { source: 'report', entry: 'agent-tools/search/report-source.ts', relation: 'harness_shared.report_library',
+    canonicalAuthority: 'report_library current visible lineage edition', partition: 'workspace + server viewer + harness + audience exclusions',
+    lexical: true, vector: true, filterKeys: ['owners', 'since', 'until'],
+    rankingTimestamp: 'published_at', fieldFreshness: 'unmeasured' },
+  { source: 'plan', entry: knowledgeEntry, relation: 'harness_shared.harness_plans',
+    canonicalAuthority: 'harness_shared.harness_plans', partition: 'workspace + harness + audience exclusions',
+    lexical: true, vector: true, filterKeys: [], rankingTimestamp: 'updated_at', fieldFreshness: 'unmeasured' },
+  { source: 'doc', entry: knowledgeEntry, relation: 'harness_shared.doc_sections',
+    canonicalAuthority: 'registered docs-engine source; doc_sections is a derived complete-body cache',
+    partition: 'framework-shared OR workspace harness membership; retirement + audience exclusions',
+    lexical: true, vector: true, filterKeys: [], rankingTimestamp: 'updated_at', fieldFreshness: 'unmeasured' },
+];
+
+/**
+ * Distinct policies outside SEARCH_SOURCES. References point at the maintained
+ * application registries; values are read/pinned from them when freezing a run.
+ * This inventory does not make private memory a public catalog source.
+ */
+export const APPLICATION_SEARCH_BASELINES = [
+  { product: 'papercusp', surface: 'memory:search', entry: 'agent-tools/memory/search.ts',
+    configurationRef: 'memory/configure.ts:HybridBackend construction', audience: 'user + resolved harness memory pools',
+    rankingPolicyRef: 'memory:search pull policy in SEARCH_SURFACES', fieldFreshness: 'unmeasured' },
+  { product: 'papercusp', surface: 'memory:auto-injection', entry: 'memory/injection.ts',
+    configurationRef: 'memory/recall-query.ts', audience: 'identity-declared user/harness pools',
+    rankingPolicyRef: 'memory/injection.ts cosine-gated precision policy', fieldFreshness: 'unmeasured' },
+  { product: 'papercusp', surface: 'memory:corpus-recall', entry: 'memory/corpus-recall-io.ts',
+    configurationRef: 'memory/corpus-recall-io.ts:CORPUS_SOURCE_NAMES', audience: 'identity-declared corpus and host authority',
+    rankingPolicyRef: 'memory/corpus-recall-io.ts admission/rerank policy', fieldFreshness: 'unmeasured' },
+  { product: 'restart', surface: 'storefront:search', entry: 'libs/catalog-search/src/useCatalogSearch.ts',
+    configurationRef: 'libs/catalog-search/src/config.ts:SURFACE_PRESETS.search', audience: 'public region catalog',
+    rankingPolicyRef: 'apps/shop-api/src/catalog/catalog.service.ts:listProducts', fieldFreshness: 'unmeasured' },
+  { product: 'restart', surface: 'storefront:wholesale', entry: 'libs/catalog-search/src/useCatalogSearch.ts',
+    configurationRef: 'libs/catalog-search/src/config.ts:SURFACE_PRESETS.wholesale', audience: 'public region catalog',
+    rankingPolicyRef: 'apps/shop-api/src/catalog/catalog.service.ts:listProducts', fieldFreshness: 'unmeasured' },
+  { product: 'restart', surface: 'storefront:autocomplete', entry: 'libs/catalog-search/src/useCatalogSearch.ts',
+    configurationRef: 'libs/catalog-search/src/config.ts:SURFACE_PRESETS.autocomplete', audience: 'public region catalog',
+    rankingPolicyRef: 'apps/shop-api/src/catalog/catalog.service.ts:listProducts', fieldFreshness: 'unmeasured' },
+  { product: 'restart', surface: 'scout:search_products', entry: 'apps/scout-service/src/scout/scout.service.ts',
+    configurationRef: 'apps/shop-api/src/tooldef/tools/catalog.reads.tool.ts:catalog.search', audience: 'public region catalog via scout service principal',
+    rankingPolicyRef: 'apps/shop-api/src/catalog/catalog.service.ts:listProducts', fieldFreshness: 'unmeasured' },
+  { product: 'restart', surface: 'scout:shopper-memory', entry: 'apps/scout-service/src/memory/memory.service.ts',
+    configurationRef: 'apps/scout-service/src/scout/memory-scopes.ts:memoryScopes', audience: 'signed-in user + store; guest store-only and no writes',
+    rankingPolicyRef: 'apps/scout-service/src/memory/memory.service.ts:recall', fieldFreshness: 'unmeasured' },
+] as const;
+
 export interface SearchSurface {
   /** Registered tool name, or a stable id for a non-tool surface. */
   id: string;

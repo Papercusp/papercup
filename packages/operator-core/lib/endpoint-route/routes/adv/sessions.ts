@@ -328,7 +328,10 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
       return { response: json({ ok: false, error: 'consultEvidenceSpan must name this exact source session, 1–12 valid turn indices, and a context window from 0–8' }, 400) } as const;
     }
     const { sql } = getOrgPg();
-    if (sessionId !== sourceNativeId) {
+    // An explicit sourceNativeSessionId was already checked against this
+    // owner/backend above. Matching evidence uses that same validated source;
+    // only evidence that selects an earlier incarnation needs another check.
+    if (sessionId !== sourceRow.sessionId) {
       if (!RESUMABLE_NATIVE_SESSION_ID_RE.test(sessionId) ||
           !(await measure('port.evidence-incarnation', () => evidenceIncarnationOwnedBy(sql as unknown as import('postgres').Sql, trackedRow, sessionId)))) {
         return {

@@ -1,5 +1,6 @@
 /** P-034/D-016: one code-intelligence leg at the existing PostToolBatch sink. */
 import { randomUUID } from 'node:crypto';
+import { AGENT_ANTIPATTERN_RULES } from './agent-antipatterns';
 import { isAbsolute, join, posix, relative } from 'node:path';
 import type { Sql, TransactionSql } from 'postgres';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -28,6 +29,8 @@ export const PUSH_LEG_FLAGS = {
   grep: FLAGS.CODE_INTEL_PUSH_GREP, 'first-touch': FLAGS.CODE_INTEL_PUSH_FIRST_TOUCH,
   interface: FLAGS.CODE_INTEL_PUSH_INTERFACE, incident: FLAGS.CODE_INTEL_PUSH_INCIDENT,
   completion: FLAGS.CODE_INTEL_PUSH_COMPLETION,
+  // Active with the existing structural capability; no default-off feature gate.
+  antipattern: FLAGS.CODE_INTEL_AST_GREP,
   // No registered hook leg: this flag gates the task brief coord:declare-intent returns for
   // current_files (declare-intent.ts -> task-brief.ts getIntentTimeTaskBrief), recorded by
   // recordIntentTaskBrief (WI-6554700010018439).
@@ -35,7 +38,7 @@ export const PUSH_LEG_FLAGS = {
   resume: FLAGS.CODE_INTEL_PUSH_RESUME, notes: FLAGS.CODE_INTEL_PUSH_NOTES,
 } as const;
 export type PushLegId = keyof typeof PUSH_LEG_FLAGS;
-export interface PushCall { tool?: string; toolInput?: unknown; toolResponse?: unknown; incidentResult?: unknown; interfaceEdit?: unknown; interfaceEdits?: unknown[] }
+export interface PushCall { tool?: string; toolInput?: unknown; toolResponse?: unknown; incidentResult?: unknown; interfaceEdit?: unknown; interfaceEdits?: unknown[]; antipatternEdits?: unknown[] }
 export interface PushInput {
   owner: string; workspace: string; harness?: string; client?: string;
   /** Populated only from the registered harness root, never request cwd. */
@@ -135,6 +138,32 @@ export async function readPushIncidentAttribution(input: PushInput, paths: strin
 export type PushLeg = (input: PushInput, snapshot: PushSnapshot) => readonly PushFact[];
 const state = pinModuleState('@papercusp/operator-core.code-intel-push-legs', () => ({ legs: new Map<PushLegId, PushLeg>() }));
 export function registerCodeIntelPushLeg(id: PushLegId, leg: PushLeg): void { state.legs.set(id, leg); }
+
+/** Only consumes prepared, hashed candidates. No parser, disk walk or subprocess here. */
+export function snapshotAntipatternLeg(input: PushInput): PushFact[] {
+  const lines: string[] = [], sources: PushProofSource[] = [], seen = new Set<string>();
+  for (const call of input.calls.slice(-20)) {
+    if (!/(?:^|_|:|\.)(?:Edit|Write|MultiEdit|edit|write|apply_patch)$/.test(call.tool ?? '')) continue;
+    for (const raw of (call.antipatternEdits ?? []).slice(0, 20)) {
+      const edit = raw as { path?: string; sha256?: string; status?: string; hits?: { ruleId?: string; line1?: number }[] };
+      if (!edit || edit.status !== 'measured' || !safeSnapshotPath(edit.path ?? '') || !/^[a-f0-9]{64}$/.test(edit.sha256 ?? '') || !Array.isArray(edit.hits)) continue;
+      for (const hit of edit.hits.slice(0, 100)) {
+        const rule = AGENT_ANTIPATTERN_RULES.find(rule => rule.id === hit.ruleId);
+        const key = `${edit.path}:${edit.sha256}:${hit.ruleId}:${hit.line1}`;
+        if (!rule || !Number.isSafeInteger(hit.line1) || hit.line1! < 1 || seen.has(key)) continue;
+        seen.add(key);
+        lines.push(`${edit.path}:${hit.line1} ${rule.id}: ${rule.hint}.`);
+        sources.push({ path: edit.path!, sha256: edit.sha256! });
+        if (lines.length === 3) break;
+      }
+      if (lines.length === 3) break;
+    }
+    if (lines.length === 3) break;
+  }
+  return lines.length ? [{ leg: 'antipattern', subject: sources.map(s => `${s.path}:${s.sha256}`).join('|').slice(0, 1000),
+    text: lines.join('\n'), citedPaths: [...new Set(sources.map(s => s.path))], sourceHashes: sources }] : [];
+}
+registerCodeIntelPushLeg('antipattern', snapshotAntipatternLeg);
 
 /** Installed hooks send bounded JSON strings; incomplete digests prove no lookup. */
 function pushCallInput(value: unknown): Record<string, unknown> | null {
@@ -1019,6 +1048,7 @@ export async function recordIntentTaskBrief(input: { workspace: string; owner: s
 }
 
 export function formatPushFact(fact: PushFact, snapshot: PushSnapshot): string {
+  if (fact.leg === 'antipattern') return fact.text;
   return `## Code intelligence (${fact.leg})\nSnapshot ${snapshot.commit.slice(0, 12)} · ${snapshot.generatedAt}\n${fact.text}`;
 }
 

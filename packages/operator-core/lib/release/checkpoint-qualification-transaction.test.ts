@@ -11,6 +11,8 @@ import {
   projectCheckpointQualificationState,
   QUALIFICATION_PROGRESS_STALE_MS,
   recordQualificationRunnerProgress,
+  recordQualificationWorkProgress,
+  type QualificationWorkProgressInput,
   isPostVerdictHang,
   QUALIFICATION_POST_VERDICT_HANG_MS,
   recordQualificationScheduledFire,
@@ -50,6 +52,91 @@ const begin = () =>
     evidenceRefs: ['tool:release:checkpoint-run'],
     nowMs: 100,
   }).transaction;
+
+describe('fenced durable remaining-work continuation', () => {
+  const running = () => reserveQualificationRunner(begin(), { attemptId: 'attempt-1', runnerId: 'runner-1',
+    candidate: 'candidate-1', runId: 'run-1', pid: 42, pidIdentity: 'boot:42', started: true,
+    leaseDurationMs: 1_000, nowMs: 200 }).transaction;
+  const input = (): QualificationWorkProgressInput => ({ attemptId: 'attempt-1', candidate: 'candidate-1',
+    repairHead: null, runnerId: 'runner-1', runId: 'run-1', pidIdentity: 'boot:42', root: '/repo',
+    taskKey: 'qualification', runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [],
+    manifest: { schemaVersion: 1, units: [
+      { id: 'a', kind: 'test', path: 'a.test.ts' }, { id: 'post', kind: 'post-suite', path: 'post.mjs' } ] },
+    updates: [{ receipt: { unitId: 'a', completionId: 'completion-a', observedAtMs: 250, state: 'pass',
+      worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass', proof: {
+        recordedSha: 'candidate-1', executedModules: ['a.test.ts'], readPaths: [], inputsCaptured: true,
+        opaqueReasons: [], runContext: 'ci', runnerIdentity: 'proof-v3 node' } } }], nowMs: 300 });
+
+  it('persists the entire frozen population and survives the production parse/recovery path', () => {
+    const saved = recordQualificationWorkProgress(running(), input());
+    expect(saved.status).toBe('updated');
+    const recovered = parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(saved.transaction)))!;
+    expect(recovered.continuation).toMatchObject({ manifest: input().manifest,
+      receipts: [{ unitId: 'a', state: 'pass' }] });
+    expect(recordQualificationWorkProgress(recovered, input())).toMatchObject({ status: 'idempotent' });
+    expect(parseCheckpointQualificationTransaction({ ...recovered, continuation: { ...recovered.continuation,
+      receipts: null } })).toBeNull();
+    expect(parseCheckpointQualificationTransaction({ ...recovered, continuation: { ...recovered.continuation,
+      manifest: { schemaVersion: 1, units: [] } } })).toBeNull();
+    expect(parseCheckpointQualificationTransaction({ ...recovered, continuation: { ...recovered.continuation,
+      supersededReceipts: recovered.continuation!.receipts } })).toBeNull();
+  });
+
+  it.each(['live', 'unknown'] as const)('refuses a second runner even with an expired lease and %s liveness', liveness => {
+    const saved = recordQualificationWorkProgress(running(), input()).transaction;
+    const rival = reserveQualificationRunner(saved, { attemptId: 'attempt-1', runnerId: 'runner-2',
+      candidate: 'candidate-1', leaseDurationMs: 1_000, incumbentLiveness: liveness, nowMs: 50_000 });
+    expect(rival).toMatchObject({ status: 'conflict', refusalReason: 'runner-held' });
+    expect(recordQualificationWorkProgress(saved, { ...input(), runnerId: 'runner-2' })).toMatchObject({
+      status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+  });
+
+  it('rejects an old fence after a proved-dead handoff without altering replacement receipts', () => {
+    const saved = recordQualificationWorkProgress(running(), input()).transaction;
+    const replacement = reserveQualificationRunner(saved, { attemptId: 'attempt-1', runnerId: 'runner-2',
+      runId: 'run-2', candidate: 'candidate-1', pid: 43, pidIdentity: 'boot:43', started: true,
+      leaseDurationMs: 1_000, incumbentLiveness: 'dead', nowMs: 50_000 }).transaction;
+    const late = recordQualificationWorkProgress(replacement, { ...input(), nowMs: 50_100 });
+    expect(late).toEqual({ status: 'conflict', refusalReason: 'runner-fence-mismatch', transaction: replacement });
+    expect(replacement.continuation).toEqual(saved.continuation);
+  });
+
+  it('refuses selection, retry-policy, candidate, repair-head, and duplicate-completion changes', () => {
+    const saved = recordQualificationWorkProgress(running(), input()).transaction;
+    for (const override of [
+      { manifest: { schemaVersion: 1 as const, units: input().manifest.units.slice(1) } },
+      { candidate: 'other' }, { repairHead: 'other' }, { retryStates: ['fail' as const] },
+      { updates: [{ receipt: { ...input().updates[0]!.receipt, unitId: 'post' } }] },
+    ]) expect(recordQualificationWorkProgress(saved, { ...input(), ...override }).status).toBe('conflict');
+    expect(reserveQualificationRunner(saved, { attemptId: 'attempt-1', runnerId: 'new-runner',
+      candidate: 'recut-candidate', incumbentLiveness: 'dead', leaseDurationMs: 1000, nowMs: 50_000 }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'continuation-lineage-mismatch' });
+    expect(beginQualificationTransaction(saved, { attemptId: 'attempt-1', candidate: 'recut-candidate', nowMs: 50_000 }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'continuation-lineage-mismatch' });
+    expect(waitQualificationTransaction(saved, { attemptId: 'attempt-1', candidate: 'recut-candidate',
+      reason: 'infra-inconclusive', nowMs: 50_000 }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'continuation-lineage-mismatch' });
+    expect(settleQualificationTransaction(saved, { attemptId: 'attempt-1', repairHead: 'recut-repair',
+      reason: 'advanced', green: true, nowMs: 50_000 }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'continuation-lineage-mismatch' });
+    expect(parseCheckpointQualificationTransaction({ ...saved, candidate: 'recut-candidate' })).toBeNull();
+  });
+
+  it('retains failure history and requires the frozen retry policy plus an exact predecessor to replace it', () => {
+    const first = input(); first.retryStates = ['fail']; first.updates[0]!.receipt.state = 'fail';
+    const saved = recordQualificationWorkProgress(running(), first).transaction;
+    const retry = input(); retry.retryStates = ['fail']; retry.nowMs = 400;
+    retry.updates[0]!.receipt.completionId = 'completion-retry';
+    expect(recordQualificationWorkProgress(saved, retry).status).toBe('conflict');
+    retry.updates[0]!.supersedesCompletionId = 'completion-a';
+    expect(recordQualificationWorkProgress(saved, retry)).toMatchObject({ status: 'updated', transaction: {
+      continuation: { receipts: [{ state: 'pass', completionId: 'completion-retry' }],
+        supersededReceipts: [{ state: 'fail', completionId: 'completion-a' }] } } });
+    const validPass = recordQualificationWorkProgress(running(), input()).transaction;
+    expect(recordQualificationWorkProgress(validPass, { ...retry, retryStates: [] })).toMatchObject({
+      status: 'conflict', refusalReason: 'continuation-replacement-not-admitted' });
+  });
+});
 
 describe('physical reservation refusal evidence (P-033)', () => {
   const running = () => reserveQualificationRunner(begin(), {

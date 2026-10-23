@@ -36,6 +36,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { effectiveCriterionInstrumentKey } from './rubrics';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
+import { retainMeasurementProvenance } from './measurement-provenance';
+import type { RecordedMeasurementProvenance } from '@papercusp/test-config/execution-details';
+import { isSensitiveValueKey } from './sensitive-text';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
@@ -923,6 +926,7 @@ export interface InstrumentReading {
   measuredAt: string;
   argv: readonly string[];
   error?: string;
+  provenance?: RecordedMeasurementProvenance;
 }
 
 export interface InstrumentRunDeps {
@@ -969,46 +973,73 @@ export async function runInstrument(key: string, deps: InstrumentRunDeps = {}): 
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const base = { key: instrument.key, unit: instrument.unit, argv: instrument.argv };
+  const startedAt = new Date(now()).toISOString();
+  const samples: Array<{ value: number | null; at: string; numericFields: Array<{ label: string; value: string }> }> = [];
+  const finish = (reading: InstrumentReading): InstrumentReading => ({
+    ...reading,
+    provenance: retainMeasurementProvenance({
+      procedure: { kind: 'command', key: instrument.key, argv: instrument.argv,
+        parser: instrument.parse.toString(),
+        combine: instrument.sample?.combine.toString() ?? instrument.sampleStdout?.combine.toString() ?? null,
+        intervalMs: instrument.sample?.intervalMs ?? instrument.sampleStdout?.intervalMs ?? null },
+      result: { samples, value: reading.value, unit: reading.unit },
+      startedAt, finishedAt: reading.measuredAt,
+    }),
+  });
   const sampleOnce = async (): Promise<{ value: number | null; at: number; stdout: string }> => {
     const stdout = instrument.acceptNonZeroExit
       ? await exec(instrument.argv, instrument.timeoutMs, { acceptNonZeroExit: true })
       : await exec(instrument.argv, instrument.timeoutMs);
     const at = now();
-    return { value: instrument.parse(stdout, { now: at }), at, stdout };
+    const value = instrument.parse(stdout, { now: at });
+    // Raw-output combiners (e.g. PSI + pswpin) need the original counters,
+    // not just parse(stdout)'s preliminary scalar. Retain labelled numbers
+    // only; the shared bounded sanitizer handles the final context budget.
+    const numericFields: Array<{ label: string; value: string }> = [];
+    const numeric = /\b([A-Za-z_][A-Za-z0-9_.-]{0,63})[\t ]*(?:=|:|[\t ])[\t ]*(-?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)(?=$|[\s,}])/g;
+    for (const match of stdout.matchAll(numeric)) {
+      if (isSensitiveValueKey(match[1]!)) continue;
+      numericFields.push({ label: match[1]!, value: match[2]! });
+      // More fields would be omitted by the 64-entry retention policy anyway.
+      // A sentinel beyond that limit makes the truncation explicit.
+      if (numericFields.length === 65) break;
+    }
+    samples.push({ value, at: new Date(at).toISOString(), numericFields });
+    return { value, at, stdout };
   };
   try {
     const first = await sampleOnce();
     if (first.value === null) {
-      return { ...base, value: null, measuredAt: new Date(first.at).toISOString(), error: 'output did not parse' };
+      return finish({ ...base, value: null, measuredAt: new Date(first.at).toISOString(), error: 'output did not parse' });
     }
     if (instrument.sampleStdout) {
       await sleep(instrument.sampleStdout.intervalMs);
       const second = await sampleOnce();
       const value = instrument.sampleStdout.combine(first.stdout, second.stdout, second.at - first.at, { now: second.at });
       return value === null
-        ? { ...base, value: null, measuredAt: new Date(second.at).toISOString(), error: 'second sample did not parse' }
-        : { ...base, value, measuredAt: new Date(second.at).toISOString() };
+        ? finish({ ...base, value: null, measuredAt: new Date(second.at).toISOString(), error: 'second sample did not parse' })
+        : finish({ ...base, value, measuredAt: new Date(second.at).toISOString() });
     }
     if (!instrument.sample) {
-      return { ...base, value: first.value, measuredAt: new Date(first.at).toISOString() };
+      return finish({ ...base, value: first.value, measuredAt: new Date(first.at).toISOString() });
     }
     await sleep(instrument.sample.intervalMs);
     const second = await sampleOnce();
     if (second.value === null) {
-      return { ...base, value: null, measuredAt: new Date(second.at).toISOString(), error: 'second sample did not parse' };
+      return finish({ ...base, value: null, measuredAt: new Date(second.at).toISOString(), error: 'second sample did not parse' });
     }
-    return {
+    return finish({
       ...base,
       value: instrument.sample.combine(first.value, second.value, second.at - first.at),
       measuredAt: new Date(second.at).toISOString(),
-    };
+    });
   } catch (error) {
-    return {
+    return finish({
       ...base,
       value: null,
       measuredAt: new Date(now()).toISOString(),
       error: error instanceof Error ? error.message : String(error),
-    };
+    });
   }
 }
 

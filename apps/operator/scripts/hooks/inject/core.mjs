@@ -22,6 +22,8 @@
 import { PORTS, killSwitchState, specFor } from './ports.mjs';
 import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { join } from 'node:path';
 import { codeIntelDelivery } from './delivery-ledger.mjs';
 
 /**
@@ -206,7 +208,7 @@ export async function postInjection(port, body, opts = {}) {
     // a second copy of the number on the server.
     // Collect locally, where the edited file and its owning repo exist. Never run
     // the parser/compiler on the shared operator's 250ms snapshot push path.
-    if (port === 'mid-turn') await collectInterfaceEdits(body, undefined, env);
+    if (port === 'mid-turn') await Promise.all([collectInterfaceEdits(body, undefined, env), collectAntipatternEdits(body)]);
     if (controller.signal.aborted || typeof fetchImpl !== 'function') return finish();
     const payloadBody = JSON.stringify({ ...body, wallMs: spec.timeoutMs });
     let res = null;
@@ -280,6 +282,33 @@ export async function collectInterfaceEdits(body, collect = async path => {
     return state.recentEdits.filter(row => row.workspace === body.workspace && row.harness === body.harness);
   });
   if (recent?.length) body.incidentAttribution = { status: 'measured', recentEdits: recent };
+}
+
+/** Async preparation shared by native Edit/Write/MultiEdit and apply_patch.
+ * The push registry receives only bounded findings; it never scans source. */
+export async function collectAntipatternEdits(body, prepare = async (path, root) => new Promise(resolveResult => {
+  const worker = join(root, 'packages/operator-core/lib/code-intelligence/agent-antipatterns-worker.ts');
+  execFile(process.execPath, [worker, path], { cwd: root, timeout: 600, maxBuffer: 100_000 }, (error, stdout) => {
+    try { resolveResult(error || !stdout ? null : JSON.parse(stdout)); } catch { resolveResult(null); }
+  });
+})) {
+  const { findRepoRoot } = await import('../cc/posttooluse-required-field-strand-nudge.mjs');
+  const paths = new Set();
+  const pending = [];
+  for (const call of body.toolCalls ?? []) {
+    if (!/(?:^|_|:|\.)(?:Edit|Write|MultiEdit|edit|write|apply_patch)$/.test(call.tool ?? '')) continue;
+    for (const path of call.editedPaths ?? []) {
+      const abs = resolve(body.cwd || process.cwd(), path);
+      if (paths.has(abs) || paths.size >= 4 || !/\.tsx?$/.test(abs)) continue;
+      paths.add(abs);
+      const root = findRepoRoot(abs);
+      if (!root) continue;
+      pending.push(Promise.resolve().then(() => prepare(abs, root)).then(result => {
+        if (result) (call.antipatternEdits ??= []).push(result);
+      }, () => {}));
+    }
+  }
+  await Promise.all(pending);
 }
 
 function mergeCodeIntel(body, delivered, env) {

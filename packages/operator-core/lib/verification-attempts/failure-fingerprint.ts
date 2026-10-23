@@ -70,7 +70,7 @@ const ZERO_FAILURE_RE = /\b(fail(?:ed|ures?|ing)?|errors?)\s*[=:]\s*0\b|\b0\s+(f
  * (for example, `✔ the mac leg cannot finish ...`). They report a passing test,
  * never the reason an attempt failed, so keep them out of the error-line fallback.
  */
-const PASSING_TEST_LINE_RE = /^(?:✔|ok\s+\d+\b)/i;
+const PASSING_TEST_LINE_RE = /^(?:[✔✓]|ok\s+\d+\b)/i;
 
 /**
  * Prefix of the lines the capability:bash runner itself appends to a job log

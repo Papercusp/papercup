@@ -3,7 +3,7 @@
  * opens application data, inherits service credentials, or starts a bg owner.
  */
 import { createRequire } from 'node:module';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { once } from 'node:events';
@@ -16,6 +16,119 @@ export const NATIVE_EXPECTATIONS = Object.freeze({
   'rocksdb-reopen': { value: 'committed' },
   'pty-input-exit': { echoed: true, exitCode: 0 },
 });
+
+// Required builtins occur in the pinned host/worker source census. These
+// operations cover specific protocol contracts, not every use of each API.
+export const RUNTIME_EXPECTATIONS = Object.freeze({
+  'async-context-isolation': { contexts: ['first', 'second'], outside: null },
+  'worker-transfer-exit': { values: [17, 34, 51], detached: true, exitCode: 0 },
+  'process-ipc-exit': { reply: 42, exitCode: 0 },
+  'http-stream-roundtrip': { status: 200, body: 'first\nsecond\n' },
+  'http2-stream-roundtrip': { status: 200, body: 'first\nsecond\n' },
+});
+
+export async function performRuntimeCapability(id) {
+  if (!Object.hasOwn(RUNTIME_EXPECTATIONS, id)) throw new Error(`Unknown runtime capability: ${id}`);
+  if (id === 'async-context-isolation') {
+    const { AsyncLocalStorage } = await import('node:async_hooks');
+    const { setImmediate } = await import('node:timers/promises');
+    const context = new AsyncLocalStorage();
+    try {
+      const contexts = await Promise.all(['first', 'second'].map(value => context.run(value, async () => {
+        await setImmediate();
+        return context.getStore();
+      })));
+      return { contexts, outside: context.getStore() ?? null };
+    } finally { context.disable(); }
+  }
+  if (id === 'worker-transfer-exit') {
+    const { Worker } = await import('node:worker_threads');
+    const directory = await mkdtemp(join(tmpdir(), 'papercusp-runtime-worker-'));
+    let worker;
+    try {
+      const script = join(directory, 'worker.mjs');
+      await writeFile(script, `
+        import { parentPort } from 'node:worker_threads';
+        parentPort.once('message', buffer => {
+          parentPort.postMessage([...new Uint8Array(buffer)]);
+          parentPort.close();
+        });
+      `);
+      // An explicit module file avoids inheriting the receipt runner's -e
+      // input type, which changes the meaning of CommonJS eval workers.
+      worker = new Worker(script, { execArgv: [] });
+      const reply = once(worker, 'message'), exited = once(worker, 'exit');
+      const bytes = new Uint8Array([17, 34, 51]);
+      worker.postMessage(bytes.buffer, [bytes.buffer]);
+      const [[values], [exitCode]] = await Promise.all([reply, exited]);
+      return { values, detached: bytes.byteLength === 0, exitCode };
+    } finally {
+      try { await worker?.terminate(); }
+      finally { await rm(directory, { recursive: true, force: true }); }
+    }
+  }
+  if (id === 'process-ipc-exit') {
+    const { fork } = await import('node:child_process');
+    const directory = await mkdtemp(join(tmpdir(), 'papercusp-runtime-ipc-'));
+    let child;
+    try {
+      const script = join(directory, 'child.cjs');
+      await writeFile(script, "process.once('message', value => { process.send(value + 1, () => process.disconnect()); });\n");
+      child = fork(script, [], { execPath: process.execPath, execArgv: [],
+        env: { PATH: process.env.PATH ?? '' }, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+      const reply = once(child, 'message'), exited = once(child, 'close');
+      child.send(41);
+      const [value] = await reply, [exitCode] = await exited;
+      return { reply: value, exitCode };
+    } finally {
+      if (child && child.exitCode === null) child.kill('SIGKILL');
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+  if (id === 'http2-stream-roundtrip') {
+    const { createServer, connect } = await import('node:http2');
+    const server = createServer();
+    let client;
+    server.on('stream', stream => {
+      stream.respond({ ':status': 200 });
+      stream.write('first\n');
+      setImmediate(() => stream.end('second\n'));
+    });
+    try {
+      server.listen(0, '127.0.0.1'); await once(server, 'listening');
+      client = connect(`http://127.0.0.1:${server.address().port}`);
+      await once(client, 'connect');
+      const request = client.request({ ':path': '/' });
+      const response = once(request, 'response');
+      request.end();
+      const [headers] = await response;
+      let body = '';
+      for await (const chunk of request) body += chunk.toString();
+      return { status: headers[':status'], body };
+    } finally {
+      client?.destroy();
+      await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  }
+  const { createServer, get } = await import('node:http');
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.write('first\n');
+    setImmediate(() => response.end('second\n'));
+  });
+  try {
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const response = await new Promise((resolve, reject) => {
+      const request = get({ host: '127.0.0.1', port: server.address().port, agent: false }, resolve);
+      request.once('error', reject);
+    });
+    let body = '';
+    for await (const chunk of response) body += chunk.toString();
+    return { status: response.statusCode, body };
+  } finally {
+    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}
 
 export async function performNativeCapability(id, requireFrom) {
   if (!Object.hasOwn(NATIVE_EXPECTATIONS, id)) throw new Error(`Unknown native capability: ${id}`);
@@ -95,5 +208,7 @@ export async function performNativeCapability(id, requireFrom) {
 
 /** The receipt runner invokes this inside the selected interpreter. */
 export async function perform() {
-  return performNativeCapability(process.env.PAPERCUSP_PROBE_CAPABILITY, process.env.PAPERCUSP_PROBE_REQUIRE_FROM);
+  const id = process.env.PAPERCUSP_PROBE_CAPABILITY;
+  return Object.hasOwn(RUNTIME_EXPECTATIONS, id) ? performRuntimeCapability(id)
+    : performNativeCapability(id, process.env.PAPERCUSP_PROBE_REQUIRE_FROM);
 }

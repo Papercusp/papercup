@@ -328,7 +328,7 @@ describe('runInstrument', () => {
 
   it('computes a two-sample instrument as a rate, never a single lifetime counter', async () => {
     const samples = ['usage_usec 1000000\n', 'usage_usec 5000000\n'];
-    const times = [0, 2000];
+    const times = [0, 0, 2000];
     const slept: number[] = [];
     const reading = await runInstrument('host:cgroup-cpu-delta-cores', {
       exec: async () => samples.shift() as string,
@@ -341,6 +341,13 @@ describe('runInstrument', () => {
     // 4,000,000 µs of CPU over 2,000 ms of wall = 2 cores.
     expect(reading.value).toBe(2);
     expect(reading.unit).toBe('cores');
+    expect(reading.provenance?.diagnostics).toEqual(expect.arrayContaining([
+      { path: '$["samples"]["0"]["value"]', value: 1000000 },
+      { path: '$["samples"]["1"]["value"]', value: 5000000 },
+    ]));
+    expect(reading.provenance?.procedure.snapshot).toContain('host:cgroup-cpu-delta-cores');
+    expect(reading.provenance?.startedAt).toBe('1970-01-01T00:00:00.000Z');
+    expect(reading.provenance?.finishedAt).toBe('1970-01-01T00:00:02.000Z');
   });
 
   it('reports an unparseable or failed command as value null with an error, never 0', async () => {
@@ -553,7 +560,7 @@ describe('papercusp-app-performance instruments (P-010)', () => {
       'some avg10=0.00 avg60=1.00 avg300=0.00 total=1\npswpin 1000\n',
       'some avg10=0.00 avg60=1.00 avg300=0.00 total=1\npswpin 7103\n',
     ];
-    const times = [NOW, NOW + 5000];
+    const times = [NOW, NOW, NOW + 5000];
     const slept: number[] = [];
     const reading = await runInstrument('host:memory-paging-budget-pct', {
       exec: async () => outputs.shift()!,
@@ -565,6 +572,11 @@ describe('papercusp-app-performance instruments (P-010)', () => {
     expect(slept).toEqual([5000]);
     expect(reading).toMatchObject({ key: 'host:memory-paging-budget-pct', unit: '%', value: 500 });
     expect(reading.error).toBeUndefined();
+    expect(reading.provenance?.diagnostics).toEqual(expect.arrayContaining([
+      { path: '$["samples"]["0"]["numericFields"]["4"]["label"]', value: 'pswpin' },
+      { path: '$["samples"]["0"]["numericFields"]["4"]["value"]', value: '1000' },
+      { path: '$["samples"]["1"]["numericFields"]["4"]["value"]', value: '7103' },
+    ]));
   });
 
   it('a raw two-sample instrument whose second sample is reshaped reads null with an error', async () => {

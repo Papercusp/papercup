@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { selectReusablePasses } from "./test-pass-reuse.mjs";
 
 export const PARTIAL_TASK_CHECKPOINT_SCHEMA = 1;
 export const PARTIAL_TASK_SKIP_LIST_SCHEMA = 1;
@@ -48,6 +49,11 @@ export function readPartialTaskCheckpoint(file, expected) {
     return null;
   }
   if (!parsed || parsed.schemaVersion !== PARTIAL_TASK_CHECKPOINT_SCHEMA) return null;
+  if (parsed.continuation !== undefined) {
+    const { checkpointIntegrity, ...body } = parsed;
+    if (checkpointIntegrity?.schemaVersion !== 1 ||
+        checkpointIntegrity.sha256 !== createHash("sha256").update(JSON.stringify(body)).digest("hex")) return null;
+  }
   if (!validIdentity(parsed.root) || !validIdentity(parsed.taskKey) ||
       !validIdentity(parsed.sourceCommit) || !validIdentity(parsed.sourceDigest)) return null;
   if (!validFileList(parsed.selectedFiles) || !validFileList(parsed.passedFiles)) return null;
@@ -63,7 +69,7 @@ export function readPartialTaskCheckpoint(file, expected) {
 }
 
 export function writePartialTaskCheckpointAtomic(file, checkpoint) {
-  const body = JSON.stringify({
+  const value = {
     schemaVersion: PARTIAL_TASK_CHECKPOINT_SCHEMA,
     root: checkpoint.root,
     taskKey: checkpoint.taskKey,
@@ -73,7 +79,13 @@ export function writePartialTaskCheckpointAtomic(file, checkpoint) {
     passedFiles: [...new Set(checkpoint.passedFiles ?? [])].sort(),
     state: checkpoint.state === "complete" ? "complete" : "partial",
     updatedAt: checkpoint.updatedAt ?? new Date().toISOString(),
-  });
+    ...(checkpoint.continuation === undefined ? {} : { continuation: checkpoint.continuation }),
+  };
+  if (checkpoint.continuation !== undefined) {
+    value.checkpointIntegrity = { schemaVersion: 1,
+      sha256: createHash("sha256").update(JSON.stringify(value)).digest("hex") };
+  }
+  const body = JSON.stringify(value);
   mkdirSync(file.replace(/\/[^/]*$/, ""), { recursive: true });
   const temp = `${file}.${process.pid}-${Date.now()}.tmp`;
   writeFileSync(temp, `${body}\n`, { mode: 0o600 });
@@ -97,4 +109,200 @@ export function partialTaskSkipListPath(dir, checkpoint) {
     if (error?.code !== "EEXIST") throw error;
   }
   return { path: file, digest, count: checkpoint.passedFiles?.length ?? 0 };
+}
+
+const UNIT_KINDS = new Set(["test", "guard", "post-suite"]);
+const repoPath = value => typeof value === "string" && value.length > 0 &&
+  !isAbsolute(value) && !value.includes("\\") &&
+  value.split("/").every(part => part !== "" && part !== "." && part !== "..");
+
+/**
+ * Read the reporter's existing atomic OUT channel, including a snapshot written before
+ * onTestRunEnd. Selection comes from the caller, never from the observed result sample.
+ * classifyReadPaths is the reporter's maintained tracked/untracked-input classifier;
+ * absent classification keeps the outcome but cannot establish a reusable pass.
+ */
+export function readPartialNativeCompletion(file, expected, options = {}) {
+  const refused = reason => ({ status: "refused", reason, receipts: [] });
+  let snapshot;
+  try { snapshot = JSON.parse(readFileSync(file, "utf8")); }
+  catch { return refused("snapshot-unreadable"); }
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return refused("snapshot-invalid");
+  const { completionIntegrity, ...body } = snapshot;
+  if (completionIntegrity?.schemaVersion !== 1 ||
+      completionIntegrity.sha256 !== createHash("sha256").update(JSON.stringify(body)).digest("hex"))
+    return refused("snapshot-integrity-invalid");
+  const context = snapshot.completionCheckpoint, native = snapshot.nativeRun;
+  if (!validIdentity(expected?.attemptId) || context?.schemaVersion !== 1 ||
+      context.qualificationAttemptId !== expected.attemptId ||
+      snapshot.workspaceName !== expected.workspaceName || !validIdentity(expected.root) ||
+      !validIdentity(snapshot.recordedSha) || !validIdentity(context.runContext) || !validIdentity(context.runnerIdentity))
+    return refused("snapshot-identity-mismatch");
+  if (native?.schemaVersion !== "native-vitest-run-v1" || !Array.isArray(native.files) ||
+      !Array.isArray(native.gaps) || !Array.isArray(snapshot.rows)) return refused("native-population-unmeasured");
+  const specifications = expected.selectedSpecifications;
+  if (!Array.isArray(specifications) || !specifications.length ||
+      !Array.isArray(native.selectedManifest?.specifications)) return refused("native-selection-unmeasured");
+  const canonical = values => JSON.stringify([...values].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
+  const selection = canonical(specifications);
+  if (selection !== canonical(native.selectedManifest.specifications) ||
+      native.selectedManifest.sha256 !== createHash("sha256").update(selection).digest("hex"))
+    return refused("native-selection-mismatch");
+  const units = continuationManifest(expected.manifest);
+  if (!units) return refused("manifest-mismatch");
+  const byPath = new Map();
+  for (const unit of units.filter(unit => unit.kind === "test" && !unit.exclusion)) {
+    if (byPath.has(unit.path)) return refused("ambiguous-test-path");
+    byPath.set(unit.path, unit);
+  }
+  const selectedPaths = new Set();
+  for (const spec of specifications) {
+    if (!repoPath(spec?.testFile) || selectedPaths.has(spec.testFile) || !byPath.has(spec.testFile))
+      return refused("native-selection-invalid");
+    selectedPaths.add(spec.testFile);
+  }
+  const rows = new Map();
+  for (const row of snapshot.rows) {
+    if (!selectedPaths.has(row?.testFile) || rows.has(row.testFile)) return refused("native-proof-population-invalid");
+    rows.set(row.testFile, row);
+  }
+  const seenFiles = new Set(), seenCompletions = new Set(), receipts = [];
+  for (const file of native.files) {
+    if (!selectedPaths.has(file?.testFile) || seenFiles.has(file.testFile) ||
+        !validIdentity(file.completionId) || seenCompletions.has(file.completionId) ||
+        !Number.isSafeInteger(file.observedAtMs) || file.observedAtMs <= 0 ||
+        !["passed", "failed", "skipped", "pending", "error"].includes(file.state))
+      return refused("native-receipt-population-invalid");
+    seenFiles.add(file.testFile);
+    seenCompletions.add(file.completionId);
+    const row = rows.get(file.testFile);
+    let classified;
+    try { if (row) classified = options.classifyReadPaths?.(row.readPaths, expected.root); }
+    catch { /* An unavailable tracked-input census never authorizes reuse. */ }
+    const inputMeasured = Array.isArray(classified?.readPaths) && classified.readPaths.every(repoPath) &&
+      Array.isArray(classified?.opaqueReasons) && classified.opaqueReasons.every(reason => typeof reason === "string");
+    const source = file.proof?.sourceEvidence;
+    const cleanSource = source?.schemaVersion === "vite-collected-source-evidence-v1" &&
+      source.status === "stable" && Array.isArray(source.sources) && source.sources.length > 0 &&
+      source.sources.every(value => repoPath(value.path) && /^[a-f0-9]{64}$/.test(value.sha256) && value.sha256 === value.currentSha256) &&
+      Array.isArray(source.reasons) && source.reasons.length === 0;
+    const cases = file.cases;
+    const measuredCases = Array.isArray(cases) && cases.length > 0 && cases.every(value => value.status === "pass");
+    const runClean = native.gaps.length === 0 && (native.finishedAtMs === null ||
+      (native.reason === "passed" && native.unhandledErrorCount === 0 && native.modulePopulationMatched === true));
+    const opaqueReasons = Array.isArray(row?.opaqueReasons) ? [...row.opaqueReasons] : ["proof-unmeasured"];
+    if (!inputMeasured) opaqueReasons.push("input-classification-unmeasured");
+    else opaqueReasons.push(...classified.opaqueReasons);
+    if (!cleanSource) opaqueReasons.push("native-source-unmeasured");
+    if (!measuredCases) opaqueReasons.push("native-cases-incomplete");
+    if (!runClean) opaqueReasons.push("native-run-incomplete-or-errored");
+    if (snapshot.configSources?.status !== "unchanged") opaqueReasons.push("config-source-unmeasured");
+    const executedModules = row?.executedModules;
+    if (!Array.isArray(executedModules) || !executedModules.length || !executedModules.every(repoPath))
+      opaqueReasons.push("execution-closure-unmeasured");
+    receipts.push({ unitId: byPath.get(file.testFile).id, completionId: file.completionId,
+      observedAtMs: file.observedAtMs, state: file.state === "passed" ? "pass" : file.state === "failed" ? "fail" : "infra",
+      worktreeDirty: snapshot.worktreeDirty !== false, firstAttemptVerdict: file.firstAttemptVerdict,
+      observedCount: measuredCases ? cases.length : 0,
+      proof: { recordedSha: snapshot.recordedSha, runContext: context.runContext,
+        runnerIdentity: context.runnerIdentity, executedModules: executedModules ?? [],
+        inputsCaptured: row?.inputsCaptured === true && inputMeasured,
+        readPaths: inputMeasured ? classified.readPaths : [], opaqueReasons } });
+  }
+  return { status: "ready", reason: null, receipts };
+}
+
+function continuationManifest(manifest) {
+  if (manifest?.schemaVersion !== 1 || !Array.isArray(manifest.units) || !manifest.units.length) return null;
+  const seen = new Set();
+  const units = [];
+  for (const unit of manifest.units) {
+    if (!validIdentity(unit?.id) || seen.has(unit.id) || !UNIT_KINDS.has(unit.kind) || !repoPath(unit.path)) return null;
+    seen.add(unit.id);
+    let exclusion;
+    if (unit.exclusion !== undefined) {
+      if (!validIdentity(unit.exclusion?.reason) || !validIdentity(unit.exclusion?.policyRef)) return null;
+      exclusion = { reason: unit.exclusion.reason, policyRef: unit.exclusion.policyRef };
+    }
+    units.push({ id: unit.id, kind: unit.kind, path: unit.path, ...(exclusion ? { exclusion } : {}) });
+  }
+  return units.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * Grade the existing checkpoint's full, independently selected population. The caller
+ * must own the existing qualification runner before executing `run`; this pure read
+ * neither acquires custody nor authorizes a stale runner to write a checkpoint.
+ *
+ * Native receipts are retained even when they cannot establish a reusable pass. Reuse
+ * delegates to the maintained source/input/context/runner validator. A retained failure
+ * is never silently retried: the qualification's explicit retry policy must admit it.
+ */
+export function evaluatePartialTaskContinuation(checkpoint, expected, options = {}) {
+  const refused = reason => ({ status: "refused", reason, verdict: "incomplete", run: [], reused: [],
+    excluded: [], retainedFailures: [], infrastructure: [], invalidated: [] });
+  const stored = checkpoint?.continuation;
+  if (stored?.schemaVersion !== 1) return refused("continuation-unmeasured");
+  for (const key of ["attemptId", "candidate", "repairHead"]) {
+    if ((key !== "repairHead" && !validIdentity(expected?.[key])) ||
+        (key === "repairHead" && expected?.[key] !== null && !validIdentity(expected?.[key])) ||
+        stored[key] !== expected[key]) return refused(`${key}-mismatch`);
+  }
+  if (checkpoint.root !== expected.root || checkpoint.taskKey !== expected.taskKey)
+    return refused("task-identity-mismatch");
+  if (![expected.sourceCommit, expected.runContext, expected.runnerIdentity].every(validIdentity))
+    return refused("execution-identity-unmeasured");
+  const units = continuationManifest(expected.manifest);
+  const prior = continuationManifest(stored.manifest);
+  if (!units || !prior || JSON.stringify(units) !== JSON.stringify(prior)) return refused("manifest-mismatch");
+  if (!Array.isArray(stored.receipts)) return refused("receipts-unmeasured");
+  const selected = new Map(units.map(unit => [unit.id, unit]));
+  const receipts = new Map();
+  const completionIds = new Set();
+  for (const receipt of stored.receipts) {
+    if (!selected.has(receipt?.unitId) || receipts.has(receipt.unitId) ||
+        !validIdentity(receipt.completionId) || completionIds.has(receipt.completionId) ||
+        !Number.isSafeInteger(receipt.observedAtMs) ||
+        receipt.observedAtMs <= 0 || !["pass", "fail", "infra"].includes(receipt.state))
+      return refused("receipt-population-invalid");
+    receipts.set(receipt.unitId, receipt);
+    completionIds.add(receipt.completionId);
+  }
+  const run = [], reused = [], excluded = [], retainedFailures = [], infrastructure = [], invalidated = [];
+  if (expected.retryStates !== undefined && !Array.isArray(expected.retryStates)) return refused("retry-policy-invalid");
+  const retries = new Set(expected.retryStates ?? []);
+  if ([...retries].some(state => !["fail", "infra"].includes(state))) return refused("retry-policy-invalid");
+  for (const unit of units) {
+    if (unit.exclusion) { excluded.push(unit.id); continue; }
+    const receipt = receipts.get(unit.id);
+    if (!receipt) { run.push(unit.id); continue; }
+    if (receipt.state !== "pass") {
+      (receipt.state === "fail" ? retainedFailures : infrastructure).push(unit.id);
+      if (retries.has(receipt.state)) run.push(unit.id);
+      continue;
+    }
+    let selection;
+    if (receipt.worktreeDirty === false && Number.isSafeInteger(receipt.observedCount) && receipt.observedCount > 0 &&
+        (unit.kind !== "test" || receipt.firstAttemptVerdict === "pass")) {
+      try {
+        selection = selectReusablePasses({ ...options, auditRate: 0,
+          candidates: [unit.path], proofs: new Map([[unit.path, receipt.proof]]),
+          judgedSha: expected.sourceCommit, runContext: expected.runContext,
+          runnerIdentity: expected.runnerIdentity });
+      } catch { /* Missing drift/input evidence never permits a skip. */ }
+    }
+    if (selection?.skip.includes(unit.path)) reused.push(unit.id);
+    else {
+      run.push(unit.id);
+      invalidated.push({ id: unit.id, reason: "pass-proof-invalid-or-unmeasured" });
+    }
+  }
+  const required = units.length - excluded.length;
+  const verdict = retainedFailures.length ? "red" :
+    required > 0 && reused.length === required ? "green" : "incomplete";
+  return { status: "ready", reason: null, verdict, run, reused, excluded,
+    retainedFailures, infrastructure, invalidated,
+    counts: { selected: units.length, required, excluded: excluded.length,
+      passed: reused.length, failed: retainedFailures.length, infrastructure: infrastructure.length,
+      pending: run.filter(id => !retainedFailures.includes(id) && !infrastructure.includes(id)).length } };
 }

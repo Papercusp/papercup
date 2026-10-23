@@ -179,6 +179,8 @@ describe('failureFingerprint never fingerprints the capability:bash runner marke
 describe('failureFingerprint never fingerprints passing test lines', () => {
   it.each([
     '✔ the mac leg cannot finish without the provenance its receipt reads as an oracle (Nms)',
+    '✓ Every operator-core file is at or under its type-error baseline.',
+    '\u001b[32m✓\u001b[39m a passing test whose name mentions a timeout (Nms)',
     'ok 17 - the mac leg cannot finish without the provenance its receipt reads as an oracle (Nms)',
   ])('falls through when a passing line contains failure-shaped text: %s', (line) => {
     const result = failureFingerprint({ exitCode: 1, exitReason: 'exited', logTail: line });
@@ -193,5 +195,21 @@ describe('failureFingerprint never fingerprints passing test lines', () => {
     });
     expect(result.source).toBe('log');
     expect(result.label).toContain('upload refused');
+  });
+
+  it('distinguishes test failures followed by the same successful typecheck footer', () => {
+    const footer = '✓ Every operator-core file is at or under its type-error baseline.\n' +
+      'LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean';
+    const fingerprint = (failure: string, passingFooter = footer) => failureFingerprint({
+      exitCode: 1, logTail: `${failure}\n${passingFooter}`,
+    });
+    const connection = fingerprint('Error: write CONNECT_TIMEOUT localhost:32769');
+    const terminal = fingerprint('Error: fresh worker terminal persistence deadline; isolated files retained');
+    expect(connection.label).toContain('CONNECT_TIMEOUT');
+    expect(terminal.label).toContain('terminal persistence deadline');
+    expect(connection.fingerprint).not.toBe(terminal.fingerprint);
+    expect(fingerprint('Error: write CONNECT_TIMEOUT localhost:32769',
+      '✓ another passing test handles failures and timeout errors').fingerprint).toBe(connection.fingerprint);
+    expect(fingerprint('✗ failing test: cannot persist terminal receipt').source).toBe('log');
   });
 });

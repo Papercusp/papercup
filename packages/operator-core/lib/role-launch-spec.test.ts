@@ -1920,6 +1920,49 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     }
   });
 
+  it('pins the full source chain of rendered provider-only layers without redelivering their providers', async () => {
+    const { getIdentitySource } = await import('./agent-identities/source');
+    const { replayAgentSpecification } = await import('@papercusp/orchestrator/blueprint');
+    const root = mkdtempSync(join(tmpdir(), 'su-provider-source-pins-'));
+    const parentDir = join(root, '.papercusp', 'blueprints', 'provider-parent');
+    const identityDir = join(root, '.papercusp', 'blueprints', 'provider-practice');
+    try {
+      mkdirSync(parentDir, { recursive: true });
+      mkdirSync(identityDir, { recursive: true });
+      const parent = 'id: provider-parent\nextends: base\nversion: 1.0.0\n';
+      writeFileSync(join(parentDir, 'blueprint.yaml'), parent);
+      writeFileSync(join(identityDir, 'blueprint.yaml'), [
+        'id: provider-practice', 'extends: provider-parent', 'version: 1.0.0',
+        'slots:', '  - slot: practice', 'contributions:', '  - id: orientation',
+        '    purpose: prompt', '    source: provider', '    refresh: turn',
+        '    inputKind: prompt-file', '    ref: provider:turn-start-orientation',
+        '    producerRef: papercusp.turn-start-orientation@1', '    verb: render',
+        '    availability: optional', '',
+      ].join('\n'));
+      const selected = await getIdentitySource('provider-practice', { repoDir: root });
+      if (!selected.ok) throw new Error('provider source fixture refused');
+      const compile = () => compileLaunchSpecificationArtifact({
+        promptText: 'ALREADY RENDERED SU PROMPT', cwd: root, workspaceId: 'fixture-workspace',
+        harnessSlug: null, role: 'su', stack: ['practice:provider-practice'],
+        state: { schemaVersion: 1 },
+      });
+      const first = await compile();
+      for (const layer of selected.layers) {
+        expect(first.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+          kind: 'blueprint-layer', ref: layer.id, contentHash: layer.contentHash,
+          document: expect.objectContaining({ id: layer.id }),
+        }));
+      }
+      expect(first.promptText).toBe('ALREADY RENDERED SU PROMPT');
+      expect(replayAgentSpecification(first.specificationArtifact).specificationRevision)
+        .toBe(first.specificationRevision);
+      writeFileSync(join(parentDir, 'blueprint.yaml'), parent + 'description: Revised provider parent.\n');
+      expect((await compile()).specificationRevision).not.toBe(first.specificationRevision);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('honors the declared fixed prompt of an explicitly selected built-in practice', async () => {
     const { builtinBlueprintPath } = await import('@papercusp/orchestrator/blueprint');
     const baseDir = dirname(builtinBlueprintPath('base'));

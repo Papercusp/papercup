@@ -31,6 +31,22 @@ import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { applyDisclosureLedgerForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { SEARCH_SOURCES as DEFAULT_SEARCH_SOURCES, compactLiteralToken } from './sources';
 import type { SearchSource, SearchSourceParams } from '@papercusp/search';
+import { PROSE_SOURCE_BASELINES } from '../../search/surface-registry';
+
+describe('baseline inventory reconciles the actual registered prose adapters', () => {
+  it('covers each runtime source exactly once, including non-vector sources', () => {
+    const registered = DEFAULT_SEARCH_SOURCES.map(s => s.name).sort();
+    const inventoried = PROSE_SOURCE_BASELINES.map(s => s.source).sort();
+    expect(inventoried).toEqual(registered);
+    expect(new Set(inventoried).size).toBe(inventoried.length);
+    for (const source of DEFAULT_SEARCH_SOURCES) {
+      const baseline = PROSE_SOURCE_BASELINES.find(b => b.source === source.name)!;
+      expect(baseline.lexical, source.name).toBe(typeof source.lexical === 'function');
+      expect(baseline.vector, source.name).toBe(typeof source.embedding === 'function');
+    }
+  });
+
+});
 
 // Reuse the semantic-parity suite's copy-out mutation seam for lexical guards.
 // Unset, every assertion exercises the registered production sources.

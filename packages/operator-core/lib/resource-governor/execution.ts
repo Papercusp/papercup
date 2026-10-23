@@ -57,6 +57,41 @@ export type GovernedExecutionSettlement =
   | { readonly kind: 'release'; readonly actualDemand?: ResourceDemand }
   | { readonly kind: 'cancel'; readonly reason: string };
 
+const detachedSettlements = new WeakSet<GovernedExecution>();
+
+/**
+ * Event emitters do not await their listeners. Observe settlement here and keep
+ * retrying the same terminal action, as the LSP admission controller does. A
+ * failed write leaves the durable lease charged; process death still leaves
+ * recovery to the queue's existing lease reconciliation.
+ */
+export function settleGovernedExecutionInBackground(
+  execution: GovernedExecution,
+  settlement: GovernedExecutionSettlement,
+): void {
+  // An error followed by exit must not replace a pending cancellation with a
+  // release, nor treat settleOnce's concurrent-call false as a completed write.
+  if (detachedSettlements.has(execution)) return;
+  detachedSettlements.add(execution);
+  let retryDelayMs = 1_000;
+  const settle = async (): Promise<void> => {
+    try {
+      if (settlement.kind === 'cancel') await execution.cancel(settlement.reason);
+      else await execution.finish(settlement.actualDemand);
+    } catch (error) {
+      console.error('[governed-execution] settlement failed; lease retained, retry pending', {
+        receiptId: execution.context.receiptId,
+        action: settlement.kind,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      const timer = setTimeout(() => { void settle(); }, retryDelayMs);
+      timer.unref?.();
+      retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
+    }
+  };
+  void settle();
+}
+
 export interface GovernedExecutionInput<T = unknown> {
   readonly owner: string;
   readonly leaseTtlMs?: number;

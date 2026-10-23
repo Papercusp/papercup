@@ -160,13 +160,17 @@ import {
 import { readVisibleAnnouncements } from '../../events/await/announced-gate-view';
 import type { TimeoutBehavior } from '../../events/await/types';
 import type { FilterNode } from '../../scheduler/claim-spec';
-import { withBoundedTimeout } from '../../bounded-timeout';
+import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { buildCapacityReport } from '../../fleet/capacity-dispatch';
 import type { AccountProvider } from '../../deployment/account-pool';
 import { providerForModel, readProviderAvailability } from './capacity';
 import type { FleetBriefDelta } from '../../fleet-brief-delta';
-import type { FleetCampaign } from './fleet-campaign';
+import {
+  FLEET_CAMPAIGN_TIMING_AXES,
+  type FleetCampaign,
+  type FleetCampaignTimingAxis,
+} from './fleet-campaign';
 import {
   computeMemberIdleVerdict,
   PRODUCTIVE_STALL_BUDGET_MS,
@@ -458,6 +462,8 @@ async function boundedLeaderBriefRead<T>(
   fallback: T,
   timeoutMs = LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
   correlationId?: string,
+  warn?: boolean,
+  onResult?: (result: BoundedTimeoutResult<T>) => void,
 ): Promise<T> {
   try {
     const result = await withBoundedTimeout((signal) => work(signal), {
@@ -465,7 +471,9 @@ async function boundedLeaderBriefRead<T>(
       timeoutMs,
       label: `leader-brief:${label}`,
       ...(correlationId ? { correlationId } : {}),
+      ...(warn === undefined ? {} : { warn }),
     });
+    try { onResult?.(result); } catch { /* invocation diagnostics must not fail the brief */ }
     return result.value;
   } catch {
     // `withBoundedTimeout` catches rejected promises; this covers a synchronous
@@ -492,6 +500,10 @@ export function boundedLeaderBriefFleetCampaignRead<T>(
   work: (correlationId: string, signal: AbortSignal) => Promise<T>,
   fallback: T,
   correlationId = randomUUID(),
+  options: {
+    warn?: boolean;
+    onResult?: (result: BoundedTimeoutResult<T>) => void;
+  } = {},
 ): Promise<T> {
   return boundedLeaderBriefRead(
     'fleet-campaign',
@@ -499,7 +511,60 @@ export function boundedLeaderBriefFleetCampaignRead<T>(
     fallback,
     LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS,
     correlationId,
+    options.warn,
+    options.onResult,
   );
+}
+
+export interface FleetCampaignInvocationDiagnostics {
+  correlationId: string;
+  status: 'completed' | 'timed-out' | 'aborted' | 'failed';
+  elapsedMs: number;
+  completedAxisTimingsMs: Partial<Record<FleetCampaignTimingAxis, number>>;
+  pendingAxisTimingsMs: Partial<Record<FleetCampaignTimingAxis, number>>;
+  notStartedAxes: FleetCampaignTimingAxis[];
+}
+
+export function projectFleetCampaignInvocationDiagnostics(input: {
+  correlationId: string;
+  elapsedMs: number;
+  degraded: boolean;
+  reason?: BoundedTimeoutResult<unknown>['reason'];
+  nowMs: number;
+  startedAtByAxis: ReadonlyMap<FleetCampaignTimingAxis, number>;
+  elapsedByAxis: ReadonlyMap<FleetCampaignTimingAxis, number>;
+}): FleetCampaignInvocationDiagnostics {
+  const completedAxisTimingsMs = Object.fromEntries(input.elapsedByAxis) as Partial<
+    Record<FleetCampaignTimingAxis, number>
+  >;
+  const pendingAxisTimingsMs = Object.fromEntries(
+    [...input.startedAtByAxis].filter(([axis]) => !input.elapsedByAxis.has(axis))
+      .map(([axis, startedAt]) => [axis, Math.max(0, input.nowMs - startedAt)]),
+  ) as Partial<Record<FleetCampaignTimingAxis, number>>;
+  const startedAxes = new Set(input.startedAtByAxis.keys());
+  const status = !input.degraded
+    ? 'completed'
+    : input.reason === 'timeout'
+      ? 'timed-out'
+      : input.reason === 'aborted'
+        ? 'aborted'
+        : 'failed';
+
+  return {
+    correlationId: input.correlationId,
+    status,
+    elapsedMs: input.elapsedMs,
+    completedAxisTimingsMs,
+    pendingAxisTimingsMs,
+    notStartedAxes: FLEET_CAMPAIGN_TIMING_AXES.filter((axis) => !startedAxes.has(axis)),
+  };
+}
+
+export function recordFleetCampaignInvocationDiagnostics(
+  metadata: ((value: Record<string, unknown>) => void) | undefined,
+  diagnostics: FleetCampaignInvocationDiagnostics,
+): void {
+  try { metadata?.({ fleetCampaignRead: diagnostics }); } catch { /* metadata must not fail the brief */ }
 }
 
 /**
@@ -3895,6 +3960,7 @@ export default defineTool({
           // so the caller is installed when the seat is empty.
           allowLeadershipWrites: true,
           resolveCallerMembership: true,
+          metadata: ctx.metadata,
         }),
       {
         data: {
@@ -3957,6 +4023,8 @@ export interface LeaderBriefCaller {
   allowLeadershipWrites: boolean;
   /** See LeaderBriefCaller's docblock §2. */
   resolveCallerMembership: boolean;
+  /** Invocation-ledger metadata sink. Optional for read-only internal callers. */
+  metadata?: (value: Record<string, unknown>) => void;
 }
 
 export type LeaderBriefFleetTarget =
@@ -5325,6 +5393,9 @@ export async function buildLeaderBrief(
   // unavailable-not-zero verdicts.
   let campaign: FleetCampaign | undefined;
   if (fleetCreatedAtMs != null) {
+    const campaignCorrelationId = randomUUID();
+    const startedAtByAxis = new Map<FleetCampaignTimingAxis, number>();
+    const elapsedByAxis = new Map<FleetCampaignTimingAxis, number>();
     const campaignRead = await boundedLeaderBriefFleetCampaignRead(
       async (correlationId, signal) => {
         const { readFleetCampaign } = await import('./fleet-campaign');
@@ -5336,9 +5407,23 @@ export async function buildLeaderBrief(
           harnessSlug: args.harness ?? null,
           correlationId,
           signal,
+          onAxisStarted: (axis, startedAtMs) => startedAtByAxis.set(axis, startedAtMs),
+          onAxisTiming: (axis, elapsedMs) => elapsedByAxis.set(axis, elapsedMs),
         });
       },
       undefined,
+      campaignCorrelationId,
+      {
+        onResult: (result) => recordFleetCampaignInvocationDiagnostics(caller.metadata, projectFleetCampaignInvocationDiagnostics({
+          correlationId: campaignCorrelationId,
+          elapsedMs: result.elapsedMs,
+          degraded: result.degraded,
+          reason: result.reason,
+          nowMs: Date.now(),
+          startedAtByAxis,
+          elapsedByAxis,
+        })),
+      },
     );
     if (campaignRead) campaign = campaignRead;
   }

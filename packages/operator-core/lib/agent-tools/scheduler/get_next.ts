@@ -12,6 +12,7 @@
  * bee's (self-selection, the blackboard result).
  */
 import { z } from 'zod';
+import { createReuseBriefIdentity } from '../../code-intelligence/reuse-brief-providers';
 import { trackPhase } from '@papercusp/tooldef';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
@@ -2585,6 +2586,9 @@ export default defineTool({
       sourceCitationWarning: string;
     } | null;
     let taskBriefHint = null as { taskBrief: unknown } | null;
+    let reuseBriefProviders: unknown[] = [];
+    const reuse = createReuseBriefIdentity(ident.ownerId, ctx.dispatchCallId,
+      outcomes => { reuseBriefProviders = outcomes; });
     // EI-22344661292350991: explicit, report-only independence enrichment. The claim is
     // already committed; this advisory must never reject/release it or make the self-pull
     // path depend on a successful lineage lookup.
@@ -2846,6 +2850,7 @@ export default defineTool({
             : Promise.resolve(null),
           trackPhase(ctx.phases, 'get_next:hint:taskBrief', () => import('../../code-intelligence/task-brief').then(m => m.getClaimTimeTaskBrief({
             workItem: wi, harness: wi?.harness ?? args.harness, workspaceId: ident.workspaceId,
+            reuse,
           })).catch(() => null)),
           // EI-22344661292350991: preserve an explicit independence marker on the
           // successful claim response and add a warning only when the claimant is
@@ -3171,6 +3176,7 @@ export default defineTool({
         : null);
     ctx.metadata?.({
       schedulerDisposition: schedulerDispositionMetadata(res?.workItem, payload, dispositionSpecHead),
+      ...(reuseBriefProviders.length ? { reuseBriefProviders } : {}),
     });
     // The claim committed before this response was rendered. Keep the existing
     // bounded text projection for ordinary model callers, but give programmatic

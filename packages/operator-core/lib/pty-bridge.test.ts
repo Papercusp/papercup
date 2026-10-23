@@ -13,7 +13,8 @@ const governorMocks = vi.hoisted(() => ({
   cancel: vi.fn(async () => true),
   begin: vi.fn(),
 }));
-vi.mock('./resource-governor/execution', () => ({
+vi.mock('./resource-governor/execution', async (importOriginal) => ({
+  settleGovernedExecutionInBackground: (await importOriginal<typeof import('./resource-governor/execution')>()).settleGovernedExecutionInBackground,
   governedExecutionRuntime: () => ({ governor: {}, driver: {} }),
   beginGovernedExecution: (...args: unknown[]) => governorMocks.begin(...args),
 }));
@@ -131,6 +132,29 @@ describe('xterm ESM export shape (EI-13212)', () => {
 });
 
 describe('pty-bridge', () => {
+  it('observes and retries a rejected governed PTY exit settlement', async () => {
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const handle = await spawnGovernedPty({
+      accessScope: TEST_SCOPE, command: 'bash', args: ['-c', 'sleep 30'],
+      cwd: process.cwd(), cols: 80, rows: 24,
+    }, { workspaceId: TEST_SCOPE.workspaceId, idempotencyKey: 'retry-pty', owner: TEST_SCOPE.principalId });
+    liveIds.push(handle.id);
+    vi.useFakeTimers();
+    try {
+      governorMocks.finish.mockRejectedValueOnce(new Error('release unavailable'));
+      for (const onExit of handle.onExit) onExit(0, 0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(governorMocks.finish).toHaveBeenCalledOnce();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('lease retained'), expect.anything());
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(governorMocks.finish).toHaveBeenCalledTimes(2);
+      expect(governorMocks.cancel).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      warning.mockRestore();
+    }
+  });
+
   it('holds a durable admission lease until the governed PTY exits', async () => {
     const handle = await spawnGovernedPty({
       accessScope: TEST_SCOPE,

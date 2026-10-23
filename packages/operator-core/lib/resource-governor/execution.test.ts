@@ -10,6 +10,7 @@ import {
   resetGovernedExecutionRuntimesForTests,
   runGovernedOperation,
   setGovernedProcessClientFactoryForTests,
+  settleGovernedExecutionInBackground,
   withGovernedExecution,
   withGovernedProcessRuntime,
   type GovernedProcessClient,
@@ -17,6 +18,7 @@ import {
 import { AGENT_ADMISSION_GOVERNOR_BINDING } from './spawn-execution';
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -77,6 +79,58 @@ describe('governed execution lifecycle', () => {
     expect(governedExecutionLeaseTtlForTimeout(undefined)).toBe(5 * 60_000);
     expect(governedExecutionLeaseTtlForTimeout(1_000)).toBe(6_000);
     expect(governedExecutionLeaseTtlForTimeout(60 * 60_000)).toBe(30 * 60_000);
+  });
+
+  it('retains the durable lease through detached release failures and retries exact measured demand', async () => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const d = deps();
+    const release = vi.spyOn(d.store, 'releaseClaim')
+      .mockRejectedValueOnce(new Error('database unavailable'))
+      .mockRejectedValueOnce(new Error('database still unavailable'));
+    const execution = await beginGovernedExecution(
+      { idempotencyKey: 'detached-release', admissionClass: 'process' }, { owner: 'child' }, d,
+    );
+    const demand = { cpuWeight: 0.5, memoryBytes: 42 };
+    settleGovernedExecutionInBackground(execution, { kind: 'release', actualDemand: demand });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(d.current()).toMatchObject({ state: 'running', lease: { owner: 'child' } });
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('lease retained'),
+      expect.objectContaining({ receiptId: 'WI-R1', action: 'release' }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(d.current()).toMatchObject({ state: 'running', lease: { owner: 'child' } });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(d.current()).toMatchObject({ state: 'completed', actualDemand: demand, lease: undefined });
+    expect(release).toHaveBeenCalledTimes(3);
+    for (const [id, leaseId, actual] of release.mock.calls) {
+      expect({ id, leaseId, actual }).toEqual({ id: 'WI-R1', leaseId: 'lease-1', actual: demand });
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps the first cancellation across duplicate child callbacks and failed persistence', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const d = deps();
+    const cancel = vi.spyOn(d.store, 'cancel').mockRejectedValueOnce(new Error('cancel unavailable'));
+    const release = vi.spyOn(d.store, 'releaseClaim');
+    const execution = await beginGovernedExecution(
+      { idempotencyKey: 'detached-cancel', admissionClass: 'process' }, { owner: 'child' }, d,
+    );
+    settleGovernedExecutionInBackground(execution, { kind: 'cancel', reason: 'child spawn error' });
+    settleGovernedExecutionInBackground(execution, { kind: 'release' });
+    settleGovernedExecutionInBackground(execution, { kind: 'cancel', reason: 'later error' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(d.current()).toMatchObject({ state: 'running', lease: { owner: 'child' } });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(d.current()).toMatchObject({ state: 'cancelled', cancellationReason: 'child spawn error' });
+    expect(cancel).toHaveBeenCalledTimes(2);
+    expect(cancel.mock.calls.every(([, , reason]) => reason === 'child spawn error')).toBe(true);
+    expect(release).not.toHaveBeenCalled();
+    settleGovernedExecutionInBackground(execution, { kind: 'release' });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(cancel).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('round-trips a propagated parent context and rejects malformed env input', async () => {

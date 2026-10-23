@@ -6,10 +6,47 @@
  * baseline-vs-ledger comparison without a unit for every SQL-probe criterion.
  */
 import { describe, expect, it } from 'vitest';
-import { probeCheckResults, probeCheckUnit, runInstrumentChecks } from './check-results-ledger';
+import { probeCheckResults, probeCheckUnit, runInstrumentChecks, recordRubricCheckResults, readLatestRubricCheckResults } from './check-results-ledger';
+import { retainMeasurementProvenance } from './measurement-provenance';
+import { fillRatingsFromLedger } from './scorecard-ledger-fill';
+import { asStructuredObservation } from './harness/improvements/observation-types';
 
 const AT = '2026-10-13T04:00:00.000Z';
 const adoption = { key: 'r-31', check: { kind: 'instrument', instrumentKey: 'code-intel:native-adoption-good-use' } };
+
+describe('historical measurement writer-reader-scorecard roundtrip', () => {
+  it('replays original descriptor, window and diagnostics after live source changes', async () => {
+    const live = { value: 42, sample_count: 7 };
+    const provenance = retainMeasurementProvenance({ procedure: { kind: 'tool', tool: 'status:read', args: { id: 'x' },
+      schemaRevision: 'frozen', expect: { path: '$.value', op: 'gte', value: 10 } }, result: live,
+      startedAt: AT, finishedAt: AT });
+    const results = probeCheckResults('roundtrip', { c: { kind: 'probe', verdict: 'pass', status: 'fresh',
+      executed: true, observed: live.value, measuredAt: AT, provenance } } as Record<string, { kind: string }>);
+    let persisted: unknown;
+    await recordRubricCheckResults(results, { workspaceId: 'ws', harnessSlug: 'papercusp' }, async (_text, ...values) => {
+      persisted = JSON.parse(JSON.stringify(values.at(-1)));
+      return [{ id: 31 }];
+    });
+    live.value = 999;
+    live.sample_count = 999;
+    const latest = await readLatestRubricCheckResults({ rubricRef: 'roundtrip', workspaceId: 'ws' }, async () => [{
+      id: 31, status: 'pass', file_path: 'rubric-check/roundtrip/c:0', finished_at: AT,
+      execution_details: persisted, output_tail: null,
+    }]);
+    const out = fillRatingsFromLedger({ criteria: [{ key: 'c', check: { kind: 'probe',
+      probe: { expect: { path: '$.value', op: 'gte', value: 10 } } } }],
+      callerRatings: undefined, latest, rubricRatingScale: ['meets', 'misses'] });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    const saved = asStructuredObservation({ ratings: out.ratings })!.ratings!.c!;
+    expect(saved.rating).toBe('meets');
+    expect(saved.ledgerResult).toMatchObject({ value: 42, provenanceStatus: 'retained', provenance: {
+      startedAt: AT, finishedAt: AT, diagnostics: expect.arrayContaining([{ path: '$["sample_count"]', value: 7 }]),
+    } });
+    expect(saved.evidence).toContain('procedure sha256');
+    expect(saved.ledgerResult?.provenance?.procedure.snapshot).toContain('frozen');
+  });
+});
 
 describe('scheduled platform instrument results', () => {
   it('runs work-overhead checks in the canonical rubric harness and completed daily window', async () => {

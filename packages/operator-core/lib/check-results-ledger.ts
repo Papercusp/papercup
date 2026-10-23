@@ -32,11 +32,13 @@ import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
   parseRecordedRubricCheck,
   parseTestRunExecutionDetails,
+  parseRecordedMeasurementProvenance,
   type RecordedRubricCheck,
   type RecordedRubricCheckExpect,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
 import type { ScorecardProbeCheckRun } from './harness/improvements/observation-types';
+import { measurementProvenanceStatus } from './measurement-provenance';
 import {
   getRegisteredInstrument,
   isManualInstrumentKey,
@@ -144,6 +146,8 @@ export function probeCheckResults(
     const unit = unitByKey.get(criterionKey) ?? null;
     children.forEach((child, childIndex) => {
       const value = scalarOrNull(child.observed);
+      const provenance = parseRecordedMeasurementProvenance(child.provenance);
+      const retained = provenance ? { provenance } : {};
       // An ordering comparison (gt/gte/lt/lte) against a missing, NULL or boolean reading measured
       // nothing: the probe ran, but there was no value to compare. Record it as 'error' (unknown),
       // the same as an instrument reading of null, never as a 'fail', which grades the criterion at
@@ -151,7 +155,7 @@ export function probeCheckResults(
       const op = probePredicateOp(child);
       if (child.verdict === 'fail' && op !== null && ORDERING_OPS.has(op) && (value === null || typeof value === 'boolean')) {
         out.push({
-          check: { id: probeCheckId(criterionKey, childIndex), rubricRef, criterionKey, kind: 'probe', value, unit },
+          check: { id: probeCheckId(criterionKey, childIndex), rubricRef, criterionKey, kind: 'probe', value, unit, ...retained },
           verdict: 'error',
           measuredAt: child.measuredAt,
           durationMs: null,
@@ -160,7 +164,7 @@ export function probeCheckResults(
         return;
       }
       out.push({
-        check: { id: probeCheckId(criterionKey, childIndex), rubricRef, criterionKey, kind: 'probe', value, unit },
+        check: { id: probeCheckId(criterionKey, childIndex), rubricRef, criterionKey, kind: 'probe', value, unit, ...retained },
         verdict: child.verdict,
         measuredAt: child.measuredAt,
         durationMs: null,
@@ -188,6 +192,7 @@ export function instrumentCheckResult(input: {
     value: reading.value,
     unit: reading.unit,
     ...(expect ? { expect: { op: expect.op, value: expect.value } } : {}),
+    ...(reading.provenance ? { provenance: reading.provenance } : {}),
   };
   const base = { check, measuredAt: reading.measuredAt, durationMs: input.durationMs ?? null };
   if (reading.value === null) {
@@ -409,6 +414,7 @@ export interface LatestRubricCheckResult {
    * a passing row. Ledger-filled evidence quotes it so a verdict row still shows the measurement.
    */
   detail?: string | null;
+  provenanceStatus?: 'retained' | 'partial' | 'legacy-missing';
 }
 
 /**
@@ -442,6 +448,7 @@ export async function readLatestRubricCheckResults(
       status: row.status as RubricCheckVerdict,
       finishedAt: row.finished_at instanceof Date ? row.finished_at.toISOString() : String(row.finished_at),
       detail: typeof row.output_tail === 'string' && row.output_tail.length > 0 ? row.output_tail : null,
+      provenanceStatus: measurementProvenanceStatus(check.provenance),
     });
   }
   return out;

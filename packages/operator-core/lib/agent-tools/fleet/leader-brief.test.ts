@@ -51,6 +51,8 @@ import {
   recoverFleetRecordForLeaderControl,
   boundedLeaderBriefFleetMetricsRead,
   boundedLeaderBriefFleetCampaignRead,
+  projectFleetCampaignInvocationDiagnostics,
+  recordFleetCampaignInvocationDiagnostics,
   readLeaderBriefFleetMetrics,
   leaderBriefFleetMetricsUnavailable,
   readLeaderBriefLaneHealth,
@@ -609,13 +611,29 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
 
   it('correlates a timed-out campaign leg with its diagnostic read', async () => {
     vi.useFakeTimers();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const observe = vi.spyOn(fallbackObservations, 'observeFallback').mockReturnValue(true);
     const correlationId = '8dd90cee-69ac-4fd3-b747-00f8fc7f3b3b';
     const fallback = { campaign: null as string | null };
+    const metadata = vi.fn();
     const read = vi.fn((_correlationId: string) => new Promise<typeof fallback>(() => {}));
     try {
-      const pending = boundedLeaderBriefFleetCampaignRead(read, fallback, correlationId);
+      // The adjacent timeout test owns console.warn coverage. Silence it here so
+      // this test isolates the correlation contract under vitest-fail-on-console.
+      const startedAtByAxis = new Map([['claims' as const, Date.now() - 100]]);
+      const elapsedByAxis = new Map([['membership' as const, 80]]);
+      const pending = boundedLeaderBriefFleetCampaignRead(read, fallback, correlationId, {
+        warn: false,
+        onResult: (result) => recordFleetCampaignInvocationDiagnostics(metadata,
+          projectFleetCampaignInvocationDiagnostics({
+            correlationId,
+            elapsedMs: result.elapsedMs,
+            degraded: result.degraded,
+            reason: result.reason,
+            nowMs: Date.now(),
+            startedAtByAxis,
+            elapsedByAxis,
+          })),
+      });
       await vi.advanceTimersByTimeAsync(LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS);
       await expect(pending).resolves.toBe(fallback);
       expect(read).toHaveBeenCalledWith(correlationId, expect.any(AbortSignal));
@@ -624,12 +642,20 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
         { eligible: 1, applied: 0, reason: 'timeout', scope: 'leader-brief:fleet-campaign' },
         expect.objectContaining({ correlationId }),
       );
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('leader-brief:fleet-campaign exceeded 5000ms'));
+      expect(metadata).toHaveBeenCalledWith({
+        fleetCampaignRead: expect.objectContaining({
+          correlationId,
+          status: 'timed-out',
+          elapsedMs: LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS,
+          completedAxisTimingsMs: { membership: 80 },
+          pendingAxisTimingsMs: { claims: LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS + 100 },
+          notStartedAxes: expect.arrayContaining(['corrections']),
+        }),
+      });
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
       observe.mockRestore();
-      warn.mockRestore();
     }
   });
 

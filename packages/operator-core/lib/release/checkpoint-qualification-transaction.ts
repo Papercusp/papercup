@@ -16,6 +16,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
+import { evaluatePartialTaskContinuation } from '../../../../scripts/lib/partial-task-resume.mjs';
 import {
   dependencyGenerationInfraCode,
   GREEN_CHECKPOINT_RESULT_MARKER,
@@ -322,6 +323,128 @@ export interface CheckpointQualificationTransaction {
   evidenceRefs: string[];
   previousAttemptId: string | null;
   eligibilitySnapshot?: CheckpointEligibilitySnapshot | null;
+  /** The full selected population and durable outcomes, under this record's existing runner fence. */
+  continuation?: QualificationWorkContinuation;
+}
+
+export interface QualificationWorkUnit {
+  id: string;
+  kind: 'test' | 'guard' | 'post-suite';
+  path: string;
+  exclusion?: { reason: string; policyRef: string };
+}
+
+export interface QualificationWorkReceipt {
+  unitId: string;
+  completionId: string;
+  observedAtMs: number;
+  state: 'pass' | 'fail' | 'infra';
+  worktreeDirty?: boolean;
+  observedCount?: number;
+  firstAttemptVerdict?: 'pass' | 'fail' | 'unknown';
+  proof?: Record<string, unknown>;
+}
+
+export interface QualificationWorkContinuation {
+  schemaVersion: 1;
+  attemptId: string;
+  candidate: string;
+  repairHead: string | null;
+  root: string;
+  taskKey: string;
+  manifest: { schemaVersion: 1; units: QualificationWorkUnit[] };
+  receipts: QualificationWorkReceipt[];
+  retryStates: Array<'fail' | 'infra'>;
+  supersededReceipts: QualificationWorkReceipt[];
+}
+
+function workLineageConflicts(
+  current: CheckpointQualificationTransaction,
+  input: { candidate?: string | null; repairHead?: string | null },
+): boolean {
+  const work = current.continuation;
+  return !!work && ((!!input.candidate?.trim() && input.candidate.trim() !== work.candidate) ||
+    (!!input.repairHead?.trim() && input.repairHead.trim() !== work.repairHead));
+}
+
+export interface QualificationWorkProgressInput {
+  attemptId: string;
+  candidate: string;
+  repairHead: string | null;
+  runnerId: string;
+  runId: string;
+  pidIdentity: string;
+  root: string;
+  taskKey: string;
+  manifest: QualificationWorkContinuation['manifest'];
+  retryStates: QualificationWorkContinuation['retryStates'];
+  runContext: string;
+  runnerIdentity: string;
+  updates: Array<{ receipt: QualificationWorkReceipt; supersedesCompletionId?: string }>;
+  nowMs?: number;
+}
+
+/** Commit a frozen population/outcome update inside the existing qualification row lock. */
+export function recordQualificationWorkProgress(
+  current: CheckpointQualificationTransaction,
+  input: QualificationWorkProgressInput,
+): QualificationTransition {
+  const conflict = (refusalReason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason });
+  const runner = current.currentPhysicalRunner;
+  if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
+  if (current.attemptId !== input.attemptId || current.phase !== 'running' ||
+      !runner || runner.id !== input.runnerId || !current.runId || current.runId !== input.runId ||
+      !runner.pidIdentity || runner.pidIdentity !== input.pidIdentity) return conflict('runner-fence-mismatch');
+  if (!input.candidate || current.candidate !== input.candidate || runner.candidate !== input.candidate ||
+      current.repairHead !== input.repairHead) return conflict('continuation-lineage-mismatch');
+  if (!input.root || !input.taskKey || !Array.isArray(input.updates) || !Array.isArray(input.retryStates) ||
+      input.retryStates.some(state => state !== 'fail' && state !== 'infra')) return conflict('continuation-input-invalid');
+  const prior = current.continuation;
+  if (prior && (prior.attemptId !== current.attemptId || prior.candidate !== current.candidate ||
+      prior.repairHead !== current.repairHead)) return conflict('continuation-lineage-mismatch');
+  const retryStates = [...new Set(input.retryStates)].sort();
+  if (prior && (prior.root !== input.root || prior.taskKey !== input.taskKey ||
+      JSON.stringify(prior.retryStates) !== JSON.stringify(retryStates))) return conflict('continuation-policy-mismatch');
+  const receipts = new Map((prior?.receipts ?? []).map(receipt => [receipt.unitId, receipt]));
+  const history = [...(prior?.supersededReceipts ?? [])];
+  const expected = { root: input.root, taskKey: input.taskKey, attemptId: current.attemptId,
+    candidate: current.candidate, repairHead: current.repairHead, sourceCommit: input.candidate,
+    runContext: input.runContext, runnerIdentity: input.runnerIdentity, manifest: input.manifest, retryStates };
+  const grade = (manifest: QualificationWorkContinuation['manifest'], values: QualificationWorkReceipt[]) =>
+    evaluatePartialTaskContinuation({ root: input.root, taskKey: input.taskKey,
+      continuation: { schemaVersion: 1, attemptId: current.attemptId, candidate: current.candidate,
+        repairHead: current.repairHead, manifest, receipts: values } }, expected);
+  const before = grade(prior?.manifest ?? input.manifest, [...receipts.values()]);
+  if (before.status !== 'ready') return conflict(`continuation-${before.reason}`);
+  const updatedUnits = new Set<string>();
+  const completionIds = new Set([...receipts.values(), ...history].map(receipt => receipt.completionId));
+  let changed = !prior;
+  for (const update of input.updates) {
+    const receipt = update?.receipt;
+    if (!receipt || updatedUnits.has(receipt.unitId)) return conflict('continuation-duplicate-unit-update');
+    updatedUnits.add(receipt.unitId);
+    const previous = receipts.get(receipt.unitId);
+    if (previous && JSON.stringify(previous) === JSON.stringify(receipt)) continue;
+    if (completionIds.has(receipt.completionId)) return conflict('continuation-completion-id-conflict');
+    if (previous) {
+      if (update.supersedesCompletionId !== previous.completionId || !new Set<string>(before.run).has(receipt.unitId))
+        return conflict('continuation-replacement-not-admitted');
+      history.push(previous);
+    } else if (update.supersedesCompletionId !== undefined) return conflict('continuation-predecessor-missing');
+    receipts.set(receipt.unitId, structuredClone(receipt));
+    completionIds.add(receipt.completionId);
+    changed = true;
+  }
+  const result = grade(input.manifest, [...receipts.values()]);
+  if (result.status !== 'ready') return conflict(`continuation-${result.reason}`);
+  if (!changed) return { status: 'idempotent', transaction: current };
+  const nowMs = input.nowMs ?? Date.now();
+  if (!Number.isSafeInteger(nowMs) || nowMs < current.updatedAtMs) return conflict('continuation-clock-regressed');
+  return { status: 'updated', transaction: { ...current, updatedAtMs: nowMs, lastProgressAtMs: nowMs,
+    continuation: { schemaVersion: 1, attemptId: current.attemptId, candidate: input.candidate,
+      repairHead: current.repairHead, root: input.root, taskKey: input.taskKey,
+      manifest: structuredClone(prior?.manifest ?? input.manifest), receipts: [...receipts.values()],
+      retryStates, supersededReceipts: history } } };
 }
 
 export interface BeginQualificationInput {
@@ -928,6 +1051,27 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
   )
     return null;
   if (!isQualificationOutcome(row.outcome)) return null;
+  if (row.continuation !== undefined) {
+    const work = row.continuation;
+    if (!work || work.schemaVersion !== 1 || typeof work.root !== 'string' || !work.root ||
+        work.attemptId !== row.attemptId || work.candidate !== row.candidate || work.repairHead !== (row.repairHead ?? null) ||
+        typeof work.taskKey !== 'string' || !work.taskKey || !Array.isArray(work.receipts) ||
+        !Array.isArray(work.supersededReceipts) || !Array.isArray(work.retryStates) ||
+        work.retryStates.some(state => state !== 'fail' && state !== 'infra') || !row.candidate) return null;
+    const expected = { root: work.root, taskKey: work.taskKey, sourceCommit: row.candidate,
+      attemptId: row.attemptId, candidate: row.candidate, repairHead: row.repairHead ?? null,
+      manifest: work.manifest, retryStates: work.retryStates, runContext: 'schema-check', runnerIdentity: 'schema-check' };
+    const validate = (receipts: QualificationWorkReceipt[]) => evaluatePartialTaskContinuation({
+      root: work.root, taskKey: work.taskKey, continuation: { schemaVersion: 1, attemptId: row.attemptId,
+        candidate: row.candidate, repairHead: row.repairHead ?? null, manifest: work.manifest, receipts },
+    }, expected).status === 'ready';
+    if (!validate(work.receipts)) return null;
+    const completions = new Set(work.receipts.map(receipt => receipt.completionId));
+    for (const receipt of work.supersededReceipts) {
+      if (!validate([receipt]) || completions.has(receipt.completionId)) return null;
+      completions.add(receipt.completionId);
+    }
+  }
   if (
     row.blockers.some(
       (blocker) =>
@@ -1008,6 +1152,8 @@ export function beginQualificationTransaction(
   );
   const abandoned = isAbandonedQualification(current, input.incumbentLiveness, nowMs);
   if (current?.attemptId === input.attemptId) {
+    if (workLineageConflicts(current, input)) return { status: 'conflict', transaction: current,
+      refusalReason: 'continuation-lineage-mismatch' };
     if (retryableUnownedWait) {
       const reclaimingDeadRepairRunner = isUnstartedDeadRepairRunner(
         current,
@@ -1156,6 +1302,8 @@ export function waitQualificationTransaction(
   },
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
+  if (workLineageConflicts(current, input)) return { status: 'conflict', transaction: current,
+    refusalReason: 'continuation-lineage-mismatch' };
   if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   if (
     current.phase === 'waiting' &&
@@ -1224,6 +1372,8 @@ export function reserveQualificationRunner(
   if (current.attemptId !== input.attemptId) {
     return { status: 'conflict', transaction: current, refusalReason: 'attempt-id-mismatch' };
   }
+  if (workLineageConflicts(current, input)) return { status: 'conflict', transaction: current,
+    refusalReason: 'continuation-lineage-mismatch' };
   if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   const nowMs = input.nowMs ?? Date.now();
   const incumbent = current.currentPhysicalRunner;
@@ -1387,6 +1537,8 @@ export function settleQualificationTransaction(
   },
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
+  if (workLineageConflicts(current, input)) return { status: 'conflict', transaction: current,
+    refusalReason: 'continuation-lineage-mismatch' };
   const candidate = input.candidate?.trim() || null;
   const verifiedRepairHead = input.repairHead?.trim() || null;
   const runId = input.runId?.trim() || null;
@@ -1426,6 +1578,8 @@ export function settleQualificationTransaction(
   // is consumed here. Leaving it set would hand an already-judged head to the next attempt.
   const judgedPending = sameRun && current.pendingRepairHead != null &&
     (current.pendingRepairHead === candidate || current.pendingRepairHead === verifiedRepairHead);
+  if (current.continuation && judgedPending && current.pendingRepairHead !== current.continuation.repairHead)
+    return { status: 'conflict', transaction: current, refusalReason: 'continuation-lineage-mismatch' };
   return {
     status: 'updated',
     transaction: {
@@ -2172,6 +2326,7 @@ function assessPreSuiteRepairRetarget(
   if (!requested || input.started !== true) return unchanged;
   if (current.attemptId !== input.attemptId || current.outcome.kind !== 'pending') return unchanged;
   if (!current.candidate || current.candidate === requested) return unchanged;
+  if (current.continuation) return refused('continuation-lineage-pinned');
   const runner = current.currentPhysicalRunner;
   if (!runner || runner.id !== input.runnerId) return unchanged;
   if (runner.phase !== 'launching' || runner.pid != null) return refused('runner-already-attached');
@@ -2221,6 +2376,67 @@ export function recordStoredQualificationRunnerProgress(
     current ? recordQualificationRunnerProgress(current, input)
       : { status: 'unreadable', error: 'missing attempt' },
   );
+}
+
+export function recordStoredQualificationWorkProgress(
+  target: GateVerdictTarget,
+  input: QualificationWorkProgressInput,
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, current => current
+    ? recordQualificationWorkProgress(current, input)
+    : { status: 'unreadable', error: 'missing attempt' });
+}
+
+/**
+ * Advance work while the caller holds the existing physical checkpoint run lock.
+ * No new runner/attempt is created here. The frozen population is committed before
+ * the first callback, and every observed outcome is fenced and durable before the
+ * next unit starts. The callback owns its ordinary hung-child/DB/process bounds.
+ * A thrown/interrupted callback leaves that unacknowledged unit pending.
+ */
+export async function continueStoredQualificationWork(
+  target: GateVerdictTarget,
+  input: QualificationWorkProgressInput,
+  execute: (unit: QualificationWorkUnit) => Promise<QualificationWorkReceipt>,
+): Promise<{
+  status: 'settled'; transaction: CheckpointQualificationTransaction;
+  evaluation: ReturnType<typeof evaluatePartialTaskContinuation>; executed: string[];
+} | { status: 'refused'; reason: string; executed: string[] }> {
+  const executed: string[] = [];
+  const refused = (reason: string) => ({ status: 'refused' as const, reason, executed });
+  const grade = (transaction: CheckpointQualificationTransaction) => evaluatePartialTaskContinuation({
+    root: input.root, taskKey: input.taskKey, continuation: { ...transaction.continuation,
+      attemptId: transaction.attemptId, candidate: transaction.candidate, repairHead: transaction.repairHead },
+  }, { ...input, sourceCommit: input.candidate });
+  const initial = await recordStoredQualificationWorkProgress(target, input);
+  if (initial.status !== 'updated' && initial.status !== 'idempotent') return refused(`custody-${initial.status}`);
+  let transaction = initial.transaction;
+  const selection = grade(transaction);
+  if (selection.status !== 'ready') return refused(`continuation-${selection.reason}`);
+  const units = new Map(input.manifest.units.map(unit => [unit.id, unit]));
+  for (const id of selection.run) {
+    // Re-read and validate the exact fence under the row lock immediately before
+    // starting another unit, including after a slow or interrupted predecessor.
+    const ownership = await recordStoredQualificationWorkProgress(target, { ...input, updates: [] });
+    if (ownership.status !== 'updated' && ownership.status !== 'idempotent') return refused(`custody-${ownership.status}`);
+    transaction = ownership.transaction;
+    const eligible = grade(transaction);
+    if (eligible.status !== 'ready') return refused(`continuation-${eligible.reason}`);
+    if (!new Set<string>(eligible.run).has(id)) continue;
+    const unit = units.get(id);
+    if (!unit) return refused('selected-unit-missing');
+    const receipt = await execute(structuredClone(unit));
+    executed.push(id);
+    if (receipt?.unitId !== id) return refused('executed-unit-mismatch');
+    const previous = transaction.continuation?.receipts.find(value => value.unitId === id);
+    const committed = await recordStoredQualificationWorkProgress(target, { ...input,
+      updates: [{ receipt, ...(previous ? { supersedesCompletionId: previous.completionId } : {}) }] });
+    if (committed.status !== 'updated' && committed.status !== 'idempotent') return refused(`completion-${committed.status}`);
+    transaction = committed.transaction;
+  }
+  // Include missing, retained-failure and infrastructure populations in the
+  // final evaluation even when this invocation had no eligible units to run.
+  return { status: 'settled', transaction, evaluation: grade(transaction), executed };
 }
 
 export function recordStoredQualificationEligibility(

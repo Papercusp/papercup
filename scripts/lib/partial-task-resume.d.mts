@@ -10,5 +10,79 @@ export function partialTaskSkipListPath(dir: any, checkpoint: any): {
     digest: string;
     count: any;
 };
+/**
+ * Read the reporter's existing atomic OUT channel, including a snapshot written before
+ * onTestRunEnd. Selection comes from the caller, never from the observed result sample.
+ * classifyReadPaths is the reporter's maintained tracked/untracked-input classifier;
+ * absent classification keeps the outcome but cannot establish a reusable pass.
+ */
+export function readPartialNativeCompletion(file: any, expected: any, options?: {}): {
+    status: string;
+    reason: any;
+    receipts: never[];
+} | {
+    status: string;
+    reason: null;
+    receipts: {
+        unitId: any;
+        completionId: any;
+        observedAtMs: any;
+        state: string;
+        worktreeDirty: boolean;
+        firstAttemptVerdict: any;
+        observedCount: number;
+        proof: {
+            recordedSha: any;
+            runContext: any;
+            runnerIdentity: any;
+            executedModules: any;
+            inputsCaptured: any;
+            readPaths: any;
+            opaqueReasons: any[];
+        };
+    }[];
+};
+/**
+ * Grade the existing checkpoint's full, independently selected population. The caller
+ * must own the existing qualification runner before executing `run`; this pure read
+ * neither acquires custody nor authorizes a stale runner to write a checkpoint.
+ *
+ * Native receipts are retained even when they cannot establish a reusable pass. Reuse
+ * delegates to the maintained source/input/context/runner validator. A retained failure
+ * is never silently retried: the qualification's explicit retry policy must admit it.
+ */
+export function evaluatePartialTaskContinuation(checkpoint: any, expected: any, options?: {}): {
+    status: string;
+    reason: any;
+    verdict: string;
+    run: never[];
+    reused: never[];
+    excluded: never[];
+    retainedFailures: never[];
+    infrastructure: never[];
+    invalidated: never[];
+} | {
+    status: string;
+    reason: null;
+    verdict: string;
+    run: any[];
+    reused: any[];
+    excluded: any[];
+    retainedFailures: any[];
+    infrastructure: any[];
+    invalidated: {
+        id: any;
+        reason: string;
+    }[];
+    counts: {
+        selected: number;
+        required: number;
+        excluded: number;
+        passed: number;
+        failed: number;
+        infrastructure: number;
+        pending: number;
+    };
+};
 export const PARTIAL_TASK_CHECKPOINT_SCHEMA: 1;
 export const PARTIAL_TASK_SKIP_LIST_SCHEMA: 1;

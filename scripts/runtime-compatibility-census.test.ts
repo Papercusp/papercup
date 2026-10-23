@@ -30,6 +30,30 @@ describe('committed runtime migration inventory discovery', () => {
     expect(result.sources).toEqual([]);
     expect(result.unresolved[0]).toMatchObject({ path: 'large.js', blobOid: oid, reason: 'nonregular-or-over-budget-source' });
   });
+  it('includes extensionless executables and launch control formats from committed tree metadata', () => {
+    const root = process.cwd();
+    const entries = [
+      ['100755', 'bin/launch', '#!/bin/sh\nexec node host.mjs\n'],
+      ['100644', 'runner.py', 'subprocess.run(["node", "host.mjs"])\n'],
+      ['100644', 'operator.desktop', '[Desktop Entry]\nExec=node host.mjs\n'],
+      ['100644', 'Dockerfile.operator', 'ENTRYPOINT ["node", "host.mjs"]\n'],
+      ['100644', 'agent.plist', '<string>node</string>\n'],
+      ['100644', 'unrelated.txt', 'not a source'],
+    ].map(([mode, path, text], index) => ({ mode, path, bytes: Buffer.from(text), oid: (index + 1).toString(16).repeat(40) }));
+    const runGit = (_root: string, args: string[], options?: { input: Buffer }) => {
+      if (args.includes('--show-toplevel')) return root;
+      if (args[0] === 'rev-parse') return 'a'.repeat(40);
+      if (args[0] === 'ls-tree') return entries.map((entry) => `${entry.mode} blob ${entry.oid} ${entry.bytes.length}\t${entry.path}\0`).join('');
+      return Buffer.concat(options!.input.toString().trim().split('\n').map((oid) => {
+        const entry = entries.find((candidate) => candidate.oid === oid)!;
+        return Buffer.concat([Buffer.from(`${oid} blob ${entry.bytes.length}\n`), entry.bytes, Buffer.from('\n')]);
+      }));
+    };
+    const result = inventorySources(readCommittedSources(root, 'HEAD', { runGit }));
+    expect(result.files.map((file) => file.path)).toEqual(['agent.plist', 'bin/launch', 'Dockerfile.operator', 'operator.desktop', 'runner.py']);
+    expect(result.groups.launchers.map((row) => row.id)).toEqual(['agent.plist', 'bin/launch', 'Dockerfile.operator', 'operator.desktop', 'runner.py']);
+    expect(result.closureAccepted).toBe(false);
+  });
   it('does not reuse a fingerprint across changed unavailable repository pins', () => {
     const input = snapshot([]); input.unresolved.push({ repository: 'missing', revision: 'old', reason: 'unavailable' });
     const first = inventorySources(input).sourceFingerprint;

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import {
   PARTIAL_TASK_CHECKPOINT_SCHEMA,
   PARTIAL_TASK_SKIP_LIST_SCHEMA,
@@ -10,6 +11,8 @@ import {
   partialTaskSkipListPath,
   readPartialTaskCheckpoint,
   writePartialTaskCheckpointAtomic,
+  evaluatePartialTaskContinuation,
+  readPartialNativeCompletion,
 } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 const ID = {
@@ -62,5 +65,207 @@ describe('partial-task-resume', () => {
     });
     expect(parsed).not.toHaveProperty('runContext');
     expect(parsed).not.toHaveProperty('runnerIdentity');
+  });
+});
+
+describe('partial-task continuation proof composition', () => {
+  const units = [
+    { id: 'test-a', kind: 'test', path: 'lib/a.test.ts' },
+    { id: 'guard-a', kind: 'guard', path: 'scripts/guard.mjs' },
+    { id: 'post-a', kind: 'post-suite', path: 'scripts/post.mjs' },
+  ];
+  const expected = { ...ID, attemptId: 'logical-one', candidate: ID.sourceCommit, repairHead: null,
+    manifest: { schemaVersion: 1, units }, runContext: 'ci', runnerIdentity: 'proof-v3 node' };
+  const receipt = (unit: typeof units[number]) => ({ unitId: unit.id, completionId: `completion:${unit.id}`,
+    observedAtMs: 100, state: 'pass', worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass',
+    proof: { recordedSha: ID.sourceCommit, executedModules: [unit.path, 'lib/shared.ts'],
+      readPaths: ['fixtures/input.json'], inputsCaptured: true, opaqueReasons: [] as string[],
+      runContext: 'ci', runnerIdentity: 'proof-v3 node' } });
+  const checkpoint = () => ({ ...ID, selectedFiles: ['lib/a.test.ts'], passedFiles: [], state: 'partial',
+    continuation: { schemaVersion: 1, attemptId: expected.attemptId, candidate: expected.candidate,
+      repairHead: null, manifest: structuredClone(expected.manifest), receipts: units.map(receipt) } });
+  const evaluate = (value = checkpoint(), overrides = {}, changed: string[] | null = []) =>
+    evaluatePartialTaskContinuation(value, { ...expected, ...overrides }, { changedBetween: () => changed });
+
+  it('recovers the same pending population from the durable checkpoint in a fresh read', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'partial-continuation-'));
+    const path = partialTaskCheckpointPath(dir, ID.root, ID.taskKey);
+    const saved = checkpoint();
+    saved.continuation.receipts = saved.continuation.receipts.filter(row => row.unitId !== 'post-a');
+    writePartialTaskCheckpointAtomic(path, saved);
+    const recovered = readPartialTaskCheckpoint(path, ID);
+    expect(evaluate(recovered)).toMatchObject({ status: 'ready', run: ['post-a'],
+      reused: ['guard-a', 'test-a'], verdict: 'incomplete', counts: { selected: 3, passed: 2, pending: 1 } });
+  });
+
+  it('composes a green verdict only from valid proofs of the complete selected population', () => {
+    expect(evaluate()).toMatchObject({ verdict: 'green', run: [], reused: ['guard-a', 'post-a', 'test-a'],
+      counts: { selected: 3, required: 3, passed: 3, pending: 0 } });
+  });
+
+  it.each(units)('retains a missing or invalid $kind as pending rather than green', unit => {
+    const missing = checkpoint();
+    missing.continuation.receipts = missing.continuation.receipts.filter(row => row.unitId !== unit.id);
+    expect(evaluate(missing)).toMatchObject({ verdict: 'incomplete', run: [unit.id] });
+    const opaque = checkpoint();
+    opaque.continuation.receipts.find(row => row.unitId === unit.id)!.proof.opaqueReasons = ['socket'];
+    expect(evaluate(opaque)).toMatchObject({ verdict: 'incomplete', run: [unit.id] });
+  });
+
+  it.each(['attemptId', 'candidate', 'repairHead'] as const)('refuses a moved %s', key => {
+    expect(evaluate(checkpoint(), { [key]: 'different' })).toMatchObject({ status: 'refused', verdict: 'incomplete' });
+  });
+
+  it('refuses changed selection, duplicate receipts and foreign receipt identities', () => {
+    expect(evaluate(checkpoint(), { manifest: { schemaVersion: 1, units: units.slice(1) } })).toMatchObject({
+      status: 'refused', reason: 'manifest-mismatch' });
+    const duplicate = checkpoint();
+    duplicate.continuation.receipts.push(receipt(units[0]!));
+    expect(evaluate(duplicate)).toMatchObject({ status: 'refused', reason: 'receipt-population-invalid' });
+    const foreign = checkpoint();
+    foreign.continuation.receipts[0]!.unitId = 'foreign';
+    expect(evaluate(foreign)).toMatchObject({ status: 'refused', verdict: 'incomplete' });
+    const aliased = checkpoint();
+    aliased.continuation.receipts[1]!.completionId = aliased.continuation.receipts[0]!.completionId;
+    expect(evaluate(aliased)).toMatchObject({ status: 'refused', reason: 'receipt-population-invalid' });
+  });
+
+  it('invalidates relevant source and input changes while retaining an unrelated-change control', () => {
+    const newer = 'c'.repeat(40);
+    expect(evaluate(checkpoint(), { sourceCommit: newer }, ['docs/unrelated.md'])).toMatchObject({ verdict: 'green', run: [] });
+    for (const changed of ['lib/shared.ts', 'fixtures/input.json', 'package-lock.json'])
+      expect(evaluate(checkpoint(), { sourceCommit: newer }, [changed])).toMatchObject({ verdict: 'incomplete',
+        run: ['guard-a', 'post-a', 'test-a'], reused: [] });
+    expect(evaluate(checkpoint(), { sourceCommit: newer }, null)).toMatchObject({ verdict: 'incomplete', reused: [] });
+  });
+
+  it('requires matching runner and context, captured inputs and a clean first-attempt pass', () => {
+    for (const overrides of [{ runnerIdentity: 'different' }, { runContext: 'different' }])
+      expect(evaluate(checkpoint(), overrides)).toMatchObject({ verdict: 'incomplete', reused: [] });
+    for (const corrupt of [
+      (row: ReturnType<typeof receipt>) => { row.proof.inputsCaptured = false; },
+      (row: ReturnType<typeof receipt>) => { row.worktreeDirty = true; },
+      (row: ReturnType<typeof receipt>) => { row.observedCount = 0; },
+      (row: ReturnType<typeof receipt>) => { row.firstAttemptVerdict = 'fail'; },
+    ]) {
+      const value = checkpoint();
+      corrupt(value.continuation.receipts[0]!);
+      expect(evaluate(value)).toMatchObject({ verdict: 'incomplete', run: ['test-a'] });
+    }
+  });
+
+  it('retains failure and infrastructure outcomes and retries them only under an explicit policy', () => {
+    const value = checkpoint();
+    value.continuation.receipts[0]!.state = 'fail';
+    value.continuation.receipts[1]!.state = 'infra';
+    expect(evaluate(value)).toMatchObject({ verdict: 'red', run: [], reused: ['post-a'],
+      retainedFailures: ['test-a'], infrastructure: ['guard-a'] });
+    expect(evaluate(value, { retryStates: ['fail', 'infra'] })).toMatchObject({ verdict: 'red',
+      run: ['guard-a', 'test-a'], reused: ['post-a'] });
+  });
+
+  it('requires exact documented exclusions and refuses empty or entirely excluded success', () => {
+    const value = checkpoint();
+    const manifest = { schemaVersion: 1, units: units.map(unit => ({ ...unit,
+      exclusion: { policyRef: 'policy:owned-exclusion', reason: 'not applicable to this candidate' } })) };
+    value.continuation.manifest = manifest;
+    expect(evaluate(value, { manifest })).toMatchObject({ verdict: 'incomplete', run: [], reused: [],
+      excluded: ['guard-a', 'post-a', 'test-a'] });
+    expect(evaluate(value)).toMatchObject({ status: 'refused', reason: 'manifest-mismatch' });
+    expect(evaluate(checkpoint(), { manifest: { schemaVersion: 1, units: [] } })).toMatchObject({ status: 'refused' });
+  });
+
+  it('detects a torn or modified durable continuation rather than recovering its pass names', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'partial-continuation-'));
+    const path = partialTaskCheckpointPath(dir, ID.root, ID.taskKey);
+    writePartialTaskCheckpointAtomic(path, checkpoint());
+    const text = readFileSync(path, 'utf8');
+    // A persisted envelope is validated before any legacy passedFiles field is returned.
+    const parsed = JSON.parse(text);
+    parsed.continuation.receipts[0].proof.inputsCaptured = false;
+    writeFileSync(path, JSON.stringify(parsed));
+    expect(readPartialTaskCheckpoint(path, ID)).toBeNull();
+    writeFileSync(path, text.slice(0, -12));
+    expect(readPartialTaskCheckpoint(path, ID)).toBeNull();
+  });
+});
+
+describe('native durable continuation outcomes', () => {
+  const selectedSpecifications = [{ testFile: 'lib/a.test.ts', projectName: null, pool: 'forks',
+    testNamePattern: null, testLines: null, testIds: null, testTagsFilter: null }];
+  const manifest = { schemaVersion: 1, units: [{ id: 'a', kind: 'test', path: 'lib/a.test.ts' },
+    { id: 'guard', kind: 'guard', path: 'scripts/guard.mjs' }] };
+  const expected = { ...ID, attemptId: 'attempt-one', workspaceName: '@repo/tests', manifest, selectedSpecifications };
+  const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const snapshot = () => ({ workspaceName: expected.workspaceName, recordedSha: ID.sourceCommit, worktreeDirty: false,
+    completionCheckpoint: { schemaVersion: 1, qualificationAttemptId: expected.attemptId,
+      runContext: 'ci', runnerIdentity: 'proof-v3 node', state: 'partial', noPersist: true },
+    configSources: { status: 'unchanged' },
+    rows: [{ testFile: 'lib/a.test.ts', executedModules: ['lib/a.test.ts'], inputsCaptured: true,
+      readPaths: ['/repo/fixtures/input.json'], opaqueReasons: [] as string[] }],
+    nativeRun: { schemaVersion: 'native-vitest-run-v1', gaps: [] as string[], finishedAtMs: null as number | null,
+      reason: null as string | null, unhandledErrorCount: null as number | null, modulePopulationMatched: false,
+      selectedManifest: { specifications: structuredClone(selectedSpecifications), sha256: hash(selectedSpecifications) },
+      files: [{ testFile: 'lib/a.test.ts', completionId: 'completion-a', observedAtMs: 123, state: 'passed',
+        firstAttemptVerdict: 'pass', cases: [{ status: 'pass' }],
+        proof: { sourceEvidence: { schemaVersion: 'vite-collected-source-evidence-v1', status: 'stable',
+          sources: [{ path: 'lib/a.test.ts', sha256: 'a'.repeat(64), currentSha256: 'a'.repeat(64) }], reasons: [] } } }] } });
+  const read = (value = snapshot(), overrides = {}, classify = true) => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-continuation-'));
+    const file = join(dir, 'out.json');
+    writeFileSync(file, JSON.stringify({ ...value, completionIntegrity: { schemaVersion: 1, sha256: hash(value) } }));
+    return readPartialNativeCompletion(file, { ...expected, ...overrides }, classify
+      ? { classifyReadPaths: () => ({ readPaths: ['fixtures/input.json'], opaqueReasons: [] }) } : {});
+  };
+
+  it('recovers a committed module before the terminal hook and composes its proof with pending guards', () => {
+    const recovered = read();
+    expect(recovered).toMatchObject({ status: 'ready', receipts: [{ unitId: 'a', completionId: 'completion-a',
+      state: 'pass', observedCount: 1, proof: { opaqueReasons: [], inputsCaptured: true } }] });
+    const checkpoint = { ...ID, continuation: { schemaVersion: 1, attemptId: expected.attemptId,
+      candidate: ID.sourceCommit, repairHead: null, manifest, receipts: recovered.receipts } };
+    expect(evaluatePartialTaskContinuation(checkpoint, { ...expected, candidate: ID.sourceCommit,
+      repairHead: null, runContext: 'ci', runnerIdentity: 'proof-v3 node' })).toMatchObject({
+      verdict: 'incomplete', reused: ['a'], run: ['guard'] });
+  });
+
+  it('requires independent exact selection including case filters and attempt identity', () => {
+    expect(read(snapshot(), { attemptId: 'other' })).toMatchObject({ status: 'refused' });
+    const filtered = snapshot();
+    filtered.nativeRun.selectedManifest.specifications[0]!.testNamePattern = 'one case' as never;
+    filtered.nativeRun.selectedManifest.sha256 = hash(filtered.nativeRun.selectedManifest.specifications);
+    expect(read(filtered)).toMatchObject({ status: 'refused', reason: 'native-selection-mismatch' });
+  });
+
+  it('retains failure and infrastructure outcomes without promoting them to passes', () => {
+    const failed = snapshot();
+    failed.nativeRun.files[0]!.state = 'failed';
+    expect(read(failed)).toMatchObject({ status: 'ready', receipts: [{ state: 'fail' }] });
+    failed.nativeRun.files[0]!.state = 'error';
+    expect(read(failed)).toMatchObject({ status: 'ready', receipts: [{ state: 'infra' }] });
+  });
+
+  it('never reuses unclassified, opaque, unstable or terminal-error proof', () => {
+    expect(read(snapshot(), {}, false).receipts[0]!.proof.inputsCaptured).toBe(false);
+    for (const damage of [
+      (v: ReturnType<typeof snapshot>) => { v.nativeRun.files[0]!.proof.sourceEvidence.status = 'unknown'; },
+      (v: ReturnType<typeof snapshot>) => { v.nativeRun.files[0]!.cases = []; },
+      (v: ReturnType<typeof snapshot>) => { v.rows[0]!.opaqueReasons = ['socket']; },
+      (v: ReturnType<typeof snapshot>) => { v.nativeRun.finishedAtMs = 200; v.nativeRun.reason = 'failed'; v.nativeRun.unhandledErrorCount = 1; },
+    ]) {
+      const value = snapshot(); damage(value);
+      expect(read(value).receipts[0]!.proof.opaqueReasons.length).toBeGreaterThan(0);
+    }
+    const duplicate = snapshot(); duplicate.nativeRun.files.push(duplicate.nativeRun.files[0]!);
+    expect(read(duplicate)).toMatchObject({ status: 'refused', reason: 'native-receipt-population-invalid' });
+  });
+
+  it('refuses a torn or altered snapshot even if its pass file names look valid', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-corruption-')), file = join(dir, 'out.json');
+    const value = snapshot();
+    writeFileSync(file, JSON.stringify({ ...value, completionIntegrity: { schemaVersion: 1, sha256: '0'.repeat(64) } }));
+    expect(readPartialNativeCompletion(file, expected)).toMatchObject({ status: 'refused', reason: 'snapshot-integrity-invalid' });
+    writeFileSync(file, '{');
+    expect(readPartialNativeCompletion(file, expected)).toMatchObject({ status: 'refused', reason: 'snapshot-unreadable' });
   });
 });

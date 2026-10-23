@@ -16,6 +16,7 @@ import {
   type CompletionVerificationEvidence,
 } from '../../coord-lifecycle/records';
 import { mapWithConcurrency } from '../../gym/concurrency';
+import { readWorkItemClaimHistory } from './fleet-claim-history-reader';
 
 export const FLEET_CAMPAIGN_RECENT_ROW_CAP = 12;
 export const FLEET_CAMPAIGN_AXIS_READ_CONCURRENCY = 4;
@@ -32,12 +33,13 @@ export type FleetCampaignTimingAxis =
   | 'jobs'
   | 'corrections';
 
-const FLEET_CAMPAIGN_TIMING_AXES: readonly FleetCampaignTimingAxis[] = [
+export const FLEET_CAMPAIGN_TIMING_AXES: readonly FleetCampaignTimingAxis[] = [
   'everMembers', 'membership', 'issues', 'gateEvents', 'speaking', 'claims', 'terminals', 'jobs', 'corrections',
 ];
 
 interface FleetCampaignTimingOptions {
   correlationId?: string;
+  onAxisStarted?: (axis: FleetCampaignTimingAxis, startedAtMs: number) => void;
   onAxisTiming?: (axis: FleetCampaignTimingAxis, elapsedMs: number) => void;
 }
 
@@ -69,6 +71,7 @@ async function timeFleetCampaignAxisRead<T>(
   options: FleetCampaignTimingOptions = {},
 ): Promise<TimedFleetCampaignRead<T>> {
   const startedAt = Date.now();
+  try { options.onAxisStarted?.(axis, startedAt); } catch { /* diagnostics must not fail a campaign read */ }
   try {
     const value = await read();
     const elapsedMs = Math.max(0, Date.now() - startedAt);
@@ -273,6 +276,7 @@ export async function readFleetCampaign(
     harnessSlug?: string | null;
     correlationId?: string;
     signal?: AbortSignal;
+    onAxisStarted?: FleetCampaignTimingOptions['onAxisStarted'];
     onAxisTiming?: FleetCampaignTimingOptions['onAxisTiming'];
   },
   sqlOverride?: Sql,
@@ -291,6 +295,9 @@ export async function readFleetCampaign(
   const axisTimingsMs: Partial<Record<FleetCampaignTimingAxis, number>> = {};
   const timingOptions: FleetCampaignTimingOptions = {
     correlationId: input.correlationId,
+    onAxisStarted: (axis, startedAtMs) => {
+      try { input.onAxisStarted?.(axis, startedAtMs); } catch { /* diagnostics must not fail a campaign read */ }
+    },
     onAxisTiming: (axis, elapsedMs) => {
       axisTimingsMs[axis] = elapsedMs;
       try { input.onAxisTiming?.(axis, elapsedMs); } catch { /* diagnostics must not fail a campaign read */ }
@@ -468,33 +475,14 @@ export async function readFleetCampaign(
            AND NOT harness_shared.work_item_status_is_terminal(status)
            ${input.harnessSlug ? sql`AND harness_slug = ${input.harnessSlug}` : sql``}
       `;
-        const flowRows = await sql<Array<Record<string, unknown>>>`
-        SELECT count(*)::bigint AS transitions, count(DISTINCT h.value->>'owner')::bigint AS workers
-          FROM harness_shared.work_items wi
-          CROSS JOIN LATERAL jsonb_array_elements(
-            CASE WHEN jsonb_typeof(wi.worked_by_history) = 'array' THEN wi.worked_by_history ELSE '[]'::jsonb END
-          ) h(value)
-         WHERE wi.workspace_id = ${input.workspaceId}
-           AND h.value->>'owner' = ANY(${sql.array(memberIds)}::text[])
-           AND (h.value->>'at')::timestamptz >= ${boundary.at}::timestamptz
-           ${input.harnessSlug ? sql`AND wi.harness_slug = ${input.harnessSlug}` : sql``}
-      `;
-        const recent = await sql<Array<Record<string, unknown>>>`
-        SELECT wi.feature_id, h.value->>'owner' AS owner_id, h.value->>'at' AS at
-          FROM harness_shared.work_items wi
-          CROSS JOIN LATERAL jsonb_array_elements(
-            CASE WHEN jsonb_typeof(wi.worked_by_history) = 'array' THEN wi.worked_by_history ELSE '[]'::jsonb END
-          ) h(value)
-         WHERE wi.workspace_id = ${input.workspaceId}
-           AND h.value->>'owner' = ANY(${sql.array(memberIds)}::text[])
-           AND (h.value->>'at')::timestamptz >= ${boundary.at}::timestamptz
-           ${input.harnessSlug ? sql`AND wi.harness_slug = ${input.harnessSlug}` : sql``}
-         ORDER BY (h.value->>'at')::timestamptz DESC
-         LIMIT ${FLEET_CAMPAIGN_RECENT_ROW_CAP}
-      `;
+        const history = await readWorkItemClaimHistory(sql, {
+          workspaceId: input.workspaceId,
+          ownerIds: memberIds,
+          sinceAt: boundary.at,
+          harnessSlug: input.harnessSlug,
+        }, { mode: 'global', limit: FLEET_CAMPAIGN_RECENT_ROW_CAP });
         const stock = stockRows[0] ?? {};
-        const flow = flowRows[0] ?? {};
-        const transitions = number(flow.transitions);
+        const transitions = history.totalTransitions;
         claims = available(
           claimsWriter,
           {
@@ -505,11 +493,11 @@ export async function readFleetCampaign(
             stock: { held: number(stock.held), distinctHolders: number(stock.holders) },
             flow: {
               transitions,
-              distinctWorkers: number(flow.workers),
+              distinctWorkers: history.distinctOwners,
               recent: recentEvidence(
-                recent.map((row) => ({
-                  workItemId: row.feature_id,
-                  ownerId: row.owner_id,
+                history.rows.map((row) => ({
+                  workItemId: row.workItemId,
+                  ownerId: row.ownerId,
                   at: row.at,
                 })),
                 transitions,
