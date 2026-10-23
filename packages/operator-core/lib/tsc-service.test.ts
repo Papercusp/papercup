@@ -12,7 +12,7 @@ import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { build } from 'esbuild';
 const nativeDir = dirname(createRequire(import.meta.url).resolve('@typescript/native/package.json'));
 const { API } = await import(pathToFileURL(join(nativeDir, 'dist/api/async/api.js')).href);
@@ -376,9 +376,14 @@ describe('bounded shared-service timeout', () => {
     const socketPath = join(dir, 'service.sock');
     const sockets = new Set<import('node:net').Socket>();
     const receivedIds: string[] = [];
+    let requestReceived!: () => void;
+    const receivedRequest = new Promise<void>(resolve => { requestReceived = resolve; });
     const server = createServer((socket) => {
       sockets.add(socket);
-      socket.on('data', (data) => receivedIds.push(JSON.parse(String(data)).requestId));
+      socket.on('data', (data) => {
+        receivedIds.push(JSON.parse(String(data)).requestId);
+        requestReceived();
+      });
       socket.on('error', () => {});
       socket.on('close', () => sockets.delete(socket));
     });
@@ -387,9 +392,15 @@ describe('bounded shared-service timeout', () => {
       server.listen(socketPath, resolve);
     });
     const lines: string[] = [];
+    const setRealTimeout = globalThis.setTimeout;
+    const clearRealTimeout = globalThis.clearTimeout;
+    let deliveryTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const startedAt = Date.now();
-      const result = await typecheckViaService({
+      // Socket delivery is real I/O; advance only the client deadline after
+      // the fixture has received the request. A busy poll phase must not race
+      // this guard's assertion that the request reached the silent server.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const pending = typecheckViaService({
         root: '/repo',
         project: '/repo/tsconfig.json',
         files: ['src/a.ts'],
@@ -398,6 +409,13 @@ describe('bounded shared-service timeout', () => {
         log: (line) => lines.push(line),
         env: { PAPERCUSP_TSC_SERVICE_SOCKET: socketPath },
       });
+      await Promise.race([receivedRequest, new Promise<never>((_resolve, reject) => {
+        deliveryTimer = setRealTimeout(() => reject(new Error('fixture socket did not receive the request')), 5_000);
+      })]);
+      await vi.advanceTimersByTimeAsync(49);
+      expect(lines).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await pending;
 
       expect(result).toBeNull();
       expect(lines.join('\n')).toContain('no answer within 50 ms');
@@ -406,8 +424,9 @@ describe('bounded shared-service timeout', () => {
       expect(lines.join('\n')).not.toContain('unreachable');
       expect(receivedIds[0]).toMatch(/^[0-9a-f-]{36}$/);
       expect(lines.join('\n')).toContain(`requestId=${receivedIds[0]}`);
-      expect(Date.now() - startedAt).toBeLessThan(2_000);
     } finally {
+      if (deliveryTimer) clearRealTimeout(deliveryTimer);
+      vi.useRealTimers();
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       rmSync(dir, { recursive: true, force: true });
