@@ -336,13 +336,20 @@ export async function continueCascadeDispatchCore(
   const routing = typeof row.routing === 'string' ? JSON.parse(row.routing) as typeof row.routing : row.routing;
   const pending = routing.cascadeDispatch;
   const isCurrent = async () => {
+    // Expiry admits a competing continuation; the token fences actual use.
+    // Revalidate and renew atomically after slow preflight when no claimant
+    // replaced us. Requiring an unexpired timestamp here misreported a live,
+    // unreplaced dispatch as a closed consult. A changed token/cursor/responder
+    // or terminal consultation still refuses renewal and prevents the spawn.
     const current = await sql`
-      SELECT conversation_id FROM harness_shared.consult_state
+      UPDATE harness_shared.consult_state
+         SET routing = jsonb_set(routing, '{cascadeDispatch}', (routing->'cascadeDispatch') ||
+           ${sql.json({ leaseUntil: new Date(now().getTime() + 120_000).toISOString() } as never)}::jsonb)
        WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
          AND closed_at IS NULL AND state IN ('awaiting_responder', 'active')
          AND cascade_cursor = ${row.cascade_cursor} AND responder_id = ${pending.responder}
          AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}
-         AND (routing #>> '{cascadeDispatch,leaseUntil}')::timestamptz > ${now().toISOString()}::timestamptz`;
+       RETURNING conversation_id`;
     return current.length > 0;
   };
   try {

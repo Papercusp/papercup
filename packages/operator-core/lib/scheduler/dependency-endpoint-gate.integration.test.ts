@@ -42,7 +42,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { createFreshPgDb, applyPlanItemAnchorMigrationsForTest, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   COORD_REF_HOLDERS_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
@@ -159,6 +159,7 @@ beforeAll(async () => {
   // WI-10005221: promotion now reaches the work-item emit path, whose key-fire latch reads
   // harness_shared.event_awaits. Apply the shared claim-path substrate, as dependency-writer does.
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
+  await applyPlanItemAnchorMigrationsForTest(db.sql);
   await db.sql
     .unsafe(
       `

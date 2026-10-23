@@ -21,7 +21,9 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, applyPlanItemAnchorMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { unknownAnchor } from './anchors';
+import { readPlanItemAnchors, writePlanItemAnchors } from './anchor-store';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 
@@ -156,6 +158,7 @@ beforeAll(async () => {
   await applyEventSubstrateMigrationsForTest(db.sql, { label: 'plan-item-convert.integration.test.ts' });
   await db.sql.unsafe(HFC_DDL);
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()); // convert→claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
+  await applyPlanItemAnchorMigrationsForTest(db.sql);
   // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
@@ -195,6 +198,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await db.sql`TRUNCATE harness_shared.plan_item_anchors, harness_shared.plan_items`;
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_entity_subscriptions, harness_shared.coord_threads, harness_shared.coord_thread_posts, harness_shared.coord_links, harness_shared.coord_topics, harness_shared.coord_event_log, harness_shared.plan_item_assignments, harness_shared.agent_names, harness_shared.agent_name_sessions, harness_shared.plan_work_group_members, harness_shared.plan_item_claims, harness_shared.contributors  RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   liveness.resetHarnessSharedResolver();
@@ -215,6 +219,23 @@ async function implementsEdges() {
 }
 
 describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link', () => {
+  it('copies the canonical anchor payload on direct pickup without adding text-derived files', async () => {
+    const scope = { workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN };
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Touch src/unlinked.ts' }] });
+    await db.sql`INSERT INTO harness_shared.plan_items
+      (workspace_id,harness_slug,plan_slug,item_id,seq,item_text,status)
+      VALUES (${WS},${HARNESS},${PLAN},'P-001',1,'Linked','todo')`;
+    await db.sql.begin(tx => writePlanItemAnchors(tx, scope, { itemId: 'P-001',
+      anchors: [unknownAnchor({ path: 'src/linked.ts' }, 'not-found')] }, 'author'));
+    const stored = await readPlanItemAnchors(scope);
+    const result = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A' });
+    expect(result.status).toBe('converted');
+    if (result.status !== 'converted') throw new Error('pickup refused');
+    expect(result.workItem.payload).toMatchObject({ paths: ['src/linked.ts'], anchors: stored['P-001'] });
+    expect((await wi.getWorkItem(result.workItem.id, HARNESS))!.payload)
+      .toMatchObject({ paths: ['src/linked.ts'], anchors: stored['P-001'] });
+  });
+
   it('converts a todo item into a claimed task work_item, linked back both ways', async () => {
     const r = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A', ownerName: 'builder-1' });
     expect(r.status).toBe('converted');

@@ -54,6 +54,8 @@ import type { ForceReleaseBasis } from '../agent-tools/work_items/release-force-
 import { releaseClaim, type LivenessMode, type PlanItemClaim } from './claims';
 import { compilePlanItemBrief, decisionsForItem } from './compile-brief';
 import { planItemTextHash } from './text-drift';
+import { readPlanItemAnchors } from './anchor-store';
+import { codePayloadForPlanItems } from '../plan-workitem-promotion';
 import { resolveGoalContext } from '../modes/goal-context';
 import type { Sql } from 'postgres';
 
@@ -856,12 +858,20 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
           decisions: decisionsForItem(read.parsed, opts.itemId),
         }) || undefined
       : undefined);
+  const anchorsByItem = await readPlanItemAnchors(opts);
+  let codePayload = codePayloadForPlanItems([opts.itemId], anchorsByItem, item.text ?? '');
+  if (codePayload && !codePayload.anchors) {
+    const { resolveProject } = await import('../harness-core');
+    const repoRoot = (await resolveProject(opts.harnessSlug, opts.workspaceId))?.path;
+    codePayload = codePayloadForPlanItems([opts.itemId], anchorsByItem, item.text ?? '', repoRoot);
+  }
   const created = await createWorkItem({
     kind,
     title,
     summary: item.text ?? undefined,
     harness: opts.harnessSlug,
     payload: {
+      ...codePayload,
       plan_item: stamp,
       ...(opts.planRun ? { plan_run: opts.planRun } : {}),
       ...(effectiveBrief ? { brief: effectiveBrief } : {}),

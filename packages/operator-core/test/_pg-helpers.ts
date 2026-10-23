@@ -108,6 +108,13 @@ export async function applyMigrationForTest(sql: postgres.Sql, filePath: string)
   await sql.unsafe(sqlText);
 }
 
+/** The canonical anchor store and its change-notification writer, for plan consumers. */
+export async function applyPlanItemAnchorMigrationsForTest(sql: postgres.Sql): Promise<void> {
+  for (const file of ['1436-emit-change-notify-row-workspace.sql', '1559-plan-item-code-anchors.sql']) {
+    await applyMigrationForTest(sql, resolve(SQL_DIR, file));
+  }
+}
+
 /**
  * WI-10005570 (plan personal-data-reader-set-labels-2026-10-01, D-006): every
  * agent-facing `session_turns` read consults the disclosure ledger

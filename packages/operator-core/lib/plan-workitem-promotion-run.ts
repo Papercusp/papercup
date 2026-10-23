@@ -59,7 +59,8 @@ import {
   type PlanLaneSyncStatus,
 } from './plan-items/reconcile-linked-work-items';
 import { planItemTextHash } from './plan-items/text-drift';
-import { computePromotions, type OpenPlanItem } from './plan-workitem-promotion';
+import { readPlanItemAnchors } from './plan-items/anchor-store';
+import { codePayloadForPlanItems, computePromotions, type OpenPlanItem } from './plan-workitem-promotion';
 import { phaseRequiresTwoMachineRig } from './plan-phase-rig';
 import { listObjectTags } from './topics-feed';
 import {
@@ -669,11 +670,23 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
       reservationsRebound++;
   }
 
+  const anchorsByItem = await readPlanItemAnchors(opts);
+  const needsRepoRoot = openItems.some(item => {
+    const payload = codePayloadForPlanItems([item.id], anchorsByItem, item.text);
+    return payload !== undefined && payload.anchors === undefined;
+  });
+  let repoRoot: string | undefined;
+  if (needsRepoRoot) {
+    const { resolveProject } = await import('./harness-core');
+    repoRoot = (await resolveProject(opts.harnessSlug, opts.workspaceId))?.path;
+  }
   const specs = computePromotions({
     planSlug: opts.planSlug,
     harness: opts.harnessSlug,
     openItems,
     existingPromotedItemIds: alreadyIds,
+    anchorsByItem,
+    repoRoot,
   });
   const allRunSpecsByPlanItem = opts.planRun
     ? new Map(
@@ -682,6 +695,8 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
           harness: opts.harnessSlug,
           openItems,
           existingPromotedItemIds: [],
+          anchorsByItem,
+          repoRoot,
         }).map((spec) => [spec.sourcePlanItemIds[0], spec]),
       )
     : new Map<string, ReturnType<typeof computePromotions>[number]>();
@@ -790,6 +805,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
         ...designProvenance,
         topics: planTopics,
         payload: {
+          ...spec.payload,
           plan_item: stamp,
           ...(opts.planRun ? { plan_run: opts.planRun } : {}),
           // EI-21574373783224719: reserve the minted lane for the fleet it was minted FOR
@@ -926,6 +942,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
         ...designProvenance,
         topics: planTopics,
         payload: {
+          ...spec.payload,
           plan_item: stampForPlanItem(item.id),
           plan_run: opts.planRun,
           // EI-21574373783224719: same fleet reservation as the mint path above — an
