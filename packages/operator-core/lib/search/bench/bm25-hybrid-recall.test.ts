@@ -14,6 +14,9 @@ import { captureCallWindow, createPrecomputedHybridQueries, startWaitSampler, st
 import {
   COLD_LATENCY_P95_CEILING_MS,
   declareBm25Attempts,
+  bm25QueryInputsSchema,
+  freezeBm25QueryInputs,
+  restoreBm25QueryInputs,
   reconcileBm25Attempts,
   BM25_EXECUTED_SOURCE_PATHS,
   LATENCY_P95_CEILING_MS,
@@ -48,6 +51,7 @@ import {
   warmQueryEmbeddings,
   type ArmObservation,
   type Bm25AttemptReceipt,
+  type Bm25QueryInputs,
   type ExecutedSourceSnapshot,
   type PairResult,
   type StatementStat,
@@ -122,6 +126,52 @@ describe('executed source qualification', () => {
     for (const patch of [{ profile: undefined }, { profile: { mode: 'gemma', profileId: 'another-profile' } },
       { pairsPerSource: 59 }, { sources: ['work_item'] }, { sources: ['work_item', 'work_item'] }, { explicitDatabase: false }])
       expect(qualificationConfigurationProblems(expected, { ...options, ...patch }).length).toBeGreaterThan(0);
+  });
+});
+
+describe('frozen benchmark query inputs', () => {
+  const pair = (id: string, style: 'fragment' | 'keyword' = 'fragment'): PairResult => ({
+    source: 'work_item', targetId: id, style, query: `exact query ${id}`, arms: { bm25: obs(1, 'bm25') },
+  });
+  const context = { seed: 'frozen-seed', workspaceId: 'fixture-workspace', sources: ['work_item'] as const,
+    pairsPerSource: 60, configuration: { profile: 'fixture@v1', limit: 10 } };
+  const freeze = () => freezeBm25QueryInputs({ ...context, sources: [...context.sources], preparedAt: '2026-10-23T06:00:00Z',
+    paired: [pair('paired')], warmup: [pair('warmup', 'keyword')], steady: [pair('steady')] });
+  it('roundtrips exact queries and disjoint pass identities without carrying observations', () => {
+    const frozen = freeze();
+    const bytes = `${JSON.stringify(frozen, null, 2)}\n`;
+    const restored = restoreBm25QueryInputs(bytes, { ...context, sources: [...context.sources] });
+    expect(restored.inputs.corpus).toBeNull();
+    expect(restored.paired).toEqual([{ ...pair('paired'), arms: {} }]);
+    expect(restored.warmup[0]?.targetId).toBe('warmup');
+    expect(restored.steady[0]?.targetId).toBe('steady');
+    expect(JSON.stringify(frozen)).not.toContain('latencyMs');
+    expect(restoreBm25QueryInputs(bytes, { ...context, sources: [...context.sources] }, restored.sha256).sha256).toBe(restored.sha256);
+    expect(() => restoreBm25QueryInputs(`${bytes} `, { ...context, sources: [...context.sources] }, restored.sha256))
+      .toThrow('bytes differ');
+  });
+  it('refuses changed scope, seed, source population, sample size and model configuration', () => {
+    const bytes = JSON.stringify(freeze());
+    for (const patch of [{ workspaceId: 'foreign' }, { seed: 'different' }, { sources: ['session_turn'] },
+      { pairsPerSource: 59 }, { configuration: { profile: 'different@v1', limit: 10 } }]) {
+      expect(() => restoreBm25QueryInputs(bytes, { ...context, sources: [...context.sources], ...patch } as Pick<Bm25QueryInputs,
+        'seed' | 'workspaceId' | 'sources' | 'pairsPerSource' | 'configuration'>))
+        .toThrow('differs');
+    }
+  });
+  it('refuses observations, unknown sources, duplicate targets/queries and broadened samples', () => {
+    const frozen = freeze();
+    for (const patch of [{ paired: [pair('paired')] }, { sources: ['unknown'] }, { sources: ['work_item', 'work_item'] },
+      { warmup: frozen.paired }, { steady: [{ ...frozen.steady[0]!, query: frozen.paired[0]!.query }] },
+      { pairsPerSource: 1, paired: [frozen.paired[0]!, { ...frozen.paired[0]!, targetId: 'second', query: 'second query' }] },
+      { corpus: 'unverified-corpus' }]) {
+      expect(bm25QueryInputsSchema.safeParse({ ...frozen, ...patch }).success).toBe(false);
+    }
+  });
+  it('rejects identity-bearing exact inputs instead of changing them during serialization', () => {
+    const frozen = freeze();
+    const query = '/home/' + ['fictional', 'bench', 'account'].join('-') + '/private';
+    expect(bm25QueryInputsSchema.safeParse({ ...frozen, paired: [{ ...frozen.paired[0]!, query }] }).success).toBe(false);
   });
 });
 

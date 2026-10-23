@@ -67,6 +67,8 @@ describe('buildBlindReviewBrief', () => {
   });
 
   it('tells the reviewer how to post and what disqualifies it', () => {
+    expect(brief.text).toContain("outcome: 'conclusive' | 'inconclusive'");
+    expect(brief.text).toContain('an inconclusive receipt cannot satisfy acceptance');
     expect(brief.text).toContain("plans:blind-review { slug: 'demo-plan', op: 'post', activationAuditSeq: 4,");
     expect(brief.text).toContain('Do NOT read this plan');
   });

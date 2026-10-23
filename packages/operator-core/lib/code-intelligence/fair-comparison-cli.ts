@@ -43,6 +43,7 @@ import type { ArmAnswer, FairCase } from './fair-comparison';
 import { readProcessIdentity } from '../process-identity';
 import { absCgroupDir, readProcessCgroupPath, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
 import { isTerminalState, taskIdFromScopeUnit, type TaskRow } from '../task-manager/types';
+import { fairObservedScopeCosts, qualifyFairProcessWitness, startFairProcessObserver } from './fair-process-observer';
 import type { UnifiedToolContext } from '@papercusp/tooldef';
 
 export interface FrozenFairInputs {
@@ -381,7 +382,8 @@ export async function verifyFairWorkerSource(readSource?:
     return (await run('git', ['-C', root, 'show', `HEAD:${path}`], { maxBuffer: 1 << 24 })).stdout;
   });
   for (const path of ['packages/operator-core/lib/code-intelligence/fair-comparison-cli.ts',
-    'packages/operator-core/lib/code-intelligence/fair-comparison-run.ts']) {
+    'packages/operator-core/lib/code-intelligence/fair-comparison-run.ts',
+    'packages/operator-core/lib/code-intelligence/fair-process-observer.ts', 'scripts/lib/fair-process-observer.py']) {
     if (await read(path, 'working') !== await read(path, 'committed'))
       throw new Error(`fresh worker source differs from committed child: ${path}; ` +
         'arm git-sync:await for this harness and end the editing turn so git-sync turn holds can clear; ' +
@@ -562,8 +564,8 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
   const admitted = await buildArm(id);
   return { capabilities: admitted.capabilities, unavailable: admitted.unavailable, async create(rep) {
     const { managedSpawn } = await import('../task-manager/managed-spawn');
-    const { absCgroupDir, readProcessCgroupPath, sampleCgroup } = await import('../task-manager/cgroup-read');
-    const { deriveUserManagerRoot, scopeCgroupRelPath } = await import('../task-manager/types');
+    const { readProcessCgroupPath } = await import('../task-manager/cgroup-read');
+    const { deriveUserManagerRoot, scopeCgroupRelPath, newTaskId, scopeUnitForTask } = await import('../task-manager/types');
     await mkdir(join(BENCH, 'repetitions'), { recursive: true });
     const owned = await mkdtemp(join(BENCH, 'repetitions', `${id}-${rep}-`));
     const treeRoot = join(owned, 'tree'), home = join(owned, 'home');
@@ -573,7 +575,11 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
     let cgroupPath: string | null = null;
     let scopeUnit: string | null = null;
     let completion: import('../task-manager/managed-spawn').ManagedSpawnResult['waitForCompletion'] | null = null;
-    const stop = () => stopFairWorker({ taskId, scopeUnit, exited, completion, owned });
+    let observer: Awaited<ReturnType<typeof startFairProcessObserver>> | null = null;
+    const stop = async () => {
+      try { await stopFairWorker({ taskId, scopeUnit, exited, completion, owned }); }
+      finally { await observer?.stop(); }
+    };
     try {
       // Copy-on-write rather than hardlinks: freshness controls must never mutate
       // the frozen donor when they replace or delete original source bytes.
@@ -585,13 +591,19 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
       const before = await indexFileCensus([treeRoot, home], new Set());
       if (!before) throw new Error('fresh repetition source/dependency census unreadable');
       const baseline = new Set(before.map(file => file.path));
+      // Mint through the existing managedSpawn seam, then arm the observer
+      // BEFORE this scope or any of its launchers can exist.
+      const reservedTaskId = newTaskId();
+      const reservedPath = scopeCgroupRelPath(deriveUserManagerRoot(readProcessCgroupPath(process.pid)),
+        'test-run', scopeUnitForTask(reservedTaskId));
+      observer = await startFairProcessObserver(reservedPath, createFairWorkerChannel, fairWorkerCompletion);
       const workerArgv = ['--import', 'tsx', fileURLToPath(import.meta.url), 'worker', '--arm', id];
       const launched = await managedSpawn(process.execPath, workerArgv,
         { class: 'test-run', title: `fair comparison ${id} repetition ${rep}`,
           argv: [process.execPath, ...workerArgv],
           launchedBy: process.env.PAPERCUSP_SID ?? 'human', workItemId: 'WI-10007889',
           runtimeMaxSec: FAIR_WORKER_RUNTIME_MAX_SEC },
-        { requireRegistration: true, spawnOptions: { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'inherit'],
+        { taskId: reservedTaskId, requireRegistration: true, spawnOptions: { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'inherit'],
           env: { ...process.env, P017_BENCH: BENCH, P017_TREE: treeRoot, P017_HOME: home,
             P017_VENDOR_HOME: VENDOR_HOME, P017_FROZEN: resolve(frozenPath) } } });
       child = launched.child;
@@ -603,6 +615,7 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
         : new Promise(done => child!.once('close', () => done()));
       if (!launched.confined || !launched.scopeUnit) throw new Error('fresh worker task cgroup unavailable');
       cgroupPath = scopeCgroupRelPath(deriveUserManagerRoot(readProcessCgroupPath(process.pid)), 'test-run', launched.scopeUnit);
+      if (cgroupPath !== reservedPath) throw new Error('observed worker scope differs from reserved task');
       let buffer = '';
       const channel = createFairWorkerChannel({
         send: (line, sent) => { child!.stdin!.write(line, sent); },
@@ -643,21 +656,31 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
         index: () => rpc('index'), query: kase => channel.query(kase), close },
       nativeGraphQuery: kase => rpc<Awaited<ReturnType<typeof replayFrozenGraphTask>>>('native-graph', kase),
       async sampleResources(_stage: ResourceStage) {
-        const sample = sampleCgroup(absCgroupDir(confinedPath));
+        const lspTasks = id === 'lsp-query' ? await rpc<{ taskId: string; rootPath: string }[]>('resource-tasks') : [];
+        const observation = await observer!.sample();
+        const qualified = observation.witness ? qualifyFairProcessWitness(observation.witness,
+          { cgroupPath: confinedPath, payloadPid: payload.pid, payloadIdentity: payload.identity })
+          : { peakChildProcesses: null, unknown: observation.unknown };
         const processCensus = fairProcessCensus(censusIdentity);
         if (processCensus.childProcesses !== null)
           observedChildProcessesMax = Math.max(observedChildProcessesMax ?? 0, processCensus.childProcesses);
         const indexFiles = await indexFileCensus([treeRoot, home], baseline);
-        const unknown: string[] = [...processCensus.unknown, 'descendant-process-lifetime-peak-not-measured'];
-        if (sample.memoryBytes === null) unknown.push('memory.current unreadable');
-        if (sample.peakMemoryBytes === null) unknown.push('memory.peak unreadable');
+        const costs = fairObservedScopeCosts(observation.witness?.cgroupPaths ?? [], confinedPath);
+        const unknown: string[] = [...processCensus.unknown, ...qualified.unknown, ...costs.unknown];
+        if (qualified.peakChildProcesses === null) unknown.push('descendant-process-lifetime-peak-not-measured');
+        if (costs.memoryCurrentBytes === null) unknown.push('memory.current unreadable');
+        if (costs.memoryPeakBytes === null) unknown.push('memory.peak unreadable');
         if (indexFiles === null) unknown.push('index census unreadable');
         // LSP adapters may start independently managed server tasks outside this
         // scope. A task-only counter must not certify those costs as included.
-        if (id === 'lsp-query') unknown.push('language-server-task-costs-not-in-worker-scope');
+        if (id === 'lsp-query' && (qualified.peakChildProcesses === null || lspTasks.some(task =>
+          task.rootPath !== treeRoot || !observation.witness?.cgroupPaths.some(path => taskIdFromScopeUnit(basename(path)) === task.taskId))))
+          unknown.push('language-server-task-costs-not-in-worker-scope');
         unknown.push('native-tool-seam-and-configuration-invalidation-not-verified');
-        return { sampledAt: new Date().toISOString(), memoryCurrentBytes: sample.memoryBytes,
-          memoryPeakBytes: sample.peakMemoryBytes, peakChildProcesses: null,
+        return { sampledAt: new Date().toISOString(), memoryCurrentBytes: costs.memoryCurrentBytes,
+          memoryPeakBytes: costs.memoryPeakBytes, memoryPeakBasis: costs.memoryPeakBasis,
+          scopeCosts: costs.scopes, peakChildProcesses: qualified.peakChildProcesses,
+          processObservation: observation,
           processCensus, observedChildProcessesMax, indexFiles, unknown };
       } };
     } catch (error) {
@@ -680,6 +703,7 @@ async function worker(id: FairArmId): Promise<void> {
         throw new Error('worker query before frozen source indexing');
       const control = request.method === 'query' ? await prepareFrozenControl(treeOf(id), request.kase!, inputs) : null;
       const result = request.method === 'native-graph' ? await replayFrozenGraphTask(treeOf(id), request.kase!, inputs) :
+        request.method === 'resource-tasks' ? (await import('./lsp-adapter')).lspClientInventory().map(({ taskId, rootPath }) => ({ taskId, rootPath })) :
         request.method === 'identity' ? { pid: process.pid, identity: readProcessIdentity(process.pid) } :
         request.method === 'index' ? await arm.index() : request.method === 'query' ?
         { ...await arm.query(request.kase!), control }

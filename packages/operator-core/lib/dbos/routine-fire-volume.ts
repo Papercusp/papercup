@@ -73,9 +73,10 @@ export function evaluateRoutineFireVolume(
 export async function readRoutineFireVolume(sql: Sql, startMs: number): Promise<RoutineFireVolumeWindow> {
   const endMs = startMs + ROUTINE_FIRE_VOLUME_DAY_MS;
   return sql.begin('isolation level repeatable read read only', async tx => {
-    const [coverage] = await tx<{ since: string | null; enabled: boolean; now_ms: string }[]>`
-      SELECT (SELECT value FROM harness_shared.operator_settings
-                WHERE key = 'routine_fire_start_counter_since_ms') AS since,
+    const [coverage] = await tx<{ provenance: string | null; enabled: boolean; now_ms: string }[]>`
+      SELECT (SELECT obj_description(oid, 'pg_trigger') FROM pg_trigger
+                WHERE tgrelid = to_regclass('dbos.workflow_status')
+                  AND tgname = 'routine_fire_committed_start_counter') AS provenance,
         EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = to_regclass('dbos.workflow_status')
           AND tgname = 'routine_fire_committed_start_counter' AND tgenabled = 'O'
           AND tgfoid = to_regprocedure('harness_shared.count_committed_routine_fire_start()')) AS enabled,
@@ -87,8 +88,13 @@ export async function readRoutineFireVolume(sql: Sql, startMs: number): Promise<
       WHERE bucket_start_ms >= ${startMs} AND bucket_start_ms < ${endMs}
       GROUP BY workspace_id, install_slug, routine_id, target_role
       ORDER BY workspace_id, install_slug, routine_id, target_role`;
+    let coveredFromMs: number | null = null;
+    try {
+      const provenance = JSON.parse(coverage?.provenance ?? 'null');
+      if (provenance?.schemaVersion === 1 && Number.isSafeInteger(provenance.sinceMs)) coveredFromMs = provenance.sinceMs;
+    } catch { /* Missing/corrupt provenance remains unknown. */ }
     return { startMs, endMs, observedAtMs: Number(coverage?.now_ms),
-      coveredFromMs: coverage?.since == null ? null : Number(coverage.since), triggerEnabled: coverage?.enabled === true,
+      coveredFromMs, triggerEnabled: coverage?.enabled === true,
       rows: rows.map(row => ({ workspaceId: row.workspace_id, installSlug: row.install_slug,
         routineId: row.routine_id, targetRole: row.target_role, starts: Number(row.starts) })) };
   });

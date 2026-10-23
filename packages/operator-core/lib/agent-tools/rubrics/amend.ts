@@ -62,6 +62,19 @@ const PROPOSE_RUBRIC_INVALID_ARGS_PREFIX = 'invalid_args: proposeRubric:';
 const PROPOSE_RUBRIC_INVALID_ARGS_NEXT =
   'Correct the rubric input described in the error, then retry. For off-scale criterion instructions, use the rubric’s effective ratingScale or revise the procedure prose.';
 
+function rubricReadFailedRefusal(error: unknown, rubricRef: string) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.startsWith('rubric_read_failed:')) return null;
+  return {
+    ok: false as const,
+    code: 'rubric_read_failed',
+    error: message,
+    rubricRef,
+    retryable: true,
+    next: 'Retry the same amendment after rubric reads recover; this failure does not establish that the rubric is missing.',
+  };
+}
+
 function proposeRubricInvalidArgsRefusal(error: unknown): {
   ok: false;
   code: string;
@@ -649,7 +662,8 @@ export default defineTool({
         try {
           preview = await previewAcceptanceBarAmendment(input);
         } catch (error) {
-          const refusal = noLiveDischargeMappingRefusal(error) ?? acceptanceBarContractRefusal(error);
+          const refusal = rubricReadFailedRefusal(error, args.rubricRef) ??
+            noLiveDischargeMappingRefusal(error) ?? acceptanceBarContractRefusal(error);
           if (refusal) return { ...refusal, dryRun: true };
           throw error;
         }
@@ -828,6 +842,7 @@ async function executeAmend(input: AmendRubricInput, rubricRef: string): Promise
     rubric = await amendRubric(input);
   } catch (error) {
     const refusal =
+      rubricReadFailedRefusal(error, rubricRef) ??
       noLiveDischargeMappingRefusal(error) ??
       acceptanceBarContractRefusal(error) ??
       acceptanceBarApprovalRequiredRefusal(error) ??

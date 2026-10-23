@@ -47,26 +47,6 @@ export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, fil
         command: any;
     } | {
         runner: string;
-        files: never[];
-        commandObligations: {
-            kind: string;
-            check: string;
-            command: any;
-            inputs: null;
-            executed: boolean;
-        }[];
-        lifecycleCommands: {
-            script: string;
-            command: any;
-        }[];
-        resolvedCommand?: any;
-        id: string;
-        workspace: any;
-        dir: any;
-        script: any;
-        command: any;
-    } | {
-        runner: string;
         files: any;
         commandObligations: {
             kind: string;
@@ -103,6 +83,7 @@ export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, fil
     } | {
         files: never[];
         commandObligations: any[];
+        runner: string;
         lifecycleCommands: {
             script: string;
             command: any;
@@ -115,6 +96,7 @@ export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, fil
         command: any;
     } | {
         files: never[];
+        runner: string;
         lifecycleCommands: {
             script: string;
             command: any;
@@ -132,6 +114,7 @@ export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, fil
         commandObligations?: any[] | undefined;
         files: any[];
         config: any;
+        runner: string;
         lifecycleCommands: {
             script: string;
             command: any;

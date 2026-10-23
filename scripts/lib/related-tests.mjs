@@ -273,7 +273,7 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
     const env = Object.fromEntries(envWords.map(word => [word.slice(0, word.indexOf('=')), word.slice(word.indexOf('=') + 1)]));
     if (Array.isArray(t.relatedFiles) && t.relatedFiles.length > 0)
       env[RELATED_FILTER_LIST_ENV] = writeRelatedFilterList(filterDir, t.relatedFiles).path;
-    selected.push(task);
+    selected.push({ ...task, runner: 'vitest' });
     requests.push({ root: wsRoot, repositoryRoot: root, config: route.config ?? false, enumerateFiles: true,
       ...(enumerateSpecifications ? { enumerateSpecifications: true } : {}), env });
   }

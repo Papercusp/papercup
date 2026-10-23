@@ -647,6 +647,7 @@ describe('rubrics:amend complete acceptance criteria input', () => {
       dryRun: true,
       reason: 'Preview the requested amendment.',
       criterion: { key: 'r-1', field: 'method', mode: 'append', text: 'Run the focused check.' },
+      requestReview: { workItemId: 'WI-9' },
     });
 
     expect(result).toEqual({
@@ -656,6 +657,32 @@ describe('rubrics:amend complete acceptance criteria input', () => {
       error: "no rubric 'missing-rubric' — rubrics:list to see refs",
       rubricRef: 'missing-rubric',
     });
+    expect(workItemMocks.commentWorkItem).not.toHaveBeenCalled();
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
+  });
+
+  it('reports a retryable read failure before posting or launching an amendment review', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockRejectedValueOnce(
+      new Error("rubric_read_failed: could not read rubric 'active-rubric'"),
+    );
+
+    const result = await body({
+      rubricRef: 'active-rubric',
+      dryRun: true,
+      criterion: { key: 'r-1', field: 'method', mode: 'append', text: 'Run the focused check.' },
+      requestReview: { workItemId: 'WI-9' },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      dryRun: true,
+      code: 'rubric_read_failed',
+      rubricRef: 'active-rubric',
+      retryable: true,
+    });
+    expect(result.next).toContain('Retry');
+    expect(workItemMocks.commentWorkItem).not.toHaveBeenCalled();
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
   });
 
   it('refuses an unregistered instrument before posting or launching its review', async () => {

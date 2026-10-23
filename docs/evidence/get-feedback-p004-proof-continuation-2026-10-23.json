@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10007524",
+  "parentWorkItemId": "WI-6554700010020902",
+  "status": "acceptance-and-shipment-open",
+  "preservedArtifact": {
+    "path": "docs/evidence/get-feedback-p004-and-rubric9-proof-2026-10-23.json",
+    "sha256": "2dcfea52fbdc3e39de156871166fb4ad8526f37757ae3cd47c6dc3c5735e852d",
+    "unchanged": true
+  },
+  "committedSource": "7267510ed07ba25599a4d6d26d0c7ed7e6f575dc",
+  "cleanUnitProof": {
+    "log": "/dev/shm/get-feedback-p004-clean-units-20261023-0607.log",
+    "requesterInterest": { "testRunId": 21805363, "passed": 17, "failed": 0, "skipped": 0, "worktreeDirty": false },
+    "routingHealth": { "testRunId": 21805364, "passed": 27, "failed": 0, "skipped": 0, "worktreeDirty": false },
+    "bindingIds": [66215, 66216, 66217, 66218, 66219],
+    "independentCurrentness": "All five replacements measured current by pinned staging plans:get-spec-evidence; receipt /tmp/gf-p004-current-evidence-20261023.json. Full executed-source graph remains unmeasured."
+  },
+  "readerMutation": {
+    "log": "/dev/shm/get-feedback-p004-reader-clean-probe-20261023-0611.log",
+    "baselineTestRunId": 21805373,
+    "copyBaselineTestRunId": 21805375,
+    "mutantTestRunId": 21806124,
+    "verdict": "caught",
+    "worktreeDirty": false,
+    "assertion": "consultation reporting retirement > does not query consult follow-through or put reporting obligations on the agenda",
+    "change": "Restore the legacy consultReconciliations read; the legacyRead not-called assertion fails.",
+    "bindingIds": [66223, 66224],
+    "independentCurrentness": "Both replacements measured current; original dirty21802627 remains unknown and receives no acceptance credit.",
+    "sourceIntegrity": "Maintained mutation-probe verified original subject bytes unchanged."
+  },
+  "callableMutation": {
+    "log": "/dev/shm/get-feedback-p004-callable-clean-probe-20261023-0621.log",
+    "baselineTestRunId": 21806187,
+    "copyBaselineTestRunId": 21806190,
+    "mutantTestRunId": 21806212,
+    "verdict": "caught",
+    "worktreeDirty": false,
+    "assertion": "consult:get_feedback requester guidance > keeps the retired reporting verb out of the production registration entrypoint",
+    "sourceIntegrity": "Maintained mutation-probe verified original subject bytes unchanged.",
+    "discardedAttempt": "The earlier0617 mutation was malformed and rejected before mutant scoring; its controls supply no mutation acceptance proof. The corrected0621 probe reuses the saved literal import recipe."
+  },
+  "dispositionMutation": {
+    "log": "/dev/shm/get-feedback-p004-disposition-clean-probe-20261023-0621.log",
+    "baselineTestRunId": 21806211,
+    "copyBaselineTestRunId": 21806230,
+    "mutantTestRunId": 21806235,
+    "verdict": "caught",
+    "assertion": "retired requester reporting — historical outcome preservation: confirmed > preserves the exact historical record through an answered close",
+    "scope": "Reuse the original saved SQL historical-record merge removal.",
+    "bindingId": 66297,
+    "independentCurrentness": "STALE at the later measurement: source and test-run remain current, but test/fixture bytes changed. Do not credit this as current acceptance proof."
+  },
+  "integrationProof": {
+    "planStart": { "testRunId": 21806142, "passed": 16, "failed": 0, "skipped": 0, "worktreeDirty": false, "log": "/dev/shm/get-feedback-p004-clean-integration-20261023-0615.log" },
+    "lifecycleBatch": {
+      "log": "/dev/shm/get-feedback-p004-lifecycle-clean-integration-20261023-0618.log",
+      "passed": 190,
+      "failed": 1,
+      "passingTestRunIds": [21806196, 21806197, 21806198],
+      "failedTestRunId": 21806199,
+      "failure": "The matched R5 complete-agenda timing case received unknown/fewer obligations after goal-portfolio exceeded its900ms budget twice.",
+      "ownedInvestigation": "WI-6554700010022519",
+      "limitation": "The complete orient file did not pass. A focused P004 case must be recorded separately. No production timeout change or load attribution."
+    },
+    "focusedAgenda": {
+      "testRunId": 21806372,
+      "passed": 1,
+      "failed": 0,
+      "unselected": 12,
+      "worktreeDirty": false,
+      "log": "/dev/shm/get-feedback-p004-agenda-focused-clean-integration-20261023-0628.log",
+      "scope": "Original P004 reporting-absence case only; the full-file R5 failure remains recorded separately."
+    },
+    "httpPretestRefusal": "The first HTTP attempt reached the existing shared-PG storage-headroom guard before assertions. It supplies no passing HTTP proof; followup uses maintained private-PG isolation."
+  },
+  "audit": {
+    "scorecardId": "EI-26746750949539896",
+    "state": "passed",
+    "auditIssueId": "EI-26749623122938685",
+    "auditedAt": "2026-10-23T06:13:48.676Z",
+    "rubricVetting": "revision9 independently read back as vetted/current with satisfied:true and attestation EI-26746750949539896",
+    "reviewerOwnerId": "su-31185fb5-5fa9-48f6-a259-89063bc8c6f1",
+    "reconciledTimeoutAwaitId": 353843,
+    "acknowledgedTimeoutDeliveryId": 952315,
+    "replacementAwaitId": 353946,
+    "replacementDeadline": "2026-10-23T06:34:26.043Z",
+    "qualification": "Later authoritative scorecard and rubric reads establish independent audit pass and current vetting. The0634 timeout delivery952585 was stale; acknowledgement refused already-settled/not-found and was not retried. No duplicate reviewer launch or audit rearm. This is rubric-quality vetting, not implementation acceptance."
+  },
+  "calibratedBindingReconciliation": {
+    "writeReceipt": "/tmp/gf-p004-calibrated-bind-result-20261023.json",
+    "request": "/tmp/gf-p004-calibrated-bind-20261023.json",
+    "independentRead": "/tmp/gf-p004-exact-mutant-current-20261023.json",
+    "agendaMutation": { "bindingId": 66287, "currentness": "current" },
+    "callableMutation": { "bindingId": 66291, "currentness": "current" },
+    "dispositionMutation": { "bindingId": 66297, "currentness": "stale-test-and-fixture" },
+    "unknownOutcomeHandling": "The full calibrated write response was trimmed. A broad currentness read and focused ledger read later timed out; no write was repeated. Exact bounded mutation read succeeded and distinguishes the current rows from the stale disposition row."
+  },
+  "rootCheckpointArchive": {
+    "contentHash": "2750f7f87c4d",
+    "commentIds": [1198997, 1199001, 1199002, 1199003, 1199004],
+    "format": "Concatenate each ordered part after its ARCHIVE-CONTENT delimiter. Archive write returned five successful posts before checkpoint replacement."
+  },
+  "preservedLimits": [
+    "No R2 proof replay for recovery or HEAD movement.",
+    "Original e99 quality cohort4/8 and supplement f01c3/8 remain unchanged; no quota calls.",
+    "P004 current adequacy, independent native acceptance and exact final shipment remain open.",
+    "No live gate operations or peer AST/loop monitoring."
+  ]
+}

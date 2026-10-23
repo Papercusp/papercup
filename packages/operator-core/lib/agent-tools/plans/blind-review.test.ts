@@ -35,7 +35,8 @@ vi.mock('../../blind-review-session-bindings', () => ({
   recordBlindReviewSessionPost: (...a: unknown[]) => recordBlindReviewSessionPost(...a),
   verifyBlindReviewSessionBinding: (...a: unknown[]) => verifyBlindReviewSessionBinding(...a),
 }));
-vi.mock('../../blind-review-gate', () => ({
+vi.mock('../../blind-review-gate', async (importOriginal) => ({
+  ...await importOriginal<object>(),
   evaluateBlindReviewGate: (...a: unknown[]) => evaluateBlindReviewGate(...a),
   loadBlindReviewBrief: (...a: unknown[]) => loadBlindReviewBrief(...a),
   recordBlindGapDispositions: (...a: unknown[]) => recordBlindGapDispositions(...a),
@@ -54,7 +55,7 @@ const CTX = { workspaceId: '*', ownerId: 'su-author' };
 const REVIEWER_CTX = { workspaceId: '*', uiClientId: 'su-reviewer', isSuperuser: true };
 
 async function call(args: Record<string, unknown>, ctx: Record<string, unknown> = CTX) {
-  const parsed = tool.args.safeParse(args);
+  const parsed = tool.args.safeParse({ ...(args.op === 'post' ? { outcome: 'conclusive' } : {}), ...args });
   if (!parsed.success) throw new Error(parsed.error.message);
   const out = (await tool.handler(parsed.data as never, ctx as never)) as {
     content: Array<{ text: string }>;
@@ -74,6 +75,35 @@ beforeEach(() => {
   findLatestBlindReviewSessionBindingByReviewer.mockReset().mockResolvedValue(null);
   recordBlindReviewSessionPost.mockReset().mockResolvedValue(true);
   verifyBlindReviewSessionBinding.mockReset().mockResolvedValue({ ok: true });
+});
+
+describe('explicit completion outcome contract', () => {
+  it('requires a valid outcome on post and scopes it to post', () => {
+    for (const outcome of [undefined, null, 'unknown']) {
+      expect(tool.args.safeParse({ slug: SLUG, op: 'post', gaps: [], outcome }).success).toBe(false);
+    }
+    for (const outcome of ['conclusive', 'inconclusive']) {
+      expect(tool.args.safeParse({ slug: SLUG, op: 'post', gaps: [], outcome }).success).toBe(true);
+      expect(tool.args.safeParse({ slug: SLUG, op: 'brief', outcome }).success).toBe(false);
+    }
+  });
+
+  it.each([
+    ['conclusive', 'INCONCLUSIVE: blocked'],
+    ['inconclusive', 'CONCLUSIVE: completed'],
+  ])('refuses contradictory %s outcomes at the tool boundary', (outcome, summary) => {
+    expect(tool.args.safeParse({ slug: SLUG, op: 'post', gaps: [], outcome, summary }).success).toBe(false);
+  });
+
+  it('forwards an inconclusive outcome unchanged and returns its non-counting receipt', async () => {
+    recordBlindReview.mockResolvedValue({ ok: true, id: 10, activationAuditSeq: 3, gapIds: [] });
+    evaluateBlindReviewGate.mockResolvedValue({ satisfied: false, acceptedReviewIds: [],
+      rejectedReviews: [{ reviewId: 10, reason: 'inconclusive' }] });
+    archiveBlindReviewScratchPlans.mockResolvedValue(null);
+    const { body } = await call({ slug: SLUG, op: 'post', outcome: 'inconclusive', gaps: [], summary: 'INCONCLUSIVE: product blocked' }, REVIEWER_CTX);
+    expect(recordBlindReview).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'inconclusive', gaps: [] }));
+    expect(body).toMatchObject({ ok: true, id: 10, counts: false, rejected: { reason: 'inconclusive' } });
+  });
 });
 
 // verification-system-improvements-2026-10-10#D-050 (5): the reviewer's scratch plans are

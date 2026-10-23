@@ -36,6 +36,9 @@
  * attribution[source].pairedBm25Tail lists the calls the cold p95 rests on.
  *
  * READ-ONLY against PG. Writes the JSON artifact and a Markdown summary beside it.
+ * --prepare-only writes exact .inputs.json plus an unexecuted declaration/ledger, without
+ * embedding query text or running search. --inputs-from <file> restores that full population;
+ * judged restores also require its byte SHA256 under queryInputs[seed] in the manifest.
  * Exit 0 = pass, 1 = fail or invalid, 2 = could not run.
  */
 import { execSync } from 'node:child_process';
@@ -57,6 +60,8 @@ import {
   COLD_LATENCY_P95_CEILING_MS,
   bm25AttemptId,
   declareBm25Attempts,
+  freezeBm25QueryInputs,
+  restoreBm25QueryInputs,
   reconcileBm25Attempts,
   LATENCY_P95_CEILING_MS,
   callAttribution,
@@ -433,19 +438,26 @@ async function main(): Promise<number> {
   const perSource = Number(argValue('--pairs') ?? '60');
   const seed = argValue('--seed') ?? 'r13-20261011';
   const replayFrom = argValue('--replay-from');
+  const inputsFrom = argValue('--inputs-from');
+  const savedInputBytes = inputsFrom ? fs.readFileSync(inputsFrom, 'utf8') : null;
+  const prepareOnly = process.argv.includes('--prepare-only');
   const replayIndices = (argValue('--replay-indices') ?? '').split(',').filter(Boolean).map(Number);
   const replayReps = Number(argValue('--replay-reps') ?? '3');
   const waitSampleMs = Number(argValue('--wait-sample-ms') ?? String(WAIT_SAMPLE_MS));
   const out = argValue('--out') ?? `docs/evidence/bm25-hybrid-recall-${new Date().toISOString().slice(0, 10)}.json`;
-  const sourceNames = (argValue('--sources') ?? 'work_item,session_turn')
+  const requestedSources = (argValue('--sources') ?? 'work_item,session_turn')
     .split(',')
     .map((s) => s.trim())
-    .filter((s): s is SourceName => s in SOURCE_TABLES);
+    .filter(Boolean);
+  if (requestedSources.some(s => !Object.hasOwn(SOURCE_TABLES, s)) || new Set(requestedSources).size !== requestedSources.length)
+    throw new Error('--sources must contain distinct supported source names');
+  const sourceNames = requestedSources as SourceName[];
+  if (replayFrom && (inputsFrom || prepareOnly)) throw new Error('diagnostic replay cannot prepare or load frozen inputs');
   if (!Number.isInteger(perSource) || perSource < 1) throw new Error('--pairs must be a positive integer');
   if (sourceNames.length === 0) throw new Error(`--sources must name one of ${Object.keys(SOURCE_TABLES).join(', ')}`);
   if (replayFrom && (!Number.isInteger(replayReps) || replayReps < 1 || replayReps > 10))
     throw new Error('--replay-reps must be an integer from 1 to 10');
-  if ([out, out.replace(/\.json$/, '.md'), `${out}.declaration.json`, `${out}.attempts.jsonl`, `${out}.ledger.json`].some(p => fs.existsSync(p)))
+  if ([out, out.replace(/\.json$/, '.md'), `${out}.inputs.json`, `${out}.declaration.json`, `${out}.attempts.jsonl`, `${out}.ledger.json`].some(p => fs.existsSync(p)))
     throw new Error('artifact path already exists; preserve every prior result and choose a new declared path');
 
   const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
@@ -457,6 +469,8 @@ async function main(): Promise<number> {
     throw new Error('judged runs require an explicit database and at least60 pairs for both sources, exactly once');
   if (manifest && (replayFrom || !manifest.runs.some(r => r.seed === seed && path.resolve(sourceRoot, r.artifactPath) === path.resolve(out))))
     throw new Error('qualification requires the prospectively declared seed and artifact path, without replay');
+  if (manifest && inputsFrom && !manifest.queryInputs?.[seed])
+    throw new Error('saved inputs require a prospective queryInputs SHA256 for this seed in the qualification manifest');
   const sourcePaths = manifest ? Object.keys(manifest.sourceHashes) : BM25_EXECUTED_SOURCE_PATHS;
   const sourceBefore = await captureExecutedSource(sourceRoot, sourcePaths);
   const preflight = qualifyExecutedSource(sourceBefore, sourceBefore, manifest);
@@ -537,6 +551,8 @@ async function main(): Promise<number> {
     if (reasons.length) throw new Error(reasons.join('; '));
   }
   const preparedQueries = createPrecomputedHybridQueries(embedder);
+  const configuration = { queryEmbeddingProfile, workspaceId, server, waitSampleMs,
+    recallK: RECALL_K, embedding: 'precomputed', highlight: SEARCH_SEMANTIC_DEFER_HIGHLIGHT, arms: ARMS };
 
   // ---- Sample: three disjoint sets per source (D-025) ------------------------
   // P (paired) is the first --pairs derivable candidates, the same sample the bench drew
@@ -548,6 +564,11 @@ async function main(): Promise<number> {
     const saved = JSON.parse(fs.readFileSync(replayFrom, 'utf8')) as { warmPairs: PairResult[] };
     if (!Array.isArray(saved.warmPairs)) throw new Error('--replay-from must contain a saved warmPairs array');
     pairs.push(...selectReplayPairs(saved.warmPairs, sourceNames, replayIndices));
+  } else if (inputsFrom) {
+    const saved = restoreBm25QueryInputs(savedInputBytes!, {
+      seed, workspaceId, sources: sourceNames, pairsPerSource: perSource, configuration,
+    }, manifest?.queryInputs?.[seed]);
+    pairs.push(...saved.paired); warmupPairs.push(...saved.warmup); steadyPairs.push(...saved.steady);
   } else for (const source of sourceNames) {
     const candidates = await sampleCandidates(pg, source, workspaceId, perSource * 3, seed);
     const derived: PairResult[] = [];
@@ -566,19 +587,33 @@ async function main(): Promise<number> {
     );
   }
   const fingerprint = sampleFingerprint(pairs);
+  const inputBytes = replayFrom ? null : savedInputBytes ?? `${JSON.stringify(freezeBm25QueryInputs({
+    preparedAt: new Date().toISOString(), seed, workspaceId, sources: sourceNames, pairsPerSource: perSource, configuration,
+    paired: pairs, warmup: warmupPairs, steady: steadyPairs,
+  }), null, 2)}\n`;
+  // Validate the same bytes that are persisted/pinned, avoiding a read-again race.
+  if (inputBytes !== null) restoreBm25QueryInputs(inputBytes, {
+    seed, workspaceId, sources: sourceNames, pairsPerSource: perSource, configuration,
+  }, manifest?.queryInputs?.[seed]);
 
   const declaration = replayFrom ? null : declareBm25Attempts({ declaredAt: new Date().toISOString(), sources: sourceNames,
     pairsPerSource: perSource, paired: pairs, warmup: warmupPairs, steady: steadyPairs,
     pins: { source: createHash('sha256').update(JSON.stringify(sourceBefore)).digest('hex'),
       // A sample fingerprint is NOT a pin of the retrieval corpus.
-      corpus: null, queries: createHash('sha256').update(JSON.stringify([pairs, warmupPairs, steadyPairs])).digest('hex'),
-      configuration: createHash('sha256').update(JSON.stringify({ queryEmbeddingProfile, workspaceId, server, waitSampleMs,
-        recallK: RECALL_K, embedding: 'precomputed', highlight: SEARCH_SEMANTIC_DEFER_HIGHLIGHT, arms: ARMS })).digest('hex') } });
+      corpus: null, queries: createHash('sha256').update(inputBytes!).digest('hex'),
+      configuration: createHash('sha256').update(JSON.stringify(configuration)).digest('hex') } });
   const attemptReceipts: Bm25AttemptReceipt[] = [];
   if (declaration) {
     fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(`${out}.inputs.json`, inputBytes!, { flag: 'wx', mode: 0o600 });
     fs.writeFileSync(`${out}.declaration.json`, `${JSON.stringify(declaration, null, 2)}\n`, { flag: 'wx' });
     fs.writeFileSync(`${out}.attempts.jsonl`, '', { flag: 'wx' });
+  }
+  if (prepareOnly) {
+    fs.writeFileSync(`${out}.ledger.json`, `${JSON.stringify(reconcileBm25Attempts(declaration!, []), null, 2)}\n`, { flag: 'wx' });
+    await pg.end({ timeout: 5 });
+    console.log(`[r13] prepared exact query inputs and unexecuted declaration; no measurements -> ${out}.inputs.json`);
+    return 0;
   }
 
   // ---- Embed every timed query before timing (D-021): otherwise the arm that runs first in a
@@ -872,6 +907,7 @@ async function main(): Promise<number> {
     generatedAt: new Date().toISOString(),
     startedAt,
     population: declaration ? { declaration, ledger: reconcileBm25Attempts(declaration, attemptReceipts) } : null,
+    queryInputs: declaration ? { path: `${out}.inputs.json`, sha256: declaration.pins.queries } : null,
     judged: !!manifest,
     qualificationManifest,
     sourceQualification: { ...qualification, before: sourceBefore, after: sourceAfter },

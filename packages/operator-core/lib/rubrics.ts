@@ -4920,7 +4920,7 @@ async function amendAcceptanceBarRubric(
   preview = false,
 ): Promise<AcceptanceAmendmentResult | null> {
   input.onPhase?.('acceptance-routing');
-  const rubricHint = await getRubric(input.rubricId);
+  const rubricHint = await readAmendmentRubric(input.rubricId);
   const subjectPlanHint = rubricHint?.subjectPlan;
   if (!subjectPlanHint) return null;
   const subjectScope = await resolveAcceptanceSubjectScope(
@@ -6155,10 +6155,19 @@ async function amendAcceptanceBarRubric(
  * — every WI-4287 loss-guard still applies to a `replace` (an `append` can only grow).
  * Returns null for an unknown rubricId; throws (like proposeRubric) on guard violations.
  */
+async function readAmendmentRubric(rubricId: string): Promise<Rubric | null> {
+  const read = await readRubricWithoutSeeding(rubricId);
+  if (read.kind === 'ambiguous') throw read.error;
+  if (read.kind === 'read-failed') {
+    throw new Error(`rubric_read_failed: could not read rubric '${rubricId}'`);
+  }
+  return read.kind === 'found' ? read.rubric : null;
+}
+
 export async function previewAcceptanceBarAmendment(
   input: AmendRubricInput,
 ): Promise<AcceptanceBarAmendmentPreview | null> {
-  const current = await getRubric(input.rubricId);
+  const current = await readAmendmentRubric(input.rubricId);
   if (!current) return null;
   // An orphan restore previews the cross-plan transaction against the pinned witness;
   // the locked transaction refuses it if no admissible witness exists.

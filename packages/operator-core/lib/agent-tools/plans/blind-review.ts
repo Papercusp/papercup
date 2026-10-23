@@ -22,6 +22,7 @@ import {
   loadBlindReviewBrief,
   recordBlindGapDispositions,
   recordBlindReview,
+  blindReviewSummaryOutcome,
 } from '../../blind-review-gate';
 import { runBlindReviewMintOp } from './blind-review-mint-op';
 import { archiveBlindReviewScratchPlans } from '../../blind-review-scratch-plans';
@@ -54,7 +55,7 @@ export default defineTool({
     when: "A plan is refused with blind_review_missing or blind_review_gap_undispositioned, or you were asked to blind-review a plan you have not read.",
     notWhen: 'Reading the plan (plans:get). A reviewer who already read the plan, its specs, rubric or evidence: its post will not count.',
     chaining:
-      "author: op 'mint' { howToRun }. If the exact reviewer session ends, the recruiter uses op 'resume' to recover it in place. reviewer: op 'brief' → run the product → op 'post' { activationAuditSeq, gaps }. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance.",
+      "author: op 'mint' { howToRun }. If the exact reviewer session ends, the recruiter uses op 'resume' to recover it in place. reviewer: op 'brief' → run the product → op 'post' { activationAuditSeq, outcome, gaps }. Use inconclusive when product access or verification is incomplete. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance.",
   },
   capability: 'plans:write',
   requirePrincipal: false,
@@ -74,7 +75,18 @@ export default defineTool({
     gaps: z.array(z.object({ text: z.string().min(1).max(4000) })).max(100).optional().describe('post: one entry per gap; [] when none.'),
     dispositions: z.array(dispositionSchema).min(1).max(200).optional().describe('dispose: one per gap.'),
     summary: z.string().max(4000).optional(),
+    outcome: z.enum(['conclusive', 'inconclusive']).optional().describe('post: conclusive only after completing the product review; inconclusive when access or verification is incomplete. Empty gaps alone are not completion.'),
   }).superRefine((args, ctx) => {
+    if (args.op === 'post' && args.outcome === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['outcome'], message: "outcome is required for op 'post'" });
+    }
+    if (args.op !== 'post' && args.outcome !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['outcome'], message: "outcome is op 'post' only" });
+    }
+    const marker = blindReviewSummaryOutcome(args.summary);
+    if (args.op === 'post' && marker && args.outcome && marker !== args.outcome) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['outcome'], message: 'summary verdict contradicts outcome' });
+    }
     if (args.op === 'post' && args.gaps === undefined) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['gaps'], message: "gaps is required for op 'post' ([] when none)" });
     }
@@ -180,7 +192,7 @@ export default defineTool({
 
     const written = args.op === 'post'
       ? await recordBlindReview({ ...scope, createdBy, gaps: args.gaps ?? [],
-          activationAuditSeq: reviewerBinding?.activationAuditSeq ?? args.activationAuditSeq, summary: args.summary })
+          activationAuditSeq: reviewerBinding?.activationAuditSeq ?? args.activationAuditSeq, summary: args.summary, outcome: args.outcome! })
       : await recordBlindGapDispositions({ ...scope, createdBy, dispositions: args.dispositions ?? [], summary: args.summary });
     if (!written.ok) return text({ error: written.code, slug: args.slug, message: written.message }, true);
     if (args.op === 'post' && reviewerBinding) {

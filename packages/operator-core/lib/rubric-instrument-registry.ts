@@ -823,7 +823,9 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
         windowMs: 120_000, unit: 'count' as const, scope: 'harness' as const,
         resolve: async window => {
           const { measureOperationalObservability } = await import('./observability/operational-check');
-          return measureOperationalObservability(key === OBSERVABILITY_INSTRUMENT_KEYS.project ? 'project' : 'staging', window);
+          const mode = key === OBSERVABILITY_INSTRUMENT_KEYS.project ? 'project' :
+            key === OBSERVABILITY_INSTRUMENT_KEYS.release ? 'release' : 'staging';
+          return measureOperationalObservability(mode, window);
         },
       } } : key === POSTGRES_RETENTION_INSTRUMENT_KEY ? { rescore: {
         windowMs: 30 * 24 * 60 * 60_000,

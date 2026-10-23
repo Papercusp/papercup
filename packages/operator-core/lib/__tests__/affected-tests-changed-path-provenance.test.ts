@@ -178,7 +178,7 @@ describe('changed-path provenance: through the real CLI', () => {
         'packages/operator-core/lib/cold-boot-drill-live.test.ts'],
     ];
     const manifest = enumerateAffectedTaskSelection(tasks, { root: REPO_ROOT,
-      runResolver: requests => {
+      runResolver: (requests: Array<{ config?: unknown }>) => {
         expect(requests).toHaveLength(populations.length);
         return requests.map((request, index) => ({ ok: true, enumerated: true,
           config: request.config, repositoryFiles: populations[index] }));

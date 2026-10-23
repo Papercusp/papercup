@@ -242,6 +242,7 @@ describe('the registry seed set', () => {
       DREAM_CONTROL_LIVE_INSTRUMENT_KEY,
       'observability:configured-project-delivery',
       'observability:staging-runtime-journey',
+      'observability:release-artifact-delivery',
       'session:carry-drill-lifecycle',
       'woe.goal-mode-base-scorecard',
       ...TOOL_DELIVERY_INSTRUMENTS,

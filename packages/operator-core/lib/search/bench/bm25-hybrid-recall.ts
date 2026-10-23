@@ -17,6 +17,7 @@
  * `invalid`, never `pass`.
  */
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import type { MeasurementPin } from '../../agent-tools/plans/evidence-measurement-pin';
 
@@ -47,6 +48,8 @@ export const sourceQualificationManifestSchema = z.object({
   sourceHashes: z.record(repoPath, z.string().regex(/^[0-9a-f]{64}$/)),
   repos: z.record(z.string(), commitId),
   embeddingProfile: z.object({ mode: z.string().min(1), profileId: z.string().min(1) }).strict(),
+  /** Optional prospective binding for exact saved inputs, keyed by declared seed. */
+  queryInputs: z.record(z.string(), z.string().regex(/^[0-9a-f]{64}$/)).optional(),
   runs: z.array(z.object({ seed: z.string().min(1), artifactPath: repoPath })).length(3),
 }).passthrough().superRefine((m, ctx) => {
   // Passthrough metadata is persisted with the manifest too. Reject leaks
@@ -449,6 +452,61 @@ export interface PairResult {
   style: QueryStyle;
   query: string;
   arms: Partial<Record<Arm, ArmObservation>>;
+}
+
+const queryInputPairSchema = z.object({
+  source: z.enum(['work_item', 'session_turn']), targetId: z.string().min(1).refine(s => !!s.trim()),
+  style: z.enum(['fragment', 'keyword']), query: z.string().min(1).refine(q => !!q.trim()),
+}).strict();
+
+/** Exact pre-execution requests, separate from observations and the retrieval corpus. */
+export const bm25QueryInputsSchema = z.object({
+  schemaVersion: z.literal(1), kind: z.literal('bm25-hybrid-query-inputs'),
+  preparedAt: z.string().refine(s => Number.isFinite(Date.parse(s))),
+  seed: z.string().min(1), workspaceId: z.string().min(1),
+  sources: z.array(z.enum(['work_item', 'session_turn'])).min(1), pairsPerSource: z.number().int().positive(),
+  configuration: z.record(z.string(), z.unknown()),
+  // Sampling known items does not freeze the corpus searched by either arm.
+  corpus: z.null(),
+  paired: z.array(queryInputPairSchema), warmup: z.array(queryInputPairSchema), steady: z.array(queryInputPairSchema),
+}).strict().superRefine((m, ctx) => {
+  if (new Set(m.sources).size !== m.sources.length)
+    ctx.addIssue({ code: 'custom', message: 'duplicate input source' });
+  const ids = new Set<string>(), queries = new Set<string>();
+  for (const pass of ['paired', 'warmup', 'steady'] as const) {
+    for (const source of m.sources) if (m[pass].filter(p => p.source === source).length > m.pairsPerSource)
+      ctx.addIssue({ code: 'custom', message: 'input population exceeds requested sample' });
+    for (const p of m[pass]) {
+      if (!m.sources.includes(p.source)) ctx.addIssue({ code: 'custom', message: 'input outside declared sources' });
+      const id = JSON.stringify([p.source, p.targetId]), query = JSON.stringify([p.source, p.query]);
+      if (ids.has(id) || queries.has(query)) ctx.addIssue({ code: 'custom', message: 'input samples are not disjoint' });
+      ids.add(id); queries.add(query);
+    }
+  }
+  // Tracked evidence must never silently redact and thereby change a frozen request.
+  if (redactIdentityLeaks(JSON.stringify(m)) !== JSON.stringify(m))
+    ctx.addIssue({ code: 'custom', message: 'query inputs contain identity leaks; exact inputs cannot be redacted' });
+});
+export type Bm25QueryInputs = z.infer<typeof bm25QueryInputsSchema>;
+
+export function freezeBm25QueryInputs(options: Omit<Bm25QueryInputs, 'schemaVersion' | 'kind' | 'corpus' | 'paired' | 'warmup' | 'steady'> & {
+  paired: readonly PairResult[]; warmup: readonly PairResult[]; steady: readonly PairResult[];
+}): Bm25QueryInputs {
+  const strip = (rows: readonly PairResult[]) => rows.map(({ source, targetId, style, query }) => ({ source, targetId, style, query }));
+  return bm25QueryInputsSchema.parse({ ...options, schemaVersion: 1, kind: 'bm25-hybrid-query-inputs', corpus: null,
+    paired: strip(options.paired), warmup: strip(options.warmup), steady: strip(options.steady) });
+}
+
+/** Admit saved bytes only for the exact requested population/configuration; never import results. */
+export function restoreBm25QueryInputs(bytes: string, expected: Pick<Bm25QueryInputs,
+  'seed' | 'workspaceId' | 'sources' | 'pairsPerSource' | 'configuration'>, expectedSha256?: string) {
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  if (expectedSha256 !== undefined && sha256 !== expectedSha256) throw new Error('query input bytes differ from manifest');
+  const inputs = bm25QueryInputsSchema.parse(JSON.parse(bytes));
+  for (const key of ['seed', 'workspaceId', 'sources', 'pairsPerSource', 'configuration'] as const)
+    if (!isDeepStrictEqual(inputs[key], expected[key])) throw new Error(`saved query input ${key} differs`);
+  const pairs = (rows: Bm25QueryInputs['paired']): PairResult[] => rows.map(p => ({ ...p, arms: {} }));
+  return { inputs, sha256, paired: pairs(inputs.paired), warmup: pairs(inputs.warmup), steady: pairs(inputs.steady) };
 }
 
 export interface ArmSummary {

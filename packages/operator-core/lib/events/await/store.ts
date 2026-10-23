@@ -3224,6 +3224,22 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
   };
 
   let owned = await readOwnedState();
+  const ackQueuedDelivery = async (): Promise<boolean> => {
+    // The pump can claim a parked row after the first ACK UPDATE, then repark
+    // it before this read. Retry the conditional update against the observed
+    // owned row instead of turning that state transition into a false miss.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (!owned || (owned.status !== 'pending' && owned.status !== 'parked')) return false;
+      if (await markDeliveryAcked(input, { pendingOrParked: true, delivering: false })) return true;
+      owned = await readOwnedState();
+    }
+    return false;
+  };
+  if (await ackQueuedDelivery()) return { acked: true, alreadySettled: false };
+  if (owned?.status === 'pending' || owned?.status === 'parked') {
+    return { acked: false, alreadySettled: false, status: owned.status };
+  }
+
   if (recallableHostWake(owned)) {
     const cancellation = await requestDirectDeliveryCancellation(input);
     if (cancellation === 'confirmed-before-write') {
@@ -3240,6 +3256,7 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
     // The pump can win the terminal update while the host request is in flight.
     // Re-read rather than returning a stale snapshot.
     owned = await readOwnedState();
+    if (await ackQueuedDelivery()) return { acked: true, alreadySettled: false };
     if (owned && (owned.status === 'pending' || owned.status === 'parked' || owned.status === 'delivering' || owned.status === 'delivered')) {
       return {
         acked: false,

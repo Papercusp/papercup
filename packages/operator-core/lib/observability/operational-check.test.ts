@@ -114,6 +114,48 @@ describe('operational observability measurements', () => {
     expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'fail' });
     expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'pass' });
   });
+  describe('release artifact acquisition', () => {
+    const paths = ['packages/operator-core/lib/observability/runtime.ts', 'packages/operator-core/lib/observability/tracing.ts',
+      'packages/operator-core/lib/observability/posthog-exporter.ts', 'packages/operator-core/lib/projected-tool-deps.ts',
+      'packages/operator-core/lib/inference-gateway/gateway.ts', 'apps/operator/bin/host-bootstrap.ts'];
+    function release() {
+      fixture.host.host = 'port-3070';
+      Object.assign(fixture.health, { artifact: { status: 'measured', sourceSha: fixture.host.buildSha,
+        bundleSha256: 'b'.repeat(64), manifestSha256: 'c'.repeat(64),
+        sourceBlobs: Object.fromEntries(paths.map(path => [path, 'd'.repeat(40)])) } });
+      fixture.position.mockResolvedValue({ servingRuntimes: [{ runtime: 'release-operator',
+        containsChange: true, buildSha: fixture.host.buildSha }] });
+      fixture.sql.mockResolvedValueOnce([{ count: 1, manifests: 1, matches: true, ref: 'writer-1' }])
+        .mockResolvedValueOnce([{ matched: true }])
+        .mockResolvedValueOnce([{ id: 'green-1', detail: { candidate: fixture.host.buildSha, green: true, runId: 'run-1' } }]);
+    }
+    it('joins real acquisition seams before grading fresh release project journeys', async () => {
+      release();
+      const result = await measureOperationalObservability('release', scope);
+      expect(result.verdict).toBe('pass');
+      expect(JSON.parse(result.detail).release).toMatchObject({ writer: 'audit_log:writer-1',
+        green: 'pipeline_events:green-1', bundleSha256: 'b'.repeat(64) });
+      expect(fixture.sql).toHaveBeenCalledTimes(4);
+    });
+    it.each(['writer', 'manifest', 'green', 'absent-green'] as const)('rejects substituted %s evidence with a healthy control', async fault => {
+      release(); fixture.sql.mockReset().mockResolvedValue(rows());
+      fixture.sql.mockResolvedValueOnce([{ count: 1, manifests: 1, matches: fault !== 'writer', ref: 'writer-1' }])
+        .mockResolvedValueOnce([{ matched: fault !== 'manifest' }])
+        .mockResolvedValueOnce(fault === 'absent-green' ? [] : [{ id: 'green-1',
+          detail: { candidate: fixture.host.buildSha, green: fault !== 'green', runId: 'run-1' } }]);
+      const result = await measureOperationalObservability('release', scope);
+      expect(result.verdict).toBe(fault === 'absent-green' ? 'unknown' : 'fail');
+      fixture.sql.mockReset().mockResolvedValue(rows()); release();
+      expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'pass' });
+    });
+    it('cannot borrow staging identity or omit the boot artifact', async () => {
+      expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'unknown' });
+      fixture.host.host = 'port-3070';
+      fixture.position.mockResolvedValue({ servingRuntimes: [{ runtime: 'release-operator',
+        containsChange: true, buildSha: fixture.host.buildSha }] });
+      expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'unknown' });
+    });
+  });
   describe.each(['project', 'staging'] as const)('%s canonical HTTP parent', mode => {
     const observations = () => {
       const observed = project();

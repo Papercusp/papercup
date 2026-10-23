@@ -4,6 +4,8 @@ import type { DispatchProjectedDeps } from '@papercusp/agent-mcp';
 import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-telemetry';
 import { createTracing } from './tracing';
 import { PosthogSpanExporter } from './posthog-exporter';
+import { measureBootOperatorArtifact, type OperatorArtifactIdentity } from '../release/operator-artifact';
+import { getBuildInfo } from '../build-info';
 
 type DispatchStart = Parameters<NonNullable<DispatchProjectedDeps['onDispatchStart']>>[0];
 type InvokeRequest = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
@@ -25,6 +27,7 @@ const state = pinModuleState('@papercusp/operator-core.otel-runtime', () => ({
   runtime: null as ReturnType<typeof createTracing> | null,
   exporter: null as PosthogSpanExporter | null,
   observerFailures: 0,
+  artifact: null as OperatorArtifactIdentity | null,
   registration: null as ReturnType<ReturnType<typeof createTracing>['register']> | null,
 }));
 
@@ -39,6 +42,7 @@ function runtime() {
 
 /** Called during host boot before DBOS can install a competing global provider. */
 export function initializeRuntimeObservability(): void {
+  if (!state.artifact) state.artifact = measureBootOperatorArtifact(process.argv[1] ?? '', getBuildInfo().sha);
   try { runtime(); } catch { state.observerFailures++; }
 }
 
@@ -93,6 +97,7 @@ export function finishGatewayTrace(key: string, timeline: GatewayRequestTimeline
 
 export function runtimeObservabilityHealth() {
   return { initialized: state.runtime !== null, observerFailures: state.observerFailures,
+    artifact: state.artifact,
     globalProviderRegistered: state.registration?.registered ?? false,
     tracing: state.runtime?.health() ?? null, posthog: state.exporter?.health() ?? null };
 }

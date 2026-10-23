@@ -20,8 +20,9 @@ interface InvocationObservation {
 type Verdict = { verdict: 'pass' | 'fail' | 'unknown'; detail: string };
 
 /** The input scopes a query; it cannot supply observations, identities or a pass.
- * Run on the current-build operator. A background/release process cannot stand
- * in for staging. No consent changes or synthetic capture happen in this read. */
+ * Run on the named operator plane. Release evidence additionally joins its
+ * boot-measured bytes to the build writer and exact green candidate. No consent
+ * changes or synthetic capture happen in this read. */
 export async function measureOperationalObservability(
   mode: keyof typeof OBSERVABILITY_INSTRUMENT_KEYS,
   scope: { workspaceId: string; harnessSlug?: string },
@@ -31,21 +32,73 @@ export async function measureOperationalObservability(
   if (!scope.workspaceId || !scope.harnessSlug) return unknown('Concrete workspace and harness required.');
   try {
     const host = getServingHostIdentity();
+    const release = mode === 'release';
+    const runtimeId = release ? 'release-operator' : 'staging-operator';
     // Git's supported short/full identities, never arbitrary text prefixes.
     const validSha = (sha: string) => /^(?:[a-f0-9]{7,40}|[a-f0-9]{64})$/.test(sha);
-    if (host.host !== 'port-3170' || !host.processId || !host.buildSha || !validSha(host.buildSha)) return unknown('Current-build staging process identity unavailable; run on :3170.');
+    if (host.host !== (release ? 'port-3070' : 'port-3170') || !host.processId || !host.buildSha || !validSha(host.buildSha)) {
+      return unknown('Required ' + runtimeId + ' process identity unavailable.');
+    }
     const health = runtimeObservabilityHealth();
-    if (!health.initialized || !health.globalProviderRegistered) return fail('Current staging process lacks the registered tracing provider.');
+    if (!health.initialized || !health.globalProviderRegistered) return fail('Required operator process lacks the registered tracing provider.');
     // Inspect source/runtime containment, without acting on or grading the gate.
     for (const path of COMPOSITION_PATHS) {
       const position = await gitPipelinePosition({ path });
-      const runtime = position.servingRuntimes.find(row => row.runtime === 'staging-operator');
+      const runtime = position.servingRuntimes.find(row => row.runtime === runtimeId);
       if (!runtime || runtime.containsChange === null || !runtime.buildSha || !validSha(runtime.buildSha)) return unknown('Source/runtime containment unreadable: ' + path);
       if (runtime.containsChange !== true || !(runtime.buildSha.startsWith(host.buildSha) || host.buildSha.startsWith(runtime.buildSha))) {
         return fail('Serving source/build mismatch: ' + path);
       }
     }
     const { sql } = getOrgPg();
+    let releaseEvidence: Record<string, unknown> | undefined;
+    if (release) {
+      const artifact = health.artifact;
+      if (artifact?.status !== 'measured') return unknown('Boot-measured release artifact unavailable.');
+      if (!artifact.sourceSha.startsWith(host.buildSha) || !/^[a-f0-9]{64}$/.test(artifact.bundleSha256) ||
+        !/^[a-f0-9]{64}$/.test(artifact.manifestSha256) ||
+        COMPOSITION_PATHS.some(path => !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(artifact.sourceBlobs[path] ?? ''))) {
+        return fail('Release artifact source identity or composition population differs.');
+      }
+      // Aggregate the full matching writer population, not a truncated page.
+      // Equal repeated build receipts are harmless; conflicting identities fail.
+      const writers = await sql<{ count: number; manifests: number; matches: boolean; ref: string }[]>`
+        SELECT count(*)::int AS count,
+          count(DISTINCT details->>'manifestSha256')::int AS manifests,
+          bool_and(details->>'sourceSha' = ${artifact.sourceSha} AND
+            details->'sourceBlobs' = ${JSON.stringify(artifact.sourceBlobs)}::jsonb) AS matches,
+          min(id) AS ref
+        FROM harness_shared.audit_log
+        WHERE workspace_id = ${scope.workspaceId} AND action = 'release.artifact.built'
+          AND details->>'bundleSha256' = ${artifact.bundleSha256}`;
+      const writer = writers[0];
+      if (!writer || !writer.count) return unknown('Release artifact writer receipt unavailable.');
+      // Count distinct hashes AND match the boot hash. A different immutable
+      // manifest must not be blessed because it happens to describe one bundle.
+      const hashes = await sql<{ matched: boolean }[]>`
+        SELECT bool_and(details->>'manifestSha256' = ${artifact.manifestSha256}) AS matched
+        FROM harness_shared.audit_log
+        WHERE workspace_id = ${scope.workspaceId} AND action = 'release.artifact.built'
+          AND details->>'bundleSha256' = ${artifact.bundleSha256}`;
+      if (writer.manifests !== 1 || writer.matches !== true || hashes[0]?.matched !== true || !writer.ref) {
+        return fail('Release artifact writer and boot measurements differ.');
+      }
+      // detail.green is written by the verdict writer. Status labels such as
+      // advanced-prefix cannot stand in for this exact candidate's outcome.
+      const greens = await sql<{ id: string; detail: { candidate?: string; green?: boolean; runId?: string } }[]>`
+        SELECT id::text AS id, detail FROM harness_shared.pipeline_events
+        WHERE workspace_id = ${scope.workspaceId} AND install_slug = ${scope.harnessSlug}
+          AND kind = 'green_checkpoint' AND detail->>'candidate' = ${artifact.sourceSha}
+        ORDER BY created_at DESC, id DESC LIMIT 1`;
+      const green = greens[0];
+      if (!green || !green.detail.runId) return unknown('Exact release source green-verdict receipt unavailable.');
+      if (green.detail.candidate !== artifact.sourceSha || green.detail.green !== true) {
+        return fail('Exact release artifact source is not green.');
+      }
+      releaseEvidence = { sourceSha: artifact.sourceSha, bundleSha256: artifact.bundleSha256,
+        manifestSha256: artifact.manifestSha256, writer: 'audit_log:' + writer.ref,
+        green: 'pipeline_events:' + green.id, greenRunId: green.detail.runId };
+    }
     // Select only identity/timing fields, never args, output, prompts or errors.
     const rows = await sql<InvocationObservation[]>`
       SELECT id::text AS id, metadata_json->'otel'->>'callId' AS "callId",
@@ -105,7 +158,7 @@ export async function measureOperationalObservability(
       };
       const generations = events.filter(event => event.event === '$ai_generation' && event.spanName === 'papercusp.model');
       if (generations.some(event => event.spanId === row.spanId || !reachable(event))) return fail('Model ancestry differs from persisted tool span; invocation=' + row.id);
-      if (mode === 'staging' && generations.some(event => !httpParentOf(event))) {
+      if (mode !== 'project' && generations.some(event => !httpParentOf(event))) {
         return fail('Current-build model journey lacks its instrumented HTTP client parent; invocation=' + row.id);
       }
       const exceptions = events.filter(event => event.event === '$exception');
@@ -116,7 +169,7 @@ export async function measureOperationalObservability(
         error: row.status !== 'ok' && exceptions.some(event => event.isError) });
     }
     let selected: typeof measured;
-    if (mode === 'project') {
+    if (mode !== 'staging') {
       const success = measured.find(item => item.generation);
       const error = measured.find(item => item.error && item.row.callId !== success?.row.callId && item.row.traceId !== success?.row.traceId);
       if (!success || !error) return unknown('Functioning project query; fresh success-model and error observations are not both established.');
@@ -131,7 +184,7 @@ export async function measureOperationalObservability(
       selected = [left, right];
     }
     return { verdict: 'pass', detail: JSON.stringify({ detector: OBSERVABILITY_INSTRUMENT_KEYS[mode], version: 1,
-      observedAt: now, host, projectId: project.projectId, projectQuery: project.evidenceRef,
+      observedAt: now, host, projectId: project.projectId, projectQuery: project.evidenceRef, release: releaseEvidence,
       invocations: selected.map(({ row }) => ({ id: row.id, callId: row.callId, traceId: row.traceId, spanId: row.spanId })),
       replay: 'Run the rubric checks via the registered rubric-rescore system action; scorecards:emit fromLedger:true on the same qualified runtime and subject.' }) };
   } catch {

@@ -82,7 +82,9 @@ export function buildBlindReviewBrief(input: {
     `call naming '${input.planSlug}' before your post disqualifies the review.`,
     '',
     `Post with: plans:blind-review { slug: '${input.planSlug}', op: 'post', activationAuditSeq: ${seq},`,
-    "  gaps: [{ text: '<one gap per entry>' }] }   (gaps: [] when you found none).",
+    "  outcome: 'conclusive' | 'inconclusive', gaps: [{ text: '<one gap per entry>' }] } (gaps: [] when none).",
+    "Use conclusive only after completing the product review. If access or verification is blocked or incomplete,",
+    "post inconclusive even when gaps are empty; an inconclusive receipt cannot satisfy acceptance.",
     '',
     `Owner turns (${ownerTurns.length}):`,
   ];
