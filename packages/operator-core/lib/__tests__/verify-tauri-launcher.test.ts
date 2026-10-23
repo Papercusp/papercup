@@ -9,6 +9,70 @@ const source = readFileSync(process.env.VERIFY_TAURI_SOURCE_PATH || resolve(repo
 const launcher = source.match(/write_and_launch_tauri\(\) \{[\s\S]*?\n\}/)?.[0];
 if (!launcher) throw new Error('Maintained native launcher was not found');
 
+describe('native budget calibration lifetime', () => {
+  const start = source.indexOf('# Share source-preview\'s absolute task admission');
+  const end = source.indexOf('# WI-10005763', start);
+  const cleanup = source.match(/^cleanup_verifier_source_snapshot\(\) \{[\s\S]*?^\}/m)?.[0];
+  if (start < 0 || end < start || !cleanup) throw new Error('Maintained verifier budget lifecycle was not found');
+
+  function probe(rows: object[], mutation = 'delete') {
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-budget-lifetime-'));
+    const original = resolve(dir, 'prior-run/phases.jsonl');
+    const wrapper = resolve(dir, 'frozen-wrapper');
+    mkdirSync(resolve(dir, 'scripts/lib'), { recursive: true });
+    mkdirSync(resolve(dir, 'prior-run'));
+    for (const name of ['verify-tauri-deadline.mjs', 'task-deadline.mjs']) {
+      writeFileSync(resolve(dir, 'scripts/lib', name), readFileSync(resolve(repo, 'scripts/lib', name)));
+    }
+    const body = rows.map(row => JSON.stringify(row)).join('\n') + '\n';
+    writeFileSync(original, body);
+    writeFileSync(wrapper, '# frozen wrapper\n');
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', cleanup, 'trap cleanup_verifier_source_snapshot EXIT',
+        source.slice(start, end),
+        // The real harness may prune the original during vh_init. No native
+        // boot is needed to exercise each subsequent production budget read.
+        'if [ "$TEST_BUDGET_MUTATION" = delete ]; then rm -rf -- "$(dirname "$VERIFY_TAURI_BUDGET_ORIGINAL_PATH")"; else printf "changed" > "$VERIFY_TAURI_BUDGET_ORIGINAL_PATH"; fi',
+        'for phase in prepare boot assert; do preflight_verifier_task_deadline "$phase"; done',
+        'cat -- "$VERIFY_TAURI_BUDGET_FROM"',
+      ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: { ...process.env,
+        REPO_DIR: dir, VERIFY_TAURI_SOURCE_SNAPSHOT_PATH: wrapper,
+        VERIFY_TAURI_BUDGET_FROM: original, VERIFY_TAURI_BUDGET_ORIGINAL_PATH: original,
+        PREPARE_ONLY: '0', ASSERTION_MODE: '1', VERIFY_TAURI_ASSERT_ESTIMATE_MS: '900000',
+        VERIFY_TAURI_MAX_BOOT_ATTEMPTS: '2', VERIFY_TAURI_BUILD_TIMEOUT: '300', VERIFY_TAURI_TIMEOUT: '180',
+        PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 3_600_000),
+        PAPERCUSP_APP_OPERATION_LIVE_PROFILE: '', TEST_BUDGET_MUTATION: mutation,
+      } });
+      return { ...result, body, snapshotExists: existsSync(`${wrapper}.budget.jsonl`) };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it.each(['delete', 'overwrite'])('keeps the validated forecast when retention or a writer can %s its source', mutation => {
+    const result = probe([{ phase: 'prepare', status: 'passed', elapsedMs: 4000 }], mutation);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(result.body);
+    expect(result.stderr).toContain('VERIFY_TAURI_BUDGET_SNAPSHOT');
+    for (const phase of ['prepare', 'boot', 'assert']) {
+      expect(result.stderr).toContain(`VERIFY_TAURI_TASK_BUDGET phase=${phase}`);
+    }
+    expect(result.stderr).not.toContain('unknownTasks=1');
+    expect(result.snapshotExists).toBe(false);
+  });
+
+  it.each([
+    [{ phase: 'prepare', status: 'failed', elapsedMs: 4000 }],
+    [{ phase: 'prepare', status: 'passed', elapsedMs: -1 }],
+    [{ phase: 'prepare', status: 'passed', elapsedMs: 4000 }, { phase: 'prepare', status: 'passed', elapsedMs: 5000 }],
+  ])('refuses invalid calibration before retention (%j)', (...rows) => {
+    const result = probe(rows);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('Verifier budget requires one completed prepare phase');
+    expect(result.stdout).toBe('');
+    expect(result.snapshotExists).toBe(false);
+  });
+});
+
 describe('isolated Postgres source identity', () => {
   const select = source.match(/^select_isolated_pg_source\(\) \{[\s\S]*?^\}/m)?.[0];
   if (!select) throw new Error('Maintained isolated Postgres source selector was not found');
