@@ -1014,6 +1014,35 @@ describe('sync-staging-checkout.sh generation admission (EI-26746441745558411)',
     }
   });
 
+  it('releases both leases when the keeper cannot process its cleanup command', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-admission-stopped-keeper-'));
+    const pidFile = join(root, 'keeper.pid');
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', keeperSource(),
+        'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+        'staging_sync_lock_start',
+        'printf "%s" "$STAGING_SYNC_LOCK_PROCESS_PID" > "$TEST_PID_FILE"',
+        'kill -STOP "$STAGING_SYNC_LOCK_PROCESS_PID"',
+        'staging_sync_lock_release; staging_sync_lock_release',
+        'flock -n "$TEST_LOCK" -c true',
+        'flock -n "$TEST_LOCK.writer" -c true',
+        'echo cleanup_finished_and_both_leases_free',
+      ].join('\n')], {
+        env: { ...process.env, TEST_LOCK: join(root, 'generation.lock'), TEST_PID_FILE: pidFile },
+        encoding: 'utf8', timeout: 6_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stdout).toContain('cleanup_finished_and_both_leases_free');
+    } finally {
+      if (existsSync(pidFile)) {
+        try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* already reaped */ }
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it('does not pass either lock descriptor to a long-lived preparation child', () => {
     const root = mkdtempSync(join(tmpdir(), 'staging-admission-child-'));
     try {

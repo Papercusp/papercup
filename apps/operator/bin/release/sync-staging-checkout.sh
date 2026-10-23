@@ -230,13 +230,20 @@ staging_sync_lock_exclusive() {
 }
 
 staging_sync_lock_release() {
-  local keeper_pid="$STAGING_SYNC_LOCK_PROCESS_PID"
+  local keeper_pid="$STAGING_SYNC_LOCK_PROCESS_PID" acknowledgement=""
   [[ -n "$keeper_pid" ]] || return 0
   STAGING_SYNC_LOCK_PROCESS_PID=""
   # An already-exited keeper can leave a closed pipe. Keep the write in this
   # shell: Bash's coprocess descriptors are not reliably inherited by a
   # subshell, and a subshell here would silently lose the release handshake.
   printf '%s\n' release 2>/dev/null >&"$STAGING_SYNC_LOCK_WRITE_FD" || true
+  # Cleanup must not wait forever for a keeper that cannot receive or process
+  # its release command. It owns only this invocation's lock descriptors; once
+  # release is requested, terminating it safely releases both leases.
+  if ! IFS= read -r -t 2 acknowledgement <&"$STAGING_SYNC_LOCK_READ_FD" 2>/dev/null ||
+     [[ "$acknowledgement" != released ]]; then
+    kill -KILL "$keeper_pid" 2>/dev/null || true
+  fi
   wait "$keeper_pid" 2>/dev/null || true
 }
 
