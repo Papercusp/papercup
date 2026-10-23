@@ -64,7 +64,7 @@ import {
 // refresh routine stay live and populated; only this leg's use of DF as a pure
 // rarity SELECTOR was unwired.
 
-/** The two registered sources this leg reads. Anything else in SEARCH_SOURCES
+/** The registered sources this leg reads. Anything else in SEARCH_SOURCES
  *  (escalations, brainstorm, decisions, coord_message, operator turns) is out
  *  of P-008's scope — widening this list is a plan decision, not an edit. */
 // Exported so the P-004 injection-reach alarm can PIN its own copy against this one
