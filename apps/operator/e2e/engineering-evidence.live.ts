@@ -6,6 +6,11 @@ import { readEngineeringJourneyConfig } from './_engineering-evidence-journey-co
 import { assertPlanAuditReleaseHealth } from './_plan-audit-release-config';
 import type { EngineeringQueryReport } from '@papercusp/operator-core/lib/code-intelligence/engineering-evidence';
 import { encodeScopedRef } from '@papercusp/operator-ui/papercup-chat/chat-ref-popup-params';
+import { POSTHOG_PUBLIC_DEFAULTS } from '../../../packages/operator-core/lib/posthog-public-defaults';
+
+// Match the existing real-workspace proof policy: configured opt-in telemetry
+// has one declared origin, while the shared fixture guards every other request.
+test.use({ egressAllowedOrigins: [new URL(POSTHOG_PUBLIC_DEFAULTS.host).origin] });
 
 test('ee.current-or-shipped: exact native graph, browser references and negative controls on the pinned artifact', async ({ page, request }, info) => {
   const config = readEngineeringJourneyConfig();
