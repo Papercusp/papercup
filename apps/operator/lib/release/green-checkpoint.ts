@@ -21858,6 +21858,12 @@ export function realCheckpointDeps(
   reclaimSnapCacheHeadroomOverride?: () =>
     | SnapCacheOutcome
     | Promise<SnapCacheOutcome>,
+  /** Exercise the production orchestration around a prepared qualification and
+   * its durable boundary without opening the live custody store in unit tests. */
+  qualificationDeps = {
+    prepare: prepareCheckpointQualificationNativeRun,
+    execution: createCheckpointQualificationExecution,
+  },
 ): CheckpointDeps {
   const notifyProgress = (detail?: string) => {
     try {
@@ -23990,7 +23996,7 @@ export function realCheckpointDeps(
       let qualificationCommandDefinitions: ReturnType<typeof preparePartialTaskCommandDefinitions>['definitions'] | undefined;
       let nativeRefusal: string | undefined;
       if (repairTarget && qualificationAttemptId) {
-        const prepared = await prepareCheckpointQualificationNativeRun({
+        const prepared = await qualificationDeps.prepare({
           target: repairTarget, attemptId: qualificationAttemptId,
           candidate: execution?.candidate ?? resolvedHeadAtStart ?? '', runId, root: treeDir, environment: env,
           async select() {
@@ -24014,7 +24020,7 @@ export function realCheckpointDeps(
           if (budget.status !== 'ready')
             throw new CheckpointQualificationBoundaryError('killed', budget.reason);
           nativeObserver = prepared.observer;
-          qualificationExecution = createCheckpointQualificationExecution({
+          qualificationExecution = qualificationDeps.execution({
             target: repairTarget, progress: prepared.postSuite.progress, observer: prepared.observer, budget,
             baselineReceipts: prepared.checkpoint.continuation.receipts,
             execute: executeCheckpointCommand, onStop: rejectBoundary,

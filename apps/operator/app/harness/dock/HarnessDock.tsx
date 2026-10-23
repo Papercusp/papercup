@@ -86,7 +86,8 @@ export function DockPaneFullscreenActions({ activePanel }: IDockviewHeaderAction
   const { maximized, toggle } = useContext(PaneFullscreenContext);
   if (!activePanel) return null;
   const label = maximized ? `Restore ${activePanel.title}` : `Fullscreen ${activePanel.title}`;
-  return <Button variant="ghost" aria-label={label} title={maximized ? `${label} (Esc)` : label}
+  return <Button variant="ghost" data-dock-pane-id={activePanel.id}
+    aria-label={label} title={maximized ? `${label} (Esc)` : label}
     onPointerDown={event => event.stopPropagation()}
     onClick={() => toggle(activePanel.id)}>
     {maximized ? <Minimize2 size={13} aria-hidden /> : <Maximize2 size={13} aria-hidden />}

@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { checkpointQualificationBudgetFromEnv, CheckpointQualificationBoundaryError,
-  createCheckpointQualificationExecution, runCmd } from './green-checkpoint';
+  createCheckpointQualificationExecution, realCheckpointDeps, runCmd } from './green-checkpoint';
+import { releaseConfig } from './release-config';
 import type { CheckpointExec, CheckpointExecResult } from './green-checkpoint';
 import type { QualificationWorkProgressInput } from '@papercusp/operator-core/lib/release/checkpoint-qualification-transaction';
 import { TASK_DEADLINE_EPOCH_MS_ENV } from '@papercusp/operator-core/lib/systemd-scope';
@@ -38,6 +42,56 @@ function setup(execute: CheckpointExec = vi.fn().mockResolvedValue(result)) {
 afterEach(() => { confined.mockReset(); vi.restoreAllMocks(); });
 
 describe('qualification production execution', () => {
+  it.each(['yield', 'kill'] as const)('fences the losing production runGreen branch after a delayed disk sample: %s', async disposition => {
+    const root = mkdtempSync(join(tmpdir(), 'qualification-late-sampler-'));
+    const saved = ['PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID', 'PAPERCUSP_GATE_VERDICT_WORKSPACE',
+      'PAPERCUSP_GATE_VERDICT_HARNESS', TASK_DEADLINE_EPOCH_MS_ENV].map(key => [key, process.env[key]] as const);
+    let releaseSample!: (value: []) => void;
+    const sample = vi.fn(() => new Promise<[]>(resolve => { releaseSample = resolve; }));
+    let boundary!: { onYield: () => void; onKill: (decision: { reason: string }) => void };
+    const observer = { snapshot: vi.fn(), finish: vi.fn(), onOutput: vi.fn() };
+    const execute = vi.fn<CheckpointExec>().mockResolvedValue(result);
+    const prepare = vi.fn().mockResolvedValue({ status: 'ready', observer,
+      commandDefinitions: [], recheckRunnerIdentity: vi.fn(), postSuite: { target, progress: { ...progress, root } },
+      checkpoint: { root, taskKey: progress.taskKey, sourceCommit: progress.candidate, sourceDigest: 'source',
+        selectedFiles: ['a.test.ts'], passedFiles: [], state: 'partial',
+        physicalExecution: { fingerprint: 'physical', evidenceRoot: root, tasks: [] },
+        continuation: { ...progress, receipts: [] } } });
+    try {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { 'test:affected': 'node suite.mjs' } }));
+      process.env.PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID = progress.attemptId;
+      process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = target.workspaceId;
+      process.env.PAPERCUSP_GATE_VERDICT_HARNESS = target.installSlug;
+      process.env[TASK_DEADLINE_EPOCH_MS_ENV] = String(Date.now() + 600_000);
+      const deps = realCheckpointDeps(releaseConfig({ checkpointRoot: root, integrationRoot: root,
+        logDir: join(root, 'logs') }), execute, 'run', undefined, undefined, sample,
+        undefined, undefined, undefined, undefined, undefined, {
+          prepare,
+          execution: input => createCheckpointQualificationExecution(input, {
+            boundary: input => { boundary = input; return { stop: vi.fn() }; },
+          } as never),
+        });
+      const pending = deps.runGreen(root, null, { candidate: progress.candidate });
+      const rejected = expect(pending).rejects.toMatchObject({ disposition: disposition === 'yield' ? 'yielded' : 'killed' });
+      await vi.waitFor(() => expect(sample).toHaveBeenCalledTimes(1));
+      expect(boundary).toBeDefined();
+      if (disposition === 'yield') boundary.onYield();
+      else boundary.onKill({ reason: 'durable-progress-stalled' });
+      await rejected;
+      const filesAtReturn = readdirSync(root, { recursive: true });
+      // The caller has already returned. Resume the abandoned operation at the
+      // exact pre-suite await that previously fell back to the raw executor.
+      releaseSample([]);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(execute).not.toHaveBeenCalled();
+      expect(observer.finish).not.toHaveBeenCalled();
+      expect(readdirSync(root, { recursive: true })).toEqual(filesAtReturn);
+    } finally {
+      for (const [key, value] of saved) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('charges preparation to the original caller clock and preserves an earlier deadline', () => {
     const started = 1_000_000;
     const inherited = started + 400_000;

@@ -67,28 +67,36 @@ test('Reports reader and individual Work panes fullscreen and restore their layo
   await wait(() => evaluate('!document.querySelector(".reports-reader--fullscreen")'));
 
   await native('navigate', '/adv?tab=harnesses&slug=papercusp&scope=self&welcome=false');
-  await wait(() => visible('[aria-label="Fullscreen Work items"]'));
-  const panes = ['Work items', 'Dependency graph', 'Detail'];
+  // Work titles include live counts; an untitled graph may use its panel id.
+  // Bind the control to the seeded pane identity rather than its changing label.
+  const panes = [
+    { id: 'p-adv-work-items', name: 'Work items' },
+    { id: 'p-adv-dep-graph', name: 'Dependency graph' },
+    { id: 'p-adv-detail', name: 'Detail' },
+  ];
+  const paneButton = (id: string) => `button[data-dock-pane-id=${JSON.stringify(id)}]`;
+  await wait(() => visible(paneButton(panes[0].id)));
   // The private profile starts from the default layout; retain actual geometry
   // to verify that maximize never overwrites its split ratios.
-  const layout = () => evaluate(`JSON.stringify(${JSON.stringify(panes)}.map(title => {
-    const e = document.querySelector('[aria-label="Fullscreen ' + title + '"]')?.closest('.dv-groupview');
+  const layout = () => evaluate(`JSON.stringify(${JSON.stringify(panes)}.map(({ id, name }) => {
+    const e = document.querySelector('button[data-dock-pane-id="' + id + '"]')?.closest('.dv-groupview');
     const r = e?.getBoundingClientRect();
-    return r ? [title, ...[r.x, r.y, r.width, r.height].map(Math.round)] : [title, null];
+    return r ? [name, ...[r.x, r.y, r.width, r.height].map(Math.round)] : [name, null];
   }))`);
   const before = await layout();
-  for (const [index, title] of panes.entries()) {
-    await click(`Fullscreen ${title}`);
+  for (const [index, pane] of panes.entries()) {
+    await native('click', paneButton(pane.id));
     await wait(() => fillsViewport('[data-testid="dock-fullscreen-surface"][data-fullscreen="true"]'));
     await wait(() => evaluate(`(() => {
-      const e = document.querySelector(${JSON.stringify(`[aria-label="Restore ${title}"]`)})?.closest('.dv-groupview');
+      const e = document.querySelector(${JSON.stringify(paneButton(pane.id))})?.closest('.dv-groupview');
       const r = e?.getBoundingClientRect();
       return !!r && r.width > innerWidth - 20 && r.height > innerHeight - 60;
     })()`));
     if (index === 1) {
       await evaluate('document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))');
-    } else await click(`Restore ${title}`);
-    await wait(() => visible(`[aria-label="Fullscreen ${title}"]`));
+    } else await native('click', paneButton(pane.id));
+    await wait(() => evaluate(`document.querySelector(${JSON.stringify(paneButton(pane.id))})
+      ?.getAttribute('aria-label')?.startsWith('Fullscreen ') === true`));
     await expect.poll(layout, { timeout: 15_000 }).toBe(before);
   }
 });
