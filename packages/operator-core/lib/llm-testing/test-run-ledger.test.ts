@@ -57,6 +57,14 @@ describe('recordLlmScenarioTestRun scope attribution', () => {
     const values = ledger.sql.mock.calls[0]!.slice(1);
     return { harness: values[10], workspace: values[11] };
   }
+  it('retains the exact rich run IDs independently of a caller-selected group label', async () => {
+    vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'caller-group');
+    const r = report([run('passed', '2026-10-08T00:00:00Z', '2026-10-08T00:00:01Z', { runId: 'rich-a' }),
+      run('passed', '2026-10-08T00:00:01Z', '2026-10-08T00:00:02Z', { runId: 'rich-b' })]);
+    expect(await recordLlmScenarioTestRun(r, file, null)).toBe(123);
+    expect(parseTestRunExecutionDetails(ledger.sql.mock.calls[0]![14]))
+      .toMatchObject({ runGroupId: 'caller-group', llmRunIds: ['rich-a', 'rich-b'], passed: 2 });
+  });
   it('records the interactive CLI workspace and harness on the actual insert', async () => {
     vi.stubEnv('PAPERCUSP_WORKSPACE', 'papercusp-workspace');
     vi.stubEnv('PAPERCUSP_HARNESS_SLUG', 'papercusp');

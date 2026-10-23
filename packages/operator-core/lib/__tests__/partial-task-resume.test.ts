@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
+import { nativeProcessTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 import {
   PARTIAL_TASK_CHECKPOINT_SCHEMA,
   PARTIAL_TASK_SKIP_LIST_SCHEMA,
@@ -30,6 +31,26 @@ const ID = {
 };
 
 describe('remaining work preserves the original selected population', () => {
+  it('freezes the same original npm invocations before task-key initialization, including standalone and empty guards', () => {
+    const source = readFileSync(new URL('../../../../scripts/affected-tests.mjs', import.meta.url), 'utf8');
+    const start = source.indexOf('function originalNpmTaskInvocation(');
+    const end = source.indexOf('\n/**', start);
+    const select = new Function('ROOT', 'join', 'emptySuiteGuardArgs', 'coverageArgsFor',
+      `${source.slice(start, end)}\nreturn selectedTaskInvocations;`)('/repo', join,
+      ({ selectedFiles }: { selectedFiles: string[] }) => selectedFiles.length ? ['--passWithNoTests=false'] : [],
+      () => []);
+    const tasks = [false, true].map(standalone => ({ ws: { name: standalone ? 'standalone' : 'workspace',
+      dir: standalone ? 'nested' : 'packages/ws', standalone, scripts: { test: 'vitest run' } },
+      script: 'test', relatedFiles: ['a.test.ts'], guardBase: 'base' }));
+    expect(select(tasks)).toEqual([
+      { task: 'workspace :: test', cwd: '/repo',
+        argv: ['npm', 'run', 'test', '--workspace', 'packages/ws', '--', '--passWithNoTests=false', '--base', 'base'],
+        emptyArgv: ['npm', 'run', 'test', '--workspace', 'packages/ws', '--', '--base', 'base'] },
+      { task: 'standalone :: test', cwd: '/repo/nested',
+        argv: ['npm', 'run', 'test', '--', '--passWithNoTests=false', '--base', 'base'],
+        emptyArgv: ['npm', 'run', 'test', '--', '--base', 'base'] },
+    ]);
+  });
   const fixture = (dir = '.') => {
     const files = ['a.test.ts', 'b.test.ts'].map(file => dir === '.' ? file : `${dir}/${file}`);
     const specifications = files.map(testFile => ({ testFile, pool: 'forks',
@@ -89,7 +110,8 @@ describe('remaining work preserves the original selected population', () => {
       evaluation: { run: ['post:build'], verdict: 'incomplete' } });
   });
 
-  it.each(['.', 'packages/ws'])('runs the actual early runner boundary before its later taskKey declaration in %s', dir => {
+  it.each(['.', 'packages/ws'].flatMap(dir => [false, true].map(green => ({ dir, green }))))(
+    'runs the actual early runner boundary before its later taskKey declaration in $dir green=$green', ({ dir, green }) => {
     const { checkpoint, selection, project } = fixture(dir);
     const source = readFileSync(new URL('../../../../scripts/affected-tests.mjs', import.meta.url), 'utf8');
     const begin = source.indexOf('if (qualificationWorkFile) {');
@@ -98,16 +120,22 @@ describe('remaining work preserves the original selected population', () => {
       { ws: { name: 'ws', dir: '.', scripts: { guard: 'node guard.mjs' } }, script: 'guard', isInvariantGuard: true }];
     const logs: string[] = [];
     const fail = (reason: string) => { throw new Error(reason); };
-    const fakeProcess = { env: { PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: 'attempt',
+    const fakeProcess = { env: { GREEN_CHECKPOINT: green ? '1' : undefined,
+      PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: 'attempt',
       PAPERCUSP_TEST_RUN_GROUP: 'run' }, exit: fail };
     const execute = new Function('qualificationWorkFile', 'tasks', 'ROOT', 'RUN_LOG_ROOT', 'partialSourceIdentity',
-      'reuseRunnerIdentity', 'execFileSync', 'createHash', 'readPartialTaskCheckpoint',
-      'enumerateAffectedTaskSelection', 'preparePartialRemainingSelection', 'outSync', 'errSync', 'process', 'relative', 'join',
+      'defaultRunnerIdentity', 'execFileSync', 'createHash', 'readPartialTaskCheckpoint',
+      'enumerateAffectedTaskSelection', 'preparePartialRemainingSelection', 'outSync', 'errSync', 'process', 'relative', 'join', 'isAbsolute', 'nativeProcessTraceEnv',
       `${block}\nconst taskKey = task => task.ws.name + ' :: ' + task.script; return tasks;`);
     Object.assign(checkpoint, { sourceDigest: createHash('sha256').update('native').digest('hex') });
+    Object.assign(checkpoint, { physicalExecution: { fingerprint: 'a'.repeat(64), evidenceRoot: '/native', tasks: [] } });
     const result = execute('/snapshot', tasks, ID.root, '/logs', () => ({ sourceCommit: ID.sourceCommit,
       sourceDigest: createHash('sha256').update('').digest('hex') }), () => 'native', () => '', createHash,
-    () => checkpoint, () => structuredClone(selection), project, (line: string) => logs.push(line), fail, fakeProcess, relative, join);
+    () => checkpoint, () => structuredClone(selection), (_checkpoint: unknown, expected: { runContext: string }) => {
+      expect(expected.runContext).toBe(green ? 'green-checkpoint' : 'clean-local');
+      return project();
+    }, (line: string) => logs.push(line), fail, fakeProcess, relative, join,
+    (file: string) => file.startsWith('/'), nativeProcessTraceEnv);
     expect(result).toMatchObject([{ ws: tasks[0]!.ws, script: 'test', relatedFiles: ['b.test.ts'],
       qualificationSelection: { tasks: selection.tasks, files: selection.files } }]);
     expect(logs).toEqual(['QUALIFICATION_REMAINING tasks=1 omitted=1 files=1 verdict=incomplete']);
@@ -215,6 +243,58 @@ describe('original npm native channel preparation', () => {
       } finally { rmSync(root, { recursive: true, force: true }); }
     });
 
+  it.each(['supported', 'strict', 'banked-hook', 'invalidated'])(
+    'keeps a simple native task and its owed lifecycle command when its tests are banked: %s', scenario => {
+      const { root, input, scripts } = fixture(scenario !== 'strict');
+      try {
+        const command = 'node guard.mjs';
+        writeFileSync(join(root, 'guard.mjs'), 'process.exitCode = 0;');
+        writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { ...scripts, prefirst: command } }));
+        const inputs = ['package.json', 'guard.mjs'].map(path => ({ path,
+          sha256: createHash('sha256').update(readFileSync(join(root, path))).digest('hex') }));
+        const hook = { kind: 'npm-lifecycle', script: 'prefirst', command, executed: false, inputs,
+          discovery: { executed: false, runtimeClosure: 'unmeasured', operationalAcceptance: false,
+            inputs, repositoryFiles: ['guard.mjs'] } };
+        const task = { id: 'ws :: first', dir: '.', command: scripts.first };
+        const leaf = input.selection.tasks[0]!.steps[0]!.discovery[0]!;
+        const entry = { ...task, ...leaf, workspace: 'ws', script: 'first',
+          lifecycleCommands: [{ script: 'prefirst', command }], commandObligations: [hook] };
+        const selection = { ...input.selection, tasks: [entry], taskInventory: [task], files: leaf.files,
+          commandObligations: [{ task: task.id, ...hook }],
+          unenumerated: [{ task: task.id, reason: 'unexecuted-lifecycle-command' }] };
+        const prepared = preparePartialContinuationManifest({ root, tasks: [task], selection, postSuite: input.postSuite });
+        expect(prepared.status).toBe('ready');
+        const expected = { ...ID, root, taskKey: 'qualification', attemptId: 'attempt', candidate: ID.sourceCommit,
+          repairHead: null, manifest: prepared.manifest, runnerIdentity: 'native', runContext: 'ci', retryStates: [] };
+        const testReceipt = { unitId: 'test:a.test.ts', completionId: 'saved-test', observedAtMs: 1,
+          state: 'pass', worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass', proof: {
+            recordedSha: ID.sourceCommit, executedModules: ['a.test.ts'], readPaths: [], inputsCaptured: true,
+            opaqueReasons: scenario === 'invalidated' ? ['unknown-input'] : [], runnerIdentity: 'native', runContext: 'ci' } };
+        const receipts = scenario === 'banked-hook' ? [{ ...testReceipt, unitId: `command:${task.id}:0`,
+          completionId: 'saved-hook', proof: { ...testReceipt.proof, executedModules: ['package.json'] } }] : [testReceipt];
+        const checkpoint = { root, taskKey: expected.taskKey, continuation: { schemaVersion: 1, ...expected, receipts } };
+        const remaining = preparePartialRemainingSelection(checkpoint, expected, { selection, postSuite: input.postSuite });
+        if (scenario === 'strict' || scenario === 'banked-hook') {
+          expect(remaining).toMatchObject({ status: 'refused', reason: scenario === 'strict'
+            ? 'native-empty-selection-with-command-work' : 'atomic-command-partially-complete' });
+          return;
+        }
+        const files = scenario === 'invalidated' ? ['a.test.ts'] : [];
+        expect(remaining).toMatchObject({ status: 'ready', omitted: [], tasks: [{ ...task, files,
+          selectedSpecifications: scenario === 'invalidated' ? leaf.selectedSpecifications : [],
+          lifecycleCommands: [{ script: 'prefirst', command }], commandObligations: [hook] }],
+          evaluation: { verdict: 'incomplete', run: expect.arrayContaining([`command:${task.id}:0`, 'post:build']) } });
+        const channels = preparePartialNativeProducerChannels({ ...input, task, selection,
+          remainingFiles: files, observedSelection: { ...selection, tasks: remaining.tasks } });
+        expect(channels).toMatchObject({ status: 'ready', manifest: prepared.manifest,
+          commandUnitIds: [`command:${task.id}:0`], postSuiteUnitIds: ['post:build'] });
+        expect(channels.channels).toMatchObject([{ step: null, outPath: input.outPath,
+          selectedSpecifications: scenario === 'invalidated' ? leaf.selectedSpecifications : [] }]);
+        expect(selection.tasks[0]!.files).toEqual(['a.test.ts']);
+        expect(checkpoint.continuation.receipts[0]!.completionId).toBe(scenario === 'banked-hook' ? 'saved-hook' : 'saved-test');
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
   it('refuses an empty strict step, a fabricated remaining file and a changed full population', () => {
     const { root, input } = fixture();
     try {
@@ -318,7 +398,7 @@ describe('original npm native channel preparation', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it.each(['narrowed', 'widened'])('checks the real simple-native filter before spawning: %s', scenario => {
+  it.each(['narrowed', 'widened', 'all-banked'])('checks the real simple-native filter before spawning: %s', scenario => {
     const { root, input, prepare } = fixture(true);
     try {
       input.task.command = 'vitest run --passWithNoTests';
@@ -335,11 +415,12 @@ describe('original npm native channel preparation', () => {
       const end = source.indexOf('    // Extend existing OUT diagnostics', begin);
       const messages: string[] = [];
       const task = { ws: { dir: '.', name: 'ws', scripts: { test: input.task.command } }, script: 'test',
-        qualificationSelection: input.selection, relatedFiles: ['b.test.ts'] };
+        qualificationSelection: input.selection, relatedFiles: scenario === 'all-banked' ? [] : ['b.test.ts'] };
       const scope = { qualificationNativeOut: input.outPath, ROOT: root, RUN_LOG_ROOT: root,
         qualificationWorkFile: checkpointPath, qualificationAttemptId: 'attempt',
         enumerateAffectedTaskSelection: () => ({ ...input.selection, tasks: [{ ...simple,
-          selectedSpecifications: simple.selectedSpecifications.filter(spec => scenario === 'widened' || spec.testFile === 'b.test.ts'),
+          selectedSpecifications: simple.selectedSpecifications.filter(spec => scenario === 'widened' ||
+            scenario !== 'all-banked' && spec.testFile === 'b.test.ts'),
         }] }), spawnTask: task, context: { t: task }, relative, join,
         taskKey: () => input.task.id, partialSourceIdentity: () => ({ sourceCommit: ID.sourceCommit }),
         governedEnv: { PAPERCUSP_TEST_RUN_GROUP: 'group' }, cmd: 'npm', argv: ['run', 'test'], cwd: root,
@@ -352,10 +433,11 @@ describe('original npm native channel preparation', () => {
         expect(existsSync(`${input.outPath}.producer.json`)).toBe(false);
       } else {
         run();
-        expect(readPartialNativeProducer(`${input.outPath}.producer.json`, {}))
+        if (scenario === 'all-banked') expect(existsSync(`${input.outPath}.producer.json`)).toBe(false);
+        else expect(readPartialNativeProducer(`${input.outPath}.producer.json`, {}))
           .toMatchObject({ selectedSpecifications: [{ testFile: 'b.test.ts' }] });
       }
-      expect(messages).toHaveLength(1);
+      expect(messages).toHaveLength(scenario === 'all-banked' ? 0 : 1);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -734,6 +816,140 @@ describe('native durable continuation outcomes', () => {
         ? { ...options, classifyReadPaths: () => ({ readPaths: ['fixtures/input.json'], opaqueReasons: [] }) } : options);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   };
+
+  const currentFixture = (damage: (value: any) => void = () => {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-current-outcome-'));
+    const traceOut = join(dir, 'out'), outPath = `${traceOut}.step-0`;
+    const channel = { traceOut, script: 'test', command: 'vitest run', step: 0 };
+    const binding = { schemaVersion: 1, kind: 'native-channel-binding', ...channel, outPath,
+      parentPid: 10, processIdentity: 'npm-process', childIdentity: 'test-child' };
+    const native = snapshot();
+    Object.assign(native.nativeRun, { scope: 'vitest-reporter-callbacks', pid: 12, ppid: 11,
+      finishedAtMs: 140, reason: 'passed', terminalHook: 'onTestRunEnd',
+      unhandledErrorCount: 0, modulePopulationMatched: true });
+    // Runtime read closure is deliberately unavailable; current evidence must
+    // authenticate independently, without inventing a reusable proof.
+    native.rows[0]!.inputsCaptured = false;
+    native.rows[0]!.opaqueReasons = ['runtime-closure-unmeasured'];
+    const physical = { ...expected, candidate: ID.sourceCommit, repairHead: null, runContext: 'ci',
+      runnerIdentity: 'proof-v3 node', runId: 'physical-run-one', runnerId: 'owner-one', pidIdentity: 'boot:42',
+      runnerReservedAtMs: 40, nowMs: 200 };
+    mkdirSync(`${traceOut}.native-processes`);
+    const emptyHash = createHash('sha256').update('').digest('hex');
+    const stream = { scope: 'node-writable-call-inputs', captureComplete: true, sha256: emptyHash,
+      ref: `${emptyHash}.stream`, byteLength: 0, observedByteLength: 0 };
+    writeFileSync(join(`${traceOut}.native-processes`, stream.ref), '');
+    const lifecycle = { event: 'test', script: channel.command };
+    const events = [
+      { event: 'node-entry', pid: 10, ppid: 1, processIdentity: 'npm-process', atMs: 60,
+        cwd: ID.root, argv: ['/node', '/npm-cli.js', 'run', 'test'], reporterOut: traceOut },
+      { event: 'child-spawn', pid: 10, ppid: 1, processIdentity: 'npm-process', atMs: 70,
+        childIdentity: binding.childIdentity, childPid: 11, nativeChannel: binding, shell: false,
+        command: 'sh', argv: ['-c', channel.command], cwd: ID.root, lifecycle },
+      { event: 'node-entry', pid: 12, ppid: 11, processIdentity: 'reporter-process', atMs: 80,
+        cwd: ID.root, reporterOut: outPath, lifecycle },
+      { event: 'node-exit', pid: 12, ppid: 11, processIdentity: 'reporter-process', atMs: 150,
+        code: 0, exitListenersComplete: true, streams: { stdout: stream, stderr: stream } },
+      { event: 'child-close', pid: 10, ppid: 1, processIdentity: 'npm-process', atMs: 160,
+        childIdentity: binding.childIdentity, childPid: 11, code: 0, signal: null },
+    ];
+    try {
+      damage({ native, physical, events, binding });
+      for (const event of events) {
+        const value = { schemaVersion: 1, kind: 'native-node-process-event', ...event };
+        writeFileSync(join(`${traceOut}.native-processes`, `${hash(value)}.json`), JSON.stringify(value));
+      }
+      writeFileSync(`${outPath}.binding.json`, JSON.stringify(binding));
+      writeFileSync(outPath, JSON.stringify({ ...native, completionIntegrity: { schemaVersion: 1, sha256: hash(native) } }));
+      const producer = registerPartialNativeProducer(outPath, { attemptId: expected.attemptId,
+        runGroupId: 'physical-run-one', root: ID.root, taskKey: ID.taskKey, workspaceName: expected.workspaceName,
+        sourceCommit: ID.sourceCommit, registeredAtMs: 50, selectedSpecifications, nativeChannel: channel,
+        command: { cmd: 'npm', argv: ['run', 'test'], cwd: ID.root } }, {});
+      const observed = readPartialNativeCompletion(outPath, { ...physical, producerPath: producer.path });
+      const guard = { unitId: 'guard', completionId: 'guard-completion', state: 'pass', observedAtMs: 123,
+        worktreeDirty: false, observedCount: 1, proof: { recordedSha: ID.sourceCommit, runContext: physical.runContext,
+          runnerIdentity: physical.runnerIdentity, executedModules: ['scripts/guard.mjs'], inputsCaptured: true,
+          readPaths: [], opaqueReasons: [] } };
+      const checkpoint = { ...ID, continuation: { schemaVersion: 1, ...physical,
+        receipts: [...observed.receipts, guard] } };
+      return { observed, physical, checkpoint };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  };
+
+  it('composes exact current and retained evidence while keeping current runtime closure unmeasured', () => {
+    const { observed, physical, checkpoint } = currentFixture();
+    expect(observed).toMatchObject({ status: 'ready', currentEvidence: [{ scope: 'current-execution' }], receipts: [{ proof: {
+      inputsCaptured: false, opaqueReasons: expect.arrayContaining(['runtime-closure-unmeasured']) } }] });
+    expect(evaluatePartialTaskContinuation(checkpoint, physical, { currentEvidence: observed.currentEvidence }))
+      .toMatchObject({ verdict: 'green', current: ['a'], reused: ['guard'], run: [], counts: { required: 2, passed: 2 },
+        evidenceScopes: [{ unitId: 'a', scope: 'current-execution' }, { unitId: 'guard', scope: 'reusable' }] });
+    expect(evaluatePartialTaskContinuation(checkpoint, physical))
+      .toMatchObject({ verdict: 'incomplete', current: [], reused: ['guard'], run: ['a'],
+        evidenceScopes: [{ unitId: 'guard', scope: 'reusable' }] });
+    expect(observed.receipts[0]!.proof).toMatchObject({ inputsCaptured: false,
+      opaqueReasons: expect.arrayContaining(['runtime-closure-unmeasured']) });
+  });
+
+  it.each(['runId', 'runnerId', 'pidIdentity', 'runnerIdentity', 'runContext', 'sourceCommit'])(
+    'cannot carry current-only authority across a changed %s', key => {
+      const { observed, physical, checkpoint } = currentFixture();
+      expect(evaluatePartialTaskContinuation(checkpoint, { ...physical, [key]: 'replacement' },
+        { currentEvidence: observed.currentEvidence })).toMatchObject({ verdict: 'incomplete', current: [] });
+    });
+
+  it('publishes canonical scope labels without granting authority to missing, forged or invalid reuse proof', () => {
+    const { observed, physical, checkpoint } = currentFixture();
+    const evaluate = (currentEvidence?: unknown) => evaluatePartialTaskContinuation(checkpoint, physical, { currentEvidence });
+    expect(evaluate(observed.currentEvidence).evidenceScopes).toEqual([
+      { unitId: 'a', scope: 'current-execution' }, { unitId: 'guard', scope: 'reusable' },
+    ]);
+    for (const claimed of [undefined, [{ scope: 'current-execution' }], [{ scope: 'reusable' }]])
+      expect(evaluate(claimed)).toMatchObject({ verdict: 'incomplete', current: [],
+        evidenceScopes: [{ unitId: 'guard', scope: 'reusable' }] });
+    // Reusable proof can fail independently while authenticated current
+    // authority remains valid. The public contract must expose that boundary.
+    checkpoint.continuation.receipts.find(receipt => receipt.unitId === 'guard')!.proof = null;
+    expect(evaluate(observed.currentEvidence)).toMatchObject({ verdict: 'incomplete', current: ['a'], reused: [],
+      evidenceScopes: [{ unitId: 'a', scope: 'current-execution' }] });
+  });
+
+  it('refuses forged, serialized, missing and receipt-mismatched current authority', () => {
+    const { observed, physical, checkpoint } = currentFixture();
+    for (const evidence of [undefined, [{}], [{ scope: 'current-execution' }],
+      JSON.parse(JSON.stringify(observed.currentEvidence))])
+      expect(evaluatePartialTaskContinuation(checkpoint, physical, { currentEvidence: evidence }))
+        .toMatchObject({ verdict: 'incomplete', current: [], run: ['a'] });
+    checkpoint.continuation.receipts[0]!.completionId = 'forged';
+    expect(evaluatePartialTaskContinuation(checkpoint, physical, { currentEvidence: observed.currentEvidence }))
+      .toMatchObject({ verdict: 'incomplete', current: [] });
+  });
+
+  it('binds the aggregate qualification while authenticating the separate original native task', () => {
+    const { observed, physical, checkpoint } = currentFixture(({ physical }) => {
+      physical.continuationTaskKey = 'aggregate-qualification';
+    });
+    checkpoint.taskKey = 'aggregate-qualification';
+    expect(evaluatePartialTaskContinuation(checkpoint, { ...physical, taskKey: checkpoint.taskKey },
+      { currentEvidence: observed.currentEvidence })).toMatchObject({ verdict: 'green', current: ['a'], reused: ['guard'] });
+    checkpoint.continuation.receipts.pop();
+    expect(evaluatePartialTaskContinuation(checkpoint, { ...physical, taskKey: checkpoint.taskKey },
+      { currentEvidence: observed.currentEvidence })).toMatchObject({ verdict: 'incomplete', current: ['a'], run: ['guard'] });
+  });
+
+  it.each(['source', 'config', 'first-attempt', 'cases', 'time', 'fence', 'group', 'trace'])(
+    'requires independent source, population and physical authentication: %s', scenario => {
+      const { observed } = currentFixture(({ native, physical, events }) => {
+        if (scenario === 'source') native.nativeRun.files[0].proof.sourceEvidence.status = 'changed';
+        if (scenario === 'config') native.configSources.status = 'changed';
+        if (scenario === 'first-attempt') native.nativeRun.files[0].firstAttemptVerdict = 'fail';
+        if (scenario === 'cases') native.nativeRun.files[0].cases = [];
+        if (scenario === 'time') native.nativeRun.files[0].observedAtMs = 141;
+        if (scenario === 'fence') physical.runnerReservedAtMs = 51;
+        if (scenario === 'group') physical.runId = 'replacement';
+        if (scenario === 'trace') events.pop();
+      });
+      expect('currentEvidence' in observed ? observed.currentEvidence : []).toEqual([]);
+    });
 
   it('requires a pre-start producer with the exact independently selected native specifications', () => {
     expect(read(snapshot(), {}, true, {})).toMatchObject({ status: 'ready' });

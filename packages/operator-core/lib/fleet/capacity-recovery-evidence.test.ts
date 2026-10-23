@@ -1,14 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { BRIEF_ADMIN, computeIdentityHash, JUDGE_PROMPT_SCAFFOLD_VERSION } from '@papercusp/testing-shell/llm';
+import { S42_CASES, S42_ITEM, S42_PROMPT } from '../llm-testing/scenarios/su/S42-drain-watch-recheck';
 import { LUNA_CAPACITY_PLAN, LUNA_CAPACITY_INSTRUMENTS, lunaCapacityInstruments, validateCapacityRecoveryProof, validateCapacityShipmentProof,
-  validateCapacityDiagnosticProof, validateCapacityContinuationProof,
+  validateCapacityDiagnosticProof, validateCapacityContinuationProof, validateCapacityContractProof, validateCapacityNativeLlmRun,
+  type NativeCapacityLlmRun, type NativeCapacityLlmContext,
   type CapacityRecoveryProof, type CapacityShipmentProof, type CapacityDiagnosticProof } from './capacity-recovery-evidence';
 
 const hash = (value: string) => value.repeat(64);
 const stamp = (minute: number) => `2026-10-23T12:${String(minute).padStart(2, '0')}:00.000Z`;
 const candidate = () => ({ commit: 'a'.repeat(40), sourceDigest: hash('b'), buildDigest: hash('c'),
   specSetHash: hash('d'), barSetHash: hash('e') });
+
+it('rejects jointly forged or superseded hashes even when the artifact is internally consistent', () => {
+  const proof = shipment();
+  const current = { specSetHash: hash('d'), barSetHash: hash('e'), sourceFingerprint: 'sha256-file-set-v1:' + hash('b') };
+  expect(validateCapacityContractProof(proof, current).status).toBe('pass');
+  for (const field of ['specSetHash', 'barSetHash', 'sourceDigest'] as const) {
+    const forged = shipment();
+    for (const c of [forged.candidate, forged.acceptance.candidate, forged.green.candidate, ...forged.evidence.map(e => e.candidate)]) c[field] = hash('9');
+    expect(validateCapacityContractProof(forged, current).status).toBe('fail');
+  }
+  expect(validateCapacityContractProof(proof, { ...current, sourceFingerprint: 'unmeasured' }).status).toBe('fail');
+});
 function census(): CapacityRecoveryProof {
   const effectiveSpec = { ref: 'member-override', revision: 4, maxConcurrentClaims: 2 };
   return { schemaVersion: 'luna-capacity-recovery-v1', plan: LUNA_CAPACITY_PLAN, candidate: candidate(),
@@ -45,6 +61,20 @@ describe('Luna census and managed-pickup semantic proof', () => {
   });
   it('accepts a fully disposed empty eligible set without waking anyone', () => {
     const p = census(); p.snapshot.members[0].admittedIds = []; p.snapshot.members[0].disposition = 'no-work'; p.recoveries = [];
+    expect(validateCapacityRecoveryProof(p).status).toBe('pass');
+  });
+  it('rejects a cap increase forged consistently in both the census and recovery', () => {
+    const p = census();
+    p.snapshot.members[0].effectiveSpec = { ...p.snapshot.members[0].effectiveSpec, maxConcurrentClaims: 3 };
+    p.recoveries[0].effectiveSpec = { ...p.recoveries[0].effectiveSpec, maxConcurrentClaims: 3 };
+    expect(validateCapacityRecoveryProof(p).violations).toEqual(expect.arrayContaining([
+      'effective-cap-exceeds-fleet:member', 'recovery-cap-exceeds-fleet:member',
+    ]));
+  });
+  it('preserves a narrower effective member cap', () => {
+    const p = census();
+    p.snapshot.members[0].effectiveSpec = { ...p.snapshot.members[0].effectiveSpec, maxConcurrentClaims: 1 };
+    p.recoveries[0].effectiveSpec = { ...p.recoveries[0].effectiveSpec, maxConcurrentClaims: 1 };
     expect(validateCapacityRecoveryProof(p).status).toBe('pass');
   });
   const invalid: Array<[string, (p: CapacityRecoveryProof) => void, string]> = [
@@ -138,7 +168,7 @@ describe('serving diagnostic semantic proof', () => {
     expect(validateCapacityDiagnosticProof(diagnostic()).status).toBe('pass');
   });
   it('accepts an explicitly unknown diagnostic with an authorized bounded recovery', () => {
-    const p = diagnostic(); p.status = 'degraded'; p.briefCount = null; delete p.reconciliation;
+    const p = diagnostic(); p.status = 'degraded'; p.briefCount = null; p.callerCount = null; delete p.reconciliation;
     p.degraded = { reasonClass: 'diagnostic-timeout', reason: 'Bounded diagnostic unavailable',
       recoveryVerb: 'work_items:claimable', recoveryActorId: 'leader', retryOrEscalationCondition: 'Retry once after runtime readiness; then record blocker', receiptRef: 'timeout-receipt' };
     expect(validateCapacityDiagnosticProof(p).status).toBe('pass');
@@ -148,6 +178,14 @@ describe('serving diagnostic semantic proof', () => {
   it('rejects missing or unbounded degraded recovery', () => {
     const p = diagnostic(); p.status = 'degraded'; p.briefCount = null;
     expect(validateCapacityDiagnosticProof(p).status).toBe('fail');
+  });
+  it('rejects contradictory measured/degraded residue in either direction', () => {
+    const p = diagnostic();
+    p.degraded = { reasonClass: 'timeout', reason: 'Unknown', recoveryVerb: 'work_items:claimable',
+      recoveryActorId: 'leader', retryOrEscalationCondition: 'Retry once after readiness', receiptRef: 'timeout' };
+    expect(validateCapacityDiagnosticProof(p).violations).toContain('measured-with-degraded-residue');
+    p.status = 'degraded'; p.briefCount = null; p.callerCount = null;
+    expect(validateCapacityDiagnosticProof(p).violations).toContain('degraded-not-explicit-unknown');
   });
   it('rejects source/build skew and the insufficient 750ms serving budget', () => {
     const p = diagnostic(); p.runtime.sourceDigest = hash('a');
@@ -173,10 +211,12 @@ describe('native continuation layer and fresh-render coverage', () => {
   const bindings = () => {
     const row = (id: number, filePath: string, testLayer: 'unit' | 'llm', passedCaseTitles: string[] = [], scenarioId?: string) => ({
       bindingId: id, testRunId: id + 10, currentness: 'current', status: 'pass', failed: 0,
-      passed: 1, collectionFailed: false, testLayer, filePath, passedCaseTitles, ...(scenarioId ? { scenarioId } : {}),
+      passed: 1, collectionFailed: false, testLayer, filePath, passedCaseTitles,
+      sourceFingerprint: 'sha256-file-set-v1:' + hash('b'),
+      ...(scenarioId ? { scenarioId, nativeRunIds: ['native-' + id] } : {}),
     });
     return [
-      ...['preexisting', 'during-registration', 'empty'].map((arrival, i) => row(i + 1, 'scenario.ts', 'llm', [], 'su-S42-drain-watch-' + arrival)),
+      ...['preexisting', 'during-registration', 'empty'].map((arrival, i) => row(i + 1, 'lib/llm-testing/scenarios/su/S42-drain-watch-recheck.ts', 'llm', [], 'su-S42-drain-watch-' + arrival)),
       row(4, 'lib/agent-tools/events/watch.test.ts', 'unit', ['the drained-lane contract is IDEMPOTENT']),
       row(5, 'lib/agent-tools/scheduler/idle-loop-recipe-pin.test.ts', 'unit', ['fresh codex member render', 'fresh claude member render']),
       row(6, 'lib/llm-testing/scenarios/su/S42-drain-watch-recheck.test.ts', 'unit',
@@ -202,12 +242,67 @@ describe('native continuation layer and fresh-render coverage', () => {
     rows[5].passedCaseTitles = [];
     expect(validateCapacityContinuationProof(rows).violations).toContain('missing-lifecycle-calibration');
   });
+  it('rejects unrelated scenario files, mixed candidate sources, missing rich runs and reused rich reports', () => {
+    const rows = bindings(); rows[0].filePath = 'foreign/scenario.ts';
+    expect(validateCapacityContinuationProof(rows).violations).toContain('unverified-native-llm-run:1');
+    rows[1].sourceFingerprint = 'sha256-file-set-v1:' + hash('9');
+    expect(validateCapacityContinuationProof(rows).violations).toContain('mixed-candidate-source');
+    rows[1].nativeRunIds = rows[2].nativeRunIds;
+    expect(validateCapacityContinuationProof(rows).violations).toContain('duplicate-native-llm-run');
+    rows[2].nativeRunIds = [];
+    expect(validateCapacityContinuationProof(rows).violations).toContain('unverified-native-llm-run:3');
+  });
+});
+
+describe('original native S42 trace and prompt provenance', () => {
+  const expected = (arrival: string): NativeCapacityLlmContext => ({ scenarioId: 'su-S42-drain-watch-' + arrival,
+    scenarioVersion: 6, scenarioHash: hash('a'), personaId: BRIEF_ADMIN.id, personaTraits: BRIEF_ADMIN.traits,
+    rubricVersion: 'current-rubric', provider: 'anthropic', systemSha256: [hash('b')] });
+  const native = (arrival: string): NativeCapacityLlmRun => {
+    const context = expected(arrival);
+    const toolCalls = [{ name: 'watch:create', input: { pattern: 'work-item:claimable', wake: true, once: false } },
+      { name: 'scheduler:get_next', input: {} }, arrival === 'empty' ? { name: 'loop:end', input: {} }
+        : { name: 'work_items:checkpoint', input: { id: S42_ITEM, next: 'Run the focused reproduction.' } }];
+    const models = { sutModel: 'claude-sonnet-4-6', judgeModel: 'claude-sonnet-4-6' };
+    return { ...context, ...models, id: 'native-' + arrival, status: 'passed',
+      identityHash: computeIdentityHash({ ...context, ...models, judgeScaffoldVersion: JUDGE_PROMPT_SCAFFOLD_VERSION }),
+      turns: [{ userText: S42_PROMPT, assistantText: '', toolCalls }] as NativeCapacityLlmRun['turns'],
+      rawEvents: [{ name: 'tool_definition_manifest', data: { schemaVersion: 'su-tool-definitions-v1',
+        provider: 'anthropic', systemSha256: hash('b'), definitions: [], sha256: createHash('sha256').update('[]').digest('hex') } },
+      ...toolCalls.map(data => ({ name: 'tool_call', data }))] };
+  };
+  it.each(S42_CASES)('replays an original %s trace with the current scenario, persona, prompt and client', arrival => {
+    expect(validateCapacityNativeLlmRun(native(arrival), expected(arrival))).toEqual({ status: 'pass', violations: [] });
+  });
+  it('rejects success labels attached to a claim-only model transcript', () => {
+    const r = native('preexisting'); r.turns[0].toolCalls.pop(); r.rawEvents.pop();
+    expect(validateCapacityNativeLlmRun(r, expected('preexisting')).violations)
+      .toContain('custom:drain-watch-recheck:claimed-work-never-progressed');
+  });
+  it('rejects a normalized trace substituted independently of the stored original tape', () => {
+    const r = native('preexisting'); r.rawEvents.pop();
+    expect(validateCapacityNativeLlmRun(r, expected('preexisting')).violations).toContain('native-trace-custody-mismatch');
+  });
+  it('rejects stale scenario/source/identity and a different native arrival world', () => {
+    for (const change of [{ scenarioVersion: 5 }, { scenarioHash: hash('9') }, { identityHash: hash('9') },
+      { personaId: 'foreign' }, { scenarioId: 'su-S42-drain-watch-empty' }]) {
+      expect(validateCapacityNativeLlmRun({ ...native('preexisting'), ...change }, expected('preexisting')).status).toBe('fail');
+    }
+  });
+  it('rejects missing, altered or foreign-client prompt manifests', () => {
+    const r = native('empty'); r.rawEvents = r.rawEvents.filter(e => e.name !== 'tool_definition_manifest');
+    expect(validateCapacityNativeLlmRun(r, expected('empty')).violations).toContain('native-prompt-manifest-missing');
+    for (const change of [{ provider: 'codex' }, { systemSha256: hash('9') }, { definitions: ['substituted'] }]) {
+      const r = native('empty'); r.rawEvents[0].data = { ...r.rawEvents[0].data as object, ...change };
+      expect(validateCapacityNativeLlmRun(r, expected('empty')).violations).toContain('native-prompt-or-client-mismatch');
+    }
+  });
 });
 
 it('registered instruments distinguish valid, contradicted and missing/native-unreadable evidence', () => {
   for (const instrument of lunaCapacityInstruments('/repo')) {
     const phase = Object.entries(LUNA_CAPACITY_INSTRUMENTS).find(([, key]) => key === instrument.key)?.[0];
-    expect(instrument.argv).toContain('/repo/scripts/verify-fleet-capacity-recovery.ts');
+    expect(instrument.argv).toContain('/repo/scripts/verify-fleet-capacity-recovery.mts');
     expect(instrument.parse(JSON.stringify({ scope: 'luna-capacity-semantic-v1', phase, status: 'pass', bindingIds: [1] }), { now: 0 })).toBe(1);
     expect(instrument.parse(JSON.stringify({ scope: 'luna-capacity-semantic-v1', phase, status: 'fail', bindingIds: [1] }), { now: 0 })).toBe(0);
     expect(instrument.parse(JSON.stringify({ scope: 'luna-capacity-semantic-v1', phase, status: 'unknown', bindingIds: [] }), { now: 0 })).toBeNull();
@@ -217,7 +312,7 @@ it('registered instruments distinguish valid, contradicted and missing/native-un
 
 it('the registered native CLI boots and rejects an invalid scope before any database read', () => {
   const root = fileURLToPath(new URL('../../../../', import.meta.url));
-  const runner = fileURLToPath(new URL('../../../../scripts/verify-fleet-capacity-recovery.ts', import.meta.url));
+  const runner = fileURLToPath(new URL('../../../../scripts/verify-fleet-capacity-recovery.mts', import.meta.url));
   const stdout = execFileSync(process.execPath, ['--import', 'tsx', runner, root, 'invalid-phase'],
     { cwd: root, encoding: 'utf8', timeout: 30_000 });
   const result = JSON.parse(stdout.trim().split('\n').at(-1)!);

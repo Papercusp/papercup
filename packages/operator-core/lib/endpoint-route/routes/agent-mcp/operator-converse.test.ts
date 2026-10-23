@@ -17,15 +17,20 @@ const dispatchMocks = vi.hoisted(() => ({
   }),
   captured: null as Record<string, unknown> | null,
   done: vi.fn(),
+  event: vi.fn(),
+  closeCallbacks: [] as Array<() => void>,
 }));
+const recoveryMocks = vi.hoisted(() => ({ find: vi.fn(), responder: vi.fn() }));
+vi.mock('../../../agent-tools/operator/converse-turn', () => ({ findConverseTurn: recoveryMocks.find }));
+vi.mock('../../session-or-local', () => ({ getSessionUserOrLocalDefaultAuthority: recoveryMocks.responder }));
 
 vi.mock('@papercusp/sse', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/sse')>()),
   sseResponse: vi.fn((opts: { setup: (sink: unknown) => Promise<void> }) => {
     void opts.setup({
       closed: false,
-      event: vi.fn(),
-      onClose: vi.fn(),
+      event: dispatchMocks.event,
+      onClose: (callback: () => void) => { dispatchMocks.closeCallbacks.push(callback); },
       close: vi.fn(),
       done: dispatchMocks.done,
     });
@@ -70,6 +75,9 @@ beforeEach(() => {
     dispatchMocks.captured = ctx;
   });
   dispatchMocks.captured = null;
+  dispatchMocks.closeCallbacks = [];
+  recoveryMocks.responder.mockResolvedValue({ user: { id: 'owner', workspace_id: 'default' }, authorize: async () => true });
+  recoveryMocks.find.mockReset();
   budgetMocks.checkBudget.mockResolvedValue({
     state: { dailyCapUsd: 5, spend: [] },
     exceeded: true,
@@ -90,6 +98,64 @@ describe('operator-converse route watchdog (EI-110)', () => {
 });
 
 describe('operator-converse isolated tutorial transport', () => {
+  const identity = { conversationId: '11111111-1111-4111-8111-111111111111', turnId: '22222222-2222-4222-8222-222222222222' };
+  it('P010 versioned disconnect detaches while legacy0 disconnect still cancels its producer', async () => {
+    await handler({ chatProtocolVersion: 1, uiClientId: 'llm-testing/detach', messages: [] });
+    await vi.waitFor(() => expect(dispatchMocks.captured).not.toBeNull());
+    for (const close of dispatchMocks.closeCallbacks) close();
+    expect((dispatchMocks.captured!.signal as AbortSignal).aborted).toBe(false);
+    dispatchMocks.closeCallbacks = [];
+    await handler({ uiClientId: 'llm-testing/legacy', messages: [] });
+    for (const close of dispatchMocks.closeCallbacks) close();
+    expect((dispatchMocks.captured!.signal as AbortSignal).aborted).toBe(true);
+  });
+
+  it('P010 reconnect subscribes to committed replay without budget admission or another provider launch', async () => {
+    const event = { schemaVersion: 1, ...identity, eventId: 'event-one', sequence: 1, event: { type: 'delta', text: 'Saved' } };
+    const stop = vi.fn();
+    recoveryMocks.find.mockResolvedValue({ identity, receipt: { ...identity, seq: 4 },
+      recovery: { replay: vi.fn(async () => ({ ok: true, value: [event] })) },
+      watch: vi.fn(async onChange => { await onChange({ state: { phase: 'completed' } }); return { stop }; }) });
+    expect((await handler({ chatProtocolVersion: 1, operation: 'reconnect', ...identity, afterSequence: 0 })).status).toBe(200);
+    await vi.waitFor(() => expect(dispatchMocks.done).toHaveBeenCalledWith({ persistedTurn: { ...identity, seq: 4 }, phase: 'completed' }));
+    expect(dispatchMocks.event).toHaveBeenCalledWith('chat-event', event);
+    expect(dispatchMocks.dispatch).not.toHaveBeenCalled();
+    expect(budgetMocks.checkBudget).not.toHaveBeenCalled();
+    for (const close of dispatchMocks.closeCallbacks) close();
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('P010 explicit cancellation returns only the committed cancellation state', async () => {
+    const state = { ...identity, phase: 'cancelled' };
+    const cancel = vi.fn(async () => ({ ok: true, value: { state } }));
+    recoveryMocks.find.mockResolvedValue({ identity, recovery: { cancel } });
+    const response = await handler({ chatProtocolVersion: 1, operation: 'cancel', ...identity });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, state });
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(identity);
+    expect(dispatchMocks.dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { operation: 'cancel' }, { chatProtocolVersion: 2 }, { chatProtocolVersion: 1, turnId: 'unowned' },
+    { chatProtocolVersion: 1, operation: 'reconnect', ...identity, afterSequence: -1 },
+    { chatProtocolVersion: 1, operation: 'reconnect', ...identity, messages: [] },
+  ])('P010 rejects invalid recovery controls without dispatch %j', async body => {
+    expect((await handler(body)).status).toBe(400);
+    expect(dispatchMocks.dispatch).not.toHaveBeenCalled();
+    expect(recoveryMocks.find).not.toHaveBeenCalled();
+  });
+
+  it('P010 recovery denies an expired responder and reports expired replay without launching a replacement', async () => {
+    recoveryMocks.responder.mockResolvedValueOnce(null);
+    expect((await handler({ chatProtocolVersion: 1, operation: 'reconnect', ...identity })).status).toBe(401);
+    recoveryMocks.find.mockResolvedValue({ identity, recovery: { replay: async () => ({ ok: false, code: 'replay-expired' }) } });
+    const expired = await handler({ chatProtocolVersion: 1, operation: 'reconnect', ...identity });
+    expect(expired.status).toBe(409);
+    expect(await expired.json()).toEqual({ error: 'replay-expired' });
+    expect(dispatchMocks.dispatch).not.toHaveBeenCalled();
+  });
+
   it('P010 forwards the committed assistant receipt and supplies the current scoped conversation on first owner use', async () => {
     const persistedTurn = { conversationId: 'active-conversation', turnId: 'admitted-turn', seq: 4 };
     dispatchMocks.dispatch.mockImplementationOnce(async function* () {

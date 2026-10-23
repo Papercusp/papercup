@@ -72,7 +72,7 @@ import {
   PUBLIC_MANUAL_TOOLS,
   type ConverseHostTrust,
 } from './converse-toolset';
-import type { ChatEvent, ChatTurnToolCall } from '@papercusp/chat-protocol';
+import { parseChatEnvelope, type ChatEvent, type ChatEventEnvelope, type ChatEventV1, type ChatTurnToolCall } from '@papercusp/chat-protocol';
 import { getOrgPg } from '@papercusp/db-org';
 import { admitConverseTurn } from './converse-turn';
 import {
@@ -290,6 +290,8 @@ export default defineTool({
   modality: ['text', 'voice'],
   args: ArgsSchema,
   events: {
+    'chat-event': z.custom<ChatEventEnvelope>(value => parseChatEnvelope(value).ok),
+    'turn-meta': z.object({ schemaVersion: z.literal(1), conversationId: z.string(), turnId: z.string() }),
     delta: z.object({ text: z.string() }),
     tool_call: z.object({ name: z.string(), input: z.unknown(), callId: z.string().optional() }),
     tool_result: z.object({ name: z.string(), summary: z.string(), ok: z.boolean(), callId: z.string().optional() }),
@@ -520,7 +522,19 @@ export default defineTool({
     let assembled = '';
     const collectedTools: ChatTurnToolCall[] = [];
     let finalizationAttempted = false;
+    const emission: { failure?: { error: unknown } } = {};
+    const emit = async (event: ChatEvent): Promise<void> => {
+      if (durableTurn) {
+        await durableTurn.publish(event as ChatEventV1, committed => {
+          ctx.emit('chat-event', committed);
+          emitChatEvent(ctx, committed.event as ChatEvent);
+        });
+      } else emitChatEvent(ctx, event);
+    };
     let persistedTurn: { conversationId: string; turnId: string; seq: number } | undefined;
+    let cancellationWatch: { stop(): void } | undefined;
+    const executionAbort = new AbortController();
+    ctx = { ...ctx, signal: AbortSignal.any([ctx.signal, executionAbort.signal]) };
     const finishTurn = async (status: 'completed' | 'failed' | 'cancelled') => {
       if (!durableTurn) return;
       finalizationAttempted = true;
@@ -529,6 +543,11 @@ export default defineTool({
         report: parsed.report ?? null });
     };
     try {
+    if (durableTurn) {
+      cancellationWatch = await durableTurn.watchCancellation(() => executionAbort.abort(), () => executionAbort.abort());
+      ctx.emit('turn-meta', { schemaVersion: 1, ...durableTurn.identity });
+      if (ctx.signal.aborted) throw new Error('cancelled');
+    }
     if (hostedCustomerIdentity && principalOk && customerPiToolNames.length > 0) {
       const unknownTool = customerPiToolNames.find((name) => !lookupByMcpName(name));
       if (unknownTool) throw new Error(`operator converse customer tool is not registered: ${unknownTool}`);
@@ -623,7 +642,7 @@ export default defineTool({
     const emptyAttempts: BrainAttemptOutcome[] = [];
     let skippedFailover: SkippedBrainFailover | null = null;
     try {
-      emitChatEvent(ctx, {
+      await emit({
         type: 'provenance',
         engine: brainEngine,
         model: brainModel,
@@ -702,9 +721,10 @@ export default defineTool({
               const name = canonicalToolName(result.name);
               if (!PUBLIC_MANUAL_TOOLS.includes(`mcp__agentmcp__${name}`)) return;
               const evidence = captureToolResultEvidence(name, result.output, result.isError);
-              emitChatEvent(ctx, { type: 'tool_result', name: evidence.name,
+              void emit({ type: 'tool_result', name: evidence.name,
                 summary: evidence.output, ok: !evidence.isError,
-                ...(result.callId ? { callId: result.callId } : {}) });
+                ...(result.callId ? { callId: result.callId } : {}) })
+                .catch(error => { emission.failure ??= { error }; });
             },
             permissionMode: 'bypassPermissions',
             // Isolate the claude-code brain spawn from the host ~/.claude so
@@ -730,9 +750,10 @@ export default defineTool({
           })) {
             if (firstEventAt === null) firstEventAt = Date.now();
             if (ctx.signal.aborted) break;
+            if (emission.failure) throw emission.failure.error;
             if (ev.type === 'delta') {
-              emitChatEvent(ctx, { type: 'delta', text: ev.text });
               assembled += ev.text;
+              await emit({ type: 'delta', text: ev.text });
             } else if (ev.type === 'tool_call') {
               emittedToolCall = true;
               // Claude Code strips the colon before the model sees the name, so
@@ -742,7 +763,7 @@ export default defineTool({
               // renders and the user sees a "pick one" with nothing to pick.
               const name = canonicalToolName(ev.name);
               collectedTools.push({ name, input: ev.input, ...(ev.callId ? { callId: ev.callId } : {}) });
-              emitChatEvent(ctx, { type: 'tool_call', name, input: ev.input,
+              await emit({ type: 'tool_call', name, input: ev.input,
                 ...(ev.callId ? { callId: ev.callId } : {}) });
             } else if (ev.type === 'result') {
               totalCost += ev.costUsd ?? 0;
@@ -804,7 +825,7 @@ export default defineTool({
             brainBackend = failover.backend;
             brainEngine = resolveBackend({ promptText: '', backend: brainBackend });
             // Re-announce what actually runs now; the chat reducer keeps the latest frame.
-            emitChatEvent(ctx, { type: 'provenance', engine: brainEngine, model: brainModel,
+            await emit({ type: 'provenance', engine: brainEngine, model: brainModel,
               ...(publicToolContext ? { toolContext: publicToolContext } : {}) });
           } else {
             console.error(
@@ -828,6 +849,7 @@ export default defineTool({
       );
       throw new Error(brainNoOutputMessage({ attempts: emptyAttempts, skippedFailover }));
     }
+    if (emission.failure) throw emission.failure.error;
     await finishTurn(ctx.signal.aborted ? 'cancelled' : 'completed');
 
     // WI-5071: output committed on a session-backed turn — bump the marker so
@@ -1031,6 +1053,7 @@ export default defineTool({
       if (!finalizationAttempted) await finishTurn(ctx.signal.aborted ? 'cancelled' : 'failed');
       throw error;
     } finally {
+      cancellationWatch?.stop();
       // Provider usage survives a failed/cancelled stream or uncertain PG
       // finalization. Keep the existing host accounting hook, exactly once.
       void recordSpend(totalCost);

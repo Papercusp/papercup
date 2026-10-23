@@ -14,9 +14,9 @@ import { InteractionResolver, type InteractionRecord, type InteractionScope } fr
 import type { ChatEventEnvelope } from '@papercusp/chat-protocol';
 import { openRun, registerCard, _resetCardCorrelatorForTests, _resetStateChannelForTests } from '@papercusp/agent-mcp';
 import { OperatorChatStore, operatorChatChildAuthority, operatorChatParentAuthority,
-  operatorChatSessionAuthority, operatorChatTurnWorkflow, operatorChatTurnChannel } from './operator-chat-store';
-import { admitConverseTurn } from './agent-tools/operator/converse-turn';
-import { createConverseCard, findConverseCard, findConverseRunCards } from './agent-tools/operator/converse-card';
+  operatorChatSessionAuthority, operatorChatTurnWorkflow, operatorChatTurnChannel, operatorChatWorkspaceChannel } from './operator-chat-store';
+import { admitConverseTurn, findConverseTurn, watchConverseTurn } from './agent-tools/operator/converse-turn';
+import { createConverseCard, findConverseCard, findConverseRunCards, snapshotConverseCards } from './agent-tools/operator/converse-card';
 
 let first: postgres.Sql;
 let second: postgres.Sql;
@@ -145,6 +145,60 @@ describe('P010 durable PG turn ports (independent connections; no actual-host cl
     await hooks.beforeCard!(info, new AbortController().signal);
     return { card, hooks, parent, binding, tool, spec, info, boundScope, s };
   }
+
+  it('hydrates a scoped durable card from a different worker with no local run', async () => {
+    const { info, spec } = await concreteCard();
+    const result = await snapshotConverseCards({ sql: second, workspaceId, live: [], authorizeAdditional: async () => true });
+    expect(result.snapshots).toMatchObject([{ workspaceId, runId: info.runId,
+      snapshot: { openCards: [{ correlationId: info.correlationId, conversationId: turn.conversationId,
+        prompt: spec.prompt, presentation: spec.presentation }] } }]);
+    expect(result.nextExpiryAt).toBeGreaterThan(Date.now());
+    expect((await snapshotConverseCards({ sql: second, workspaceId: 'foreign', live: [],
+      authorizeAdditional: async () => true })).snapshots).toEqual([]);
+    await expect(snapshotConverseCards({ sql: second, workspaceId, live: [],
+      authorizeAdditional: async () => false })).rejects.toThrow('unauthorized');
+  });
+
+  it('suppresses stale local cards after durable decisions, expiry and authority revocation', async () => {
+    const { info, card, spec } = await concreteCard();
+    const live = [{ runId: info.runId, workspaceId, version: 90, snapshot: { openCards: [{
+      correlationId: info.correlationId, prompt: spec.prompt, dataSchemaJson: {}, createdAt: 1 }] } }];
+    const load = () => snapshotConverseCards({ sql: second, workspaceId, live, authorizeAdditional: async () => true });
+    expect((await load()).snapshots[0].snapshot.openCards).toHaveLength(1);
+    await first.unsafe("UPDATE harness_shared.pi_sessions SET ended_at=clock_timestamp()");
+    expect((await load()).snapshots[0].snapshot.openCards).toEqual([]);
+    await first.unsafe('UPDATE harness_shared.pi_sessions SET ended_at=NULL');
+    expect((await load()).snapshots[0].snapshot.openCards).toHaveLength(1);
+    await first.unsafe(`UPDATE harness_shared.operator_turns SET chat_state=jsonb_set(chat_state,
+      '{interactions,concrete-card,expiresAt}',to_jsonb(1::bigint)) WHERE id=$1`, [turn.turnId]);
+    expect((await load()).snapshots[0].snapshot.openCards).toEqual([]);
+    await first.unsafe(`UPDATE harness_shared.operator_turns SET chat_state=jsonb_set(chat_state,
+      '{interactions,concrete-card,expiresAt}',to_jsonb((EXTRACT(EPOCH FROM clock_timestamp())*1000+60000)::bigint)) WHERE id=$1`, [turn.turnId]);
+    await card.commitResponse({ action: 'submit', payload: { picks: ['yes'] } }, info, 'response');
+    expect((await load()).snapshots[0].snapshot.openCards).toEqual([]);
+  });
+
+  it('notifies workspace snapshot readers only after the durable transaction commits', async () => {
+    const { card, info } = await concreteCard();
+    const notifications: string[] = [];
+    const listener = await second.listen(operatorChatWorkspaceChannel(workspaceId), value => notifications.push(value));
+    try {
+      await card.commitResponse({ action: 'submit', payload: { picks: ['yes'] } }, info, 'response');
+      await expect.poll(() => notifications.length).toBeGreaterThan(0);
+      expect(notifications.every(value => value === 'changed')).toBe(true);
+      expect((await snapshotConverseCards({ sql: first, workspaceId, live: [],
+        authorizeAdditional: async () => true })).snapshots).toEqual([]);
+    } finally { await listener.unlisten(); }
+  });
+
+  it('refuses an incomplete durable binding rather than returning its stale local card', async () => {
+    const { info } = await concreteCard();
+    await first.unsafe("UPDATE harness_shared.operator_turns SET chat_state=chat_state-'interactionBindings' WHERE id=$1", [turn.turnId]);
+    await expect(snapshotConverseCards({ sql: second, workspaceId, live: [{ runId: info.runId,
+      workspaceId, version: 1, snapshot: { openCards: [{ correlationId: info.correlationId,
+        prompt: 'stale', createdAt: 1, dataSchemaJson: {} }] } }], authorizeAdditional: async () => true }))
+      .rejects.toThrow('needs-reconciliation');
+  });
 
   it('resolves a pending card after native finalization from another worker without losing its exact workflow', async () => {
     const { card, parent, tool, info, s } = await concreteCard();
@@ -621,6 +675,121 @@ describe('P010 durable PG turn ports (independent connections; no actual-host cl
     await expect(admitConverseTurn({ ...args, options: { ...args.options, turn: { ...turn, turnId: randomUUID() } } }))
       .rejects.toThrow('unauthorized');
     expect(await second.unsafe('SELECT id FROM harness_shared.operator_turns')).toHaveLength(1);
+  });
+
+  async function publisher(replayLimit = 4) {
+    await first.unsafe('DELETE FROM harness_shared.operator_turns');
+    const bearer = 'publisher-credential';
+    const principalId = 'system:publisher';
+    await first.unsafe(`INSERT INTO harness_shared.system_principals VALUES ($1,'publisher',$2,'["chat:write"]')`,
+      [workspaceId, createHash('sha256').update(bearer).digest('hex')]);
+    await first.unsafe('INSERT INTO harness_shared.token_index VALUES ($1,$2,$3,$4)',
+      [bearer, 'system', principalId, workspaceId]);
+    const publisherScope = { principalId, tenantId: workspaceId, customerId: principalId, publicOwnerId: principalId };
+    const admitted = await admitConverseTurn({ options: { sql: first, workspaceId, turn,
+      scope: publisherScope, replayLimit }, credential: { kind: 'system', name: 'publisher', bearer },
+      capability: 'chat:write', toolName: 'chat:ask_choice', runId: 'publisher-run', source: 'text_typed' });
+    return { admitted, replacement: store(second, { scope: publisherScope, replayLimit,
+      authorize: operatorChatSessionAuthority({ workspaceId, principalId,
+        credential: { kind: 'system', name: 'publisher', bearer }, capability: 'chat:write', toolName: 'chat:ask_choice' }) }) };
+  }
+
+  it('P010 publisher commits ordered bounded events before observers and retains replay after completion', async () => {
+    const { admitted, replacement } = await publisher(2);
+    const observations: Array<Promise<unknown>> = [];
+    const emitted: ChatEventEnvelope[] = [];
+    const emit = (event: ChatEventEnvelope) => {
+      emitted.push(event);
+      observations.push(second.unsafe('SELECT chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId])
+        .then(rows => expect(rows[0].chat_state.events).toContainEqual(event)));
+    };
+    // Generator backpressure plus a synchronous native observer use one order.
+    await Promise.all([admitted.publish({ type: 'delta', text: 'one' }, emit),
+      admitted.publish({ type: 'delta', text: 'two' }, emit)]);
+    await Promise.all(observations);
+    await admitted.publish({ type: 'delta', text: 'three' }, emit);
+    await Promise.all(observations);
+    await admitted.finalize({ status: 'completed', text: 'onetwothree' });
+    expect(emitted.map(event => event.sequence)).toEqual([1, 2, 3]);
+    expect(new Set(emitted.map(event => event.eventId)).size).toBe(3);
+    expect(await replacement.replay(turn, 1)).toEqual({ firstAvailableSequence: 2, lastSequence: 3,
+      events: emitted.slice(1) });
+    const saved = await replacement.read(turn);
+    expect(saved?.state.capabilities).toMatchObject({ connectionReplay: true,
+      completedToolCheckpoints: false, interruptedTurnRecovery: false });
+    await expect(admitted.publish({ type: 'delta', text: 'late' }, emit)).rejects.toThrow('turn-result-conflict');
+  });
+
+  it('P010 publisher latches a lost commit acknowledgement without publishing or retrying uncertain bytes', async () => {
+    const { admitted, replacement } = await publisher();
+    const append = admitted.store.appendEvent.bind(admitted.store);
+    let writes = 0, publications = 0;
+    admitted.store.appendEvent = async event => {
+      writes++;
+      await append(event);
+      throw new Error('commit-ack-lost');
+    };
+    await expect(admitted.publish({ type: 'delta', text: 'committed' }, () => { publications++; }))
+      .rejects.toThrow('commit-ack-lost');
+    await expect(admitted.publish({ type: 'delta', text: 'must-not-jump' }, () => { publications++; }))
+      .rejects.toThrow('commit-ack-lost');
+    await expect(admitted.finalize({ status: 'completed', text: 'committed' })).rejects.toThrow('commit-ack-lost');
+    expect({ writes, publications }).toEqual({ writes: 1, publications: 0 });
+    expect(await replacement.replay(turn, 0)).toMatchObject({ lastSequence: 1,
+      events: [{ sequence: 1, event: { type: 'delta', text: 'committed' } }] });
+    expect((await replacement.read(turn))?.state.phase).toBe('running');
+  });
+
+  it('P010 publisher and replay recheck revoked authority without leaking or advancing an event', async () => {
+    const { admitted, replacement } = await publisher();
+    let publications = 0;
+    await admitted.publish({ type: 'delta', text: 'authorized' }, () => { publications++; });
+    await second.unsafe("UPDATE harness_shared.system_principals SET capabilities='[]' WHERE name='publisher'");
+    await expect(admitted.publish({ type: 'delta', text: 'refused' }, () => { publications++; }))
+      .rejects.toThrow('unauthorized');
+    await expect(replacement.replay(turn, 0)).rejects.toThrow('unauthorized');
+    await expect(admitted.finalize({ status: 'completed', text: 'refused' })).rejects.toThrow('unauthorized');
+    expect(publications).toBe(1);
+    const rows = await second.unsafe('SELECT chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows[0].chat_state.checkpoint.state.lastSequence).toBe(1);
+    expect(rows[0].chat_state.execution.status).toBe('running');
+  });
+
+  it('P010 replacement worker reopens the exact turn, fences cancellation before late publication and wakes the producer', async () => {
+    const { admitted } = await publisher();
+    await admitted.publish({ type: 'delta', text: 'Partial' }, () => {});
+    const input = { sql: second, workspaceId, identity: turn, authorizeAdditional: async () => true };
+    const recovered = await findConverseTurn(input);
+    expect(recovered).not.toBeNull();
+    expect(await recovered!.recovery.replay(turn, 0)).toMatchObject({ ok: true,
+      value: [{ sequence: 1, event: { type: 'delta', text: 'Partial' } }] });
+    await expect(findConverseTurn({ ...input, expectedPrincipalId: 'pi:foreign' })).rejects.toThrow('unauthorized');
+    await expect(findConverseTurn({ ...input, authorizeAdditional: async () => false })).rejects.toThrow('unauthorized');
+    expect(await findConverseTurn({ ...input, identity: { ...turn, turnId: randomUUID() } })).toBeNull();
+    const listener = postgres(databaseUrl, { max: 1 });
+    let cancelled = false;
+    const errors: unknown[] = [];
+    const watch = await watchConverseTurn({ store: admitted.store, workspaceId, identity: turn,
+      onChange: checkpoint => { cancelled ||= checkpoint.state.phase === 'cancelled'; },
+      onError: error => errors.push(error) }, async (channel, nudge, onListen) => {
+      const subscription = await listener.listen(channel, nudge, onListen);
+      return () => { void subscription.unlisten(); };
+    });
+    try {
+      expect((await recovered!.recovery.cancel(turn)).ok).toBe(true);
+      await expect.poll(() => cancelled, { timeout: 5000 }).toBe(true);
+      await expect(admitted.publish({ type: 'delta', text: 'late' }, () => { throw new Error('must not publish'); }))
+        .rejects.toThrow('cancelled');
+      expect(await recovered!.store.admitDispatch(turn, 'late-effect', 1, async () => 'must-not-run'))
+        .toEqual({ admitted: false, reason: 'cancelled' });
+      await admitted.finalize({ status: 'cancelled', text: 'Partial' });
+      await expect(admitted.finalize({ status: 'completed', text: 'Resurrected' })).rejects.toThrow();
+      expect(errors).toEqual([]);
+      const rows = await second.unsafe('SELECT text,chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+      expect(rows[0]).toMatchObject({ text: 'Partial', chat_state: { execution: { status: 'cancelled' },
+        checkpoint: { state: { phase: 'cancelled', lastSequence: 1 } } } });
+      expect(await second.unsafe('SELECT id FROM harness_shared.operator_turns')).toHaveLength(1);
+    } finally { watch.stop(); await listener.end({ timeout: 5 }); }
   });
 
   it('P010 pre-stream admission reserves one scoped row and never grants a duplicate provider launch', async () => {

@@ -56,6 +56,10 @@ import {
 } from './types';
 
 export interface ManagedSpawnOptions {
+  /** Cancel an awaited enrollment before it can turn into a late fork. */
+  signal?: AbortSignal;
+  /** Immutable caller cutoff, rechecked after enrollment and immediately before fork. */
+  deadlineEpochMs?: number;
   /** Metered executions require enrollment before any process can send. */
   requireRegistration?: boolean;
   /** A caller that depends on an OS orphan fuse must refuse before spawn if no scope can enforce it. */
@@ -261,6 +265,13 @@ export async function managedSpawn(
   const spawnFn = opts.spawnFn ?? spawn;
   const fs = opts.fs ?? nodeCgroupFs;
   const taskId = opts.taskId ?? newTaskId();
+  const checkLaunch = () => {
+    opts.signal?.throwIfAborted();
+    if (opts.deadlineEpochMs !== undefined &&
+        (!Number.isSafeInteger(opts.deadlineEpochMs) || Date.now() >= opts.deadlineEpochMs))
+      throw new Error('Task launch deadline exhausted; no process started.');
+  };
+  checkLaunch();
   if (!isValidTaskId(taskId)) {
     throw new Error(
       `task-manager: invalid caller taskId ${JSON.stringify(taskId)} — must match /^[0-9a-z]{4,64}$/`,
@@ -275,6 +286,7 @@ export async function managedSpawn(
   if (!(await isTaskManagerEnabled('task-manager:spawn'))) {
     if (opts.requireConfinement) throw new Error('Required task confinement is disabled; no process started.');
     if (opts.requireRegistration) throw new Error('Required task enrollment is disabled; no process started.');
+    checkLaunch();
     opts.stage?.('spawn-fork');
     const child = spawnFn(command, args as string[], opts.spawnOptions ?? {});
     const completion = new Promise<ManagedSpawnCompletion>((resolve) => {
@@ -349,6 +361,10 @@ export async function managedSpawn(
   }
 
   const scopeUnit = scopeOk ? scopeUnitForTask(taskId) : null;
+  // Registration may have waited on the database. Bound the OS fuse to the
+  // original absolute cutoff rather than granting a new lifetime after that wait.
+  const runtimeMaxSec = opts.deadlineEpochMs === undefined ? spec.runtimeMaxSec :
+    Math.min(spec.runtimeMaxSec ?? Infinity, Math.floor((opts.deadlineEpochMs - Date.now()) / 1000) - 1);
 
   // WI-40906 — a caller-supplied env belongs to the PAYLOAD, never to the
   // `systemd-run` client. The client reaches the user manager over
@@ -378,7 +394,12 @@ export async function managedSpawn(
         swap: spec.swap ?? undefined,
         cpuWeight: spec.cpuWeight,
         tasksMax: spec.tasksMax,
-        runtimeMaxSec: spec.runtimeMaxSec,
+        runtimeMaxSec,
+        // A fixed cutoff includes escalation, rather than inheriting the user
+        // manager's much longer default stop timeout after RuntimeMaxSec expires.
+        ...(opts.deadlineEpochMs === undefined ? {} : {
+          extraProperties: ['TimeoutStopSec=1s', 'SendSIGKILL=yes'],
+        }),
         collectFailedUnit: false,
       })
     : null;
@@ -413,6 +434,9 @@ export async function managedSpawn(
 
   let child: ChildProcess;
   try {
+    checkLaunch();
+    if (opts.deadlineEpochMs !== undefined && (!runtimeMaxSec || runtimeMaxSec < 1))
+      throw new Error('Task launch deadline has no OS fuse reserve; no process started.');
     opts.stage?.('spawn-fork');
     child = spawnFn(launchArgv[0]!, launchArgv.slice(1), launchSpawnOptions);
   } catch (e) {

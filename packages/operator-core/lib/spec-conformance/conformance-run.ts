@@ -28,6 +28,7 @@
  * Plan: spec-conformance-loop-2026-10-14 (P-018; R-2, R-3, R-4).
  */
 import type { RubricCriterionCheck } from '../agent-tools/plans/rubric-template';
+import { trackPhase, type PhaseTracker } from '@papercusp/tooldef';
 import type { RubricCheckResult, RubricCheckVerdict } from '../check-results-ledger';
 import { evaluateRequirementEnforcement, type RequirementEnforcement } from './conformance-contract';
 
@@ -121,6 +122,8 @@ export interface PlanDriftAlarmPayload {
 }
 
 export interface ConformanceRunDeps {
+  /** The caller's existing tracker retains request identity through inner dependencies. */
+  phases?: PhaseTracker;
   /** Run one check. Null when the run cannot evaluate this check kind (reported, never green). */
   evaluateCheck(request: ConformanceCheckRequest): Promise<EvaluatedConformanceCheck | null>;
   /** Latest recorded verdict per check id in the plan's conformance ledger namespace. */
@@ -273,9 +276,10 @@ export async function runPlanConformance(
   };
   if (!report.applicable || outcome.contractProblems.length > 0) return outcome;
 
-  const before = await deps.readLatestVerdicts(ledgerRef);
-  const openAlarms = new Map((await deps.listOpenDriftAlarms()).map((alarm) => [alarm.barKey, alarm] as const));
-  const deviations = (await deps.approvedDeviations?.()) ?? new Set<string>();
+  const track = <T>(phase: string, work: () => T | Promise<T>) => trackPhase(deps.phases, `conformance:${phase}`, work);
+  const before = await track('readLatestVerdicts', () => deps.readLatestVerdicts(ledgerRef));
+  const openAlarms = new Map((await track('listOpenDriftAlarms', () => deps.listOpenDriftAlarms())).map((alarm) => [alarm.barKey, alarm] as const));
+  const deviations = (await track('approvedDeviations', () => deps.approvedDeviations?.())) ?? new Set<string>();
 
   // Pass 1 — measure everything, then record it in one batch.
   const evaluations = new Map<string, EvaluatedConformanceCheck | null>();
@@ -308,7 +312,7 @@ export async function runPlanConformance(
     for (const request of requests) {
       let evaluated: EvaluatedConformanceCheck | null;
       try {
-        evaluated = await deps.evaluateCheck(request);
+        evaluated = await track(`check:${request.checkId}`, () => deps.evaluateCheck(request));
       } catch (error) {
         evaluated = {
           kind: request.check.kind === 'instrument' || request.check.kind === 'probe' ? request.check.kind : 'tests',
@@ -328,7 +332,7 @@ export async function runPlanConformance(
     }
   }
   if (ledgerResults.length > 0) {
-    outcome.testRunIds = await deps.recordResults(ledgerResults);
+    outcome.testRunIds = await track('recordResults', () => deps.recordResults(ledgerResults));
     outcome.executed = ledgerResults.length;
   }
 
@@ -375,7 +379,7 @@ export async function runPlanConformance(
 
     if (deviations.has(barKey)) {
       if (alarm) {
-        await deps.closeDriftAlarm(alarm.id, `approved deviation recorded for ${barKey}; drift alarm suppressed`);
+        await track(`closeDriftAlarm:${barKey}`, () => deps.closeDriftAlarm(alarm.id, `approved deviation recorded for ${barKey}; drift alarm suppressed`));
         outcome.alarmsClosed.push(alarm.id);
       }
       row.alarm = { action: 'suppressed', id: alarm?.id ?? null };
@@ -390,17 +394,17 @@ export async function runPlanConformance(
         summary: alarmSummary({ planSlug: input.planSlug, requirement, firedFalsifiers, doneWhenRegressed, ledgerRef }),
         ...(paths.length > 0 ? { paths } : {}),
       };
-      const opened = await deps.openDriftAlarm(filing);
+      const opened = await track(`openDriftAlarm:${barKey}`, () => deps.openDriftAlarm(filing));
       row.alarm = { action: opened.created ? 'opened' : 'kept', id: opened.id };
-      for (const work of await deps.listMappedWorkItems(barKey)) {
+      for (const work of await track(`listMappedWorkItems:${barKey}`, () => deps.listMappedWorkItems(barKey))) {
         if (work.terminal || work.id === opened.id) continue;
-        const link = await deps.linkBlocks(opened.id, work.id);
+        const link = await track(`linkBlocks:${barKey}:${work.id}`, () => deps.linkBlocks(opened.id, work.id));
         if (link.linked) row.blocked.push(work.id);
         else row.blockRefused.push({ workItemId: work.id, reason: link.reason });
       }
       if (opened.created) {
         outcome.alarmsOpened.push(opened.id);
-        await deps.emitDriftAlarm({
+        await track(`emitDriftAlarm:${barKey}`, () => deps.emitDriftAlarm({
           planSlug: input.planSlug,
           harnessSlug: input.harnessSlug,
           barKey,
@@ -409,10 +413,10 @@ export async function runPlanConformance(
           doneWhenRegressed,
           blocked: row.blocked,
           blockRefused: row.blockRefused,
-        });
+        }));
       }
     } else if (alarm && !unmeasured) {
-      await deps.closeDriftAlarm(alarm.id, `every check of ${barKey} measured green in ${ledgerRef}`);
+      await track(`closeDriftAlarm:${barKey}`, () => deps.closeDriftAlarm(alarm.id, `every check of ${barKey} measured green in ${ledgerRef}`));
       outcome.alarmsClosed.push(alarm.id);
       row.alarm = { action: 'closed', id: alarm.id };
     } else if (alarm) {

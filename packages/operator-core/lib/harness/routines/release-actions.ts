@@ -107,6 +107,7 @@ import {
   checkpointScopeMemoryMaxGForGreenCmd,
   SCOPE_LAUNCH_FAILURE_RE,
   SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
+  TASK_DEADLINE_EPOCH_MS_ENV,
 } from '../../systemd-scope';
 import type { FlakeSuspect } from '../../dev-data';
 import { buildDeployTerminalShell, RELEASE_DEPLOY_UNIT } from '../../release-deploy-terminal';
@@ -125,6 +126,7 @@ import {
   recordStoredQualificationScheduledFire,
   recordStoredQualificationScheduledTerminalRecovery,
   recordStoredQualificationVerdict,
+  recordStoredQualificationComposedVerdict,
   reserveStoredQualificationRunner,
   settleQualificationTransaction,
   type CheckpointQualificationTransaction,
@@ -1168,6 +1170,11 @@ function runScript(
    *  undefined env values, which is true but unstated. */
   clearEnv: string[] = [],
 ): Promise<RunResult> {
+  // One clock includes boot admission and fallback launches. A retry cannot
+  // grant the same caller another complete suite budget.
+  const inheritedDeadline = Number(extraEnv[TASK_DEADLINE_EPOCH_MS_ENV] ?? process.env[TASK_DEADLINE_EPOCH_MS_ENV]);
+  const callerDeadlineEpochMs = Math.min(Date.now() + timeoutMs,
+    Number.isSafeInteger(inheritedDeadline) && inheritedDeadline > 0 ? inheritedDeadline : Infinity);
   const base = [tsxBin(root), path.join(root, relScript), ...args];
   // Isolation kill-switch: PAPERCUSP_CHECKPOINT_SCOPE=0 forces the pre-2026-07-01
   // direct spawn (ops escape hatch, peer of PAPERCUSP_GATEWAY_RPM_SMOOTH).
@@ -1206,6 +1213,7 @@ function runScript(
           ...childEnv,
           PAPERCUSP_INTEGRATION_ROOT: root,
           ...extraEnv,
+          [TASK_DEADLINE_EPOCH_MS_ENV]: String(callerDeadlineEpochMs),
           // Reuse the scheduled-run transport: a modern scope sends its terminal-marker
           // runId; the legacy direct path retains the '1' sentinel and mints in the CLI.
           ...(checkpointPaths ? { [CHECKPOINT_SCHEDULED_RUN_ENV]: checkpointPaths.runId } : {}),
@@ -1232,7 +1240,7 @@ function runScript(
         killGroup('SIGTERM');
         // Escalate if a wedged worker ignores SIGTERM, so the group can't linger.
         sigkiller = setTimeout(() => killGroup('SIGKILL'), 15_000);
-      }, timeoutMs);
+      }, Math.max(0, callerDeadlineEpochMs - Date.now()));
       const finish = (r: RunResult): void => {
         if (settled) return;
         settled = true;
@@ -1702,6 +1710,12 @@ export async function publishSignedGateVerdictsWithDeadline(
 
 /** WI-6554700010009547: per-call knobs for {@link recordCheckpointVerdict}. */
 export interface RecordCheckpointVerdictOptions {
+  /** Ephemeral source-owned context from this physical suite. The final row
+   * lock reauthenticates every artifact; an earlier green check grants nothing. */
+  qualificationWork?: {
+    input: Parameters<typeof recordStoredQualificationComposedVerdict>[1];
+    options: Parameters<typeof recordStoredQualificationComposedVerdict>[3];
+  };
   /** Deadline for the additive signed-shard publication step. Omitted = the
    *  {@link SIGNED_GATE_VERDICT_PUBLISH_DEADLINE_MS} default; `0` = do not publish at all. */
   signedShardDeadlineMs?: number;
@@ -2048,6 +2062,29 @@ export function verdictQualificationAttemptId(
   return undefined;
 }
 
+type CheckpointFailureSummary = {
+  /** Entries can name files, workspaces or lint legs; this is not a test-case census. */
+  unit: 'reported-failure-entry';
+  reportedEntries: number;
+  retainedEntries: number;
+  truncated: boolean;
+};
+
+/** Preserve the producer's reported population before bounding its diagnostic list. */
+function checkpointFailureSample(entries: readonly string[] | undefined): {
+  failingTests: string[];
+  failingTestsSummary: CheckpointFailureSummary | null;
+} {
+  const failingTests = (entries ?? []).slice(0, 20);
+  return {
+    failingTests,
+    failingTestsSummary: entries === undefined ? null : {
+      unit: 'reported-failure-entry', reportedEntries: entries.length,
+      retainedEntries: failingTests.length, truncated: entries.length > failingTests.length,
+    },
+  };
+}
+
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
  *  producer-side write and the routine's fallback) so a manual run's history row is identical to a
  *  routine run's — the /admin/git timeline must not be able to tell who launched the suite. */
@@ -2110,7 +2147,7 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
   if (v.advancedTo) detail.advancedTo = v.advancedTo.slice(0, 12);
   // P-003 (git-sync-dx-hardening): persist the failing-test reason in the append-only event so WHY
   // the gate was red survives the per-tick metadata overwrite (capped).
-  if (v.failingTests?.length) detail.failingTests = v.failingTests.slice(0, 20);
+  if (v.failingTests) Object.assign(detail, checkpointFailureSample(v.failingTests));
   // load-flake-isolation-2026-06-23: persist the files the gate ABSORBED as load-flakes.
   if (v.flakeSuspects?.length) detail.flakeSuspects = v.flakeSuspects.slice(0, 20);
   // EI-18685042025868279: persist the retry accounting, so "was this green clean?" is
@@ -2428,15 +2465,14 @@ export async function recordCheckpointVerdict(
   // verdicts, but they are exactly the outcomes that return the same logical attempt to waiting.
   // The detached launcher transports the attempt id in its unit environment; scheduled/version-
   // skew paths omit it and best-effort settle the current global attempt instead.
-  const transportedAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined;
+  const transportedAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() ||
+    options.qualificationWork?.input.attemptId || undefined;
   const pinned = isPinnedCheckpointVerdict(verdict);
   const recordable = isRecordableVerdict(verdict.reason);
   const atomicTerminalEvent = transportedAttemptId && !pinned && recordable
     ? { status: verdict.reason, detail: buildCheckpointDetail(verdict) }
     : undefined;
-  const qualificationSettlement = pinned
-    ? null
-    : await recordStoredQualificationVerdict(target, {
+  const settle = {
         ...(transportedAttemptId ? { attemptId: transportedAttemptId } : {}),
         reason: verdict.reason,
         green: verdict.green,
@@ -2448,7 +2484,13 @@ export async function recordCheckpointVerdict(
           ...(verdict.candidate ? [`candidate:${verdict.candidate}`] : []),
         ],
         ...(atomicTerminalEvent ? { terminalEvent: atomicTerminalEvent } : {}),
-      }).catch((error) => ({
+      };
+  const qualificationSettlement = pinned
+    ? null
+    : await (verdict.green === true && options.qualificationWork &&
+        options.qualificationWork.input.attemptId === transportedAttemptId
+      ? recordStoredQualificationComposedVerdict(target, options.qualificationWork.input, settle, options.qualificationWork.options)
+      : recordStoredQualificationVerdict(target, settle)).catch((error) => ({
         status: 'unreadable' as const,
         error: error instanceof Error ? error.message : String(error),
       }));
@@ -3601,24 +3643,32 @@ export function gateRedStreakBroadcast(opts: {
   heldHrs: number | null;
   candidate?: string | null;
   failingTests?: string[];
+  failingTestsSummary?: CheckpointFailureSummary | null;
   ownership?: GateRedOwnership;
   /** `staleness.commitsBehindTip` — how far the judged candidate trails staging. */
   commitsBehindTip?: number | null;
 }): { summary: string; body: string } {
   const tests = (opts.failingTests ?? []).slice(0, 20);
+  const sample = opts.failingTestsSummary;
+  const reportedEntries = sample?.unit === 'reported-failure-entry' &&
+    Number.isSafeInteger(sample.reportedEntries) && sample.reportedEntries >= tests.length &&
+    sample.retainedEntries === tests.length && sample.truncated === (sample.reportedEntries > tests.length)
+    ? sample.reportedEntries : null;
   const held = opts.heldHrs != null ? `~${opts.heldHrs}h since last green` : 'last green time unknown';
   const noVerdict = opts.consecutiveNoVerdict ?? 0;
   return {
     summary:
       `green-checkpoint held on ${opts.installSlug} — ${held}; ` +
       `${opts.consecutiveReds} consecutive red verdict(s), ${noVerdict} consecutive no-verdict run(s); ` +
-      `${tests.length ? `last red: ${tests.length} failing check(s); ` : ''}main frozen.`,
+      `${tests.length ? `last red: ${reportedEntries === null
+        ? `sample of ${tests.length} failure entries (total unknown)`
+        : `${reportedEntries} reported failure entries`}; ` : ''}main frozen.`,
     body:
       `The last measured release verdict was red${
         opts.candidate ? `; the last judged candidate was ${opts.candidate.slice(0, 12)}` : ''
       }. ${noVerdict} consecutive run(s) have produced no new verdict.${
         tests.length
-          ? ` Failing: ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}.`
+          ? ` Failure sample (${tests.length} retained): ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more retained)` : ''}. Entries may name files, workspaces or lint legs; they are not a test-case count.`
           : ''
       }${opts.ownership ? ` ${opts.ownership.label}` : ''}${
         opts.commitsBehindTip != null && opts.commitsBehindTip > 0
@@ -3675,6 +3725,7 @@ async function refreshGateRedStreakHeadline(ctx: GateVerdictTarget): Promise<voi
       consecutiveReds?: number;
       consecutiveNoVerdict?: number;
       failingTests?: string[];
+      failingTestsSummary?: CheckpointFailureSummary | null;
     } | null }>;
     const health = rows[0]?.headline_health;
     if (!health || health.lastVerdict === 'green') return;
@@ -3686,6 +3737,7 @@ async function refreshGateRedStreakHeadline(ctx: GateVerdictTarget): Promise<voi
       consecutiveReds: health.consecutiveReds ?? 0,
       consecutiveNoVerdict: health.consecutiveNoVerdict ?? 0,
       failingTests: Array.isArray(health.failingTests) ? health.failingTests : undefined,
+      failingTestsSummary: health.failingTestsSummary,
       heldHrs,
     });
     const { updateWorkItem } = await import('../../work-items');
@@ -4155,7 +4207,7 @@ export function shouldWarnOnStallClearMiss(stallAlerted: boolean, clearedCount: 
  * non-preserving branch clears it explicitly instead of letting an older `true` ride along.
  */
 export function mergeGateHealthMonotonic(
-  previous: { failingTests?: unknown; observedCandidate?: unknown } | null | undefined,
+  previous: { failingTests?: unknown; failingTestsSummary?: unknown; observedCandidate?: unknown } | null | undefined,
   next: Record<string, unknown>,
 ): Record<string, unknown> {
   const previousFailingTests = Array.isArray(previous?.failingTests)
@@ -4175,7 +4227,8 @@ export function mergeGateHealthMonotonic(
     next.lastFromFresh !== true &&
     next.lastVerdict !== 'green';
   return preservesPreviousFailures
-    ? { ...next, failingTests: previousFailingTests, failingTestsCarriedForward: true }
+    ? { ...next, failingTests: previousFailingTests,
+        failingTestsSummary: previous?.failingTestsSummary ?? null, failingTestsCarriedForward: true }
     : { ...next, failingTestsCarriedForward: false };
 }
 
@@ -4837,7 +4890,9 @@ export async function trackGateStall(
                     jsonb_set(
                       jsonb_set(
                         jsonb_set(
-                          jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,inconclusive}', $2::jsonb, true),
+                          jsonb_set(
+                            jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,failingTestsSummary}', 'null'::jsonb, true),
+                            '{gate_health,inconclusive}', $2::jsonb, true),
                           '{gate_health,failingTestsMeasured}', 'true'::jsonb, true),
                         '{gate_health,repairTickLegs}', $3::jsonb, true),
                       '{gate_health,failingTests}',
@@ -5257,7 +5312,7 @@ export async function trackGateStall(
           lastMainPin: mainPinAfterRun,
           pendingRunId: null,
           watchdogAlerted: false,
-          failingTests: [],
+          ...checkpointFailureSample([]),
           failingTestsMeasured: true,
           observedAt: Date.now(),
           observedCandidate: candidate?.slice(0, 12) ?? null,
@@ -5301,7 +5356,7 @@ export async function trackGateStall(
           lastMainPin: mainPinAfterRun,
           pendingRunId: null,
           watchdogAlerted: gh.watchdogAlerted ?? false,
-          failingTests: (failingTests ?? []).slice(0, 20),
+          ...checkpointFailureSample(failingTests),
           failingTestsMeasured: true,
           observedAt: Date.now(),
           observedCandidate: candidate?.slice(0, 12) ?? null,
@@ -5683,6 +5738,7 @@ export async function trackGateStall(
             heldHrs,
             candidate,
             failingTests,
+            failingTestsSummary: checkpointFailureSample(failingTests).failingTestsSummary,
             ownership: ownership ?? undefined,
             commitsBehindTip: staleness.commitsBehindTip,
           });
@@ -5756,7 +5812,7 @@ export async function trackGateStall(
       // lets `evaluateGateVerdictFreshness` tell hard proof from a coincidence of two shas.
       lastFromFresh: fromPin != null,
       watchdogAlerted: gh.watchdogAlerted ?? false,
-      failingTests: (failingTests ?? []).slice(0, 20),
+      ...checkpointFailureSample(failingTests),
       failingTestsMeasured: true,
       observedAt: Date.now(),
       observedCandidate: candidate?.slice(0, 12) ?? null,
@@ -5828,9 +5884,14 @@ export async function trackGateStall(
             AND COALESCE($2::jsonb->'gate_health'->>'lastVerdict', '') <> 'green'
             THEN jsonb_set(
               jsonb_set(
-                $2::jsonb->'gate_health',
-                '{failingTests}',
-                metadata->'gate_health'->'failingTests',
+                jsonb_set(
+                  $2::jsonb->'gate_health',
+                  '{failingTests}',
+                  metadata->'gate_health'->'failingTests',
+                  true
+                ),
+                '{failingTestsSummary}',
+                COALESCE(metadata->'gate_health'->'failingTestsSummary', 'null'::jsonb),
                 true
               ),
               '{failingTestsCarriedForward}',

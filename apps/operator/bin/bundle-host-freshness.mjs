@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { measureBootOperatorArtifact, writeOperatorArtifactManifest } from "../../../packages/operator-core/lib/release/operator-artifact.ts";
 
 const SCHEMA_VERSION = "bundle-host-freshness-v2";
 
@@ -234,8 +235,18 @@ function normalizedInputs(values) {
   };
 }
 
+function isOperatorHost(inputs) {
+  return inputs.outfile === resolve(inputs.source.repoRoot, "apps/operator/dist-host/hono-host.mjs");
+}
+
 function stamp(values) {
   const inputs = normalizedInputs(values);
+  // The maintained staging build must carry the same compiler-input-to-bundle
+  // provenance as a release build, before the fresh process starts. A source
+  // freshness stamp alone cannot identify the bytes loaded by that process.
+  const artifact = isOperatorHost(inputs) ? writeOperatorArtifactManifest({
+    root: inputs.source.repoRoot, entry: inputs.outfile, sourceSha: inputs.source.headSha,
+  }) : null;
   const dependencies = dependencyIdentity(inputs.source.repoRoot, inputs.entry);
   const outputTree = outputTreeIdentity(inputs.outfile, inputs.manifest);
   const record = {
@@ -246,6 +257,8 @@ function stamp(values) {
     outfile: inputs.outfile,
     dependencies,
     outputTree,
+    ...(artifact ? { artifact: { sourceSha: artifact.sourceSha,
+      bundleSha256: artifact.bundleSha256, manifestSha256: artifact.manifestSha256 } } : {}),
     stampedAt: new Date().toISOString(),
   };
   const tmp = `${inputs.manifest}.tmp.${process.pid}`;
@@ -269,6 +282,13 @@ function check(values) {
     throw new Error("freshness manifest entry mismatch");
   if (record.outfile !== inputs.outfile)
     throw new Error("freshness manifest outfile mismatch");
+  if (isOperatorHost(inputs)) {
+    const artifact = measureBootOperatorArtifact(inputs.outfile, inputs.source.headSha);
+    if (artifact.status !== "measured" || record.artifact?.sourceSha !== artifact.sourceSha
+      || record.artifact?.bundleSha256 !== artifact.bundleSha256
+      || record.artifact?.manifestSha256 !== artifact.manifestSha256)
+      throw new Error("freshness manifest boot-artifact mismatch");
+  }
   const dependencies = dependencyIdentity(inputs.source.repoRoot, inputs.entry);
   if (record.dependencies?.sha256 !== dependencies.sha256)
     throw new Error("freshness manifest installed-dependency mismatch");

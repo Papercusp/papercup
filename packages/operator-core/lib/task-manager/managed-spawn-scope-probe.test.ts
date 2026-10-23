@@ -35,6 +35,50 @@ describe('managed spawn current-scope evidence (P026)', () => {
     expect(registerTask).not.toHaveBeenCalled();
   });
 
+  it.each(['abort', 'deadline'])('refuses a late fork after awaited registration: %s', async mode => {
+    const cancellation = new AbortController(), spawnFn = vi.fn();
+    let registered!: () => void;
+    vi.mocked(registerTask).mockImplementationOnce(async () => {
+      await new Promise<void>(resolve => { registered = resolve; });
+      return {} as Awaited<ReturnType<typeof registerTask>>;
+    });
+    let clock = 1000;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      const pending = managedSpawn('node', ['worker.mjs'], { class: 'test-run', title: 'qualification',
+        argv: [], launchedBy: 'test:qualification', runtimeMaxSec: 10 },
+        { spawnFn, taskId: 'qualified123', scopeAvailable: true, signal: cancellation.signal,
+          deadlineEpochMs: 11000, requireRegistration: true, requireConfinement: true });
+      await vi.waitFor(() => expect(registered).toBeTypeOf('function'));
+      if (mode === 'abort') cancellation.abort(); else clock = 11000;
+      registered();
+      await expect(pending).rejects.toThrow();
+      expect(spawnFn).not.toHaveBeenCalled();
+    } finally { now.mockRestore(); }
+  });
+
+  it('includes OS termination grace in the immutable deadline after registration waits', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    vi.mocked(registerTask).mockImplementationOnce(async () => {
+      now.mockReturnValue(3000);
+      return {} as Awaited<ReturnType<typeof registerTask>>;
+    });
+    const payload = child(), spawnFn = vi.fn<typeof spawn>().mockReturnValue(payload as unknown as ReturnType<typeof spawn>);
+    try {
+      const launched = await managedSpawn('node', ['worker.mjs'], { class: 'test-run', title: 'qualification',
+        argv: [], launchedBy: 'test:qualification', runtimeMaxSec: 100 },
+        { spawnFn: spawnFn as unknown as typeof spawn, taskId: 'qualified123', scopeAvailable: true,
+          deadlineEpochMs: 11000, requireRegistration: true, requireConfinement: true, fs: filesystem() });
+      expect(spawnFn.mock.calls[0]?.[1]).toEqual(expect.arrayContaining([
+        '--property=RuntimeMaxSec=7', '--property=TimeoutStopSec=1s', '--property=SendSIGKILL=yes',
+      ]));
+      // wireExit's handoff grace observes wall time; restore it before draining.
+      now.mockRestore();
+      payload.emit('exit', 0); payload.emit('close', 0);
+      await launched.waitForCompletion();
+    } finally { now.mockRestore(); }
+  });
+
   it('enrolls and confines the real payload without launching a disposable bootstrap scope', async () => {
     const attestation = child();
     const payload = child();

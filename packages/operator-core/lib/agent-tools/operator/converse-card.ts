@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type postgres from 'postgres';
-import { deliverCommittedCardResponse, type CardResponse, type CardSpec, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { deliverCommittedCardResponse, type CardResponse, type CardSpec, type UnifiedToolContext,
+  type VersionedSnapshot, type OpenCardSnapshot } from '@papercusp/agent-mcp';
 import type { CardSpec as PersistedCardSpec, ChatTurnToolCall } from '@papercusp/chat-protocol';
 import { InteractionResolver, type InteractionRecord, type InteractionScope } from '@papercusp/chat-protocol/interactions';
 import { canonicalJson } from '../../external-bench/reproducibility/canonical-json';
@@ -13,6 +14,78 @@ import { hubListen } from '../../pg-listen-hub';
 type Parent = Omit<NonNullable<UnifiedToolContext['chatParent']>, 'credentialSha256'>;
 type Binding = Omit<OperatorChatInteractionBinding, 'nativeCallId'>;
 const schemaId = (spec: PersistedCardSpec) => `chat:ask_choice:${createHash('sha256').update(canonicalJson(spec)).digest('hex')}`;
+
+/** Rehydrate the existing snapshot wire shape from the same durable card port
+ * used by HTTP decisions. Local cards are hints: a persisted decision, expiry
+ * or revoked parent/child must override an obsolete in-process waiter. */
+export async function snapshotConverseCards(input: {
+  sql: postgres.Sql; workspaceId: string; live: VersionedSnapshot[];
+  authorizeAdditional: OperatorChatStoreOptions['authorize'];
+}): Promise<{ snapshots: VersionedSnapshot[]; nextExpiryAt: number | null }> {
+  const { sql, workspaceId, live, authorizeAdditional } = input;
+  if (!workspaceId || workspaceId === '*') throw new Error('unauthorized');
+  const liveIds = live.flatMap(vs => vs.snapshot.openCards.map(card => card.correlationId));
+  if (liveIds.length > 1000) throw new Error('interaction-snapshot-overflow');
+  const candidates = await sql.begin(async tx => {
+    if (!await authorizeAdditional(tx)) throw new Error('unauthorized');
+    return tx.unsafe<{ conversation_id: string; correlation_id: string; now: number }[]>(
+      `SELECT t.conversation_id,entry.key AS correlation_id,
+        (EXTRACT(EPOCH FROM clock_timestamp())*1000)::float8 AS now
+       FROM harness_shared.operator_turns t
+       JOIN harness_shared.operator_conversations c ON c.id=t.conversation_id AND c.workspace_id=t.workspace_id
+       CROSS JOIN LATERAL jsonb_each(COALESCE(t.chat_state->'interactions','{}'::jsonb)) entry
+       WHERE t.workspace_id=$1 AND t.role='assistant'
+         AND ((entry.value->>'status'='pending'
+           AND (entry.value->>'expiresAt')::numeric>EXTRACT(EPOCH FROM clock_timestamp())*1000)
+           OR entry.key=ANY($2::text[]))
+       ORDER BY t.conversation_id,t.id,entry.key LIMIT 1001`, [workspaceId, tx.array(liveIds)]);
+  });
+  if (candidates.length > 1000) throw new Error('interaction-snapshot-overflow');
+  const managed = new Set(candidates.map(candidate => candidate.correlation_id));
+  const byRun = new Map(live.filter(vs => vs.workspaceId === undefined || vs.workspaceId === workspaceId)
+    .map(vs => [vs.runId, { ...vs, workspaceId, snapshot: { ...vs.snapshot,
+      openCards: vs.snapshot.openCards.filter(card => !managed.has(card.correlationId)) } }]));
+  let nextExpiryAt: number | null = null;
+  for (const candidate of candidates) {
+    const card = await findConverseCard({ sql, workspaceId, conversationId: candidate.conversation_id,
+      correlationId: candidate.correlation_id, authorizeAdditional });
+    if (!card) throw new Error('needs-reconciliation');
+    const read = await card.read();
+    if (!read.ok) {
+      // A revoked parent/child hides its card. Storage/invalid state cannot
+      // masquerade as an empty healthy snapshot or a legacy fallback.
+      if (read.code === 'unauthorized') continue;
+      throw new Error(read.code);
+    }
+    const record = read.value;
+    if (record.status !== 'pending' || record.expiresAt <= candidate.now) continue;
+    const spec = record.spec;
+    const presentation = spec.presentation;
+    if (!presentation || (presentation.kind !== 'radio' && presentation.kind !== 'checkbox')
+      || !Array.isArray(presentation.options)) throw new Error('invalid-state');
+    const options = presentation.options;
+    const open: OpenCardSnapshot & { conversationId: string } = {
+      ...structuredClone(spec), correlationId: record.correlationId, conversationId: record.conversationId,
+      // Preparation records expiry and the exact timeout before publication.
+      createdAt: record.expiresAt - (spec.timeoutMs ?? 600_000),
+      presentation: presentation.kind === 'radio' ? { kind: 'radio', options,
+        ...(presentation.voiceAnswerable === undefined ? {} : { voiceAnswerable: presentation.voiceAnswerable }) }
+        : { kind: 'checkbox', options },
+      dataSchemaJson: { type: 'object', required: ['picks'], additionalProperties: false,
+        properties: { picks: { type: 'array', minItems: 1, maxItems: presentation.kind === 'radio' ? 1 : 6,
+          uniqueItems: true, items: { type: 'string', enum: options.map(option => option.id) } } } },
+    };
+    const { runId } = card.info();
+    const vs = byRun.get(runId) ?? { runId, workspaceId, version: 0, snapshot: { openCards: [] } };
+    vs.snapshot.openCards.push(open);
+    byRun.set(runId, vs);
+    nextExpiryAt = Math.min(nextExpiryAt ?? record.expiresAt, record.expiresAt);
+  }
+  // Recheck the responder even if there were no durable candidates (legacy
+  // cards and empty baselines require current authority too).
+  await sql.begin(async tx => { if (!await authorizeAdditional(tx)) throw new Error('unauthorized'); });
+  return { snapshots: [...byRun.values()], nextExpiryAt };
+}
 
 /** Recovery/HTTP ingress needs no live waiter or child process. Lookup is
  * scoped by the authenticated workspace and URL conversation; returned data
@@ -54,9 +127,8 @@ export async function findConverseRunCards(input: {
   return cards;
 }
 
-/** Concrete adapter for the existing ask_choice/store/resolver ports. It is
- * deliberately not enabled by constructing a turn: host and ALL ingress
- * paths must bind current responder authority before installing these hooks.
+/** Concrete adapter for the existing ask_choice/store/resolver ports. Host
+ * and ingress paths bind current authority before installing these hooks.
  * No map or model event is an authority or a correlation mechanism. */
 export function createConverseCard(input: {
   sql: postgres.Sql; parent: Parent; binding: Binding; tool: ChatTurnToolCall;

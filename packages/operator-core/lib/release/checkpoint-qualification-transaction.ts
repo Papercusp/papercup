@@ -21,7 +21,7 @@ import { FROZEN_REPAIR_CARRY_METADATA_KEY, FROZEN_REPAIR_CARRY_LAST_METADATA_KEY
   type FrozenRepairPendingCarry, type FrozenRepairCarryRecord } from './frozen-repair-carry';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
-import { evaluatePartialTaskContinuation, readPartialNativeCompletion, readPartialNativeProducer } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { evaluatePartialTaskContinuation, readPartialCurrentCommandCompletion, readPartialTaskCommandCompletion, readPartialNativeCompletion, readPartialNativeProducer } from '../../../../scripts/lib/partial-task-resume.mjs';
 import {
   dependencyGenerationInfraCode,
   GREEN_CHECKPOINT_RESULT_MARKER,
@@ -122,10 +122,10 @@ const systemdRunnerLiveness: RunnerLivenessProber = async (runner) => {
   if (!unit) return 'unknown';
   const read = (value: unknown): RunnerLiveness | null => {
     const state = String(value ?? '').trim();
-    if (state === 'active' || state === 'activating') return 'live';
+    if (state === 'active' || state === 'activating' || state === 'deactivating') return 'live';
     // `is-active` prints `inactive` for a unit systemd has never heard of, which is precisely the
     // case we care about: a transient unit that has already been collected.
-    if (state === 'inactive' || state === 'failed' || state === 'deactivating') return 'dead';
+    if (state === 'inactive' || state === 'failed') return 'dead';
     return null;
   };
   try {
@@ -156,7 +156,7 @@ export function configureRunnerLivenessProber(prober: RunnerLivenessProber | nul
  * hello-world-3-pot's gate for 7 days, every fire returning `conflict`.
  */
 function unboundReservationOutlivedCeiling(runner: QualificationPhysicalRunner, nowMs: number): boolean {
-  if (runner.pid != null || runner.unit?.trim()) return false;
+  if (runner.pid != null || runner.unit?.trim() || runner.childScopeUnits?.length) return false;
   const lastSign = Math.max(runner.reservedAtMs, runner.heartbeatAtMs ?? 0, runner.leaseExpiresAtMs ?? 0);
   return nowMs - lastSign > QUALIFICATION_OWNER_ABANDONED_MS;
 }
@@ -166,6 +166,19 @@ export async function probeRunnerLiveness(
   nowMs = Date.now(),
 ): Promise<RunnerLiveness> {
   if (!runner) return 'unknown';
+  // A checkpoint parent can die before its independently confined payload.
+  // Neither an expired lease nor the parent's PID proves that payload is gone.
+  let childUnknown = false;
+  for (const unit of runner.childScopeUnits ?? []) {
+    const child = await runnerLivenessProber({ ...runner, unit, pid: null, pidIdentity: null,
+      childScopeUnits: [] });
+    if (child === 'live') return 'live';
+    // Enrollment precedes systemd's asynchronous unit creation. Its absence
+    // during handoff cannot permit a successor to race the original launch.
+    if (child !== 'dead' || !Number.isSafeInteger(runner.childScopeReservedAtMs) ||
+        nowMs - runner.childScopeReservedAtMs! < QUALIFICATION_LAUNCH_GRACE_MS) childUnknown = true;
+  }
+  if (childUnknown) return 'unknown';
   if (unboundReservationOutlivedCeiling(runner, nowMs)) return 'dead';
   const observed = await runnerLivenessProber(runner);
   // A scope name is reserved in the DB before systemd-run creates it. Its temporary absence
@@ -231,6 +244,10 @@ export interface QualificationPhysicalRunner {
    * this field existed have none, and those must keep their pre-existing (lease-only) behaviour.
    */
   unit?: string | null;
+  /** Enrolled before fork; retained until the scoped payload is positively dead. */
+  childScopeUnits?: string[];
+  /** Last child enrollment; all missing units retain the launch handoff grace. */
+  childScopeReservedAtMs?: number;
   pid?: number | null;
   pidIdentity?: string | null;
   heartbeatAtMs?: number;
@@ -482,6 +499,64 @@ export interface QualificationWorkContinuation {
   supersededReceipts: QualificationWorkReceipt[];
   /** Immutable enrollment references, retained across physical runner replacement. */
   nativeProducers?: QualificationNativeProducerReference[];
+  /** Saved under the same row lock as receipts; never releases a still-live runner. */
+  lastYield?: QualificationWorkYield;
+}
+
+export interface QualificationWorkYield {
+  runnerId: string;
+  runId: string;
+  savedAtMs: number;
+  executionCutoffEpochMs: number;
+  yieldDeadlineEpochMs: number;
+  cleanupDeadlineEpochMs: number;
+  orphanDeadlineEpochMs: number;
+  callerDeadlineEpochMs: number | null;
+  completed: Array<{ unitId: string; completionId: string }>;
+  pendingUnitIds: string[];
+}
+
+function validQualificationWorkYield(value: QualificationWorkYield, work: QualificationWorkContinuation): boolean {
+  if (!value || typeof value.runnerId !== 'string' || !value.runnerId || typeof value.runId !== 'string' || !value.runId ||
+      ![value.savedAtMs, value.executionCutoffEpochMs, value.yieldDeadlineEpochMs,
+        value.cleanupDeadlineEpochMs, value.orphanDeadlineEpochMs].every(at => Number.isSafeInteger(at) && at >= 0) ||
+      value.executionCutoffEpochMs > value.savedAtMs || value.savedAtMs >= value.yieldDeadlineEpochMs ||
+      value.yieldDeadlineEpochMs >= value.cleanupDeadlineEpochMs || value.cleanupDeadlineEpochMs > value.orphanDeadlineEpochMs ||
+      (value.callerDeadlineEpochMs !== null && (!Number.isSafeInteger(value.callerDeadlineEpochMs) ||
+        value.cleanupDeadlineEpochMs > value.callerDeadlineEpochMs)) ||
+      !Array.isArray(value.completed) || !Array.isArray(value.pendingUnitIds)) return false;
+  const units = new Set(work.manifest.units.filter(unit => !unit.exclusion).map(unit => unit.id));
+  const ids = [...value.completed.map(receipt => receipt?.unitId), ...value.pendingUnitIds];
+  return ids.length === units.size && new Set(ids).size === ids.length && ids.every(id => units.has(id)) &&
+    new Set(value.completed.map(receipt => receipt?.completionId)).size === value.completed.length &&
+    value.completed.every(receipt => typeof receipt?.completionId === 'string' && !!receipt.completionId);
+}
+
+/** Persist a quantum cursor without surrendering custody before process cleanup.
+ * The caller's snapshot is checked against the locked canonical receipt population.
+ * Source validity and reuse permission remain the existing continuation validator's job. */
+export function recordQualificationWorkYield(current: CheckpointQualificationTransaction,
+  input: QualificationWorkProgressInput, checkpoint: QualificationWorkYield): QualificationTransition {
+  const conflict = (refusalReason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason });
+  if (input.updates.length) return conflict('yield-mixed-updates');
+  const custody = recordQualificationWorkProgress(current, input);
+  if (custody.status !== 'updated' && custody.status !== 'idempotent') return custody;
+  const work = custody.transaction.continuation!;
+  const activeUnits = new Set(work.manifest.units.filter(unit => !unit.exclusion).map(unit => unit.id));
+  const receipts = work.receipts.filter(receipt => activeUnits.has(receipt.unitId));
+  if (!validQualificationWorkYield(checkpoint, work) || checkpoint.runnerId !== input.runnerId || checkpoint.runId !== input.runId ||
+      checkpoint.savedAtMs !== (input.nowMs ?? Date.now()) ||
+      checkpoint.savedAtMs < current.updatedAtMs ||
+      checkpoint.completed.length !== receipts.length || checkpoint.completed.some(saved =>
+        !receipts.some(receipt => receipt.unitId === saved.unitId && receipt.completionId === saved.completionId)))
+    return conflict('yield-cursor-mismatch');
+  if (isDeepStrictEqual(work.lastYield, checkpoint)) return { status: 'idempotent', transaction: custody.transaction };
+  if (!receipts.some(receipt => receipt.observedAtMs >= current.currentPhysicalRunner!.reservedAtMs &&
+      receipt.observedAtMs <= checkpoint.savedAtMs &&
+      !work.lastYield?.completed.some(saved => saved.completionId === receipt.completionId)))
+    return conflict('yield-no-new-completion');
+  return { status: 'updated', transaction: { ...custody.transaction, updatedAtMs: checkpoint.savedAtMs,
+    continuation: { ...work, lastYield: structuredClone(checkpoint) } } };
 }
 
 export interface QualificationNativeProducerReference {
@@ -612,6 +687,7 @@ export function recordQualificationWorkProgress(
       repairHead: current.repairHead, root: input.root, taskKey: input.taskKey,
       manifest: structuredClone(prior?.manifest ?? input.manifest), receipts: [...receipts.values()],
       retryStates, supersededReceipts: history,
+      ...(prior?.lastYield ? { lastYield: structuredClone(prior.lastYield) } : {}),
       ...(prior?.nativeProducers ? { nativeProducers: structuredClone(prior.nativeProducers) } : {}) } } };
 }
 
@@ -1237,6 +1313,7 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
         candidate: row.candidate, repairHead: row.repairHead ?? null, manifest: work.manifest, receipts },
     }, expected).status === 'ready';
     if (!validate(work.receipts)) return null;
+    if (work.lastYield !== undefined && !validQualificationWorkYield(work.lastYield, work)) return null;
     const completions = new Set(work.receipts.map(receipt => receipt.completionId));
     for (const receipt of work.supersededReceipts) {
       if (!validate([receipt]) || completions.has(receipt.completionId)) return null;
@@ -1268,6 +1345,12 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
       (row.currentPhysicalRunner.pid != null &&
         (!Number.isInteger(row.currentPhysicalRunner.pid) || row.currentPhysicalRunner.pid <= 0)) ||
       (row.currentPhysicalRunner.pidIdentity != null && typeof row.currentPhysicalRunner.pidIdentity !== 'string') ||
+      (row.currentPhysicalRunner.childScopeUnits !== undefined &&
+        (!Array.isArray(row.currentPhysicalRunner.childScopeUnits) ||
+          (row.currentPhysicalRunner.childScopeUnits.length > 0 &&
+            (!Number.isSafeInteger(row.currentPhysicalRunner.childScopeReservedAtMs) || row.currentPhysicalRunner.childScopeReservedAtMs! < 0)) ||
+          new Set(row.currentPhysicalRunner.childScopeUnits).size !== row.currentPhysicalRunner.childScopeUnits.length ||
+          row.currentPhysicalRunner.childScopeUnits.some(unit => typeof unit !== 'string' || !/^pc-[0-9a-z]{4,64}\.scope$/.test(unit)))) ||
       !Array.isArray(row.currentPhysicalRunner.evidenceRefs) ||
       row.currentPhysicalRunner.evidenceRefs.some((ref) => typeof ref !== 'string'))
   )
@@ -1473,6 +1556,8 @@ export function waitQualificationTransaction(
   },
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
+  if (current.currentPhysicalRunner?.childScopeUnits?.length)
+    return { status: 'conflict', transaction: current, refusalReason: 'child-scope-custody-held' };
   if (workLineageConflicts(current, input)) return { status: 'conflict', transaction: current,
     refusalReason: 'continuation-lineage-mismatch' };
   if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
@@ -1694,6 +1779,33 @@ export function classifyQualificationVerdict(input: { reason: string; green?: bo
   return { kind: 'code-inconclusive', reason: input.reason || 'unknown' };
 }
 
+/** Child custody uses the same row and physical-run fence as durable results.
+ * Enrollment must commit before fork; release requires a positive death probe. */
+export function recordQualificationChildScope(current: CheckpointQualificationTransaction, input: {
+  attemptId: string; runnerId: string; runId: string; pidIdentity: string;
+  unit: string; operation: 'enroll' | 'release'; scopeLiveness?: RunnerLiveness; nowMs?: number;
+}): QualificationTransition {
+  const runner = current.currentPhysicalRunner;
+  if (current.phase !== 'running' || isTerminalQualificationOutcome(current.outcome) ||
+      current.attemptId !== input.attemptId || !runner || runner.id !== input.runnerId ||
+      current.runId !== input.runId || !runner.pidIdentity || runner.pidIdentity !== input.pidIdentity ||
+      !/^pc-[0-9a-z]{4,64}\.scope$/.test(input.unit) || !['enroll', 'release'].includes(input.operation))
+    return { status: 'conflict', transaction: current, refusalReason: 'child-scope-fence-mismatch' };
+  const units = runner.childScopeUnits ?? [];
+  if (input.operation === 'release' && input.scopeLiveness !== 'dead')
+    return { status: 'conflict', transaction: current, refusalReason: 'child-scope-death-unmeasured' };
+  if (units.includes(input.unit) === (input.operation === 'enroll'))
+    return { status: 'idempotent', transaction: current };
+  const nowMs = input.nowMs ?? Date.now();
+  if (!Number.isSafeInteger(nowMs) || nowMs < current.updatedAtMs)
+    return { status: 'conflict', transaction: current, refusalReason: 'child-scope-stale-clock' };
+  return { status: 'updated', transaction: { ...current, updatedAtMs: nowMs,
+    currentPhysicalRunner: { ...runner,
+      ...(input.operation === 'enroll' ? { childScopeReservedAtMs: nowMs } : {}),
+      childScopeUnits: input.operation === 'enroll'
+      ? [...units, input.unit] : units.filter(unit => unit !== input.unit) } } };
+}
+
 export function settleQualificationTransaction(
   current: CheckpointQualificationTransaction,
   input: {
@@ -1722,6 +1834,8 @@ export function settleQualificationTransaction(
     return { status: 'conflict', transaction: current };
   }
   const outcome = classifyQualificationVerdict(input);
+  if (current.currentPhysicalRunner?.childScopeUnits?.length)
+    return { status: 'conflict', transaction: current, refusalReason: 'child-scope-custody-held' };
   // Only the identical outcome is a replay. A changed run, candidate, or verdict may
   // never turn a terminal red into a green wake under the same logical attempt.
   if (isTerminalQualificationOutcome(current.outcome)) {
@@ -1808,7 +1922,7 @@ export function recoverQualificationScheduledTerminal(
   }
   const runner = current.currentPhysicalRunner;
   if (current.phase !== 'running' || !runner || runner.id !== input.runnerId ||
-      runner.pid != null || runner.unit || runner.phase !== 'launching' ||
+      runner.pid != null || runner.unit || runner.childScopeUnits?.length || runner.phase !== 'launching' ||
       !runner.evidenceRefs.includes(`gate-fire:${input.runnerId}`) ||
       !Number.isFinite(input.finishedAtMs) || input.finishedAtMs < runner.reservedAtMs) {
     return { status: 'conflict', transaction: current };
@@ -1954,6 +2068,8 @@ export function cancelQualificationTransaction(
   input: CancelQualificationInput,
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
+  if (current.currentPhysicalRunner?.childScopeUnits?.length)
+    return { status: 'conflict', transaction: current, refusalReason: 'child-scope-custody-held' };
   if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   const runner = current.currentPhysicalRunner;
   if (!runner || runner.unit !== input.unit.trim()) return { status: 'conflict', transaction: current };
@@ -2552,6 +2668,19 @@ export function recordStoredQualificationRunnerProgress(
   );
 }
 
+export function recordStoredQualificationChildScope(target: GateVerdictTarget,
+  input: Parameters<typeof recordQualificationChildScope>[1]): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, async current => {
+    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    const runner = current.currentPhysicalRunner;
+    // Never trust a caller-authored liveness value on the stored release path.
+    const scopeLiveness = input.operation === 'release' && runner
+      ? await runnerLivenessProber({ ...runner, unit: input.unit, pid: null, pidIdentity: null,
+        childScopeUnits: [] }) : undefined;
+    return recordQualificationChildScope(current, { ...input, scopeLiveness, nowMs: Date.now() });
+  });
+}
+
 export function recordStoredQualificationWorkProgress(
   target: GateVerdictTarget,
   input: QualificationWorkProgressInput,
@@ -2559,6 +2688,20 @@ export function recordStoredQualificationWorkProgress(
   return mutateStoredQualification(target, current => current
     ? recordQualificationWorkProgress(current, input)
     : { status: 'unreadable', error: 'missing attempt' });
+}
+
+export function recordStoredQualificationWorkYield(target: GateVerdictTarget,
+  input: QualificationWorkProgressInput, checkpoint: QualificationWorkYield,
+  signal?: AbortSignal): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, current => {
+    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    // Acquisition can outlive the caller's persistence reserve. Check again
+    // inside the locked transaction rather than trusting its pre-await clock.
+    const nowMs = Date.now();
+    if (signal?.aborted || nowMs >= checkpoint.yieldDeadlineEpochMs)
+      return { status: 'conflict', transaction: current, refusalReason: 'yield-deadline-exceeded' };
+    return recordQualificationWorkYield(current, { ...input, nowMs }, { ...checkpoint, savedAtMs: nowMs });
+  });
 }
 
 export interface QualificationNativeCompletionInput {
@@ -2901,11 +3044,17 @@ export function recordStoredQualificationVerdict(
  * population and enrolled native artifacts while the row is locked. No final event
  * or terminal state is written when any obligation or source check is unknown.
  */
+export interface QualificationCompositionOptions {
+  classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths'];
+  /** Independent source-owned inventory; observed outcomes may not define it. */
+  currentCommandDefinition?: (unit: QualificationWorkUnit, input: QualificationWorkProgressInput) => unknown | Promise<unknown>;
+}
+
 export function recordStoredQualificationComposedVerdict(
   target: GateVerdictTarget,
   input: QualificationWorkProgressInput,
   verdict: Omit<Parameters<typeof recordStoredQualificationVerdict>[1], 'attemptId'>,
-  options: { classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths'] } = {},
+  options: QualificationCompositionOptions = {},
 ): Promise<StoredQualificationMutation> {
   return mutateStoredQualification(target, async current => {
     if (!current) return { status: 'unreadable', error: 'missing attempt' };
@@ -2927,7 +3076,7 @@ export function recordStoredQualificationComposedVerdict(
 export function composeStoredQualificationWork(
   target: GateVerdictTarget,
   input: QualificationWorkProgressInput,
-  options: { classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths'] } = {},
+  options: QualificationCompositionOptions = {},
 ): Promise<StoredQualificationMutation> {
   return mutateStoredQualification(target, current => current
     ? composeQualificationWork(current, input, options)
@@ -2937,13 +3086,16 @@ export function composeStoredQualificationWork(
 async function composeQualificationWork(
   current: CheckpointQualificationTransaction,
   input: QualificationWorkProgressInput,
-  options: { classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths'] },
+  options: QualificationCompositionOptions,
 ): Promise<QualificationTransition> {
     const conflict = (refusalReason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason });
     if (input.updates.length || !current.continuation) return conflict('continuation-composition-unmeasured');
     const custody = recordQualificationWorkProgress(current, input);
     if (custody.status !== 'updated' && custody.status !== 'idempotent') return custody;
     let transaction = custody.transaction;
+    // Ephemeral capabilities come only from rereading native artifacts under
+    // this row's current fence. They are never recovered from stored receipts.
+    const currentEvidence: object[] = [];
     const interruptedTasks: Array<{ taskKey: string; endedAtMs: number }> = [];
     const terminalTasks: Array<{ taskKey: string; startedAtMs: number }> = [];
     const nativePaths = new Set((transaction.continuation!.nativeProducers ?? []).filter(ref => !ref.missingSnapshot)
@@ -2976,12 +3128,17 @@ async function composeQualificationWork(
         selectedSpecifications: ref.selectedSpecifications, classifyReadPaths: options.classifyReadPaths, requireTerminal: true,
         ...(ref.supersedesCompletionIds ? { supersedesCompletionIds: ref.supersedesCompletionIds } : {}),
       };
-      const observed = readPartialNativeCompletion(ref.outPath, { ...input, ...observation }, {
+      const observed = readPartialNativeCompletion(ref.outPath, { ...input, ...observation,
+        continuationTaskKey: input.taskKey,
+        runnerReservedAtMs: transaction.currentPhysicalRunner!.reservedAtMs,
+        nowMs: input.nowMs ?? Date.now(),
+      }, {
         classifyReadPaths: options.classifyReadPaths, requireTerminal: true,
         allowInterrupted: !!ended && await probeRunnerLiveness(ended, input.nowMs) === 'dead',
       });
       if (observed.status !== 'ready' || !('origin' in observed))
         return conflict(observed.reason ?? 'native-observation-unmeasured');
+      currentEvidence.push(...observed.currentEvidence);
       if (observed.origin.terminal === 'interrupted') {
         if (!ended) return conflict('native-producer-not-proved-dead');
         interruptedTasks.push({ taskKey: ref.taskKey, endedAtMs: ended.endedAtMs });
@@ -2997,8 +3154,42 @@ async function composeQualificationWork(
     // full-manifest evaluation below still accounts for every selected file.
     if (interruptedTasks.some(prior => !terminalTasks.some(next => next.taskKey === prior.taskKey &&
         next.startedAtMs >= prior.endedAtMs))) return conflict('native-successor-terminal-unmeasured');
-    const evaluation = evaluatePartialTaskContinuation({ root: input.root, taskKey: input.taskKey,
+    const retained = evaluatePartialTaskContinuation({ root: input.root, taskKey: input.taskKey,
       continuation: transaction.continuation }, { ...input, sourceCommit: input.candidate });
+    if (retained.status !== 'ready') return conflict('continuation-reuse-unmeasured');
+    const reusable = new Set<string>(retained.reused);
+    const authenticatedTasks = new Set<string>();
+    for (const unit of input.manifest.units.filter(unit => unit.kind !== 'test' && !unit.exclusion)) {
+      // Eligible retained work is disjoint from current-only authentication.
+      // Requiring its old physical capture to match this runner would silently
+      // revoke the reuse decision that already omitted its original command.
+      if (reusable.has(unit.id)) continue;
+      const receipt = transaction.continuation!.receipts.find(receipt => receipt.unitId === unit.id);
+      if (receipt?.state !== 'pass') continue;
+      const definition = await options.currentCommandDefinition?.(unit, input);
+      if (!definition) continue;
+      const expected = { ...input, sourceCommit: input.candidate,
+        runnerReservedAtMs: transaction.currentPhysicalRunner!.reservedAtMs, nowMs: input.nowMs ?? Date.now() };
+      if (unit.kind === 'guard') {
+        // A generic zero-exit command observation cannot discharge source-owned
+        // npm hooks/chains. Authenticate the complete atomic guard population.
+        const task = definition as { task?: string };
+        if (typeof task.task !== 'string' || authenticatedTasks.has(task.task)) continue;
+        const outcomes = receipt.proof?.commandOutcomes;
+        if (!Array.isArray(outcomes) || outcomes.length !== 1) return conflict('task-command-outcome-unmeasured');
+        const observed = readPartialTaskCommandCompletion(outcomes[0], expected, definition);
+        if (observed.status !== 'ready' || observed.receipts.some(value =>
+            !isDeepStrictEqual(value, transaction.continuation!.receipts.find(saved => saved.unitId === value.unitId))))
+          return conflict('task-command-completion-mismatch');
+        authenticatedTasks.add(task.task);
+        currentEvidence.push(...observed.currentEvidence);
+        continue;
+      }
+      const observed = readPartialCurrentCommandCompletion(receipt, expected, definition);
+      if (observed.status === 'ready') currentEvidence.push(...observed.currentEvidence);
+    }
+    const evaluation = evaluatePartialTaskContinuation({ root: input.root, taskKey: input.taskKey,
+      continuation: transaction.continuation }, { ...input, sourceCommit: input.candidate }, { currentEvidence });
     if (evaluation.status !== 'ready' || evaluation.verdict !== 'green') return conflict('continuation-verdict-not-green');
     try {
       // Frozen candidates are immutable. Inspect the actual root instead of

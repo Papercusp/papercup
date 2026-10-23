@@ -16,7 +16,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const durableMocks = vi.hoisted(() => ({ admit: vi.fn(), bind: vi.fn(), finish: vi.fn(), observe: vi.fn() }));
+const durableMocks = vi.hoisted(() => ({ admit: vi.fn(), bind: vi.fn(), finish: vi.fn(), observe: vi.fn(), publish: vi.fn() }));
 vi.mock('../converse-turn', () => ({ admitConverseTurn: durableMocks.admit }));
 vi.mock('../../../operator-conversation-compaction', () => ({ maybeCompactConversation: vi.fn(async () => undefined) }));
 vi.mock('@papercusp/db-org', async original => ({ ...(await original<Record<string, unknown>>()), getOrgPg: () => ({ sql: {} }) }));
@@ -217,10 +217,13 @@ let fetchMock: any;
 
 beforeEach(() => {
   durableMocks.admit.mockReset(); durableMocks.bind.mockReset(); durableMocks.finish.mockReset(); durableMocks.observe.mockReset();
+  durableMocks.publish.mockReset();
+  durableMocks.publish.mockImplementation(async (event, emit) => emit({ event }));
   durableMocks.bind.mockImplementation(async mount => ({ ...mount, url: mount.url + '&chat_binding=signed' }));
   durableMocks.finish.mockResolvedValue({ conversationId: 'conv-a', turnId: 'durable-turn', seq: 4 });
   durableMocks.admit.mockResolvedValue({ identity: { conversationId: 'conv-a', turnId: 'durable-turn' },
-    bindMount: durableMocks.bind, finalize: durableMocks.finish, observeToolResult: durableMocks.observe });
+    bindMount: durableMocks.bind, finalize: durableMocks.finish, observeToolResult: durableMocks.observe, publish: durableMocks.publish,
+    watchCancellation: async () => ({ stop() {} }) });
   customerPiMocks.spawnTransform.mockReturnValue(false);
   customerPiMocks.start.mockClear();
   customerPiMocks.end.mockClear();

@@ -262,7 +262,7 @@ export default defineTool({
   abortCompletionReceipt: gitSyncRunAbortCompletionReceipt,
   profile: 'engineer',
   description:
-    "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. Mutating fires must execute on the background-worker host; a request-only operator refuses before entering git-sync, while dryRun:true remains a read-only preview everywhere. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",
+    "FIRE git-sync NOW — run its routine action once on demand. Mutations require the background-worker host; a request-only operator refuses, while dryRun:true previews everywhere. A LOCAL commit differs from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. Uses the scheduled action's lock, content guard and attribution. release:deploy fires this before the normal publication/gate path.",
   capability: 'operator:write',
   guidance: {
     when: 'You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.) Use dryRun:true first when you only need to inspect the selected checkout.',

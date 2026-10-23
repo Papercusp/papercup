@@ -104,12 +104,13 @@ export function judgeS42Run(kind: S42Case, run: Pick<RunSummary, 'turns'>) {
   if (!state.claimed && (!state.subscribed || !state.rechecked)) errors.push('missing-subscribe-recheck');
   if (kind === 'empty' && !state.stopped) errors.push('empty-lane-never-parks');
   if (kind !== 'empty' && !state.claimed) errors.push('ready-work-never-claimed');
+  if (state.claimed && !state.progressed) errors.push('claimed-work-never-progressed');
   return [...new Set(errors)].map(error => ({ assertKind: 'custom:drain-watch-recheck:' + error,
     severity: 'error' as const, claim: `${kind}: ${error}` }));
 }
 
 export const SU_S42_DRAIN_WATCH_RECHECK: Scenario[] = S42_CASES.map(kind => ({
-  id: 'su-S42-drain-watch-' + kind, version: 5, target: 'su', transport: 'in-process',
+  id: 'su-S42-drain-watch-' + kind, version: 6, target: 'su', transport: 'in-process',
   description: 'A missed lane must install the standing watch, recheck, and progress admitted work or park after a verified miss. Hidden arrival: ' + kind,
   persona: BRIEF_ADMIN, targetConfig: { modes: ['auto'] },
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },

@@ -16,6 +16,11 @@ import {
   reserveQualificationRunner,
   reserveStoredQualificationRunner,
   recordStoredQualificationWorkProgress,
+  recordStoredQualificationChildScope,
+  recordQualificationChildScope,
+  configureRunnerLivenessProber,
+  recordStoredQualificationWorkYield,
+  recordQualificationWorkProgress,
   recordStoredQualificationVerdict,
   type QualificationWorkProgressInput,
   retargetPreSuiteAttemptToOwningRepairHead,
@@ -30,6 +35,29 @@ import {
   markFrozenRepairAdmitted,
   markFrozenRepairFixerDispatched,
 } from './frozen-candidate-repair-queue';
+
+describe('stored qualification child scope custody', () => {
+  it.each(['live', 'unknown', 'dead'] as const)('probes %s payload under the row lock and ignores caller death claims', async state => {
+    const fence = { attemptId: 'attempt-1', runnerId: 'runner', runId: 'run', pidIdentity: 'boot:42' };
+    const begun = beginQualificationTransaction(null, { attemptId: fence.attemptId, nowMs: 100 }).transaction;
+    const runner = reserveQualificationRunner(begun, { ...fence, pid: 42, started: true,
+      leaseDurationMs: 1000, nowMs: 200 }).transaction;
+    const current = recordQualificationChildScope(runner, { ...fence, operation: 'enroll',
+      unit: 'pc-child123.scope', nowMs: 300 }).transaction;
+    const { statements } = transactionHarness({ qualificationTransaction: current });
+    configureRunnerLivenessProber(candidate => {
+      expect(statements[0]!.text).toContain('FOR UPDATE');
+      expect(candidate).toMatchObject({ unit: 'pc-child123.scope', pid: null, pidIdentity: null });
+      return state;
+    });
+    try {
+      const result = await recordStoredQualificationChildScope(target, { ...fence, operation: 'release',
+        unit: 'pc-child123.scope', scopeLiveness: 'dead' });
+      expect(result.status).toBe(state === 'dead' ? 'updated' : 'conflict');
+      expect(statements.some(value => value.text.includes('UPDATE harness_shared.routines'))).toBe(state === 'dead');
+    } finally { configureRunnerLivenessProber(null); }
+  });
+});
 
 type QueryResult = Record<string, unknown>[];
 
@@ -61,6 +89,23 @@ describe('stored continuation uses the existing qualification row authority', ()
     const { statements } = transactionHarness({ qualificationTransaction: current });
     expect(await recordStoredQualificationWorkProgress(target, { ...input, runnerId: 'old-runner' }))
       .toMatchObject({ status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+    expect(statements.some(value => value.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+  });
+
+  it.each(['expired', 'cancelled'] as const)('refuses a %s yield after acquiring the row lock', async mode => {
+    const { current, input } = fixture();
+    const saved = recordQualificationWorkProgress(current, input).transaction;
+    const { statements } = transactionHarness({ qualificationTransaction: saved });
+    const now = Date.now(), controller = new AbortController();
+    if (mode === 'cancelled') controller.abort();
+    const result = await recordStoredQualificationWorkYield(target, { ...input, nowMs: now }, {
+      runnerId: input.runnerId, runId: input.runId, savedAtMs: now,
+      executionCutoffEpochMs: now - 1, yieldDeadlineEpochMs: mode === 'expired' ? now - 1 : now + 10000,
+      cleanupDeadlineEpochMs: now + 20000, orphanDeadlineEpochMs: now + 30000,
+      callerDeadlineEpochMs: now + 20000, completed: [], pendingUnitIds: ['a'],
+    }, controller.signal);
+    expect(result).toMatchObject({ status: 'conflict', refusalReason: 'yield-deadline-exceeded' });
+    expect(statements[0]!.text).toContain('FOR UPDATE');
     expect(statements.some(value => value.text.includes('UPDATE harness_shared.routines'))).toBe(false);
   });
   it.each([{ reason: 'advanced', green: true }, { reason: 'up-to-date', green: null }])(

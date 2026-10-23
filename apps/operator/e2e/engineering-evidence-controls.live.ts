@@ -4,6 +4,11 @@ import { join } from 'node:path';
 import { test, expect } from './_egress';
 import { assertPlanAuditReleaseHealth } from './_plan-audit-release-config';
 import { encodeScopedRef } from '@papercusp/operator-ui/papercup-chat/chat-ref-popup-params';
+import { POSTHOG_PUBLIC_DEFAULTS } from '../../../packages/operator-core/lib/posthog-public-defaults';
+
+// Real-workspace proof retains its configured opt-in telemetry. Declare that
+// reviewed origin explicitly; the shared fixture still rejects other origins.
+test.use({ egressAllowedOrigins: [new URL(POSTHOG_PUBLIC_DEFAULTS.host).origin] });
 
 // This controlled response seam exercises the actual mounted app and its shared
 // primitives. It supplies no canonical graph or execution proof for P-007.

@@ -50,7 +50,7 @@ import {
   type GateVerdictTarget,
 } from './release/gate-verdict-target';
 import { GATE_FIRE_ID_ENV, isGateFireId, mintGateFireId, recordGateFire } from './release/gate-fire-ledger';
-import { checkpointScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
+import { checkpointScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS, TASK_DEADLINE_EPOCH_MS_ENV } from './systemd-scope';
 import { admitCheckpointMemory, type CheckpointMemoryAdmission } from './release/checkpoint-memory-admission';
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from './release/checkpoint-qualification-transaction';
 import type { CheckpointEligibilitySnapshot } from './release/checkpoint-eligibility-snapshot';
@@ -1903,7 +1903,11 @@ export function buildCheckpointSystemdArgv(
   clearEnv: string[] = [],
   /** Exact runnable provenance. Invalid/preflight-only values are never forwarded. */
   candidateSource?: CheckpointCandidateSource | null,
+  launchStartedAtMs = Date.now(),
 ): string[] {
+  const inheritedDeadlines = [extraEnv[TASK_DEADLINE_EPOCH_MS_ENV], process.env[TASK_DEADLINE_EPOCH_MS_ENV]]
+    .map(Number).filter(value => Number.isSafeInteger(value) && value > 0);
+  const callerDeadlineEpochMs = Math.min(launchStartedAtMs + MANUAL_CHECKPOINT_WATCHDOG_MS, ...inheritedDeadlines);
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
   // `systemd-run --user`, which does NOT inherit the launching process env — so without this it always
@@ -1992,7 +1996,7 @@ export function buildCheckpointSystemdArgv(
       : [];
   const gateFireEnv = isGateFireId(gateFireId) ? [`--setenv=${GATE_FIRE_ID_ENV}=${gateFireId}`] : [];
   const routedEnv = Object.entries(extraEnv)
-    .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+    .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && key !== TASK_DEADLINE_EPOCH_MS_ENV)
     .map(([key, value]) => `--setenv=${key}=${value}`);
   return [
     '--user',
@@ -2017,6 +2021,7 @@ export function buildCheckpointSystemdArgv(
     ...greenCheckpointDbTargetSetenvArgs(),
     `--setenv=${MANUAL_CHECKPOINT_WATCHDOG_ENV}=${MANUAL_CHECKPOINT_WATCHDOG_MS}`,
     ...routedEnv,
+    `--setenv=${TASK_DEADLINE_EPOCH_MS_ENV}=${callerDeadlineEpochMs}`,
     ...verdictEnv,
     ...qualificationEnv,
     ...gateFireEnv,

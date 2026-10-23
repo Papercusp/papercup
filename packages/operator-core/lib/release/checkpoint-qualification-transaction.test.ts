@@ -13,7 +13,9 @@ import {
   projectCheckpointQualificationState,
   QUALIFICATION_PROGRESS_STALE_MS,
   recordQualificationRunnerProgress,
+  recordQualificationChildScope,
   recordQualificationWorkProgress,
+  recordQualificationWorkYield,
   type QualificationWorkProgressInput,
   isPostVerdictHang,
   QUALIFICATION_POST_VERDICT_HANG_MS,
@@ -55,6 +57,57 @@ const begin = () =>
     evidenceRefs: ['tool:release:checkpoint-run'],
     nowMs: 100,
   }).transaction;
+
+describe('qualification child scope custody', () => {
+  const fence = { attemptId: 'attempt-1', runnerId: 'runner', runId: 'run', pidIdentity: 'boot:42' };
+  const fixture = () => reserveQualificationRunner(begin(), { ...fence, pid: 42,
+    unit: 'parent.scope', started: true, leaseDurationMs: 1000, nowMs: 200 }).transaction;
+  const enroll = (unit = 'pc-child123.scope') => recordQualificationChildScope(fixture(), {
+    ...fence, unit, operation: 'enroll', nowMs: 300 }).transaction;
+
+  it('durably recovers enrolled payloads and refuses settlement or cancellation before death', () => {
+    const current = parseCheckpointQualificationTransaction(enroll())!;
+    expect(current.currentPhysicalRunner!.childScopeUnits).toEqual(['pc-child123.scope']);
+    expect(waitQualificationTransaction(current, { attemptId: fence.attemptId, reason: 'infra-inconclusive' }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'child-scope-custody-held' });
+    expect(settleQualificationTransaction(current, { ...fence, reason: 'not-green', green: false }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'child-scope-custody-held' });
+    expect(cancelQualificationTransaction(current, { attemptId: fence.attemptId, unit: 'parent.scope' }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'child-scope-custody-held' });
+  });
+
+  it.each(['live', 'unknown', undefined] as const)('retains payload custody for %s liveness', scopeLiveness => {
+    const current = enroll();
+    expect(recordQualificationChildScope(current, { ...fence, unit: 'pc-child123.scope',
+      operation: 'release', scopeLiveness, nowMs: 400 }))
+      .toMatchObject({ status: 'conflict', transaction: current, refusalReason: 'child-scope-death-unmeasured' });
+  });
+
+  it('releases only the dead payload and permits a successor after the last payload is gone', () => {
+    const first = enroll();
+    const second = recordQualificationChildScope(first, { ...fence, unit: 'pc-child456.scope',
+      operation: 'enroll', nowMs: 400 }).transaction;
+    const release = (current: Parameters<typeof recordQualificationChildScope>[0], unit: string) => recordQualificationChildScope(current, { ...fence, unit,
+      operation: 'release', scopeLiveness: 'dead', nowMs: 500 });
+    const partial = release(second, 'pc-child123.scope').transaction;
+    expect(partial.currentPhysicalRunner!.childScopeUnits).toEqual(['pc-child456.scope']);
+    const freed = release(partial, 'pc-child456.scope').transaction;
+    expect(waitQualificationTransaction(freed, { attemptId: fence.attemptId, reason: 'infra-inconclusive',
+      runId: fence.runId, nowMs: 600 }).status).toBe('updated');
+  });
+
+  it('refuses stale runners, malformed units, duplicate recovery data and backwards clocks', () => {
+    const current = enroll();
+    for (const wrong of [{ runnerId: 'old' }, { runId: 'old' }, { pidIdentity: 'old' },
+      { attemptId: 'old' }, { unit: 'unowned.service' }, { nowMs: 299 }]) {
+      expect(recordQualificationChildScope(current, { ...fence, unit: 'pc-other123.scope',
+        operation: 'enroll', nowMs: 400, ...wrong }).status).toBe('conflict');
+    }
+    const duplicate = structuredClone(current);
+    duplicate.currentPhysicalRunner!.childScopeUnits!.push('pc-child123.scope');
+    expect(parseCheckpointQualificationTransaction(duplicate)).toBeNull();
+  });
+});
 
 describe('prepared selection authority shape', () => {
   const prepared = (): PreparedCheckpointSelectionRecord => ({
@@ -133,6 +186,32 @@ describe('fenced durable remaining-work continuation', () => {
       manifest: { schemaVersion: 1, units: [] } } })).toBeNull();
     expect(parseCheckpointQualificationTransaction({ ...recovered, continuation: { ...recovered.continuation,
       supersededReceipts: recovered.continuation!.receipts } })).toBeNull();
+  });
+
+  it('saves the exact yield cursor while retaining single-flight custody through cleanup', () => {
+    const saved = recordQualificationWorkProgress(running(), input()).transaction;
+    const checkpoint = { runnerId: 'runner-1', runId: 'run-1', savedAtMs: 350,
+      executionCutoffEpochMs: 340, yieldDeadlineEpochMs: 400, cleanupDeadlineEpochMs: 600,
+      orphanDeadlineEpochMs: 700, callerDeadlineEpochMs: 650,
+      completed: [{ unitId: 'a', completionId: 'completion-a' }], pendingUnitIds: ['post'] };
+    const result = recordQualificationWorkYield(saved, { ...input(), updates: [], nowMs: 350 }, checkpoint);
+    expect(result.status).toBe('updated');
+    expect(result.transaction.currentPhysicalRunner).toEqual(saved.currentPhysicalRunner);
+    expect(result.transaction.continuation!.lastYield).toEqual(checkpoint);
+    expect(parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(result.transaction))))
+      .toEqual(result.transaction);
+    expect(reserveQualificationRunner(result.transaction, { attemptId: 'attempt-1', runnerId: 'rival',
+      candidate: 'candidate-1', incumbentLiveness: 'live', leaseDurationMs: 1000, nowMs: 360 }).status).toBe('conflict');
+    const waiting = settleQualificationTransaction(result.transaction, { attemptId: 'attempt-1',
+      runId: 'run-1', candidate: 'candidate-1', reason: 'infra-inconclusive', green: null, nowMs: 380 }).transaction;
+    expect(waiting.phase).toBe('waiting');
+    expect(waiting.continuation).toEqual(result.transaction.continuation);
+    for (const override of [{ pendingUnitIds: [] }, { completed: [] },
+      { completed: [{ unitId: 'a', completionId: 'forged' }] }, { savedAtMs: 400 },
+      { callerDeadlineEpochMs: 550 }]) {
+      expect(recordQualificationWorkYield(saved, { ...input(), updates: [], nowMs: 350 },
+        { ...checkpoint, ...override }).status).toBe('conflict');
+    }
   });
 
   it.each(['live', 'unknown'] as const)('refuses a second runner even with an expired lease and %s liveness', liveness => {

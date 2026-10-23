@@ -2,13 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 
 const mocks = vi.hoisted(() => ({ begin: vi.fn(), finish: vi.fn(), authority: vi.fn(), mint: vi.fn(), options: vi.fn(),
-  readBinding: vi.fn(), verifyBinding: vi.fn(), associate: vi.fn() }));
+  readBinding: vi.fn(), verifyBinding: vi.fn(), associate: vi.fn(), cas: vi.fn(), append: vi.fn() }));
 vi.mock('../../operator-chat-store', () => ({
   OperatorChatStore: class {
     constructor(options: unknown) { mocks.options(options); }
     beginTurn = mocks.begin;
     finalizeTurn = mocks.finish;
     associateInteractionCall = mocks.associate;
+    compareAndSwap = mocks.cas;
+    appendEvent = mocks.append;
   },
   operatorChatSessionAuthority: mocks.authority,
 }));
@@ -27,10 +29,71 @@ beforeEach(() => {
   mocks.begin.mockResolvedValue(true); mocks.finish.mockResolvedValue(undefined);
   mocks.authority.mockReturnValue('current-authority-fence'); mocks.mint.mockResolvedValue('signed-association');
   mocks.readBinding.mockReturnValue(null); mocks.verifyBinding.mockResolvedValue(null); mocks.associate.mockResolvedValue(true);
+  mocks.cas.mockResolvedValue(true); mocks.append.mockImplementation(async event => event);
 });
 describe('P010 scoped converse lifecycle admission adapter', () => {
   const result = { name: 'mcp__agentmcp__chat_ask_choice', output: 'native-result', isError: false, callId: 'native-a' };
   const binding = { dispatchCallId: 'dispatch-a', childRunId: 'child-a', credentialSha256: 'b'.repeat(64), correlationId: 'card-a' };
+
+  it('persists ordered native events before publication and finalization without widening recovery capabilities', async () => {
+    const turn = await admitConverseTurn(input());
+    expect(mocks.cas).toHaveBeenCalledWith(turn.identity, null, expect.objectContaining({
+      state: expect.objectContaining({ phase: 'running', lastSequence: 0, capabilities: {
+        connectionReplay: true, persistedHistory: true, persistedInteractionDecisions: true,
+        completedToolCheckpoints: false, interruptedTurnRecovery: false,
+      } }), effects: {},
+    }));
+    let commit!: () => void;
+    mocks.append.mockImplementationOnce(event => new Promise(resolve => { commit = () => resolve(event); }));
+    const publish = vi.fn();
+    const delta = { type: 'delta' as const, text: 'Original' };
+    const first = turn.publish(delta, publish);
+    delta.text = 'Mutated';
+    const second = turn.publish({ type: 'tool_call', name: 'read', callId: 'native-call', input: { safe: true } }, publish);
+    const final = turn.finalize({ status: 'completed', text: 'Original' });
+    await vi.waitFor(() => expect(mocks.append).toHaveBeenCalledOnce());
+    expect(publish).not.toHaveBeenCalled(); expect(mocks.finish).not.toHaveBeenCalled();
+    commit(); await Promise.all([first, second, final]);
+    expect(mocks.append.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ schemaVersion: 1, ...turn.identity, sequence: 1,
+        event: { type: 'delta', text: 'Original' } }),
+      expect.objectContaining({ schemaVersion: 1, ...turn.identity, sequence: 2,
+        event: { type: 'tool_call', name: 'read', callId: 'native-call', input: { safe: true } } }),
+    ]);
+    expect(new Set(mocks.append.mock.calls.map(([event]) => event.eventId)).size).toBe(2);
+    expect(publish).toHaveBeenCalledTimes(2); expect(mocks.finish).toHaveBeenCalledOnce();
+  });
+
+  it('keeps an uncertain event write unacknowledged and never retries it or publishes later events', async () => {
+    const turn = await admitConverseTurn(input());
+    mocks.append.mockRejectedValueOnce(new Error('event-ack-lost'));
+    const publish = vi.fn();
+    await expect(turn.publish({ type: 'delta', text: 'Partial' }, publish)).rejects.toThrow('event-ack-lost');
+    await expect(turn.publish({ type: 'delta', text: 'Later' }, publish)).rejects.toThrow('event-ack-lost');
+    // Failure can preserve already assembled partial text, but cannot attest
+    // successful replay coverage or write an optimistic completed result.
+    await expect(turn.finalize({ status: 'completed', text: 'Partial' })).rejects.toThrow('event-ack-lost');
+    expect(publish).not.toHaveBeenCalled(); expect(mocks.append).toHaveBeenCalledOnce();
+    expect(mocks.finish).not.toHaveBeenCalled();
+  });
+
+  it('refuses an invalid native identity before any event write, and never persists state-channel cards', async () => {
+    const turn = await admitConverseTurn(input());
+    const publish = vi.fn();
+    await expect(turn.publish({ type: 'tool_call', name: 'read' } as never, publish)).rejects.toThrow('invalid-frame');
+    expect(mocks.append).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled();
+    await expect(turn.publish({ type: 'state', version: 1, snapshot: {} } as never, publish)).rejects.toThrow('invalid-frame');
+    expect(mocks.append).not.toHaveBeenCalled();
+  });
+
+  it('refuses the provider mount when initial replay checkpoint admission is uncertain', async () => {
+    mocks.cas.mockResolvedValue(false);
+    await expect(admitConverseTurn(input())).rejects.toThrow('needs-reconciliation');
+    expect(mocks.mint).not.toHaveBeenCalled();
+    mocks.cas.mockRejectedValue(new Error('checkpoint-ack-lost'));
+    await expect(admitConverseTurn(input())).rejects.toThrow('checkpoint-ack-lost');
+    expect(mocks.mint).not.toHaveBeenCalled();
+  });
 
   it('awaits the exact signed native result association before finalizing canonical raw arguments', async () => {
     const turn = await admitConverseTurn(input());

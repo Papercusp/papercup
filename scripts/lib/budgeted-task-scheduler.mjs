@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { lstat, open, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, isAbsolute } from "node:path";
@@ -13,7 +13,7 @@ import { formatTaskBudgetRefusal } from "./task-exit-class.mjs";
 import { scriptCommandWords } from "./executed-source-map.mjs";
 import { readTaskCgroupLimit, readTaskCgroupMemoryMaxMb } from "./task-cgroup-limits.mjs";
 export { readTaskCgroupMemoryMaxMb } from "./task-cgroup-limits.mjs";
-import { readTaskDeadlineEpochMs, formatTaskDeadlineRefusal } from './task-deadline.mjs';
+import { readTaskDeadlineEpochMs, formatTaskDeadlineRefusal, admitTaskDeadline } from './task-deadline.mjs';
 export { TASK_DEADLINE_EPOCH_MS_ENV, TASK_DEADLINE_REFUSAL_MARKER,
   readTaskDeadlineEpochMs, formatTaskDeadlineRefusal, isTaskDeadlineRefusal } from './task-deadline.mjs';
 
@@ -212,6 +212,31 @@ function retainReporterEvaluatorArtifacts(payload, out, persist) {
  * the real parent invocation and raw streams; it cannot certify unobserved npm
  * lifecycle/shell steps, executable resolution or runtime dependency closure.
  * Call before the finished pulse so a killed aggregate cannot lose this receipt. */
+export function syncBudgetedTaskNativeExecutionReceipt(saved) {
+  const sync = file => {
+    const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+  };
+  const retained = (value, depth = 0) => {
+    if (depth > 24) throw new Error('native-artifact-nesting-invalid');
+    if (!value || typeof value !== 'object') return;
+    for (const [key, pin] of Object.entries(value)) {
+      if (key === 'artifact' && pin !== null) {
+        if (!pin || basename(pin.ref ?? '') !== pin.ref || !comparisonDigest(pin.sha256))
+          throw new Error('native-artifact-reference-invalid');
+        const bytes = readNativeArtifactBytes(join(saved.root, pin.ref), pin.byteLength, 64 * 1024 * 1024);
+        if (createHash('sha256').update(bytes).digest('hex') !== pin.sha256) throw new Error('native-artifact-digest-mismatch');
+        sync(join(saved.root, pin.ref));
+      } else retained(pin, depth + 1);
+    }
+  };
+  retained(saved.observation);
+  for (const pin of [saved.receipt, saved.logs.stdout, saved.logs.stderr]) sync(join(saved.root, pin.ref));
+  sync(saved.root);
+  sync(dirname(saved.root));
+  sync(dirname(dirname(saved.root)));
+}
+
 export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
   if (!input || typeof input.task !== "string" || !input.task ||
       typeof input.attempt !== "string" || !input.attempt ||
@@ -563,6 +588,7 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
   }
   const receipt = { schemaVersion: 1, kind: "affected-task-native-execution", task: input.task,
     attempt: input.attempt, originalCommand: input.originalCommand ?? null,
+    ...(input.currentExecution ? { currentExecution: structuredClone(input.currentExecution) } : {}),
     execution: { command: input.command.slice(), cwd: input.cwd,
       ...(input.invocation ? { invocation: { command: input.invocation.command.slice(),
         environmentSha256: input.invocation.environmentSha256 } } : {}),
@@ -2541,7 +2567,9 @@ function createBudgetedTaskRun(tasks, options) {
     return admitted;
   };
 
-  const runOne = async (entry, lane, workers) => {
+  const runOne = async (entry, lane, requestedWorkers) => {
+    const execute = async (workers) => {
+    if (firstError) throw firstError;
     const memoryMb = workers * budget.workerMemoryMb;
     admissions += 1;
     activeWorkers += workers;
@@ -2583,6 +2611,12 @@ function createBudgetedTaskRun(tasks, options) {
       activeWorkers -= workers;
       activeTasks -= 1;
     }
+    };
+    try {
+      return options.admitTask
+        ? await options.admitTask(entry.task, requestedWorkers, execute, entry.index)
+        : await execute(requestedWorkers);
+    } catch (error) { firstError ??= error; throw error; }
   };
 
   const runLane = async (lane, workers, take, turn) => {
@@ -2822,6 +2856,65 @@ export async function runBudgetedTasks(tasks, options) {
     Number(options?.admissionTimeoutMs) > 0
       ? Number(options.admissionTimeoutMs)
       : SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS;
+  if (typeof options.taskAdmissionKey === 'function') {
+    // Native artifact readers also import this module without running tasks.
+    // Resolve the new admission API only at its execution boundary.
+    const { withFsMutexBudget } = await import('./fs-mutex.mjs');
+    const budget = resolveTaskBudget(options);
+    // Charge the union of idle queue intervals, never concurrent waits or
+    // time when this invocation is already executing/persisting a task.
+    const waiting = new Set();
+    let queuedMs = 0, waitingSince = null, reportedMs = 0, resident = 0;
+    const spend = () => queuedMs + (waitingSince === null ? 0 : Date.now() - waitingSince);
+    const updateClock = () => {
+      const shouldRun = waiting.size > 0 && resident === 0;
+      if (shouldRun && waitingSince === null) waitingSince = Date.now();
+      if (!shouldRun && waitingSince !== null) {
+        queuedMs += Date.now() - waitingSince; waitingSince = null;
+      }
+    };
+    const leave = token => {
+      waiting.delete(token);
+      updateClock();
+    };
+    const run = createBudgetedTaskRun(tasks, { ...options,
+      admitTask: async (task, workers, execute, index) => {
+        const token = {};
+        waiting.add(token);
+        updateClock();
+        try {
+          return await withFsMutexBudget(admissionMutexName(), async granted => {
+            leave(token);
+            const deadline = options.deadlineEpochMs === undefined ? readTaskDeadlineEpochMs() : options.deadlineEpochMs;
+            if (deadline != null) {
+              const estimate = options.estimateMs?.(task, index);
+              const known = Number.isFinite(estimate) && estimate >= 0;
+              admitTaskDeadline({ env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadline) },
+                knownEstimateMs: known ? Math.ceil(estimate) : 0, knownTasks: known ? 1 : 0, unknownTasks: known ? 0 : 1 });
+            }
+            resident++; updateClock();
+            try { return await execute(granted); }
+            finally { resident--; updateClock(); }
+          }, { workers, workerMemoryMb: budget.workerMemoryMb,
+            workerBudget: budget.effectiveWorkerBudget, memoryBudgetMb: budget.memoryBudgetMb,
+            maxConcurrentTasks: budget.maxConcurrentTasks,
+            resource: options.taskAdmissionKey(task) || '*',
+            timeoutMs, remainingMs: () => timeoutMs - spend(),
+            onWaiting: ({ owner, elapsedMs }) => notify(
+              `AFFECTED_TESTS_ADMISSION_QUEUED task-sized lease waiting ${elapsedMs}ms; holder: ${formatAdmissionHolder(owner)}`,
+              { kind: 'queued', elapsedMs, budgetMs: Math.max(0, timeoutMs - spend()) }),
+            onAcquired: ({ waitedMs }) => {
+              const total = spend(), queueChargeMs = total - reportedMs;
+              reportedMs = total;
+              options.onAdmissionAcquired?.({ waitedMs, queueChargeMs, budgetMs: timeoutMs });
+            },
+          });
+        } finally { leave(token); }
+      },
+    });
+    const result = await run();
+    return { results: result.results, stats: result.stats };
+  }
   const runTurn = createBudgetedTaskRun(tasks, options);
   let queuedMs = 0;
   let run;
@@ -2992,9 +3085,9 @@ export async function runBudgetedTaskShards(plan, options) {
     const run = await runBudgetedTasks(shard.tasks, {
       ...options,
       admissionTimeoutMs: Math.max(1, runBudgetMs - queuedSoFarMs),
-      onAdmissionAcquired: ({ waitedMs, budgetMs }) => {
-        queuedSoFarMs += waitedMs;
-        if (options?.onAdmissionAcquired) options.onAdmissionAcquired({ waitedMs, budgetMs });
+      onAdmissionAcquired: ({ waitedMs, budgetMs, queueChargeMs }) => {
+        queuedSoFarMs += queueChargeMs ?? waitedMs;
+        if (options?.onAdmissionAcquired) options.onAdmissionAcquired({ waitedMs, budgetMs, queueChargeMs });
       },
     });
     shardStats.push({

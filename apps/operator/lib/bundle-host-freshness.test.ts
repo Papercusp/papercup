@@ -21,7 +21,7 @@ const HELPER =
 let repo: string;
 let outdir: string;
 
-function run(op: 'stamp' | 'check') {
+function run(op: 'stamp' | 'check', entry = join(repo, 'entry.ts')) {
   return spawnSync(
     process.execPath,
     [
@@ -30,7 +30,7 @@ function run(op: 'stamp' | 'check') {
       '--repo-root',
       repo,
       '--entry',
-      join(repo, 'entry.ts'),
+      entry,
       '--outfile',
       join(outdir, 'hono-host.mjs'),
       '--manifest',
@@ -87,6 +87,43 @@ describe('bundle-host-freshness output-tree identity', () => {
     const check = run('check');
     expect(check.status).not.toBe(0);
     expect(check.stderr).toContain('output-tree mismatch');
+  });
+});
+
+describe('staging boot artifact provenance', () => {
+  function stagingFixture() {
+    const entry = join(repo, 'apps/operator/bin/host.ts');
+    mkdirSync(join(repo, 'apps/operator/bin'), { recursive: true });
+    writeFileSync(entry, 'export const trace = true;\n');
+    execFileSync('git', ['-C', repo, 'add', 'apps/operator/bin/host.ts']);
+    execFileSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'host']);
+    outdir = join(repo, 'apps/operator/dist-host');
+    mkdirSync(outdir, { recursive: true });
+    const outfile = join(outdir, 'hono-host.mjs');
+    writeFileSync(outfile, 'export const trace = true;\n');
+    writeFileSync(outfile + '.meta.json', JSON.stringify({ inputs: { 'bin/host.ts': {} } }));
+    const sha = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    return { entry, outfile, sha };
+  }
+
+  it('writes an artifact that a fresh staging process can measure at boot', () => {
+    const f = stagingFixture();
+    const stamped = run('stamp', f.entry);
+    expect(stamped.status, stamped.stderr).toBe(0);
+    const module = new URL('../../../packages/operator-core/lib/release/operator-artifact.ts', import.meta.url).href;
+    const child = spawnSync(process.execPath, ['--input-type=module', '--eval',
+      `import { measureBootOperatorArtifact } from ${JSON.stringify(module)}; console.log(JSON.stringify(measureBootOperatorArtifact(${JSON.stringify(f.outfile)}, ${JSON.stringify(f.sha)})));`],
+    { encoding: 'utf8' });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toMatchObject({ status: 'measured', sourceSha: f.sha,
+      sourceBlobs: { 'apps/operator/bin/host.ts': expect.stringMatching(/^[a-f0-9]{40}$/) } });
+    expect(run('check', f.entry).status).toBe(0);
+  });
+
+  it('refuses a staging freshness stamp without compiler input provenance', () => {
+    const f = stagingFixture();
+    rmSync(f.outfile + '.meta.json');
+    expect(run('stamp', f.entry).status).not.toBe(0);
   });
 });
 

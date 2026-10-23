@@ -38,6 +38,7 @@ import { expandWorkspaces as expandRootWorkspaces } from './assert-workspace-lin
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   readFileSync,
+  realpathSync,
   existsSync,
   appendFileSync,
   mkdirSync,
@@ -130,9 +131,11 @@ import {
 } from "./lib/test-pass-reuse.mjs";
 import {
   LANE_SCRIPTS as SHARED_LANE_SCRIPTS,
+  defaultRunnerIdentity,
   restoreCandidateCheckpointForReuse,
 } from "./lib/targeted-task-reuse.mjs";
 import { exactRadiusAdmission } from "./lib/exact-radius-admission.mjs";
+import { admitTaskDeadline } from "./lib/task-deadline.mjs";
 import {
   crossRootTestPatterns,
   isUnderDir,
@@ -201,6 +204,7 @@ import {
 } from "./lib/batch-watchdog.mjs";
 import {
   normalizePartialFiles,
+  partialTaskCommandInputs,
   partialTaskCheckpointPath,
   partialTaskSkipListPath,
   readPartialTaskCheckpoint,
@@ -276,9 +280,11 @@ import {
   timeoutDurationEstimate,
   writeDurationHistoryAtomic,
   writeBudgetedTaskNativeExecutionReceipt,
+  syncBudgetedTaskNativeExecutionReceipt,
 } from "./lib/budgeted-task-scheduler.mjs";
 import {
   buildPassingTaskVerdictIdentity,
+  captureNpmTaskRuntimeIdentity,
   closureDigestManifestPath,
   decidePassingTaskVerdict,
   diffClosureDigests,
@@ -1638,6 +1644,29 @@ function formatWorkspaceCommand(ws, script, extraArgs = []) {
     ...(extraArgs.length ? ["--", ...extraArgs] : []),
   ];
   return argv.map(shellQuote).join(" ");
+}
+
+// Shared by the independent selection census and the actual child boundary.
+function originalNpmTaskInvocation(t, extraArgs = []) {
+  return { cmd: 'npm', cwd: t.ws.standalone ? join(ROOT, t.ws.dir) : ROOT,
+    argv: ['run', t.script, ...(t.ws.standalone ? [] : ['--workspace', t.ws.dir]),
+      ...(extraArgs.length ? ['--', ...extraArgs] : [])] };
+}
+
+function taskGuardArguments(t) {
+  return [...emptySuiteGuardArgs({ scriptText: t.ws.scripts[t.script] ?? '',
+    wsAbsDir: join(ROOT, t.ws.dir), script: t.script, reuseSkipped: t.reuseSkipped ?? null,
+    selectedFiles: Array.isArray(t.relatedFiles) ? t.relatedFiles : null }),
+    ...(t.guardArgs ?? []), ...(t.guardBase ? ['--base', t.guardBase] : [])];
+}
+
+function selectedTaskInvocations(tasks) {
+  return tasks.map(t => {
+    const spec = originalNpmTaskInvocation(t, [...taskGuardArguments(t), ...coverageArgsFor(t)]);
+    const empty = originalNpmTaskInvocation(t, [...taskGuardArguments({ ...t, relatedFiles: [] }), ...coverageArgsFor(t)]);
+    return { task: `${t.ws.name} :: ${t.script}`, cwd: spec.cwd, argv: [spec.cmd, ...spec.argv],
+      emptyArgv: [empty.cmd, ...empty.argv] };
+  });
 }
 
 /**
@@ -5583,10 +5612,28 @@ async function resolveExecutedMapContext() {
 async function executedMapFor(ctx, wsName, files) {
   if (!ctx.enabled) return { map: null, rows: 0, error: null };
   if (!files.length) return { map: new Map(), rows: 0, error: null };
+  // Qualification allocates per-task diagnostic channels later. Until that
+  // topology is resolved, related selection keeps the static superset.
+  if (qualificationWorkFile) return { map: null, rows: 0, error: 'runtime-topology-unmeasured' };
+  // Related selection is shared by a workspace's lanes. Only prune when every
+  // selected lane has the same measured interpreter; an opaque/mixed lane runs wide.
+  const identities = tasks.filter(t => t.ws.name === wsName &&
+    (t.script === 'test' || SHARED_LANE_SCRIPTS.includes(t.script))).map(t =>
+    defaultRunnerIdentity(ROOT, nativeProcessTraceEnv(process.env, {
+      enabled: Boolean(process.env.PC_EXECUTED_SOURCE_MAP_OUT ||
+        (executedMapRecordingEnabled() && process.env.PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID &&
+          process.env.PAPERCUSP_TEST_RUN_GROUP)),
+    }), undefined, {
+      workspaceRoot: join(ROOT, t.ws.dir), scriptText: t.ws.scripts[t.script],
+      preScript: t.ws.scripts[`pre${t.script}`], postScript: t.ws.scripts[`post${t.script}`],
+    }));
+  const runnerIdentity = identities[0];
+  if (!runnerIdentity || identities.some(identity => identity !== runnerIdentity))
+    return { map: null, rows: 0, error: 'runtime-topology-unmeasured' };
   let out;
   try {
     out = await Promise.race([
-      loadExecutedSourceMap({ client: ctx.client, workspaceName: wsName, repoRoot: ROOT, files }),
+      loadExecutedSourceMap({ client: ctx.client, workspaceName: wsName, repoRoot: ROOT, files, runnerIdentity }),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("executed-map read timed out")), 15_000).unref(),
       ),
@@ -5912,6 +5959,7 @@ if (printSelection) {
     syncAstro: syncAstroSelection, enumerateSpecifications: enumerateSelectionSpecifications });
   selection.taskInventory = tasks.map(task => ({ id: `${task.ws.name} :: ${task.script}`, dir: task.ws.dir,
     command: task.ws.scripts[task.script], isInvariantGuard: task.isInvariantGuard === true }));
+  selection.invocations = selectedTaskInvocations(tasks);
   outSync(`AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}`);
   terminalSuppressed = true;
   process.exit(0);
@@ -6012,12 +6060,11 @@ if (printAffected) {
   process.exit(0);
 }
 
+let qualificationPhysicalExecution;
 if (qualificationWorkFile) {
   try {
     const identity = partialSourceIdentity();
-    const runnerIdentity = reuseRunnerIdentity(execFileSync('node',
-      ['-p', "process.version + ' ' + process.platform + ' ' + process.arch"],
-      { cwd: ROOT, encoding: 'utf8', timeout: 30_000 }));
+    const runnerIdentity = defaultRunnerIdentity(ROOT, nativeProcessTraceEnv(process.env, { enabled: true }));
     if (!identity || !runnerIdentity || identity.sourceDigest !== createHash('sha256').update('').digest('hex'))
       throw new Error('qualification-source-unmeasured-or-dirty');
     const checkpoint = readPartialTaskCheckpoint(qualificationWorkFile);
@@ -6025,6 +6072,12 @@ if (qualificationWorkFile) {
         checkpoint.sourceDigest !== createHash('sha256').update(runnerIdentity).digest('hex') ||
         !process.env.PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID?.trim() ||
         !process.env.PAPERCUSP_TEST_RUN_GROUP) throw new Error('qualification-work-unmeasured');
+    qualificationPhysicalExecution = checkpoint.physicalExecution;
+    if (!/^[a-f0-9]{64}$/.test(qualificationPhysicalExecution?.fingerprint) ||
+        !isAbsolute(qualificationPhysicalExecution?.evidenceRoot ?? '') ||
+        !Array.isArray(qualificationPhysicalExecution?.tasks) ||
+        !qualificationPhysicalExecution.tasks.every(task => typeof task === 'string'))
+      throw new Error('qualification-physical-execution-unmeasured');
     const selection = enumerateAffectedTaskSelection(tasks, { root: ROOT, filterDir: RUN_LOG_ROOT,
       enumerateSpecifications: true });
     selection.taskInventory = tasks.map(task => ({ id: `${task.ws.name} :: ${task.script}`, dir: task.ws.dir,
@@ -6033,7 +6086,8 @@ if (qualificationWorkFile) {
       attemptId: process.env.PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID.trim(),
       candidate: identity.sourceCommit, sourceCommit: identity.sourceCommit,
       repairHead: checkpoint.continuation.repairHead, manifest: checkpoint.continuation.manifest,
-      retryStates: checkpoint.continuation.retryStates, runContext: 'ci', runnerIdentity },
+      retryStates: checkpoint.continuation.retryStates,
+      runContext: process.env.GREEN_CHECKPOINT === '1' ? 'green-checkpoint' : 'clean-local', runnerIdentity },
     { selection, postSuite: { schemaVersion: 1, coverage: 'complete',
       units: checkpoint.continuation.manifest.units.filter(unit => unit.kind === 'post-suite') } });
     if (remaining.status !== 'ready') throw new Error(remaining.reason);
@@ -6257,22 +6311,6 @@ async function armTestPassReuse(taskList) {
         .join(",")})`,
     );
   }
-  // The identity of the node the task will spawn (npm -> PATH node), not this process's: the
-  // proof was stamped by the vitest process. vitest-config re-checks it against its own process.
-  // reuseRunnerIdentity prefixes the proof format (P-001), so older-format proofs never match.
-  let runnerIdentity = null;
-  try {
-    runnerIdentity = reuseRunnerIdentity(
-      execFileSync(
-        "node",
-        ["-p", "process.version + ' ' + process.platform + ' ' + process.arch"],
-        { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30_000 },
-      ),
-    );
-  } catch {
-    runnerIdentity = null;
-  }
-  if (!runnerIdentity) return off("no-runner-identity");
   let client = null;
   try {
     client = await connectExecutedMapPg();
@@ -6341,6 +6379,21 @@ async function armTestPassReuse(taskList) {
   };
   try {
     for (const t of unitTasks) {
+      const runnerIdentity = defaultRunnerIdentity(ROOT, nativeProcessTraceEnv(process.env, {
+        enabled: Boolean(process.env.PC_EXECUTED_SOURCE_MAP_OUT ||
+          qualificationPhysicalExecution?.tasks.includes(taskKey(t)) ||
+          (executedMapRecordingEnabled() && process.env.PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID &&
+            process.env.PAPERCUSP_TEST_RUN_GROUP)),
+      }), undefined, {
+        workspaceRoot: join(ROOT, t.ws.dir), scriptText: t.ws.scripts[t.script],
+        preScript: t.ws.scripts[`pre${t.script}`], postScript: t.ws.scripts[`post${t.script}`],
+      });
+      if (!runnerIdentity) {
+        const label = `${t.ws.name}::${t.script}`;
+        outSync(`TEST_PASS_REUSE ws=${label} applied=false reason=no-runner-identity`);
+        await recordReuse(label, { offReason: 'no-runner-identity', eligible: t.relatedFiles?.length });
+        continue;
+      }
       const wsRel = relative(ROOT, join(ROOT, t.ws.dir)).replaceAll("\\", "/");
       const prefix = wsRel === "" ? "" : `${wsRel}/`;
       const lane = laneOfTaskScript(t.script);
@@ -6349,6 +6402,7 @@ async function armTestPassReuse(taskList) {
         : null;
       const cacheKey = JSON.stringify([
         t.ws.name,
+        runnerIdentity,
         lane,
         requestedFiles == null ? null : [...requestedFiles].sort(),
       ]);
@@ -6363,14 +6417,15 @@ async function armTestPassReuse(taskList) {
               if (lane !== null) {
                 let laneCandidates = files;
                 if (laneCandidates == null) {
-                  if (!proofFilesByWorkspace.has(t.ws.name)) {
+                  const runtimeKey = JSON.stringify([t.ws.name, runnerIdentity]);
+                  if (!proofFilesByWorkspace.has(runtimeKey)) {
                     proofFilesByWorkspace.set(
-                      t.ws.name,
-                      loadReuseProofFiles({ client, workspaceName: t.ws.name, runContext })
+                      runtimeKey,
+                      loadReuseProofFiles({ client, workspaceName: t.ws.name, runContext, runnerIdentity })
                         .then((listed) => listed.files),
                     );
                   }
-                  laneCandidates = await proofFilesByWorkspace.get(t.ws.name);
+                  laneCandidates = await proofFilesByWorkspace.get(runtimeKey);
                 }
                 try {
                   laneOf = await laneClassifier(
@@ -6394,6 +6449,7 @@ async function armTestPassReuse(taskList) {
                 client,
                 workspaceName: t.ws.name,
                 runContext,
+                runnerIdentity,
                 ...(files == null ? {} : { files }),
               });
               return { ...loadedProofs, error: null, laneOf, laneNote };
@@ -6642,22 +6698,7 @@ function spawnSpecFor(t, extraArgs) {
     // `--workspace <dir>` does not resolve for it — npm fails with "No workspaces
     // found". Run it the way a human would: `npm run <script>` with cwd = its own dir,
     // which resolves against ITS package.json and its own node_modules/.bin.
-    if (t.ws.standalone) {
-      const argv = [
-        "run",
-        t.script,
-        ...(extraArgs.length ? ["--", ...extraArgs] : []),
-      ];
-      return { cmd: "npm", argv, cwd: join(ROOT, t.ws.dir) };
-    }
-    const argv = [
-      "run",
-      t.script,
-      "--workspace",
-      t.ws.dir,
-      ...(extraArgs.length ? ["--", ...extraArgs] : []),
-    ];
-    return { cmd: "npm", argv, cwd: ROOT };
+    return originalNpmTaskInvocation(t, extraArgs);
   }
   // No npm (a PACKAGED install — see the note above). The direct-exec fallback below
   // reproduces `npm run` for a script that is a single binary invocation; a standalone
@@ -6811,7 +6852,18 @@ function preparePartialResumeTask(t) {
   }
   const workspaceRoot = join(ROOT, t.ws.dir);
   const key = taskKey(t);
-  const expected = { root: ROOT, taskKey: key, ...identity };
+  const runnerIdentity = defaultRunnerIdentity(ROOT, nativeProcessTraceEnv(process.env, {
+    enabled: Boolean(process.env.PC_EXECUTED_SOURCE_MAP_OUT || executedMapRecordingEnabled()),
+  }), undefined, {
+    workspaceRoot, scriptText: t.ws.scripts[t.script],
+    preScript: t.ws.scripts[`pre${t.script}`], postScript: t.ws.scripts[`post${t.script}`],
+  });
+  if (!runnerIdentity) {
+    outSync(`PARTIAL_RESUME applied=false task=${JSON.stringify(key)} reason=runtime-identity-unavailable`);
+    return null;
+  }
+  const expected = { root: ROOT, taskKey: key, ...identity, runnerIdentity,
+    sourceDigest: createHash('sha256').update(JSON.stringify([identity.sourceDigest, runnerIdentity])).digest('hex') };
   const checkpointPath = partialTaskCheckpointPath(PARTIAL_TASK_CACHE_DIR, ROOT, key);
   const existing = readPartialTaskCheckpoint(checkpointPath, expected);
   const checkpoint = existing && samePartialManifest(existing.selectedFiles, listed.files)
@@ -6845,7 +6897,8 @@ function preparePartialResumeTask(t) {
     workspaceRoot,
     taskKey: key,
     sourceCommit: identity.sourceCommit,
-    sourceDigest: identity.sourceDigest,
+    sourceDigest: expected.sourceDigest,
+    runnerIdentity,
     checkpointPath,
     selectedFiles: listed.files,
     passedFiles,
@@ -7212,17 +7265,7 @@ const taskContexts = tasks.map((t) => ({
   // pass-reuse skip list covers every file the task would run, which empties it on purpose.
   // A guard that diffs git must see the same base this runner used to select it;
   // otherwise a clean-after-git-sync tree looks like a no-op to the child process.
-  guardArgs: [
-    ...emptySuiteGuardArgs({
-      scriptText: t.ws.scripts[t.script] ?? "",
-      wsAbsDir: join(ROOT, t.ws.dir),
-      script: t.script,
-      reuseSkipped: t.reuseSkipped ?? null,
-      selectedFiles: Array.isArray(t.relatedFiles) ? t.relatedFiles : null,
-    }),
-    ...(t.guardArgs ?? []),
-    ...(t.guardBase ? ["--base", t.guardBase] : []),
-  ],
+  guardArgs: taskGuardArguments(t),
   cacheProvenance: dependencyProvenanceForTask(t),
 }));
 const TASK_CONTEXT_SHARD_PLAN = planAffectedTaskShards(taskContexts, {
@@ -7265,7 +7308,7 @@ function runCapturedTask(
     Number.isFinite(context.__retry?.budgetMs) && context.__retry.budgetMs > 0
       ? context.__retry.budgetMs
       : null;
-  const taskTimeoutMs =
+  const historyTimeoutMs =
     retryBudgetMs ??
     resolveTaskTimeoutMs({
       overrideMs: BATCH_TIMEOUT_OVERRIDE_MS,
@@ -7275,7 +7318,17 @@ function runCapturedTask(
       quantumMs: BATCH_TIMEOUT_QUANTUM_MS,
       maxMs: BATCH_TIMEOUT_MAX_MS,
     });
-  const taskTimeoutSource =
+  // Reuse the native deadline contract and its cleanup reserve. A task may
+  // have queued since the plan preflight; never start a watchdog beyond the
+  // launcher's cutoff and lose its final receipt to the outer timeout.
+  const launchBudget = process.env.PC_HEAVY_RELEASE_GATE === '1' ? null : admitTaskDeadline({
+    env: process.env, nowMs: Date.now(),
+    knownEstimateMs: Number.isFinite(taskDurationMs) ? Math.ceil(taskDurationMs) : 0,
+    knownTasks: taskDurationMs == null ? 0 : 1, unknownTasks: taskDurationMs == null ? 1 : 0,
+  });
+  const taskTimeoutMs = launchBudget?.childCutoffEpochMs == null ? historyTimeoutMs
+    : Math.min(historyTimeoutMs, Math.max(1, launchBudget.childCutoffEpochMs - Date.now()));
+  const taskTimeoutSource = taskTimeoutMs < historyTimeoutMs ? 'launcher-deadline' :
     retryBudgetMs != null
       ? "retry-budget"
       : BATCH_TIMEOUT_OVERRIDE_MS != null
@@ -7358,6 +7411,9 @@ function runCapturedTask(
     process.env.PAPERCUSP_TEST_RUN_GROUP && extraArgs.length === 0 && scriptOverride == null
     ? integrationSourceMapOut ?? `${executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, taskKey(spawnTask))}.sources.json`
     : null;
+  const qualificationTaskOut = qualificationPhysicalExecution?.tasks.includes(spawnTaskKey) &&
+    extraArgs.length === 0 && scriptOverride == null
+    ? `${executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, taskKey(spawnTask))}.task.sources.json` : null;
   const {
     [TEST_REUSE_SKIP_LIST_ENV]: _inheritedReuseSkipList,
     [PC_TEST_PARTIAL_SKIP_LIST_ENV]: _inheritedPartialSkipList,
@@ -7386,6 +7442,7 @@ function runCapturedTask(
     ...(integrationSourceMapOut
       ? { [EXECUTED_MAP_OUT_ENV]: integrationSourceMapOut, [EXECUTED_MAP_NO_PERSIST_ENV]: "1" } : {}),
     ...(qualificationNativeOut ? { [EXECUTED_MAP_OUT_ENV]: qualificationNativeOut } : {}),
+    ...(!qualificationNativeOut && qualificationTaskOut ? { [EXECUTED_MAP_OUT_ENV]: qualificationTaskOut } : {}),
     ...(context.partialResume?.armed ? { AFFECTED_PARTIAL_RESUME: "1" } : {}),
     ...(context.partialResume?.skipList
       ? { [PC_TEST_PARTIAL_SKIP_LIST_ENV]: context.partialResume.skipList.path }
@@ -7469,6 +7526,11 @@ function runCapturedTask(
         // differs between the per-run and cross-run identities. Shared so the two can never
         // drift apart: a field added to one would otherwise silently weaken the other.
         const cacheIdentitySpec = {
+          runtimeIdentity: cmd === "npm" ? captureNpmTaskRuntimeIdentity({ root: ROOT,
+            workspaceRoot: join(ROOT, spawnTask.ws.dir), environment: nativeProcessTraceEnv(childEnv),
+            scriptText: spawnTask.ws.scripts[spawnTask.script],
+            preScript: spawnTask.ws.scripts[`pre${spawnTask.script}`],
+            postScript: spawnTask.ws.scripts[`post${spawnTask.script}`] }) : null,
           taskKey: taskKey(context.t),
           // lint:as-committed isolates its cache by source repository. Only that
           // explicit immutable launch may compare relocated checkout commands.
@@ -7532,6 +7594,7 @@ function runCapturedTask(
             taskVerdictCacheRead.cache,
             childCacheGroup,
             taskKey(context.t),
+            cacheIdentity,
           ),
           identity: cacheIdentity,
         });
@@ -7589,6 +7652,7 @@ function runCapturedTask(
               taskVerdictCacheRead.cache,
               crossRunGroup,
               taskKey(context.t),
+              crossRunCacheIdentity,
             ),
             identity: crossRunCacheIdentity,
           });
@@ -7738,9 +7802,13 @@ function runCapturedTask(
               : channels;
           } else prepared = preparePartialNativeProducerSelection(selection, task, ROOT);
           if (prepared.status !== "ready") throw new Error(prepared.reason);
-          const enrolled = registerPartialNativeProducer(qualificationNativeOut,
-            { ...registration, selectedSpecifications: prepared.selectedSpecifications }, governedEnv);
-          outSync(`QUALIFICATION_NATIVE_PRODUCER task=${JSON.stringify(taskKey(context.t))} path=${JSON.stringify(enrolled.path)}`);
+          // A fully banked native selection contributes no producer. Its original
+          // npm invocation still runs below, including every owed lifecycle guard.
+          if (prepared.selectedSpecifications?.length) {
+            const enrolled = registerPartialNativeProducer(qualificationNativeOut,
+              { ...registration, selectedSpecifications: prepared.selectedSpecifications }, governedEnv);
+            outSync(`QUALIFICATION_NATIVE_PRODUCER task=${JSON.stringify(taskKey(context.t))} path=${JSON.stringify(enrolled.path)}`);
+          }
         }
       } catch (error) {
         outSync(`QUALIFICATION_NATIVE_PRODUCER_REFUSED task=${JSON.stringify(taskKey(context.t))} reason=${JSON.stringify(String(error?.message ?? error))}`);
@@ -7751,8 +7819,10 @@ function runCapturedTask(
     }
     // Extend existing OUT diagnostics without replacing npm or its shell. The
     // selected script is metadata; command below is the actual spawn invocation.
-    const nativeReceiptArmed = Boolean(inheritedExecutedMapOut || integrationSourceMapOut || qualificationNativeOut);
+    const qualificationCapture = Boolean(qualificationTaskOut);
+    const nativeReceiptArmed = Boolean(qualificationCapture || inheritedExecutedMapOut || integrationSourceMapOut || qualificationNativeOut);
     const nativeWrapperInputs = () => {
+      if (qualificationCapture) return partialTaskCommandInputs(ROOT, spawnTask.ws.dir);
       try {
         const paths = ["package.json", relative(ROOT, join(ROOT, spawnTask.ws.dir, "package.json"))];
         return [...new Set(paths)].map(path => ({
@@ -7761,14 +7831,29 @@ function runCapturedTask(
       } catch { return null; }
     };
     const nativeBefore = nativeReceiptArmed ? nativeWrapperInputs() : null;
+    const sourceSnapshot = () => {
+      const source = partialSourceIdentity();
+      return { commit: source?.sourceCommit ?? null,
+        clean: source?.sourceDigest === createHash('sha256').update('').digest('hex') };
+    };
+    const sourceBefore = qualificationCapture ? sourceSnapshot() : null;
+    let observedChildIdentity = null;
     const nativeObservation = (status, signal, error, stdoutBytes, stderrBytes, childPid = null) => nativeReceiptArmed ? {
-      task: spawnTaskKey, attempt: journalLabel, cwd, command: [cmd, ...argv],
+      task: spawnTaskKey, attempt: qualificationCapture ? process.env.PAPERCUSP_TEST_RUN_GROUP : journalLabel,
+      cwd, command: [cmd, ...argv],
+      ...(qualificationCapture ? {
+        invocation: { command: [cmd, ...argv], environmentSha256: createHash('sha256')
+          .update(JSON.stringify(Object.entries(governedEnv).filter(([, value]) => value !== undefined)
+            .sort(([a], [b]) => a.localeCompare(b)))).digest('hex') },
+        currentExecution: { schemaVersion: 1, fingerprint: qualificationPhysicalExecution.fingerprint,
+          childPid, childIdentity: observedChildIdentity, sourceBefore, sourceAfter: sourceSnapshot() },
+      } : {}),
       originalCommand: spawnTask.ws.scripts[spawnTask.script] ?? null,
       startedAtMs: startedAt, finishedAtMs: Date.now(), exitCode: status, signal,
       error: error ? String(error.message ?? error) : null,
       captureComplete: !error, stdout: stdoutBytes, stderr: stderrBytes,
       before: nativeBefore, after: nativeWrapperInputs(),
-      processTrace: { out: qualificationNativeOut || integrationSourceMapOut || inheritedExecutedMapOut, rootPid: childPid },
+      processTrace: { out: qualificationNativeOut || qualificationTaskOut || integrationSourceMapOut || inheritedExecutedMapOut, rootPid: childPid },
     } : null;
     const stdout = [];
     const stderr = [];
@@ -7790,6 +7875,11 @@ function runCapturedTask(
         // holding these capture pipes and made a 45m timeout close at 49.8m.
         detached: true,
       });
+      if (qualificationCapture && child.pid) {
+        try { observedChildIdentity = `${readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()}:${
+          readFileSync(`/proc/${child.pid}/stat`, 'utf8').split(') ')[1].split(' ')[19]}`; }
+        catch { /* Unmeasured child identity cannot authenticate current completion. */ }
+      }
     } catch (error) {
       // Node normally reports child startup failures through the `error` event, but
       // E2BIG is thrown synchronously before a ChildProcess exists. Letting that throw
@@ -7932,11 +8022,15 @@ function runCapturedTask(
     // Policy + its two safety properties (MONOTONE — never kills earlier than the time-only
     // watchdog did; BOUNDED — extensions stop at BATCH_TIMEOUT_MAX_MS, under the ~120m gate
     // ceiling) live in decideWatchdogExpiry, unit-tested with these measured numbers.
+    // Recompute at arming time: process preparation/spawn consumed part of the
+    // same launcher budget. Output progress must never extend past cleanup.
+    const launcherWatchdogMs = launchBudget?.childCutoffEpochMs == null ? Infinity
+      : Math.max(1, launchBudget.childCutoffEpochMs - Date.now());
     const watchdog = createProgressAwareWatchdog({
-      timeoutMs: taskTimeoutMs,
+      timeoutMs: Math.min(taskTimeoutMs, launcherWatchdogMs),
       // P-004: a retry's ceiling IS its budget (see retryBudgetMs above); the initial pass keeps
       // the gate-wide BATCH_TIMEOUT_MAX_MS so its extension policy is byte-identical to before.
-      maxMs: watchdogCeilingMs,
+      maxMs: Math.min(watchdogCeilingMs, launcherWatchdogMs),
       stallWindowMs: BATCH_TIMEOUT_QUANTUM_MS,
       extensionMs: BATCH_TIMEOUT_QUANTUM_MS,
       onExtend: () => emitProgress("watchdog-extended"),
@@ -8106,7 +8200,13 @@ function journalCapturedTaskOutput(t, r, allocation, label) {
   const error = r.error ? JSON.stringify(r.error.message) : "none";
   if (r.__nativeExecution) {
     try {
-      const native = writeBudgetedTaskNativeExecutionReceipt(`${RUN_LOG_PATH}.native`, r.__nativeExecution);
+      const native = writeBudgetedTaskNativeExecutionReceipt(
+        r.__nativeExecution.currentExecution ? qualificationPhysicalExecution.evidenceRoot : `${RUN_LOG_PATH}.native`,
+        r.__nativeExecution);
+      if (r.__nativeExecution.currentExecution) {
+        syncBudgetedTaskNativeExecutionReceipt(native);
+        outSync(`QUALIFICATION_TASK_COMPLETION=${JSON.stringify({ task: taskKey(t), root: native.root, receipt: native.receipt })}`);
+      }
       appendAllSync(RUN_LOG_PATH, [`AFFECTED_TASK_NATIVE_RECEIPT=${JSON.stringify({
         task: taskKey(t), attempt: label, root: native.root, receipt: native.receipt,
         orderedChainQualified: false, runtimeClosure: "unmeasured", operationalAcceptance: false,
@@ -8190,6 +8290,7 @@ function persistPartialResumeCheckpoint(context, value) {
     taskKey: partial.taskKey,
     sourceCommit: partial.sourceCommit,
     sourceDigest: partial.sourceDigest,
+    runnerIdentity: partial.runnerIdentity,
   };
   const current = readPartialTaskCheckpoint(partial.checkpointPath, expected);
   const selectedFiles = current?.selectedFiles ?? partial.selectedFiles;
@@ -8411,6 +8512,17 @@ const admissionIntent = (() => {
   }
 })();
 
+// Use the maintained runner/config resolver. Aliases of one Vitest config
+// share an exclusion key; unknown/native scripts retain exclusive admission.
+// Lane scripts are the existing partition of the default unit configuration.
+const taskAdmissionKey = ({ t }) => {
+  const command = SHARED_LANE_SCRIPTS.includes(t.script) ? 'vitest run' : t.ws.scripts?.[t.script];
+  const report = resolveTaskReportExpectation({ command, wsDir: join(ROOT, t.ws.dir) });
+  if (!report.expectsReport || !report.config) return '*';
+  try { return createHash('sha256').update(realpathSync(join(ROOT, t.ws.dir, report.config))).digest('hex'); }
+  catch { return '*'; }
+};
+
 let initialPool;
 
 // WI-1734042: a passing fresh-process retry is only a FLAKE when the two attempts
@@ -8426,10 +8538,13 @@ publishPreemptReadyMarker();
 try {
   initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN, {
   ...SCHEDULER_CONFIG,
+  readMemAvailableMb,
+  // Keep the release owner's existing lane unchanged. Ordinary invocations
+  // share one accounted envelope at task/config granularity.
+  ...(process.env.PC_HEAVY_RELEASE_GATE === '1' ? {} : { taskAdmissionKey }),
   // EI-20801764054303492 route (a): the startup budget is sized ONCE, from a reading taken before
   // any child exists. A long run's real memory picture drifts underneath it, so admission
   // re-measures and may only ever admit fewer workers than the ceiling already allows.
-  readMemAvailableMb,
   estimateMs: (context) =>
     durationEstimate(durationHistory, taskKey(context.t)),
   runTask: (context, allocation) => cgroupMemoryObserver.withWorkers(allocation.workers,
@@ -8745,6 +8860,9 @@ if (retryPoolTasks.length > 0) {
           : null,
       onAdmissionNotice: (line) => errSync(line),
       admissionIntent,
+      // Retries may rewrite the script/config inside runTask; retain exclusive
+      // admission until that actual command has been chosen.
+      ...(process.env.PC_HEAVY_RELEASE_GATE === '1' ? {} : { taskAdmissionKey: () => '*' }),
       runTask: async (context, allocation) => {
         // WI-1734042: capture immediately before THIS child starts. This brackets the two
         // attempts without treating files written by the retry itself as input drift, and

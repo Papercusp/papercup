@@ -14,7 +14,18 @@ import { readPartialNativeChannelCustody, readPartialNativeCompletion,
 import { writeRelatedFilterList } from '../../../../scripts/lib/related-tests.mjs';
 
 describe('focused runner startup tracing', () => {
-  it.each([0, 7])('runs an original empty native step without enrolling a producer and preserves owed guard exit %s', async guardExit => {
+  it('predicts the exact native preload environment before OUT allocation without fabricating a channel', () => {
+    const plain = { NODE_OPTIONS: '--stack-trace-limit=30' };
+    const predicted = nativeProcessTraceEnv(plain, { enabled: true });
+    const actual = nativeProcessTraceEnv({ ...plain, PC_EXECUTED_SOURCE_MAP_OUT: '/tmp/native.json' });
+    expect(predicted.NODE_OPTIONS).toBe(actual.NODE_OPTIONS);
+    expect(predicted.PC_EXECUTED_SOURCE_MAP_OUT).toBeUndefined();
+    expect(nativeProcessTraceEnv(predicted, { enabled: true }).NODE_OPTIONS).toBe(predicted.NODE_OPTIONS);
+    expect(nativeProcessTraceEnv(plain, { enabled: false })).toBe(plain);
+  });
+
+  it.each(['chain', 'simple'].flatMap(route => [0, 7].map(guardExit => ({ route, guardExit }))))(
+    'runs an original empty native step without enrolling a producer and preserves owed guard exit $guardExit via $route', async ({ route, guardExit }) => {
     const root = fileURLToPath(new URL('../../../../', import.meta.url));
     const dir = mkdtempSync(join(tmpdir(), 'native-banked-step-')), out = join(dir, 'out.json');
     const command = 'vitest run --passWithNoTests --config vitest.config.mjs --configLoader native';
@@ -26,7 +37,8 @@ describe('focused runner startup tracing', () => {
     try {
       symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'), 'dir');
       writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'banked-step-fixture', scripts: {
-        test: 'npm run first && npm run owed', first: command, owed: 'node owed.cjs',
+        ...(route === 'chain' ? { test: 'npm run first && npm run owed', first: command, owed: 'node owed.cjs' }
+          : { test: command, posttest: 'node owed.cjs' }),
       } }));
       writeFileSync(join(dir, 'vitest.config.mjs'),
         `import {defineVitestConfig} from ${JSON.stringify(pathToFileURL(join(root, 'libs/test-config/src/vitest-config.ts')).href)};\n` +
@@ -45,26 +57,33 @@ describe('focused runner startup tracing', () => {
       const traced = nativeProcessTraceEnv({ ...env, PC_TEST_FILTER_LIST: filter.path,
         PC_EXECUTED_SOURCE_MAP_OUT: out, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1',
         PAPERCUSP_TEST_STARTUP_TRACE: '0' });
-      const registered = registerPartialNativeProducerChannels(out, { status: 'ready', channels: [{
+      const registered = route === 'chain' ? registerPartialNativeProducerChannels(out, { status: 'ready', channels: [{
         taskKey: 'ws :: test:step:0', script: 'first', command, step: 0, outPath: `${out}.step-0`,
         selectedSpecifications: [], bankedSpecifications: [{ testFile: 'a.test.ts', pool: 'forks',
           projectName: null, testNamePattern: null, testIds: null, testTagsFilter: null, testLines: null }],
       }] }, { attemptId: 'attempt', runGroupId: 'group', root: dir, workspaceName: 'ws',
         sourceCommit: 'a'.repeat(40), registeredAtMs: Date.now(),
-        command: { cmd: 'npm', argv: ['run', '--silent', 'test'], cwd: dir } }, traced);
-      expect(registered.producers).toEqual([]);
+        command: { cmd: 'npm', argv: ['run', '--silent', 'test'], cwd: dir } }, traced) : null;
+      if (registered) expect(registered.producers).toEqual([]);
       const result = await promisify(execFile)('npm', ['run', '--silent', 'test'], {
         cwd: dir, env: traced, timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
       }).then(value => ({ ...value, code: 0 }), error => ({ stdout: error.stdout, stderr: error.stderr, code: error.code }));
       expect(result.code, result.stderr).toBe(guardExit);
       expect(result.stdout).toContain('OWED_GUARD');
       expect(result.stdout + result.stderr).not.toContain('banked file executed again');
+      expect(existsSync(`${out}.producer.json`)).toBe(false);
       expect(existsSync(`${out}.step-0.producer.json`)).toBe(false);
       const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json'))
         .map(name => JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
-      expect(rows.find(row => row.event === 'child-spawn' && row.nativeChannel))
+      if (route === 'chain') expect(rows.find(row => row.event === 'child-spawn' && row.nativeChannel))
         .toMatchObject({ argv: ['-c', command], nativeChannel: { step: 0, command } });
-      const owed = rows.find(row => row.event === 'child-spawn' && row.lifecycle?.event === 'owed');
+      else {
+        expect(rows.find(row => row.event === 'child-spawn' && row.lifecycle?.event === 'test' &&
+          ['sh', '/bin/sh'].includes(row.command)))
+          .toMatchObject({ argv: ['-c', command] });
+        expect(rows.some(row => row.nativeChannel)).toBe(false);
+      }
+      const owed = rows.find(row => row.event === 'child-spawn' && row.lifecycle?.event === (route === 'chain' ? 'owed' : 'posttest'));
       expect(owed).toBeDefined();
       expect(rows.find(row => row.event === 'child-close' && row.childIdentity === owed.childIdentity))
         .toMatchObject({ code: guardExit, signal: null });

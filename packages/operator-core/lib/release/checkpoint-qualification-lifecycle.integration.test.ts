@@ -2,12 +2,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { execFileSync, spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { classifyReadPaths, writeExecutedSourceMapSnapshot } from '../../../../libs/test-config/src/executed-source-map-reporter';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
@@ -59,8 +59,12 @@ import {
 } from './gate-verdict-freshness';
 import { fireAwaitsForKey, registerAwait } from '../events/await/store';
 import { writeFrozenCandidateRepairQueue } from '../harness/routines/release-actions';
-import { evaluatePartialTaskContinuation, registerPartialNativeProducer } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { evaluatePartialTaskContinuation, registerPartialNativeProducer, partialCurrentExecutionFingerprint,
+  partialTaskCommandInputs, preparePartialTaskCommandDefinitions, readPartialTaskCommandCompletion } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { nativeProcessTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
+import { syncBudgetedTaskNativeExecutionReceipt, writeBudgetedTaskNativeExecutionReceipt } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 import { vitestConfigLoaderPolicy } from '../../../../scripts/lib/vitest-host-preflight.mjs';
+import { captureRuntimeProofIdentity, runtimeProofFingerprint } from '../../../../scripts/lib/runtime-compatibility.mjs';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -224,9 +228,12 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         if (scenario === 'source-drift') writeFileSync(join(root, 'input.json'), '{"changed":true}\n');
         const verdict = { candidate: input.candidate, runId: input.runId, reason: 'advanced', green: true,
           nowMs: 400, terminalEvent: { status: 'qualification-composition-fixture', detail: { scenario } } };
+        const currentDefinition = vi.fn(() => { throw new Error('eligible retained commands must not execute or reauthenticate as current'); });
+        const compositionOptions = { classifyReadPaths: observation.classifyReadPaths,
+          currentCommandDefinition: currentDefinition };
         const composed = await composeStoredQualificationWork(target,
           { ...input, ...(scenario === 'old-fence' ? { runnerId: 'old' } : {}) },
-          { classifyReadPaths: observation.classifyReadPaths });
+          compositionOptions);
         expect(composed.status).toBe(scenario === 'complete' ? 'idempotent' : 'conflict');
         // Even a complete population cannot settle or release the physical owner
         // before the caller has performed its promotion decision.
@@ -234,7 +241,8 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
           currentPhysicalRunner: { id: input.runnerId } } });
         const result = await recordStoredQualificationComposedVerdict(target,
           { ...input, ...(scenario === 'old-fence' ? { runnerId: 'old' } : {}) }, verdict,
-          { classifyReadPaths: observation.classifyReadPaths });
+          compositionOptions);
+        expect(currentDefinition).not.toHaveBeenCalled();
         if (scenario === 'complete') {
           expect(result).toMatchObject({ status: 'updated', transaction: { outcome: { kind: 'green' },
             currentPhysicalRunner: null, continuation: { receipts: expect.arrayContaining([
@@ -369,6 +377,8 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
     const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 }).trim();
     const children: Array<ReturnType<typeof spawn>> = [];
+    let dependencyLease: string | undefined;
+    const generationScript = join(sourceRoot, 'apps/operator/bin/release/dependency-generation.sh');
     const stop = (child: ReturnType<typeof spawn>) => {
       if (!child.pid) return;
       try { process.kill(-child.pid, 'SIGKILL'); }
@@ -407,10 +417,48 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       mkdirSync(join(root, 'libs/test-config'), { recursive: true });
       cpSync(join(sourceRoot, 'libs/test-config/src'), join(root, 'libs/test-config/src'), { recursive: true });
       cpSync(join(sourceRoot, 'libs/test-config/package.json'), join(root, 'libs/test-config/package.json'));
+      mkdirSync(join(root, 'libs/generic'), { recursive: true });
+      cpSync(join(sourceRoot, 'libs/generic/module-singleton'), join(root, 'libs/generic/module-singleton'), { recursive: true });
+      mkdirSync(join(root, 'libs/test-config/node_modules/@papercusp'), { recursive: true });
+      symlinkSync(join(root, 'libs/generic/module-singleton'), join(root, 'libs/test-config/node_modules/@papercusp/module-singleton'), 'dir');
       cpSync(join(sourceRoot, 'scripts/lib'), join(root, 'scripts/lib'), { recursive: true });
-      writeFileSync(join(root, 'package.json'), '{"private":true,"type":"module"}\n');
+      cpSync(join(sourceRoot, 'package-lock.json'), join(root, 'package-lock.json'));
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'qualification-fixture', private: true, type: 'module', scripts: {
+        preguard: 'node -e "console.log(111)"', guard: 'node -e "console.log(222)"',
+        postguard: 'node -e "console.log(333)"', after: 'node -e "console.log(444)"',
+      } }));
       writeFileSync(join(root, '.gitignore'), 'node_modules/\n.vitest-tmp/\n');
-      symlinkSync(join(sourceRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+      if (existsSync(join(sourceRoot, 'node_modules/.papercusp-dependency-generation'))) {
+        symlinkSync(join(sourceRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+      } else {
+        // A mutable development install cannot grant a reusable prefix. Select
+        // and lease the maintained, already-published exact-input generation;
+        // link its actual dependency bytes and copy its real immutable marker.
+        // This never installs packages or invents a generation for this fixture.
+        const selected = execFileSync('bash', ['-c',
+          'source "$1"; store=$(dependency_generation_resolve_root "$2"); ' +
+          'dependency_generation_select_inputs "$2" "$store" || exit $?; ' +
+          'dependency_generation_acquire_selector_lease "$store" "$DEPENDENCY_GENERATION_ID" "$3" "$DEPENDENCY_GENERATION_TOKEN" || exit $?; ' +
+          'printf "FIXTURE_GENERATION=%s\\nFIXTURE_LEASE=%s\\n" "$DEPENDENCY_GENERATION_PATH" "$DEPENDENCY_GENERATION_SELECTOR_LEASE"',
+          '--', generationScript, sourceRoot, String(process.pid)],
+        { encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
+        const generation = selected.split('\n').find(line => line.startsWith('FIXTURE_GENERATION='))?.slice('FIXTURE_GENERATION='.length);
+        dependencyLease = selected.split('\n').find(line => line.startsWith('FIXTURE_LEASE='))?.slice('FIXTURE_LEASE='.length);
+        if (!generation || !dependencyLease) throw new Error('immutable fixture dependency selection unmeasured');
+        const modules = join(generation, 'tree/node_modules');
+        mkdirSync(join(root, 'node_modules'));
+        for (const entry of readdirSync(modules))
+          symlinkSync(join(modules, entry), join(root, 'node_modules', entry));
+        const marker = Object.fromEntries(readFileSync(join(generation, '.papercusp-dependency-generation'), 'utf8')
+          .trim().split('\n').map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+        // The same two-field projection setup-release-checkout materializes;
+        // identity/source are from the native selector's leased publication.
+        writeFileSync(join(root, 'node_modules/.papercusp-dependency-generation'),
+          `identity=${marker.identity}\nsource=${marker.source}\n`);
+      }
+      // Tests import Vitest from this materialization; launch that same module
+      // graph so a mutable-install Vitest cannot drive immutable-install tests.
+      argv[0] = join(root, 'node_modules/vitest/vitest.mjs');
       git('init', '--quiet');
       git('add', '.');
       git('-c', 'user.name=Qualification fixture', '-c', 'user.email=fixture@example.invalid',
@@ -426,6 +474,13 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         PC_EXECUTED_INPUTS_DIR: join(directory, 'inputs-one'), PAPERCUSP_TEST_RUN_GROUP: owner.runId,
         PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: owner.attemptId,
         PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://127.0.0.1:1/native-banked-fixture' });
+      const trace = await import(pathToFileURL(join(root, 'scripts/lib/vitest-startup-trace.mjs')).href);
+      // The router already preloads the shared observer. This fixture owns a
+      // copied source graph: replace that observer rather than installing both
+      // and turning each real lifecycle spawn into two observations.
+      const inheritedTrace = nativeProcessTraceEnv({ PC_EXECUTED_SOURCE_MAP_OUT: outPath }).NODE_OPTIONS!;
+      env.NODE_OPTIONS = (env.NODE_OPTIONS ?? '').replaceAll(inheritedTrace, '').trim();
+      Object.assign(env, trace.nativeProcessTraceEnv(env));
       const discover = (environment: NodeJS.ProcessEnv) => {
         const output = execFileSync(process.execPath, [join(sourceRoot, 'scripts/resolve-vitest-config-contracts.mjs')], {
           cwd: sourceRoot, env: environment, encoding: 'utf8', timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
@@ -454,10 +509,14 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       });
       const pidIdentity = checkpointPidIdentity(first.child.pid!)!;
       expect(pidIdentity).toBeTruthy();
+      const runtime = runtimeProofFingerprint(captureRuntimeProofIdentity({ root, environment: env, executable: process.execPath }));
+      expect(runtime).toBeTruthy();
       const input: QualificationWorkProgressInput = { ...owner, pidIdentity, root, taskKey: 'qualification',
-        repairHead: null, runContext: 'clean-local', runnerIdentity: `proof-v3 ${process.version} ${process.platform} ${process.arch}`,
+        repairHead: null, runContext: 'clean-local', runnerIdentity: `proof-v3 ${runtime}`,
         retryStates: [], updates: [], manifest: { schemaVersion: 1,
-          units: specifications.map(spec => ({ id: spec.testFile, kind: 'test' as const, path: spec.testFile })) } };
+          units: [...specifications.map(spec => ({ id: spec.testFile, kind: 'test' as const, path: spec.testFile })),
+            { id: 'guard:qualification-fixture :: guard', kind: 'guard', path: 'package.json' },
+            { id: 'post:after', kind: 'post-suite', path: 'package.json' }] } };
       expect((await reserveStoredQualificationRunner(target, { ...owner, pid: first.child.pid!, pidIdentity,
         started: true, evidenceRefs: [`checkpoint-run:${owner.runId}`] })).status).toBe('updated');
       const enroll = async (progress: QualificationWorkProgressInput, path: string, selectedSpecifications: typeof specifications) => {
@@ -487,7 +546,7 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       expect(snapshot.nativeRun.files).toHaveLength(1);
       const bankedFile = snapshot.nativeRun.files[0].testFile as string;
       const bankedId = snapshot.nativeRun.files[0].completionId as string;
-      expect(snapshot.nativeRun.files[0].state).toBe('passed');
+      expect(snapshot.nativeRun.files[0].state, first.output()).toBe('passed');
       const replacement = { ...owner, runnerId: 'native-banked-two', runId: 'native-banked-run-two',
         pid: process.pid, pidIdentity: checkpointPidIdentity(process.pid)!, started: true };
       expect((await reserveStoredQualificationRunner(target, replacement)).status).toBe('updated');
@@ -505,7 +564,7 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       const grade = () => evaluatePartialTaskContinuation({ root, taskKey: input.taskKey,
         continuation: stored.transaction.continuation }, { ...resumed, sourceCommit: candidate });
       expect(grade()).toMatchObject({ reused: [bankedFile], run: specifications.filter(spec => spec.testFile !== bankedFile)
-        .map(spec => spec.testFile), verdict: 'incomplete' });
+        .map(spec => spec.testFile).concat(['guard:qualification-fixture :: guard', 'post:after']).sort(), verdict: 'incomplete' });
       expect(await composeStoredQualificationWork(target, resumed, { classifyReadPaths: classifier }))
         .toMatchObject({ status: 'conflict', refusalReason: 'native-successor-terminal-unmeasured' });
       const remaining = specifications.filter(spec => spec.testFile !== bankedFile);
@@ -524,7 +583,83 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       expect(completed.nativeRun.files.map((file: { testFile: string }) => file.testFile))
         .toEqual(remaining.map(spec => spec.testFile));
       expect(completed.nativeRun.files.some((file: { testFile: string }) => file.testFile === bankedFile)).toBe(false);
-      const composed = await composeStoredQualificationWork(target, resumed, { classifyReadPaths: classifier });
+      // Actual original npm guard + post commands discharge their separately
+      // frozen obligations. Their runtime reuse closure is deliberately opaque.
+      const evidenceRoot = join(directory, 'commands');
+      const task = 'qualification-fixture :: guard';
+      const scripts = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).scripts;
+      const selection = { schemaVersion: 1, kind: 'full-gate', phase: 'selection-preparation', executed: false,
+        taskInventory: [{ id: task, dir: '.', command: scripts.guard, isInvariantGuard: true }],
+        tasks: [], unenumerated: [], commandObligations: [] };
+      const prepared = preparePartialTaskCommandDefinitions({ root, selection, evidenceRoot,
+        postSuite: { schemaVersion: 1, coverage: 'complete', units: [{ id: 'post:after', kind: 'post-suite', path: 'package.json' }] },
+        invocations: [{ task, cwd: root, argv: ['npm', 'run', 'guard'] }] });
+      expect(prepared.status).toBe('ready');
+      const guardDefinition = prepared.definitions[0]!;
+      const source = () => ({ commit: git('rev-parse', 'HEAD'), clean: !git('status', '--porcelain') });
+      const capture = async (script: string, task: string, ignoreScripts = false) => {
+        const traceOut = join(directory, `${script}-${ignoreScripts}.trace.json`);
+        const environment = trace.nativeProcessTraceEnv({ ...env, PC_EXECUTED_SOURCE_MAP_OUT: traceOut,
+          npm_config_ignore_scripts: String(ignoreScripts) });
+        const sourceBefore = source(), before = partialTaskCommandInputs(root, '.');
+        const startedAtMs = Date.now();
+        const child = spawn('npm', ['run', script], { cwd: root, env: environment, detached: true,
+          stdio: ['ignore', 'pipe', 'pipe'] });
+        children.push(child);
+        const childIdentity = checkpointPidIdentity(child.pid!)!;
+        const stdout: Buffer[] = [], stderr: Buffer[] = [];
+        child.stdout!.on('data', chunk => stdout.push(chunk));
+        child.stderr!.on('data', chunk => stderr.push(chunk));
+        const timer = setTimeout(() => stop(child), 30_000);
+        const outcome = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+          child.once('error', reject);
+          child.once('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
+        });
+        expect(outcome).toEqual({ code: 0, signal: null });
+        const saved = writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, {
+          task, attempt: resumed.runId, cwd: root, command: ['npm', 'run', script],
+          invocation: { command: ['npm', 'run', script], environmentSha256: createHash('sha256')
+            .update(JSON.stringify(Object.entries(environment).sort(([a], [b]) => a.localeCompare(b)))).digest('hex') },
+          originalCommand: scripts[script], before, after: partialTaskCommandInputs(root, '.'),
+          currentExecution: { schemaVersion: 1, fingerprint: partialCurrentExecutionFingerprint({ ...resumed, sourceCommit: candidate }),
+            childPid: child.pid!, childIdentity, sourceBefore, sourceAfter: source() },
+          processTrace: { out: traceOut, rootPid: child.pid! }, startedAtMs, finishedAtMs: Date.now(),
+          exitCode: outcome.code, signal: outcome.signal, error: null, captureComplete: true,
+          stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr),
+        });
+        syncBudgetedTaskNativeExecutionReceipt(saved);
+        return saved;
+      };
+      const current = await readStoredQualification(target);
+      if (current.status !== 'present') throw new Error('current command fence missing');
+      const expected = () => ({ ...resumed, sourceCommit: candidate,
+        runnerReservedAtMs: current.transaction.currentPhysicalRunner!.reservedAtMs, nowMs: Date.now() });
+      const ignored = await capture('guard', task, true);
+      expect(readPartialTaskCommandCompletion(ignored, expected(), guardDefinition)).toMatchObject({ status: 'refused' });
+      // Even a stored zero-exit receipt cannot bypass the task lifecycle check.
+      const guardReceipt = (saved: typeof ignored) => ({ unitId: `guard:${task}`, completionId: `${saved.receipt.sha256}:guard:${task}`,
+        observedAtMs: saved.observation.execution.finishedAtMs, state: 'pass' as const, observedCount: 1,
+        proof: { commandOutcomes: [{ command: task, root: saved.root, receipt: saved.receipt }],
+          opaqueReasons: ['task-command-runtime-inputs-unmeasured'] } });
+      const invalid = guardReceipt(ignored);
+      expect((await recordStoredQualificationWorkProgress(target, { ...resumed, updates: [{ receipt: invalid }] })).status).toBe('updated');
+      const options = { classifyReadPaths: classifier, currentCommandDefinition: (unit: { kind: string }) =>
+        unit.kind === 'guard' ? guardDefinition : postDefinition };
+      let postDefinition: unknown;
+      expect(await composeStoredQualificationWork(target, resumed, options)).toMatchObject({ status: 'conflict' });
+      const guard = readPartialTaskCommandCompletion(await capture('guard', task), expected(), guardDefinition);
+      expect(guard.status, JSON.stringify(guard)).toBe('ready');
+      expect((await recordStoredQualificationWorkProgress(target, { ...resumed, updates: guard.receipts.map(receipt =>
+        ({ receipt, supersedesCompletionId: invalid.completionId })) })).status).toBe('updated');
+      const post = await capture('after', 'post:after');
+      postDefinition = { evidenceRoot, commands: [{ id: 'after', task: 'post:after', argv: ['npm', 'run', 'after'],
+        cwd: root, originalCommand: scripts.after, inputs: partialTaskCommandInputs(root, '.'), exitCodes: [0] }] };
+      expect((await recordStoredQualificationWorkProgress(target, { ...resumed, updates: [{ receipt: {
+        unitId: 'post:after', completionId: post.receipt.sha256, observedAtMs: post.observation.execution.finishedAtMs,
+        state: 'pass', observedCount: 1, proof: { commandOutcomes: [{ command: 'after', root: post.root, receipt: post.receipt }],
+          opaqueReasons: ['post-suite-runtime-inputs-unmeasured'] },
+      } }] })).status).toBe('updated');
+      const composed = await composeStoredQualificationWork(target, resumed, options);
       expect(composed.status, JSON.stringify({ reason: 'refusalReason' in composed ? composed.refusalReason : null,
         dirty: completed.worktreeDirty, porcelain: git('status', '--porcelain'),
         config: completed.configSources.status,
@@ -539,8 +674,14 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       expect(final).toMatchObject({ transaction: { attemptId: owner.attemptId, candidate,
         continuation: { receipts: expect.arrayContaining(remaining.map(spec => expect.objectContaining({ unitId: spec.testFile }))) } } });
       expect(git('status', '--porcelain')).toBe('');
+      expect(await recordStoredQualificationComposedVerdict(target, resumed, { candidate, runId: resumed.runId,
+        reason: 'advanced', green: true, terminalEvent: { status: 'real-native-guard-post-composition', detail: { signal } } }, options))
+        .toMatchObject({ status: 'updated', transaction: { outcome: { kind: 'green' }, currentPhysicalRunner: null } });
     } finally {
       for (const child of children) stop(child);
+      if (dependencyLease) execFileSync('bash', ['-c',
+        'source "$1"; DEPENDENCY_GENERATION_SELECTOR_LEASE="$2"; dependency_generation_release_selector_lease',
+        '--', generationScript, dependencyLease], { timeout: 10_000 });
       rmSync(directory, { recursive: true, force: true });
     }
   }, 240_000);

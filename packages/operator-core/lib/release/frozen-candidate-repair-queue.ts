@@ -812,6 +812,8 @@ export interface FrozenRepairAdmission {
   };
   /** Explicit reviewed commit delta; provenance is NOT hook or agent authorship. */
   patch?: { commit: string; parent: string; sha256: string };
+  /** Ordered reviewed deltas replayed before the single admission; patch is the final member. */
+  patches?: Array<{ commit: string; parent: string; sha256: string }>;
   /** hunk-exact: per admitted path, how many ledgered hunks were replayed and by whom. */
   hunks?: Record<string, { applied: number; agents: string[] }>;
   /** Exact ledger rows captured by this hunk source; later edits are not consumed. Whole-blob and
@@ -1034,6 +1036,15 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       typeof patch.commit === 'string' && /^[0-9a-f]{40,64}$/.test(patch.commit) &&
       typeof patch.parent === 'string' && /^[0-9a-f]{40,64}$/.test(patch.parent) &&
       typeof patch.sha256 === 'string' && /^[0-9a-f]{64}$/.test(patch.sha256);
+    const patches = e.patches;
+    const validPatches = validPatch && Array.isArray(patches) && patches.length >= 2 && patches.length <= 20 &&
+      patches.every((p) => p && typeof p === 'object' &&
+        typeof p.commit === 'string' && /^[0-9a-f]{40,64}$/.test(p.commit) &&
+        typeof p.parent === 'string' && /^[0-9a-f]{40,64}$/.test(p.parent) &&
+        typeof p.sha256 === 'string' && /^[0-9a-f]{64}$/.test(p.sha256)) &&
+      new Set(patches.map((p) => p.commit)).size === patches.length &&
+      patches.at(-1).commit === patch.commit && patches.at(-1).parent === patch.parent &&
+      patches.at(-1).sha256 === patch.sha256;
     const precheck = parseAdmissionPrecheckRecord(e.precheck);
     const parsed: FrozenRepairAdmission = {
       atMs: e.atMs as number,
@@ -1047,6 +1058,7 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       ...(nonBlank(e.reason) ? { reason: e.reason as string } : {}),
       ...(e.mode === 'hunk-exact' || e.mode === 'whole-blob' || e.mode === 'committed-patch' ? { mode: e.mode } : {}),
       ...(validPatch ? { patch: { commit: patch.commit as string, parent: patch.parent as string, sha256: patch.sha256 as string } } : {}),
+      ...(validPatches ? { patches: patches.map((p) => ({ commit: p.commit, parent: p.parent, sha256: p.sha256 })) } : {}),
       ...(hunksValid ? { hunks } : {}),
       ...(Array.isArray(e.ledgerRowIds) && e.ledgerRowIds.every((id) => Number.isSafeInteger(id) && id > 0)
         ? { ledgerRowIds: [...new Set(e.ledgerRowIds as number[])] } : {}),

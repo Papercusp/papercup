@@ -1709,11 +1709,11 @@ export function OperatorConversationProvider({
           return;
         }
         if (outcome.kind === "submit" || outcome.kind === "decline") {
-          const conv = conversationIdRef.current;
-          if (conv) {
+          const conv = outcome.conversationId ?? conversationIdRef.current;
+          if (conv && (!outcome.workspaceId || outcome.workspaceId === workspaceId)) {
             void postCardResponse(conv, {
               correlationId: outcome.correlationId,
-              workspaceId,
+              workspaceId: outcome.workspaceId ?? workspaceId,
               action: outcome.kind,
               payload: outcome.kind === "submit" ? outcome.payload : undefined,
             });
@@ -2370,7 +2370,8 @@ export function OperatorConversationProvider({
   // on every state-snapshot tick: when the focused card disappears
   // (server resolved it / aborted / workspace switch), active clears.
   const { cards: openCards } = useStateSnapshots();
-  const focusedCard = useMemo(() => selectFocusedCard(openCards), [openCards]);
+  const focusedCard = useMemo(() => selectFocusedCard(openCards.filter(card =>
+    !card.workspaceId || card.workspaceId === workspaceId)), [openCards, workspaceId]);
 
   // Arm-pending listener: surfaces from defaultGenerationFn when a
   // chat:ask_choice tool_call SSE event lands. Voice-active gates the
@@ -2483,6 +2484,8 @@ export function OperatorConversationProvider({
     const drained = routerAttachActive(routerStateRef.current, {
       correlationId: focusedCard.correlationId,
       runId: focusedCard.runId,
+      conversationId: focusedCard.conversationId,
+      workspaceId: focusedCard.workspaceId,
       card: focusedCard,
     });
     // Replay any buffered transcripts now that the card is active.

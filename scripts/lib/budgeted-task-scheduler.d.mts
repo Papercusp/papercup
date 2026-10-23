@@ -31,10 +31,14 @@ export interface NativeNpmLifecycleDiagnostics {
     close: { ref: string; sha256: string; byteLength: number } }>;
 }
 
+export function syncBudgetedTaskNativeExecutionReceipt(saved: ReturnType<typeof writeBudgetedTaskNativeExecutionReceipt>): void;
 export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, input: {
   task: string; attempt: string; cwd: string; command: string[]; originalCommand?: string | null;
   /** Requested command and environment before diagnostic preload/wrapper additions. Values are never retained. */
   invocation?: { command: string[]; environmentSha256: string };
+  /** Captured physical provenance; independently validated for current-only composition. */
+  currentExecution?: { schemaVersion: 1; fingerprint: string | null; childPid: number; childIdentity: string;
+    sourceBefore: { commit: string; clean: boolean } | null; sourceAfter: { commit: string; clean: boolean } | null };
   startedAtMs: number; finishedAtMs: number; exitCode: number | null; signal: string | null;
   error: string | null; captureComplete: boolean; stdout: Buffer; stderr: Buffer;
   before?: Array<{ path: string; sha256: string }> | null;
@@ -514,6 +518,8 @@ export interface AdmissionNoticeInfo {
 }
 
 export interface SharedAdmissionOptions {
+  /** Recheck this launcher deadline after task admission; null disables the inherited deadline. */
+  deadlineEpochMs?: number | null;
   /**
    * Sink for queue notices. DEFAULTS to `console.error`, which cannot reach the
    * affected-tests run log — the runner injects a sink that writes both, so a queued run
@@ -521,7 +527,9 @@ export interface SharedAdmissionOptions {
    */
   onAdmissionNotice?: (line: string, info: AdmissionNoticeInfo) => void;
   /** Fires once per acquisition, with how long it queued and the bound it was given. */
-  onAdmissionAcquired?: (info: { waitedMs: number; budgetMs: number }) => void;
+  onAdmissionAcquired?: (info: { waitedMs: number; budgetMs: number; queueChargeMs?: number }) => void;
+  /** Opt in to shared task-sized worker/memory leases. Equal keys exclude each other; '*' excludes every task. */
+  taskAdmissionKey?: (task: any) => string;
   /**
    * EI-21917992245424964 — a self-description published into the admission mutex's owner
    * record, so a BLOCKED peer can judge whether waiting is worth it without a coord

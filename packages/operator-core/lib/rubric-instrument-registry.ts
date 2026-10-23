@@ -842,7 +842,7 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
           const { hostname } = await import('node:os');
           const { gitPipelinePosition } = await import('./git-pipeline-position');
           const { measurePostgresRetentionEvidence } = await import('./storage/retention-interval-evidence');
-          const position = await gitPipelinePosition({ path: 'packages/operator-core/lib/storage/session-archive-read.ts' });
+          const position = await gitPipelinePosition({ path: 'packages/operator-core/lib/session-archive.ts' });
           return measurePostgresRetentionEvidence(getOrgPg().sql, { workspaceId: window.workspaceId, host: hostname(),
             servingRuntimes: (position.servingRuntimes ?? []).map(runtime => ({ runtime: runtime.runtime,
               applicable: true, containsColdFallback: runtime.containsChange })) });

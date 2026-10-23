@@ -57,6 +57,7 @@ const recordStoredQualificationVerdict = vi.hoisted(() =>
     status: 'missing',
   })),
 );
+const recordStoredQualificationComposedVerdict = vi.hoisted(() => vi.fn());
 const recordStoredQualificationScheduledTerminalRecovery = vi.hoisted(() =>
   vi.fn(async (..._a: unknown[]): Promise<{ status: string; transaction?: Record<string, unknown> }> => ({
     status: 'missing',
@@ -76,6 +77,7 @@ const probeRunnerLiveness = vi.hoisted(() => vi.fn());
 vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   ...(await orig<typeof import('../../release/checkpoint-qualification-transaction')>()),
   recordStoredQualificationVerdict: (...a: unknown[]) => recordStoredQualificationVerdict(...a),
+  recordStoredQualificationComposedVerdict: (...a: unknown[]) => recordStoredQualificationComposedVerdict(...a),
   recordStoredQualificationScheduledTerminalRecovery: (...a: unknown[]) => recordStoredQualificationScheduledTerminalRecovery(...a),
   readStoredQualification: (...a: unknown[]) => readStoredQualification(...a),
   beginStoredQualification: (...a: unknown[]) => beginStoredQualification(...a),
@@ -931,7 +933,7 @@ describe('EI-210830: serialized repair holds are visible without incrementing th
     expect(query).toMatch(new RegExp(`SET metadata = ${'jsonb_set\\(\\s*'.repeat(layers)}COALESCE\\(metadata`));
   }
 
-  it('WI-10000844: the repair-tick (tick-legs) snapshot write is balanced five-layer nested jsonb_set SQL', async () => {
+  it('WI-10000844: the repair-tick (tick-legs) snapshot write is balanced six-layer nested jsonb_set SQL', async () => {
     fakeSql.unsafe.mockClear();
     const candidate = 'a'.repeat(40);
     await trackGateStall(
@@ -959,7 +961,7 @@ describe('EI-210830: serialized repair holds are visible without incrementing th
     );
     expect(update).toBeDefined();
     const query = String(update![0]);
-    expectBalancedNestedJsonbSet(query, 5);
+    expectBalancedNestedJsonbSet(query, 6);
     expect(query).toMatch(
       /'\{gate_health,candidateSnapshot\}'\s*,\s*\$6::jsonb\s*,\s*true\s*\)\s*,\s*updated_at\s*=\s*now\(\)/,
     );
@@ -1330,6 +1332,7 @@ beforeEach(() => {
   emitAwaitedEvent.mockClear();
   fakeSql.unsafe.mockClear();
   recordStoredQualificationVerdict.mockClear();
+  recordStoredQualificationComposedVerdict.mockReset();
   recordStoredQualificationVerdict.mockResolvedValue({ status: 'missing' });
   recordStoredQualificationScheduledTerminalRecovery.mockReset();
   recordStoredQualificationScheduledTerminalRecovery.mockResolvedValue({ status: 'missing' });
@@ -3289,6 +3292,26 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
   beforeEach(() => {
     appendPipelineEvent.mockClear();
     fakeSql.unsafe.mockClear();
+  });
+
+  it.each(['terminal', 'unreadable'])('routes a full continuation through the atomic composer: %s', async status => {
+    const target = { workspaceId: 'ws-42', installSlug: 'my-harness' };
+    const input = { attemptId: 'composed-attempt', candidate: 'abc123', repairHead: null,
+      runnerId: 'runner', runId: 'run', pidIdentity: 'boot:42', root: '/source', taskKey: 'full',
+      manifest: { schemaVersion: 1 as const, units: [{ id: 'guard', kind: 'guard' as const, path: 'package.json' }] },
+      retryStates: [], runContext: 'ci', runnerIdentity: 'native', updates: [] };
+    const options = { currentCommandDefinition: vi.fn() };
+    recordStoredQualificationComposedVerdict.mockResolvedValue({ status });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await recordCheckpointVerdict(target, { reason: 'advanced', green: true, candidate: 'abc123', runId: 'run' },
+      { qualificationWork: { input, options }, signedShardDeadlineMs: 0 })).toBe(status === 'terminal');
+    expect(recordStoredQualificationComposedVerdict).toHaveBeenCalledWith(target, input,
+      expect.objectContaining({ green: true, candidate: 'abc123', runId: 'run', terminalEvent: expect.any(Object) }), options);
+    expect(recordStoredQualificationVerdict).not.toHaveBeenCalled();
+    expect(appendPipelineEvent).not.toHaveBeenCalled();
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(status === 'unreadable' ? 1 : 0);
+    warn.mockRestore();
   });
 
   it('⭐ a lock collision records NOTHING — the run holding the lock has the real verdict', () => {

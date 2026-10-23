@@ -107,6 +107,9 @@ export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedge
   const outputTailBase = `llm-test ${report.scenarioId} verdict=${report.verdict} runs=${report.runs.length} passed=${passed} failed=${failed} errored=${errored}`;
   const outputTail = status === 'pass' ? null
     : `${outputTailBase}${diagnosticTail ? `; ${diagnosticTail}` : ''}`.slice(0, 1200);
+  const runIds = report.runs.map(run => run.summary.runId);
+  const completeRunIds = runIds.length > 0 && runIds.every(id => typeof id === 'string' && id.length > 0)
+    && new Set(runIds).size === runIds.length;
 
   return {
     filePath: ledger.filePath,
@@ -125,6 +128,7 @@ export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedge
       testNamePattern: null,
       scenarioId: report.scenarioId,
       testLayer: 'llm',
+      ...(completeRunIds ? { llmRunIds: runIds } : {}),
       // Scenarios are imported before their per-scenario snapshot. Reuse the
       // process boundary so proof binding also catches edits after those imports.
       runStartedAt: PROCESS_BOOT_TIME,

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPhaseTracker } from '@papercusp/tooldef';
 
 const { sqlCalls, sqlMock, upsertMock } = vi.hoisted(() => {
   const calls: Array<{ query: string; values: unknown[] }> = [];
@@ -198,22 +199,26 @@ describe('conformance test-run evidence', () => {
 
   it('rejects a clean pass recorded on an older build as current evidence', async () => {
     sqlMock.mockImplementationOnce(async () => [testRunRow('pass')] as never[]);
+    const contentEquivalence = vi.fn(async () => ({ equivalent: false, reason: 'different dependency closure' }));
 
     const result = await judgeTestsFromLedger({
       files: [file],
       workspaceId: 'workspace',
       currentBuildSha: 'b'.repeat(40),
       now: () => finishedAt,
+      contentEquivalence,
     });
 
     expect(result).toMatchObject({ kind: 'tests', verdict: 'error', value: null, unit: 'files' });
     expect(result.detail).toContain(`test-run commit ${'a'.repeat(40)} does not match current build ${'b'.repeat(40)}`);
     expect(result.detail).toContain('test_runs #21720475');
+    expect(contentEquivalence).toHaveBeenCalledExactlyOnceWith({ file, recordedSha: 'a'.repeat(40), currentSha: 'b'.repeat(40) });
   });
 
   it('rejects named-case evidence recorded on a different build before loading case outcomes', async () => {
     sqlMock.mockImplementationOnce(async () => [testRunRow('pass')] as never[]);
     const caseLoader = vi.fn(async () => []);
+    const contentEquivalence = vi.fn(async () => ({ equivalent: false, reason: 'different dependency closure' }));
 
     const result = await judgeTestsFromLedger({
       files: [file],
@@ -222,11 +227,13 @@ describe('conformance test-run evidence', () => {
       currentBuildSha: 'b'.repeat(40),
       now: () => finishedAt,
       caseLoader,
+      contentEquivalence,
     });
 
     expect(result).toMatchObject({ kind: 'tests', verdict: 'error', value: null, unit: 'cases' });
     expect(result.detail).toContain('does not match current build');
     expect(caseLoader).not.toHaveBeenCalled();
+    expect(contentEquivalence).toHaveBeenCalledExactlyOnceWith({ file, recordedSha: 'a'.repeat(40), currentSha: 'b'.repeat(40) });
   });
 
   it('selects a newer dependency-equivalent receipt ahead of an older unpinned error', async () => {
@@ -238,6 +245,45 @@ describe('conformance test-run evidence', () => {
     expect(await judgeTestsFromLedger({ files: [file], workspaceId: 'workspace', currentBuildSha: 'b'.repeat(40),
       now: () => finishedAt, contentEquivalence })).toMatchObject({ verdict: 'pass', value: 1 });
     expect(contentEquivalence).toHaveBeenCalledWith({ file, recordedSha: 'a'.repeat(40), currentSha: 'b'.repeat(40) });
+  });
+
+  it('distinguishes pending ledger and dependency-content reads and retains their settlement', async () => {
+    const phases = createPhaseTracker();
+    let readRows!: (rows: never[]) => void;
+    sqlMock.mockImplementationOnce(() => new Promise<never[]>((resolve) => { readRows = resolve; }));
+    let finishProof!: (proof: { equivalent: boolean; reason: string }) => void;
+    let proofStarted!: () => void;
+    const started = new Promise<void>((resolve) => { proofStarted = resolve; });
+    const contentEquivalence = vi.fn(() => {
+      proofStarted();
+      return new Promise<{ equivalent: boolean; reason: string }>((resolve) => { finishProof = resolve; });
+    });
+    const pending = judgeTestsFromLedger({ files: [file], workspaceId: 'workspace', phases,
+      currentBuildSha: 'b'.repeat(40), now: () => finishedAt, contentEquivalence });
+    expect(phases.snapshot().activePhase).toBe('conformance:tests:ledger');
+    readRows([testRunRow('pass')] as never[]);
+    await started;
+    const contentPhase = `conformance:tests:contentEquivalence:21720475:${file}`;
+    expect(phases.snapshot().activePhase).toBe(contentPhase);
+    finishProof({ equivalent: true, reason: 'same dependency closure' });
+    expect(await pending).toMatchObject({ verdict: 'pass', value: 1 });
+    expect(phases.snapshot().activePhases).toEqual([]);
+    expect(phases.toMetadata()?.phases.map((phase) => phase.phase)).toEqual(['conformance:tests:ledger', contentPhase]);
+    expect(contentEquivalence).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the caller tracker from the production adapter to its test-ledger reader', async () => {
+    const phases = createPhaseTracker();
+    const deps = productionConformanceDeps({ workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: PLAN, phases });
+    let readRows!: (rows: never[]) => void;
+    sqlMock.mockImplementationOnce(() => new Promise<never[]>((resolve) => { readRows = resolve; }));
+    const pending = deps.evaluateCheck({ barKey: 'R-1', role: 'done-when', checkId: 'R-1:done-when',
+      check: { kind: 'tests', files: [file] } });
+    expect(deps.phases).toBe(phases);
+    expect(phases.snapshot().activePhase).toBe('conformance:tests:ledger');
+    readRows([]);
+    expect(await pending).toMatchObject({ verdict: 'error' });
+    expect(phases.snapshot().activePhases).toEqual([]);
   });
 
   it.each(['unpinned error', 'current failure', 'filtered pass', 'dirty pass', 'changed dependencies', 'unknown build'])

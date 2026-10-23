@@ -202,6 +202,28 @@ describe('frozen-candidate repair queue', () => {
     expect(malformed?.admissions?.[0]).not.toHaveProperty('patch');
   });
 
+  it('round-trips the complete ordered patch series and drops malformed series metadata', () => {
+    const patches = [
+      { commit: C1, parent: C, sha256: 'a'.repeat(64) },
+      { commit: C2, parent: C1, sha256: 'b'.repeat(64) },
+    ];
+    const admission = {
+      atMs: T0 + 1, actor: 'su-test', source: { ref: C2, sha: C2 },
+      fromRepairHead: C, toRepairHead: C2, paths: ['lib/a.test.ts'], unchanged: [],
+      blobs: { 'lib/a.test.ts': C1 }, mode: 'committed-patch' as const, patch: patches[1], patches,
+    };
+    const queue = markFrozenRepairAdmitted(fresh(), admission);
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue)));
+    expect(parsed?.admissions?.[0]).toMatchObject({ patch: patches[1], patches });
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(parsed)))?.admissions?.[0].patches).toEqual(patches);
+    for (const malformed of [[], [patches[0]], [patches[0], patches[0]],
+      [patches[0], { ...patches[1], sha256: 'bad' }], [...patches].reverse()]) {
+      const read = parseFrozenCandidateRepairQueue({ ...queue, admissions: [{ ...admission, patches: malformed }] });
+      expect(read?.admissions?.[0]).not.toHaveProperty('patches');
+      expect(read?.admissions?.[0].patch).toEqual(patches[1]);
+    }
+  });
+
   it("carries a newer build's admission keys through parse and persist (WI-6554700010009930)", () => {
     const patch = { commit: C1, parent: C, sha256: 'f'.repeat(64) };
     const admission = {

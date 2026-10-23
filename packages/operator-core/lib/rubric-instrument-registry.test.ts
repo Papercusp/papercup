@@ -309,6 +309,41 @@ describe('the registry seed set', () => {
     } finally { measure.mockRestore(); }
   });
 
+  it('measures Postgres cold-reader adoption at its actual source and preserves unknown containment', async () => {
+    const org = await import('@papercusp/db-org');
+    const pipeline = await import('./git-pipeline-position');
+    const retention = await import('./storage/retention-interval-evidence');
+    const sql = {} as ReturnType<typeof org.getOrgPg>['sql'];
+    const database = vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql } as ReturnType<typeof org.getOrgPg>);
+    const position = vi.spyOn(pipeline, 'gitPipelinePosition').mockResolvedValue({
+      servingRuntimes: [
+        { runtime: 'bg-host', containsChange: true },
+        { runtime: 'staging-operator', containsChange: false },
+        { runtime: 'release-operator', containsChange: null },
+      ],
+    } as Awaited<ReturnType<typeof pipeline.gitPipelinePosition>>);
+    const measure = vi.spyOn(retention, 'measurePostgresRetentionEvidence')
+      .mockResolvedValue({ verdict: 'unknown', detail: 'unqualified reader remains unknown', checks: [] });
+    try {
+      const instrument = getRegisteredInstrument(POSTGRES_RETENTION_INSTRUMENT_KEY);
+      if (instrument?.evaluator !== 'platform' || !instrument.rescore) throw new Error('expected Postgres rescore');
+      expect(existsSync(new URL('./session-archive.ts', import.meta.url))).toBe(true);
+      const result = await instrument.rescore.resolve({ workspaceId: 'ws', harnessSlug: 'papercusp',
+        windowStart: '2026-10-22T00:00:00Z', windowEnd: '2026-10-23T00:00:00Z' });
+      expect(position).toHaveBeenCalledWith({ path: 'packages/operator-core/lib/session-archive.ts' });
+      expect(measure).toHaveBeenCalledWith(sql, expect.objectContaining({ workspaceId: 'ws',
+        servingRuntimes: [
+          { runtime: 'bg-host', applicable: true, containsColdFallback: true },
+          { runtime: 'staging-operator', applicable: true, containsColdFallback: false },
+          { runtime: 'release-operator', applicable: true, containsColdFallback: null },
+        ],
+      }));
+      expect(result).toEqual({ verdict: 'unknown', detail: 'unqualified reader remains unknown', checks: [] });
+    } finally {
+      measure.mockRestore(); position.mockRestore(); database.mockRestore();
+    }
+  });
+
   it("never registers the manual key, and treats 'none' case-insensitively as manual", () => {
     expect(registeredInstrumentKeys()).not.toContain('none');
     expect(isManualInstrumentKey('none')).toBe(true);

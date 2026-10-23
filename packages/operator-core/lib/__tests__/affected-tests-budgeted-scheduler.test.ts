@@ -45,6 +45,7 @@ import {
   timeoutDurationEstimate,
   writeDurationHistoryAtomic,
   writeBudgetedTaskNativeExecutionReceipt,
+  syncBudgetedTaskNativeExecutionReceipt,
 } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS policy module, no declaration file.
@@ -848,24 +849,28 @@ describe('native affected-task parent receipt transport', () => {
       expect(fds.size).toBe(0);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
-  it('executes the production OUT observation and settled journal with native binary output', () => {
+  it.each([false, true])('executes the production OUT observation and settled journal with native binary output, qualification %s', qualification => {
     const root = mkdtempSync(join(tmpdir(), 'native-production-journal-'));
     try {
       const input = nativeObservation();
       const task = { ws: { name: 'native-fixture', dir: 'packages/operator-core', scripts: { test: 'native fixture' } }, script: 'test' };
-      const observationStart = AFFECTED_TESTS_SRC.indexOf('const nativeReceiptArmed =');
+      const observationStart = AFFECTED_TESTS_SRC.indexOf('const qualificationCapture =');
       const observationEnd = AFFECTED_TESTS_SRC.indexOf('const stdout = [];', observationStart);
       expect(observationStart).toBeGreaterThan(0); expect(observationEnd).toBeGreaterThan(observationStart);
       const observe = (out: string | null, integrationOut: string | null = null,
         qualificationOut: string | null = null) => new Script(
         `${AFFECTED_TESTS_SRC.slice(observationStart, observationEnd)}\nnativeObservation;`,
       ).runInNewContext({ inheritedExecutedMapOut: out, integrationSourceMapOut: integrationOut,
-        qualificationNativeOut: qualificationOut,
+        qualificationNativeOut: qualificationOut, qualificationTaskOut: qualification ? 'task.json' : null,
+        qualificationPhysicalExecution: { fingerprint: 'a'.repeat(64) },
+        process: { env: { PAPERCUSP_TEST_RUN_GROUP: 'run' } }, governedEnv: {},
+        partialTaskCommandInputs: () => [{ path: 'package.json', sha256: 'a'.repeat(64) }],
+        partialSourceIdentity: () => ({ sourceCommit: 'candidate', sourceDigest: createHash('sha256').update('').digest('hex') }),
         ROOT: REPO_ROOT, spawnTask: task, spawnTaskKey: input.task, journalLabel: input.attempt,
         startedAt: input.startedAtMs, cwd: input.cwd, cmd: input.command[0], argv: input.command.slice(1),
         relative: (a: string, b: string) => resolve(b).slice(resolve(a).length + 1),
         join, readFileSync, createHash, Date, Set });
-      expect(observe(null)(0, null, null, input.stdout, input.stderr)).toBeNull();
+      if (!qualification) expect(observe(null)(0, null, null, input.stdout, input.stderr)).toBeNull();
       for (const [inheritedOut, integrationOut, qualificationOut, expectedOut] of [
         ['inherited.json', null, null, 'inherited.json'],
         [null, 'integration.json', null, 'integration.json'],
@@ -876,17 +881,22 @@ describe('native affected-task parent receipt transport', () => {
         const captured = observe(inheritedOut, integrationOut, qualificationOut)(
           0, null, null, input.stdout, input.stderr, 321,
         );
-        expect(captured.processTrace).toEqual({ out: expectedOut, rootPid: 321 });
+        expect(captured.processTrace).toEqual({ out: qualification ? qualificationOut ?? 'task.json' : expectedOut, rootPid: 321 });
       }
       const observation = observe('requested.json')(0, null, null, input.stdout, input.stderr);
       expect(observation.command).toEqual(input.command);
-      expect(observation.before).toHaveLength(2);
+      expect(observation.before).toHaveLength(qualification ? 1 : 2);
       expect(observation.before).toEqual(observation.after);
       const journalStart = AFFECTED_TESTS_SRC.indexOf('function journalCapturedTaskOutput(');
       const journalEnd = AFFECTED_TESTS_SRC.indexOf('\n}\n\nfunction emitCapturedTaskOutput(', journalStart) + 2;
-      const log = join(root, 'run.log'), errors: string[] = [];
+      const log = join(root, 'run.log'), errors: string[] = [], announcements: string[] = [], synced: string[] = [];
       const journal = new Script(`(${AFFECTED_TESTS_SRC.slice(journalStart, journalEnd)})`).runInNewContext({
         taskKey: () => input.task, RUN_LOG_PATH: log, writeBudgetedTaskNativeExecutionReceipt,
+        qualificationPhysicalExecution: { evidenceRoot: join(root, 'qualification') },
+        syncBudgetedTaskNativeExecutionReceipt: (saved: ReturnType<typeof writeBudgetedTaskNativeExecutionReceipt>) => {
+          syncBudgetedTaskNativeExecutionReceipt(saved); synced.push(saved.receipt.ref);
+        },
+        outSync: (line: string) => { expect(synced).toHaveLength(1); announcements.push(line); },
         appendAllSync: (path: string, chunks: string[]) => appendFileSync(path, chunks.join('')),
         rawErrSync: (text: string) => errors.push(text),
         formatTaskOutcomeFields: () => ({ exitStatus: 0, signal: 'none' }),
@@ -901,6 +911,9 @@ describe('native affected-task parent receipt transport', () => {
       expect(receipt.execution.command).toEqual(input.command);
       expect(readFileSync(join(marker.root, receipt.execution.logs.stdout.ref))).toEqual(input.stdout);
       expect(marker.orderedChainQualified).toBe(false);
+      expect(announcements).toHaveLength(qualification ? 1 : 0);
+      if (qualification) expect(JSON.parse(announcements[0]!.slice('QUALIFICATION_TASK_COMPLETION='.length)))
+        .toEqual({ task: input.task, root: marker.root, receipt: marker.receipt });
       expect(errors).toEqual([]);
       // Artifact failure is a diagnostic miss; the ordinary settled journal must still survive.
       writeFileSync(join(marker.root, receipt.execution.logs.stdout.ref), 'tampered');
@@ -1168,7 +1181,12 @@ describe('R12 native command-local artifact preparation', () => {
       const modulePath = join(subjectRoot, 'budgeted-task-scheduler.mjs');
       const subjectBytes = readFileSync(join(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs'));
       writeFileSync(modulePath, subjectBytes);
-      for (const dependency of ['fs-mutex.mjs', 'task-exit-class.mjs', 'executed-source-map.mjs',
+      // This dependency evolves with the scheduler. A symlink is resolved back
+      // into the checkout and the native loader can substitute older HEAD bytes.
+      const mutexBytes = readFileSync(join(REPO_ROOT, 'scripts/lib/fs-mutex.mjs'));
+      writeFileSync(join(subjectRoot, 'fs-mutex.mjs'), mutexBytes);
+      const mutexSha256 = createHash('sha256').update(mutexBytes).digest('hex');
+      for (const dependency of ['task-exit-class.mjs', 'executed-source-map.mjs',
         'task-cgroup-limits.mjs', 'task-deadline.mjs'])
         symlinkSync(join(REPO_ROOT, 'scripts/lib', dependency), join(subjectRoot, dependency));
       const subjectSha256 = createHash('sha256').update(subjectBytes).digest('hex');
@@ -1181,6 +1199,9 @@ describe('R12 native command-local artifact preparation', () => {
         const config = JSON.parse(fs.readFileSync(0, 'utf8'));
         const subjectSha256 = createHash('sha256').update(fs.readFileSync(config.modulePath)).digest('hex');
         if (subjectSha256 !== config.subjectSha256) throw new Error('private reader subject differs');
+        const mutexSha256 = createHash('sha256').update(fs.readFileSync(
+          new URL('./fs-mutex.mjs', pathToFileURL(config.modulePath)))).digest('hex');
+        if (mutexSha256 !== config.mutexSha256) throw new Error('private mutex subject differs');
         const originalBytes = fs.statSync(config.target).size < 1024 * 1024
           ? fs.readFileSync(config.target) : null;
         let bytesRead = 0, fullFileReads = 0, opens = 0, closes = 0, mutated = false;
@@ -1222,18 +1243,19 @@ describe('R12 native command-local artifact preparation', () => {
         try { await readBudgetedTaskComparisonArtifacts(config.root, config.pins); accepted = true; }
         catch (cause) { error = String(cause.message); }
         console.log(JSON.stringify({ accepted, error, bytesRead, fullFileReads, opens, closes, mutated,
-          subjectSha256 }));
+          subjectSha256, mutexSha256 }));
       `;
       const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
-        input: JSON.stringify({ root, pins, target, mutation, modulePath, subjectSha256 }),
+        input: JSON.stringify({ root, pins, target, mutation, modulePath, subjectSha256, mutexSha256 }),
         encoding: 'utf8', timeout: 20_000,
       });
       if (child.error) throw child.error;
       expect(child.status, child.stderr).toBe(0);
       const result = JSON.parse(child.stdout.trim()) as { accepted: boolean; error: string | null;
         bytesRead: number; fullFileReads: number; opens: number; closes: number; mutated: boolean;
-        subjectSha256: string };
+        subjectSha256: string; mutexSha256: string };
       expect(result.subjectSha256).toBe(subjectSha256);
+      expect(result.mutexSha256).toBe(mutexSha256);
       return result;
     }
     it.each(['artifact', 'current input'])('rejects an oversized %s before reading its contents', kind => {
@@ -2244,6 +2266,122 @@ describe('runBudgetedTasks', () => {
       rmSync(lockRoot, { recursive: true, force: true });
     }
   });
+});
+
+describe('task-sized shared admission (EI-26797533961242022)', () => {
+  it.each(['wildcard', 'memory'])('keeps %s exclusions across independent invocations', async mode => {
+    const release = deferred<string>();
+    let started = false, queued = false, peerStarted = false;
+    const options = { ...config, admissionTimeoutMs: 8_000, onAdmissionNotice: () => {},
+      taskAdmissionKey: (task: string) => mode === 'wildcard' && task === 'holder' ? '*' : task };
+    const holder = runBudgetedTasks(['holder'], { ...options,
+      workerMemoryMb: mode === 'memory' ? 4096 : config.workerMemoryMb,
+      runTask: async () => { started = true; return release.promise; } });
+    let peer: ReturnType<typeof runBudgetedTasks> | undefined;
+    try {
+      await until(() => started, 'the exclusive or memory-saturating holder');
+      peer = runBudgetedTasks(['peer'], { ...options,
+        onAdmissionNotice: (_, info) => { if (info.kind === 'queued') queued = true; },
+        runTask: async () => { peerStarted = true; return 'peer'; } });
+      await until(() => queued, 'the peer to encounter the shared exclusion');
+      expect(peerStarted).toBe(false);
+    } finally {
+      release.resolve('holder');
+      await Promise.allSettled([holder, ...(peer ? [peer] : [])]);
+    }
+    expect(peerStarted).toBe(true);
+  }, 20_000);
+
+  it('uses the spare lane for integration before a long unit child finishes, without multiplying workers', async () => {
+    const long = deferred<string>(), short = deferred<string>(), peer = deferred<string>();
+    const starts: string[] = [];
+    let workers = 0, peakWorkers = 0, peerQueued = false;
+    const options = { ...config, admissionTimeoutMs: 8_000,
+      onAdmissionNotice: () => {},
+      taskAdmissionKey: (task: { id: string }) => task.id,
+      estimateMs: (task: { id: string }) => task.id === 'long' ? 100 : 1,
+      runTask: async (task: { id: string }, allocation: { workers: number }) => {
+        starts.push(task.id); workers += allocation.workers; peakWorkers = Math.max(peakWorkers, workers);
+        try { return await ({ long, short, peer })[task.id as 'long' | 'short' | 'peer'].promise; }
+        finally { workers -= allocation.workers; }
+      },
+    };
+    const broad = runBudgetedTasks([{ id: 'long' }, { id: 'short' }], options);
+    let narrow: ReturnType<typeof runBudgetedTasks> | undefined;
+    try {
+      await until(() => starts.length === 2, 'the broad active wave');
+      narrow = runBudgetedTasks([{ id: 'peer' }], { ...options,
+        onAdmissionNotice: (_, info) => { if (info.kind === 'queued') peerQueued = true; },
+      });
+      await until(() => peerQueued, 'integration to queue behind the full envelope');
+      short.resolve('short');
+      await until(() => starts.includes('peer'), 'integration to use the released lane while long remains resident');
+      expect(starts).toHaveLength(3);
+      expect(peakWorkers).toBeLessThanOrEqual(config.workerBudget);
+      expect(workers).toBe(4); // long=3, integration is clamped to the remaining one token.
+    } finally {
+      long.resolve('long'); short.resolve('short'); peer.resolve('peer');
+      await Promise.allSettled([broad, ...(narrow ? [narrow] : [])]);
+    }
+  }, 20_000);
+
+  it('serializes duplicate configs but does not let their queued ticket block a disjoint config', async () => {
+    const release = deferred<string>();
+    let started = false, duplicateQueued = false, duplicates = 0, integration = false;
+    const options = { ...config, admissionTimeoutMs: 8_000,
+      onAdmissionNotice: () => {},
+      taskAdmissionKey: (task: string) => task === 'integration' ? 'integration-config' : 'unit-config',
+    };
+    const holder = runBudgetedTasks(['holder', 'initial'], { ...options,
+      estimateMs: task => task === 'holder' ? 100 : 1,
+      runTask: async task => {
+      if (task === 'initial') return 'initial';
+      started = true; return release.promise;
+    } });
+    let duplicate: ReturnType<typeof runBudgetedTasks> | undefined;
+    let independent: ReturnType<typeof runBudgetedTasks> | undefined;
+    try {
+      await until(() => started, 'the config holder');
+      duplicate = runBudgetedTasks(['duplicate'], { ...options,
+        onAdmissionNotice: (_, info) => { if (info.kind === 'queued') duplicateQueued = true; },
+        runTask: async () => { duplicates++; return 'duplicate'; },
+      });
+      await until(() => duplicateQueued, 'the duplicate config to queue');
+      independent = runBudgetedTasks(['integration'], { ...options, runTask: async () => {
+        integration = true; return 'integration';
+      } });
+      await until(() => integration, 'the disjoint config to pass the blocked duplicate');
+      expect(duplicates).toBe(0);
+    } finally {
+      release.resolve('holder');
+      await Promise.allSettled([holder, ...(duplicate ? [duplicate] : []), ...(independent ? [independent] : [])]);
+    }
+    expect(duplicates).toBe(1);
+  }, 20_000);
+
+  it('releases a task lease after failure so the same config can run again', async () => {
+    const options = { ...config, admissionTimeoutMs: 1_000, taskAdmissionKey: () => 'same-config', onAdmissionNotice: () => {} };
+    await expect(runBudgetedTasks(['broken'], { ...options, runTask: async () => { throw new Error('fixture failure'); } }))
+      .rejects.toThrow('fixture failure');
+    await expect(runBudgetedTasks(['restored'], { ...options, runTask: async () => 'restored' }))
+      .resolves.toMatchObject({ results: [{ value: 'restored' }] });
+  });
+
+  it('rechecks the launcher deadline after queueing and retains an attributable refusal before spawning', async () => {
+    const acquired = deferred<void>(), release = deferred<void>();
+    const holder = withFsMutex(admissionMutexName(), async () => { acquired.resolve(); await release.promise; });
+    await acquired.promise;
+    const runTask = vi.fn(async () => 'must-not-run');
+    const running = runBudgetedTasks(['schema'], { ...config, runTask,
+      admissionTimeoutMs: 8_000, deadlineEpochMs: Date.now() + 1_000,
+      estimateMs: () => 50, taskAdmissionKey: () => 'integration-config', onAdmissionNotice: () => {},
+    });
+    const outcome = running.then(() => null, error => error as Error);
+    try { await new Promise<void>(done => setTimeout(done, 1_200)); }
+    finally { release.resolve(); await holder; }
+    expect((await outcome)?.message).toContain('TASK_DEADLINE_REFUSAL');
+    expect(runTask).not.toHaveBeenCalled();
+  }, 20_000);
 });
 
 describe('cooperative shared admission (WI-10006150)', () => {
@@ -3533,6 +3671,16 @@ describe('operator-visible budget markers', () => {
 });
 
 describe('affected-tests scheduler wiring', () => {
+  it('bounds initial watchdog and progress extensions by the maintained launcher cleanup cutoff', () => {
+    const body = AFFECTED_TESTS_SRC.slice(AFFECTED_TESTS_SRC.indexOf('const launchBudget ='));
+    expect(body).toMatch(/const launchBudget = [\s\S]{0,100}?admitTaskDeadline\(\{/);
+    expect(body).toContain('launchBudget.childCutoffEpochMs - Date.now()');
+    const watchdog = body.slice(body.indexOf('const watchdog = createProgressAwareWatchdog({'),
+      body.indexOf('let progressTimer = null;'));
+    expect(watchdog).toContain('timeoutMs: Math.min(taskTimeoutMs, launcherWatchdogMs)');
+    expect(watchdog).toContain('maxMs: Math.min(watchdogCeilingMs, launcherWatchdogMs)');
+  });
+
   it('awaits the initial budgeted pool and preserves allocation-specific Vitest ceilings', () => {
     expect(AFFECTED_TESTS_SRC).toContain('initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN');
     for (const variable of ['VITEST_MAX_WORKERS', 'VITEST_MAX_FORKS', 'VITEST_MAX_THREADS']) {

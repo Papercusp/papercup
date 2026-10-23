@@ -41,7 +41,7 @@ const serviceSourceSha256 = (() => {
 })();
 // Capture runtime JS and executable bytes before the daemon imports the API.
 // Version/path cannot distinguish an in-place compiler replacement.
-const compilerArtifactsSha256 = (() => {
+function measureCompilerArtifacts() {
   try {
     const hash = createHash('sha256');
     const visit = (directory) => {
@@ -58,7 +58,15 @@ const compilerArtifactsSha256 = (() => {
     const executable = join(dirname(platformPackage), 'lib', `${base === 'typescript' ? 'tsc' : 'tsgo'}${process.platform === 'win32' ? '.exe' : ''}`);
     return hash.update(readFileSync(platformPackage)).update(readFileSync(executable)).digest('hex');
   } catch { return null; }
-})();
+}
+const compilerArtifactsSha256 = measureCompilerArtifacts();
+
+/** A reset may spawn a new executable from disk. Refuse replacement until restart. */
+export function assertTscCompilerIdentityCurrent() {
+  if (!compilerArtifactsSha256 || measureCompilerArtifacts() !== compilerArtifactsSha256)
+    throw Object.assign(new Error('compiler artifacts changed since service/client load; restart required'),
+      { code: 'compiler-identity-changed' });
+}
 
 /** Exact loaded service/compiler identity plus the requested root config and named inputs.
  * Missing inputs remain explicit nulls; they never certify a successful focused check.
@@ -886,6 +894,7 @@ export function baselineWithinScope(baselineByFile, judged) {
  * @returns {Promise<TscServiceResponse>}
  */
 export function requestTscService({ socketPath, request, timeoutMs = TSC_SERVICE_TIMEOUT_MS, onProgress = () => {} }) {
+  try { assertTscCompilerIdentityCurrent(); } catch (error) { return Promise.reject(error); }
   const requestId = tscServiceRequestId(request.requestId);
   const identity = request.identity ?? tscServiceIdentity(request);
   return new Promise((resolvePromise, rejectPromise) => {

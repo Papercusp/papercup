@@ -23,6 +23,7 @@ import {
   renderDiagnostics,
   tscServiceRequestId,
   tscServiceIdentity,
+  assertTscCompilerIdentityCurrent,
   tscServiceSocketPath,
 } from '../lib/tsc-service.mjs';
 
@@ -140,6 +141,7 @@ async function resetApi(why) {
 
 /** Take a fresh snapshot covering `projects`, opening and evicting projects as needed. */
 async function refresh(projects, trace) {
+  assertTscCompilerIdentityCurrent();
   if (!state.api) state.api = new API({ cwd: ROOT });
   const toOpen = projects.filter((p) => !state.open.includes(p));
   state.open = [...state.open.filter((p) => !projects.includes(p)), ...projects];
@@ -155,6 +157,7 @@ async function refresh(projects, trace) {
     ...(toClose.length > 0 ? { closeProjects: toClose } : {}),
     ...(previous ? { fileChanges: { invalidateAll: true } } : {}),
   });
+  assertTscCompilerIdentityCurrent();
   trace('snapshot-updated');
   // invalidateAll does not re-evaluate a tsconfig's include globs. Re-parse each config and tell
   // the API about both added and removed roots; otherwise deleted roots remain in the loaded program
@@ -249,6 +252,7 @@ async function serve({ request, arrivedAt, trace, isCancelled }) {
   for (const d of errors) if (d.fileName) judged.add(relative(ROOT, d.fileName));
   const now = Date.now();
   if (isCancelled()) return null;
+  assertTscCompilerIdentityCurrent();
   return {
     ok: true,
     output,

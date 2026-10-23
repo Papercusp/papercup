@@ -33,6 +33,7 @@ import {
 import type { OpAAD } from './hive-epoch-crypto';
 // Lazy native load only (no keychain), so still safe in the fold worker bundle.
 import { loadSodium, openOpCiphertext } from './hive-epoch-aead';
+import { operationGroupKey } from './merge-rules';
 
 /** Reserved table tag identifying a snapshot op. No projection is registered for
  *  it, so non-snapshot-aware readers drop it (harmless). */
@@ -306,6 +307,14 @@ export function buildSnapshotRows(
  * the property suite (`log-snapshot.property.test.ts`, PREFIX-REPLACEMENT FAITHFULNESS)
  * exercises this fold rather than a parallel copy of it — the two cannot drift.
  */
+function snapshotFoldKey(row: SnapshotRow | PeerLogOp): string {
+  return operationGroupKey({
+    type: 'type' in row ? row.type : row.deleted ? 'del' : 'put',
+    table: row.table, hbKey: row.hbKey, hlc: row.hlc, ts: row.ts,
+    sourceLogKeyHex: row.author_pubkey, writerPubkey: row.author_pubkey,
+  });
+}
+
 export class SnapshotRowFolder {
   /** key → its current-state row (live put OR a `deleted` tombstone). */
   private readonly latest = new Map<string, SnapshotRow>();
@@ -351,7 +360,7 @@ export class SnapshotRowFolder {
       if (payload && Array.isArray(payload.rows)) {
         for (const r of payload.rows) {
           if (this.excludeTables.has(r.table)) continue;
-          const key = `${r.table}::${r.hbKey}`;
+          const key = snapshotFoldKey(r);
           const value = this.transformValue
             ? this.transformValue(r.value, {
                 table: r.table,
@@ -373,7 +382,7 @@ export class SnapshotRowFolder {
       return;
     }
     if (this.excludeTables.has(op.table)) return;
-    const key = `${op.table}::${op.hbKey}`;
+    const key = snapshotFoldKey(op);
     if (op.type === 'put') {
       const rowValue = this.transformValue
         ? this.transformValue(decoded, {

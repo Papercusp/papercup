@@ -2785,6 +2785,86 @@ describe('release:repair-queue', () => {
       },
     );
 
+    it.each([false, true])('replays a reviewed series before one admission, confirm=%s', async (confirm) => {
+      const second = { commit: '2'.repeat(40), parent: patch.commit, sha256: '3'.repeat(64) };
+      mocks.committedPatch
+        .mockReturnValueOnce({ ok: true, sourceCommit: ALT_HEAD, tree: 'a'.repeat(40), patch })
+        .mockReturnValueOnce({ ok: true, sourceCommit: HX_SOURCE, tree: 'b'.repeat(40), patch: second });
+      mocks.admit.mockReturnValue(admissionOf(confirm));
+      const { patchCommit: _single, ...base } = patchArgs;
+      const args = { ...base, patchCommits: [patch.commit, second.commit], confirm };
+      expect(tool.args.safeParse(args).success).toBe(true);
+      const result = body(await tool.handler(args as never, ctx));
+      expect(result).toMatchObject({ ok: true, admitted: confirm, mode: 'committed-patch', patch: second, patches: [patch, second] });
+      expect(mocks.committedPatch.mock.calls.map(([input]) => [input.patchCommit, input.repairHead])).toEqual([
+        [patch.commit, queue.repairHead], [second.commit, ALT_HEAD],
+      ]);
+      expect(mocks.admissionGit).toHaveBeenCalledWith(
+        ['merge-base', '--is-ancestor', patch.commit, second.commit], expect.objectContaining({ cwd: '/repo' }),
+      );
+      expect(mocks.admit.mock.calls.every(([input]) => input.source.ref === HX_SOURCE)).toBe(true);
+      if (confirm) {
+        expect((mocks.write.mock.calls[0]![1] as Written).admissions[0]).toMatchObject({ patch: second, patches: [patch, second] });
+        expect(JSON.parse(mocks.audit.mock.calls[0]![1][5])).toMatchObject({ patches: [patch, second] });
+      } else expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('rejects conflicting, duplicate or empty series sources before building', async () => {
+      const { patchCommit: _single, ...base } = patchArgs;
+      for (const extra of [
+        { patchCommits: [] },
+        { patchCommits: [patch.commit, patch.commit] },
+        { patchCommits: [patch.commit], patchCommit: patch.commit },
+        { patchCommits: [patch.commit], wholeBlob: true },
+        { patchCommits: [patch.commit], reason: undefined },
+      ]) {
+        const args = { ...base, ...extra };
+        expect(tool.args.safeParse(args).success).toBe(false);
+        expect(body(await tool.handler(args as never, ctx))).toMatchObject({ ok: false, reason: 'invalid-patch-source' });
+      }
+      expect(mocks.committedPatch).not.toHaveBeenCalled();
+      expect(mocks.admit).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('measures the completed series through R6 before any publication', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, admissionPrecheck: undefined } });
+      mocks.startPrecheckWorker.mockResolvedValue({ taskId: 'series-precheck', confined: true });
+      mocks.committedPatch
+        .mockReturnValueOnce({ ok: true, sourceCommit: ALT_HEAD, tree: 'a'.repeat(40), patch })
+        .mockReturnValueOnce({ ok: true, sourceCommit: HX_SOURCE, tree: 'b'.repeat(40),
+          patch: { ...patch, commit: '2'.repeat(40) } });
+      mocks.admit.mockReturnValue(admissionOf(true));
+      const { patchCommit: _single, ...base } = patchArgs;
+      const result = body(await tool.handler({ ...base, patchCommits: [patch.commit, '2'.repeat(40)], confirm: true } as never, ctx));
+      expect(result).toMatchObject({ ok: true, admitted: false, verdict: 'precheck-running' });
+      expect(mocks.admit.mock.calls.every(([input]) => input.dryRun === true && input.source.ref === HX_SOURCE)).toBe(true);
+      expect(mocks.startPrecheckWorker).toHaveBeenCalledOnce();
+      expect(mocks.audit).not.toHaveBeenCalled();
+      expect((mocks.write.mock.calls[0]![1] as FrozenCandidateRepairQueue).admissions ?? []).toEqual([]);
+    });
+
+    it('refuses a series in reverse ancestry before replaying either commit', async () => {
+      mocks.admissionGit.mockReturnValue({ status: 1, stdout: '', stderr: '' });
+      const { patchCommit: _single, ...base } = patchArgs;
+      expect(body(await tool.handler({ ...base, patchCommits: [patch.commit, patch.parent], confirm: true } as never, ctx)))
+        .toMatchObject({ ok: false, reason: 'invalid-patch-source' });
+      expect(mocks.committedPatch).not.toHaveBeenCalled();
+      expect(mocks.admit).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('never admits an intermediate source when a later committed delta conflicts', async () => {
+      mocks.committedPatch
+        .mockReturnValueOnce({ ok: true, sourceCommit: ALT_HEAD, tree: 'a'.repeat(40), patch })
+        .mockReturnValueOnce({ ok: false, code: 'patch-conflict', detail: 'dependent delta conflicts', exits: [] });
+      const { patchCommit: _single, ...base } = patchArgs;
+      expect(body(await tool.handler({ ...base, patchCommits: [patch.commit, '2'.repeat(40)], confirm: true } as never, ctx)))
+        .toMatchObject({ ok: false, reason: 'patch-conflict' });
+      expect(mocks.admit).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
     it('committed patch refusal and stale queue never publish or write', async () => {
       mocks.committedPatch.mockReturnValue({
         ok: false,

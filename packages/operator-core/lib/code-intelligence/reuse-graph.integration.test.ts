@@ -2,13 +2,26 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { SemanticCodeIndex } from './semantic-code';
+type SearchResult = Awaited<ReturnType<SemanticCodeIndex['search']>>;
 const capture = vi.hoisted(() => ({ onRead: null as null | ((path: string) => void),
-  search: vi.fn(async () => { throw new Error('Controlled semantic backend unavailable'); }) }));
+  search: vi.fn<SemanticCodeIndex['search']>(async () => { throw new Error('Controlled semantic backend unavailable'); }) }));
 vi.mock('./semantic-code-runtime', async importOriginal => {
   const actual = await importOriginal<typeof import('./semantic-code-runtime')>();
-  return { ...actual, semanticSimilarQuery: (...args: Parameters<typeof actual.semanticSimilarQuery>) =>
-    actual.semanticSimilarQuery(...args.slice(0, 4) as [string, string | undefined, Parameters<typeof actual.semanticSimilarQuery>[2], AbortSignal?],
-      async () => ({ search: capture.search }) as never) };
+  const { SemanticCodeIndex } = await import('./semantic-code');
+  const { default: postgres } = await import('postgres');
+  const { afterAll } = await import('vitest');
+  // postgres is lazy: this client never connects because the only method used
+  // by the real query is replaced with the fully typed controlled search.
+  const sql = postgres({ max: 1 });
+  afterAll(() => sql.end({ timeout: 0 }));
+  const index = new SemanticCodeIndex(sql,
+    { workspaceId: 'controlled-workspace', repositoryId: 'controlled-root', profile: 'controlled', dimensions: 1 },
+    { profile: 'controlled', dimensions: 1, query: async () => [1], document: async () => [1] });
+  index.search = capture.search;
+  return { ...actual, semanticSimilarQuery: (root: string, workspaceId: string | undefined,
+    args: Parameters<typeof actual.semanticSimilarQuery>[2], signal?: AbortSignal) =>
+    actual.semanticSimilarQuery(root, workspaceId, args, signal, async () => index) };
 });
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -23,6 +36,14 @@ import { buildCloneIndex } from './clone-index';
 import { queryCloneIndex } from './reuse-graph';
 import { extractSemanticFunctions } from './semantic-code';
 import { SEMANTIC_HYBRID_MODEL } from './semantic-code-calibration';
+
+function measured(matches: SearchResult['matches']): SearchResult {
+  return { matches, vectorStatus: 'measured', vectorError: null, relevanceStatus: 'measured', relevanceError: null,
+    relevanceMethod: SEMANTIC_HYBRID_MODEL.id, relevanceCutoff: .70, indexVersion: 'controlled-v1',
+    stalePaths: [], completeness: 'bounded-index-lower-bound',
+    ranking: 'reciprocal-rank-fusion; not probability; not a duplicate verdict',
+    truncation: { truncated: false, totalAvailable: matches.length } };
+}
 
 const body = 'let total = input;\n' + Array.from({ length: 24 }, (_, i) => `total += input * ${i + 1};`).join('\n') + '\nreturn total;';
 const source = `export function calculate(input: number) {\n${body}\n}`;
@@ -42,7 +63,10 @@ afterEach(() => { capture.onRead = null; capture.search.mockReset();
   roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })); });
 async function run(root: string, args: Record<string, unknown>) {
   const parsed = graphQuery.args.parse({ paths: ['src'], ...args });
-  const result = await graphQuery.handler(parsed, { projectDir: root, workspaceId: 'controlled-workspace' } as never);
+  const result = await graphQuery.handler(parsed, { projectDir: root, workspaceId: 'controlled-workspace',
+    principal: { kind: 'system', slug: 'controlled-test', workspaceId: 'controlled-workspace',
+      authMethod: 'host-loopback', trust: 'trusted', capabilities: new Set<string>() },
+    tx: undefined, log: () => {}, signal: new AbortController().signal, progress: () => {}, emit: () => {} });
   return (result as { data: Record<string, any> }).data;
 }
 
@@ -55,9 +79,7 @@ describe('graph:query reuse operations through the real schema and handler', () 
       ...extractSemanticFunctions({ path, source: readFileSync(join(root, path), 'utf8') })[0]!,
       rankScore: .02, rankers: ['vector'], cosineSimilarity: .44, relevanceScore: .85, crossEncoderRelevance: .93,
     }));
-    capture.search.mockResolvedValue({ matches: rows, vectorStatus: 'measured', relevanceStatus: 'measured',
-      relevanceMethod: SEMANTIC_HYBRID_MODEL.id, relevanceCutoff: .70, indexVersion: 'controlled-v1',
-      truncation: { truncated: false, totalAvailable: rows.length } } as never);
+    capture.search.mockResolvedValue(measured(rows));
     for (const input of [{ name: 'calculate' }, { file_path: 'src/a.ts', line1: 4 },
       { snippet: source }, { snippet: body }]) {
       const result = await run(root, { op: 'similar', ...input });
@@ -84,9 +106,7 @@ describe('graph:query reuse operations through the real schema and handler', () 
     const row = { ...extractSemanticFunctions({ path, source: text })[0]!, rankScore: .02, rankers: ['vector'],
       cosineSimilarity: .44, relevanceScore: .85, crossEncoderRelevance: .93 };
     for (const invalid of [{ ...row, relevanceScore: Number.NaN }, { ...row, blobSha: 'stale' }]) {
-      capture.search.mockResolvedValue({ matches: [invalid], vectorStatus: 'measured', relevanceStatus: 'measured',
-        relevanceMethod: SEMANTIC_HYBRID_MODEL.id, relevanceCutoff: .70, indexVersion: 'controlled-v1',
-        truncation: { truncated: false, totalAvailable: 1 } } as never);
+      capture.search.mockResolvedValue(measured([invalid]));
       const result = await run(root, { op: 'similar', name: 'calculate' });
       expect(result).toMatchObject({ status: 'ok', semantic: { status: 'unknown', matches: [] } });
       expect(result.matches.map((match: { kind: string }) => match.kind)).toEqual(['exact', 'renamed', 'near']);
@@ -99,9 +119,7 @@ describe('graph:query reuse operations through the real schema and handler', () 
     expect(unknown).toMatchObject({ status: 'ok', calibration: { semantic: { status: 'unknown' } }, semantic: { status: 'unknown', matches: [] } });
     capture.search.mockImplementation(async () => {
       writeFileSync(join(root, 'src/a.ts'), source + '\n// changed during semantic inference');
-      return { matches: [], vectorStatus: 'measured', relevanceStatus: 'measured',
-        relevanceMethod: SEMANTIC_HYBRID_MODEL.id, relevanceCutoff: .70, indexVersion: 'controlled-v1',
-        truncation: { truncated: false, totalAvailable: 0 } } as never;
+      return measured([]);
     });
     expect(await run(root, { op: 'similar', name: 'calculate' })).toMatchObject({
       status: 'unknown', matches: [], freshness: { status: 'unknown', staleVsDisk: null },

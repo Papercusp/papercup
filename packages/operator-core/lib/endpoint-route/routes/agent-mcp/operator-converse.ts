@@ -10,6 +10,7 @@ import {
   emitToSseSink,
   lookupByMcpName,
   subscribeWorkspace,
+  resolveBearer,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import '../../../agent-tools/index';
@@ -19,8 +20,16 @@ import { getConversationById, getOrCreateActiveConversation } from '../../../ope
 import { UI_CONTEXT_MAX_CHARS } from '../../../chat-context-sections';
 import { defineTool } from '@papercusp/agent-mcp';
 import { tutorialHelpContextSchema, type TutorialHelpContext } from '../../../onboarding/cloud-tutorial-help';
+import { getOrgPg } from '@papercusp/db-org';
+import { getSessionUserOrLocalDefaultAuthority } from '../../session-or-local';
+import { findConverseTurn } from '../../../agent-tools/operator/converse-turn';
+import { operatorChatSessionAuthority } from '../../../operator-chat-store';
 
 interface ConverseRequestBody {
+  chatProtocolVersion?: 1;
+  operation?: 'reconnect' | 'cancel';
+  turnId?: string;
+  afterSequence?: number;
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
   trigger?:
     | 'user_message'
@@ -63,6 +72,76 @@ interface ConverseRequestBody {
   lessonContext?: TutorialHelpContext;
 }
 
+async function controlTurn(req: Request, body: ConverseRequestBody): Promise<Response> {
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+  if (body.chatProtocolVersion !== 1 || !['reconnect', 'cancel'].includes(body.operation ?? '')
+    || typeof body.conversationId !== 'string' || !uuid.test(body.conversationId)
+    || typeof body.turnId !== 'string' || !uuid.test(body.turnId)
+    || body.lessonContext !== undefined || body.messages !== undefined
+    || !Number.isSafeInteger(body.afterSequence ?? 0) || (body.afterSequence ?? 0) < 0) {
+    return Response.json({ error: 'invalid turn control' }, { status: 400 });
+  }
+  try {
+    const workspaceId = activeWorkspaceId();
+    let expectedPrincipalId: string | undefined;
+    let authorizeAdditional;
+    if (body.hostTrust === 'public') {
+      const bearer = typeof body.principalToken === 'string' ? body.principalToken.trim() : '';
+      const principal = bearer ? await resolveBearer(bearer) : null;
+      if (principal?.kind !== 'pi' || principal.workspaceId !== workspaceId) {
+        return Response.json({ error: 'unauthorized' }, { status: 403 });
+      }
+      const sessionId = principal.slug.replace(/^pi:/, '');
+      expectedPrincipalId = `pi:${sessionId}`;
+      authorizeAdditional = operatorChatSessionAuthority({ workspaceId, principalId: expectedPrincipalId,
+        credential: { kind: 'pi', sessionId, bearer }, capability: 'chat:write', toolName: 'chat:ask_choice' });
+    } else {
+      const responder = await getSessionUserOrLocalDefaultAuthority(req);
+      if (!responder || responder.user.workspace_id !== workspaceId) {
+        return Response.json({ error: 'unauthorized' }, { status: 401 });
+      }
+      authorizeAdditional = responder.authorize;
+    }
+    const turn = await findConverseTurn({ sql: getOrgPg().sql, workspaceId,
+      identity: { conversationId: body.conversationId, turnId: body.turnId }, authorizeAdditional, expectedPrincipalId });
+    if (!turn) return Response.json({ error: 'turn not found' }, { status: 404 });
+    if (body.operation === 'cancel') {
+      const cancelled = await turn.recovery.cancel(turn.identity);
+      return cancelled.ok ? Response.json({ ok: true, state: cancelled.value.state })
+        : Response.json({ error: cancelled.code }, { status: cancelled.code === 'conflict' ? 409 : 503 });
+    }
+    let cursor = body.afterSequence ?? 0;
+    const initial = await turn.recovery.replay(turn.identity, cursor);
+    if (!initial.ok) return Response.json({ error: initial.code },
+      { status: ['invalid-cursor', 'replay-expired'].includes(initial.code) ? 409 : 503 });
+    return sseResponse({ signal: req.signal, setup: async sink => {
+      let stopped = false;
+      let subscription: { stop(): void } | undefined;
+      sink.onClose(() => { stopped = true; subscription?.stop(); });
+      const fail = () => {
+        if (!stopped) { sink.event('error', { code: 'needs-reconciliation', message: 'Turn stream needs reconciliation' }); sink.close(); }
+      };
+      try {
+        subscription = await turn.watch(async checkpoint => {
+          const replay = await turn.recovery.replay(turn.identity, cursor);
+          if (!replay.ok) throw new Error(replay.code);
+          if (stopped || sink.closed) return;
+          for (const event of replay.value) { sink.event('chat-event', event); cursor = event.sequence; }
+          sink.event('turn-state', checkpoint.state);
+          if (['completed', 'failed', 'cancelled'].includes(checkpoint.state.phase)) {
+            sink.done({ persistedTurn: turn.receipt, phase: checkpoint.state.phase });
+          }
+        }, fail);
+        if (stopped) subscription.stop();
+      } catch { fail(); }
+    } });
+  } catch (error) {
+    return Response.json({ error: error instanceof Error && error.message === 'unauthorized'
+      ? 'unauthorized' : 'turn needs reconciliation' },
+    { status: error instanceof Error && error.message === 'unauthorized' ? 403 : 503 });
+  }
+}
+
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-converse',
@@ -100,6 +179,14 @@ export default defineTool({
       return Response.json({ error: "hostTrust must be 'owner' or 'public'" }, { status: 400 });
     }
     const hostTrust: 'owner' | 'public' = body.hostTrust === 'public' ? 'public' : 'owner';
+    if (body.chatProtocolVersion !== undefined && body.chatProtocolVersion !== 1) {
+      return Response.json({ error: 'unsupported chat protocol' }, { status: 400 });
+    }
+    if (body.operation !== undefined) return controlTurn(req, body);
+    if (body.turnId !== undefined || body.afterSequence !== undefined
+      || (body.chatProtocolVersion === 1 && body.lessonContext !== undefined)) {
+      return Response.json({ error: 'invalid turn control' }, { status: 400 });
+    }
     let lessonContext: TutorialHelpContext | undefined;
     if (body.lessonContext !== undefined) {
       const parsed = tutorialHelpContextSchema.safeParse(body.lessonContext);
@@ -196,7 +283,10 @@ export default defineTool({
     return sseResponse({
       signal: req.signal,
       setup: async (sink) => {
-        sink.onClose(() => ctrl.abort());
+        // Versioned connections are subscribers. Only the explicit durable
+        // cancellation operation aborts their producer. Legacy0 retains its
+        // existing disconnect behavior during the ordered adapter rollout.
+        if (body.chatProtocolVersion !== 1) sink.onClose(() => ctrl.abort());
 
         // WI-5023: expose this turn's own card-correlator runId up front, on
         // every modality. Purely additive (a new event name; nothing existing
@@ -307,6 +397,7 @@ export default defineTool({
           )) {
             if (ctrl.signal.aborted) break;
             if (ev.kind === 'event') {
+              if (body.chatProtocolVersion === 1 && !['chat-event', 'turn-meta'].includes(ev.name)) continue;
               emitToSseSink(sink, operatorConverseTool, ev.name, ev.data);
             } else if (ev.kind === 'done') {
               try {

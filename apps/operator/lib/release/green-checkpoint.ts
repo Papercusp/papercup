@@ -41,6 +41,7 @@ import {
 } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   git,
   revParse,
@@ -200,6 +201,7 @@ import {
   readStoredQualification,
   composeStoredQualificationWork,
   recordStoredQualificationWorkProgress,
+  recordStoredQualificationWorkYield,
   recordStoredQualificationRunnerProgress,
   recordStoredQualificationNativeProducer,
   recoverStoredQualificationNativeCompletions,
@@ -214,16 +216,17 @@ import {
   type RunnerLiveness,
   type StoredQualificationMutation,
 } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
-import { executedSourceRunnerIdentity } from "@papercusp/test-config/test-pass-reuse-skip";
+import { executedSourceRunContext, executedSourceRunnerIdentity } from "@papercusp/test-config/test-pass-reuse-skip";
 import { readNativeArtifactBytes, writeBudgetedTaskNativeExecutionReceipt } from "../../../../scripts/lib/budgeted-task-scheduler.mjs";
 import { nativeProcessTraceEnv } from "../../../../scripts/lib/vitest-startup-trace.mjs";
-import { evaluatePartialTaskContinuation, partialTaskCheckpointPath, preparePartialContinuationManifest,
+import { evaluatePartialTaskContinuation, partialCurrentExecutionFingerprint, partialTaskCheckpointPath, preparePartialContinuationManifest,
   preparePartialNativeProducerChannels, preparePartialNativeProducerSelection,
-  preparePartialRemainingSelection, writePartialTaskCheckpointAtomic } from "../../../../scripts/lib/partial-task-resume.mjs";
+  preparePartialRemainingSelection, preparePartialTaskCommandDefinitions, readPartialTaskCommandCompletion,
+  writePartialTaskCheckpointAtomic } from "../../../../scripts/lib/partial-task-resume.mjs";
 // eslint-disable-next-line import/no-relative-packages -- share the native reporter's maintained input classifier
 import { classifyReadPaths } from "../../../../libs/test-config/src/executed-source-map-reporter";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
-import type { CheckpointVerdict } from "@papercusp/operator-core/lib/harness/routines/release-actions";
+import type { CheckpointVerdict, RecordCheckpointVerdictOptions } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import {
   isCheckpointCandidateSource,
   type CheckpointCandidateSource,
@@ -382,7 +385,8 @@ import {
 import { recordGateReuseDecision, TEST_REUSE_SKIP_LIST_ENV } from "../../../../scripts/lib/test-pass-reuse.mjs";
 // EI-24538088938561684: a targeted TASK re-run (runGateAtRef — the frozen-repair verification's
 // `<ws> :: test:lane-*` re-run) arms the suite's per-file pass reuse and proof recording.
-import { armTargetedTaskReuse } from "../../../../scripts/lib/targeted-task-reuse.mjs";
+import { armTargetedTaskReuse, defaultRunnerIdentity } from "../../../../scripts/lib/targeted-task-reuse.mjs";
+import { judgedTreeProofFormat } from "../../../../scripts/lib/test-pass-reuse.mjs";
 import { applyGitOptionalLocksDefault } from "../../../../scripts/lib/git-optional-locks.mjs";
 // gate-test-reuse-yield-2026-10-01 P-006 (D-005 §1): after the verdict is recorded, capture
 // isolated pass proofs for the pure lane, which records none during the suite (isolate:false).
@@ -408,8 +412,13 @@ import { EXIT_NOT_CHECKED } from "../../../../scripts/lib/not-checked.mjs";
 import {
   resolveBatchTimeoutMs,
   resolveTaskTimeoutMs,
+  resolveQualificationYieldBudget,
+  createQualificationYieldBoundary,
+  type QualificationYieldBudget,
   // @ts-ignore -- plain .mjs policy module, no type declarations; keep immediately above the module specifier.
 } from "../../../../scripts/lib/batch-watchdog.mjs";
+import { runQualificationCommand, type QualificationCommandOptions } from '@papercusp/operator-core/lib/release/checkpoint-qualification-command';
+import { TASK_DEADLINE_EPOCH_MS_ENV } from '@papercusp/operator-core/lib/systemd-scope';
 // EI-19395755190419540 — the orchestrator's stdout tags, DEFINED one layer down so the log
 // PARSER (operator-core) and this EMITTER can share one literal across the package boundary.
 // Imported (not merely re-exported) because `log()` below calls orchestratorStdoutTag() on
@@ -786,6 +795,8 @@ export type StagingLineageAbsorptionResult =
     };
 
 export interface CheckpointDeps {
+  qualificationWorkForVerdict?(verdict: Pick<CheckpointVerdict, 'green' | 'candidate' | 'runId'>):
+    Promise<RecordCheckpointVerdictOptions['qualificationWork']>;
   /** Internal trace shared across this physical run's recursive refires. Never live state. */
   decisionTrace?: GateDecisionReplay[];
   /**
@@ -4210,15 +4221,19 @@ export function createCheckpointQualificationNativeObserver(
       supersedesCompletionIds?: Record<string, string>;
     }>;
     classifyReadPaths?: Parameters<typeof recoverStoredQualificationNativeCompletions>[2];
+    commands?: Map<string, ReturnType<typeof preparePartialTaskCommandDefinitions>['definitions'][number]>;
   },
   deps: {
     enroll: typeof recordStoredQualificationNativeProducer;
     recover: typeof recoverStoredQualificationNativeCompletions;
+    record?: typeof recordStoredQualificationWorkProgress;
   } = { enroll: recordStoredQualificationNativeProducer, recover: recoverStoredQualificationNativeCompletions },
 ) {
   const target = structuredClone(input.target);
   const progress = structuredClone({ ...input.progress, updates: [] });
   const tasks = new Map([...input.tasks].map(([key, task]) => [key, structuredClone(task)]));
+  const commands = new Map([...(input.commands ?? [])].map(([key, definition]) => [key, structuredClone(definition)]));
+  const completedCommands = new Map<string, string>();
   const streams = new Map<string, { remainder: string; discarding: boolean }>();
   const producers = new Map<string, string>();
   const taskProducers = new Map<string, string>();
@@ -4230,6 +4245,38 @@ export function createCheckpointQualificationNativeObserver(
   > | undefined;
   const refuse = (reason: string) => { failure ??= reason; };
   const acceptLine = (line: string) => {
+    if (!failure && line.startsWith('QUALIFICATION_TASK_COMPLETION')) {
+      let observation: { task: string; root: string; receipt: { ref: string; sha256: string; byteLength: number } };
+      try {
+        if (line.length > 16_384 || !line.startsWith('QUALIFICATION_TASK_COMPLETION=')) throw new Error('invalid');
+        observation = JSON.parse(line.slice('QUALIFICATION_TASK_COMPLETION='.length));
+      } catch { refuse('task-command-announcement-invalid'); return; }
+      const definition = commands.get(observation?.task);
+      if (!definition) { refuse('task-command-announcement-outside-selection'); return; }
+      const key = JSON.stringify(observation);
+      if (completedCommands.has(observation.task)) {
+        if (completedCommands.get(observation.task) !== key) refuse('task-command-announcement-conflict');
+        return;
+      }
+      completedCommands.set(observation.task, key);
+      pending = pending.then(async () => {
+        if (failure) return;
+        const record = deps.record ?? recordStoredQualificationWorkProgress;
+        const custody = await record(target, progress);
+        if (custody.status !== 'updated' && custody.status !== 'idempotent') {
+          refuse(`task-command-custody-${custody.status}`); return;
+        }
+        const observed = readPartialTaskCommandCompletion(observation, { ...progress, sourceCommit: progress.candidate,
+          runnerReservedAtMs: custody.transaction.currentPhysicalRunner?.reservedAtMs, nowMs: Date.now() }, definition);
+        if (observed.status !== 'ready') { refuse(`task-command-${observed.reason}`); return; }
+        const stored = await record(target, { ...progress, updates: observed.receipts.map(receipt => {
+          const prior = custody.transaction.continuation?.receipts.find(row => row.unitId === receipt.unitId);
+          return { receipt, ...(prior ? { supersedesCompletionId: prior.completionId } : {}) };
+        }) });
+        if (stored.status !== 'updated' && stored.status !== 'idempotent') refuse(`task-command-store-${stored.status}`);
+      }).catch(() => { refuse('task-command-completion-unreadable'); });
+      return;
+    }
     if (failure || !line.startsWith('QUALIFICATION_NATIVE_PRODUCER')) return;
     const match = line.length <= 16_384 && line.match(
       /^QUALIFICATION_NATIVE_PRODUCER task=("(?:[^"\\]|\\.)*") path=("(?:[^"\\]|\\.)*")$/,
@@ -4261,6 +4308,27 @@ export function createCheckpointQualificationNativeObserver(
         refuse(`native-producer-enrollment-${enrolled.status}`);
     }).catch(() => { refuse('native-producer-enrollment-unreadable'); });
   };
+  const recover = () => {
+    // Serialize with enrollment and command stores, including output received
+    // during a previous read. A snapshot must never overtake its durable writes.
+    const result = pending.then(async () => {
+      if (failure) return { status: 'refused' as const, reason: failure };
+      try {
+        const recovered = await deps.recover(target, progress, input.classifyReadPaths);
+        if (recovered.status !== 'updated' && recovered.status !== 'idempotent')
+          refuse(`native-producer-recovery-${recovered.status}`);
+        if (failure) return { status: 'refused' as const, reason: failure };
+        if (recovered.status === 'updated' || recovered.status === 'idempotent')
+          return { status: 'ready' as const, transaction: recovered.transaction };
+        return { status: 'refused' as const, reason: 'native-producer-recovery-unmeasured' };
+      } catch {
+        refuse('native-producer-recovery-unreadable');
+        return { status: 'refused' as const, reason: failure! };
+      }
+    });
+    pending = result.then(() => {});
+    return result;
+  };
   return {
     onOutput(stream: 'stdout' | 'stderr', text: string) {
       if (finished) { refuse('native-producer-output-after-finish'); return; }
@@ -4276,51 +4344,200 @@ export function createCheckpointQualificationNativeObserver(
       state.remainder = lines.pop() ?? '';
       for (const line of lines) acceptLine(line);
       if (state.remainder.length > 16_384) {
-        if (state.remainder.startsWith('QUALIFICATION_NATIVE_PRODUCER'))
+        if (state.remainder.startsWith('QUALIFICATION_NATIVE_PRODUCER') || state.remainder.startsWith('QUALIFICATION_TASK_COMPLETION'))
           refuse('native-producer-announcement-invalid');
         state.remainder = '';
         state.discarding = true;
       }
       streams.set(stream, state);
     },
+    /** Repeatable, authenticated durable-prefix read for the quantum boundary.
+     * Keep observing the physical child; unfinished output is never parsed as a
+     * complete announcement, and any recovery refusal remains a green barrier. */
+    snapshot() { return finished ?? recover(); },
     finish() {
       if (finished) return finished;
       for (const state of streams.values()) if (!state.discarding) acceptLine(state.remainder);
-      finished = (async () => {
-        await pending;
-        if (failure) return { status: 'refused' as const, reason: failure };
-        try {
-          // Also recover already-enrolled producers when this invocation emitted none.
-          // A conflict is terminal for this batch; never compose the earlier banked passes.
-          const recovered = await deps.recover(target, progress, input.classifyReadPaths);
-          if (recovered.status !== 'updated' && recovered.status !== 'idempotent')
-            return { status: 'refused' as const, reason: `native-producer-recovery-${recovered.status}` };
-          if (failure) return { status: 'refused' as const, reason: failure };
-          return { status: 'ready' as const, transaction: recovered.transaction };
-        } catch { return { status: 'refused' as const, reason: 'native-producer-recovery-unreadable' }; }
-      })();
+      // Recover already-enrolled producers even when this invocation emitted none.
+      finished = recover();
       return finished;
     },
   };
 }
 
-/** Recheck the frozen population and runner custody before attaching native output
- * to a production suite. Unsupported remaining selections stop before execution. */
+/** Connect the quantum policy to authenticated native snapshots and the existing
+ * row-locked receipt store. Process teardown remains the owning executor's job. */
+export function createCheckpointQualificationYieldBoundary(input: {
+  target: GateVerdictTarget;
+  progress: QualificationWorkProgressInput;
+  observer: Pick<ReturnType<typeof createCheckpointQualificationNativeObserver>, 'snapshot'>;
+  budget: QualificationYieldBudget;
+  baselineReceipts: Array<{ unitId: string; completionId: string }>;
+  onYield: Parameters<typeof createQualificationYieldBoundary>[0]['onYield'];
+  onKill: Parameters<typeof createQualificationYieldBoundary>[0]['onKill'];
+}, deps = { record: recordStoredQualificationWorkYield }) {
+  const target = structuredClone(input.target), progress = structuredClone(input.progress);
+  if (progress.updates.length) throw new Error('qualification-yield-mixed-updates');
+  const identity = partialCurrentExecutionFingerprint({ ...progress, sourceCommit: progress.candidate });
+  if (!identity) throw new Error('qualification-yield-identity-unmeasured');
+  const units = progress.manifest.units.filter(unit => !unit.exclusion).map(unit => unit.id);
+  const selected = new Set(units);
+  let receipts = new Map<string, string>();
+  return createQualificationYieldBoundary({ identity, budget: input.budget, unitIds: units,
+    baselineReceipts: structuredClone(input.baselineReceipts.filter(receipt => selected.has(receipt.unitId))),
+    readDurableProgress: async signal => {
+      if (signal.aborted) return { status: 'refused' };
+      const observed = await input.observer.snapshot();
+      if (signal.aborted || observed.status !== 'ready') return { status: 'refused' };
+      const current = observed.transaction, runner = current.currentPhysicalRunner;
+      if (current.attemptId !== progress.attemptId || current.candidate !== progress.candidate ||
+          current.repairHead !== progress.repairHead || current.runId !== progress.runId ||
+          runner?.id !== progress.runnerId || runner.pidIdentity !== progress.pidIdentity ||
+          !current.continuation) return { status: 'refused' };
+      const completed = current.continuation.receipts.filter(receipt => selected.has(receipt.unitId));
+      receipts = new Map(completed.map(receipt => [receipt.unitId, receipt.completionId]));
+      return { status: 'ready', identity, receipts: completed };
+    },
+    commitYield: async (cursor, signal) => {
+      if (signal.aborted) return false;
+      const result = await deps.record(target, { ...progress, updates: [] }, {
+        runnerId: progress.runnerId, runId: progress.runId, savedAtMs: Date.now(),
+        executionCutoffEpochMs: cursor.budget.executionCutoffEpochMs,
+        yieldDeadlineEpochMs: cursor.budget.yieldDeadlineEpochMs,
+        cleanupDeadlineEpochMs: cursor.budget.cleanupDeadlineEpochMs,
+        orphanDeadlineEpochMs: cursor.budget.orphanDeadlineEpochMs,
+        callerDeadlineEpochMs: cursor.budget.callerDeadlineEpochMs,
+        completed: cursor.completedUnitIds.map(unitId => ({ unitId, completionId: receipts.get(unitId)! })),
+        pendingUnitIds: [...cursor.pendingUnitIds],
+      }, signal);
+      return !signal.aborted && (result.status === 'updated' || result.status === 'idempotent');
+    }, onYield: input.onYield, onKill: input.onKill });
+}
+
+export class CheckpointQualificationBoundaryError extends Error {
+  constructor(readonly disposition: 'yielded' | 'killed', readonly detail: string) {
+    super(`QUALIFICATION_BOUNDARY status=${disposition} reason=${detail}`);
+  }
+}
+
+/** Derive every bound from the original invocation clock. Preparation consumes
+ * that budget; a later suite, retry, or scope launch cannot refresh it. */
+export function checkpointQualificationBudgetFromEnv(startedAtMs: number,
+  environment: NodeJS.ProcessEnv = process.env,
+  processStartedAtMs = Math.floor(Date.now() - process.uptime() * 1000)) {
+  const inherited = Number(environment[TASK_DEADLINE_EPOCH_MS_ENV]);
+  const watchdog = selfWatchdogConfigFromEnv(environment);
+  const callerDeadline = Number.isSafeInteger(inherited) && inherited > 0 ? inherited :
+    processStartedAtMs + (watchdog.trigger === 'manual-run-deadline' ? watchdog.ms : GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
+  return resolveQualificationYieldBudget({ startedAtMs, quantumMs: GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
+    deadlineEpochMs: callerDeadline, orphanDeadlineEpochMs: processStartedAtMs + watchdog.ms });
+}
+
+/** One quantum owns the suite and its post-suite workers. Stop publication first,
+ * then drain the fenced executors' death-aware cleanup before releasing this call. */
+export function createCheckpointQualificationExecution(input: {
+  target: GateVerdictTarget;
+  progress: QualificationWorkProgressInput;
+  observer: Pick<ReturnType<typeof createCheckpointQualificationNativeObserver>, 'snapshot'>;
+  budget: QualificationYieldBudget;
+  baselineReceipts: Array<{ unitId: string; completionId: string }>;
+  execute: CheckpointExec;
+  onStop: (error: CheckpointQualificationBoundaryError) => void;
+}, deps = { boundary: createCheckpointQualificationYieldBoundary }) {
+  input = { ...input, target: structuredClone(input.target), progress: structuredClone(input.progress),
+    baselineReceipts: structuredClone(input.baselineReceipts) };
+  const cancellation = new AbortController();
+  const pending = new Set<Promise<CheckpointExecResult>>();
+  let failure: CheckpointQualificationBoundaryError | undefined;
+  const fail = (error: CheckpointQualificationBoundaryError) => {
+    failure ??= error;
+    cancellation.abort();
+    input.onStop(failure);
+  };
+  const boundary = deps.boundary({ ...input,
+    onYield: () => fail(new CheckpointQualificationBoundaryError('yielded', 'durable-progress-saved')),
+    onKill: decision => fail(new CheckpointQualificationBoundaryError('killed', decision.reason)),
+  });
+  const execute: CheckpointExec = async (cmd, args, options) => {
+    if (failure) throw failure;
+    cancellation.signal.throwIfAborted();
+    const relative = path.relative(input.progress.root, options?.cwd ?? process.cwd());
+    const inCandidate = relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    const running = input.execute(cmd, args, { ...options,
+      signal: options?.signal ? AbortSignal.any([options.signal, cancellation.signal]) : cancellation.signal,
+      ...(inCandidate ? { qualification: { target: input.target, progress: input.progress,
+        deadlineEpochMs: input.budget.cleanupDeadlineEpochMs } } : {}),
+    });
+    pending.add(running);
+    try {
+      const result = await running;
+      if (failure) throw failure;
+      return result;
+    } finally { pending.delete(running); }
+  };
+  return { execute,
+    assertRunning() { if (failure) throw failure; cancellation.signal.throwIfAborted(); },
+    async stop() {
+      boundary.stop(); cancellation.abort();
+      await Promise.allSettled([...pending]);
+    },
+  };
+}
+
+/** Recheck the candidate's actual child interpreter and preload before execution. */
+export async function checkpointQualificationRunnerIdentity(root: string, selection: unknown, environment: NodeJS.ProcessEnv,
+  measure = defaultRunnerIdentity) {
+  try {
+    // The candidate's own helper names the preload the candidate child will
+    // actually load. The orchestration process may run another checkout/runtime.
+    const trace = await import(pathToFileURL(path.join(root, 'scripts/lib/vitest-startup-trace.mjs')).href);
+    const finalEnvironment = trace.nativeProcessTraceEnv({ ...environment }, { enabled: true }) as NodeJS.ProcessEnv;
+    const expectedPreload = `--import=${JSON.stringify(pathToFileURL(path.join(root, 'scripts/lib/vitest-startup-trace.mjs')).href)}`;
+    if (!finalEnvironment.NODE_OPTIONS?.includes(expectedPreload)) return null;
+    const format = judgedTreeProofFormat(root) ?? undefined;
+    const selected = selection as { tasks?: Array<{ dir: string; runner: string; command: string;
+      steps?: Array<{ lifecycle?: boolean; command: string; discovery: Array<{ runner: string }> }> }> };
+    const identities = new Set<string>();
+    for (const task of selected.tasks ?? []) {
+      const commands = task.runner === 'vitest' ? [task.command] : task.runner === 'command-chain'
+        ? task.steps?.filter(step => !step.lifecycle && step.discovery?.[0]?.runner === 'vitest').map(step => step.command) ?? [] : [];
+      for (const command of commands) {
+        const measured = measure(root, finalEnvironment, format,
+          { workspaceRoot: path.resolve(root, task.dir), scriptText: command });
+        if (!measured) return null;
+        identities.add(measured);
+      }
+    }
+    if (!identities.size) {
+      const measured = measure(root, finalEnvironment, format);
+      if (!measured) return null;
+      identities.add(measured);
+    }
+    // A single qualification identity cannot safely label mixed interpreters.
+    return identities.size === 1 ? [...identities][0]! : null;
+  } catch { return null; }
+}
+
 export async function prepareCheckpointQualificationNativeRun(
   input: { target: GateVerdictTarget; attemptId: string; candidate: string; runId: string; root: string;
-    select: () => Promise<unknown> },
+    select: () => Promise<unknown>; environment?: NodeJS.ProcessEnv },
   deps = {
     read: readStoredQualification, record: recordStoredQualificationWorkProgress,
     recover: recoverStoredQualificationNativeCompletions,
-    pidIdentity: () => checkpointPidIdentity(process.pid), runnerIdentity: executedSourceRunnerIdentity,
+    pidIdentity: () => checkpointPidIdentity(process.pid),
+    runnerIdentity: checkpointQualificationRunnerIdentity as (root: string, selection: unknown,
+      environment: NodeJS.ProcessEnv) => string | null | Promise<string | null>,
     classify: checkpointQualificationInputClassifier,
     observe: createCheckpointQualificationNativeObserver,
   },
 ): Promise<{ status: 'legacy' } | { status: 'refused'; reason: string } |
   { status: 'ready'; observer: ReturnType<typeof createCheckpointQualificationNativeObserver>;
+    commandDefinitions: ReturnType<typeof preparePartialTaskCommandDefinitions>['definitions'];
+    recheckRunnerIdentity: () => Promise<string | null>;
     postSuite: { target: GateVerdictTarget; progress: QualificationWorkProgressInput };
     checkpoint: { root: string; taskKey: string; sourceCommit: string; sourceDigest: string;
       selectedFiles: string[]; passedFiles: string[]; state: string;
+      physicalExecution: { fingerprint: string; evidenceRoot: string; tasks: string[] };
       continuation: NonNullable<Extract<StoredQualificationMutation, { status: 'updated' | 'idempotent' }>['transaction']['continuation']> } }> {
   const refuse = (reason: string) => ({ status: 'refused' as const, reason });
   const stored = await deps.read(input.target);
@@ -4346,11 +4563,14 @@ export async function prepareCheckpointQualificationNativeRun(
   });
   if (prepared.status !== 'ready') return refuse(`qualification-selection-${prepared.reason}`);
   if (!isDeepStrictEqual(prepared.manifest, work.manifest)) return refuse('qualification-selection-manifest-mismatch');
+  const environment = { ...(input.environment ?? process.env) };
+  const runnerIdentity = await deps.runnerIdentity(input.root, selection, environment);
+  if (!runnerIdentity) return refuse('qualification-runtime-identity-unmeasured');
   const progress: QualificationWorkProgressInput = {
     attemptId: input.attemptId, candidate: input.candidate, repairHead: current.repairHead,
     runnerId: runner.id, runId: input.runId, pidIdentity, root: input.root, taskKey: work.taskKey,
-    manifest: work.manifest, retryStates: work.retryStates, runContext: 'ci',
-    runnerIdentity: deps.runnerIdentity(), updates: [],
+    manifest: work.manifest, retryStates: work.retryStates, runContext: executedSourceRunContext({ GREEN_CHECKPOINT: '1' }),
+    runnerIdentity, updates: [],
   };
   const classifier = await deps.classify(input.root);
   const frozen = await deps.record(input.target, progress);
@@ -4363,6 +4583,8 @@ export async function prepareCheckpointQualificationNativeRun(
     continuation: recovered.transaction.continuation }, { ...progress, sourceCommit: input.candidate },
   { selection, postSuite: postSuiteContinuationPopulation() });
   if (remaining.status !== 'ready') return refuse(`qualification-${remaining.reason}`);
+  const commandPreparation = prepareCheckpointQualificationTaskCommands(progress, selection, remaining.tasks);
+  if (commandPreparation.status !== 'ready') return refuse(`qualification-${commandPreparation.reason}`);
   const tasks = new Map<string, { workspaceName: string; selectedSpecifications: unknown[];
     supersedesCompletionIds: Record<string, string> }>();
   for (const task of remaining.tasks) {
@@ -4402,12 +4624,33 @@ export async function prepareCheckpointQualificationNativeRun(
     tasks.set(task.id, { workspaceName: task.workspace, selectedSpecifications: native.selectedSpecifications!,
       supersedesCompletionIds: predecessors });
   }
-  return { status: 'ready', observer: deps.observe({ target: input.target, progress, tasks, classifyReadPaths: classifier }),
+  const fingerprint = partialCurrentExecutionFingerprint({ ...progress, sourceCommit: input.candidate });
+  if (!fingerprint) return refuse('qualification-physical-execution-unmeasured');
+  return { status: 'ready', observer: deps.observe({ target: input.target, progress, tasks, classifyReadPaths: classifier,
+      commands: new Map(commandPreparation.definitions.map(definition => [definition.task, definition])) }),
+    commandDefinitions: commandPreparation.definitions,
+    recheckRunnerIdentity: async () => await deps.runnerIdentity(input.root, selection, environment),
     postSuite: { target: input.target, progress },
     checkpoint: { root: input.root, taskKey: work.taskKey, sourceCommit: input.candidate,
       sourceDigest: createHash('sha256').update(progress.runnerIdentity).digest('hex'),
       selectedFiles: work.manifest.units.filter(unit => unit.kind === 'test').map(unit => unit.path),
-      passedFiles: [], state: 'partial', continuation: recovered.transaction.continuation! } };
+      passedFiles: [], state: 'partial', continuation: recovered.transaction.continuation!,
+      physicalExecution: { fingerprint, tasks: commandPreparation.definitions.map(definition => definition.task),
+        evidenceRoot: path.join(os.tmpdir(), 'papercusp-qualification-task',
+        createHash('sha256').update(`${progress.root}\0${progress.attemptId}`).digest('hex')) } } };
+}
+
+/** Original commands come from the maintained selector, before execution. The
+ * artifact directory is the existing immutable native receipt transport. */
+export function prepareCheckpointQualificationTaskCommands(progress: QualificationWorkProgressInput, selection: unknown,
+  remaining: Array<{ id: string; runner?: string; files: unknown[] }> = []) {
+  const evidenceRoot = path.join(os.tmpdir(), 'papercusp-qualification-task',
+    createHash('sha256').update(`${progress.root}\0${progress.attemptId}`).digest('hex'));
+  const selected = selection as { invocations?: Array<{ task: string; argv: string[]; emptyArgv?: string[] }> };
+  return preparePartialTaskCommandDefinitions({ root: progress.root, selection,
+    postSuite: postSuiteContinuationPopulation(), evidenceRoot, invocations: (selected.invocations ?? []).map(invocation =>
+      remaining.some(task => task.id === invocation.task && task.runner === 'vitest' && !task.files.length)
+        ? { ...invocation, argv: invocation.emptyArgv ?? invocation.argv } : invocation) });
 }
 
 async function checkpointQualificationInputClassifier(root: string) {
@@ -4422,9 +4665,11 @@ async function checkpointQualificationInputClassifier(root: string) {
 /** The production suite's final green barrier, after absorption and exclusions.
  * Composition leaves custody and terminal settlement untouched. */
 export async function composeCheckpointQualificationBeforePromotion(
-  input: { target: GateVerdictTarget; attemptId: string; candidate: string; runId: string; root: string },
+  input: { target: GateVerdictTarget; attemptId: string; candidate: string; runId: string; root: string; spaWorkspace?: string;
+    runnerIdentity?: string | null;
+    commandDefinitions?: ReturnType<typeof preparePartialTaskCommandDefinitions>['definitions'] },
   deps: { read: typeof readStoredQualification; compose: typeof composeStoredQualificationWork;
-    pidIdentity: () => string | null; runnerIdentity: () => string;
+    pidIdentity: () => string | null; runnerIdentity: () => string | null;
     classify?: (root: string) => NonNullable<Parameters<typeof composeStoredQualificationWork>[2]>['classifyReadPaths'] |
       Promise<NonNullable<Parameters<typeof composeStoredQualificationWork>[2]>['classifyReadPaths']> } = {
     read: readStoredQualification, compose: composeStoredQualificationWork,
@@ -4443,12 +4688,17 @@ export async function composeCheckpointQualificationBeforePromotion(
   const pidIdentity = deps.pidIdentity();
   if (!runner || !pidIdentity || runner.pidIdentity !== pidIdentity || work.root !== input.root)
     return { status: 'refused', reason: 'qualification-runner-fence-mismatch' };
+  const runnerIdentity = input.runnerIdentity === undefined ? deps.runnerIdentity() : input.runnerIdentity;
+  if (!runnerIdentity) return { status: 'refused', reason: 'qualification-runtime-identity-unmeasured' };
   const composed = await deps.compose(input.target, {
     attemptId: input.attemptId, candidate: input.candidate, repairHead: transaction.repairHead,
     runnerId: runner.id, runId: input.runId, pidIdentity, root: input.root, taskKey: work.taskKey,
-    manifest: work.manifest, retryStates: work.retryStates, runContext: 'ci',
-    runnerIdentity: deps.runnerIdentity(), updates: [],
-  }, { classifyReadPaths: await deps.classify?.(input.root) });
+    manifest: work.manifest, retryStates: work.retryStates, runContext: executedSourceRunContext({ GREEN_CHECKPOINT: '1' }),
+    runnerIdentity, updates: [],
+  }, { classifyReadPaths: await deps.classify?.(input.root),
+    currentCommandDefinition: (unit, progress) => unit.kind === 'guard'
+      ? input.commandDefinitions?.find(definition => definition.unitIds.includes(unit.id))
+      : checkpointQualificationPostSuiteDefinition(progress, unit.id, input.spaWorkspace) });
   return composed.status === 'updated' || composed.status === 'idempotent'
     ? { status: 'ready' }
     : { status: 'refused', reason: `qualification-composition-${composed.status}${
@@ -10922,6 +11172,10 @@ export function buildGreenCheckpointEnv(
   frozenCandidateOpenedAtMs?: number,
 ): NodeJS.ProcessEnv {
   const env = canonicalGreenCheckpointSourceEnv(source);
+  // This control value is the launcher's immutable ceiling, independent of test inputs.
+  const callerDeadline = Number(source[TASK_DEADLINE_EPOCH_MS_ENV]);
+  if (Number.isSafeInteger(callerDeadline) && callerDeadline > 0)
+    env[TASK_DEADLINE_EPOCH_MS_ENV] = String(callerDeadline);
   // Targeted repair tasks bypass affected-tests, so their Git reads need the same
   // optional-lock policy as the ordinary suite. A killed status must not strand index.lock.
   applyGitOptionalLocksDefault(env);
@@ -18264,6 +18518,11 @@ export async function runGreenCheckpoint(
   try {
     inner = await runGreenCheckpointInner(cfg, { ...deps, decisionTrace }, innerOpts);
   } catch (error) {
+    if (error instanceof CheckpointQualificationBoundaryError) return {
+      advanced: false, candidate: opts.candidate ?? opts.candidateHint ?? '', from: null,
+      green: null, reason: 'infra-inconclusive', summary: error.message,
+      ...replayProvenance, ...(deps.runId ? { runId: deps.runId } : {}),
+    };
     // Measured 2026-10-12: every headroom refusal that day was setup's OWN exit 77, thrown
     // mid-materialization after the preflight passed — so it never reached a returned result.
     // Classify it with the crash handler's own function; anything that is not a typed
@@ -18570,6 +18829,8 @@ export type CheckpointExec = (
      *  process GROUP when `killProcessGroupOnTimeout` is set) and the call rejects. Optional
      *  so every injected test fake keeps compiling untouched — a fake simply ignores it. */
     signal?: AbortSignal;
+    /** Fenced qualification commands require an independently bounded OS scope. */
+    qualification?: Pick<QualificationCommandOptions, 'target' | 'progress' | 'deadlineEpochMs'>;
   },
 ) => Promise<CheckpointExecResult>;
 
@@ -19855,11 +20116,81 @@ const SPA_CONFLICT_MARKER_ARGS = [
   'grep', '-n', '-I', '-E', '^(<{7}|>{7}|\\|{7})([ \\t]|$)', '--', '.',
 ];
 
+const checkpointCommandWrapperInputs = (root: string, command: readonly string[]) => {
+  try {
+    const files = ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', '.npmrc'];
+    const inputs: Array<{ path: string; sha256: string }> = [];
+    let scripts: Record<string, string> | undefined;
+    for (const file of files) {
+      const absolute = path.join(root, file);
+      if (file !== 'package.json' && !existsSync(absolute)) continue;
+      const size = statSync(absolute).size;
+      const bytes = readNativeArtifactBytes(absolute, size, 16 * 1024 * 1024);
+      inputs.push({ path: file, sha256: createHash('sha256').update(bytes).digest('hex') });
+      if (file === 'package.json') scripts = JSON.parse(bytes.toString('utf8')).scripts;
+    }
+    if (command[0] === 'npm' && command[1] === '--workspace') {
+      if (command.length !== 5 || command[3] !== 'run' || command[4] !== 'build') return null;
+      const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+      const workspaces = Array.isArray(pkg.workspaces) ? pkg.workspaces : pkg.workspaces?.packages;
+      if (!Array.isArray(workspaces) || workspaces.some(value => typeof value !== 'string')) return null;
+      const patterns = workspaces.filter((value: string) => !value.startsWith('!'))
+        .map((value: string) => `${value.replace(/\/$/, '')}/package.json`);
+      const exclude = workspaces.filter((value: string) => value.startsWith('!'))
+        .map((value: string) => `${value.slice(1).replace(/\/$/, '')}/package.json`);
+      const candidates = globSync(patterns, { cwd: root, exclude });
+      if (candidates.length > 4096) return null;
+      const matches: Array<{ file: string; scripts?: Record<string, string> }> = [];
+      for (const file of candidates) {
+        const bytes = readNativeArtifactBytes(path.join(root, file), statSync(path.join(root, file)).size,
+          16 * 1024 * 1024);
+        const workspace = JSON.parse(bytes.toString('utf8'));
+        if (workspace.name === command[2] || path.dirname(file) === command[2])
+          matches.push({ file, scripts: workspace.scripts });
+      }
+      if (matches.length !== 1) return null;
+      const selected = matches[0]!;
+      for (const file of [selected.file, path.join(path.dirname(selected.file), '.npmrc')]) {
+        if (file !== selected.file && !existsSync(path.join(root, file))) continue;
+        const bytes = readNativeArtifactBytes(path.join(root, file), statSync(path.join(root, file)).size,
+          16 * 1024 * 1024);
+        inputs.push({ path: file, sha256: createHash('sha256').update(bytes).digest('hex') });
+      }
+      scripts = selected.scripts;
+    }
+    return { inputs, script: command[0] === 'npm' ? scripts?.[command[command.indexOf('run') + 1]!] ?? null : null };
+  } catch { return null; }
+};
+
+const checkpointPostSuiteEvidenceRoot = (progress: QualificationWorkProgressInput) => path.join(os.tmpdir(),
+  'papercusp-qualification-post-suite', createHash('sha256').update(`${progress.root}\0${progress.attemptId}`).digest('hex'));
+
+/** Reconstruct the complete original leg from source-owned definitions, never
+ * from the stored outcome sample. This describes execution, not reuse closure. */
+export function checkpointQualificationPostSuiteDefinition(
+  progress: QualificationWorkProgressInput, unitId: string, spaWorkspace = '',
+) {
+  const leg = POST_SUITE_LEG_DEFINITIONS.find(leg => `post:${leg.id}` === unitId);
+  if (!leg) return null;
+  const commands = leg.commands.map(id => {
+    if (id === 'build' && !spaWorkspace) return null;
+    const argv = id === 'spa:conflict-markers' ? ['git', ...SPA_CONFLICT_MARKER_ARGS] :
+      id === 'build' ? ['npm', '--workspace', spaWorkspace, 'run', 'build'] : ['npm', 'run', id];
+    const wrapper = checkpointCommandWrapperInputs(progress.root, argv);
+    return wrapper ? { id, task: `${unitId}:${id}`, argv, cwd: progress.root,
+      originalCommand: wrapper.script, inputs: wrapper.inputs,
+      exitCodes: id === 'spa:conflict-markers' ? [0, 1] : [0], emptyStdout: id === 'spa:conflict-markers' } : null;
+  });
+  return commands.every(command => command !== null) ? {
+    evidenceRoot: checkpointPostSuiteEvidenceRoot(progress), wrapper: resolveHeavyWrapper(), commands,
+  } : null;
+}
+
 /** Save measured post-suite outcomes through the existing qualification fence.
  * A logical leg is the bounded chunk: grouped commands bank only once every
  * member closes. Raw output uses the existing immutable native receipt store.
- * These observations deliberately carry no input-closure proof, so they cannot
- * authorize reuse or green composition until a proof collector qualifies them.
+ * Runtime-input closure stays unmeasured. Current-only composition separately
+ * authenticates these physical captures and cannot use them to skip a later run.
  */
 export function createCheckpointQualificationPostSuiteExecutor(
   input: { target: GateVerdictTarget; progress: QualificationWorkProgressInput },
@@ -19868,56 +20199,11 @@ export function createCheckpointQualificationPostSuiteExecutor(
 ): CheckpointExec {
   const progress = structuredClone({ ...input.progress, updates: [] });
   const target = structuredClone(input.target);
-  const evidenceRoot = path.join(os.tmpdir(), 'papercusp-qualification-post-suite',
-    createHash('sha256').update(`${progress.root}\0${progress.attemptId}`).digest('hex'));
+  const evidenceRoot = checkpointPostSuiteEvidenceRoot(progress);
   // These are wrapper inputs, not a claim about everything a command can read.
   // Read both populations independently: adding/removing a lockfile or npmrc
   // during execution must differ just as changing its bytes does.
-  const wrapperInputs = (command: readonly string[]) => {
-    try {
-      const files = ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', '.npmrc'];
-      const inputs: Array<{ path: string; sha256: string }> = [];
-      let scripts: Record<string, string> | undefined;
-      for (const file of files) {
-        const absolute = path.join(progress.root, file);
-        if (file !== 'package.json' && !existsSync(absolute)) continue;
-        const size = statSync(absolute).size;
-        const bytes = readNativeArtifactBytes(absolute, size, 16 * 1024 * 1024);
-        inputs.push({ path: file, sha256: createHash('sha256').update(bytes).digest('hex') });
-        if (file === 'package.json') scripts = JSON.parse(bytes.toString('utf8')).scripts;
-      }
-      if (command[0] === 'npm' && command[1] === '--workspace') {
-        if (command.length !== 5 || command[3] !== 'run' || command[4] !== 'build') return null;
-        const pkg = JSON.parse(readFileSync(path.join(progress.root, 'package.json'), 'utf8'));
-        const workspaces = Array.isArray(pkg.workspaces) ? pkg.workspaces : pkg.workspaces?.packages;
-        if (!Array.isArray(workspaces) || workspaces.some(value => typeof value !== 'string')) return null;
-        const patterns = workspaces.filter((value: string) => !value.startsWith('!'))
-          .map((value: string) => `${value.replace(/\/$/, '')}/package.json`);
-        const exclude = workspaces.filter((value: string) => value.startsWith('!'))
-          .map((value: string) => `${value.slice(1).replace(/\/$/, '')}/package.json`);
-        const candidates = globSync(patterns, { cwd: progress.root, exclude });
-        if (candidates.length > 4096) return null;
-        const matches: Array<{ file: string; scripts?: Record<string, string> }> = [];
-        for (const file of candidates) {
-          const bytes = readNativeArtifactBytes(path.join(progress.root, file), statSync(path.join(progress.root, file)).size,
-            16 * 1024 * 1024);
-          const workspace = JSON.parse(bytes.toString('utf8'));
-          if (workspace.name === command[2] || path.dirname(file) === command[2])
-            matches.push({ file, scripts: workspace.scripts });
-        }
-        if (matches.length !== 1) return null;
-        const selected = matches[0]!;
-        for (const file of [selected.file, path.join(path.dirname(selected.file), '.npmrc')]) {
-          if (file !== selected.file && !existsSync(path.join(progress.root, file))) continue;
-          const bytes = readNativeArtifactBytes(path.join(progress.root, file), statSync(path.join(progress.root, file)).size,
-            16 * 1024 * 1024);
-          inputs.push({ path: file, sha256: createHash('sha256').update(bytes).digest('hex') });
-        }
-        scripts = selected.scripts;
-      }
-      return { inputs, script: command[0] === 'npm' ? scripts?.[command[command.indexOf('run') + 1]!] ?? null : null };
-    } catch { return null; }
-  };
+  const wrapperInputs = (command: readonly string[]) => checkpointCommandWrapperInputs(progress.root, command);
   type NativeReceipt = ReturnType<typeof writeBudgetedTaskNativeExecutionReceipt>;
   const observations = new Map<string, { receipt: NativeReceipt; state: 'pass' | 'fail' | 'infra'; endedAtMs: number }>();
   const started = new Set<string>();
@@ -20058,6 +20344,13 @@ export function createCheckpointQualificationPostSuiteExecutor(
     const traceOut = path.join(evidenceRoot, `${randomUUID()}.out`);
     mkdirSync(evidenceRoot, { recursive: true, mode: 0o700 });
     let nativeSpawn: { pid: number; command: string[]; cwd: string } | undefined;
+    let nativeSpawnIdentity: string | null = null;
+    const sourceSnapshot = async () => {
+      try { return { commit: (await git(progress.root, ['rev-parse', 'HEAD'])).trim(),
+        clean: !(await git(progress.root, ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'])).trim() }; }
+      catch { return null; }
+    };
+    const sourceBefore = await sourceSnapshot();
     const startedAtMs = deps.now();
     let result: CheckpointExecResult | undefined;
     let thrown: unknown;
@@ -20067,12 +20360,14 @@ export function createCheckpointQualificationPostSuiteExecutor(
       onSpawn: child => {
         // Copy before notifying another observer; caller mutation is not evidence.
         nativeSpawn = structuredClone(child);
+        nativeSpawnIdentity = checkpointPidIdentity(child.pid);
         try { executionOptions.onSpawn?.(child); }
         catch { /* Caller diagnostics cannot alter the command outcome. */ }
       },
     }); }
     catch (error) { errored = true; thrown = error; }
     const endedAtMs = deps.now();
+    const sourceAfter = await sourceSnapshot();
     const after = wrapperInputs(invocation.command);
     const state = !result || result.signal ? 'infra' :
       commandId === 'spa:conflict-markers'
@@ -20084,6 +20379,9 @@ export function createCheckpointQualificationPostSuiteExecutor(
         cwd: nativeSpawn?.cwd ?? options?.cwd ?? progress.root,
         command: nativeSpawn?.command ?? [cmd, ...args],
         invocation,
+        ...(nativeSpawn && nativeSpawnIdentity ? { currentExecution: { schemaVersion: 1,
+          fingerprint: partialCurrentExecutionFingerprint({ ...progress, sourceCommit: progress.candidate }),
+          childPid: nativeSpawn.pid, childIdentity: nativeSpawnIdentity, sourceBefore, sourceAfter } } : {}),
         originalCommand: before?.script ?? null,
         before: before?.inputs ?? null, after: after?.inputs ?? null,
         ...(nativeSpawn ? { processTrace: { out: traceOut, rootPid: nativeSpawn.pid } } : {}),
@@ -22059,7 +22357,26 @@ export function realCheckpointDeps(
   // carries the measured sentence a projection cannot reconstruct) always wins. One
   // checkpoint process is one tick, so a closure variable is the whole lifetime needed.
   let freezeDispositionRecordedThisTick = false;
+  let qualificationWorkContext: { progress: QualificationWorkProgressInput;
+    commandDefinitions: ReturnType<typeof preparePartialTaskCommandDefinitions>['definitions'];
+    recheckRunnerIdentity: () => Promise<string | null> } | undefined;
+  const qualificationWorkForVerdict: NonNullable<CheckpointDeps['qualificationWorkForVerdict']> = async verdict => {
+    const context = qualificationWorkContext;
+    if (!context || verdict.green !== true || verdict.candidate !== context.progress.candidate ||
+        verdict.runId !== context.progress.runId) return undefined;
+    if (await context.recheckRunnerIdentity() !== context.progress.runnerIdentity)
+      throw new Error('qualification-final-runtime-identity-changed');
+    const commands = structuredClone(context.commandDefinitions);
+    return { input: structuredClone(context.progress), options: {
+      classifyReadPaths: await checkpointQualificationInputClassifier(context.progress.root),
+      currentCommandDefinition: (unit, progress) => unit.kind === 'guard'
+        ? commands.find(definition => definition.unitIds.includes(unit.id))
+        : checkpointQualificationPostSuiteDefinition(progress, unit.id, cfg.spaBuildWorkspace),
+    } };
+  };
+  const executeCheckpointCommand = exec;
   return {
+    qualificationWorkForVerdict,
     isolationRun,
     concurrentRun,
     workspaceRerun,
@@ -23333,6 +23650,7 @@ export function realCheckpointDeps(
         return await recordCheckpointVerdict(
           target,
           checkpointVerdictFromResult(r),
+          { qualificationWork: await qualificationWorkForVerdict(r) },
         );
       } catch (e) {
         console.error(
@@ -23594,6 +23912,15 @@ export function realCheckpointDeps(
       };
     },
     async runGreen(treeDir, base, execution) {
+      // This closure survives a boundary winning the race. A late DB/output
+      // continuation still sees its cancelled executor and cannot fork again.
+      let qualificationExecution: ReturnType<typeof createCheckpointQualificationExecution> | undefined;
+      const exec: CheckpointExec = (cmd, args, options) =>
+        (qualificationExecution?.execute ?? executeCheckpointCommand)(cmd, args, options);
+      let rejectBoundary!: (error: CheckpointQualificationBoundaryError) => void;
+      const stopped = new Promise<never>((_, reject) => { rejectBoundary = reject; });
+      const operation = (async () => {
+      qualificationWorkContext = undefined;
       // EI-8744: nothing-to-gate short-circuit. A codeless pot (no root package.json)
       // can't run the npm green command — it dies with `Missing script` (rc=1) before any
       // test, and the gate went hard-RED with an empty failing-test signature, churning the
@@ -23660,11 +23987,12 @@ export function realCheckpointDeps(
       const qualificationAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim();
       let nativeObserver: ReturnType<typeof createCheckpointQualificationNativeObserver> | undefined;
       let postSuiteQualification: PostSuiteRunOptions['qualification'];
+      let qualificationCommandDefinitions: ReturnType<typeof preparePartialTaskCommandDefinitions>['definitions'] | undefined;
       let nativeRefusal: string | undefined;
       if (repairTarget && qualificationAttemptId) {
         const prepared = await prepareCheckpointQualificationNativeRun({
           target: repairTarget, attemptId: qualificationAttemptId,
-          candidate: execution?.candidate ?? resolvedHeadAtStart ?? '', runId, root: treeDir,
+          candidate: execution?.candidate ?? resolvedHeadAtStart ?? '', runId, root: treeDir, environment: env,
           async select() {
             if (cfg.greenCmd !== 'npm run test:affected') throw new Error('qualification-green-command-unsupported');
             const selected = await exec('node', ['scripts/affected-tests.mjs', '--print-selection', '--enumerate-specifications'], {
@@ -23682,8 +24010,19 @@ export function realCheckpointDeps(
           return { green: false, summary, failingTests: ['qualification-native-preparation'] };
         }
         if (prepared.status === 'ready') {
+          const budget = checkpointQualificationBudgetFromEnv(Date.now());
+          if (budget.status !== 'ready')
+            throw new CheckpointQualificationBoundaryError('killed', budget.reason);
           nativeObserver = prepared.observer;
+          qualificationExecution = createCheckpointQualificationExecution({
+            target: repairTarget, progress: prepared.postSuite.progress, observer: prepared.observer, budget,
+            baselineReceipts: prepared.checkpoint.continuation.receipts,
+            execute: executeCheckpointCommand, onStop: rejectBoundary,
+          });
+          qualificationCommandDefinitions = prepared.commandDefinitions;
           postSuiteQualification = prepared.postSuite;
+          qualificationWorkContext = { progress: structuredClone(prepared.postSuite.progress),
+            commandDefinitions: structuredClone(prepared.commandDefinitions), recheckRunnerIdentity: prepared.recheckRunnerIdentity };
           // Reuse the integrity-sealed partial checkpoint transport. The child
           // independently reselects the full inventory and regrades the proofs
           // before applying task-local file filters to original npm invocations.
@@ -24437,11 +24776,15 @@ export function realCheckpointDeps(
         if (logPath) appendFileSync(logPath, `\n${note}\n`);
       }
       if (green && repairTarget && qualificationAttemptId) {
+        qualificationExecution?.assertRunning();
         // This must follow every absorption/downgrade/inheritance path that can
         // turn the suite green, and precede returning green to the advance path.
         const composed = await composeCheckpointQualificationBeforePromotion({
           target: repairTarget, attemptId: qualificationAttemptId,
           candidate: execution?.candidate ?? resolvedHeadAtStart ?? '', runId, root: treeDir,
+          spaWorkspace: cfg.spaBuildWorkspace,
+          commandDefinitions: qualificationCommandDefinitions,
+          runnerIdentity: await qualificationWorkContext?.recheckRunnerIdentity(),
         });
         if (composed.status === 'refused') {
           green = false;
@@ -24551,6 +24894,11 @@ export function realCheckpointDeps(
         ...(ratchetShadow ? { ratchetShadow } : {}),
         ...(excludedFromCount.length ? { excludedFromCount } : {}),
       };
+      })();
+      try { return await Promise.race([operation, stopped]); }
+      finally {
+        await qualificationExecution?.stop();
+      }
     },
     advance: (candidate) =>
       advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
@@ -25655,6 +26003,7 @@ export function runCmd(
      *  `killProcessGroupOnTimeout` is set, exactly like a timeout kill) and reject. An
      *  already-aborted signal rejects without spawning anything. */
     signal?: AbortSignal;
+    qualification?: Pick<QualificationCommandOptions, 'target' | 'progress' | 'deadlineEpochMs'>;
   } = {},
 ): Promise<CheckpointExecResult> {
   return new Promise((resolve, reject) => {
@@ -25680,7 +26029,7 @@ export function runCmd(
     // The two timeoutMs callers are the isolation + workspace re-runs, which are single-file /
     // single-fork by construction — light enough that leaving them unthrottled costs nothing.
     const wrapper =
-      opts.heavy && !opts.timeoutMs ? resolveHeavyWrapper() : null;
+      opts.heavy && (!opts.timeoutMs || opts.qualification) ? resolveHeavyWrapper() : null;
     if (wrapper) {
       argsToRun = [cmdToRun, ...argsToRun];
       cmdToRun = wrapper;
@@ -25696,6 +26045,30 @@ export function runCmd(
         PC_HEAVY_COALESCE: "0",
         PC_HEAVY_TIMEOUT_SEC: String(HEAVY_SLOT_WAIT_SEC),
       };
+    }
+
+    if (opts.qualification) {
+      const remainders = new Map<string, string>();
+      void runQualificationCommand(cmdToRun, argsToRun, {
+        ...opts.qualification, cwd: opts.cwd ?? process.cwd(), env, signal: opts.signal,
+        timeoutMs: opts.timeoutMs, timeoutResetsOnProgress: opts.timeoutResetsOnProgress,
+        hardTimeoutMs: opts.hardTimeoutMs, onSpawn: opts.onSpawn, onProgress: opts.onProgress,
+        onOutput(stream, text) {
+          try { opts.onOutput?.(stream, text); } catch { /* diagnostic */ }
+          if (!opts.relayAffectedProgress) return;
+          const lines = ((remainders.get(stream) ?? '') + text).split(/\r?\n/);
+          remainders.set(stream, lines.pop() ?? '');
+          for (const line of lines) if (line.startsWith('AFFECTED_TASK_PROGRESS ') ||
+            /^AFFECTED_TESTS_ADMISSION_(?:QUEUED|GRANTED|YIELD) /.test(line) || line.startsWith('Full run log: '))
+            console.log(`${orchestratorStdoutTag()} ${line}`);
+        },
+      }).then(result => {
+        const measured = { ...result, code: result.code ?? 1 };
+        if (!opts.allowNonZero && (measured.code !== 0 || measured.signal))
+          reject(new Error(`${cmd} ${args.join(' ')} exited ${measured.code}${measured.signal ? ` (${measured.signal})` : ''}\n${measured.stderr}`));
+        else resolve(measured);
+      }, reject);
+      return;
     }
 
     // WI-7069: only DETACH (new process group, this child becomes its own group leader) when
@@ -26004,6 +26377,7 @@ if (require.main === module) {
    * deployed tree driving the integration tree's CLI) working. Any failure here degrades to the
    * same place, so this can never leave the gate blind: the worst case is the old behaviour.
    */
+  let qualificationWorkForFinalVerdict: CheckpointDeps['qualificationWorkForVerdict'];
   const recordOwnVerdict = async (
     r: CheckpointResult,
     recordOpts: { signedShardDeadlineMs?: number } = {},
@@ -26018,7 +26392,7 @@ if (require.main === module) {
       return await recordCheckpointVerdict(
         target,
         checkpointVerdictFromResult(r),
-        recordOpts,
+        { ...recordOpts, qualificationWork: await qualificationWorkForFinalVerdict?.(r) },
       );
     } catch (e) {
       console.error(
@@ -26525,6 +26899,7 @@ if (require.main === module) {
         prewarmedDependencyGeneration,
         gateFireId,
       );
+      qualificationWorkForFinalVerdict = checkpointDeps.qualificationWorkForVerdict;
       flushTerminalEvents = checkpointDeps.flushTerminalEvents;
       // WI-6554700010009615 stage 1: past the admission refire the run is post-verdict.
       checkpointDeps.enterPostVerdictPhase = (verdict) => {

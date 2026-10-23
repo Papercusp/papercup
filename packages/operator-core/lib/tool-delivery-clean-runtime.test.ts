@@ -10,9 +10,10 @@ import { validateToolDeliveryCleanBlocks, validateToolDeliveryCleanBoundary, too
   type ToolDeliveryCleanBoundary, type ToolDeliveryCleanPin } from './tool-delivery-clean-runtime';
 import cleanRegistration from './llm-testing/fixtures/tool-delivery-clean-runtime-candidate-20261023.json';
 import fidelityRegistration from './llm-testing/fixtures/tool-delivery-fidelity-candidate-20261023.json';
+import sourceV2Registration from './llm-testing/fixtures/tool-delivery-clean-source-v2-20261023.json';
 import { toolDeliveryPreregistration } from './tool-delivery-acceptance';
 import { findBoxIdentityPaths, findOwnerNameLeaks } from '../../../scripts/lib/identity-leak-patterns.mjs';
-import { assertCleanCohortAuthority, claimCleanCohort } from './llm-testing/tool-delivery-clean-cohort.mjs';
+import { assertCleanCohortAuthority, claimCleanCohort, parseCleanCohortArgs } from './llm-testing/tool-delivery-clean-cohort.mjs';
 
 const cleanup: string[] = [];
 afterEach(() => cleanup.splice(0).forEach(path => rmSync(path, { recursive: true, force: true })));
@@ -35,6 +36,40 @@ function fixture() {
 }
 
 describe('prospective clean tool-delivery execution admission', () => {
+  it('selects only registered cohorts and keeps preparation separate from execution', () => {
+    const args = ['retained', 'private'];
+    expect(parseCleanCohortArgs(args).readinessPath).toBeUndefined();
+    const v2 = parseCleanCohortArgs([...args, '--registration', sourceV2Registration.experiment.id]);
+    expect(v2.fixture).toMatch(/tool-delivery-clean-source-v2-20261023.json$/);
+    expect(v2.readinessPath).toBeUndefined();
+    expect(parseCleanCohortArgs([...args, '--execute', 'approval.json', '--registration', sourceV2Registration.experiment.id])
+      .readinessPath).toBe('approval.json');
+    for (const options of [['--registration', '../../private.json'], ['--registration', 'toString'],
+      ['--execute'], ['--execute', 'a', '--execute', 'b'], ['--override', 'b']])
+      expect(() => parseCleanCohortArgs([...args, ...options])).toThrow();
+  });
+  it('retains the exact machine-readable D079 catalog delta under a distinct current-source identity', () => {
+    expect(toolDeliveryPreregistration(sourceV2Registration.experiment.id)).toEqual(sourceV2Registration);
+    expect(sourceV2Registration.experiment.id).not.toBe(cleanRegistration.experiment.id);
+    expect(sourceV2Registration.configuration).toEqual(fidelityRegistration.configuration);
+    expect(sourceV2Registration.experiment.manifestContract.compactDefinitions)
+      .toEqual(fidelityRegistration.experiment.manifestContract.compactDefinitions);
+    const restored = structuredClone(sourceV2Registration.experiment.manifestContract.fullDefinitions);
+    expect(sourceV2Registration.treatmentDelta.changes).toHaveLength(1);
+    for (const delta of sourceV2Registration.treatmentDelta.changes) {
+      expect(delta.arm).toBe('full');
+      const index = Number(delta.path.split('/')[1]);
+      expect(restored[index]!.name).toBe('code__run');
+      expect(delta.path).toBe(`/${index}/parameters/properties/inputs/description`);
+      const inputs = (restored[index]!.parameters.properties as Record<string, { description?: string }>).inputs!;
+      expect(inputs.description).toBe(delta.after);
+      inputs.description = delta.before;
+    }
+    expect(restored).toEqual(fidelityRegistration.experiment.manifestContract.fullDefinitions);
+    expect(findBoxIdentityPaths(JSON.stringify(sourceV2Registration))).toEqual([]);
+    expect(findOwnerNameLeaks(JSON.stringify(sourceV2Registration))).toEqual([]);
+    for (const arm of Object.values(sourceV2Registration.variants)) expect(arm.configDelta).not.toHaveProperty('systemPromptText');
+  });
   function authorityFixture() {
     const registration = structuredClone(cleanRegistration);
     const expected = { experimentId: registration.experiment.id, portableSha256: 'a'.repeat(64), buildSha: 'b'.repeat(40),

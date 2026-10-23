@@ -12,8 +12,30 @@ import { zstdDecompressSync } from 'node:zlib';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const digest = value => sha(JSON.stringify(value));
-const fixture = 'packages/operator-core/lib/llm-testing/fixtures/tool-delivery-clean-runtime-candidate-20261023.json';
+const defaultExperiment = 'session-tool-delivery-clean-runtime-candidate-20261023';
+const fixtures = {
+  [defaultExperiment]: 'packages/operator-core/lib/llm-testing/fixtures/tool-delivery-clean-runtime-candidate-20261023.json',
+  'session-tool-delivery-clean-source-v2-20261023': 'packages/operator-core/lib/llm-testing/fixtures/tool-delivery-clean-source-v2-20261023.json',
+};
 const planSlug = 'deterministic-tool-definition-delivery-2026-09-21';
+
+/** Only registered prospective identities are selectable; no arbitrary fixture path. */
+export function parseCleanCohortArgs(argv) {
+  assert.ok(argv.length >= 2 && argv.length <= 6 && argv.length % 2 === 0,
+    'Pass retained-checkout private-directory [--registration experiment-id] [--execute exact-readiness.json].');
+  let experimentId = defaultExperiment, readinessPath;
+  const seen = new Set();
+  for (let i = 2; i < argv.length; i += 2) {
+    const option = argv[i], value = argv[i + 1];
+    assert.ok(['--registration', '--execute'].includes(option) && !seen.has(option) && value,
+      'Unknown, duplicate or incomplete cohort option.');
+    seen.add(option);
+    if (option === '--registration') experimentId = value;
+    else readinessPath = value;
+  }
+  assert.ok(Object.hasOwn(fixtures, experimentId), 'Unregistered prospective cohort.');
+  return { experimentId, fixture: fixtures[experimentId], readinessPath };
+}
 
 /** Pure gate, also exercised with hostile readiness records by the maintained tests. */
 export function assertCleanCohortAuthority(registration, portableSha256, expected, live) {
@@ -87,8 +109,7 @@ function canonicalAuthority(expected) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  assert.ok(argv.length === 2 || (argv.length === 4 && argv[2] === '--execute'),
-    'Pass retained-checkout private-experiment-directory [--execute exact-readiness.json].');
+  const { experimentId, fixture, readinessPath } = parseCleanCohortArgs(argv);
   const root = realpathSync(argv[0]), privateRoot = realpathSync(argv[1]);
   assert.equal(realpathSync(process.cwd()), root);
   const within = path => { const rel = relative(root, realpathSync(path));
@@ -104,7 +125,7 @@ export async function main(argv = process.argv.slice(2)) {
   const head = git(['rev-parse', 'HEAD']).toString().trim();
   const bytes = readFileSync(resolve(root, fixture)), registration = JSON.parse(bytes);
   assert.equal(sha(git(['show', `${head}:${fixture}`])), sha(bytes), 'Uncommitted registration.');
-  assert.equal(registration.experiment.id, 'session-tool-delivery-clean-runtime-candidate-20261023');
+  assert.equal(registration.experiment.id, experimentId);
   assert.equal(registration.executionPolicy.requireCleanRuntime, true);
   assert.equal(registration.executionPolicy.launcherPath, relative(root, fileURLToPath(import.meta.url)).split(sep).join('/'));
   const directory = resolve(privateRoot, registration.custodyPaths.receiptDirectory);
@@ -153,8 +174,8 @@ export async function main(argv = process.argv.slice(2)) {
     check(initial);
     const prior = await sql`SELECT id FROM harness_shared.llm_test_runs WHERE telemetry_json->>'variantId' = ANY(${Object.values(registration.experiment.arms)}) LIMIT 1`;
     assert.equal(prior.length, 0, 'Candidate rows already exist: never replay.');
-    if (argv.length === 2) return { status: 'PREPARATION_ONLY_NO_EXECUTION_AUTHORITY', realModelCalls: 0, head, portableSha256: sha(bytes) };
-    const expected = JSON.parse(readFileSync(realpathSync(argv[3]), 'utf8'));
+    if (!readinessPath) return { status: 'PREPARATION_ONLY_NO_EXECUTION_AUTHORITY', realModelCalls: 0, head, portableSha256: sha(bytes) };
+    const expected = JSON.parse(readFileSync(realpathSync(readinessPath), 'utf8'));
     const live = canonicalAuthority(expected);
     const readerCustody = acceptance.verifyToolDeliverySourceCustody({ registration, privateCapture: raw,
       buildSha: live.buildSha, readSource });

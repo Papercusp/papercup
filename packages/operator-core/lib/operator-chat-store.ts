@@ -249,6 +249,10 @@ const sameTurn = (a: TurnIdentity, b: TurnIdentity) =>
  * on the wake bus. Subscribers always reread under current authority. */
 export const operatorChatTurnChannel = (workspaceId: string, turn: TurnIdentity) =>
   `pc_chat_${createHash('sha256').update(canonicalJson({ workspaceId, ...turn })).digest('hex').slice(0, 48)}`;
+/** Same wake plane for workspace snapshot readers, including new cards whose
+ * turn/run was unknown when a reader connected. Payloads remain opaque hints. */
+export const operatorChatWorkspaceChannel = (workspaceId: string) =>
+  `pc_chat_${createHash('sha256').update(canonicalJson({ workspaceId })).digest('hex').slice(0, 48)}`;
 const sameScope = (a: InteractionScope, b: InteractionScope) =>
   ['principalId', 'tenantId', 'customerId', 'publicOwnerId'].every(key =>
     a[key as keyof InteractionScope] === b[key as keyof InteractionScope]);
@@ -522,7 +526,7 @@ export class OperatorChatStore implements TurnCheckpointStore {
     }) as Promise<T>;
   }
 
-  private async save(tx: Tx, state: StoredTurn): Promise<void> {
+  private async save(tx: Tx, state: StoredTurn, notifyCards = false): Promise<void> {
     // Serialization failure aborts the transaction and never acknowledges success.
     const json = JSON.parse(JSON.stringify(state));
     // JSON.stringify silently turns NaN into null, drops undefined and converts
@@ -535,6 +539,8 @@ export class OperatorChatStore implements TurnCheckpointStore {
     // its ACK. Rollback cannot wake a waiter with an uncommitted decision.
     await tx.unsafe('SELECT pg_notify($1,$2)',
       [operatorChatTurnChannel(this.options.workspaceId, this.options.turn), 'changed']);
+    if (notifyCards) await tx.unsafe('SELECT pg_notify($1,$2)',
+      [operatorChatWorkspaceChannel(this.options.workspaceId), 'changed']);
   }
 
   async read(identity: TurnIdentity): Promise<TurnCheckpoint | null> {
@@ -599,6 +605,7 @@ export class OperatorChatStore implements TurnCheckpointStore {
         if (!isDeepStrictEqual(prior, event)) throw new Error('event-conflict');
         return prior;
       }
+      if (checkpoint.state.phase === 'cancelled') throw new Error('cancelled');
       if (state.execution && state.execution.status !== 'running') throw new Error('turn-result-conflict');
       if (event.sequence !== checkpoint.state.lastSequence + 1
         || state.events.some(item => item.eventId === event.eventId)) throw new Error('event-conflict');
@@ -662,7 +669,7 @@ export class OperatorChatStore implements TurnCheckpointStore {
         WHERE id=$2 AND conversation_id=$3 AND workspace_id=$4`,
       [tx.json([...tools, tool] as unknown as postgres.JSONValue), this.options.turn.turnId,
         this.options.turn.conversationId, this.options.workspaceId]);
-      await this.save(tx, state);
+      await this.save(tx, state, true);
       return true;
     });
   }
@@ -711,7 +718,7 @@ export class OperatorChatStore implements TurnCheckpointStore {
       if (state.checkpoint && !['running', 'awaiting-input'].includes(state.checkpoint.state.phase)) return false;
       if (Object.hasOwn(state.interactions, candidate.correlationId)) return false;
       state.interactions = { ...state.interactions, [candidate.correlationId]: candidate };
-      await this.save(tx, state);
+      await this.save(tx, state, true);
       return true;
     });
   }
@@ -747,7 +754,7 @@ export class OperatorChatStore implements TurnCheckpointStore {
             || mutation.next.correlationId !== identity.correlationId
             || !sameScope(mutation.next.scope, this.options.scope)) throw new Error('invalid-state');
           state.interactions = { ...state.interactions, [identity.correlationId]: structuredClone(mutation.next) };
-          await this.save(tx, state);
+          await this.save(tx, state, true);
           if (mutation.next.status === 'resolved') await advance(tx, mutation.next);
         }
         return mutation.result;

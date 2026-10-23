@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { computeIdentityHash, JUDGE_PROMPT_SCAFFOLD_VERSION, type PersonaTraits } from '@papercusp/testing-shell/llm';
 import type { CommandInstrument } from '../rubric-instrument-registry';
+import { judgeS42Run, S42_CASES } from '../llm-testing/scenarios/su/S42-drain-watch-recheck';
 
 export const LUNA_CAPACITY_PLAN = 'luna-drain-capacity-recovery-2026-10-23';
 export const LUNA_CAPACITY_INSTRUMENTS = {
@@ -74,6 +77,18 @@ export const diagnosticProofSchema = z.object({ schemaVersion: z.literal('luna-c
 }).strict();
 export type CapacityDiagnosticProof = z.infer<typeof diagnosticProofSchema>;
 export interface CapacityProofVerdict { status: 'pass' | 'fail'; violations: string[] }
+export interface CapacityContractContext { specSetHash: string; barSetHash: string; sourceFingerprint: string }
+/** Context is read from the native measurement and current stores by the instrument. */
+export function validateCapacityContractProof(input: unknown, current: CapacityContractContext): CapacityProofVerdict {
+  const parsed = z.object({ candidate }).safeParse(input);
+  if (!parsed.success) return { status: 'fail', violations: ['missing-candidate-contract'] };
+  const c = parsed.data.candidate;
+  const violations: string[] = [];
+  if (c.specSetHash !== current.specSetHash || c.barSetHash !== current.barSetHash) violations.push('noncanonical-current-contract');
+  if (!/^sha256-file-set-v1:[a-f0-9]{64}$/.test(current.sourceFingerprint)
+    || c.sourceDigest !== current.sourceFingerprint.split(':')[1]) violations.push('noncanonical-source-digest');
+  return { status: violations.length ? 'fail' : 'pass', violations };
+}
 const unique = (values: string[]) => new Set(values).size === values.length;
 const sameSet = (a: string[], b: string[]) => unique(a) && unique(b) && a.length === b.length && a.every(id => b.includes(id));
 const sameCandidate = (a: z.infer<typeof candidate>, b: z.infer<typeof candidate>) =>
@@ -90,6 +105,7 @@ export function validateCapacityRecoveryProof(input: unknown): CapacityProofVerd
   if (s.leaderAfterId !== s.leaderId) errors.push('leader-changed');
   const eligible: string[] = [];
   for (const m of s.members) {
+    if (m.effectiveSpec.maxConcurrentClaims > s.fleetCap) errors.push('effective-cap-exceeds-fleet:' + m.id);
     if (!unique(m.heldIds) || !unique(m.blockerParkedIds) || !unique(m.admittedIds ?? [])) errors.push('duplicate-member-ids:' + m.id);
     if (m.activeIds !== null && (m.activeClaims !== m.activeIds.length ||
       !sameSet(m.heldIds, [...m.activeIds, ...m.blockerParkedIds]))) errors.push('claim-accounting:' + m.id);
@@ -107,6 +123,7 @@ export function validateCapacityRecoveryProof(input: unknown): CapacityProofVerd
   if (eligible.length === 0 && recoveries.length > 0) errors.push('recovery-without-eligible-member');
   if (!unique(recoveries.map(r => r.memberId)) || !unique(recoveries.map(r => r.claim.workItemId))) errors.push('duplicate-recovery');
   for (const r of recoveries) {
+    if (r.effectiveSpec.maxConcurrentClaims > s.fleetCap) errors.push('recovery-cap-exceeds-fleet:' + r.memberId);
     const m = s.members.find(m => m.id === r.memberId);
     if (!m || !eligible.includes(r.memberId)) { errors.push('ineligible-recovery:' + r.memberId); continue; }
     if (r.snapshotId !== s.id || r.leaderId !== s.leaderId || r.control.actorId !== s.leaderId) errors.push('recovery-authority');
@@ -157,8 +174,9 @@ export function validateCapacityDiagnosticProof(input: unknown): CapacityProofVe
   const errors: string[] = [];
   if (p.runtime.sourceDigest !== p.candidate.sourceDigest || p.runtime.buildDigest !== p.candidate.buildDigest) errors.push('serving-source-identity');
   if (p.status === 'degraded') {
-    if (p.briefCount !== null || !p.degraded) errors.push('degraded-not-explicit-unknown');
+    if (p.briefCount !== null || p.callerCount !== null || p.reconciliation || !p.degraded) errors.push('degraded-not-explicit-unknown');
   } else {
+    if (p.degraded) errors.push('measured-with-degraded-residue');
     const r = p.reconciliation;
     if (p.briefCount === null || p.callerCount === null || !r || p.scope.specRef === null || p.scope.specRevision === null) errors.push('measured-scope-incomplete');
     else {
@@ -175,6 +193,7 @@ const continuationBindingsSchema = z.array(z.object({ bindingId: z.number().int(
   testRunId: z.number().int().positive(), currentness: z.literal('current'), status: z.enum(['pass', 'passed']),
   failed: z.literal(0), passed: z.number().int().positive(), collectionFailed: z.literal(false),
   testLayer: z.enum(['unit', 'llm']), filePath: text, scenarioId: text.optional(), passedCaseTitles: ids.optional(),
+  sourceFingerprint: text, nativeRunIds: ids.optional(),
 }).strict()).min(1).max(20);
 export function validateCapacityContinuationProof(input: unknown): CapacityProofVerdict {
   const parsed = continuationBindingsSchema.safeParse(input);
@@ -182,6 +201,13 @@ export function validateCapacityContinuationProof(input: unknown): CapacityProof
   const rows = parsed.data;
   const errors: string[] = [];
   if (!unique(rows.map(r => String(r.bindingId))) || !unique(rows.map(r => String(r.testRunId)))) errors.push('duplicate-native-binding');
+  if (new Set(rows.map(r => r.sourceFingerprint)).size !== 1) errors.push('mixed-candidate-source');
+  const nativeIds = rows.flatMap(r => r.nativeRunIds ?? []);
+  if (!unique(nativeIds)) errors.push('duplicate-native-llm-run');
+  for (const row of rows.filter(r => r.testLayer === 'llm')) {
+    if (!row.filePath.endsWith('/su/S42-drain-watch-recheck.ts') || !row.nativeRunIds?.length
+      || row.nativeRunIds.length !== row.passed) errors.push('unverified-native-llm-run:' + row.bindingId);
+  }
   for (const arrival of ['preexisting', 'during-registration', 'empty']) {
     if (!rows.some(r => r.testLayer === 'llm' && r.scenarioId === 'su-S42-drain-watch-' + arrival)) errors.push('missing-native-arrival:' + arrival);
   }
@@ -195,12 +221,56 @@ export function validateCapacityContinuationProof(input: unknown): CapacityProof
   return { status: errors.length ? 'fail' : 'pass', violations: errors };
 }
 
+export interface NativeCapacityLlmRun {
+  id: string; scenarioId: string; scenarioVersion: number; scenarioHash: string; identityHash: string;
+  personaId: string; personaTraits: PersonaTraits; rubricVersion: string; sutModel: string; judgeModel: string;
+  status: string; turns: Parameters<typeof judgeS42Run>[1]['turns']; rawEvents: Array<{ name: string; data: unknown }>;
+}
+export interface NativeCapacityLlmContext {
+  scenarioId: string; scenarioVersion: number; scenarioHash: string; personaId: string; personaTraits: PersonaTraits;
+  rubricVersion: string; provider: 'anthropic' | 'codex'; systemSha256: string[];
+}
+/** Replays original model calls; success labels and a matching scenario name are insufficient. */
+export function validateCapacityNativeLlmRun(run: NativeCapacityLlmRun, expected: NativeCapacityLlmContext): CapacityProofVerdict {
+  const violations: string[] = [];
+  const kind = S42_CASES.find(kind => expected.scenarioId === 'su-S42-drain-watch-' + kind);
+  if (!kind || !run.id || run.status !== 'passed' || run.scenarioId !== expected.scenarioId
+    || run.scenarioVersion !== expected.scenarioVersion || run.scenarioHash !== expected.scenarioHash
+    || run.personaId !== expected.personaId || JSON.stringify(run.personaTraits) !== JSON.stringify(expected.personaTraits)
+    || run.rubricVersion !== expected.rubricVersion || !run.sutModel || !run.judgeModel) violations.push('native-llm-identity');
+  const identity = computeIdentityHash({ ...expected, sutModel: run.sutModel, judgeModel: run.judgeModel,
+    judgeScaffoldVersion: JUDGE_PROMPT_SCAFFOLD_VERSION });
+  if (run.identityHash !== identity) violations.push('native-llm-composite-identity');
+  const manifests = run.rawEvents.filter(event => event.name === 'tool_definition_manifest');
+  if (!manifests.length) violations.push('native-prompt-manifest-missing');
+  for (const event of manifests) {
+    const parsed = z.object({ schemaVersion: z.literal('su-tool-definitions-v1'), provider: z.literal(expected.provider),
+      systemSha256: digest, sha256: digest, definitions: z.array(z.unknown()) }).safeParse(event.data);
+    if (!parsed.success || !expected.systemSha256.includes(parsed.data.systemSha256)
+      || createHash('sha256').update(JSON.stringify(parsed.data.definitions)).digest('hex') !== parsed.data.sha256)
+      violations.push('native-prompt-or-client-mismatch');
+  }
+  if (!Array.isArray(run.turns) || !run.turns.length || run.turns.some(turn => !Array.isArray(turn.toolCalls)
+    || turn.toolCalls.some(call => typeof call.name !== 'string' || !call.input || typeof call.input !== 'object')))
+    violations.push('native-trace-malformed');
+  else {
+    const normalizedCalls = run.turns.flatMap(turn => turn.toolCalls).map(({ name, input }) => ({ name, input }));
+    const originalCalls = run.rawEvents.filter(event => event.name === 'tool_call').map(event => {
+      const data = event.data as { name?: unknown; input?: unknown };
+      return { name: data?.name, input: data?.input };
+    });
+    if (JSON.stringify(originalCalls) !== JSON.stringify(normalizedCalls)) violations.push('native-trace-custody-mismatch');
+    if (kind) violations.push(...judgeS42Run(kind, { turns: run.turns }).map(v => v.assertKind));
+  }
+  return { status: violations.length ? 'fail' : 'pass', violations: [...new Set(violations)] };
+}
+
 /** Extend the existing instrument surface; no new tool, store or polling loop. */
 export function lunaCapacityInstruments(root: string): CommandInstrument[] {
   return (['recovery', 'shipment', 'diagnostic', 'continuation'] as const).map(phase => ({
     key: LUNA_CAPACITY_INSTRUMENTS[phase], evaluator: 'command', unit: 'count', timeoutMs: 120_000,
     description: 'Validate current native spec evidence: serving diagnostic, watch/recheck layers, census/pickup, or independently accepted release identity. 1 valid, 0 contradicted, absent/unreadable unknown.',
-    argv: [process.execPath, '--import', 'tsx', join(root, 'scripts/verify-fleet-capacity-recovery.ts'), root, phase],
+    argv: [process.execPath, '--import', 'tsx', join(root, 'scripts/verify-fleet-capacity-recovery.mts'), root, phase],
     parse(stdout: string) {
       try {
         const r = JSON.parse(stdout.trim());

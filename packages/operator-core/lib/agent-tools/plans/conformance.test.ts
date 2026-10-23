@@ -175,7 +175,7 @@ describe("plans:conformance op:'run'", () => {
     const out = await call({ op: 'run', harness: 'h', slug: 'p' });
     expect(out).toMatchObject({ ok: true, op: 'run', harnessSlug: 'h', planSlug: 'p', ran: [{ summary: { drifting: ['R-2'] } }] });
     expect(mocks.readPlanBySlug).toHaveBeenCalledExactlyOnceWith('p', { workspaceId: 'ws', harnessSlug: 'h' });
-    expect(mocks.productionSweepDeps).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'ws' });
+    expect(mocks.productionSweepDeps).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'ws', phases: expect.objectContaining({ track: expect.any(Function) }) });
     const [opts, deps] = mocks.runSpecConformanceSweep.mock.calls[0];
     expect(opts).toEqual({ target: { harnessSlug: 'h', planSlug: 'p' } });
     expect(await deps.listPlans()).toEqual([{ harnessSlug: 'h', planSlug: 'p', content: PLAN }]);
@@ -275,6 +275,39 @@ describe("plans:conformance op:'run'", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     failRead(new Error('original read failure'));
     await rejection;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps inner dependency phases on the same request through pending and late settlement', async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+    let finish!: () => void;
+    mocks.productionSweepDeps.mockImplementationOnce(({ phases }) => ({
+      runConformance: () => phases.track('conformance:tests:ledger', () => new Promise<void>((resolve) => { finish = resolve; })),
+    }));
+    mocks.runSpecConformanceSweep.mockImplementationOnce(async (_opts, deps) => {
+      await deps.runConformance({ harnessSlug: 'h', planSlug: 'p', content: PLAN });
+      return { ran: [{ ok: true }] };
+    });
+    const phases = createPhaseTracker();
+    const pending = tool.handler({ op: 'run', slug: 'p' } as never, {
+      workspaceId: 'ws', harnessSlug: 'h', phases, dispatchCallId: 'inner-call',
+      requestOrigin: { transport: 'mcp', mcpRequestTraceId: 'inner-trace' },
+    } as never);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const events = () => log.mock.calls.map(([line]) => JSON.parse(line.replace('[spec-conformance-phase] ', '')));
+    expect(events()[0]).toMatchObject({
+      event: 'pending', traceId: 'inner-trace', dispatchCallId: 'inner-call',
+      phases: { activePhase: 'conformance:tests:ledger' },
+    });
+    finish();
+    await pending;
+    expect(events().at(-1)).toMatchObject({
+      event: 'settled', traceId: 'inner-trace', dispatchCallId: 'inner-call',
+      phases: { activePhase: null, activePhases: [] },
+    });
+    expect(phases.toMetadata()?.phases.map((phase) => phase.phase)).toContain('conformance:tests:ledger');
+    expect(mocks.runSpecConformanceSweep).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });
 

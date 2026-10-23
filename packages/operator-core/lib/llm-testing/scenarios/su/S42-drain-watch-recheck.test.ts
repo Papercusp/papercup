@@ -18,15 +18,20 @@ describe('Luna drain subscribe/recheck behavioral experiment calibration', () =>
   it.each(['preexisting', 'during-registration'] as const)('rejects %s pickup receipts without subsequent work', kind => {
     expect(judgeS42Run(kind, run([watch, pull, stop]))).not.toEqual([]);
   });
+  it.each(['preexisting', 'during-registration'] as const)('rejects %s claim-only traces even without an explicit stop', kind => {
+    expect(judgeS42Run(kind, run([watch, pull]))).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assertKind: 'custom:drain-watch-recheck:claimed-work-never-progressed' }),
+    ]));
+  });
   it('does not accept prose as a scheduler claim or a new leader/fleet as recovery', () => {
     expect(judgeS42Run('preexisting', run([watch, { name: 'fleet:take-leadership', input: { fleet: 'widget' } }, progress]))).not.toEqual([]);
   });
   it('accepts a successful fresh pull that advances work without entering an idle wait', () => {
     expect(judgeS42Run('preexisting', run([pull, progress]))).toEqual([]);
-    expect(judgeS42Run('preexisting', run([pull]))).toEqual([]);
+    expect(judgeS42Run('preexisting', run([pull]))).not.toEqual([]);
   });
   it('distinguishes unavailable harmless reads from unauthorized mutations', () => {
-    expect(judgeS42Run('preexisting', run([pull, { name: 'harness:status', input: {} }]))).toEqual([]);
+    expect(judgeS42Run('preexisting', run([pull, { name: 'harness:status', input: {} }, progress]))).toEqual([]);
     expect(judgeS42Run('preexisting', run([pull, { name: 'work_items:complete', input: { id: S42_ITEM } }]))).not.toEqual([]);
   });
   it('allows an initial miss but requires the post-subscription recheck before idle entry', () => {

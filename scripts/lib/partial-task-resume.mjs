@@ -15,6 +15,37 @@ import { readNativeArtifactBytes, readNativeProcessTraceArtifacts } from "./budg
 export const PARTIAL_TASK_CHECKPOINT_SCHEMA = 1;
 export const PARTIAL_TASK_SKIP_LIST_SCHEMA = 1;
 
+// These capabilities exist only for an independently authenticated artifact read.
+// JSON round trips, stored receipt fields and caller-supplied run ids cannot mint
+// them. A composer must reread artifacts under its current physical runner fence.
+// Public scope labels describe authority; only this WeakMap grants it. In a plan,
+// declare separately whether acceptance needs this execution's outcome or permission
+// to skip work in a replacement execution. Unknown reusable closure stays unknown.
+const currentOutcomeEvidence = new WeakMap();
+const currentIdentityKeys = ["root", "taskKey", "attemptId", "candidate", "repairHead",
+  "sourceCommit", "runContext", "runnerIdentity", "runId", "runnerId", "pidIdentity"];
+function currentIdentity(expected) {
+  if (currentIdentityKeys.some(key => key === "repairHead"
+    ? expected?.[key] !== null && !validIdentity(expected?.[key]) : !validIdentity(expected?.[key]))) return null;
+  const manifest = continuationManifest(expected.manifest);
+  return manifest ? { ...Object.fromEntries(currentIdentityKeys.map(key => [key, expected[key]])), manifest } : null;
+}
+function currentCapability(receipt, expected) {
+  const identity = currentIdentity(expected);
+  if (!identity) return null;
+  const capability = Object.freeze({ scope: "current-execution" });
+  currentOutcomeEvidence.set(capability, { identity, receipt: structuredClone(receipt) });
+  return capability;
+}
+
+/** Bind a native execution capture to the complete logical/physical identity.
+ * This fingerprint is provenance, never authority without authenticated artifacts.
+ */
+export function partialCurrentExecutionFingerprint(expected) {
+  const identity = currentIdentity(expected);
+  return identity ? createHash("sha256").update(JSON.stringify(identity)).digest("hex") : null;
+}
+
 const normalizePath = (value, cwd) => {
   if (typeof value !== "string") return null;
   let file = value.replace(/\x1b\[[0-9;]*m/g, "").trim();
@@ -63,7 +94,9 @@ export function readPartialTaskCheckpoint(file, expected) {
   if (!validFileList(parsed.selectedFiles) || !validFileList(parsed.passedFiles)) return null;
   if (parsed.state !== "partial" && parsed.state !== "complete") return null;
   if (expected && (parsed.root !== expected.root || parsed.taskKey !== expected.taskKey ||
-      parsed.sourceCommit !== expected.sourceCommit || parsed.sourceDigest !== expected.sourceDigest)) {
+      parsed.sourceCommit !== expected.sourceCommit || parsed.sourceDigest !== expected.sourceDigest ||
+      (expected.runnerIdentity !== undefined && (!validIdentity(expected.runnerIdentity) ||
+        parsed.runnerIdentity !== expected.runnerIdentity)))) {
     return null;
   }
   const selectedFiles = [...new Set(parsed.selectedFiles)].sort();
@@ -79,11 +112,13 @@ export function writePartialTaskCheckpointAtomic(file, checkpoint) {
     taskKey: checkpoint.taskKey,
     sourceCommit: checkpoint.sourceCommit,
     sourceDigest: checkpoint.sourceDigest,
+    ...(checkpoint.runnerIdentity === undefined ? {} : { runnerIdentity: checkpoint.runnerIdentity }),
     selectedFiles: [...new Set(checkpoint.selectedFiles ?? [])].sort(),
     passedFiles: [...new Set(checkpoint.passedFiles ?? [])].sort(),
     state: checkpoint.state === "complete" ? "complete" : "partial",
     updatedAt: checkpoint.updatedAt ?? new Date().toISOString(),
     ...(checkpoint.continuation === undefined ? {} : { continuation: checkpoint.continuation }),
+    ...(checkpoint.physicalExecution === undefined ? {} : { physicalExecution: checkpoint.physicalExecution }),
   };
   if (checkpoint.continuation !== undefined) {
     value.checkpointIntegrity = { schemaVersion: 1,
@@ -102,6 +137,7 @@ export function partialTaskSkipListPath(dir, checkpoint) {
     taskKey: checkpoint.taskKey,
     sourceCommit: checkpoint.sourceCommit,
     sourceDigest: checkpoint.sourceDigest,
+    ...(checkpoint.runnerIdentity === undefined ? {} : { runnerIdentity: checkpoint.runnerIdentity }),
     files: [...new Set(checkpoint.passedFiles ?? [])].sort(),
   });
   const digest = createHash("sha256").update(body).digest("hex").slice(0, 16);
@@ -477,7 +513,7 @@ export function readPartialNativeChannelCustody(producer, native, { allowInterru
  * absent classification keeps the outcome but cannot establish a reusable pass.
  */
 export function readPartialNativeCompletion(file, expected, options = {}) {
-  const refused = reason => ({ status: "refused", reason, receipts: [] });
+  const refused = reason => ({ status: "refused", reason, receipts: [], currentEvidence: [] });
   let snapshot;
   try { snapshot = JSON.parse(readFileSync(file, "utf8")); }
   catch { return refused("snapshot-unreadable"); }
@@ -535,11 +571,13 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
   const interrupted = native.finishedAtMs === null && native.terminalHook === null && native.reason === null &&
     native.unhandledErrorCount === null && native.modulePopulationMatched === false &&
     native.gaps.length === 0 && native.files.length > 0;
+  let physicalCustody;
   if (producer?.nativeChannel) {
     const custody = readPartialNativeChannelCustody(producer, native, {
       allowInterrupted: options.allowInterrupted === true && interrupted,
     });
     if (custody.status !== "bound") return refused(custody.reason);
+    physicalCustody = custody.custody;
   }
   if (options.requireTerminal === true && !terminalPassed && !(options.allowInterrupted === true && interrupted))
     return refused("native-terminal-verdict-unmeasured");
@@ -548,7 +586,15 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
     if (!selectedPaths.has(row?.testFile) || rows.has(row.testFile)) return refused("native-proof-population-invalid");
     rows.set(row.testFile, row);
   }
-  const seenFiles = new Set(), seenCompletions = new Set(), receipts = [];
+  const seenFiles = new Set(), seenCompletions = new Set(), receipts = [], currentEvidence = [];
+  const currentPhysical = currentIdentity(expected) && physicalCustody?.terminal === true && terminalPassed &&
+    native.terminalHook === "onTestRunEnd" &&
+    context.runGroupId === expected.runId && snapshot.recordedSha === expected.sourceCommit &&
+    snapshot.recordedSha === expected.candidate && context.runContext === expected.runContext &&
+    context.runnerIdentity === expected.runnerIdentity && snapshot.worktreeDirty === false &&
+    snapshot.configSources?.status === "unchanged" && Number.isSafeInteger(expected.runnerReservedAtMs) &&
+    producer.registeredAtMs >= expected.runnerReservedAtMs &&
+    Number.isSafeInteger(expected.nowMs) && physicalCustody.closedAtMs <= expected.nowMs;
   for (const file of native.files) {
     if (!selectedPaths.has(file?.testFile) || seenFiles.has(file.testFile) ||
         !validIdentity(file.completionId) || seenCompletions.has(file.completionId) ||
@@ -581,21 +627,298 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
     const executedModules = row?.executedModules;
     if (!Array.isArray(executedModules) || !executedModules.length || !executedModules.every(repoPath))
       opaqueReasons.push("execution-closure-unmeasured");
-    receipts.push({ unitId: byPath.get(file.testFile).id, completionId: file.completionId,
+    const receipt = { unitId: byPath.get(file.testFile).id, completionId: file.completionId,
       observedAtMs: file.observedAtMs, state: file.state === "passed" ? "pass" : file.state === "failed" ? "fail" : "infra",
       worktreeDirty: snapshot.worktreeDirty !== false, firstAttemptVerdict: file.firstAttemptVerdict,
       observedCount: measuredCases ? cases.length : 0,
       proof: { recordedSha: snapshot.recordedSha, runContext: context.runContext,
         runnerIdentity: context.runnerIdentity, executedModules: executedModules ?? [],
         inputsCaptured: row?.inputsCaptured === true && inputMeasured,
-        readPaths: inputMeasured ? classified.readPaths : [], opaqueReasons } });
+        readPaths: inputMeasured ? classified.readPaths : [], opaqueReasons } };
+    receipts.push(receipt);
+    // Runtime-input closure remains unmeasured. Current evidence independently
+    // requires source/config, full collection, clean first attempt and native
+    // command/process/artifact custody; an opaque reuse proof grants nothing.
+    if (currentPhysical && cleanSource && measuredCases && file.state === "passed" &&
+        file.firstAttemptVerdict === "pass" && file.observedAtMs >= native.startedAtMs &&
+        file.observedAtMs <= native.finishedAtMs) {
+      const capability = currentCapability(receipt, { ...expected,
+        taskKey: expected.continuationTaskKey ?? expected.taskKey });
+      if (capability) currentEvidence.push(capability);
+    }
   }
-  return { status: "ready", reason: null, receipts, origin: {
+  return { status: "ready", reason: null, receipts, currentEvidence, origin: {
     terminal: terminalPassed ? "passed" : interrupted ? "interrupted" : "unmeasured",
     runGroupId: validIdentity(context.runGroupId) ? context.runGroupId : null,
     startedAtMs: Number.isSafeInteger(native.startedAtMs) && native.startedAtMs > 0 ? native.startedAtMs : null,
     sourceCommit: snapshot.recordedSha,
   } };
+}
+
+/** Authenticate a current command's ORIGINAL pinned output, independently of
+ * retained-pass eligibility. Definitions must come from the frozen source-owned
+ * command inventory, not the receipt's observed sample. No runtime closure is
+ * inferred; only a complete current physical outcome can mint a capability.
+ */
+export function readPartialCurrentCommandCompletion(receipt, expected, definition) {
+  const refused = reason => ({ status: "refused", reason, currentEvidence: [] });
+  const identity = partialCurrentExecutionFingerprint(expected);
+  const unit = continuationManifest(expected?.manifest)?.find(unit => unit.id === receipt?.unitId);
+  if (!identity || !unit || unit.kind === "test" || unit.exclusion || receipt.state !== "pass" ||
+      !Array.isArray(definition?.commands) || !definition.commands.length ||
+      new Set(definition.commands.map(command => command?.id)).size !== definition.commands.length ||
+      receipt.observedCount !== definition.commands.length || !Number.isSafeInteger(expected.runnerReservedAtMs) ||
+      !Number.isSafeInteger(expected.nowMs)) return refused("current-command-identity-unmeasured");
+  const outcomes = receipt.proof?.commandOutcomes;
+  if (!Array.isArray(outcomes) || outcomes.length !== definition.commands.length ||
+      new Set(outcomes.map(row => row?.command)).size !== outcomes.length)
+    return refused("current-command-population-mismatch");
+  let bytesRead = 0, latest = 0;
+  const readPin = (root, pin) => {
+    if (!isAbsolute(root ?? "") || root !== definition.evidenceRoot || !pin ||
+        !repoPath(pin.ref) || basename(pin.ref) !== pin.ref || !/^[a-f0-9]{64}$/.test(pin.sha256) ||
+        !Number.isSafeInteger(pin.byteLength) || pin.byteLength < 0)
+      throw new Error("artifact-reference-invalid");
+    const bytes = readNativeArtifactBytes(join(root, pin.ref), pin.byteLength,
+      64 * 1024 * 1024 - bytesRead, count => { bytesRead += count; });
+    if (createHash("sha256").update(bytes).digest("hex") !== pin.sha256) throw new Error("artifact-digest-mismatch");
+    return bytes;
+  };
+  const retainedArtifacts = (root, value, depth = 0) => {
+    if (depth > 20) throw new Error("artifact-nesting-invalid");
+    if (!value || typeof value !== "object") return;
+    for (const [key, child] of Object.entries(value)) {
+      // Non-test commands legitimately have no Vitest reporter artifact. Null
+      // diagnostics grant no evidence; every concrete referenced pin is checked.
+      if (key === "artifact" && child !== null) readPin(root, child);
+      else retainedArtifacts(root, child, depth + 1);
+    }
+  };
+  try {
+    for (const command of definition.commands) {
+      const outcome = outcomes.find(row => row?.command === command?.id);
+      if (!outcome || !validIdentity(command.id) || !validIdentity(command.task) ||
+          !Array.isArray(command.argv) || !command.argv.length || !command.argv.every(validIdentity) ||
+          !isAbsolute(command.cwd ?? "") || !Array.isArray(command.inputs) || !command.inputs.length ||
+          command.inputs.some(pin => !repoPath(pin?.path) || !/^[a-f0-9]{64}$/.test(pin.sha256)) ||
+          new Set(command.inputs.map(pin => pin.path)).size !== command.inputs.length)
+        return refused("current-command-definition-invalid");
+      const native = JSON.parse(readPin(outcome.root, outcome.receipt).toString("utf8"));
+      retainedArtifacts(outcome.root, native);
+      const execution = native.execution, origin = native.currentExecution;
+      if (native.schemaVersion !== 1 || native.kind !== "affected-task-native-execution" ||
+          native.task !== command.task || native.attempt !== expected.runId ||
+          origin?.schemaVersion !== 1 || origin.fingerprint !== identity ||
+          origin.sourceBefore?.commit !== expected.candidate || origin.sourceBefore?.clean !== true ||
+          origin.sourceAfter?.commit !== expected.candidate || origin.sourceAfter?.clean !== true ||
+          !Number.isSafeInteger(origin.childPid) || origin.childPid <= 0 || !validIdentity(origin.childIdentity) ||
+          execution?.cwd !== command.cwd || execution.captureComplete !== true || execution.signal !== null ||
+          execution.error !== null || !Number.isSafeInteger(execution.startedAtMs) ||
+          execution.startedAtMs < expected.runnerReservedAtMs || !Number.isSafeInteger(execution.finishedAtMs) ||
+          execution.finishedAtMs < execution.startedAtMs || execution.finishedAtMs > expected.nowMs ||
+          !isDeepStrictEqual(execution.invocation?.command, command.argv) ||
+          !/^[a-f0-9]{64}$/.test(execution.invocation?.environmentSha256) ||
+          !(isDeepStrictEqual(execution.command, command.argv) ||
+            validIdentity(definition.wrapper) && isDeepStrictEqual(execution.command, [definition.wrapper, ...command.argv])) ||
+          native.originalCommand !== command.originalCommand || native.sourceInputsUnchanged !== true ||
+          !isDeepStrictEqual(native.before?.inputs, command.inputs) || !isDeepStrictEqual(native.after?.inputs, command.inputs))
+        return refused("current-command-origin-mismatch");
+      for (const pin of command.inputs) {
+        const absolute = resolve(expected.root, pin.path), stat = lstatSync(absolute);
+        if (createHash("sha256").update(readNativeArtifactBytes(absolute, stat.size, 16 * 1024 * 1024))
+          .digest("hex") !== pin.sha256) return refused("current-command-source-changed");
+      }
+      const stdout = readPin(outcome.root, execution.logs?.stdout).toString("utf8");
+      readPin(outcome.root, execution.logs?.stderr);
+      if (!Array.isArray(command.exitCodes) || !command.exitCodes.includes(execution.exitCode) ||
+          command.emptyStdout === true && stdout.trim()) return refused("current-command-outcome-not-pass");
+      // Native commands require the measured complete process census and the
+      // matching original Node/npm entry and clean terminal event. Shell and
+      // non-Node executable closure stays explicitly outside this observation.
+      if (["npm", "npm.cmd", "node", "node.exe"].includes(basename(command.argv[0]))) {
+        const trace = native.processTrace;
+        if (trace?.population?.complete !== true || !Array.isArray(trace.events))
+          return refused("current-command-process-unmeasured");
+        const entries = trace.events.filter(row => row.event === "node-entry" &&
+          (row.pid === origin.childPid || row.ppid === origin.childPid) && row.cwd === command.cwd &&
+          Array.isArray(row.argv) && isDeepStrictEqual(row.argv.slice(basename(command.argv[0]).startsWith("npm") ? 2 : 1),
+            command.argv.slice(1)));
+        if (entries.length !== 1) return refused("current-command-process-mismatch");
+        const entry = entries[0];
+        const exits = trace.events.filter(row => row.event === "node-exit" && row.pid === entry.pid &&
+          row.processIdentity === entry.processIdentity && row.code === execution.exitCode && row.exitListenersComplete === true &&
+          row.atMs >= entry.atMs && row.atMs <= execution.finishedAtMs);
+        if (exits.length !== 1) return refused("current-command-terminal-unmeasured");
+      }
+      latest = Math.max(latest, execution.finishedAtMs);
+    }
+    if (receipt.observedAtMs !== latest) return refused("current-command-completion-time-mismatch");
+    const capability = currentCapability(receipt, expected);
+    return capability ? { status: "ready", reason: null, currentEvidence: [capability] }
+      : refused("current-command-identity-unmeasured");
+  } catch (error) { return refused(`current-command-artifact-unreadable:${error?.message ?? "unknown"}`); }
+}
+
+/** Source census for an original affected-task npm invocation. This is wrapper
+ * provenance, not runtime-input closure or permission to reuse a later result. */
+export function partialTaskCommandInputs(root, dir) {
+  if (!isAbsolute(root ?? "") || (dir !== "." && !repoPath(dir))) return null;
+  try {
+    const files = ["package.json", "package-lock.json", "npm-shrinkwrap.json", ".npmrc",
+      ...(dir === "." ? [] : [`${dir}/package.json`, `${dir}/.npmrc`])];
+    const inputs = [];
+    for (const file of files) {
+      let stat;
+      try { stat = lstatSync(resolve(root, file)); }
+      catch (error) {
+        if (error?.code === "ENOENT" && !file.endsWith("package.json")) continue;
+        throw error;
+      }
+      const bytes = readNativeArtifactBytes(resolve(root, file), stat.size, 16 * 1024 * 1024);
+      inputs.push({ path: file, sha256: createHash("sha256").update(bytes).digest("hex") });
+    }
+    return inputs;
+  } catch { return null; }
+}
+
+/** Map the independently selected full guard population to ORIGINAL npm tasks.
+ * Invocations must come from the host's maintained selector, before execution;
+ * receipt samples never choose a command or its owed units. A whole task is the
+ * atomic guard chunk, including source-validated npm hooks and ordered chains.
+ * @param {{root: string, selection: any, postSuite: any, evidenceRoot: string, invocations: any[]}} input
+ */
+export function preparePartialTaskCommandDefinitions({ root, selection, postSuite, evidenceRoot, invocations }) {
+  const refused = reason => ({ status: "refused", reason, definitions: [], operationalAcceptance: false });
+  if (!isAbsolute(evidenceRoot ?? "") || !Array.isArray(invocations) ||
+      new Set(invocations.map(row => row?.task)).size !== invocations.length)
+    return refused("task-command-invocations-unmeasured");
+  const prepared = preparePartialContinuationManifest({ root, tasks: selection?.taskInventory, selection, postSuite });
+  if (prepared.status !== "ready") return refused(`task-command-${prepared.reason}`);
+  const definitions = [];
+  for (const task of selection.taskInventory) {
+    const entry = selection.tasks.find(row => row.id === task.id);
+    const part = preparePartialContinuationManifest({ root, tasks: [task], postSuite,
+      selection: { ...selection, tasks: entry ? [entry] : [],
+        unenumerated: selection.unenumerated.filter(row => row.task === task.id),
+        commandObligations: selection.commandObligations.filter(row => row.task === task.id) } });
+    if (part.status !== "ready") return refused(`task-command-${part.reason}`);
+    const unitIds = part.manifest.units.filter(unit => unit.kind === "guard").map(unit => unit.id);
+    if (!unitIds.length) continue;
+    const invocation = invocations.find(row => row?.task === task.id);
+    const script = task.id.slice(task.id.lastIndexOf(" :: ") + 4);
+    const argv = invocation?.argv;
+    const cwd = invocation?.cwd;
+    const prefix = cwd === root && argv?.[3] === "--workspace" ? ["npm", "run", script, "--workspace", task.dir] :
+      cwd === resolve(root, task.dir) ? ["npm", "run", script] : null;
+    const inputs = partialTaskCommandInputs(root, task.dir);
+    if (!prefix || !Array.isArray(argv) || !argv.every(validIdentity) ||
+        !isDeepStrictEqual(argv.slice(0, prefix.length), prefix) ||
+        (argv.length > prefix.length && argv[prefix.length] !== "--") || !inputs)
+      return refused("task-command-invocation-mismatch");
+    const forwardedArgs = argv.length > prefix.length ? argv.slice(prefix.length + 1) : [];
+    // npm appends these arguments to the main script through sh -c. Keep the
+    // measured, unambiguous subset; opaque shell quoting cannot grant a pass.
+    if (forwardedArgs.some(arg => !/^[\w@%+=:,./-]+$/.test(arg)))
+      return refused("task-command-forwarded-arguments-unsupported");
+    let sourceLifecycle;
+    try {
+      const bytes = readNativeArtifactBytes(resolve(root, task.dir, "package.json"),
+        lstatSync(resolve(root, task.dir, "package.json")).size, 16 * 1024 * 1024);
+      const source = JSON.parse(bytes.toString("utf8"));
+      if (source.scripts?.[script] !== task.command || `${source.name} :: ${script}` !== task.id)
+        return refused("task-command-source-mismatch");
+      sourceLifecycle = expandSelectionCommands(source.scripts, script);
+    } catch { return refused("task-command-source-unreadable"); }
+    definitions.push({ task: task.id, unitIds, evidenceRoot, sourceLifecycle, forwardedArgs,
+      lifecycleCwd: resolve(root, task.dir), commands: [{
+      id: task.id, task: task.id, argv: [...argv], cwd, originalCommand: task.command,
+      inputs, exitCodes: [0],
+    }] });
+  }
+  if (invocations.some(row => !selection.taskInventory.some(task => task.id === row?.task)))
+    return refused("task-command-outside-selection");
+  return { status: "ready", reason: null, definitions, operationalAcceptance: false };
+}
+
+/** Recover one durable whole-task outcome against the source-owned guard list.
+ * Every guard is authenticated before any update is returned. Current capabilities
+ * stay ephemeral; the resulting receipts cannot authorize a replacement to skip.
+ */
+export function readPartialTaskCommandCompletion(observation, expected, definition) {
+  const refused = reason => ({ status: "refused", reason, receipts: [], currentEvidence: [] });
+  const pin = observation?.receipt;
+  if (observation?.root !== definition?.evidenceRoot || !isAbsolute(observation?.root ?? "") ||
+      !Array.isArray(definition?.unitIds) || !definition.unitIds.length ||
+      new Set(definition.unitIds).size !== definition.unitIds.length ||
+      !Array.isArray(definition.commands) || definition.commands.length !== 1 ||
+      !Array.isArray(definition.sourceLifecycle) || !definition.sourceLifecycle.length ||
+      definition.sourceLifecycle.some(step => !validIdentity(step?.script) || !validIdentity(step?.command)) ||
+      !isAbsolute(definition.lifecycleCwd ?? "") ||
+      !pin || !repoPath(pin.ref) || basename(pin.ref) !== pin.ref || !/^[a-f0-9]{64}$/.test(pin.sha256) ||
+      !Number.isSafeInteger(pin.byteLength) || pin.byteLength < 0)
+    return refused("task-command-artifact-reference-invalid");
+  try {
+    const bytes = readNativeArtifactBytes(join(observation.root, pin.ref), pin.byteLength, 64 * 1024 * 1024);
+    if (createHash("sha256").update(bytes).digest("hex") !== pin.sha256)
+      return refused("task-command-artifact-digest-mismatch");
+    const native = JSON.parse(bytes.toString("utf8"));
+    // A zero npm exit does not prove its source-owned hooks ran: ignore-scripts
+    // can omit them. Require each expanded source step's actual npm-owned shell
+    // spawn/clean close, including repeated nested aliases, in execution order.
+    const events = native.processTrace?.events;
+    if (native.processTrace?.population?.complete !== true || !Array.isArray(events))
+      return refused("task-command-lifecycle-unmeasured");
+    const starts = events.filter(row => row.event === "child-spawn" &&
+      ["sh", "/bin/sh"].includes(row.command) && row.shell === false &&
+      row.cwd === definition.lifecycleCwd && Array.isArray(row.argv) && row.argv.length === 2 &&
+      row.argv[0] === "-c" &&
+      definition.sourceLifecycle.some(step => step.script === row.lifecycle?.event && step.command === row.lifecycle?.script))
+      .sort((a, b) => a.atMs - b.atMs);
+    if (starts.length !== definition.sourceLifecycle.length) return refused("task-command-lifecycle-population-mismatch");
+    const lastMainStep = definition.sourceLifecycle.findLastIndex(step => step.lifecycle !== true);
+    const forwarded = definition.forwardedArgs ?? [];
+    if (!Array.isArray(forwarded) || forwarded.some(arg => typeof arg !== 'string' || !/^[\w@%+=:,./-]+$/.test(arg)))
+      return refused("task-command-forwarded-arguments-unsupported");
+    let previousEnd = native.execution?.startedAtMs;
+    for (const [index, step] of definition.sourceLifecycle.entries()) {
+      const start = starts[index];
+      const observers = events.filter(row => row.event === "node-entry" && row.pid === start.pid &&
+        row.processIdentity === start.processIdentity && Array.isArray(row.argv) &&
+        ["npm", "npm-cli.js"].includes(basename(row.argv[1] ?? "")) &&
+        ["run", "run-script"].includes(row.argv[2]));
+      const closes = events.filter(row => row.event === "child-close" && row.pid === start.pid &&
+        row.processIdentity === start.processIdentity && row.childPid === start.childPid && row.childIdentity === start.childIdentity);
+      const close = closes[0];
+      if (start.lifecycle.event !== step.script || start.lifecycle.script !== step.command ||
+          start.argv[1] !== step.command + (index === lastMainStep && forwarded.length ? ` ${forwarded.join(' ')}` : '') ||
+          observers.length !== 1 || closes.length !== 1 || close.code !== 0 || close.signal !== null ||
+          !Number.isSafeInteger(start.atMs) || start.atMs < previousEnd ||
+          !Number.isSafeInteger(close.atMs) || close.atMs < start.atMs || close.atMs > native.execution?.finishedAtMs)
+        return refused("task-command-lifecycle-mismatch");
+      previousEnd = close.atMs;
+    }
+    const receipts = [], currentEvidence = [];
+    for (const unitId of definition.unitIds) {
+      if (expected.manifest?.units?.find(unit => unit.id === unitId)?.kind !== "guard")
+        return refused("task-command-unit-outside-selection");
+      const receipt = { unitId, completionId: `${pin.sha256}:${unitId}`,
+        observedAtMs: native.execution?.finishedAtMs, state: /** @type {"pass"} */ ("pass"), observedCount: 1,
+        proof: { commandOutcomes: [{ command: definition.task, root: observation.root, receipt: pin }],
+          opaqueReasons: ["task-command-runtime-inputs-unmeasured"] } };
+      receipts.push(receipt);
+    }
+    // All units name the same original command/artifacts. Authenticate that IO
+    // once, after checking the entire guard population, then mint per-unit
+    // capabilities in this module. A long chain cannot multiply the IO budget.
+    const authenticated = readPartialCurrentCommandCompletion(receipts[0], expected, definition);
+    if (authenticated.status !== "ready") return refused(authenticated.reason);
+    for (const receipt of receipts) {
+      const capability = currentCapability(receipt, expected);
+      if (!capability) return refused("task-command-identity-unmeasured");
+      currentEvidence.push(capability);
+    }
+    return { status: "ready", reason: null, receipts, currentEvidence };
+  } catch (error) { return refused(`task-command-artifact-unreadable:${error?.message ?? "unknown"}`); }
 }
 
 function continuationManifest(manifest) {
@@ -837,9 +1160,15 @@ export function preparePartialContinuationManifest({ tasks, selection, postSuite
  * Native receipts are retained even when they cannot establish a reusable pass. Reuse
  * delegates to the maintained source/input/context/runner validator. A retained failure
  * is never silently retried: the qualification's explicit retry policy must admit it.
+ *
+ * Evidence contract: `current` counts only within the independently authenticated
+ * physical execution, even when runtime read closure is unmeasured. `reused` may
+ * skip a unit in a replacement execution only after complete reuse validation.
+ * `evidenceScopes` exposes that distinction per counted unit; its labels are not
+ * capabilities, cannot be replayed, and never change the receipt's closure proof.
  */
 export function evaluatePartialTaskContinuation(checkpoint, expected, options = {}) {
-  const refused = reason => ({ status: "refused", reason, verdict: "incomplete", run: [], reused: [],
+  const refused = reason => ({ status: "refused", reason, verdict: "incomplete", run: [], reused: [], current: [], evidenceScopes: [],
     excluded: [], retainedFailures: [], infrastructure: [], invalidated: [] });
   const stored = checkpoint?.continuation;
   if (stored?.schemaVersion !== 1) return refused("continuation-unmeasured");
@@ -868,7 +1197,14 @@ export function evaluatePartialTaskContinuation(checkpoint, expected, options = 
     receipts.set(receipt.unitId, receipt);
     completionIds.add(receipt.completionId);
   }
-  const run = [], reused = [], excluded = [], retainedFailures = [], infrastructure = [], invalidated = [];
+  const run = [], reused = [], current = [], excluded = [], retainedFailures = [], infrastructure = [], invalidated = [];
+  const identity = currentIdentity(expected);
+  const authenticated = new Map();
+  for (const capability of Array.isArray(options.currentEvidence) ? options.currentEvidence : []) {
+    const evidence = capability && typeof capability === "object" ? currentOutcomeEvidence.get(capability) : undefined;
+    if (evidence && identity && isDeepStrictEqual(evidence.identity, identity))
+      authenticated.set(evidence.receipt.unitId, evidence.receipt);
+  }
   if (expected.retryStates !== undefined && !Array.isArray(expected.retryStates)) return refused("retry-policy-invalid");
   const retries = new Set(expected.retryStates ?? []);
   if ([...retries].some(state => !["fail", "infra"].includes(state))) return refused("retry-policy-invalid");
@@ -879,6 +1215,12 @@ export function evaluatePartialTaskContinuation(checkpoint, expected, options = 
     if (receipt.state !== "pass") {
       (receipt.state === "fail" ? retainedFailures : infrastructure).push(unit.id);
       if (retries.has(receipt.state)) run.push(unit.id);
+      continue;
+    }
+    // Authenticate current outcomes BEFORE and independently of reuse. Never
+    // reinterpret a rejected retained proof as evidence of current execution.
+    if (isDeepStrictEqual(authenticated.get(unit.id), receipt)) {
+      current.push(unit.id);
       continue;
     }
     let selection;
@@ -899,11 +1241,15 @@ export function evaluatePartialTaskContinuation(checkpoint, expected, options = 
   }
   const required = units.length - excluded.length;
   const verdict = retainedFailures.length ? "red" :
-    required > 0 && reused.length === required ? "green" : "incomplete";
-  return { status: "ready", reason: null, verdict, run, reused, excluded,
+    required > 0 && reused.length + current.length === required ? "green" : "incomplete";
+  return { status: "ready", reason: null, verdict, run, reused, current, excluded,
+    evidenceScopes: [
+      ...current.map(unitId => ({ unitId, scope: "current-execution" })),
+      ...reused.map(unitId => ({ unitId, scope: "reusable" })),
+    ],
     retainedFailures, infrastructure, invalidated,
     counts: { selected: units.length, required, excluded: excluded.length,
-      passed: reused.length, failed: retainedFailures.length, infrastructure: infrastructure.length,
+      passed: reused.length + current.length, failed: retainedFailures.length, infrastructure: infrastructure.length,
       pending: run.filter(id => !retainedFailures.includes(id) && !infrastructure.includes(id)).length } };
 }
 
@@ -920,7 +1266,9 @@ export function preparePartialRemainingSelection(checkpoint, expected, { selecti
       .map(unit => ({ unitId: unit.id, ...unit.exclusion })) });
   if (prepared.status !== "ready") return refused(`selection-${prepared.reason}`);
   if (!isDeepStrictEqual(prepared.manifest, expected.manifest)) return refused("selection-manifest-mismatch");
-  const evaluation = evaluatePartialTaskContinuation(checkpoint, expected, options);
+  // Selection is permission to omit execution in a new invocation. Current-only
+  // evidence must never travel through this retained-work skip path.
+  const evaluation = evaluatePartialTaskContinuation(checkpoint, expected, { ...options, currentEvidence: [] });
   if (evaluation.status !== "ready") return refused(`eligibility-${evaluation.reason}`);
   const run = new Set(evaluation.run);
   if ([...evaluation.retainedFailures, ...evaluation.infrastructure].some(id => !run.has(id)))
@@ -942,7 +1290,8 @@ export function preparePartialRemainingSelection(checkpoint, expected, { selecti
       if (units.some(unit => unit.kind !== "test" && !run.has(unit.id)))
         return refused("atomic-command-partially-complete");
       const files = entry.files.filter(file => run.has(`test:${file}`));
-      if (!files.length) return refused("native-empty-selection-with-command-work");
+      if (!files.length && !(scriptUsesPassWithNoTests(entry.command) && scriptSupportsPassReuse(entry.command)))
+        return refused("native-empty-selection-with-command-work");
       const selectedSpecifications = entry.selectedSpecifications.filter(spec => files.includes(spec.testFile));
       tasks.push({ ...structuredClone(entry), files, selectedSpecifications });
     } else if (entry?.runner === "command-chain" && remaining.length !== units.length) {

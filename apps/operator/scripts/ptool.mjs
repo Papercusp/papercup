@@ -2523,6 +2523,12 @@ export function timeoutForTool(toolName, callArgs) {
   const effectiveArgs = toolName === 'tools:invoke' && callArgs?.args && typeof callArgs.args === 'object'
     ? callArgs.args
     : callArgs;
+  // A conformance run is non-idempotent and returns its persisted run receipt
+  // within the MCP response window. Do not abandon that receipt at the flat
+  // 30s client deadline while the server can still return a settled outcome.
+  if (effectiveToolName === 'plans:conformance' && effectiveArgs?.op === 'run') {
+    return PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+  }
   // This bounded audit inspects fresh upstream Git/PR evidence. Its server read
   // budget can exceed the ordinary list cutoff; preserve the foreground budget
   // for this operation on both direct and deferred routes.

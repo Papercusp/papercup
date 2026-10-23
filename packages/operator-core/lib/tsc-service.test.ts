@@ -6,7 +6,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -115,7 +115,7 @@ describe('bundled typecheck service identity', () => {
     cpSync(nativeDir, join(scoped, 'native'), { recursive: true });
     const nativePackage = JSON.parse(readFileSync(join(nativeDir, 'package.json'), 'utf8'));
     const platformName = `${nativePackage.name.split('/').pop()}-${process.platform}-${process.arch}`;
-    symlinkSync(dirname(createRequire(import.meta.url).resolve(`@typescript/${platformName}/package.json`)), join(scoped, platformName), 'dir');
+    cpSync(dirname(createRequire(import.meta.url).resolve(`@typescript/${platformName}/package.json`)), join(scoped, platformName), { recursive: true });
     symlinkSync(dirname(createRequire(import.meta.url).resolve('typescript/package.json')), join(root, 'node_modules/typescript'), 'dir');
     for (const [relativePath, source] of [['scripts/lib/tsc-service.mjs', clientSource], ['scripts/tsc-service/server.mjs', serverSource]]) {
       const destination = join(root, relativePath!);
@@ -175,6 +175,30 @@ describe('bundled typecheck service identity', () => {
       expect((await hanging).result).toMatchObject({ ok: false, reason: 'timed-out' });
       expect((await queued).result).toMatchObject({ ok: true, kind: 'result', errorCount: 0 });
       expect(output).toContain('orphan diagnostic disposed');
+      // Exercise a previously loaded caller's identity, after the API has
+      // already reset once. Alter only the PRIVATE executable, preserving its
+      // version/path and executable format (ELF permits trailing data).
+      const baseName = nativePackage.name.split('/').pop();
+      const executable = join(scoped, platformName, 'lib', `${baseName === 'typescript' ? 'tsc' : 'tsgo'}${process.platform === 'win32' ? '.exe' : ''}`);
+      writeFileSync(executable + '.replacement', Buffer.concat([readFileSync(executable), Buffer.from('\nprivate-replacement\n')]), { mode: 0o755 });
+      renameSync(executable + '.replacement', executable);
+      const stale = await new Promise<any>((resolve, reject) => {
+        const socket = createConnection(socketPath);
+        let buffer = '';
+        const timer = setTimeout(() => { socket.destroy(); reject(new Error(output)); }, 10_000);
+        socket.on('connect', () => socket.write(JSON.stringify({ v: 2, requestId: 'old-caller-after-reset',
+          root, project, files: ['a.ts'], scope: 'named', identity: before.identity }) + '\n'));
+        socket.on('data', data => {
+          buffer += String(data);
+          let newline: number;
+          while ((newline = buffer.indexOf('\n')) >= 0) {
+            const response = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1);
+            if (response.kind === 'result') { clearTimeout(timer); socket.destroy(); resolve(response); }
+          }
+        });
+        socket.once('error', error => { clearTimeout(timer); reject(error); });
+      });
+      expect(stale).toMatchObject({ ok: false, reason: 'refresh-failed', detail: expect.stringContaining('compiler artifacts changed') });
       writeFileSync(entry, readFileSync(entry, 'utf8') + '\n// replacement without version bump\n');
       const after = await runCaller();
       expect(after.identity.compilerVersion).toBe(before.identity.compilerVersion);

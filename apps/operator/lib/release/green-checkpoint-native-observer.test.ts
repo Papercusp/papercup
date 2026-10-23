@@ -4,15 +4,22 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { composeCheckpointQualificationBeforePromotion, createCheckpointQualificationNativeObserver,
-  createCheckpointQualificationPostSuiteExecutor, runPostSuiteLegs,
+import { checkpointQualificationRunnerIdentity, composeCheckpointQualificationBeforePromotion, createCheckpointQualificationNativeObserver,
+  createCheckpointQualificationYieldBoundary,
+  createCheckpointQualificationPostSuiteExecutor, checkpointQualificationPostSuiteDefinition, runPostSuiteLegs,
   postSuiteContinuationPopulation, prepareCheckpointQualificationNativeRun, realCheckpointDeps, runCmd } from './green-checkpoint';
 import type { CheckpointExec, CheckpointExecResult } from './green-checkpoint';
 import type { QualificationWorkProgressInput } from '@papercusp/operator-core/lib/release/checkpoint-qualification-transaction';
-import { beginQualificationTransaction } from '@papercusp/operator-core/lib/release/checkpoint-qualification-transaction';
+import { beginQualificationTransaction, reserveQualificationRunner, recordQualificationWorkProgress,
+  recordQualificationWorkYield } from '@papercusp/operator-core/lib/release/checkpoint-qualification-transaction';
 import type { QualificationWorkContinuation, StoredQualificationMutation } from '@papercusp/operator-core/lib/release/checkpoint-qualification-transaction';
-import { evaluatePartialTaskContinuation, preparePartialContinuationManifest } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { evaluatePartialTaskContinuation, readPartialCurrentCommandCompletion, preparePartialContinuationManifest,
+  partialCurrentExecutionFingerprint, partialTaskCommandInputs, preparePartialTaskCommandDefinitions,
+  readPartialTaskCommandCompletion } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { nativeProcessTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
+import { syncBudgetedTaskNativeExecutionReceipt, writeBudgetedTaskNativeExecutionReceipt } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 import { releaseConfig } from './release-config';
+import { resolveQualificationYieldBudget } from '../../../../scripts/lib/batch-watchdog.mjs';
 
 const storedRead = vi.hoisted(() => vi.fn());
 const storedProgress = vi.hoisted(() => vi.fn());
@@ -26,7 +33,7 @@ const progress: QualificationWorkProgressInput = {
   attemptId: 'attempt', candidate: 'candidate', repairHead: null, runnerId: 'runner',
   runId: 'run', pidIdentity: 'boot:42', root: '/repo', taskKey: 'qualification',
   manifest: { schemaVersion: 1, units: [{ id: 'test:a.test.ts', kind: 'test', path: 'a.test.ts' }] },
-  retryStates: [], runContext: 'ci', runnerIdentity: 'native', updates: [],
+  retryStates: [], runContext: 'green-checkpoint', runnerIdentity: 'native', updates: [],
 };
 const announcement = (task = 'ws :: test', path = '/out/a.producer.json') =>
   `QUALIFICATION_NATIVE_PRODUCER task=${JSON.stringify(task)} path=${JSON.stringify(path)}`;
@@ -38,6 +45,228 @@ const fixture = () => {
     observer: createCheckpointQualificationNativeObserver({ target: { workspaceId: 'w', installSlug: 'h' },
       progress, tasks }, { enroll, recover }) };
 };
+
+describe('durable native qualification yield adapter', () => {
+  const setup = () => {
+    const budget = resolveQualificationYieldBudget({ startedAtMs: 1000, quantumMs: 500,
+      deadlineEpochMs: 2000, orphanDeadlineEpochMs: 2200, cleanupReserveMs: 200, yieldReserveMs: 100 });
+    if (budget.status !== 'ready') throw new Error(budget.reason);
+    const runner = reserveQualificationRunner(beginQualificationTransaction(null, {
+      attemptId: progress.attemptId, candidate: progress.candidate, nowMs: 1000 }).transaction,
+      { attemptId: progress.attemptId, candidate: progress.candidate, runnerId: progress.runnerId,
+        runId: progress.runId, pid: 42, pidIdentity: progress.pidIdentity, started: true,
+        leaseDurationMs: 1000, nowMs: 1000 }).transaction;
+    let current = recordQualificationWorkProgress(runner, { ...progress, nowMs: 1300, updates: [{ receipt: {
+      unitId: 'test:a.test.ts', completionId: 'new-completion', state: 'pass', observedAtMs: 1200,
+    } }] }).transaction;
+    const snapshot = vi.fn(async () => ({ status: 'ready' as const, transaction: current }));
+    const record = vi.fn(async (_target, input, cursor, _signal) => {
+      const saved = recordQualificationWorkYield(current, { ...input, nowMs: Date.now() }, cursor);
+      if (saved.status === 'updated' || saved.status === 'idempotent') current = saved.transaction;
+      return saved;
+    });
+    const onYield = vi.fn(), onKill = vi.fn();
+    const boundary = createCheckpointQualificationYieldBoundary({ target: { workspaceId: 'w', installSlug: 'h' },
+      progress, observer: { snapshot }, budget, baselineReceipts: [], onYield, onKill }, { record });
+    return { boundary, snapshot, record, onYield, onKill, current: () => current };
+  };
+
+  it('saves the authenticated prefix and exact pending cursor before acknowledgment without releasing custody', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1000);
+    try {
+      const f = setup();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(f.onKill).not.toHaveBeenCalled(); expect(f.onYield).toHaveBeenCalledTimes(1);
+      expect(f.current().continuation!.lastYield).toMatchObject({ savedAtMs: 1500,
+        completed: [{ unitId: 'test:a.test.ts', completionId: 'new-completion' }], pendingUnitIds: [] });
+      expect(f.current().currentPhysicalRunner!.id).toBe(progress.runnerId);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('refuses a snapshot from another physical runner without attempting the store', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1000);
+    try {
+      const f = setup();
+      f.snapshot.mockResolvedValue({ status: 'ready', transaction: { ...f.current(), runId: 'other-run' } });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(f.record).not.toHaveBeenCalled(); expect(f.onYield).not.toHaveBeenCalled();
+      expect(f.onKill).toHaveBeenCalledWith({ reason: 'durable-progress-unmeasured' });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('cancels blocked persistence at its absolute reserve and never acknowledges it', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1000);
+    try {
+      const f = setup();
+      f.record.mockImplementation(() => new Promise(() => {}));
+      await vi.advanceTimersByTimeAsync(600);
+      expect(f.boundary.signal.aborted).toBe(true);
+      expect(f.onYield).not.toHaveBeenCalled();
+      expect(f.onKill).toHaveBeenCalledWith({ reason: 'yield-deadline' });
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+describe('durable native observer snapshots', () => {
+  it('reads a prefix without ending observation and keeps the final read idempotent', async () => {
+    const f = fixture();
+    const line = announcement();
+    f.observer.onOutput('stdout', line.slice(0, 20));
+    expect(await f.observer.snapshot()).toMatchObject({ status: 'ready' });
+    expect(f.enroll).not.toHaveBeenCalled();
+    f.observer.onOutput('stdout', line.slice(20) + '\n');
+    expect(await f.observer.snapshot()).toMatchObject({ status: 'ready' });
+    expect(f.enroll).toHaveBeenCalledTimes(1);
+    const final = f.observer.finish();
+    expect(f.observer.finish()).toBe(final);
+    expect(f.observer.snapshot()).toBe(final);
+    expect(await final).toMatchObject({ status: 'ready' });
+    expect(f.recover).toHaveBeenCalledTimes(3);
+  });
+
+  it('cannot overtake pending enrollment or another durable-prefix read', async () => {
+    const f = fixture();
+    let finishEnrollment!: (value: { status: string; transaction: {} }) => void;
+    f.enroll.mockImplementationOnce(() => new Promise<{ status: string; transaction: {} }>(resolve => { finishEnrollment = resolve; }));
+    f.observer.onOutput('stdout', announcement() + '\n');
+    const first = f.observer.snapshot(), second = f.observer.snapshot();
+    await Promise.resolve();
+    expect(f.recover).not.toHaveBeenCalled();
+    finishEnrollment({ status: 'updated', transaction: {} });
+    await Promise.all([first, second]);
+    expect(f.recover).toHaveBeenCalledTimes(2);
+  });
+
+  it('latches a rejected prefix so later reads cannot hide it behind banked passes', async () => {
+    const f = fixture();
+    f.recover.mockResolvedValueOnce({ status: 'conflict', transaction: { attemptId: 'attempt' } });
+    const first = await f.observer.snapshot();
+    expect(first).toEqual({ status: 'refused', reason: 'native-producer-recovery-conflict' });
+    expect(await f.observer.snapshot()).toEqual(first);
+    expect(await f.observer.finish()).toEqual(first);
+    expect(f.recover).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('original affected-task guard authentication', () => {
+  it.each([[0, false, []], [0, false, ['--fixture-marker=ok']], [7, false, []], [0, true, []]] as const)(
+    'authenticates the entire original npm guard, postguard exit %s, ignore-scripts %s, forwarded %j', async (postExit, ignoreScripts, forwarded) => {
+    const root = mkdtempSync(join(tmpdir(), 'qualification-task-guard-source-'));
+    const evidenceRoot = mkdtempSync(join(tmpdir(), 'qualification-task-guard-evidence-'));
+    const git = (...args: string[]) => {
+      const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    try {
+      const originalCommand = 'node -e "console.log(\'GUARD_EXECUTED\')" --';
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'guard-fixture', scripts: {
+        preguard: 'node -e "console.log(\'PRE_EXECUTED\')"', guard: originalCommand,
+        postguard: `node -e "console.log('POST_EXECUTED');process.exit(${postExit})"`,
+      } }));
+      git('init', '--quiet');
+      git('add', 'package.json');
+      git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'core.hooksPath=/dev/null',
+        'commit', '--quiet', '-m', 'original guard fixture');
+      const candidate = git('rev-parse', 'HEAD');
+      const task = 'guard-fixture :: guard';
+      const selection = { schemaVersion: 1, kind: 'full-gate', phase: 'selection-preparation', executed: false,
+        taskInventory: [{ id: task, dir: '.', command: originalCommand, isInvariantGuard: true }],
+        tasks: [], unenumerated: [], commandObligations: [] };
+      const postSuite = { schemaVersion: 1, coverage: 'complete',
+        units: [{ id: 'post:build', kind: 'post-suite', path: 'package.json' }] };
+      const invocations = [{ task, cwd: root, argv: ['npm', 'run', 'guard', ...(forwarded.length ? ['--', ...forwarded] : [])] }];
+      const prepared = preparePartialTaskCommandDefinitions({ root, selection, postSuite, evidenceRoot, invocations });
+      expect(prepared, JSON.stringify(prepared)).toMatchObject({ status: 'ready', operationalAcceptance: false,
+        definitions: [{ task, unitIds: [`guard:${task}`] }] });
+      const definition = prepared.definitions[0]!;
+      const manifest = preparePartialContinuationManifest({ root, tasks: selection.taskInventory, selection, postSuite }).manifest;
+      const expected = { ...progress, root, candidate, sourceCommit: candidate, manifest,
+        runnerReservedAtMs: Date.now(), nowMs: 0 };
+      const before = partialTaskCommandInputs(root, '.');
+      const sourceBefore = { commit: candidate, clean: !git('status', '--porcelain') };
+      const startedAtMs = Date.now();
+      const traceOut = join(evidenceRoot, 'original-task.out');
+      let childPid = 0;
+      const result = await runCmd('npm', invocations[0]!.argv.slice(1), { cwd: root, timeoutMs: 10_000, allowNonZero: true,
+        env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: traceOut,
+          npm_config_ignore_scripts: String(ignoreScripts) }),
+        onSpawn: child => { childPid = child.pid; } });
+      const finishedAtMs = Date.now();
+      const saved = writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, {
+        task, attempt: expected.runId, cwd: root, command: invocations[0]!.argv,
+        invocation: { command: invocations[0]!.argv, environmentSha256: 'a'.repeat(64) },
+        originalCommand, before, after: partialTaskCommandInputs(root, '.'),
+        currentExecution: { schemaVersion: 1, fingerprint: partialCurrentExecutionFingerprint(expected),
+          childPid, childIdentity: `observed:${childPid}`, sourceBefore,
+          sourceAfter: { commit: git('rev-parse', 'HEAD'), clean: !git('status', '--porcelain') } },
+        processTrace: { out: traceOut, rootPid: childPid }, startedAtMs, finishedAtMs,
+        exitCode: result.code, signal: result.signal ?? null, error: null, captureComplete: true,
+        stdout: Buffer.from(result.stdout), stderr: Buffer.from(result.stderr),
+      });
+      syncBudgetedTaskNativeExecutionReceipt(saved);
+      expect(result.stdout).toContain('GUARD_EXECUTED');
+      if (ignoreScripts) {
+        expect(result.stdout).not.toContain('PRE_EXECUTED');
+        expect(result.stdout).not.toContain('POST_EXECUTED');
+      } else {
+        expect(result.stdout).toContain('PRE_EXECUTED');
+        expect(result.stdout).toContain('POST_EXECUTED');
+      }
+      expected.nowMs = Date.now();
+      const read = (identity = expected, def = definition) => readPartialTaskCommandCompletion(saved, identity, def);
+      const transaction = { currentPhysicalRunner: { reservedAtMs: expected.runnerReservedAtMs },
+        continuation: { receipts: [] } };
+      const record = vi.fn().mockResolvedValue({ status: 'updated', transaction });
+      const recover = vi.fn().mockResolvedValue({ status: 'idempotent', transaction });
+      const host = () => createCheckpointQualificationNativeObserver({ target: { workspaceId: 'w', installSlug: 'h' },
+        progress: expected, tasks: new Map(), commands: new Map([[task, definition]]) },
+      { enroll: vi.fn(), recover, record });
+      const line = `QUALIFICATION_TASK_COMPLETION=${JSON.stringify({ task, root: saved.root, receipt: saved.receipt })}`;
+      const observer = host();
+      observer.onOutput('stdout', line.slice(0, 31));
+      observer.onOutput('stdout', line.slice(31) + '\n');
+      if (postExit || ignoreScripts) {
+        expect(read()).toMatchObject({ status: 'refused', receipts: [], currentEvidence: [] });
+        expect(await observer.finish()).toMatchObject({ status: 'refused' });
+        expect(record.mock.calls.filter(([, input]) => input.updates.length)).toHaveLength(0);
+        expect(recover).not.toHaveBeenCalled();
+        return;
+      }
+      const observed = read();
+      expect(await observer.finish()).toMatchObject({ status: 'ready' });
+      expect(record.mock.calls.filter(([, input]) => input.updates.length)).toHaveLength(1);
+      expect(record.mock.calls.find(([, input]) => input.updates.length)![1].updates)
+        .toEqual(observed.receipts.map(receipt => ({ receipt })));
+      const conflict = host();
+      conflict.onOutput('stdout', `${line}\n${line.replace(saved.receipt.sha256, 'f'.repeat(64))}\n`);
+      expect(await conflict.finish()).toMatchObject({ status: 'refused', reason: 'task-command-announcement-conflict' });
+      const stolen = host();
+      record.mockResolvedValueOnce({ status: 'conflict', transaction });
+      stolen.onOutput('stderr', line + '\n');
+      expect(await stolen.finish()).toMatchObject({ status: 'refused', reason: 'task-command-custody-conflict' });
+      expect(observed, JSON.stringify(observed)).toMatchObject({ status: 'ready',
+        receipts: [{ unitId: `guard:${task}`, state: 'pass', proof: {
+          opaqueReasons: ['task-command-runtime-inputs-unmeasured'] } }], currentEvidence: [{}] });
+      const checkpoint = { root, taskKey: expected.taskKey, continuation: { schemaVersion: 1, ...expected,
+        receipts: observed.receipts } };
+      expect(evaluatePartialTaskContinuation(checkpoint, expected, { currentEvidence: observed.currentEvidence }))
+        .toMatchObject({ verdict: 'incomplete', current: [`guard:${task}`], run: ['post:build'], reused: [] });
+      expect(evaluatePartialTaskContinuation(checkpoint, expected)).toMatchObject({ current: [], reused: [] });
+      expect(read({ ...expected, runId: 'replacement' })).toMatchObject({ status: 'refused' });
+      expect(read({ ...expected, pidIdentity: 'stale:fence' })).toMatchObject({ status: 'refused' });
+      expect(read(expected, { ...definition, unitIds: [...definition.unitIds, 'guard:invented'] }))
+        .toMatchObject({ status: 'refused', receipts: [], currentEvidence: [] });
+      expect(preparePartialTaskCommandDefinitions({ root, selection, postSuite, evidenceRoot,
+        invocations: [{ ...invocations[0], argv: ['npm', 'run', 'other'] }] })).toMatchObject({ status: 'refused' });
+      writeFileSync(join(evidenceRoot, saved.receipt.ref), 'corrupt');
+      expect(read()).toMatchObject({ status: 'refused', receipts: [], currentEvidence: [] });
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'guard-fixture', scripts: { guard: 'node other.mjs' } }));
+      expect(preparePartialTaskCommandDefinitions({ root, selection, postSuite, evidenceRoot, invocations }))
+        .toMatchObject({ status: 'refused', reason: 'task-command-source-mismatch' });
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(evidenceRoot, { recursive: true, force: true }); }
+  }, 30_000);
+});
 
 describe('production post-suite qualification capture', () => {
   const setup = (execute: CheckpointExec, root = progress.root, overrides: Partial<QualificationWorkProgressInput> = {}) => {
@@ -58,6 +287,45 @@ describe('production post-suite qualification capture', () => {
       { record, now: Date.now });
     return { exec, record, transaction, input };
   };
+
+  it('authenticates a real current command independently of reuse and refuses replacement or corrupt artifacts', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'checkpoint-current-command-'));
+    const git = (...args: string[]) => {
+      const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    try {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { 'lint:tsc': 'node guard.mjs' } }));
+      writeFileSync(join(root, 'guard.mjs'), 'console.log("CURRENT_COMMAND_EXECUTED");\n');
+      git('init', '--quiet');
+      git('add', 'package.json', 'guard.mjs');
+      git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'core.hooksPath=/dev/null',
+        'commit', '--quiet', '-m', 'current command fixture');
+      const candidate = git('rev-parse', 'HEAD');
+      const reservedAtMs = Date.now();
+      const state = setup(runCmd, root, { candidate });
+      expect(await state.exec('npm', ['run', 'lint:tsc'], { cwd: root, timeoutMs: 10_000 }))
+        .toMatchObject({ code: 0, stdout: expect.stringContaining('CURRENT_COMMAND_EXECUTED') });
+      const saved = state.transaction.continuation.receipts[0]!;
+      expect(saved.proof?.opaqueReasons).toEqual(['post-suite-runtime-inputs-unmeasured']);
+      expect(saved.proof?.inputsCaptured).toBeUndefined();
+      const expected = { ...state.input.progress, sourceCommit: candidate, runnerReservedAtMs: reservedAtMs, nowMs: Date.now() };
+      const definition = checkpointQualificationPostSuiteDefinition(state.input.progress, saved.unitId)!;
+      const read = (identity = expected) => readPartialCurrentCommandCompletion(saved, identity, definition);
+      const observed = read();
+      expect(observed, JSON.stringify(observed)).toMatchObject({ status: 'ready', currentEvidence: [{}] });
+      expect(evaluatePartialTaskContinuation({ root, taskKey: progress.taskKey, continuation: state.transaction.continuation },
+        expected, { currentEvidence: observed.currentEvidence })).toMatchObject({ verdict: 'incomplete',
+        current: ['post:lint:tsc'], reused: [], counts: { passed: 1 } });
+      expect(read({ ...expected, runId: 'replacement' })).toMatchObject({ status: 'refused', currentEvidence: [] });
+      const outcomes = saved.proof?.commandOutcomes;
+      if (!Array.isArray(outcomes)) throw new Error('missing current command artifact');
+      const artifact = join(outcomes[0].root, outcomes[0].receipt.ref);
+      writeFileSync(artifact, `${readFileSync(artifact, 'utf8')}corrupt`);
+      expect(read()).toMatchObject({ status: 'refused', currentEvidence: [] });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 30_000);
 
   it('banks real original npm output before a later post-suite interruption without inventing input proof', async () => {
     const root = mkdtempSync(join(tmpdir(), 'checkpoint-post-capture-'));
@@ -436,6 +704,33 @@ describe('production post-suite qualification capture', () => {
 });
 
 describe('native qualification preparation before the production suite', () => {
+  it('measures the candidate preload and each source-selected leaf, refusing unknown or mixed runtimes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'checkpoint-runtime-source-'));
+    try {
+      mkdirSync(join(root, 'scripts/lib'), { recursive: true });
+      writeFileSync(join(root, 'scripts/lib/vitest-startup-trace.mjs'),
+        readFileSync(new URL('../../../../scripts/lib/vitest-startup-trace.mjs', import.meta.url)));
+      const selection = { tasks: [{ dir: 'packages/a', runner: 'vitest', command: 'vitest run a.test.ts' },
+        { dir: 'packages/b', runner: 'command-chain', command: 'npm run first && npm run second', steps: [
+          { command: 'vitest run b.test.ts', discovery: [{ runner: 'vitest' }] },
+          { lifecycle: true, command: 'node hook.mjs', discovery: [] },
+        ] }] };
+      const environment = { NODE_OPTIONS: '--max-old-space-size=2048' };
+      const measure = vi.fn().mockReturnValue('measured-runtime');
+      expect(await checkpointQualificationRunnerIdentity(root, selection, environment, measure)).toBe('measured-runtime');
+      expect(measure.mock.calls.map(call => call[3])).toEqual([
+        { workspaceRoot: join(root, 'packages/a'), scriptText: 'vitest run a.test.ts' },
+        { workspaceRoot: join(root, 'packages/b'), scriptText: 'vitest run b.test.ts' },
+      ]);
+      expect(measure.mock.calls[0]![1].NODE_OPTIONS).toContain(root + '/scripts/lib/vitest-startup-trace.mjs');
+      expect(measure.mock.calls[0]![1].NODE_OPTIONS).toContain('--max-old-space-size=2048');
+      expect(environment.NODE_OPTIONS).toBe('--max-old-space-size=2048');
+      measure.mockReset().mockReturnValueOnce('one-runtime').mockReturnValueOnce('another-runtime');
+      expect(await checkpointQualificationRunnerIdentity(root, selection, environment, measure)).toBeNull();
+      measure.mockReset().mockReturnValue(null);
+      expect(await checkpointQualificationRunnerIdentity(root, selection, environment, measure)).toBeNull();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it('the actual production runGreen refuses an unreadable qualification before spawning a suite', async () => {
     const root = mkdtempSync(join(tmpdir(), 'checkpoint-native-run-'));
     const saved = ['PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID', 'PAPERCUSP_GATE_VERDICT_WORKSPACE',
@@ -522,7 +817,7 @@ describe('native qualification preparation before the production suite', () => {
       const scripts = { test: 'npm run first && npm run second',
         first: `vitest run a.test.ts${scenario === 'banked-step' || scenario === 'banked-all-files' ? ' --passWithNoTests' : ''}`,
         second: `vitest run b.test.ts${scenario === 'banked-all-files' ? ' --passWithNoTests' : ''}` };
-      writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts }));
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'ws', scripts }));
       const previous = selection.tasks[0]!;
       const steps = ['first', 'second'].map((script, index) => {
         const command = scripts[script as 'first' | 'second'], file = `${index ? 'b' : 'a'}.test.ts`;
@@ -540,6 +835,7 @@ describe('native qualification preparation before the production suite', () => {
         files: steps.flatMap(step => step.files) });
       selection.files = previous.files;
       selection.taskInventory[0]!.command = scripts.test;
+      Object.assign(selection, { invocations: [{ task: 'ws :: test', cwd: root, argv: ['npm', 'run', 'test'] }] });
       input.root = root;
       transaction.continuation.root = root;
       const prepared = preparePartialContinuationManifest({ root, selection,
@@ -551,7 +847,7 @@ describe('native qualification preparation before the production suite', () => {
         state: 'pass', observedAtMs: 1, worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass',
         proof: { recordedSha: input.candidate, executedModules: ['a.test.ts'], readPaths: [],
           inputsCaptured: true, opaqueReasons: scenario === 'invalidated-file' ? ['unmeasured-input'] : [],
-          runContext: 'ci', runnerIdentity: progress.runnerIdentity } }];
+          runContext: progress.runContext, runnerIdentity: progress.runnerIdentity } }];
       if (scenario === 'banked-all-files') receipts.push({ ...receipts[0]!, unitId: 'test:b.test.ts',
         completionId: 'prior-second-pass', proof: { ...receipts[0]!.proof, executedModules: ['b.test.ts'] } });
       Object.assign(transaction.continuation, { receipts });
@@ -584,7 +880,7 @@ describe('native qualification preparation before the production suite', () => {
     Object.assign(transaction.continuation, { receipts: [{ unitId: 'test:a.test.ts', completionId: 'prior-pass',
       state: 'pass', observedAtMs: 1, worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass',
       proof: { recordedSha: input.candidate, executedModules: ['a.test.ts'], readPaths: [],
-        inputsCaptured: true, opaqueReasons: [], runContext: 'ci', runnerIdentity: progress.runnerIdentity } }] });
+        inputsCaptured: true, opaqueReasons: [], runContext: progress.runContext, runnerIdentity: progress.runnerIdentity } }] });
     const result = await prepareCheckpointQualificationNativeRun(input, deps);
     expect(result).toMatchObject({ status: 'ready', checkpoint: {
       selectedFiles: ['a.test.ts', 'b.test.ts'], continuation: { manifest,
@@ -641,7 +937,8 @@ describe('the production green barrier before promotion', () => {
     let release!: () => void;
     compose.mockImplementation(() => new Promise(resolve => { release = () => resolve({ status: 'idempotent' }); }));
     const ready = composeCheckpointQualificationBeforePromotion(input, deps);
-    await vi.waitFor(() => expect(compose).toHaveBeenCalledWith(input.target, progress, { classifyReadPaths: classifier }));
+    await vi.waitFor(() => expect(compose).toHaveBeenCalledWith(input.target, progress, {
+      classifyReadPaths: classifier, currentCommandDefinition: expect.any(Function) }));
     release();
     expect(await ready).toEqual({ status: 'ready' });
   });

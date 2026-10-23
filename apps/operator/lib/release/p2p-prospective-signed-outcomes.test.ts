@@ -151,15 +151,26 @@ async function signedPacket() {
     canary: { workspaceId: WORKSPACE, potHomeSlug: 'private-canary-owner', repoKey: 'private-canary-owner:main' } });
   resignPhysical(drill);
 
+  // Private unit originals declare an installer; no separate runtime or seed
+  // artifact is part of this fixture's candidate. These are fixture receipts,
+  // not measured prechecks or physical acceptance on a real candidate.
+  const precheckSubject = { artifactDigest: DIGEST, installerSha256: ARTIFACT };
   const journeyEvidence = JOURNEYS.map(journey => {
+    const localPrechecks = [{ journey, check: `p521-local-precheck:${journey}`, verdict: 'pass',
+      startedAt: '2026-08-13T11:59:00Z', finishedAt: '2026-08-13T11:59:30Z',
+      subject: { ...precheckSubject }, command: ['private-fixture-local-precheck', journey],
+      evidence: [{ kind: 'local-precheck', ref: `fixture:local-precheck:${journey}` }],
+      exitCode: 0, skipped: false }];
     const doc = { kind: 'operational-test-evidence', name: `Private ${journey}`, p521Journey: journey,
       subject: { debSha256: ARTIFACT, sourceSha: SOURCE, topology: { hosts: [{ id: 'tower' }, { id: 'mac-vm' }] } },
       exitCode: 0, skipped: 0, startedAt: '2026-08-13T12:00:00Z', finishedAt: '2026-08-13T12:29:00Z',
+      precheckSubject: { ...precheckSubject }, localPrechecks,
       assertions: [{ id: `complete-${journey}`, passed: true }], physicalRun: witness.evidence };
     return { path: `fixture:${journey}`, sha256: sha(canonicalJson(doc)), doc };
   });
   const derived = deriveJourneyEvidence({ candidate, evidence: journeyEvidence });
-  const readiness = await buildP2pCandidateManifest({ candidate, journeys: derived.journeys, now: Date.parse('2026-08-13T12:30:40Z') });
+  const readiness = await buildP2pCandidateManifest({ candidate, journeys: derived.journeys,
+    localPrechecks: derived.localPrechecks, now: Date.parse('2026-08-13T12:30:40Z') });
   const items = [...PREREQUISITES.map(id => ({ id, status: 'done', text: `Private current ${id} candidate evidence`,
     importance: 'normal', blockedBy: [], decisionRefs: [], phase: null })),
   { id: 'P-401', status: 'wip', text: 'Independent same-candidate GO after complete readiness and current ledger audit.', importance: 'normal', blockedBy: [], decisionRefs: [], phase: null },

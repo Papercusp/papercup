@@ -12,7 +12,7 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
-import { createPhaseTracker, type AbortCompletionContext, type AbortCompletionReceipt, type ToolResult } from '@papercusp/tooldef';
+import { createPhaseTracker, type AbortCompletionContext, type AbortCompletionReceipt, type PhaseTracker, type ToolResult } from '@papercusp/tooldef';
 import { asRecord, completedResultPayload } from '../abort-completion-payload';
 import { harnessArg, harnessScopedCtx, isAllHarnessSentinel } from '../_harness-scope';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
@@ -147,12 +147,10 @@ const text = (payload: Record<string, unknown>, isError = false) => ({
   ...(isError ? { isError: true as const } : {}),
 });
 
-type TrackConformancePhase = <T>(phase: string, work: () => T | Promise<T>) => Promise<T>;
-
 /** Keep a stalled run observable even before dispatch can write its invocation row. */
 async function withConformanceRunDiagnostics<T>(
   ctx: UnifiedToolContext,
-  work: (track: TrackConformancePhase) => Promise<T>,
+  work: (phases: PhaseTracker) => Promise<T>,
 ): Promise<T> {
   const phases = ctx.phases ?? createPhaseTracker({ historyCap: 32 });
   let slow = false;
@@ -169,13 +167,13 @@ async function withConformanceRunDiagnostics<T>(
   // One observation per slow run, then only real phase transitions; no polling.
   const timer = setTimeout(() => { slow = true; report('pending'); }, 5_000);
   timer.unref?.();
-  const track: TrackConformancePhase = (phase, operation) => {
+  const track: PhaseTracker['track'] = (phase, operation) => {
     const pending = phases.track(phase, operation);
     if (slow) report('progress');
     return pending;
   };
   try {
-    return await work(track);
+    return await work({ ...phases, track });
   } finally {
     clearTimeout(timer);
     if (slow) report('settled');
@@ -240,13 +238,14 @@ export default defineTool({
       if (isAllHarnessSentinel(sctx.harnessSlug)) {
         return text({ ok: false, error: 'invalid_args', message: "op:'run' requires one concrete harness" }, true);
       }
-      return withConformanceRunDiagnostics(ctx, async (track) => {
+      return withConformanceRunDiagnostics(ctx, async (phases) => {
+        const { track } = phases;
         const opts = await track('sourceOptions', () => ctxToPlanSourceOpts(sctx));
         const read = await track('readPlan', () => readPlanBySlug(args.slug!, opts));
         if (!read) return text({ ok: false, error: 'plan_not_found', slug: args.slug }, true);
         const target = { harnessSlug: read.row.harnessSlug, planSlug: args.slug! };
         const { productionSweepDeps, runSpecConformanceSweep } = await track('loadSweep', () => import('../../spec-conformance/sweep-action'));
-        const deps = productionSweepDeps({ workspaceId: opts.workspaceId ?? activeWorkspaceId() });
+        const deps = productionSweepDeps({ workspaceId: opts.workspaceId ?? activeWorkspaceId(), phases });
         const persisted: { row: SweepWatermarkWrite | null } = { row: null };
         const outcome = await track('sweep', () => runSpecConformanceSweep({ target }, {
           ...deps,

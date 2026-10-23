@@ -18,6 +18,7 @@
  * Plan: spec-conformance-loop-2026-10-14 (P-018).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { trackPhase, type PhaseTracker } from '@papercusp/tooldef';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { sameBuildSha } from '../attention/bug-reproduction';
 import { readPlanBySlug } from '../agent-tools/plans/source';
@@ -133,6 +134,8 @@ export async function judgeTestsFromLedger(
     maxAgeMs?: number;
     /** Immutable dependency-content proof; injectable for focused selection tests. */
     contentEquivalence?: TestContentEquivalence;
+    /** Same per-request tracker as the enclosing conformance run. */
+    phases?: PhaseTracker;
   },
   sql: Sql = getOrgPg().sql,
 ): Promise<EvaluatedConformanceCheck> {
@@ -141,7 +144,7 @@ export async function judgeTestsFromLedger(
   const matchingBuildSha = normalizedCurrentBuildSha && SPEC_CONFORMANCE_BUILD_SHA_RE.test(normalizedCurrentBuildSha)
     ? normalizedCurrentBuildSha.toLowerCase()
     : null;
-  const candidates = (await sql`
+  const candidates = (await trackPhase(input.phases, 'conformance:tests:ledger', () => sql`
     WITH per_commit AS (
     SELECT DISTINCT ON (file_path, commit_sha)
            id, file_path, status, finished_at, commit_sha, worktree_dirty, execution_details
@@ -175,7 +178,7 @@ export async function judgeTestsFromLedger(
         FROM per_commit
     ) SELECT * FROM ranked WHERE candidate_rank <= 32
       ORDER BY file_path, candidate_rank
-  `) as Array<{
+  `)) as Array<{
     id: number | string;
     file_path: string;
     status: string;
@@ -196,7 +199,8 @@ export async function judgeTestsFromLedger(
     // full-file/named-case checks below; content equality never grants coverage.
     if (!details || details.testLayer !== 'unit' || details.filePath !== row.file_path
       || row.worktree_dirty !== false || details.worktreeDirty || details.commitSha !== row.commit_sha) continue;
-    const proof = await contentEquivalence({ file: row.file_path, recordedSha: sha, currentSha: matchingBuildSha });
+    const proof = await trackPhase(input.phases, `conformance:tests:contentEquivalence:${row.id}:${row.file_path}`,
+      () => contentEquivalence({ file: row.file_path, recordedSha: sha, currentSha: matchingBuildSha }));
     if (proof.equivalent) equivalentRows.add(row);
     else equivalenceProblems.set(row, proof.reason);
   }
@@ -301,7 +305,8 @@ export async function judgeTestsFromLedger(
         try {
           recordedByFile.set(
             selector.file,
-            await loadCases({ testRunIds: [testRunId], file: selector.file }),
+            await trackPhase(input.phases, `conformance:tests:cases:${testRunId}:${selector.file}`,
+              () => loadCases({ testRunIds: [testRunId], file: selector.file })),
           );
         } catch (error) {
           caseProblems.push(
@@ -396,6 +401,7 @@ export interface ProductionConformanceDepsInput {
   workspaceId: string;
   harnessSlug: string;
   planSlug: string;
+  phases?: PhaseTracker;
   /** Injectable probe dispatcher for focused tests; production uses the palette dispatcher. */
   dispatchTool?: Parameters<typeof rescoreProbeDispatcher>[1];
   /** Injectable probe evaluator for focused tests; production uses the continuity evaluator. */
@@ -422,6 +428,7 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
   const sql = () => getOrgPg().sql;
   const nowIso = () => new Date().toISOString();
   return {
+    phases: input.phases,
     async evaluateCheck(request: ConformanceCheckRequest) {
       const check = request.check;
       if (check.kind === 'tests') {
@@ -433,6 +440,7 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
         return judgeTestsFromLedger({
           files: check.files,
           workspaceId: input.workspaceId,
+          phases: input.phases,
           ...(cases ? { cases } : {}),
         }, sql());
       }
