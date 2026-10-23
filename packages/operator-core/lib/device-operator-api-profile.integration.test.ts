@@ -400,6 +400,8 @@ describe('disposable operator-api device lifecycle', () => {
       root, filePath: 'packages/operator-core/lib/device-operator-api-profile.integration.test.ts',
       sourcePaths: [
         'packages/operator-core/lib/endpoint-route/routes/device/pair.ts',
+        'packages/operator-core/lib/endpoint-route/routes/device/_shared.ts',
+        'packages/operator-core/lib/device-pair-store.ts',
         'packages/operator-core/lib/device-jwt.ts', 'packages/operator-core/lib/device-store.ts',
         'packages/operator-core/lib/native-device-fixture.ts', 'packages/operator-core/lib/workspace-registry.ts',
         'packages/operator-core/test/isolated-integration-proof.ts',
