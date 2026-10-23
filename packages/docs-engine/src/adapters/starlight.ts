@@ -46,6 +46,7 @@ export interface StarlightContentAdapterOptions {
 }
 
 const MAX_FILE_BYTES = 1024 * 1024;
+const PAGE_READ_CONCURRENCY = 16;
 
 interface StarlightPage extends DocPage {
   absolutePath: string;
@@ -288,35 +289,42 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
     options?.onTiming?.({ component: 'starlight', phase: 'walk', state: 'completed', elapsedMs: walkMs, count: files.length });
     const readParseStartedAt = Date.now();
     options?.onTiming?.({ component: 'starlight', phase: 'read-parse', state: 'started', count: files.length });
-    for (const abs of files) {
-      const rel = path.relative(contentRoot, abs).replace(/\\/g, '/');
-      const slug = slugFromRelPath(rel);
-      const content = await readSafe(abs);
-      if (content === null) continue;
-      const { meta, body } = parseFrontmatter(content);
-      const slugs = slug === '' ? [] : slug.split('/');
-      const url = slug === '' ? `${baseUrl}/` : `${baseUrl}/${slug}`;
-      const title = meta.title ?? humanize(slugs[slugs.length - 1] ?? 'index');
-      // EI-10937: `searchable: false` frontmatter keeps generated aggregator pages
-      // (the *-index title-dumps) OUT of the search corpus. Only an explicit
-      // `false` opts out — anything else (absent, `true`, junk) stays searchable.
-      const searchable = meta.searchable === 'false' ? false : undefined;
-      // OKF v0.2 (P-005). Parsed from the RAW frontmatter block rather than `meta`
-      // above, which is a flat top-level-scalar reader by construction and so cannot
-      // see `generated:` / `verified:` (nested blocks) at all. Absent → no OKF keys.
-      const okf = parseOkfFrontmatter(content);
-      const page: StarlightPage = {
-        slug,
-        slugs,
-        url,
-        title,
-        ...(meta.description ? { description: meta.description } : {}),
-        ...(searchable === false ? { searchable: false as const } : {}),
-        ...(okf ? { okf } : {}),
-        toc: extractHeadings(body),
-        absolutePath: abs,
-      };
-      cache.set(slug, page);
+    // Overlap filesystem waits without retaining the entire raw corpus at once.
+    // Publish each batch in source order so completion order cannot change slugs
+    // that collide (for example a section.md and section/index.md).
+    for (let offset = 0; offset < files.length; offset += PAGE_READ_CONCURRENCY) {
+      const batch = files.slice(offset, offset + PAGE_READ_CONCURRENCY);
+      const contents = await Promise.all(batch.map(readSafe));
+      for (const [index, abs] of batch.entries()) {
+        const content = contents[index];
+        if (content === null) continue;
+        const rel = path.relative(contentRoot, abs).replace(/\\/g, '/');
+        const slug = slugFromRelPath(rel);
+        const { meta, body } = parseFrontmatter(content);
+        const slugs = slug === '' ? [] : slug.split('/');
+        const url = slug === '' ? `${baseUrl}/` : `${baseUrl}/${slug}`;
+        const title = meta.title ?? humanize(slugs[slugs.length - 1] ?? 'index');
+        // EI-10937: `searchable: false` frontmatter keeps generated aggregator pages
+        // (the *-index title-dumps) OUT of the search corpus. Only an explicit
+        // `false` opts out — anything else (absent, `true`, junk) stays searchable.
+        const searchable = meta.searchable === 'false' ? false : undefined;
+        // OKF v0.2 (P-005). Parsed from the RAW frontmatter block rather than `meta`
+        // above, which is a flat top-level-scalar reader by construction and so cannot
+        // see `generated:` / `verified:` (nested blocks) at all. Absent → no OKF keys.
+        const okf = parseOkfFrontmatter(content);
+        const page: StarlightPage = {
+          slug,
+          slugs,
+          url,
+          title,
+          ...(meta.description ? { description: meta.description } : {}),
+          ...(searchable === false ? { searchable: false as const } : {}),
+          ...(okf ? { okf } : {}),
+          toc: extractHeadings(body),
+          absolutePath: abs,
+        };
+        cache.set(slug, page);
+      }
     }
     const readParseMs = Math.max(0, Date.now() - readParseStartedAt);
     options?.onTiming?.({ component: 'starlight', phase: 'read-parse', state: 'completed', elapsedMs: readParseMs, count: cache.size });
