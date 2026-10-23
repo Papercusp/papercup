@@ -126,6 +126,50 @@ describe('operational observability measurements', () => {
       expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'pass' });
       expect(fixture.readProject).toHaveBeenLastCalledWith([old.traceId, '3'.repeat(32), '4'.repeat(32)]);
     });
+    function modelThenToolError(age: number, missing: '$ai_generation' | '$exception' | null) {
+      observations('$ai_generation', age, true);
+      const old = { ...rows()[0]!, status: 'error', expectedModel: true,
+        startedAt: now - age - 1000, endedAt: now - age };
+      const fresh = rows().map(row => ({ ...row, id: 'new-' + row.id, callId: 'new-' + row.callId,
+        traceId: (row.id === '1' ? '3' : '4').repeat(32),
+        ...(mode === 'staging' ? { status: 'ok', expectedModel: true } : {}) }));
+      fixture.sql.mockResolvedValue([old, ...fresh]);
+      const oldEvents = project().events.filter(event => event.traceId === old.traceId)
+        .map(event => ({ ...event, timestamp: old.startedAt + 10 }));
+      oldEvents.push({ ...oldEvents[0]!, uuid: 'tool-error-1', event: '$exception',
+        timestamp: old.endedAt, isError: true });
+      fixture.readProject.mockResolvedValue({ ...project(), events: [
+        ...oldEvents.filter(event => event.event !== missing),
+        ...project().events.map(event => ({ ...event,
+          traceId: (event.traceId[0] === '1' ? '3' : '4').repeat(32),
+          callId: event.callId ? 'new-' + event.callId : null,
+          ...(mode === 'staging' && event.event === '$exception' ? { event: '$ai_generation', isError: false } : {}) })),
+      ] });
+    }
+    it.each(['$ai_generation', '$exception'] as const)('requires independent %s delivery when a model succeeds before its tool fails', async missing => {
+      for (const age of [120_000, 120_001, 300_000]) {
+        modelThenToolError(age, missing);
+        expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'fail',
+          detail: expect.stringContaining('Expected ' + missing + ' absent after ingestion bound; invocation=1') });
+      }
+    });
+    it.each(['$ai_generation', '$exception'] as const)('keeps a mixed-outcome %s obligation unknown before deadline or without query authority', async missing => {
+      modelThenToolError(119_999, missing);
+      expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'unknown' });
+      modelThenToolError(120_001, missing);
+      fixture.readProject.mockResolvedValueOnce({ status: 'unknown', reason: 'query-denied' });
+      expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'unknown', detail: 'query-denied' });
+    });
+    it('retains both mixed-outcome obligations and accepts their complete delivery', async () => {
+      modelThenToolError(300_000, null);
+      const result = await measureOperationalObservability(mode, scope);
+      expect(result.verdict).toBe('pass');
+      const expected = JSON.parse(result.detail).expected.filter((row: { id: string }) => row.id === '1');
+      expect(expected).toEqual([
+        expect.objectContaining({ event: '$ai_generation', deadline: now - 180_000 }),
+        expect.objectContaining({ event: '$exception', deadline: now - 180_000 }),
+      ]);
+    });
   });
   it('does not infer model use from an arbitrary successful tool and retains sanitized evidence on a pass', async () => {
     fixture.sql.mockResolvedValueOnce(rows().map(row => ({ ...row, status: 'ok', expectedModel: false })));

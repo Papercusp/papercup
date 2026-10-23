@@ -57,8 +57,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
       },
     }),
     withWorkspace: async <T>(_workspaceId: string, fn: (tx: unknown) => Promise<T>) => {
-      const tx = ((strings: TemplateStringsArray | string[]) => {
+      const tx = ((strings: TemplateStringsArray | string[], ...values: unknown[]) => {
         const sql = Array.from(strings).join(' ');
+        if (sql.includes('b.id = ANY')) return { bindingIds: values[0] };
+        const selection = values.find((value): value is { bindingIds: number[] } =>
+          !!value && typeof value === 'object' && 'bindingIds' in value);
+        if (sql.includes('FROM harness_shared.spec_evidence_bindings b') && selection)
+          return Promise.resolve(h.rows.filter(row => selection.bindingIds.includes(Number(row.id))));
         return Promise.resolve(sql.includes('provisional') ? [] : h.rows);
       }) as unknown;
       return fn(tx);
@@ -652,6 +657,36 @@ describe('plans:certify-spec-clauses', () => {
     expect(dispatchTool.mock.calls[0]![1]).toMatchObject({ specIds: ['SPEC-PASS'], replaySnapshot: true });
   });
 
+  it('certifies and replays only the exact pinned cohort despite a later same-ref binding', async () => {
+    h.rows.push({
+      ...bindingRow({ id: 6, specId: 'SPEC-PASS', evidenceKind: 'test', evidenceRef: 'test:pass', outcome: 'passed' }, bound),
+      test_run_worktree_dirty: true,
+    });
+    const unselected = await certify({ specIds: ['SPEC-PASS'], dryRun: true });
+    expect(unselected.counts).toMatchObject({ passing: 0, filed: 0 });
+
+    const bindingIds = [1, 2, 4, 5];
+    const result = await certify({ specIds: ['SPEC-PASS'], bindingIds });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      ok: true, counts: { passing: 1, filed: 1, refused: 0 },
+    });
+    expect(result.clauses![0]).toMatchObject({ measurementEvidence: {
+      selectedBindings: 4, bindings: bindingIds.map(bindingId => expect.objectContaining({ bindingId })),
+    } });
+    expect(dispatchTool.mock.calls[0]![1]).toMatchObject({ bindingIds, replaySnapshot: true });
+    const observation = asStructuredObservation((captureImprovement.mock.calls[0]![0] as { payloadExtra: { observation: unknown } }).payloadExtra.observation)!;
+    expect(observation.rerunRecipe?.args).toMatchObject({ bindingIds });
+    expect((await replayViaEvaluator(observation.rerunRecipe!.args!))).toMatchObject({
+      ok: true, rows: [{ verdict: 'pass', measurementEvidence: { selectedBindings: 4 } }],
+    });
+  });
+
+  it('an explicitly empty binding cohort cannot widen into all available proof', async () => {
+    const result = await certify({ specIds: ['SPEC-PASS'], bindingIds: [] });
+    expect(result).toMatchObject({ ok: false, evaluator: { ok: false, error: 'selection_empty' } });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it('keeps a draft clause in the exact replay when includeDraft:true was used for grading', async () => {
     const specId = 'SPEC-DRAFT';
     h.rows = [
@@ -1093,11 +1128,16 @@ describe('certifyPassingRef (plans:evaluate-spec-test-adequacy → plans:certify
     expect(ref!.args).toEqual({ ...live, classRef: 'plan-class-feature-ship' });
   });
 
-  it('is withheld when nothing passes, the class is not active, or the read is pinned or replayed', () => {
+  it('preserves exact binding IDs in a live certification referral', () => {
+    const ref = certifyPassingRef({ ...live, bindingIds: [7] }, ctx);
+    expect(ref?.args).toMatchObject({ bindingIds: [7] });
+    expect(certifyTool.args.safeParse(ref!.args).success).toBe(true);
+  });
+
+  it('is withheld when nothing passes, the class is not active, or the clause is pinned or replayed', () => {
     expect(certifyPassingRef(live, { ...ctx, passingCount: 0 })).toBeUndefined();
     expect(certifyPassingRef(live, { ...ctx, classRefSource: 'retired-acceptance-rubric' })).toBeUndefined();
     expect(certifyPassingRef(live, { ...ctx, classRefSource: 'work-item-completion-attestation' })).toBeUndefined();
-    expect(certifyPassingRef({ ...live, bindingIds: [7] }, ctx)).toBeUndefined();
     expect(certifyPassingRef({ ...live, replaySnapshot: true }, ctx)).toBeUndefined();
     expect(certifyPassingRef({ ...live, specRevision: 3 }, ctx)).toBeUndefined();
   });

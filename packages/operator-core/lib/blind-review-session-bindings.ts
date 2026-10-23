@@ -64,7 +64,8 @@ function stable(value: unknown): string {
 }
 
 function map(row: Row | undefined): BlindReviewSessionBinding | null {
-  if (!row) return null;
+  // Reservations have no native identity until the exact launch is reconciled.
+  if (!row || !row.reviewer_owner_id || !row.adv_session_id || !row.native_session_id) return null;
   const confinement = object(row.confinement_snapshot);
   if (!confinement) return null;
   if (!Array.isArray(confinement.denyTools) || confinement.denyTools.some((name) => typeof name !== 'string') ||
@@ -151,6 +152,8 @@ export async function findBlindReviewSessionBinding(input: {
      WHERE launch_parent_owner = ${BLIND_GAP_REVIEW_ACTOR}
        AND workspace_id = ${input.workspaceId} AND plan_slug = ${input.planSlug}
        AND activation_audit_seq = ${input.activationAuditSeq}
+       AND reviewer_owner_id IS NOT NULL
+     ORDER BY id DESC
      LIMIT 1`;
   return map(row);
 }
@@ -192,8 +195,14 @@ export async function inspectBlindReviewResumeTarget(input: {
 export async function findBlindReviewSessionBindingByReviewer(input: {
   workspaceId: string; planSlug: string; activationAuditSeq: number; reviewerOwnerId: string;
 }, deps: { sql?: Sql } = {}): Promise<BlindReviewSessionBinding | null> {
-  const binding = await findBlindReviewSessionBinding(input, deps);
-  return binding?.reviewerOwnerId === input.reviewerOwnerId ? binding : null;
+  const sql = deps.sql ?? getOrgPg().sql;
+  const [row] = await sql<Row[]>`
+    SELECT * FROM harness_shared.plan_blind_review_sessions
+     WHERE workspace_id = ${input.workspaceId} AND plan_slug = ${input.planSlug}
+       AND activation_audit_seq = ${input.activationAuditSeq}
+       AND reviewer_owner_id = ${input.reviewerOwnerId}
+       AND launch_parent_owner = ${BLIND_GAP_REVIEW_ACTOR} LIMIT 1`;
+  return map(row);
 }
 
 export async function findLatestBlindReviewSessionBindingByReviewer(input: {
@@ -214,6 +223,7 @@ export async function createBlindReviewSessionBinding(input: {
   workspaceId: string; harnessSlug: string; planSlug: string; activationAuditSeq: number;
   reviewerOwnerId: string; advSessionId: number; nativeSessionId: string;
   launchParentOwner: string; confinement: SessionToolConfinement;
+  replacementAttemptId?: number;
 }, deps: { sql?: Sql } = {}): Promise<BlindReviewBindingResult> {
   const sql = deps.sql ?? getOrgPg().sql;
   try {
@@ -222,6 +232,23 @@ export async function createBlindReviewSessionBinding(input: {
     const actualConfinement = await readSessionConfinement(input.reviewerOwnerId, input.workspaceId);
     if (!actualConfinement || stable(actualConfinement) !== stable(input.confinement)) {
       return { ok: false, code: 'confinement_mismatch', message: 'The authoritative reviewer confinement differs from its launch snapshot.' };
+    }
+    if (input.replacementAttemptId !== undefined) {
+      const [row] = await sql<Row[]>`
+        UPDATE harness_shared.plan_blind_review_sessions
+           SET reviewer_owner_id = ${input.reviewerOwnerId}, adv_session_id = ${input.advSessionId},
+               native_session_id = ${input.nativeSessionId}, account_route = ${profile.accountRoute},
+               model_spec = ${profile.modelSpec}, status = 'ready', updated_at = now()
+         WHERE id = ${input.replacementAttemptId} AND replacement_of IS NOT NULL
+           AND workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug}
+           AND plan_slug = ${input.planSlug} AND activation_audit_seq = ${input.activationAuditSeq}
+           AND launch_parent_owner = ${input.launchParentOwner}
+           AND confinement_snapshot = ${sql.json(input.confinement as never)}
+           AND reviewer_owner_id IS NULL AND status IN ('launching', 'uncertain')
+        RETURNING *`;
+      const binding = map(row);
+      return binding ? { ok: true, created: true, binding }
+        : { ok: false, code: 'binding_conflict', message: 'The replacement reservation no longer accepts this exact native receipt.' };
     }
     const [inserted] = await sql<Row[]>`
       INSERT INTO harness_shared.plan_blind_review_sessions
@@ -286,6 +313,9 @@ export async function acquireBlindReviewSessionResume(input: {
              resume_lease_expires_at = now() + (${leaseSec} * interval '1 second'), updated_at = now()
        WHERE workspace_id = ${input.workspaceId} AND plan_slug = ${input.planSlug}
          AND activation_audit_seq = ${input.activationAuditSeq}
+         AND id = (SELECT max(id) FROM harness_shared.plan_blind_review_sessions
+           WHERE workspace_id = ${input.workspaceId} AND plan_slug = ${input.planSlug}
+             AND activation_audit_seq = ${input.activationAuditSeq})
          AND launch_parent_owner = ${BLIND_GAP_REVIEW_ACTOR}
          AND (status = 'ready' OR (status = 'resuming' AND resume_lease_expires_at <= now()))
        RETURNING *`;

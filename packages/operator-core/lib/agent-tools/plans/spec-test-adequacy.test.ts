@@ -2781,7 +2781,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       expect(result.ratings.falsifiability.evidence).toContain('which declares no structured falsifier.requiredScenarios list');
     });
 
-    it('keeps self-specId as an accepted identity but does not let it prove an explicit falsifier alone', () => {
+    it('accepts measured same-clause proof for an observation without declared scenarios', () => {
       const targetClause = clause({
         falsifier: { observation: 'The promoted directive cannot be read from the open standing state.' },
       });
@@ -2793,9 +2793,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         classRef: 'plan-class-feature-ship',
       });
 
-      expect(result.ratings.falsifiability.rating).toBe('unknown');
-      expect(result.ratings.falsifiability.evidence).toContain('an own-specId target establishes identity only');
-      expect(result.ratings.falsifiability.suggestion).toContain('real clause falsifier.requiredScenarios id');
+      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.ratings.falsifiability.evidence).toContain('which declares no structured falsifier.requiredScenarios list');
     });
 
     it('accepts the exact uppercase ID of a platform-generated clause as its self-target', () => {
@@ -2814,7 +2813,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       expect(result.ratings.falsifiability.rating).toBe('pass');
     });
 
-    it('keeps an explicit falsifier unresolved when it has no canonical scenario to align', () => {
+    it('accepts measured self-target proof when observation and probe declare no scenarios', () => {
       const result = evaluateSpecTestAdequacy({
         clause: clause({
           falsifier: {
@@ -2826,13 +2825,13 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         classRef: 'plan-class-feature-ship',
       });
 
-      expect(result.ratings.falsifiability.rating).toBe('unknown');
-      expect(result.ratings.falsifiability.evidence).toContain('an own-specId target establishes identity only');
+      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.ratings.falsifiability.evidence).toContain('which declares no structured falsifier.requiredScenarios list');
       expect(result.ratings.falsifiability.evidence).not.toContain('observation and probe method do not name scenarios');
       expect(result.ratings.falsifiability.evidence).not.toContain('declares no falsifier scenarios');
     });
 
-    it('does not use prose-named scenarios to stand in for a canonical scenario list', () => {
+    it('does not interpret prose examples as a declared scenario list', () => {
       const result = evaluateSpecTestAdequacy({
         clause: clause({
           falsifier: {
@@ -2844,8 +2843,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         classRef: 'plan-class-feature-ship',
       });
 
-      expect(result.ratings.falsifiability.rating).toBe('unknown');
-      expect(result.ratings.falsifiability.evidence).toContain('an own-specId target establishes identity only');
+      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.ratings.falsifiability.evidence).toContain('which declares no structured falsifier.requiredScenarios list');
       expect(result.ratings.falsifiability.evidence).not.toContain('observation and probe method do not name scenarios');
     });
 

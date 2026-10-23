@@ -236,9 +236,10 @@ function isSchemaObject(value: unknown): value is Record<string, unknown> {
  * (a name absent from the full schema's same map), recursively, then drops
  * those added definitions.
  *
- * Strict by construction: an added definition whose BODY differs from the
- * subschema it replaced restores the wrong leaves and still fails the contract
- * check, and a ref with siblings or into an AUTHORED definition is left alone.
+ * An authored definition may also replace an identical inline schema. Expand
+ * that reference only where the full schema did not already have the same
+ * reference. Original reference sites and authored definition bodies remain
+ * subject to the exact comparison; changed constraints cannot be normalized away.
  */
 function inlineHoisted(compact: unknown, full: unknown): unknown {
   if (!isSchemaObject(compact)) return compact;
@@ -255,10 +256,10 @@ function inlineHoisted(compact: unknown, full: unknown): unknown {
     }
     if (names.size > 0) added.set(mapKey, names);
   }
-  if (added.size === 0) return compact;
-  const inline = (node: unknown, hops: number): unknown => {
+  const inline = (node: unknown, expected: unknown, hops: number): unknown => {
     if (hops > 64) throw new Error('inlineHoisted: a $ref chain deeper than 64 hops is a hoisting cycle');
-    if (Array.isArray(node)) return node.map((entry) => inline(entry, hops));
+    if (Array.isArray(node)) return node.map((entry, index) =>
+      inline(entry, Array.isArray(expected) ? expected[index] : undefined, hops));
     if (!isSchemaObject(node)) return node;
     const ref = node.$ref;
     if (typeof ref === 'string' && Object.keys(node).length === 1) {
@@ -266,13 +267,16 @@ function inlineHoisted(compact: unknown, full: unknown): unknown {
       if (match) {
         const [, mapKey, escaped] = match;
         const name = (escaped ?? '').replace(/~1/g, '/').replace(/~0/g, '~');
-        const body = added.get(mapKey ?? '')?.get(name);
-        if (body !== undefined) return inline(body, hops + 1);
+        const originalRef = isSchemaObject(expected) ? expected.$ref : undefined;
+        const body = added.get(mapKey ?? '')?.get(name) ??
+          (expected !== undefined && ref !== originalRef ? resolveLocalRef(compact, ref) : undefined);
+        if (body !== undefined) return inline(body, expected, hops + 1);
       }
     }
-    return Object.fromEntries(Object.entries(node).map(([key, value]) => [key, inline(value, hops)]));
+    return Object.fromEntries(Object.entries(node).map(([key, value]) =>
+      [key, inline(value, isSchemaObject(expected) ? expected[key] : undefined, hops)]));
   };
-  const restored = inline(compact, 0) as Record<string, unknown>;
+  const restored = inline(compact, full, 0) as Record<string, unknown>;
   for (const [mapKey, names] of added) {
     const defs = restored[mapKey] as Record<string, unknown>;
     for (const name of names.keys()) delete defs[name];
@@ -516,6 +520,23 @@ describe('compact schema projection — live catalog (AUTO-BAR-R-3-P-001 / AUTO-
         'IDENTICAL to the full schema for every catalog tool. That means the contract ' +
         'comparison above is not measuring anything, so its green is vacuous.',
     ).toBeGreaterThan(0);
+  });
+
+  it('CONTROL: authored-definition reuse preserves recursive refs and still exposes damaged constraints', () => {
+    const leaf = { type: 'string', minLength: 1, maxLength: 200, pattern: '^[a-z]+$' };
+    const full = {
+      type: 'object',
+      properties: { value: leaf, head: { $ref: '#/$defs/node' } },
+      $defs: {
+        leaf: { ...leaf },
+        node: { type: 'object', properties: { next: { $ref: '#/$defs/node' } } },
+      },
+    };
+    const compact = compactInputSchema(full) as typeof full;
+    expect(contractOf(inlineHoisted(compact, full))).toEqual(contractOf(full));
+    const damaged = structuredClone(compact);
+    damaged.$defs.leaf.minLength = 2;
+    expect(contractOf(inlineHoisted(damaged, full))).not.toEqual(contractOf(full));
   });
 
   it('MEASURES the catalog-wide byte reduction and reports it (no magic threshold)', () => {

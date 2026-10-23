@@ -60,11 +60,15 @@ describe('release writer population with real PostgreSQL null semantics', () => 
       ('valid', ${scope.workspaceId}, 'release.artifact.built', ${JSON.stringify(valid())}::jsonb)`;
   });
 
-  it.each(['$ai_generation', '$exception'] as const)('retains expired %s expectations in actual SQL ahead of healthy new rows', async kind => {
+  it.each([
+    { kind: '$ai_generation', oldStatus: 'ok', oldExpectedModel: true },
+    { kind: '$exception', oldStatus: 'error', oldExpectedModel: false },
+    { kind: '$ai_generation', oldStatus: 'error', oldExpectedModel: true },
+  ] as const)('retains expired $kind expectations for $oldStatus tools in actual SQL ahead of healthy new rows', async ({ kind, oldStatus, oldExpectedModel }) => {
     const now = Date.now();
     const events: ObservedProjectEvent[] = [];
     for (const [digit, age, status, expectedModel] of [
-      ['1', 300_000, kind === '$ai_generation' ? 'ok' : 'error', kind === '$ai_generation'],
+      ['1', 300_000, oldStatus, oldExpectedModel],
       ['2', 100, 'ok', true], ['3', 100, 'error', false], ['4', 300_000, 'ok', false],
     ] as const) {
       const startedAt = now - age - 1000;
@@ -83,11 +87,26 @@ describe('release writer population with real PostgreSQL null semantics', () => 
         event: status === 'ok' ? '$ai_generation' : '$exception', isError: status !== 'ok',
         spanId: String(Number(digit) + 6).repeat(16), parentSpanId: http, callId: null, spanName: 'papercusp.model' });
     }
+    const mixed = oldStatus === 'error' && oldExpectedModel;
+    if (mixed) events.push({ uuid: 'tool-error-1', event: '$exception', traceId: '1'.repeat(32),
+      spanId: '1'.repeat(16), parentSpanId: null, callId: 'call-1', timestamp: now - 300_000,
+      isError: true, httpClient: false, spanName: 'papercusp.tool' });
     vi.mocked(readConfiguredTraceProject).mockResolvedValue({ status: 'available', queriedAt: now,
       projectId: '7', evidenceRef: 'authenticated-exact-id-query', events });
     expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'fail',
       detail: expect.stringContaining('Expected ' + kind + ' absent after ingestion bound') });
     expect(readConfiguredTraceProject).toHaveBeenLastCalledWith(['1'.repeat(32), '2'.repeat(32), '3'.repeat(32)]);
+    if (mixed) {
+      events.push({ uuid: 'restored-generation-1', event: '$ai_generation', traceId: '1'.repeat(32),
+        spanId: '7'.repeat(16), parentSpanId: '4'.repeat(16), callId: null, timestamp: now - 300_500,
+        isError: false, httpClient: false, spanName: 'papercusp.model' });
+      expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'pass' });
+      vi.mocked(readConfiguredTraceProject).mockResolvedValueOnce({ status: 'available', queriedAt: now,
+        projectId: '7', evidenceRef: 'authenticated-exact-id-query',
+        events: events.filter(event => event.uuid !== 'tool-error-1') });
+      expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'fail',
+        detail: expect.stringContaining('Expected $exception absent after ingestion bound') });
+    }
     // Revocation/regrant excludes pre-consent expectations exactly as the
     // exporter excludes spans whose start predates the current consent epoch.
     fixture.consentSince = now - 2000;

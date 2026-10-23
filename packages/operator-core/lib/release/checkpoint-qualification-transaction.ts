@@ -2588,12 +2588,13 @@ function recordQualificationNativeCompletion(
   current: CheckpointQualificationTransaction,
   input: QualificationWorkProgressInput,
   observation: QualificationNativeCompletionInput,
+  nativeObservation?: ReturnType<typeof readPartialNativeCompletion>,
 ): QualificationTransition {
     const conflict = (reason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason: reason });
     if (input.updates.length !== 0) return conflict('native-recovery-mixed-updates');
     const custody = recordQualificationWorkProgress(current, input);
     if (custody.status !== 'updated' && custody.status !== 'idempotent') return custody;
-    const observed = readPartialNativeCompletion(observation.path, { ...input,
+    const observed = nativeObservation ?? readPartialNativeCompletion(observation.path, { ...input,
       taskKey: observation.taskKey ?? input.taskKey,
       workspaceName: observation.workspaceName, selectedSpecifications: observation.selectedSpecifications,
       ...(observation.producerPath !== undefined ? { producerPath: observation.producerPath } : {}),
@@ -2927,6 +2928,8 @@ async function composeQualificationWork(
     const custody = recordQualificationWorkProgress(current, input);
     if (custody.status !== 'updated' && custody.status !== 'idempotent') return custody;
     let transaction = custody.transaction;
+    const interruptedTasks: Array<{ taskKey: string; endedAtMs: number }> = [];
+    const terminalTasks: Array<{ taskKey: string; startedAtMs: number }> = [];
     const nativePaths = new Set((transaction.continuation!.nativeProducers ?? []).filter(ref => !ref.missingSnapshot)
       .flatMap(ref => ref.selectedSpecifications.map(value => (value as { testFile: string }).testFile)));
     if (input.manifest.units.some(unit => unit.kind === 'test' && !unit.exclusion && !nativePaths.has(unit.path)))
@@ -2950,14 +2953,34 @@ async function composeQualificationWork(
         if (banked) return conflict('missing-native-output-has-banked-receipts');
         continue;
       }
-      const recovered = recordQualificationNativeCompletion(transaction, input, {
+      const ended = ref.runGroupId === input.runId ? undefined : transaction.consumedPhysicalRuns?.find(run =>
+        runIdBoundToRunner(run, ref.runGroupId) && run.outcome.kind === 'pre-suite-no-verdict');
+      const observation = {
         path: ref.outPath, producerPath: ref.path, taskKey: ref.taskKey, workspaceName: ref.workspaceName,
         selectedSpecifications: ref.selectedSpecifications, classifyReadPaths: options.classifyReadPaths, requireTerminal: true,
         ...(ref.supersedesCompletionIds ? { supersedesCompletionIds: ref.supersedesCompletionIds } : {}),
+      };
+      const observed = readPartialNativeCompletion(ref.outPath, { ...input, ...observation }, {
+        classifyReadPaths: options.classifyReadPaths, requireTerminal: true,
+        allowInterrupted: !!ended && await probeRunnerLiveness(ended, input.nowMs) === 'dead',
       });
+      if (observed.status !== 'ready' || !('origin' in observed))
+        return conflict(observed.reason ?? 'native-observation-unmeasured');
+      if (observed.origin.terminal === 'interrupted') {
+        if (!ended) return conflict('native-producer-not-proved-dead');
+        interruptedTasks.push({ taskKey: ref.taskKey, endedAtMs: ended.endedAtMs });
+      } else if (observed.origin.terminal === 'passed' && observed.origin.startedAtMs !== null) {
+        terminalTasks.push({ taskKey: ref.taskKey, startedAtMs: observed.origin.startedAtMs });
+      }
+      const recovered = recordQualificationNativeCompletion(transaction, input, observation, observed);
       if (recovered.status !== 'updated' && recovered.status !== 'idempotent') return recovered;
       transaction = recovered.transaction;
     }
+    // A banked prefix never substitutes for the task's final runtime guard. A
+    // later producer must actually finish cleanly under the same enrolled task;
+    // full-manifest evaluation below still accounts for every selected file.
+    if (interruptedTasks.some(prior => !terminalTasks.some(next => next.taskKey === prior.taskKey &&
+        next.startedAtMs >= prior.endedAtMs))) return conflict('native-successor-terminal-unmeasured');
     const evaluation = evaluatePartialTaskContinuation({ root: input.root, taskKey: input.taskKey,
       continuation: transaction.continuation }, { ...input, sourceCommit: input.candidate });
     if (evaluation.status !== 'ready' || evaluation.verdict !== 'green') return conflict('continuation-verdict-not-green');

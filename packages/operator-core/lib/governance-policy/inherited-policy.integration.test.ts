@@ -28,7 +28,7 @@ import {
 } from './store';
 import { evaluateInheritedPolicy } from './inherited-policy';
 import {
-  assessPermissionChange, evaluateEffectivePermission, revalidateEffectivePermission,
+  assessPermissionChange, evaluateEffectivePermission, revalidateEffectivePermission, resourcePermissionValue,
   type AuthorityPolicy, type AuthoritySnapshot, type PermissionRequest,
 } from './effective-authority';
 
@@ -199,6 +199,59 @@ describe('P-024 shared evaluator with the versioned governance store', () => {
     expect(assessPermissionChange({ ...change, current: await sharedSnapshot() })).toMatchObject({
       canApplyWithoutApproval: false, code: 'stale-before-state',
     });
+  });
+
+  it.each(['org-acme', 'dept-eng', 'ws-1'].flatMap(id =>
+    (['queued', 'in-flight'] as const).flatMap(phase =>
+      (['unchanged', 'revoked', 'narrowed'] as const).map(change => ({ id, phase, change }))),
+  ))('the $phase store contract rechecks $id after $change authority', async ({ id, change }) => {
+    await seedTree();
+    const initial = evaluateEffectivePermission(await sharedSnapshot(), protectedRequest);
+    expect(initial.allowed).toBe(true);
+    let resume!: () => void;
+    const barrier = new Promise<void>(resolve => { resume = resolve; });
+    // This is an actual paused database fixture, not a production dispatch or
+    // billing claim. The resumed transaction must observe the committed writer.
+    const pending = (async () => {
+      await barrier;
+      return sql.begin(async tx => {
+        const current = await sharedSnapshot(tx as unknown as postgres.Sql);
+        const decision = revalidateEffectivePermission(current, protectedRequest, initial.revisions);
+        if (decision.allowed) await tx`INSERT INTO harness_shared.idop_test_effects (target) VALUES (${protectedRequest.resource.target})`;
+        return decision;
+      });
+    })();
+    let changedRevision: { kind: string; id: string; revision: string } | undefined;
+    try {
+      if (change !== 'unchanged') {
+        const load = await loadChainForWorkspace('ws-1', sql);
+        if (load.status !== 'ok') throw new Error(`chain ${load.status}`);
+        const row = load.chain.find(entry => entry.layerId === id)!;
+        const changed = await upsertLayer(layer({
+          layerId: id, level: row.level, scopeRef: row.scopeRef, parentLayerId: row.parentLayerId,
+          rules: { ...row.rules, resources: { allow: change === 'revoked'
+            ? [] : [resourcePermissionValue(protectedRequest.resource)] } }, expectedVersion: row.version,
+        }), sql);
+        changedRevision = { kind: changed.level, id, revision: `${changed.version}:${changed.contentHash}` };
+      }
+    } finally {
+      resume();
+    }
+    const decision = await pending;
+    expect(decision).toMatchObject({ allowed: change === 'unchanged', request: protectedRequest,
+      code: change === 'unchanged' ? 'allowed' : change === 'revoked' ? 'denied' : 'authority-stale' });
+    const effects = await sql<{ target: string }[]>`SELECT target FROM harness_shared.idop_test_effects`;
+    expect(effects).toEqual(change === 'unchanged' ? [{ target: protectedRequest.resource.target }] : []);
+    if (changedRevision) expect(decision.revisions!.authorities).toContainEqual(changedRevision);
+    if (change === 'revoked') expect(decision.decidingAuthority)
+      .toEqual({ kind: changedRevision!.kind, id });
+    if (change === 'narrowed') {
+      // The new policy still allows this request. Only stale authorization must
+      // fail; a fresh token is a separate permitted control.
+      const current = await sharedSnapshot();
+      const fresh = evaluateEffectivePermission(current, protectedRequest);
+      expect(revalidateEffectivePermission(current, protectedRequest, fresh.revisions).allowed).toBe(true);
+    }
   });
 });
 

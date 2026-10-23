@@ -295,12 +295,17 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
       return refused("native-selection-invalid");
     selectedPaths.add(spec.testFile);
   }
-  // Per-file banking may consume a partial snapshot. Final composition also
-  // requires the native runner's terminal guard over this exact population.
-  if (options.requireTerminal === true &&
-      (!Number.isSafeInteger(native.finishedAtMs) || native.finishedAtMs < native.startedAtMs ||
-        native.reason !== "passed" || native.unhandledErrorCount !== 0 || native.modulePopulationMatched !== true ||
-        native.files.length !== selectedPaths.size || native.gaps.length !== 0))
+  // A dead producer may contribute its acknowledged prefix, never a terminal
+  // verdict. The host must establish dead custody and a later clean successor.
+  // In particular onExit, failed terminal hooks and unknown/mixed tail fields
+  // cannot be relabeled as an interrupted prefix.
+  const terminalPassed = Number.isSafeInteger(native.finishedAtMs) && native.finishedAtMs >= native.startedAtMs &&
+    native.reason === "passed" && native.unhandledErrorCount === 0 && native.modulePopulationMatched === true &&
+    native.files.length === selectedPaths.size && native.gaps.length === 0;
+  const interrupted = native.finishedAtMs === null && native.terminalHook === null && native.reason === null &&
+    native.unhandledErrorCount === null && native.modulePopulationMatched === false &&
+    native.gaps.length === 0 && native.files.length > 0;
+  if (options.requireTerminal === true && !terminalPassed && !(options.allowInterrupted === true && interrupted))
     return refused("native-terminal-verdict-unmeasured");
   const rows = new Map();
   for (const row of snapshot.rows) {
@@ -329,8 +334,7 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
       Array.isArray(source.reasons) && source.reasons.length === 0;
     const cases = file.cases;
     const measuredCases = Array.isArray(cases) && cases.length > 0 && cases.every(value => value.status === "pass");
-    const runClean = native.gaps.length === 0 && (native.finishedAtMs === null ||
-      (native.reason === "passed" && native.unhandledErrorCount === 0 && native.modulePopulationMatched === true));
+    const runClean = interrupted || terminalPassed;
     const opaqueReasons = Array.isArray(row?.opaqueReasons) ? [...row.opaqueReasons] : ["proof-unmeasured"];
     if (!inputMeasured) opaqueReasons.push("input-classification-unmeasured");
     else opaqueReasons.push(...classified.opaqueReasons);
@@ -351,6 +355,7 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
         readPaths: inputMeasured ? classified.readPaths : [], opaqueReasons } });
   }
   return { status: "ready", reason: null, receipts, origin: {
+    terminal: terminalPassed ? "passed" : interrupted ? "interrupted" : "unmeasured",
     runGroupId: validIdentity(context.runGroupId) ? context.runGroupId : null,
     startedAtMs: Number.isSafeInteger(native.startedAtMs) && native.startedAtMs > 0 ? native.startedAtMs : null,
     sourceCommit: snapshot.recordedSha,

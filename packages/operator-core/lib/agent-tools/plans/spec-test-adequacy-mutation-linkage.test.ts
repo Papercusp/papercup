@@ -300,6 +300,30 @@ describe('canonical falsifier scenario to mutation case alignment', () => {
     }).ratings.falsifiability;
   }
 
+  it.each([
+    null,
+    { observation: 'A seeded edit is attributed to the wrong work-item.' },
+    { observation: 'A seeded edit is attributed to the wrong work-item.', probeMethod: 'Join recorded edits.' },
+    { observation: 'A seeded edit is attributed to the wrong work-item.', requiredScenarios: [] },
+  ])('accepts exact current baseline/caught-case self-target proof without declared scenarios: %j', falsifier => {
+    const targetClause = { ...publishClause(), falsifier };
+    expect(rate(targetClause, publishCase).rating).toBe('pass');
+    expect(rate(targetClause, publishCase, { targeted: 'SPEC-P-024' }).rating).toBe('unknown');
+
+    const positive = scenarioProof('test', publishCase);
+    const caught = scenarioProof('mutation', publishCase);
+    // A filtered calibration must name this case; a complete zero-skip suite already passed every case.
+    caught.testRunProvenance!.mutationBaseline!.skipped = 1;
+    caught.testRunProvenance!.mutationBaseline!.passedCaseTitles = [mentionsCase];
+    expect(evaluateSpecTestAdequacy({ clause: targetClause, evidence: [positive, caught],
+      classRef: 'plan-class-feature-ship' }).ratings.falsifiability.rating).toBe('unknown');
+
+    const mismatchedPositive = scenarioProof('test', mentionsCase);
+    expect(evaluateSpecTestAdequacy({ clause: targetClause,
+      evidence: [mismatchedPositive, scenarioProof('mutation', publishCase)],
+      classRef: 'plan-class-feature-ship' }).ratings.falsifiability.rating).toBe('unknown');
+  });
+
   it('does not let a same-spec self-targeted mentions case prove publish-via-gateway', () => {
     const result = rate(publishClause(), mentionsCase, {
       targeted: 'SPEC-P-023', scenarioIds: ['mentions-mapping'],

@@ -82,7 +82,7 @@ export async function setupEngineeringEvidenceFixture(registerPublicRoot = false
       (workspace_id,harness_slug,work_item_id,plan_slug,spec_id,spec_revision,spec_fingerprint,
         evidence_kind,evidence_ref,source_fingerprint,test_run_id,binding_fingerprint,created_by)
       VALUES (${scope.workspaceId},${harness},'WI-ee-proof',${plan},'EE-1',1,${spec!.contentHash},
-        'test',${`test-run:${runId}`},${digest},${runId},${'b'.repeat(64)},'su-ee-author') RETURNING id`;
+        'test','evidence-feature.integration.test.ts',${digest},${runId},${'b'.repeat(64)},'su-ee-author') RETURNING id`;
     bindingId = Number(binding!.id);
     // A separately scoped, same-file row must not become the requested owner.
     await seedPlan(db, 'ee-foreign', harness, 'foreign-plan', body.replaceAll(plan, 'foreign-plan'));

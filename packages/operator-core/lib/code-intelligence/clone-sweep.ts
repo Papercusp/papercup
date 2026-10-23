@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { CloneFamily, CloneIndex } from './clone-index';
 import { adoptConditionIncumbent, upsertConditionWorkItem, withConditionReplayLock } from '../coord/condition-upsert';
+import { activeWorkspaceId } from '../workspace-registry';
 
 const reviewedFamily = z.object({ familyId: z.string().min(1), membersDigest: z.string().regex(/^[a-f0-9]{64}$/),
   reason: z.string().trim().min(1) }).strict();
@@ -80,6 +81,9 @@ export async function fileCloneSweep(families: readonly RankedCloneFamily[], sco
   workspaceId: string; harness: string; fireId: string;
 }) {
   if (!scope.workspaceId.trim() || !scope.harness.trim() || !scope.fireId.trim()) throw new Error('Clone sweep scope required');
+  // Issue-family creates use the established ambient workspace. The standalone
+  // managed runner pins it; refuse a misbound caller before minting any row.
+  if (activeWorkspaceId() !== scope.workspaceId) throw new Error('Clone sweep ambient workspace mismatch');
   const rows: { familyId: string; itemId: string | null; disposition: 'accepted' | 'created' | 'reused' }[] = [];
   for (const row of families) {
     if (row.accepted) { rows.push({ familyId: row.family.id, itemId: null, disposition: 'accepted' }); continue; }
@@ -100,6 +104,9 @@ export async function fileCloneSweep(families: readonly RankedCloneFamily[], sco
           rank: { redundantMass: row.redundantMass, copies: row.copies, packageDistance: row.packageDistance } },
           tags: ['clone-family', row.disposition, ...(row.generic ? ['libs/generic'] : [])] } });
     });
+    if ('duplicateLeftOpen' in result && result.duplicateLeftOpen) {
+      throw new Error(`Clone family duplicate remains open: ${result.duplicateLeftOpen}`);
+    }
     if (!result.id) throw new Error(`Clone family filing returned no identity: ${row.family.id}`);
     rows.push({ familyId: row.family.id, itemId: result.id, disposition: result.created ? 'created' : 'reused' });
   }

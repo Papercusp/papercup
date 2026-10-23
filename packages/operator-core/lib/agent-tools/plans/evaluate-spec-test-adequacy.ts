@@ -625,9 +625,9 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
 
 /**
  * oversized-tool-results-reduction-2026-10-12 P-006: the ready plans:certify-spec-clauses
- * call for a result with passing rows. Offered only for a live, unpinned evaluation against
- * an active acceptance rubric: certify cannot pin bindingIds or a clause snapshot, so a
- * pinned read would silently widen its cohort. Carries only arguments certify accepts.
+ * call for a result with passing rows. Offered for a live evaluation against an active
+ * acceptance rubric, preserving any exact binding cohort. Immutable clause snapshots
+ * still cannot be certified by this live-clause verb.
  */
 export function certifyPassingRef(
   args: {
@@ -649,8 +649,7 @@ export function certifyPassingRef(
     ctx.passingCount === 0 ||
     ctx.classRefSource !== 'active-acceptance-rubric' ||
     args.replaySnapshot === true ||
-    args.specRevision !== undefined ||
-    args.bindingIds !== undefined
+    args.specRevision !== undefined
   ) {
     return undefined;
   }
@@ -662,6 +661,7 @@ export function certifyPassingRef(
       classRef: ctx.classRef,
       ...(args.workItemIds ? { workItemIds: args.workItemIds } : {}),
       ...(args.evidenceRefs ? { evidenceRefs: args.evidenceRefs } : {}),
+      ...(args.bindingIds !== undefined ? { bindingIds: args.bindingIds } : {}),
       ...(args.specIds ? { specIds: args.specIds } : {}),
       ...(args.planItemIds ? { planItemIds: args.planItemIds } : {}),
       ...(args.includeDraft !== undefined ? { includeDraft: args.includeDraft } : {}),

@@ -75,7 +75,7 @@ function configureSql() {
         model_spec: modelSpec, confinement_snapshot: confinement });
       return [state.binding];
     }
-    if (query.includes('from harness_shared.plan_blind_review_sessions')) {
+    if (query.trimStart().startsWith('select') && query.includes('from harness_shared.plan_blind_review_sessions')) {
       const workspaceIndex = values[1] === 'ws-1' ? 1 : 2;
       const workspaceId = values[workspaceIndex];
       if (!state.binding || state.binding.workspace_id !== workspaceId) return [];

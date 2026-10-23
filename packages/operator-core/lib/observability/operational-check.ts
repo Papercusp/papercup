@@ -18,6 +18,15 @@ interface InvocationObservation {
   id: string; callId: string; traceId: string; spanId: string;
   status: string; startedAt: number; endedAt: number; expectedModel: boolean;
 }
+function expectedEvents(row: InvocationObservation): Array<'$ai_generation' | '$exception'> {
+  // A successful model response and the enclosing tool's final error are
+  // independent writer observations. A later tool error cannot erase delivery
+  // obligations for the model response it already consumed.
+  const events: Array<'$ai_generation' | '$exception'> = [];
+  if (row.expectedModel) events.push('$ai_generation');
+  if (row.status !== 'ok') events.push('$exception');
+  return events;
+}
 type Verdict = { verdict: 'pass' | 'fail' | 'unknown'; detail: string };
 
 /** The input scopes a query; it cannot supply observations, identities or a pass.
@@ -206,10 +215,11 @@ export async function measureOperationalObservability(
       }
       const exceptions = events.filter(event => event.event === '$exception');
       if (exceptions.some(event => event.spanId === row.spanId ? event.callId !== row.callId : !reachable(event))) return fail('Exception ancestry differs from persisted tool span; invocation=' + row.id);
-      const expected = row.status === 'ok' ? '$ai_generation' : '$exception';
-      const delivered = row.status === 'ok' ? generations.some(event => !event.isError) : exceptions.some(event => event.isError);
-      if (!delivered) {
-        if (now - row.endedAt >= 120_000) return fail('Expected ' + expected + ' absent after ingestion bound; invocation=' + row.id);
+      const missing = expectedEvents(row).find(event => event === '$ai_generation'
+        ? !generations.some(generation => !generation.isError)
+        : !exceptions.some(exception => exception.isError));
+      if (missing) {
+        if (now - row.endedAt >= 120_000) return fail('Expected ' + missing + ' absent after ingestion bound; invocation=' + row.id);
         pending = true;
         continue;
       }
@@ -270,9 +280,9 @@ export async function measureOperationalObservability(
     return { verdict: 'pass', detail: JSON.stringify({ detector: OBSERVABILITY_INSTRUMENT_KEYS[mode], version: 1,
       observedAt: now, host, projectId: project.projectId, projectQuery: project.evidenceRef, release: releaseEvidence,
       shipment,
-      expected: valid.map(row => ({ id: row.id, callId: row.callId, traceId: row.traceId, spanId: row.spanId,
-        event: row.status === 'ok' ? '$ai_generation' : '$exception', startedAt: row.startedAt,
-        endedAt: row.endedAt, deadline: row.endedAt + 120_000 })),
+      expected: valid.flatMap(row => expectedEvents(row).map(event => ({ id: row.id, callId: row.callId,
+        traceId: row.traceId, spanId: row.spanId, event, startedAt: row.startedAt,
+        endedAt: row.endedAt, deadline: row.endedAt + 120_000 }))),
       observedEvents: project.events,
       invocations: selected.map(({ row }) => ({ id: row.id, callId: row.callId, traceId: row.traceId, spanId: row.spanId,
         startedAt: row.startedAt, endedAt: row.endedAt })),

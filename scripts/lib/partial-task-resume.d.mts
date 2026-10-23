@@ -64,6 +64,7 @@ export function readPartialNativeCompletion(file: any, expected: any, options?: 
         };
     }[];
     origin: {
+        terminal: string;
         runGroupId: any;
         startedAtMs: any;
         sourceCommit: any;

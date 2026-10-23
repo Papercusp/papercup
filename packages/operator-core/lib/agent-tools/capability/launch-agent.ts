@@ -302,7 +302,10 @@ function headlessResumeLogNote(tail: string | null): string {
 }
 
 function err(text: string) {
-  return { content: [{ type: 'text' as const, text }], isError: true };
+  // Every err() return is before the spawn loop. Recovery callers must distinguish
+  // these definite refusals from a lost reply or a partially opened launch.
+  return { content: [{ type: 'text' as const, text }], isError: true,
+    data: { launchFailure: { stage: 'pre-spawn' as const, processesOpened: 0 } } };
 }
 
 /**

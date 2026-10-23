@@ -3025,6 +3025,8 @@ export async function listWorkItemSpecRevisionEdges(options: {
 
 export interface RetractSpecEvidenceOptions {
   harnessSlug?: string;
+  /** Internal callers already holding a scoped target must retain its workspace. */
+  workspaceId?: string;
   /**
    * The exact binding row to withdraw, as returned by plans:get-spec-evidence.
    *
@@ -3105,7 +3107,7 @@ export async function retractSpecEvidence(
   options: RetractSpecEvidenceOptions,
   deps: SpecEvidenceGradingAuditNotificationDeps = {},
 ) {
-  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug, workspaceId: options.workspaceId });
   const reason = options.reason.trim();
   const actorId = options.actorId.trim();
   const result = await withWorkspace(scope.workspaceId, async (tx) => {

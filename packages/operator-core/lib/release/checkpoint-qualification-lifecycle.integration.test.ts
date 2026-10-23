@@ -94,6 +94,100 @@ async function metadata(): Promise<Record<string, unknown>> {
 }
 
 describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
+  it.each(['complete', 'live-predecessor', 'unknown-predecessor', 'missing-terminal', 'terminal-error',
+    'prefix-error', 'missing-post', 'old-fence', 'source-drift', 'different-task'] as const)(
+    'composes a dead native prefix with only its remaining file: %s', async scenario => {
+      const root = mkdtempSync(join(tmpdir(), 'qualification-prefix-source-'));
+      const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+      let fixture: Awaited<ReturnType<typeof nativeRecoveryFixture>> | undefined;
+      try {
+        git('init', '--quiet');
+        for (const file of ['native.test.ts', 'remaining.test.ts', 'input.json']) writeFileSync(join(root, file), '{}\n');
+        git('add', '.');
+        git('-c', 'user.name=Qualification fixture', '-c', 'user.email=fixture@example.invalid',
+          'commit', '--quiet', '-m', 'fixture');
+        fixture = await nativeRecoveryFixture({ root, candidate: git('rev-parse', 'HEAD') });
+        fixture.input.manifest.units.push({ id: 'remaining', kind: 'test', path: 'remaining.test.ts' },
+          { id: 'post', kind: 'post-suite', path: 'input.json' });
+        const specifications = fixture.observation.selectedSpecifications;
+        specifications.push({ ...specifications[0]!, testFile: 'remaining.test.ts' });
+        fixture.snapshot.nativeRun.selectedManifest = { specifications: structuredClone(specifications),
+          sha256: createHash('sha256').update(JSON.stringify(specifications)).digest('hex') };
+        fixture.save();
+        const first = fixture.enroll();
+        expect((await recordStoredQualificationNativeProducer(target, fixture.input, first)).status).toBe('updated');
+        expect((await recoverStoredQualificationNativeCompletions(target, fixture.input, first.classifyReadPaths)).status)
+          .toBe('updated');
+        const banked = await readStoredQualification(target);
+        expect(banked).toMatchObject({ transaction: { continuation: { receipts: [
+          expect.objectContaining({ unitId: 'native', completionId: 'native-completion' }),
+        ] } } });
+        expect((await reserveStoredQualificationRunner(target, { ...fixture.owner, runnerId: 'runner-two', runId: 'run-two',
+          pid: 43, pidIdentity: 'boot:43', incumbentLiveness: 'dead', nowMs: 500 })).status).toBe('updated');
+        const input = { ...fixture.input, runnerId: 'runner-two', runId: 'run-two', pidIdentity: 'boot:43', nowMs: 900 };
+        const stored = await readStoredQualification(target);
+        if (stored.status !== 'present') throw new Error('fixture qualification missing');
+        expect(evaluatePartialTaskContinuation({ root, taskKey: input.taskKey, continuation: stored.transaction.continuation },
+          { ...input, sourceCommit: input.candidate })).toMatchObject({ reused: ['native'], run: ['post', 'remaining'] });
+
+        // Execute/enroll only the missing file. The old completed file is never
+        // included in this producer's independent selection or output population.
+        const path = join(fixture.directory, 'remaining.json');
+        const selected = [specifications[1]!];
+        const taskKey = scenario === 'different-task' ? 'another-task' : first.taskKey;
+        const producer = registerPartialNativeProducer(path, { attemptId: input.attemptId, runGroupId: input.runId,
+          root, taskKey, workspaceName: first.workspaceName, sourceCommit: input.candidate, registeredAtMs: 550,
+          command: { cwd: root, cmd: 'npm', argv: ['run', 'test'] }, selectedSpecifications: selected }, { NODE_ENV: 'test' });
+        expect((await recordStoredQualificationNativeProducer(target, input, { ...first, taskKey, path,
+          producerPath: producer.path, selectedSpecifications: selected })).status).toBe('updated');
+        const remaining = structuredClone(fixture.snapshot);
+        remaining.completionCheckpoint.runGroupId = input.runId;
+        remaining.rows[0]!.testFile = 'remaining.test.ts';
+        remaining.rows[0]!.executedModules = ['remaining.test.ts'];
+        remaining.nativeRun.selectedManifest = { specifications: structuredClone(selected),
+          sha256: createHash('sha256').update(JSON.stringify(selected)).digest('hex') };
+        const file = remaining.nativeRun.files[0]!;
+        Object.assign(file, { testFile: 'remaining.test.ts', completionId: 'remaining-completion', observedAtMs: 650 });
+        file.proof.sourceEvidence.sources[0]!.path = 'remaining.test.ts';
+        remaining.nativeRun.startedAtMs = 600;
+        if (scenario !== 'missing-terminal') Object.assign(remaining.nativeRun,
+          { finishedAtMs: 700, terminalHook: 'onTestRunEnd', reason: 'passed', unhandledErrorCount: 0, modulePopulationMatched: true });
+        if (scenario === 'terminal-error') Object.assign(remaining.nativeRun, { reason: 'failed', unhandledErrorCount: 1 });
+        writeExecutedSourceMapSnapshot(path, remaining);
+        if (scenario === 'prefix-error') {
+          Object.assign(fixture.snapshot.nativeRun, { finishedAtMs: 280, reason: 'failed', unhandledErrorCount: 1 });
+          fixture.save();
+        }
+        if (scenario !== 'missing-post') expect((await recordStoredQualificationWorkProgress(target, { ...input,
+          updates: [{ receipt: { unitId: 'post', completionId: 'post-completion', state: 'pass', observedAtMs: 750,
+            observedCount: 1, worktreeDirty: false, proof: { recordedSha: input.candidate, runContext: input.runContext,
+              runnerIdentity: input.runnerIdentity, executedModules: ['input.json'], inputsCaptured: true,
+              readPaths: [], opaqueReasons: [] } } }] })).status).toBe('updated');
+        if (scenario === 'source-drift') writeFileSync(join(root, 'input.json'), '{"changed":true}\n');
+        configureRunnerLivenessProber(() => scenario === 'live-predecessor' ? 'live' :
+          scenario === 'unknown-predecessor' ? 'unknown' : 'dead');
+        const before = await readStoredQualification(target);
+        const request = { ...input, ...(scenario === 'old-fence' ? { runnerId: 'runner-one' } : {}) };
+        const composed = await composeStoredQualificationWork(target, request, { classifyReadPaths: first.classifyReadPaths });
+        if (scenario !== 'complete') {
+          expect(composed).toMatchObject({ status: 'conflict' });
+          expect(await readStoredQualification(target)).toEqual(before);
+          return;
+        }
+        expect(composed).toMatchObject({ status: 'updated', transaction: { outcome: { kind: 'pending' },
+          continuation: { receipts: expect.arrayContaining([
+            expect.objectContaining({ unitId: 'native', completionId: 'native-completion' }),
+            expect.objectContaining({ unitId: 'remaining', completionId: 'remaining-completion' }),
+          ]) } } });
+        const result = await recordStoredQualificationComposedVerdict(target, input, {
+          candidate: input.candidate, runId: input.runId, reason: 'advanced', green: true, nowMs: 1000,
+          terminalEvent: { status: 'qualification-prefix-composition-fixture', detail: { scenario } },
+        }, { classifyReadPaths: first.classifyReadPaths });
+        expect(result).toMatchObject({ status: 'updated', transaction: { outcome: { kind: 'green' }, currentPhysicalRunner: null } });
+      } finally { configureRunnerLivenessProber(null); fixture?.cleanup(); rmSync(root, { recursive: true, force: true }); }
+    }, 30_000,
+  );
   it.each(['complete', 'missing-post', 'partial-native', 'native-error', 'missing-output', 'source-drift', 'old-fence'])(
     'composes the frozen full manifest atomically: %s', async scenario => {
       const root = mkdtempSync(join(tmpdir(), 'qualification-composition-source-'));
@@ -1088,6 +1182,7 @@ async function nativeRecoveryFixture(options: { root?: string; candidate?: strin
     rows: [{ testFile: 'native.test.ts', executedModules: ['native.test.ts'], readPaths: [join(input.root, 'input.json')],
       inputsCaptured: true, opaqueReasons: [] }],
     nativeRun: { schemaVersion: 'native-vitest-run-v1', startedAtMs: 220, finishedAtMs: null, gaps: [],
+      terminalHook: null, reason: null, unhandledErrorCount: null, modulePopulationMatched: false,
       selectedManifest: { specifications: structuredClone(specifications), sha256: createHash('sha256')
         .update(JSON.stringify(specifications)).digest('hex') },
       files: [{ testFile: 'native.test.ts', state: 'passed', firstAttemptVerdict: 'pass',

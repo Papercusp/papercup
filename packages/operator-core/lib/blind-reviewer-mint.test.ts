@@ -298,6 +298,9 @@ describe('buildBlindReviewerKickoff', () => {
     expect(kickoff).toContain('Make the export button produce a CSV.');
     expect(kickoff).toContain('Boot it with scripts/verify-tauri-headless.sh');
     expect(kickoff).toContain(`${BLIND_REVIEW_TOOL} { op: 'post', slug: '${SLUG}'`);
+    expect(kickoff).toContain("outcome: 'conclusive'");
+    expect(kickoff).toContain("outcome: 'inconclusive'");
+    expect(kickoff).toContain('Empty gaps alone do not complete a review.');
   });
 
   it('falls back to a discovery hint when no run hint is given', () => {

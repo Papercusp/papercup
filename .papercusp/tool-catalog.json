@@ -22605,7 +22605,7 @@
       "guidance": {
         "when": "A decision-shaped output: trade-off resolved, scope ratified, or a choice made. Record it so fresh agents do not relitigate. For current-tree claims, open the tree and add `Measured: <file:line or command + result>`. Design authority is not tree evidence. Use items:[…] for bulk.",
         "notWhen": "Adding work units — use plans:add-item. Flipping status — plans:set-status. Updating overall state — plans:set-now.",
-        "chaining": "plans:add-decision → optionally plans:set-now referencing the new D-NNN in **State:**."
+        "chaining": "Declare refs/itemRefs:[\"P-NNN\"] for the items this decision governs; sharing a plan or mentioning an ID in prose does not establish applicability. affects:[planSlug] is broader plan context. plans:add-decision → graph:query { op:\"evidence\", plan, item } to inspect applicability; optionally plans:set-now referencing the new D-NNN in **State:**."
       }
     },
     {
@@ -22679,7 +22679,7 @@
       "guidance": {
         "when": "New work surfaces — a chunk to do, a verification step, a follow-up. Pick the right phase (or name a new one). Add several at once via items:[…] (the new ids come back per result).",
         "notWhen": "Updating an existing item — that's a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.",
-        "chaining": "Before writing a code item, run graph:query impact on the symbols it changes; pass symbols or paths as anchors (code links). plans:add-item → plans:set-status when work starts."
+        "chaining": "Before writing a code item, run graph:query impact on the symbols it changes; pass symbols or paths as anchors (code links). Name/import similarity is not ownership. Use graph:query { op:\"evidence\", plan, item } to inspect exact linked specs and proof; missing declarations need explicit anchors/specs. plans:add-item → plans:set-specs → plans:set-status when work starts."
       }
     },
     {
@@ -23173,7 +23173,7 @@
       "guidance": {
         "when": "Recording execution proof for one or more plan specs before work-item completion or plan acceptance. AUTO-BAR proof: vet first (amend → vet → attest → bind → cards → grade).",
         "notWhen": "Authoring behavior — plans:set-specs. Running a test — testing:run.",
-        "chaining": "plans:get-specs → plans:bind-spec-evidence → plans:get-spec-evidence with current fingerprints."
+        "chaining": "plans:get-specs exact revision → plans:bind-spec-evidence { items:[{ workItemId, specId, specRevision, fromTestRun, sourcePaths, fixturePaths }] } → plans:get-spec-evidence with current fingerprints → graph:query { op:\"evidence\", plan, item }. Declare calibration inputs on the first bind, including inline test fixtures. Qualifying newer clean runs of requirement verification.check.files refresh the authored recipe through existing autobind; a newer failure/error withdraws earlier support for that exact file. An unrelated pass never supplies the missing link."
       }
     },
     {
@@ -23184,7 +23184,7 @@
           "POST"
         ]
       },
-      "description": "Blind gap review before acceptance. op 'brief' returns the owner's source turns only (never plan text); op 'mint' launches a confined reviewer; op 'resume' recovers that exact reviewer in place; op 'post' records the reviewer's gaps; op 'dispose' maps each gap to a plan item or an accepted-risk Decision.",
+      "description": "Blind gap review before acceptance. op 'brief' returns the owner's source turns only; 'mint' launches a confined reviewer; 'resume' recovers that exact reviewer; 'replace' recruits an independent replacement for an ended, posted inconclusive review while preserving its history; 'post' records the reviewer's outcome; 'dispose' maps gaps to plan items or accepted risks.",
       "capabilities": [
         "plans:write"
       ],
@@ -23214,7 +23214,7 @@
           "POST"
         ]
       },
-      "description": "Evaluate spec-test adequacy on server-measured evidence. Passing test-checked clauses return mechanicalProof and card.status='not-required' without scorecard emission or audit; counts.mechanicallyVerified records these clauses. Passing judgment clauses file the evaluator's unedited draft through scorecards:emit and its exact-replay gate. Non-passing clauses report wouldBlock and are never filed. Select with workItemIds and specIds; evidenceRefs must be persisted evidence_ref values from plans:get-spec-evidence, not test-run IDs. limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered cohort. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
+      "description": "Evaluate spec-test adequacy on server-measured evidence. Passing test-checked clauses return mechanicalProof and card.status='not-required' without scorecard emission or audit; counts.mechanicallyVerified records these clauses. Passing judgment clauses file the evaluator's unedited draft through scorecards:emit and its exact-replay gate. Non-passing clauses report wouldBlock and are never filed. Select with workItemIds and specIds; bindingIds pins the exact proof cohort, including through replay. evidenceRefs must be persisted evidence_ref values from plans:get-spec-evidence, not test-run IDs. limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered cohort. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
       "capabilities": [
         "coord:write"
       ],
@@ -26253,7 +26253,7 @@
       "guidance": {
         "when": "Authoring or revising atomic observable behavior owned by a P-NNN plan item. Use expectedRevision:0 to create; otherwise pass the current revision returned by plans:get-specs.",
         "notWhen": "Changing a plan-item outcome or dependency — plans:* item verbs. Recording test evidence — testing/coverage tools. Changing the behavior of a sourceBar-pinned AUTO-BAR projection — amend the canonical rubric with rubrics:amend.",
-        "chaining": "plans:get-specs → plans:set-specs { expectedRevision } → plans:get-specs exact/history to verify."
+        "chaining": "plans:get-specs → plans:set-specs { expectedRevision } → plans:get-specs exact/history to verify. Author the requirement verification.check.files with exact maintained tests for automatic ledger reconciliation; specIds/revisions and explicit item/code anchors establish ownership, never symbol-name similarity. Bind the first exact test run with sourcePaths and fixturePaths so later autobind can retain its measured recipe."
       }
     },
     {

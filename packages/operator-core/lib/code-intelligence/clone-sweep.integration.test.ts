@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,11 +16,16 @@ vi.mock('../agent-tools/coordination/log', async orig => ({ ...(await orig<Recor
 vi.mock('../pot-membership', async orig => ({ ...(await orig<Record<string, unknown>>()),
   resolveWorkItemPot: async ({ rawSlug }: { rawSlug?: string }) => rawSlug ?? null }));
 vi.mock('../modes/goal-context', async orig => ({ ...(await orig<Record<string, unknown>>()), resolveGoalContext: async () => null }));
+// These are system findings, never blueprint operation workers. The minimal
+// filing fixture deliberately does not provision the operation/session plane.
+vi.mock('../blueprint/operation-worker-binding', async orig => ({ ...(await orig<Record<string, unknown>>()),
+  readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' }) }));
 
 const { cloneFamilyConditionKey, cloneSweepInputSchema, fileCloneSweep, rankCloneSweep } = await import('./clone-sweep');
 const { runCloneFamilySweepAction, CLONE_FAMILY_SWEEP_ACTION } = await import('../harness/routines/clone-family-sweep-action');
 const { getSystemActionEntry } = await import('../harness/routines/system-actions');
 let db: FreshPgDb;
+let savedWorkspace: string | undefined;
 const dirs: string[] = [];
 const source = (name = 'sum') => `export function ${name}(xs: number[]) { let total = 0; for (const x of xs) {
   if (x > 0) { total += x; } else { total -= x; } } return total; }`;
@@ -35,6 +40,8 @@ const countKey = async (key: string) => {
 };
 
 beforeAll(async () => {
+  savedWorkspace = process.env.PAPERCUSP_WORKSPACE_ID;
+  process.env.PAPERCUSP_WORKSPACE_ID = WS;
   db = await createFreshPgDb('clone-sweep'); h.sql = db.sql;
   const sqlDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
@@ -51,10 +58,16 @@ beforeAll(async () => {
     '741-work-items-condition-key-singleton.sql', '777-work-items-embedding-recipe-discriminator.sql',
     '1110-work-items-admission-flags-generated-columns.sql', '1135-work-items-epoch-ms-timestamp-guard.sql',
     '1194-work-items-directive-ref.sql', '1294-work-item-readiness-payload-projections.sql', '1308-work-items-severity-projection.sql',
-    '1534-work-items-duplicate-of.sql',
-  ] });
+  ], knownInapplicable: [{ file: '1534-work-items-duplicate-of.sql',
+    reason: 'Canonical work-item fixture DDL already carries duplicate verdict columns. This filing fixture does not build the work_items_claimable view that migration 1534 locks and rewrites; claimable/admission policy is outside its subject.' }] });
 }, 120000);
-afterAll(async () => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); await db?.cleanup(); });
+beforeEach(async () => { await db.sql`DELETE FROM harness_shared.work_items`; });
+afterAll(async () => {
+  if (savedWorkspace === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+  else process.env.PAPERCUSP_WORKSPACE_ID = savedWorkspace;
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  await db?.cleanup();
+});
 
 describe('durable clone sweep', () => {
   it('REUSE-P-008-01 files once across simultaneous, repeated, restarted and terminal-history sweeps', async () => {
@@ -80,7 +93,7 @@ describe('durable clone sweep', () => {
     const ranked = rankCloneSweep(index, empty);
     expect(ranked).toHaveLength(1);
     expect(ranked[0]).toMatchObject({ copies: 2, disposition: 'derive-and-sync', generic: false });
-    const out = await fileCloneSweep(ranked, { ...scope('vendor'), workspaceId: 'clone-vendor-test' });
+    const out = await fileCloneSweep(ranked, scope('vendor'));
     const [item] = await db.sql`SELECT payload, summary FROM harness_shared.work_items WHERE feature_id = ${out.rows[0].itemId}`;
     expect(item.payload.cloneFamily.disposition).toBe('derive-and-sync');
     expect(item.summary).toContain('templates/example/a.ts');
@@ -132,5 +145,7 @@ describe('durable clone sweep', () => {
     expect(overlap.diagnostics).toEqual({ status: 'skipped-overlap', taskIds: ['existing'] });
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(() => cloneSweepInputSchema.parse({ root, acceptances: [{ familyId: 'a', membersDigest: 'b', reason: '', expiresAt: 'tomorrow' }] })).toThrow();
+    await expect(fileCloneSweep([], { ...scope('wrong-workspace'), workspaceId: 'another-workspace' }))
+      .rejects.toThrow('ambient workspace mismatch');
   });
 });

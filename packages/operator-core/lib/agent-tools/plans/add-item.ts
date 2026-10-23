@@ -563,7 +563,7 @@ export default defineTool({
     notWhen:
       "Updating an existing item — that's a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.",
     chaining:
-      'Before writing a code item, run graph:query impact on the symbols it changes; pass symbols or paths as anchors (code links). plans:add-item → plans:set-status when work starts.',
+      'Before writing a code item, run graph:query impact on the symbols it changes; pass symbols or paths as anchors (code links). Name/import similarity is not ownership. Use graph:query { op:"evidence", plan, item } to inspect exact linked specs and proof; missing declarations need explicit anchors/specs. plans:add-item → plans:set-specs → plans:set-status when work starts.',
     seeAlso: [
       'plans:set-status (advance an item you just added off todo)',
       'plans:set-importance (re-rank the new item vs its siblings)',

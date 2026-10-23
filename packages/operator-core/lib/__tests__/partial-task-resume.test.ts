@@ -107,6 +107,16 @@ describe('remaining work preserves the original selected population', () => {
     expect(result).toEqual([{ ws: tasks[0]!.ws, script: 'test', relatedFiles: ['b.test.ts'] }]);
     expect(logs).toEqual(['QUALIFICATION_REMAINING tasks=1 omitted=1 files=1 verdict=incomplete']);
   });
+
+  it.each([['--qualification-work', '/snapshot'], ['--qualification-work=/snapshot']])(
+    'parses the original runner value option %s without treating its checkpoint as a positional file', (...argv) => {
+      const source = readFileSync(new URL('../../../../scripts/affected-tests.mjs', import.meta.url), 'utf8');
+      const begin = source.indexOf('const VALUE_FLAGS =');
+      const end = source.indexOf('// WI-42146 / green-main-fast', begin);
+      const parse = new Function('process', `${source.slice(begin, end)}\n` +
+        `return { path: arg('--qualification-work', null), positionalArgs };`);
+      expect(parse({ argv: ['node', 'affected-tests.mjs', ...argv] })).toEqual({ path: '/snapshot', positionalArgs: [] });
+    });
 });
 
 describe('partial-task-resume', () => {
@@ -426,13 +436,15 @@ describe('native durable continuation outcomes', () => {
     rows: [{ testFile: 'lib/a.test.ts', executedModules: ['lib/a.test.ts'], inputsCaptured: true,
       readPaths: ['/repo/fixtures/input.json'], opaqueReasons: [] as string[] }],
     nativeRun: { schemaVersion: 'native-vitest-run-v1', startedAtMs: 100, gaps: [] as string[], finishedAtMs: null as number | null,
-      reason: null as string | null, unhandledErrorCount: null as number | null, modulePopulationMatched: false,
+      terminalHook: null as string | null, reason: null as string | null,
+      unhandledErrorCount: null as number | null, modulePopulationMatched: false,
       selectedManifest: { specifications: structuredClone(selectedSpecifications), sha256: hash(selectedSpecifications) },
       files: [{ testFile: 'lib/a.test.ts', completionId: 'completion-a', observedAtMs: 123, state: 'passed',
         firstAttemptVerdict: 'pass', cases: [{ status: 'pass' }],
         proof: { sourceEvidence: { schemaVersion: 'vite-collected-source-evidence-v1', status: 'stable',
           sources: [{ path: 'lib/a.test.ts', sha256: 'a'.repeat(64), currentSha256: 'a'.repeat(64) }], reasons: [] } } }] } });
-  const read = (value = snapshot(), overrides = {}, classify = true, producerOverrides: Record<string, unknown> | null = null) => {
+  const read = (value = snapshot(), overrides = {}, classify = true, producerOverrides: Record<string, unknown> | null = null,
+    options = {}) => {
     const dir = mkdtempSync(join(tmpdir(), 'native-continuation-'));
     const file = join(dir, 'out.json');
     writeFileSync(file, JSON.stringify({ ...value, completionIntegrity: { schemaVersion: 1, sha256: hash(value) } }));
@@ -445,7 +457,7 @@ describe('native durable continuation outcomes', () => {
       }, { TEST_SECRET: 'credential-never-written' });
       return readPartialNativeCompletion(file, { ...expected, ...overrides,
         ...(producer ? { producerPath: producer.path } : {}) }, classify
-        ? { classifyReadPaths: () => ({ readPaths: ['fixtures/input.json'], opaqueReasons: [] }) } : {});
+        ? { ...options, classifyReadPaths: () => ({ readPaths: ['fixtures/input.json'], opaqueReasons: [] }) } : options);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   };
 
@@ -507,6 +519,26 @@ describe('native durable continuation outcomes', () => {
     filtered.nativeRun.selectedManifest.specifications[0]!.testNamePattern = 'one case' as never;
     filtered.nativeRun.selectedManifest.sha256 = hash(filtered.nativeRun.selectedManifest.specifications);
     expect(read(filtered)).toMatchObject({ status: 'refused', reason: 'native-selection-mismatch' });
+  });
+
+  it('distinguishes a clean interrupted prefix from a terminal verdict or an observed error', () => {
+    const options = { requireTerminal: true, allowInterrupted: true };
+    expect(read(snapshot(), {}, true, null, { requireTerminal: true }))
+      .toMatchObject({ status: 'refused', reason: 'native-terminal-verdict-unmeasured' });
+    expect(read(snapshot(), {}, true, null, options)).toMatchObject({ status: 'ready', origin: { terminal: 'interrupted' } });
+    for (const damage of [
+      (v: ReturnType<typeof snapshot>) => { v.nativeRun.finishedAtMs = 200; },
+      (v: ReturnType<typeof snapshot>) => { v.nativeRun.reason = 'failed'; },
+      (v: ReturnType<typeof snapshot>) => { v.nativeRun.unhandledErrorCount = 1; },
+      (v: ReturnType<typeof snapshot>) => { v.nativeRun.terminalHook = 'onExit'; },
+      (v: ReturnType<typeof snapshot>) => { v.nativeRun.gaps = ['run-end-unobserved']; },
+      (v: ReturnType<typeof snapshot>) => { v.nativeRun.files = []; },
+    ]) {
+      const value = snapshot(); damage(value);
+      expect(read(value, {}, true, null, options)).toMatchObject({ status: 'refused' });
+      if (value.nativeRun.files.length) expect(read(value).receipts[0]!.proof.opaqueReasons)
+        .toContain('native-run-incomplete-or-errored');
+    }
   });
 
   it('retains failure and infrastructure outcomes without promoting them to passes', () => {

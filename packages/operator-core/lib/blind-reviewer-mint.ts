@@ -135,8 +135,10 @@ export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: st
     brief.text,
     '',
     '## Report',
-    `Call ${BLIND_REVIEW_TOOL} { op: 'post', slug: '${brief.planSlug}', activationAuditSeq: ${brief.activationAuditSeq}, gaps: [...] }`,
-    '(gaps: [] when you found none), then end your session.',
+    `Call ${BLIND_REVIEW_TOOL} { op: 'post', slug: '${brief.planSlug}', activationAuditSeq: ${brief.activationAuditSeq}, outcome: 'conclusive', gaps: [...] }`,
+    'Use conclusive only after completing the product interaction against the owner\'s words; gaps: [] means you found none.',
+    'If product access or verification is incomplete, post outcome: \'inconclusive\' with a summary explaining what could not be verified. Empty gaps alone do not complete a review.',
+    'Then end your session.',
   ].join('\n');
 }
 

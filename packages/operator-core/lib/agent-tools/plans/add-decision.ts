@@ -646,7 +646,7 @@ export default defineTool({
     notWhen:
       'Adding work units — use plans:add-item. Flipping status — plans:set-status. Updating overall state — plans:set-now.',
     chaining:
-      'plans:add-decision → optionally plans:set-now referencing the new D-NNN in **State:**.',
+      'Declare refs/itemRefs:["P-NNN"] for the items this decision governs; sharing a plan or mentioning an ID in prose does not establish applicability. affects:[planSlug] is broader plan context. plans:add-decision → graph:query { op:"evidence", plan, item } to inspect applicability; optionally plans:set-now referencing the new D-NNN in **State:**.',
     seeAlso: [
       'plans:set-decision-body (edit an existing decision\'s body)',
       'plans:set-now (reference the new D-NNN in the Now)',

@@ -962,7 +962,7 @@ export default defineTool({
   guidance: {
     when: `Recording execution proof for one or more plan specs before work-item completion or plan acceptance. AUTO-BAR proof: vet first (${VET_BEFORE_PROOF_ORDER}).`,
     notWhen: 'Authoring behavior — plans:set-specs. Running a test — testing:run.',
-    chaining: 'plans:get-specs → plans:bind-spec-evidence → plans:get-spec-evidence with current fingerprints.',
+    chaining: 'plans:get-specs exact revision → plans:bind-spec-evidence { items:[{ workItemId, specId, specRevision, fromTestRun, sourcePaths, fixturePaths }] } → plans:get-spec-evidence with current fingerprints → graph:query { op:"evidence", plan, item }. Declare calibration inputs on the first bind, including inline test fixtures. Qualifying newer clean runs of requirement verification.check.files refresh the authored recipe through existing autobind; a newer failure/error withdraws earlier support for that exact file. An unrelated pass never supplies the missing link.',
     seeAlso: ['plans:get-spec-evidence (inspect proof/currentness)', 'plans:get-specs (resolve exact revisions)'],
   },
   capability: 'plans:write',

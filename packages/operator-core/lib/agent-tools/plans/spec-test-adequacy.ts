@@ -2903,7 +2903,7 @@ function mutationTargetScenarioMatchesMeasuredCase(
   const target = detailsOf(mutation).targeted;
   if (typeof target !== 'string') return false;
   const targetRequirement = mutationTargetRequirement(clause);
-  if (targetRequirement.selfTarget !== null) return clause.falsifier === null;
+  if (targetRequirement.selfTarget !== null) return targetRequirement.acceptedTargets.includes(target);
   if (!targetRequirement.acceptedTargets.includes(target)) return false;
 
   const requiredScenarios = clause.falsifier?.requiredScenarios ?? [];
@@ -2950,10 +2950,9 @@ function mutationTargetMatchesMeasuredCase(
     .map(normalizedTarget));
 
   if (targetRequirement.selfTarget !== null) {
-    // Preserve the legacy identity fallback only when there is no structured falsifier to align.
-    // For an explicit falsifier, an own-specId target identifies the clause but names no canonical
-    // scenario, so it cannot prove that the measured failure exercises that falsifier.
-    return clause.falsifier === null && targetsOnRun.size <= 1;
+    // No declared scenarios: the clause itself is the target, including prose-only falsifiers.
+    // The caller still requires an exact measured failing case and its current passing baseline.
+    return targetRequirement.acceptedTargets.includes(target) && targetsOnRun.size <= 1;
   }
   if (!mutationTargetScenarioMatchesMeasuredCase(clause, mutation, caseTitle)) return false;
 

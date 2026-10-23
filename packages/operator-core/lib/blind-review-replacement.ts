@@ -1,0 +1,275 @@
+/** Recruiter-only, append-only replacement on the existing reviewer binding ledger. */
+import { createHash, randomUUID } from 'node:crypto';
+import { realpath, stat } from 'node:fs/promises';
+import path from 'node:path';
+import { getOrgPg } from '@papercusp/db-org';
+import { resolveAgentIdentity } from './agent-tools/coordination/identity';
+import { loadHarnessRegistry } from './harness-registry';
+import { areAcceptanceLineageRelated, isAcceptanceAuthorIdentity, resolvePlanImplementerIdentities } from './acceptance-author-identity';
+import { blindReviewCompletion, loadBlindReviewBrief } from './blind-review-gate';
+import { validProductReadBoundary, type ProductReadBoundary, type SessionToolConfinement } from './capability-envelope/session-confinement';
+import { blindReviewScratchPrefix } from './blind-review-scratch-plans';
+import { blindReviewerConfinement, buildBlindReviewerKickoff, BLIND_GAP_REVIEW_ACCOUNT, type BlindReviewerProductReads } from './blind-reviewer-mint';
+import { BLIND_GAP_REVIEW_ACTOR, createBlindReviewSessionBinding, recordBlindReviewSessionPost } from './blind-review-session-bindings';
+
+type Sql = ReturnType<typeof getOrgPg>['sql'];
+type Attempt = {
+  id: number | string; replacement_of: number | string; attempt_seq: number;
+  workspace_id: string; harness_slug: string; plan_slug: string; activation_audit_seq: number;
+  request_key: string; request_hash: string; requested_by: string; launch_key: string;
+  status: string; reviewer_owner_id: string | null; adv_session_id: number | string | null;
+  native_session_id: string | null; review_id: number | string | null;
+  confinement_snapshot: SessionToolConfinement;
+  request_snapshot: { productReads: ProductReadBoundary; howToRun: string; kickoff: string };
+  launch_result: unknown;
+};
+export type BlindReviewReplacementInput = {
+  workspaceId: string; harness: string; slug: string; activationAuditSeq: number;
+  sourceReviewId: number; requestKey: string; productReads: BlindReviewerProductReads;
+  howToRun?: string; ctx: Record<string, unknown>;
+};
+export type BlindReviewReplacementDeps = {
+  sql?: Sql;
+  loadBrief?: typeof loadBlindReviewBrief;
+  resolveImplementers?: typeof resolvePlanImplementerIdentities;
+  authorIdentity?: typeof isAcceptanceAuthorIdentity;
+  lineageRelated?: typeof areAcceptanceLineageRelated;
+  repoRoot?: (workspaceId: string, harness: string) => Promise<string>;
+  launcher?: () => Promise<{ handler: (args: Record<string, unknown>, ctx: never) => Promise<unknown>; confinementKey: symbol }>;
+  bind?: typeof createBlindReviewSessionBinding;
+};
+class Refusal extends Error {
+  constructor(readonly code: string, message: string) { super(message); }
+}
+function refuse(code: string, message: string): never { throw new Refusal(code, message); }
+function stable(value: unknown): string {
+  if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
+  if (value && typeof value === 'object') return '{' + Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, entry]) => JSON.stringify(key) + ':' + stable(entry)).join(',') + '}';
+  return JSON.stringify(value);
+}
+function obj(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/** Exact canonical nominations; lexical checks alone cannot detect symlink escapes. */
+export async function validateReplacementProductReads(reads: ProductReadBoundary, root: string): Promise<void> {
+  if (!validProductReadBoundary(reads) || new Set(reads.testFiles).size !== reads.testFiles.length ||
+      new Set(reads.docsSlugs).size !== reads.docsSlugs.length) {
+    refuse('invalid_product_reads', 'Nominations must contain unique exact product paths and documentation slugs.');
+  }
+  const canonicalRoot = await realpath(root);
+  for (const file of reads.testFiles) {
+    if (path.posix.normalize(file) !== file || path.isAbsolute(file) || file.includes('\\')) {
+      refuse('invalid_product_reads', 'Each nominated test must be a canonical repository-relative path.');
+    }
+    let target: string;
+    try { target = await realpath(path.join(canonicalRoot, file)); }
+    catch { refuse('invalid_product_reads', `Nominated test is missing: ${file}`); }
+    const relative = path.relative(canonicalRoot, target);
+    if (relative === '..' || relative.startsWith('../') || path.isAbsolute(relative) || !(await stat(target)).isFile()) {
+      refuse('invalid_product_reads', `Nominated test escapes its repository or is not a file: ${file}`);
+    }
+  }
+}
+
+/** isError alone never proves no process started. Unknown/partial receipts stay reserved. */
+export function replacementLaunchReceipt(value: unknown):
+  | { kind: 'not-started' }
+  | { kind: 'native'; ownerId: string; advSessionId: number; sessionId: string }
+  | { kind: 'uncertain' } {
+  const env = obj(value);
+  const data = obj(env?.data);
+  const failure = obj(data?.launchFailure);
+  if (failure?.stage === 'pre-spawn' && failure.processesOpened === 0) return { kind: 'not-started' };
+  const launch = obj(data?.launch) ?? obj(env?.launch) ?? env;
+  if (!launch || launch.mode === 'deduped') return { kind: 'uncertain' };
+  if (launch.opened === 0 && launch.partial === false && Array.isArray(launch.tasks) && launch.tasks.length === 0) {
+    return { kind: 'not-started' };
+  }
+  const sessions = obj(launch.freshVerdict)?.sessions;
+  const owners = launch.ownerIds;
+  if (launch.opened !== 1 || !Array.isArray(owners) || owners.length !== 1 ||
+      !Array.isArray(sessions) || sessions.length !== 1) return { kind: 'uncertain' };
+  const session = obj(sessions[0]);
+  const adv = Number(session?.advSessionId);
+  return typeof owners[0] === 'string' && session?.ownerId === owners[0] &&
+    typeof session.sessionId === 'string' && session.sessionId.length > 0 && Number.isSafeInteger(adv) && adv > 0
+    ? { kind: 'native', ownerId: owners[0], advSessionId: adv, sessionId: session.sessionId }
+    : { kind: 'uncertain' };
+}
+
+function publicAttempt(row: Attempt) {
+  return { id: Number(row.id), sourceBindingId: Number(row.replacement_of), attemptSeq: row.attempt_seq,
+    requestKey: row.request_key, requestedBy: row.requested_by, status: row.status,
+    activationAuditSeq: row.activation_audit_seq, reviewerOwnerId: row.reviewer_owner_id,
+    advSessionId: row.adv_session_id == null ? null : Number(row.adv_session_id),
+    nativeSessionId: row.native_session_id, reviewId: row.review_id == null ? null : Number(row.review_id),
+    productReads: row.request_snapshot.productReads };
+}
+
+export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput, deps: BlindReviewReplacementDeps = {}):
+  Promise<Record<string, unknown>> {
+  const sql = deps.sql ?? getOrgPg().sql;
+  try {
+    const identity = resolveAgentIdentity(input.ctx as Parameters<typeof resolveAgentIdentity>[0]);
+    if (identity.workspaceId !== input.workspaceId || input.workspaceId === '*' || !input.workspaceId) {
+      refuse('recruiter_only', 'Replacement requires an authenticated recruiter in this workspace.');
+    }
+    const caller = identity.ownerId;
+    const brief = await (deps.loadBrief ?? loadBlindReviewBrief)({ workspaceId: input.workspaceId,
+      harnessSlug: input.harness, planSlug: input.slug });
+    if (!brief || brief.activationAuditSeq !== input.activationAuditSeq || !brief.ownerTurns.length) {
+      refuse('activation_audit_mismatch', 'Use the exact current activation with authenticated owner turns.');
+    }
+    const reads: ProductReadBoundary = { harness: input.harness, docsHarness: input.productReads.docsHarness ?? input.harness,
+      docsSlugs: [...(input.productReads.docsSlugs ?? [])], testFiles: [...(input.productReads.testFiles ?? [])] };
+    const root = await (deps.repoRoot ?? (async (ws, harness) => {
+      const entry = (await loadHarnessRegistry(ws, { fresh: true })).projects.find(p => p.slug === harness);
+      if (!entry?.path) refuse('repository_unavailable', 'The nominated repository is not registered.');
+      return entry.path;
+    }))(input.workspaceId, input.harness);
+    await validateReplacementProductReads(reads, root);
+    reads.docsSlugs.sort(); reads.testFiles.sort();
+    const howToRun = input.howToRun?.trim() ?? '';
+    const requestHash = createHash('sha256').update(stable({ workspaceId: input.workspaceId, harness: input.harness,
+      slug: input.slug, activation: input.activationAuditSeq, sourceReviewId: input.sourceReviewId, reads, howToRun })).digest('hex');
+    const scratch = { scratchPrefix: blindReviewScratchPrefix(), reviewedSlug: input.slug, harness: input.harness };
+    const confinement = blindReviewerConfinement(input.slug, reads, scratch);
+    const kickoff = buildBlindReviewerKickoff(brief, howToRun, reads, scratch);
+
+    // The plan, source binding, material and native writer are locked before eligibility
+    // is decided. Every contender serializes on the same source; there is no check→claim gap.
+    const selected = await sql.begin(async txValue => {
+      const tx = txValue as unknown as Sql;
+      const [plan] = await tx<Array<{ owner: string | null }>>`
+        SELECT owner FROM harness_shared.harness_plans
+         WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harness} AND plan_slug = ${input.slug}
+         FOR UPDATE`;
+      if (!plan) refuse('plan_not_found', 'The exact plan scope was not found.');
+      const implementers = await (deps.resolveImplementers ?? resolvePlanImplementerIdentities)(input.slug, { workspaceId: input.workspaceId, sql: tx });
+      const authorized = implementers.includes(caller) || await (deps.authorIdentity ?? isAcceptanceAuthorIdentity)(plan.owner, caller, { workspaceId: input.workspaceId, sql: tx });
+      if (!authorized) refuse('recruiter_only', 'Only the recorded plan author or implementer may recruit a replacement.');
+      const [activation] = await tx<Array<{ audit_seq: number }>>`
+        SELECT audit_seq FROM harness_shared.plan_audits WHERE workspace_id = ${input.workspaceId}
+          AND harness_slug = ${input.harness} AND plan_slug = ${input.slug} AND audit_kind = 'activation'
+         ORDER BY audit_seq DESC LIMIT 1`;
+      if (activation?.audit_seq !== input.activationAuditSeq) refuse('activation_audit_mismatch', 'The current activation changed before reservation.');
+      const [source] = await tx<Array<{ id: string; reviewer_owner_id: string; adv_session_id: string; status: string; review_id: string }>>`
+        SELECT id, reviewer_owner_id, adv_session_id, status, review_id FROM harness_shared.plan_blind_review_sessions
+         WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harness} AND plan_slug = ${input.slug}
+           AND activation_audit_seq = ${input.activationAuditSeq} AND review_id = ${input.sourceReviewId}
+           AND launch_parent_owner = ${BLIND_GAP_REVIEW_ACTOR} FOR UPDATE`;
+      if (!source || caller === source.reviewer_owner_id) refuse('source_review_mismatch', 'The request must name a bound review belonging to a different reviewer.');
+      const [material] = await tx<Array<Parameters<typeof blindReviewCompletion>[0]>>`
+        SELECT * FROM harness_shared.plan_blind_reviews WHERE id = ${input.sourceReviewId}
+          AND workspace_id = ${input.workspaceId} AND harness_slug = ${input.harness} AND plan_slug = ${input.slug}
+          AND activation_audit_seq = ${input.activationAuditSeq} AND created_by = ${source.reviewer_owner_id} FOR UPDATE`;
+      if (source.status !== 'posted' || !material || blindReviewCompletion(material) !== 'inconclusive') {
+        refuse('review_protected', 'Only a posted, explicitly incomplete review can be replaced.');
+      }
+      const [native] = await tx<Array<{ ended_at: unknown; resume_claim_key: string | null }>>`
+        SELECT ended_at, resume_claim_key FROM harness_shared.adv_sessions
+         WHERE workspace_id = ${input.workspaceId} AND id = ${source.adv_session_id}
+           AND coord_owner_id = ${source.reviewer_owner_id} FOR UPDATE`;
+      if (!native?.ended_at || native.resume_claim_key) refuse('review_protected', 'The source reviewer is live, reserved for resume, or its end is unverified.');
+      const history = await tx<Attempt[]>`
+        SELECT * FROM harness_shared.plan_blind_review_sessions WHERE replacement_of = ${source.id} ORDER BY attempt_seq FOR UPDATE`;
+      const same = history.find(row => row.request_key === input.requestKey);
+      if (same && (same.request_hash !== requestHash || same.requested_by !== caller)) refuse('request_conflict', 'This request key already names a different authenticated immutable request.');
+      const active = history.find(row => row.status !== 'failed');
+      if (same || active) {
+        const attempt = same ?? active!;
+        if (attempt.request_hash !== requestHash) refuse('replacement_active', 'A replacement with a different manifest or run instruction is already reserved.');
+        return { attempt, launch: false, excluded: [...new Set([plan.owner, caller, ...implementers].filter((v): v is string => !!v))] };
+      }
+      const seq = (history.at(-1)?.attempt_seq ?? 0) + 1;
+      const launchKey = `blind-review-replacement:${randomUUID()}`;
+      const [attempt] = await tx<Attempt[]>`
+        INSERT INTO harness_shared.plan_blind_review_sessions
+          (workspace_id, harness_slug, plan_slug, activation_audit_seq, launch_parent_owner,
+           confinement_snapshot, status, replacement_of, attempt_seq, request_key, request_hash,
+           requested_by, request_snapshot, launch_key)
+        VALUES (${input.workspaceId}, ${input.harness}, ${input.slug}, ${input.activationAuditSeq}, ${BLIND_GAP_REVIEW_ACTOR},
+          ${tx.json(confinement as never)}, 'launching', ${source.id}, ${seq}, ${input.requestKey}, ${requestHash},
+          ${caller}, ${tx.json({ productReads: reads, howToRun, kickoff } as never)}, ${launchKey}) RETURNING *`;
+      if (!attempt) refuse('reservation_failed', 'The replacement reservation was not persisted.');
+      return { attempt, launch: true, excluded: [...new Set([plan.owner, caller, ...implementers].filter((v): v is string => !!v))] };
+    });
+    let attempt = selected.attempt;
+    let outcome: unknown = attempt.launch_result;
+    if (selected.launch) {
+      try {
+        // Revalidate filesystem custody against the persisted request immediately before launch.
+        await validateReplacementProductReads(attempt.request_snapshot.productReads, root);
+        const launcher = await (deps.launcher ?? (async () => {
+          const mod = await import('./agent-tools/capability/launch-agent');
+          return { handler: (args: Record<string, unknown>, ctx: never) => mod.default.handler(args as never, ctx),
+            confinementKey: mod.INTERNAL_SCOPED_SESSION_CONFINEMENT };
+        }))();
+        outcome = await launcher.handler({ harness: input.harness, brief: attempt.request_snapshot.kickoff,
+          headless: true, agent: 'codex', account: BLIND_GAP_REVIEW_ACCOUNT, independent: true,
+          mcpTarget: 'spawn-host', idempotencyKey: attempt.launch_key }, {
+          ...input.ctx, workspaceId: input.workspaceId, harnessSlug: input.harness, uiClientId: null,
+          isSuperuser: false, isPowerUser: false, userId: null, ownerId: BLIND_GAP_REVIEW_ACTOR,
+          principal: { kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId: input.workspaceId },
+          [launcher.confinementKey]: attempt.confinement_snapshot,
+        } as never);
+      } catch (error) {
+        // A thrown transport/launcher exception may follow spawn. Never release on it.
+        outcome = { uncertain: error instanceof Error ? error.message : String(error) };
+      }
+      await sql`UPDATE harness_shared.plan_blind_review_sessions SET launch_result = ${sql.json((outcome ?? null) as never)},
+        status = 'uncertain', updated_at = now() WHERE id = ${attempt.id} AND status = 'launching'`;
+    } else if (attempt.status === 'uncertain' || attempt.status === 'launching') {
+      const [ledger] = await sql<Array<{ summary: unknown }>>`
+        SELECT summary FROM harness_shared.agent_launch_idempotency
+         WHERE workspace_id = ${input.workspaceId} AND idempotency_key = ${attempt.launch_key}
+           AND launched_by = ${BLIND_GAP_REVIEW_ACTOR}`;
+      if (obj(ledger?.summary) && Object.keys(obj(ledger?.summary)!).length) outcome = ledger!.summary;
+    }
+    if (attempt.status === 'launching' || attempt.status === 'uncertain') {
+      const receipt = replacementLaunchReceipt(outcome);
+      if (receipt.kind === 'not-started') {
+        await sql`UPDATE harness_shared.plan_blind_review_sessions SET status = 'failed',
+          launch_result = ${sql.json(outcome as never)}, updated_at = now()
+          WHERE id = ${attempt.id} AND status IN ('launching', 'uncertain')`;
+      } else if (receipt.kind === 'native') {
+        for (const excluded of selected.excluded) {
+          if (excluded === receipt.ownerId || await (deps.lineageRelated ?? areAcceptanceLineageRelated)(excluded, receipt.ownerId,
+            { workspaceId: input.workspaceId, sql })) refuse('reviewer_not_independent', 'The native receipt belongs to the author or an implementation lineage; the reservation remains protected.');
+        }
+        const bound = await (deps.bind ?? createBlindReviewSessionBinding)({ workspaceId: input.workspaceId,
+          harnessSlug: input.harness, planSlug: input.slug, activationAuditSeq: input.activationAuditSeq,
+          reviewerOwnerId: receipt.ownerId, advSessionId: receipt.advSessionId, nativeSessionId: receipt.sessionId,
+          launchParentOwner: BLIND_GAP_REVIEW_ACTOR, confinement: attempt.confinement_snapshot,
+          replacementAttemptId: Number(attempt.id) }, { sql });
+        if (!bound.ok && bound.code !== 'binding_conflict') refuse(bound.code, bound.message);
+        // A very fast reviewer can post before the native launch reply reaches us.
+        // Reconcile that immutable post instead of leaving its binding 'ready'.
+        if (bound.ok) {
+          const [post] = await sql<Array<{ id: number }>>`
+            SELECT id FROM harness_shared.plan_blind_reviews WHERE workspace_id = ${input.workspaceId}
+              AND harness_slug = ${input.harness} AND plan_slug = ${input.slug}
+              AND activation_audit_seq = ${input.activationAuditSeq} AND record_kind = 'review'
+              AND created_by = ${receipt.ownerId} ORDER BY id LIMIT 1`;
+          if (post) await recordBlindReviewSessionPost({ workspaceId: input.workspaceId,
+            planSlug: input.slug, activationAuditSeq: input.activationAuditSeq,
+            reviewerOwnerId: receipt.ownerId, reviewId: Number(post.id) }, { sql });
+        }
+      }
+    }
+    const history = await sql<Attempt[]>`
+      SELECT * FROM harness_shared.plan_blind_review_sessions WHERE replacement_of = ${attempt.replacement_of} ORDER BY attempt_seq`;
+    attempt = history.find(row => Number(row.id) === Number(attempt.id)) ?? attempt;
+    return { ok: true, op: 'replace', slug: input.slug, deduped: !selected.launch,
+      attempt: publicAttempt(attempt), attempts: history.map(publicAttempt),
+      next: attempt.status === 'failed' ? 'No process started. Correct the launch cause and use a new requestKey for a new ordered attempt.'
+        : attempt.status === 'launching' || attempt.status === 'uncertain'
+          ? 'Launch outcome is unresolved. Retry this exact request to reconcile its ledger; no second reviewer will be started.'
+          : 'The confined replacement posts its own typed product-review outcome. The original receipt remains unchanged.' };
+  } catch (error) {
+    return { ok: false, error: error instanceof Refusal ? error.code : 'replacement_unavailable',
+      message: error instanceof Error ? error.message : String(error) };
+  }
+}

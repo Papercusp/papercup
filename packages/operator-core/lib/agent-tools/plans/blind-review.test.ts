@@ -8,6 +8,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const runBlindReviewMintOp = vi.fn();
 const resumeBlindGapReviewer = vi.fn();
 const loadBlindReviewBrief = vi.fn();
+const replaceBlindGapReviewer = vi.fn();
+vi.mock('../../blind-review-replacement', () => ({
+  replaceBlindGapReviewer: (...args: unknown[]) => replaceBlindGapReviewer(...args),
+}));
 
 vi.mock('./blind-review-mint-op', () => ({
   runBlindReviewMintOp: (...a: unknown[]) => runBlindReviewMintOp(...a),
@@ -47,6 +51,28 @@ vi.mock('../../blind-review-scratch-plans', () => ({
 }));
 
 import tool from './blind-review';
+
+describe('plans:blind-review typed recruiter replacement', () => {
+  const args = { slug: 'replacement-plan', op: 'replace', activationAuditSeq: 5, sourceReviewId: 60,
+    requestKey: 'corrected-manifest-v1', productReads: { testFiles: ['product.test.ts'] } };
+  it('requires the exact activation, source attempt, immutable request and manifest together', () => {
+    expect(tool.args.safeParse(args).success).toBe(true);
+    for (const key of ['activationAuditSeq', 'sourceReviewId', 'requestKey', 'productReads']) {
+      const missing = { ...args };
+      delete missing[key as keyof typeof missing];
+      expect(tool.args.safeParse(missing).success).toBe(false);
+    }
+    expect(tool.args.safeParse({ slug: args.slug, op: 'mint', requestKey: args.requestKey }).success).toBe(false);
+  });
+  it('forwards only authenticated context and exact request fields to the recovery operation', async () => {
+    replaceBlindGapReviewer.mockResolvedValue({ ok: true, attempt: { id: 9, status: 'uncertain' } });
+    const ctx = { workspaceId: '*', uiClientId: 'su-author', isSuperuser: true };
+    const result = await tool.handler(args as never, ctx as never);
+    expect(replaceBlindGapReviewer).toHaveBeenCalledWith({ ...args, harness: 'papercusp', workspaceId: 'ws-resolved',
+      howToRun: undefined, ctx: { ...ctx, workspaceId: 'ws-resolved' } });
+    expect(result.isError).toBeUndefined();
+  });
+});
 
 const SLUG = 'demo-plan-2026-10-11';
 const CTX = { workspaceId: '*', ownerId: 'su-author' };
@@ -221,7 +247,7 @@ describe('plans:blind-review op mint', () => {
       const extra = op === 'post' ? { gaps: [] } : op === 'dispose' ? { dispositions: [{ reviewId: 1, gapId: 'G-1', itemId: 'P-001' }] } : {};
       const parsed = tool.args.safeParse({ slug: SLUG, op, howToRun: 'npm run dev', ...extra });
       expect(parsed.success, op).toBe(false);
-      expect(parsed.error?.issues.map((i) => i.message), op).toContain("howToRun is op 'mint' only");
+      expect(parsed.error?.issues.map((i) => i.message), op).toContain("howToRun is op 'mint' or 'replace' only");
     }
   });
 
