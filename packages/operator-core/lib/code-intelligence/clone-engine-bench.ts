@@ -9,7 +9,10 @@ import { preregister, scoreCase, type AnswerKey, type FairCase } from './fair-co
 import { runArm, scoreRuns, type ArmRun } from './fair-comparison-run';
 
 export const CLONE_BENCH_POLICY = Object.freeze({
-  edition: 'clone-pairs-v1', similarity: 0.8, minNodes: 20, minLines: 1,
+  edition: 'clone-pairs-v2-native-conformance', similarity: 0.8, minNodes: 20, minLines: 1,
+  jscpd: { minTokens: 1, kinds: 'all (exact plus normalized similar)', workers: 1,
+    pairLifting: 'a cross-file segment must cover at least the similarity ratio of both complete function line spans' },
+  similarityTs: { renameCost: 0.3, fast: false, types: false, pairLifting: 'cross-file top-level function spans start at line 1' },
   minhashSeeds: 32, rowsPerBand: 4, shingleWidth: 3, reps: 3, seed: 20261021,
   ranking: 'micro-F1 descending, then dependency count ascending, then arm id; failures or unavailable required candidates forbid selection',
 });
@@ -93,17 +96,30 @@ export function minhashTreeSimilarity(left: string, right: string): { candidate:
 /** Parsers reject unrecognised output instead of certifying an empty answer. */
 export function parseSimilarityTs(text: string): boolean {
   const clean = text.replace(/\x1b\[[0-9;]*m/g, '');
-  if (/No similar functions found!/.test(clean)) return false;
+  if (/No (?:similar|duplicate) functions found!/.test(clean)) return false;
+  if (/Found \d+ duplicate (?:pairs|clusters?)/.test(clean)) {
+    // The native report also includes within-file/nested-function matches.
+    // Only a reported cross-file pair belongs to this labelled pair question.
+    return /Similarity:[^\n]*\n\s+[^\n]*\/a\.ts:1-\d+[^\n]*\n\s+[^\n]*\/b\.ts:1-\d+/.test(clean)
+      || /Similarity:[^\n]*\n\s+[^\n]*\/b\.ts:1-\d+[^\n]*\n\s+[^\n]*\/a\.ts:1-\d+/.test(clean);
+  }
   const total = /Total similar (?:function )?pairs found:\s*(\d+)/.exec(clean);
   if (!total) throw new Error('unrecognised similarity-ts function report');
   return Number(total[1]) > 0;
 }
-export function parseJscpd(value: unknown): boolean {
+export function parseJscpd(value: unknown, functionLines: readonly [number, number] = [1, 1]): boolean {
   if (!value || typeof value !== 'object' || !Array.isArray((value as { duplicates?: unknown }).duplicates))
     throw new Error('unrecognised jscpd JSON report');
-  const duplicates = (value as { duplicates: { firstFile?: { name?: string }; secondFile?: { name?: string } }[] }).duplicates;
-  return duplicates.some(p => p.firstFile?.name?.endsWith('/a.ts') && p.secondFile?.name?.endsWith('/b.ts')
-    || p.firstFile?.name?.endsWith('/b.ts') && p.secondFile?.name?.endsWith('/a.ts'));
+  type Segment = { name?: string; start?: number; end?: number };
+  const duplicates = (value as { duplicates: { firstFile?: Segment; secondFile?: Segment }[] }).duplicates;
+  const basename = (name: string | undefined) => name?.split('/').pop();
+  const covers = (segment: Segment | undefined, index: number) => functionLines[index] === 1
+    || (segment?.start !== undefined && segment.end !== undefined
+      && (segment.end - segment.start + 1) / functionLines[index]! >= CLONE_BENCH_POLICY.similarity);
+  return duplicates.some(p => basename(p.firstFile?.name) === 'a.ts' && basename(p.secondFile?.name) === 'b.ts'
+    && covers(p.firstFile, 0) && covers(p.secondFile, 1)
+    || basename(p.firstFile?.name) === 'b.ts' && basename(p.secondFile?.name) === 'a.ts'
+      && covers(p.firstFile, 1) && covers(p.secondFile, 0));
 }
 export interface CloneEngine {
   readonly id: CloneEngineId;
