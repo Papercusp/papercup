@@ -641,6 +641,40 @@ describe('gather + execute against a real temporary repo', () => {
     return { dir, launches, usageWalk, finished };
   }
 
+  it('retains exact usage slot and admission phases after real mutex contention', async () => {
+    const tree = path.join(tmp, 'contended-usage');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    const slot = usageSlot();
+    // Longer than the human message budget: the structured identity must not
+    // inherit its truncation, or a later investigator will inspect another slot.
+    slot.usageWalk.dir = path.join(tmp, 'long-slot-'.repeat(20));
+    let release!: () => void;
+    let acquired!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { acquired = resolve; });
+    const holder = withFsMutex(`release-cut-usage:${path.resolve(slot.usageWalk.dir)}`, async () => {
+      acquired();
+      await held;
+    });
+    await ready;
+    try {
+      const result = await reclaimCutWorktrees(plan, { notAfterMs: Date.now() + 300 }, { usageWalk: slot.usageWalk });
+      expect(result.ok).toBe(false);
+      const failure = JSON.parse(result.errors[0]!.split('usage before reclaim: ')[1]!);
+      expect(failure.code).toBe('ETIMEDOUT');
+      expect(failure.usageAdmission.slot).toBe(path.resolve(slot.usageWalk.dir));
+      expect(failure.usageAdmission.timeoutMs).toBeGreaterThan(0);
+      expect(failure.usageAdmission.waitedMs).toBeGreaterThanOrEqual(failure.usageAdmission.timeoutMs);
+      expect(Object.keys(failure.usageAdmission.admissionSubphaseTimingsMs)).not.toHaveLength(0);
+      expect(slot.launches).toHaveLength(0);
+      expect(fs.existsSync(tree)).toBe(true);
+    } finally {
+      release();
+      await holder;
+    }
+  });
+
   it('adopts the same scheduled usage worker after a bounded wait and refuses a live changed population', async () => {
     const tree = path.join(tmp, 'adopt-first');
     g(repo, 'worktree', 'add', '-q', '--detach', tree);

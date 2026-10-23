@@ -142,7 +142,10 @@ for (const request of requests) {
       config: request.config,
       ...(configLoaderArgs.length ? { configLoader: configLoaderArgs[1] } : {}),
     };
-    const { vitestConfig } = await resolveConfig(configOptions);
+    // Unlike createVitest, resolveConfig does not forward configLoader from
+    // its CLI options. Vite consumes this policy through the override argument.
+    const { vitestConfig } = await resolveConfig(configOptions,
+      configLoaderArgs.length ? { configLoader: configLoaderArgs[1] } : {});
     let files, repositoryFiles, projects, selectedSpecifications;
     if (request.enumerateFiles) {
       // Project inheritance, in-source detection and typecheck pools belong to

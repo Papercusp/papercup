@@ -1354,6 +1354,8 @@ function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<
 async function measureDetachedCutUsage(roots: readonly string[], notAfterMs: number, opts: Omit<DetachedWalkOptions, 'signal'>) {
   const remaining = () => notAfterMs - Date.now();
   if (!Number.isFinite(notAfterMs) || remaining() <= 0) throw new Error('release-cut usage run deadline exhausted');
+  let usageAdmission: { slot: string; waitedMs: number; timeoutMs: number;
+    admissionSubphaseTimingsMs?: Record<string, number> } | undefined;
   return withFsMutex(`release-cut-usage:${path.resolve(opts.dir)}`, async () => {
     const state = await readWalkState(opts.dir);
     const terminal = !!state && !walkProcessAlive(state) && fs.existsSync(walkAttemptFiles(opts.dir, state.attempt).exit);
@@ -1398,7 +1400,15 @@ async function measureDetachedCutUsage(roots: readonly string[], notAfterMs: num
       if (e instanceof DetachedWalkAbandoned) throw new Error('release-cut usage pending; managed census continues for adoption');
       throw e;
     } finally { clearTimeout(timer); }
-  }, { timeoutMs: Math.max(1, Math.min(1000, remaining())), retryMs: 25 });
+  }, { timeoutMs: Math.max(1, Math.min(1000, remaining())), retryMs: 25,
+    onTimedOut: (timing) => { usageAdmission = { slot: path.resolve(opts.dir), ...timing }; },
+  }).catch((error: unknown) => {
+    // Keep the exact slot and admission phases separate from the bounded human
+    // message, which can end halfway through a long slot path. A timeout alone
+    // cannot distinguish a held mutex from slow admission metadata operations.
+    if (usageAdmission && error instanceof Error) Object.assign(error, { usageAdmission });
+    throw error;
+  });
 }
 
 /** The scheduled adapter holds the pin mutex across discovery and this owner call.
@@ -1459,10 +1469,12 @@ export async function reclaimCutWorktrees(
   // Error.message starts with du's complete argument list. Retain the actual
   // failure before that list consumes the bounded receipt's diagnostic budget.
   const usageFailure = (error: unknown): string => {
-    const detail = error as { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown; usageProgress?: CutUsageProgress } | null;
+    const detail = error as { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown; usageProgress?: CutUsageProgress;
+      usageAdmission?: { slot: string; waitedMs: number; timeoutMs: number; admissionSubphaseTimingsMs?: Record<string, number> } } | null;
     return JSON.stringify({ code: detail?.code ?? null, signal: detail?.signal ?? null,
       killed: detail?.killed === true,
-      stderr: String(detail?.stderr ?? '').slice(-1024), usageProgress: detail?.usageProgress, message: errText(error) });
+      stderr: String(detail?.stderr ?? '').slice(-1024), usageProgress: detail?.usageProgress,
+      usageAdmission: detail?.usageAdmission, message: errText(error) });
   };
   try {
     const before = await measure();

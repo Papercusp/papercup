@@ -16,6 +16,8 @@ export interface FairProcessWitness {
     current: number; peak: number; births: number; exits: number; threads: number; migrations: number };
   members: { pid: number; startNs: string }[];
   cgroupPaths: string[];
+  /** Ordered kernel attach records retain the identity of already-exited probes. */
+  scopeAttachments?: { index: number; pid: number; startNs: string; cgroupPath: string; commandAtAttach: string }[];
 }
 
 /** Validate the writer's units and conservation laws before exposing its peak.
@@ -51,6 +53,15 @@ export function qualifyFairProcessWitness(value: FairProcessWitness,
   const root = value.members.find(row => row.pid === c.root_pid && row.startNs === c.root_start);
   if (value.members.length - (root ? 1 : 0) !== c.current)
     unknown.push('process-observer-membership-conservation-failed');
+  const attachments = value.scopeAttachments;
+  if (attachments !== undefined && (!Array.isArray(attachments) ||
+      attachments.length !== c.migrations + (c.root_pid ? 1 : 0) ||
+      attachments.some((row, index) => !row || row.index !== index ||
+        !Number.isSafeInteger(row.pid) || row.pid <= 0 || !/^\d+$/.test(row.startNs) ||
+        typeof row.commandAtAttach !== 'string' || !value.cgroupPaths.includes(row.cgroupPath)) ||
+      value.cgroupPaths.some(path => !attachments.some(row => row.cgroupPath === path)) ||
+      attachments[0]?.pid !== c.root_pid || attachments[0]?.startNs !== c.root_start))
+    unknown.push('process-observer-scope-attachment-conservation-failed');
   return { peakChildProcesses: unknown.length ? null : c.peak, unknown };
 }
 

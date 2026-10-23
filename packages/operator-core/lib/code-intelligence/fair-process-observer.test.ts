@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { fairLspTasksObserved, fairObservedScopeCosts, qualifyFairProcessWitness, type FairProcessWitness } from './fair-process-observer';
 
 const scope = '/user.slice/pc-test.scope';
@@ -14,6 +16,45 @@ const fixture = (): FairProcessWitness => ({ schemaVersion: 1, scope: 'launch-ro
 const qualify = (value: FairProcessWitness) => qualifyFairProcessWitness(value, expected, () => expected.payloadIdentity);
 
 describe('fair process lifetime witness', () => {
+  it('retains ordered PID, start identity and command custody after a migrated probe exits', () => {
+    const value = fixture();
+    const attachment = { index: 0, pid: 10, startNs: '100000000', cgroupPath: scope, commandAtAttach: 'node' };
+    value.scopeAttachments = [attachment,
+      { ...attachment, index: 1, pid: 30, startNs: '300000000', cgroupPath: '/user.slice/pc-lsp123.scope', commandAtAttach: 'systemd-run' },
+      { ...attachment, index: 2, pid: 20, startNs: '200000000' }];
+    expect(qualify(value).unknown).toEqual([]);
+    for (const changed of [value.scopeAttachments.slice(1), [...value.scopeAttachments].reverse(),
+      value.scopeAttachments.map(row => ({ ...row, cgroupPath: '/foreign' })),
+      value.scopeAttachments.map(row => ({ ...row, startNs: 'unknown' }))])
+      expect(qualify({ ...value, scopeAttachments: changed }).peakChildProcesses).toBeNull();
+  });
+  it('decodes the kernel attachment map without losing exited identities or nanosecond precision', () => {
+    const path = fileURLToPath(new URL('../../../../scripts/lib/fair-process-observer.py', import.meta.url));
+    const output = execFileSync('/usr/bin/python3', ['-c', `
+import ctypes, importlib.util, json, sys
+from types import SimpleNamespace as Row
+spec = importlib.util.spec_from_file_location('observer', sys.argv[1])
+observer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(observer)
+class Stats(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_ulonglong) for name in ['writers', 'version', 'errors', 'root_pid', 'root_start', 'live_processes', 'peak', 'births', 'exits', 'threads', 'migrations']]
+stats = Stats(0, 7, 0, 10, 9999999999999999, 0, 1, 1, 1, 0, 1)
+class StatTable:
+    def __getitem__(self, key): return stats
+class Map:
+    def __init__(self, rows): self.rows = rows
+    def keys(self): return self.rows
+    def items(self): return self.rows
+first = Row(process=Row(pid=10, start=9999999999999999), path=Row(text=b'/owned'), command=b'node')
+exited = Row(process=Row(pid=30, start=9999999999999998), path=Row(text=b'/probe'), command=b'systemd-run')
+bpf = {'stats': StatTable(), 'members': Map([Row(pid=10, start=9999999999999999)]), 'paths': Map([Row(text=b'/owned'), Row(text=b'/probe')]), 'attachments': Map([(Row(value=1), exited), (Row(value=0), first)])}
+print(json.dumps(observer.snapshot(bpf)))
+`, path], { encoding: 'utf8' });
+    expect(JSON.parse(output).scopeAttachments).toEqual([
+      { index: 0, pid: 10, startNs: '9999999999999999', cgroupPath: '/owned', commandAtAttach: 'node' },
+      { index: 1, pid: 30, startNs: '9999999999999998', cgroupPath: '/probe', commandAtAttach: 'systemd-run' },
+    ]);
+  });
   it('preserves fleeting forks, ignores thread births, and keeps a distinct launch root and migrated LSP scope', () => {
     expect(qualify(fixture())).toEqual({ peakChildProcesses: 3, unknown: [] });
   });

@@ -40,7 +40,7 @@ import { operatorHomeHarnessSlug } from '../operator-home-harness';
 const SLUG = process.env.ACCEPTANCE_GRADING_SWEEP_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 const NAME = 'acceptance-grading-sweep';
 const TARGET_ROLE = 'system:acceptance-grading-sweep';
-const DEFAULT_INTERVAL_SEC = 600;
+const DEFAULT_INTERVAL_SEC = 60;
 
 async function main(): Promise<void> {
   const active = !process.argv.includes('--inactive');

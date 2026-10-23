@@ -11,6 +11,8 @@ import { setSpecClause, listSpecClauses } from '../agent-tools/plans/spec-clause
 import { writePlanItemAnchors } from '../plan-items/anchor-store';
 import { readEngineeringEvidence, type EngineeringScope } from './engineering-evidence';
 import { engineeringEvidenceStore } from './engineering-evidence-store';
+import { getHarnessAdminUrl } from '../embedded-pg-discovery';
+import { ensureBootstrap } from '../agent-tools/locks/su-lock-store';
 
 describe('native engineering evidence canonical PG adapters', () => {
   let fixture: PlanPgFixture;
@@ -133,4 +135,18 @@ describe('native engineering evidence canonical PG adapters', () => {
     expect(graph.gaps.some(g => g.code === 'test-cases-unavailable')).toBe(true);
     expect(graph.gaps.some(g => g.code === 'test-run-unavailable')).toBe(false);
   }, 60_000);
+  it('ee.fixture-handoff: rotates dedicated admin URL pins and restores the surviving database', async () => {
+    const outer = getHarnessAdminUrl();
+    const nested = await setupPlanPgFixture({ isolated: true });
+    try {
+      const inner = getHarnessAdminUrl();
+      expect(new URL(inner).pathname).not.toBe(new URL(outer).pathname);
+      const [database] = await nested.admin`SELECT current_database() AS name`;
+      expect(new URL(inner).pathname).toBe(`/${database!.name}`);
+    } finally { await nested.dispose(); }
+    expect(getHarnessAdminUrl()).toBe(outer);
+    // Exercise the same dedicated resolver as later evidence measurement,
+    // after the nested database has actually been dropped.
+    await ensureBootstrap();
+  }, 180_000);
 });

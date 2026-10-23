@@ -3297,6 +3297,8 @@ export async function launchAcceptanceGrader(
     staleAfterMs?: number;
     /** Durable typed assignment to quote in the fresh-judge brief. */
     reviewReservation?: AcceptanceReviewReservationRef;
+    /** Stable admitted sweep episode; pins launch identity across an effect-before-ack replay. */
+    dispatchEpisodeIdentity?: string;
   } = {},
 ): Promise<AcceptanceGraderLifecycle> {
   const plan = await (deps.readPlan ?? readPlanBySlug)(planSlug, {
@@ -3366,7 +3368,8 @@ export async function launchAcceptanceGrader(
   const rubricRef = String(rubricRecord.rubricId);
   const identity = createHash('sha256')
     .update(
-      [plan.row.workspaceId, plan.row.harnessSlug, planSlug, rubricRef, plan.row.version, plan.row.contentHash].join(
+      [plan.row.workspaceId, plan.row.harnessSlug, planSlug, rubricRef,
+        ...(deps.dispatchEpisodeIdentity ? [deps.dispatchEpisodeIdentity] : [plan.row.version, plan.row.contentHash])].join(
         '\0',
       ),
     )

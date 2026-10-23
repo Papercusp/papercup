@@ -299,6 +299,10 @@ describe('native protocol real confined worker lifecycle', () => {
       expect(migrated.counters.current).toBe(retired.counters.current + 1);
       expect(migrated.counters.migrations).toBeGreaterThan(retired.counters.migrations);
       expect(migrated.cgroupPaths).toContain(movedPath);
+      expect(migrated.scopeAttachments).toContainEqual(expect.objectContaining({
+        pid: migrate.pid, cgroupPath: movedPath, startNs: expect.stringMatching(/^\d+$/),
+        commandAtAttach: expect.any(String),
+      }));
       expect(readProcessCgroupPath(migrate.pid)).toBe(movedPath);
       await send('retire');
       const final = await sample();

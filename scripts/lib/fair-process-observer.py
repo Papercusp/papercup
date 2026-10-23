@@ -25,6 +25,7 @@ def program(path):
 // different at the attach and fork probes, creating unequal map keys.
 struct key_t { u64 start; u32 pid; u32 padding; };
 struct path_t { char text[240]; };
+struct attachment_t { struct key_t process; struct path_t path; char command[16]; };
 struct stats_t {
     u64 writers, version, errors, root_pid, root_start;
     u64 live_processes, peak, births, exits, threads, migrations;
@@ -34,6 +35,7 @@ BPF_HASH(targets, struct path_t, u8, 1);
 BPF_HASH(members, struct key_t, u8, 32768);
 BPF_HASH(stamps, u32, u64, 32768);
 BPF_HASH(paths, struct path_t, u8, 1024);
+BPF_HASH(attachments, u64, struct attachment_t, 32768);
 static __always_inline struct key_t key_for(struct task_struct *task) {
     struct task_struct *leader = task->group_leader;
     struct key_t key = {};
@@ -70,18 +72,19 @@ RAW_TRACEPOINT_PROBE(cgroup_attach_task) {
     if (!s) return 0;
     struct task_struct *task = (void *)ctx->args[2];
     struct key_t key = key_for(task);
-    struct path_t path = {};
-    int length = bpf_probe_read_kernel_str(path.text, sizeof(path.text), (void *)ctx->args[1]);
+    struct attachment_t attachment = {};
+    int length = bpf_probe_read_kernel_str(attachment.path.text, sizeof(attachment.path.text), (void *)ctx->args[1]);
     // A constant byte-comparison chain causes verifier state explosion on
     // long scope paths. Exact map-key equality has the same custody boundary
     // without making the verifier explore combinations of input bytes.
-    volatile int target = targets.lookup(&path) != 0;
+    volatile int target = targets.lookup(&attachment.path) != 0;
     volatile int member = members.lookup(&key) != 0;
     if (!target && !member) return 0;
     begin(s);
-    if (length <= 0 || length >= sizeof(path.text)) fault(s, 2);
+    if (length <= 0 || length >= sizeof(attachment.path.text)) fault(s, 2);
     u8 yes = 1;
-    if (paths.update(&path, &yes)) fault(s, 4);
+    if (paths.update(&attachment.path, &yes)) fault(s, 4);
+    u64 attachment_id = 0;
     if (!member && target) {
         u64 previous = __sync_val_compare_and_swap(&s->root_pid, 0, key.pid);
         if (previous == 0) {
@@ -94,8 +97,14 @@ RAW_TRACEPOINT_PROBE(cgroup_attach_task) {
             fault(s, 16);
         }
     } else {
-        __sync_fetch_and_add(&s->migrations, 1);
+        attachment_id = __sync_add_and_fetch(&s->migrations, 1);
     }
+    // Keep exited, fleeting probe identities as well as live server members.
+    // Read the moved task's command, not the manager performing the attach.
+    attachment.process = key;
+    if (bpf_probe_read_kernel_str(attachment.command, sizeof(attachment.command), task->group_leader->comm) <= 0)
+        fault(s, 2048);
+    if (attachments.insert(&attachment_id, &attachment)) fault(s, 1024);
     end(s);
     return 0;
 }
@@ -175,6 +184,12 @@ def snapshot(bpf):
             continue
         population = [{"pid": key.pid, "startNs": str(key.start)} for key in bpf["members"].keys()]
         groups = sorted(key.text.decode() for key in bpf["paths"].keys())
+        attachments = [{"index": int(index.value), "pid": value.process.pid,
+                        "startNs": str(value.process.start),
+                        "cgroupPath": value.path.text.decode(),
+                        "commandAtAttach": value.command.decode(errors="replace")}
+                       for index, value in bpf["attachments"].items()]
+        attachments.sort(key=lambda value: value["index"])
         second = table[ctypes.c_int(0)]
         if not second.writers and first.version == second.version:
             fields = {name: int(getattr(second, name)) for name, _ in second._fields_}
@@ -184,7 +199,8 @@ def snapshot(bpf):
             return {"schemaVersion": 1, "scope": "launch-root-process-descendants",
                     "clockTicksPerSecond": os.sysconf("SC_CLK_TCK"),
                     "observerUid": os.getuid(),
-                    "counters": fields, "members": population, "cgroupPaths": groups}
+                    "counters": fields, "members": population, "cgroupPaths": groups,
+                    "scopeAttachments": attachments}
     raise RuntimeError("process observer snapshot remained concurrent")
 
 

@@ -76,7 +76,7 @@ export const RELATED_FILTER_LIST_ENV = "PC_TEST_FILTER_LIST";
 
 // Expand only local npm aliases and && sequencing. Keep the command order and
 // each alias lifecycle; other shell syntax is deliberately left unsupported.
-function expandSelectionCommands(scripts, script, seen = new Set()) {
+export function expandSelectionCommands(scripts, script, seen = new Set()) {
   if (seen.has(script) || typeof scripts[script] !== 'string') throw new Error('invalid-local-script-chain');
   const next = new Set([...seen, script]);
   const expand = command => {
@@ -179,7 +179,8 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
           (step.commandObligations ?? []).map(obligation => ({ ...obligation, step: index })));
         entries.push({ ...task, runner: 'command-chain', steps: prepared,
           files: [...new Set(prepared.flatMap(step => step.files))].sort(), commandObligations });
-        const stepFiles = prepared.flatMap(step => step.files);
+        const stepFiles = prepared.flatMap(step =>
+          step.discovery?.[0]?.runner === 'astro-check' ? [] : step.files);
         if (new Set(stepFiles).size !== stepFiles.length)
           unenumerated.push({ task: id, reason: 'overlapping-chain-file-population', command });
         for (const [index, step] of prepared.entries()) for (const residue of step.unenumerated)

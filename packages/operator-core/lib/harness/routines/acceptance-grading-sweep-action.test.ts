@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SystemActionCtx } from './system-actions';
 
 const h = vi.hoisted(() => ({
@@ -6,6 +6,7 @@ const h = vi.hoisted(() => ({
   reconcile: vi.fn(), runSweep: vi.fn(),
   pinSweep: vi.fn(),
   resolveGrader: vi.fn(),
+  enqueue: vi.fn(),
   progressTimers: [] as Array<{ name: string; tick: () => void; stop: ReturnType<typeof vi.fn> }>,
 }));
 vi.mock('@papercusp/scheduled-registry', () => ({
@@ -36,18 +37,55 @@ vi.mock('../../acceptance-grading-sweep-run', () => ({
 }));
 vi.mock('../../acceptance-grading-sweep-observe', () => ({ observeAcceptanceGrader: vi.fn() }));
 vi.mock('../../acceptance-bar-pin-sweep', () => ({ runAcceptanceBarPinSweep: h.pinSweep }));
-import './acceptance-grading-sweep-action';
+vi.mock('../../acceptance-grading-sweep-dispatch', () => ({ enqueueAcceptanceGradingDispatch: h.enqueue }));
+import { resetAcceptanceGradingSweepForTest } from './acceptance-grading-sweep-action';
+
+// Resolve the production adapter's lazy modules before switching the wall clock.
+beforeAll(async () => {
+  await Promise.all([
+    import('@papercusp/db-org'), import('../../agent-tools/plans/rubric-template'),
+    import('../../plan-acceptance-gate'), import('../../acceptance-grader'),
+    import('../../grading-integrity'), import('../../task-manager/store'),
+    import('../../coord/condition-upsert'), import('../../acceptance-grading-sweep-run'),
+    import('../../acceptance-grading-sweep-observe'), import('../../acceptance-bar-pin-sweep'),
+  ]);
+});
 
 beforeEach(() => {
+  resetAcceptanceGradingSweepForTest();
   h.progressTimers.length = 0;
   h.reconcile.mockReset().mockResolvedValue({ requestedTargetIds: ['EI-audit'], receipts: [
     { issueId: 'EI-audit', state: 'routed', conversationId: 'audit-conversation' },
   ] });
   h.runSweep.mockReset().mockResolvedValue(undefined);
+  h.enqueue.mockReset().mockResolvedValue({ workflowId: 'admitted' });
   h.pinSweep.mockReset().mockResolvedValue({ scanned: 0, reconciled: 0, held: {}, scopeSkipped: 0, errors: [], nextCursor: null });
 });
+afterEach(() => vi.useRealTimers());
 
 describe('registered acceptance sweep audit entrypoint', () => {
+  it('releases a slow repair at its deadline and joins it on the next tick', async () => {
+    vi.useFakeTimers();
+    let finishPins!: (value: unknown) => void;
+    h.pinSweep.mockImplementationOnce(() => new Promise(resolve => { finishPins = resolve; }));
+    const handler = h.handlers.get('acceptance-grading-sweep')!;
+    const first = handler({ workspaceId: 'ws-sweep' } as SystemActionCtx);
+    await vi.waitFor(() => expect(h.pinSweep).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await first).toMatchObject({ softError: expect.stringContaining('remains in flight') });
+    expect(h.runSweep).toHaveBeenCalledOnce();
+    const second = handler({ workspaceId: 'ws-sweep' } as SystemActionCtx);
+    await vi.waitFor(() => expect(h.progressTimers.filter(t => t.name.endsWith(':subject-pins'))).toHaveLength(2));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await second;
+    expect(h.pinSweep).toHaveBeenCalledOnce();
+    expect(h.runSweep).toHaveBeenCalledTimes(2);
+    finishPins({ scanned: 0, reconciled: 0, errors: [], nextCursor: null });
+    await handler({ workspaceId: 'ws-sweep' } as SystemActionCtx);
+    expect(h.pinSweep).toHaveBeenCalledOnce();
+    for (const timer of h.progressTimers) expect(timer.stop).toHaveBeenCalledOnce();
+  });
+
   it('logs the exact plan operation before its settlement', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     h.runSweep.mockImplementation(async (deps) => {
@@ -100,10 +138,11 @@ describe('registered acceptance sweep audit entrypoint', () => {
   it('carries the routine model pin through both audit repairs and eligible plan grading', async () => {
     const profile = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' };
     h.resolveGrader.mockResolvedValue({ state: 'launched' });
-    h.runSweep.mockImplementation(async (d) => d.dispatchGrader({ workspaceId: 'ws-sweep', harnessSlug: 'papercusp', planSlug: 'ready-plan' }));
+    h.runSweep.mockImplementation(async (d) => d.dispatchGrader({ workspaceId: 'ws-sweep', harnessSlug: 'papercusp', planSlug: 'ready-plan', gradeableSinceMs: 123 }));
     await h.handlers.get('acceptance-grading-sweep')!({ workspaceId: 'ws-sweep', installSlug: 'papercusp', triggerConfig: {}, payloadTemplate: { gradingLaunch: profile } });
     expect(h.reconcile).toHaveBeenCalledWith(expect.objectContaining({ ctx: expect.objectContaining({ gradingLaunch: profile }) }));
-    expect(h.resolveGrader).toHaveBeenCalledWith('ready-plan', expect.objectContaining({ gradingLaunch: profile }));
+    expect(h.enqueue).toHaveBeenCalledWith(expect.objectContaining({ planSlug: 'ready-plan', gradeableSinceMs: 123, gradingLaunch: profile }));
+    expect(h.resolveGrader).not.toHaveBeenCalled();
   });
 
   it('dispatches the pending audit queue with a scoped system identity and accepts routed delivery', async () => {

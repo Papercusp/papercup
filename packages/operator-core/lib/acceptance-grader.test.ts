@@ -1229,6 +1229,21 @@ describe('launchAcceptanceGrader', () => {
     expect(brief.length).toBeLessThan(8_000);
   });
 
+  it('keeps an admitted episode launch key across neutral plan revisions and distinguishes the next episode', async () => {
+    const launch = vi.fn(async () => ({ data: { launch: { tasks: [{ taskId: 'episode-task', logPath: '/tmp/episode-task.log' }] } } }));
+    const d = deps(launch);
+    const first = await launchAcceptanceGrader('ship-the-thing', ctx, { ...d, dispatchEpisodeIdentity: 'episode:1' });
+    const moved = { ...plan, row: { ...plan.row, version: 8, contentHash: 'neutral-edit' } };
+    const replay = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...d, readPlan: async () => moved, dispatchEpisodeIdentity: 'episode:1',
+    });
+    const next = await launchAcceptanceGrader('ship-the-thing', ctx, { ...d, dispatchEpisodeIdentity: 'episode:2' });
+    expect(first.state).toBe('launched');
+    expect(replay.idempotencyKey).toBe(first.idempotencyKey);
+    expect(next.idempotencyKey).not.toBe(first.idempotencyKey);
+    expect(launch.mock.calls).toHaveLength(3);
+  });
+
   it('refuses a fresh judge launch when the caller is in the rubric author lineage', async () => {
     const launch = vi.fn(async () => ({
       content: [{ type: 'text', text: 'must not launch' }],

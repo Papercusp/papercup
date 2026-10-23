@@ -12,6 +12,7 @@ export function resolveRelatedWidenThreshold(env?: Record<string, string | undef
     source: "default" | "env";
     invalid?: string;
 };
+export function expandSelectionCommands(scripts: any, script: any, seen?: Set<any>): any[];
 /** Preparation only: enumerate the maintained selector's actual task configs, never executions.
  * Unsupported commands and failed config reads remain named residue, even with relatedFiles.
  * @param {Array<object>} tasks
