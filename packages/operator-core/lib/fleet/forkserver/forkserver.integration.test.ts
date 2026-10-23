@@ -349,11 +349,29 @@ describe.runIf(linux)('sidecar forkserver', () => {
   });
 
   it('rejects a synchronous spawn validation failure before returning a child', async () => {
+    await prepareForkserverContainment();
+    const server = currentForkserverProcess()!;
+    const messages: Array<{ t?: string; id?: number; code?: string }> = [];
+    const observe = (raw: unknown) => {
+      const message = raw as { t?: string; id?: number; error?: { code?: string } };
+      messages.push({ t: message.t, id: message.id, code: message.error?.code });
+    };
+    server.on('message', observe);
+    const sent = vi.spyOn(server, 'send');
     const before = forkserverStats().inFlight;
-    await expect(spawnSidecarChild({
-      command: process.execPath, args: ['\0'], env, detached: true,
-    })).rejects.toMatchObject({ code: 'ERR_INVALID_ARG_VALUE' });
-    expect(forkserverStats().inFlight).toBe(before);
+    try {
+      await expect(spawnSidecarChild({
+        command: process.execPath, args: ['\0'], env, detached: true,
+      })).rejects.toMatchObject({ code: 'ERR_INVALID_ARG_VALUE' });
+      const requests = sent.mock.calls.map(([raw]) => {
+        const request = raw as { t?: string; id?: number; command?: string };
+        return { t: request.t, id: request.id, command: request.command };
+      });
+      expect(forkserverStats().inFlight, JSON.stringify({ before, after: forkserverStats(), requests, messages })).toBe(before);
+    } finally {
+      sent.mockRestore();
+      server.off('message', observe);
+    }
     expect((await viaForkserver('true', [])).code).toBe(0);
   });
 
