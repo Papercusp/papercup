@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -28,9 +28,12 @@ describe('fair process lifetime witness', () => {
       value.scopeAttachments.map(row => ({ ...row, startNs: 'unknown' }))])
       expect(qualify({ ...value, scopeAttachments: changed }).peakChildProcesses).toBeNull();
   });
-  it('decodes the kernel attachment map without losing exited identities or nanosecond precision', () => {
-    const path = fileURLToPath(new URL('../../../../scripts/lib/fair-process-observer.py', import.meta.url));
-    const output = execFileSync('/usr/bin/python3', ['-c', `
+  it('decodes the kernel attachment map without losing identities, precision or source-directory integrity', () => {
+    const owned = mkdtempSync(join(tmpdir(), 'fair-observer-import-'));
+    const path = join(owned, 'fair-process-observer.py');
+    try {
+      copyFileSync(fileURLToPath(new URL('../../../../scripts/lib/fair-process-observer.py', import.meta.url)), path);
+      const output = execFileSync('/usr/bin/python3', ['-B', '-c', `
 import ctypes, importlib.util, json, sys
 from types import SimpleNamespace as Row
 spec = importlib.util.spec_from_file_location('observer', sys.argv[1])
@@ -50,10 +53,12 @@ exited = Row(process=Row(pid=30, start=9999999999999998), path=Row(text=b'/probe
 bpf = {'stats': StatTable(), 'members': Map([Row(pid=10, start=9999999999999999)]), 'paths': Map([Row(text=b'/owned'), Row(text=b'/probe')]), 'attachments': Map([(Row(value=1), exited), (Row(value=0), first)])}
 print(json.dumps(observer.snapshot(bpf)))
 `, path], { encoding: 'utf8' });
-    expect(JSON.parse(output).scopeAttachments).toEqual([
-      { index: 0, pid: 10, startNs: '9999999999999999', cgroupPath: '/owned', commandAtAttach: 'node' },
-      { index: 1, pid: 30, startNs: '9999999999999998', cgroupPath: '/probe', commandAtAttach: 'systemd-run' },
-    ]);
+      expect(readdirSync(owned)).toEqual(['fair-process-observer.py']);
+      expect(JSON.parse(output).scopeAttachments).toEqual([
+        { index: 0, pid: 10, startNs: '9999999999999999', cgroupPath: '/owned', commandAtAttach: 'node' },
+        { index: 1, pid: 30, startNs: '9999999999999998', cgroupPath: '/probe', commandAtAttach: 'systemd-run' },
+      ]);
+    } finally { rmSync(owned, { recursive: true, force: true }); }
   });
   it('preserves fleeting forks, ignores thread births, and keeps a distinct launch root and migrated LSP scope', () => {
     expect(qualify(fixture())).toEqual({ peakChildProcesses: 3, unknown: [] });
