@@ -8,7 +8,7 @@
     "takesPrecedenceOverEarlierCalibrationLanguage": true,
     "finding": "Exact ledger reads show execution_details.mutation=NULL in21805373,21806124 and21806212. Their logs explicitly withheld descriptors because the reader URL was the host instead of its/api/health endpoint.",
     "interpretation": "The controls passed and mutations were caught, and binding hashes measured current. Those facts do not establish machine-verified calibration linkage. Treat the earlier descriptor-free mutation rows as unqualified for acceptance.",
-    "adequacy": "Required descriptors restored R4 mechanical PASS, and D032 produced a four-clause PASS before the completed HTTP binding. The completedRequiredHttpProof below takes precedence for current acceptance: the HTTP receipt is real but stale after a named helper changed; the callable clause currently fails freshness. Broader acceptance and shipment remain open.",
+    "adequacy": "The final fixtureDriftRefresh below takes precedence: governing evaluator afe9d2e1ae passes all four current P004 clauses after independently current replacements and qualified stale-row retirements. Clean HTTP21813089/binding66638 remains current, including its completed runtime. Earlier two-failure and four-pass snapshots remain historical. Native acceptance and exact shipment remain open.",
     "retirements": "The31 old-row retirements applied, but stronger proof equivalence remains an open repair until required-descriptor replacements pass adequacy. No P004 acceptance or shipment was certified.",
     "repair": "Use PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED=1 and PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL=http://127.0.0.1:3170/api/health. Preserve a fresh committed source with maintained --retain-for; refuse before tests if descriptor preflight fails.",
     "repairState": "/tmp/gf-p004-required-proof-20261023.state.json",
@@ -157,11 +157,111 @@
     "helperSha256": "97e9c296d89947617c7b3617d830d9670f4413ea8c915d00ef3a4c847457746c",
     "pid": 1910797,
     "startedAt": "2026-10-23T09:28:08.963Z",
-    "observedPhase": "bundle-preflight",
+    "observedPhase": "complete",
+    "finishedAt": "2026-10-23T10:04:26.534Z",
+    "exitCode": 0,
+    "retentionMarkerPresent": false,
+    "bundlePreflightExitCode": 0,
+    "bundleSha256": "80a405092671077583400501e16d474152c3012e316afea178cc3b42b5da67f6",
     "sourceVerified": true,
     "coverageExportsVerified": true,
     "executionContract": "Materialize one exact committed source root retained by the external marker. Verify both coverage exports and their source files inside that root. Run the maintained host bundler first; start the private-PG HTTP test only if that bundle passes. Reconcile the state/log before retrying after context loss.",
-    "qualification": "No final HTTP result or current runtime binding is claimed. The original21-source/3-fixture basis remains the required binding recipe."
+    "testRunId": 21813089,
+    "status": "pass",
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "runtimeReceipt": {
+      "runId": "20261023T095435Z-3730617",
+      "resultSha256": "a2fc1066e017226fdfd7a280f5dc49b9329872c5017b796887780eb07e03b473",
+      "sourceSha256": "5389ab6110081f3de05a8f71831fabe82606957fd807b019410dcdb1a45f83a5",
+      "lifecycleSha256": "c5f60f5f87f658f213fe72c740f8fd20decb81cdc4afae458c91180ecac74afb",
+      "runtimeExitCode": 0,
+      "runtimeRemoved": true,
+      "pgDataRemoved": true
+    },
+    "bindingId": 66638,
+    "originalRecipeBindingId": 39071,
+    "sourcePathCount": 21,
+    "fixturePathCount": 3,
+    "evidencePlane": "live",
+    "currentness": {
+      "overall": "current",
+      "applicableDimensions": ["spec", "source", "test", "fixture", "environment", "testRun"],
+      "staleReasons": [],
+      "unknownReasons": [],
+      "provenance": "server-measured"
+    },
+    "qualifiedRetirements": {
+      "bindingIds": [66465, 66634],
+      "reason": "Retired only after replacement66638 independently measured current. Historical66465 retains its passing run and original recipe in the withdrawn-row ledger. Metadata-incomplete66634 used the same new run but omitted ORIGINAL39071 live-plane metadata. No test was replayed for that correction and no history was deleted."
+    },
+    "currentAdequacy": {
+      "governing": true,
+      "evaluatorBuild": "fbf1cdd90a",
+      "receipt": "/tmp/gf-p004-governing-four-adequacy.json",
+      "rows": [
+        { "specId": "AUTO-BAR-R-4-P-004", "revision": 4, "verdict": "fail", "wouldBlock": ["mechanical-test-adequacy"] },
+        { "specId": "GF-P004-agenda-absence", "revision": 2, "verdict": "fail", "wouldBlock": ["freshness"] },
+        { "specId": "GF-P004-callable-absence", "revision": 2, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-disposition", "revision": 2, "verdict": "pass", "wouldBlock": [] }
+      ],
+      "remainingDrift": "The changed plans/__tests__/_pg-tool-fixture.ts stales start-auto-flip binding66251 and agenda bindings66441/66449. A bounded latest-run lookup found no replacement start-auto-flip run in the prior three hours. Refresh only those affected cases, retain their original measurement recipes, and leave current HTTP/probes/R2/cohorts alone."
+    },
+    "qualification": "The clean committed HTTP case and its completed private-runtime witness are qualified current proof. They do not establish current native acceptance or exact deployed shipment. The full executed source graph remains unmeasured."
+  },
+  "fixtureDriftRefresh": {
+    "workflowState": "/tmp/gf-p004-fixture-drift-refresh-20261023.state.json",
+    "workflowLog": "/dev/shm/get-feedback-p004-fixture-drift-refresh-20261023.log",
+    "reporterReceipt": "/tmp/gf-p004-fixture-drift-refresh-20261023.test-runs.json",
+    "sourceCommit": "afe9d2e1ae751fbbf6786356db53947f90548340",
+    "phase": "complete",
+    "finishedAt": "2026-10-23T10:21:05.163Z",
+    "exitCode": 0,
+    "retentionMarkerPresent": false,
+    "planStart": {
+      "testRunId": 21813683,
+      "passed": 16,
+      "failed": 0,
+      "skipped": 0,
+      "worktreeDirty": false,
+      "originalRecipeBindings": [66251, 66441],
+      "replacementBindingIds": [66662, 66663],
+      "independentCurrentness": "Both current in every applicable dimension, with no stale or unknown reasons; /tmp/gf-fixture-start-current.json."
+    },
+    "focusedAgenda": {
+      "testRunId": 21813750,
+      "passed": 1,
+      "failed": 0,
+      "unselected": 12,
+      "worktreeDirty": false,
+      "testNamePattern": "keeps proceed advice and retained requester history out of the reporting agenda",
+      "originalRecipeBinding": 66449,
+      "replacementBindingId": 66666,
+      "independentCurrentness": "Current in every applicable dimension, with no stale or unknown reasons; /tmp/gf-fixture-agenda-current.json."
+    },
+    "scope": "Only the two proof inputs made stale by actual fixture changes. The earlier current HTTP, required-descriptor probes, R2 proof and original cohorts were reused. The R5 timing case was excluded.",
+    "qualifiedRetirements": {
+      "bindingIds": [66251, 66441, 66449],
+      "status": "retracted",
+      "receipt": "/tmp/gf-fixture-qualified-retirements.json",
+      "basis": "Each exact replacement independently measured current before its equivalent stale row was retired. Original test receipts and withdrawn binding history remain preserved."
+    },
+    "finalGoverningAdequacy": {
+      "governing": true,
+      "evaluatorBuild": "afe9d2e1ae",
+      "receipt": "/tmp/gf-p004-post-fixture-governing-adequacy.json",
+      "rows": [
+        { "specId": "AUTO-BAR-R-4-P-004", "revision": 4, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-agenda-absence", "revision": 2, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-callable-absence", "revision": 2, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-disposition", "revision": 2, "verdict": "pass", "wouldBlock": [] }
+      ],
+      "wouldBlock": [],
+      "mechanicalGaps": []
+    },
+    "qualification": "Both exact affected tests completed cleanly, all three replacements independently measured current, equivalent stale rows were retired, and the unfiltered four-clause evaluation is governing PASS. This establishes P004 test adequacy; native acceptance and exact shipment remain open."
   },
   "r5CapturedDiagnostic": {
     "workItemId": "WI-6554700010022519",
@@ -179,7 +279,10 @@
     "unchangedNamedSources": 15,
     "sourceHashComparison": "sourceStart equals sourceEnd in the completed phase report. These named sources do not identify the complete imported graph.",
     "observation": "The original focused case preserved the expected facts, worklists and obligation states in both portfolio arms with the unchanged900ms provider budget. Its matched shared-arm timing checks passed. The initial seeded read remains recorded separately.",
-    "interpretation": "The earlier intermittent agenda loss was not reproduced in this single working-source diagnostic. No root-cause fix, clean-commit acceptance or deployed-runtime claim follows; preserve original failing21806199 and keep the investigation open."
+    "interpretation": "The earlier intermittent agenda loss was not reproduced in this single working-source diagnostic. No root-cause fix, clean-commit acceptance or deployed-runtime claim follows; preserve original failing21806199 and keep the investigation open.",
+    "causalCorrection": "The reset-cache hypothesis is rejected for this focused invocation: it calls setupBaselineCoordFixture, whose admin-URL resets already existed at original7267510 lines41/176/198. The only changed file adds resets inside setupPlanPgFixture/dispose, neither called by the R5 case; seedPlan is the only imported helper used. Fourteen matching named sources plus this unused function delta do not explain the pass.",
+    "originalFailureLocalization": "The original TEST_FILE_CASE_TRACE points to line645:120, Promise.all index2, in the eight-read cold-concurrent phase. Original arm/window and inner portfolio SQL timings were not captured. Preserve the900ms budget and exact agenda oracle; localize cold-concurrent source stages before choosing a fix.",
+    "causalCheckpoint": { "workItemId": "WI-6554700010022519", "contentHash": "008443a39e7b" }
   },
   "preservedArtifact": {
     "path": "docs/evidence/get-feedback-p004-and-rubric9-proof-2026-10-23.json",
