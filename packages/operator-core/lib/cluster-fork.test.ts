@@ -164,6 +164,7 @@ describe('startCluster (P3-2)', () => {
       vi.advanceTimersByTime(1);
       expect(h.liveWorkerCount?.()).toBe(2);
       expect(cl.forks).toBe(6);
+      expect(cl.forkEnvs.every(env => env.PAPERCUSP_BACKGROUND_WORKERS === '0')).toBe(true);
       h.drain?.();
     } finally {
       vi.useRealTimers();
