@@ -158,6 +158,28 @@ describe('describeUnreadRun', () => {
     expect(describeUnreadRun(body, 0)?.signals.inFlight).toEqual(['still running']);
   });
 
+  it.each([
+    'No agent was launched',
+    'No agents launched',
+    'No fleet launched',
+    'Zero fleets were launched',
+    'No agents or fleets launched',
+    'No jobs launched',
+  ])('does not attribute retained worker evidence to a negated launch: %s (EI-26741883152223587)', (status) => {
+    const body = `${status} this unit. ` +
+      'Read the worker-owned qualification receipt at /tmp/worker/qualification.json; its result is retained.';
+    expect(describeUnreadRun(body, 0)).toBeNull();
+  });
+
+  it.each([
+    'No agents launched this unit; launched a separate suite',
+    'No fleets launched this unit. Launched a separate suite',
+    'No agents launched, but launched a separate suite',
+  ])('keeps an affirmative unread run after a negated agent launch: %s', (status) => {
+    const body = `${status}; output at /tmp/current.log is not yet read.`;
+    expect(describeUnreadRun(body, 0)?.signals.inFlight).toEqual(['launched', 'not yet read']);
+  });
+
   it('does not infer an active run from a negated inventory and a proposed scenario (EI-26699409305176974)', () => {
     const body = '## Did\nNo product code or runtime launched this unit.\n' +
       'Read-only inventory at /tmp/papercusp-focus-449b1-current.\n' +

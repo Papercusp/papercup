@@ -27,6 +27,7 @@ import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { execPath } from 'node:process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Script } from 'node:vm';
 import { applyCodexGatewayRoute } from '../scripts/psu-launcher.mjs';
 import {
   findNativeTranscriptMarker,
@@ -2273,19 +2274,23 @@ it('the busy fixture keeps emitting while its agent main thread is blocked', asy
     "blockFs.writeSync(1,'MAIN-BLOCKED\\n');" +
     `while(!blockFs.existsSync(${JSON.stringify(unblockMain)}))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,25);` +
     "blockFs.writeSync(1,'MAIN-RESUMED\\n');}});";
+  const childCode = busyThenIdleChildCode(900, 50, 1000, releaseBusy) + blockCode;
+  // Fail before launch if a generated control cannot execute at all.
+  new Script(childCode);
   const done = hostThroughPty({
     command: execPath,
-    args: ['-e', busyThenIdleChildCode(900, 50, 1000, releaseBusy) + blockCode],
+    args: ['-e', childCode],
     cwd: '/tmp',
     env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId },
     ownerId,
     io,
     bridgeTty: false,
+    onExit: () => {},
   });
   onTestFinished(async () => {
     writeFileSync(unblockMain, 'release\n');
     writeFileSync(releaseBusy, 'release\n');
-    await done;
+    expect(await done).toBe(0);
   });
   expect(await waitForHost(ownerId)).not.toBeNull();
   expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
