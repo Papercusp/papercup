@@ -11,13 +11,14 @@ import { compileAgentSpecification, BlueprintSchema } from '@papercusp/orchestra
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { projectBlueprintToPg, readBlueprintFromPg, readBlueprintHashFromPg } from './project-to-pg';
 import { readAcceptedBlueprintDirectWorkItem } from './operation-admission';
-import { cancelBlueprintOperation, getBlueprintOperationEvents, getBlueprintOperationResult, getBlueprintOperationStatus, OperationEventBodySchema, prepareDirectOperationCompletion,
+import { cancelBlueprintOperation, getBlueprintOperationEvents, getBlueprintOperationResult, getBlueprintOperationStatus,
   signalBlueprintOperation, submitBlueprintOperation } from './operation-service';
 import { validateSupportOperationResult } from './support-workflow-case';
 import { supportToEngineeringOperation } from './support-workflow-operation';
 import { administerWorkflow, readWorkflowAdministration, WorkflowAdministrationActionSchema } from './support-workflow-administration';
 import { evaluateSupportWorkflowTrial, type SupportTrialAuthority } from './support-workflow-trial';
 import { supportWorkflowTrialEvidenceFixture } from './fixtures/support-workflow-trial-cases';
+import { seedSupportWorkflowSyntheticCompletion } from './fixtures/support-workflow-synthetic-completion';
 import { getWorkItem } from '../work-items';
 import { runWithWorkspace } from '../workspace-als';
 import { writeOperatorState } from '../operator-state-pg';
@@ -552,43 +553,8 @@ describe('support business review with real corpus and funding (synthetic comple
     const output = { supportCaseId: 'case-cobalt', summary: 'Cited engineering handoff',
       reproduction: ['Open the synthetic case'], checklist: ['Confirm the failure'], suggestedRole: 'engineering',
       citations: [{ id: documentId, source: 'slack', externalId: 'T1:CSUPPORT:123' }] };
-    // Match the maintained operation-admission fixture's two independent model
-    // records. These are synthetic evidence, not a second native launch proof.
-    const nativeSessionId = `synthetic-business-${crypto.randomUUID()}`;
-    const workerId = `worker-${nativeSessionId}`;
-    const { pin } = await readAcceptedBlueprintDirectWorkItem(db.adminSql, workspaceId, item);
-    await db.adminSql`INSERT INTO harness_shared.adv_sessions
-      (workspace_id, mode, role, feature, agent, session_id, launch_spec, coord_owner_id)
-      VALUES (${workspaceId}, 'console', ${role}, ${workItemId}, 'codex', ${nativeSessionId},
-        ${db.adminSql.json(JSON.parse(JSON.stringify({ acceptedOperation: { pin } })))}, ${workerId})`;
-    const attestation = OperationEventBodySchema.parse({ kind: 'model-attestation', receiptId: handle.receiptId,
-      workItemId, runId: null, ownerId: workerId, nativeSessionId,
-      requestId: crypto.randomUUID(), providerResponseId: `response-${nativeSessionId}`, backend: 'codex', provider: 'openai',
-      requestedModel: 'gpt-6.1-sol', actualModel: 'gpt-6.1-sol', forwardedEffort: 'medium', effortSource: 'forwarded-request',
-      usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokenBasis: 'inclusive' }, source: 'gateway' });
-    if (attestation.kind !== 'model-attestation') throw new Error('expected model attestation fixture');
-    await db.adminSql`INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body)
-      VALUES (${workspaceId}, 'blueprint-operation', ${`receipt:${handle.receiptId}`}, ${`model-${nativeSessionId}`}, ${db.adminSql.json(attestation)})`;
-    await db.adminSql`INSERT INTO harness_shared.agent_usage_samples
-      (workspace_id, session_id, ts, bucket_key, provider, model, model_class, source, input_tokens, output_tokens,
-        cache_read_tokens, cache_creation_tokens, usage_provenance)
-      VALUES (${workspaceId}, ${nativeSessionId}, 1000, ${nativeSessionId}, 'openai', 'gpt-6.1-sol', 'default', 'interactive',
-        10, 2, 0, 0, ${db.adminSql.json({ grain: 'request', modelSource: 'transcript',
-          sourceId: `turn:${nativeSessionId}`, inputTotalTokens: 10 })})`;
-    const [modelFixture] = await db.adminSql<{ n: number }[]>`SELECT count(*)::int AS n
-      FROM harness_shared.adv_sessions s JOIN harness_shared.agent_usage_samples u
-        ON u.workspace_id = s.workspace_id AND u.session_id = s.session_id
-      WHERE s.workspace_id = ${workspaceId} AND s.feature = ${workItemId}
-        AND s.launch_spec->'acceptedOperation'->'pin' = ${db.adminSql.json(JSON.parse(JSON.stringify(pin)))}
-        AND u.model = 'gpt-6.1-sol' AND u.usage_provenance->>'modelSource' = 'transcript'`;
-    expect(modelFixture?.n, 'seed paired model evidence before preparing the completion').toBe(1);
-    const completion = await runWithWorkspace(workspaceId, () => prepareDirectOperationCompletion(db.adminSql, workspaceId, item, output));
-    // This is an issue-family task: seed the canonical terminal vocabulary,
-    // just as the state writer does, rather than a legacy feature status.
-    await db.adminSql`UPDATE harness_shared.work_items SET status = 'done', authority = 'committed',
-      terminal_owner = ${workerId}, terminal_completion_ref = ${`business:${decision}`},
-      payload = payload || ${JSON.stringify({ blueprintResult: completion })}::text::jsonb
-      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${workItemId}`;
+    expect((await seedSupportWorkflowSyntheticCompletion(db.adminSql, { handle, role, output })).pairedModelRecords)
+      .toBe(1);
     expect(await getBlueprintOperationStatus(db.adminSql, handle, callerId)).toMatchObject({
       phase: 'terminal', outcome: 'succeeded', items: [{ state: 'done' }],
     });
