@@ -112,6 +112,7 @@ import {
   toolNotOkReason,
   unwrapOutputEnvelope,
   withPtoolConnectionPhaseTrace,
+  createPtoolHttpTraceFetch,
 } from './ptool.mjs';
 import {
   AGENT_LAUNCH_CLIENT_TIMEOUT_MS,
@@ -184,6 +185,67 @@ describe('ptool post-connect phase diagnostics', () => {
       log.mockRestore();
       vi.useRealTimers();
     }
+  });
+});
+
+describe('ptool HTTP request correlation', () => {
+  const trace = { traceId: 'connection-test', operatorConnectSequence: 2 };
+
+  it('sends distinct server trace IDs across discovery retries while preserving the request and response', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = new Response('private-response');
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response);
+    const send = createPtoolHttpTraceFetch(trace, { fetchImpl });
+    const signal = new AbortController().signal;
+    const url = 'http://127.0.0.1:3271/api/mcp?native_session=private-session';
+    const init = { method: 'POST', signal, body: 'private-arguments',
+      headers: { Authorization: 'Bearer private-token', 'x-papercusp-mcp-trace-id': 'old-request' } };
+    try {
+      await expect(send(url, init)).resolves.toBe(response);
+      await expect(send(url, init)).resolves.toBe(response);
+      const ids = fetchImpl.mock.calls.map(([input, options]) => {
+        expect(input).toBe(url);
+        expect(options).toMatchObject({ method: 'POST', signal, body: init.body });
+        const headers = new Headers(options?.headers);
+        expect(headers.get('authorization')).toBe(init.headers.Authorization);
+        return headers.get('x-papercusp-mcp-trace-id');
+      });
+      expect(new Set(ids).size).toBe(2);
+      for (const id of ids) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line).replace('ptool: connection trace ', '')));
+      expect(events.map(event => event.requestTraceId)).toEqual(ids);
+      for (const event of events) expect(event).toMatchObject({ ...trace, event: 'http-request-start',
+        route: { host: '127.0.0.1', port: 3271 } });
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(/private-|old-request/);
+      expect(init.headers['x-papercusp-mcp-trace-id']).toBe('old-request');
+    } finally { log.mockRestore(); }
+  });
+
+  it('correlates a stalled request and preserves Request headers and the original rejection', async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failure = new Error('private-error');
+    let reject!: (error: Error) => void;
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise<Response>((_, fail) => { reject = fail; }));
+    const send = createPtoolHttpTraceFetch(trace, { fetchImpl });
+    try {
+      const request = new Request('http://127.0.0.1:3271/api/mcp', {
+        headers: { Authorization: 'Bearer private-token' },
+      });
+      const pending = send(request);
+      const rejected = expect(pending).rejects.toBe(failure);
+      await vi.advanceTimersByTimeAsync(PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS);
+      const headers = new Headers(fetchImpl.mock.calls[0][1]?.headers);
+      expect(headers.get('authorization')).toBe('Bearer private-token');
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line).replace('ptool: connection trace ', '')));
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({ event: 'phase-pending', stage: 'http-response-headers',
+        requestTraceId: headers.get('x-papercusp-mcp-trace-id') });
+      reject(failure);
+      await rejected;
+      expect(vi.getTimerCount()).toBe(0);
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(/private-/);
+    } finally { log.mockRestore(); vi.useRealTimers(); }
   });
 });
 
@@ -842,7 +904,7 @@ describe('ptool bearer-token resolution', () => {
       .toEqual(['/run/papercusp/explicit-token']);
   });
 
-  it('falls back to the shared host token when an isolated workspace token is absent', () => {
+  it('prefers the shared host token for a workspace-scoped PAPERCUSP_HOME', () => {
     const env: NodeJS.ProcessEnv = {
       NODE_ENV: 'test',
       PAPERCUSP_HOME: '/home/tester/.papercusp-workspaces/demo/.papercusp',
@@ -850,10 +912,36 @@ describe('ptool bearer-token resolution', () => {
     const paths = resolveTokenPaths({ env, home: '/home/tester' });
 
     expect(paths).toEqual([
+      '/home/tester/.papercusp/superuser-token',
       '/home/tester/.papercusp-workspaces/demo/.papercusp/superuser-token',
+    ]);
+    expect(resolveTokenPath({ env, home: '/home/tester' })).toBe('/home/tester/.papercusp/superuser-token');
+  });
+
+  it('uses PAPERCUSP_OPERATOR_HOME when the session home is workspace-scoped', () => {
+    const env: NodeJS.ProcessEnv = {
+      NODE_ENV: 'test',
+      PAPERCUSP_HOME: '/home/tester/.papercusp-workspaces/demo/.papercusp',
+      PAPERCUSP_OPERATOR_HOME: '/tmp/operator-home',
+    };
+
+    expect(resolveTokenPaths({ env, home: '/home/tester' })).toEqual([
+      '/tmp/operator-home/.papercusp/superuser-token',
+      '/home/tester/.papercusp/superuser-token',
+      '/home/tester/.papercusp-workspaces/demo/.papercusp/superuser-token',
+    ]);
+  });
+
+  it('keeps an isolated operator PAPERCUSP_HOME ahead of the shared host token', () => {
+    const env: NodeJS.ProcessEnv = {
+      NODE_ENV: 'test',
+      PAPERCUSP_HOME: '/tmp/isolated/.papercusp',
+    };
+
+    expect(resolveTokenPaths({ env, home: '/home/tester' })).toEqual([
+      '/tmp/isolated/.papercusp/superuser-token',
       '/home/tester/.papercusp/superuser-token',
     ]);
-    expect(resolveTokenPath({ env, home: '/home/tester' })).toBe(paths[0]);
   });
 
   it('tries the next implicit token only after the operator rejects the first bearer', async () => {
@@ -1129,7 +1217,40 @@ describe('ptool call deadlines', () => {
       .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 
-  it('keeps the client alive for unconfirmed release-cut reclaim previews only', () => {
+  it('keeps release-cut calls alive beyond the declared handler budget on direct and deferred routes', () => {
+    const source = readFileSync(new URL('../../../packages/operator-core/lib/agent-tools/release/cut.ts', import.meta.url), 'utf8');
+    const timeoutSec = Number(source.match(/timeoutSec:\s*(\d+)/)?.[1]);
+    expect(timeoutSec).toBeGreaterThan(0);
+    for (const args of [
+      { op: 'preflight', deferTag: true },
+      { op: 'run', confirm: true },
+      { op: 'run-leg', platform: 'windows', confirm: true },
+      { op: 'status' },
+      { op: 'reclaim', confirm: true },
+    ]) {
+      const deadline = (timeoutSec + 5) * 1000;
+      expect(timeoutForTool('release:cut', args)).toBeGreaterThan(deadline);
+      expect(timeoutForTool('tools:invoke', { name: 'release:cut', args }))
+        .toBeGreaterThan(deadline);
+    }
+    expect(timeoutForTool('unrelated:tool', { op: 'preflight' })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('keeps storage prune calls alive beyond the maintenance handler and settlement budget', () => {
+    const source = readFileSync(new URL('../../../packages/operator-core/lib/agent-tools/storage/prune.ts', import.meta.url), 'utf8');
+    const timeoutSec = Number(source.match(/timeoutSec:\s*(\d+)/)?.[1]);
+    expect(timeoutSec).toBeGreaterThan(0);
+    const deadline = (timeoutSec + 5) * 1000;
+    for (const dryRun of [true, false]) {
+      const args = { category: 'agent-sessions', olderThanDays: 3, dryRun };
+      expect(timeoutForTool('storage:prune', args)).toBeGreaterThan(deadline);
+      expect(timeoutForTool('tools:invoke', { name: 'storage:prune', args }))
+        .toBeGreaterThan(deadline);
+    }
+    expect(timeoutForTool('unrelated:tool')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('preserves the existing release-cut reclaim preview allowance', () => {
     const preview = { op: 'reclaim', confirm: false };
     expect(timeoutForTool('release:cut', preview)).toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', { name: 'release:cut', args: preview }))
@@ -1137,14 +1258,6 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('release:cut', { op: 'reclaim' }))
       .toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
 
-    expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: true }))
-      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
-    expect(timeoutForTool('tools:invoke', {
-      name: 'release:cut',
-      args: { op: 'reclaim', confirm: true },
-    })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
-    expect(timeoutForTool('release:cut', { op: 'status' }))
-      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: false }))
       .toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
