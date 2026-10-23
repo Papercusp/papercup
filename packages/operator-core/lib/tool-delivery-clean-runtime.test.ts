@@ -1,0 +1,218 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { validateToolDeliveryCleanBlocks, validateToolDeliveryCleanBoundary, toolDeliveryModuleFile, installToolDeliveryModuleGuard,
+  toolDeliveryMandatorySources, validateToolDeliveryCleanCensus, toolDeliveryBlockLedgerIdentity, validateToolDeliveryBlockLedgerIdentity,
+  toolDeliveryIgnoredCensus,
+  type ToolDeliveryCleanBoundary, type ToolDeliveryCleanPin } from './tool-delivery-clean-runtime';
+import cleanRegistration from './llm-testing/fixtures/tool-delivery-clean-runtime-candidate-20261023.json';
+import fidelityRegistration from './llm-testing/fixtures/tool-delivery-fidelity-candidate-20261023.json';
+import { toolDeliveryPreregistration } from './tool-delivery-acceptance';
+import { findBoxIdentityPaths, findOwnerNameLeaks } from '../../../scripts/lib/identity-leak-patterns.mjs';
+import { assertCleanCohortAuthority, claimCleanCohort } from './llm-testing/tool-delivery-clean-cohort.mjs';
+
+const cleanup: string[] = [];
+afterEach(() => cleanup.splice(0).forEach(path => rmSync(path, { recursive: true, force: true })));
+function fixture() {
+  const root = '/synthetic-retained-checkout';
+  const pin: ToolDeliveryCleanPin = { sourceRoot: root, cwd: root, commit: 'a'.repeat(40), porcelain: '',
+    stagedDiff: '', unstagedDiff: '', submoduleStatus: ` ${'b'.repeat(40)} libs/tooldef (heads/staging)\n`, untracked: [],
+    ignoredCensusSha256: 'c'.repeat(64), disallowedIgnoredFiles: [], sourceHashes: { 'sut.ts': 'd'.repeat(64) },
+    moduleHashes: { 'sut.ts': 'd'.repeat(64), 'node_modules/dependency/index.js': 'e'.repeat(64) },
+    installSha256: 'f'.repeat(64), environmentSha256: '1'.repeat(64), executableSha256: '2'.repeat(64), nodeVersion: 'v25.0.0',
+    loadedBuildSha: 'a'.repeat(40), configGenerationSha256: '1'.repeat(64) };
+  const boundary = (time: number): ToolDeliveryCleanBoundary => ({ ...structuredClone(pin), pid: 1234,
+    processStartTicks: '789', sut: { transport: 'in-process', pid: 1234, processStartTicks: '789' }, monotonicNs: String(time) });
+  const expectedBlocks = [0, 1, 2, 3, 4].flatMap(i => ['compact', 'full'].map(arm => ({ scenario: `S${i}`,
+    arm, variantId: `new-${arm}` })));
+  const blocks = expectedBlocks.map((block, i) => ({ ...block, runIds: [0, 1, 2].map(j => `${i}:${j}`),
+    before: boundary(i * 10), after: boundary(i * 10 + 9), requestManifestSha256: '3'.repeat(64) }));
+  return { pin, expectedBlocks, blocks, runIds: blocks.flatMap(b => b.runIds), judgedCells: expectedBlocks.map(b =>
+    ({ scenario: b.scenario, arm: b.variantId, judged: 3, unmeasured: 0 })) };
+}
+
+describe('prospective clean tool-delivery execution admission', () => {
+  function authorityFixture() {
+    const registration = structuredClone(cleanRegistration);
+    const expected = { experimentId: registration.experiment.id, portableSha256: 'a'.repeat(64), buildSha: 'b'.repeat(40),
+      plan: { version: 999, contentHash: 'c'.repeat(64) }, auditSeq: 99,
+      rubric: { revision: 99, criteriaHash: 'd'.repeat(64) }, critic: 'independent-critic' };
+    const live = { buildSha: expected.buildSha, readerSourceSha256: registration.measurementAmendment.sourceReplacements[
+      'packages/operator-core/lib/tool-delivery-acceptance.ts'].sha256,
+    plan: structuredClone(expected.plan), audit: { seq: 99, ...expected.plan },
+    rubric: { ...expected.rubric, criteriaCount: 10, selections: { 'R-6': expected.experimentId, 'R-9': expected.experimentId } },
+    vetting: { satisfied: true, reason: 'current', attestedRevision: 99, attestedCriteriaHash: expected.rubric.criteriaHash,
+      critique: { critics: [expected.critic] } }, implementer: 'author',
+    r10: ['AUTO-BAR-R-10-P-013', 'AUTO-BAR-R-10-P-015'].map(specId => ({ specId, verdict: 'pass', wouldBlock: [],
+      mechanicalProof: { verdict: 'pass', gaps: [] } })) };
+    return { registration, expected, live };
+  }
+  it('admits only an exact live prospective approval, current full rubric and rollout', () => {
+    const { registration, expected, live } = authorityFixture();
+    expect(() => assertCleanCohortAuthority(registration, expected.portableSha256, expected, live)).not.toThrow();
+    expect(() => assertCleanCohortAuthority(registration, expected.portableSha256, undefined, live)).toThrow();
+  });
+  it.each(['experiment', 'portable', 'reader', 'build', 'plan', 'audit', 'rubric', 'population', 'selection', 'vetting',
+    'critic', 'self-review', 'r10', 'r10-population'])('rejects %s authority drift before creating any execution marker', mode => {
+    const { registration, expected, live } = authorityFixture();
+    if (mode === 'experiment') expected.experimentId = 'historical';
+    if (mode === 'portable') expected.portableSha256 = 'wrong';
+    if (mode === 'reader') live.readerSourceSha256 = 'wrong';
+    if (mode === 'build') live.buildSha = 'wrong';
+    if (mode === 'plan') live.plan.version++;
+    if (mode === 'audit') live.audit.contentHash = 'wrong';
+    if (mode === 'rubric') live.rubric.criteriaHash = 'wrong';
+    if (mode === 'population') live.rubric.criteriaCount--;
+    if (mode === 'selection') live.rubric.selections['R-9'] = 'historical';
+    if (mode === 'vetting') live.vetting.satisfied = false;
+    if (mode === 'critic') live.vetting.critique.critics = ['other'];
+    if (mode === 'self-review') live.implementer = expected.critic;
+    if (mode === 'r10') live.r10[0]!.mechanicalProof.gaps.push('missing proof' as never);
+    if (mode === 'r10-population') live.r10[0]!.specId = 'wrong';
+    expect(() => assertCleanCohortAuthority(registration, 'a'.repeat(64), expected, live)).toThrow();
+  });
+  it('retains a started marker and rejects both duplicate and crash-recovery execution', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'tool-delivery-once-')); cleanup.push(directory);
+    claimCleanCohort(directory, { experimentId: 'new', status: 'started' });
+    expect(() => claimCleanCohort(directory, { experimentId: 'new', status: 'retry' })).toThrow(/EEXIST/);
+  });
+  it('keeps the new cohort distinct and the entire D079 treatment unchanged', () => {
+    expect(toolDeliveryPreregistration(cleanRegistration.experiment.id)).toEqual(cleanRegistration);
+    expect(cleanRegistration.experiment.id).not.toBe(fidelityRegistration.experiment.id);
+    expect(cleanRegistration.experiment.manifestContract).toEqual(fidelityRegistration.experiment.manifestContract);
+    expect(cleanRegistration.configuration).toEqual(fidelityRegistration.configuration);
+    expect(cleanRegistration.executionPolicy.requireCleanRuntime).toBe(true);
+    expect(cleanRegistration.capture.privateCapture.originalSha256).toBe('59dbe40408cc761e879e3ea56d9c47431246684de5608914806c28f9622bfb40');
+    expect(findBoxIdentityPaths(JSON.stringify(cleanRegistration))).toEqual([]);
+    expect(findOwnerNameLeaks(JSON.stringify(cleanRegistration))).toEqual([]);
+    for (const arm of Object.values(cleanRegistration.variants)) expect(arm.configDelta).not.toHaveProperty('systemPromptText');
+  });
+  it('accepts a complete sequential clean population with stable recorder/SUT identity', () => {
+    expect(validateToolDeliveryCleanBlocks(fixture())).toBeUndefined();
+  });
+  it('rejects swapped arms, reordered same-scenario rows, reused rows and changed boundary digests', () => {
+    const f = fixture(), first = f.blocks[0]!, second = f.blocks[1]!;
+    const identity = toolDeliveryBlockLedgerIdentity('new', 0, first);
+    expect(validateToolDeliveryBlockLedgerIdentity(identity, 'new', 0, first)).toBeUndefined();
+    // jsonb reorders object keys; identical custody values must survive its round trip.
+    expect(validateToolDeliveryBlockLedgerIdentity(Object.fromEntries(Object.entries(identity).reverse()), 'new', 0, first)).toBeUndefined();
+    expect(validateToolDeliveryBlockLedgerIdentity(toolDeliveryBlockLedgerIdentity('new', 1, second), 'new', 0, first)).toBeDefined();
+    expect(validateToolDeliveryBlockLedgerIdentity(identity, 'new', 1, first)).toBeDefined();
+    expect(validateToolDeliveryBlockLedgerIdentity(identity, 'new', 2, f.blocks[2]!)).toBeDefined();
+    expect(validateToolDeliveryBlockLedgerIdentity({ ...identity, beforeSha256: 'f'.repeat(64) }, 'new', 0, first)).toBeDefined();
+    expect(validateToolDeliveryBlockLedgerIdentity({ ...identity, requestManifestSha256: 'f'.repeat(64) }, 'new', 0, first)).toBeDefined();
+  });
+  it.each(['launcher.cjs', 'node_modules/tsx/dist/loader.mjs',
+    'packages/operator-core/lib/llm-testing/targets/codex-responses-tool-loop.ts',
+    'apps/operator/scripts/tool-delivery.generated.mjs', 'scenario.ts'])('rejects omission of mandatory %s even from an otherwise consistent pin', path => {
+    const registration = { sourcePins: { files: { 'apps/operator/scripts/tool-delivery.generated.mjs': 'a' },
+      scenarioPaths: { scenario: 'scenario.ts' } }, executionPolicy: { launcherPath: 'launcher.cjs' } };
+    const f = fixture(), boundary = f.blocks[0]!.before;
+    boundary.sourceHashes = Object.fromEntries(toolDeliveryMandatorySources(registration).map(p => [p, 'a'.repeat(64)]));
+    boundary.moduleHashes = { ...boundary.sourceHashes };
+    expect(validateToolDeliveryCleanCensus(boundary, registration)).toBeUndefined();
+    delete boundary.sourceHashes[path];
+    expect(validateToolDeliveryCleanCensus(boundary, registration)).toMatch(/Mandatory source census/);
+    boundary.sourceHashes[path] = 'a'.repeat(64);
+    delete boundary.moduleHashes['packages/operator-core/lib/llm-testing/test-run-ledger.ts'];
+    expect(validateToolDeliveryCleanCensus(boundary, registration)).toMatch(/Mandatory loaded module/);
+  });
+  it('rejects pre-existing ignored config inputs and changed runtime/config generations', () => {
+    const f = fixture(); f.blocks[0]!.before.disallowedIgnoredFiles = ['.config/loader.mjs'];
+    expect(validateToolDeliveryCleanBlocks(f)).toMatch(/ignored execution input/);
+    const g = fixture(); g.blocks[0]!.before.loadedBuildSha = 'b'.repeat(40);
+    expect(validateToolDeliveryCleanBlocks(g)).toMatch(/generation differs/);
+    const h = fixture(); h.blocks[0]!.before.configGenerationSha256 = '2'.repeat(64);
+    expect(validateToolDeliveryCleanBlocks(h)).toMatch(/generation differs/);
+  });
+  it('includes ignored redirect inputs inside nested gitlinks in the whole-checkout census', () => {
+    const status = ` ${'a'.repeat(40)} libs/outer (heads/staging)\n ${'b'.repeat(40)} libs/outer/nested (heads/staging)\n`;
+    const ignored = toolDeliveryIgnoredCensus(status, directory => directory.endsWith('/nested')
+      ? ['.config/redirect.mjs'] : ['node_modules/package/index.mjs']);
+    expect(ignored).toContain('libs/outer/nested/.config/redirect.mjs');
+    const f = fixture(); f.blocks[0]!.before.disallowedIgnoredFiles = ignored.filter(path => !path.split('/').includes('node_modules'));
+    expect(validateToolDeliveryCleanBlocks(f)).toMatch(/ignored execution input/);
+    expect(() => toolDeliveryIgnoredCensus('unreadable gitlink', () => [])).toThrow(/unavailable/);
+  });
+  it.each(['porcelain', 'stagedDiff', 'unstagedDiff'] as const)('rejects dirty %s before model admission', field => {
+    const f = fixture(); f.blocks[0]!.before[field] = 'M sut.ts';
+    expect(validateToolDeliveryCleanBoundary(f.blocks[0]!.before, f.pin)).toMatch(/not globally clean/);
+  });
+  it('rejects untracked files and an uninitialized or moved gitlink', () => {
+    const f = fixture(); f.blocks[0]!.before.untracked = ['untracked.ts'];
+    expect(validateToolDeliveryCleanBlocks(f)).toMatch(/not globally clean/);
+    const g = fixture(); g.blocks[0]!.before.submoduleStatus = '+wrong libs/tooldef';
+    expect(validateToolDeliveryCleanBlocks(g)).toMatch(/gitlink/);
+  });
+  it.each(['commit', 'sourceHashes', 'moduleHashes', 'installSha256', 'environmentSha256',
+    'executableSha256', 'cwd', 'nodeVersion', 'ignoredCensusSha256'] as const)('rejects changed %s at the post-block boundary', field => {
+    const f = fixture(); Object.assign(f.blocks[4]!.after, { [field]: field.endsWith('Hashes') ? { changed: '0'.repeat(64) } : 'changed' });
+    expect(validateToolDeliveryCleanBlocks(f)).toMatch(/identity changed|generation differs/);
+  });
+  it('invalidates the entire cohort when one post-block receipt is missing', () => {
+    const f = fixture(); delete (f.blocks[3] as Partial<typeof f.blocks[3]>)!.after;
+    expect(validateToolDeliveryCleanBlocks(f)).toMatch(/Missing block boundary/);
+  });
+  it('rejects a restarted recorder or a different SUT process', () => {
+    const f = fixture(); f.blocks[2]!.after.processStartTicks = '790'; f.blocks[2]!.after.sut.processStartTicks = '790';
+    expect(validateToolDeliveryCleanBlocks(f)).toMatch(/generation changed/);
+    const g = fixture(); g.blocks[2]!.after.sut.pid++;
+    expect(validateToolDeliveryCleanBlocks(g)).toMatch(/Recorder\/SUT process identity differs/);
+  });
+  it('rejects overlapping monotonic block intervals', () => {
+    const f = fixture(); f.blocks[1]!.before.monotonicNs = '8';
+    expect(validateToolDeliveryCleanBlocks(f)).toMatch(/overlap/);
+  });
+  it('rejects an earlier experiment marker or a replacement attempt', () => {
+    const f = fixture(); f.blocks[0]!.variantId = 'historical-compact';
+    expect(validateToolDeliveryCleanBlocks(f)).toMatch(/Mixed experiment/);
+    const g = fixture(); g.blocks[9]!.runIds[0] = 'replacement';
+    expect(validateToolDeliveryCleanBlocks(g)).toMatch(/omits or replaces/);
+  });
+  it('rejects extra, hidden and duplicate candidate population rows', () => {
+    for (const mode of ['extra', 'hidden', 'duplicate']) {
+      const f = fixture();
+      if (mode === 'extra') f.runIds.push('extra');
+      if (mode === 'hidden') f.runIds.pop();
+      if (mode === 'duplicate') f.runIds[0] = f.runIds[1]!;
+      expect(validateToolDeliveryCleanBlocks(f), mode).toMatch(/population/);
+    }
+  });
+  it('rejects a missing manifest or zero-judged scenario/arm cell', () => {
+    const f = fixture(); f.blocks[0]!.requestManifestSha256 = '';
+    expect(validateToolDeliveryCleanBlocks(f)).toMatch(/manifest checksum/);
+    const g = fixture(); g.judgedCells[7]!.judged = 0;
+    expect(validateToolDeliveryCleanBlocks(g)).toMatch(/not completely judged/);
+  });
+  it('checks actual module realpaths and rejects symlink escape into the shared tree', () => {
+    const base = mkdtempSync(join(tmpdir(), 'tool-delivery-modules-')); cleanup.push(base);
+    const root = join(base, 'retained'), outside = join(base, 'shared');
+    mkdirSync(root); mkdirSync(outside); writeFileSync(join(root, 'good.mjs'), 'export const good = true;');
+    writeFileSync(join(outside, 'dirty.mjs'), 'export const dirty = true;');
+    symlinkSync(outside, join(root, 'workspace-package'), 'dir');
+    expect(toolDeliveryModuleFile(root, pathToFileURL(join(root, 'good.mjs')).href)).toBe(join(root, 'good.mjs'));
+    expect(toolDeliveryModuleFile(root, 'node:fs')).toBeNull();
+    expect(() => toolDeliveryModuleFile(root, pathToFileURL(join(root, 'workspace-package/dirty.mjs')).href)).toThrow(/escaped/);
+    expect(() => toolDeliveryModuleFile(root, 'https://unregistered.invalid/module.mjs')).toThrow(/no local source/);
+  });
+  it('enforces containment on a real Node import and permits it only after removing the guard', () => {
+    const base = mkdtempSync(join(tmpdir(), 'tool-delivery-node-hook-')); cleanup.push(base);
+    const root = join(base, 'retained'), outside = join(base, 'shared');
+    mkdirSync(root); mkdirSync(outside);
+    const good = join(root, 'good.cjs'), escaped = join(root, 'dependency/escaped.cjs');
+    writeFileSync(good, 'module.exports = 23;');
+    writeFileSync(join(outside, 'escaped.cjs'), 'module.exports = 42;');
+    symlinkSync(outside, join(root, 'dependency'), 'dir');
+    const require = createRequire(import.meta.url);
+    const guard = installToolDeliveryModuleGuard(root);
+    try {
+      expect(require(good)).toBe(23);
+      expect(guard.urls.has(pathToFileURL(good).href)).toBe(true);
+      expect(() => require(escaped)).toThrow(/escaped the retained/);
+    } finally { guard.deregister(); }
+    expect(require(escaped)).toBe(42);
+  });
+});

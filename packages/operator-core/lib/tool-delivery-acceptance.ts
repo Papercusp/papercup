@@ -11,7 +11,10 @@ import { getBuildInfo } from './build-info';
 import candidatePreregistration from './llm-testing/fixtures/tool-delivery-full-after-use-20261021.json';
 import diagnosticPreregistration from './llm-testing/fixtures/tool-delivery-diagnostic-candidate-20261023.json';
 import fidelityPreregistration from './llm-testing/fixtures/tool-delivery-fidelity-candidate-20261023.json';
+import cleanRuntimePreregistration from './llm-testing/fixtures/tool-delivery-clean-runtime-candidate-20261023.json';
 import { buildOracleSchemaIndex, r6PrimaryVerdict, type OracleToolCall } from './llm-testing/r6-malformed-call-oracle';
+import { validateToolDeliveryCleanBlocks, validateToolDeliveryCleanCensus, validateToolDeliveryBlockLedgerIdentity,
+  type ToolDeliveryCleanBlock, type ToolDeliveryCleanPin } from './tool-delivery-clean-runtime';
 
 export const TOOL_DELIVERY_PLAN = 'deterministic-tool-definition-delivery-2026-09-21';
 export const TOOL_DELIVERY_INSTRUMENTS = ['llm-test-su-tool-definition-tier-ab', 'tool-delivery-invalid-arg-evidence-ladder'] as const;
@@ -56,16 +59,20 @@ interface Preregistration {
   sourcePins: { head: string; files: Record<string, string>; scenarioPaths: Record<string, string>; submodules?: Record<string, string> };
   capture: { privateCapture: { originalSha256: string } };
   custodyPaths?: { privateCaptureFile: string; receiptDirectory: string; catalogSource: 'current-build' };
+  executionPolicy?: { requireCleanRuntime?: boolean; launcherPath?: string };
   measurementAmendment?: {
     decisionRef: string; registeredAt: string;
     sourceReplacements: Record<string, { originalSha256: string; sha256: string }>;
     addedFiles: Record<string, string>;
+    /** Prospective measurement-only gitlinks; never changes frozen treatment pins. */
+    addedSubmodules?: Record<string, string>;
   };
 }
 const preregistrations: Readonly<Record<string, Preregistration>> = {
   [candidatePreregistration.experiment.id]: candidatePreregistration as unknown as Preregistration,
   [diagnosticPreregistration.experiment.id]: diagnosticPreregistration as unknown as Preregistration,
   [fidelityPreregistration.experiment.id]: fidelityPreregistration as unknown as Preregistration,
+  [cleanRuntimePreregistration.experiment.id]: cleanRuntimePreregistration as unknown as Preregistration,
 };
 export function toolDeliveryPreregistration(id: string): Preregistration {
   const registration = preregistrations[id];
@@ -259,10 +266,14 @@ export function verifyToolDeliverySourceCustody(input: {
       }
     }
     const amendment = registration.measurementAmendment;
-    const allowed = ['packages/operator-core/lib/tool-delivery-acceptance.ts', 'packages/operator-core/lib/scorecards.ts'];
+    const allowed = ['packages/operator-core/lib/tool-delivery-acceptance.ts', 'packages/operator-core/lib/scorecards.ts',
+      'packages/operator-core/lib/tool-delivery-fidelity-custody.test.ts'];
     const oraclePath = 'packages/operator-core/lib/llm-testing/r6-malformed-call-oracle.ts';
     const allowedAdditions = [oraclePath, 'packages/operator-core/lib/tool-delivery-acceptance.test.ts',
-      'packages/operator-core/lib/tool-delivery-fidelity-custody.test.ts'];
+      'packages/operator-core/lib/tool-delivery-fidelity-custody.test.ts',
+      'packages/operator-core/lib/tool-delivery-clean-runtime.ts', 'packages/operator-core/lib/tool-delivery-clean-runtime.test.ts',
+      'packages/operator-core/lib/llm-testing/test-run-ledger.ts', 'libs/test-config/src/execution-details.ts',
+      'libs/test-config/src/execution-details.test.ts', 'packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs'];
     if (!amendment || !(amendment.addedFiles[oraclePath] || (registration.custodyPaths && registration.sourcePins.files[oraclePath])) ||
         !amendment.sourceReplacements['packages/operator-core/lib/tool-delivery-acceptance.ts'] ||
         !/^deterministic-tool-definition-delivery-2026-09-21#D-\d+$/.test(amendment.decisionRef) || !Number.isFinite(Date.parse(amendment.registeredAt)) ||
@@ -270,6 +281,7 @@ export function verifyToolDeliverySourceCustody(input: {
         Object.keys(amendment.addedFiles).some(path => !allowedAdditions.includes(path))) {
       return bad('Missing or invalid measurement-only amendment; original treatment remains frozen.');
     }
+    toolDeliveryCommittedSubmodules(registration);
     if (!input.buildSha || !/^[a-f0-9]{7,40}$/.test(input.buildSha)) return bad('Loaded measurement build identity is unavailable.');
     for (const [path, originalSha256] of Object.entries(registration.sourcePins.files)) {
       const replacement = amendment?.sourceReplacements[path];
@@ -287,6 +299,21 @@ export function verifyToolDeliverySourceCustody(input: {
     }
     return { verified: true, reason: 'Private original, unchanged treatment and pinned measurement sources verified.', privateOriginalSha256, sourceFiles };
   } catch { return bad('Private capture or pinned source could not be verified.'); }
+}
+
+/** The expanded reader must be deployed before recording the new optional custody field. */
+export function toolDeliveryCommittedSubmodules(registration: Preregistration): Record<string, string> {
+  const frozen = registration.sourcePins.submodules ?? {};
+  const added = registration.measurementAmendment?.addedSubmodules ?? {};
+  for (const [path, commit] of Object.entries(added)) {
+    if (path !== 'libs/test-config' || path in frozen || !/^[a-f0-9]{40}$/.test(commit))
+      throw new Error('Invalid added measurement gitlink; frozen treatment gitlinks cannot be replaced.');
+    if (!Object.keys(registration.measurementAmendment!.addedFiles).some(file => file.startsWith(`${path}/`)))
+      throw new Error('Added measurement gitlink has no registered source.');
+  }
+  if (Object.keys(registration.measurementAmendment?.addedFiles ?? {}).some(path => path.startsWith('libs/test-config/'))
+      && !added['libs/test-config']) throw new Error('Measurement contract has no committed test-config gitlink.');
+  return { ...frozen, ...added };
 }
 
 /** The once-only runner's durable marker and complete receipt bind this population to its first execution. */
@@ -461,7 +488,7 @@ export async function measureToolDeliveryAcceptance(window: { workspaceId: strin
         readSource: (path, ref) => {
           if (!ref) return readFileSync(resolve(root, path));
           const options = { cwd: root, timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'] };
-          return readToolDeliveryCommittedSource(path, ref, registration.sourcePins.submodules ?? {},
+          return readToolDeliveryCommittedSource(path, ref, toolDeliveryCommittedSubmodules(registration),
             (args, directory) => execFileSync('git', args, { ...options, cwd: directory ? resolve(root, directory) : root }));
         },
       });
@@ -469,11 +496,65 @@ export async function measureToolDeliveryAcceptance(window: { workspaceId: strin
       receiptError = validateToolDeliveryBatchReceipt(rows, JSON.parse(readFileSync(resolve(directory, 'started.json'), 'utf8')),
         JSON.parse(readFileSync(resolve(directory, 'receipt.json'), 'utf8')), registration);
     } catch { result.custody = { verified: false, reason: 'Private original source custody is unavailable.' }; }
+    let cleanError: string | undefined;
+    const registration = toolDeliveryPreregistration(experiment.id);
+    if (registration.executionPolicy?.requireCleanRuntime === true) {
+      try {
+        const directory = resolve(homedir(), '.papercusp/experiments', registration.custodyPaths!.receiptDirectory);
+        const clean = JSON.parse(readFileSync(resolve(directory, 'clean-runtime-receipts.json'), 'utf8')) as {
+          pin: ToolDeliveryCleanPin; blocks: ToolDeliveryCleanBlock[];
+        };
+        const expectedBlocks = registration.configuration.armOrder.flatMap(block => block.arms.map(arm => ({
+          scenario: block.scenario, arm,
+          variantId: arm === 'compact' ? experiment.arms.compactArm : experiment.arms.fullArm,
+        })));
+        cleanError = validateToolDeliveryCleanBlocks({ ...clean, expectedBlocks, runIds: result.runIds,
+          judgedCells: result.oracle?.scenarioCoverage ?? [] });
+        const receipt = JSON.parse(readFileSync(resolve(directory, 'receipt.json'), 'utf8')) as Array<{
+          testRunId: number; scenario: string;
+        }>;
+        const testRunIds = receipt.map(block => block.testRunId);
+        if (testRunIds.length !== 10 || new Set(testRunIds).size !== 10 || testRunIds.some(id => !Number.isSafeInteger(id)))
+          cleanError = 'Clean cohort has no exact ten-block recorder ledger.';
+        else {
+          const recorded = await sql<{ id: number; framework: string; worktree_dirty: boolean;
+            commit_sha: string; execution_details: Record<string, unknown> }[]>`
+            SELECT id, framework, worktree_dirty, commit_sha, execution_details FROM harness_shared.test_runs
+             WHERE id = ANY(${testRunIds}) ORDER BY id`;
+          if (recorded.length !== 10 || receipt.some((block, index) => {
+            const row = recorded.find(row => Number(row.id) === block.testRunId);
+            const execution = object(row?.execution_details);
+            const before = object(execution.runtimeEnvironmentBefore), after = object(execution.runtimeEnvironmentAfter);
+            const unit = `llm-test-in-process-${clean.blocks[index]?.before.pid}`;
+            return !row || row.framework !== 'llm-test' || row.worktree_dirty !== false || execution.worktreeDirty !== false
+              || Boolean(validateToolDeliveryBlockLedgerIdentity(execution.llmBlockCustody, experiment.id, index, clean.blocks[index]!))
+              || row.commit_sha !== clean.pin.commit || execution.commitSha !== clean.pin.commit
+              || execution.scenarioId !== block.scenario || execution.testLayer !== 'llm'
+              || execution.passed !== 3 || execution.failed !== 0 || execution.skipped !== 0
+              || execution.collectionFailed !== false || digest(before.units) !== digest([unit])
+              || digest(after.units) !== digest([unit]) || typeof before.fingerprint !== 'string'
+              || before.fingerprint !== after.fingerprint;
+          })) cleanError = 'Original recorder ledger does not prove clean, stable in-process execution.';
+        }
+        for (const block of clean.blocks) {
+          for (const boundary of [block.before, block.after]) {
+            const error = validateToolDeliveryCleanCensus(boundary, registration);
+            if (error) cleanError = error;
+          }
+          const attempts = block.runIds.map(id => rows.find(row => row.id === id));
+          const manifests = attempts.map(row => ({ runId: row?.id,
+            manifests: (Array.isArray(row?.raw_events) ? row.raw_events : [])
+              .filter(event => object(event).name === 'tool_definition_manifest') }));
+          if (digest(manifests) !== block.requestManifestSha256)
+            cleanError = 'Clean boundary receipt differs from the original request manifests.';
+        }
+      } catch { cleanError = 'Clean-runtime boundary or recorder receipts are unavailable or invalid.'; }
+    }
     const outsideWindow = rows.some(row => !row.started_at || !row.finished_at ||
       new Date(row.started_at).getTime() < Date.parse(window.windowStart) || new Date(row.finished_at).getTime() > Date.parse(window.windowEnd));
-    if (!result.custody.verified || outsideWindow || receiptError) {
+    if (!result.custody.verified || outsideWindow || receiptError || cleanError) {
       result.comprehension = result.invalidArguments = { verdict: 'unknown',
-        reason: outsideWindow ? 'Observation window omits candidate attempts; the entire population was retained.' : receiptError ?? result.custody.reason };
+        reason: outsideWindow ? 'Observation window omits candidate attempts; the entire population was retained.' : receiptError ?? cleanError ?? result.custody.reason };
     }
     return result;
   }

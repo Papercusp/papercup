@@ -290,7 +290,7 @@ export default defineTool({
       'JavaScript VM scoped to owner/workspace/harness: open creates id; run executes; status reads; close cancels. Persist cross-cell state on globalThis, not lexical locals. Each cell uses CURRENT authority. No Python or restart recovery; timeout/cancel loses state; idle expires in 5m. Refused on :3170 and in dryRun. For restart-safe state, persist store(key,value) output and replay it via inputs.',
     ),
     inputs: z.record(z.string().max(200), z.unknown()).optional().describe(
-      'JSON replay state in inputs. Persist returned store/load state and pass it here after restart. Never restores arbitrary globalThis objects/functions.',
+      'JSON replay state in inputs is deeply frozen. Clone nested values before mutation (for example, `JSON.parse(JSON.stringify(inputs.state))`), or use store/load for state the script updates. Persist returned store/load state and pass it here after restart. Never restores arbitrary globalThis objects/functions.',
     ),
     work_item_id: z.string().min(1).max(120).optional().describe(
       'Default work-item attribution for nested capability:bash calls. Use the exact held WI-/EI-/F- id when this session holds multiple work-items; an explicit nested work_item_id takes precedence.',

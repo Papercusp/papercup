@@ -5,7 +5,8 @@ import fidelity from './llm-testing/fixtures/tool-delivery-fidelity-candidate-20
 import original from './llm-testing/fixtures/tool-delivery-full-after-use-20261021.json';
 import diagnostic from './llm-testing/fixtures/tool-delivery-diagnostic-candidate-20261023.json';
 import { toolDeliveryExperiment, toolDeliveryPreregistration, validateToolDeliveryBatchReceipt,
-  verifyToolDeliverySourceCustody, type ToolDeliveryRun } from './tool-delivery-acceptance';
+  verifyToolDeliverySourceCustody, toolDeliveryCommittedSubmodules, readToolDeliveryCommittedSource,
+  type ToolDeliveryRun } from './tool-delivery-acceptance';
 
 const sha = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
 const guardPath = 'packages/operator-core/lib/tool-delivery-fidelity-custody.test.ts';
@@ -44,6 +45,22 @@ function sourceFixture() {
 }
 
 describe('prospective fidelity experiment custody', () => {
+  it('requires a prospective test-config gitlink without mutating the frozen treatment', () => {
+    const f = sourceFixture(), original = structuredClone(f.registration.sourcePins);
+    const path = 'libs/test-config/src/execution-details.ts';
+    f.sources.set(path, Buffer.from('new strict recorder contract'));
+    f.registration.measurementAmendment!.addedFiles[path] = sha(f.sources.get(path)!);
+    expect(verifyToolDeliverySourceCustody(f).verified).toBe(false);
+    f.registration.measurementAmendment!.addedSubmodules = { 'libs/test-config': 'a'.repeat(40) };
+    expect(verifyToolDeliverySourceCustody(f).verified).toBe(true);
+    expect(f.registration.sourcePins).toEqual(original);
+    const pins = toolDeliveryCommittedSubmodules(f.registration);
+    const git = (args: string[], directory?: string) => directory
+      ? Buffer.from('new strict recorder contract') : Buffer.from('b'.repeat(40));
+    expect(() => readToolDeliveryCommittedSource(path, f.buildSha, pins, git)).toThrow(/registered gitlink/);
+    f.registration.measurementAmendment!.addedSubmodules['libs/testing-shell'] = 'b'.repeat(40);
+    expect(() => toolDeliveryCommittedSubmodules(f.registration)).toThrow(/cannot be replaced/);
+  });
   it('selects its own frozen treatment and keeps both historical identities separate', () => {
     expect(toolDeliveryPreregistration(fidelity.experiment.id)).toEqual(fidelity);
     expect(toolDeliveryExperiment(fidelity.experiment.id).arms).toEqual(fidelity.experiment.arms);

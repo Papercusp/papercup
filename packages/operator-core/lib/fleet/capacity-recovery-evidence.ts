@@ -1,0 +1,212 @@
+import { z } from 'zod';
+import { join } from 'node:path';
+import type { CommandInstrument } from '../rubric-instrument-registry';
+
+export const LUNA_CAPACITY_PLAN = 'luna-drain-capacity-recovery-2026-10-23';
+export const LUNA_CAPACITY_INSTRUMENTS = {
+  recovery: 'fleet:luna-capacity-census', shipment: 'fleet:luna-capacity-shipment',
+  diagnostic: 'fleet:luna-capacity-diagnostic', continuation: 'fleet:luna-capacity-continuation',
+} as const;
+const text = z.string().trim().min(1);
+const digest = z.string().regex(/^[a-f0-9]{64}$/);
+const commit = z.string().regex(/^[a-f0-9]{40}$/);
+const time = z.string().datetime({ offset: true });
+const ids = z.array(text);
+const candidate = z.object({ commit, sourceDigest: digest, buildDigest: digest,
+  specSetHash: digest, barSetHash: digest }).strict();
+const spec = z.object({ ref: text, revision: z.number().int().positive(),
+  maxConcurrentClaims: z.number().int().positive() }).strict();
+const member = z.object({ id: text, effectiveSpec: spec, runtimeState: z.enum(['parked', 'live', 'ended']),
+  wakeable: z.boolean(), ownerRestricted: z.boolean(), gateProtected: z.boolean(),
+  activeClaims: z.number().int().nonnegative().nullable(), activeIds: ids.nullable(),
+  heldIds: ids, blockerParkedIds: ids, admittedIds: ids.nullable(),
+  typedBlockers: z.array(z.object({ workItemId: text, ref: text, status: z.literal('active'), receiptRef: text }).strict()),
+  disposition: z.enum(['eligible', 'at-capacity', 'protected', 'working', 'historical', 'no-work', 'unknown']),
+  reason: text, receiptRef: text,
+}).strict();
+const recovery = z.object({ snapshotId: text, memberId: text, leaderId: text, leaderReceiptRef: text,
+  effectiveSpec: spec, restrictionsRecheckedAt: time, ownerRestricted: z.boolean(), gateProtected: z.boolean(),
+  control: z.object({ verb: z.enum(['coord:wake', 'coord:send', 'capability:launch-agent']),
+    memberId: text, actorId: text, receiptRef: text, invokedAt: time, resumeRef: text.optional() }).strict(),
+  turn: z.object({ id: text, memberId: text, triggerReceiptRef: text, startedAt: time }).strict(),
+  claim: z.object({ workItemId: text, memberId: text, takenBy: text, takenAt: time,
+    receiptRef: text, writers: ids, writerAuditReceiptRef: text }).strict(),
+}).strict();
+export const recoveryProofSchema = z.object({ schemaVersion: z.literal('luna-capacity-recovery-v1'),
+  plan: z.literal(LUNA_CAPACITY_PLAN), candidate,
+  snapshot: z.object({ id: text, observedAt: time, generation: text, fleet: text,
+    leaderId: text, leaderAfterId: text, fleetCap: z.literal(2), receiptRef: text,
+    roster: ids, members: z.array(member) }).strict(),
+  recoveries: z.array(recovery),
+}).strict();
+export type CapacityRecoveryProof = z.infer<typeof recoveryProofSchema>;
+
+const acceptance = z.object({ ref: text, reviewerId: text, authorId: text, implementerIds: ids,
+  verdict: z.literal('accept'), pendingFindings: ids, candidate, acceptedAt: time, receiptRef: text }).strict();
+export const shipmentProofSchema = z.object({ schemaVersion: z.literal('luna-capacity-shipment-v1'),
+  plan: z.literal(LUNA_CAPACITY_PLAN), candidate, acceptance,
+  evidence: z.array(z.object({ barKey: z.enum(['R-1', 'R-2', 'R-3', 'R-4', 'R-5']),
+    fingerprint: digest, candidate, observedAt: time, receiptRef: text }).strict()),
+  green: z.object({ runId: text, verdict: z.literal('green'), candidate,
+    ownerId: text, actorId: text, receiptRef: text }).strict(),
+  release: z.object({ deployId: text, commit, sourceDigest: digest, buildDigest: digest,
+    deployedAt: time, receiptRef: text }).strict(),
+  provenance: z.object({ candidateCommit: commit, artifactCommit: commit, sourceDigest: digest,
+    inputBuildDigest: digest, artifactDigest: digest, acceptanceRef: text, verifiedBy: text,
+    deterministic: z.literal(true), receiptRef: text }).strict().optional(),
+  probe: z.object({ runtime: z.literal('release-operator'), sourceDigest: digest,
+    buildDigest: digest, observedAt: time, verdict: z.literal('pass'), receiptRef: text }).strict(),
+}).strict();
+export type CapacityShipmentProof = z.infer<typeof shipmentProofSchema>;
+export const diagnosticProofSchema = z.object({ schemaVersion: z.literal('luna-capacity-diagnostic-v1'),
+  plan: z.literal(LUNA_CAPACITY_PLAN), candidate,
+  runtime: z.object({ id: z.literal('staging-operator'), containsSource: z.literal(true),
+    sourceDigest: digest, buildDigest: digest, observedAt: time, receiptRef: text }).strict(),
+  scope: z.object({ fleet: text, harness: text, specRef: text.nullable(),
+    specRevision: z.number().int().positive().nullable(), populationBasis: text, receiptRef: text }).strict(),
+  status: z.enum(['measured', 'degraded']), briefCount: z.number().int().nonnegative().nullable(),
+  callerCount: z.number().int().nonnegative().nullable(),
+  reconciliation: z.object({ specRef: text, specRevision: z.number().int().positive(), harness: text,
+    callerFloorExclusions: z.array(z.object({ id: text, reason: text, receiptRef: text }).strict()), receiptRef: text }).strict().optional(),
+  diagnosticBudgetMs: z.number().int().min(12_000), deadlineReceiptRef: text,
+  degraded: z.object({ reasonClass: text, reason: text, recoveryVerb: text, recoveryActorId: text,
+    retryOrEscalationCondition: text, receiptRef: text }).strict().optional(),
+}).strict();
+export type CapacityDiagnosticProof = z.infer<typeof diagnosticProofSchema>;
+export interface CapacityProofVerdict { status: 'pass' | 'fail'; violations: string[] }
+const unique = (values: string[]) => new Set(values).size === values.length;
+const sameSet = (a: string[], b: string[]) => unique(a) && unique(b) && a.length === b.length && a.every(id => b.includes(id));
+const sameCandidate = (a: z.infer<typeof candidate>, b: z.infer<typeof candidate>) =>
+  a.commit === b.commit && a.sourceDigest === b.sourceDigest && a.buildDigest === b.buildDigest &&
+  a.specSetHash === b.specSetHash && a.barSetHash === b.barSetHash;
+
+/** Fail closed on missing fields as well as internally contradictory receipts. */
+export function validateCapacityRecoveryProof(input: unknown): CapacityProofVerdict {
+  const parsed = recoveryProofSchema.safeParse(input);
+  if (!parsed.success) return { status: 'fail', violations: parsed.error.issues.map(i => 'schema:' + i.path.join('.')) };
+  const { snapshot: s, recoveries } = parsed.data;
+  const errors: string[] = [];
+  if (!sameSet(s.roster, s.members.map(m => m.id))) errors.push('census-population');
+  if (s.leaderAfterId !== s.leaderId) errors.push('leader-changed');
+  const eligible: string[] = [];
+  for (const m of s.members) {
+    if (!unique(m.heldIds) || !unique(m.blockerParkedIds) || !unique(m.admittedIds ?? [])) errors.push('duplicate-member-ids:' + m.id);
+    if (m.activeIds !== null && (m.activeClaims !== m.activeIds.length ||
+      !sameSet(m.heldIds, [...m.activeIds, ...m.blockerParkedIds]))) errors.push('claim-accounting:' + m.id);
+    if (m.blockerParkedIds.some(id => !m.typedBlockers.some(b => b.workItemId === id))) errors.push('untyped-exemption:' + m.id);
+    const expected = m.runtimeState === 'ended' ? 'historical' : m.runtimeState === 'live' ? 'working'
+      : !m.wakeable || m.ownerRestricted || m.gateProtected ? 'protected'
+      : m.activeClaims === null || m.activeIds === null ? 'unknown'
+      : m.activeClaims >= m.effectiveSpec.maxConcurrentClaims ? 'at-capacity'
+      : m.admittedIds === null ? 'unknown' : m.admittedIds.length === 0 ? 'no-work' : 'eligible';
+    if (m.disposition !== expected) errors.push('false-disposition:' + m.id);
+    if (expected === 'eligible') eligible.push(m.id);
+  }
+  if (eligible.length === 0 && s.members.some(m => m.disposition === 'unknown')) errors.push('unknown-is-not-empty');
+  if (eligible.length > 0 && recoveries.length === 0) errors.push('eligible-without-pickup');
+  if (eligible.length === 0 && recoveries.length > 0) errors.push('recovery-without-eligible-member');
+  if (!unique(recoveries.map(r => r.memberId)) || !unique(recoveries.map(r => r.claim.workItemId))) errors.push('duplicate-recovery');
+  for (const r of recoveries) {
+    const m = s.members.find(m => m.id === r.memberId);
+    if (!m || !eligible.includes(r.memberId)) { errors.push('ineligible-recovery:' + r.memberId); continue; }
+    if (r.snapshotId !== s.id || r.leaderId !== s.leaderId || r.control.actorId !== s.leaderId) errors.push('recovery-authority');
+    if (r.effectiveSpec.ref !== m.effectiveSpec.ref || r.effectiveSpec.revision !== m.effectiveSpec.revision ||
+      r.effectiveSpec.maxConcurrentClaims !== m.effectiveSpec.maxConcurrentClaims || r.ownerRestricted || r.gateProtected) errors.push('recovery-permission-change');
+    if (r.control.memberId !== m.id || r.turn.memberId !== m.id || r.claim.memberId !== m.id ||
+      r.claim.takenBy !== m.id || !sameSet(r.claim.writers, [m.id]) ||
+      !m.admittedIds?.includes(r.claim.workItemId) || m.heldIds.includes(r.claim.workItemId)) errors.push('pickup-identity-or-duplicate-writer');
+    if (r.turn.triggerReceiptRef !== r.control.receiptRef ||
+      (r.control.verb === 'capability:launch-agent' && !r.control.resumeRef)) errors.push('unmanaged-pickup');
+    const [snapshotAt, recheckAt, controlAt, turnAt, claimAt] =
+      [s.observedAt, r.restrictionsRecheckedAt, r.control.invokedAt, r.turn.startedAt, r.claim.takenAt].map(Date.parse);
+    if (!(snapshotAt <= recheckAt && recheckAt <= controlAt && controlAt <= turnAt && turnAt <= claimAt) ||
+      controlAt - snapshotAt > 15 * 60_000 || controlAt - recheckAt > 5 * 60_000) errors.push('pickup-time-or-stale-recheck');
+  }
+  return { status: errors.length ? 'fail' : 'pass', violations: [...new Set(errors)] };
+}
+
+export function validateCapacityShipmentProof(input: unknown): CapacityProofVerdict {
+  const parsed = shipmentProofSchema.safeParse(input);
+  if (!parsed.success) return { status: 'fail', violations: parsed.error.issues.map(i => 'schema:' + i.path.join('.')) };
+  const p = parsed.data;
+  const errors: string[] = [];
+  const a = p.acceptance;
+  if (!a.implementerIds.length || !unique(a.implementerIds) || a.reviewerId === a.authorId ||
+    a.implementerIds.includes(a.reviewerId) || a.pendingFindings.length) errors.push('acceptance-not-independent-or-settled');
+  if (!sameCandidate(p.candidate, a.candidate) || !sameCandidate(p.candidate, p.green.candidate)) errors.push('candidate-identity');
+  if (!sameSet(p.evidence.map(e => e.barKey), ['R-1', 'R-2', 'R-3', 'R-4', 'R-5']) ||
+    p.evidence.some(e => !sameCandidate(e.candidate, p.candidate) || Date.parse(e.observedAt) > Date.parse(a.acceptedAt))) errors.push('r1-r5-proof-join');
+  if (p.green.actorId !== p.green.ownerId) errors.push('live-gate-owner');
+  if (p.release.sourceDigest !== p.candidate.sourceDigest) errors.push('released-source-identity');
+  if (p.release.commit !== p.candidate.commit || p.release.buildDigest !== p.candidate.buildDigest) {
+    const chain = p.provenance;
+    if (!chain || chain.candidateCommit !== p.candidate.commit || chain.artifactCommit !== p.release.commit ||
+      chain.sourceDigest !== p.candidate.sourceDigest || chain.inputBuildDigest !== p.candidate.buildDigest ||
+      chain.artifactDigest !== p.release.buildDigest || chain.acceptanceRef !== a.ref || chain.verifiedBy !== a.reviewerId) errors.push('release-provenance-chain');
+  }
+  if (p.probe.sourceDigest !== p.release.sourceDigest || p.probe.buildDigest !== p.release.buildDigest) errors.push('release-runtime-identity');
+  if (!(Date.parse(a.acceptedAt) <= Date.parse(p.release.deployedAt) &&
+    Date.parse(p.release.deployedAt) <= Date.parse(p.probe.observedAt))) errors.push('shipment-order');
+  return { status: errors.length ? 'fail' : 'pass', violations: [...new Set(errors)] };
+}
+
+export function validateCapacityDiagnosticProof(input: unknown): CapacityProofVerdict {
+  const parsed = diagnosticProofSchema.safeParse(input);
+  if (!parsed.success) return { status: 'fail', violations: parsed.error.issues.map(i => 'schema:' + i.path.join('.')) };
+  const p = parsed.data;
+  const errors: string[] = [];
+  if (p.runtime.sourceDigest !== p.candidate.sourceDigest || p.runtime.buildDigest !== p.candidate.buildDigest) errors.push('serving-source-identity');
+  if (p.status === 'degraded') {
+    if (p.briefCount !== null || !p.degraded) errors.push('degraded-not-explicit-unknown');
+  } else {
+    const r = p.reconciliation;
+    if (p.briefCount === null || p.callerCount === null || !r || p.scope.specRef === null || p.scope.specRevision === null) errors.push('measured-scope-incomplete');
+    else {
+      if (r.specRef !== p.scope.specRef || r.specRevision !== p.scope.specRevision || r.harness !== p.scope.harness) errors.push('caller-population-mismatch');
+      const exclusions = r.callerFloorExclusions.map(e => e.id);
+      if (!unique(exclusions) || p.briefCount !== p.callerCount + exclusions.length) errors.push('unreconciled-caller-floors');
+    }
+  }
+  return { status: errors.length ? 'fail' : 'pass', violations: errors };
+}
+
+/** Native ledger coverage, not a hand-written claim that the named scenarios ran. */
+const continuationBindingsSchema = z.array(z.object({ bindingId: z.number().int().positive(),
+  testRunId: z.number().int().positive(), currentness: z.literal('current'), status: z.enum(['pass', 'passed']),
+  failed: z.literal(0), passed: z.number().int().positive(), collectionFailed: z.literal(false),
+  testLayer: z.enum(['unit', 'llm']), filePath: text, scenarioId: text.optional(), passedCaseTitles: ids.optional(),
+}).strict()).min(1).max(20);
+export function validateCapacityContinuationProof(input: unknown): CapacityProofVerdict {
+  const parsed = continuationBindingsSchema.safeParse(input);
+  if (!parsed.success) return { status: 'fail', violations: parsed.error.issues.map(i => 'schema:' + i.path.join('.')) };
+  const rows = parsed.data;
+  const errors: string[] = [];
+  if (!unique(rows.map(r => String(r.bindingId))) || !unique(rows.map(r => String(r.testRunId)))) errors.push('duplicate-native-binding');
+  for (const arrival of ['preexisting', 'during-registration', 'empty']) {
+    if (!rows.some(r => r.testLayer === 'llm' && r.scenarioId === 'su-S42-drain-watch-' + arrival)) errors.push('missing-native-arrival:' + arrival);
+  }
+  const unit = (suffix: string) => rows.filter(r => r.testLayer === 'unit' && r.filePath.endsWith(suffix));
+  if (!unit('/events/watch.test.ts').some(r => r.passedCaseTitles?.some(t => t.includes('the drained-lane contract is IDEMPOTENT')))) errors.push('missing-watch-guard');
+  for (const client of ['codex', 'claude']) {
+    if (!unit('/scheduler/idle-loop-recipe-pin.test.ts').some(r => r.passedCaseTitles?.some(t => t.includes('fresh ' + client + ' member render')))) errors.push('missing-fresh-render:' + client);
+  }
+  if (!unit('/su/S42-drain-watch-recheck.test.ts').some(r => ['preexisting', 'during-registration', 'empty'].every(arrival =>
+    r.passedCaseTitles?.some(t => t.includes('accepts the correct ' + arrival + ' lifecycle'))))) errors.push('missing-lifecycle-calibration');
+  return { status: errors.length ? 'fail' : 'pass', violations: errors };
+}
+
+/** Extend the existing instrument surface; no new tool, store or polling loop. */
+export function lunaCapacityInstruments(root: string): CommandInstrument[] {
+  return (['recovery', 'shipment', 'diagnostic', 'continuation'] as const).map(phase => ({
+    key: LUNA_CAPACITY_INSTRUMENTS[phase], evaluator: 'command', unit: 'count', timeoutMs: 120_000,
+    description: 'Validate current native spec evidence: serving diagnostic, watch/recheck layers, census/pickup, or independently accepted release identity. 1 valid, 0 contradicted, absent/unreadable unknown.',
+    argv: [process.execPath, '--import', 'tsx', join(root, 'scripts/verify-fleet-capacity-recovery.ts'), root, phase],
+    parse(stdout: string) {
+      try {
+        const r = JSON.parse(stdout.trim());
+        if (r.scope !== 'luna-capacity-semantic-v1' || r.phase !== phase || !Array.isArray(r.bindingIds) || !r.bindingIds.length) return null;
+        return r.status === 'pass' ? 1 : r.status === 'fail' ? 0 : null;
+      } catch { return null; }
+    },
+  }));
+}
