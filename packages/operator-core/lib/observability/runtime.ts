@@ -72,6 +72,12 @@ export function finishToolTrace(input: Invocation) {
   catch { state.observerFailures++; return undefined; }
 }
 
+/** Only the maintained transport supplies this; caller metadata is overwritten
+ * by finishToolTrace at the invocation writer. Ordinary tools imply no model. */
+export function expectSuccessfulToolModelTrace(): void {
+  try { state.runtime?.expectModel(); } catch { state.observerFailures++; }
+}
+
 export function beginGatewayTrace(key: string, provider: string, headers: Record<string, string>) {
   try { runtime().begin(key, 'papercusp.model', { 'gen_ai.operation.name': 'chat', 'gen_ai.provider.name': provider,
     'papercusp.request_id': key }, headers); }

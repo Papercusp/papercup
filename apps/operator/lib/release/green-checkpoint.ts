@@ -195,6 +195,8 @@ import {
   probeRunnerLiveness,
   readStoredQualification,
   recordStoredQualificationRunnerProgress,
+  recordStoredQualificationNativeProducer,
+  recoverStoredQualificationNativeCompletions,
   reserveStoredQualificationRunner,
   readPreparedCheckpointSelection,
   commitPreparedCheckpointSelection,
@@ -202,6 +204,7 @@ import {
   preparedCheckpointQueueMatches,
   type PreparedCheckpointSelectionRecord,
   type QualificationPhysicalRunner,
+  type QualificationWorkProgressInput,
   type RunnerLiveness,
   type StoredQualificationMutation,
 } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
@@ -4174,6 +4177,115 @@ export function startCheckpointQualificationProgress(
       stopped = true;
       timer.stop();
       await pending;
+    },
+  };
+}
+
+/** Host-side adapter for the affected runner's existing native OUT announcements.
+ * Selection is supplied independently by the host. Output supplies artifact locations,
+ * never the selected population or custody. Callers must await finish and honor a
+ * refusal before composition; runCmd's diagnostic observer cannot propagate failures.
+ */
+export function createCheckpointQualificationNativeObserver(
+  input: {
+    target: GateVerdictTarget;
+    progress: QualificationWorkProgressInput;
+    tasks: ReadonlyMap<string, {
+      workspaceName: string;
+      selectedSpecifications: unknown[];
+      supersedesCompletionIds?: Record<string, string>;
+    }>;
+    classifyReadPaths?: Parameters<typeof recoverStoredQualificationNativeCompletions>[2];
+  },
+  deps: {
+    enroll: typeof recordStoredQualificationNativeProducer;
+    recover: typeof recoverStoredQualificationNativeCompletions;
+  } = { enroll: recordStoredQualificationNativeProducer, recover: recoverStoredQualificationNativeCompletions },
+) {
+  const target = structuredClone(input.target);
+  const progress = structuredClone({ ...input.progress, updates: [] });
+  const tasks = new Map([...input.tasks].map(([key, task]) => [key, structuredClone(task)]));
+  const streams = new Map<string, { remainder: string; discarding: boolean }>();
+  const producers = new Map<string, string>();
+  const taskProducers = new Map<string, string>();
+  let pending: Promise<void> = Promise.resolve();
+  let failure: string | null = input.progress.updates.length ? 'native-producer-mixed-updates' : null;
+  let finished: Promise<
+    { status: 'ready'; transaction: Extract<StoredQualificationMutation, { status: 'updated' | 'idempotent' }>['transaction'] } |
+    { status: 'refused'; reason: string }
+  > | undefined;
+  const refuse = (reason: string) => { failure ??= reason; };
+  const acceptLine = (line: string) => {
+    if (failure || !line.startsWith('QUALIFICATION_NATIVE_PRODUCER')) return;
+    const match = line.length <= 16_384 && line.match(
+      /^QUALIFICATION_NATIVE_PRODUCER task=("(?:[^"\\]|\\.)*") path=("(?:[^"\\]|\\.)*")$/,
+    );
+    if (!match) { refuse('native-producer-announcement-invalid'); return; }
+    let taskKey: string, producerPath: string;
+    try { taskKey = JSON.parse(match[1]!); producerPath = JSON.parse(match[2]!); }
+    catch { refuse('native-producer-announcement-invalid'); return; }
+    const task = tasks.get(taskKey);
+    if (!task || !path.isAbsolute(producerPath) || !producerPath.endsWith('.producer.json')) {
+      refuse('native-producer-announcement-outside-selection'); return;
+    }
+    const prior = producers.get(producerPath);
+    if (prior !== undefined) {
+      if (prior !== taskKey) refuse('native-producer-announcement-conflict');
+      return;
+    }
+    // One native producer per independently selected task in this physical run.
+    // This also bounds the asynchronous enrollment queue by that frozen inventory.
+    if (taskProducers.has(taskKey)) { refuse('native-producer-announcement-conflict'); return; }
+    producers.set(producerPath, taskKey);
+    taskProducers.set(taskKey, producerPath);
+    pending = pending.then(async () => {
+      if (failure) return;
+      const enrolled = await deps.enroll(target, progress, {
+        ...task, taskKey, producerPath, path: producerPath.slice(0, -'.producer.json'.length),
+      });
+      if (enrolled.status !== 'updated' && enrolled.status !== 'idempotent')
+        refuse(`native-producer-enrollment-${enrolled.status}`);
+    }).catch(() => { refuse('native-producer-enrollment-unreadable'); });
+  };
+  return {
+    onOutput(stream: 'stdout' | 'stderr', text: string) {
+      if (finished) { refuse('native-producer-output-after-finish'); return; }
+      const state = streams.get(stream) ?? { remainder: '', discarding: false };
+      let chunk = text;
+      if (state.discarding) {
+        const newline = chunk.indexOf('\n');
+        if (newline < 0) return;
+        chunk = chunk.slice(newline + 1);
+        state.discarding = false;
+      }
+      const lines = (state.remainder + chunk).split(/\r?\n/);
+      state.remainder = lines.pop() ?? '';
+      for (const line of lines) acceptLine(line);
+      if (state.remainder.length > 16_384) {
+        if (state.remainder.startsWith('QUALIFICATION_NATIVE_PRODUCER'))
+          refuse('native-producer-announcement-invalid');
+        state.remainder = '';
+        state.discarding = true;
+      }
+      streams.set(stream, state);
+    },
+    finish() {
+      if (finished) return finished;
+      for (const state of streams.values()) if (!state.discarding) acceptLine(state.remainder);
+      finished = (async () => {
+        await pending;
+        if (failure) return { status: 'refused' as const, reason: failure };
+        try {
+          // Also recover already-enrolled producers when this invocation emitted none.
+          // A conflict is terminal for this batch; never compose the earlier banked passes.
+          const recovered = await deps.recover(target, progress, input.classifyReadPaths);
+          if (recovered.status !== 'updated' && recovered.status !== 'idempotent')
+            return { status: 'refused' as const, reason: `native-producer-recovery-${recovered.status}` };
+          if (failure) return { status: 'refused' as const, reason: failure };
+          return { status: 'ready' as const, transaction: recovered.transaction };
+        } catch { return { status: 'refused' as const, reason: 'native-producer-recovery-unreadable' }; }
+      })();
+      return finished;
     },
   };
 }

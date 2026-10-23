@@ -84,7 +84,7 @@ export function createTracing(options: { exporter?: SpanExporter; processor?: Sp
   const provider = new TracerProvider({ spanProcessors: [inheritingProcessor],
     spanLimits: { attributeCountLimit: 32, attributeValueLengthLimit: 200, eventCountLimit: 0, linkCountLimit: 8 } });
   const tracer = provider.getTracer('papercusp.runtime', '1');
-  const active = new Map<string, { span: Span; context: Context; startedAt: number }>();
+  const active = new Map<string, { span: Span; context: Context; startedAt: number; expectedModel: boolean }>();
   const now = options.now ?? Date.now;
   let skipped = 0;
   let expired = 0;
@@ -119,7 +119,7 @@ export function createTracing(options: { exporter?: SpanExporter; processor?: Sp
       const parent = carrier?.traceparent ? extractTraceContext(carrier) : context.active();
       const span = tracer.startSpan(name, { attributes: safeTraceAttributes({ 'service.name': options.service ?? 'papercusp-operator', ...attributes }), startTime }, parent);
       const executionContext = trace.setSpan(parent, span).setValue(invocationAttributes, safeTraceAttributes(attributes));
-      active.set(callId, { span, context: executionContext, startedAt: now() });
+      active.set(callId, { span, context: executionContext, startedAt: now(), expectedModel: false });
       return span.spanContext();
     },
     async run<T>(callId: string, work: () => Promise<T>): Promise<T> {
@@ -128,6 +128,14 @@ export function createTracing(options: { exporter?: SpanExporter; processor?: Sp
     },
     attributes(callId: string, attributes: Attributes) {
       active.get(callId)?.span.setAttributes(safeTraceAttributes(attributes));
+    },
+    /** The maintained model transport calls this on a successful response.
+     * It is local invocation evidence, independent of the export queue/project. */
+    expectModel() {
+      const attributes = context.active().getValue(invocationAttributes) as Attributes | undefined;
+      const callId = attributes?.['papercusp.call_id'];
+      const entry = typeof callId === 'string' ? active.get(callId) : undefined;
+      if (entry) entry.expectedModel = true;
     },
     current(callId: string) {
       const span = active.get(callId)?.span;
@@ -143,7 +151,7 @@ export function createTracing(options: { exporter?: SpanExporter; processor?: Sp
       entry.span.setAttributes(safeTraceAttributes({ 'papercusp.outcome': outcome, ...(errorCode ? { 'papercusp.error_code': errorCode } : {}) }));
       entry.span.setStatus({ code: outcome === 'ok' ? SpanStatusCode.OK : SpanStatusCode.ERROR });
       entry.span.end(endTime);
-      return correlation;
+      return correlation ? { ...correlation, expectedModel: entry.expectedModel } : undefined;
     },
     health: () => ({ active: active.size, skipped, expired, maxActive: options.maxActive ?? 1024,
       queuedSpans, queueDroppedSpans, maxQueued }),

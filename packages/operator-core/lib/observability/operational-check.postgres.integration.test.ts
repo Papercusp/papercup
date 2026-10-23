@@ -4,7 +4,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 // eslint-disable-next-line import/no-relative-packages -- mirror the production postgres-js JSON binder
 import { restoreRawJsonbSerializer } from '../../../../libs/papercusp/libs/db/src/raw-serializers';
 
-const fixture = vi.hoisted(() => ({ sql: null as postgres.Sql | null }));
+const fixture = vi.hoisted(() => ({ sql: null as postgres.Sql | null, consentSince: 0 }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: fixture.sql! }) }));
 vi.mock('../serving-host-identity', () => ({ getServingHostIdentity: () => ({
   host: 'port-3070', processId: 'release-test-process', buildSha: 'a'.repeat(40),
@@ -17,7 +17,8 @@ const paths = [
   'packages/operator-core/lib/inference-gateway/gateway.ts',
   'apps/operator/bin/host-bootstrap.ts',
 ];
-vi.mock('./runtime', () => ({ runtimeObservabilityHealth: () => ({
+vi.mock('./runtime', () => ({ runtimeTraceDeliveryConfig: async () => ({ allowed: true, consentSince: fixture.consentSince }),
+  runtimeObservabilityHealth: () => ({
   initialized: true, globalProviderRegistered: true,
   artifact: { status: 'measured', sourceSha: 'a'.repeat(40), bundleSha256: 'b'.repeat(64),
     manifestSha256: 'c'.repeat(64), sourceBlobs: Object.fromEntries(paths.map(path => [path, 'd'.repeat(40)])) },
@@ -27,6 +28,7 @@ vi.mock('../git-pipeline-position', () => ({ gitPipelinePosition: async () => ({
 }) }));
 vi.mock('./project-readback', () => ({ readConfiguredTraceProject: vi.fn() }));
 import { measureOperationalObservability } from './operational-check';
+import { readConfiguredTraceProject } from './project-readback';
 
 describe('release writer population with real PostgreSQL null semantics', () => {
   let db: FreshPgDb;
@@ -51,9 +53,49 @@ describe('release writer population with real PostgreSQL null semantics', () => 
   }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
   beforeEach(async () => {
+    fixture.consentSince = 0;
     await db.sql`DELETE FROM harness_shared.audit_log`;
+    await db.sql`DELETE FROM harness_shared.tool_invocations`;
     await db.sql`INSERT INTO harness_shared.audit_log VALUES
       ('valid', ${scope.workspaceId}, 'release.artifact.built', ${JSON.stringify(valid())}::jsonb)`;
+  });
+
+  it.each(['$ai_generation', '$exception'] as const)('retains expired %s expectations in actual SQL ahead of healthy new rows', async kind => {
+    const now = Date.now();
+    const events: Array<Record<string, unknown>> = [];
+    for (const [digit, age, status, expectedModel] of [
+      ['1', 300_000, kind === '$ai_generation' ? 'ok' : 'error', kind === '$ai_generation'],
+      ['2', 100, 'ok', true], ['3', 100, 'error', false], ['4', 300_000, 'ok', false],
+    ] as const) {
+      const startedAt = now - age - 1000;
+      await db.sql`INSERT INTO harness_shared.tool_invocations
+        (metadata_json, status, invoked_at, duration_ms, workspace_id, harness_slug, serving_process_id, serving_build_sha)
+        VALUES (${JSON.stringify({ otel: { callId: 'call-' + digit, traceId: digit.repeat(32),
+          spanId: digit.repeat(16), expectedModel } })}::jsonb, ${status}, ${new Date(now - age)}, 1000,
+          ${scope.workspaceId}, ${scope.harnessSlug}, 'release-test-process', ${'a'.repeat(40)})`;
+      const common = { traceId: digit.repeat(32), timestamp: startedAt, isError: false, httpClient: false };
+      const http = String(Number(digit) + 3).repeat(16);
+      events.push({ ...common, uuid: 'tool-' + digit, event: '$ai_trace', spanId: digit.repeat(16),
+        parentSpanId: null, callId: 'call-' + digit, spanName: 'papercusp.tool' },
+      { ...common, uuid: 'http-' + digit, event: '$ai_span', spanId: http,
+        parentSpanId: digit.repeat(16), callId: 'call-' + digit, httpClient: true, spanName: 'papercusp.http' });
+      if (digit === '2' || digit === '3') events.push({ ...common, uuid: 'leaf-' + digit,
+        event: status === 'ok' ? '$ai_generation' : '$exception', isError: status !== 'ok',
+        spanId: String(Number(digit) + 6).repeat(16), parentSpanId: http, callId: null, spanName: 'papercusp.model' });
+    }
+    vi.mocked(readConfiguredTraceProject).mockResolvedValue({ status: 'available', queriedAt: now,
+      projectId: '7', evidenceRef: 'authenticated-exact-id-query', events } as never);
+    expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'fail',
+      detail: expect.stringContaining('Expected ' + kind + ' absent after ingestion bound') });
+    expect(readConfiguredTraceProject).toHaveBeenLastCalledWith(['1'.repeat(32), '2'.repeat(32), '3'.repeat(32)]);
+    // Revocation/regrant excludes pre-consent expectations exactly as the
+    // exporter excludes spans whose start predates the current consent epoch.
+    fixture.consentSince = now - 2000;
+    expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'pass' });
+    expect(readConfiguredTraceProject).toHaveBeenLastCalledWith(['2'.repeat(32), '3'.repeat(32)]);
+    fixture.consentSince = 0;
+    await db.sql`DELETE FROM harness_shared.tool_invocations WHERE metadata_json->'otel'->>'callId' = 'call-1'`;
+    expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'pass' });
   });
 
   const assertWriterAccepted = async () => {

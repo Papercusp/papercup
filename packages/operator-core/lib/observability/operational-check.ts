@@ -2,7 +2,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { getServingHostIdentity } from '../serving-host-identity';
 import { gitPipelinePosition } from '../git-pipeline-position';
-import { runtimeObservabilityHealth } from './runtime';
+import { runtimeObservabilityHealth, runtimeTraceDeliveryConfig } from './runtime';
 import { readConfiguredTraceProject, type ObservedProjectEvent } from './project-readback';
 import { OBSERVABILITY_INSTRUMENT_KEYS } from './instrument-keys';
 import { verifyObservabilityShipmentReceipt, type ObservabilityShipmentReceipt } from './shipment-receipt';
@@ -16,7 +16,7 @@ const COMPOSITION_PATHS = [
 ];
 interface InvocationObservation {
   id: string; callId: string; traceId: string; spanId: string;
-  status: string; startedAt: number; endedAt: number;
+  status: string; startedAt: number; endedAt: number; expectedModel: boolean;
 }
 type Verdict = { verdict: 'pass' | 'fail' | 'unknown'; detail: string };
 
@@ -115,25 +115,51 @@ export async function measureOperationalObservability(
           evidenceRef: 'release-process:' + host.processId + ' audit_log:' + writer.ref },
       };
     }
+    const capture = await runtimeTraceDeliveryConfig();
+    if (!capture.allowed) return unknown('project-query-not-authorized');
+    const consentSince = capture.consentSince ?? 0;
+    if (!Number.isFinite(consentSince) || consentSince < 0) return unknown('Consent epoch unavailable.');
     // Select only identity/timing fields, never args, output, prompts or errors.
     const rows = await sql<InvocationObservation[]>`
       SELECT id::text AS id, metadata_json->'otel'->>'callId' AS "callId",
         metadata_json->'otel'->>'traceId' AS "traceId", metadata_json->'otel'->>'spanId' AS "spanId", status,
+        metadata_json->'otel'->'expectedModel' = 'true'::jsonb AS "expectedModel",
         (extract(epoch FROM invoked_at) * 1000 - duration_ms)::float8 AS "startedAt",
         (extract(epoch FROM invoked_at) * 1000)::float8 AS "endedAt"
       FROM harness_shared.tool_invocations
       WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
         AND serving_process_id = ${host.processId} AND serving_build_sha = ${host.buildSha}
-        AND invoked_at >= now() - interval '240 seconds' AND metadata_json->'otel' IS NOT NULL
-      ORDER BY id DESC LIMIT 16`;
-    const valid = rows.filter(row => typeof row.callId === 'string' && row.callId.length > 0 &&
+        AND metadata_json->'otel' IS NOT NULL
+        AND (status <> 'ok' OR metadata_json->'otel'->'expectedModel' = 'true'::jsonb)
+        AND (extract(epoch FROM invoked_at) * 1000 - duration_ms) > ${consentSince}
+      ORDER BY id ASC LIMIT 257`;
+    // The population comes from the invocation writer, before project readback.
+    // Never evict an expired expectation to make room for a healthy new sample.
+    // Bound work explicitly; overflow cannot produce a passing measurement.
+    const overflow = rows.length > 256;
+    const population = rows.slice(0, 256).filter(row => row.status !== 'ok' || row.expectedModel === true);
+    const valid = population.filter(row => typeof row.callId === 'string' && row.callId.length > 0 &&
       /^[a-f0-9]{32}$/.test(row.traceId) && !/^0+$/.test(row.traceId) &&
       /^[a-f0-9]{16}$/.test(row.spanId) && !/^0+$/.test(row.spanId) &&
       Number.isFinite(row.startedAt) && Number.isFinite(row.endedAt) && row.endedAt >= row.startedAt);
     if (!valid.length) return unknown('No fresh invocation identity with persisted call/trace/span metadata.');
-    const project = await readConfiguredTraceProject([...new Set(valid.map(row => row.traceId))]);
+    if (valid.length !== population.length) return unknown('Expected invocation identity is incomplete.');
+    const traceIds = [...new Set(valid.map(row => row.traceId))];
+    let project: Awaited<ReturnType<typeof readConfiguredTraceProject>> | undefined;
+    for (let offset = 0; offset < traceIds.length; offset += 16) {
+      const page = await readConfiguredTraceProject(traceIds.slice(offset, offset + 16));
+      if (page.status !== 'available') return { verdict: page.status === 'broken' ? 'fail' : 'unknown', detail: page.reason };
+      if (!project) project = { ...page, events: [...page.events] };
+      else if (project.status === 'available' && project.projectId === page.projectId) {
+        project.events.push(...page.events);
+        project.queriedAt = Math.min(project.queriedAt, page.queriedAt);
+        project.evidenceRef += '\n' + page.evidenceRef;
+      } else return unknown('Configured project changed during exact-ID readback.');
+    }
+    if (!project) return unknown('Expected invocation population unavailable.');
     if (project.status !== 'available') return { verdict: project.status === 'broken' ? 'fail' : 'unknown', detail: project.reason };
     const now = project.queriedAt;
+    let pending = false;
     const measured: Array<{ row: InvocationObservation; generation: boolean; error: boolean }> = [];
     for (const row of valid) {
       const events = project.events.filter(event => event.traceId === row.traceId);
@@ -141,6 +167,7 @@ export async function measureOperationalObservability(
         ['$ai_trace', '$ai_span'].includes(event.event));
       if (!tools.length) {
         if (now - row.endedAt >= 120_000) return fail('Fresh tool event absent after ingestion bound; invocation=' + row.id);
+        pending = true;
         continue;
       }
       if (tools.some(event => event.callId !== row.callId)) return fail('Persisted invocation and project call identity differ; invocation=' + row.id);
@@ -179,11 +206,20 @@ export async function measureOperationalObservability(
       }
       const exceptions = events.filter(event => event.event === '$exception');
       if (exceptions.some(event => event.spanId === row.spanId ? event.callId !== row.callId : !reachable(event))) return fail('Exception ancestry differs from persisted tool span; invocation=' + row.id);
+      const expected = row.status === 'ok' ? '$ai_generation' : '$exception';
+      const delivered = row.status === 'ok' ? generations.some(event => !event.isError) : exceptions.some(event => event.isError);
+      if (!delivered) {
+        if (now - row.endedAt >= 120_000) return fail('Expected ' + expected + ' absent after ingestion bound; invocation=' + row.id);
+        pending = true;
+        continue;
+      }
       if (now - row.startedAt > 120_000 || row.startedAt > now || row.endedAt > now) continue;
       if (events.some(event => event.timestamp < row.startedAt || event.timestamp > now)) return fail('Project event lies outside the measured journey; invocation=' + row.id);
       measured.push({ row, generation: row.status === 'ok' && generations.some(event => !event.isError),
         error: row.status !== 'ok' && exceptions.some(event => event.isError) });
     }
+    if (overflow) return unknown('Expected invocation population exceeds the bounded measurement; no identities were replaced.');
+    if (pending) return unknown('Expected event delivery is still within its ingestion bound.');
     let selected: typeof measured;
     if (mode !== 'staging') {
       const success = measured.find(item => item.generation);
@@ -234,7 +270,12 @@ export async function measureOperationalObservability(
     return { verdict: 'pass', detail: JSON.stringify({ detector: OBSERVABILITY_INSTRUMENT_KEYS[mode], version: 1,
       observedAt: now, host, projectId: project.projectId, projectQuery: project.evidenceRef, release: releaseEvidence,
       shipment,
-      invocations: selected.map(({ row }) => ({ id: row.id, callId: row.callId, traceId: row.traceId, spanId: row.spanId })),
+      expected: valid.map(row => ({ id: row.id, callId: row.callId, traceId: row.traceId, spanId: row.spanId,
+        event: row.status === 'ok' ? '$ai_generation' : '$exception', startedAt: row.startedAt,
+        endedAt: row.endedAt, deadline: row.endedAt + 120_000 })),
+      observedEvents: project.events,
+      invocations: selected.map(({ row }) => ({ id: row.id, callId: row.callId, traceId: row.traceId, spanId: row.spanId,
+        startedAt: row.startedAt, endedAt: row.endedAt })),
       replay: 'Run the rubric checks via the registered rubric-rescore system action; scorecards:emit fromLedger:true on the same qualified runtime and subject.' }) };
   } catch {
     return unknown('Runtime, source or invocation authority unavailable; no acceptance inferred.');

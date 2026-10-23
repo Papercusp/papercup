@@ -98,9 +98,11 @@ async function fixture() {
 
 describe("fresh preparation preserves inherited active-run authority (R4)", () => {
   it.each([
-    { name: "commits with the inherited attempt while time remains", elapsedDuringPublication: 0, expected: "ready" },
-    { name: "charges preparation to the inherited clock before commit", elapsedDuringPublication: 200, expected: "deadline" },
-  ])("$name", async ({ elapsedDuringPublication, expected }) => {
+    { name: "commits with the inherited attempt while time remains", publicationCosts: [0], loseFirstCas: false, expected: "ready" },
+    { name: "charges preparation to the inherited clock before commit", publicationCosts: [200], loseFirstCas: false, expected: "deadline" },
+    { name: "replans after a lost first commit CAS with the same inherited attempt", publicationCosts: [25, 0], loseFirstCas: true, expected: "ready" },
+    { name: "charges both preparations to the inherited clock after a lost first commit CAS", publicationCosts: [25, 100], loseFirstCas: true, expected: "deadline" },
+  ])("$name", async ({ publicationCosts, loseFirstCas, expected }) => {
     const f = await fixture();
     const budgetMs = 10_000;
     let clock = Date.now();
@@ -108,6 +110,15 @@ describe("fresh preparation preserves inherited active-run authority (R4)", () =
     vi.stubEnv("PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS", String(budgetMs));
     vi.spyOn(Date, "now").mockImplementation(() => clock);
     let publications = 0;
+    let commitAttempts = 0;
+    f.deps.commitPreparedCheckpointSelection = async (record) => {
+      f.observedAttempts.push(record.attemptId);
+      expect(record.attemptId).toBe(f.attemptId);
+      expect(record.candidate).toBe(f.knownGood);
+      expect(existsSync(checkpointRunLockDir(f.cfg.checkpointLogDir, f.integration))).toBe(true);
+      commitAttempts += 1;
+      return !(loseFirstCas && commitAttempts === 1);
+    };
     const exec: typeof runCmd = async (command, args, options) => {
       const publishing = args.includes("--ensure-ref");
       if (publishing) {
@@ -116,7 +127,7 @@ describe("fresh preparation preserves inherited active-run authority (R4)", () =
         publications += 1;
       }
       const result = await f.exec(command, args, options);
-      if (publishing) clock += elapsedDuringPublication;
+      if (publishing) clock += publicationCosts[publications - 1] ?? budgetMs;
       return result;
     };
     const opts: CheckpointOpts = { runStartedAtMs: inheritedStart, totalRefires: 1, noPush: true };
@@ -126,7 +137,7 @@ describe("fresh preparation preserves inherited active-run authority (R4)", () =
       if (result.kind === "ready") onTestFinished(() => { if (result.lock.acquired) result.lock.release(); });
       return { result, error: null };
     }, (error: unknown) => ({ result: null, error }));
-    expect(publications).toBe(1);
+    expect(publications).toBe(publicationCosts.length);
     expect(opts).toEqual({ runStartedAtMs: inheritedStart, totalRefires: 1, noPush: true });
     expect(f.deps.qualificationAttemptId).toBe(f.attemptId);
     if (expected === "ready") {
@@ -134,11 +145,13 @@ describe("fresh preparation preserves inherited active-run authority (R4)", () =
       expect(outcome.result?.kind).toBe("ready");
       if (outcome.result?.kind !== "ready") throw new Error("active-budget preparation did not succeed");
       expect(outcome.result.preparedSelection).toMatchObject({ attemptId: f.attemptId, candidate: f.knownGood });
-      expect(f.observedAttempts).toEqual([f.attemptId, f.attemptId]);
+      expect(commitAttempts).toBe(loseFirstCas ? 2 : 1);
+      expect(f.observedAttempts).toEqual(Array(loseFirstCas ? 4 : 2).fill(f.attemptId));
     } else {
       expect(outcome.result).toBeNull();
       expect(String(outcome.error)).toMatch(/run deadline\/refire budget exhausted before commit/);
-      expect(f.observedAttempts).toEqual([f.attemptId]);
+      expect(commitAttempts).toBe(loseFirstCas ? 1 : 0);
+      expect(f.observedAttempts).toEqual(Array(loseFirstCas ? 3 : 1).fill(f.attemptId));
       expect(existsSync(checkpointRunLockDir(f.cfg.checkpointLogDir, f.integration))).toBe(false);
     }
   }, 180_000);

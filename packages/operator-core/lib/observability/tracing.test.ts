@@ -5,6 +5,19 @@ import { createTracing, enableTracingContext, extractTraceContext, injectTraceCo
 
 beforeAll(enableTracingContext);
 describe('runtime OpenTelemetry correlation', () => {
+  it('records successful model expectations independently of delivery without leaking across concurrent invocations', async () => {
+    const runtime = createTracing();
+    try {
+      runtime.begin('model', 'papercusp.tool', { 'papercusp.call_id': 'model' });
+      runtime.begin('ordinary', 'papercusp.tool', { 'papercusp.call_id': 'ordinary' });
+      await Promise.all([
+        runtime.run('model', async () => { await Promise.resolve(); runtime.expectModel(); }),
+        runtime.run('ordinary', async () => { await Promise.resolve(); }),
+      ]);
+      expect(runtime.finish('model', 'ok')).toMatchObject({ expectedModel: true });
+      expect(runtime.finish('ordinary', 'ok')).toMatchObject({ expectedModel: false });
+    } finally { await runtime.shutdown(); }
+  });
   it.each([undefined, 'malformed', '00-00000000000000000000000000000000-1234567890123456-01'])('creates a valid root for absent or invalid inbound parent %s', async parent => {
     const exporter = new InMemorySpanExporter();
     const runtime = createTracing({ processor: new SimpleSpanProcessor({ exporter }) });

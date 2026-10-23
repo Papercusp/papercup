@@ -14,6 +14,8 @@ import type { StatelessRequestAttempt } from '../../agent-chat-stream';
 import { isLlmCallError } from '@papercusp/testing-shell/llm';
 
 const events: unknown[] = [];
+const modelExpectations = vi.hoisted(() => ({ mark: vi.fn() }));
+vi.mock('../../observability/runtime', () => ({ expectSuccessfulToolModelTrace: modelExpectations.mark }));
 const diagnostics: Array<Record<string, unknown>> = [];
 let streamFailure: Error | undefined;
 // EI-315: captures the opts of the LAST runAgentChat call so a test can assert on the
@@ -303,6 +305,7 @@ describe('llmCall backend selection', () => {
   });
 
   it('uses the local Codex gateway for OpenAI-family stateless calls', async () => {
+    modelExpectations.mark.mockClear();
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       expect(body.model).toBe('gpt-5.5');
@@ -328,6 +331,7 @@ describe('llmCall backend selection', () => {
       responseFormat: 'json',
       ownerId: 'system:work-item-admission-bulk-dedup:run-1',
     });
+    expect(modelExpectations.mark).toHaveBeenCalledOnce();
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://127.0.0.1:8788/v1/responses',

@@ -18,7 +18,13 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { generated, getOrgPg, withAcquisitionDeadline } from '@papercusp/db-org';
+import {
+  acquireSnapshot,
+  acquireTicketSnapshot,
+  generated,
+  getOrgPg,
+  withAcquisitionDeadline,
+} from '@papercusp/db-org';
 import { mergeRoleQuota } from './quota-overrides';
 import { resolveDispatchPremises } from './agent-tools/premises-gate';
 import {
@@ -276,6 +282,11 @@ interface KernelAuthorityTimingSample {
   calls: number;
   totalMs: number;
 }
+interface KernelAuthorityPoolSnapshot {
+  observedAt: string;
+  counters: ReturnType<typeof acquireSnapshot>;
+  tickets: ReturnType<typeof acquireTicketSnapshot>;
+}
 interface KernelAuthorityQueryTrace {
   queryFingerprint: 'controlAnchorSql/v1';
   traceId: string;
@@ -285,6 +296,13 @@ interface KernelAuthorityQueryTrace {
   clientQueryMs: number | null;
   clientCompletedAt: string | null;
   outcome: 'fulfilled' | 'rejected';
+  acquisitionDiagnostics: {
+    // Logical tickets are a lower bound; direct pool users and physical
+    // connection occupancy are not observed by the acquisition registry.
+    coverage: 'registered-acquisition-tickets-only';
+    before: KernelAuthorityPoolSnapshot;
+    settled: KernelAuthorityPoolSnapshot | null;
+  };
 }
 type KernelAuthorityTimingCollector = {
   controlAnchorSql: KernelAuthorityTimingSample & { executions: KernelAuthorityQueryTrace[] };
@@ -313,6 +331,14 @@ function recordKernelAuthorityTiming(
 
 function elapsedMsSince(startedAt: number): number {
   return Math.round(Math.max(0, performance.now() - startedAt) * 10) / 10;
+}
+
+function controlAnchorPoolSnapshot(): KernelAuthorityPoolSnapshot {
+  return {
+    observedAt: new Date().toISOString(),
+    counters: acquireSnapshot('org-admin'),
+    tickets: acquireTicketSnapshot('org-admin'),
+  };
 }
 
 function attachKernelAuthorityTimings(
@@ -530,6 +556,11 @@ export async function readControlAnchorKernelState(
     clientQueryMs: null,
     clientCompletedAt: null,
     outcome: 'rejected',
+    acquisitionDiagnostics: {
+      coverage: 'registered-acquisition-tickets-only',
+      before: controlAnchorPoolSnapshot(),
+      settled: null,
+    },
   };
   try {
     const reserved = await withAcquisitionDeadline<ReservedAnchorConnection>(
@@ -541,6 +572,7 @@ export async function readControlAnchorKernelState(
           }
           anchorTrace.poolAcquisitionMs = elapsedMsSince(anchorAcquisitionStartedAt);
           disarm();
+          anchorTrace.acquisitionDiagnostics.settled = controlAnchorPoolSnapshot();
           return reserved;
         }),
       { label: 'control-anchor-sql-acquire', pool: 'org-admin' },
@@ -611,6 +643,7 @@ export async function readControlAnchorKernelState(
     anchorTrace.outcome = 'fulfilled';
   } catch (error) {
     anchorTrace.poolAcquisitionMs ??= elapsedMsSince(anchorAcquisitionStartedAt);
+    anchorTrace.acquisitionDiagnostics.settled ??= controlAnchorPoolSnapshot();
     // Unknown authority cannot authorize a new effect. In particular, neither
     // a missing migration nor a failed join is evidence of a legacy session.
     controlReadFailed = true;

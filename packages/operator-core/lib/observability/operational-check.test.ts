@@ -2,19 +2,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fixture = vi.hoisted(() => ({
   host: { host: 'port-3170', processId: 'process-1', buildSha: 'a'.repeat(40) },
   health: { initialized: true, globalProviderRegistered: true },
+  consentSince: 0,
   sql: vi.fn(), position: vi.fn(), readProject: vi.fn(),
 }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: fixture.sql }) }));
 vi.mock('../serving-host-identity', () => ({ getServingHostIdentity: () => fixture.host }));
 vi.mock('../git-pipeline-position', () => ({ gitPipelinePosition: fixture.position }));
-vi.mock('./runtime', () => ({ runtimeObservabilityHealth: () => fixture.health }));
+vi.mock('./runtime', () => ({ runtimeObservabilityHealth: () => fixture.health,
+  runtimeTraceDeliveryConfig: async () => ({ allowed: true, consentSince: fixture.consentSince }) }));
 vi.mock('./project-readback', () => ({ readConfiguredTraceProject: fixture.readProject }));
 import { measureOperationalObservability } from './operational-check';
 const scope = { workspaceId: 'workspace-test', harnessSlug: 'harness-test' };
 const now = Date.now();
 const rows = () => ['1', '2'].map((digit, i) => ({ id: digit, callId: 'call-' + digit,
   traceId: digit.repeat(32), spanId: digit.repeat(16), status: i ? 'error' : 'ok',
-  startedAt: now - 1000, endedAt: now - 100 }));
+  startedAt: now - 1000, endedAt: now - 100, expectedModel: !i }));
 const project = () => ({ status: 'available', projectId: '7', queriedAt: now, evidenceRef: 'authenticated-project-query',
   events: rows().flatMap((row, i) => [{ uuid: 'tool-' + row.id, event: '$ai_trace', timestamp: row.startedAt,
     traceId: row.traceId, spanId: row.spanId, parentSpanId: null, callId: row.callId, isError: !!i, httpClient: false, spanName: 'papercusp.tool' },
@@ -25,6 +27,7 @@ const project = () => ({ status: 'available', projectId: '7', queriedAt: now, ev
 beforeEach(() => {
   fixture.host = { host: 'port-3170', processId: 'process-1', buildSha: 'a'.repeat(40) };
   fixture.health = { initialized: true, globalProviderRegistered: true };
+  fixture.consentSince = 0;
   fixture.sql.mockReset().mockResolvedValue(rows());
   fixture.position.mockReset().mockResolvedValue({ servingRuntimes: [{ runtime: 'staging-operator',
     containsChange: true, buildSha: 'a'.repeat(40) }] });
@@ -37,7 +40,7 @@ describe('operational observability measurements', () => {
     expect(result.verdict).toBe('pass');
     expect(JSON.parse(result.detail)).toMatchObject({ host: fixture.host, projectId: '7',
       invocations: [{ id: '1', callId: 'call-1' }, { id: '2', callId: 'call-2' }] });
-    expect(fixture.sql.mock.calls[0]!.slice(1)).toEqual([scope.workspaceId, scope.harnessSlug, 'process-1', fixture.host.buildSha]);
+    expect(fixture.sql.mock.calls[0]!.slice(1)).toEqual([scope.workspaceId, scope.harnessSlug, 'process-1', fixture.host.buildSha, 0]);
     expect(fixture.readProject).toHaveBeenCalledWith(['1'.repeat(32), '2'.repeat(32)]);
   });
   it('cannot substitute a release/background process for the current-build route', async () => {
@@ -64,6 +67,78 @@ describe('operational observability measurements', () => {
     fixture.readProject.mockResolvedValue({ ...project(), events: [] });
     expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'fail', detail: expect.stringContaining('absent after ingestion bound') });
   });
+  describe.each(['project', 'staging', 'release'] as const)('%s expected-event deadline', mode => {
+    function observations(kind: '$ai_generation' | '$exception', age: number, healthyNew = false) {
+      const selected = rows()[kind === '$ai_generation' ? 0 : 1]!;
+      const old = { ...selected, startedAt: now - age - 1000, endedAt: now - age };
+      // Both independent ledger rows and the surviving anchors retain the same
+      // identities. Only the expected leaf is deleted from project visibility.
+      const missing = project().events.filter(event => event.traceId === old.traceId && event.event !== kind)
+        .map(event => ({ ...event, timestamp: old.startedAt + 10 }));
+      fixture.sql.mockResolvedValue(healthyNew ? [old, ...rows().map(row => ({ ...row,
+        id: 'new-' + row.id, callId: 'new-' + row.callId, traceId: (row.id === '1' ? '3' : '4').repeat(32) }))] : [old]);
+      fixture.readProject.mockResolvedValue({ ...project(), events: healthyNew ? [...missing,
+        ...project().events.map(event => ({ ...event, traceId: (event.traceId[0] === '1' ? '3' : '4').repeat(32),
+          callId: event.callId ? 'new-' + event.callId : null }))] : missing });
+      if (mode === 'release') {
+        fixture.host.host = 'port-3070';
+        const paths = ['packages/operator-core/lib/observability/runtime.ts', 'packages/operator-core/lib/observability/tracing.ts',
+          'packages/operator-core/lib/observability/posthog-exporter.ts', 'packages/operator-core/lib/projected-tool-deps.ts',
+          'packages/operator-core/lib/inference-gateway/gateway.ts', 'apps/operator/bin/host-bootstrap.ts'];
+        Object.assign(fixture.health, { artifact: { status: 'measured', sourceSha: fixture.host.buildSha,
+          bundleSha256: 'b'.repeat(64), manifestSha256: 'c'.repeat(64),
+          sourceBlobs: Object.fromEntries(paths.map(path => [path, 'd'.repeat(40)])) } });
+        fixture.position.mockResolvedValue({ servingRuntimes: [{ runtime: 'release-operator', containsChange: true, buildSha: fixture.host.buildSha }] });
+        fixture.sql.mockResolvedValueOnce([{ count: 1, manifests: 1, matches: true, ref: 'writer-1' }])
+          .mockResolvedValueOnce([{ matched: true }])
+          .mockResolvedValueOnce([{ id: 'green-1', detail: { candidate: fixture.host.buildSha, green: true, runId: 'run-1' } }]);
+      }
+    }
+    it.each(['$ai_generation', '$exception'] as const)('fails partial %s delivery at and after its deadline despite healthy replacements', async kind => {
+      for (const age of [120_000, 120_001, 300_000]) {
+        observations(kind, age, true);
+        expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'fail',
+          detail: expect.stringContaining('Expected ' + kind + ' absent after ingestion bound; invocation=') });
+      }
+    });
+    it.each(['$ai_generation', '$exception'] as const)('keeps %s predeadline and denied queries unknown', async kind => {
+      observations(kind, 119_999);
+      expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'unknown' });
+      observations(kind, 120_001);
+      fixture.readProject.mockResolvedValueOnce({ status: 'unknown', reason: 'query-denied' });
+      expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'unknown', detail: 'query-denied' });
+    });
+    it.each(['$ai_generation', '$exception'] as const)('accepts a restored expired %s with fresh healthy controls', async kind => {
+      observations(kind, 120_001, true);
+      const old = rows()[kind === '$ai_generation' ? 0 : 1]!;
+      const fresh = rows().map(row => ({ ...row, id: 'new-' + row.id, callId: 'new-' + row.callId,
+        traceId: (row.id === '1' ? '3' : '4').repeat(32),
+        ...(mode === 'staging' ? { status: 'ok', expectedModel: true } : {}) }));
+      // Preserve the release writer/green one-shot query responses.
+      fixture.sql.mockResolvedValue([{ ...old, startedAt: now - 121_001, endedAt: now - 120_001 }, ...fresh]);
+      fixture.readProject.mockResolvedValue({ ...project(), events: [
+        ...project().events.filter(event => event.traceId === old.traceId)
+          .map(event => ({ ...event, timestamp: now - 121_000 })),
+        ...project().events.map(event => ({ ...event, traceId: (event.traceId[0] === '1' ? '3' : '4').repeat(32),
+          callId: event.callId ? 'new-' + event.callId : null,
+          ...(mode === 'staging' && event.event === '$exception' ? { event: '$ai_generation', isError: false } : {}) })),
+      ] });
+      expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'pass' });
+      expect(fixture.readProject).toHaveBeenLastCalledWith([old.traceId, '3'.repeat(32), '4'.repeat(32)]);
+    });
+  });
+  it('does not infer model use from an arbitrary successful tool and retains sanitized evidence on a pass', async () => {
+    fixture.sql.mockResolvedValueOnce(rows().map(row => ({ ...row, status: 'ok', expectedModel: false })));
+    expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'unknown' });
+    const result = await measureOperationalObservability('project', scope);
+    expect(result.verdict).toBe('pass');
+    expect(JSON.parse(result.detail)).toMatchObject({ observedEvents: project().events,
+      expected: [{ id: '1', event: '$ai_generation', deadline: rows()[0]!.endedAt + 120_000 },
+        { id: '2', event: '$exception', deadline: rows()[1]!.endedAt + 120_000 }] });
+    const sqlText = fixture.sql.mock.calls.at(-1)![0].join('');
+    expect(sqlText).not.toContain("interval '240 seconds'");
+    expect(sqlText).toContain('ORDER BY id ASC');
+  });
   it('rejects a cross-swapped model parent and a forged project call ID', async () => {
     const swapped = project(); swapped.events[2]!.parentSpanId = 'c'.repeat(16);
     fixture.readProject.mockResolvedValueOnce(swapped);
@@ -73,14 +148,14 @@ describe('operational observability measurements', () => {
     expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'fail', detail: expect.stringContaining('call identity') });
   });
   it('requires two concurrent disjoint tool/HTTP/model chains for staging', async () => {
-    fixture.sql.mockResolvedValue(rows().map(row => ({ ...row, status: 'ok' })));
+    fixture.sql.mockResolvedValue(rows().map(row => ({ ...row, status: 'ok', expectedModel: true })));
     const concurrent = project(); concurrent.events[5]!.event = '$ai_generation'; concurrent.events[5]!.isError = false;
     fixture.readProject.mockResolvedValue(concurrent);
     expect(await measureOperationalObservability('staging', scope)).toMatchObject({ verdict: 'pass' });
     fixture.readProject.mockResolvedValueOnce({ ...concurrent,
       events: concurrent.events.map(event => ({ ...event, httpClient: false })) });
     expect(await measureOperationalObservability('staging', scope)).toMatchObject({ verdict: 'fail' });
-    fixture.sql.mockResolvedValue(rows().map((row, i) => ({ ...row, status: 'ok', startedAt: now - 1000 + i * 950, endedAt: now - 100 + i * 99 })));
+    fixture.sql.mockResolvedValue(rows().map((row, i) => ({ ...row, status: 'ok', expectedModel: true, startedAt: now - 1000 + i * 950, endedAt: now - 100 + i * 99 })));
     fixture.readProject.mockResolvedValue({ ...concurrent,
       events: concurrent.events.map(event => ({ ...event, timestamp: event.timestamp + (event.traceId === '2'.repeat(32) ? 950 : 0) })) });
     expect(await measureOperationalObservability('staging', scope)).toMatchObject({ verdict: 'unknown' });
@@ -175,7 +250,7 @@ describe('operational observability measurements', () => {
     const observations = () => {
       const observed = project();
       if (mode === 'staging') {
-        fixture.sql.mockResolvedValue(rows().map(row => ({ ...row, status: 'ok' })));
+        fixture.sql.mockResolvedValue(rows().map(row => ({ ...row, status: 'ok', expectedModel: true })));
         observed.events[5]!.event = '$ai_generation';
         observed.events[5]!.isError = false;
       }

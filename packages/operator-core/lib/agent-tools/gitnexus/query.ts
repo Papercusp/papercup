@@ -49,6 +49,7 @@ import { runtimeEvidenceForContracts } from '../../code-intelligence/runtime-cod
 import { queryPushSnapshot } from '../../code-intelligence/push-snapshot';
 import { readCoChange, readSymbolProvenance } from '../../code-intelligence/change-history';
 import { postgresLineageQuery } from '../../code-intelligence/postgres-lineage-query';
+import { reuseGraphQuery } from '../../code-intelligence/reuse-graph';
 
 /**
  * WI-10006543 (plan gitnexus-deterministic-integration-2026-10-05, D-026, D-018):
@@ -110,6 +111,7 @@ async function firstPartyCallersAnswer(
 // deliberately refuses. That lets an agent receive the typed `useInstead`
 // guidance rather than a schema error with no redirect.
 const OP_VALUES = [
+  'similar', 'clones',
   'cochange', 'provenance',
   'sql-lineage',
   'communities', 'flows', 'concept-search',
@@ -123,13 +125,13 @@ const OP_VALUES = [
 export default defineTool({
   name: 'graph:query',
   description:
-    'Code topology: symbol | context | callers | callees | impact | trace | contracts | sql-lineage | cochange | provenance | communities | flows | concept-search | health. cochange measures eligible 90-day first-parent commit associations; provenance joins recorded edits to exact sessions/work-items for file_path and one harnesses entry. Both retain explicit unknowns and never use git authorship. sql-lineage requires table and bounded paths, with optional column; maintained Postgres parser maps static SQL, migrations, sync and invalidation sites with explicit unknowns. Callers prefer hash-checked positive syntax snapshots; misses use the compiler. Read coverage for lower bounds. Other native operations use JS/TS compiler snapshots. Discovery requires bounded paths; communities are weak call components, flows are possible call paths, and concept-search fuses symbol/path and source-text rankings. Retrieval and static paths do not prove runtime execution. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.',
+    'Code topology and reuse: symbol | context | callers | callees | impact | trace | contracts | sql-lineage | cochange | provenance | communities | flows | concept-search | similar | clones | health. similar accepts name, file_path+line1, or snippet; clones returns bounded path families. Exact/renamed matches use AST equality; near/semantic remain unknown until calibrated. cochange measures 90-day first-parent associations; provenance joins edits to sessions/items for file_path and one harnesses entry, never git authorship. sql-lineage takes table, bounded paths and optional column; maps static SQL/migration/sync sites. Callers prefer hash-checked snapshots then compiler. Read coverage: static retrieval and paths are lower bounds, not runtime proof. contracts joins scoped HTTP/RPC/event evidence. Native topology supports JS/TS; reuse supports TS/TSX.',
   guidance: {
-    when: 'For "who calls X?", use op:"callers", name and bounded paths; for "what does X call?", use op:"callees". Read syntax/compiler coverage before treating sites as binding or change-impact evidence.',
+    when: 'Who calls X: callers; what X calls: callees. Reuse: similar with name, file_path/line1 or snippet; clones with bounded paths. Read coverage and freshness.',
     notWhen:
-      'Use lsp:query for references, implementations, diagnostics and rename previews; scoped rg for literals. Native symbol/context/callees currently admit JS/TS compiler inputs. Runtime diagnosis needs state/log tools.',
+      'Use lsp:query for references, implementations, diagnostics and rename; rg for literals; state/log tools for runtime diagnosis.',
     chaining:
-    'op:"context" → op:"impact" for the change radius → op:"trace", target:"name" for a forward call path. Use paths to bound compiler source scope. Static paths do not establish runtime execution. op:"health" reports index freshness; lsp:query handles references/diagnostics.',
+    'context → impact → trace with target for forward paths. Bound paths for discovery/reuse. Ambiguous similar names need file_path/line1. health reports index freshness.',
   },
   capability: 'intel:read',
   requirePrincipal: false,
@@ -165,6 +167,7 @@ export default defineTool({
       .optional()
       .describe('symbol/context/callees: defining file; picks one of several same-name symbols.'),
     line1: z.number().int().min(1).optional().describe('Native symbol/context/callees: defining line to distinguish same-name declarations in one file.'),
+    snippet: z.string().min(1).max(100_000).optional().describe('similar: one TS function or body, instead of name/location selectors.'),
     target: z.string().min(1).optional().describe('trace: exact destination symbol name.'),
     target_file_path: z.string().min(1).optional().describe('trace: destination defining file to disambiguate homonyms.'),
     target_line1: z.number().int().min(1).optional().describe('trace: destination defining line.'),
@@ -206,6 +209,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const op = args.op as string;
+    if (op === 'similar' || op === 'clones') return { data: await reuseGraphQuery(resolveAgentWorkspaceRoot(ctx), { ...args, op }, ctx.signal) };
     if (op === 'cochange') {
       const paths = args.paths ?? (args.file_path ? [args.file_path] : []);
       if (!paths.length) return { data: { status: 'unknown', error: 'cochange requires bounded exact paths.' } };
