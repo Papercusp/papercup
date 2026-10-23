@@ -223,4 +223,32 @@ describe('conformance test-run evidence', () => {
     expect(result.detail).toContain('does not match current build');
     expect(caseLoader).not.toHaveBeenCalled();
   });
+
+  it('selects a newer dependency-equivalent receipt ahead of an older unpinned error', async () => {
+    const pass = testRunRow('pass');
+    pass.execution_details = { ...pass.execution_details, testLayer: 'unit' } as typeof pass.execution_details;
+    const error = { ...testRunRow('error'), finished_at: new Date(finishedAt.getTime() - 1000) };
+    sqlMock.mockImplementationOnce(async () => [error, pass] as never[]);
+    const contentEquivalence = vi.fn(async () => ({ equivalent: true, reason: 'same dependency closure' }));
+    expect(await judgeTestsFromLedger({ files: [file], workspaceId: 'workspace', currentBuildSha: 'b'.repeat(40),
+      now: () => finishedAt, contentEquivalence })).toMatchObject({ verdict: 'pass', value: 1 });
+    expect(contentEquivalence).toHaveBeenCalledWith({ file, recordedSha: 'a'.repeat(40), currentSha: 'b'.repeat(40) });
+  });
+
+  it.each(['unpinned error', 'current failure', 'filtered pass', 'dirty pass', 'changed dependencies', 'unknown build'])
+    ('preserves the %s guard when considering an equivalent receipt', async guard => {
+      const pass = { ...testRunRow('pass'), finished_at: new Date(finishedAt.getTime() - 1000),
+        execution_details: { ...testRunRow('pass').execution_details, testLayer: 'unit' } };
+      let candidates: unknown[] = [pass];
+      if (guard === 'unpinned error') candidates.push(testRunRow('error'));
+      if (guard === 'current failure') candidates.push({ ...testRunRow('fail'), commit_sha: 'b'.repeat(40) });
+      if (guard === 'filtered pass') pass.execution_details.testNamePattern = 'one case' as never;
+      if (guard === 'dirty pass') pass.worktree_dirty = true;
+      const contentEquivalence = vi.fn(async () => ({ equivalent: guard !== 'changed dependencies', reason: 'dependency changed' }));
+      sqlMock.mockImplementationOnce(async () => candidates as never[]);
+      const result = await judgeTestsFromLedger({ files: [file], workspaceId: 'workspace',
+        currentBuildSha: guard === 'unknown build' ? null : 'b'.repeat(40), now: () => finishedAt, contentEquivalence });
+      expect(result.verdict).toBe(guard === 'current failure' ? 'fail' : 'error');
+      if (guard === 'dirty pass' || guard === 'unknown build') expect(contentEquivalence).not.toHaveBeenCalled();
+    });
 });

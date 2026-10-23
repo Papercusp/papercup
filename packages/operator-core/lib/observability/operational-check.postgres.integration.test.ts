@@ -75,7 +75,8 @@ describe('release writer population with real PostgreSQL null semantics', () => 
       await db.sql`INSERT INTO harness_shared.tool_invocations
         (metadata_json, status, invoked_at, duration_ms, workspace_id, harness_slug, serving_process_id, serving_build_sha)
         VALUES (${JSON.stringify({ otel: { callId: 'call-' + digit, traceId: digit.repeat(32),
-          spanId: digit.repeat(16), expectedModel } })}::jsonb, ${status}, ${new Date(now - age)}, 1000,
+          spanId: digit.repeat(16), expectedModel,
+          expectedModelRequestIds: expectedModel ? ['11111111-1111-4111-8111-111111111111:' + digit] : [] } })}::jsonb, ${status}, ${new Date(now - age)}, 1000,
           ${scope.workspaceId}, ${scope.harnessSlug}, 'release-test-process', ${'a'.repeat(40)})`;
       const common = { traceId: digit.repeat(32), timestamp: startedAt, isError: false, httpClient: false };
       const http = String(Number(digit) + 3).repeat(16);
@@ -85,7 +86,8 @@ describe('release writer population with real PostgreSQL null semantics', () => 
         parentSpanId: digit.repeat(16), callId: 'call-' + digit, httpClient: true, spanName: 'papercusp.http' });
       if (digit === '2' || digit === '3') events.push({ ...common, uuid: 'leaf-' + digit,
         event: status === 'ok' ? '$ai_generation' : '$exception', isError: status !== 'ok',
-        spanId: String(Number(digit) + 6).repeat(16), parentSpanId: http, callId: null, spanName: 'papercusp.model' });
+        spanId: String(Number(digit) + 6).repeat(16), parentSpanId: http, callId: null, spanName: 'papercusp.model',
+        requestId: '11111111-1111-4111-8111-111111111111:' + digit });
     }
     const mixed = oldStatus === 'error' && oldExpectedModel;
     if (mixed) events.push({ uuid: 'tool-error-1', event: '$exception', traceId: '1'.repeat(32),
@@ -103,7 +105,7 @@ describe('release writer population with real PostgreSQL null semantics', () => 
     if (mixed) {
       events.push({ uuid: 'restored-generation-1', event: '$ai_generation', traceId: '1'.repeat(32),
         spanId: '7'.repeat(16), parentSpanId: '4'.repeat(16), callId: null, timestamp: now - 300_500,
-        isError: false, httpClient: false, spanName: 'papercusp.model' });
+        isError: false, httpClient: false, spanName: 'papercusp.model', requestId: '11111111-1111-4111-8111-111111111111:1' });
       expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'pass' });
       vi.mocked(readConfiguredTraceProject).mockResolvedValueOnce({ status: 'available', queriedAt: now,
         projectId: '7', evidenceRef: 'authenticated-exact-id-query',
@@ -119,6 +121,33 @@ describe('release writer population with real PostgreSQL null semantics', () => 
     fixture.consentSince = 0;
     await db.sql`DELETE FROM harness_shared.tool_invocations WHERE metadata_json->'otel'->>'callId' = 'call-1'`;
     expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'pass' });
+    if (mixed) {
+      const firstId = '11111111-1111-4111-8111-111111111111:2';
+      const secondId = '11111111-1111-4111-8111-111111111111:5';
+      await db.sql`UPDATE harness_shared.tool_invocations SET metadata_json = jsonb_set(metadata_json,
+        '{otel,expectedModelRequestIds}', ${JSON.stringify([firstId, secondId])}::jsonb)
+        WHERE metadata_json->'otel'->>'callId' = 'call-2'`;
+      const secondHttp: ObservedProjectEvent = { uuid: 'second-http-2', event: '$ai_span', traceId: '2'.repeat(32),
+        spanId: 'a'.repeat(16), parentSpanId: '2'.repeat(16), callId: 'call-2', timestamp: now - 500,
+        isError: false, httpClient: true, spanName: 'papercusp.http' };
+      const secondModel: ObservedProjectEvent = { ...secondHttp, uuid: 'second-model-2', event: '$ai_generation',
+        spanId: 'b'.repeat(16), parentSpanId: secondHttp.spanId, callId: null, httpClient: false,
+        spanName: 'papercusp.model', requestId: secondId };
+      events.push(secondHttp, secondModel);
+      for (const missingId of [firstId, secondId]) {
+        const incomplete = events.filter(event => event.event !== '$ai_generation' || event.requestId !== missingId);
+        vi.mocked(readConfiguredTraceProject).mockResolvedValue({ status: 'available', queriedAt: now,
+          projectId: '7', evidenceRef: 'authenticated-exact-id-query', events: incomplete });
+        expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'unknown' });
+        vi.mocked(readConfiguredTraceProject).mockResolvedValueOnce({ status: 'available', queriedAt: now + 120_000,
+          projectId: '7', evidenceRef: 'authenticated-exact-id-query', events: incomplete });
+        expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'fail',
+          detail: expect.stringContaining('Expected $ai_generation absent after ingestion bound') });
+      }
+      vi.mocked(readConfiguredTraceProject).mockResolvedValue({ status: 'available', queriedAt: now,
+        projectId: '7', evidenceRef: 'authenticated-exact-id-query', events });
+      expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'pass' });
+    }
   });
 
   const assertWriterAccepted = async () => {

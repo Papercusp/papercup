@@ -21,6 +21,7 @@
  */
 import http from 'node:http';
 import { beginGatewayTrace, finishGatewayTrace } from '../observability/runtime';
+import { MODEL_REQUEST_ID_HEADER } from '../observability/tracing';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import { readProcessIdentity } from '../process-identity';
@@ -1200,7 +1201,7 @@ const STRIP_REQUEST = new Set([
   'transfer-encoding',
   'keep-alive',
 ]);
-const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
+const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', MODEL_REQUEST_ID_HEADER]);
 
 /** Trusted controller input for one actual, fully shaped Codex HTTP attempt.
  * Account labels and client metadata alone are not serving-scope authentication.
@@ -2671,6 +2672,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const traceparent = req.headers.traceparent;
     beginGatewayTrace(`${gatewayProcessInstanceId}:${span.requestId}`, provider,
       typeof traceparent === 'string' ? { traceparent } : {});
+    // Server-minted identity, shared with the model span and returned to the
+    // maintained caller. Request headers never choose the expected population.
+    res.setHeader(MODEL_REQUEST_ID_HEADER, `${gatewayProcessInstanceId}:${span.requestId}`);
     requestTelemetryByRequest.set(req, state);
     const finish = (closedBeforeFinish: boolean) => {
       if (state.finished) return;

@@ -74,8 +74,8 @@ export function finishToolTrace(input: Invocation) {
 
 /** Only the maintained transport supplies this; caller metadata is overwritten
  * by finishToolTrace at the invocation writer. Ordinary tools imply no model. */
-export function expectSuccessfulToolModelTrace(): void {
-  try { state.runtime?.expectModel(); } catch { state.observerFailures++; }
+export function expectSuccessfulToolModelTrace(requestId?: string | null): void {
+  try { state.runtime?.expectModel(requestId); } catch { state.observerFailures++; }
 }
 
 export function beginGatewayTrace(key: string, provider: string, headers: Record<string, string>) {

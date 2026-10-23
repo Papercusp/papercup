@@ -837,7 +837,7 @@ export const PASSING_TASK_SHARED_MODULE_INPUTS = Object.freeze([
  * represented by the lockfiles above. Any graph hole or untracked runtime module fails closed and
  * makes every ordinary task execute; a broken proof must never be interpreted as an empty proof.
  */
-export function passingTaskVerdictSharedInputProvenance({ root, trackedScan }) {
+export function passingTaskVerdictSharedInputProvenance({ root, trackedScan, fs }) {
   if (!trackedScan || trackedScan.files.length === 0) {
     return {
       ok: false,
@@ -848,6 +848,7 @@ export function passingTaskVerdictSharedInputProvenance({ root, trackedScan }) {
   const graph = staticImportClosure({
     rootDir: root,
     entryFiles: PASSING_TASK_SHARED_MODULE_INPUTS.map((file) => resolve(root, file)),
+    ...(fs ? { fs } : {}),
   });
   if (!graph.ok) {
     return {
@@ -919,6 +920,7 @@ export function passingTaskVerdictDependencyProvenance({
   repoWideTaskKeys,
   sharedInputProvenance = null,
   digestCache = new Map(),
+  hashFiles = hashDependencyFileSet,
 }) {
   if (script === "test:integration" || script === "test:el-suite") {
     return {
@@ -997,7 +999,7 @@ export function passingTaskVerdictDependencyProvenance({
         sharedSemanticFiles.has(file) ||
         sortedClosureDirs.some((dir) => pathInsideDir(file, dir)),
       );
-  const semantic = hashDependencyFileSet({
+  const semantic = hashFiles({
     root,
     files: semanticFiles,
     unavailable,
@@ -1008,7 +1010,7 @@ export function passingTaskVerdictDependencyProvenance({
   const execution =
     executionFiles.length === 0
       ? null
-      : hashDependencyFileSet({
+      : hashFiles({
           root,
           files: executionFiles,
           digestCache,
@@ -1017,7 +1019,7 @@ export function passingTaskVerdictDependencyProvenance({
 
   // Preserve the former aggregate shape for callers that have not adopted the split. New cache
   // identity code must use `semantic`, so execution-only runner changes no longer invalidate it.
-  const legacy = hashDependencyFileSet({
+  const legacy = hashFiles({
     root,
     files: [...semanticFiles, ...executionFiles],
     unavailable,

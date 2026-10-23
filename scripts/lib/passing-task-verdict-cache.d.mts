@@ -119,6 +119,7 @@ export type SharedInputProvenance =
 export function passingTaskVerdictSharedInputProvenance(args: {
   root: string;
   trackedScan: { files: string[]; unscannedPresent: string[] };
+  fs?: import('./related-tests.mjs').RelatedFs;
 }): SharedInputProvenance;
 export type TaskVerdictDependencyProvenance =
   | {
@@ -144,6 +145,7 @@ export function passingTaskVerdictDependencyProvenance(args: {
   repoWideTaskKeys: Set<string>;
   sharedInputProvenance?: SharedInputProvenance | null;
   digestCache?: Map<string, unknown>;
+  hashFiles?: typeof hashDependencyFileSet;
 }): TaskVerdictDependencyProvenance;
 export function shouldStorePassingTaskVerdict(args: {
   enabled: boolean;

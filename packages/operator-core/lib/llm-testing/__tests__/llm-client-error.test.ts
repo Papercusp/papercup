@@ -317,7 +317,8 @@ describe('llmCall backend selection', () => {
           output_text: '{"ok":true}',
           usage: { input_tokens: 10, output_tokens: 4 },
         }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
+        { status: 200, headers: { 'content-type': 'application/json',
+          'x-papercusp-model-request-id': '11111111-1111-4111-8111-111111111111:1' } },
       );
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -332,6 +333,7 @@ describe('llmCall backend selection', () => {
       ownerId: 'system:work-item-admission-bulk-dedup:run-1',
     });
     expect(modelExpectations.mark).toHaveBeenCalledOnce();
+    expect(modelExpectations.mark).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111:1');
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://127.0.0.1:8788/v1/responses',

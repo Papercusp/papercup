@@ -15,14 +15,14 @@ beforeEach(() => {
   request.mockReset(); vi.stubGlobal('fetch', request);
   request.mockResolvedValueOnce(json({ results: [{ id: 7, api_token: 'capture-secret' }, { id: 8, api_token: 'foreign' }], next: null }))
     .mockResolvedValueOnce(json({ results: [] }))
-    .mockResolvedValueOnce(json({ results: [['event-id', '$ai_generation', Date.now(), trace, span, null, 'call-id', false, false, 'papercusp.model']] }));
+    .mockResolvedValueOnce(json({ results: [['event-id', '$ai_generation', Date.now(), trace, span, null, 'call-id', false, false, 'papercusp.model', '11111111-1111-4111-8111-111111111111:1']] }));
 });
 afterEach(() => vi.unstubAllGlobals());
 
 describe('configured project evidence acquisition', () => {
   it('resolves the capture token to its project, queries exact traces, and returns only safe measured fields', async () => {
     const result = await readConfiguredTraceProject([trace]);
-    expect(result).toMatchObject({ status: 'available', projectId: '7', events: [{ traceId: trace, callId: 'call-id' }] });
+    expect(result).toMatchObject({ status: 'available', projectId: '7', events: [{ traceId: trace, callId: 'call-id', requestId: '11111111-1111-4111-8111-111111111111:1' }] });
     expect(String(request.mock.calls[2]![0])).toBe('https://posthog.example.test/api/projects/7/query/');
     expect(JSON.parse(request.mock.calls[2]![1].body).query.query).toContain(`IN ('${trace}')`);
     expect(request.mock.calls.every(([, init]) => init.redirect === 'error')).toBe(true);
@@ -66,9 +66,9 @@ describe('configured project evidence acquisition', () => {
   it.each([300_000, 86_400_000])('retains delivered model and error events from a selected trace aged %sms', async age => {
     const now = Date.now();
     const delivered = [
-      ['old-model', '$ai_generation', now - age, trace, span, null, 'old-call', false, false, 'papercusp.model'],
-      ['old-error', '$exception', now - age + 10, trace, 'a'.repeat(16), null, 'old-call', true, false, 'papercusp.tool'],
-      ['fresh-control', '$ai_generation', now, trace, 'b'.repeat(16), null, 'fresh-call', false, false, 'papercusp.model'],
+      ['old-model', '$ai_generation', now - age, trace, span, null, 'old-call', false, false, 'papercusp.model', null],
+      ['old-error', '$exception', now - age + 10, trace, 'a'.repeat(16), null, 'old-call', true, false, 'papercusp.tool', null],
+      ['fresh-control', '$ai_generation', now, trace, 'b'.repeat(16), null, 'fresh-call', false, false, 'papercusp.model', null],
     ];
     request.mockReset().mockImplementation(async (_url, init) => {
       if (!init.body) return json({ results: [{ id: 7, api_token: 'capture-secret' }], next: null });
@@ -95,14 +95,14 @@ describe('configured project evidence acquisition', () => {
   it('cannot treat foreign-trace rows as evidence for a selected trace', async () => {
     request.mockReset().mockResolvedValueOnce(json({ results: [{ id: 7, api_token: 'capture-secret' }], next: null }))
       .mockResolvedValueOnce(json({ results: [] }))
-      .mockResolvedValueOnce(json({ results: [['event-id', '$ai_generation', Date.now(), 'f'.repeat(32), span, null, 'call-id', false, false, 'papercusp.model']] }));
+      .mockResolvedValueOnce(json({ results: [['event-id', '$ai_generation', Date.now(), 'f'.repeat(32), span, null, 'call-id', false, false, 'papercusp.model', null]] }));
     expect(await readConfiguredTraceProject([trace])).toMatchObject({ status: 'unknown' });
   });
   it.each(['span', 'parent'])('rejects a zero %s ID instead of treating it as correlation', async field => {
     request.mockReset().mockResolvedValueOnce(json({ results: [{ id: 7, api_token: 'capture-secret' }], next: null }))
       .mockResolvedValueOnce(json({ results: [] })).mockResolvedValueOnce(json({ results: [
         ['event-id', '$ai_generation', Date.now(), trace, field === 'span' ? '0'.repeat(16) : span,
-          field === 'parent' ? '0'.repeat(16) : null, 'call-id', false, false, 'papercusp.model'],
+          field === 'parent' ? '0'.repeat(16) : null, 'call-id', false, false, 'papercusp.model', null],
       ] }));
     expect(await readConfiguredTraceProject([trace])).toMatchObject({ status: 'unknown' });
   });

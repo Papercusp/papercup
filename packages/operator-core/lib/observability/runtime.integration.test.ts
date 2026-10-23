@@ -34,7 +34,8 @@ vi.mock('@papercusp/db-org', async original => ({
 
 import { PROJECTED_DEPS, flushPendingTelemetry } from '../projected-tool-deps';
 import { beginGatewayTrace, finishGatewayTrace, flushRuntimeObservability,
-  beginToolTrace, finishToolTrace, initializeRuntimeObservability, runtimeObservabilityHealth, shutdownRuntimeObservability } from './runtime';
+  beginToolTrace, finishToolTrace, initializeRuntimeObservability, runtimeObservabilityHealth, shutdownRuntimeObservability,
+  expectSuccessfulToolModelTrace } from './runtime';
 import { mergeSetupWizardState } from '../endpoint-route/routes/desktop/setup-wizard-state';
 import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-telemetry';
 
@@ -155,6 +156,24 @@ describe('production observability composition', () => {
     const before = captured.length;
     await flushRuntimeObservability();
     expect(captured).toHaveLength(before); // capture requests do not recursively export
+  });
+  it('persists both trusted model expectations through the production invocation writer even when the tool fails', async () => {
+    const callId = 'two-models-then-error';
+    const ids = [1, 2].map(n => '11111111-1111-4111-8111-111111111111:' + n);
+    PROJECTED_DEPS.onDispatchStart!({ ctx, toolName: 'synthetic:observe', callId } as never);
+    await PROJECTED_DEPS.aroundInvoke!({ tool: { pluginName: 'synthetic' }, toolName: 'synthetic:observe',
+      input: {}, ctx, callId, invoke: async () => {
+        for (const id of ids) { await Promise.resolve(); expectSuccessfulToolModelTrace(id); }
+      } } as never);
+    await PROJECTED_DEPS.recordInvocation!({ ctx, callId, toolName: 'synthetic:observe', pluginName: 'synthetic',
+      windowKey: 'synthetic-window', status: 'error', durationMs: 1,
+      metadataJson: { otel: { expectedModelRequestIds: ['caller-forged'] } } } as never);
+    await flushPendingTelemetry();
+    const rows = await fixture.db!.adminSql`SELECT metadata_json FROM harness_shared.tool_invocations
+      WHERE workspace_id = 'synthetic-workspace' AND metadata_json->'otel'->>'callId' = ${callId}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.metadata_json).toMatchObject({ otel: { callId, expectedModel: true,
+      expectedModelRequestIds: ids, modelExpectationsIncomplete: false } });
   });
   it('keeps two barrier-interleaved production tool, HTTP, model and PostgreSQL journeys isolated', async () => {
     const journeys = [

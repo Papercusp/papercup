@@ -22,6 +22,7 @@ import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-d
 import { sameBuildSha } from '../attention/bug-reproduction';
 import { readPlanBySlug } from '../agent-tools/plans/source';
 import { getBuildInfo } from '../build-info';
+import { createTestContentEquivalence, type TestContentEquivalence } from './conformance-test-content';
 import { approvedDeviations } from './deviation';
 import {
   probeCheckResults,
@@ -130,6 +131,8 @@ export async function judgeTestsFromLedger(
     now?: () => Date;
     /** Override only for focused tests; production uses the seven-day policy above. */
     maxAgeMs?: number;
+    /** Immutable dependency-content proof; injectable for focused selection tests. */
+    contentEquivalence?: TestContentEquivalence;
   },
   sql: Sql = getOrgPg().sql,
 ): Promise<EvaluatedConformanceCheck> {
@@ -138,8 +141,9 @@ export async function judgeTestsFromLedger(
   const matchingBuildSha = normalizedCurrentBuildSha && SPEC_CONFORMANCE_BUILD_SHA_RE.test(normalizedCurrentBuildSha)
     ? normalizedCurrentBuildSha.toLowerCase()
     : null;
-  const rows = (await sql`
-    SELECT DISTINCT ON (file_path)
+  const candidates = (await sql`
+    WITH per_commit AS (
+    SELECT DISTINCT ON (file_path, commit_sha)
            id, file_path, status, finished_at, commit_sha, worktree_dirty, execution_details
       FROM harness_shared.test_runs
      WHERE file_path = ANY(${[...input.files]})
@@ -152,7 +156,11 @@ export async function judgeTestsFromLedger(
      -- Concurrent reviewers may test other commits in this same workspace.
      -- Prefer this build's newest run; retain foreign rows as a diagnostic
      -- fallback when there is no match. Unpinned errors stay fail-closed.
-     ORDER BY file_path,
+     ORDER BY file_path, commit_sha,
+              CASE WHEN status = 'pass' AND worktree_dirty IS TRUE THEN 1 ELSE 0 END,
+              finished_at DESC NULLS LAST, id DESC
+    ), ranked AS (
+      SELECT *, row_number() OVER (PARTITION BY file_path ORDER BY
               CASE WHEN ${matchingBuildSha}::text IS NULL
                      OR nullif(btrim(commit_sha), '') IS NULL
                      OR (commit_sha ~ '^[a-fA-F0-9]{7,64}$' AND (
@@ -163,7 +171,10 @@ export async function judgeTestsFromLedger(
               -- its HEAD matches. Prefer this build's committed observation;
               -- keep negative and name-filtered evidence fail-closed as before.
               CASE WHEN status = 'pass' AND worktree_dirty IS TRUE THEN 1 ELSE 0 END,
-              finished_at DESC NULLS LAST, id DESC
+              finished_at DESC NULLS LAST, id DESC) AS candidate_rank
+        FROM per_commit
+    ) SELECT * FROM ranked WHERE candidate_rank <= 32
+      ORDER BY file_path, candidate_rank
   `) as Array<{
     id: number | string;
     file_path: string;
@@ -173,6 +184,32 @@ export async function judgeTestsFromLedger(
     worktree_dirty: boolean | null;
     execution_details: unknown;
   }>;
+  const equivalentRows = new Set<typeof candidates[number]>();
+  const equivalenceProblems = new Map<typeof candidates[number], string>();
+  const contentEquivalence = input.contentEquivalence ?? createTestContentEquivalence();
+  for (const row of candidates) {
+    const sha = row.commit_sha?.trim();
+    if (!matchingBuildSha || !sha || !SPEC_CONFORMANCE_BUILD_SHA_RE.test(sha) || sameBuildSha(sha, matchingBuildSha)) continue;
+    const details = parseTestRunExecutionDetails(row.execution_details);
+    // Content cannot recover unknown runtime identity, a dirty observation, or
+    // external integration state. Filtered evidence still reaches the existing
+    // full-file/named-case checks below; content equality never grants coverage.
+    if (!details || details.testLayer !== 'unit' || details.filePath !== row.file_path
+      || row.worktree_dirty !== false || details.worktreeDirty || details.commitSha !== row.commit_sha) continue;
+    const proof = await contentEquivalence({ file: row.file_path, recordedSha: sha, currentSha: matchingBuildSha });
+    if (proof.equivalent) equivalentRows.add(row);
+    else equivalenceProblems.set(row, proof.reason);
+  }
+  const priority = (row: typeof candidates[number]) => !matchingBuildSha || !row.commit_sha?.trim()
+    || (SPEC_CONFORMANCE_BUILD_SHA_RE.test(row.commit_sha.trim()) && sameBuildSha(row.commit_sha.trim(), matchingBuildSha))
+    || equivalentRows.has(row) ? 0 : 1;
+  const ordered = [...candidates].sort((a, b) => priority(a) - priority(b)
+    || Number(a.status === 'pass' && a.worktree_dirty === true) - Number(b.status === 'pass' && b.worktree_dirty === true)
+    || (finishedAtMs(b.finished_at) || 0) - (finishedAtMs(a.finished_at) || 0)
+    || Number(b.id) - Number(a.id));
+  const byFile = new Map<string, typeof candidates[number]>();
+  for (const row of ordered) if (!byFile.has(row.file_path)) byFile.set(row.file_path, row);
+  const rows = [...byFile.values()];
   const currentBuildProblems = rows.flatMap((row) => {
     if (row.status === 'error') return [];
     if (!normalizedCurrentBuildSha || !SPEC_CONFORMANCE_BUILD_SHA_RE.test(normalizedCurrentBuildSha)) {
@@ -184,12 +221,11 @@ export async function judgeTestsFromLedger(
         ? [`${row.file_path} (test run has no commit SHA to match the current build, test_runs #${row.id})`]
         : [];
     }
-    if (!SPEC_CONFORMANCE_BUILD_SHA_RE.test(runSha) || !sameBuildSha(runSha, normalizedCurrentBuildSha)) {
-      return [`${row.file_path} (test-run commit ${runSha} does not match current build ${normalizedCurrentBuildSha}, test_runs #${row.id})`];
+    if ((!SPEC_CONFORMANCE_BUILD_SHA_RE.test(runSha) || !sameBuildSha(runSha, normalizedCurrentBuildSha)) && !equivalentRows.has(row)) {
+      return [`${row.file_path} (test-run commit ${runSha} does not match current build ${normalizedCurrentBuildSha}, test_runs #${row.id}${equivalenceProblems.has(row) ? '; ' + equivalenceProblems.get(row) : ''})`];
     }
     return [];
   });
-  const byFile = new Map(rows.map((row) => [row.file_path, row] as const));
   const missing = input.files.filter((file) => !byFile.has(file));
   const now = input.now?.() ?? new Date();
   const nowMs = now.getTime();

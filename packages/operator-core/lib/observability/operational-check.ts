@@ -6,6 +6,7 @@ import { runtimeObservabilityHealth, runtimeTraceDeliveryConfig } from './runtim
 import { readConfiguredTraceProject, type ObservedProjectEvent } from './project-readback';
 import { OBSERVABILITY_INSTRUMENT_KEYS } from './instrument-keys';
 import { verifyObservabilityShipmentReceipt, type ObservabilityShipmentReceipt } from './shipment-receipt';
+import { isModelRequestId, MAX_EXPECTED_MODEL_REQUESTS } from './tracing';
 const COMPOSITION_PATHS = [
   'packages/operator-core/lib/observability/runtime.ts',
   'packages/operator-core/lib/observability/tracing.ts',
@@ -17,14 +18,15 @@ const COMPOSITION_PATHS = [
 interface InvocationObservation {
   id: string; callId: string; traceId: string; spanId: string;
   status: string; startedAt: number; endedAt: number; expectedModel: boolean;
+  expectedModelRequestIds?: unknown; modelExpectationsIncomplete?: boolean;
 }
-function expectedEvents(row: InvocationObservation): Array<'$ai_generation' | '$exception'> {
+function expectedEvents(row: InvocationObservation): Array<{ event: '$ai_generation' | '$exception'; requestId?: string }> {
   // A successful model response and the enclosing tool's final error are
   // independent writer observations. A later tool error cannot erase delivery
   // obligations for the model response it already consumed.
-  const events: Array<'$ai_generation' | '$exception'> = [];
-  if (row.expectedModel) events.push('$ai_generation');
-  if (row.status !== 'ok') events.push('$exception');
+  const events: Array<{ event: '$ai_generation' | '$exception'; requestId?: string }> = [];
+  if (row.expectedModel) for (const requestId of row.expectedModelRequestIds as string[]) events.push({ event: '$ai_generation', requestId });
+  if (row.status !== 'ok') events.push({ event: '$exception' });
   return events;
 }
 type Verdict = { verdict: 'pass' | 'fail' | 'unknown'; detail: string };
@@ -133,6 +135,8 @@ export async function measureOperationalObservability(
       SELECT id::text AS id, metadata_json->'otel'->>'callId' AS "callId",
         metadata_json->'otel'->>'traceId' AS "traceId", metadata_json->'otel'->>'spanId' AS "spanId", status,
         metadata_json->'otel'->'expectedModel' = 'true'::jsonb AS "expectedModel",
+        metadata_json->'otel'->'expectedModelRequestIds' AS "expectedModelRequestIds",
+        metadata_json->'otel'->'modelExpectationsIncomplete' = 'true'::jsonb AS "modelExpectationsIncomplete",
         (extract(epoch FROM invoked_at) * 1000 - duration_ms)::float8 AS "startedAt",
         (extract(epoch FROM invoked_at) * 1000)::float8 AS "endedAt"
       FROM harness_shared.tool_invocations
@@ -153,6 +157,13 @@ export async function measureOperationalObservability(
       Number.isFinite(row.startedAt) && Number.isFinite(row.endedAt) && row.endedAt >= row.startedAt);
     if (!valid.length) return unknown('No fresh invocation identity with persisted call/trace/span metadata.');
     if (valid.length !== population.length) return unknown('Expected invocation identity is incomplete.');
+    for (const row of valid) {
+      const ids = row.expectedModelRequestIds;
+      if (row.modelExpectationsIncomplete || row.expectedModel && (!Array.isArray(ids) || !ids.length ||
+        ids.length > MAX_EXPECTED_MODEL_REQUESTS || ids.some(id => !isModelRequestId(id)) || new Set(ids).size !== ids.length)) {
+        return unknown('Expected model request identities are incomplete or exceed the bound; invocation=' + row.id);
+      }
+    }
     const traceIds = [...new Set(valid.map(row => row.traceId))];
     let project: Awaited<ReturnType<typeof readConfiguredTraceProject>> | undefined;
     for (let offset = 0; offset < traceIds.length; offset += 16) {
@@ -215,11 +226,16 @@ export async function measureOperationalObservability(
       }
       const exceptions = events.filter(event => event.event === '$exception');
       if (exceptions.some(event => event.spanId === row.spanId ? event.callId !== row.callId : !reachable(event))) return fail('Exception ancestry differs from persisted tool span; invocation=' + row.id);
-      const missing = expectedEvents(row).find(event => event === '$ai_generation'
-        ? !generations.some(generation => !generation.isError)
+      const obligations = expectedEvents(row);
+      if (obligations.some(obligation => obligation.requestId && generations.filter(generation =>
+        !generation.isError && generation.requestId === obligation.requestId).length > 1)) {
+        return fail('Ambiguous expected model request identity; invocation=' + row.id);
+      }
+      const missing = obligations.find(obligation => obligation.event === '$ai_generation'
+        ? !generations.some(generation => !generation.isError && generation.requestId === obligation.requestId)
         : !exceptions.some(exception => exception.isError));
       if (missing) {
-        if (now - row.endedAt >= 120_000) return fail('Expected ' + missing + ' absent after ingestion bound; invocation=' + row.id);
+        if (now - row.endedAt >= 120_000) return fail('Expected ' + missing.event + ' absent after ingestion bound; invocation=' + row.id);
         pending = true;
         continue;
       }
@@ -280,8 +296,8 @@ export async function measureOperationalObservability(
     return { verdict: 'pass', detail: JSON.stringify({ detector: OBSERVABILITY_INSTRUMENT_KEYS[mode], version: 1,
       observedAt: now, host, projectId: project.projectId, projectQuery: project.evidenceRef, release: releaseEvidence,
       shipment,
-      expected: valid.flatMap(row => expectedEvents(row).map(event => ({ id: row.id, callId: row.callId,
-        traceId: row.traceId, spanId: row.spanId, event, startedAt: row.startedAt,
+      expected: valid.flatMap(row => expectedEvents(row).map(obligation => ({ id: row.id, callId: row.callId,
+        traceId: row.traceId, spanId: row.spanId, ...obligation, startedAt: row.startedAt,
         endedAt: row.endedAt, deadline: row.endedAt + 120_000 }))),
       observedEvents: project.events,
       invocations: selected.map(({ row }) => ({ id: row.id, callId: row.callId, traceId: row.traceId, spanId: row.spanId,

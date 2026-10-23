@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { context, trace, propagation } from '@opentelemetry/api';
 import { InMemorySpanExporter, SimpleSpanProcessor, type SpanExporter } from '@opentelemetry/sdk-trace';
-import { createTracing, enableTracingContext, extractTraceContext, injectTraceContext, safeTraceAttributes } from './tracing';
+import { createTracing, enableTracingContext, extractTraceContext, injectTraceContext, safeTraceAttributes, MAX_EXPECTED_MODEL_REQUESTS } from './tracing';
 
 beforeAll(enableTracingContext);
 describe('runtime OpenTelemetry correlation', () => {
@@ -11,11 +11,34 @@ describe('runtime OpenTelemetry correlation', () => {
       runtime.begin('model', 'papercusp.tool', { 'papercusp.call_id': 'model' });
       runtime.begin('ordinary', 'papercusp.tool', { 'papercusp.call_id': 'ordinary' });
       await Promise.all([
-        runtime.run('model', async () => { await Promise.resolve(); runtime.expectModel(); }),
+        runtime.run('model', async () => {
+          await Promise.resolve();
+          runtime.expectModel('11111111-1111-4111-8111-111111111111:1');
+          runtime.expectModel('11111111-1111-4111-8111-111111111111:2');
+        }),
         runtime.run('ordinary', async () => { await Promise.resolve(); }),
       ]);
-      expect(runtime.finish('model', 'ok')).toMatchObject({ expectedModel: true });
-      expect(runtime.finish('ordinary', 'ok')).toMatchObject({ expectedModel: false });
+      expect(runtime.finish('model', 'error')).toMatchObject({ expectedModel: true, modelExpectationsIncomplete: false,
+        expectedModelRequestIds: ['11111111-1111-4111-8111-111111111111:1', '11111111-1111-4111-8111-111111111111:2'] });
+      expect(runtime.finish('ordinary', 'ok')).toMatchObject({ expectedModel: false, expectedModelRequestIds: [] });
+    } finally { await runtime.shutdown(); }
+  });
+  it.each(['missing', 'duplicate', 'overflow'])('marks %s model identities incomplete without replacing prior expectations', async fault => {
+    const runtime = createTracing();
+    try {
+      runtime.begin('tool', 'papercusp.tool', { 'papercusp.call_id': 'tool' });
+      await runtime.run('tool', async () => {
+        const id = '11111111-1111-4111-8111-111111111111:1';
+        runtime.expectModel(id);
+        if (fault === 'overflow') for (let i = 2; i <= MAX_EXPECTED_MODEL_REQUESTS + 1; i++) {
+          runtime.expectModel('11111111-1111-4111-8111-111111111111:' + i);
+        }
+        else runtime.expectModel(fault === 'duplicate' ? id : null);
+      });
+      const result = runtime.finish('tool', 'ok')!;
+      expect(result.modelExpectationsIncomplete).toBe(true);
+      expect(result.expectedModelRequestIds[0]).toBe('11111111-1111-4111-8111-111111111111:1');
+      expect(result.expectedModelRequestIds).toHaveLength(fault === 'overflow' ? MAX_EXPECTED_MODEL_REQUESTS : 1);
     } finally { await runtime.shutdown(); }
   });
   it.each([undefined, 'malformed', '00-00000000000000000000000000000000-1234567890123456-01'])('creates a valid root for absent or invalid inbound parent %s', async parent => {

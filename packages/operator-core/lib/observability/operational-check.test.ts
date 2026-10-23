@@ -14,16 +14,17 @@ vi.mock('./project-readback', () => ({ readConfiguredTraceProject: fixture.readP
 import { measureOperationalObservability } from './operational-check';
 const scope = { workspaceId: 'workspace-test', harnessSlug: 'harness-test' };
 const now = Date.now();
+const modelRequestId = (digit: string) => '11111111-1111-4111-8111-111111111111:' + digit;
 const rows = () => ['1', '2'].map((digit, i) => ({ id: digit, callId: 'call-' + digit,
   traceId: digit.repeat(32), spanId: digit.repeat(16), status: i ? 'error' : 'ok',
-  startedAt: now - 1000, endedAt: now - 100, expectedModel: !i }));
+  startedAt: now - 1000, endedAt: now - 100, expectedModel: !i, expectedModelRequestIds: [modelRequestId(digit)] }));
 const project = () => ({ status: 'available', projectId: '7', queriedAt: now, evidenceRef: 'authenticated-project-query',
   events: rows().flatMap((row, i) => [{ uuid: 'tool-' + row.id, event: '$ai_trace', timestamp: row.startedAt,
     traceId: row.traceId, spanId: row.spanId, parentSpanId: null, callId: row.callId, isError: !!i, httpClient: false, spanName: 'papercusp.tool' },
   { uuid: 'http-' + row.id, event: '$ai_span', timestamp: row.startedAt + 10,
     traceId: row.traceId, spanId: (i ? 'c' : 'a').repeat(16), parentSpanId: row.spanId, callId: row.callId, isError: false, httpClient: true, spanName: 'papercusp.http' },
   { uuid: 'model-' + row.id, event: i ? '$exception' : '$ai_generation', timestamp: row.startedAt + 20,
-    traceId: row.traceId, spanId: (i ? 'd' : 'b').repeat(16), parentSpanId: (i ? 'c' : 'a').repeat(16), callId: null, isError: !!i, httpClient: false, spanName: 'papercusp.model' }]) });
+    traceId: row.traceId, spanId: (i ? 'd' : 'b').repeat(16), parentSpanId: (i ? 'c' : 'a').repeat(16), callId: null, isError: !!i, httpClient: false, spanName: 'papercusp.model', requestId: modelRequestId(row.id) }]) });
 beforeEach(() => {
   fixture.host = { host: 'port-3170', processId: 'process-1', buildSha: 'a'.repeat(40) };
   fixture.health = { initialized: true, globalProviderRegistered: true };
@@ -35,6 +36,55 @@ beforeEach(() => {
 });
 
 describe('operational observability measurements', () => {
+  it.each([0, 1])('requires each of two successful models independently when sibling %s is missing', async missing => {
+    const requestIds = [1, 2].map(n => '11111111-1111-4111-8111-111111111111:' + n);
+    const ledger = rows();
+    Object.assign(ledger[0]!, { expectedModelRequestIds: requestIds });
+    const delivered = project();
+    Object.assign(delivered.events[2]!, { requestId: requestIds[0] });
+    delivered.events.push({ ...delivered.events[1]!, uuid: 'second-http', spanId: 'e'.repeat(16) },
+      { ...delivered.events[2]!, uuid: 'second-model', spanId: 'f'.repeat(16),
+        parentSpanId: 'e'.repeat(16), requestId: requestIds[1] });
+    ledger.push({ ...ledger[0]!, id: '3', callId: 'call-3', traceId: '3'.repeat(32), spanId: '3'.repeat(16),
+      expectedModelRequestIds: [requestIds[0]!] });
+    delivered.events.push(...project().events.slice(0, 3).map(event => ({ ...event,
+      uuid: 'fresh-' + event.uuid, traceId: '3'.repeat(32),
+      spanId: event.spanId === '1'.repeat(16) ? '3'.repeat(16) : event.spanId,
+      parentSpanId: event.parentSpanId === '1'.repeat(16) ? '3'.repeat(16) : event.parentSpanId,
+      callId: event.callId ? 'call-3' : null, requestId: requestIds[0] })));
+    fixture.sql.mockResolvedValue(ledger);
+    for (const age of [119_999, 120_000, 300_000]) {
+      Object.assign(ledger[0]!, { startedAt: now - age - 1000, endedAt: now - age });
+      const events = delivered.events.map(event => ({ ...event,
+        timestamp: event.traceId === ledger[0]!.traceId ? now - age - 500 : event.timestamp }));
+      // Keep both HTTP anchors and every unrelated healthy event.
+      fixture.readProject.mockResolvedValue({ ...delivered, events: events.filter(event =>
+        event.uuid !== (missing ? 'second-model' : 'model-1')) });
+      expect(await measureOperationalObservability('project', scope)).toMatchObject({
+        verdict: age < 120_000 ? 'unknown' : 'fail' });
+      fixture.readProject.mockResolvedValueOnce({ status: 'unknown', reason: 'query-denied' });
+      expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'unknown' });
+      fixture.readProject.mockResolvedValue({ ...delivered, events });
+      expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'pass' });
+    }
+  });
+  it.each([undefined, [], [modelRequestId('1'), modelRequestId('1')], ['untrusted'],
+    Array.from({ length: 65 }, (_, i) => modelRequestId(String(i + 1)))])(
+    'keeps incomplete, duplicate or overflowing model populations unknown: %j', async ids => {
+      fixture.sql.mockResolvedValue(rows().map(row => row.expectedModel ? { ...row, expectedModelRequestIds: ids } : row));
+      expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'unknown',
+        detail: expect.stringContaining('identities are incomplete') });
+      expect(fixture.readProject).not.toHaveBeenCalled();
+    });
+  it('does not turn a truncated writer or duplicate delivered request identity into a pass', async () => {
+    fixture.sql.mockResolvedValueOnce(rows().map(row => ({ ...row, modelExpectationsIncomplete: true })));
+    expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'unknown' });
+    const duplicate = project();
+    duplicate.events.push({ ...duplicate.events[2]!, uuid: 'different-generation', spanId: 'e'.repeat(16) });
+    fixture.readProject.mockResolvedValue(duplicate);
+    expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'fail',
+      detail: expect.stringContaining('Ambiguous expected model') });
+  });
   it('acquires invocation and project evidence instead of accepting a supplied receipt', async () => {
     const result = await measureOperationalObservability('project', scope);
     expect(result.verdict).toBe('pass');
