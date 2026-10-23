@@ -8,6 +8,10 @@
  */
 import { describe, it, expect, afterEach } from "vitest";
 import http from "node:http";
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { readProcessIdentity } from '@papercusp/operator-core/lib/process-identity';
 import { createTextCollector } from "@papercusp/operator-core/lib/child-output";
 import {
   applyMcpBuildSelector,
@@ -15,8 +19,10 @@ import {
   MCP_BUILD_META_KEY,
   normalizeMcpBuild,
   selectTargetsForBuild,
+  applyMcpWorkerSelector,
+  selectWorkerForTarget,
 } from "./build-routing";
-import { createMcpProxy, staticMcpProxyTargets, type McpProxyTarget } from "./proxy";
+import { createMcpProxy, staticMcpProxyTargets, readMcpWorkerTargets, type McpProxyTarget } from "./proxy";
 
 const call = (
   name: string,
@@ -167,10 +173,10 @@ function freePort(): Promise<number> {
     });
   });
 }
-function post(p: number, body: string): Promise<{ status: number; body: string }> {
+function post(p: number, body: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const r = http.request(
-      { host: "127.0.0.1", port: p, method: "POST", path: "/api/mcp", headers: { "content-type": "application/json" } },
+      { host: "127.0.0.1", port: p, method: "POST", path: "/api/mcp", headers: { "content-type": "application/json", ...headers } },
       (res) => {
         const b = createTextCollector(res);
         res.on("end", () => resolve({ status: res.statusCode ?? 0, body: b.text() }));
@@ -291,5 +297,115 @@ describe("MCP proxy build routing (end to end)", () => {
     expect(r.status).toBe(400);
     expect(JSON.parse(r.body).error).toBe("build_selector_conflict");
     expect(seen).toEqual([]);
+  });
+});
+
+describe('target-preserving worker routing', () => {
+  const target = { environment: 'staging' as const, buildSha: 'a'.repeat(40), installRoot: '/selected/install' };
+  const worker = (p: number): McpProxyTarget => ({ host: '127.0.0.1', port: p,
+    processRole: 'bg-host', executionTarget: target });
+  const request = (extra = {}) => JSON.stringify(call('git-sync:run', { installSlug: 'selected', target, ...extra },
+    { threadId: 'session-one', workspace: 'workspace-one' }));
+  async function routed(workers: McpProxyTarget[]) {
+    const proxy = track(createMcpProxy({ listenPort: 0, targetPort: 1, resolveWorkerTargets: () => workers,
+      retryWindowMs: 40, retryBackoffMs: 5, log: () => {} }));
+    await listen(proxy);
+    return port(proxy);
+  }
+
+  it('requires private live discovery with a matching process identity', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'mcp-worker-discovery-'));
+    const path = join(directory, 'endpoint-ipc.3271.json');
+    const descriptor = { port: 3271, pid: process.pid, processRole: 'bg-host', executionTarget: target,
+      executionProcessId: readProcessIdentity(process.pid) };
+    const write = (value: unknown, mode = 0o600) => { rmSync(path, { force: true }); writeFileSync(path, JSON.stringify(value), { mode }); };
+    try {
+      write(descriptor);
+      expect(readMcpWorkerTargets(directory)).toMatchObject([{ port: 3271, executionTarget: target }]);
+      write({ ...descriptor, executionProcessId: 'replaced-process' });
+      expect(readMcpWorkerTargets(directory)).toEqual([]);
+      write(descriptor, 0o644);
+      expect(readMcpWorkerTargets(directory)).toEqual([]);
+      write({ ...descriptor, processRole: 'operator' });
+      expect(readMcpWorkerTargets(directory)).toEqual([]);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('preserves the explicit environment, build and install at the selected worker', async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const selected = await listen(stubOperator('selected', seen));
+    const p = await routed([worker(port(selected)), { ...worker(1), executionTarget: { ...target, environment: 'main' } }]);
+    const response = await post(p, request());
+    expect(response.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    const forwarded = JSON.parse(seen[0]!.body);
+    expect(forwarded.params.arguments).toMatchObject({ installSlug: 'selected', target });
+    expect(forwarded.params._meta).toMatchObject({ threadId: 'session-one', workspace: 'workspace-one', 'papercusp/build': 'staging' });
+  });
+
+  it('refuses ambiguous or unavailable targets without substitution', async () => {
+    for (const workers of [[], [worker(1), worker(2)],
+      [{ ...worker(1), executionTarget: { ...target, buildSha: 'b'.repeat(40) } }],
+      [{ ...worker(1), executionTarget: { ...target, installRoot: '/another' } }],
+      [{ ...worker(1), processRole: 'operator' }]]) {
+      const response = await post(await routed(workers), request());
+      expect(response.status).toBe(503);
+      expect(JSON.parse(response.body)).toMatchObject({ forwardingResult: 'not_applied' });
+    }
+    expect(applyMcpWorkerSelector(buf(call('git-sync:run', { target: { ...target, buildSha: undefined } }))))
+      .toMatchObject({ kind: 'refused' });
+  });
+
+  it('preserves authentication and attribution without forwarding host-local principals', async () => {
+    let authorization: string | undefined;
+    let dispatched = 0;
+    const upstream = track(http.createServer((req, res) => {
+      authorization = req.headers.authorization;
+      dispatched++;
+      req.resume();
+      res.writeHead(401); res.end('authentication required');
+    }));
+    await listen(upstream);
+    const p = await routed([worker(port(upstream))]);
+    expect((await post(p, request(), { authorization: 'Bearer original-test-credential' })).status).toBe(401);
+    expect(authorization).toBe('Bearer original-test-credential');
+    expect(dispatched).toBe(1);
+    const refused = await post(p, request({ authenticatedPrincipal: { capabilities: ['all'] } }));
+    expect(refused.status).toBe(400);
+    expect(JSON.parse(refused.body).forwardingResult).toBe('not_applied');
+    expect(dispatched).toBe(1);
+  });
+
+  it('distinguishes no-dispatch, unknown and authenticated completion without replay', async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const upstream = await listen(stubOperator('worker-result', seen));
+    const p = await routed([worker(port(upstream))]);
+    const completed = await post(p, request());
+    expect(JSON.parse(completed.body)).toMatchObject({ result: { servedBy: 'worker-result' } });
+    expect(seen).toHaveLength(1);
+    const unavailable = await post(await routed([]), request());
+    expect(JSON.parse(unavailable.body).forwardingResult).toBe('not_applied');
+    // A preview remains on the existing request-only handler; zero worker dispatch.
+    expect(applyMcpWorkerSelector(Buffer.from(request({ dryRun: true })))).toEqual({ kind: 'none' });
+    expect(seen).toHaveLength(1);
+  });
+
+  it('reports connection loss before dispatch as no-dispatch', async () => {
+    const response = await post(await routed([worker(await freePort())]), request());
+    expect(response.status).toBe(503);
+    expect(JSON.parse(response.body)).toMatchObject({ forwardingResult: 'not_forwarded' });
+  });
+
+  it('reports connection loss after possible dispatch as unknown without retry', async () => {
+    let dispatched = 0;
+    const upstream = track(http.createServer((req) => {
+      req.on('data', () => {});
+      req.on('end', () => { dispatched++; req.socket.destroy(); });
+    }));
+    await listen(upstream);
+    const response = await post(await routed([worker(port(upstream))]), request());
+    expect(response.status).toBe(502);
+    expect(JSON.parse(response.body)).toMatchObject({ forwardingResult: 'outcome_unknown' });
+    expect(dispatched).toBe(1);
   });
 });

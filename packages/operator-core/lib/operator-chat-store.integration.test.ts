@@ -146,6 +146,25 @@ describe('P010 durable PG turn ports (independent connections; no actual-host cl
     return { card, hooks, parent, binding, tool, spec, info, boundScope, s };
   }
 
+  it('resolves a pending card after native finalization from another worker without losing its exact workflow', async () => {
+    const { card, parent, tool, info, s } = await concreteCard();
+    await card.associateNative('native-finalized');
+    await s.finalizeTurn({ runId: parent.runId, status: 'completed', text: 'Choose',
+      tools: [{ ...tool, callId: 'native-finalized' }] });
+    const recovered = await findConverseCard({ sql: second, workspaceId, conversationId: turn.conversationId,
+      correlationId: info.correlationId, authorizeAdditional: async () => true });
+    expect(recovered).not.toBeNull();
+    const picked = { action: 'submit' as const, payload: { picks: ['yes'] } };
+    expect(await recovered!.commitResponse(picked, recovered!.info(), 'response')).toEqual({ accepted: true, response: picked });
+    const rows = await first.unsafe('SELECT tools FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows[0].tools).toEqual([{ ...tool, callId: 'native-finalized',
+      answered: { picks: [{ option_id: 'yes', label: 'Proceed' }], at: expect.any(Number) } }]);
+    const users = await first.unsafe("SELECT text FROM harness_shared.operator_turns WHERE role='user'");
+    expect(users).toEqual([{ text: 'Proceed' }]);
+    expect(await recovered!.commitResponse(picked, recovered!.info(), 'response')).toEqual({ accepted: false, response: picked });
+    expect(await first.unsafe("SELECT text FROM harness_shared.operator_turns WHERE role='user'")).toEqual(users);
+  });
+
   it('adapts exact host card preparation, decision and late native association through the real PG ports', async () => {
     const { card, hooks, parent, binding, tool, info, s } = await concreteCard();
     expect(await card.read()).toMatchObject({ ok: true, value: { status: 'pending', revision: 0 } });

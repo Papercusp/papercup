@@ -30,9 +30,62 @@ import {
   MCP_BUILD_META_KEY,
   normalizeMcpBuild,
   type McpBuild,
+  normalizeMcpExecutionTarget,
+  sameMcpExecutionTarget,
+  type McpExecutionTarget,
 } from "@papercusp/operator-core/lib/serving-build";
 
 export { MCP_BUILD_ARGUMENT, MCP_BUILD_META_KEY, normalizeMcpBuild, type McpBuild };
+
+export interface WorkerRoutableTarget extends BuildRoutableTarget {
+  processRole?: string;
+  executionTarget?: McpExecutionTarget;
+}
+
+/** Reuse the build-selector boundary for the one mutating git-sync operation.
+ * Credentials stay on the original HTTP request; principal objects are never relayed.
+ */
+export function applyMcpWorkerSelector(rawBody: Buffer):
+  | { kind: 'none' }
+  | { kind: 'refused'; reason: string }
+  | { kind: 'worker'; target: McpExecutionTarget; body: Buffer } {
+  let parsed: unknown;
+  try { parsed = JSON.parse(rawBody.toString('utf8')); } catch { return { kind: 'none' }; }
+  const messages = Array.isArray(parsed) ? parsed : [parsed];
+  let selected: McpExecutionTarget | null = null;
+  let selectedCount = 0;
+  for (const message of messages) {
+    if (!isRecord(message) || message.method !== 'tools/call' || !isRecord(message.params)) continue;
+    const params = message.params;
+    if (!isRecord(params.arguments)) continue;
+    let name = params.name;
+    let args = params.arguments;
+    if (name === 'tools:invoke' && isRecord(args.args)) { name = args.name; args = args.args; }
+    if (name !== 'git-sync:run' || args.dryRun === true || args.target === undefined) continue;
+    const target = normalizeMcpExecutionTarget(args.target);
+    if (!target || args.authenticatedPrincipal !== undefined || params.authenticatedPrincipal !== undefined ||
+        (isRecord(params._meta) && params._meta.authenticatedPrincipal !== undefined))
+      return { kind: 'refused', reason: 'invalid-target-or-host-local-principal' };
+    if (selected && !sameMcpExecutionTarget(selected, target)) return { kind: 'refused', reason: 'ambiguous-target' };
+    const build = isRecord(params._meta) ? normalizeMcpBuild(params._meta[MCP_BUILD_META_KEY]) : null;
+    if (build && build !== target.environment) return { kind: 'refused', reason: 'target-build-conflict' };
+    selected = target;
+    selectedCount++;
+    // The existing build fence validates the exact worker's declared environment.
+    params._meta = { ...(isRecord(params._meta) ? params._meta : {}), [MCP_BUILD_META_KEY]: target.environment };
+  }
+  if (!selected) return { kind: 'none' };
+  if (messages.length !== 1 || selectedCount !== 1) return { kind: 'refused', reason: 'mixed-worker-batch' };
+  return { kind: 'worker', target: selected, body: Buffer.from(JSON.stringify(parsed)) };
+}
+
+export function selectWorkerForTarget<T extends WorkerRoutableTarget>(candidates: readonly T[], target: McpExecutionTarget):
+  { kind: 'selected'; worker: T } | { kind: 'refused'; reason: string } {
+  const matches = candidates.filter(worker => worker.processRole === 'bg-host' && worker.executionTarget &&
+    sameMcpExecutionTarget(worker.executionTarget, target));
+  return matches.length === 1 ? { kind: 'selected', worker: matches[0]! }
+    : { kind: 'refused', reason: matches.length ? 'ambiguous-worker' : 'target-unavailable' };
+}
 
 export type McpBuildRouting =
   /** No tools/call names a build: forward the original body with today's routing. */

@@ -16,7 +16,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const durableMocks = vi.hoisted(() => ({ admit: vi.fn(), bind: vi.fn(), finish: vi.fn() }));
+const durableMocks = vi.hoisted(() => ({ admit: vi.fn(), bind: vi.fn(), finish: vi.fn(), observe: vi.fn() }));
 vi.mock('../converse-turn', () => ({ admitConverseTurn: durableMocks.admit }));
 vi.mock('../../../operator-conversation-compaction', () => ({ maybeCompactConversation: vi.fn(async () => undefined) }));
 vi.mock('@papercusp/db-org', async original => ({ ...(await original<Record<string, unknown>>()), getOrgPg: () => ({ sql: {} }) }));
@@ -216,11 +216,11 @@ function makeCtx() {
 let fetchMock: any;
 
 beforeEach(() => {
-  durableMocks.admit.mockReset(); durableMocks.bind.mockReset(); durableMocks.finish.mockReset();
+  durableMocks.admit.mockReset(); durableMocks.bind.mockReset(); durableMocks.finish.mockReset(); durableMocks.observe.mockReset();
   durableMocks.bind.mockImplementation(async mount => ({ ...mount, url: mount.url + '&chat_binding=signed' }));
   durableMocks.finish.mockResolvedValue({ conversationId: 'conv-a', turnId: 'durable-turn', seq: 4 });
   durableMocks.admit.mockResolvedValue({ identity: { conversationId: 'conv-a', turnId: 'durable-turn' },
-    bindMount: durableMocks.bind, finalize: durableMocks.finish });
+    bindMount: durableMocks.bind, finalize: durableMocks.finish, observeToolResult: durableMocks.observe });
   customerPiMocks.spawnTransform.mockReturnValue(false);
   customerPiMocks.start.mockClear();
   customerPiMocks.end.mockClear();
@@ -240,9 +240,11 @@ afterEach(() => {
 
 describe('operator:converse — mcpUrl / state-channel shape', () => {
   it('P010 scoped converse lifecycle reserves before provider and finalizes the same turn with stable calls and a durable receipt', async () => {
-    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+    vi.mocked(runAgentChat).mockImplementation(async function* (opts): AnyGen {
       expect(durableMocks.admit).toHaveBeenCalledOnce();
       expect(durableMocks.bind).toHaveBeenCalledOnce();
+      opts.onToolResult?.({ name: 'chat:ask_choice', callId: 'native-choice',
+        output: 'signed native result', isError: false });
       yield { type: 'tool_call', name: 'read', input: { path: 'safe' }, callId: 'call-a' };
       yield { type: 'delta', text: '<say>Done.</say>' };
     });
@@ -252,6 +254,8 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
     expect(durableMocks.finish).toHaveBeenCalledExactlyOnceWith({ status: 'completed', text: 'Done.',
       tools: [{ name: 'read', input: { path: 'safe' }, callId: 'call-a' }], report: null });
     expect(out.data.persistedTurn).toEqual({ conversationId: 'conv-a', turnId: 'durable-turn', seq: 4 });
+    expect(durableMocks.observe).toHaveBeenCalledWith({ name: 'chat:ask_choice', callId: 'native-choice',
+      output: 'signed native result', isError: false });
   });
   it('P010 scoped converse lifecycle never starts a provider after denied or uncertain admission', async () => {
     durableMocks.admit.mockRejectedValue(new Error('needs-reconciliation'));
@@ -852,7 +856,7 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     errSpy.mockRestore();
   });
 
-  it('publishes redacted public manual returns, omits other tools and never observes owner returns', async () => {
+  it('publishes redacted public manual returns and keeps owner return bodies private', async () => {
     vi.mocked(runAgentChat).mockImplementation(async function* (opts): AnyGen {
       yield { type: 'tool_call', name: 'docs:get', input: {}, callId: 'docs-get-1' };
       opts.onToolResult?.({ name: 'docs:get', output: JSON.stringify({ marker: 'PUBLIC-ORCHARD', token: 'secret-fixture' }), isError: false, callId: 'docs-get-1' });
@@ -875,7 +879,7 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     expect(JSON.stringify(returns)).not.toContain('PRIVATE-FIXTURE');
     const ownerCtx = makeCtx();
     await handler({ messages: [], trigger: 'user_message', hostTrust: 'owner', sessionUser: null }, ownerCtx);
-    expect(vi.mocked(runAgentChat).mock.calls.at(-1)?.[0].onToolResult).toBeUndefined();
+    expect(vi.mocked(runAgentChat).mock.calls.at(-1)?.[0].onToolResult).toBeTypeOf('function');
     expect(ownerCtx.emit.mock.calls.some(([name]) => name === 'tool_result')).toBe(false);
   });
 

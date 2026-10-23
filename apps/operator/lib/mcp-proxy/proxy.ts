@@ -46,6 +46,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { parser as createStreamJsonParser } from "stream-json";
 import { normalizeMcpName } from "@papercusp/tooldef";
+import { normalizeMcpExecutionTarget } from "@papercusp/operator-core/lib/serving-build";
+import { readProcessIdentity } from "@papercusp/operator-core/lib/process-identity";
 import { papercuspPath } from "@papercusp/host-platform/home";
 import {
   MCP_DATA_PLANE_DEGRADED_AT_HEADER,
@@ -87,12 +89,17 @@ import {
   buildUnavailableBody,
   buildUnavailableError,
   selectTargetsForBuild,
+  applyMcpWorkerSelector,
+  selectWorkerForTarget,
+  type WorkerRoutableTarget,
   type McpBuild,
 } from "./build-routing";
 import {
   appendFileSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  lstatSync,
   renameSync,
   statSync,
 } from "node:fs";
@@ -746,6 +753,8 @@ export interface McpProxyOptions {
   resolveTarget?: () => McpProxyTarget;
   /** Resolve ordered upstream candidates per attempt. A later candidate is selected only after a pre-connect refusal. */
   resolveTargets?: () => McpProxyTarget[];
+  /** Same per-port discovery as native clients; no target may be inferred from a fallback. */
+  resolveWorkerTargets?: () => McpProxyTarget[];
   /**
    * WI-41045 — the superuser MCP client config contains a bearer captured at
    * session boot. When the token file rotates, refresh it at the proxy boundary
@@ -917,10 +926,37 @@ export interface McpProxyOptions {
   log?: (s: string) => void;
 }
 
-export interface McpProxyTarget {
+export interface McpProxyTarget extends WorkerRoutableTarget {
   host: string;
   port: number;
   source?: string;
+}
+
+/** Read only same-user private, live per-port discovery records. Legacy or
+ * identity-less workers are unavailable for an exact-target request.
+ */
+export function readMcpWorkerTargets(directory = papercuspPath('')): McpProxyTarget[] {
+  const targets: McpProxyTarget[] = [];
+  try {
+    for (const name of readdirSync(directory)) {
+      if (!/^endpoint-ipc\.\d+\.json$/.test(name)) continue;
+      try {
+        const file = join(directory, name);
+        const stat = lstatSync(file);
+        if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) continue;
+        const value = JSON.parse(readFileSync(file, 'utf8'));
+        if (value.processRole !== 'bg-host' || !Number.isSafeInteger(value.pid) || value.pid < 1 ||
+            !Number.isSafeInteger(value.port) || value.port < 1 || value.port > 65535 ||
+            name !== `endpoint-ipc.${value.port}.json` || !value.executionTarget) continue;
+        process.kill(value.pid, 0);
+        const executionTarget = normalizeMcpExecutionTarget(value.executionTarget);
+        if (!executionTarget || !value.executionProcessId || readProcessIdentity(value.pid) !== value.executionProcessId) continue;
+        targets.push({ host: '127.0.0.1', port: value.port, source: 'endpoint-ipc',
+          processRole: value.processRole, executionTarget });
+      } catch { /* Stale/unreadable discovery cannot authorize a mutation. */ }
+    }
+  } catch { /* Missing discovery is an explicit no-target outcome. */ }
+  return targets;
 }
 
 /** Keep the per-session affinity pool bounded even when clients churn. */
@@ -5710,8 +5746,24 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           }
           const requestedBuild: McpBuild | null =
             buildRouting.kind === "routed" ? buildRouting.build : null;
-          const routedBody =
+          const buildBody =
             buildRouting.kind === "routed" ? buildRouting.body : rawBody;
+          const workerRouting = applyMcpWorkerSelector(buildBody);
+          if (workerRouting.kind === 'refused') {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'worker_target_refused', reason: workerRouting.reason,
+              forwardingResult: 'not_applied', traceId: requestTraceId }));
+            return;
+          }
+          const workerSelection = workerRouting.kind === 'worker'
+            ? selectWorkerForTarget((opts.resolveWorkerTargets ?? readMcpWorkerTargets)(), workerRouting.target) : null;
+          if (workerSelection?.kind === 'refused') {
+            res.writeHead(503, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'worker_target_unavailable', reason: workerSelection.reason,
+              forwardingResult: 'not_applied', traceId: requestTraceId }));
+            return;
+          }
+          const routedBody = workerRouting.kind === 'worker' ? workerRouting.body : buildBody;
           const routedHeaders: http.IncomingHttpHeaders =
             routedBody === rawBody
               ? req.headers
@@ -5836,7 +5888,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             candidateCount = 0;
             // P-001: a build-routed call sees only its build's targets. None ⇒ this proxy
             // cannot serve that build; answer `<build>_unavailable` rather than use the other.
-            const buildCandidates = selectTargetsForBuild(
+            const buildCandidates = workerSelection?.kind === 'selected' ? [workerSelection.worker] : selectTargetsForBuild(
               resolveTargetCandidates(opts),
               requestedBuild,
               stagingPort,
@@ -5942,11 +5994,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               // absorbing it would stall probes for the whole retry window and read as a
               // wedge (worst case: the watchdog restart-loops the proxy, flapping the fleet).
               const bootAbsorbable =
+                workerRouting.kind !== 'worker' &&
                 req.method === "POST" &&
                 BOOT_WINDOW_STATUSES.has(status) &&
                 absorbBoot;
               if (
-                ((isBackpressureStatus(status) && absorb429) ||
+                ((isBackpressureStatus(status) && absorb429 && workerRouting.kind !== 'worker') ||
                   bootAbsorbable) &&
                 backpressureRetryable(
                   backpressureRetries,

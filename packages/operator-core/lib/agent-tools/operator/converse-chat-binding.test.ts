@@ -11,7 +11,8 @@ vi.mock('@papercusp/db-org', async original => ({
   getOrgPg: () => ({ db: keyStore.db }),
 }));
 import { _resetSpawnSigningKeyCache, signSpawnParams } from '../../spawn-signing';
-import { mintConverseChatBinding, verifyConverseChatBinding } from './converse-chat-binding';
+import { mintConverseChatBinding, verifyConverseChatBinding, mintConverseCardBinding,
+  verifyConverseCardBinding, readConverseCardBinding } from './converse-chat-binding';
 
 const parent = { workspaceId: 'ws-a', conversationId: 'conv-a', turnId: 'turn-a', runId: 'parent-run',
   authority: { kind: 'system' as const, principalId: 'system:operator', credentialSha256: 'a'.repeat(64) } };
@@ -22,6 +23,58 @@ beforeEach(() => {
 });
 
 describe('converse signed parent association', () => {
+  const childParent = async () => (await verifyConverseChatBinding(
+    await mintConverseChatBinding(parent, authority.bearer), authority))!;
+  const dispatch = { dispatchCallId: 'dispatch-a', childRunId: 'child-run', correlationId: 'card-a' };
+
+  it('binds the exact dispatch/child/card to the original parent and current mount credential', async () => {
+    const token = await mintConverseCardBinding({ parent: await childParent(), ...dispatch });
+    expect(token).not.toContain(authority.bearer);
+    expect(await verifyConverseCardBinding(token, { parent, childBearer: authority.bearer })).toEqual({
+      ...dispatch, credentialSha256: (await childParent()).credentialSha256,
+    });
+    for (const key of ['workspaceId', 'conversationId', 'turnId', 'runId'] as const) {
+      expect(await verifyConverseCardBinding(token, { parent: { ...parent, [key]: 'foreign' },
+        childBearer: authority.bearer })).toBeNull();
+    }
+    expect(await verifyConverseCardBinding(token, { parent, childBearer: 'rotated' })).toBeNull();
+    expect(await verifyConverseCardBinding(token, { parent: { ...parent,
+      authority: { ...parent.authority, credentialSha256: 'b'.repeat(64) } }, childBearer: authority.bearer })).toBeNull();
+    expect(await verifyConverseChatBinding(token, authority)).toBeNull();
+    expect(await verifyConverseCardBinding(await mintConverseChatBinding(parent, authority.bearer),
+      { parent, childBearer: authority.bearer })).toBeNull();
+  });
+
+  it('rejects tampered dispatch receipts, duplicate keys, expiry and signer rotation', async () => {
+    const token = await mintConverseCardBinding({ parent: await childParent(), ...dispatch });
+    for (const suffix of ['&chat=other', '&sig=other', '&extra=1']) {
+      expect(await verifyConverseCardBinding(token + suffix, { parent, childBearer: authority.bearer })).toBeNull();
+    }
+    const params = new URLSearchParams(token);
+    const payload = JSON.parse(params.get('chat')!);
+    payload[6] = 'unrelated-dispatch';
+    params.set('chat', JSON.stringify(payload));
+    expect(await verifyConverseCardBinding(params.toString(), { parent, childBearer: authority.bearer })).toBeNull();
+    const expired = new URLSearchParams(token);
+    await signSpawnParams(expired, { nowMs: 0, ttlSec: 1 });
+    expect(await verifyConverseCardBinding(expired.toString(), { parent, childBearer: authority.bearer })).toBeNull();
+    keyStore.rows[0] = { value_b64: Buffer.alloc(32, 8).toString('base64'), rotated_at: '2026-01-02' };
+    expect(await verifyConverseCardBinding(token, { parent, childBearer: authority.bearer })).toBeNull();
+  });
+
+  it('extracts one exact receipt from native JSON, text arrays and full MCP results', () => {
+    const result = { ok: true, converseCardBinding: 'signed-receipt' };
+    const content = [{ type: 'text', text: JSON.stringify(result) }];
+    for (const value of [result, content, { content }]) {
+      expect(readConverseCardBinding(JSON.stringify(value))).toBe('signed-receipt');
+    }
+    expect(readConverseCardBinding('a model said signed-receipt')).toBeNull();
+    expect(readConverseCardBinding(JSON.stringify({ unrelated: result }))).toBeNull();
+    expect(() => readConverseCardBinding(JSON.stringify([...content, ...content]))).toThrow('ambiguous');
+    expect(() => readConverseCardBinding(JSON.stringify({ converseCardBinding: 1 }))).toThrow('invalid');
+    expect(() => readConverseCardBinding(' '.repeat(65537))).toThrow('invalid');
+  });
+
   it('round-trips without exposing the bearer or changing the parent identity', async () => {
     const token = await mintConverseChatBinding(parent, authority.bearer);
     expect(token).not.toContain(authority.bearer);

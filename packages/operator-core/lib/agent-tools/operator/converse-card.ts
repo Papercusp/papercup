@@ -173,7 +173,7 @@ export function createConverseCard(input: {
       try { await refresh(); } catch (error) { stopped = true; stop(); throw error; }
       return { refresh, stop() { stopped = true; stop(); } };
     },
-    hooks(spec: CardSpec): Pick<CardSpec, 'beforeCard' | 'commitResponse'> {
+    hooks(spec: Pick<CardSpec, 'prompt' | 'allowDecline' | 'presentation' | 'fallbackText' | 'timeoutMs' | 'report'>): Pick<CardSpec, 'beforeCard' | 'commitResponse'> {
       // Persist only protocol data, never schema objects or callback functions.
       const persisted: PersistedCardSpec = { prompt: spec.prompt, allowDecline: spec.allowDecline ?? true,
         ...(spec.presentation === undefined ? {} : { presentation: structuredClone(spec.presentation) }),

@@ -19,8 +19,9 @@ import { papercuspPath as hostPapercuspPath } from '@papercusp/host-platform/hom
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve as resolvePath } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import { readSuperuserToken } from './superuser-token';
+import { resolveBundledNode } from './bundled-node';
 
 import { resolveBackend } from '@papercusp/papercusp-shared/agent';
 
@@ -365,8 +366,9 @@ export async function buildConsoleEnvelope(
     // desktop-session PATH can put a different system Node ahead of the
     // operator's runtime, so checkout terminals get this one explicit
     // precedence entry; other backend PATH fallbacks remain appended.
-    const runtimeName = basename(process.execPath).replace(/\.exe$/i, '').toLowerCase();
-    if (runtimeName === 'node') env.PAPERCUSP_NODE_RUNTIME_DIR = dirname(process.execPath);
+    const retainedNode = await resolveBundledNode();
+    if (!retainedNode) throw new Error('Checkout CLI launch requires an explicit retained Node executable');
+    env.PAPERCUSP_NODE_RUNTIME_DIR = dirname(retainedNode);
   }
   // If no slug, resolveContextEnv set PAPERCUSP_HARNESS_SLUG=''; drop
   // that — empty value is worse than absent for "is this harness-scoped?".

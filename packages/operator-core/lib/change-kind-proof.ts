@@ -403,9 +403,9 @@ function renderRefusal(
   lines.push(
     kinds
       ? `REJECTED — ${itemId} declares change kind(s) ${kinds.join(', ')}, but this close does not carry the proof they ` +
-          'require. The completion is recorded; the item stays open.'
-      : `REJECTED — ${itemId} has no change-kind declaration, so this close cannot show the proof its change requires. ` +
-          'The completion is recorded; the item stays open.',
+          'require; the item stays open.'
+      : `REJECTED — ${itemId} has no change-kind declaration, so this close cannot show the proof its change requires; ` +
+          'the item stays open.',
   );
   for (const p of problems) lines.push(`- ${p}`);
   for (const m of missing) {

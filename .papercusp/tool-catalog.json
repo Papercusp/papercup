@@ -14348,7 +14348,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.) Use dryRun:true first when you only need to inspect the selected checkout.",
-        "notWhen": "Do not fire it through a request-only operator (:3070/:3170 on the canonical dev box); route the mutation to the background-worker MCP host. To retune the cadence or pause git-sync, use routines:set. To deploy, release:deploy (which already fires git-sync first).",
+        "notWhen": "A request-only operator cannot execute the mutation locally. Through the standard MCP proxy, provide target with the explicit environment, exact loaded build SHA and install root to resolve its background worker. Missing or ambiguous workers refuse without substitution. To retune cadence use routines:set; to deploy use release:deploy.",
         "chaining": "git-sync:run { dryRun:true } → review preview → git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging)."
       }
     },

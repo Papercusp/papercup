@@ -210,8 +210,9 @@ export function operatorChatTurnWorkflow(input: { workspaceId: string; turn: Tur
       throw new Error('invalid-workflow-transition');
     }
     if (binding && !validInteractionBinding(binding)) throw new Error('invalid-workflow-transition');
-    const callId = validInteractionBinding(binding) ? binding.dispatchCallId : next.correlationId;
-    const matches = tools.filter(tool => object(tool) && tool.callId === callId
+    const callIds = validInteractionBinding(binding)
+      ? [binding.dispatchCallId, ...(binding.nativeCallId ? [binding.nativeCallId] : [])] : [next.correlationId];
+    const matches = tools.filter(tool => object(tool) && callIds.includes(tool.callId as string)
       && typeof tool.name === 'string' && canonicalToolName(tool.name) === 'chat:ask_choice');
     if (matches.length !== 1 || matches[0].answered) throw new Error('invalid-workflow-transition');
     const tool = matches[0] as Record<string, unknown>;

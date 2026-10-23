@@ -37,6 +37,11 @@ vi.mock('./workspace-registry', () => ({
 vi.mock('./sync-sse', () => ({
   notifySyncInvalidate: vi.fn(async () => {}),
 }));
+vi.mock('./endpoint-route/session-or-local', () => ({
+  getSessionUserOrLocalDefaultAuthority: async () => ({
+    user: { id: 'integration-owner', workspace_id: WS }, authorize: async () => true,
+  }),
+}));
 
 const {
   appendTurn,
@@ -89,6 +94,7 @@ beforeAll(async () => {
       audio_url text,
       created_at bigint NOT NULL,
       tools jsonb,
+      chat_state jsonb,
       report jsonb,
       workspace_id text NOT NULL,
       CONSTRAINT operator_turns_conv_seq UNIQUE (conversation_id, seq)

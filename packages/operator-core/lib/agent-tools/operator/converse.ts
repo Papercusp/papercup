@@ -696,14 +696,16 @@ export default defineTool({
             allowedTools: [...allowedTools],
             // Reuse chat-protocol's result summary for public manual evidence.
             // Owner/private tools never publish their return bodies here.
-            ...(hostTrust === 'public' ? { onToolResult: (result: { name: string; output: string; isError: boolean; callId?: string }) => {
+            onToolResult: (result: { name: string; output: string; isError: boolean; callId?: string }) => {
+              durableTurn?.observeToolResult(result);
+              if (hostTrust !== 'public') return;
               const name = canonicalToolName(result.name);
               if (!PUBLIC_MANUAL_TOOLS.includes(`mcp__agentmcp__${name}`)) return;
               const evidence = captureToolResultEvidence(name, result.output, result.isError);
               emitChatEvent(ctx, { type: 'tool_result', name: evidence.name,
                 summary: evidence.output, ok: !evidence.isError,
                 ...(result.callId ? { callId: result.callId } : {}) });
-            } } : {}),
+            },
             permissionMode: 'bypassPermissions',
             // Isolate the claude-code brain spawn from the host ~/.claude so
             // it loads ONLY its agentmcp tools + persona — not the dev box's

@@ -8436,6 +8436,8 @@ describe('work_items:complete — change-kind proof gate (change-kind-declared-p
       changeKindProof: { kinds: ['logic'], missing: expect.any(Array), problems: expect.any(Array) },
     });
     expect(r.validationOnly).toBe(true);
+    expect(r.error).not.toContain('completion is recorded');
+    expect(r).not.toHaveProperty('completion');
     expect(r.completionContract.requirements).toEqual(
       expect.arrayContaining([expect.objectContaining({ key: 'change-kind-proof', applicable: true, satisfied: false })]),
     );
@@ -8460,6 +8462,8 @@ describe('work_items:complete — change-kind proof gate (change-kind-declared-p
         problems: expect.arrayContaining([expect.stringContaining('no change kind has been declared')]),
       },
     });
+    expect(r.error).not.toContain('completion is recorded');
+    expect(r).not.toHaveProperty('completion');
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 

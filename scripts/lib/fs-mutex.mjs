@@ -1081,6 +1081,119 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
+/**
+ * A task-sized, weighted reader lease on the existing mutex. Legacy writers
+ * still exclude these readers. The short allocator only protects inspection
+ * and publication; it never holds a lock while a child runs. Unknown readers
+ * and wildcard resources fail closed. A blocked duplicate does not prevent an
+ * older eligible, disjoint request from using spare capacity.
+ * @template T
+ * @param {string} name
+ * @param {(workers: number) => Promise<T>} fn
+ * @param {{ workers: number, workerMemoryMb: number, workerBudget: number, memoryBudgetMb: number, maxConcurrentTasks: number, resource: string, timeoutMs?: number, retryMs?: number, lockRootDir?: string, remainingMs?: () => number, onWaiting?: (info: {owner: string, elapsedMs: number}) => void, onAcquired?: (info: {waitedMs: number}) => void }} opts
+ * @returns {Promise<T>}
+ */
+export async function withFsMutexBudget(name, fn, opts) {
+  for (const key of ['workers', 'workerMemoryMb', 'workerBudget', 'memoryBudgetMb', 'maxConcurrentTasks']) {
+    if (!Number.isSafeInteger(opts[key]) || opts[key] < 1) throw new Error(`Invalid admission ${key}`);
+  }
+  if (typeof opts.resource !== 'string' || !opts.resource || opts.resource.length > 500)
+    throw new Error('Invalid admission resource');
+  if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === '1') return fn(opts.workers);
+  const root = await ensureFsMutexLockRoot(undefined, { lockRootDir: opts.lockRootDir });
+  const writer = join(root, `${safeName(name)}.lock`), readers = readerRoot(root, name);
+  const queue = queueRoot(root, name), started = Date.now();
+  const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
+  const retryMs = opts.retryMs ?? DEFAULT_RETRY_MS;
+  const staleMs = intEnv('PAPERCUSP_FS_MUTEX_STALE_MS', DEFAULT_STALE_MS);
+  const ticket = join(queue, `${ticketId(started)}.ticket`);
+  const reader = join(readers, `${process.pid}-${randomUUID()}.lock`);
+  const request = { workers: opts.workers, workerMemoryMb: opts.workerMemoryMb,
+    workerBudget: opts.workerBudget, memoryBudgetMb: opts.memoryBudgetMb,
+    maxConcurrentTasks: opts.maxConcurrentTasks, resource: opts.resource };
+  const owner = { pid: process.pid, ...processIdentity(process.pid), host: hostname(),
+    name, startedAt: new Date(started).toISOString(), admission: request };
+  const remaining = () => opts.remainingMs ? opts.remainingMs() : timeoutMs - (Date.now() - started);
+  const readAdmission = async path => {
+    const value = JSON.parse(await readOwner(path));
+    const a = value.admission;
+    if (!a || typeof a.resource !== 'string' || !a.resource ||
+        !['workers', 'workerMemoryMb', 'workerBudget', 'memoryBudgetMb', 'maxConcurrentTasks']
+          .every(key => Number.isSafeInteger(a[key]) && a[key] > 0)) return null;
+    return a;
+  };
+  const allocation = (candidate, active) => {
+    if (active.some(a => !a || a.resource === '*' || candidate.resource === '*' || a.resource === candidate.resource)) return 0;
+    const taskCap = Math.min(candidate.maxConcurrentTasks, ...active.map(a => a.maxConcurrentTasks));
+    if (active.length >= taskCap) return 0;
+    const workers = Math.min(candidate.workerBudget, ...active.map(a => a.workerBudget)) - active.reduce((n, a) => n + a.workers, 0);
+    const memory = Math.min(candidate.memoryBudgetMb, ...active.map(a => a.memoryBudgetMb)) - active.reduce((n, a) => n + a.workers * a.workerMemoryMb, 0);
+    return Math.max(0, Math.min(candidate.workers, workers, Math.floor(memory / candidate.workerMemoryMb)));
+  };
+  let granted = 0, announced = -Infinity;
+  await mkdir(queue, { recursive: true });
+  await mkdir(readers, { recursive: true });
+  await mkdir(ticket);
+  try {
+    await writeFile(join(ticket, 'owner.json'), JSON.stringify(owner));
+    while (!granted) {
+      if (remaining() <= 0) throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${writer})`);
+      await withFsMutex(`${name}-allocator`, async () => {
+        if (await writerLockIsHeld(writer, staleMs)) return;
+        const active = [];
+        for (const lease of await listReaderLocks(readers)) {
+          if (await reclaimAbandonedLock(lease, staleMs)) continue;
+          try { active.push(await readAdmission(lease)); } catch { active.push(null); }
+        }
+        // Keep the existing FIFO ticket format and dead-owner recovery. Skip
+        // only predecessors whose resource/budget cannot currently be admitted.
+        const entries = (await readdir(queue)).filter(n => n.endsWith('.ticket')).sort();
+        for (const entry of entries) {
+          const path = join(queue, entry);
+          if (path === ticket) break;
+          if (await reclaimAbandonedLock(path, staleMs)) continue;
+          let previous;
+          try { previous = await readAdmission(path); } catch { return; }
+          if (!previous || allocation(previous, active) > 0) return;
+        }
+        const workers = allocation(request, active);
+        if (!workers || remaining() <= 0) return;
+        await mkdir(reader);
+        await writeFile(join(reader, 'owner.json'), JSON.stringify({ ...owner,
+          acquiredAt: new Date().toISOString(), mode: 'read', admission: { ...request, workers } }));
+        // Writer/reader handshake: a legacy writer that wins the race drains
+        // this marker; back out before executing any user callback.
+        if (await writerLockIsHeld(writer, staleMs) || remaining() <= 0) {
+          await rm(reader, { recursive: true, force: true }); return;
+        }
+        granted = workers;
+        await rm(ticket, { recursive: true, force: true });
+      }, { lockRootDir: root, timeoutMs: Math.max(1, remaining()), retryMs });
+      if (!granted) {
+        const elapsedMs = Date.now() - started;
+        if (elapsedMs - announced >= 60_000) {
+          announced = elapsedMs;
+          opts.onWaiting?.({ owner: await readOwner(writer), elapsedMs });
+        }
+        await sleep(Math.max(1, Math.min(retryMs, remaining())));
+      }
+    }
+    opts.onAcquired?.({ waitedMs: Date.now() - started });
+    return await fn(granted);
+  } finally {
+    await rm(ticket, { recursive: true, force: true });
+    await rm(reader, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Existing unweighted reader lease; writers drain these readers as before.
+ * @template T
+ * @param {string} name
+ * @param {() => Promise<T>} fn
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
+ * @returns {Promise<T>}
+ */
 export async function withFsMutexRead(name, fn, opts = {}) {
   if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === "1") return fn();
 
