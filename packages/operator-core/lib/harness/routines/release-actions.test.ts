@@ -3025,6 +3025,28 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     );
   });
 
+  it.each(['scope', 'direct', 'fallback'])('transports the original caller cutoff through the scheduled %s launch', async route => {
+    const key = 'PAPERCUSP_TASK_DEADLINE_EPOCH_MS';
+    const saved = process.env[key];
+    const cutoff = Date.now() + 120_000;
+    process.env[key] = String(cutoff);
+    try {
+      if (route === 'direct') process.env.PAPERCUSP_CHECKPOINT_SCOPE = '0';
+      else delete process.env.PAPERCUSP_CHECKPOINT_SCOPE;
+      if (route === 'fallback') spawnMock.mockImplementationOnce(() =>
+        fakeSpawnFail('Failed to connect to bus: No such file or directory', 1));
+      spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+      await getSystemAction('green-checkpoint')!(ctx);
+      expect(spawnMock).toHaveBeenCalledTimes(route === 'fallback' ? 2 : 1);
+      for (const call of spawnMock.mock.calls) {
+        const options = call[2] as { env?: Record<string, string> };
+        expect(options.env?.[key]).toBe(String(cutoff));
+      }
+    } finally {
+      if (saved === undefined) delete process.env[key]; else process.env[key] = saved;
+    }
+  });
+
   it('a PAYLOAD failure inside a healthy scope does NOT retry (one suite run per tick)', async () => {
     delete process.env.PAPERCUSP_CHECKPOINT_SCOPE;
     // Non-zero exit but no scope-launch-shaped stderr → the suite itself failed; no fallback.

@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkpointQualificationBudgetFromEnv, CheckpointQualificationBoundaryError,
-  createCheckpointQualificationExecution, realCheckpointDeps, runCmd } from './green-checkpoint';
+  createCheckpointQualificationExecution, createCheckpointQualificationYieldBoundary, realCheckpointDeps, runCmd } from './green-checkpoint';
 import { releaseConfig } from './release-config';
 import type { CheckpointExec, CheckpointExecResult } from './green-checkpoint';
 import type { QualificationWorkProgressInput } from '@papercusp/operator-core/lib/release/checkpoint-qualification-transaction';
@@ -48,7 +48,7 @@ describe('qualification production execution', () => {
       'PAPERCUSP_GATE_VERDICT_HARNESS', TASK_DEADLINE_EPOCH_MS_ENV].map(key => [key, process.env[key]] as const);
     let releaseSample!: (value: []) => void;
     const sample = vi.fn(() => new Promise<[]>(resolve => { releaseSample = resolve; }));
-    let boundary!: { onYield: () => void; onKill: (decision: { reason: string }) => void };
+    let boundary!: Parameters<typeof createCheckpointQualificationYieldBoundary>[0];
     const observer = { snapshot: vi.fn(), finish: vi.fn(), onOutput: vi.fn() };
     const execute = vi.fn<CheckpointExec>().mockResolvedValue(result);
     const prepare = vi.fn().mockResolvedValue({ status: 'ready', observer,
@@ -64,19 +64,22 @@ describe('qualification production execution', () => {
       process.env.PAPERCUSP_GATE_VERDICT_HARNESS = target.installSlug;
       process.env[TASK_DEADLINE_EPOCH_MS_ENV] = String(Date.now() + 600_000);
       const deps = realCheckpointDeps(releaseConfig({ checkpointRoot: root, integrationRoot: root,
-        logDir: join(root, 'logs') }), execute, 'run', undefined, undefined, sample,
+        checkpointLogDir: join(root, 'logs') }), execute, 'run', undefined, undefined, sample,
         undefined, undefined, undefined, undefined, undefined, {
           prepare,
           execution: input => createCheckpointQualificationExecution(input, {
-            boundary: input => { boundary = input; return { stop: vi.fn() }; },
+            boundary: (input: Parameters<typeof createCheckpointQualificationYieldBoundary>[0]) => {
+              boundary = input; return { stop: vi.fn() };
+            },
           } as never),
         });
       const pending = deps.runGreen(root, null, { candidate: progress.candidate });
       const rejected = expect(pending).rejects.toMatchObject({ disposition: disposition === 'yield' ? 'yielded' : 'killed' });
       await vi.waitFor(() => expect(sample).toHaveBeenCalledTimes(1));
       expect(boundary).toBeDefined();
-      if (disposition === 'yield') boundary.onYield();
-      else boundary.onKill({ reason: 'durable-progress-stalled' });
+      if (disposition === 'yield') boundary.onYield!({ identity: 'fixture', completedUnitIds: [],
+        pendingUnitIds: [], newCompletionIds: [], budget: budget() });
+      else boundary.onKill!({ reason: 'durable-progress-stalled' });
       await rejected;
       const filesAtReturn = readdirSync(root, { recursive: true });
       // The caller has already returned. Resume the abandoned operation at the
