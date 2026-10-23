@@ -1,6 +1,6 @@
 {
   "irVersion": "0.1",
-  "surface": "plans-overview-mockups",
+  "surface": "plans-selected-conversation-layout-with-status-filters",
   "ecosystem": "react-tailwind",
   "a11y": {
     "landmark": "main",
@@ -32,11 +32,32 @@
           {
             "kind": "text",
             "copy": {
-              "default": "Overview · Board · Plan and conversation",
+              "default": "Selected: Plan and conversation · Overview · Board",
               "key": "plans.mockup.3"
             }
           }
         ]
+      },
+      {
+        "kind": "tabs",
+        "interactions": ["filter-plan-status"],
+        "a11y": {
+          "ariaLabel": {
+            "default": "Filter plan status",
+            "key": "plans.filter.status"
+          }
+        },
+        "binding": {
+          "slot": "statusCounts",
+          "shape": "all|active|ready|draft|done with plan counts"
+        },
+        "children": [{
+          "kind": "text",
+          "copy": {
+            "default": "All plans · Active · Ready · Draft · Done",
+            "key": "plans.filter.labels"
+          }
+        }]
       },
       {
         "kind": "component",
@@ -54,7 +75,7 @@
       {
         "kind": "list",
         "binding": {
-          "slot": "plans",
+          "slot": "filteredPlans",
           "repeats": true,
           "shape": "PlanListRow with agent roster"
         },
