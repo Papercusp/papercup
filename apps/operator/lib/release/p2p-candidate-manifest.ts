@@ -63,11 +63,35 @@ export interface P2pJourneyResult {
   /** `candidateArtifactDigest` of the artifact the journey actually ran on. */
   artifactDigest: string;
   observedPeers: readonly string[];
+  /** Physical start, distinct from the observation/finish time. */
+  startedAt?: string;
+  precheckSubject?: P521PrecheckSubject;
+}
+
+export interface P521PrecheckSubject {
+  artifactDigest: string;
+  installerSha256?: string;
+  runtimeSha256?: string;
+  seedSha256?: string;
+}
+
+export interface P521LocalPrecheck {
+  journey: string;
+  check: string;
+  verdict: string;
+  startedAt: string;
+  finishedAt: string;
+  subject: P521PrecheckSubject;
+  command: string[];
+  evidence: EvidenceRef[];
+  exitCode?: number;
+  skipped?: boolean | number;
 }
 
 interface JourneyDef {
   key: string;
   title: string;
+  localPrecheck: string;
   /** Source-closed plan items (F1–F8 + v1 scope) whose packaged proof this journey
    *  discharges. Graph edges only — they never become rows of their own. */
   dependencies: readonly string[];
@@ -83,10 +107,90 @@ export const P521_JOURNEYS: readonly JourneyDef[] = [
   { key: 'protected-effect-fencing', title: 'Protected-effect fencing', dependencies: ['P-517'] },
   { key: 'github-bridge', title: 'GitHub bridge', dependencies: ['P-517'] },
   { key: 'full-installer-compat', title: 'Full-installer compatibility', dependencies: ['P-518', 'P-520'] },
-];
+].map((journey) => ({ ...journey, localPrecheck: 'p521-local-precheck:' + journey.key }));
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
+
+const SUBJECT_KEYS = new Set(['artifactDigest', 'installerSha256', 'runtimeSha256', 'seedSha256']);
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validPrecheckSubject(value: unknown): value is P521PrecheckSubject {
+  return record(value) && typeof value.artifactDigest === 'string'
+    && SHA256_HEX.test(value.artifactDigest)
+    && Object.entries(value).every(([key, hash]) =>
+      SUBJECT_KEYS.has(key) && typeof hash === 'string' && SHA256_HEX.test(hash));
+}
+
+/** Optional byte identities must have identical presence, as well as equal values. */
+export function p521PrecheckSubjectsMatch(a: unknown, b: unknown): boolean {
+  return validPrecheckSubject(a) && validPrecheckSubject(b)
+    && Object.keys(a).length === Object.keys(b).length
+    && Object.entries(a).every(([key, hash]) => b[key as keyof P521PrecheckSubject] === hash);
+}
+
+function precheckTime(value: unknown): number {
+  if (typeof value !== 'string') return NaN;
+  const parts = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!parts) return NaN;
+  const [, yearText, monthText, dayText] = parts;
+  const year = Number(yearText), month = Number(monthText), day = Number(dayText);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > days[month - 1]) return NaN;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : NaN;
+}
+
+/** Shared admission rule for dispatch and both evidence consumers (D283/D286). */
+export function validateP521LocalPrechecks(
+  receipts: unknown,
+  subject: unknown,
+  physicalStartedAt: unknown,
+  requiredJourneys: readonly string[],
+): { ok: boolean; errors: string[] } {
+  const errors: string[] = [];
+  if (!validPrecheckSubject(subject)) errors.push('complete precheck subject required');
+  const physicalStart = precheckTime(physicalStartedAt);
+  if (!Number.isFinite(physicalStart)) errors.push('physical startedAt required');
+  if (!Array.isArray(receipts)) return { ok: false, errors: [...errors, 'local precheck receipts missing'] };
+  const byJourney = new Map<string, Record<string, unknown>>();
+  for (const receipt of receipts) {
+    if (!record(receipt) || typeof receipt.journey !== 'string') {
+      errors.push('malformed local precheck receipt');
+      continue;
+    }
+    const journey = P521_JOURNEYS.find((row) => row.key === receipt.journey);
+    if (!journey || receipt.check !== journey.localPrecheck) errors.push('unknown journey/check in local precheck');
+    if (byJourney.has(receipt.journey)) errors.push('duplicate local precheck journey: ' + receipt.journey);
+    byJourney.set(receipt.journey, receipt);
+  }
+  for (const key of requiredJourneys) {
+    const receipt = byJourney.get(key);
+    if (!receipt) { errors.push('local precheck missing: ' + key); continue; }
+    if (receipt.verdict !== 'pass'
+      || ('exitCode' in receipt && receipt.exitCode !== 0)
+      || ('skipped' in receipt && receipt.skipped !== false && receipt.skipped !== 0)) {
+      errors.push('local precheck refused verdict/skip/exit: ' + key);
+    }
+    if (!p521PrecheckSubjectsMatch(receipt.subject, subject)) errors.push('local precheck subject mismatch: ' + key);
+    const started = precheckTime(receipt.startedAt), finished = precheckTime(receipt.finishedAt);
+    if (!Number.isFinite(started) || !Number.isFinite(finished)
+      || started > finished || !(finished < physicalStart)) errors.push('local precheck time invalid/late: ' + key);
+    if (!Array.isArray(receipt.command) || !receipt.command.length
+      || !receipt.command.every((part) => typeof part === 'string' && part.trim())) {
+      errors.push('local precheck command required: ' + key);
+    }
+    if (!Array.isArray(receipt.evidence) || !receipt.evidence.length
+      || !receipt.evidence.every((ref) => record(ref) && typeof ref.ref === 'string'
+        && ref.ref.trim() && (ref.kind === undefined || typeof ref.kind === 'string'))) {
+      errors.push('local precheck evidence required: ' + key);
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
 
 /**
  * Content digest of a candidate's artifact set: sha256 over the sorted
@@ -111,6 +215,7 @@ export interface BuildP2pCandidateManifestOptions {
   candidate: P2pCandidateProvenance;
   /** Journey results keyed by `P521_JOURNEYS[].key`; an absent key is unmeasured. */
   journeys?: Readonly<Record<string, P2pJourneyResult>>;
+  localPrechecks?: readonly P521LocalPrecheck[];
   now?: number;
   history?: readonly ReadinessHistoryEntry[];
 }
@@ -137,9 +242,15 @@ export async function buildP2pCandidateManifest(
       if (!result) {
         return { verdict: 'unknown', reason: 'not yet run on this artifact', measuredAt: nowIso, evidence: [] };
       }
+      const precheck = validateP521LocalPrechecks(
+        options.localPrechecks, result.precheckSubject, result.startedAt, [journey.key],
+      );
+      const subjectMatches = result.precheckSubject?.artifactDigest === digest
+        && result.artifactDigest === digest;
       return {
-        verdict: result.verdict,
-        reason: result.reason,
+        verdict: precheck.ok && subjectMatches ? result.verdict : 'fail',
+        reason: precheck.ok && subjectMatches ? result.reason
+          : 'local precheck refused: ' + [...precheck.errors, ...(subjectMatches ? [] : ['candidate subject mismatch'])].join('; '),
         measuredAt: result.measuredAt,
         evidence: result.evidence,
         lineage: { sha: result.artifactDigest },

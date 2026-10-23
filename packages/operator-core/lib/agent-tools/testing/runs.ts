@@ -819,12 +819,12 @@ export default defineTool({
           SELECT id, count(*) OVER () AS total
             FROM latest
            ORDER BY finished_at DESC NULLS LAST, started_at DESC, id DESC
-           LIMIT \${limit}
+           LIMIT ${limit}
         )
         SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details,
                p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
-               CASE WHEN p.status = ANY(\${RED_STATUSES as unknown as string[]}::text[])
-                    THEN left(p.output_tail, \${OUTPUT_TAIL_CHARS}) END AS output_tail,
+               CASE WHEN p.status = ANY(${RED_STATUSES as unknown as string[]}::text[])
+                    THEN left(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
                p.run_group_id, p.source, p.branch, p.commit_sha,
                p.loop_lag_p95_ms, p.rss_mb, p.worktree_dirty, p.is_scratch_config,
                page.total::text AS total
@@ -842,14 +842,14 @@ export default defineTool({
         )
         SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details,
                p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
-               CASE WHEN p.status = ANY(\${RED_STATUSES as unknown as string[]}::text[])
-                    THEN left(p.output_tail, \${OUTPUT_TAIL_CHARS}) END AS output_tail,
+               CASE WHEN p.status = ANY(${RED_STATUSES as unknown as string[]}::text[])
+                    THEN left(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
                p.run_group_id, p.source, p.branch, p.commit_sha,
                p.loop_lag_p95_ms, p.rss_mb, p.worktree_dirty, p.is_scratch_config,
                (SELECT count(*) FROM picked)::text AS total
           FROM picked p
          ORDER BY p.finished_at DESC NULLS LAST, p.started_at DESC
-         LIMIT \${limit}`;
+         LIMIT ${limit}`;
     }
 
     const omittedRows = shouldCountSourceOmissions
