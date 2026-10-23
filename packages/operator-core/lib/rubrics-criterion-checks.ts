@@ -894,6 +894,8 @@ export async function evaluateCriterionProbeChecks(input: {
     const chunk = await runContinuityProbeBatch(sources.slice(start, start + CONTINUITY_PROBE_MAX_PER_WAKE), {
       dispatchTool: input.dispatchTool,
       timeoutMs: input.probeTimeoutMs ?? CRITERION_PROBE_TIMEOUT_MS,
+      retainMeasurement: true,
+      now: () => Date.parse(nowIso()),
     });
     batch.results.push(...chunk.results);
     batch.truncated += chunk.truncated;
@@ -935,7 +937,8 @@ export async function evaluateCriterionProbeChecks(input: {
       status: result.status,
       executed: true,
       ...(result.observed !== undefined ? { observed: result.observed as string | number | boolean | null } : {}),
-      measuredAt: nowIso(),
+      ...(result.provenance ? { provenance: result.provenance } : {}),
+      measuredAt: result.provenance?.finishedAt ?? nowIso(),
     };
     records.set(item.key, [...(records.get(item.key) ?? []), record]);
   }

@@ -2285,6 +2285,27 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
     },
   );
 
+  it('does not treat a lock-holder request as a work-item handoff when its summary names the parent item', async () => {
+    const b = await body({
+      to: ['lock-holder'],
+      summary: 'Preserve your delta and release the file lock for EI-26716291703422647.',
+      expects: 'action',
+      body: [{
+        text: 'Please preserve your source delta and release the file lock.',
+        forYouBecause: {
+          relation: 'holds-a-lock-on',
+          ref: 'packages/operator-core/lib/tsc-service.test.ts',
+          note: 'you hold the requested file lock',
+        },
+      }],
+    });
+
+    expect(b.results[0]).toMatchObject({ ok: true });
+    expect(b.results[0].dispatchAdvisory).toBeUndefined();
+    expect(getWorkItemM).not.toHaveBeenCalled();
+    expect(sendM).toHaveBeenCalledTimes(1);
+  });
+
   it('stays quiet when the sender already holds an item asked about via a non-structural relation', async () => {
     getWorkItemM.mockResolvedValueOnce({ id: 'WI-10006526', state: 'open', assignee: 'me' });
 

@@ -44,7 +44,7 @@ export async function performRuntimeCapability(id) {
   if (id === 'worker-transfer-exit') {
     const { Worker } = await import('node:worker_threads');
     const directory = await mkdtemp(join(tmpdir(), 'papercusp-runtime-worker-'));
-    let worker;
+    let worker, hasExited = false;
     try {
       const script = join(directory, 'worker.mjs');
       await writeFile(script, `
@@ -57,13 +57,16 @@ export async function performRuntimeCapability(id) {
       // An explicit module file avoids inheriting the receipt runner's -e
       // input type, which changes the meaning of CommonJS eval workers.
       worker = new Worker(script, { execArgv: [] });
+      worker.once('exit', () => { hasExited = true; });
       const reply = once(worker, 'message'), exited = once(worker, 'exit');
       const bytes = new Uint8Array([17, 34, 51]);
       worker.postMessage(bytes.buffer, [bytes.buffer]);
       const [[values], [exitCode]] = await Promise.all([reply, exited]);
       return { values, detached: bytes.byteLength === 0, exitCode };
     } finally {
-      try { await worker?.terminate(); }
+      // Bun 1.3.14 does not settle terminate() after an observed exit. The
+      // protocol already proved shutdown; only a still-running worker needs it.
+      try { if (worker && !hasExited) await worker.terminate(); }
       finally { await rm(directory, { recursive: true, force: true }); }
     }
   }

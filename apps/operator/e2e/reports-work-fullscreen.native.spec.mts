@@ -5,6 +5,30 @@ import { decodeNativeBridgeJson } from './_native-bridge-json';
 
 const exec = promisify(execFile);
 
+test.afterEach(async ({}, info) => {
+  const pid = process.env.VERIFY_TAURI_PID;
+  const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN;
+  if (!pid || !tool) return;
+  const { stdout } = await exec(tool, ['eval', '--pid', pid, `(() => {
+    const capture = selector => {
+      const element = document.querySelector(selector);
+      if (!element) return null;
+      const ancestors = [];
+      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent);
+        ancestors.push({ tag: parent.tagName, className: parent.className,
+          willChange: style.willChange, transform: style.transform, contain: style.contain });
+      }
+      return { html: element.outerHTML, rect: element.getBoundingClientRect().toJSON(), ancestors };
+    };
+    return JSON.stringify({ url: location.href, viewport: { width: innerWidth, height: innerHeight },
+      reader: capture('.reports-reader'), work: capture('[data-testid="dock-fullscreen-surface"]') });
+  })()`, '--json'], { timeout: 30_000 });
+  await info.attach('native-fullscreen-dom', {
+    body: String(decodeNativeBridgeJson(stdout, 'eval')), contentType: 'application/json',
+  });
+});
+
 test('Reports reader and individual Work panes fullscreen and restore their layout', async () => {
   test.setTimeout(240_000);
   expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');

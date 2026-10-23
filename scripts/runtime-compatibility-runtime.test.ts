@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { Worker } from 'node:worker_threads';
+import { describe, expect, it, vi } from 'vitest';
 import { RUNTIME_EXPECTATIONS, performRuntimeCapability } from './lib/runtime-compatibility-probes.mjs';
 import { measureRuntime, runCapability } from './lib/runtime-compatibility.mjs';
 
@@ -17,5 +18,14 @@ describe('isolated runtime protocol semantics', () => {
   }, 15_000);
   it('refuses an unknown protocol instead of completing a substitute operation', async () => {
     await expect(performRuntimeCapability('unknown')).rejects.toThrow('Unknown runtime capability');
+  });
+  it('does not await redundant termination after observing a clean worker exit', async () => {
+    const termination = vi.spyOn(Worker.prototype, 'terminate')
+      .mockRejectedValue(new Error('already-exited termination must not be used'));
+    try {
+      await expect(performRuntimeCapability('worker-transfer-exit'))
+        .resolves.toEqual(RUNTIME_EXPECTATIONS['worker-transfer-exit']);
+      expect(termination).not.toHaveBeenCalled();
+    } finally { termination.mockRestore(); }
   });
 });

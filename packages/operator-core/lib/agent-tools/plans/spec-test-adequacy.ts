@@ -2659,8 +2659,9 @@ function appendRatingRerunProbes(
  *  36 — explicitly registered source BAR named cases can establish shared suite coverage only.
  *  37 — files-only source BARs accept complete shared suites, rejecting filtered or skipped whole-file proof.
  *  38 — non-automated work-item census proof without test bytes does not require executable fixture evidence.
+ *  39 — evidence-kind/plane compliance cannot turn unexercised layer reachability into a positive pass.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 38;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 39;
 
 /** One key on which a fixture-free review fails to pair with the binding it cites. */
 export type FixtureAbsencePairingKey =
@@ -3758,10 +3759,13 @@ export function evaluateSpecTestAdequacy(input: {
         `Current bindings cover the required evidence plane(s) for ${clauseIdentity(clause)}: ${requiredPlanes.join(', ')}.`,
         planeBindings,
       );
-  const parts = [
+  const reachabilityParts = [
     layerRating,
     sourceBarTestSuiteRating(clause, evidence, input.sourceBarTestRequirements),
     scenarioRating,
+  ].filter((part): part is CorrectLayerEvidencePart => part !== null);
+  const parts = [
+    ...reachabilityParts,
     evidenceKindRating,
     planeRating,
   ]
@@ -3770,7 +3774,9 @@ export function evaluateSpecTestAdequacy(input: {
     ? 'fail'
     : parts.some((part) => part.rating === 'unknown')
       ? 'unknown'
-      : parts.every((part) => part.rating === 'not-applicable')
+      // Evidence requirements remain blockers, but satisfying them does not exercise
+      // a test layer, suite or path. Preserve N/A when none of those duties applies.
+      : reachabilityParts.every((part) => part.rating === 'not-applicable')
         ? 'not-applicable'
         : 'pass';
   ratings['correct-layer'] = {

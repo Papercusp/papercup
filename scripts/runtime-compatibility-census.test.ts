@@ -38,6 +38,9 @@ describe('committed runtime migration inventory discovery', () => {
       ['100644', 'operator.desktop', '[Desktop Entry]\nExec=node host.mjs\n'],
       ['100644', 'Dockerfile.operator', 'ENTRYPOINT ["node", "host.mjs"]\n'],
       ['100644', 'agent.plist', '<string>node</string>\n'],
+      ['100644', 'systemd/host.service.d/override.conf', '[Service]\nExecStart=\nExecStart=node host.mjs\n'],
+      ['100644', 'systemd/host.timer', '[Timer]\nUnit=host.service\n'],
+      ['120000', 'bin/linked-launch', 'launch'],
       ['100644', 'unrelated.txt', 'not a source'],
     ].map(([mode, path, text], index) => ({ mode, path, bytes: Buffer.from(text), oid: (index + 1).toString(16).repeat(40) }));
     const runGit = (_root: string, args: string[], options?: { input: Buffer }) => {
@@ -50,8 +53,11 @@ describe('committed runtime migration inventory discovery', () => {
       }));
     };
     const result = inventorySources(readCommittedSources(root, 'HEAD', { runGit }));
-    expect(result.files.map((file) => file.path)).toEqual(['agent.plist', 'bin/launch', 'Dockerfile.operator', 'operator.desktop', 'runner.py']);
-    expect(result.groups.launchers.map((row) => row.id)).toEqual(['agent.plist', 'bin/launch', 'Dockerfile.operator', 'operator.desktop', 'runner.py']);
+    expect(result.files.map((file) => file.path)).toEqual(['agent.plist', 'bin/launch', 'Dockerfile.operator', 'operator.desktop', 'runner.py',
+      'systemd/host.service.d/override.conf', 'systemd/host.timer']);
+    expect(result.groups.launchers.map((row) => row.id)).toEqual(['agent.plist', 'bin/launch', 'Dockerfile.operator', 'operator.desktop', 'runner.py',
+      'systemd/host.service.d/override.conf']);
+    expect(result.unresolved).toContainEqual(expect.objectContaining({ path: 'bin/linked-launch', reason: 'nonregular-or-over-budget-source' }));
     expect(result.closureAccepted).toBe(false);
   });
   it('does not reuse a fingerprint across changed unavailable repository pins', () => {

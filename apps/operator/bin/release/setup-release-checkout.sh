@@ -112,6 +112,11 @@ NODE_MODULES_GENERATION_MODE="${NODE_MODULES_GENERATION_MODE:-required}"
 NODE_MODULES_GENERATION_ID="${NODE_MODULES_GENERATION_ID:-}"
 NODE_MODULES_GENERATION_TOKEN="${NODE_MODULES_GENERATION_TOKEN:-}"
 NODE_MODULES_WORKSPACE_DIRS=()
+# Shared by dependency capture and the pinned runtime builds below.
+RUNTIME_BUILD_WORKSPACES=(
+  "@papercusp/omp"
+  "@papercusp/sse"
+)
 DEPENDENCY_GENERATION_ROOT="${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}"
 # P-008 (green-main-fast-2026-08-25) — SOURCE integrity, the peer of the
 # dependency-generation pin above. Every other leg of candidate materialization is
@@ -1448,12 +1453,47 @@ record_node_modules_copy_metadata() {
   fi
 }
 
+# RUNTIME DEPENDENCY CLOSURE
+configure_release_dependency_workspace_dirs() {
+  local workspace workspace_root
+  local selected=("${NODE_MODULES_WORKSPACE_DIRS[@]}")
+  RUNTIME_DEPENDENCY_WORKSPACE_DIRS=()
+  for workspace in "${RUNTIME_BUILD_WORKSPACES[@]}"; do
+    workspace_root="$(readlink -f "$INTEGRATION_ROOT/node_modules/$workspace" 2>/dev/null || true)"
+    [ -n "$workspace_root" ] && [ -d "$workspace_root/node_modules" ] || continue
+    case "$workspace_root" in
+      "$INTEGRATION_ROOT"/*)
+        RUNTIME_DEPENDENCY_WORKSPACE_DIRS+=("${workspace_root#"$INTEGRATION_ROOT"/}")
+        ;;
+      *)
+        echo "[setup-release] FATAL: runtime workspace $workspace resolves outside the integration root" >&2
+        return 1
+        ;;
+    esac
+  done
+  # No selector means full capture; do not accidentally narrow that default.
+  if [ "${#selected[@]}" -gt 0 ]; then
+    selected+=("${RUNTIME_DEPENDENCY_WORKSPACE_DIRS[@]}")
+  fi
+  dependency_generation_configure_workspace_dirs "$INTEGRATION_ROOT" "${selected[@]}"
+}
+
+validate_runtime_dependency_toolchains() {
+  local workspace_dir
+  for workspace_dir in "${RUNTIME_DEPENDENCY_WORKSPACE_DIRS[@]}"; do
+    [ -d "$DEPENDENCY_GENERATION_TREE/$workspace_dir/node_modules" ] || {
+      echo "[setup-release] FATAL: pinned dependency generation $PINNED_DEPENDENCY_GENERATION_ID is missing the package-local toolchain for $workspace_dir; select or capture a complete generation before materialization" >&2
+      return 1
+    }
+  done
+}
+# END RUNTIME DEPENDENCY CLOSURE
+
 if need_node_modules; then
   NODE_MODULES_SOURCE_ROOT="$INTEGRATION_ROOT"
   if [ "$NODE_MODULES_COPY_MODE" = "copy" ] && [ "$NODE_MODULES_GENERATION_MODE" = "required" ]; then
     DEPENDENCY_GENERATION_ROOT="$(dependency_generation_resolve_root "$INTEGRATION_ROOT" "$DEPENDENCY_GENERATION_ROOT")"
-    dependency_generation_configure_workspace_dirs \
-      "$INTEGRATION_ROOT" "${NODE_MODULES_WORKSPACE_DIRS[@]}"
+    configure_release_dependency_workspace_dirs
     if [ -n "$NODE_MODULES_GENERATION_ID" ]; then
       # Lease BEFORE the full validation walk. Otherwise a retention pass can
       # remove this exact identity between selection and materialization.
@@ -1473,6 +1513,7 @@ if need_node_modules; then
     fi
     PINNED_DEPENDENCY_GENERATION_ID="$DEPENDENCY_GENERATION_ID"
     NODE_MODULES_SOURCE_ROOT="$DEPENDENCY_GENERATION_TREE"
+    validate_runtime_dependency_toolchains
     dependency_generation_apply_retention "$DEPENDENCY_GENERATION_ROOT" "$INTEGRATION_ROOT"
     log "pinned immutable dependency generation $PINNED_DEPENDENCY_GENERATION_ID (reused=$DEPENDENCY_GENERATION_REUSED)"
   fi
@@ -1764,11 +1805,6 @@ fi
 # setup-release-checkout-workspace-builds.test.ts: any new workspace package
 # that exposes a gitignored `main`/`require`/`default` target must be registered
 # here or that detector fails before the same class can reach deploy again.
-RUNTIME_BUILD_WORKSPACES=(
-  "@papercusp/omp"
-  "@papercusp/sse"
-)
-
 build_pinned_workspace_runtime_outputs() {
   local workspace scope package manifest integration_workspace_root release_workspace_root
   local dependency_workspace_node_modules

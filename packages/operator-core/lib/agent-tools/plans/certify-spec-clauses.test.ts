@@ -254,7 +254,7 @@ function bindingRow(
   };
 }
 
-const clause = (specId: string, lifecycleStatus: 'active' | 'draft' = 'active') =>
+const clause = (specId: string, lifecycleStatus: 'active' | 'draft' = 'active'): Awaited<ReturnType<typeof listSpecClauses>>[number] =>
   ({
     planSlug: h.planSlug,
     specId,
@@ -280,7 +280,7 @@ const clause = (specId: string, lifecycleStatus: 'active' | 'draft' = 'active') 
     acceptedAt: lifecycleStatus === 'draft' ? null : '2026-09-20T00:01:00.000Z',
     acceptanceRef: lifecycleStatus === 'draft' ? null : 'D-003',
     sourceBar: null,
-  }) as never;
+  });
 
 let root = '';
 let bound: { sourceFingerprint: string; testFingerprint: string | null };
@@ -402,6 +402,101 @@ afterEach(() => {
 });
 
 describe('plans:certify-spec-clauses', () => {
+  describe('mechanical proof without judgment cards', () => {
+    async function mechanicalClause(): Promise<Awaited<ReturnType<typeof listSpecClauses>>[number]> {
+      const standard = await getRubric('spec-test-adequacy');
+      const sourceBar = { rubricSlug: 'mechanical-bar', rubricRevision: 1, barSetHash: 'bars',
+        barKey: 'R-1', barHash: 'bar-1', evidencePlane: 'tree' as const };
+      getRubric.mockImplementation(async (slug: string) => slug === sourceBar.rubricSlug ? {
+        ...standard, rubricId: sourceBar.rubricSlug, revision: 1, kind: 'acceptance', barSetHash: 'bars',
+        criteria: [{ ...standard.criteria[0], barKey: 'R-1', barHash: 'bar-1', evidencePlane: 'tree',
+          check: { kind: 'tests', files: ['test/reconnect.test.ts'] } }],
+      } : standard);
+      return { ...clause('SPEC-PASS'), sourceBar };
+    }
+
+    function calibrateMutant() {
+      const mutant = h.rows.find(row => row.id === 2)!;
+      const execution = mutant.test_run_execution_details as Record<string, unknown>;
+      const mutation: import('@papercusp/test-config/mutation-descriptor').MutationDescriptor = {
+        schemaVersion: 1, probeInvocationId: 'certify-mechanical', leg: 'mutant', mode: 'copy-out',
+        subjectPath: 'src/reconnect.ts', mutateExpression: 's/false/true/', againstCommit: null,
+        subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64),
+        mutantDiff: '-false\n+true', mutantDiffTruncated: false,
+        testCommandSha256: 'c'.repeat(64), testFileSha256: 'd'.repeat(64),
+      };
+      mutant.test_run_execution_details = { ...execution, mutation };
+      mutant.mutation_execution_details = mutant.test_run_execution_details;
+      mutant.mutation_baseline_id = 99;
+      mutant.mutation_baseline_status = 'pass';
+      mutant.mutation_baseline_execution_details = { ...execution, mutationPhase: 'baseline',
+        passed: 1, failed: 0, failedCaseTitles: undefined, passedCaseTitles: [CASE_TITLE],
+        mutation: { ...mutation, leg: 'baseline' } };
+    }
+
+    it('rejects descriptorless historical proof even when the legacy evaluator passes it', async () => {
+      const selected = await mechanicalClause();
+      listClauses.mockResolvedValue([selected]);
+      const historical = await replayViaEvaluator({ harness: 'papercusp', slug: PLAN,
+        classRef: 'plan-class-feature-ship', specIds: ['SPEC-PASS'], specRevision: 1,
+        specFingerprint: SPEC_FINGERPRINT, replaySnapshot: true, detail: 'full' });
+      expect(historical).toMatchObject({ rows: [{ verdict: 'pass', evaluationMode: 'judgment' }] });
+
+      const result = await certify({ specIds: ['SPEC-PASS'] });
+      expect(result).toMatchObject({ ok: true, counts: { filed: 0, notPassing: 1, mechanicallyVerified: 0 },
+        clauses: [{ verdict: 'fail', card: { status: 'not-passing' },
+          mechanicalProof: { caughtMutantBindingIds: [], gaps: [expect.stringContaining('verified calibration linkage')] } }] });
+      expect(captureImprovement).not.toHaveBeenCalled();
+      expect(dispatchTool).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])('returns calibrated ledger verification without filing or replaying a card (dryRun=%s)', async dryRun => {
+      listClauses.mockResolvedValue([await mechanicalClause()]);
+      calibrateMutant();
+      const result = await certify({ specIds: ['SPEC-PASS'], dryRun });
+      expect(result).toMatchObject({ ok: true, counts: { passing: 1, filed: 0, notPassing: 0, mechanicallyVerified: 1 },
+        clauses: [{ verdict: 'pass', card: { status: 'not-required', reason: 'mechanical-test-adequacy' },
+          mechanicalProof: { passingTestBindingIds: { 'test/reconnect.test.ts': 4 },
+            caughtMutantBindingIds: [2], gaps: [] } }] });
+      expect(captureImprovement).not.toHaveBeenCalled();
+      expect(dispatchTool).not.toHaveBeenCalled();
+    });
+
+    it.each(['missing-test', 'missing-mutant', 'stale-source'])(
+      'keeps %s proof non-passing without scorecard creation', async defect => {
+        listClauses.mockResolvedValue([await mechanicalClause()]);
+        calibrateMutant();
+        if (defect === 'missing-test') h.rows = h.rows.filter(row => row.evidence_kind !== 'test');
+        if (defect === 'missing-mutant') h.rows = h.rows.filter(row => row.id !== 2);
+        if (defect === 'stale-source') await writeSubject('export const ackedEventsReplayed = true;\n');
+        const result = await certify({ specIds: ['SPEC-PASS'] });
+        expect(result).toMatchObject({ counts: { filed: 0, notPassing: 1, mechanicallyVerified: 0 },
+          clauses: [{ verdict: 'fail', card: { status: 'not-passing' } }] });
+        expect(captureImprovement).not.toHaveBeenCalled();
+      },
+    );
+
+    it('files only the judgment clause in a mixed mechanical and legacy evaluation', async () => {
+      const mechanical = await mechanicalClause();
+      const legacy = clause('SPEC-LEGACY');
+      h.rows.push(...h.rows.filter(row => row.spec_id === 'SPEC-PASS').map(row => ({
+        ...row, id: Number(row.id) + 20, spec_id: legacy.specId,
+        evidence_ref: `${row.evidence_ref}:legacy`, binding_fingerprint: `${row.binding_fingerprint}:legacy`,
+        details: { ...(row.details as Record<string, unknown>), adequacy: {
+          ...((row.details as { adequacy: Record<string, unknown> }).adequacy), targeted: 'spec-legacy',
+        } },
+      })));
+      calibrateMutant();
+      listClauses.mockImplementation(async input =>
+        [mechanical, legacy].filter(row => !input.specIds || input.specIds.includes(row.specId)));
+      const result = await certify({});
+      expect(result).toMatchObject({ ok: true, counts: { passing: 2, filed: 1, mechanicallyVerified: 1 },
+        clauses: [{ specId: 'SPEC-PASS', card: { status: 'not-required' } },
+          { specId: 'SPEC-LEGACY', card: { status: 'filed' } }] });
+      expect(captureImprovement).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('staging runtime lease', () => {
     it.each([false, true])('refuses before evaluation or filing while a restart owns staging (dryRun=%s)', async (dryRun) => {
       resourceAcquire.mockResolvedValueOnce({

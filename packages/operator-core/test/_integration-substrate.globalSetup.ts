@@ -13,6 +13,8 @@ declare module 'vitest' {
 // Keep the integration layer/reporters; only omit substrates this suite never uses.
 const PG_FREE_TESTS = new Set([
   '../lib/agent-tools/capability/vm-copy-authority-bridge.integration.test.ts',
+  // Isolated repository fixtures and the provisioned syntax parser; no SQL or PG runtime.
+  '../lib/agent-tools/plans/plan-native-declarations.integration.test.ts',
   '../lib/integration-substrate-selection.integration.test.ts',
 ].map(path => fileURLToPath(new URL(path, import.meta.url))));
 

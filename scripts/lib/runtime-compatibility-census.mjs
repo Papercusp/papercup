@@ -12,6 +12,10 @@ const ts = require('typescript');
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const SOURCE = /\.(?:[cm]?[jt]sx?|json|sh|bash|ps1|py|cmd|bat|desktop|plist|nsh|wxs|gyp|gypi|rs|toml|lock|sql|ya?ml|service)$/;
 const CONTROL_FILE = /(?:^|\/)(?:Dockerfile(?:[.-][^/]*)?|[^/]+\.Dockerfile|CMakeLists\.txt)$/;
+// Unit drop-ins override the base service's ExecStart and environment. Select
+// whole launch-control directories so timer/socket units and unfamiliar drop-in
+// suffixes cannot disappear merely because they are not JavaScript or .service.
+const CONTROL_DIRECTORY = /(?:^|\/)(?:systemd|launchd|init\.d|rc\.d)\//;
 const JS = /\.[cm]?[jt]sx?$/;
 export const INVENTORY_GROUPS = ['launchers', 'guards', 'capabilities', 'platforms', 'proofs', 'mutators', 'persistence'];
 const MATCHERS = {
@@ -51,7 +55,8 @@ export function readCommittedSources(root, revision = 'HEAD', { runGit = git } =
     // Installed commands often have no extension. The executable mode is part
     // of the committed tree, so include it without inspecting mutable disk bytes.
     const candidates = entries.filter((entry) => entry.type === 'blob'
-      && (entry.mode === '100755' || SOURCE.test(entry.path) || CONTROL_FILE.test(entry.path)));
+      && (entry.mode === '100755' || entry.mode === '120000' || SOURCE.test(entry.path)
+        || CONTROL_FILE.test(entry.path) || CONTROL_DIRECTORY.test(entry.path)));
     const selected = candidates.filter((entry) => /^(?:100644|100755)$/.test(entry.mode)
       && Number.isSafeInteger(entry.size) && entry.size <= 2 * 1024 * 1024);
     for (const entry of candidates.filter((entry) => !selected.includes(entry))) {

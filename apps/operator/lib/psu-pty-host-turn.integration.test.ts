@@ -2262,6 +2262,42 @@ function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number
   );
 }
 
+it('the busy fixture keeps emitting while its agent main thread is blocked', async () => {
+  const ownerId = uniqueOwner('BUSY-WORKER-FORWARDING');
+  const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
+  const unblockMain = join(PSU_PTY_DIR, `${ownerId}.unblock`);
+  const { captured, io } = fakeIo();
+  const blockCode =
+    "const fs=require('node:fs');process.stdin.on('data',d=>{if(d.includes('BLOCK\\n')){" +
+    "fs.writeSync(1,'MAIN-BLOCKED\\n');" +
+    `while(!fs.existsSync(${JSON.stringify(unblockMain)}))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,25);` +
+    "fs.writeSync(1,'MAIN-RESUMED\\n');}});";
+  const done = hostThroughPty({
+    command: execPath,
+    args: ['-e', busyThenIdleChildCode(900, 50, 1000, releaseBusy) + blockCode],
+    cwd: '/tmp',
+    env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId },
+    ownerId,
+    io,
+    bridgeTty: false,
+  });
+  onTestFinished(async () => {
+    writeFileSync(unblockMain, 'release\n');
+    writeFileSync(releaseBusy, 'release\n');
+    await done;
+  });
+  expect(await waitForHost(ownerId)).not.toBeNull();
+  expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+  expect(await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: 'BLOCK\n' })).toBe(true);
+  expect(await waitForOutput(captured, 'MAIN-BLOCKED')).toBe(true);
+  const blockedOutputStart = captured().length;
+  // A worker's process.stdout is forwarded through its parent's event loop.
+  // The fixture promises busy output even while that event loop cannot run.
+  expect(await waitForOutput(() => captured().slice(blockedOutputStart), '.', 1000),
+    hostTestDiagnostics(ownerId, captured)).toBe(true);
+  expect(captured()).not.toContain('MAIN-RESUMED');
+}, 20_000);
+
 /** A RAW-mode child that announces 'READY', then emits 'SUBMIT:<buffer>' on each
  *  CR. Raw mode is the load-bearing part for a keystroke test: the pty's
  *  canonical line discipline would otherwise ECHO every typed byte back onto

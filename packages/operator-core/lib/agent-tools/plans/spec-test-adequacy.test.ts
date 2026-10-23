@@ -2955,7 +2955,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       clause: target, evidence: [row], classRef: 'plan-class-feature-ship',
     });
     const covered = grade(proof);
-    expect(covered.ratings['correct-layer'].rating).toBe('pass');
+    expect(covered.ratings['correct-layer'].rating).toBe('not-applicable');
+    expect(covered.ratings['correct-layer'].evidence).toContain('cover the required evidence plane(s)');
     expect(covered.ratings.traceability.evidence).toContain(`evidencePlane="${plane}"`);
 
     const stale = grade({ ...proof, currentness: { ...proof.currentness, overall: 'stale' } });
@@ -3008,7 +3009,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       evidence: [treeProof, liveProof],
       classRef: 'plan-class-feature-ship',
     });
-    expect(covered.ratings['correct-layer'].rating).toBe('pass');
+    expect(covered.ratings['correct-layer'].rating).toBe('not-applicable');
     expect(covered.ratings['correct-layer'].evidence).toContain('Current bindings cover the required evidence plane(s)');
     expect(covered.ratings['correct-layer'].evidence).toContain('ref="live:verified-report"');
   });
@@ -3104,7 +3105,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       evidence: [evidence({ evidenceKind: 'operational' })],
       classRef: 'plan-class-feature-ship',
     });
-    expect(covered.ratings['correct-layer'].rating).toBe('pass');
+    expect(covered.ratings['correct-layer'].rating).toBe('not-applicable');
     expect(covered.ratings['correct-layer'].evidence).toContain('cover the required evidence kind(s)');
   });
 
@@ -4005,7 +4006,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(38);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(39);
   });
 
   it('accepts a non-automated ledger census without inventing executable fixture proof', () => {
@@ -4016,9 +4017,48 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
 
     expect(result.ratings['fixture-calibration'].rating).toBe('not-applicable');
+    expect(result.ratings['correct-layer'].rating).toBe('not-applicable');
     expect(result.ratings.traceability.rating).toBe('pass');
     expect(result.verdict).toBe('pass');
   });
+
+  it('does not count evidence-kind and plane coverage as exercised layer reachability', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ behaviorClass: 'non-automated', requiredEvidence: ['tree', 'coverage-census'], requiredTestLayers: [] }),
+      evidence: [ledgerCensusEvidence()],
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result.ratings['correct-layer'].rating).toBe('not-applicable');
+    expect(result.ratings['correct-layer'].evidence).toContain('cover the required evidence kind(s)');
+    expect(result.ratings['correct-layer'].evidence).toContain('cover the required evidence plane(s)');
+    expect(result.verdict).toBe('pass');
+  });
+
+  it.each(['missing-plane', 'wrong-plane', 'missing-kind', 'required-layer', 'required-scenario', 'source-suite'] as const)(
+    'keeps a layer-free census blocked by %s obligations', (control) => {
+      const row = ledgerCensusEvidence();
+      const spec = clause({ behaviorClass: 'non-automated', requiredEvidence: ['tree'], requiredTestLayers: [] });
+      if (control === 'missing-plane') delete row.details.evidencePlane;
+      else if (control === 'wrong-plane') row.details.evidencePlane = 'live';
+      else if (control === 'missing-kind') spec.requiredEvidence.push('manual');
+      else if (control === 'required-layer') spec.requiredTestLayers = ['integration'];
+      else if (control === 'required-scenario') spec.falsifier = {
+        observation: 'The missing path must have been exercised.', requiredScenarios: ['missing-path'],
+      };
+
+      const result = evaluateSpecTestAdequacy({
+        clause: spec, evidence: [row], classRef: 'plan-class-bugfix',
+        ...(control === 'source-suite' ? {
+          sourceBarTestRequirements: { status: 'required' as const, files: ['src/feature.test.ts'] },
+        } : {}),
+      });
+
+      expect(['fail', 'unknown']).toContain(result.ratings['correct-layer'].rating);
+      expect(result.wouldBlock).toContain('correct-layer');
+      expect(result.verdict).not.toBe('pass');
+    },
+  );
 
   it.each(['executable', 'repo-files', 'test-run', 'test-execution', 'test-fingerprint', 'fixture-required',
     'unmeasured', 'malformed-measurement'] as const)(
