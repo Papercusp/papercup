@@ -126,7 +126,60 @@
         { "specId": "GF-P004-disposition", "revision": 2, "verdict": "pass", "wouldBlock": [] }
       ]
     },
-    "next": "Refresh only the HTTP proof on current committed helper bytes using the maintained isolated route and original21-source/3-fixture recipe. Preserve binding66465 and its completed run as historical evidence; do not remove it merely to recover a PASS. Reuse R2, qualified descriptor probes and original cohorts."
+    "next": "The first helper refresh failed on an unrelated committed dependency export mismatch before API assertions. The corrected committed candidate is in httpExportRefresh below. Preserve binding66465 and its completed run as historical evidence; do not remove it merely to recover a PASS. Reuse R2, qualified descriptor probes and original cohorts."
+  },
+  "httpHelperRefreshFailure": {
+    "workflowState": "/tmp/gf-p004-http-helper-refresh-20261023.state.json",
+    "phase": "failed",
+    "finishedAt": "2026-10-23T09:15:55.896Z",
+    "exitCode": 1,
+    "testRunId": 21811737,
+    "status": "fail",
+    "worktreeDirty": false,
+    "sourceCommit": "ccbbc7111a2c5a9995991b10118dc33f377fd29e",
+    "isolatedRunId": "20261023T090713Z-665020",
+    "buildLog": "/mnt/data/offload/verification-harness/isolated-integration/20261023T090713Z-665020/phases/execute/operator-api-build.log",
+    "failure": "Private operator bundle cannot resolve the test-coverage-map and test-coverage-store subpath exports from @papercusp/test-config. API assertions were not reached.",
+    "rootCauseEvidence": "The executed root pins libs/test-config at37092189419574d5fd0426c7f9216accf9538fa8. Its committed package.json contains neither required export, while the committed consumer imports both. A stale installed copy alone does not explain the missing committed declarations.",
+    "existingIssue": "EI-26758654879848411",
+    "evidenceCommentId": 1199712,
+    "ownedCapture": "EI-26761519981166665",
+    "ownership": "The existing issue was unassigned and not_claimable. Exact-item admission recovery was requested; no assignment was confirmed. The later capture remains assigned to this session pending canonical ownership reconciliation. No duplicate implementation lane was launched.",
+    "recurrenceGuardFollowup": "Validate reachable workspace subpath imports against the committed package exports at the maintained source preflight, before copying dependencies. The owned capture retains this follow-up."
+  },
+  "httpExportRefresh": {
+    "workflowState": "/tmp/gf-p004-http-export-refresh-20261023.state.json",
+    "workflowLog": "/dev/shm/get-feedback-p004-http-export-refresh-20261023.log",
+    "reporterReceipt": "/tmp/gf-p004-http-export-refresh-20261023.test-runs.json",
+    "retentionMarker": "/tmp/gf-p004-http-export-refresh-20261023.inflight",
+    "sourceCommit": "6bffe39570ed67111efcd2689c991791b3bb28b2",
+    "testConfigPin": "0c3aa7afb92cce655c428240f5e71ecbd31abedf",
+    "helperSha256": "97e9c296d89947617c7b3617d830d9670f4413ea8c915d00ef3a4c847457746c",
+    "pid": 1910797,
+    "startedAt": "2026-10-23T09:28:08.963Z",
+    "observedPhase": "bundle-preflight",
+    "sourceVerified": true,
+    "coverageExportsVerified": true,
+    "executionContract": "Materialize one exact committed source root retained by the external marker. Verify both coverage exports and their source files inside that root. Run the maintained host bundler first; start the private-PG HTTP test only if that bundle passes. Reconcile the state/log before retrying after context loss.",
+    "qualification": "No final HTTP result or current runtime binding is claimed. The original21-source/3-fixture basis remains the required binding recipe."
+  },
+  "r5CapturedDiagnostic": {
+    "workItemId": "WI-6554700010022519",
+    "testRunId": 21811706,
+    "status": "pass",
+    "passed": 1,
+    "failed": 0,
+    "unselected": 12,
+    "worktreeDirty": true,
+    "phaseReport": "/tmp/gf-r5-orient-diagnostic-20261023.phases.json",
+    "phaseReportSha256": "c2f91825b6fe51e836399ae3e72672d69ea1f41f13564adfa0ed80559e102e2a",
+    "completedAt": "2026-10-23T09:06:05.927Z",
+    "phaseGuardsPassed": true,
+    "matchedWindows": 20,
+    "unchangedNamedSources": 15,
+    "sourceHashComparison": "sourceStart equals sourceEnd in the completed phase report. These named sources do not identify the complete imported graph.",
+    "observation": "The original focused case preserved the expected facts, worklists and obligation states in both portfolio arms with the unchanged900ms provider budget. Its matched shared-arm timing checks passed. The initial seeded read remains recorded separately.",
+    "interpretation": "The earlier intermittent agenda loss was not reproduced in this single working-source diagnostic. No root-cause fix, clean-commit acceptance or deployed-runtime claim follows; preserve original failing21806199 and keep the investigation open."
   },
   "preservedArtifact": {
     "path": "docs/evidence/get-feedback-p004-and-rubric9-proof-2026-10-23.json",
