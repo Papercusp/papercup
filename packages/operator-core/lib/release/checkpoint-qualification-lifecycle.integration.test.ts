@@ -25,6 +25,7 @@ vi.mock('./frozen-repair-edit-marker', () => ({ projectFrozenRepairMarker: () =>
 import {
   beginQualificationTransaction,
   beginStoredQualification,
+  composeStoredQualificationWork,
   checkpointPidIdentity,
   classifyScheduledQualificationJoin,
   configureRunnerLivenessProber,
@@ -128,6 +129,14 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         if (scenario === 'source-drift') writeFileSync(join(root, 'input.json'), '{"changed":true}\n');
         const verdict = { candidate: input.candidate, runId: input.runId, reason: 'advanced', green: true,
           nowMs: 400, terminalEvent: { status: 'qualification-composition-fixture', detail: { scenario } } };
+        const composed = await composeStoredQualificationWork(target,
+          { ...input, ...(scenario === 'old-fence' ? { runnerId: 'old' } : {}) },
+          { classifyReadPaths: observation.classifyReadPaths });
+        expect(composed.status).toBe(scenario === 'complete' ? 'idempotent' : 'conflict');
+        // Even a complete population cannot settle or release the physical owner
+        // before the caller has performed its promotion decision.
+        expect(await readStoredQualification(target)).toMatchObject({ transaction: { outcome: { kind: 'pending' },
+          currentPhysicalRunner: { id: input.runnerId } } });
         const result = await recordStoredQualificationComposedVerdict(target,
           { ...input, ...(scenario === 'old-fence' ? { runnerId: 'old' } : {}) }, verdict,
           { classifyReadPaths: observation.classifyReadPaths });

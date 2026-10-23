@@ -2893,10 +2893,37 @@ export function recordStoredQualificationComposedVerdict(
   return mutateStoredQualification(target, async current => {
     if (!current) return { status: 'unreadable', error: 'missing attempt' };
     const conflict = (refusalReason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason });
-    if (input.updates.length || !current.continuation) return conflict('continuation-composition-unmeasured');
     if (classifyQualificationVerdict(verdict).kind !== 'green') return conflict('continuation-composition-not-green');
     if (verdict.candidate !== input.candidate || verdict.runId !== input.runId ||
         (verdict.repairHead ?? null) !== input.repairHead) return conflict('continuation-lineage-mismatch');
+    const composed = await composeQualificationWork(current, input, options);
+    if (composed.status !== 'updated' && composed.status !== 'idempotent') return composed;
+    return settleQualificationTransaction(composed.transaction, { ...verdict, attemptId: input.attemptId,
+      [COMPOSED_QUALIFICATION_GREEN]: true });
+  }, { terminalEvent: verdict.terminalEvent });
+}
+
+/** Run the same row-locked full-population composer BEFORE the caller may promote.
+ * Keep the attempt running: a successful composition is not a promotion receipt,
+ * and the ordinary terminal path must still recheck and settle the final verdict.
+ */
+export function composeStoredQualificationWork(
+  target: GateVerdictTarget,
+  input: QualificationWorkProgressInput,
+  options: { classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths'] } = {},
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, current => current
+    ? composeQualificationWork(current, input, options)
+    : { status: 'unreadable', error: 'missing attempt' });
+}
+
+async function composeQualificationWork(
+  current: CheckpointQualificationTransaction,
+  input: QualificationWorkProgressInput,
+  options: { classifyReadPaths?: QualificationNativeCompletionInput['classifyReadPaths'] },
+): Promise<QualificationTransition> {
+    const conflict = (refusalReason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason });
+    if (input.updates.length || !current.continuation) return conflict('continuation-composition-unmeasured');
     const custody = recordQualificationWorkProgress(current, input);
     if (custody.status !== 'updated' && custody.status !== 'idempotent') return custody;
     let transaction = custody.transaction;
@@ -2944,9 +2971,7 @@ export function recordStoredQualificationComposedVerdict(
           await git('status', '--porcelain', '--untracked-files=normal') !== '')
         return conflict('continuation-source-changed');
     } catch { return conflict('continuation-source-unmeasured'); }
-    return settleQualificationTransaction(transaction, { ...verdict, attemptId: input.attemptId,
-      [COMPOSED_QUALIFICATION_GREEN]: true });
-  }, { terminalEvent: verdict.terminalEvent });
+    return { status: isDeepStrictEqual(current, transaction) ? 'idempotent' : 'updated', transaction };
 }
 
 export function recordStoredQualificationScheduledTerminalRecovery(
