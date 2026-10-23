@@ -67,6 +67,7 @@ import {
   stripSqlLiteralsAndComments,
   type PgErrorInfo,
 } from './pg-read-query';
+import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 
 /**
  * Matches the start of a top-level SQL read statement embedded in prose. `SELECT` alone
@@ -289,14 +290,15 @@ interface RubricSqlCriterion {
   key: string;
   replication?: string;
   method?: string;
-  check?: { kind: string; probe?: { kind: string; sql?: string } };
+  check?: RubricCriterionCheck;
 }
 
 /** Diagnose the unambiguous single-tool/two-cohort mismatch without executing a probe. */
 export function lintSqlCohortMethod(criterion: RubricSqlCriterion): ReplicationSqlFinding[] {
   if (!/\bboth\s+(?:named\s+)?cohorts\b/i.test(criterion.method ?? '')) return [];
   const probe = criterion.check?.kind === 'probe' ? criterion.check.probe : undefined;
-  if (probe?.kind !== 'sql' || !probe.sql) return [];
+  if (!probe || typeof probe !== 'object' || !('kind' in probe) || probe.kind !== 'sql'
+    || !('sql' in probe) || typeof probe.sql !== 'string' || !probe.sql) return [];
   const sql = stripSqlLiteralsAndComments(probe.sql);
   // Deliberately decline complex or dynamic populations. Removing SQL noise prevents
   // a comment or string containing tool_name from becoming a fictitious cohort.

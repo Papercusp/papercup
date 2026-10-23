@@ -783,6 +783,42 @@ process.exit(result.status ?? 1);`);
   });
 
   describe('papercusp_pinned_deps_snapshot_locked — prevention, not detection', () => {
+    it.runIf(process.platform === 'linux')('queues for physical copy capacity before entering the donor install reader', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snap = join(t, 'snap');
+      const lock = join(t, 'copy.lock'); const entered = join(t, 'reader-entered');
+      write(join(donor, 'node_modules/p/index.js'), 'original');
+      write(join(donor, 'scripts/npm-install-safe.mjs'), `import { writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+writeFileSync(${JSON.stringify(entered)}, 'entered');
+if (spawnSync('flock', ['-n', process.env.DEPENDENCY_GENERATION_COPY_LOCK_FILE, 'true']).status === 0) process.exit(91);
+const args = process.argv.slice(process.argv.indexOf('--') + 1);
+process.exit(spawnSync(args[0], args.slice(1), { stdio: 'inherit' }).status ?? 1);`);
+      const env = { ...process.env, DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+        DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '0', DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '0' };
+      const queued = spawnSync('flock', [lock, 'bash', HELPER_PATH, 'snapshot-locked', donor, snap, 'copy'], {
+        encoding: 'utf8', timeout: 10_000, env,
+      });
+      expect(queued.status, queued.stderr).toBe(76);
+      expect(existsSync(entered), 'a queued physical copy must not retain an install reader').toBe(false);
+      expect(existsSync(snap)).toBe(false);
+      const copied = runLib(['snapshot-locked', donor, snap, 'copy'], env);
+      expect(copied.code, copied.err).toBe(0);
+      expect(readFileSync(join(snap, 'node_modules/p/index.js'), 'utf8')).toBe('original');
+      expect(existsSync(entered)).toBe(true);
+      expect(spawnSync('flock', ['-n', lock, 'true']).status, 'copy slot must release on completion').toBe(0);
+    });
+
+    it.runIf(process.platform === 'linux')('rejects an invalid admitted-copy holder without publishing a snapshot', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snap = join(t, 'snap');
+      write(join(donor, 'node_modules/p/index.js'), 'original');
+      const result = runLib(['snapshot', donor, snap, 'copy', '', 'invalid-holder'], {
+        DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(t, 'copy.lock'),
+      });
+      expect(result.code, result.err).toBe(76);
+      expect(result.err).toContain('admitted copy holder changed');
+      expect(existsSync(join(snap, '.papercusp-pinned-deps'))).toBe(false);
+    });
+
     it('REFUSES when the donor install mutex is unreachable; never snapshots unlocked', () => {
       const t = fixture();
       mkdirSync(join(t, 'donor', 'node_modules'), { recursive: true });

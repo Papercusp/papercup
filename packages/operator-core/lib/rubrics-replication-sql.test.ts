@@ -21,7 +21,7 @@ import {
 describe('SQL cohort method consistency', () => {
   const singleSql = "SELECT count(*) n FROM harness_shared.tool_invocations WHERE workspace_id='ws' AND tool_name='coord:orient' AND duration_ms>=0";
   const criterion = (sql = singleSql, method = 'Both named cohorts must have at least20 calls.') => ({
-    key: 'wake-orient-latency', method, check: { kind: 'probe', probe: { kind: 'sql', sql } },
+    key: 'wake-orient-latency', method, check: { kind: 'probe' as const, probe: { kind: 'sql' as const, sql } },
   });
 
   it('surfaces the live single-tool/two-cohort defect through the existing write validator', async () => {
@@ -42,7 +42,8 @@ describe('SQL cohort method consistency', () => {
     expect(lintSqlCohortMethod(criterion("SELECT 'tool_name=''coord:orient''' FROM calls"))).toEqual([]);
     expect(lintSqlCohortMethod(criterion('SELECT count(*) FROM calls WHERE tool_name=$1'))).toEqual([]);
     expect(lintSqlCohortMethod(criterion(singleSql + " OR tool_name='coord:inbox'"))).toEqual([]);
-    expect(lintSqlCohortMethod({ ...criterion(), check: { kind: 'manual' } })).toEqual([]);
+    expect(lintSqlCohortMethod({ ...criterion(), check: { kind: 'instrument', instrumentKey: 'none' } })).toEqual([]);
+    expect(lintSqlCohortMethod({ ...criterion(), check: { kind: 'probe', probe: 'not a descriptor' } })).toEqual([]);
   });
 });
 
