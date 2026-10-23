@@ -92,18 +92,21 @@ function StructuredResult({ result, authorizationKey, host }: {
       || current.current.key !== key || current.current.resolve !== host.resolve || current.current.activate !== callback) return;
     const intent = resultActionIntent(value, actionId);
     if (!intent.ok) return;
+    // Fulfilled and rejected promises belong to the same captured host operation.
+    const isCurrent = (): boolean => active.current === token && current.current.key === key
+      && current.current.activate === callback && current.current.resolve === host.resolve
+      && !token.controller.signal.aborted;
     token.busy = true;
     setBusy(true);
     try {
       const response = await callback(intent.value, {
         result: structuredClone(value), authorizationKey, signal: token.controller.signal,
       });
-      if (active.current !== token || current.current.key !== key || current.current.activate !== callback
-        || current.current.resolve !== host.resolve || token.controller.signal.aborted) return;
+      if (!isCurrent()) return;
       if (!response.ok) setState({ key, resolver: host.resolve,
         outcome: { ok: false, code: Object.hasOwn(failureText, response.code) ? response.code : 'unavailable' } });
     } catch {
-      if (active.current === token && current.current.key === key && !token.controller.signal.aborted)
+      if (isCurrent())
         setState({ key, resolver: host.resolve, outcome: { ok: false, code: 'unavailable' } });
     } finally {
       token.busy = false;

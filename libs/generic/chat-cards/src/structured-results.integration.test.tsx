@@ -13,8 +13,9 @@ function block(kind: ChatResultBlock['kind'] = 'document'): ChatResultBlock {
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>(done => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 describe('structured result host composition (tree only)', () => {
@@ -215,5 +216,33 @@ describe('structured result host composition (tree only)', () => {
     await act(async () => lateAction.resolve({ ok: false, code: 'unauthorized' }));
     expect(screen.getByText(current.title)).toBeTruthy();
     expect(screen.queryByRole('button')).toBeNull();
+    view.unmount();
+
+    // Replacing only the host callback leaves scope/reference/resolver unchanged.
+    // An obsolete callback's thrown failure must obey the same fence as its return.
+    const obsolete = deferred<StructuredResultOutcome<void>>();
+    const obsoleteAction = vi.fn(() => obsolete.promise);
+    const replacement = vi.fn<NonNullable<StructuredResultHost['activate']>>(async () => ({ ok: true, value: undefined }));
+    const stableResolve: StructuredResultHost['resolve'] = async request => ({ ok: true, value: request.result });
+    view = render(<StructuredResults blocks={[original]} authorizationKey="unchanged:1"
+      host={{ resolve: stableResolve, activate: obsoleteAction }} />);
+    await screen.findByText(original.title);
+    fireEvent.click(screen.getByRole('button', { name: 'Open document' }));
+    expect(obsoleteAction).toHaveBeenCalledTimes(1);
+    view.rerender(<StructuredResults blocks={[original]} authorizationKey="unchanged:1"
+      host={{ resolve: stableResolve, activate: replacement }} />);
+    await act(async () => obsolete.reject(new Error('old transport failed')));
+    expect(screen.getByText(original.title)).toBeTruthy();
+    expect(replacement).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Open document' }));
+    await waitFor(() => expect(replacement).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(original.title)).toBeTruthy();
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Open document' }) as HTMLButtonElement).disabled).toBe(false));
+    const currentFailure: StructuredResultHost['activate'] = async () => { throw new Error('current transport failed'); };
+    view.rerender(<StructuredResults blocks={[original]} authorizationKey="unchanged:1"
+      host={{ resolve: stableResolve, activate: currentFailure }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open document' }));
+    await screen.findByText('This result is unavailable.');
+    expect(screen.queryByText(original.title)).toBeNull();
   });
 });
