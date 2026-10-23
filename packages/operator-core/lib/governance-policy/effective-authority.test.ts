@@ -24,6 +24,7 @@ function fixture(): AuthoritySnapshot {
 describe('effective authority contract (P-024)', () => {
   it.each(AUTHORITY_KINDS)('each independent %s authority can decide refusal despite all other grants', kind => {
     const snapshot = fixture();
+    expect(evaluateEffectivePermission(snapshot, request).allowed).toBe(true);
     const policy = snapshot.policies.find(policy => policy.kind === kind)!;
     policy.rules = { ...policy.rules, resources: { allow: [] } };
     const decision = evaluateEffectivePermission(snapshot, request);
