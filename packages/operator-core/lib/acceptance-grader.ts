@@ -3063,7 +3063,10 @@ export async function resolveAcceptanceGrader(
         // the same shape as the bug this guard exists to fix.
         () => ({ settled: false, reason: 'read_threw' }) as const,
       );
-      if (settlement?.settled) {
+      // A completed grade does not settle a newly required live re-observation
+      // (WI-6554700010022598). Keep the grading result, but let the existing
+      // request/reservation and lineage guards route the verification work.
+      if (settlement?.settled && !carriedIndependentVerificationBrief(ctx)) {
         return { state: 'settled', idempotencyKey: '', label: '', settlement };
       }
 

@@ -5,6 +5,7 @@ import { gitPipelinePosition } from '../git-pipeline-position';
 import { runtimeObservabilityHealth } from './runtime';
 import { readConfiguredTraceProject, type ObservedProjectEvent } from './project-readback';
 import { OBSERVABILITY_INSTRUMENT_KEYS } from './instrument-keys';
+import { verifyObservabilityShipmentReceipt, type ObservabilityShipmentReceipt } from './shipment-receipt';
 const COMPOSITION_PATHS = [
   'packages/operator-core/lib/observability/runtime.ts',
   'packages/operator-core/lib/observability/tracing.ts',
@@ -52,6 +53,7 @@ export async function measureOperationalObservability(
     }
     const { sql } = getOrgPg();
     let releaseEvidence: Record<string, unknown> | undefined;
+    let releaseReceipt: Pick<ObservabilityShipmentReceipt, 'accepted' | 'artifact' | 'green' | 'runtime'> | undefined;
     if (release) {
       const artifact = health.artifact;
       if (artifact?.status !== 'measured') return unknown('Boot-measured release artifact unavailable.');
@@ -65,8 +67,8 @@ export async function measureOperationalObservability(
       const writers = await sql<{ count: number; manifests: number; matches: boolean; ref: string }[]>`
         SELECT count(*)::int AS count,
           count(DISTINCT details->>'manifestSha256')::int AS manifests,
-          bool_and(details->>'sourceSha' = ${artifact.sourceSha} AND
-            details->'sourceBlobs' = ${JSON.stringify(artifact.sourceBlobs)}::jsonb) AS matches,
+          bool_and(COALESCE(details->>'sourceSha' = ${artifact.sourceSha} AND
+            details->'sourceBlobs' = ${JSON.stringify(artifact.sourceBlobs)}::jsonb, false)) AS matches,
           min(id) AS ref
         FROM harness_shared.audit_log
         WHERE workspace_id = ${scope.workspaceId} AND action = 'release.artifact.built'
@@ -76,7 +78,7 @@ export async function measureOperationalObservability(
       // Count distinct hashes AND match the boot hash. A different immutable
       // manifest must not be blessed because it happens to describe one bundle.
       const hashes = await sql<{ matched: boolean }[]>`
-        SELECT bool_and(details->>'manifestSha256' = ${artifact.manifestSha256}) AS matched
+        SELECT bool_and(COALESCE(details->>'manifestSha256' = ${artifact.manifestSha256}, false)) AS matched
         FROM harness_shared.audit_log
         WHERE workspace_id = ${scope.workspaceId} AND action = 'release.artifact.built'
           AND details->>'bundleSha256' = ${artifact.bundleSha256}`;
@@ -98,6 +100,20 @@ export async function measureOperationalObservability(
       releaseEvidence = { sourceSha: artifact.sourceSha, bundleSha256: artifact.bundleSha256,
         manifestSha256: artifact.manifestSha256, writer: 'audit_log:' + writer.ref,
         green: 'pipeline_events:' + green.id, greenRunId: green.detail.runId };
+      // The preceding per-path runtime probes bind these boot-measured blobs to
+      // current source. The independent writer and green joins bind the bundle.
+      const blobs = Object.fromEntries(COMPOSITION_PATHS.map(path => [path, artifact.sourceBlobs[path]!]));
+      releaseReceipt = {
+        accepted: { sourceSha: artifact.sourceSha, blobs },
+        artifact: { sourceSha: artifact.sourceSha, digest: artifact.bundleSha256,
+          containment: Object.entries(blobs).map(([path, blob]) => ({ path,
+            containedInJudgedSha: true, stagingBlob: blob, judgedBlob: blob })) },
+        green: { verdict: 'green', sourceSha: artifact.sourceSha, digest: artifact.bundleSha256,
+          evidenceRef: 'pipeline_events:' + green.id },
+        runtime: { plane: runtimeId, sourceSha: artifact.sourceSha, digest: artifact.bundleSha256,
+          providerRegistered: health.globalProviderRegistered, loadedBlobs: blobs,
+          evidenceRef: 'release-process:' + host.processId + ' audit_log:' + writer.ref },
+      };
     }
     // Select only identity/timing fields, never args, output, prompts or errors.
     const rows = await sql<InvocationObservation[]>`
@@ -183,8 +199,41 @@ export async function measureOperationalObservability(
       if (!left || !right) return unknown('Two fresh concurrent, disjoint tool/model journeys are not established.');
       selected = [left, right];
     }
+    let shipment: { receipt: ObservabilityShipmentReceipt; validation: ReturnType<typeof verifyObservabilityShipmentReceipt>;
+      observedEvents: ObservedProjectEvent[] } | undefined;
+    if (releaseReceipt) {
+      const observedEvents = project.events.filter(event => selected.some(({ row }) => row.traceId === event.traceId));
+      const receipt: ObservabilityShipmentReceipt = { ...releaseReceipt,
+        project: { id: project.projectId, queryOk: true, queriedAt: now, evidenceRef: project.evidenceRef,
+          // A model process receives W3C ancestry. Its call identity is inherited
+          // only after the exact HTTP-parent/ledger joins above. Preserve the raw
+          // nullable observations beside the receipt so this derivation is visible.
+          events: observedEvents.map(event => ({ ...event, projectId: project.projectId,
+            callId: event.callId ?? selected.find(({ row }) => row.traceId === event.traceId)!.row.callId })) },
+        journeys: selected.map(({ row, generation }) => {
+          const event = observedEvents.find(event => event.traceId === row.traceId &&
+            (generation ? event.event === '$ai_generation' && !event.isError : event.event === '$exception' && event.isError))!;
+          return { callId: row.callId, traceId: row.traceId, spanId: event.spanId,
+            parentSpanId: event.parentSpanId, outcome: generation ? 'ok' : 'error',
+            event: generation ? '$ai_generation' : '$exception', eventUuid: event.uuid, startedAt: row.startedAt,
+            invocation: { callId: row.callId, traceId: row.traceId, spanId: row.spanId,
+              evidenceRef: 'tool_invocations:' + row.id },
+            ancestry: observedEvents.filter(edge => edge.traceId === row.traceId && edge.event !== '$exception')
+              .map(edge => ({ traceId: edge.traceId, spanId: edge.spanId, parentSpanId: edge.parentSpanId,
+                evidenceRef: project.evidenceRef + ' uuid=' + edge.uuid })),
+          };
+        }),
+      };
+      const validation = verifyObservabilityShipmentReceipt(receipt, now);
+      if (validation.verdict !== 'healthy') return {
+        verdict: validation.verdict === 'broken' ? 'fail' : 'unknown',
+        detail: JSON.stringify({ receipt, validation, observedEvents }),
+      };
+      shipment = { receipt, validation, observedEvents };
+    }
     return { verdict: 'pass', detail: JSON.stringify({ detector: OBSERVABILITY_INSTRUMENT_KEYS[mode], version: 1,
       observedAt: now, host, projectId: project.projectId, projectQuery: project.evidenceRef, release: releaseEvidence,
+      shipment,
       invocations: selected.map(({ row }) => ({ id: row.id, callId: row.callId, traceId: row.traceId, spanId: row.spanId })),
       replay: 'Run the rubric checks via the registered rubric-rescore system action; scorecards:emit fromLedger:true on the same qualified runtime and subject.' }) };
   } catch {

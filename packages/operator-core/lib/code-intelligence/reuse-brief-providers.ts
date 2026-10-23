@@ -1,5 +1,6 @@
 /** code-intel-reuse-signals P-009: bounded composition at existing brief surfaces. */
 import { pinModuleState } from '@papercusp/module-singleton';
+import { postgresLineageProvider } from './postgres-lineage';
 
 export const REUSE_BRIEF_LIMIT = 3_000;
 export const REUSE_BRIEF_DEADLINE_MS = 6_000;
@@ -24,6 +25,11 @@ export interface ReuseProviderContext {
   planItems?: readonly string[];
   paths: readonly string[];
   sourceVersion: string | null;
+  /** Authority and hashes from the mandatory brief capture, never the operator cwd. */
+  repository?: { workspaceId: string; rootPath: string };
+  sourceFiles?: readonly { path: string; sha256: string }[];
+  /** Independently checked source paths from bound evidence; missing is unknown. */
+  checkedPaths?: readonly string[];
   /** Actual repository commit, distinct from the scoped source fingerprint. */
   commit?: string | null;
 }
@@ -62,7 +68,20 @@ export function registerReuseBriefProvider(provider: ReuseBriefProvider): () => 
   registry.set(provider.id, provider);
   return () => { if (registry.get(provider.id) === provider) registry.delete(provider.id); };
 }
-export const registeredReuseBriefProviders = (): readonly ReuseBriefProvider[] => [...registry.values()];
+const sqlProvider = postgresLineageProvider(async (context, signal) => {
+  if (!context.repository || context.repository.workspaceId !== context.workspaceId || !context.sourceFiles?.length || !context.sourceVersion) return null;
+  const { readPostgresLineage } = await import('./postgres-lineage-query');
+  const { createHash } = await import('node:crypto');
+  // Match the mandatory task-brief fingerprint writer, including capture order.
+  const fingerprint = createHash('sha256').update(JSON.stringify(context.sourceFiles.map(s => [s.path, s.sha256]))).digest('hex');
+  if (fingerprint !== context.sourceVersion) return null;
+  const report = await readPostgresLineage(context.repository.rootPath, context.sourceFiles.map(s => s.path), signal);
+  const actual = new Map(report.sourceFiles.map(s => [s.path, s.contentHash]));
+  if (context.sourceFiles.some(s => actual.get(s.path) !== s.sha256)) return null;
+  return { report, sourceVersion: fingerprint };
+});
+export const registeredReuseBriefProviders = (): readonly ReuseBriefProvider[] =>
+  [...registry.values(), ...(registry.has('sql') ? [] : [sqlProvider])];
 export const briefCodePoints = (value: string): number => Array.from(value).length;
 
 /** One collector per dispatch: bulk claims must not overwrite earlier item outcomes. */
@@ -116,7 +135,10 @@ export async function composeReuseBrief<T>(input: {
     try {
       const result = await Promise.race([
         Promise.resolve().then(() => provider.read(Object.freeze({ ...input.context,
-          paths: Object.freeze([...input.context.paths]), planItems: Object.freeze([...(input.context.planItems ?? [])]) }), controller.signal)),
+          paths: Object.freeze([...input.context.paths]), planItems: Object.freeze([...(input.context.planItems ?? [])]),
+          repository: input.context.repository ? Object.freeze({ ...input.context.repository }) : undefined,
+          sourceFiles: input.context.sourceFiles ? Object.freeze(input.context.sourceFiles.map(row => Object.freeze({ ...row }))) : undefined,
+          checkedPaths: input.context.checkedPaths ? Object.freeze([...input.context.checkedPaths]) : undefined }), controller.signal)),
         new Promise<null>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(null); },
           Math.min(REUSE_PROVIDER_DEADLINE_MS, remaining)); }),
       ]);

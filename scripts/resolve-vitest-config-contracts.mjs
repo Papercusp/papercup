@@ -15,6 +15,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { readFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { vitestConfigLoaderPolicy } from './test-files.mjs';
 
 const MARKER = 'PC_VITEST_CONFIG_CONTRACTS=';
 
@@ -132,10 +133,16 @@ for (const request of requests) {
         if (request.env?.[key] !== undefined) process.env[key] = request.env[key];
       }
     }
-    const { vitestConfig } = await resolveConfig({
+    // Discovery must use the same source boundary as the maintained list/run
+    // route. A bundled config transforms source before Node's committed-source
+    // loader can judge it, even when discovery never imports a test module.
+    const { configLoaderArgs } = vitestConfigLoaderPolicy([]);
+    const configOptions = {
       root: request.root,
       config: request.config,
-    });
+      ...(configLoaderArgs.length ? { configLoader: configLoaderArgs[1] } : {}),
+    };
+    const { vitestConfig } = await resolveConfig(configOptions);
     let files, repositoryFiles, projects, selectedSpecifications;
     if (request.enumerateFiles) {
       // Project inheritance, in-source detection and typecheck pools belong to
@@ -143,7 +150,7 @@ for (const request of requests) {
       if (request.enumerateSpecifications || vitestConfig.includeSource?.length || vitestConfig.typecheck?.enabled || vitestConfig.projects?.length) {
         let context;
         try {
-          context = await createVitest('test', { root: request.root, config: request.config, watch: false });
+          context = await createVitest('test', { ...configOptions, watch: false });
           const specifications = await context.globTestSpecifications();
           if (request.enumerateSpecifications) selectedSpecifications = specifications.map(spec => ({
             testFile: relative(request.repositoryRoot ?? request.root, spec.moduleId).replaceAll('\\', '/'),

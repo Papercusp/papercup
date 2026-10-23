@@ -553,6 +553,23 @@ export async function withPtoolConnectionPhaseTrace(trace, phase, route, operati
   }
 }
 
+/** Correlate each direct HTTP request with the operator's existing MCP trace. */
+export function createPtoolHttpTraceFetch(trace, { fetchImpl = globalThis.fetch } = {}) {
+  return (input, init) => {
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+    const requestTraceId = randomUUID();
+    headers.set('x-papercusp-mcp-trace-id', requestTraceId);
+    // A connection can initialize, discover repeatedly and dispatch several
+    // calls. Reusing its trace ID as the request ID would conflate settlements.
+    const requestTrace = { traceId: trace.traceId,
+      operatorConnectSequence: trace.operatorConnectSequence, requestTraceId };
+    const route = describePtoolOperatorRoute(input instanceof Request ? input.url : String(input));
+    emitPtoolConnectionTrace(requestTrace, 'http-request-start', { stage: 'http-response-headers', route });
+    return withPtoolConnectionPhaseTrace(requestTrace, 'http-response-headers', route,
+      () => fetchImpl(input, { ...init, headers }));
+  };
+}
+
 /* ─── arg parsing (pure — exported for tests) ─────────────────────────── */
 
 function missingValueFlagMessage(flag) {
@@ -4003,6 +4020,7 @@ async function connect(
   { workspace, harness, tokenFile, transport: requestedTransport, nativeSessionOverride } = {},
   { timeoutMs } = {},
   preparedConnection,
+  trace = {},
 ) {
   const tokenPaths = resolveTokenPaths({ tokenFile });
   const tokenCandidates = tokenPaths
@@ -4054,6 +4072,7 @@ async function connect(
     const { Client, StreamableHTTPClientTransport } = preparedConnection;
     const transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      fetch: createPtoolHttpTraceFetch(trace),
     });
     const client = new Client({ name: 'ptool', version: '0.1.0' }, { capabilities: {} });
     try {
@@ -4589,7 +4608,7 @@ async function main() {
         trace,
         'mcp-initialize',
         { ...activeRoute, attempt },
-        () => connect(url, connectScope, options, preparedConnection),
+        () => connect(url, connectScope, options, preparedConnection, trace),
       );
     };
     let connected;

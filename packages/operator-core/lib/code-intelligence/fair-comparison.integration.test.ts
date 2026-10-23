@@ -43,7 +43,7 @@ vi.mock('../task-manager/managed-spawn', async original => {
   } };
 });
 import { hashCases, hashKeys, preregister, type AnswerKey, type FairCase, type Preregistration } from './fair-comparison';
-import { runArm, scoreRuns } from './fair-comparison-run';
+import { runArm, scoreRuns, type ArmResourceSample } from './fair-comparison-run';
 import type { FairArm } from './fair-comparison-arms';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
@@ -438,8 +438,9 @@ describe('native protocol real confined worker lifecycle', () => {
       console.log('NATIVE_FRESH_GRAPH_TASK=' + JSON.stringify({ preregHash: saved.preregistration.hash,
         identity, ready, final, replays: nativeReplays,
         backendVerdict: 'unqualified',
-        notMeasured: ['complete-descendant-process-lifetime-peak', 'separate-lsp-task-costs',
-          'full-143-case-backend-comparison', 'repository-project-config-byte-custody'] }));
+        notMeasured: [...new Set([...ready.unknown, ...final.unknown,
+          'separate-lsp-task-costs', 'full-143-case-backend-comparison',
+          'repository-project-config-byte-custody'])] }));
       const [task] = await storage.sql!`SELECT confined, scope_unit, workspace_id FROM harness_shared.task_ledger
         WHERE task_id = ${identity.taskId}`;
       expect(task).toMatchObject({ confined: true, workspace_id: `test-fair-worker-${process.pid}` });
@@ -454,4 +455,52 @@ describe('native protocol real confined worker lifecycle', () => {
       WHERE task_id = ${identity.taskId}`;
     expect(task).toMatchObject({ ended: true });
   }, 180_000);
+
+  it('includes the real language-server managed scopes in the worker lifetime and resource witness', async () => {
+    const frozenPath = new URL('../../../../docs/evidence/native-code-intelligence-preregistration-2026-10-09.json', import.meta.url).pathname;
+    const saved = JSON.parse(readFileSync(frozenPath, 'utf8')) as FrozenFairInputs;
+    const repetition = await (await freshFactory('lsp-query', saved, frozenPath)).create(0);
+    const identity = repetition.identity;
+    const samples: ArmResourceSample[] = [];
+    try {
+      const index = await repetition.arm.index();
+      expect(index.ok, JSON.stringify(index)).toBe(true);
+      samples.push(await repetition.sampleResources!('ready'));
+      console.log('NATIVE_FRESH_LSP_READY=' + JSON.stringify({ identity, sample: samples[0] }));
+      const kase = saved.cases.find(candidate => candidate.language === 'typescript' &&
+        candidate.source === 'authored' && candidate.intent === 'references' && candidate.subject === 'target' &&
+        candidate.sourceState === 'current' && candidate.configuration === 'configured')!;
+      expect(kase).toBeDefined();
+      expect(repetition.arm.capabilities.intents).toContain(kase.intent);
+      const answer = await repetition.arm.query(kase);
+      expect(answer.status, JSON.stringify(answer)).toBe('answered');
+      const key = saved.keys.find(candidate => candidate.caseId === kase.id)!;
+      expect(answer.sites.map(site => `${site.path}:${site.line1}`).filter(site => !key.neutral.includes(site)).sort())
+        .toEqual([...key.sites].sort());
+      samples.push(await repetition.sampleResources!('warm'));
+      samples.push(await repetition.sampleResources!('final'));
+      for (const sample of samples) {
+        expect(sample.processObservation?.witness, JSON.stringify(sample.unknown)).toBeTruthy();
+        expect(sample.peakChildProcesses).toBeGreaterThan(0);
+        expect(sample.processObservation!.witness!.counters.errors).toBe(0);
+        expect(sample.processObservation!.witness!.counters.migrations).toBeGreaterThan(0);
+        expect(sample.memoryCurrentBytes).toBeGreaterThan(0);
+        expect(sample.memoryPeakBytes).toBeGreaterThanOrEqual(sample.memoryCurrentBytes!);
+        expect(sample.memoryPeakBasis).toBe('sum-of-scope-peaks-upper-bound');
+        expect(sample.scopeCosts!.length).toBeGreaterThan(1);
+        expect(sample.scopeCosts!.some(scope => scope.taskId === identity.taskId)).toBe(true);
+        expect(sample.scopeCosts!.filter(scope => scope.taskId !== identity.taskId)
+          .every(scope => sample.processObservation!.witness!.cgroupPaths.includes(scope.cgroupPath))).toBe(true);
+        expect(sample.unknown).toEqual(['native-tool-seam-and-configuration-invalidation-not-verified']);
+      }
+      console.log('NATIVE_FRESH_LSP_TASK=' + JSON.stringify({ preregHash: saved.preregistration.hash,
+        identity, index, question: kase, answer, samples, backendVerdict: 'unqualified',
+        notMeasured: ['native-tool-seam-and-configuration-invalidation-not-verified',
+          'full-143-case-backend-comparison', 'repository-project-config-byte-custody'] }));
+    } finally { await repetition.arm.close!(); }
+    expect(existsSync(identity.treeRoot)).toBe(false);
+    expect(existsSync(identity.home)).toBe(false);
+    for (const path of new Set(samples.flatMap(sample => sample.scopeCosts!.map(scope => scope.cgroupPath))))
+      expect(sampleCgroup(absCgroupDir(path)).pidsCurrent ?? 0).toBe(0);
+  }, 300_000);
 });

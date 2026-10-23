@@ -285,7 +285,11 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
     },
 
     onEvent: (ev) => {
-      if (ev.kind === 'dispatched') {
+      if (ev.kind === 'observe-started') {
+        console.log(`[acceptance-grading-sweep] sweep=${sweepId} plan=${ev.planSlug} operation=${ev.operation} started`);
+      } else if (ev.kind === 'observe-settled') {
+        console.log(`[acceptance-grading-sweep] sweep=${sweepId} plan=${ev.planSlug} operation=${ev.operation} ${ev.outcome} elapsedMs=${ev.durationMs}`);
+      } else if (ev.kind === 'dispatched') {
         console.log(`[acceptance-grading-sweep] re-dispatched grader for ${ev.planSlug} (${ev.state ?? 'ok'})`);
       } else if (ev.kind === 'escalated') {
         console.log(

@@ -108,6 +108,10 @@ export function ptoolConnectionRetryOptions(args?: {}, env?: NodeJS.ProcessEnv):
     totalTimeoutMs?: undefined;
 };
 export function withPtoolConnectionPhaseTrace(trace: any, phase: any, route: any, operation: any): Promise<any>;
+/** Correlate each direct HTTP request with the operator's existing MCP trace. */
+export function createPtoolHttpTraceFetch(trace: any, { fetchImpl }?: {
+    fetchImpl?: typeof fetch | undefined;
+}): (input: any, init: any) => Promise<any>;
 /**
  * Parse argv into the ptool invocation shape. The first non-flag positional
  * is the tool name (`group:verb`); everything else is a flag. Pure.

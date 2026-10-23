@@ -199,6 +199,7 @@ import {
   readPreparedCheckpointSelection,
   commitPreparedCheckpointSelection,
   isPreparedCheckpointSelectionRecord,
+  preparedCheckpointQueueMatches,
   type PreparedCheckpointSelectionRecord,
   type QualificationPhysicalRunner,
   type RunnerLiveness,
@@ -18726,7 +18727,7 @@ async function beginPreparedCheckpointPreflight(
       const lock = acquireCheckpointRunLock(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot));
       try {
         await validatePreparedCheckpointSelection(cfg, recovered, exec);
-        if (recovered.queue !== undefined && !isDeepStrictEqual(recovered.queue, await readCheckpointSelectionQueue(deps)))
+        if (!preparedCheckpointQueueMatches(recovered, await readCheckpointSelectionQueue(deps)))
           throw new Error("prepared selection queue authority changed after commit");
         return { kind: "ready", candidate: recovered.candidate, prewarmedDependencyGeneration: recovered.generation,
           preparedSelection: recovered, lock };
@@ -25373,6 +25374,9 @@ if (require.main === module) {
   const runId = checkpointRunIdFromScheduledEnv(scheduledRunToken);
   const gateFireId = gateFireIdFromEnv();
   const processStartedAtMs = Math.floor(Date.now() - process.uptime() * 1000);
+  // Preparation and execution share one run clock, so initialize the transcript
+  // here too; the inner runner only resets it for callers without an inherited clock.
+  resetOrchestratorLog();
   let resolvedCandidateForRun: string | null = null;
 
   /**
@@ -25897,6 +25901,7 @@ if (require.main === module) {
       });
       runGreenCheckpoint(cfg, checkpointDeps, {
         preparedSelection,
+        runStartedAtMs: processStartedAtMs,
         candidate: candidateArg,
         candidateHint: prewarmedDependencyGeneration.candidate,
         candidateSource,

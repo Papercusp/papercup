@@ -26,6 +26,7 @@
  * gotcha: DBOS dedup'd by workflow-id; in-process does not).
  */
 import { shouldShedHeavyTick } from './tick-load-shed';
+import { installManagedTickAlarm } from './managed-tick-alarm';
 import { observeFallback } from '../degradation/fallback-observations';
 import { createConnectionPressureGovernor } from '../connection-pressure-governor';
 import nodeCluster from 'node:cluster';
@@ -1600,6 +1601,7 @@ export function armInProcessPeriodicChecks(
   opts: { checks?: PeriodicCheck[]; deps?: RunCheckDeps; isPrimary?: boolean } = {},
 ): { stop: () => void } {
   if (armed) return { stop: disarmInProcessPeriodicChecks };
+  installManagedTickAlarm();
   const all = opts.checks ?? buildDefaultChecks();
   // P-018: in a node cluster, only the PRIMARY runs the host-scoped sweeps — see
   // PeriodicCheck.scope for why `backgroundWorkersEnabled()` never actually provided this.

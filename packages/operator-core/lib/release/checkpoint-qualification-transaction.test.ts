@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import {
   assessTerminalRepairQueueReconciliation,
   beginQualificationTransaction,
+  type PreparedCheckpointSelectionRecord,
+  preparedCheckpointQueueMatches,
   classifyScheduledQualificationJoin,
   cancelQualificationTransaction,
   classifyQualificationVerdict,
@@ -27,6 +29,7 @@ import {
 import { GREEN_CHECKPOINT_RESULT_MARKER } from './checkpoint-log-tags';
 import {
   createFrozenCandidateQueue,
+  parseFrozenCandidateRepairQueue,
   decideFrozenCandidateRepairQueue,
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
@@ -52,6 +55,56 @@ const begin = () =>
     evidenceRefs: ['tool:release:checkpoint-run'],
     nowMs: 100,
   }).transaction;
+
+describe('prepared selection authority shape', () => {
+  const prepared = (): PreparedCheckpointSelectionRecord => ({
+    schemaVersion: 1, attemptId: 'attempt-1', integrationRoot: '/integration', checkpointRoot: '/checkpoint',
+    candidate: 'candidate-1', tip: 'tip-1', base: null, candidateSource: 'tip', quietCutApplied: false,
+    freezeCut: null, carry: null, queue: null,
+    generation: { candidate: 'candidate-1', identity: 'generation-1', token: 'v3:token',
+      inputFingerprint: '1'.repeat(64), reused: true, root: '/generations' },
+  });
+
+  it('recovers the complete committed selection through the stored transaction parser', () => {
+    const transaction = { ...begin(), preparedSelection: prepared() };
+    expect(parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(transaction))))
+      .toEqual(transaction);
+  });
+
+  it.each([
+    ['missing freeze cut', { freezeCut: undefined }],
+    ['partial freeze cut', { freezeCut: { candidate: 'candidate-1' } }],
+    ['mismatched freeze cut', { freezeCut: { candidate: 'other', tip: 'tip-1', knownGood: null,
+      source: 'staging-tip', reason: 'no-known-good' } }],
+    ['unknown freeze reason', { freezeCut: { candidate: 'candidate-1', tip: 'tip-1', knownGood: null,
+      source: 'staging-tip', reason: 'invented' } }],
+    ['partial carry', { carry: { judgedCandidate: 'candidate-1' } }],
+    ['malformed queue', { queue: { repairHead: 'candidate-1' } }],
+  ])('refuses %s instead of recovering partial authority', (_name, corruption) => {
+    const stored = JSON.parse(JSON.stringify({ ...begin(), preparedSelection: { ...prepared(), ...corruption } }));
+    expect(parseCheckpointQualificationTransaction(stored)).toBeNull();
+  });
+
+  it('recovers after its own initial queue write, preserving strict refusal after authority changes', () => {
+    const record = prepared();
+    const initial = createFrozenCandidateQueue({ candidate: record.candidate,
+      qualificationAttemptId: record.attemptId, base: record.base, nowMs: 200,
+      affectedTestProofGroup: 'original-run' });
+    const roundTrip = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(initial)))!;
+    expect(preparedCheckpointQueueMatches(record, null)).toBe(true);
+    expect(preparedCheckpointQueueMatches(record, roundTrip)).toBe(true);
+    for (const changed of [
+      { ...roundTrip, qualificationAttemptId: 'other-attempt' },
+      { ...roundTrip, repairHead: 'admitted-head' },
+      { ...roundTrip, base: 'other-base' },
+      { ...roundTrip, updatedAtMs: 201 },
+      { ...roundTrip, attempts: 1 },
+      { ...roundTrip, phase: 'blocked' as const },
+    ]) expect(preparedCheckpointQueueMatches(record, changed)).toBe(false);
+    // A captured queue never takes the fresh-cut exception, even at the same SHA.
+    expect(preparedCheckpointQueueMatches({ ...record, queue: roundTrip }, { ...roundTrip, updatedAtMs: 201 })).toBe(false);
+  });
+});
 
 describe('fenced durable remaining-work continuation', () => {
   const running = () => reserveQualificationRunner(begin(), { attemptId: 'attempt-1', runnerId: 'runner-1',

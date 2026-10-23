@@ -15,6 +15,7 @@ import {
   acceptanceGradingStallConditionKey,
   runAcceptanceGradingSweep,
   type AcceptanceGradingSweepDeps,
+  type AcceptanceGradingSweepEvent,
   type ObservedPlanRow,
 } from './acceptance-grading-sweep-run';
 
@@ -228,8 +229,36 @@ describe('R5 — one tick is bounded', () => {
 });
 
 describe('partial failure never strands the plans behind it', () => {
+  it('identifies a pending gate without releasing the tick or dispatching another grader', async () => {
+    let finishGate!: (value: { satisfied: boolean; code: string }) => void;
+    let now = NOW;
+    const events: AcceptanceGradingSweepEvent[] = [];
+    const dispatchGrader = vi.fn(async () => ({ ok: true }));
+    const { deps } = fakeDeps([row('waiting', 5)], {
+      evaluateGate: () => new Promise(resolve => { finishGate = resolve; }),
+      dispatchGrader,
+      now: () => now,
+      onEvent: event => events.push(event),
+    });
+    const running = runAcceptanceGradingSweep(deps);
+    await vi.waitFor(() => expect(events).toContainEqual({
+      kind: 'observe-settled', planSlug: 'waiting', operation: 'grader', outcome: 'completed', durationMs: 0,
+    }));
+    expect(events).toContainEqual({ kind: 'observe-started', planSlug: 'waiting', operation: 'gate' });
+    expect(events.some(event => event.kind === 'observe-settled' && event.operation === 'gate')).toBe(false);
+    expect(dispatchGrader).not.toHaveBeenCalled();
+    now += 90_000;
+    finishGate({ satisfied: false, code: 'acceptance_ungraded' });
+    expect((await running).dispatched).toEqual(['waiting']);
+    expect(events).toContainEqual({
+      kind: 'observe-settled', planSlug: 'waiting', operation: 'gate', outcome: 'completed', durationMs: 90_000,
+    });
+  });
+
   it('one unreadable plan is recorded and the rest still recover', async () => {
+    const events: AcceptanceGradingSweepEvent[] = [];
     const { deps } = fakeDeps([row('bad', 5), row('good', 6)], {
+      onEvent: event => events.push(event),
       evaluateGate: async (slug) => {
         if (slug === 'bad') throw new Error('gate read blew up');
         return { satisfied: false, code: 'acceptance_ungraded' };
@@ -238,6 +267,9 @@ describe('partial failure never strands the plans behind it', () => {
     const out = await runAcceptanceGradingSweep(deps);
     expect(out.dispatched).toEqual(['good']);
     expect(out.failures).toEqual([{ planSlug: 'bad', stage: 'observe', error: 'gate read blew up' }]);
+    expect(events).toContainEqual({
+      kind: 'observe-settled', planSlug: 'bad', operation: 'gate', outcome: 'failed', durationMs: 0,
+    });
   });
 
   it('a failed dispatch is recorded, not swallowed, and not counted as success', async () => {

@@ -231,6 +231,13 @@ export type RecoveryVerdict =
  * turns the whole audit into noise.
  */
 export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
+  {
+    name: 'managed-tick-watch',
+    file: 'libs/generic/scheduled-registry/src/index.ts',
+    executor: 'operator-in-process-timer',
+    recovers: ['dbos-executor', 'dbos-queue'],
+    note: 'Reports a held async managed tick on an independent in-process timer; raises and resolves through the attention rail without DBOS. Requires a turning event loop and PostgreSQL for delivery; a stopped loop is covered by the event-loop sentinel.',
+  },
   // ── The event-loop family — where every real finding lives ────────────────────────
   {
     name: 'event-loop-lag-monitor',

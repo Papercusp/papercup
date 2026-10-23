@@ -17,7 +17,8 @@ import type { GateVerdictTarget } from './gate-verdict-target';
 import { isCheckpointCandidateSource, type CheckpointCandidateSource } from './checkpoint-candidate-source';
 import type { FreezeCutRecord } from './known-good-freeze';
 import { FROZEN_REPAIR_CARRY_METADATA_KEY, FROZEN_REPAIR_CARRY_LAST_METADATA_KEY,
-  parseFrozenRepairPendingCarry, type FrozenRepairPendingCarry, type FrozenRepairCarryRecord } from './frozen-repair-carry';
+  parseFrozenRepairPendingCarry, parseFrozenRepairCarryRecord,
+  type FrozenRepairPendingCarry, type FrozenRepairCarryRecord } from './frozen-repair-carry';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
 import { evaluatePartialTaskContinuation, readPartialNativeCompletion, readPartialNativeProducer } from '../../../../scripts/lib/partial-task-resume.mjs';
@@ -28,6 +29,7 @@ import {
   ORCHESTRATOR_STDOUT_TAG,
 } from './checkpoint-log-tags';
 import {
+  createFrozenCandidateQueue,
   frozenRepairHeadAwaitsVerification,
   frozenRepairHeadOwesVerification,
   parseFrozenCandidateRepairQueue,
@@ -355,6 +357,14 @@ export interface PreparedCheckpointSelectionRecord {
 export function isPreparedCheckpointSelectionRecord(value: unknown): value is PreparedCheckpointSelectionRecord {
   if (!value || typeof value !== 'object') return false;
   const r = value as PreparedCheckpointSelectionRecord;
+  const freeze = r.freezeCut;
+  const validFreeze = freeze === null || (freeze && typeof freeze === 'object' &&
+    ['known-good', 'staging-tip'].includes(freeze.source) &&
+    ['known-good-selected', 'no-known-good', 'known-good-unreadable', 'known-good-not-on-tip-lineage',
+      'known-good-not-ahead-of-green', 'carry-advanced-to-tip'].includes(freeze.reason) &&
+    freeze.candidate === r.candidate && freeze.tip === r.tip &&
+    (freeze.knownGood === null || (typeof freeze.knownGood === 'string' && freeze.knownGood.length > 0)));
+  const carry = parseFrozenRepairCarryRecord(r.carry);
   return r.schemaVersion === 1 && [r.attemptId, r.integrationRoot, r.checkpointRoot,
     r.candidate, r.tip, r.candidateSource, r.generation?.root, r.generation?.identity,
     r.generation?.token].every(v => typeof v === 'string' && v.length > 0) &&
@@ -362,7 +372,25 @@ export function isPreparedCheckpointSelectionRecord(value: unknown): value is Pr
     (r.base === null || typeof r.base === 'string') && typeof r.quietCutApplied === 'boolean' &&
     r.generation.candidate === r.candidate && /^[a-f0-9]{64}$/.test(r.generation.inputFingerprint) &&
     typeof r.generation.reused === 'boolean' &&
-    (r.carry === null || r.carry?.judgedCandidate === r.candidate);
+    Boolean(validFreeze) &&
+    (r.queue === undefined || r.queue === null || parseFrozenCandidateRepairQueue(r.queue) !== null) &&
+    (r.carry === null || (carry !== null && isDeepStrictEqual(carry, r.carry) && carry.judgedCandidate === r.candidate));
+}
+
+/** A fresh run may have persisted its own initial queue before dying in materialization. */
+export function preparedCheckpointQueueMatches(
+  record: PreparedCheckpointSelectionRecord,
+  queue: FrozenCandidateRepairQueue | null,
+): boolean {
+  if (record.queue === undefined || isDeepStrictEqual(record.queue, queue)) return true;
+  if (record.queue !== null || queue === null) return false;
+  // Reconstruct exactly the initial queue this attempt is allowed to publish.
+  // An admission, verdict, version change, or another attempt still invalidates it.
+  const initial = createFrozenCandidateQueue({
+    candidate: record.candidate, qualificationAttemptId: record.attemptId, base: record.base,
+    affectedTestProofGroup: queue.affectedTestProofGroup, nowMs: queue.openedAtMs,
+  });
+  return isDeepStrictEqual(parseFrozenCandidateRepairQueue(queue), parseFrozenCandidateRepairQueue(initial));
 }
 
 /** Read the existing qualification authority; absence is distinct from unreadability. */

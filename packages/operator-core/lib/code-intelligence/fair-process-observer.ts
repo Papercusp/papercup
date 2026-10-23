@@ -3,7 +3,8 @@
  */
 import { readProcessIdentity } from '../process-identity';
 import { fileURLToPath } from 'node:url';
-import { basename } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { basename, isAbsolute, relative } from 'node:path';
 import { absCgroupDir, readProcessCgroupPath, sampleCgroup } from '../task-manager/cgroup-read';
 import { deriveUserManagerRoot, scopeCgroupRelPath, taskIdFromScopeUnit } from '../task-manager/types';
 
@@ -51,6 +52,22 @@ export function qualifyFairProcessWitness(value: FairProcessWitness,
   if (value.members.length - (root ? 1 : 0) !== c.current)
     unknown.push('process-observer-membership-conservation-failed');
   return { peakChildProcesses: unknown.length ? null : c.peak, unknown };
+}
+
+/** The adapter roots each server at its declared project, which can be a
+ * nested directory. Require canonical source custody and the exact observed
+ * task; a sibling prefix or an escaping symlink cannot prove inclusion. */
+export function fairLspTasksObserved(treeRoot: string,
+  tasks: readonly { taskId: string; rootPath: string }[], paths: readonly string[], peak: number | null) {
+  if (peak === null) return false;
+  try {
+    const root = realpathSync(treeRoot);
+    return tasks.every(task => {
+      const path = relative(root, realpathSync(task.rootPath));
+      return path !== '..' && !path.startsWith('../') && !isAbsolute(path) &&
+        paths.some(scope => taskIdFromScopeUnit(basename(scope)) === task.taskId);
+    });
+  } catch { return false; }
 }
 
 /** Independent managed scopes are not included in the worker's memory. Sum

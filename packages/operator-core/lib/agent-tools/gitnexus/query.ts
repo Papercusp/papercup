@@ -47,6 +47,8 @@ import { sourceRuntimeProvenance } from '../../code-intelligence/source-runtime-
 import { scopedContractQuery } from '../../code-intelligence/scoped-contracts';
 import { runtimeEvidenceForContracts } from '../../code-intelligence/runtime-code-evidence';
 import { queryPushSnapshot } from '../../code-intelligence/push-snapshot';
+import { readCoChange, readSymbolProvenance } from '../../code-intelligence/change-history';
+import { postgresLineageQuery } from '../../code-intelligence/postgres-lineage-query';
 
 /**
  * WI-10006543 (plan gitnexus-deterministic-integration-2026-10-05, D-026, D-018):
@@ -108,6 +110,8 @@ async function firstPartyCallersAnswer(
 // deliberately refuses. That lets an agent receive the typed `useInstead`
 // guidance rather than a schema error with no redirect.
 const OP_VALUES = [
+  'cochange', 'provenance',
+  'sql-lineage',
   'communities', 'flows', 'concept-search',
   'contracts',
   'context',
@@ -119,7 +123,7 @@ const OP_VALUES = [
 export default defineTool({
   name: 'graph:query',
   description:
-    'Code topology: symbol | context | callers | callees | impact | trace | contracts | communities | flows | concept-search | health. Callers prefer hash-checked positive syntax snapshots; misses use the compiler. Read coverage for lower bounds. Other native operations use JS/TS compiler snapshots. Discovery requires bounded paths; communities are weak call components, flows are possible call paths, and concept-search fuses symbol/path and source-text rankings. Retrieval and static paths do not prove runtime execution. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.',
+    'Code topology: symbol | context | callers | callees | impact | trace | contracts | sql-lineage | cochange | provenance | communities | flows | concept-search | health. cochange measures eligible 90-day first-parent commit associations; provenance joins recorded edits to exact sessions/work-items for file_path and one harnesses entry. Both retain explicit unknowns and never use git authorship. sql-lineage requires table and bounded paths, with optional column; maintained Postgres parser maps static SQL, migrations, sync and invalidation sites with explicit unknowns. Callers prefer hash-checked positive syntax snapshots; misses use the compiler. Read coverage for lower bounds. Other native operations use JS/TS compiler snapshots. Discovery requires bounded paths; communities are weak call components, flows are possible call paths, and concept-search fuses symbol/path and source-text rankings. Retrieval and static paths do not prove runtime execution. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.',
   guidance: {
     when: 'For "who calls X?", use op:"callers", name and bounded paths; for "what does X call?", use op:"callees". Read syntax/compiler coverage before treating sites as binding or change-impact evidence.',
     notWhen:
@@ -138,6 +142,8 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     op: z.enum(OP_VALUES).describe('Which read-only operation to run.'),
+    table: z.string().min(1).optional().describe('sql-lineage: exact parsed table name, including schema when present.'),
+    column: z.string().min(1).optional().describe('sql-lineage: exact parsed column name; omitted means table relationships.'),
     harnesses: z.array(z.string().min(1)).min(1).max(8).optional()
       .describe('contracts: explicit registered repository cohort; scoped callers may only select their own harness.'),
     workspace: z.string().min(1).optional().describe('contracts: must equal the authenticated principal workspace; never expands authority.'),
@@ -200,6 +206,20 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const op = args.op as string;
+    if (op === 'cochange') {
+      const paths = args.paths ?? (args.file_path ? [args.file_path] : []);
+      if (!paths.length) return { data: { status: 'unknown', error: 'cochange requires bounded exact paths.' } };
+      return { data: await readCoChange(resolveAgentWorkspaceRoot(ctx), paths, undefined, ctx.signal) };
+    }
+    if (op === 'provenance') {
+      const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId;
+      const harness = args.harnesses?.length === 1 ? args.harnesses[0] : undefined;
+      if (!workspaceId || !harness || !args.file_path || ctx.harnessSlug && harness !== ctx.harnessSlug)
+        return { data: { status: 'unknown', error: 'provenance requires file_path and one authorized harnesses entry.' } };
+      return { data: await readSymbolProvenance({ workspaceId, harness, root: resolveAgentWorkspaceRoot(ctx),
+        path: args.file_path, name: args.name }) };
+    }
+    if (op === 'sql-lineage') return { data: await postgresLineageQuery(resolveAgentWorkspaceRoot(ctx), args) };
     if (op === 'contracts') {
       const report = await scopedContractQuery(args, ctx);
       if (!args.runtime_evidence || report.error) return { data: report };

@@ -62,12 +62,14 @@ export function readPartialNativeCompletion(file: any, expected: any, options?: 
  * even when they have no native test files. Post-suite selection is mandatory and
  * supplied independently by the gate; observed post-suite results cannot define it.
  * This is preparation only: it neither enrolls a producer nor authorizes execution.
+ * @param {{tasks: any, selection: any, postSuite: any, exclusions?: any[], root?: string}} input
  */
-export function preparePartialContinuationManifest({ tasks, selection, postSuite, exclusions }: {
+export function preparePartialContinuationManifest({ tasks, selection, postSuite, exclusions, root }: {
     tasks: any;
     selection: any;
     postSuite: any;
-    exclusions?: never[] | undefined;
+    exclusions?: any[];
+    root?: string;
 }): {
     status: string;
     reason: any;

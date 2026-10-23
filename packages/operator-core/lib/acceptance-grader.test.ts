@@ -2862,6 +2862,38 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
+  it('recruits required independent verification even when grading and the author verdict are settled', async () => {
+    const launch = freshLaunch();
+    const settlement = {
+      settled: true,
+      reason: 'settled' as const,
+      rubricRevision: 7,
+      independentCardId: 'EI-historical-independent',
+      acceptanceCardId: 'EI-author-pending-delivery',
+    };
+    const openCascade = vi.fn(async () => ({ conversationId: 'conv-verification', woke: 1 }));
+
+    const result = await resolveAcceptanceGrader('ship-the-thing', {
+      ...baseCtx,
+      acceptanceIndependentVerificationBrief: 'Re-observe the current R-6 and R-7 bindings before grading.',
+    } as never, {
+      ...deps(launch),
+      readSettlement: vi.fn(async () => settlement),
+      discover: vi.fn(async () => ({
+        verdict: 'assigned' as const,
+        graders: [{ ownerId: 'su-independent', score: 0.71, liveness: 'live', via: 'floor' as const }],
+        routing: { selection: { min: 1, max: 2, selected: [] } },
+        excluded: [],
+      })),
+      openCascade: openCascade as never,
+    });
+
+    expect(result.state).toBe('assigned');
+    expect(result.settlement).toEqual(settlement);
+    expect(openCascade).toHaveBeenCalledTimes(1);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
   it('an open acceptance-grading task suppresses duplicate dispatch (EI-22678191183363422)', async () => {
     const launch = freshLaunch();
     const discover = vi.fn();
@@ -2925,6 +2957,13 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
       const appendVerificationBrief = vi.fn(async () => 'appended' as const);
       const result = await resolveAcceptanceGrader('ship-the-thing', briefCtx, {
         ...deps(launch),
+        readSettlement: vi.fn(async () => ({
+          settled: true,
+          reason: 'settled' as const,
+          rubricRevision: 7,
+          independentCardId: 'EI-historical-independent',
+          acceptanceCardId: 'EI-author-pending-delivery',
+        })),
         listWork: openRequest() as never,
         discover: vi.fn() as never,
         appendVerificationBrief,

@@ -135,7 +135,22 @@ describe('operational observability measurements', () => {
       expect(result.verdict).toBe('pass');
       expect(JSON.parse(result.detail).release).toMatchObject({ writer: 'audit_log:writer-1',
         green: 'pipeline_events:green-1', bundleSha256: 'b'.repeat(64) });
+      const shipment = JSON.parse(result.detail).shipment;
+      expect(shipment.validation).toEqual({ verdict: 'healthy', failures: [] });
+      expect(shipment.receipt.journeys[0]).toMatchObject({ callId: 'call-1',
+        eventUuid: 'model-1', invocation: { evidenceRef: 'tool_invocations:1' } });
+      expect(shipment.observedEvents.find((event: { uuid: string }) => event.uuid === 'model-1').callId).toBeNull();
       expect(fixture.sql).toHaveBeenCalledTimes(4);
+    });
+    it('fails the operational check when the retained receipt detector rejects measured event identity', async () => {
+      release();
+      const unreadable = project(); unreadable.events[2]!.uuid = '';
+      fixture.readProject.mockResolvedValueOnce(unreadable);
+      const result = await measureOperationalObservability('release', scope);
+      expect(result.verdict).toBe('fail');
+      expect(JSON.parse(result.detail).validation.failures).toContain('duplicate-or-empty-event-uuid');
+      fixture.sql.mockReset().mockResolvedValue(rows()); release();
+      expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'pass' });
     });
     it.each(['writer', 'manifest', 'green', 'absent-green'] as const)('rejects substituted %s evidence with a healthy control', async fault => {
       release(); fixture.sql.mockReset().mockResolvedValue(rows());

@@ -9,6 +9,7 @@
  * mocked service modules, with no PG/flags/network initialization.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { installManagedTickAlarm } from './managed-tick-alarm';
 import {
   armInProcessPeriodicChecks,
   buildDefaultChecks,
@@ -29,6 +30,7 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: healthCadence.getFlag }));
 vi.mock('../workspace-registry', () => ({ readRegistry: healthCadence.readRegistry }));
 vi.mock('../system-health', () => ({ runSystemHealthTick: healthCadence.tick }));
 vi.mock('../system-health/perf-regression-rig', () => ({ collectPerfRegressionWhenDue: healthCadence.sample }));
+vi.mock('./managed-tick-alarm', () => ({ installManagedTickAlarm: vi.fn() }));
 
 afterEach(() => {
   disarmInProcessPeriodicChecks();
@@ -82,6 +84,13 @@ describe('runPeriodicCheck', () => {
 });
 
 describe('armInProcessPeriodicChecks', () => {
+  it('installs the production alarm adapter once when the host arms its checks', () => {
+    vi.mocked(installManagedTickAlarm).mockClear();
+    armInProcessPeriodicChecks({ checks: [] });
+    armInProcessPeriodicChecks({ checks: [] });
+    expect(installManagedTickAlarm).toHaveBeenCalledOnce();
+  });
+
   it('fires each check on its own interval and disarm stops it', async () => {
     vi.useFakeTimers();
     const a = vi.fn(async () => {});

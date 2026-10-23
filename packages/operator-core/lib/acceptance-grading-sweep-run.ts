@@ -78,6 +78,8 @@ export interface AcceptanceGradingSweepDeps {
 }
 
 export type AcceptanceGradingSweepEvent =
+  | { kind: 'observe-started'; planSlug: string; operation: 'gate' | 'grader' | 'escalation' }
+  | { kind: 'observe-settled'; planSlug: string; operation: 'gate' | 'grader' | 'escalation'; outcome: 'completed' | 'failed'; durationMs: number }
   | { kind: 'dispatched'; planSlug: string; state?: string }
   | { kind: 'dispatch-failed'; planSlug: string; error: string }
   | { kind: 'escalated'; planSlug: string; workItemId: string; created: boolean }
@@ -134,11 +136,28 @@ export async function runAcceptanceGradingSweep(
   const candidates: AcceptanceGradingCandidate[] = [];
 
   for (const row of scanned) {
+    // A count cap cannot identify an await that holds the tick's guard. Report
+    // the plan and operation before awaiting it, including failed settlements.
+    const observe = async <T>(
+      operation: 'gate' | 'grader' | 'escalation',
+      work: () => Promise<T>,
+    ): Promise<T> => {
+      const startedAt = deps.now();
+      emit({ kind: 'observe-started', planSlug: row.planSlug, operation });
+      let outcome: 'completed' | 'failed' = 'failed';
+      try {
+        const result = await work();
+        outcome = 'completed';
+        return result;
+      } finally {
+        emit({ kind: 'observe-settled', planSlug: row.planSlug, operation, outcome, durationMs: deps.now() - startedAt });
+      }
+    };
     try {
       const [gate, grader, escalated] = await Promise.all([
-        deps.evaluateGate(row.planSlug),
-        deps.observeGrader(row),
-        deps.escalationExists(row.planSlug),
+        observe('gate', () => deps.evaluateGate(row.planSlug)),
+        observe('grader', () => deps.observeGrader(row)),
+        observe('escalation', () => deps.escalationExists(row.planSlug)),
       ]);
       byPlan.set(row.planSlug, row);
       candidates.push({

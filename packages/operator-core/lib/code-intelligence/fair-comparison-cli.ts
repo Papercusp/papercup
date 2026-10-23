@@ -43,7 +43,7 @@ import type { ArmAnswer, FairCase } from './fair-comparison';
 import { readProcessIdentity } from '../process-identity';
 import { absCgroupDir, readProcessCgroupPath, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
 import { isTerminalState, taskIdFromScopeUnit, type TaskRow } from '../task-manager/types';
-import { fairObservedScopeCosts, qualifyFairProcessWitness, startFairProcessObserver } from './fair-process-observer';
+import { fairLspTasksObserved, fairObservedScopeCosts, qualifyFairProcessWitness, startFairProcessObserver } from './fair-process-observer';
 import type { UnifiedToolContext } from '@papercusp/tooldef';
 
 export interface FrozenFairInputs {
@@ -673,8 +673,8 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
         if (indexFiles === null) unknown.push('index census unreadable');
         // LSP adapters may start independently managed server tasks outside this
         // scope. A task-only counter must not certify those costs as included.
-        if (id === 'lsp-query' && (qualified.peakChildProcesses === null || lspTasks.some(task =>
-          task.rootPath !== treeRoot || !observation.witness?.cgroupPaths.some(path => taskIdFromScopeUnit(basename(path)) === task.taskId))))
+        if (id === 'lsp-query' && !fairLspTasksObserved(treeRoot, lspTasks,
+          observation.witness?.cgroupPaths ?? [], qualified.peakChildProcesses))
           unknown.push('language-server-task-costs-not-in-worker-scope');
         unknown.push('native-tool-seam-and-configuration-invalidation-not-verified');
         return { sampledAt: new Date().toISOString(), memoryCurrentBytes: costs.memoryCurrentBytes,

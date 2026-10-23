@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { fairObservedScopeCosts, qualifyFairProcessWitness, type FairProcessWitness } from './fair-process-observer';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fairLspTasksObserved, fairObservedScopeCosts, qualifyFairProcessWitness, type FairProcessWitness } from './fair-process-observer';
 
 const scope = '/user.slice/pc-test.scope';
 const expected = { cgroupPath: scope, payloadPid: 20, payloadIdentity: 'linux:boot:20' };
@@ -40,6 +43,22 @@ describe('fair process lifetime witness', () => {
 });
 
 describe('separately managed process scope costs', () => {
+  it('includes observed nested projects but refuses foreign roots, escaping links and missing task lineage', () => {
+    const owned = mkdtempSync(join(tmpdir(), 'fair-lsp-custody-'));
+    try {
+      const tree = join(owned, 'tree'), project = join(tree, 'packages', 'project'), foreign = join(owned, 'tree-other');
+      mkdirSync(project, { recursive: true }); mkdirSync(foreign);
+      symlinkSync(foreign, join(tree, 'escaping'));
+      const paths = [scope, '/user.slice/pc-lsp123.scope'];
+      const tasks = [{ taskId: 'lsp123', rootPath: project }];
+      expect(fairLspTasksObserved(tree, tasks, paths, 3)).toBe(true);
+      expect(fairLspTasksObserved(tree, [{ ...tasks[0]!, rootPath: tree }], paths, 3)).toBe(true);
+      for (const rootPath of [foreign, join(tree, 'escaping'), join(tree, 'missing')])
+        expect(fairLspTasksObserved(tree, [{ ...tasks[0]!, rootPath }], paths, 3)).toBe(false);
+      expect(fairLspTasksObserved(tree, tasks, [scope], 3)).toBe(false);
+      expect(fairLspTasksObserved(tree, tasks, paths, null)).toBe(false);
+    } finally { rmSync(owned, { recursive: true, force: true }); }
+  });
   const read = (path: string) => ({ memoryBytes: path.includes('pc-lsp') ? 30 : 10,
     peakMemoryBytes: path.includes('pc-lsp') ? 50 : 20, cpuUsec: 1, pidsCurrent: 99, pidsEventsMax: 0 });
   it('includes migrated LSP task memory while leaving thread counters out of process counts', () => {

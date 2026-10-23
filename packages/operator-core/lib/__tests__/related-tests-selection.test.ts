@@ -347,6 +347,14 @@ describe('original gate selection preparation', () => {
       expect(accepted.coverage).toBe('partial');
       expect(accepted.unenumerated[0].reason).toBe('unexecuted-command-obligations');
       expect(accepted.commandObligations[0].inputs).toEqual(receipt.inputs);
+      expect(preparePartialContinuationManifest({ root: dir,
+        tasks: [{ id: '@probe/core :: test', dir: request.ws.dir, command: request.ws.scripts.test }],
+        selection: accepted, postSuite: { schemaVersion: 1, coverage: 'complete',
+          units: [{ id: 'post:lint', kind: 'post-suite', path: 'package.json' }] },
+      })).toMatchObject({ status: 'ready', manifest: { units: [
+        { id: 'command:@probe/core :: test:0', kind: 'guard' },
+        { id: 'post:lint', kind: 'post-suite' },
+      ] } });
       const failedReceipt = { ok: false, error: 'sync fixture failed',
         diagnostics: { currentPhase: 'sync', elapsedMs: 21, phases: {} } };
       const failed = enumerateAffectedTaskSelection([request], { root: dir, syncAstro: true,
@@ -393,6 +401,14 @@ describe('original gate selection preparation', () => {
       expect(diagnostics.elapsedMs).toBeGreaterThanOrEqual(diagnostics.phases.syncMs);
       expect(result.runtimeClosure).toBe('unmeasured');
       expect(result.operationalAcceptance).toBe(false);
+      expect(preparePartialContinuationManifest({ root: repo,
+        tasks: [{ id: '@probe/astro :: test', dir: relativeDir, command: 'astro check' }],
+        selection: result, postSuite: { schemaVersion: 1, coverage: 'complete',
+          units: [{ id: 'post:lint', kind: 'post-suite', path: 'package.json' }] },
+      })).toMatchObject({ status: 'ready', manifest: { units: [
+        { id: 'command:@probe/astro :: test:0', kind: 'guard' },
+        { id: 'post:lint', kind: 'post-suite' },
+      ] } });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 40_000);
 
@@ -417,6 +433,14 @@ describe('original gate selection preparation', () => {
       .toBe(createHash('sha256').update(readFileSync(join(repo, input.path))).digest('hex'));
     expect(result.runtimeClosure).toBe('unmeasured');
     expect(result.operationalAcceptance).toBe(false);
+    expect(preparePartialContinuationManifest({ root: repo,
+      tasks: [{ id: '@probe/operator :: lint:el-tools', dir: ws.dir, command: ws.scripts['lint:el-tools'] }],
+      selection: result, postSuite: { schemaVersion: 1, coverage: 'complete',
+        units: [{ id: 'post:lint', kind: 'post-suite', path: 'package.json' }] },
+    })).toMatchObject({ status: 'ready', manifest: { units: [
+      { id: 'command:@probe/operator :: lint:el-tools:0', kind: 'guard' },
+      { id: 'post:lint', kind: 'post-suite' },
+    ] } });
   });
 
   it('refuses a repeated test-file population within an ordered chain', () => {

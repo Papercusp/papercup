@@ -48,6 +48,21 @@ beforeEach(() => {
 });
 
 describe('registered acceptance sweep audit entrypoint', () => {
+  it('logs the exact plan operation before its settlement', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    h.runSweep.mockImplementation(async (deps) => {
+      deps.onEvent({ kind: 'observe-started', planSlug: 'waiting-plan', operation: 'gate' });
+      deps.onEvent({ kind: 'observe-settled', planSlug: 'waiting-plan', operation: 'gate', outcome: 'failed', durationMs: 90_000 });
+    });
+    try {
+      await h.handlers.get('acceptance-grading-sweep')!({ workspaceId: 'ws-sweep', workflowId: 'measured-sweep' } as SystemActionCtx);
+      expect(log).toHaveBeenCalledWith('[acceptance-grading-sweep] sweep=measured-sweep plan=waiting-plan operation=gate started');
+      expect(log).toHaveBeenCalledWith('[acceptance-grading-sweep] sweep=measured-sweep plan=waiting-plan operation=gate failed elapsedMs=90000');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('repairs subject pins before grading and retains its bounded scan cursor', async () => {
     const cursor = { workspaceId: 'ws', harnessSlug: 'papercusp', planSlug: 'last-plan' };
     const order: string[] = [];

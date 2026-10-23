@@ -237,7 +237,7 @@ const { SHARED_TEST_PG_DURABILITY_OFF } = await import('../libs/test-config/src/
 const { browserCachePath } = await import('./lib/playwright-cache-path.mjs');
 const { defaultEvidenceRoot } = await import('../libs/generic/verification-harness/src/evidence-root.ts');
 const { processGroupLifetime } = await import('../packages/operator-core/lib/fleet/process-group-lifetime.ts');
-const { cleanupOwnedTestState } = await import('./lib/with-test-pg-cleanup.mjs');
+const { cleanupOwnedTestState, unhookRegisteredExitSignals } = await import('./lib/with-test-pg-cleanup.mjs');
 
 /** Ask the OS for a free TCP port. Never hardcode 5432 — that is the host's own PG. */
 function freePort() {
@@ -424,7 +424,7 @@ async function stopPrivateManagedTasks() {
 const ownProcessGroup = isolatedRuntime && process.platform === 'linux' &&
   Number(readFileSync('/proc/self/stat', 'utf8').split(')').slice(1).join(')').trim().split(/\s+/)[2]) === process.pid;
 if (isolatedRuntime) {
-  for (const sig of ['SIGINT', 'SIGTERM']) AsyncExitHook.unhookEvent(sig);
+  unhookRegisteredExitSignals(AsyncExitHook);
 }
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {

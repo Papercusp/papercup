@@ -44,6 +44,7 @@ import { parsePromotePolicy, type ParsePromoteResult } from './promote-policy';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { detectUnparsedItemLines } from './item-parse-feedback';
 import { analyzePlanDagParallelism, nativePlanGraphAdvice, type PlanCodeScope } from './plan-dag-parallelism';
+import { coChangeOverlap, readCoChange } from '../../code-intelligence/change-history';
 import type { DependencyPolicyFinding } from '../../scheduler/dependency-invariants';
 import {
   detectNowItemContradictions,
@@ -176,6 +177,8 @@ export async function lintPlan(
         ]);
         report.codeAdvice = answer.error ? { status: 'unknown', reason: answer.error }
           : nativePlanGraphAdvice(parsed.items, codeScope, answer.evidence, coverage, slug, fileClaims);
+        const history = await readCoChange(root, [...new Set(codeScope.taskPaths.flatMap(task => task.paths))].slice(0, 50));
+        Object.assign(report.codeAdvice, { coChange: coChangeOverlap(history, codeScope.taskPaths) });
       }
     } catch { report.codeAdvice = { status: 'unknown', reason: 'native graph or live ownership read unavailable' }; }
   }

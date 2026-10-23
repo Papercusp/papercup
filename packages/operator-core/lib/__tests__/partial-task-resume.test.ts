@@ -127,6 +127,83 @@ describe('independent qualification manifest preparation', () => {
     expect(prepare({ postSuite: { ...postSuite, units: [...postSuite.units, ...postSuite.units] } }))
       .toMatchObject({ status: 'refused', reason: 'manifest-population-invalid' });
   });
+
+  const commandFixture = (runner = 'command-check') => {
+    const root = mkdtempSync(join(tmpdir(), 'continuation-command-'));
+    const file = 'input.mjs';
+    writeFileSync(join(root, file), 'export const input = 1;\n');
+    const inputs = [{ path: file, sha256: createHash('sha256').update(readFileSync(join(root, file))).digest('hex') }];
+    const commandTask = { id: 'command :: test', dir: '.', command: 'node input.mjs' };
+    const command = { kind: 'command-check', command: commandTask.command, inputs, executed: false,
+      discovery: { files: [file], inputs, executed: false, runtimeClosure: 'unmeasured', operationalAcceptance: false } };
+    const entry = { ...commandTask, runner, files: [file], commandObligations: [command] };
+    const selection = { ...selected, tasks: [entry],
+      commandObligations: [{ ...command, task: commandTask.id }],
+      unenumerated: [{ task: commandTask.id, reason: 'unexecuted-command-obligations' }] };
+    return { root, file, inputs, command, entry, selection, tasks: [commandTask], postSuite };
+  };
+
+  it('keeps a discovered command and its test files as separate unsatisfied obligations', () => {
+    const fixture = commandFixture();
+    try {
+      const prepared = preparePartialContinuationManifest(fixture);
+      expect(prepared).toMatchObject({ status: 'ready', operationalAcceptance: false,
+        manifest: { units: [
+          { id: 'command:command :: test:0', kind: 'guard', path: 'package.json' },
+          postSuite.units[0], { id: 'test:input.mjs', kind: 'test', path: 'input.mjs' },
+        ] } });
+      const expected = { ...ID, root: fixture.root, attemptId: 'logical-one', candidate: ID.sourceCommit,
+        repairHead: null, manifest: prepared.manifest!, runContext: 'ci', runnerIdentity: 'runner' };
+      const evaluation = evaluatePartialTaskContinuation({ root: fixture.root, taskKey: ID.taskKey,
+        continuation: { ...expected, schemaVersion: 1, receipts: [] } }, expected);
+      expect(evaluation).toMatchObject({ verdict: 'incomplete', run: [
+        'command:command :: test:0', 'post:lint', 'test:input.mjs',
+      ] });
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it('retains Astro check inputs as a command guard without relabeling them as tests', () => {
+    const fixture = commandFixture('astro-check');
+    try {
+      expect(preparePartialContinuationManifest(fixture)).toMatchObject({ status: 'ready', manifest: { units: [
+        { id: 'command:command :: test:0', kind: 'guard' }, postSuite.units[0],
+      ] } });
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it('preserves an independently discovered npm lifecycle hook around native tests', () => {
+    const fixture = commandFixture();
+    try {
+      const hook = { ...fixture.command, kind: 'npm-lifecycle', script: 'pretest' };
+      const selection = { ...selected, tasks: [{ ...selected.tasks[0],
+        lifecycleCommands: [{ script: hook.script, command: hook.command }], commandObligations: [hook] }],
+        commandObligations: [{ ...hook, task: tasks[0]!.id }],
+        unenumerated: [{ task: tasks[0]!.id, reason: 'unexecuted-lifecycle-command' }, ...selected.unenumerated] };
+      expect(prepare({ root: fixture.root, selection })).toMatchObject({ status: 'ready', manifest: { units: [
+        { id: 'command:workspace :: test:0', kind: 'guard' }, { id: 'guard:root :: guard' },
+        postSuite.units[0], { id: 'test:packages/example/a.test.ts' },
+      ] } });
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it.each(['missing-root', 'missing-inputs', 'missing-discovery', 'false-execution', 'foreign-command',
+    'unknown-residue', 'omitted-command', 'changed-input', 'removed-input'])(
+    'refuses command preparation with %s', mutation => {
+      const fixture = commandFixture();
+      const originalRoot = fixture.root;
+      try {
+        if (mutation === 'missing-root') fixture.root = undefined as unknown as string;
+        if (mutation === 'missing-inputs') fixture.command.inputs = [];
+        if (mutation === 'missing-discovery') fixture.command.discovery = undefined as unknown as typeof fixture.command.discovery;
+        if (mutation === 'false-execution') fixture.command.executed = true;
+        if (mutation === 'foreign-command') fixture.command.command = 'node foreign.mjs';
+        if (mutation === 'unknown-residue') fixture.selection.unenumerated[0]!.reason = 'unsupported-task-command';
+        if (mutation === 'omitted-command') fixture.selection.commandObligations = [];
+        if (mutation === 'changed-input') writeFileSync(join(fixture.root, fixture.file), 'changed');
+        if (mutation === 'removed-input') rmSync(join(fixture.root, fixture.file));
+        expect(preparePartialContinuationManifest(fixture)).toMatchObject({ status: 'refused', manifest: null });
+      } finally { rmSync(originalRoot, { recursive: true, force: true }); }
+    });
 });
 
 describe('partial-task continuation proof composition', () => {

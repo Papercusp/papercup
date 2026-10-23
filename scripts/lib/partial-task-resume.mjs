@@ -326,8 +326,9 @@ function continuationManifest(manifest) {
  * even when they have no native test files. Post-suite selection is mandatory and
  * supplied independently by the gate; observed post-suite results cannot define it.
  * This is preparation only: it neither enrolls a producer nor authorizes execution.
+ * @param {{tasks: any, selection: any, postSuite: any, exclusions?: any[], root?: string}} input
  */
-export function preparePartialContinuationManifest({ tasks, selection, postSuite, exclusions = [] }) {
+export function preparePartialContinuationManifest({ tasks, selection, postSuite, exclusions = [], root }) {
   const refused = reason => ({ status: "refused", reason, manifest: null, operationalAcceptance: false });
   if (!Array.isArray(tasks) || !tasks.length || selection?.schemaVersion !== 1 ||
       selection.kind !== "full-gate" || selection.phase !== "selection-preparation" ||
@@ -357,17 +358,68 @@ export function preparePartialContinuationManifest({ tasks, selection, postSuite
         path: task.dir === "." ? "package.json" : `${task.dir}/package.json` });
       continue;
     }
-    if (!entry || !Array.isArray(entry.files) || !entry.files.length ||
-        !["vitest", "node-test"].includes(entry.runner) ||
-        selection.unenumerated.some(value => value.task === id) ||
-        selection.commandObligations.some(value => value.task === id))
+    if (!entry || !Array.isArray(entry.files) || (!entry.files.length && entry.runner !== "command-check") ||
+        !["vitest", "node-test", "astro-check", "command-check"].includes(entry.runner) ||
+        entry.files.some(file => !repoPath(file)) || new Set(entry.files).size !== entry.files.length)
       return refused("task-selection-unmeasured");
+    // Discovery is not execution. Keep each explicit command as a separate required
+    // guard, including lifecycle hooks around a native test task. Unknown commands,
+    // missing input censuses and discovery that moved since selection still refuse.
+    const commands = entry.commandObligations ?? [];
+    if (!Array.isArray(commands) || commands.some(command => !command || typeof command !== "object"))
+      return refused("command-population-invalid");
+    const declared = selection.commandObligations.filter(value => value.task === id)
+      .map(({ task: _task, ...value }) => value);
+    if (!isDeepStrictEqual(commands, declared)) return refused("command-population-mismatch");
+    const residues = selection.unenumerated.filter(value => value.task === id);
+    if (residues.some(value =>
+      !(value.reason === "unexecuted-command-obligations" && commands.some(command => command.kind === "command-check")) &&
+      !(value.reason === "unexecuted-lifecycle-command" && commands.some(command => command.kind === "npm-lifecycle"))))
+      return refused("task-selection-unmeasured");
+    if (["astro-check", "command-check"].includes(entry.runner) &&
+        !commands.some(command => command.kind === "command-check")) return refused("command-population-unmeasured");
+    if (entry.lifecycleCommands !== undefined && (!Array.isArray(entry.lifecycleCommands) ||
+        entry.lifecycleCommands.some(step => !step || commands.filter(command => command.kind === "npm-lifecycle" &&
+          command.script === step.script && command.command === step.command).length !== 1)))
+      return refused("command-population-unmeasured");
+    for (const [index, command] of commands.entries()) {
+      const discovery = command?.discovery;
+      const discoveryFiles = discovery?.repositoryFiles ?? discovery?.files;
+      if (!["command-check", "npm-lifecycle"].includes(command?.kind) || !validIdentity(command.command) ||
+          command.executed !== false || !isAbsolute(root ?? "") ||
+          !Array.isArray(command.inputs) || !command.inputs.length ||
+          new Set(command.inputs.map(input => input?.path)).size !== command.inputs.length ||
+          command.inputs.some(input => !repoPath(input?.path) || !/^[a-f0-9]{64}$/.test(input.sha256)) ||
+          discovery?.executed !== false || discovery.runtimeClosure !== "unmeasured" ||
+          discovery.operationalAcceptance !== false || !isDeepStrictEqual(discovery.inputs, command.inputs) ||
+          !Array.isArray(discoveryFiles) || discoveryFiles.some(file => !repoPath(file)) ||
+          new Set(discoveryFiles).size !== discoveryFiles.length ||
+          discoveryFiles.some(file => !command.inputs.some(input => input.path === file)) ||
+          (discovery.files !== undefined && discovery.repositoryFiles !== undefined &&
+            !isDeepStrictEqual(discovery.files, discovery.repositoryFiles)))
+        return refused("command-inputs-unmeasured");
+      if (command.kind === "command-check" &&
+          (command.command !== (entry.resolvedCommand ?? entry.command) ||
+          !isDeepStrictEqual([...discoveryFiles].sort(), [...entry.files].sort())))
+        return refused("command-selection-mismatch");
+      if (command.kind === "npm-lifecycle" && (!Array.isArray(entry.lifecycleCommands) ||
+          !entry.lifecycleCommands.some(step => step.script === command.script && step.command === command.command)))
+        return refused("command-selection-mismatch");
+      try {
+        if (command.inputs.some(input => createHash("sha256").update(readFileSync(resolve(root, input.path)))
+          .digest("hex") !== input.sha256)) return refused("command-inputs-changed");
+      } catch { return refused("command-inputs-unreadable"); }
+      units.push({ id: `command:${id}:${index}`, kind: "guard",
+        path: task.dir === "." ? "package.json" : `${task.dir}/package.json` });
+    }
     if (entry.runner === "vitest" && (!validNativeSpecifications(entry.selectedSpecifications) ||
         entry.selectedSpecifications.length !== entry.files.length ||
         new Set(entry.selectedSpecifications.map(value => value?.testFile)).size !== entry.files.length ||
         entry.selectedSpecifications.some(value => !entry.files.includes(value?.testFile))))
       return refused("native-specifications-unmeasured");
-    for (const file of entry.files) {
+    // Astro's file census names check inputs. It must never become a population
+    // of native tests or overlap a Vitest task that executes those same sources.
+    for (const file of entry.runner === "astro-check" ? [] : entry.files) {
       if (!repoPath(file) || testPaths.has(file)) return refused("test-population-overlapping-or-invalid");
       testPaths.add(file);
       units.push({ id: `test:${file}`, kind: "test", path: file });

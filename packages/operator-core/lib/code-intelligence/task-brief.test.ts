@@ -7,6 +7,7 @@ import { buildTaskBrief, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompl
 import { nativeChangeReport, type ChangeReportRequest } from './packer-facade';
 import { firstPartyCallers } from './first-party-callers';
 import type { CodeIntelAnswer } from './contracts';
+import { coChangeFromCommits } from './change-history';
 
 const dirs: string[] = [];
 describe('P039 completion pre-review briefs', () => {
@@ -44,12 +45,44 @@ describe('P039 completion pre-review briefs', () => {
       runs: async () => [{ path: 'target.test.ts', status: 'skip', runGroupId: 'bound-run' }] });
     expect(skipped.testsWithoutRunEvidence).toContain('target.test.ts');
   });
+  it('appends untouched co-change into the existing completion advisory with P009 limits and issued identity', async () => {
+    const { report, rootResolver } = setup();
+    const now = new Date().toISOString();
+    const history = coChangeFromCommits({ end: now, paths: ['target.ts'], commit: 'a'.repeat(40), complete: true,
+      commits: [1, 2, 3].map(n => ({ sha: String(n), parents: ['parent'], at: new Date(Date.now() - n * 86400000).toISOString(),
+        files: [{ status: 'M', path: 'target.ts' }, { status: 'M', path: 'partner.ts' }] })) });
+    const issued = vi.fn(async () => true), observe = vi.fn();
+    const base = await getCompletionTimeBrief(ref(), { root: rootResolver, report, runs: async () => [] });
+    const enriched = await getCompletionTimeBrief({ ...ref(), workItem: 'WI-completion',
+      reuse: { owner: 'su-fixture', invocation: 'real-completion', observe } },
+    { root: rootResolver, report, runs: async () => [], cochange: async () => history, reuse: { recordIssued: issued } });
+    expect(enriched.changes).toEqual(base.changes); expect(enriched.tests).toEqual(base.tests);
+    expect(enriched.limitations).toContain('Untouched partner.ts (3/3;90d)');
+    expect(Object.keys(enriched)).toEqual(Object.keys(base));
+    expect(issued).toHaveBeenCalledOnce();
+    expect(observe.mock.calls[0]?.[0]).toMatchObject({ ledger: 'recorded',
+      context: { surface: 'completion', invocation: 'real-completion', workItem: 'WI-completion' },
+      observations: expect.arrayContaining([expect.objectContaining({ provider: 'cochange', status: 'issued' }),
+        expect.objectContaining({ provider: 'sql' })]) });
+    expect(JSON.stringify(enriched).length).toBeLessThanOrEqual(TASK_BRIEF_MAX_CHARS);
+  });
   it('invalidates consequences when the source changes during the ledger read', async () => {
     const { root, report, rootResolver } = setup();
     const result = await getCompletionTimeBrief(ref(), { root: rootResolver, report, runs: async () => {
       writeFileSync(join(root, 'target.ts'), 'export function target() { return 2; }'); return [];
     } });
     expect(result).toMatchObject({ status: 'unknown', changes: [], tests: [], testsWithoutRunEvidence: null });
+  });
+  it('keeps an independent SQL provider when the co-change source is unavailable', async () => {
+    const { report, rootResolver } = setup();
+    const observed = vi.fn();
+    const result = await getCompletionTimeBrief({ ...ref(), reuse: { owner: 'su-fixture', invocation: 'completion-sql', observe: observed } },
+      { root: rootResolver, report, cochange: async () => { throw new Error('history unavailable'); }, reuse: {
+        recordIssued: async () => true, providers: [{ id: 'sql', read: async context => ({ status: 'measured',
+          sourceVersion: context.sourceVersion, indexVersion: 'sql-v1', lines: ['Unchecked reader db/read.ts'] }) }],
+      } });
+    expect(result.limitations).toContain('Unchecked reader db/read.ts');
+    expect(observed.mock.calls[0]?.[0]).toMatchObject({ ledger: 'recorded', observations: [{ provider: 'sql', status: 'issued' }] });
   });
   it('gives the default compiler report the remaining brief deadline, not a fixed 2000 ms sub-budget', async () => {
     const { rootResolver } = setup();

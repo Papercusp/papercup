@@ -13,9 +13,10 @@ import { LSP_VENDOR_DIR } from './lsp-adapter';
 import type { CodeIntelAnswer } from './contracts';
 import { getClaimTimePlanDecisions, type ClaimTimePlanDecisionsBrief } from '../plan-decisions-claim-port';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { composeReuseBrief, type ReuseBriefDestination, type ReuseBriefProvider,
+import { composeReuseBrief, registeredReuseBriefProviders, type ReuseBriefDestination, type ReuseBriefProvider,
   type ReuseContribution, type ReuseProviderContext, type ReuseProviderObservation } from './reuse-brief-providers';
 import { recordReuseBriefIssued, type ReuseIssuedRecord } from './reuse-brief-ledger';
+import { boundChangeHistoryProviders, changeHistoryProviders, readCoChange } from './change-history';
 
 export const TASK_BRIEF_BUDGET_MS = 6_000;
 export const TASK_BRIEF_MAX_CHARS = 3_000;
@@ -27,7 +28,7 @@ export interface ClaimBriefReuseIdentity {
   owner: string;
   invocation: string;
   observe?: (outcome: { context: ReuseProviderContext; observations: ReuseProviderObservation[];
-    recover: TaskBrief['recover']; ledger: 'not-needed' | 'recorded' | 'unknown' }) => void;
+    recover: ReuseIssuedRecord['recover']; ledger: 'not-needed' | 'recorded' | 'unknown' }) => void;
 }
 export type TaskBriefReuseAdapter = (base: TaskBrief, value: ReuseContribution) => TaskBrief;
 const reuseAdapters = pinModuleState('operator-core.task-brief-reuse-adapters.v1',
@@ -439,10 +440,23 @@ export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: 
   const context: ReuseProviderContext = { surface: 'claim', workspaceId: ref.workspaceId ?? activeWorkspaceId(),
     owner: ref.reuse.owner, invocation: ref.reuse.invocation, workItem: ref.workItem?.id ?? undefined,
     plan: ref.workItem?.sourcePlanSlug ?? undefined, planItems: ref.workItem?.sourcePlanItemIds ?? [],
-    paths: base.scope.paths, sourceVersion: base.sourceFingerprint, commit: base.commit };
+    paths: base.scope.paths, sourceVersion: base.sourceFingerprint, commit: base.commit,
+    repository: base.repository, sourceFiles: base.files.map(file => ({ path: file.path, sha256: file.sha256 })) };
   const adapters = deps.reuse?.adapters ?? Object.fromEntries(reuseAdapters);
+  const harness = ref.workItem?.harness ?? ref.harness;
+  const history = harness ? boundChangeHistoryProviders({ harness,
+    root: () => deps.root(context.workspaceId, harness),
+    plannedAt: async () => {
+      if (!context.plan) return null;
+      const { readPlanBySlug } = await import('../agent-tools/plans/source');
+      const plan = await readPlanBySlug(context.plan, { harnessSlug: harness, workspaceId: context.workspaceId });
+      return plan?.row.created ?? null;
+    } }) : [];
   const result = await composeReuseBrief({ base, context, deadline: deadline - 150,
-    providers: deps.reuse?.providers,
+    providers: deps.reuse?.providers ?? (() => {
+      const registered = registeredReuseBriefProviders();
+      return [...registered, ...history.filter(provider => !registered.some(row => row.id === provider.id))];
+    })(),
     available: section => base.status === 'current' && Boolean(adapters[section]),
     append: (brief, value) => {
       const next = adapters[value.section]!(brief, value);
@@ -492,11 +506,14 @@ export interface CompletionBriefDeps {
   graph?: (request: ChangeReportRequest, root: string, budgetMs: number) => Promise<CodeIntelAnswer>;
   /** The default report's non-graph effects (git, artifact writes). */
   effects?: Omit<ChangeReportEffects, 'graph'>;
+  cochange?: typeof readCoChange;
+  reuse?: TaskBriefDeps['reuse'];
 }
 
 /** P-039: reuse the pre-review report at the completion receipt, without
  * treating a declared test command or a static edge as execution evidence. */
-export async function getCompletionTimeBrief(ref: { workspaceId: string; harness: string; paths: readonly string[] },
+export async function getCompletionTimeBrief(ref: { workspaceId: string; harness: string; paths: readonly string[];
+  reuse?: ClaimBriefReuseIdentity; workItem?: string },
   deps: Partial<CompletionBriefDeps> = {}) {
   const rootResolver = deps.root ?? defaults.root;
   const deadline = Date.now() + TASK_BRIEF_BUDGET_MS;
@@ -545,6 +562,10 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
     const root = await realpath(rootValue);
     if (Date.now() >= deadline) return brief;
     brief.recover.args.rootPath = root; brief.recover.args.include = brief.scope.paths;
+    const historyController = new AbortController();
+    const historyTimer = setTimeout(() => historyController.abort(), Math.min(750, Math.max(0, deadline - Date.now())));
+    const history = (ref.reuse ? (deps.cochange ?? readCoChange)(root, brief.scope.paths, undefined, historyController.signal)
+      .catch(() => null) : Promise.resolve(null)).finally(() => clearTimeout(historyTimer));
     const captured = new Map<string, string>();
     const tests = new Set<string>();
     const unmeasured: string[] = [];
@@ -604,6 +625,36 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
     brief.status = brief.changes.length ? 'measured' : 'unknown';
     if (!brief.changes.length && unmeasured.length)
       brief.limitations.push(`Compiler evidence was unmeasured for ${unmeasured.join('; ')}.`);
+    const cochange = await history;
+    if (ref.reuse && Date.now() < deadline - 150) {
+      const sourceFiles = [...captured].map(([path, sha256]) => ({ path, sha256 }));
+      const context: ReuseProviderContext = { surface: 'completion', workspaceId: ref.workspaceId,
+        owner: ref.reuse.owner, invocation: ref.reuse.invocation, workItem: ref.workItem, paths: brief.scope.paths,
+        sourceVersion: hash(JSON.stringify([...captured])), commit: cochange?.commit ?? null,
+        repository: { workspaceId: ref.workspaceId, rootPath: root }, sourceFiles };
+      const registered = registeredReuseBriefProviders();
+      const historyProviders = cochange ? changeHistoryProviders({ cochange: async () => cochange,
+        provenance: async () => [] }).filter(provider => provider.id === 'cochange') : [];
+      const providers = deps.reuse?.providers ?? [...registered,
+        ...historyProviders.filter(provider => !registered.some(row => row.id === provider.id))];
+      const result = await composeReuseBrief({ base: finish(brief), context, deadline: deadline - 150, providers,
+        append: (base, contribution) => ({ ...base, limitations: [...base.limitations, contribution.text] }) });
+      Object.assign(brief, result.brief);
+      let ledger: 'not-needed' | 'recorded' | 'unknown' = 'not-needed';
+      if (result.observations.some(row => row.status === 'issued')) {
+        ledger = 'unknown';
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()));
+        try {
+          const recorded = await Promise.race([(deps.reuse?.recordIssued ?? recordReuseBriefIssued)(
+            { context, observations: result.observations, recover: brief.recover }, controller.signal),
+          new Promise<false>(resolve => controller.signal.addEventListener('abort', () => resolve(false), { once: true }))]);
+          if (recorded) ledger = 'recorded';
+        } catch { /* Failure is observed below and cannot erase mandatory completion evidence. */ }
+        finally { clearTimeout(timeout); controller.abort(); }
+      }
+      ref.reuse.observe?.({ context, observations: result.observations, recover: brief.recover, ledger });
+    }
     return brief;
   };
   try {
