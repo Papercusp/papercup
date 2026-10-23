@@ -638,7 +638,9 @@ export function currentBenchLaunchSelection(input: LaunchBenchRunInput, config: 
   }
   const id = createHash('sha256').update(canonicalJson({ workspaceId: current.workspaceId,
     protocolRunId: protocol.runId, preregHash: current.preregHash, arm: arm.id, seed: current.seed })).digest('hex');
-  return { protocol, arm, runId: `current-${id}` };
+  // Preserve the narrowed client in the returned type; host references have
+  // their own driver and must never widen CurrentSuBenchOptions by accident.
+  return { protocol, arm: { ...arm, agent: arm.agent }, runId: `current-${id}` };
 }
 
 function currentBenchResources(protocol: CurrentBenchmarkProtocol): LearningReservationResourceBudget {

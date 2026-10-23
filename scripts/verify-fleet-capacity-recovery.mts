@@ -101,6 +101,64 @@ async function readDiagnosticOutputs(root: string, row: Awaited<ReturnType<typeo
       now: new Date().toISOString(), startedAt: artifact.startedAt, finishedAt: artifact.finishedAt });
 }
 
+async function readRecoveryOperations(root: string, row: Awaited<ReturnType<typeof listSpecEvidence>>[number],
+  artifact: Awaited<ReturnType<typeof inspectCommittedOperationalEvidence>>['artifact']) {
+  const [{ getOrgPg }, { recoveryProofSchema, capacityBriefCaptureSchema, validateCapacityRecoveryOperations }] = await Promise.all([
+    import('@papercusp/db-org'), import('../packages/operator-core/lib/fleet/capacity-recovery-evidence'),
+  ]);
+  const { sql } = getOrgPg();
+  const proof = recoveryProofSchema.parse(artifact.capacityRecoveryProof);
+  const receiptId = (ref: string, prefix: string) => {
+    if (!ref.startsWith(prefix) || !/^[1-9][0-9]*$/.test(ref.slice(prefix.length))) throw new Error('invalid-native-reference:' + ref);
+    const id = Number(ref.slice(prefix.length));
+    if (!Number.isSafeInteger(id)) throw new Error('invalid-native-reference:' + ref);
+    return id;
+  };
+  const operations: import('../packages/operator-core/lib/fleet/capacity-recovery-evidence').NativeCapacityRecoveryOperation[] = [];
+  for (const r of proof.recoveries) {
+    const control = await nativeToolReceipt(receiptId(r.control.receiptRef, 'tool-invocation:'));
+    const claim = await nativeToolReceipt(receiptId(r.claim.receiptRef, 'tool-invocation:'));
+    const [delivery] = await sql<Array<{ id: number; workspace_id: string; subscriber_id: string; event_key: string;
+      source: string | null; status: string; turn_proof: string | null; created_at: Date;
+      delivered_at: Date | null; turn_started_at: Date | null }>>`
+      SELECT id, workspace_id, subscriber_id, event_key, source, status, turn_proof, created_at, delivered_at, turn_started_at
+        FROM harness_shared.event_wake_deliveries
+       WHERE workspace_id = 'papercusp-workspace' AND id = ${receiptId(r.turn.id, 'event-wake-delivery:')}`;
+    const claimStart = new Date(Date.parse(claim.invokedAt) - (claim.durationMs ?? 0)).toISOString();
+    const audits = await sql<Array<{ id: number; feature_id: string; claimer_pubkey: string; outcome: string; attempt_ts: Date; detail: string | null }>>`
+      SELECT id, feature_id, claimer_pubkey, outcome, attempt_ts, detail FROM harness_shared.claim_audit
+       WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp'
+         AND feature_id = ${r.claim.workItemId} AND claimer_pubkey = ${r.memberId} AND outcome = 'won'
+         AND attempt_ts >= ${claimStart}::timestamptz AND attempt_ts <= ${claim.invokedAt}::timestamptz
+       ORDER BY id LIMIT 2`;
+    if (!delivery || audits.length !== 1) throw new Error('native-recovery-join-missing-or-ambiguous:' + r.memberId);
+    const audit = audits[0];
+    const writers = await sql<Array<{ id: number; coord_owner_id: string | null }>>`
+      SELECT id, coord_owner_id FROM harness_shared.tool_invocations
+       WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp' AND goal_ref = ${r.claim.workItemId}
+         AND invoked_at >= ${audit.attempt_ts.toISOString()}::timestamptz AND invoked_at <= ${artifact.finishedAt}::timestamptz
+         AND status = 'ok' AND (tool_name IN ('work_items:checkpoint', 'work_items:complete', 'capability:edit', 'capability:write', 'capability:multi_edit', 'Edit', 'Write', 'MultiEdit')
+           OR tool_name IN ('activity:report', 'activity_report') AND args_json->>'tool_name' IN ('Edit', 'Write', 'MultiEdit', 'apply_patch')
+             AND args_json->>'status' = 'ok')
+       ORDER BY id LIMIT 1001`;
+    operations.push({ memberId: r.memberId, control, claim,
+      controlSourceMatches: await matchesMeasuredSource(root, row, control.servingBuildSha),
+      claimSourceMatches: await matchesMeasuredSource(root, row, claim.servingBuildSha),
+      delivery: { id: Number(delivery.id), workspaceId: delivery.workspace_id, subscriberId: delivery.subscriber_id,
+        eventKey: delivery.event_key, source: delivery.source, status: delivery.status, turnProof: delivery.turn_proof,
+        createdAt: delivery.created_at.toISOString(), deliveredAt: delivery.delivered_at?.toISOString() ?? null,
+        turnStartedAt: delivery.turn_started_at?.toISOString() ?? null },
+      claimAudit: { id: Number(audit.id), workItemId: audit.feature_id, memberId: audit.claimer_pubkey, outcome: audit.outcome,
+        takenAt: audit.attempt_ts.toISOString(), detail: audit.detail ? JSON.parse(audit.detail) : null },
+      writers: writers.map(w => ({ id: Number(w.id), actorId: w.coord_owner_id })) });
+  }
+  const capture = capacityBriefCaptureSchema.parse(artifact.capacityLeaderAfterCapture);
+  const native = await nativeToolReceipt(capture.invocationId);
+  return validateCapacityRecoveryOperations(proof, operations,
+    { capture, native, sourceMatches: await matchesMeasuredSource(root, row, native.servingBuildSha) },
+    { now: new Date().toISOString(), startedAt: artifact.startedAt, finishedAt: artifact.finishedAt });
+}
+
 async function readNativeLlmRuns(root: string, testRunId: number, scenarioId: string, passed: number) {
   const [{ getOrgPg }, { parseTestRunExecutionDetails }, { validateCapacityNativeLlmRun }] = await Promise.all([
     import('@papercusp/db-org'), import('@papercusp/test-config/execution-details'),
@@ -222,7 +280,10 @@ try {
     if (phase === 'recovery' || phase === 'diagnostic') {
       result.violations.push(...(await readBriefProof(root, row, artifact.artifact)).violations.map(v => row.id + ':' + v));
     }
-    if (phase === 'recovery') result.violations.push(...(await readAdmissionProof(root, row, artifact.artifact)).map(v => row.id + ':' + v));
+    if (phase === 'recovery') {
+      result.violations.push(...(await readAdmissionProof(root, row, artifact.artifact)).map(v => row.id + ':' + v));
+      result.violations.push(...(await readRecoveryOperations(root, row, artifact.artifact)).violations.map(v => row.id + ':' + v));
+    }
     if (phase === 'diagnostic') result.violations.push(...(await readDiagnosticOutputs(root, row, artifact.artifact)).violations.map(v => row.id + ':' + v));
     result.violations.push(...validateCapacityContractProof(artifact.artifact.capacityRecoveryProof,
       { specSetHash, barSetHash: rubrics[0].barSetHash, sourceFingerprint }).violations.map(v => row.id + ':' + v));

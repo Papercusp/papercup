@@ -16,7 +16,7 @@ import { requireCurrentBenchmarkAssignment } from './reproducibility/schema';
 import { normalizeFeatureStateInput } from '../work-item-dispatch-states';
 import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-telemetry';
 import { measureRuntimeVintageEnvironment, type RuntimeVintageRow } from '../runtime-vintage';
-import { currentBenchmarkProtocolSchema, type CurrentBenchmarkProtocol } from './reproducibility/schema';
+import { currentBenchmarkProtocolSchema, currentBenchProviderAgent, type CurrentBenchmarkProtocol } from './reproducibility/schema';
 import { canonicalJson } from './reproducibility/canonical-json';
 import { createNativeGymGatewayController, startNativeGymGateway, type NativeGymProviderAuthorization } from '../gym/proposer';
 import type { GovernorGlueDeps } from '../learning-governor/registrants';
@@ -785,6 +785,7 @@ export function createNativeProviderAuthenticator(input: {
   policy: Pick<CurrentBenchmarkProtocol['arms'][number],
     'agent' | 'account' | 'model' | 'effort' | 'payer'> & {
       generationBudget: { maxUsd: number; maxTokens?: number };
+      runtime?: Pick<CurrentBenchmarkProtocol['arms'][number]['runtime'], 'proximus'>;
     };
   rate: FrozenBenchRate;
   readNativeInputCeiling?: (attempt: GatewayCarryTrialAttempt, credential: CurrentBenchInputCredential) => Promise<CurrentBenchNativeInputCeiling | null>;
@@ -800,9 +801,11 @@ export function createNativeProviderAuthenticator(input: {
     throw new Error('Native provider authentication requires a pinned policy and frozen price rate.');
   }
   const payer = currentBenchArmPayer(arm), subscription = payer === 'subscription';
-  const route = arm.agent === 'claude' ? { transport: 'anthropic-http', target: 'https://api.anthropic.com/v1/messages' } as const
+  const providerAgent = currentBenchProviderAgent(arm);
+  if (arm.agent === 'proximus' && subscription) throw new Error('Proximus supports only the API-key payer.');
+  const route = providerAgent === 'claude' ? { transport: 'anthropic-http', target: 'https://api.anthropic.com/v1/messages' } as const
     : currentBenchCodexRoute(payer);
-  const contract = arm.agent === 'codex' ? currentBenchRateContract(payer, rate) : null;
+  const contract = providerAgent === 'codex' ? currentBenchRateContract(payer, rate) : null;
   const providerReader = input.readNativeInputCeiling !== undefined || contract === null ||
     rate.inputTokenCeilingSourceSha256 !== contract ? null : subscription
     ? currentBenchCodexSubscriptionInputReader({ model: arm.model, inputTokens: rate.inputTokenCeiling!, outputTokens: rate.outputTokenCeiling! })
@@ -1137,6 +1140,7 @@ export function currentBenchGatewayController(input: {
     throw new Error('Benchmark per-request output ceiling exceeds its frozen allowance or is invalid.');
   }
   const codexRoute = currentBenchCodexRoute(payer);
+  const providerAgent = currentBenchProviderAgent(arm);
   const controller = createNativeGymGatewayController({ workspaceId, loopId, token, manifestSha256: preregHash, armId: assignmentId,
     ...(subscription ? {} : { outputTokenLimit }),
     exact: { binding: preregHash, budgetUsd: protocol.aggregateBudgetUsd, resourceBudget: resources },
@@ -1149,8 +1153,8 @@ export function currentBenchGatewayController(input: {
         const output = request.transport === 'anthropic-http' ? body.max_tokens : subscription
           ? (body.max_output_tokens === undefined ? outputTokenLimit : undefined) : body.max_output_tokens;
         const effort = request.transport === 'anthropic-http' ? body.output_config?.effort : body.reasoning?.effort;
-        if ((arm.agent === 'codex') !== (request.transport !== 'anthropic-http') ||
-            arm.agent === 'codex' && request.transport !== codexRoute.transport ||
+        if ((providerAgent === 'codex') !== (request.transport !== 'anthropic-http') ||
+            providerAgent === 'codex' && request.transport !== codexRoute.transport ||
             !['auto', 'default'].includes(arm.account) && request.accountId !== arm.account ||
             body.model !== arm.model || effort !== arm.effort ||
             !Number.isSafeInteger(output) || output <= 0 || output > outputTokenLimit ||
@@ -1708,7 +1712,8 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
           topology: allowance?.topology ?? (kind === 'stock-native' ? 'stock-native-reference' : undefined) });
         if (allowance?.sessionBudget) record.sessionBudget = allowance.sessionBudget;
         const frozenArm = frozen.arms.find(arm => arm.id === opts.armId)!;
-        const { promptHashMode = 'exact-request-v1', ...runtimePins } = frozenArm.runtime;
+        const { promptHashMode = 'exact-request-v1', proximus: hostReference, ...runtimePins } = frozenArm.runtime;
+        if (hostReference) throw new Error('Proximus requires its host reference driver, not the native CLI driver.');
         const expectedIdentity = { ...runtimePins, effort: frozenArm.effort };
         const protocol = await ports.verifyPreregistration();
         record.preregistration = protocol;
