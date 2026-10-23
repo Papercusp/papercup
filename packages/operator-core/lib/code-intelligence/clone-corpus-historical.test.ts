@@ -11,6 +11,7 @@ const recipe = createRequire(import.meta.url)('./__fixtures__/clone-corpus-20261
   verifyHistoricalRoot: (root: string) => unknown;
   verifyOutputEquality: (original: unknown, historical: unknown, filtered: unknown) => unknown;
   resolveSubmodulePins: (manifest: unknown, supplement: unknown) => { path: string; sha: string }[];
+  parseSubmoduleStatus: (output: string) => { path: string; sha: string }[];
 };
 const json = (name: string) => JSON.parse(readFileSync(resolve(fixtureDir, name), 'utf8'));
 
@@ -30,6 +31,12 @@ describe('D-012 frozen historical clone corpus prerequisite', () => {
       historicalQualifyingFunctions: 36183, censusDifference: 2,
     });
     expect(provenance.originalInputIdentity).toMatch(/^UNPROVEN:/);
+    const corrected = json('candidate-manifest-v3.json');
+    expect(corrected.files).toEqual(json('candidate-manifest-v2.json').files);
+    expect(corrected.submodules).toHaveLength(39);
+    for (const pin of corrected.submodules) expect(pin.sha).toMatch(/^[a-f0-9]{40}$/);
+    expect(corrected.correction.originalManifestSha256)
+      .toBe('5b818f5451a60b02263da5d672c5ef82306d8d563d580d7c2539d87367351e21');
   });
 
   it('rejects changed labels even when the raw group and member counts remain equal', () => {
@@ -73,5 +80,18 @@ describe('D-012 frozen historical clone corpus prerequisite', () => {
     });
     supplement.corrections[0].materializedHead = '0'.repeat(40);
     expect(() => recipe.resolveSubmodulePins(manifest, supplement)).toThrow();
+    const sha = 'cf8b670c5aea000eaea8c9616279994b7b3a170b';
+    const status = ` ${sha} apps/slack-asana-bug-drill (cf8b670)\r\n ${'9'.repeat(40)} libs/agent-chat (heads/main)\r\n`;
+    // Reproduce the writer defect separately from Git: whole-output trim loses
+    // the first status byte, then the old slice(1) loses the first SHA byte.
+    expect(status.trim().split('\n')[0].slice(1).split(' ')[0]).toBe(sha.slice(1));
+    expect(recipe.parseSubmoduleStatus(status)).toEqual([
+      { sha, path: 'apps/slack-asana-bug-drill' }, { sha: '9'.repeat(40), path: 'libs/agent-chat' },
+    ]);
+    expect(() => recipe.parseSubmoduleStatus(status.trim())).toThrow();
+    for (const marker of ['+', '-', 'U']) {
+      expect(() => recipe.parseSubmoduleStatus(`${marker}${sha} path (head)\n`)).toThrow();
+    }
+    expect(() => recipe.parseSubmoduleStatus(` ${sha.slice(1)} path (head)\n`)).toThrow();
   });
 });

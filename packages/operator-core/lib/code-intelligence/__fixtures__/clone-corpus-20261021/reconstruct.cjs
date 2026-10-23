@@ -5,7 +5,7 @@
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
-const { readFileSync, realpathSync, mkdirSync } = require('node:fs');
+const { readFileSync, realpathSync, mkdirSync, existsSync, writeFileSync } = require('node:fs');
 const { resolve, join } = require('node:path');
 
 const fixtureDir = __dirname;
@@ -14,6 +14,14 @@ const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const gitBlob = (bytes) => createHash('sha1')
   .update(Buffer.from('blob ' + bytes.length + '\0')).update(bytes).digest('hex');
 const readJson = (name) => JSON.parse(readFileSync(join(fixtureDir, name), 'utf8'));
+const correctedManifestName = 'candidate-manifest-v3.json';
+const correction = {
+  issue: 'EI-26742762259332807',
+  originalManifestSha256: '5b818f5451a60b02263da5d672c5ef82306d8d563d580d7c2539d87367351e21',
+  authority: 'thread-post:1198640; coord-send-f7c9122ca029179cebe839d3888696f345af652279954414883ae691f189b75c',
+  source: 'Reconstructed historical checkout, not the unsaved original probe input tree.',
+  rootCause: 'Whole-output trim removed the first leading status space before slice(1) removed the first SHA character.',
+};
 const labelParts = (label) => {
   const match = /^(.*):(\d+) (.*) m=(\d+)$/.exec(label);
   assert(match, 'malformed archived family label: ' + label);
@@ -54,6 +62,33 @@ function resolveSubmodulePins(manifest, supplement) {
   return resolved;
 }
 
+function parseSubmoduleStatus(output) {
+  // The first byte is a status, including a meaningful space for a clean pin.
+  // Never trimStart/trim the whole output before parsing that byte.
+  const pins = output.trimEnd().split(/\r?\n/).filter(Boolean).map((line) => {
+    const match = /^ ([a-f0-9]{40}) (.+?)(?: \([^\r\n]*\))?$/.exec(line);
+    assert(match, 'malformed or unclean submodule status: ' + line);
+    return { sha: match[1], path: match[2] };
+  });
+  assert.equal(new Set(pins.map((pin) => pin.path)).size, pins.length, 'duplicate submodule status');
+  return pins;
+}
+
+function verifyCorrectedManifest(manifest, supplement) {
+  const provenance = readJson('corrected-manifest-provenance.json');
+  const bytes = readFileSync(join(fixtureDir, correctedManifestName));
+  assert.equal(provenance.correctedManifest.sha256, sha256(bytes), 'corrected manifest digest changed');
+  assert.equal(provenance.correctedManifest.bytes, bytes.length);
+  assert.equal(provenance.originalManifestSha256, correction.originalManifestSha256);
+  assert.equal(provenance.candidateCommit, manifest.candidateCommit);
+  const corrected = JSON.parse(bytes);
+  assert.deepEqual(corrected, { ...manifest, schemaVersion: 3,
+    submodules: resolveSubmodulePins(manifest, supplement), correction },
+  'corrected manifest changed more than its schema, pins and explicit provenance');
+  for (const pin of corrected.submodules) assert.match(pin.sha, /^[a-f0-9]{40}$/);
+  return { correctedManifestSha256: sha256(bytes), correctedSubmodulePins: corrected.submodules.length };
+}
+
 function verifyOutputEquality(original, historical, filtered) {
   assert.equal(original.minMass, 80);
   assert.equal(historical.minMass, 80);
@@ -76,7 +111,7 @@ function verifyOutputEquality(original, historical, filtered) {
     historicalQualifyingFunctions: 36183, censusDifference: 2 };
 }
 
-function verifyFrozenArtifacts() {
+function verifyFrozenArtifacts(verifyCorrection = true) {
   const provenance = readJson('provenance.json');
   for (const [name, expected] of Object.entries(provenance.artifacts)) {
     const bytes = readFileSync(join(fixtureDir, name));
@@ -113,14 +148,15 @@ function verifyFrozenArtifacts() {
     assert(member.source.split('\n')[label.line - 1].includes(label.name));
   }
   return { ...verifyOutputEquality(original, historical, filtered), selectedPaths: 10339,
-    submodulePins: 39, originalInputIdentity: provenance.originalInputIdentity };
+    submodulePins: 39, originalInputIdentity: provenance.originalInputIdentity,
+    ...(verifyCorrection ? verifyCorrectedManifest(manifest, supplement) : {}) };
 }
 
-function verifyHistoricalRoot(root) {
+function verifyHistoricalRoot(root, verifyCorrection = true) {
   const actualRoot = realpathSync(root);
   assert.notEqual(actualRoot, realpathSync(canonicalRoot), 'canonical staging is not a historical replay target');
-  verifyFrozenArtifacts();
-  const manifest = readJson('candidate-manifest-v2.json');
+  verifyFrozenArtifacts(verifyCorrection);
+  const manifest = readJson(verifyCorrection ? correctedManifestName : 'candidate-manifest-v2.json');
   const git = (args, cwd = actualRoot) => execFileSync('git', args, { cwd, maxBuffer: 1 << 28 }).toString().trim();
   assert.equal(git(['rev-parse', 'HEAD']), manifest.candidateCommit, 'wrong historical commit');
   assert.equal(git(['diff', '--name-only']), '', 'historical materialization has tracked changes');
@@ -136,7 +172,11 @@ function verifyHistoricalRoot(root) {
     assert.equal(sha256(bytes), row.sha256, row.path);
     assert.equal(gitBlob(bytes), row.committedGitBlobSha1, row.path);
   }
-  const pins = resolveSubmodulePins(manifest, readJson('submodule-pin-corrections.json'));
+  const pins = verifyCorrection ? manifest.submodules
+    : resolveSubmodulePins(manifest, readJson('submodule-pin-corrections.json'));
+  const parsedPins = parseSubmoduleStatus(execFileSync('git', ['submodule', 'status', '--recursive'],
+    { cwd: actualRoot, maxBuffer: 1 << 20 }).toString());
+  assert.deepEqual(parsedPins, pins, 'historical status pins differ from manifest');
   for (const pin of pins) {
     const parent = pins.filter((other) => pin.path.startsWith(other.path + '/'))
       .sort((a, b) => b.path.length - a.path.length)[0];
@@ -151,7 +191,32 @@ function verifyHistoricalRoot(root) {
   const compiler = JSON.parse(readFileSync(join(actualRoot, 'node_modules/typescript/package.json'), 'utf8'));
   assert.equal(compiler.version, manifest.compiler.version);
   return { root: actualRoot, commit: manifest.candidateCommit, selectedPaths: paths.length,
-    sourceMismatches: 0, submodulePins: manifest.submodules.length, compilerVersion: compiler.version };
+    sourceMismatches: 0, submodulePins: manifest.submodules.length, compilerVersion: compiler.version,
+    ...(verifyCorrection ? { correctedManifestSha256: sha256(readFileSync(join(fixtureDir, correctedManifestName))) } : {}) };
+}
+
+function writeCorrectedManifest(root) {
+  const verified = verifyHistoricalRoot(root, false);
+  const manifest = readJson('candidate-manifest-v2.json');
+  const pins = parseSubmoduleStatus(execFileSync('git', ['submodule', 'status', '--recursive'],
+    { cwd: verified.root, maxBuffer: 1 << 20 }).toString());
+  // The parser independently reads all pins; the supplement corroborates them.
+  assert.deepEqual(pins, resolveSubmodulePins(manifest, readJson('submodule-pin-corrections.json')));
+  const bytes = Buffer.from(JSON.stringify({ ...manifest, schemaVersion: 3, submodules: pins, correction }, null, 2) + '\n');
+  const provenance = Buffer.from(JSON.stringify({
+    schemaVersion: 1, ...correction, candidateCommit: manifest.candidateCommit,
+    originalInputIdentity: readJson('provenance.json').originalInputIdentity,
+    correctedManifest: { path: correctedManifestName, sha256: sha256(bytes), bytes: bytes.length },
+    verification: { ...verified, parentGitlinksChecked: pins.length, checkoutHeadsChecked: pins.length },
+    regeneration: 'node reconstruct.cjs --root <retained-historical-root> --write-corrected-manifest',
+  }, null, 2) + '\n');
+  for (const [name, content] of [[correctedManifestName, bytes], ['corrected-manifest-provenance.json', provenance]]) {
+    const path = join(fixtureDir, name);
+    if (existsSync(path)) assert.deepEqual(readFileSync(path), content, 'refusing to overwrite changed evidence: ' + name);
+  }
+  writeFileSync(join(fixtureDir, correctedManifestName), bytes);
+  writeFileSync(join(fixtureDir, 'corrected-manifest-provenance.json'), provenance);
+  return { ...verified, ...verifyCorrectedManifest(manifest, readJson('submodule-pin-corrections.json')) };
 }
 
 function replayHistoricalProbe(root) {
@@ -168,13 +233,13 @@ function replayHistoricalProbe(root) {
 }
 
 module.exports = { filterFamilies, verifyFrozenArtifacts, verifyHistoricalRoot,
-  verifyOutputEquality, replayHistoricalProbe, resolveSubmodulePins };
+  verifyOutputEquality, replayHistoricalProbe, resolveSubmodulePins, parseSubmoduleStatus };
 
 if (require.main === module) {
   const args = process.argv.slice(2);
   const rootIndex = args.indexOf('--root');
   assert(rootIndex >= 0 && args[rootIndex + 1], 'supply --root <pinned historical materialization>');
-  const result = args.includes('--run-probe')
-    ? replayHistoricalProbe(args[rootIndex + 1]) : verifyHistoricalRoot(args[rootIndex + 1]);
+  const result = args.includes('--write-corrected-manifest') ? writeCorrectedManifest(args[rootIndex + 1])
+    : args.includes('--run-probe') ? replayHistoricalProbe(args[rootIndex + 1]) : verifyHistoricalRoot(args[rootIndex + 1]);
   console.log(JSON.stringify(result));
 }
