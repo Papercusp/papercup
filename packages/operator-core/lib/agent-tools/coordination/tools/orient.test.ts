@@ -27,6 +27,8 @@ import {
 import orientTool from './orient';
 import { FLEET_DELTA_SCHEMA_VERSION, fingerprintFleet } from './fleet-monitor-delta';
 import type { InnerCall } from '../../_compound-dispatch';
+import type { CompactionRecovery } from '../compaction-recovery';
+import type { StubResult } from '../recovery-delivery';
 import type { GoalPortfolioBrief } from '../../../goal-launch-settings';
 import { lookupByMcpName, runToolOrchestration, type ProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { createPhaseTracker } from '@papercusp/tooldef';
@@ -367,6 +369,12 @@ const buildCompactionRecoveryMock = vi.hoisted(() =>
     coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
   })),
 );
+const applyCarryDeliveredStubsMock = vi.hoisted(() =>
+  vi.fn(async (_ownerId: string, recovery: CompactionRecovery): Promise<StubResult> => ({
+    recovery,
+    stubbed: [],
+  })),
+);
 const acknowledgeControlTransitionMock = vi.hoisted(() => vi.fn(async () => true));
 const readGovernorStateSnapshotMock = vi.hoisted(() => vi.fn(async () => null as unknown));
 const recordOrientDisclosuresMock = vi.hoisted(() => vi.fn(async () => 'unchanged' as const));
@@ -407,6 +415,9 @@ vi.mock('../pipeline-health', async (importOriginal) => ({
 vi.mock('../compaction-recovery', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../compaction-recovery')>()),
   buildCompactionRecovery: buildCompactionRecoveryMock,
+}));
+vi.mock('../recovery-delivery', () => ({
+  applyCarryDeliveredStubs: applyCarryDeliveredStubsMock,
 }));
 vi.mock('../control-anchor', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../control-anchor')>()),
@@ -507,6 +518,7 @@ beforeEach(() => {
   listFleetsLedByMock.mockResolvedValue([]);
   acknowledgeControlTransitionMock.mockClear();
   acknowledgeControlTransitionMock.mockResolvedValue(true);
+  applyCarryDeliveredStubsMock.mockClear();
   runContinuityProbesForOwnerMock.mockReset();
 });
 
@@ -1428,6 +1440,7 @@ describe('coord:orient args', () => {
 
     try {
       await vi.advanceTimersByTimeAsync(8_000);
+      expect(applyCarryDeliveredStubsMock).toHaveBeenCalledExactlyOnceWith(ownerId, recovery);
       await governorStarted;
       // Let the recovery promise's early aggregate-fallback observer run before
       // the later enrichment stalls the handler.
@@ -1906,31 +1919,44 @@ function composeOrientWithDeadline(
 }
 
 describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
-  it.each([1, 8])('overlaps assignments with the independent backlog chain for %i readers', async (readers) => {
+  it.each([1, 8])('overlaps assignments, inbox, and backlog reads for %i readers', async (readers) => {
     vi.useFakeTimers();
     const delay = <T>(value: T, ms: number): Promise<T> =>
       new Promise((resolve) => setTimeout(() => resolve(value), ms));
     const assignments = { ok: true, agents: [{ ownerId: 'me' }] };
     const rows = [{ id: 'WI-visible' }, { id: 'WI-held' }];
     const inbox = { summary: { unread: 1 }, entries: [{ id: 'message-1' }] };
+    let backlogSettled = false;
     const { call, calls } = fakeCall({
       ...CORE,
       'fleet:assignments': () => delay(assignments, 100),
-      'work_items:list': () => delay(rows, 80),
-      'coord:inbox': () => delay(inbox, 30),
+      'work_items:list': () => delay(rows, 80).then((value) => {
+        backlogSettled = true;
+        return value;
+      }),
+      'coord:inbox': () => {
+        // A serial inbox call would start only after the 80ms backlog read settles.
+        expect(backlogSettled).toBe(false);
+        return delay(inbox, 30);
+      },
       'work_items:observe': () => delay({ results: [{ id: 'WI-held', available: false }] }, 20),
     });
     const results: Array<Awaited<ReturnType<typeof composeOrient>>> = [];
     const pending = Promise.all(Array.from({ length: readers }, () =>
-      composeOrient({ includePlanEvents: false }, call, 'me').then((value) => {
+      composeOrient({ afterCompaction: true, includePlanEvents: false }, call, 'me').then((value) => {
         results.push(value);
       }),
     ));
     try {
       await vi.advanceTimersByTimeAsync(1);
       expect(calls.filter((entry) => entry.name === 'work_items:list')).toHaveLength(readers);
-      await vi.advanceTimersByTimeAsync(129);
+      await vi.advanceTimersByTimeAsync(100);
       expect(results).toHaveLength(readers);
+      expect(calls.filter((entry) => entry.name === 'coord:inbox')).toHaveLength(readers);
+      expect(calls.find((entry) => entry.name === 'coord:inbox')?.args).toMatchObject({
+        limit: 25,
+        max_body_chars: 800,
+      });
       for (const result of results) {
         expect(result).toMatchObject({
           me: assignments,
@@ -2020,19 +2046,19 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     // No intent ⇒ no memory recall, no declare.
     expect(r.memory).toBeUndefined();
     expect(r.intentDeclared).toBeUndefined();
-    // sequential order (never Promise.all on one ctx) + arg forwarding.
+    // Independent reads overlap; dependent observation and later folds retain their order.
     // P-007: coord:whoami is hoisted ABOVE the facts fold (the audience filter
     // needs the caller's fleet), so it now precedes coord:plan-events.
     // WI-5343: work_items:observe (the claimable floor-parity batch check) runs
-    // right after coord:inbox, before coord:whoami.
+    // after the inbox and claimable rows are both available, before coord:whoami.
     // EI-19452326548245557: the issue-family lane is sourced from the claim ORACLE
     // (work_items:claimable) and the feature-family lane from work_items:list; the
     // two are fetched together, so the oracle precedes the list.
     expect(calls.map((c) => c.name)).toEqual([
       'fleet:assignments',
+      'coord:inbox',
       'work_items:claimable',
       'work_items:list',
-      'coord:inbox',
       'work_items:observe',
       'coord:whoami',
       'coord:plan-events',
@@ -2257,8 +2283,8 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   it('honors claimableState / claimableLimit / inboxLimit overrides', async () => {
     const { call, calls } = fakeCall({ ...CORE });
     await composeOrient({ claimableState: 'wip', claimableLimit: 5, inboxLimit: 3 }, call, 'me');
-    expect(calls[1].args).toMatchObject({ state: 'wip', limit: 5 });
-    expect(calls[2].args).toMatchObject({ limit: 3 });
+    expect(calls.find(({ name }) => name === 'work_items:claimable')?.args).toMatchObject({ state: 'wip', limit: 5 });
+    expect(calls.find(({ name }) => name === 'coord:inbox')?.args).toMatchObject({ limit: 3 });
   });
 
   it('joins the orient inbox fallback observation to the nested inbox correlation id', async () => {
@@ -2777,6 +2803,36 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       audience: '@fleet:backend',
       limit: 8,
     });
+  });
+
+  it('starts fleet health while fleet catch-up is still pending', async () => {
+    let finishCatchUp!: (value: { total: number; rows: unknown[] }) => void;
+    let signalCatchUpStarted!: () => void;
+    const catchUpStarted = new Promise<void>((resolve) => { signalCatchUpStarted = resolve; });
+    const pendingCatchUp = new Promise<{ total: number; rows: unknown[] }>((resolve) => {
+      finishCatchUp = resolve;
+    });
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+      'coord:catch-up': () => {
+        signalCatchUpStarted();
+        return pendingCatchUp;
+      },
+    });
+    const pending = composeOrient({ includePlanEvents: false }, call, 'me');
+    let glanceStartedBeforeCatchUpSettled = false;
+    try {
+      await catchUpStarted;
+      glanceStartedBeforeCatchUpSettled = calls.some(({ name }) => name === 'coord:glance');
+    } finally {
+      finishCatchUp({ total: 0, rows: [] });
+    }
+    const result = await pending;
+
+    expect(glanceStartedBeforeCatchUpSettled).toBe(true);
+    expect(result.fleetCatchUp).toEqual({ fleet: 'backend', total: 0, recent: [] });
+    expect(result.fleetHealth).toMatchObject({ status: 'available', ref: 'coord:glance' });
   });
 
   it('skips fleet catch-up when fleetCatchUpLimit=0 for a narrow bootstrap', async () => {

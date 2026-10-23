@@ -8,7 +8,8 @@ import fastGlob from 'fast-glob';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import ts from 'typescript';
-import { detectBroadRepoTreeScanOffThread } from '../../cpu-task-worker';
+import { detectBroadRepoTreeScanOffThread, TREE_SCAN_MAX_REQUESTS } from '../../cpu-task-worker';
+import { mapWithConcurrency } from '../../gym/concurrency';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
 import {
@@ -4212,8 +4213,12 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   // measurement remains rejected for every identical binding, never a cached pass.
   const committedMeasurements = new Map<string, Promise<DetailedRepoEvidenceMeasurement>>();
   const committedTreeScans = new Map<string, Promise<boolean>>();
-  const serverMeasurements = await Promise.all(
-    rows.map(async (row, index) => {
+  // Each binding can submit an AST scan before its file measurement. Respect the
+  // scanner's existing admission bound instead of rejecting our own later rows.
+  const serverMeasurements = await mapWithConcurrency(
+    rows,
+    TREE_SCAN_MAX_REQUESTS,
+    async (row, index) => {
       const bindingStartedAt = diagnostics ? Date.now() : 0;
       // A REPLAY RE-MEASURES UNLESS THE CALLER HANDS US SERVER-MEASURED PROOF.
       // `currentProvenance:'server-measured'` is a caller saying "this pinned tuple is
@@ -4418,7 +4423,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           reason: (error instanceof Error ? error.message : String(error)).slice(0, 240),
         };
       }
-    }),
+    },
   );
   recordPhase('serverMeasurements', serverMeasurementsStartedAt);
   // Post-read half of the batch fence: a probe that locked a binding's paths while the

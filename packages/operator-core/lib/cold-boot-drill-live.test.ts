@@ -27,7 +27,7 @@ describe('selected carry-drill lifecycle measurement', () => {
     const row = (kind: ColdBootDrillLedgerEvent['kind']): ColdBootDrillLedgerEvent => ({
       kind, ownerId: input.ownerId, drillId: input.drillId, sessionClass: 'codex-interactive', ts: new Date(NOW - 1000).toISOString(),
     });
-    const ledger = [row('carry-drill-requested'), row('carry-drill-queued'),
+    const ledger = [{ ...row('carry-drill-requested'), sourceKind: 'codex' as const, bridgeTty: true }, row('carry-drill-queued'),
       { ...row('carry-drill-graded'), lookups: [], gradedByOwnerId: input.ownerId }];
     const host: ColdBootDrillHostEvent[] = [
       { ...row('carry-drill-respawned'), nativeId: 'exact-native', launchContextPath: '/carry' },
@@ -38,10 +38,15 @@ describe('selected carry-drill lifecycle measurement', () => {
       ...['grade', 'verify', 'report'].map((op, i): ReplayTurn => ({ index: i + 1, role: 'tool_use',
         toolName: 'session:carry-drill', text: JSON.stringify({ op, drillId: input.drillId }) })),
     ] };
+    const verifyReceipt = { ok: true, pass: true, drillId: input.drillId, sessionClass: 'codex-interactive',
+      assertions: ['ledger-registered', 'host-respawned', 'terminal-outcome', 'owner-socket-live'].map(name => ({ name, pass: true })) };
+    transcript.turns.splice(3, 0, { index: 3, role: 'tool_result', text: JSON.stringify(verifyReceipt) });
     const loadTranscript = vi.fn(async () => transcript);
-    return { ledger, host, transcript, loadTranscript, deps: {
+    return { ledger, host, transcript, loadTranscript, verifyReceipt, deps: {
       readLedger: async () => ledger, readHostEvents: async () => host, readCarry: async () => 'Identity ownerId: su-test',
       socketExists: async () => true, loadTranscript,
+      findHost: async () => ({ ownerId: input.ownerId, advSessionId: null, pid: 1, ptyPid: 2,
+        sock: '/socket', command: 'codex', startedAt: NOW - 1000, bridgeTty: true, nativeSessionId: 'exact-native' }),
     } };
   }
   it('reads the exact native successor and recomputes zero gaps without actuating a drill', async () => {
@@ -77,9 +82,21 @@ describe('selected carry-drill lifecycle measurement', () => {
       if (defect === 'missing-call') h.transcript.turns[1].text = 'Uninspectable variable';
       expect((await measureCarryDrillLifecycle(input, h.deps)).verdict).toBe('unknown');
     });
-  it('rejects a vanished owner socket even when the terminal diagnostic is present', async () => {
+  it('retains native verifier evidence after supported cleanup removes the live host', async () => {
     const h = evidence();
-    expect((await measureCarryDrillLifecycle(input, { ...h.deps, socketExists: async () => false })).verdict).toBe('fail');
+    expect((await measureCarryDrillLifecycle(input, { ...h.deps, socketExists: async () => false, findHost: async () => null })).verdict).toBe('pass');
+  });
+  it.each(['headless', 'wrong-backend', 'old-host'])(
+    'measures actual %s metadata rather than trusting a caller-supplied class', async defect => {
+      const h = evidence();
+      h.ledger[0].bridgeTty = defect === 'old-host' ? undefined : defect !== 'headless';
+      if (defect === 'wrong-backend') h.ledger[0].sourceKind = 'claude';
+      expect((await measureCarryDrillLifecycle(input, h.deps)).verdict).toBe(defect === 'old-host' ? 'unknown' : 'fail');
+    });
+  it.each(['missing', 'failed'])('rejects %s native verify results', async defect => {
+    const h = evidence();
+    h.transcript.turns[3].text = defect === 'missing' ? '{}' : JSON.stringify({ ...h.verifyReceipt, pass: false });
+    expect((await measureCarryDrillLifecycle(input, h.deps)).verdict).toBe(defect === 'missing' ? 'unknown' : 'fail');
   });
   it.each([false, true])('detects a native recovery gap, including surfaced=%s', async surfaced => {
     const h = evidence();

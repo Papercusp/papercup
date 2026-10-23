@@ -21,7 +21,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Worker } from 'node:worker_threads';
 import { execFile } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -39,6 +39,10 @@ afterEach(async () => {
 describe('cpu-task-worker — repository census guard', () => {
   it('packages the parser in the shipped worker without repository node_modules', async () => {
     const { build } = await import('esbuild');
+    const shippingScript = readFileSync(resolve(__dirname, '../../../apps/operator/bin/bundle-host-common.sh'), 'utf8');
+    const workerBlock = shippingScript.slice(shippingScript.indexOf('if [ "$output" = "cpu-task-worker.script.mjs" ]; then'));
+    const shippingBanner = /--banner:js="([^"]+)"/.exec(workerBlock)?.[1];
+    expect(shippingBanner, 'the CPU worker must use its maintained shipping banner').toBeTruthy();
     const dir = mkdtempSync(join(tmpdir(), 'cpu-worker-package-'));
     const output = join(dir, 'cpu-task-worker.script.mjs');
     let worker: Worker | undefined;
@@ -46,9 +50,10 @@ describe('cpu-task-worker — repository census guard', () => {
       await build({
         entryPoints: [resolve(__dirname, 'cpu-task-worker.script.mjs')],
         outfile: output, bundle: true, platform: 'node', format: 'esm', target: 'node22',
-        banner: { js: "import{createRequire as __cpuRequire}from'node:module';const require=__cpuRequire(import.meta.url);" },
+        banner: { js: shippingBanner! },
       });
       const verdict = await new Promise<unknown>((resolveReply, reject) => {
+        const replies: unknown[] = [];
         worker = new Worker(output);
         worker.on('error', reject);
         worker.on('message', (message) => {
@@ -56,10 +61,20 @@ describe('cpu-task-worker — repository census guard', () => {
             kind: 'broad_tree_scan', id: 1,
             source: "const APP_ROOTS = []; function walk() { return readdir(APP_ROOTS); }",
           });
-          else resolveReply(message);
+          else {
+            replies.push(message);
+            if (message.id === 1) worker!.postMessage({
+              kind: 'broad_tree_scan', id: 2,
+              source: "// ROOTS walk readdirSync()\nconst fixture = 'ROOTS walk readdirSync()';",
+            });
+            else resolveReply(replies);
+          }
         });
       });
-      expect(verdict).toMatchObject({ kind: 'broad_tree_scan_ok', id: 1, broadTreeScan: true });
+      expect(verdict, JSON.stringify(verdict)).toMatchObject([
+        { kind: 'broad_tree_scan_ok', id: 1, broadTreeScan: true },
+        { kind: 'broad_tree_scan_ok', id: 2, broadTreeScan: false },
+      ]);
     } finally {
       await worker?.terminate();
       rmSync(dir, { recursive: true, force: true });
@@ -103,6 +118,80 @@ describe('cpu-task-worker — repository census guard', () => {
         .rejects.toThrow('analysis transport unavailable');
       expect(m.getCpuWorkerState().pendingCount).toBe(0);
     } finally { spawn.mockRestore(); }
+  });
+
+  it('rejects oversized sources before spawning or cloning them', async () => {
+    const m = await mod();
+    await expect(m.detectBroadRepoTreeScanOffThread('x'.repeat(m.TREE_SCAN_MAX_SOURCE_CHARS + 1)))
+      .rejects.toThrow('source exceeds');
+    expect(m.getCpuWorkerState()).toMatchObject({ alive: false, pendingCount: 0 });
+  });
+
+  it('bounds admission during startup and settles every waiter when ready never arrives', async () => {
+    const m = await mod();
+    const emit = Worker.prototype.emit;
+    const delivery = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (this: Worker, event, ...args) {
+      if (event === 'message' && args[0]?.kind === 'ready') return true;
+      return emit.call(this, event, ...args);
+    });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const admitted = Array.from({ length: m.TREE_SCAN_MAX_REQUESTS }, () =>
+        m.detectBroadRepoTreeScanOffThread('const small = 1;'));
+      const settled = Promise.allSettled(admitted);
+      await expect(m.detectBroadRepoTreeScanOffThread('const extra = 1;'))
+        .rejects.toThrow('admission limit');
+      await vi.advanceTimersByTimeAsync(m.TREE_SCAN_DEADLINE_MS);
+      for (const result of await settled) {
+        expect(result.status).toBe('rejected');
+        if (result.status === 'rejected') expect(result.reason.message).toContain('deadline exceeded');
+      }
+      expect(m.getCpuWorkerState()).toMatchObject({ alive: false, pendingCount: 0, keepAlive: false });
+    } finally {
+      vi.useRealTimers();
+      delivery.mockRestore();
+      errors.mockRestore();
+    }
+    // Admission is released after failure, and the next actual worker serves.
+    expect(await m.detectBroadRepoTreeScanOffThread('const small = 1;')).toBe(false);
+  });
+
+  it('terminates a timed-out real parser job and ignores its late exit after replacement', async () => {
+    const m = await mod();
+    await m.detectBroadRepoTreeScanOffThread('const small = 1;');
+    let oldWorker: Worker | undefined;
+    const postMessage = Worker.prototype.postMessage;
+    const posts = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (this: Worker, message, ...args) {
+      oldWorker = this;
+      return postMessage.call(this, message, ...args);
+    });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const source = Array.from({ length: 30_000 }, (_, i) => `const value${i} = ${i};`).join('\n');
+      const scan = m.detectBroadRepoTreeScanOffThread(source);
+      const failed = expect(scan).rejects.toThrow('deadline exceeded');
+      await Promise.resolve(); // The real thread receives the source before expiry.
+      expect(oldWorker).toBeDefined();
+      vi.advanceTimersByTime(m.TREE_SCAN_DEADLINE_MS);
+      await failed;
+      expect(m.getCpuWorkerState()).toMatchObject({ alive: false, pendingCount: 0 });
+      vi.useRealTimers();
+      posts.mockRestore();
+      const replacement = m.detectBroadRepoTreeScanOffThread(
+        'const APP_ROOTS = []; function walk() { return readdir(APP_ROOTS); }',
+      );
+      oldWorker!.emit('exit', 1); // Delayed completion from the retired generation.
+      expect(await replacement).toBe(true);
+      expect(m.getCpuWorkerState()).toMatchObject({ alive: true, pendingCount: 0 });
+      expect(JSON.parse(await m.serializeJsonResponse({ ok: true }, m.OFFLOAD_MIN_ITEMS)))
+        .toEqual({ ok: true });
+    } finally {
+      vi.useRealTimers();
+      posts.mockRestore();
+      errors.mockRestore();
+    }
   });
 });
 

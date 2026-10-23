@@ -284,7 +284,7 @@ bundle_host_workers() {
       fi
       bundle_host_run_step "worker-$output" bundle_host_esbuild "$repo_root" "$source" \
         --bundle --platform=node --format=esm --target=node22 \
-        --banner:js="import{createRequire as __cpuRequire}from'node:module';const require=__cpuRequire(import.meta.url);" \
+        --banner:js="import{createRequire as __cpuRequire}from'node:module';import{fileURLToPath as __cpuFile}from'node:url';import{dirname as __cpuDir}from'node:path';const require=__cpuRequire(import.meta.url),__filename=__cpuFile(import.meta.url),__dirname=__cpuDir(__filename);" \
         --outfile="$tmp" "${cpu_meta_args[@]}" || return 1
       mv -f "$tmp" "$out_dir/$output" || return 1
     else

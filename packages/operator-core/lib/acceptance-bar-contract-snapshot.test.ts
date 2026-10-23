@@ -80,7 +80,7 @@ describe('BAR snapshot settled audit currentness', () => {
     const canonical = await getAcceptanceRubricVettingStatus(rubric, {
       vettingGateEnabled: true,
       getRubric: async () => rubric,
-      getRubricPlanRevision: async () => rubric.revision,
+      getRubricPlanRevision: async () => rubric.revision ?? null,
       listScorecards: async () => [card],
       readCurrentCritique: async () => null,
     });
@@ -443,7 +443,7 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
     };
     evidence.details = { evidencePlane: 'tree', adequacy: { testLayer: 'integration', pathReachable: true,
       fixtureCalibrated: true, falsifiable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
-      outcome: 'passed', targeted: evidence.specId, testCases: [caseTitle] } };
+      outcome: 'passed', targeted: evidence.specId, testCases: [caseTitle], scenarioIds: [caseTitle] } };
     // Since 39ce2b4152 a counterexample proves falsifiability only when its run's test file
     // also carries this clause's current passing `test` binding (clauseBoundCurrentTests pairs
     // them by testRunProvenance.filePath). The counterexamples below spread this row, so each
@@ -1039,7 +1039,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       harness: 'papercusp',
       sourceBarTestRequirements: { status: 'not-required' },
     });
-    expect(adequacy, adequacy.ratings.falsifiability?.evidence).toMatchObject({
+    expect(adequacy, JSON.stringify(adequacy.ratings)).toMatchObject({
       requiredProofFloor: 'l3',
       verdict: 'pass',
       wouldBlock: [],
@@ -1074,7 +1074,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
           ],
         }),
         details: expect.objectContaining({
-          adequacy: expect.objectContaining({ targeted: clause.specId, outcome: 'killed' }),
+          adequacy: expect.objectContaining({ targeted: 'bar-proof-case-' + (index + 1), outcome: 'killed' }),
         }),
       }),
     )));
@@ -1156,6 +1156,17 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     const snapshot = projectAcceptanceBarContractSnapshot(input);
     expect(snapshot.bars[0]!.proof.adequacy?.state).not.toBe('pass');
     expect(snapshot.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('falsifiability');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
+  });
+
+  it.each(['missing', 'wrong'] as const)('refuses %s canonical scenario coverage despite passing measured tests', kind => {
+    const input = provedFixture(1);
+    for (const row of input.evidence.rows) {
+      row.details.adequacy = { ...(row.details.adequacy as object),
+        scenarioIds: kind === 'missing' ? [] : ['unrelated-scenario'] };
+    }
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('correct-layer');
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
   });
 
@@ -1522,13 +1533,16 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       const input = provedFixture(1);
       const base = input.evidence.rows[0]!;
       const makeAttempt = (n: number, result: string): AcceptanceBarEvidenceSource[] => {
+        // Prepare and finish describe the same measured file and scenario set.
+        const scenarioIds = (base.details.adequacy as { scenarioIds: string[] }).scenarioIds;
         const binding = { specId: base.specId, specRevision: base.specRevision,
-          testPath: 'test/journey.test.ts', sourcePaths: ['src/journey.ts'], testLayer: 'integration' };
+          testPath: base.testRunProvenance!.filePath, sourcePaths: ['src/journey.ts'],
+          testLayer: 'integration', scenarioIds };
         const pending = { ...base, id: n * 10, evidenceRef: `test-run-group:attempt-${n}:0`, testRunId: null,
           details: { currentMeasurement: { schemaVersion: 1, kind: 'repo-files',
             testPaths: [binding.testPath], sourcePaths: binding.sourcePaths },
           testExecution: { schemaVersion: 1, phase: 'pending', originRunId: `attempt-${n}`, binding },
-          adequacy: { testLayer: 'integration', outcome: 'pending', executed: false, collected: false } } };
+          adequacy: { testLayer: 'integration', scenarioIds, outcome: 'pending', executed: false, collected: false } } };
         return [pending, ...(result === 'pending' ? [] : [{ ...pending, id: n * 10 + 1, testRunId: n,
           details: { ...pending.details, evidencePlane: 'tree',
             testExecution: { ...pending.details.testExecution, phase: 'settled' },

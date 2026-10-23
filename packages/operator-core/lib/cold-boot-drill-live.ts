@@ -108,6 +108,9 @@ export interface ColdBootDrillLedgerEvent {
   drillId: string;
   ownerId: string;
   sessionClass: string;
+  /** Measured at admission; unlike sessionClass these are not caller labels. */
+  sourceKind?: SelfSession['sourceKind'];
+  bridgeTty?: boolean | null;
   detail?: string;
   lookups?: RecoveryLookup[];
   transcriptPath?: string;
@@ -460,6 +463,8 @@ export async function startColdBootDrill(
     drillId,
     ownerId,
     sessionClass,
+    sourceKind: transcript.sourceKind,
+    bridgeTty: host.bridgeTty ?? null,
     ...(input.note?.trim() ? { detail: input.note.trim() } : {}),
   };
   if (!(await deps.appendLedger(requested))) {
@@ -947,6 +952,7 @@ export interface CarryDrillMeasurement {
   ownerId: string;
   nativeId?: string;
   transcriptRef?: string;
+  requestedAt?: string;
   gaps?: number;
   surfacingGaps?: number;
 }
@@ -961,7 +967,7 @@ export interface CarryDrillMeasurement {
 export async function measureCarryDrillLifecycle(
   input: CarryDrillMeasurementInput,
   overrides: Partial<Pick<GradeColdBootDrillDeps, 'readLedger' | 'readHostEvents' | 'readCarry' | 'loadTranscript'> &
-    Pick<VerifyColdBootDrillDeps, 'socketExists'>> = {},
+    Pick<VerifyColdBootDrillDeps, 'socketExists'> & Pick<StartColdBootDrillDeps, 'findHost'>> = {},
 ): Promise<CarryDrillMeasurement> {
   const result = (verdict: CarryDrillMeasurement['verdict'], reason: string,
     extra: Partial<CarryDrillMeasurement> = {}): CarryDrillMeasurement => ({
@@ -997,11 +1003,12 @@ export async function measureCarryDrillLifecycle(
         !host.some(row => row.kind === 'carry-drill-carry-delivered'))
       return result('unknown', 'Queued, delivered, exact successor and durable grade evidence are required.');
     if (grade.gradedByOwnerId !== input.ownerId) return result('fail', 'The grade was not recorded by the addressed owner.');
-    const verified = await verifyColdBootDrill(input.ownerId, { drillId: input.drillId }, {
-      readLedger: async () => ledger, readHostEvents: async () => host,
-      socketExists: overrides.socketExists ?? verifyDeps({}).socketExists,
-    });
-    if (!verified.ok || !verified.pass) return result('fail', 'The selected drill failed its maintained lifecycle verifier.');
+    // Read admission-time facts so supported cleanup cannot invalidate the
+    // historical class. Old hosts without these facts remain explicitly unknown.
+    if (!requested[0].sourceKind || requested[0].bridgeTty == null)
+      return result('unknown', 'Actual admission-time backend and interactive host identity are unproven.');
+    if (requested[0].sourceKind !== 'codex' || requested[0].bridgeTty !== true)
+      return result('fail', 'Actual admission-time host class contradicts the caller label.');
     const carry = await (overrides.readCarry ?? safeReadCarry)(respawn.launchContextPath);
     const loadTranscript = overrides.loadTranscript ?? (async (ownerId: string, nativeId: string | null) => {
       // Never borrow the current session when this exact native successor is missing.
@@ -1023,13 +1030,31 @@ export async function measureCarryDrillLifecycle(
     if (!calls.some(({ turn, index }) => index > gradeAt && operation(turn.text, 'verify') && turn.text.includes(input.drillId)) ||
         !calls.some(({ turn, index }) => index > gradeAt && operation(turn.text, 'report')))
       return result('unknown', 'The successor must record verify and report after its single grade.');
+    // Require the actual verifier result, not just a call or a currently live
+    // socket. Native result envelopes may wrap the JSON in MCP text content.
+    const verifyAt = calls.find(({ turn, index }) => index > gradeAt && operation(turn.text, 'verify') && turn.text.includes(input.drillId))!.index;
+    const decode = (value: unknown, depth = 0): Record<string, unknown>[] => {
+      if (depth > 5) return [];
+      if (typeof value === 'string') { try { return decode(JSON.parse(value), depth + 1); } catch { return []; } }
+      if (Array.isArray(value)) return value.flatMap(item => decode(item, depth + 1));
+      if (!value || typeof value !== 'object') return [];
+      const object = value as Record<string, unknown>;
+      return [object, ...decode(object.content, depth + 1), ...decode(object.text, depth + 1)];
+    };
+    const verifyResults = transcript.turns.slice(verifyAt + 1).filter(turn => turn.role === 'tool_result')
+      .flatMap(turn => decode(turn.text)).filter(row => row.drillId === input.drillId && Array.isArray(row.assertions));
+    if (!verifyResults.length) return result('unknown', 'The native successful verifier receipt is missing.');
+    const expectedAssertions = ['ledger-registered', 'host-respawned', 'terminal-outcome', 'owner-socket-live'];
+    if (verifyResults.some(row => row.ok !== true || row.pass !== true || row.sessionClass !== 'codex-interactive' ||
+        !expectedAssertions.every(name => (row.assertions as VerifyAssertion[]).some(assertion => assertion.name === name && assertion.pass === true))))
+      return result('fail', 'The native lifecycle verifier did not pass every required assertion.');
     const lookups = extractRecoveryLookups(transcript.turns.slice(markerAt + 1, gradeAt + 1), carry);
     if (JSON.stringify(lookups) !== JSON.stringify(grade.lookups)) return result('fail', 'The saved grade differs from the exact native recovery window.');
     const gaps = lookups.filter(lookup => classifyRecoveryLookup(lookup) === 'gap').length;
     const surfacingGaps = lookups.filter(lookup => classifyRecoveryLookup(lookup) === 'surfacing-gap').length;
     return result(gaps || surfacingGaps ? 'fail' : 'pass', gaps || surfacingGaps
       ? 'The selected successor has recovery gaps.' : 'Selected drill lifecycle and zero recovery gaps verified; shipment obligations remain separate.',
-    { nativeId: respawn.nativeId, transcriptRef: transcript.ref, gaps, surfacingGaps });
+    { nativeId: respawn.nativeId, transcriptRef: transcript.ref, requestedAt: requested[0].ts, gaps, surfacingGaps });
   } catch (error) {
     return result('unknown', `Native drill evidence unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }

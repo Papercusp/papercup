@@ -1350,6 +1350,24 @@ export async function composeOrient(
       label,
       ...(correlationId ? { correlationId } : {}),
     }).then((r) => r.value);
+  // The inbox view is independent of the claimable backlog. Start it before the
+  // backlog chain so afterCompaction's larger window does not add another serial
+  // core-leg budget to the orientation wall time.
+  const inboxLimit = args.inboxLimit ?? (args.includeInbox === false ? 0 : args.afterCompaction ? 25 : 10);
+  const inboxCorrelationId = inboxLimit === 0 ? null : randomUUID();
+  const inboxPromise =
+    inboxCorrelationId === null
+      ? Promise.resolve(undefined)
+      : boundedCore(
+          (signal) => call('coord:inbox', {
+            limit: inboxLimit,
+            max_body_chars: args.afterCompaction ? 800 : 300,
+            __correlationId: inboxCorrelationId,
+          }, signal),
+          undefined,
+          'orient:coord:inbox',
+          inboxCorrelationId,
+        );
   let list: unknown;
   /** EI-20113865649946366 — the AUTHORITATIVE issue-family claimable population, taken
    *  from the oracle's own `claimableCount` (work_items/claimable.ts: "rows passing
@@ -1442,24 +1460,10 @@ export async function composeOrient(
   // "newer than read_through_ts", which could HIDE mail the agent had been shown
   // but not acted on. `unanswered` remains the actionable signal, and it is
   // computed independently of this window.
-  const inboxLimit = args.inboxLimit ?? (args.includeInbox === false ? 0 : args.afterCompaction ? 25 : 10);
   // EI-20287600163306401: callers that already consumed the inbox can pass zero
   // to suppress this duplicate fold. The nested coord:inbox tool requires a
-  // positive limit, so do not forward an explicit zero as an invalid call.
-  const inboxCorrelationId = inboxLimit === 0 ? null : randomUUID();
-  const inbox =
-    inboxCorrelationId === null
-      ? undefined
-      : ((await boundedCore(
-          (signal) => call('coord:inbox', {
-            limit: inboxLimit,
-            max_body_chars: args.afterCompaction ? 800 : 300,
-            __correlationId: inboxCorrelationId,
-          }, signal),
-          undefined,
-          'orient:coord:inbox',
-          inboxCorrelationId,
-        )) as { summary?: unknown; entries?: unknown } | undefined);
+  // positive limit, so the early promise above skips it instead of forwarding zero.
+  const inbox = (await inboxPromise) as { summary?: unknown; entries?: unknown } | undefined;
 
   // work_items:list returns the bare array (its `result` schema), but be defensive
   // about the wrapped shapes the unwrap may yield.
@@ -1891,6 +1895,18 @@ export async function composeOrient(
     );
     fleetSlug = who?.fleetSlug ?? null;
   }
+  // The compact fleet-health glance depends only on the resolved fleet slug.
+  // Start it now so it overlaps the independent facts, plan-event, and catch-up
+  // folds below; join it where the fleet-health projection is assembled.
+  const fleetHealthGlancePromise =
+    !monitor && fleetSlug && (args.includeFleetHealth ?? args.includeFleet) !== false
+      ? withBoundedTimeout(
+          (signal) => call('coord:glance', { audience: 'su', activity_limit: 0 }, signal) as Promise<
+            { bees?: unknown; wake?: unknown; governor?: unknown } | undefined
+          >,
+          { fallback: undefined, timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS, label: 'orient:coord:glance' },
+        )
+      : null;
 
   // ── standing-facts fold (queen-memory-hybrid L1c) — the deterministic sibling of
   // the fuzzy memory recall above: scoped conclusions delivered VERBATIM every
@@ -2389,16 +2405,8 @@ export async function composeOrient(
     // fleet-health (fold #1) — COMPACT: coord:glance's health subset only (bees/wake/
     // governor; audience 'su' + activity_limit:0 skip the human display/tips/activity
     // rows). Kills the post-orient coord:glance re-call for fleet members.
-    if (fleetSlug && includeFleetHealth !== false) {
-      // WI-3818: bounded — a slow coord:glance used to hang orient until the
-      // 55s MCP client timeout; now degrades to null (same as the pre-existing
-      // catch-based failure contract) within ORIENT_FLEET_LEG_TIMEOUT_MS.
-      const glanceResult = await withBoundedTimeout(
-        (signal) => call('coord:glance', { audience: 'su', activity_limit: 0 }, signal) as Promise<
-          { bees?: unknown; wake?: unknown; governor?: unknown } | undefined
-        >,
-        { fallback: undefined, timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS, label: 'orient:coord:glance' },
-      );
+    if (fleetHealthGlancePromise) {
+      const glanceResult = await fleetHealthGlancePromise;
       const g = glanceResult.value;
       result.fleetHealth = {
         schemaVersion: ORIENT_FLEET_HEALTH_SCHEMA_VERSION,

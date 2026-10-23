@@ -4935,6 +4935,47 @@ async function amendAcceptanceBarRubric(
     preview,
   );
   if (preLockReplay) return preLockReplay;
+  // Independent-pool and filesystem readers must finish before opening the
+  // amendment transaction. Revalidate their governing sources under the locks;
+  // approval, caller CAS and the writes below remain atomic.
+  const compositionRefs = normalizeRubricCompositionRefs(applyRubricAmendment(rubricHint, input).composes) ?? [];
+  const readPreparationSources = async (sql: AcceptanceBarAmendmentSql) => {
+    const rows = await Promise.all([
+      sql`SELECT harness_slug, plan_slug, content, content_hash, version, status, owner, archived, template_data
+        FROM harness_shared.harness_plans WHERE workspace_id = ${rubricScope.workspaceId}
+          AND ((harness_slug = ${rubricScope.harnessSlug} AND plan_slug = ${input.rubricId})
+            OR (harness_slug = ${subjectScope.harnessSlug} AND plan_slug = ${subjectPlanHint}))
+        ORDER BY harness_slug, plan_slug`,
+      sql`SELECT harness_slug, plan_slug, content, content_hash, version, status, owner, archived, template_data
+        FROM harness_shared.harness_plans WHERE workspace_id = ${rubricScope.workspaceId}
+          AND plan_slug = ANY(${compositionRefs}::text[]) ORDER BY harness_slug, plan_slug`,
+      sql`SELECT item_id, status, deliverable FROM harness_shared.plan_items
+        WHERE workspace_id = ${subjectScope.workspaceId} AND harness_slug = ${subjectScope.harnessSlug}
+          AND plan_slug = ${subjectPlanHint} ORDER BY item_id`,
+      sql`SELECT c.spec_id, c.current_revision, r.content_hash FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r ON r.workspace_id = c.workspace_id
+          AND r.harness_slug = c.harness_slug AND r.plan_slug = c.plan_slug
+          AND r.spec_id = c.spec_id AND r.revision = c.current_revision
+        WHERE c.workspace_id = ${subjectScope.workspaceId} AND c.harness_slug = ${subjectScope.harnessSlug}
+          AND c.plan_slug = ${subjectPlanHint} ORDER BY c.spec_id`,
+    ]);
+    return rows.map((source) => [...source]);
+  };
+  const { sql: preparationSql } = getOrgPg();
+  const preparationSources = await readPreparationSources(preparationSql);
+  input.onPhase?.('acceptance-composition-links');
+  await assertRubricCompositionLinksResolve({ rubricId: input.rubricId, composes: compositionRefs });
+  const {
+    readAcceptanceBarContractSnapshot,
+    diffAcceptanceBarContractSnapshots,
+    predictAmendedBarProofFloor,
+    barRequiresAutomatedProof,
+  } = await import('./acceptance-bar-contract-snapshot');
+  const { evaluateAcceptanceBarLifecycle } = await import('./acceptance-bar-lifecycle-evaluator');
+  input.onPhase?.('acceptance-contract-snapshot');
+  const snapshot = await readAcceptanceBarContractSnapshot(subjectPlanHint, {}, {
+    harnessSlug: subjectScope.harnessSlug,
+  });
   input.onPhase?.('acceptance-transaction-acquire');
   const txResult = await withAcceptanceBarAmendmentTransaction(
     {
@@ -5051,8 +5092,18 @@ async function amendAcceptanceBarRubric(
               ...applyRubricAmendment(stored, { rubricId: input.rubricId, criteria: stored.criteria }),
               criteria: stored.criteria.map(normalizeAcceptanceBarCriterion),
             }).data);
-      input.onPhase?.('acceptance-composition-links');
-      await assertRubricCompositionLinksResolve(amended);
+      input.onPhase?.('acceptance-source-revalidation');
+      if (!isDeepStrictEqual(preparationSources, await readPreparationSources(tx)) ||
+          !isDeepStrictEqual(compositionRefs, normalizeRubricCompositionRefs(amended.composes) ?? []) ||
+          (rubricHint.revision !== undefined && rubricHint.revision !== Number(rubricRow.version)) ||
+          (snapshot.plan && (snapshot.plan.revision !== Number(subjectRow.version) ||
+            snapshot.plan.contentHash !== subjectRow.content_hash)) ||
+          (snapshot.rubric && (snapshot.rubric.rubricId !== input.rubricId ||
+            snapshot.rubric.revision !== Number(rubricRow.version)))) {
+        throw new Error(preview
+          ? 'acceptance_bar_amendment_preview_stale: source plans changed during preparation; re-run dryRun'
+          : 'acceptance_bar_amendment_revision_conflict: governing sources changed during preparation; retry with fresh revisions');
+      }
       // EI-24372605712471072: before the subject plan starts, its BARs may name proof
       // files the plan's own items will write. Those are accepted as planned (and named on
       // the preview); a started plan stays strict, and grading always is.
@@ -5409,17 +5460,6 @@ async function amendAcceptanceBarRubric(
         }
       }
 
-      const {
-        readAcceptanceBarContractSnapshot,
-        diffAcceptanceBarContractSnapshots,
-        predictAmendedBarProofFloor,
-        barRequiresAutomatedProof,
-      } = await import('./acceptance-bar-contract-snapshot');
-      const { evaluateAcceptanceBarLifecycle } = await import('./acceptance-bar-lifecycle-evaluator');
-      input.onPhase?.('acceptance-contract-snapshot');
-      const snapshot = await readAcceptanceBarContractSnapshot(subjectPlanHint, {}, {
-        harnessSlug: subjectScope.harnessSlug,
-      });
       if (
         preview &&
         (snapshot.completeness.truncated ||
