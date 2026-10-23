@@ -201,7 +201,8 @@ staging_sync_lock_start() {
   STAGING_SYNC_LOCK_WRITE_FD="${STAGING_SYNC_LOCK_KEEPER[1]:-}"
   [[ -n "$STAGING_SYNC_LOCK_PROCESS_PID" && -n "$STAGING_SYNC_LOCK_READ_FD" && -n "$STAGING_SYNC_LOCK_WRITE_FD" ]] || return 1
   staging_lock_state=""
-  if ! IFS= read -r staging_lock_state <&"$STAGING_SYNC_LOCK_READ_FD"; then
+  if ! IFS= read -r -t 5 staging_lock_state <&"$STAGING_SYNC_LOCK_READ_FD"; then
+    printf '%s\n' 'staging lock: initial acknowledgement unavailable; refusing admission' >&2
     return 1
   fi
   if [[ "$staging_lock_state" == busy ]]; then
@@ -213,7 +214,13 @@ staging_sync_lock_start() {
 staging_sync_lock_shared() {
   printf '%s\n' shared >&"$STAGING_SYNC_LOCK_WRITE_FD" || return 1
   staging_lock_state=""
-  IFS= read -r staging_lock_state <&"$STAGING_SYNC_LOCK_READ_FD" || return 1
+  # The keeper is a separate process: liveness alone cannot guarantee a reply.
+  # Fail closed so the EXIT trap releases this invocation's leases and a later
+  # tick can retry; a missing acknowledgement must never freeze staging forever.
+  if ! IFS= read -r -t 5 staging_lock_state <&"$STAGING_SYNC_LOCK_READ_FD"; then
+    printf '%s\n' 'staging lock: shared acknowledgement unavailable; refusing preparation' >&2
+    return 1
+  fi
   [[ "$staging_lock_state" == shared ]]
 }
 
@@ -221,7 +228,10 @@ staging_sync_lock_exclusive() {
   local budget="${1:-45}" state
   [[ "$budget" =~ ^[1-9][0-9]{0,2}$ ]] && ((budget <= 300)) || return 2
   printf 'exclusive %s\n' "$budget" >&"$STAGING_SYNC_LOCK_WRITE_FD" || return 1
-  IFS= read -r state <&"$STAGING_SYNC_LOCK_READ_FD" || return 1
+  if ! IFS= read -r -t "$((budget + 5))" state <&"$STAGING_SYNC_LOCK_READ_FD"; then
+    printf '%s\n' 'staging lock: exclusive acknowledgement unavailable; refusing publication' >&2
+    return 1
+  fi
   case "$state" in
     exclusive) return 0 ;;
     exclusive-failed:*) return "${state#exclusive-failed:}" ;;
