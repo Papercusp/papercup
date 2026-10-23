@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { buildSync } from 'esbuild';
 
 // Overridable so scripts/mutation-probe.sh can point the suite at a mutated COPY.
 const HELPER =
@@ -101,13 +102,20 @@ describe('staging boot artifact provenance', () => {
     mkdirSync(outdir, { recursive: true });
     const outfile = join(outdir, 'hono-host.mjs');
     writeFileSync(outfile, 'export const trace = true;\n');
-    writeFileSync(outfile + '.meta.json', JSON.stringify({ inputs: { 'bin/host.ts': {} } }));
+    writeFileSync(outfile + '.meta.json', JSON.stringify({ inputs: { 'apps/operator/bin/host.ts': {} } }));
     const sha = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     return { entry, outfile, sha };
   }
 
   it('writes an artifact that a fresh staging process can measure at boot', () => {
     const f = stagingFixture();
+    // bundle_host_esbuild runs through the cache reader at the repository root.
+    // Use the actual compiler's paths so a synthetic operator-relative fixture
+    // cannot hide a mismatch between the build and artifact writer.
+    const built = buildSync({ absWorkingDir: repo, entryPoints: ['apps/operator/bin/host.ts'],
+      outfile: f.outfile, bundle: true, platform: 'node', format: 'esm', metafile: true });
+    expect(Object.keys(built.metafile!.inputs)).toContain('apps/operator/bin/host.ts');
+    writeFileSync(f.outfile + '.meta.json', JSON.stringify(built.metafile));
     const stamped = run('stamp', f.entry);
     expect(stamped.status, stamped.stderr).toBe(0);
     const module = new URL('../../../packages/operator-core/lib/release/operator-artifact.ts', import.meta.url).href;
