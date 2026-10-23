@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { BRIEF_ADMIN, computeIdentityHash, JUDGE_PROMPT_SCAFFOLD_VERSION } from '@papercusp/testing-shell/llm';
 import { S42_CASES, S42_ITEM, S42_PROMPT } from '../llm-testing/scenarios/su/S42-drain-watch-recheck';
 import { LUNA_CAPACITY_PLAN, LUNA_CAPACITY_INSTRUMENTS, lunaCapacityInstruments, validateCapacityRecoveryProof, validateCapacityShipmentProof,
   validateCapacityDiagnosticProof, validateCapacityContinuationProof, validateCapacityContractProof, validateCapacityNativeLlmRun,
-  type NativeCapacityLlmRun, type NativeCapacityLlmContext,
+  validateCapacityBriefReceipt, type NativeCapacityBriefReceipt, type NativeCapacityLlmRun, type NativeCapacityLlmContext,
   type CapacityRecoveryProof, type CapacityShipmentProof, type CapacityDiagnosticProof } from './capacity-recovery-evidence';
 
 const hash = (value: string) => value.repeat(64);
@@ -54,6 +55,47 @@ function shipment(): CapacityShipmentProof {
     probe: { runtime: 'release-operator', sourceDigest: hash('b'), buildDigest: hash('c'), observedAt: stamp(4),
       verdict: 'pass', receiptRef: 'release-probe' } };
 }
+
+describe('native leader-brief receipt custody', () => {
+  function observation() {
+    const proof = diagnostic();
+    proof.scope.receiptRef = 'tool-invocation:17';
+    const result = { ok: true, summary: { fleet: 'luna', claimable_now: {
+      value: proof.briefCount, population: { fleet: 'luna', harness: 'papercusp',
+        basis: proof.scope.populationBasis, spec: { ref: proof.scope.specRef, revision: proof.scope.specRevision } },
+    } } };
+    const native: NativeCapacityBriefReceipt = { id: 17, toolName: 'fleet:leader-brief', status: 'ok',
+      workspaceId: 'papercusp-workspace', actorId: 'leader', invokedAt: stamp(0), durationMs: 1_000,
+      metadata: { identityContribution: { identityId: 'su.fleet-leader', contributionId: 'fleet-leader-brief',
+        status: 'bound', outputRevision: createHash('sha256').update(canonicalJson(result)).digest('hex'),
+        observedAt: stamp(0), scope: { workspace: 'papercusp-workspace', fleet: 'luna', harness: 'papercusp' } } } };
+    const capture = { invocationId: 17, result };
+    const context = { now: stamp(2), startedAt: stamp(0), finishedAt: stamp(1), sourceMatches: true };
+    return { proof, capture, native, context };
+  }
+  it('accepts the exact native producer result and preserves JSONB semantic equality', () => {
+    const { proof, capture, native, context } = observation();
+    capture.result = Object.fromEntries(Object.entries(capture.result).reverse()) as typeof capture.result;
+    expect(validateCapacityBriefReceipt(proof, capture, native, context)).toEqual({ status: 'pass', violations: [] });
+  });
+  it('rejects a substituted result even when its proof count is changed consistently', () => {
+    const { proof, capture, native, context } = observation();
+    proof.briefCount = capture.result.summary.claimable_now.value = 999;
+    expect(validateCapacityBriefReceipt(proof, capture, native, context).violations).toContain('native-brief-custody');
+  });
+  it('rejects an unrelated invocation, missing source, stale observation and changed fleet', () => {
+    for (const mutate of [
+      (o: ReturnType<typeof observation>) => { o.native.id++; },
+      (o: ReturnType<typeof observation>) => { o.context.sourceMatches = false; },
+      (o: ReturnType<typeof observation>) => { o.context.now = stamp(20); },
+      (o: ReturnType<typeof observation>) => { o.proof.scope.fleet = 'foreign'; },
+      (o: ReturnType<typeof observation>) => { o.native.durationMs = null; },
+    ]) {
+      const { proof, capture, native, context } = (() => { const o = observation(); mutate(o); return o; })();
+      expect(validateCapacityBriefReceipt(proof, capture, native, context).status).toBe('fail');
+    }
+  });
+});
 
 describe('Luna census and managed-pickup semantic proof', () => {
   it('accepts a complete leader-coordinated same-member admitted-item pickup', () => {
@@ -153,8 +195,7 @@ describe('Luna independent acceptance and released-artifact join', () => {
   });
 });
 
-describe('serving diagnostic semantic proof', () => {
-  const diagnostic = (): CapacityDiagnosticProof => ({ schemaVersion: 'luna-capacity-diagnostic-v1',
+const diagnostic = (): CapacityDiagnosticProof => ({ schemaVersion: 'luna-capacity-diagnostic-v1',
     plan: LUNA_CAPACITY_PLAN, candidate: candidate(),
     runtime: { id: 'staging-operator', containsSource: true, sourceDigest: hash('b'), buildDigest: hash('c'),
       observedAt: stamp(0), receiptRef: 'runtime-containment' },
@@ -164,6 +205,7 @@ describe('serving diagnostic semantic proof', () => {
     reconciliation: { specRef: 'luna-spec', specRevision: 4, harness: 'papercusp',
       callerFloorExclusions: [{ id: 'WI-cooldown', reason: 'caller-specific cooldown', receiptRef: 'floor-read' }], receiptRef: 'caller-read' },
     diagnosticBudgetMs: 12_000, deadlineReceiptRef: 'bounded-diagnostic-read' });
+describe('serving diagnostic semantic proof', () => {
   it('reconciles the same scope while accounting explicitly for caller-only floors', () => {
     expect(validateCapacityDiagnosticProof(diagnostic()).status).toBe('pass');
   });
@@ -281,6 +323,15 @@ describe('original native S42 trace and prompt provenance', () => {
   });
   it('rejects a normalized trace substituted independently of the stored original tape', () => {
     const r = native('preexisting'); r.rawEvents.pop();
+    expect(validateCapacityNativeLlmRun(r, expected('preexisting')).violations).toContain('native-trace-custody-mismatch');
+  });
+  it('accepts Postgres jsonb key reordering while preserving value and array-order checks', () => {
+    const r = native('preexisting');
+    r.personaTraits = Object.fromEntries(Object.entries(r.personaTraits).reverse()) as typeof r.personaTraits;
+    r.turns[0].toolCalls = r.turns[0].toolCalls.map(call => ({ ...call,
+      input: Object.fromEntries(Object.entries(call.input as Record<string, unknown>).reverse()) }));
+    expect(validateCapacityNativeLlmRun(r, expected('preexisting')).status).toBe('pass');
+    r.turns[0].toolCalls.reverse();
     expect(validateCapacityNativeLlmRun(r, expected('preexisting')).violations).toContain('native-trace-custody-mismatch');
   });
   it('rejects stale scenario/source/identity and a different native arrival world', () => {

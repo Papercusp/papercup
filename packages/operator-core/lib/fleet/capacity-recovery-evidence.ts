@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { computeIdentityHash, JUDGE_PROMPT_SCAFFOLD_VERSION, type PersonaTraits } from '@papercusp/testing-shell/llm';
+import { canonicalJson } from '@papercusp/hash-chain';
 import type { CommandInstrument } from '../rubric-instrument-registry';
 import { judgeS42Run, S42_CASES } from '../llm-testing/scenarios/su/S42-drain-watch-recheck';
 
@@ -77,6 +78,81 @@ export const diagnosticProofSchema = z.object({ schemaVersion: z.literal('luna-c
 }).strict();
 export type CapacityDiagnosticProof = z.infer<typeof diagnosticProofSchema>;
 export interface CapacityProofVerdict { status: 'pass' | 'fail'; violations: string[] }
+export const capacityBriefCaptureSchema = z.object({ invocationId: z.number().int().positive(),
+  result: z.record(z.string(), z.unknown()),
+}).strict();
+/** Read from tool_invocations by the instrument, never from artifact-authored metadata. */
+export interface NativeCapacityBriefReceipt {
+  id: number; toolName: string; status: string; workspaceId: string; actorId: string | null;
+  invokedAt: string; durationMs: number | null; metadata: unknown;
+}
+const record = (v: unknown): Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
+
+/** The existing identity producer hashes the complete, unshaped brief. A saved
+ * result is evidence only when its hash resolves to that native producer row. */
+export function validateCapacityBriefReceipt(input: unknown, capture: unknown,
+  native: NativeCapacityBriefReceipt | null, context: {
+    now: string; startedAt: string; finishedAt: string; sourceMatches: boolean;
+  }): CapacityProofVerdict {
+  const p = diagnosticProofSchema.safeParse(input);
+  const r = recoveryProofSchema.safeParse(input);
+  const c = capacityBriefCaptureSchema.safeParse(capture);
+  if ((!p.success && !r.success) || !c.success || !native) return { status: 'fail', violations: ['native-brief-missing'] };
+  const errors: string[] = [];
+  const data = c.data.result;
+  const pin = record(record(native.metadata).identityContribution);
+  const scope = record(pin.scope);
+  const resultHash = createHash('sha256').update(canonicalJson(data)).digest('hex');
+  if (native.id !== c.data.invocationId || native.toolName !== 'fleet:leader-brief'
+    || native.status !== 'ok' || native.workspaceId !== 'papercusp-workspace'
+    || data.ok !== true || data.notLeader || pin.status !== 'bound'
+    || pin.identityId !== 'su.fleet-leader' || pin.contributionId !== 'fleet-leader-brief'
+    || pin.outputRevision !== resultHash) errors.push('native-brief-custody');
+  if (!context.sourceMatches) errors.push('native-brief-source');
+  const observedAt = typeof pin.observedAt === 'string' ? Date.parse(pin.observedAt) : NaN;
+  const invokedAt = Date.parse(native.invokedAt);
+  const [start, end, now] = [context.startedAt, context.finishedAt, context.now].map(Date.parse);
+  if (native.durationMs === null || ![observedAt, invokedAt, start, end, now].every(Number.isFinite)
+    || !(start <= invokedAt && invokedAt <= observedAt && observedAt <= invokedAt + (native.durationMs ?? 0)
+      && observedAt <= end && end <= now && now - observedAt <= 15 * 60_000)) errors.push('native-brief-stale-or-outside-run');
+  const receiptRef = 'tool-invocation:' + native.id;
+  const summary = record(data.summary);
+  if (p.success) {
+    const proof = p.data;
+    const actual = record(summary.claimable_now);
+    const population = record(actual.population);
+    const spec = record(population.spec);
+    if (scope.workspace !== native.workspaceId || scope.fleet !== proof.scope.fleet
+      || scope.harness !== proof.scope.harness || population.fleet !== proof.scope.fleet
+      || population.harness !== proof.scope.harness || proof.scope.receiptRef !== receiptRef
+      || proof.scope.specRef !== (spec.ref ?? null) || proof.scope.specRevision !== (spec.revision ?? null)
+      || proof.scope.populationBasis !== population.basis || proof.briefCount !== actual.value
+      || (proof.status === 'degraded') !== Boolean(actual.unknown)) errors.push('native-diagnostic-population');
+  } else if (r.success) {
+    const proof = r.data;
+    const s = proof.snapshot;
+    const members = Array.isArray(data.members) ? data.members.map(record) : [];
+    if (scope.workspace !== native.workspaceId || scope.fleet !== s.fleet || summary.fleet !== s.fleet
+      || native.actorId !== s.leaderId || s.receiptRef !== receiptRef
+      || s.observedAt !== pin.observedAt || !pin.specificationRevision
+      || s.generation !== pin.specificationRevision + ':' + pin.outputRevision
+      || data.membersTruncated || record(summary.population).complete === false
+      || !sameSet(s.roster, members.map(m => String(m.agentId)))
+      || s.members.some(m => m.receiptRef !== receiptRef)) errors.push('native-census-registration');
+    for (const m of s.members) {
+      const actual = members.find(a => a.agentId === m.id);
+      const capacity = record(actual?.parkedCapacity);
+      if (!actual || actual.sessionState !== m.runtimeState || actual.wakeable !== m.wakeable
+        || (m.runtimeState === 'parked' && (capacity.status !== m.disposition
+          || capacity.activeClaims !== m.activeClaims || capacity.maxConcurrentClaims !== m.effectiveSpec.maxConcurrentClaims
+          || !sameSet(Array.isArray(capacity.heldIds) ? capacity.heldIds as string[] : [], m.heldIds)
+          || !sameSet(Array.isArray(capacity.blockerParkedIds) ? capacity.blockerParkedIds as string[] : [], m.blockerParkedIds))))
+        errors.push('native-census-member:' + m.id);
+    }
+  }
+  return { status: errors.length ? 'fail' : 'pass', violations: errors };
+}
 export interface CapacityContractContext { specSetHash: string; barSetHash: string; sourceFingerprint: string }
 /** Context is read from the native measurement and current stores by the instrument. */
 export function validateCapacityContractProof(input: unknown, current: CapacityContractContext): CapacityProofVerdict {
@@ -236,7 +312,7 @@ export function validateCapacityNativeLlmRun(run: NativeCapacityLlmRun, expected
   const kind = S42_CASES.find(kind => expected.scenarioId === 'su-S42-drain-watch-' + kind);
   if (!kind || !run.id || run.status !== 'passed' || run.scenarioId !== expected.scenarioId
     || run.scenarioVersion !== expected.scenarioVersion || run.scenarioHash !== expected.scenarioHash
-    || run.personaId !== expected.personaId || JSON.stringify(run.personaTraits) !== JSON.stringify(expected.personaTraits)
+    || run.personaId !== expected.personaId || canonicalJson(run.personaTraits) !== canonicalJson(expected.personaTraits)
     || run.rubricVersion !== expected.rubricVersion || !run.sutModel || !run.judgeModel) violations.push('native-llm-identity');
   const identity = computeIdentityHash({ ...expected, sutModel: run.sutModel, judgeModel: run.judgeModel,
     judgeScaffoldVersion: JUDGE_PROMPT_SCAFFOLD_VERSION });
@@ -259,7 +335,7 @@ export function validateCapacityNativeLlmRun(run: NativeCapacityLlmRun, expected
       const data = event.data as { name?: unknown; input?: unknown };
       return { name: data?.name, input: data?.input };
     });
-    if (JSON.stringify(originalCalls) !== JSON.stringify(normalizedCalls)) violations.push('native-trace-custody-mismatch');
+    if (canonicalJson(originalCalls) !== canonicalJson(normalizedCalls)) violations.push('native-trace-custody-mismatch');
     if (kind) violations.push(...judgeS42Run(kind, { turns: run.turns }).map(v => v.assertKind));
   }
   return { status: violations.length ? 'fail' : 'pass', violations: [...new Set(violations)] };
