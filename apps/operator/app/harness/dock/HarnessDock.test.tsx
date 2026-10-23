@@ -150,7 +150,7 @@ describe('HarnessDock (shared DockWorkspace adapter)', () => {
     const panel = dockWorkbenchMock.panels[0];
     const originalTitle = panel.title;
     try {
-      const view = render(<HarnessDock layoutName="default" />);
+      const view = rtlRender(<NuqsTestingAdapter hasMemory><HarnessDock layoutName="default" /></NuqsTestingAdapter>);
       const api = { getPanel: vi.fn(() => panel), maximizeGroup: vi.fn(), exitMaximizedGroup: vi.fn() };
       act(() => lastDockProps().onApiReady?.(api));
       const control = () => document.querySelector<HTMLButtonElement>(`button[data-dock-pane-id="${panel.id}"]`);
@@ -158,7 +158,7 @@ describe('HarnessDock (shared DockWorkspace adapter)', () => {
       fireEvent.click(control()!);
       await waitFor(() => expect(api.maximizeGroup).toHaveBeenCalledWith(panel));
       panel.title = 'Work items · papercusp (3)';
-      view.rerender(<NuqsTestingAdapter><HarnessDock layoutName="default" /></NuqsTestingAdapter>);
+      view.rerender(<NuqsTestingAdapter hasMemory><HarnessDock layoutName="default" /></NuqsTestingAdapter>);
       expect(control()?.getAttribute('aria-label')).toBe(`Restore ${panel.title}`);
       fireEvent.click(control()!);
       await waitFor(() => expect(api.exitMaximizedGroup).toHaveBeenCalledTimes(1));
