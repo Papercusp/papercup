@@ -457,7 +457,7 @@ try:
                 fields.append(value)
                 if len(fields) == 9:
                     kind, dev, ino, mtime, ctime, blocks, owner, nlink, path = fields
-                    valid = kind in [b'f', b'd', b'l', b'b', b'c', b's', b'p'] and path.startswith(prefix) and all(v.isdigit() for v in [dev, ino, blocks, owner, nlink]) and all(re.fullmatch(rb'-?\\d+(?:\\.\\d{1,9}0*)?', v) for v in [mtime, ctime])
+                    valid = kind in [b'a', b'f', b'd', b'l', b'b', b'c', b's', b'p'] and path.startswith(prefix) and all(v.isdigit() for v in [dev, ino, blocks, owner, nlink]) and (kind != b'a' or int(nlink) > 0) and all(re.fullmatch(rb'-?\\d+(?:\\.\\d{1,9}0*)?', v) for v in [mtime, ctime])
                     if valid:
                         deadline = time.monotonic() + idle
                     child_path = prefix + path[len(prefix):].split(b'/')[0]
@@ -500,6 +500,8 @@ excluded = set(config['excluded'])
 cutoff = float(config['retainAfterMs'])
 uid = config['uid']
 flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+totals = {}
+candidate_path = None
 
 def identity(value):
     return value.st_dev, value.st_ino
@@ -508,12 +510,39 @@ def timestamp(ns):
     seconds, nanos = divmod(abs(ns), 1000000000)
     return ('-' if ns < 0 else '') + str(seconds) + '.' + str(nanos).zfill(9)
 
+def flush():
+    for (dev, owner), total in totals.items():
+        ino, mtime, ctime, blocks, count = total
+        fields = ['a', str(dev), str(ino), timestamp(mtime), timestamp(ctime), str(blocks), str(owner), str(count), candidate_path]
+        sys.stdout.buffer.write(b'\\0'.join(os.fsencode(field) for field in fields) + b'\\0')
+    totals.clear()
+    sys.stdout.buffer.flush()
+
 def emit(path, value):
     mode = value.st_mode
     kind = 'd' if stat.S_ISDIR(mode) else 'f' if stat.S_ISREG(mode) else 'l' if stat.S_ISLNK(mode) else 'p' if stat.S_ISFIFO(mode) else 's' if stat.S_ISSOCK(mode) else 'b' if stat.S_ISBLK(mode) else 'c' if stat.S_ISCHR(mode) else '?'
-    fields = [kind, str(value.st_dev), str(value.st_ino), timestamp(value.st_mtime_ns), timestamp(value.st_ctime_ns), str(value.st_blocks), str(value.st_uid), str(value.st_nlink), path]
-    sys.stdout.buffer.write(b'\\0'.join(os.fsencode(field) for field in fields) + b'\\0')
-    return path in excluded or kind not in ['f', 'd'] or value.st_dev != config['dev'] or (uid is not None and value.st_uid != uid) or max(value.st_mtime_ns, value.st_ctime_ns) / 1000000 >= cutoff
+    boundary = path in excluded or kind not in ['f', 'd'] or value.st_dev != config['dev'] or (uid is not None and value.st_uid != uid) or max(value.st_mtime_ns, value.st_ctime_ns) / 1000000 >= cutoff
+    # Aggregate before crossing the worker pipe, rather than formatting and
+    # reparsing nine fields for every ordinary file in the supervisor. Keep
+    # identities, hardlinks, build tags and eligibility boundaries verbatim.
+    if not boundary and kind == 'f' and value.st_nlink == 1 and path != candidate_path and not path.endswith('/CACHEDIR.TAG'):
+        key = (value.st_dev, value.st_uid)
+        total = totals.get(key)
+        if total is None:
+            total = [value.st_ino, value.st_mtime_ns, value.st_ctime_ns, 0, 0]
+            totals[key] = total
+        total[1] = max(total[1], value.st_mtime_ns)
+        total[2] = max(total[2], value.st_ctime_ns)
+        total[3] += value.st_blocks
+        total[4] += 1
+        # Bounded batches keep real metadata progress observable even inside
+        # a single large child, without accumulating its file inventory.
+        if total[4] >= 1024:
+            flush()
+    else:
+        fields = [kind, str(value.st_dev), str(value.st_ino), timestamp(value.st_mtime_ns), timestamp(value.st_ctime_ns), str(value.st_blocks), str(value.st_uid), str(value.st_nlink), path]
+        sys.stdout.buffer.write(b'\\0'.join(os.fsencode(field) for field in fields) + b'\\0')
+    return boundary
 
 def descend(parent, name, expected):
     fd = os.open(name, flags, dir_fd=parent)
@@ -526,6 +555,8 @@ def descend(parent, name, expected):
         raise
 
 def candidate(parent, name, path):
+    global candidate_path
+    candidate_path = path
     stack = []
     try:
         try:
@@ -564,6 +595,7 @@ def candidate(parent, name, path):
         for fd, entries, _ in reversed(stack):
             entries.close()
             os.close(fd)
+        flush()
 
 try:
     root_fd = os.open(root, flags)
@@ -668,7 +700,7 @@ export async function inspectRetentionTrees(root: string, opts: {
     const take = (row: string[]) => {
       const [type, dev, ino, mtime, ctime, blocks, owner, nlink, path] = row;
       const modifiedMs = findTimestampMs(mtime!), changedMs = findTimestampMs(ctime!);
-      const aggregate = type === 'a' && progressSupervised;
+      const aggregate = type === 'a' && (progressSupervised || !opts.includeRecent);
       if (!path?.startsWith(root + '/') || (!/^[fdlbcsp]$/.test(type!) && !aggregate) ||
           ![dev, ino, blocks, owner, nlink].every((v) => /^\d+$/.test(v!)) || modifiedMs === undefined || changedMs === undefined) {
         malformed = true; return;
