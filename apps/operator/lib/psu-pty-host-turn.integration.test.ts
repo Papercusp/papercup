@@ -37,6 +37,7 @@ import {
   metaPathFor,
   eventLogPathForOwner,
   nativeLatestExecution,
+  nativeLatestTurnCompleted,
   KICKOFF_PROOF_PATH_ENV,
   KICKOFF_PROOF_TOKEN_ENV,
 } from '../scripts/psu-pty-host.mjs';
@@ -3504,7 +3505,6 @@ describe(
         const sock = socketPathFor(ownerId);
         const meta = metaPathFor(ownerId);
         const { captured, io } = fakeIo(); // bridgeTty:false — the exact gap closed
-
         const childCode =
           "process.stdout.write('BOOT:'+process.pid+'\\n');" +
           "process.stdin.setEncoding('utf8');let b='';" +
@@ -3587,6 +3587,27 @@ describe(
         const sock = socketPathFor(ownerId);
         const meta = metaPathFor(ownerId);
         const { captured, io } = fakeIo(); // bridgeTty:false — the exact gap closed
+        const fixtureEnv = {
+          ...hermeticEnv(),
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+          PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS: '200',
+        };
+        const startedAt = Date.now();
+        const outputTimeline: Array<{ ms: number; text: string }> = [];
+        const writeOutput = io.stdout.write;
+        io.stdout.write = (data: Buffer | string) => {
+          outputTimeline.push({ ms: Date.now() - startedAt, text: data.toString().slice(0, 100) });
+          writeOutput(data);
+        };
+        const nativeObservation = () => ({
+          completed: nativeLatestTurnCompleted({ agent: 'claude', env: fixtureEnv, completedAtOrAfterMs: startedAt }),
+          execution: nativeLatestExecution({ agent: 'claude', env: fixtureEnv, receivedAtMs: startedAt }),
+        });
 
         let exitCode: number | null = null;
         const done = hostThroughPty({
@@ -3602,16 +3623,7 @@ describe(
             'fixture.md',
           ],
           cwd: '/tmp',
-          env: {
-            ...hermeticEnv(),
-            PAPERCUSP_AGENT: 'claude',
-            PAPERCUSP_SID: ownerId,
-            TERM: 'xterm-256color',
-            PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
-            PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000', // generous — the agent DOES go quiet
-            PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
-            PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS: '200',
-          },
+          env: fixtureEnv,
           ownerId,
           io,
           bridgeTty: false,
@@ -3630,13 +3642,21 @@ describe(
         // even after the former 900 ms timer would have expired.
         await sleep(1100);
         expect(existsSync(releaseBusy), hostTestDiagnostics(ownerId, captured)).toBe(false);
+        const injectAtMs = Date.now() - startedAt;
+        const nativeBeforeInject = nativeObservation();
         const ok = await injectIntoHost(sock, { mode: 'reset', data: 'midturn-reset-carry' });
         expect(ok).toBe(true);
 
         // Before explicit release, the /clear + carry must be HELD — nothing
         // written into the busy child yet.
         await sleep(400);
-        const heldDiagnostics = hostTestDiagnostics(ownerId, captured);
+        const heldDiagnostics = JSON.stringify({
+          protocol: JSON.parse(hostTestDiagnostics(ownerId, captured)),
+          injectAtMs, heldAtMs: Date.now() - startedAt,
+          nativeBeforeInject, nativeAtAssertion: nativeObservation(),
+          outputTimeline,
+        });
+        console.info('RESET_BOUNDARY_OBSERVATION', heldDiagnostics);
         expect(existsSync(releaseBusy), heldDiagnostics).toBe(false);
         expect(captured(), heldDiagnostics).not.toContain('ECHO:midturn-reset-carry');
         expect(captured(), heldDiagnostics).not.toContain('midturn-reset-carry');
