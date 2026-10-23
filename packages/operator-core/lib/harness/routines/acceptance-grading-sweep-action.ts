@@ -26,6 +26,8 @@
  * re-running the idempotent dispatcher here lets that delayed failure reach its
  * safe retirement/fallback path instead of leaving the target scorecard pending.
  */
+import { randomUUID } from 'node:crypto';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { registerSystemAction } from './system-actions';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import type { AcceptanceBarPinSweepCursor, AcceptanceBarPinSweepResult } from '../../acceptance-bar-pin-sweep';
@@ -67,6 +69,30 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
 
   const { sql } = getOrgPg();
   const gradingLaunch = gradingLaunchProfile({ gradingLaunch: ctx.payloadTemplate?.gradingLaunch });
+  const sweepId = ctx.workflowId ?? randomUUID();
+  const stages: Record<string, { durationMs: number; outcome: 'completed' | 'failed' }> = {};
+  // EI-26619271533407778: a registry long-tick report cannot identify which
+  // awaited repair owns the guard. Keep that identity visible while it runs,
+  // and retain the settled measurements in the action's existing diagnostics.
+  const observeStage = async <T>(stage: string, work: () => Promise<T>): Promise<T> => {
+    const startedAt = Date.now();
+    const prefix = `[acceptance-grading-sweep] sweep=${sweepId} stage=${stage}`;
+    console.log(`${prefix} started`);
+    const progress = managedSetInterval(`acceptance-grading-sweep-stage:${sweepId}:${stage}`, 60_000, () => {
+      console.warn(`${prefix} still running elapsedMs=${Date.now() - startedAt}`);
+    }, { category: 'watchdog' });
+    let outcome: 'completed' | 'failed' = 'failed';
+    try {
+      const result = await work();
+      outcome = 'completed';
+      return result;
+    } finally {
+      progress.stop();
+      const durationMs = Date.now() - startedAt;
+      stages[stage] = { durationMs, outcome };
+      console.log(`${prefix} ${outcome} elapsedMs=${durationMs}`);
+    }
+  };
 
   // WI-6554700010014766: a post-start neutral edit may strand a pin. Recover it
   // before grading, using the same clock rather than adding another routine.
@@ -74,7 +100,7 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
   let subjectPinError: string | undefined;
   try {
     const { runAcceptanceBarPinSweep } = await import('../../acceptance-bar-pin-sweep');
-    subjectPins = await runAcceptanceBarPinSweep({ after: subjectPinCursor });
+    subjectPins = await observeStage('subject-pins', () => runAcceptanceBarPinSweep({ after: subjectPinCursor }));
     subjectPinCursor = subjectPins.nextCursor;
     if (subjectPins.errors.length > 0) {
       subjectPinError = `subject-pin reconciliation failed for ${subjectPins.errors.length} plan(s)`;
@@ -83,8 +109,9 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
     subjectPinError = `subject-pin reconciliation failed: ${error instanceof Error ? error.message : error}`;
   }
 
+  let auditError: string | undefined;
   try {
-    const result = await reconcilePendingGradingAudits({
+    const result = await observeStage('pending-audits', () => reconcilePendingGradingAudits({
       ctx: {
         ...(gradingLaunch ? { gradingLaunch } : {}),
         workspaceId: ctx.workspaceId,
@@ -98,7 +125,7 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
         userId: null,
       } as never,
       harness: ctx.installSlug,
-    });
+    }));
     const launched = result.receipts.filter((receipt) => receipt.state === 'launched').length;
     if (launched > 0) {
       console.log(`[acceptance-grading-sweep] reconciled ${launched} pending grading-integrity auditor(s)`);
@@ -114,9 +141,10 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
       '[acceptance-grading-sweep] pending grading-integrity reconciliation failed:',
       error instanceof Error ? error.message : error,
     );
+    auditError = `pending grading-integrity reconciliation failed: ${error instanceof Error ? error.message : error}`;
   }
 
-  await runAcceptanceGradingSweep({
+  await observeStage('plan-grading', () => runAcceptanceGradingSweep({
     now: () => Date.now(),
 
     /**
@@ -267,12 +295,13 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
         console.warn(`[acceptance-grading-sweep] ${ev.kind} for ${ev.planSlug}: ${'error' in ev ? ev.error : ''}`);
       }
     },
-  });
+  }));
 
   // A failed sub-pass remains visible through routine health without suppressing
   // independent grading/audit recovery or making a partial scan look healthy.
+  const softError = [subjectPinError, auditError].filter(Boolean).join('; ');
   return {
-    diagnostics: { subjectPins: subjectPins ?? { error: subjectPinError } },
-    ...(subjectPinError ? { softError: subjectPinError } : {}),
+    diagnostics: { subjectPins: subjectPins ?? { error: subjectPinError }, stages },
+    ...(softError ? { softError } : {}),
   };
 });
