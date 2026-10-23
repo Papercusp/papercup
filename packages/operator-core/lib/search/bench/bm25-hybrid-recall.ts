@@ -454,6 +454,30 @@ export interface PairResult {
   arms: Partial<Record<Arm, ArmObservation>>;
 }
 
+/** A source-derived sampling stratum, not a claim about all user queries. */
+export const BM25_PROBE_SAMPLING_POLICY = {
+  population: 'identity-safe derived known-item probes',
+  eligibility: 'nonempty derivable query unchanged by the shared identity scrubber',
+  exclusions: ['not-derivable', 'identity-bearing'] as const,
+  selection: 'seeded candidate order; disjoint target/query samples; requested sample size is never lowered',
+};
+
+/** Freeze eligibility before search and retain every candidate without leaking its text. */
+export function selectBm25ProbeInputs(source: string,
+  candidates: readonly { targetId: string; style: QueryStyle; query: string | null }[], n: number) {
+  const eligible = candidates.flatMap(p => p.query?.trim() && redactIdentityLeaks(p.query) === p.query
+    ? [{ source, targetId: p.targetId, style: p.style, query: p.query, arms: {} } satisfies PairResult] : []);
+  const split = splitDisjointSamples(eligible, n);
+  const selected = new Map<string, string>();
+  for (const pass of ['paired', 'warmup', 'steady'] as const)
+    for (const p of split[pass]) selected.set(JSON.stringify([p.targetId, p.style, p.query]), pass);
+  return { ...split, candidates: candidates.map((p, index) => ({ source, index, targetId: p.targetId, style: p.style,
+    queryFingerprint: p.query === null ? null : createHash('sha256').update(p.query).digest('hex'),
+    disposition: !p.query?.trim() ? 'not-derivable' : redactIdentityLeaks(p.query) !== p.query ? 'identity-bearing' :
+      selected.get(JSON.stringify([p.targetId, p.style, p.query])) ?? 'not-selected',
+  })) };
+}
+
 const queryInputPairSchema = z.object({
   source: z.enum(['work_item', 'session_turn']), targetId: z.string().min(1).refine(s => !!s.trim()),
   style: z.enum(['fragment', 'keyword']), query: z.string().min(1).refine(q => !!q.trim()),

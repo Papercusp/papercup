@@ -57,6 +57,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import {
   ARMS,
   BM25_EXECUTED_SOURCE_PATHS,
+  BM25_PROBE_SAMPLING_POLICY,
   COLD_LATENCY_P95_CEILING_MS,
   bm25AttemptId,
   declareBm25Attempts,
@@ -82,7 +83,7 @@ import {
   redactPairsForArtifact,
   sampleFingerprint,
   selectReplayPairs,
-  splitDisjointSamples,
+  selectBm25ProbeInputs,
   statementDeltas,
   sourceQualificationManifestSchema,
   summarizeSource,
@@ -457,7 +458,7 @@ async function main(): Promise<number> {
   if (sourceNames.length === 0) throw new Error(`--sources must name one of ${Object.keys(SOURCE_TABLES).join(', ')}`);
   if (replayFrom && (!Number.isInteger(replayReps) || replayReps < 1 || replayReps > 10))
     throw new Error('--replay-reps must be an integer from 1 to 10');
-  if ([out, out.replace(/\.json$/, '.md'), `${out}.inputs.json`, `${out}.declaration.json`, `${out}.attempts.jsonl`, `${out}.ledger.json`].some(p => fs.existsSync(p)))
+  if ([out, out.replace(/\.json$/, '.md'), `${out}.inputs.json`, `${out}.sampling.json`, `${out}.candidates.json`, `${out}.declaration.json`, `${out}.attempts.jsonl`, `${out}.ledger.json`].some(p => fs.existsSync(p)))
     throw new Error('artifact path already exists; preserve every prior result and choose a new declared path');
 
   const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
@@ -560,6 +561,13 @@ async function main(): Promise<number> {
   const pairs: PairResult[] = [];
   const warmupPairs: PairResult[] = [];
   const steadyPairs: PairResult[] = [];
+  const candidateReceipts: ReturnType<typeof selectBm25ProbeInputs>['candidates'] = [];
+  if (!replayFrom && !inputsFrom) {
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(`${out}.sampling.json`, `${JSON.stringify({ declaredAt: new Date().toISOString(),
+      seed, workspaceId, sources: sourceNames, requestedPerSourcePerPass: perSource,
+      policy: BM25_PROBE_SAMPLING_POLICY }, null, 2)}\n`, { flag: 'wx' });
+  }
   if (replayFrom) {
     const saved = JSON.parse(fs.readFileSync(replayFrom, 'utf8')) as { warmPairs: PairResult[] };
     if (!Array.isArray(saved.warmPairs)) throw new Error('--replay-from must contain a saved warmPairs array');
@@ -571,13 +579,13 @@ async function main(): Promise<number> {
     pairs.push(...saved.paired); warmupPairs.push(...saved.warmup); steadyPairs.push(...saved.steady);
   } else for (const source of sourceNames) {
     const candidates = await sampleCandidates(pg, source, workspaceId, perSource * 3, seed);
-    const derived: PairResult[] = [];
-    for (const [i, c] of candidates.entries()) {
+    const derived = candidates.map((c, i) => {
       const style: QueryStyle = i % 2 === 0 ? 'fragment' : 'keyword';
       const query = canary.deriveCanaryQuery(c.text, style);
-      if (query) derived.push({ source, targetId: c.id, style, query, arms: {} });
-    }
-    const split = splitDisjointSamples(derived, perSource);
+      return { targetId: c.id, style, query };
+    });
+    const split = selectBm25ProbeInputs(source, derived, perSource);
+    candidateReceipts.push(...split.candidates);
     pairs.push(...split.paired);
     warmupPairs.push(...split.warmup);
     steadyPairs.push(...split.steady);
@@ -586,6 +594,8 @@ async function main(): Promise<number> {
         `${split.warmup.length} warm-up, ${split.steady.length} steady (disjoint)`,
     );
   }
+  if (!replayFrom && !inputsFrom) fs.writeFileSync(`${out}.candidates.json`,
+    `${JSON.stringify({ policy: BM25_PROBE_SAMPLING_POLICY, candidates: candidateReceipts }, null, 2)}\n`, { flag: 'wx' });
   const fingerprint = sampleFingerprint(pairs);
   const inputBytes = replayFrom ? null : savedInputBytes ?? `${JSON.stringify(freezeBm25QueryInputs({
     preparedAt: new Date().toISOString(), seed, workspaceId, sources: sourceNames, pairsPerSource: perSource, configuration,

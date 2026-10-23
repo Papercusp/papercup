@@ -17,6 +17,7 @@ import {
   bm25QueryInputsSchema,
   freezeBm25QueryInputs,
   restoreBm25QueryInputs,
+  selectBm25ProbeInputs,
   reconcileBm25Attempts,
   BM25_EXECUTED_SOURCE_PATHS,
   LATENCY_P95_CEILING_MS,
@@ -172,6 +173,22 @@ describe('frozen benchmark query inputs', () => {
     const frozen = freeze();
     const query = '/home/' + ['fictional', 'bench', 'account'].join('-') + '/private';
     expect(bm25QueryInputsSchema.safeParse({ ...frozen, paired: [{ ...frozen.paired[0]!, query }] }).success).toBe(false);
+  });
+  it('accounts for ineligible probe candidates without rewriting queries or shrinking the requested sample', () => {
+    const privateQuery = '/home/' + ['fictional', 'bench', 'account'].join('-') + '/private';
+    const selected = selectBm25ProbeInputs('work_item', [
+      { targetId: 'private', style: 'fragment', query: privateQuery },
+      { targetId: 'empty', style: 'keyword', query: null },
+      { targetId: 'safe', style: 'fragment', query: 'exact  original bytes' },
+      { targetId: 'duplicate-query', style: 'keyword', query: 'exact  original bytes' },
+    ], 60);
+    expect(selected.paired).toEqual([{ source: 'work_item', targetId: 'safe', style: 'fragment', query: 'exact  original bytes', arms: {} }]);
+    expect(selected.warmup).toEqual([]);
+    expect(selected.steady).toEqual([]);
+    expect(selected.candidates.map(c => c.disposition)).toEqual(['identity-bearing', 'not-derivable', 'paired', 'not-selected']);
+    expect(selected.candidates).toHaveLength(4);
+    expect(selected.candidates.every(c => c.queryFingerprint === null || c.queryFingerprint.length === 64)).toBe(true);
+    expect(JSON.stringify(selected.candidates)).not.toContain(privateQuery);
   });
 });
 
