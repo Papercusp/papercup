@@ -259,3 +259,53 @@ export function comparePermissionPopulations(
   const removed = before.allowed.filter(atom => !after.allowed.includes(atom)).sort();
   return { kind: added.length ? 'widening' : removed.length ? 'narrowing' : 'neutral', added, removed };
 }
+
+export interface PermissionChangeInput {
+  /** Host-derived current authorities and the edit action's actual target. */
+  current: AuthoritySnapshot;
+  request: PermissionRequest;
+  /** Pinned when the before-image was measured; recheck at the write boundary. */
+  expected: AuthorityRevisionVector | null | undefined;
+  before: PermissionPopulationProof;
+  after: PermissionPopulationProof;
+  /** Complete finite proofs for EVERY current platform floor, not a caller's simulation. */
+  fixedFloors: readonly { authority: AuthorityRevision; permissions: PermissionPopulationProof }[];
+}
+export interface PermissionChangeAssessment {
+  canApplyWithoutApproval: boolean;
+  requiresOwnerApproval: boolean;
+  code: 'allowed-without-approval' | 'edit-denied' | 'stale-before-state' |
+    'floor-unavailable' | 'floor-denied' | 'approval-required';
+  edit: EffectivePermissionDecision;
+  comparison: PermissionChangeComparison;
+}
+
+/**
+ * A narrowing proof never grants edit authority or overrides a fixed floor.
+ * Widening/unknown changes remain refused here: P-002 must route them through
+ * the existing sensitive-action approval seat and recheck exact owner receipts.
+ * This pure assessment neither accepts approval claims nor performs a write;
+ * its host must bind the population proofs to these revisions and hold the
+ * transaction/lease through its protected effect.
+ */
+export function assessPermissionChange(input: PermissionChangeInput, now: Date = new Date()): PermissionChangeAssessment {
+  const comparison = comparePermissionPopulations(input.before, input.after);
+  const edit = revalidateEffectivePermission(input.current, input.request, input.expected, now);
+  const refuse = (code: PermissionChangeAssessment['code']): PermissionChangeAssessment => ({
+    canApplyWithoutApproval: false, requiresOwnerApproval: code === 'approval-required', code, edit, comparison,
+  });
+  if (!edit.allowed) return refuse(edit.code === 'authority-stale' ? 'stale-before-state' : 'edit-denied');
+  const floors = input.current.policies.filter(policy => policy.kind === 'platform');
+  if (!Array.isArray(input.fixedFloors) || input.fixedFloors.length !== floors.length ||
+      input.fixedFloors.some(proof => !proof?.authority || !floors.some(floor =>
+        keyOf(floor) === keyOf(proof.authority) && floor.revision === proof.authority.revision)) ||
+      !unique(input.fixedFloors.map(proof => keyOf(proof.authority)))) return refuse('floor-unavailable');
+  for (const floor of input.fixedFloors) {
+    const withinFloor = comparePermissionPopulations(floor.permissions, input.after);
+    if (withinFloor.kind === 'unknown') return refuse('floor-unavailable');
+    if (withinFloor.kind === 'widening') return refuse('floor-denied');
+  }
+  if (comparison.kind === 'unknown' || comparison.kind === 'widening') return refuse('approval-required');
+  return { canApplyWithoutApproval: true, requiresOwnerApproval: false,
+    code: 'allowed-without-approval', edit, comparison };
+}
