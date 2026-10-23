@@ -1531,6 +1531,7 @@ describe('retention on a real fixture tree', () => {
     const waiting = new Promise<void>((resolve) => { queued = resolve; });
     let protectedByPeer = false;
     let censusCompleted = false;
+    const protectionReads: boolean[] = [];
     const inspectTrees = vi.fn(async (path: string, input: Parameters<typeof inspectRetentionTrees>[1]) => {
       const result = await inspectRetentionTrees(path, input);
       // Queue the writer after native IO has completed. This fixture exercises
@@ -1540,8 +1541,11 @@ describe('retention on a real fixture tree', () => {
       return result;
     });
     const reclaim = runDiskReclaimOnce({ ...options, inspectTrees,
-      readProtection: async () => ({ paths: protectedByPeer && kind === 'lease' ? [paths[1]!] : [],
-        pins: protectedByPeer && kind === 'pin' ? [{ paths: [paths[1]!], expiresAt: new Date(options.nowMs + 60_000).toISOString() }] : [] }),
+      readProtection: async ({ renewEvidence }) => {
+        protectionReads.push(renewEvidence);
+        return { paths: protectedByPeer && kind === 'lease' ? [paths[1]!] : [],
+          pins: protectedByPeer && kind === 'pin' ? [{ paths: [paths[1]!], expiresAt: new Date(options.nowMs + 60_000).toISOString() }] : [] };
+      },
       removeEntry: async (entry) => { expect(protectedByPeer).toBe(true); await rm(entry.path); },
     });
     await inspecting;
@@ -1551,6 +1555,11 @@ describe('retention on a real fixture tree', () => {
     try { await waiting; } finally { finish(); }
     const receipt = await reclaim; await peer;
     expect(receipt.complete).toBe(true);
+    // The peer's new protection must be read after handoff, while the global
+    // open-evidence maintenance query/renewal is admitted only once per pass.
+    expect(protectionReads.length).toBeGreaterThan(1);
+    expect(protectionReads[0]).toBe(true);
+    expect(protectionReads.slice(1).every(renew => renew === false)).toBe(true);
     expect(inspectTrees.mock.calls.filter(([, input]) => !input.paths)).toHaveLength(1);
     expect(receipt.entries.find((entry) => entry.path === paths[1])).toMatchObject({ status: 'protected', reason: 'live retention lease or pin' });
     await expect(stat(paths[0]!)).rejects.toMatchObject({ code: 'ENOENT' });

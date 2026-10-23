@@ -139,8 +139,10 @@ export interface DiskReclaimOptions {
   delegates?: readonly ReclaimDelegate[];
   /** Additional leases are resolved by the runtime before this planner runs. */
   protectedPaths?: readonly string[];
-  /** Resolve leases after acquiring the reclaim mutex, shared with pin mutations. */
-  readProtection?: () => Promise<{ paths: readonly string[]; pins?: readonly RetentionPinProtection[] }>;
+  /** Resolve leases after every mutex acquisition. Open-evidence lease renewal
+   * is once per pass; intake pins new evidence under this same mutex before
+   * accepting its binding, so handoffs need a fresh store read, not renewal. */
+  readProtection?: (context: { renewEvidence: boolean }) => Promise<{ paths: readonly string[]; pins?: readonly RetentionPinProtection[] }>;
   expectedDevices?: readonly string[];
   /** Production writes to audit_log before an effect and after the completed pass. */
   record?: (phase: string, details: unknown) => Promise<void>;
@@ -919,10 +921,12 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
     await record('started', receipt);
     let mutex: { hasWaiters: () => Promise<boolean> } | undefined;
     let protectedPaths: string[] = [];
+    let protectionInitialized = false;
     const refreshProtection = () => measure('protectionReadMs', async () => {
-      const protection = await options.readProtection?.();
+      const protection = await options.readProtection?.({ renewEvidence: !protectionInitialized });
       policy.pins = protection?.pins ?? [];
       protectedPaths = [...(options.protectedPaths ?? []), ...(protection?.paths ?? [])].map((path) => resolve(path));
+      protectionInitialized = true;
     });
     // Keep the census/effect cursor across FIFO handoffs. Ending the whole pass
     // here made a queued writer discard minutes of inspection on every tick.
@@ -1702,26 +1706,33 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
   const previousReceipt = await readReclaimReceipt(getOrgPg().sql as unknown as ReclaimSql, activeWorkspaceId(),
     undefined, undefined, { requireScan: true });
   let isPinnedPath: (path: string) => boolean = () => { throw new Error('retention protection has not been read'); };
-  const readProtection = async () => {
+  let renewedPins: RetentionPinProtection[] = [];
+  const readProtection = async ({ renewEvidence }: { renewEvidence: boolean }) => {
     const dir = defaultRetentionDir();
-    const { readOpenWorkItemEvidenceReferences, renewWorkItemEvidencePins } = await import('./retention-pins');
-    const references = await readOpenWorkItemEvidenceReferences(getOrgPg().sql, activeWorkspaceId());
-    let renewedPins: RetentionPinProtection[] = [];
-    if (references.length) {
-      const { loadHarnessRegistry, resolveHarnessContentPath } = await import('../harness-registry');
-      const registry = await loadHarnessRegistry(activeWorkspaceId(), { fresh: true });
-      const repositories = new Map<string, string>();
-      for (const ref of references) {
-        const root = resolveHarnessContentPath(registry, ref.harness_slug);
-        if (root) repositories.set(ref.harness_slug, root);
+    // Renewal maintains finite leases for already-open evidence. Repeating its
+    // DB query, receipt reads and fsyncs on every FIFO handoff spent minutes of
+    // the shared run budget before any census. New intake creates its pin while
+    // holding this mutex (withWorkItemEvidenceRetention); fresh reads below
+    // therefore see newly accepted evidence without repeating maintenance.
+    if (renewEvidence) {
+      const { readOpenWorkItemEvidenceReferences, renewWorkItemEvidencePins } = await import('./retention-pins');
+      const references = await readOpenWorkItemEvidenceReferences(getOrgPg().sql, activeWorkspaceId());
+      if (references.length) {
+        const { loadHarnessRegistry, resolveHarnessContentPath } = await import('../harness-registry');
+        const registry = await loadHarnessRegistry(activeWorkspaceId(), { fresh: true });
+        const repositories = new Map<string, string>();
+        for (const ref of references) {
+          const root = resolveHarnessContentPath(registry, ref.harness_slug);
+          if (root) repositories.set(ref.harness_slug, root);
+        }
+        const renewal = await renewWorkItemEvidencePins(references, { repositories, dir, dryRun: options.dryRun });
+        renewedPins = renewal.pins;
+        // Missing evidence is distinct from a historical test failure. Preserve
+        // the exact custody gap on the standing cleaner's existing audit surface.
+        if (renewal.missing.length) await writeReclaimAudit(getOrgPg().sql, activeWorkspaceId(), 'disk-retention', 'progress', {
+          phase: 'missing-open-work-item-evidence', missing: renewal.missing,
+        });
       }
-      const renewal = await renewWorkItemEvidencePins(references, { repositories, dir, dryRun: options.dryRun });
-      renewedPins = renewal.pins;
-      // Missing evidence is distinct from a historical test failure. Preserve
-      // the exact custody gap on the standing cleaner's existing audit surface.
-      if (renewal.missing.length) await writeReclaimAudit(getOrgPg().sql, activeWorkspaceId(), 'disk-retention', 'progress', {
-        phase: 'missing-open-work-item-evidence', missing: renewal.missing,
-      });
     }
     const leaseRead = readRetentionLeases(dir);
     const { readRetentionPins } = await import('./retention-pins');
