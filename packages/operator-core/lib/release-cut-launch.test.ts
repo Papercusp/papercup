@@ -13,12 +13,20 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+const readOperatorDbEnvLocalMock = vi.hoisted(() => vi.fn(() => ({} as Record<string, string>)));
+vi.mock('@papercusp/db-org/operator-db-env', async () => ({
+  ...await vi.importActual('@papercusp/db-org/operator-db-env'),
+  readOperatorDbEnvLocal: readOperatorDbEnvLocalMock,
+}));
 import {
   isValidVersion,
   isValidChannel,
   isValidSourceSha,
   buildCutEnv,
   buildCutArgv,
+  launchDetachedCut,
+  type SpawnLike,
   orchestratorNeedsStagingSyncLock,
   wrapWithStagingSyncLock,
   STAGING_SYNC_LOCK,
@@ -52,6 +60,56 @@ import {
   type GitRunner,
   type ReleaseToolingDrift,
 } from './release-cut-launch';
+
+describe('detached cut database credentials', () => {
+  it.each(['canonical', 'explicit-admin', 'explicit-database'] as const)('transports %s DB pins without exposing secrets', async (mode) => {
+    const configuredUrl = 'postgres://fixture:configured-secret@localhost/configured';
+    const explicitUrl = 'postgres://fixture:explicit-secret@localhost/explicit';
+    readOperatorDbEnvLocalMock.mockReturnValue({ HARNESS_ADMIN_DATABASE_URL: configuredUrl });
+    const explicit = mode === 'canonical' ? {} : mode === 'explicit-admin'
+      ? { HARNESS_ADMIN_DATABASE_URL: explicitUrl } : { DATABASE_URL: explicitUrl };
+    let credentialPath = '';
+    let received: Record<string, string> = {};
+    const spawnMock = vi.fn((_binary: string, argv: string[]) => {
+      expect(argv.join(' ')).not.toContain('configured-secret');
+      expect(argv.join(' ')).not.toContain('explicit-secret');
+      credentialPath = argv.find((arg) => arg.startsWith('--property=LoadCredential='))!.split(':').slice(1).join(':');
+      received = Object.fromEntries(fs.readFileSync(credentialPath, 'utf8').split('\0').filter(Boolean)
+        .map((record) => [record.slice(0, record.indexOf('=')), record.slice(record.indexOf('=') + 1)]));
+      const child = new EventEmitter();
+      queueMicrotask(() => child.emit('close', 0));
+      return child;
+    });
+    try {
+      const result = await launchDetachedCut({ version: '0.0.27', channel: 'alpha', expectedSourceSha: 'a'.repeat(40),
+        root: '/isolated/papercusp-desktop', runtime: { ownerName: 'Fixture', canonicalDesktopRoot: '/canonical/papercusp-desktop' } },
+      spawnMock as unknown as SpawnLike, { PATH: '/usr/bin', HOME: '/fixture', ...explicit,
+        PRIVATE_PROVIDER_KEY: 'do-not-forward' });
+      expect(result.launched).toBe(true);
+      expect(readOperatorDbEnvLocalMock).toHaveBeenCalledWith('/canonical/apps/operator/.env.local');
+      const selectedUrl = mode === 'canonical' ? configuredUrl : explicitUrl;
+      expect(received).toEqual({ PATH: '/usr/bin', HOME: '/fixture', HARNESS_ADMIN_DATABASE_URL: selectedUrl, DATABASE_URL: selectedUrl });
+      expect(fs.existsSync(credentialPath)).toBe(false);
+      expect(result.argv.join(' ')).not.toContain('do-not-forward');
+    } finally {
+      readOperatorDbEnvLocalMock.mockReturnValue({});
+    }
+  });
+
+  it('releases the credential when systemd admission throws', async () => {
+    let credentialPath = '';
+    const spawnMock = vi.fn((_binary: string, argv: string[]) => {
+      credentialPath = argv.find((arg) => arg.startsWith('--property=LoadCredential='))!.split(':').slice(1).join(':');
+      expect(fs.existsSync(credentialPath)).toBe(true);
+      throw new Error('fixture admission failure');
+    });
+    const result = await launchDetachedCut({ version: '0.0.27', channel: 'alpha', expectedSourceSha: 'a'.repeat(40),
+      root: '/isolated/papercusp-desktop', runtime: { ownerName: 'Fixture', canonicalDesktopRoot: '/canonical/papercusp-desktop' } },
+    spawnMock as unknown as SpawnLike, { PATH: '/usr/bin' });
+    expect(result).toMatchObject({ launched: false, reason: 'fixture admission failure' });
+    expect(fs.existsSync(credentialPath)).toBe(false);
+  });
+});
 
 describe('version / channel validation', () => {
   it('accepts X.Y.Z and X.Y.Z-prerelease, rejects junk', () => {

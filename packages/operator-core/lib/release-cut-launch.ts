@@ -24,7 +24,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
+import { readOperatorDbEnvLocal } from '@papercusp/db-org/operator-db-env';
+import { buildServiceEnvPayloadWithTransport, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 import { serviceUnitForTask, TASK_ROOT_SLICE } from './task-manager/types';
 import { execFileViaSidecar } from './fleet/git-via-sidecar';
 
@@ -555,7 +556,11 @@ export interface LaunchCutResult {
  *
  * `spawnFn` is injectable so the tool handler is unit-testable without launching anything.
  */
-export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spawn): Promise<LaunchCutResult> {
+export function launchDetachedCut(
+  opts: LaunchCutOpts,
+  spawnFn: SpawnLike = spawn,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<LaunchCutResult> {
   const root = opts.root ?? desktopRoot();
   const orchestratorRoot = opts.orchestratorRoot ?? desktopRoot();
   const legs = opts.legs ?? {};
@@ -565,11 +570,33 @@ export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spaw
     opts.channel,
     legs,
     opts.expectedSourceSha,
-    process.env.PATH ?? '',
+    environment.PATH ?? '',
     opts.runtime,
     opts.platform,
     orchestratorRoot,
   );
+  // The user manager does not inherit the operator's DB pins, and an isolated
+  // source checkout deliberately has no .env.local. Keep the live disclosure
+  // census enabled, but give it the operator's configured database. Reuse the
+  // anonymous credential transport so URLs never enter ExecStart or journald.
+  const operatorRoot = path.dirname(opts.runtime.canonicalDesktopRoot ?? canonicalDesktopRoot(environment));
+  const configured = readOperatorDbEnvLocal(path.join(operatorRoot, 'apps', 'operator', '.env.local'));
+  const childEnvironment: NodeJS.ProcessEnv = {};
+  for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'LANG']) {
+    if (environment[key] !== undefined) childEnvironment[key] = environment[key];
+  }
+  // Resolve precedence before merging: a configured HARNESS_ADMIN_DATABASE_URL
+  // must not shadow an explicit DATABASE_URL in the receiving process.
+  const explicitAdmin = environment.HARNESS_ADMIN_DATABASE_URL || environment.DATABASE_URL;
+  const admin = explicitAdmin || configured.HARNESS_ADMIN_DATABASE_URL || configured.DATABASE_URL;
+  if (admin) {
+    childEnvironment.HARNESS_ADMIN_DATABASE_URL = admin;
+    childEnvironment.DATABASE_URL = admin;
+  }
+  const app = environment.HARNESS_DATABASE_URL || (!explicitAdmin ? configured.HARNESS_DATABASE_URL : undefined);
+  if (app) childEnvironment.HARNESS_DATABASE_URL = app;
+  const payload = buildServiceEnvPayloadWithTransport(argv.slice(-3), childEnvironment);
+  const launchArgv = [...argv.slice(0, -3), payload.credentialProperty!, ...payload.argv];
   return new Promise<LaunchCutResult>((resolve) => {
     const base: LaunchCutResult = {
       launched: false,
@@ -579,19 +606,28 @@ export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spaw
       version: opts.version,
       channel: opts.channel,
       legs,
-      argv,
+      argv: launchArgv,
       logPath: cutLogFor(opts.platform),
       donePath: cutDoneFor(opts.platform),
       operationId: opts.runtime.releaseOperationId?.trim() || null,
       taskId: opts.runtime.releaseTaskId?.trim() || null,
     };
     let stderr = '';
-    const child = spawnFn('systemd-run', argv);
+    let child: ReturnType<SpawnLike>;
+    try {
+      child = spawnFn('systemd-run', launchArgv);
+    } catch (error) {
+      payload.transport.release();
+      resolve({ ...base, reason: error instanceof Error ? error.message : String(error) });
+      return;
+    }
     child.stderr?.on('data', (d: unknown) => (stderr += String(d)));
     child.on('error', (e: unknown) => {
+      payload.transport.release();
       resolve({ ...base, launched: false, reason: e instanceof Error ? e.message : String(e) });
     });
     child.on('close', (code: number | null) => {
+      payload.transport.release();
       if (code === 0) {
         resolve({ ...base, launched: true });
       } else {
