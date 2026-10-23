@@ -77,30 +77,35 @@ export async function measureOperationalObservability(
       if (tools.some(event => event.callId !== row.callId)) return fail('Persisted invocation and project call identity differ; invocation=' + row.id);
       const anchors = new Set(tools.map(event => JSON.stringify([event.uuid, event.event, event.parentSpanId, event.timestamp])));
       if (anchors.size !== 1) return fail('Ambiguous canonical tool anchor; invocation=' + row.id);
+      const httpParentOf = (event: ObservedProjectEvent): ObservedProjectEvent | null => {
+        const parents = events.filter(parent => parent.spanId === event.parentSpanId && parent.event !== '$exception');
+        const parent = parents.length === 1 ? parents[0]! : null;
+        return parent?.event === '$ai_span' && parent.httpClient && parent.spanName === 'papercusp.http' &&
+          parent.callId === row.callId ? parent : null;
+      };
       const reachable = (event: ObservedProjectEvent): boolean => {
         if (event.callId !== null && event.callId !== row.callId) return false;
         // Cross-process model spans carry standard W3C ancestry, not caller
         // authority. A missing leaf callId is admitted only through its exact,
         // instrumented HTTP parent bearing this persisted callId. Direct null
         // leaves and foreign leaf IDs never satisfy the join.
-        if (event.callId === null && !events.some(parent => parent.spanId === event.parentSpanId &&
-          parent.httpClient && parent.spanName === 'papercusp.http' && parent.callId === row.callId)) return false;
+        const origin = event.callId === null ? httpParentOf(event) : event;
+        if (!origin) return false;
         const seen = new Set<string>();
-        let parent = event.parentSpanId;
+        let parent = origin.parentSpanId;
         while (parent && !seen.has(parent)) {
           if (parent === row.spanId) return true;
           seen.add(parent);
           const edges = events.filter(edge => edge.spanId === parent && edge.event !== '$exception');
-          const signatures = new Set(edges.map(edge => JSON.stringify([edge.parentSpanId, edge.callId])));
-          if (!edges.length || signatures.size !== 1 || edges[0]!.callId !== row.callId) return false;
+          if (edges.length !== 1 || !['$ai_trace', '$ai_span'].includes(edges[0]!.event) ||
+            edges[0]!.callId !== row.callId) return false;
           parent = edges[0]!.parentSpanId;
         }
         return false;
       };
       const generations = events.filter(event => event.event === '$ai_generation' && event.spanName === 'papercusp.model');
       if (generations.some(event => event.spanId === row.spanId || !reachable(event))) return fail('Model ancestry differs from persisted tool span; invocation=' + row.id);
-      if (mode === 'staging' && generations.some(event => !events.some(parent =>
-        parent.spanId === event.parentSpanId && parent.httpClient && parent.spanName === 'papercusp.http' && parent.callId === row.callId))) {
+      if (mode === 'staging' && generations.some(event => !httpParentOf(event))) {
         return fail('Current-build model journey lacks its instrumented HTTP client parent; invocation=' + row.id);
       }
       const exceptions = events.filter(event => event.event === '$exception');
@@ -128,7 +133,7 @@ export async function measureOperationalObservability(
     return { verdict: 'pass', detail: JSON.stringify({ detector: OBSERVABILITY_INSTRUMENT_KEYS[mode], version: 1,
       observedAt: now, host, projectId: project.projectId, projectQuery: project.evidenceRef,
       invocations: selected.map(({ row }) => ({ id: row.id, callId: row.callId, traceId: row.traceId, spanId: row.spanId })),
-      replay: 'plans:rescore-rubric on :3170 with the same rubric; scorecards:emit fromLedger:true' }) };
+      replay: 'Run the rubric checks via the registered rubric-rescore system action; scorecards:emit fromLedger:true on the same qualified runtime and subject.' }) };
   } catch {
     return unknown('Runtime, source or invocation authority unavailable; no acceptance inferred.');
   }

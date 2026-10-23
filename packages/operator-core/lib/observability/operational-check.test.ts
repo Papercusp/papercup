@@ -114,4 +114,31 @@ describe('operational observability measurements', () => {
     expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'fail' });
     expect(await measureOperationalObservability('project', scope)).toMatchObject({ verdict: 'pass' });
   });
+  describe.each(['project', 'staging'] as const)('%s canonical HTTP parent', mode => {
+    const observations = () => {
+      const observed = project();
+      if (mode === 'staging') {
+        fixture.sql.mockResolvedValue(rows().map(row => ({ ...row, status: 'ok' })));
+        observed.events[5]!.event = '$ai_generation';
+        observed.events[5]!.isError = false;
+      }
+      return observed;
+    };
+    it.each([1, 4])('rejects a non-span HTTP parent at event %s', async index => {
+      const wrongEvent = observations();
+      wrongEvent.events[index]!.event = '$ai_trace';
+      fixture.readProject.mockResolvedValueOnce(wrongEvent);
+      expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'fail' });
+      fixture.readProject.mockResolvedValue(observations());
+      expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'pass' });
+    });
+    it.each([1, 4])('rejects duplicate same-signature HTTP parents at event %s', async index => {
+      const duplicated = observations();
+      duplicated.events.push({ ...duplicated.events[index]!, uuid: 'duplicate-http-parent' });
+      fixture.readProject.mockResolvedValueOnce(duplicated);
+      expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'fail' });
+      fixture.readProject.mockResolvedValue(observations());
+      expect(await measureOperationalObservability(mode, scope)).toMatchObject({ verdict: 'pass' });
+    });
+  });
 });
