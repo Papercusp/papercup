@@ -106,12 +106,25 @@ export async function resolveItemCloseContributions(input: {
     if (!map.ok || !map.mappings.some((entry) => entry.barKey === pin.barKey &&
       entry.planItemIds.includes(itemId!) && entry.evidencePlane === pin.evidencePlane)) return false;
     const rubric = await getRubric(pin.rubricSlug);
-    if (!rubric || rubric.kind !== 'acceptance' || rubric.subjectPlan !== stamp.planSlug ||
-        rubric.revision !== pin.rubricRevision || rubric.barSetHash !== pin.barSetHash) return false;
+    if (!rubric || rubric.rubricId !== pin.rubricSlug || rubric.kind !== 'acceptance' ||
+        rubric.subjectPlan !== stamp.planSlug) return false;
+    // Amendments preserve unchanged clauses' historical aggregate stamps.
+    // Resolve that immutable history, then compare this BAR's current meaning
+    // as the canonical acceptance snapshot does; aggregate age is not drift.
+    const pinned = rubric.revision === pin.rubricRevision
+      ? rubric : await getRubric(pin.rubricSlug, pin.rubricRevision);
+    if (!pinned || pinned.rubricId !== pin.rubricSlug || pinned.kind !== 'acceptance' ||
+        pinned.subjectPlan !== stamp.planSlug || pinned.revision !== pin.rubricRevision ||
+        pinned.barSetHash !== pin.barSetHash) return false;
+    const historicalBar = pinned.criteria.filter((entry) => entry.barKey === pin.barKey);
+    if (historicalBar.length !== 1 || historicalBar[0]!.barHash !== pin.barHash ||
+        historicalBar[0]!.evidencePlane !== pin.evidencePlane ||
+        acceptanceBarProjectedBehavior(historicalBar[0]!) !== clause.behavior) return false;
     const bar = rubric.criteria.filter((entry) => entry.barKey === pin.barKey);
     if (bar.length !== 1 || bar[0]!.barHash !== pin.barHash ||
         bar[0]!.evidencePlane !== pin.evidencePlane ||
-        acceptanceBarProjectedBehavior(bar[0]!) !== clause.behavior) return false;
+        acceptanceBarProjectedBehavior(bar[0]!) !== clause.behavior ||
+        (bar[0]!.requiredTestLayers ?? []).some((layer) => !clause.requiredTestLayers.includes(layer))) return false;
     const assessment = await conformanceClosureAssessment({
       workspaceId: input.workspaceId, harnessSlug: stamp.harnessSlug,
       planSlug: stamp.planSlug, planItemIds: [itemId!], completion: input.completion!,

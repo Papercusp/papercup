@@ -180,14 +180,15 @@ describe('exact independently verified item-close contribution relations', () =>
       '| bar | implementing plan items | evidence plane |', '|---|---|---|', '| R-9 | P-002 | deployed |',
       '## Build', '- **P-002** `todo` Protocol', '- **P-003** `todo` Conformance' ].join('\n');
     production.plan.mockReset().mockResolvedValue({ row: { content: planContent } });
-    production.rubric.mockReset().mockResolvedValue({ kind: 'acceptance', subjectPlan: 'protocol-rollout',
+    const rubric = { rubricId: 'protocol-rollout-acceptance', kind: 'acceptance', subjectPlan: 'protocol-rollout',
       revision: 3, barSetHash: 'sethash', criteria: [{ barKey: 'R-9', barHash: 'r9hash',
-        evidencePlane: 'deployed', model: w.projection.behavior }] });
+        evidencePlane: 'deployed', model: w.projection.behavior, requiredTestLayers: ['e2e'] }] };
+    production.rubric.mockReset().mockResolvedValue(rubric);
     production.conformance.mockReset().mockResolvedValue({ applicable: true, declarationSatisfied: true,
       refusal: null, mappedRequirements: ['R-9'] });
     production.implementers.mockReset().mockResolvedValue(['implementer']);
     production.lineage.mockReset().mockImplementation(async (a: string, b: string) => a === b);
-    return { ...w, planContent, runProduction: () => resolveItemCloseContributions(w.input) };
+    return { ...w, planContent, rubric, runProduction: () => resolveItemCloseContributions(w.input) };
   }
 
   it('checks the current canonical BAR, map, conformance and acceptance lineage in production', async () => {
@@ -197,13 +198,29 @@ describe('exact independently verified item-close contribution relations', () =>
     expect(production.lineage).toHaveBeenCalledWith('implementer', 'outside-reviewer', { workspaceId: 'workspace' });
   });
 
-  it.each(['removed-map', 'old-rubric', 'changed-bar', 'changed-projection', 'wrong-plane',
+  it.each(['sethash', 'prior-sethash'])('preserves an unchanged BAR with historical aggregate %s', async (barSetHash) => {
+    const w = productionWorld();
+    Object.assign(w.projection.sourceBar!, { rubricRevision: 2, barSetHash });
+    const historical = { ...w.rubric, revision: 2, barSetHash };
+    production.rubric.mockImplementation(async (_slug: string, revision?: number) =>
+      revision === 2 ? historical : w.rubric);
+    expect(await w.runProduction()).toHaveLength(1);
+    expect(production.rubric).toHaveBeenCalledWith('protocol-rollout-acceptance', 2);
+  });
+
+  it.each(['removed-map', 'unresolvable-history', 'changed-bar', 'wrong-set-pin', 'missing-required-layer', 'changed-projection', 'wrong-plane',
     'unreadable-implementers', 'related-reviewer', 'drift-alarm', 'unknown-identity'] as const)(
     'cannot defer with production %s', async (fault) => {
       const w = productionWorld();
       if (fault === 'removed-map') production.plan.mockResolvedValue({ row: { content: w.planContent.replace('| R-9 | P-002 |', '| R-9 | P-003 |') } });
-      if (fault === 'old-rubric') w.projection.sourceBar!.rubricRevision = 2;
-      if (fault === 'changed-bar') w.projection.sourceBar!.barSetHash = 'old';
+      if (fault === 'unresolvable-history') {
+        w.projection.sourceBar!.rubricRevision = 2;
+        production.rubric.mockImplementation(async (_slug: string, revision?: number) =>
+          revision === 2 ? null : w.rubric);
+      }
+      if (fault === 'changed-bar') w.rubric.criteria[0]!.barHash = 'changed';
+      if (fault === 'wrong-set-pin') w.projection.sourceBar!.barSetHash = 'old';
+      if (fault === 'missing-required-layer') w.projection.requiredTestLayers = ['unit'];
       if (fault === 'changed-projection') w.projection.behavior = 'Different behavior.';
       if (fault === 'wrong-plane') w.projection.sourceBar!.evidencePlane = 'tree';
       if (fault === 'unreadable-implementers') production.implementers.mockResolvedValue([]);
