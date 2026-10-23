@@ -139,8 +139,8 @@ fi
 # Keep the checkout flock in a dedicated coprocess. A shell fd opened with
 # `exec 9>...` is inherited by every child, so an unrelated child can keep the
 # staging barrier alive after this script exits (the android-ci failure mode).
-# The keeper owns fd 9 and only receives mode changes over a pipe; the main
-# workflow and all of its children never receive the lock descriptor.
+# The keeper owns the writer lease on fd 8 and generation barrier on fd 9,
+# receiving mode changes over a pipe. No workflow child inherits either fd.
 # Bash owns STAGING_SYNC_LOCK_KEEPER_PID and unsets it when the coprocess exits.
 # Keep our cleanup receipt separately so cleanup is safe even after reaping.
 STAGING_SYNC_LOCK_PROCESS_PID=""
@@ -150,8 +150,9 @@ STAGING_SYNC_LOCK_OWNER_PID="$$"
 
 staging_sync_lock_start() {
   coproc STAGING_SYNC_LOCK_KEEPER {
+    exec 8>"${STAGING_SYNC_LOCK_PATH}.writer"
     exec 9>"$STAGING_SYNC_LOCK_PATH"
-    if ! flock -n 9; then
+    if ! flock -n 8 || ! flock -n 9; then
       printf '%s\n' busy
       # Keep the coprocess alive until the parent acknowledges the result.
       # Bash removes the generated named-coproc PID variables as soon as a
@@ -169,13 +170,23 @@ staging_sync_lock_start() {
     printf '%s\n' exclusive
     staging_lock_command=""
     while kill -0 "$STAGING_SYNC_LOCK_OWNER_PID" 2>/dev/null; do
-      if IFS= read -r -t 1 staging_lock_command; then
+      if IFS=' ' read -r -t 1 staging_lock_command staging_lock_budget; then
         case "$staging_lock_command" in
           shared)
             if flock -s 9; then printf '%s\n' shared; else printf '%s\n' shared-failed; exit 1; fi
             ;;
+          exclusive)
+            # flock conversions can drop the shared lock while waiting. The
+            # separate writer lease remains held throughout this transition.
+            if flock -x -w "$staging_lock_budget" -E 75 9; then
+              printf '%s\n' exclusive
+            else
+              printf 'exclusive-failed:%s\n' "$?"
+            fi
+            ;;
           release)
             flock -u 9
+            flock -u 8
             printf '%s\n' released
             exit 0
             ;;
@@ -183,6 +194,7 @@ staging_sync_lock_start() {
       fi
     done
     flock -u 9
+    flock -u 8
   }
   STAGING_SYNC_LOCK_PROCESS_PID="${STAGING_SYNC_LOCK_KEEPER_PID:-}"
   STAGING_SYNC_LOCK_READ_FD="${STAGING_SYNC_LOCK_KEEPER[0]:-}"
@@ -203,6 +215,18 @@ staging_sync_lock_shared() {
   staging_lock_state=""
   IFS= read -r staging_lock_state <&"$STAGING_SYNC_LOCK_READ_FD" || return 1
   [[ "$staging_lock_state" == shared ]]
+}
+
+staging_sync_lock_exclusive() {
+  local budget="${1:-45}" state
+  [[ "$budget" =~ ^[1-9][0-9]{0,2}$ ]] && ((budget <= 300)) || return 2
+  printf 'exclusive %s\n' "$budget" >&"$STAGING_SYNC_LOCK_WRITE_FD" || return 1
+  IFS= read -r state <&"$STAGING_SYNC_LOCK_READ_FD" || return 1
+  case "$state" in
+    exclusive) return 0 ;;
+    exclusive-failed:*) return "${state#exclusive-failed:}" ;;
+    *) return 1 ;;
+  esac
 }
 
 staging_sync_lock_release() {
@@ -1198,8 +1222,10 @@ current_commit_age_sec() {
 }
 
 # Single-flight: a second timer tick (or a manual run) waits/skips rather than
-# racing two setups on the same checkout. A release cut whose orchestrator is this
-# checkout also holds the lock SHARED for its whole run (WI-10003515,
+# racing two setups on the same checkout, even when preparation permits readers.
+# A separate writer lease serializes ticks; the generation barrier is exclusive
+# only for GC/bootstrap and publication. A release cut whose orchestrator is this
+# checkout holds the generation barrier SHARED for its whole run (WI-10003515,
 # release-cut-launch.ts wrapWithStagingSyncLock), so re-cloning submodules in place
 # cannot delete scripts out from under an in-flight cut.
 STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"
@@ -1239,6 +1265,10 @@ staging_alias_bootstrap || { log "FATAL: could not bootstrap the stable staging 
 # collected on the next timer tick through this same maintained GC path.
 prune_staging_generations
 staging_sync_checkpoint "generation cleanup complete"
+
+# Immutable candidate preparation cannot invalidate a selected generation.
+# Keep the writer lease, but admit shared readers during the expensive work.
+staging_sync_lock_shared || { log "FATAL: could not admit generation readers after cleanup"; exit 1; }
 
 forward_compat_review_warnings
 
@@ -1352,6 +1382,16 @@ if [ "$restart_required" = 1 ]; then
 fi
 
 if [ "$checkout_needs_advance" = 1 ]; then
+  # Serialize publication with GC/selection readers. A failed bounded upgrade
+  # leaves the old alias intact; the EXIT trap cleans only our unpublished work
+  # before releasing the separate writer lease.
+  if staging_sync_lock_exclusive; then
+    :
+  else
+    publication_lock_status=$?
+    log "FATAL: generation publication lock unavailable (exit $publication_lock_status); keeping the published alias"
+    exit "$publication_lock_status"
+  fi
   mark_staging_candidate_ready "$target"
   require_host_bundle=0
   if [ "$restart_required" = 1 ]; then
