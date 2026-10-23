@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, constants, cpSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -59,6 +59,56 @@ const SCHEDULER_SRC = readFileSync(
   'utf8',
 );
 
+// Read failure evidence before the fixture's finally block removes its trace.
+// An absent entry is unknown startup progress, not proof the child never ran.
+function assertNativeFixtureCompleted(child: ReturnType<typeof spawnSync>, out: string, phase: string) {
+  if (!child.error) return;
+  const events: { pid?: number; event?: string; atMs?: number; loadId?: number; url?: string }[] = [];
+  let traceReadError: string | null = null;
+  let traceFiles = 0;
+  try {
+    const names = readdirSync(`${out}.native-processes`).filter(name => /^[a-f0-9]{64}\.json$/.test(name));
+    traceFiles = names.length;
+    const buffer = Buffer.alloc(128 * 1024 + 1);
+    for (const name of names.slice(0, 2048)) {
+      const fd = openSync(join(`${out}.native-processes`, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      let length = 0;
+      try {
+        if (!fstatSync(fd).isFile()) continue;
+        while (length < buffer.length) {
+          const count = readSync(fd, buffer, length, buffer.length - length, null);
+          if (!count) break;
+          length += count;
+        }
+      } finally { closeSync(fd); }
+      if (length > 128 * 1024) continue;
+      const bytes = buffer.subarray(0, length);
+      if (createHash('sha256').update(bytes).digest('hex') !== name.slice(0, 64)) continue;
+      const row = JSON.parse(bytes.toString('utf8'));
+      if (row.kind === 'native-node-process-event') events.push(row);
+    }
+  } catch (error) { traceReadError = error instanceof Error ? error.name : 'unknown'; }
+  events.sort((a, b) => (a.atMs ?? 0) - (b.atMs ?? 0));
+  const terminalLoads = new Set(events.filter(row => row.event === 'module-load-return' || row.event === 'module-load-error')
+    .map(row => `${row.pid}:${row.loadId}`));
+  const tail = (value: Buffer | string | null) => {
+    const bytes = Buffer.from(value ?? '');
+    return { byteLength: bytes.length, tailBase64: bytes.subarray(-2048).toString('base64') };
+  };
+  const diagnostic = {
+    phase, pid: child.pid, code: (child.error as NodeJS.ErrnoException).code ?? null,
+    status: child.status, signal: child.signal,
+    traceStatus: events.length ? 'observed' : 'unknown', traceFiles, traceReadError,
+    traceTruncated: traceFiles > 2048, eventCount: events.length,
+    lastEvents: events.slice(-8).map(({ pid, event, atMs }) => ({ pid, event, atMs })),
+    pendingLoads: events.filter(row => row.event === 'module-load-start' && !terminalLoads.has(`${row.pid}:${row.loadId}`))
+      .slice(-8).map(({ pid, loadId, url }) => ({ pid, loadId, url: url?.slice(-512) })),
+    stdout: tail(child.stdout), stderr: tail(child.stderr),
+  };
+  child.error.message += `\nNATIVE_FIXTURE_FAILURE ${JSON.stringify(diagnostic)}`;
+  throw child.error;
+}
+
 describe('native npm lifecycle diagnostics', () => {
   function observe(root: string, fail: string | null = null, shell = '/bin/sh') {
     const scripts = Object.fromEntries(['pretest', 'test', 'posttest'].map(phase =>
@@ -78,7 +128,7 @@ describe('native npm lifecycle diagnostics', () => {
     const child = spawnSync(command[0]!, command.slice(1), { cwd: root, timeout: 20_000,
       env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
         npm_config_script_shell: shell, PAPERCUSP_TEST_STARTUP_TRACE: '0' }) });
-    if (child.error) throw child.error;
+    assertNativeFixtureCompleted(child, out, `npm-lifecycle:${fail ?? 'success'}`);
     return { task: 'native-npm-protocol-fixture', attempt: 'initial', cwd: root, command,
       originalCommand: scripts.test, startedAtMs, finishedAtMs: Date.now(), exitCode: child.status,
       signal: child.signal, error: null, captureComplete: true, stdout: child.stdout, stderr: child.stderr,
@@ -188,6 +238,35 @@ describe('native npm lifecycle diagnostics', () => {
 });
 
 describe('native affected-task parent receipt transport', () => {
+  it('retains bounded native timeout diagnostics after fixture cleanup', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-process-timeout-'));
+    let failure: Error | undefined;
+    let observed: ReturnType<typeof spawnSync> | undefined;
+    try {
+      const out = join(root, 'source-map.json');
+      // A real blocked child, with the production preload and inherited loader.
+      // Startup may itself exceed the ceiling; its progress then stays unknown.
+      observed = spawnSync(process.execPath, ['-e',
+        "process.stdout.write('fixture-ready'); process.stderr.write('fixture-stderr'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000);"], {
+        cwd: REPO_ROOT, timeout: 2000,
+        env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+          PAPERCUSP_TEST_STARTUP_TRACE: '0' }),
+      });
+      try { assertNativeFixtureCompleted(observed, out, 'forced-timeout'); }
+      catch (error) { failure = error as Error; }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+    expect(failure).toBe(observed!.error);
+    const diagnostic = JSON.parse(failure!.message.split('\nNATIVE_FIXTURE_FAILURE ')[1]!);
+    expect(diagnostic).toMatchObject({ phase: 'forced-timeout', code: 'ETIMEDOUT', pid: observed!.pid,
+      stdout: { byteLength: observed!.stdout.length }, stderr: { byteLength: observed!.stderr.length } });
+    expect(Buffer.from(diagnostic.stdout.tailBase64, 'base64')).toEqual(Buffer.from(observed!.stdout).subarray(-2048));
+    expect(Buffer.from(diagnostic.stderr.tailBase64, 'base64')).toEqual(Buffer.from(observed!.stderr).subarray(-2048));
+    expect(diagnostic.lastEvents.length).toBeLessThanOrEqual(8);
+    expect(diagnostic.pendingLoads.length).toBeLessThanOrEqual(8);
+    expect(diagnostic.traceStatus).toBe(diagnostic.eventCount ? 'observed' : 'unknown');
+    expect(readdirSync(dirname(root))).not.toContain(root.split('/').at(-1));
+  }, 15_000);
+
   it.each([16384, 16385, 55278])('retains bounded authenticated observations from %i artifacts including streams', count => {
     const root = mkdtempSync(join(tmpdir(), 'native-process-population-'));
     try {
@@ -246,11 +325,11 @@ describe('native affected-task parent receipt transport', () => {
       const child = spawnSync(command[0]!, command.slice(1), { cwd: REPO_ROOT,
         env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
           PAPERCUSP_TEST_STARTUP_TRACE: '0' }), timeout: 15_000 });
-      if (child.error) throw child.error;
+      assertNativeFixtureCompleted(child, out, 'process-step-root');
       const unrelated = spawnSync(process.execPath, ['-e', 'process.exitCode = 0'], {
         env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
           PAPERCUSP_TEST_STARTUP_TRACE: '0' }), timeout: 15_000 });
-      if (unrelated.error) throw unrelated.error;
+      assertNativeFixtureCompleted(unrelated, out, 'unrelated-process');
       const input = { task: 'native-fixture :: test', attempt: 'initial', cwd: REPO_ROOT, command,
         startedAtMs, finishedAtMs: Date.now(), exitCode: child.status, signal: child.signal,
         error: null, captureComplete: true, stdout: child.stdout, stderr: child.stderr,
@@ -318,7 +397,7 @@ describe('native affected-task parent receipt transport', () => {
     const child = spawnSync(command[0]!, command.slice(1), { cwd: REPO_ROOT, timeout: 15_000,
       env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
         PAPERCUSP_TEST_STARTUP_TRACE: '0' }) });
-    if (child.error) throw child.error;
+    assertNativeFixtureCompleted(child, out, nested ? 'nested-reporter' : 'reporter');
     return { out, input: { task: 'native-reporter-fixture', attempt: 'initial', cwd: REPO_ROOT,
       command, startedAtMs, finishedAtMs: Date.now(), exitCode: child.status,
       signal: child.signal, error: null, captureComplete: true, stdout: child.stdout,
@@ -905,6 +984,126 @@ describe('R12 native command-local artifact preparation', () => {
     };
     return { root, pins, selection, receipt, stdout, files, pin, saveSelection, saveReceipt, saveStdout };
   }
+  describe('bounded reads', () => {
+    // Instrument the real native IO boundary, including the old readFile path.
+    // Mutations happen after real bytes are read, before the reader can accept them.
+    function observeRead(root: string, pins: unknown, target: string, mutation = 'none') {
+      // The launcher correctly substitutes HEAD for dirty checkout modules in
+      // native children. Use an exact private snapshot of this test's subject,
+      // keeping the loader and its unchanged dependency checks enabled.
+      const subjectRoot = join(root, 'reader-subject');
+      mkdirSync(subjectRoot);
+      const modulePath = join(subjectRoot, 'budgeted-task-scheduler.mjs');
+      const subjectBytes = readFileSync(join(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs'));
+      writeFileSync(modulePath, subjectBytes);
+      for (const dependency of ['fs-mutex.mjs', 'task-exit-class.mjs', 'executed-source-map.mjs',
+        'task-cgroup-limits.mjs', 'task-deadline.mjs'])
+        symlinkSync(join(REPO_ROOT, 'scripts/lib', dependency), join(subjectRoot, dependency));
+      const subjectSha256 = createHash('sha256').update(subjectBytes).digest('hex');
+      const script = `
+        import fs from 'node:fs';
+        import promises from 'node:fs/promises';
+        import { createHash } from 'node:crypto';
+        import { syncBuiltinESMExports } from 'node:module';
+        import { pathToFileURL } from 'node:url';
+        const config = JSON.parse(fs.readFileSync(0, 'utf8'));
+        const subjectSha256 = createHash('sha256').update(fs.readFileSync(config.modulePath)).digest('hex');
+        if (subjectSha256 !== config.subjectSha256) throw new Error('private reader subject differs');
+        const originalBytes = fs.statSync(config.target).size < 1024 * 1024
+          ? fs.readFileSync(config.target) : null;
+        let bytesRead = 0, fullFileReads = 0, opens = 0, closes = 0, mutated = false;
+        const mutate = () => {
+          if (mutated || config.mutation === 'none') return;
+          mutated = true;
+          if (config.mutation === 'grow') fs.truncateSync(config.target, 64 * 1024 * 1024 + 1);
+          if (config.mutation === 'shrink') fs.truncateSync(config.target, 1);
+          if (config.mutation === 'rewrite') fs.writeFileSync(config.target, originalBytes);
+          if (config.mutation === 'replace') {
+            fs.renameSync(config.target, config.target + '.before');
+            fs.writeFileSync(config.target, originalBytes);
+          }
+        };
+        const readFile = promises.readFile.bind(promises);
+        promises.readFile = async (path, ...args) => {
+          const result = await readFile(path, ...args);
+          if (String(path) === config.target) {
+            fullFileReads++; bytesRead += Buffer.byteLength(result); mutate();
+          }
+          return result;
+        };
+        const open = promises.open.bind(promises);
+        promises.open = async (path, ...args) => {
+          const handle = await open(path, ...args);
+          if (String(path) === config.target) {
+            opens++;
+            const read = handle.read.bind(handle), close = handle.close.bind(handle);
+            handle.read = async (...args) => {
+              const result = await read(...args); bytesRead += result.bytesRead; mutate(); return result;
+            };
+            handle.close = async () => { closes++; return close(); };
+          }
+          return handle;
+        };
+        syncBuiltinESMExports();
+        const { readBudgetedTaskComparisonArtifacts } = await import(pathToFileURL(config.modulePath));
+        let accepted = false, error = null;
+        try { await readBudgetedTaskComparisonArtifacts(config.root, config.pins); accepted = true; }
+        catch (cause) { error = String(cause.message); }
+        console.log(JSON.stringify({ accepted, error, bytesRead, fullFileReads, opens, closes, mutated,
+          subjectSha256 }));
+      `;
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+        input: JSON.stringify({ root, pins, target, mutation, modulePath, subjectSha256 }),
+        encoding: 'utf8', timeout: 20_000,
+      });
+      if (child.error) throw child.error;
+      expect(child.status, child.stderr).toBe(0);
+      const result = JSON.parse(child.stdout.trim()) as { accepted: boolean; error: string | null;
+        bytesRead: number; fullFileReads: number; opens: number; closes: number; mutated: boolean;
+        subjectSha256: string };
+      expect(result.subjectSha256).toBe(subjectSha256);
+      return result;
+    }
+    it.each(['artifact', 'current input'])('rejects an oversized %s before reading its contents', kind => {
+      const f = fixture();
+      try {
+        const target = kind === 'artifact' ? join(f.root, f.pins.selection.ref)
+          : join(f.pins.repositoryRoot, f.files[0]!);
+        truncateSync(target, 64 * 1024 * 1024 + 1);
+        const observed = observeRead(f.root, f.pins, target);
+        expect(observed.accepted).toBe(false);
+        expect(observed.error).toContain('exceeded read budget');
+        expect(observed.bytesRead).toBe(0);
+        expect(observed.fullFileReads).toBe(0);
+        expect(observed.closes).toBe(observed.opens);
+      } finally { rmSync(f.root, { recursive: true, force: true }); }
+    });
+    it('accepts an artifact at the byte ceiling and closes its descriptor', () => {
+      const f = fixture();
+      try {
+        const target = join(f.root, f.pins.selection.ref);
+        truncateSync(target, 64 * 1024 * 1024);
+        f.pins.selection.sha256 = createHash('sha256').update(readFileSync(target)).digest('hex');
+        expect(observeRead(f.root, f.pins, target)).toMatchObject({ accepted: true,
+          bytesRead: 64 * 1024 * 1024, fullFileReads: 0, opens: 1, closes: 1 });
+      } finally { rmSync(f.root, { recursive: true, force: true }); }
+    });
+    it.each(['artifact', 'current input'].flatMap(kind =>
+      ['grow', 'shrink', 'replace', 'rewrite'].map(mutation => ({ kind, mutation }))))
+    ('rejects $kind that can $mutation during a read', ({ kind, mutation }) => {
+      const f = fixture();
+      try {
+        const target = kind === 'artifact' ? join(f.root, f.pins.selection.ref)
+          : join(f.pins.repositoryRoot, f.files[0]!);
+        const originalLength = readFileSync(target).length;
+        const observed = observeRead(f.root, f.pins, target, mutation);
+        expect(observed).toMatchObject({ accepted: false, fullFileReads: 0,
+          opens: 1, closes: 1, mutated: true });
+        expect(observed.error).toContain('changed during read');
+        expect(observed.bytesRead).toBeLessThanOrEqual(originalLength);
+      } finally { rmSync(f.root, { recursive: true, force: true }); }
+    });
+  });
   it('resolves raw receipts and logs, preserving script order, guard inputs and partial selection', async () => {
     const f = fixture();
     try {
@@ -1269,7 +1468,7 @@ describe('R12 original ordered native occurrence qualification', () => {
     const child = spawnSync('npm', ['run', 'test'], { cwd: appRoot, timeout: 20_000,
       env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
         npm_config_script_shell: '/bin/sh', PAPERCUSP_TEST_STARTUP_TRACE: '0' }) });
-    if (child.error) throw child.error;
+    assertNativeFixtureCompleted(child, out, 'ordered-native-reporter');
     if (child.status !== 0) throw new Error(`native Vitest fixture exited ${child.status}: ${String(child.stderr)}`);
     const retained = writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, {
       task, attempt: 'initial', cwd: appRoot, command: ['npm', 'run', 'test'], originalCommand: command,
