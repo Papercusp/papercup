@@ -198,6 +198,14 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
 it('persists bounded delegate diagnostics in the observed private background runtime',
   context => runSelection({ reclaimTitles: ['persists delegate phases before the delegate ends', 'bounds delegate phase receipts and persisted writes'], expectedReclaimCases: 2, census: false }, context),
   options.testTimeoutMs);
+it('hands queued writers the mutex before diagnostic auditing in the observed private background runtime',
+  context => runSelection({ reclaimTitles: [
+    'releases the real mutex while a queued-writer diagnostic',
+    'finishes an admitted removal, yields the real mutex, then resumes the same pass',
+    'attributes a failed FIFO reacquisition wait and preserves the unprocessed continuation',
+    'refreshes a new pin after a FIFO handoff without repeating the census',
+    'refreshes a new lease after a FIFO handoff without repeating the census',
+  ], expectedReclaimCases: 6, census: false }, context), options.testTimeoutMs);
 it('retains open acceptance evidence through the observed private background runtime',
   context => runSelection({ reclaimTitles: ['retains old evidence bound to an open acceptance item'],
     expectedReclaimCases: 1, census: false,
