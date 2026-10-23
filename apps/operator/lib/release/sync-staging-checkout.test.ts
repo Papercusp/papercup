@@ -916,6 +916,131 @@ describe('sync-staging-checkout.sh staging launch contract (EI-19457080109574347
   });
 });
 
+describe('sync-staging-checkout.sh generation admission (EI-26746441745558411)', () => {
+  function keeperSource() {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const start = script.indexOf('# Keep the checkout flock in a dedicated coprocess.');
+    return script.slice(start, script.indexOf('staging_alias_bootstrap()', start));
+  }
+
+  it('keeps preparation readable while GC and publication remain exclusive', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-admission-workflow-'));
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const start = script.indexOf('# Single-flight: a second timer tick');
+    const end = script.indexOf('# WI-5710 — SPA-only advance:', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const driver = script.slice(start, end).replace(
+      'STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"',
+      'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+    );
+    mkdirSync(join(root, '.git'));
+    mkdirSync(join(root, 'published'));
+    mkdirSync(join(root, 'candidate/checkout/apps/operator/bin'), { recursive: true });
+    writeFileSync(join(root, 'candidate/checkout/apps/operator/bin/bundle-host.sh'), 'fixture');
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', keeperSource(),
+        'trap staging_sync_lock_release EXIT',
+        'INTEGRATION_ROOT="$TEST_ROOT"; STAGING_ROOT="$TEST_ROOT/published"',
+        'STAGING_CANDIDATE_ROOT=""; STAGING_CANDIDATE_HOME=""',
+        'STAGING_BUNDLE_SCRIPT=/unused; UNIT=fixture.service; BRANCH=staging; STAGING_PORT=12345',
+        'PAPERCUSP_PTOOL_BIN=/unused; MAX_STALE_SEC=1800',
+        'log() { printf "%s\\n" "$*"; }',
+        'staging_lock_log() { :; }; staging_sync_checkpoint() { :; }',
+        'staging_lock_attempt_id() { echo fixture; }; staging_lock_now_ms() { echo 0; }',
+        'git() { case "$*" in *"diff --name-only"*) echo server.ts;; *"staging^{commit}"*) echo "$TEST_TARGET";; *HEAD*) echo "$TEST_CURRENT";; *) return 1;; esac; }',
+        'require_shared() { flock -s -n "$TEST_LOCK" -c true || { echo "reader refused during $1" >&2; return 91; }; echo "shared:$1"; }',
+        'require_exclusive() { if flock -s -n "$TEST_LOCK" -c true; then echo "barrier missing during $1" >&2; return 92; fi; echo "exclusive:$1"; }',
+        'staging_alias_bootstrap() { require_exclusive bootstrap; }',
+        'prune_staging_generations() { require_exclusive gc; }',
+        'forward_compat_review_warnings() { :; }; assert_staging_unit_loopback() { :; }; assert_staging_unit_checkout() { :; }',
+        'staging_health_source_sha() { echo "$TEST_CURRENT"; }; paths_require_restart() { return 0; }; staging_live_client_count() { echo 0; }',
+        'prepare_staging_candidate() { require_shared candidate; STAGING_CANDIDATE_ROOT="$TEST_ROOT/candidate/checkout"; STAGING_CANDIDATE_HOME="$TEST_ROOT/candidate"; }',
+        'preflight_staging_migrations() { require_shared migrations; }; prebuild_staging_host_bundle() { require_shared bundle; }; prepare_staging_schema() { require_shared schema; }',
+        'mark_staging_candidate_ready() { require_exclusive ready; }',
+        'publish_staging_generation() { require_exclusive publication; printf "%s" "$3" > "$TEST_ROOT/published-sha"; }',
+        driver,
+      ].join('\n')], {
+        env: { ...process.env, TEST_ROOT: root, TEST_LOCK: join(root, 'generation.lock'),
+          TEST_TARGET: 'b'.repeat(40), TEST_CURRENT: 'a'.repeat(40) },
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      for (const phase of ['candidate', 'migrations', 'bundle', 'schema']) {
+        expect(result.stdout).toContain(`shared:${phase}`);
+      }
+      for (const phase of ['bootstrap', 'gc', 'ready', 'publication']) {
+        expect(result.stdout).toContain(`exclusive:${phase}`);
+      }
+      expect(readFileSync(join(root, 'published-sha'), 'utf8')).toBe('b'.repeat(40));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps writer single-flight across a failed upgrade and admits no publication through readers', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-admission-upgrade-'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', keeperSource(),
+        'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+        'trap staging_sync_lock_release EXIT',
+        'staging_sync_lock_start; staging_sync_lock_shared',
+        'flock -s -n "$TEST_LOCK" -c true',
+        'exec 7>"$TEST_LOCK"; flock -s 7',
+        'if staging_sync_lock_exclusive 1; then echo unsafe_upgrade; exit 90; else status=$?; fi',
+        '[[ "$status" == 75 ]]',
+        // A failed flock conversion can drop fd 9's shared lock. Once the
+        // other reader exits, the independent writer lease must still hold.
+        'flock -u 7; exec 7>&-',
+        '(STAGING_SYNC_LOCK_OWNER_PID="$BASHPID"; STAGING_SYNC_LOCK_PROCESS_PID=""; if staging_sync_lock_start; then status=0; else status=$?; fi; staging_sync_lock_release; [[ "$status" == 75 ]])',
+        'staging_sync_lock_exclusive 1',
+        'if flock -s -n "$TEST_LOCK" -c true; then echo unsafe_reader; exit 91; fi',
+        'staging_sync_lock_release; staging_sync_lock_release',
+        'flock -n "$TEST_LOCK" -c true',
+        'flock -n "$TEST_LOCK.writer" -c true',
+        'echo bounded_upgrade_and_writer_lease_passed',
+      ].join('\n')], {
+        env: { ...process.env, TEST_LOCK: join(root, 'generation.lock') },
+        encoding: 'utf8', timeout: 8_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stdout).toContain('bounded_upgrade_and_writer_lease_passed');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not pass either lock descriptor to a long-lived preparation child', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-admission-child-'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', keeperSource(),
+        'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+        'trap staging_sync_lock_release EXIT',
+        'staging_sync_lock_start; staging_sync_lock_shared',
+        'sleep 2 & child=$!',
+        'staging_sync_lock_release',
+        'flock -n "$TEST_LOCK" -c true',
+        'flock -n "$TEST_LOCK.writer" -c true',
+        'echo both_locks_free_before_child_exit',
+        'wait "$child"',
+      ].join('\n')], {
+        env: { ...process.env, TEST_LOCK: join(root, 'generation.lock') },
+        encoding: 'utf8', timeout: 5_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stdout).toContain('both_locks_free_before_child_exit');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('sync-staging-checkout.sh bundle checkout lock (WI-10003374)', () => {
   const effective = '{ path=/usr/bin/flock ; argv[]=/usr/bin/flock -s /tmp/papercup-staging-sync.lock /isolated/apps/operator/bin/bundle-host.sh ; ignore_errors=no ; start_time=[n/a] ; status=0/0 }';
   const guarded = '{ path=/usr/bin/bash ; argv[]=/usr/bin/bash -c root="/isolated"; helper="$$root/apps/operator/scripts/systemd/staging-lock-attribution.sh"; if [ -f "$$helper" ]; then exec /usr/bin/bash "$$helper" api-pre /tmp/papercup-staging-sync.lock "$$root/apps/operator/bin/bundle-host.sh"; fi; echo "[95-bundled-entry] $$helper is absent from this staging generation; bundling under the shared flock without attribution" >&2; exec /usr/bin/flock -s /tmp/papercup-staging-sync.lock "$$root/apps/operator/bin/bundle-host.sh" ; ignore_errors=no ; start_time=[n/a] ; status=0/0 }';
@@ -2128,6 +2253,7 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
       expect(r.stdout).toContain('lock_after_keeper_release=free');
     } finally {
       rmSync(lock, { force: true });
+      rmSync(`${lock}.writer`, { force: true });
     }
   });
 
