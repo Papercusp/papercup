@@ -194,6 +194,7 @@ import {
   checkpointPidIdentity,
   probeRunnerLiveness,
   readStoredQualification,
+  composeStoredQualificationWork,
   recordStoredQualificationRunnerProgress,
   recordStoredQualificationNativeProducer,
   recoverStoredQualificationNativeCompletions,
@@ -208,6 +209,7 @@ import {
   type RunnerLiveness,
   type StoredQualificationMutation,
 } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
+import { executedSourceRunnerIdentity } from "@papercusp/test-config/test-pass-reuse-skip";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
 import type { CheckpointVerdict } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import {
@@ -4288,6 +4290,42 @@ export function createCheckpointQualificationNativeObserver(
       return finished;
     },
   };
+}
+
+/** The production suite's final green barrier, after absorption and exclusions.
+ * A legacy attempt has no frozen continuation. Once a population is frozen on
+ * the existing row, no successful child exit can bypass its full composer.
+ * Composition deliberately leaves custody and terminal settlement untouched.
+ */
+export async function composeCheckpointQualificationBeforePromotion(
+  input: { target: GateVerdictTarget; attemptId: string; candidate: string; runId: string; root: string },
+  deps: { read: typeof readStoredQualification; compose: typeof composeStoredQualificationWork;
+    pidIdentity: () => string | null; runnerIdentity: () => string } = {
+    read: readStoredQualification, compose: composeStoredQualificationWork,
+    pidIdentity: () => checkpointPidIdentity(process.pid), runnerIdentity: executedSourceRunnerIdentity,
+  },
+): Promise<{ status: 'legacy' | 'ready' } | { status: 'refused'; reason: string }> {
+  const stored = await deps.read(input.target);
+  if (stored.status !== 'present') return { status: 'refused', reason: `qualification-${stored.status}` };
+  const transaction = stored.transaction;
+  if (transaction.attemptId !== input.attemptId || transaction.candidate !== input.candidate ||
+      transaction.runId !== input.runId) return { status: 'refused', reason: 'qualification-lineage-mismatch' };
+  const work = transaction.continuation;
+  if (!work) return { status: 'legacy' };
+  const runner = transaction.currentPhysicalRunner;
+  const pidIdentity = deps.pidIdentity();
+  if (!runner || !pidIdentity || runner.pidIdentity !== pidIdentity || work.root !== input.root)
+    return { status: 'refused', reason: 'qualification-runner-fence-mismatch' };
+  const composed = await deps.compose(input.target, {
+    attemptId: input.attemptId, candidate: input.candidate, repairHead: transaction.repairHead,
+    runnerId: runner.id, runId: input.runId, pidIdentity, root: input.root, taskKey: work.taskKey,
+    manifest: work.manifest, retryStates: work.retryStates, runContext: 'ci',
+    runnerIdentity: deps.runnerIdentity(), updates: [],
+  });
+  return composed.status === 'updated' || composed.status === 'idempotent'
+    ? { status: 'ready' }
+    : { status: 'refused', reason: `qualification-composition-${composed.status}${
+      composed.status === 'conflict' && composed.refusalReason ? `:${composed.refusalReason}` : ''}` };
 }
 
 /**
@@ -23902,6 +23940,24 @@ export function realCheckpointDeps(
       }
       // P-008 (#D-015): what quarantine and downgrades removed from this run's count. The repair
       // round records it, so the convergence trajectory compares rounds over one population.
+      const qualificationAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim();
+      if (green && repairTarget && qualificationAttemptId) {
+        // This must follow every absorption/downgrade/inheritance path that can
+        // turn the suite green, and precede returning green to the advance path.
+        const composed = await composeCheckpointQualificationBeforePromotion({
+          target: repairTarget, attemptId: qualificationAttemptId,
+          candidate: execution?.candidate ?? resolvedHeadAtStart ?? '', runId, root: treeDir,
+        });
+        if (composed.status === 'refused') {
+          green = false;
+          failingTests.push('qualification-composition');
+          const note = `QUALIFICATION_COMPOSITION status=refused reason=${composed.reason}`;
+          summary = `${summary}\n\n${note}`;
+          fullOutput += `\n${note}\n`;
+          log(note);
+          if (logPath) appendFileSync(logPath, `\n${note}\n`);
+        }
+      }
       const excludedFromCount = green
         ? []
         : failingBeforeExclusions.filter((entry) => !failingTests.includes(entry));
