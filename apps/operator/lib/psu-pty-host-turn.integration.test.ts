@@ -204,14 +204,16 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
     };
     const childCode = [
       "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
-      "let line='',crs=0;process.stdout.write('READY\\n');",
+      "const trace=(kind,data)=>fs.appendFileSync(process.env.TEST_INPUT_TRACE,JSON.stringify({atMs:Date.now(),kind,data})+'\\n');",
+      "const emit=data=>{trace('output',data);process.stdout.write(data);};",
+      "let line='',crs=0;emit('READY\\n');",
       rearmed ? "const busy=setInterval(()=>{if(fs.existsSync(process.env.TEST_BUSY_RELEASE))clearInterval(busy);else process.stdout.write('BUSY\\n');},15);" : '',
-      "process.stdin.on('data',data=>{fs.appendFileSync(process.env.TEST_INPUT_TRACE,JSON.stringify({atMs:Date.now(),data})+'\\n');for(const c of data){",
+      "process.stdin.on('data',data=>{trace('input',data);for(const c of data){",
       "if(c==='\\x04'){process.exit(0);return;}",
-      "if(c!=='\\r'){line+=c;continue;}crs++;process.stdout.write('REPAINT:'+crs+'\\n');",
+      "if(c!=='\\r'){line+=c;continue;}crs++;emit('REPAINT:'+crs+'\\n');",
       "if(process.env.TEST_ACCEPT==='retry'&&crs===2){",
       "fs.appendFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({type:'user',timestamp:new Date().toISOString(),message:{role:'user',content:line}})+'\\n');",
-      "process.stdout.write('NATIVE_ACCEPTED\\n');line='';}}});",
+      "emit('NATIVE_ACCEPTED\\n');line='';}}});",
       'setTimeout(()=>process.exit(0),18000);',
     ].join('');
     const freshCode = [
@@ -313,7 +315,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
       const stdinTimeline = existsSync(stdinTrace)
         ? readFileSync(stdinTrace, 'utf8').split('\n').filter(Boolean).map(line => {
           const row = JSON.parse(line);
-          return { ms: row.atMs - startedAt, data: row.data };
+          return { ms: row.atMs - startedAt, kind: row.kind, data: row.data };
         })
         : [];
       console.info('TAGGED_WAKE_OBSERVATION', JSON.stringify({ scenario, milestones,
@@ -2272,9 +2274,10 @@ function pasteAwareChildCode(ttlMs: number, pasteWindowMs: number): string {
  *  It also echoes 'ECHO:<line>' per
  *  newline-terminated stdin line, so a CR-submitted wake turn is observable.
  *  Self-exits after ttlMs. The output stream is what the host's mid-turn gate watches. */
-function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number, releasePath?: string): string {
+function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number, releasePath?: string, pausePath?: string): string {
+  const pauseCondition = pausePath ? `&&!fs.existsSync(${JSON.stringify(pausePath)})` : '';
   const emitterCode = releasePath
-    ? `const fs=require('node:fs');setInterval(()=>{if(!fs.existsSync(${JSON.stringify(releasePath)}))fs.writeSync(1,'.');},${intervalMs});`
+    ? `const fs=require('node:fs');setInterval(()=>{if(!fs.existsSync(${JSON.stringify(releasePath)})${pauseCondition})fs.writeSync(1,'.');},${intervalMs});`
     : `const fs=require('node:fs');setInterval(()=>fs.writeSync(1,'.'),${intervalMs});`;
   // Negative assertions own their busy window. A fixed child timer can expire
   // before a delayed parent observes readiness and reaches the assertion.
@@ -3609,7 +3612,12 @@ describe(
         // carry) must not land into a still-generating TUI — it would corrupt the
         // busy turn AND drop whatever that turn hadn't yet committed.
         const ownerId = uniqueOwner('RESET-MIDTURN');
+        const root = mkdtempSync(join(tmpdir(), 'pty-reset-native-'));
+        const project = join(root, 'projects', 'fixture');
+        mkdirSync(project, { recursive: true });
+        const transcript = join(project, 'native.jsonl');
         const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
+        const pauseBusy = join(PSU_PTY_DIR, `${ownerId}.pause`);
         const sock = socketPathFor(ownerId);
         const meta = metaPathFor(ownerId);
         const { captured, io } = fakeIo(); // bridgeTty:false — the exact gap closed
@@ -3617,6 +3625,7 @@ describe(
           ...hermeticEnv(),
           PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_SID: ownerId,
+          CLAUDE_CONFIG_DIR: root,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000',
@@ -3651,7 +3660,7 @@ describe(
           // without it coldResetModeForAgent correctly selects hard recycle.
           args: [
             '-e',
-            "process.stdout.write('RESET-BOOT:'+process.pid+'\\n');" + busyThenIdleChildCode(900, 50, 4000, releaseBusy),
+            "process.stdout.write('RESET-BOOT:'+process.pid+'\\n');" + busyThenIdleChildCode(900, 50, 4000, releaseBusy, pauseBusy),
             '--',
             '--system-prompt-file',
             'fixture.md',
@@ -3670,6 +3679,7 @@ describe(
           console.info('RESET_BOUNDARY_OBSERVATION', fixtureDiagnostics());
           writeFileSync(releaseBusy, 'release\n');
           await done;
+          rmSync(root, { recursive: true, force: true });
         });
 
         expect(await waitForHost(ownerId), fixtureDiagnostics()).not.toBeNull();
@@ -3680,6 +3690,18 @@ describe(
         // even after the former 900 ms timer would have expired.
         await sleep(1100);
         expect(existsSync(releaseBusy), hostTestDiagnostics(ownerId, captured)).toBe(false);
+        // A logical turn may keep working without producing a PTY frame.
+        // Hold its release barrier closed while deliberately pausing redraws.
+        writeFileSync(pauseBusy, 'pause\n');
+        // The private release file is not a native execution signal. Supply
+        // the backend's actual running/settled records so the fixture models
+        // an in-flight turn even when its output stream is quiet.
+        const runningRow = JSON.stringify({ type: 'assistant', uuid: `${ownerId}-running`,
+          timestamp: new Date().toISOString(),
+          message: { role: 'assistant', stop_reason: null,
+            content: [{ type: 'text', text: 'working' }] } }) + '\n';
+        writeFileSync(transcript, runningRow);
+        expect(nativeObservation().execution, fixtureDiagnostics()).toMatchObject({ phase: 'running' });
         injectAtMs = Date.now() - startedAt;
         nativeBeforeInject = nativeObservation();
         injectionConfirmation = await injectIntoHostWithConfirmation(sock, { mode: 'reset', data: 'midturn-reset-carry' });
@@ -3690,8 +3712,12 @@ describe(
         await sleep(400);
         const heldDiagnostics = fixtureDiagnostics();
         expect(existsSync(releaseBusy), heldDiagnostics).toBe(false);
+        expect(captured(), heldDiagnostics).not.toContain('ECHO:/clear');
         expect(captured(), heldDiagnostics).not.toContain('ECHO:midturn-reset-carry');
         expect(captured(), heldDiagnostics).not.toContain('midturn-reset-carry');
+        writeFileSync(transcript, runningRow + JSON.stringify({ type: 'assistant',
+          uuid: `${ownerId}-settled`, timestamp: new Date().toISOString(),
+          message: { role: 'assistant', stop_reason: 'end_turn', content: [] } }) + '\n');
         writeFileSync(releaseBusy, 'release\n');
 
         // After the agent goes quiet (≥900ms) + the output-quiet window, the gate
