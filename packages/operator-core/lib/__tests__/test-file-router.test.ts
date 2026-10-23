@@ -1846,7 +1846,14 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(spawnImpl).toHaveBeenCalledWith(
         '/usr/bin/setsid',
         ['--wait', 'npx', 'vitest', 'list', '--filesOnly', 'a.test.ts'],
-        expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
+        expect.objectContaining({
+          env: expect.objectContaining({
+            PATH: '/usr/bin',
+            PAPERCUSP_TEST_STARTUP_TRACE: '1',
+            NODE_OPTIONS: expect.stringContaining('/scripts/lib/vitest-startup-trace.mjs'),
+          }),
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }),
       );
       await vi.advanceTimersByTimeAsync(100);
       expect(readProcessDiagnosticImpl).toHaveBeenCalledWith(4240);
