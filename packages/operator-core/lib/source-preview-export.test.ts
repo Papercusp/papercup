@@ -61,8 +61,20 @@ describe('immutable generation verifier snapshots', () => {
     'materializes leased independent dependencies and refuses incomplete custody (%s)', async defect => {
       const root = mkdtempSync(join(tmpdir(), 'verifier-generation-case-'));
       const donor = join(root, 'donor'), dest = join(root, 'invoked'), store = join(root, 'generations');
-      const helper = join(SOURCE_ROOT, 'papercusp-desktop/bin/lib/pinned-deps.sh');
-      const generation = join(SOURCE_ROOT, 'apps/operator/bin/release/dependency-generation.sh');
+      // EI-26811538560256341: a new caller can be committed before its desktop
+      // gitlink advances. Reading the mutable desktop checkout hid that broken
+      // publication contract. Exercise the helper the parent actually records.
+      const parent = git(SOURCE_ROOT, ['rev-parse', 'HEAD']).trim();
+      const desktop = git(SOURCE_ROOT, ['rev-parse', `${parent}:papercusp-desktop`]).trim();
+      const helperPath = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+      const helper = join(root, helperPath);
+      write(root, helperPath, git(join(SOURCE_ROOT, 'papercusp-desktop'),
+        ['show', `${desktop}:bin/lib/pinned-deps.sh`]));
+      // The generation implementation remains this test's subject; preserve its
+      // relative support files beside the separately frozen helper.
+      cpSync(join(SOURCE_ROOT, 'apps/operator/bin/release'), join(root, 'apps/operator/bin/release'),
+        { recursive: true });
+      const generation = join(root, 'apps/operator/bin/release/dependency-generation.sh');
       const env = { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: store,
         DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(root, 'copy.lock'),
         DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1' };
@@ -1096,7 +1108,11 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       stallWindowMs: 400, extensionMs: 300 })).rejects.toThrow('absolute-ceiling');
   });
 
-  it.each([false, true])('freezes materialized committed source without cloning on root (root donor=%s)', async rootDonor => {
+  it.each([
+    { rootDonor: false, generationHelper: false },
+    { rootDonor: true, generationHelper: false },
+    { rootDonor: true, generationHelper: true },
+  ])('freezes materialized committed source without cloning on root (root donor=$rootDonor, generation helper=$generationHelper)', async ({ rootDonor, generationHelper }) => {
     const fixtureParent = rootDonor && process.platform === 'linux'
       ? mkdtempSync('/var/tmp/source-preview-root-donor-') : tmp;
     try {
@@ -1109,7 +1125,19 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
     // Keep the physical-donor precondition and real independent Node resolution;
     // substitute only the expensive production dependency census/copy.
-    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = ' + (copiesDependencies ? 'snapshot-generation-locked' : 'snapshot-locked') + '\ntest "$4" = ' + (copiesDependencies ? 'copy' : 'hardlink') + '\ntest ! -L "$2/node_modules/.bin"\nif [ "$4" = copy ]; then cp -a -- "$2/node_modules" "$3/node_modules"; else cp -al -- "$2/node_modules" "$3/node_modules"; fi\n');
+    const snapshotVerb = copiesDependencies && generationHelper ? 'snapshot-generation-locked' : 'snapshot-locked';
+    write(fixture.repo, helper, [
+      '#!/bin/bash', 'set -eu',
+      'case "$1" in',
+      '  trees) echo node_modules; exit ;;',
+      '  ' + snapshotVerb + ') ;;',
+      '  *) exit 94 ;;',
+      'esac',
+      'test "$4" = ' + (copiesDependencies ? 'copy' : 'hardlink'),
+      'test ! -L "$2/node_modules/.bin"',
+      'if [ "$4" = copy ]; then cp -a -- "$2/node_modules" "$3/node_modules"; else cp -al -- "$2/node_modules" "$3/node_modules"; fi',
+      '',
+    ].join('\n'));
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/node_modules/\n/.papercusp/scratch/\n');
     git(fixture.repo, ['add', script, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
     git(fixture.repo, ['commit', '-qm', 'materialized dependency donor fixture']);

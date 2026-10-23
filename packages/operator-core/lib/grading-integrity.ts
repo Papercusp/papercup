@@ -2312,11 +2312,12 @@ export async function dispatchPendingGradingAudits(
       allowGradingAuditRefusal: true,
       detectStartupStall: false,
     });
-  const retireProvenTerminalDriftTasks = async (issueId: string) => {
+  const retireProvenTerminalAuditTasks = async (issueId: string) => {
     const retiredTaskIds: string[] = [];
     const codes: GradingAuditRecoveryCode[] = [];
     const errors: string[] = [];
-    if (!workspaceId) return { retiredTaskIds, codes, errors };
+    const remainingTaskIds: string[] = [];
+    if (!workspaceId) return { retiredTaskIds, codes, errors, remainingTaskIds };
 
     const labelPrefix = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${issueId}`;
     let tasks: Awaited<ReturnType<typeof listTasks>>;
@@ -2332,6 +2333,7 @@ export async function dispatchPendingGradingAudits(
         retiredTaskIds,
         codes,
         errors: [`retained auditor task read failed: ${error instanceof Error ? error.message : String(error)}`],
+        remainingTaskIds,
       };
     }
 
@@ -2339,6 +2341,11 @@ export async function dispatchPendingGradingAudits(
       const label = task.detail?.label;
       return typeof label === 'string' && (label === labelPrefix || label.startsWith(`${labelPrefix}:`));
     });
+    // A full page cannot prove that another healthy reviewer is absent.
+    if (tasks.length >= 10) return {
+      retiredTaskIds, codes, errors: ['retained auditor task scan reached its page limit'],
+      remainingTaskIds: matchingTasks.map(task => task.taskId),
+    };
     for (const task of matchingTasks) {
       const taskLogPath = task.logPath ?? null;
       const taskOwnerId = typeof task.detail?.coordOwnerId === 'string' ? task.detail.coordOwnerId.trim() : '';
@@ -2402,7 +2409,8 @@ export async function dispatchPendingGradingAudits(
       retiredTaskIds.push(task.taskId);
       codes.push(terminalFailure.code);
     }
-    return { retiredTaskIds, codes, errors };
+    remainingTaskIds.push(...matchingTasks.filter(task => !retiredTaskIds.includes(task.taskId)).map(task => task.taskId));
+    return { retiredTaskIds, codes, errors, remainingTaskIds };
   };
 
   const dispatchTarget = async (issueId: string): Promise<PendingGradingAuditDispatchReceipt> => {
@@ -2414,7 +2422,7 @@ export async function dispatchPendingGradingAudits(
     if (!card) {
       if (evaluatorBuildDriftIds.has(issueId)) {
         const driftCard = evaluatorBuildDriftById.get(issueId);
-        const cleanup = driftCard ? await retireProvenTerminalDriftTasks(issueId) : { retiredTaskIds: [], codes: [], errors: [] };
+        const cleanup = driftCard ? await retireProvenTerminalAuditTasks(issueId) : { retiredTaskIds: [], codes: [], errors: [] };
         const stranding = driftCard
           ? await assessEvaluatorBuildStrandingAsync(driftCard, liveEvaluatorBuild, {
               nowMs: deps.now?.() ?? Date.now(),
@@ -2637,18 +2645,37 @@ export async function dispatchPendingGradingAudits(
       }
 
       markPhase('reservation');
-      const reservation = await reserve(issueId, idempotencyKey, {
+      const reservationOptions = {
         workspaceId: input.ctx.workspaceId,
         currentness: card.gradingAuditCurrentness,
         snapshot: reservationSnapshot,
         ...(generationCompatible ? { allowGenerationIncompatibleBackoff: true } : {}),
-      });
+      };
+      let reservation = await reserve(issueId, idempotencyKey, reservationOptions);
+      // Targeted repair must reach an auditor's proven terminal provider error
+      // even while its original dispatch lease is fresh. Reuse the native
+      // identity proof; a healthy/unreadable peer or an incomplete scan keeps
+      // the lease. The exact timestamp CAS fences concurrent lease renewals.
+      const heldReservation = card.gradingAudit?.dispatchReservation;
+      if (reservation.status === 'already-reserved' && explicitTargetIds.includes(issueId) &&
+          heldReservation?.key === idempotencyKey && heldReservation.reservedAt) {
+        const cleanup = await retireProvenTerminalAuditTasks(issueId);
+        retiredTaskIds.push(...cleanup.retiredTaskIds);
+        terminalCodes.push(...cleanup.codes);
+        if (cleanup.retiredTaskIds.length > 0 && cleanup.remainingTaskIds.length === 0 && cleanup.errors.length === 0 &&
+            await release(issueId, heldReservation.key, {
+              workspaceId: input.ctx.workspaceId, reservedAt: heldReservation.reservedAt,
+            })) {
+          reservation = await reserve(issueId, idempotencyKey, reservationOptions);
+        }
+      }
       if (reservation.status !== 'claimed') {
         return {
           issueId,
           rubricRef: card.rubricRef,
           state: 'skipped',
           idempotencyKey,
+          ...recoveryFields(),
           reason:
             reservation.status === 'quota-backoff'
               ? `re-dispatch suppressed until ${reservation.backoff?.until} ` +

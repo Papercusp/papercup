@@ -16,6 +16,7 @@ import type {
 
 // @ts-expect-error Runtime script is intentionally executable ESM and has no declaration artifact.
 import * as publisher from './publish-workspace-host-artifacts.mjs';
+import { gcsPublicationTarget, publishGcsObjects, verifyGcsPublicBytes } from './lib/workspace-host-gcs-publication.mjs';
 
 const {
   publishWorkspaceHostArtifacts,
@@ -34,6 +35,86 @@ const SOURCE_SHA = 'a'.repeat(40);
 const VERSION = '0.0.19-20260908.0450';
 const OPERATION_ID = 'release-operation-20260908';
 const TASK_ID = 'releasetask01';
+
+function gcsFixture(options: { loseReply?: boolean; denyRead?: boolean; conflict?: boolean } = {}) {
+  const bytes = Buffer.from('verified signed release bytes');
+  const target = gcsPublicationTarget('p544-release-bucket', sha256(bytes));
+  const objects = [{ name: 'server.tgz', path: '/candidate/server.tgz', sha256: sha256(bytes), sizeBytes: bytes.length, contentType: 'application/gzip' }];
+  const expiresAt = '2026-10-30T00:00:00.000Z';
+  const condition = { title: `workspace-host-${target.digest.slice(0, 20)}`,
+    expression: `resource.name.startsWith("projects/_/buckets/${target.bucket}/objects/${target.prefix}") && request.time < timestamp("${expiresAt}")` };
+  let grant = false;
+  let uploaded = false;
+  let lost = false;
+  const calls: string[][] = [];
+  const gcloud = async (args: string[]) => {
+    calls.push(args);
+    if (args.includes('get-iam-policy')) return JSON.stringify({ bindings: grant ? [{ role: 'roles/storage.objectViewer', members: ['allUsers'], condition }] : [] });
+    if (args.includes('add-iam-policy-binding')) { grant = true; return '{}'; }
+    if (args.includes('objects')) {
+      assert.ok(args.includes('--raw'), 'provider metadata must use the raw API field shape');
+      if (options.denyRead) throw Object.assign(new Error('Forbidden'), { stderr: 'HTTPError 403' });
+      if (!uploaded) throw Object.assign(new Error('absent'), { stderr: 'object not found: 404.' });
+      return JSON.stringify({ size: bytes.length, generation: '42', metadata: { sha256: options.conflict ? '0'.repeat(64) : sha256(bytes) } });
+    }
+    if (args[1] === 'cp') {
+      assert.ok(args.includes('--if-generation-match=0'));
+      uploaded = true;
+      if (options.loseReply && !lost) { lost = true; throw new Error('connection lost after committed upload'); }
+      return '';
+    }
+    return '{}';
+  };
+  const fetchImpl = async () => new Response(bytes);
+  return { target, objects, expiresAt, gcloud, fetchImpl, calls };
+}
+
+test('GCS publication rejects unsafe bucket names and unpinned targets', () => {
+  assert.throws(() => gcsPublicationTarget('bucket/other', 'a'.repeat(64)), /bucket/);
+  assert.throws(() => gcsPublicationTarget('bucket.example', 'a'.repeat(64)), /bucket/);
+  assert.throws(() => gcsPublicationTarget('safe-bucket', 'latest'), /digest/);
+  assert.equal(parseArgs(['--dir', '/candidate', '--gcs-bucket', 'safe-bucket'], {}).gcsBucket, 'safe-bucket');
+});
+
+test('GCS public-byte verification rejects metadata-independent corruption and truncation', async () => {
+  const good = Buffer.from('complete');
+  const expected = { sizeBytes: good.length, sha256: sha256(good) };
+  await assert.rejects(verifyGcsPublicBytes('https://storage.googleapis.com/object', expected,
+    async () => new Response(Buffer.from('corrupt!'))), /differ|exceeds/);
+  await assert.rejects(verifyGcsPublicBytes('https://storage.googleapis.com/object', expected,
+    async () => new Response(good.subarray(0, 2))), /differ/);
+});
+
+for (const loseReply of [false, true]) {
+  test(`GCS publication resumes without duplicate upload after ${loseReply ? 'lost' : 'normal'} response`, async () => {
+    const fixture = gcsFixture({ loseReply });
+    const ledger = createLedger();
+    const ctx = { taskId: TASK_ID, operationId: OPERATION_ID, ledger, now: () => new Date() };
+    const input = { ...fixture, ctx, runMutation: runJournaledMutation, log: () => {} };
+    const result = await publishGcsObjects(input);
+    assert.equal(result.provider, 'gcs');
+    assert.equal(result.verified[0].sha256, fixture.objects[0].sha256);
+    await publishGcsObjects(input);
+    assert.equal(fixture.calls.filter(a => a[1] === 'cp').length, 1);
+    assert.equal(fixture.calls.filter(a => a.includes('add-iam-policy-binding')).length, 1);
+    assert.ok(ledger.task.detail.release.receipts.some(r => r.stage === 'publish.gcs.verify' && r.state === 'committed'));
+  });
+}
+
+test('GCS authentication failure cannot become absence or authorize another upload', async () => {
+  const fixture = gcsFixture({ denyRead: true });
+  const ctx = { taskId: TASK_ID, operationId: OPERATION_ID, ledger: createLedger(), now: () => new Date() };
+  await assert.rejects(publishGcsObjects({ ...fixture, ctx, runMutation: runJournaledMutation, log: () => {} }), /Forbidden/);
+  assert.equal(fixture.calls.filter(a => a[1] === 'cp').length, 0);
+});
+
+test('GCS preview performs no object or IAM mutations and needs no release journal', async () => {
+  const fixture = gcsFixture();
+  const result = await publishGcsObjects({ ...fixture, planOnly: true });
+  assert.equal(result.planOnly, true);
+  assert.equal(fixture.calls.length, 1);
+  assert.ok(fixture.calls[0].includes('describe'));
+});
 
 test('the CLI help path is side-effect-free and does not require --dir or credentials', async () => {
   assert.deepEqual(parseArgs(['--help'], {}), {

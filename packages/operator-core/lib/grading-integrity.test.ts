@@ -3460,6 +3460,64 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
+  it.each(['terminal', 'quoted', 'unreadable', 'healthy-peer'] as const)(
+    'repairs a fresh reserved auditor only with complete terminal proof: %s', async (proof) => {
+      const d = deps();
+      const issueId = 'EI-fresh-reserved-terminal';
+      const sessionId = 'native-fresh-reserved';
+      const ownerId = 'su-failed-reserved-auditor';
+      const prior = { key: `grading-audit:${issueId}`, reservedAt: '2026-10-23T22:44:48.945Z' };
+      const target = card(issueId);
+      target.gradingAudit = { ...target.gradingAudit!, dispatchReservation: prior };
+      d.listScorecards.mockResolvedValue([target]);
+      d.reserve.mockResolvedValueOnce({ status: 'already-reserved' });
+      const task = {
+        taskId: 'task-fresh-reserved', sessionId, workspaceId: 'ws-test', class: 'agent-session',
+        state: 'running', logPath: '/tmp/fresh-reserved.log',
+        detail: { label: prior.key, coordOwnerId: ownerId },
+      } as unknown as TaskRow;
+      const healthy = {
+        ...task, taskId: 'task-healthy-reserved', sessionId: 'native-healthy',
+        detail: { label: prior.key, coordOwnerId: 'su-healthy-auditor' },
+      } as TaskRow;
+      d.listTasks.mockResolvedValueOnce(proof === 'healthy-peer' ? [task, healthy] : [task]);
+      const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' as const }));
+      const nativeTranscript = JSON.stringify({
+        type: 'assistant', sessionId, isSidechain: false, isApiErrorMessage: proof !== 'quoted', apiErrorStatus: 400,
+        message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text',
+          text: "API Error: 400 role 'system' is not supported on this model" }] },
+      });
+      const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx, harness: 'papercusp' }, {
+        ...d, killTask,
+        listNativeSessionsByTranscriptHandles: async () => [{ sessionId, coordOwnerId: ownerId, agent: 'claude' }],
+        findSessionTranscript: async () => '/tmp/fresh-reserved.jsonl',
+        readLogTail: path => {
+          if (path.endsWith('.jsonl')) {
+            if (proof === 'unreadable') throw new Error('native evidence unavailable');
+            return nativeTranscript;
+          }
+          return "API Error: 400 role 'system' is not supported on this model\n❯";
+        },
+        terminalLogRecheckDelayMs: 0, terminalLogMaxRechecks: 0,
+      });
+      if (proof === 'terminal') {
+        expect(d.release).toHaveBeenCalledWith(issueId, prior.key,
+          expect.objectContaining({ workspaceId: 'ws-test', reservedAt: prior.reservedAt }));
+        expect(d.reserve).toHaveBeenCalledTimes(2);
+        expect(d.launch).toHaveBeenCalledOnce();
+        expect(result.receipts[0]).toMatchObject({ state: 'launched',
+          terminalRecovery: { retiredTaskIds: [task.taskId], codes: ['inference_gateway_error'] } });
+      } else {
+        expect(d.release).not.toHaveBeenCalled();
+        expect(d.reserve).toHaveBeenCalledOnce();
+        expect(d.launch).not.toHaveBeenCalled();
+        expect(result.receipts[0]).toMatchObject({ state: 'skipped' });
+      }
+      if (proof === 'terminal' || proof === 'healthy-peer') expect(killTask).toHaveBeenCalledOnce();
+      else expect(killTask).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([false, true])('uses the exact retained Claude session transcript (missing task binding: %s) to recover a gateway failure without a PTY footer', async (missingBinding) => {
     const d = deps();
     const sessionId = 'native-retained-session';

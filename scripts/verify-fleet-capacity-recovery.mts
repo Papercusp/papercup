@@ -4,21 +4,58 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { getOrgPg } from '@papercusp/db-org';
-import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
-import { listSpecEvidence, repoFilesEvidenceMeasurementSchema, expandRepoFilesEvidenceSourcePathsAtRoot } from '../packages/operator-core/lib/agent-tools/plans/spec-evidence-store';
-import { listSpecClauses } from '../packages/operator-core/lib/agent-tools/plans/spec-clauses-store';
-import { computeSpecSetHash } from '../packages/operator-core/lib/agent-tools/plans/spec-clause-compiler';
-import { getAcceptanceRubricsForPlan } from '../packages/operator-core/lib/rubrics';
-import { inspectCommittedOperationalEvidence } from '../packages/operator-core/lib/agent-tools/testing/record-run';
-import { LUNA_CAPACITY_PLAN, validateCapacityRecoveryProof, validateCapacityShipmentProof,
-  validateCapacityDiagnosticProof, validateCapacityContinuationProof, validateCapacityContractProof,
-  validateCapacityNativeLlmRun, type NativeCapacityLlmRun } from '../packages/operator-core/lib/fleet/capacity-recovery-evidence';
+import type { listSpecEvidence } from '../packages/operator-core/lib/agent-tools/plans/spec-evidence-store';
+import type { inspectCommittedOperationalEvidence } from '../packages/operator-core/lib/agent-tools/testing/record-run';
+import type { NativeCapacityLlmRun } from '../packages/operator-core/lib/fleet/capacity-recovery-evidence';
 
 const S42_PATH = 'packages/operator-core/lib/llm-testing/scenarios/su/S42-drain-watch-recheck.ts';
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 
+/** Resolve gitlinks recursively, preserving the exact superproject pin. */
+function committedBytes(root: string, revision: string, path: string): Buffer {
+  const parts = path.split('/');
+  for (let i = 1; i < parts.length; i++) {
+    const prefix = parts.slice(0, i).join('/');
+    const entry = execFileSync('git', ['ls-tree', revision, '--', prefix], { cwd: root, encoding: 'utf8' });
+    const gitlink = /^160000 commit ([a-f0-9]{40})\t/.exec(entry);
+    if (gitlink) return committedBytes(join(root, prefix), gitlink[1], parts.slice(i).join('/'));
+  }
+  return execFileSync('git', ['show', revision + ':' + path], { cwd: root, maxBuffer: 4 * 1024 * 1024 });
+}
+
+async function readBriefProof(root: string, row: Awaited<ReturnType<typeof listSpecEvidence>>[number],
+  artifact: Awaited<ReturnType<typeof inspectCommittedOperationalEvidence>>['artifact']) {
+  const [{ getOrgPg }, { capacityBriefCaptureSchema, validateCapacityBriefReceipt },
+    { repoFilesEvidenceMeasurementSchema, expandRepoFilesEvidenceSourcePathsAtRoot }] = await Promise.all([
+    import('@papercusp/db-org'), import('../packages/operator-core/lib/fleet/capacity-recovery-evidence'),
+    import('../packages/operator-core/lib/agent-tools/plans/spec-evidence-store'),
+  ]);
+  const capture = capacityBriefCaptureSchema.parse(artifact.capacityBriefCapture);
+  const { sql } = getOrgPg();
+  const [native] = await sql<Array<{ id: number; tool_name: string; status: string; workspace_id: string;
+    coord_owner_id: string | null; invoked_at: Date; duration_ms: number | null; metadata_json: unknown; serving_build_sha: string | null }>>`
+    SELECT id, tool_name, status, workspace_id, coord_owner_id, invoked_at, duration_ms, metadata_json, serving_build_sha
+      FROM harness_shared.tool_invocations
+     WHERE id = ${capture.invocationId} AND workspace_id = 'papercusp-workspace'`;
+  if (!native) throw new Error('native-brief-receipt-missing');
+  const recipe = repoFilesEvidenceMeasurementSchema.parse(row.details?.currentMeasurement);
+  const paths = await expandRepoFilesEvidenceSourcePathsAtRoot(root, recipe);
+  let sourceMatches = paths.length > 0 && /^[a-f0-9]{40}$/.test(native.serving_build_sha ?? '');
+  if (sourceMatches) {
+    try { sourceMatches = paths.every(path => sha256(committedBytes(root, native.serving_build_sha!, path))
+      === sha256(readFileSync(join(root, path)))); } catch { sourceMatches = false; }
+  }
+  return validateCapacityBriefReceipt(artifact.capacityRecoveryProof, capture, {
+    id: Number(native.id), toolName: native.tool_name, status: native.status, workspaceId: native.workspace_id,
+    actorId: native.coord_owner_id, invokedAt: native.invoked_at.toISOString(), durationMs: native.duration_ms, metadata: native.metadata_json,
+  }, { now: new Date().toISOString(), startedAt: artifact.startedAt, finishedAt: artifact.finishedAt, sourceMatches });
+}
+
 async function readNativeLlmRuns(root: string, testRunId: number, scenarioId: string, passed: number) {
+  const [{ getOrgPg }, { parseTestRunExecutionDetails }, { validateCapacityNativeLlmRun }] = await Promise.all([
+    import('@papercusp/db-org'), import('@papercusp/test-config/execution-details'),
+    import('../packages/operator-core/lib/fleet/capacity-recovery-evidence'),
+  ]);
   const { sql } = getOrgPg();
   const [ledger] = await sql<Array<{ execution_details: unknown; started_at: Date; finished_at: Date }>>`
     SELECT execution_details, started_at, finished_at FROM harness_shared.test_runs
@@ -71,6 +108,19 @@ const result: { scope: string; phase: string; status: string; bindingIds: number
   { scope: 'luna-capacity-semantic-v1', phase, status: 'unknown', bindingIds: [], violations: [] };
 try {
   if (!root || !['recovery', 'shipment', 'diagnostic', 'continuation'].includes(phase)) throw new Error('invalid-instrument-scope');
+  // Reject invalid scopes before loading DB accessors and the scenario graph.
+  const [{ listSpecEvidence, repoFilesEvidenceMeasurementSchema, expandRepoFilesEvidenceSourcePathsAtRoot },
+    { listSpecClauses }, { computeSpecSetHash }, { getAcceptanceRubricsForPlan },
+    { inspectCommittedOperationalEvidence }, { LUNA_CAPACITY_PLAN, validateCapacityRecoveryProof,
+      validateCapacityShipmentProof, validateCapacityDiagnosticProof, validateCapacityContinuationProof,
+      validateCapacityContractProof }] = await Promise.all([
+    import('../packages/operator-core/lib/agent-tools/plans/spec-evidence-store'),
+    import('../packages/operator-core/lib/agent-tools/plans/spec-clauses-store'),
+    import('../packages/operator-core/lib/agent-tools/plans/spec-clause-compiler'),
+    import('../packages/operator-core/lib/rubrics'),
+    import('../packages/operator-core/lib/agent-tools/testing/record-run'),
+    import('../packages/operator-core/lib/fleet/capacity-recovery-evidence'),
+  ]);
   const [clauses, rubrics] = await Promise.all([
     listSpecClauses({ workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', planSlug: LUNA_CAPACITY_PLAN, limit: 101 }),
     getAcceptanceRubricsForPlan(LUNA_CAPACITY_PLAN, { harnessSlug: 'papercusp', strict: true, limit: 2 }),
@@ -119,6 +169,9 @@ try {
     const bytes = execFileSync('git', ['show', native.commitSha + ':' + native.filePath], { cwd: root, maxBuffer: 4 * 1024 * 1024 });
     const artifact = await inspectCommittedOperationalEvidence(root, native.filePath, createHash('sha256').update(bytes).digest('hex'));
     if (artifact.artifact.exitCode !== 0 || artifact.artifact.assertions.some(a => !a.passed)) throw new Error('failed-operational-artifact');
+    if (phase === 'recovery' || phase === 'diagnostic') {
+      result.violations.push(...(await readBriefProof(root, row, artifact.artifact)).violations.map(v => row.id + ':' + v));
+    }
     result.violations.push(...validateCapacityContractProof(artifact.artifact.capacityRecoveryProof,
       { specSetHash, barSetHash: rubrics[0].barSetHash, sourceFingerprint }).violations.map(v => row.id + ':' + v));
     const verdict = phase === 'recovery' ? validateCapacityRecoveryProof(artifact.artifact.capacityRecoveryProof)

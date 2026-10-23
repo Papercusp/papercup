@@ -9,6 +9,8 @@
  */
 
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { gitPipelinePosition, type PipelinePosition } from '../../git-pipeline-position';
 import { buildKey } from '../../events/await/catalog';
@@ -924,8 +926,11 @@ export default defineTool({
       // pipeline digest can omit the root or clip nested containment fields. Keep
       // the selected test route with this evidence so native preflights can check
       // readiness without pulling in unrelated, potentially truncated gate detail.
-      return { data: { ...routeHint, repoRoot: result.repoRoot, submodule: result.submodule,
-        acceptedSource: result.acceptedSource, servingRuntimes: result.servingRuntimes ?? [] } };
+      const data = { ...routeHint, repoRoot: result.repoRoot, submodule: result.submodule,
+        acceptedSource: result.acceptedSource, servingRuntimes: result.servingRuntimes ?? [] };
+      ctx.metadata?.({ operationalOutput: { schemaVersion: 1, observedAt: new Date().toISOString(),
+        sha256: createHash('sha256').update(canonicalJson(data)).digest('hex') } });
+      return { data };
     }
     const subjectStamp = pipelineSubjectStamp(ctx as { harnessSlug?: string | null }, result.repoRoot);
 

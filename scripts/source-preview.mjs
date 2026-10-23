@@ -889,8 +889,14 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
   const copyMode = (await fs.stat(donor)).dev === (await fs.stat(dest)).dev ? 'hardlink' : 'copy';
   // Reuse a full immutable generation on the destination filesystem instead
   // of repeatedly copying the mutable donor across devices before tests start.
-  const snapshotCommand = copyMode === 'copy' ? 'snapshot-generation-locked' : 'snapshot-locked';
-  await runPhase('deps.snapshot', () => run('bash', [join(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
+  // Older frozen refs pin a helper that only has the original locked snapshot.
+  // Select its published CLI before invoking it; a supported generation command
+  // must still refuse invalid custody rather than retrying through the donor.
+  const snapshotHelper = join(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh');
+  const generationSnapshotSupported = /^\s*snapshot-generation-locked\s*\)/m.test(await fs.readFile(snapshotHelper, 'utf8'));
+  const snapshotCommand = copyMode === 'copy' && generationSnapshotSupported
+    ? 'snapshot-generation-locked' : 'snapshot-locked';
+  await runPhase('deps.snapshot', () => run('bash', [snapshotHelper,
     snapshotCommand, realpathSync(donor), realpathSync(dest), copyMode]));
   await runPhase('deps.source.after-snapshot', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
   const script = join(dest, 'scripts/source-preview.mjs');

@@ -7,7 +7,7 @@ import { BRIEF_ADMIN, computeIdentityHash, JUDGE_PROMPT_SCAFFOLD_VERSION } from 
 import { S42_CASES, S42_ITEM, S42_PROMPT } from '../llm-testing/scenarios/su/S42-drain-watch-recheck';
 import { LUNA_CAPACITY_PLAN, LUNA_CAPACITY_INSTRUMENTS, lunaCapacityInstruments, validateCapacityRecoveryProof, validateCapacityShipmentProof,
   validateCapacityDiagnosticProof, validateCapacityContinuationProof, validateCapacityContractProof, validateCapacityNativeLlmRun,
-  validateCapacityBriefReceipt, type NativeCapacityBriefReceipt, type NativeCapacityLlmRun, type NativeCapacityLlmContext,
+  validateCapacityBriefReceipt, validateCapacityOutputReceipt, type NativeCapacityBriefReceipt, type NativeCapacityLlmRun, type NativeCapacityLlmContext,
   type CapacityRecoveryProof, type CapacityShipmentProof, type CapacityDiagnosticProof } from './capacity-recovery-evidence';
 
 const hash = (value: string) => value.repeat(64);
@@ -38,6 +38,8 @@ function census(): CapacityRecoveryProof {
         disposition: 'eligible', reason: 'Member-specific admission and spare capacity verified', receiptRef: 'oracle-receipt' }] },
     recoveries: [{ snapshotId: 'census-1', memberId: 'member', leaderId: 'leader', leaderReceiptRef: 'leader-action',
       effectiveSpec, restrictionsRecheckedAt: stamp(1), ownerRestricted: false, gateProtected: false,
+      admission: { memberId: 'member', effectiveSpec, admittedIds: ['WI-next'], ownerRestricted: false,
+        gateProtected: false, observedAt: stamp(1), receiptRef: 'action-admission' },
       control: { verb: 'coord:wake', memberId: 'member', actorId: 'leader', receiptRef: 'wake-action', invokedAt: stamp(2) },
       turn: { id: 'native-turn', memberId: 'member', triggerReceiptRef: 'wake-action', startedAt: stamp(3) },
       claim: { workItemId: 'WI-next', memberId: 'member', takenBy: 'member', takenAt: stamp(4),
@@ -95,6 +97,18 @@ describe('native leader-brief receipt custody', () => {
       expect(validateCapacityBriefReceipt(proof, capture, native, context).status).toBe('fail');
     }
   });
+  it('rejects substituted operational output, foreign actor/tool, and missing native measurement', () => {
+    const { capture, native, context } = observation();
+    native.toolName = 'work_items:claimable';
+    native.metadata = { operationalOutput: { schemaVersion: 1, observedAt: stamp(0),
+      sha256: createHash('sha256').update(canonicalJson(capture.result)).digest('hex') } };
+    const expected = { ...context, toolName: 'work_items:claimable', actorId: 'leader' };
+    expect(validateCapacityOutputReceipt(capture, native, expected).status).toBe('pass');
+    for (const change of [{ actorId: 'foreign' }, { toolName: 'scheduler:get_next' }, { metadata: {} }])
+      expect(validateCapacityOutputReceipt(capture, { ...native, ...change }, expected).status).toBe('fail');
+    capture.result.summary.fleet = 'foreign';
+    expect(validateCapacityOutputReceipt(capture, native, expected).violations).toContain('native-output-custody');
+  });
 });
 
 describe('Luna census and managed-pickup semantic proof', () => {
@@ -117,7 +131,16 @@ describe('Luna census and managed-pickup semantic proof', () => {
     const p = census();
     p.snapshot.members[0].effectiveSpec = { ...p.snapshot.members[0].effectiveSpec, maxConcurrentClaims: 1 };
     p.recoveries[0].effectiveSpec = { ...p.recoveries[0].effectiveSpec, maxConcurrentClaims: 1 };
+    p.recoveries[0].admission.effectiveSpec = { ...p.recoveries[0].admission.effectiveSpec, maxConcurrentClaims: 1 };
     expect(validateCapacityRecoveryProof(p).status).toBe('pass');
+  });
+  it('rejects an item withdrawn before the action-time recheck and an admission recorded after claim', () => {
+    const p = census(); p.recoveries[0].admission.admittedIds = [];
+    expect(validateCapacityRecoveryProof(p).violations).toContain('action-time-admission');
+    const resumed = census(); resumed.recoveries[0].admission.observedAt = stamp(3);
+    expect(validateCapacityRecoveryProof(resumed).status).toBe('pass');
+    const late = census(); late.recoveries[0].admission.observedAt = stamp(5);
+    expect(validateCapacityRecoveryProof(late).violations).toContain('pickup-time-or-stale-recheck');
   });
   const invalid: Array<[string, (p: CapacityRecoveryProof) => void, string]> = [
     ['missing census identity', p => { p.snapshot.roster.push('omitted'); }, 'census-population'],

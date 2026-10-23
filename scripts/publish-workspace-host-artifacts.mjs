@@ -32,7 +32,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { open, stat, readFile } from 'node:fs/promises';
+import { open, stat, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Readable } from 'node:stream';
@@ -41,6 +41,7 @@ import { createGunzip } from 'node:zlib';
 import { tsImport } from 'tsx/esm/api';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { releaseStageInputHash, releaseStageRequestIdentity } from './lib/release-task-journal.mts';
+import { gcsPublicationTarget, publishGcsObjects } from './lib/workspace-host-gcs-publication.mjs';
 
 export { releaseStageInputHash, releaseStageRequestIdentity };
 
@@ -84,7 +85,7 @@ const DEFAULT_BASE = 'https://cupboard.papercusp.com';
 
 export const USAGE = `Usage:
   npm run release:publish-workspace-host-artifacts -- \\
-    --dir <publication-dir> [--base <url>] [--token <bearer>] [--plan-only] [--evidence-only]
+    --dir <publication-dir> [--base <url>] [--token <bearer>] [--gcs-bucket <bucket>] [--plan-only] [--evidence-only]
 `;
 
 export function parseArgs(argv, env = process.env) {
@@ -96,6 +97,7 @@ export function parseArgs(argv, env = process.env) {
     else if (a === '--token') out.token = argv[++i];
     else if (a === '--task-id') out.taskId = argv[++i];
     else if (a === '--operation-id') out.operationId = argv[++i];
+    else if (a === '--gcs-bucket') out.gcsBucket = argv[++i];
     else if (a === '--plan-only') out.planOnly = true;
     else if (a === '--evidence-only') out.evidenceOnly = true;
     else if (a === '--concurrency') out.concurrency = Number(argv[++i]);
@@ -110,6 +112,8 @@ export function parseArgs(argv, env = process.env) {
   out.taskId ??= env.PAPERCUSP_RELEASE_TASK_ID?.trim();
   out.operationId ??= env.PAPERCUSP_RELEASE_OPERATION_ID?.trim();
   out.base = out.base.replace(/\/+$/, '');
+  if (out.gcsBucket) gcsPublicationTarget(out.gcsBucket, '0'.repeat(64));
+  if (out.gcsBucket && out.evidenceOnly) throw new Error('--gcs-bucket publishes the complete verified publication');
   return out;
 }
 
@@ -733,6 +737,51 @@ export async function publishWorkspaceHostArtifacts(args, injected = {}) {
     }
   }
   log(`  manifest bundle claim MATCHES (files.bundle + artifact.release)`);
+
+  if (args.gcsBucket) {
+    const [{ deriveWorkspaceHostCanonicalArtifactUrls }, publication] = await Promise.all([
+      tsImport('@papercusp/deployment-driver', import.meta.url),
+      tsImport('@papercusp/operator-core/lib/workspace-host/publication-manifest', import.meta.url),
+    ]);
+    const target = gcsPublicationTarget(args.gcsBucket, plan.sha256);
+    const urls = deriveWorkspaceHostCanonicalArtifactUrls(plan.sha256, { origin: target.origin });
+    const signature = await readFile(join(args.dir, 'server.tgz.minisig'));
+    const signatureSha = createHash('sha256').update(signature).digest('hex');
+    if (signatureSha !== manifest.files.signature.sha256 || signature.length !== manifest.files.signature.sizeBytes) {
+      throw new Error('signature bytes differ from the accepted manifest');
+    }
+    // Rebind only delivery addresses. Build identity, signed bytes and recorded
+    // trust measurements remain the original accepted candidate's evidence.
+    const relocated = publication.buildWorkspaceHostPublicationManifest({
+      artifact: { ...manifest.artifact, release: { ...manifest.artifact.release,
+        bundleUrl: urls.bundleUrl, signatureUrl: urls.signatureUrl } },
+      trustReport: manifest.trustReport,
+      bundle: { sha256: plan.sha256, bytes: plan.size },
+      signature: { sha256: signatureSha, bytes: signature.length },
+      origin: target.origin,
+    });
+    const sbom = await readPublicationSbom(args.dir, relocated);
+    const relocatedRaw = publication.serializeWorkspaceHostPublicationManifest(relocated);
+    const manifestPath = join(args.dir, 'gcs-manifest.json');
+    await writeFile(manifestPath, relocatedRaw);
+    const describe = (name, path, bytes, sha256, contentType) => ({ name, path, sizeBytes: bytes, sha256, contentType });
+    const objects = [
+      describe('server.tgz', bundlePath, plan.size, plan.sha256, 'application/gzip'),
+      describe('server.tgz.minisig', join(args.dir, 'server.tgz.minisig'), signature.length, signatureSha, 'text/plain'),
+      describe('sbom.cdx.json', join(args.dir, 'evidence', 'sbom.cdx.json'), sbom.sizeBytes, sbom.sha256, 'application/json'),
+      describe('manifest.json', manifestPath, Buffer.byteLength(relocatedRaw), createHash('sha256').update(relocatedRaw).digest('hex'), 'application/json'),
+    ];
+    const publishedAt = Date.parse(manifest.artifact.lifecycle.publishedAt);
+    if (!Number.isFinite(publishedAt)) throw new Error('GCS publication requires the original publication timestamp');
+    const expiresAt = new Date(publishedAt + 7 * 86400_000).toISOString();
+    if (Date.parse(expiresAt) <= Date.now()) throw new Error('temporary GCS publication access window has expired');
+    if (ctx) {
+      const { journal } = await readReleaseJournal(ctx.ledger, ctx.taskId, ctx.operationId);
+      assertPublicationJournalIdentity(journal, manifest, plan);
+    }
+    return publishGcsObjects({ target, objects, expiresAt, ctx, runMutation: runJournaledMutation,
+      planOnly: args.planOnly, fetchImpl: deps.fetch, gcloud: injected.gcloud, log });
+  }
 
   const root = `${args.base}/admin/artifacts/workspace-host/sha256/${plan.sha256}`;
   const mp = `${root}/server.tgz/multipart`;

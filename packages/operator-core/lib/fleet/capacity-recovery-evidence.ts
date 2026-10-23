@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { computeIdentityHash, JUDGE_PROMPT_SCAFFOLD_VERSION, type PersonaTraits } from '@papercusp/testing-shell/llm';
 import { canonicalJson } from '@papercusp/hash-chain';
+import { formatSpecRef } from '../scheduler/claim-spec';
 import type { CommandInstrument } from '../rubric-instrument-registry';
 import { judgeS42Run, S42_CASES } from '../llm-testing/scenarios/su/S42-drain-watch-recheck';
 
@@ -30,6 +31,8 @@ const member = z.object({ id: text, effectiveSpec: spec, runtimeState: z.enum(['
 }).strict();
 const recovery = z.object({ snapshotId: text, memberId: text, leaderId: text, leaderReceiptRef: text,
   effectiveSpec: spec, restrictionsRecheckedAt: time, ownerRestricted: z.boolean(), gateProtected: z.boolean(),
+  admission: z.object({ memberId: text, effectiveSpec: spec, admittedIds: ids,
+    ownerRestricted: z.boolean(), gateProtected: z.boolean(), observedAt: time, receiptRef: text }).strict(),
   control: z.object({ verb: z.enum(['coord:wake', 'coord:send', 'capability:launch-agent']),
     memberId: text, actorId: text, receiptRef: text, invokedAt: time, resumeRef: text.optional() }).strict(),
   turn: z.object({ id: text, memberId: text, triggerReceiptRef: text, startedAt: time }).strict(),
@@ -84,7 +87,54 @@ export const capacityBriefCaptureSchema = z.object({ invocationId: z.number().in
 /** Read from tool_invocations by the instrument, never from artifact-authored metadata. */
 export interface NativeCapacityBriefReceipt {
   id: number; toolName: string; status: string; workspaceId: string; actorId: string | null;
-  invokedAt: string; durationMs: number | null; metadata: unknown;
+  invokedAt: string; durationMs: number | null; metadata: unknown; args?: unknown;
+}
+/** Source/runtime and admission producers retain this digest in the same
+ * invocation ledger. The caller supplies only the row id and captured bytes. */
+export function validateCapacityOutputReceipt(capture: unknown, native: NativeCapacityBriefReceipt | null,
+  expected: { toolName: string; actorId: string; now: string; startedAt: string; finishedAt: string }): CapacityProofVerdict {
+  const c = capacityBriefCaptureSchema.safeParse(capture);
+  if (!c.success || !native) return { status: 'fail', violations: ['native-output-missing'] };
+  const pin = record(record(native.metadata).operationalOutput);
+  const [at, start, end, now, invoked] = [String(pin.observedAt), expected.startedAt, expected.finishedAt,
+    expected.now, native.invokedAt].map(Date.parse);
+  const errors: string[] = [];
+  if (native.id !== c.data.invocationId || native.status !== 'ok' || native.toolName !== expected.toolName
+    || native.workspaceId !== 'papercusp-workspace' || native.actorId !== expected.actorId || pin.schemaVersion !== 1
+    || pin.sha256 !== createHash('sha256').update(canonicalJson(c.data.result)).digest('hex')) errors.push('native-output-custody');
+  if (native.durationMs === null || ![at, start, end, now, invoked].every(Number.isFinite)
+    || !(start <= invoked && invoked <= at && at <= invoked + (native.durationMs ?? 0)
+      && at <= end && end <= now && now - at <= 15 * 60_000)) errors.push('native-output-stale-or-outside-run');
+  return { status: errors.length ? 'fail' : 'pass', violations: errors };
+}
+
+/** Join action-time admission to the same member/spec/item before its claim. */
+export function validateCapacityAdmissionReceipt(input: unknown, memberId: string, capture: unknown,
+  native: NativeCapacityBriefReceipt | null, window: { now: string; startedAt: string; finishedAt: string }): CapacityProofVerdict {
+  const p = recoveryProofSchema.safeParse(input);
+  const c = capacityBriefCaptureSchema.safeParse(capture);
+  if (!p.success || !c.success || !native) return { status: 'fail', violations: ['native-admission-missing'] };
+  const errors = validateCapacityOutputReceipt(capture, native,
+    { ...window, toolName: 'work_items:claimable', actorId: memberId }).violations;
+  const recovery = p.data.recoveries.find(r => r.memberId === memberId);
+  const data = c.data.result;
+  const actualSpec = record(data.spec);
+  const contract = record(record(data.countEvidence).contract);
+  const caller = record(contract.scope);
+  const selector = record(record(contract.population).selector);
+  const actualIds = Array.isArray(data.claimable) ? data.claimable.map(v => String(record(v).id)) : [];
+  const at = record(record(native.metadata).operationalOutput).observedAt;
+  if (!recovery || data.ok !== true || caller.caller !== memberId
+    || record(selector.claimSpec).fleetSlug !== p.data.snapshot.fleet
+    || data.harness !== record(native.args).harness
+    || actualSpec.revision !== recovery.effectiveSpec.revision
+    || typeof actualSpec.specId !== 'string' || formatSpecRef(String(actualSpec.specId), actualSpec.revision as number) !== recovery.effectiveSpec.ref
+    || recovery.admission.receiptRef !== 'tool-invocation:' + native.id || recovery.admission.observedAt !== at
+    || !sameSet(actualIds, recovery.admission.admittedIds) || !actualIds.includes(recovery.claim.workItemId)
+    || record(record(record(data.countEvidence).metrics).claimable).exactness == null
+    || record(record(record(record(data.countEvidence).metrics).claimable).exactness).status !== 'exact'
+    || data.claimableCount !== actualIds.length) errors.push('native-action-admission');
+  return { status: errors.length ? 'fail' : 'pass', violations: errors };
 }
 const record = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -205,14 +255,18 @@ export function validateCapacityRecoveryProof(input: unknown): CapacityProofVerd
     if (r.snapshotId !== s.id || r.leaderId !== s.leaderId || r.control.actorId !== s.leaderId) errors.push('recovery-authority');
     if (r.effectiveSpec.ref !== m.effectiveSpec.ref || r.effectiveSpec.revision !== m.effectiveSpec.revision ||
       r.effectiveSpec.maxConcurrentClaims !== m.effectiveSpec.maxConcurrentClaims || r.ownerRestricted || r.gateProtected) errors.push('recovery-permission-change');
+    if (r.admission.memberId !== m.id || r.admission.ownerRestricted || r.admission.gateProtected
+      || canonicalJson(r.admission.effectiveSpec) !== canonicalJson(r.effectiveSpec)
+      || !unique(r.admission.admittedIds) || !r.admission.admittedIds.includes(r.claim.workItemId)) errors.push('action-time-admission');
     if (r.control.memberId !== m.id || r.turn.memberId !== m.id || r.claim.memberId !== m.id ||
       r.claim.takenBy !== m.id || !sameSet(r.claim.writers, [m.id]) ||
       !m.admittedIds?.includes(r.claim.workItemId) || m.heldIds.includes(r.claim.workItemId)) errors.push('pickup-identity-or-duplicate-writer');
     if (r.turn.triggerReceiptRef !== r.control.receiptRef ||
       (r.control.verb === 'capability:launch-agent' && !r.control.resumeRef)) errors.push('unmanaged-pickup');
-    const [snapshotAt, recheckAt, controlAt, turnAt, claimAt] =
-      [s.observedAt, r.restrictionsRecheckedAt, r.control.invokedAt, r.turn.startedAt, r.claim.takenAt].map(Date.parse);
-    if (!(snapshotAt <= recheckAt && recheckAt <= controlAt && controlAt <= turnAt && turnAt <= claimAt) ||
+    const [snapshotAt, recheckAt, admittedAt, controlAt, turnAt, claimAt] =
+      [s.observedAt, r.restrictionsRecheckedAt, r.admission.observedAt, r.control.invokedAt, r.turn.startedAt, r.claim.takenAt].map(Date.parse);
+    if (!(snapshotAt <= recheckAt && recheckAt <= controlAt && controlAt <= turnAt && turnAt <= claimAt
+      && recheckAt <= admittedAt && admittedAt <= claimAt) ||
       controlAt - snapshotAt > 15 * 60_000 || controlAt - recheckAt > 5 * 60_000) errors.push('pickup-time-or-stale-recheck');
   }
   return { status: errors.length ? 'fail' : 'pass', violations: [...new Set(errors)] };

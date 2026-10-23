@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import tool, { PIPELINE_POSITION_RESPONSE_BUDGET_CHARS, shapePipelinePosition } from './pipeline_position';
 import { gitPipelinePosition, type PipelinePosition, type RuntimeOwnership } from '../../git-pipeline-position';
 import { resolveSeeAlso } from '@papercusp/agent-mcp';
@@ -68,7 +70,10 @@ describe('native P017 pipeline source-runtime measurement selector', () => {
     vi.mocked(gitPipelinePosition).mockResolvedValue({ repoRoot: '/native-fixture', submodule: null,
       acceptedSource, servingRuntimes, gate: { ownerBrief: 'x'.repeat(20_000) } } as unknown as PipelinePosition);
     const args = tool.args.parse({ path: 'target.ts', expectedSourceSha256: digest, sourceRuntimeOnly: true });
-    const result = await tool.handler(args, {} as never) as { data: Record<string, unknown> };
+    const metadata = vi.fn();
+    const result = await tool.handler(args, { metadata } as never) as { data: Record<string, unknown> };
+    expect(metadata).toHaveBeenCalledWith({ operationalOutput: { schemaVersion: 1,
+      observedAt: expect.any(String), sha256: createHash('sha256').update(canonicalJson(result.data)).digest('hex') } });
     expect(result.data).toEqual({ repoRoot: '/native-fixture', submodule: null, acceptedSource, servingRuntimes });
     expect(gitPipelinePosition).toHaveBeenLastCalledWith(expect.objectContaining({ path: 'target.ts', expectedSourceSha256: digest }));
   });
