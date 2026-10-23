@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,7 +16,7 @@ import type {
 
 // @ts-expect-error Runtime script is intentionally executable ESM and has no declaration artifact.
 import * as publisher from './publish-workspace-host-artifacts.mjs';
-import { gcsPublicationTarget, publishGcsObjects, verifyGcsPublicBytes } from './lib/workspace-host-gcs-publication.mjs';
+import { gcsPublicationTarget, publishGcsObjects, verifyGcsPublicBytes, verifyGcsPrivateBytes } from './lib/workspace-host-gcs-publication.mjs';
 
 const {
   publishWorkspaceHostArtifacts,
@@ -36,21 +36,36 @@ const VERSION = '0.0.19-20260908.0450';
 const OPERATION_ID = 'release-operation-20260908';
 const TASK_ID = 'releasetask01';
 
-function gcsFixture(options: { loseReply?: boolean; denyRead?: boolean; conflict?: boolean } = {}) {
+function gcsFixture(options: { loseReply?: boolean; loseGrantReply?: boolean; loseFolderReply?: boolean; denyRead?: boolean; conflict?: boolean } = {}) {
   const bytes = Buffer.from('verified signed release bytes');
   const target = gcsPublicationTarget('p544-release-bucket', sha256(bytes));
   const objects = [{ name: 'server.tgz', path: '/candidate/server.tgz', sha256: sha256(bytes), sizeBytes: bytes.length, contentType: 'application/gzip' }];
   const expiresAt = '2026-10-30T00:00:00.000Z';
-  const condition = { title: `workspace-host-${target.digest.slice(0, 20)}`,
-    expression: `resource.name.startsWith("projects/_/buckets/${target.bucket}/objects/${target.prefix}") && request.time < timestamp("${expiresAt}")` };
+  let folder = false;
   let grant = false;
   let uploaded = false;
   let lost = false;
   const calls: string[][] = [];
   const gcloud = async (args: string[]) => {
     calls.push(args);
-    if (args.includes('get-iam-policy')) return JSON.stringify({ bindings: grant ? [{ role: 'roles/storage.objectViewer', members: ['allUsers'], condition }] : [] });
-    if (args.includes('add-iam-policy-binding')) { grant = true; return '{}'; }
+    if (args.includes('add-iam-policy-binding')) {
+      assert.equal(args[1], 'managed-folders', 'public access must never broaden bucket IAM');
+      assert.equal(args[3], `gs://${target.bucket}/${target.prefix}`);
+      assert.ok(!args.some(a => a.startsWith('--condition')), 'GCS rejects conditions on public principals');
+      grant = true;
+      if (options.loseGrantReply && !lost) { lost = true; throw new Error('grant committed but response lost'); }
+      return '{}';
+    }
+    if (args.includes('get-iam-policy')) return JSON.stringify({ bindings: grant ? [{ role: 'roles/storage.objectViewer', members: ['allUsers'] }] : [] });
+    if (args[1] === 'managed-folders') {
+      if (args[2] === 'create') {
+        folder = true;
+        if (options.loseFolderReply && !lost) { lost = true; throw new Error('folder created but response lost'); }
+        return '{}';
+      }
+      if (!folder) throw Object.assign(new Error('absent folder'), { stderr: 'HTTPError 404: folder not found' });
+      return JSON.stringify({ name: target.prefix });
+    }
     if (args.includes('objects')) {
       assert.ok(args.includes('--raw'), 'provider metadata must use the raw API field shape');
       if (options.denyRead) throw Object.assign(new Error('Forbidden'), { stderr: 'HTTPError 403' });
@@ -68,6 +83,63 @@ function gcsFixture(options: { loseReply?: boolean; denyRead?: boolean; conflict
   const fetchImpl = async () => new Response(bytes);
   return { target, objects, expiresAt, gcloud, fetchImpl, calls };
 }
+
+for (const failure of ['loseGrantReply', 'loseFolderReply'] as const) {
+  test(`GCS folder-scoped public access reconciles ${failure} without repeating the write`, async () => {
+    const fixture = gcsFixture({ [failure]: true });
+    const ledger = createLedger();
+    const ctx = { taskId: TASK_ID, operationId: OPERATION_ID, ledger, now: () => new Date() };
+    const input = { ...fixture, ctx, runMutation: runJournaledMutation, log: () => {} };
+    const result = await publishGcsObjects(input);
+    await publishGcsObjects(input);
+    assert.equal(fixture.calls.filter(a => a[1] === 'managed-folders' && a[2] === 'create').length, 1);
+    assert.equal(fixture.calls.filter(a => a.includes('add-iam-policy-binding')).length, 1);
+    assert.equal(result.accessScope.uri, `gs://${fixture.target.bucket}/${fixture.target.prefix}`);
+    assert.equal(result.qualificationExpiresAt, fixture.expiresAt);
+    assert.ok(!('expiresAt' in result), 'qualification freshness must not promise public IAM expiry');
+  });
+}
+
+test('exhausted journal mutations preserve the provider error as their cause', async () => {
+  const ledger = createLedger();
+  const providerError = new Error('HTTPError 400: Conditions are not allowed on public resources');
+  await assert.rejects(runJournaledMutation({ taskId: TASK_ID, operationId: OPERATION_ID, ledger, now: () => new Date() }, {
+    stage: 'publish.gcs.access', input: { test: true },
+    mutate: async () => { throw providerError; },
+    reconcile: async () => ({ state: 'absent' }),
+  }), (error: unknown) => error instanceof Error && error.cause === providerError);
+});
+
+test('GCS private staging verifies authenticated bytes without granting access or publishing a manifest', async () => {
+  const fixture = gcsFixture();
+  const ledger = createLedger();
+  const ctx = { taskId: TASK_ID, operationId: OPERATION_ID, ledger, now: () => new Date() };
+  const objects = [...fixture.objects, { ...fixture.objects[0], name: 'manifest.json' }];
+  const verifiedUris: string[] = [];
+  const result = await publishGcsObjects({ ...fixture, objects, ctx, stageOnly: true,
+    runMutation: runJournaledMutation, log: () => {},
+    verifyPrivate: async (uri, expected) => { verifiedUris.push(uri); return { sha256: expected.sha256, sizeBytes: expected.sizeBytes }; },
+    fetchImpl: async () => { throw new Error('private staging cannot claim anonymous delivery'); },
+  });
+  assert.equal(result.stageOnly, true);
+  assert.equal(verifiedUris.length, 1);
+  assert.ok(!('publicUrl' in result));
+  assert.ok(!fixture.calls.some(a => a.includes('managed-folders') || a.includes('add-iam-policy-binding')));
+  assert.equal(fixture.calls.filter(a => a[1] === 'cp').length, 1);
+  assert.ok(ledger.task.detail.release.receipts.some(r => r.stage === 'publish.gcs.private.verify' && r.state === 'committed'));
+  assert.throws(() => parseArgs(['--dir', '/candidate', '--gcs-private-stage'], {}), /requires --gcs-bucket/);
+});
+
+test('authenticated GCS verification hashes the stream and refuses failed or corrupted downloads', async () => {
+  const good = Buffer.from('verified private bytes');
+  const expected = { sha256: sha256(good), sizeBytes: good.length };
+  const producer = (body: string, code = 0) => () => spawn(process.execPath,
+    ['-e', 'process.stdout.write(process.argv[1]); process.exitCode=Number(process.argv[2])', body, String(code)],
+    { stdio: ['ignore', 'pipe', 'pipe'] });
+  assert.deepEqual(await verifyGcsPrivateBytes('gs://private/object', expected, producer(good.toString())), expected);
+  await assert.rejects(verifyGcsPrivateBytes('gs://private/object', expected, producer('corrupted private data')), /differ|exceeds/);
+  await assert.rejects(verifyGcsPrivateBytes('gs://private/object', expected, producer(good.toString(), 1)), /authenticated read failed/);
+});
 
 test('GCS publication rejects unsafe bucket names and unpinned targets', () => {
   assert.throws(() => gcsPublicationTarget('bucket/other', 'a'.repeat(64)), /bucket/);

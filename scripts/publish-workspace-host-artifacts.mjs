@@ -85,7 +85,7 @@ const DEFAULT_BASE = 'https://cupboard.papercusp.com';
 
 export const USAGE = `Usage:
   npm run release:publish-workspace-host-artifacts -- \\
-    --dir <publication-dir> [--base <url>] [--token <bearer>] [--gcs-bucket <bucket>] [--plan-only] [--evidence-only]
+    --dir <publication-dir> [--base <url>] [--token <bearer>] [--gcs-bucket <bucket>] [--gcs-private-stage] [--plan-only] [--evidence-only]
 `;
 
 export function parseArgs(argv, env = process.env) {
@@ -98,6 +98,7 @@ export function parseArgs(argv, env = process.env) {
     else if (a === '--task-id') out.taskId = argv[++i];
     else if (a === '--operation-id') out.operationId = argv[++i];
     else if (a === '--gcs-bucket') out.gcsBucket = argv[++i];
+    else if (a === '--gcs-private-stage') out.gcsPrivateStage = true;
     else if (a === '--plan-only') out.planOnly = true;
     else if (a === '--evidence-only') out.evidenceOnly = true;
     else if (a === '--concurrency') out.concurrency = Number(argv[++i]);
@@ -114,6 +115,7 @@ export function parseArgs(argv, env = process.env) {
   out.base = out.base.replace(/\/+$/, '');
   if (out.gcsBucket) gcsPublicationTarget(out.gcsBucket, '0'.repeat(64));
   if (out.gcsBucket && out.evidenceOnly) throw new Error('--gcs-bucket publishes the complete verified publication');
+  if (out.gcsPrivateStage && !out.gcsBucket) throw new Error('--gcs-private-stage requires --gcs-bucket');
   return out;
 }
 
@@ -487,6 +489,7 @@ export async function runJournaledMutation(ctx, args) {
   const stageArgs = { ...args, inputHash };
   let { journal } = await readReleaseJournal(ctx.ledger, ctx.taskId, ctx.operationId);
   let receipts = matchingStageReceipts(journal, args.stage, inputHash);
+  let lastMutationError;
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const identities = [...new Set(receipts.map((receipt) => receipt.requestIdentity))];
@@ -542,6 +545,7 @@ export async function runJournaledMutation(ctx, args) {
       assertCredentialFresh(ctx);
       outcome = await args.mutate(requestIdentity);
     } catch (error) {
+      lastMutationError = error;
       if (error instanceof ReleaseHttpError && !error.outcomeUnknown) {
         await appendReleaseReceipt(ctx, {
           requestIdentity,
@@ -578,7 +582,7 @@ export async function runJournaledMutation(ctx, args) {
     await ctx.afterStage?.(args.stage, { resumed: false, requestIdentity });
     return outcome.value;
   }
-  throw new Error(`release stage ${args.stage} exhausted reconciled attempts`);
+  throw new Error(`release stage ${args.stage} exhausted reconciled attempts`, { cause: lastMutationError });
 }
 
 async function parseResponse(res, leg) {
@@ -780,7 +784,7 @@ export async function publishWorkspaceHostArtifacts(args, injected = {}) {
       assertPublicationJournalIdentity(journal, manifest, plan);
     }
     return publishGcsObjects({ target, objects, expiresAt, ctx, runMutation: runJournaledMutation,
-      planOnly: args.planOnly, fetchImpl: deps.fetch, gcloud: injected.gcloud, log });
+      planOnly: args.planOnly, stageOnly: args.gcsPrivateStage, fetchImpl: deps.fetch, gcloud: injected.gcloud, log });
   }
 
   const root = `${args.base}/admin/artifacts/workspace-host/sha256/${plan.sha256}`;
@@ -1216,7 +1220,7 @@ if (isCliEntry(import.meta.url)) {
   main().catch((error) => {
     console.error('');
     console.error(`PUBLISH_VERDICT=FAIL`);
-    console.error(String(error?.stack ?? error));
+    console.error(JSON.stringify(serializeError(error)));
     process.exit(1);
   });
 }
