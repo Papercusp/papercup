@@ -150,7 +150,7 @@ describe('production observability composition', () => {
       WHERE workspace_id = 'synthetic-workspace' AND tool_name = 'synthetic:observe'
       ORDER BY id DESC LIMIT 1`;
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.metadata_json).toMatchObject({ otel: { traceId: tool!.properties.$ai_trace_id } });
+    expect(rows[0]!.metadata_json).toMatchObject({ otel: { callId: 'synthetic-success', traceId: tool!.properties.$ai_trace_id } });
     expect(JSON.stringify(captured)).not.toContain('SECRET');
     const before = captured.length;
     await flushRuntimeObservability();
@@ -209,7 +209,7 @@ describe('production observability composition', () => {
           e.properties['papercusp.call_id'] !== journey.callId)).toBe(false);
         const row = rows.filter(row => row.window_key === journey.callId);
         expect(row).toHaveLength(1);
-        expect(row[0]!.metadata_json).toMatchObject({ otel: { traceId: journey.traceId, spanId: toolSpanId } });
+        expect(row[0]!.metadata_json).toMatchObject({ otel: { callId: journey.callId, traceId: journey.traceId, spanId: toolSpanId } });
       }
       expect(new Set(toolSpanIds).size).toBe(2);
       expect(events.filter(e => e.event === '$ai_generation')).toHaveLength(2);

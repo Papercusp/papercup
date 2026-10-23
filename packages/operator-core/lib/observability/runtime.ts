@@ -61,7 +61,10 @@ export function runToolTrace(request: InvokeRequest, invoke: () => ReturnType<In
 }
 
 export function finishToolTrace(input: Invocation) {
-  try { return input.callId ? state.runtime?.finish(input.callId, input.status, input.errorCode ?? undefined) : undefined; }
+  try {
+    const correlation = input.callId ? state.runtime?.finish(input.callId, input.status, input.errorCode ?? undefined) : undefined;
+    return correlation ? { ...correlation, callId: input.callId } : undefined;
+  }
   catch { state.observerFailures++; return undefined; }
 }
 

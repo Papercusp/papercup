@@ -45,6 +45,7 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { SERVING_RUNTIME_IDS } from '../../serving-runtimes';
 import { sourceRuntimeProvenance } from '../../code-intelligence/source-runtime-provenance';
 import { scopedContractQuery } from '../../code-intelligence/scoped-contracts';
+import { runtimeEvidenceForContracts } from '../../code-intelligence/runtime-code-evidence';
 import { queryPushSnapshot } from '../../code-intelligence/push-snapshot';
 
 /**
@@ -194,10 +195,16 @@ export default defineTool({
       .describe('Native operations: join captured source versions to the selected runtime artifact via existing pipeline evidence. Unknown measurements remain explicit.'),
     runtime_limit: z.number().int().min(1).max(8).optional()
       .describe('Maximum supporting files compared to the selected runtime; default 4. Omitted files remain unmeasured.'),
+    runtime_evidence: z.boolean().optional()
+      .describe('contracts only: join linked tool implementations to successful dispatches over rolling seven days; incomplete versions/retention stay unknown, never dead-code proof.'),
   }),
   async handler(args, ctx) {
     const op = args.op as string;
-    if (op === 'contracts') return { data: await scopedContractQuery(args, ctx) };
+    if (op === 'contracts') {
+      const report = await scopedContractQuery(args, ctx);
+      if (!args.runtime_evidence || report.error) return { data: report };
+      return { data: { ...report, runtimeEvidence: await runtimeEvidenceForContracts(report, resolveAgentWorkspaceRoot(ctx)) } };
+    }
     const native = ['callers', 'symbol', 'callees', 'context', 'impact', 'trace', 'communities', 'flows', 'concept-search'].includes(op);
     const scoped = (answer: CodeIntelAnswer): CodeIntelAnswer => {
       const measured = answer.evidence ? answer : { ...answer,

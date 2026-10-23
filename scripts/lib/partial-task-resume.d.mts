@@ -41,6 +41,11 @@ export function readPartialNativeCompletion(file: any, expected: any, options?: 
             opaqueReasons: any[];
         };
     }[];
+    origin: {
+        runGroupId: any;
+        startedAtMs: any;
+        sourceCommit: any;
+    };
 };
 /**
  * Grade the existing checkpoint's full, independently selected population. The caller

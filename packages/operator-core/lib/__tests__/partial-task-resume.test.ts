@@ -199,11 +199,11 @@ describe('native durable continuation outcomes', () => {
   const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
   const snapshot = () => ({ workspaceName: expected.workspaceName, recordedSha: ID.sourceCommit, worktreeDirty: false,
     completionCheckpoint: { schemaVersion: 1, qualificationAttemptId: expected.attemptId,
-      runContext: 'ci', runnerIdentity: 'proof-v3 node', state: 'partial', noPersist: true },
+      runGroupId: 'physical-run-one', runContext: 'ci', runnerIdentity: 'proof-v3 node', state: 'partial', noPersist: true },
     configSources: { status: 'unchanged' },
     rows: [{ testFile: 'lib/a.test.ts', executedModules: ['lib/a.test.ts'], inputsCaptured: true,
       readPaths: ['/repo/fixtures/input.json'], opaqueReasons: [] as string[] }],
-    nativeRun: { schemaVersion: 'native-vitest-run-v1', gaps: [] as string[], finishedAtMs: null as number | null,
+    nativeRun: { schemaVersion: 'native-vitest-run-v1', startedAtMs: 100, gaps: [] as string[], finishedAtMs: null as number | null,
       reason: null as string | null, unhandledErrorCount: null as number | null, modulePopulationMatched: false,
       selectedManifest: { specifications: structuredClone(selectedSpecifications), sha256: hash(selectedSpecifications) },
       files: [{ testFile: 'lib/a.test.ts', completionId: 'completion-a', observedAtMs: 123, state: 'passed',
@@ -221,7 +221,8 @@ describe('native durable continuation outcomes', () => {
   it('recovers a committed module before the terminal hook and composes its proof with pending guards', () => {
     const recovered = read();
     expect(recovered).toMatchObject({ status: 'ready', receipts: [{ unitId: 'a', completionId: 'completion-a',
-      state: 'pass', observedCount: 1, proof: { opaqueReasons: [], inputsCaptured: true } }] });
+      state: 'pass', observedCount: 1, proof: { opaqueReasons: [], inputsCaptured: true } }],
+      origin: { runGroupId: 'physical-run-one', startedAtMs: 100, sourceCommit: ID.sourceCommit } });
     const checkpoint = { ...ID, continuation: { schemaVersion: 1, attemptId: expected.attemptId,
       candidate: ID.sourceCommit, repairHead: null, manifest, receipts: recovered.receipts } };
     expect(evaluatePartialTaskContinuation(checkpoint, { ...expected, candidate: ID.sourceCommit,

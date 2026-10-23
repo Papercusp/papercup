@@ -309,7 +309,7 @@ describe('setup-release-checkout.sh dependency-generation retention wiring', () 
   it('WI-41491: uses the immutable-token selector and transports the chosen workspace closure', () => {
     const source = readFileSync(SCRIPT_PATH, 'utf8');
     const configure = source.indexOf(
-      'dependency_generation_configure_workspace_dirs \\',
+      '    configure_release_dependency_workspace_dirs\n',
     );
     const tokenSelect = source.indexOf(
       'dependency_generation_select_prevalidated \\',

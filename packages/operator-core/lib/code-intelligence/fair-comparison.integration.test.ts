@@ -7,11 +7,13 @@ import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
-const storage = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined }));
+const storage = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined, reads: 0,
+  adminDsn: '', appDsn: '', workerStderr: '' }));
 vi.mock('@papercusp/db-org', async original => ({
   ...await original<typeof import('@papercusp/db-org')>(),
   getOrgPg: () => {
     if (!storage.sql) throw new Error('fair worker private database is not initialized');
+    storage.reads += 1;
     return { sql: storage.sql };
   },
 }));
@@ -20,8 +22,24 @@ vi.mock('@papercusp/flags/server', async original => ({
 }));
 vi.mock('../task-manager/managed-spawn', async original => {
   const actual = await original<typeof import('../task-manager/managed-spawn')>();
-  return { ...actual, managedSpawn: (...args: Parameters<typeof actual.managedSpawn>) =>
-    actual.managedSpawn(args[0], args[1], args[2], { ...args[3], workspaceId: `test-fair-worker-${process.pid}` }) };
+  return { ...actual, managedSpawn: async (...args: Parameters<typeof actual.managedSpawn>) => {
+    if (!storage.adminDsn || !storage.appDsn) throw new Error('fair worker private database routing is not initialized');
+    // Vitest mocks do not cross the real process boundary. Route every native
+    // tool dependency in that child to the same throwaway database as its parent.
+    const launched = await actual.managedSpawn(args[0], args[1], args[2], {
+      ...args[3], workspaceId: `test-fair-worker-${process.pid}`,
+      spawnOptions: { ...args[3]?.spawnOptions, stdio: ['pipe', 'pipe', 'pipe'], env: {
+        ...args[3]?.spawnOptions?.env, HARNESS_ADMIN_DATABASE_URL: storage.adminDsn,
+        DATABASE_URL: storage.adminDsn, HARNESS_DATABASE_URL: storage.appDsn,
+      } },
+    });
+    launched.child.stderr?.setEncoding('utf8');
+    launched.child.stderr?.on('data', (chunk: string) => {
+      storage.workerStderr += chunk;
+      process.stderr.write(chunk);
+    });
+    return launched;
+  } };
 });
 import { hashCases, hashKeys, preregister, type AnswerKey, type FairCase, type Preregistration } from './fair-comparison';
 import { runArm, scoreRuns } from './fair-comparison-run';
@@ -70,6 +88,12 @@ const arm: FairArm = {
 beforeAll(async () => {
   db = await createOrgTestDb();
   storage.sql = db.adminSql;
+  storage.adminDsn = db.adminDsn;
+  storage.appDsn = db.appDsn;
+  // Exercise the lazy role-scoped client before a task enrollment can attribute
+  // a connection failure to the worker. Keep the private database identity.
+  const [database] = await storage.sql`SELECT current_database() AS name`;
+  expect(database?.name).toBe(db.dbName);
   root = mkdtempSync(join(tmpdir(), 'native-frozen-comparison-'));
   mkdirSync(join(root, 'src'));
   writeFileSync(join(root, 'src/fixture.ts'), source);
@@ -82,6 +106,37 @@ afterAll(async () => {
 });
 
 describe('native frozen comparison through the compiler pipeline', () => {
+  it('observes configuration changes that alter module resolution on the same native dispatcher', async () => {
+    const configuredRoot = mkdtempSync(join(tmpdir(), 'native-config-invalidation-'));
+    try {
+      mkdirSync(join(configuredRoot, 'src'));
+      writeFileSync(join(configuredRoot, 'src/first.ts'), 'export function configTarget() { return 1; }\n');
+      writeFileSync(join(configuredRoot, 'src/second.ts'), 'export function configTarget() { return 2; }\n');
+      writeFileSync(join(configuredRoot, 'src/use.ts'),
+        "import { configTarget } from '@configured-target';\nexport function callConfigured() { return configTarget(); }\n");
+      const ctx = { projectDir: configuredRoot, role: 'operator' as const, transport: 'in_process' as const,
+        codeMode: true, contextTier: 'full' as const, transportCapExempt: true,
+        log: () => {}, signal: new AbortController().signal, progress: () => {}, emit: () => {} };
+      const request = { op: 'callees', name: 'callConfigured', file_path: 'src/use.ts', paths: ['src'] };
+      const observations = [];
+      // This is a distinct causal detector, not another frozen benchmark case:
+      // its answers MUST change, so stale compiler options cannot pass it.
+      for (const target of ['first', 'second', 'first']) {
+        writeFileSync(join(configuredRoot, 'tsconfig.json'), JSON.stringify({ compilerOptions: {
+          baseUrl: '.', paths: { '@configured-target': [`./src/${target}.ts`] },
+        } }));
+        const replay = await dispatchFrozenGraphRequest(request, ctx);
+        expect(replay.response.error, JSON.stringify(replay.response)).toBeNull();
+        const sites = replay.response.sites.map(site => `${site.path}:${site.line1}`).sort();
+        expect(sites).toEqual(['src/use.ts:2']);
+        const targets = replay.response.evidence?.relationships.map(row => row.target?.site.path);
+        expect(targets).toEqual([`src/${target}.ts`]);
+        observations.push({ target, sites, targets, dispatchWitness: replay.dispatchWitness });
+      }
+      expect(new Set(observations.map(row => row.dispatchWitness.callId)).size).toBe(3);
+    } finally { rmSync(configuredRoot, { recursive: true, force: true }); }
+  }, 180_000);
+
   it('uses the registered dispatch gates before native graph execution', async () => {
     const ctx = { projectDir: root, role: 'operator' as const, transport: 'in_process' as const,
       codeMode: true, contextTier: 'full' as const, transportCapExempt: true,
@@ -161,7 +216,9 @@ describe('native protocol real confined worker lifecycle', () => {
     const factory = await freshFactory('rg', saved, frozenPath.pathname);
     // This is a lifecycle/control calibration, not a backend benchmark or a replay
     // of the frozen three-repetition experiment. It writes no arm.run.json.
+    const readsBeforeEnrollment = storage.reads;
     const repetition = await factory.create(0);
+    expect(storage.reads).toBeGreaterThan(readsBeforeEnrollment);
     const identity = repetition.identity;
     try {
       expect(identity.taskId).toBeTruthy();
@@ -254,6 +311,8 @@ describe('native protocol real confined worker lifecycle', () => {
       }
       const final = await repetition.sampleResources!('final');
       expect(final.memoryPeakBytes).toBeGreaterThanOrEqual(ready.memoryPeakBytes!);
+      expect(storage.workerStderr).toContain('[db] target source=env');
+      expect(storage.workerStderr).not.toContain('protected live Postgres target');
       console.log('NATIVE_FRESH_GRAPH_TASK=' + JSON.stringify({ preregHash: saved.preregistration.hash,
         identity, ready, final, replays: nativeReplays,
         backendVerdict: 'unqualified',
@@ -267,10 +326,10 @@ describe('native protocol real confined worker lifecycle', () => {
     expect(existsSync(identity.treeRoot)).toBe(false);
     expect(existsSync(identity.home)).toBe(false);
     expect(sampleCgroup(absCgroupDir(identity.cgroupPath)).pidsCurrent ?? 0).toBe(0);
-    await vi.waitFor(async () => {
-      const [task] = await storage.sql!`SELECT ended_at IS NOT NULL AS ended FROM harness_shared.task_ledger
-        WHERE task_id = ${identity.taskId}`;
-      expect(task).toMatchObject({ ended: true });
-    }, { timeout: 5_000, interval: 20 });
+    // close() now awaits the managed terminal receipt, so a separate polling
+    // window must not be needed to observe the durable postcondition.
+    const [task] = await storage.sql!`SELECT ended_at IS NOT NULL AS ended FROM harness_shared.task_ledger
+      WHERE task_id = ${identity.taskId}`;
+    expect(task).toMatchObject({ ended: true });
   }, 180_000);
 });

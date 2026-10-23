@@ -11,12 +11,12 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
-import { promisify } from 'node:util';
+import { isDeepStrictEqual, promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
-import { evaluatePartialTaskContinuation } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { evaluatePartialTaskContinuation, readPartialNativeCompletion } from '../../../../scripts/lib/partial-task-resume.mjs';
 import {
   dependencyGenerationInfraCode,
   GREEN_CHECKPOINT_RESULT_MARKER,
@@ -424,7 +424,9 @@ export function recordQualificationWorkProgress(
     if (!receipt || updatedUnits.has(receipt.unitId)) return conflict('continuation-duplicate-unit-update');
     updatedUnits.add(receipt.unitId);
     const previous = receipts.get(receipt.unitId);
-    if (previous && JSON.stringify(previous) === JSON.stringify(receipt)) continue;
+    // JSONB may reorder object keys; a durable replay still names the identical
+    // completion rather than conflicting solely on serialization order.
+    if (previous && isDeepStrictEqual(previous, receipt)) continue;
     if (completionIds.has(receipt.completionId)) return conflict('continuation-completion-id-conflict');
     if (previous) {
       if (update.supersedesCompletionId !== previous.completionId || !new Set<string>(before.run).has(receipt.unitId))
@@ -2385,6 +2387,49 @@ export function recordStoredQualificationWorkProgress(
   return mutateStoredQualification(target, current => current
     ? recordQualificationWorkProgress(current, input)
     : { status: 'unreadable', error: 'missing attempt' });
+}
+
+export interface QualificationNativeCompletionInput {
+  path: string;
+  workspaceName: string;
+  selectedSpecifications: unknown[];
+  classifyReadPaths?: (reads: unknown, root: string) => { readPaths: string[]; opaqueReasons: string[] };
+  supersedesCompletionIds?: Record<string, string>;
+}
+
+/** Recover native OUT outcomes under the current fence, with physical-run provenance. */
+export function recordStoredQualificationNativeCompletion(
+  target: GateVerdictTarget,
+  input: QualificationWorkProgressInput,
+  observation: QualificationNativeCompletionInput,
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, current => {
+    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    const conflict = (reason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason: reason });
+    if (input.updates.length !== 0) return conflict('native-recovery-mixed-updates');
+    const custody = recordQualificationWorkProgress(current, input);
+    if (custody.status !== 'updated' && custody.status !== 'idempotent') return custody;
+    const observed = readPartialNativeCompletion(observation.path, { ...input,
+      workspaceName: observation.workspaceName, selectedSpecifications: observation.selectedSpecifications,
+    }, { classifyReadPaths: observation.classifyReadPaths });
+    if (observed.status !== 'ready' || !('origin' in observed)) return conflict(observed.reason ?? 'native-observation-unmeasured');
+    const group = observed.origin.runGroupId;
+    const active = group === current.runId ? current.currentPhysicalRunner : null;
+    const ended = (current.consumedPhysicalRuns ?? []).find(run =>
+      !!group && runIdBoundToRunner(run, group) && run.outcome.kind === 'pre-suite-no-verdict');
+    const origin = active ?? ended;
+    const cutoff = active ? input.nowMs ?? Date.now() : ended?.endedAtMs;
+    if (!group || !origin || origin.candidate !== input.candidate || observed.origin.sourceCommit !== input.candidate ||
+        observed.origin.startedAtMs === null || observed.origin.startedAtMs < origin.reservedAtMs ||
+        cutoff === undefined || observed.origin.startedAtMs > cutoff ||
+        observed.receipts.some(receipt => receipt.observedAtMs < observed.origin.startedAtMs! || receipt.observedAtMs > cutoff))
+      return conflict('native-physical-run-unmeasured-or-outside-custody');
+    return recordQualificationWorkProgress(current, { ...input, updates: observed.receipts.map(receipt => ({
+      receipt: receipt as QualificationWorkReceipt,
+      ...(observation.supersedesCompletionIds?.[receipt.unitId]
+        ? { supersedesCompletionId: observation.supersedesCompletionIds[receipt.unitId] } : {}),
+    })) });
+  });
 }
 
 /**

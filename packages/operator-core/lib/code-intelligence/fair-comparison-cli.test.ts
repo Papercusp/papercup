@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { buildArm, createFairWorkerChannel, fairProcessCensus, FAIR_ARM_IDS, frozenGraphRequest, indexFileCensus, loadFairInputs, materializeFrozenControls,
+import { buildArm, createFairWorkerChannel, fairProcessCensus, fairWorkerCompletion, FAIR_ARM_IDS, frozenGraphRequest, indexFileCensus, loadFairInputs, materializeFrozenControls,
   FAIR_WORKER_RUNTIME_MAX_SEC, materializeFrozenRepositoryTask, measureFairToolPayload, prepareFrozenControl, validateFrozenInputs, verifyFrozenSource,
   stopFairWorker, verifyFairWorkerSource, workspaceDirs, type FrozenFairInputs } from './fair-comparison-cli';
 
@@ -82,6 +82,25 @@ describe('FAIR_ARM_IDS', () => {
 });
 
 describe('fresh worker cleanup', () => {
+  it('accepts the exact durable terminal row when another writer wins the close', async () => {
+    const completion = async () => ({ status: 'unavailable' as const, reason: 'terminal write did not update the row' });
+    await expect(fairWorkerCompletion({ taskId: 'worker-task', workspaceId: 'test-workspace',
+      scopeUnit: 'pc-worker.scope', completion }, async () => ({ taskId: 'worker-task',
+      workspaceId: 'test-workspace', scopeUnit: 'pc-worker.scope', state: 'killed', endedAt: '2026-10-23T03:00:00Z' })))
+      .resolves.toEqual({ status: 'recorded' });
+  });
+
+  it('does not reinterpret a missing, live or foreign terminal row as recorded', async () => {
+    const outcome = { status: 'unavailable' as const, reason: 'controlled missing receipt' };
+    const task = { taskId: 'worker-task', workspaceId: 'test-workspace', scopeUnit: 'pc-worker.scope',
+      state: 'killed' as const, endedAt: '2026-10-23T03:00:00Z' };
+    for (const row of [null, { ...task, taskId: 'foreign' }, { ...task, workspaceId: 'foreign' },
+      { ...task, scopeUnit: 'pc-foreign.scope' }, { ...task, state: 'running' as const }, { ...task, endedAt: null }]) {
+      await expect(fairWorkerCompletion({ taskId: task.taskId, workspaceId: task.workspaceId,
+        scopeUnit: task.scopeUnit, completion: async () => outcome }, async () => row)).resolves.toBe(outcome);
+    }
+  });
+
   it.each([{ ok: true }, { ok: false, error: 'already_gone' }])(
     'removes private files only after scope proof when the client never closes (%j)', async outcome => {
       vi.useFakeTimers();
@@ -128,6 +147,49 @@ describe('fresh worker cleanup', () => {
       expect(existsSync(owned)).toBe(false);
     } finally { rmSync(owned, { recursive: true, force: true }); }
   });
+
+  it('retains private evidence after pipe close until the managed terminal write finishes', async () => {
+    const owned = mkdtempSync(join(tmpdir(), 'fair-worker-cleanup-'));
+    let recorded!: (value: { status: 'recorded' }) => void;
+    const terminal = new Promise<{ status: 'recorded' }>(done => { recorded = done; });
+    const completion = vi.fn(() => terminal);
+    try {
+      const stopped = stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        exited: Promise.resolve(), completion, owned }, async () => ({
+        killTask: vi.fn().mockResolvedValue({ ok: true }), killScopeUnit: vi.fn(),
+      }));
+      await vi.waitFor(() => expect(completion).toHaveBeenCalledOnce());
+      expect(existsSync(owned)).toBe(true);
+      recorded({ status: 'recorded' });
+      await stopped;
+      expect(existsSync(owned)).toBe(false);
+    } finally { rmSync(owned, { recursive: true, force: true }); }
+  });
+
+  it.each(['delegated', 'unavailable'] as const)('retains private evidence for a %s terminal write', async status => {
+    const owned = mkdtempSync(join(tmpdir(), 'fair-worker-cleanup-'));
+    try {
+      await expect(stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        exited: Promise.resolve(), completion: async () => ({ status, reason: 'controlled terminal failure' }), owned },
+      async () => ({ killTask: vi.fn().mockResolvedValue({ ok: true }), killScopeUnit: vi.fn() })))
+        .rejects.toThrow(`terminal persistence ${status}`);
+      expect(existsSync(owned)).toBe(true);
+    } finally { rmSync(owned, { recursive: true, force: true }); }
+  });
+
+  it('bounds a missing terminal receipt and retains private evidence', async () => {
+    vi.useFakeTimers();
+    const owned = mkdtempSync(join(tmpdir(), 'fair-worker-cleanup-'));
+    try {
+      const stopped = stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        exited: Promise.resolve(), completion: () => new Promise(() => {}), owned },
+      async () => ({ killTask: vi.fn().mockResolvedValue({ ok: true }), killScopeUnit: vi.fn() }));
+      const refused = expect(stopped).rejects.toThrow('terminal persistence deadline; isolated files retained');
+      await vi.advanceTimersByTimeAsync(10_000);
+      await refused;
+      expect(existsSync(owned)).toBe(true);
+    } finally { vi.useRealTimers(); rmSync(owned, { recursive: true, force: true }); }
+  });
 });
 
 describe('CLI import without execFile', () => {
@@ -139,7 +201,8 @@ describe('CLI import without execFile', () => {
   it('refuses mixed worker contracts before launch and propagates unreadable provenance', async () => {
     const read = vi.fn(async (path: string, version: 'working' | 'committed') =>
       version === 'working' && path.endsWith('fair-comparison-run.ts') ? 'new-contract' : 'committed-contract');
-    await expect(verifyFairWorkerSource(read)).rejects.toThrow(/differs from committed child.*lint:as-committed/);
+    await expect(verifyFairWorkerSource(read)).rejects.toThrow(
+      /differs from committed child.*git-sync:await.*end the editing turn.*containing commit.*lint:as-committed/);
     expect(spawn).not.toHaveBeenCalled();
     await expect(verifyFairWorkerSource(async () => 'same-contract')).resolves.toBeUndefined();
     await expect(verifyFairWorkerSource(async () => { throw new Error('git source unavailable'); }))

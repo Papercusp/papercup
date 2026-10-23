@@ -5,6 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { classifyReadPaths, writeExecutedSourceMapSnapshot } from '../../../../libs/test-config/src/executed-source-map-reporter';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
 const db = vi.hoisted(() => ({ sql: null as Sql | null }));
@@ -29,6 +31,7 @@ import {
   readStoredQualification,
   recordStoredQualificationRunnerProgress,
   recordStoredQualificationWorkProgress,
+  recordStoredQualificationNativeCompletion,
   continueStoredQualificationWork,
   type QualificationWorkProgressInput,
   recordStoredQualificationScheduledFire,
@@ -85,6 +88,56 @@ async function metadata(): Promise<Record<string, unknown>> {
 }
 
 describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
+  it('recovers native OUT through the current fence and replays identically after JSONB key reordering', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      expect((await recordStoredQualificationNativeCompletion(target, fixture.input, fixture.observation)).status).toBe('updated');
+      expect((await recordStoredQualificationNativeCompletion(target, fixture.input, fixture.observation)).status).toBe('idempotent');
+      const stored = await readStoredQualification(target);
+      expect(stored).toMatchObject({ status: 'present', transaction: { continuation: {
+        receipts: [{ unitId: 'native', completionId: 'native-completion', proof: { inputsCaptured: true, opaqueReasons: [] } }],
+      } } });
+    } finally { fixture.cleanup(); }
+  });
+
+  it('adopts an ended physical run only inside its recorded custody window and never accepts its late write', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      expect((await reserveStoredQualificationRunner(target, { ...fixture.owner, runnerId: 'runner-two', runId: 'run-two',
+        pid: 43, pidIdentity: 'boot:43', evidenceRefs: ['checkpoint-run:run-two'],
+        incumbentLiveness: 'dead', nowMs: 500 })).status).toBe('updated');
+      const input = { ...fixture.input, runnerId: 'runner-two', runId: 'run-two', pidIdentity: 'boot:43', nowMs: 600 };
+      expect((await recordStoredQualificationNativeCompletion(target, input, fixture.observation)).status).toBe('updated');
+      const before = await readStoredQualification(target);
+      fixture.snapshot.nativeRun.files[0]!.observedAtMs = 501;
+      fixture.snapshot.nativeRun.files[0]!.completionId = 'late-completion';
+      fixture.save();
+      expect(await recordStoredQualificationNativeCompletion(target, input, fixture.observation)).toMatchObject({
+        status: 'conflict', refusalReason: 'native-physical-run-unmeasured-or-outside-custody' });
+      const after = await readStoredQualification(target);
+      expect(after).toEqual(before);
+      expect(await recordStoredQualificationNativeCompletion(target, fixture.input, fixture.observation)).toMatchObject({
+        status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+    } finally { fixture.cleanup(); }
+  });
+
+  it.each(['foreign-group', 'before-custody', 'filtered-selection'] as const)('refuses native %s without changing the qualification row', async damage => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      const before = await readStoredQualification(target);
+      if (damage === 'foreign-group') fixture.snapshot.completionCheckpoint.runGroupId = 'unknown-run';
+      if (damage === 'before-custody') fixture.snapshot.nativeRun.startedAtMs = 199;
+      if (damage === 'filtered-selection') {
+        fixture.snapshot.nativeRun.selectedManifest.specifications[0]!.testNamePattern = 'one-case';
+        fixture.snapshot.nativeRun.selectedManifest.sha256 = createHash('sha256')
+          .update(JSON.stringify(fixture.snapshot.nativeRun.selectedManifest.specifications)).digest('hex');
+      }
+      fixture.save();
+      expect((await recordStoredQualificationNativeCompletion(target, fixture.input, fixture.observation)).status).toBe('conflict');
+      expect(await readStoredQualification(target)).toEqual(before);
+    } finally { fixture.cleanup(); }
+  });
+
   it('executes only remaining eligible units after an unacknowledged callback interruption', async () => {
     await seed();
     await beginStoredQualification(target, { attemptId: 'attempt-execute', candidate: 'candidate-execute', nowMs: 100 });
@@ -601,3 +654,38 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
     }
   });
 });
+
+/** Native artifact contract fixture; actual Vitest crash proof remains in the recorder suite. */
+async function nativeRecoveryFixture() {
+  await seed();
+  await beginStoredQualification(target, { attemptId: 'attempt-native', candidate: 'candidate-native', nowMs: 100 });
+  const owner = { attemptId: 'attempt-native', candidate: 'candidate-native', runnerId: 'runner-one', runId: 'run-one',
+    evidenceRefs: ['checkpoint-run:run-one'], pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 };
+  expect((await reserveStoredQualificationRunner(target, owner)).status).toBe('updated');
+  const input: QualificationWorkProgressInput = { ...owner, repairHead: null, root: '/repo', taskKey: 'qualification',
+    runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [], updates: [], nowMs: 300,
+    manifest: { schemaVersion: 1, units: [{ id: 'native', kind: 'test', path: 'native.test.ts' }] } };
+  const specifications = [{ testFile: 'native.test.ts', projectName: null, pool: 'forks',
+    testNamePattern: null as string | null, testLines: null, testIds: null, testTagsFilter: null }];
+  const snapshot = { workspaceName: '@fixture/native', recordedSha: owner.candidate, worktreeDirty: false,
+    completionCheckpoint: { schemaVersion: 1, qualificationAttemptId: owner.attemptId,
+      runGroupId: owner.runId, runContext: input.runContext, runnerIdentity: input.runnerIdentity, state: 'partial', noPersist: true },
+    configSources: { status: 'unchanged' },
+    rows: [{ testFile: 'native.test.ts', executedModules: ['native.test.ts'], readPaths: ['/repo/input.json'],
+      inputsCaptured: true, opaqueReasons: [] }],
+    nativeRun: { schemaVersion: 'native-vitest-run-v1', startedAtMs: 220, finishedAtMs: null, gaps: [],
+      selectedManifest: { specifications: structuredClone(specifications), sha256: createHash('sha256')
+        .update(JSON.stringify(specifications)).digest('hex') },
+      files: [{ testFile: 'native.test.ts', state: 'passed', firstAttemptVerdict: 'pass',
+        completionId: 'native-completion', observedAtMs: 250, cases: [{ status: 'pass' }],
+        proof: { sourceEvidence: { schemaVersion: 'vite-collected-source-evidence-v1', status: 'stable', reasons: [],
+          sources: [{ path: 'native.test.ts', sha256: 'a'.repeat(64), currentSha256: 'a'.repeat(64) }] } } }] } };
+  const directory = mkdtempSync(join(tmpdir(), 'native-qualification-')), file = join(directory, 'out.json');
+  const save = () => writeExecutedSourceMapSnapshot(file, snapshot);
+  save();
+  return { owner, input, snapshot, save, observation: { path: file, workspaceName: snapshot.workspaceName,
+    selectedSpecifications: specifications,
+    classifyReadPaths: (reads: unknown, root: string) => classifyReadPaths(reads as string[], {
+      repoRoot: root, isTracked: path => path === 'input.json', exists: () => false,
+    }) }, cleanup: () => rmSync(directory, { recursive: true, force: true }) };
+}

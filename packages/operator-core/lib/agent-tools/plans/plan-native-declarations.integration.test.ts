@@ -52,6 +52,13 @@ describe('native declaration audit', () => {
       }
       const invalidScope = await resolveReuseReferences(declaration('mobile/Cargo.toml'), { resolvers, planItemIds: new Set(['P-002']) });
       expect(invalidScope.ok).toBe(false);
+      const offline = await resolveReuseReferences(declaration('mobile/Cargo.toml'), {
+        resolvers: defaultReuseReferenceResolvers({ repoRoot: root, citationDeps: { locate: () => { throw new Error('fixture backend unavailable'); } } }),
+        planItemIds: new Set(['P-001']),
+      });
+      expect(offline.ok).toBe(true);
+      expect(offline.unverified).toContain('mobile/Cargo.toml');
+      expect(offline.checks).toContainEqual(expect.objectContaining({ status: 'unverified', detail: expect.stringContaining('fixture backend unavailable') }));
       // The production resolver exposes evidence only; no execution/admission surface.
       expect(Object.keys(resolvers).sort()).toEqual(['doc', 'file', 'package', 'routine', 'symbol', 'table', 'tool']);
     });

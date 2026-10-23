@@ -209,7 +209,11 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
         inputsCaptured: row?.inputsCaptured === true && inputMeasured,
         readPaths: inputMeasured ? classified.readPaths : [], opaqueReasons } });
   }
-  return { status: "ready", reason: null, receipts };
+  return { status: "ready", reason: null, receipts, origin: {
+    runGroupId: validIdentity(context.runGroupId) ? context.runGroupId : null,
+    startedAtMs: Number.isSafeInteger(native.startedAtMs) && native.startedAtMs > 0 ? native.startedAtMs : null,
+    sourceCommit: snapshot.recordedSha,
+  } };
 }
 
 function continuationManifest(manifest) {

@@ -42,7 +42,7 @@ import { runArm, scoreRuns, type ArmRun, type FairArmFactory, type PendingSites,
 import type { ArmAnswer, FairCase } from './fair-comparison';
 import { readProcessIdentity } from '../process-identity';
 import { absCgroupDir, readProcessCgroupPath, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
-import { taskIdFromScopeUnit } from '../task-manager/types';
+import { isTerminalState, taskIdFromScopeUnit, type TaskRow } from '../task-manager/types';
 import type { UnifiedToolContext } from '@papercusp/tooldef';
 
 export interface FrozenFairInputs {
@@ -383,7 +383,9 @@ export async function verifyFairWorkerSource(readSource?:
   for (const path of ['packages/operator-core/lib/code-intelligence/fair-comparison-cli.ts',
     'packages/operator-core/lib/code-intelligence/fair-comparison-run.ts']) {
     if (await read(path, 'working') !== await read(path, 'committed'))
-      throw new Error(`fresh worker source differs from committed child: ${path}; wait for a containing commit and use lint:as-committed`);
+      throw new Error(`fresh worker source differs from committed child: ${path}; ` +
+        'arm git-sync:await for this harness and end the editing turn so git-sync turn holds can clear; ' +
+        'after wake, verify a containing commit and use lint:as-committed');
   }
 }
 
@@ -484,10 +486,28 @@ export function createFairWorkerChannel(io: FairWorkerChannelIo) {
   return { receive, failAll, rpc, query };
 }
 
+/** A competing terminal writer may finish first. Accept it only from the exact
+ * task, workspace and scope; an unavailable completion alone proves nothing. */
+export async function fairWorkerCompletion(
+  expected: { taskId: string; workspaceId: string; scopeUnit: string | null;
+    completion: import('../task-manager/managed-spawn').ManagedSpawnResult['waitForCompletion'] },
+  readTerminal: (id: string) => Promise<Pick<TaskRow, 'taskId' | 'workspaceId' | 'scopeUnit' | 'state' | 'endedAt'> | null> =
+    async id => (await import('../task-manager/store')).getTask(id),
+): Promise<import('../task-manager/managed-spawn').ManagedSpawnCompletion> {
+  const outcome = await expected.completion();
+  if (outcome.status === 'recorded') return outcome;
+  const task = await readTerminal(expected.taskId);
+  if (task?.taskId === expected.taskId && task.workspaceId === expected.workspaceId &&
+      task.scopeUnit === expected.scopeUnit && task.endedAt && isTerminalState(task.state))
+    return { status: 'recorded' };
+  return outcome;
+}
+
 /** Prove the payload scope is gone before removing a repetition's private files. */
 export async function stopFairWorker(
-  { taskId, scopeUnit, exited, owned }: {
+  { taskId, scopeUnit, exited, completion, owned }: {
     taskId: string | null; scopeUnit: string | null; exited: Promise<void> | null; owned: string;
+    completion?: import('../task-manager/managed-spawn').ManagedSpawnResult['waitForCompletion'] | null;
   },
   loadControls: () => Promise<Pick<typeof import('../task-manager/control'), 'killTask' | 'killScopeUnit'>> =
     () => import('../task-manager/control'),
@@ -517,6 +537,19 @@ export async function stopFairWorker(
       }
     } finally { clearTimeout(timer); }
   }
+  if (completion) {
+    // ChildProcess.close fences the pipe, while managedSpawn's retained promise
+    // fences the asynchronous terminal write. Keep private evidence until both
+    // have finished; a delegated or failed write cannot certify cleanup.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const recorded = await Promise.race([completion(),
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() =>
+          reject(new Error('fresh worker terminal persistence deadline; isolated files retained')), 10_000); })]);
+      if (recorded.status !== 'recorded') throw new Error(
+        `fresh worker terminal persistence ${recorded.status}: ${recorded.reason}; isolated files retained`);
+    } finally { clearTimeout(timer); }
+  }
   await rm(owned, { recursive: true, force: true });
 }
 
@@ -539,7 +572,8 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
     let taskId: string | null = null;
     let cgroupPath: string | null = null;
     let scopeUnit: string | null = null;
-    const stop = () => stopFairWorker({ taskId, scopeUnit, exited, owned });
+    let completion: import('../task-manager/managed-spawn').ManagedSpawnResult['waitForCompletion'] | null = null;
+    const stop = () => stopFairWorker({ taskId, scopeUnit, exited, completion, owned });
     try {
       // Copy-on-write rather than hardlinks: freshness controls must never mutate
       // the frozen donor when they replace or delete original source bytes.
@@ -563,6 +597,8 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
       child = launched.child;
       taskId = launched.taskId;
       scopeUnit = launched.scopeUnit;
+      completion = () => fairWorkerCompletion({ taskId: launched.taskId, scopeUnit: launched.scopeUnit,
+        workspaceId: launched.row.workspaceId, completion: launched.waitForCompletion });
       exited = child.exitCode !== null || child.signalCode !== null ? Promise.resolve()
         : new Promise(done => child!.once('close', () => done()));
       if (!launched.confined || !launched.scopeUnit) throw new Error('fresh worker task cgroup unavailable');

@@ -10680,6 +10680,11 @@ export function buildGreenCheckpointEnv(
   // still indexes exactly the "recent gate runs" read this exists to serve.
   env.PAPERCUSP_TEST_RUN_SOURCE = "ci";
   if (runId) env.PAPERCUSP_TEST_RUN_GROUP = runId;
+  // The activated parent owns the logical attempt; bind native completion OUT
+  // to that attempt AND this physical run after the host identity was stripped.
+  delete env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV];
+  const qualificationAttemptId = source[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim();
+  if (runId && qualificationAttemptId) env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV] = qualificationAttemptId;
   // P-006 (design-to-code-coverage-seam-2026-09-02): arm coverage attribution on the gate's
   // child processes, so a gate run contributes the same surface→test evidence an agent's
   // `testing:run` already does (run.ts) and the admin-UI runner already does
