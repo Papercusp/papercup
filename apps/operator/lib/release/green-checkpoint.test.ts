@@ -24,6 +24,7 @@ import { frozenLineageRef } from "@papercusp/operator-core/lib/release/repair-he
 import { captureGateSuiteVerdictReplay } from "@papercusp/operator-core/lib/release/gate-hygiene-split";
 import {
   runGreenCheckpoint,
+  CheckpointQualificationBoundaryError,
   planCheckpointCarryAtCut,
   failingRepairLegsForRouting,
   archivePureProofCapture,
@@ -482,6 +483,24 @@ function stubDeps(
   };
   return { deps, calls };
 }
+
+describe('qualification boundary orchestration', () => {
+  it.each(['yielded', 'killed'] as const)('returns inconclusive without publishing a verdict after %s', async disposition => {
+    const ready = await commit('a', '1', 'ready');
+    await git(repo, ['branch', 'ready', ready]);
+    const candidate = await commit('b', '2', 'candidate');
+    const { deps, calls } = stubDeps(true);
+    const record = vi.fn();
+    deps.recordVerdict = record;
+    deps.runGreen = async () => { throw new CheckpointQualificationBoundaryError(disposition, 'boundary-test'); };
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+    expect(result).toMatchObject({ advanced: false, green: null, reason: 'infra-inconclusive' });
+    expect(record).not.toHaveBeenCalled();
+    expect(calls).not.toContain('advance');
+    expect(calls).not.toContain('push');
+    expect(calls).not.toContain('broadcast');
+  });
+});
 
 /** P-003: the one repair-signature kind that legitimately enters the full canonical gate.
  * Orchestration tests below use it when their subject starts at `runGreen`; a workspace-less

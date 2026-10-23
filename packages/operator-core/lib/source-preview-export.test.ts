@@ -15,12 +15,13 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import type { Sql } from 'postgres';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
+  ROOT as SOURCE_ROOT,
   ADDED_FILES,
   SELECTION_LIB,
   TAURI_VERIFIER_INPUTS,
@@ -54,6 +55,94 @@ import type { TaskRow } from './task-manager/types';
 let tmp: string;
 let fx: Superproject;
 let out: string;
+
+describe('immutable generation verifier snapshots', () => {
+  it.each(['complete', 'missing-selector', 'changed-input', 'changed-token', 'changed-publication-after-copy', 'missing-output'])(
+    'materializes leased independent dependencies and refuses incomplete custody (%s)', async defect => {
+      const root = mkdtempSync(join(tmpdir(), 'verifier-generation-case-'));
+      const donor = join(root, 'donor'), dest = join(root, 'invoked'), store = join(root, 'generations');
+      const helper = join(SOURCE_ROOT, 'papercusp-desktop/bin/lib/pinned-deps.sh');
+      const generation = join(SOURCE_ROOT, 'apps/operator/bin/release/dependency-generation.sh');
+      const env = { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: store,
+        DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(root, 'copy.lock'),
+        DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1' };
+      const shell = (file: string, args: string[]) => spawnSync('bash', [file, ...args],
+        { env, encoding: 'utf8', timeout: 60_000 });
+      try {
+        for (const path of ['package.json', 'package-lock.json']) {
+          const body = path === 'package.json' ? '{"name":"fixture","private":true}'
+            : '{"name":"fixture","lockfileVersion":3,"packages":{}}';
+          write(donor, path, body); write(dest, path, body);
+        }
+        write(donor, 'node_modules/pkg/package.json', '{"name":"pkg","version":"1.0.0"}');
+        write(donor, 'node_modules/pkg/index.js', 'published dependency');
+        const pkg = '{"name":"cli","bin":{"probe":"dist/run.js"}}';
+        write(donor, 'packages/cli/package.json', pkg); write(dest, 'packages/cli/package.json', pkg);
+        write(donor, 'packages/cli/dist/run.js', 'console.log("workspace executable");\n');
+        write(donor, 'node_modules/.bin/seed', '');
+        symlinkSync('../../packages/cli/dist/run.js', join(donor, 'node_modules/.bin/probe'));
+        write(dest, '.verifier-source.json', JSON.stringify({ files: [{ path: 'packages/cli/package.json' }] }));
+        // The reader adapter checks that custody is live while the workspace
+        // output child runs, and that materialization released copy capacity.
+        write(donor, 'scripts/npm-install-safe.mjs', `
+import { chmodSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+if (!readdirSync(${JSON.stringify(join(store, '.leases'))}).some(p => p.startsWith('selector-'))) process.exit(91);
+if (spawnSync('flock', ['-n', process.env.DEPENDENCY_GENERATION_COPY_LOCK_FILE, 'true']).status !== 0) process.exit(92);
+writeFileSync(${JSON.stringify(join(root, 'reader-entered'))}, 'held');
+if (${JSON.stringify(defect)} === 'changed-publication-after-copy') {
+  const published = readdirSync(${JSON.stringify(store)}).find(p => p.startsWith('v1-'));
+  const marker = ${JSON.stringify(store)} + '/' + published + '/.papercusp-dependency-generation';
+  chmodSync(marker, 0o644);
+  writeFileSync(marker, readFileSync(marker, 'utf8').replace(/^publication_token=.*$/m, 'publication_token=v3:' + '0'.repeat(64)));
+}
+const args = process.argv.slice(process.argv.indexOf('--') + 1);
+process.exit(spawnSync(args[0], args.slice(1), { stdio: 'inherit' }).status ?? 1);
+`);
+        const published = shell(generation, ['--integration', donor, '--generation-root', store]);
+        expect(published.status, published.stderr).toBe(0);
+        const generationPath = published.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
+        const input = published.stdout.match(/\binput=([a-f0-9]+)/)![1]!;
+        if (defect === 'missing-selector') rmSync(join(store, '.inputs', input));
+        if (defect === 'changed-input') write(dest, 'package-lock.json', '{"name":"different","lockfileVersion":3,"packages":{}}');
+        if (defect === 'changed-token') {
+          const selector = join(store, '.inputs', input);
+          writeFileSync(selector, readFileSync(selector, 'utf8').replace(/^token=.*$/m, 'token=v3:' + '0'.repeat(64)));
+        }
+        if (defect === 'missing-output') rmSync(join(donor, 'packages/cli/dist'), { recursive: true });
+        // A changed mutable install must never become the verifier's dependency.
+        write(donor, 'node_modules/pkg/index.js', 'mutable donor changed');
+        const result = shell(helper, ['snapshot-generation-locked', donor, dest, 'copy']);
+        const leases = existsSync(join(store, '.leases')) ? readdirSync(join(store, '.leases')) : [];
+        expect(leases.filter(p => p.startsWith('selector-'))).toEqual([]);
+        expect(spawnSync('flock', ['-n', env.DEPENDENCY_GENERATION_COPY_LOCK_FILE, 'true']).status).toBe(0);
+        if (defect !== 'complete') {
+          expect(result.status, result.stdout + result.stderr).not.toBe(0);
+          expect(existsSync(join(dest, '.papercusp-pinned-deps'))).toBe(false);
+          if (defect !== 'missing-output' && defect !== 'changed-publication-after-copy') {
+            expect(existsSync(join(dest, 'node_modules'))).toBe(false);
+            expect(existsSync(join(root, 'reader-entered'))).toBe(false);
+          }
+          return;
+        }
+        expect(result.status, result.stderr).toBe(0);
+        const dependency = 'node_modules/pkg/index.js';
+        expect(readFileSync(join(dest, dependency), 'utf8')).toBe('published dependency');
+        expect(statSync(join(dest, dependency)).ino).not.toBe(statSync(join(generationPath, 'tree', dependency)).ino);
+        expect(spawnSync(process.execPath, [join(dest, 'node_modules/.bin/probe')], { encoding: 'utf8' }))
+          .toMatchObject({ status: 0, stdout: 'workspace executable\n' });
+        expect(readFileSync(join(dest, '.papercusp-pinned-deps'), 'utf8')).toContain('mode=generation-copy');
+        write(dest, 'node_modules/.cache/probe', 'disposable cache');
+        chmodSync(join(dest, dependency), 0o644);
+        write(dest, dependency, 'verifier mutation');
+        expect(readFileSync(join(generationPath, 'tree', dependency), 'utf8')).toBe('published dependency');
+      } finally {
+        spawnSync('chmod', ['-R', 'u+rwX', root]);
+        rmSync(root, { recursive: true, force: true });
+      }
+    }, 120_000,
+  );
+});
 
 describe('verifier command disclosure admission', () => {
   const marker = 'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT';
@@ -1020,7 +1109,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
     // Keep the physical-donor precondition and real independent Node resolution;
     // substitute only the expensive production dependency census/copy.
-    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = ' + (copiesDependencies ? 'copy' : 'hardlink') + '\ntest ! -L "$2/node_modules/.bin"\nif [ "$4" = copy ]; then cp -a -- "$2/node_modules" "$3/node_modules"; else cp -al -- "$2/node_modules" "$3/node_modules"; fi\n');
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = ' + (copiesDependencies ? 'snapshot-generation-locked' : 'snapshot-locked') + '\ntest "$4" = ' + (copiesDependencies ? 'copy' : 'hardlink') + '\ntest ! -L "$2/node_modules/.bin"\nif [ "$4" = copy ]; then cp -a -- "$2/node_modules" "$3/node_modules"; else cp -al -- "$2/node_modules" "$3/node_modules"; fi\n');
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/node_modules/\n/.papercusp/scratch/\n');
     git(fixture.repo, ['add', script, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
     git(fixture.repo, ['commit', '-qm', 'materialized dependency donor fixture']);

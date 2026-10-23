@@ -887,8 +887,11 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
   const run = (command, args) => runVerifierDependencyCommand(command, args,
     { cwd: dest, env, signal, maxMs, cutoffEpochMs: preparationCutoff, now });
   const copyMode = (await fs.stat(donor)).dev === (await fs.stat(dest)).dev ? 'hardlink' : 'copy';
+  // Reuse a full immutable generation on the destination filesystem instead
+  // of repeatedly copying the mutable donor across devices before tests start.
+  const snapshotCommand = copyMode === 'copy' ? 'snapshot-generation-locked' : 'snapshot-locked';
   await runPhase('deps.snapshot', () => run('bash', [join(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
-    'snapshot-locked', realpathSync(donor), realpathSync(dest), copyMode]));
+    snapshotCommand, realpathSync(donor), realpathSync(dest), copyMode]));
   await runPhase('deps.source.after-snapshot', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
   const script = join(dest, 'scripts/source-preview.mjs');
   // The CLI imports workspace TypeScript, including extensionless and directory
