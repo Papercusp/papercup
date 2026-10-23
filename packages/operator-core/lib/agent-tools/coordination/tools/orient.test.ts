@@ -44,6 +44,18 @@ vi.mock('../presence', async (original) => ({
 vi.mock('../../../adv-sessions', () => ({
   latestAdvSessionByCoordOwner: vi.fn(async () => null),
 }));
+const orgPgSqlMock = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@papercusp/db-org')>();
+  return {
+    ...original,
+    getOrgPg: vi.fn(() => ({ sql: orgPgSqlMock }) as unknown as ReturnType<typeof original.getOrgPg>),
+  };
+});
+vi.mock('../../../memory/session-epoch-ledger', () => ({
+  currentSessionEpoch: vi.fn(async () => 0),
+  stampSurfaced: vi.fn(async () => true),
+}));
 
 describe('coord:orient component receipt', () => {
   it('binds root SU from the already-read modes and matching presence assignment', async () => {
