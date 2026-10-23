@@ -158,6 +158,11 @@ describe('conformance test-run evidence', () => {
     worktree_dirty: status === 'error',
     execution_details: {
       schemaVersion: 1,
+      root: '/repo',
+      runGroupId: 'conformance-run',
+      workspaceId: 'workspace',
+      harnessSlug: 'papercusp',
+      mutationPhase: null,
       testLayer: 'unit',
       filePath: file,
       testNamePattern: null,
