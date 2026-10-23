@@ -78,8 +78,9 @@ export type EffectivePermissionDecision = {
 
 const requiredKinds = AUTHORITY_KINDS.filter(kind => kind !== 'vault');
 const keyOf = (ref: AuthorityRef) => JSON.stringify([ref.kind, ref.id]);
+// Lone surrogates cannot be URI-encoded; Unicode mode preserves valid pairs.
 const validText = (value: unknown): value is string =>
-  typeof value === 'string' && !!value.trim() && value === value.trim() && !/[\u0000-\u001f]/.test(value);
+  typeof value === 'string' && !!value.trim() && value === value.trim() && !/[\u0000-\u001f\uD800-\uDFFF]/u.test(value);
 const unique = (values: readonly string[]) => new Set(values).size === values.length;
 
 /** An unambiguous resource selector using the same policy pattern engine. */
