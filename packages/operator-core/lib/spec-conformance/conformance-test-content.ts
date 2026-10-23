@@ -1,34 +1,77 @@
 /** Immutable Git inputs, judged by the SAME closure policy as passing-task reuse. */
-import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { matchesGlob, relative, resolve } from 'node:path';
-import { promisify } from 'node:util';
+import { lstat } from 'node:fs/promises';
+import { isAbsolute, matchesGlob, relative, resolve } from 'node:path';
 import {
   passingTaskVerdictDependencyProvenance,
   passingTaskVerdictSharedInputProvenance,
   type ResolvedDependencyClosureProof,
 } from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
 import { STANDALONE_PACKAGE_DIRS } from '../../../../scripts/lib/test-runner-classes.mjs';
+import { nextForkSlot, runGitBatch } from '../git-batch';
+import { execFileViaSidecar } from '../fleet/git-via-sidecar';
 import { moduleRepoRoot } from '../module-repo-root';
 
-const exec = promisify(execFile);
 const SHA = /^[a-f0-9]{7,40}$/i;
 type Repository = { cwd: string; gitDir?: string };
 type Entry = { repo: Repository; oid: string; mode: string; type: string };
-type Snapshot = { files: Map<string, Entry>; texts: Map<string, string>; unscanned: string[] };
+type Snapshot = {
+  files: Map<string, Entry>; texts: Map<string, string>; unscanned: string[];
+  textLoads: Promise<void>;
+};
 export type TestContentEquivalence = (input: {
   file: string; recordedSha: string; currentSha: string;
 }) => Promise<{ equivalent: boolean; reason: string }>;
 
 async function git(repo: Repository, args: string[]): Promise<Buffer> {
-  const result = await exec('git', [...(repo.gitDir ? ['--git-dir', repo.gitDir] : []), ...args], {
-    cwd: repo.cwd, encoding: 'buffer', timeout: 15_000, maxBuffer: 64 * 1024 * 1024,
+  await nextForkSlot();
+  // Yield between fallback forks, and use the maintained small-process route
+  // on serving hosts. Traversing immutable submodule pins must not repeatedly
+  // copy the background host's page tables just to read Git metadata.
+  const result = await execFileViaSidecar('git', [...(repo.gitDir ? ['--git-dir', repo.gitDir, '--work-tree', repo.cwd] : []), ...args], {
+    cwd: repo.cwd, timeoutMs: 15_000, maxBuffer: 64 * 1024 * 1024,
+    subsystem: 'conformance-test-content',
   });
-  return result.stdout;
+  return Buffer.from(result.stdout, 'utf8');
+}
+
+async function submoduleRepository(root: string, parent: Repository, ref: string,
+  local: string, path: string, oid: string): Promise<Repository> {
+  const candidates = new Set<string>();
+  const checkout = resolve(root, path);
+  try {
+    // Check the marker first: rev-parse alone could climb to the superproject.
+    await lstat(resolve(checkout, '.git'));
+    candidates.add((await git({ cwd: checkout }, ['rev-parse', '--absolute-git-dir'])).toString().trim());
+  } catch { /* An archive may retain only the absorbed object database. */ }
+  const common = (await git(parent, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).toString().trim();
+  try {
+    const config = await git(parent, ['config', '--null', '--blob', ref + ':.gitmodules',
+      '--get-regexp', '^submodule\\..*\\.path$']);
+    for (const entry of config.toString('utf8').split('\0').filter(Boolean)) {
+      const split = entry.indexOf('\n');
+      const key = entry.slice(0, split);
+      const name = key.slice('submodule.'.length, -'.path'.length);
+      if (split >= 0 && entry.slice(split + 1) === local && name
+        && !isAbsolute(name) && !name.split('/').includes('..')) {
+        candidates.add(resolve(common, 'modules', name));
+      }
+    }
+  } catch { /* Missing metadata does not establish that the pinned object exists. */ }
+  candidates.add(resolve(common, 'modules', local));
+  for (const gitDir of candidates) {
+    const repo = { cwd: root, gitDir };
+    try {
+      // Discover storage from disk; read source only from the requested pin.
+      await git(repo, ['cat-file', '-e', oid + '^{commit}']);
+      return repo;
+    } catch { /* Try another existing layout, never the submodule's moving HEAD. */ }
+  }
+  throw new Error('pinned submodule object unavailable: ' + path);
 }
 
 async function snapshot(root: string, sha: string): Promise<Snapshot> {
-  const result: Snapshot = { files: new Map(), texts: new Map(), unscanned: [] };
+  const result: Snapshot = { files: new Map(), texts: new Map(), unscanned: [], textLoads: Promise.resolve() };
   const walk = async (repo: Repository, ref: string, prefix: string) => {
     const tree = await git(repo, ['ls-tree', '-rz', '--full-tree', ref]);
     for (const record of tree.toString('utf8').split('\0').filter(Boolean)) {
@@ -44,8 +87,9 @@ async function snapshot(root: string, sha: string): Promise<Snapshot> {
       // Release archives have no submodule .git. Read its existing object database;
       // never checkout, update, or read the submodule's moving HEAD as source.
       try {
-        const common = (await git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).toString().trim();
-        await walk({ cwd: repo.cwd, gitDir: resolve(common, 'modules', local) }, oid, path + '/');
+        const child = await submoduleRepository(root, repo, ref, local, path, oid);
+        await walk(child, oid, path + '/');
+        result.files.delete(path);
       } catch {
         result.unscanned.push(path);
       }
@@ -56,18 +100,39 @@ async function snapshot(root: string, sha: string): Promise<Snapshot> {
 }
 
 async function loadTexts(view: Snapshot, files: readonly string[]): Promise<void> {
-  const missing = [...new Set(files)].filter(file => !view.texts.has(file));
-  for (let offset = 0; offset < missing.length; offset += 16) {
-    await Promise.all(missing.slice(offset, offset + 16).map(async file => {
-      const entry = view.files.get(file);
-      if (!entry || entry.type !== 'blob' || entry.mode === '120000') throw new Error('unreadable input: ' + file);
-      view.texts.set(file, (await git(entry.repo, ['cat-file', 'blob', entry.oid])).toString('utf8'));
-    }));
-  }
+  // Several test proofs share this immutable snapshot. Recheck the cache after
+  // earlier loads settle so concurrent proofs never fork again for the same blob.
+  const load = view.textLoads.then(async () => {
+    const missing = [...new Set(files)].filter(file => !view.texts.has(file));
+    for (let offset = 0; offset < missing.length; offset += 64) {
+      const batch = missing.slice(offset, offset + 64);
+      const commands = batch.map(file => {
+        const entry = view.files.get(file);
+        if (!entry || entry.type !== 'blob' || entry.mode === '120000') throw new Error('unreadable input: ' + file);
+        return {
+          repo: entry.repo.cwd,
+          args: [...(entry.repo.gitDir ? ['--git-dir', entry.repo.gitDir, '--work-tree', entry.repo.cwd] : []),
+            'cat-file', 'blob', entry.oid],
+        };
+      });
+      const results = await runGitBatch(commands, {
+        label: 'conformance-test-content', timeoutMs: 15_000, maxBuffer: 64 * 1024 * 1024,
+      });
+      for (let index = 0; index < batch.length; index++) {
+        const result = results[index];
+        if (!result || result.code !== 0) throw new Error('unreadable input: ' + batch[index]);
+        view.texts.set(batch[index]!, result.stdout);
+      }
+    }
+  });
+  // A failed read still rejects its caller; it must not poison later queued reads.
+  view.textLoads = load.catch(() => {});
+  await load;
 }
 
 async function dependencyProof(view: Snapshot, file: string): Promise<ResolvedDependencyClosureProof> {
   const root = '/conformance-git-inputs';
+  if (view.unscanned.length) throw new Error('Git dependency enumeration incomplete: ' + view.unscanned[0]);
   await loadTexts(view, ['package.json']);
   const pkg = JSON.parse(view.texts.get('package.json')!);
   if (!Array.isArray(pkg.workspaces)) throw new Error('workspace enumeration unavailable');

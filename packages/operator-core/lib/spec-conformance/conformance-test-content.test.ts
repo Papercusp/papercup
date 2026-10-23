@@ -2,7 +2,9 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as gitBatch from '../git-batch';
+import * as gitSidecar from '../fleet/git-via-sidecar';
 import { createTestContentEquivalence } from './conformance-test-content';
 
 describe('conformance immutable dependency content', () => {
@@ -36,7 +38,10 @@ describe('conformance immutable dependency content', () => {
     write('scripts/pc-heavy.sh', '#!/bin/sh\ntrue\n');
     recordedSha = commit();
   });
-  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(root, { recursive: true, force: true });
+  });
 
   it('accepts unchanged semantic inputs across an unrelated commit, using immutable bytes despite dirty disk', async () => {
     write('docs/note.md', 'unrelated');
@@ -45,6 +50,51 @@ describe('conformance immutable dependency content', () => {
     expect(await createTestContentEquivalence(root)({ file, recordedSha, currentSha }))
       .toEqual({ equivalent: true, reason: 'canonical semantic dependency closure matches' });
   });
+
+  it('batches immutable reads and shares them across concurrent test proofs', async () => {
+    for (let index = 0; index < 40; index++) {
+      write(`packages/extra-${index}/package.json`, JSON.stringify({ name: `@fixture/extra-${index}` }));
+    }
+    const secondFile = 'packages/unit/second.test.ts';
+    write(secondFile, 'export const second = true;');
+    recordedSha = commit();
+    write('docs/note.md', 'unrelated');
+    const currentSha = commit();
+    const batch = vi.spyOn(gitBatch, 'runGitBatch');
+    const compare = createTestContentEquivalence(root);
+    const results = await Promise.all([file, secondFile].map(file => compare({ file, recordedSha, currentSha })));
+    expect(results).toEqual([
+      { equivalent: true, reason: 'canonical semantic dependency closure matches' },
+      { equivalent: true, reason: 'canonical semantic dependency closure matches' },
+    ]);
+    const calls = batch.mock.calls;
+    expect(calls.some(([commands]) => commands.length >= 40)).toBe(true);
+    expect(calls.length).toBeLessThan(12);
+    const objects = calls.flatMap(([commands]) => commands.map(command => JSON.stringify(command)));
+    // Each object belongs to one immutable snapshot; the second test does not
+    // reread either snapshot's manifests or shared runner graph.
+    expect(objects.length).toBe(new Set(objects).size * 2);
+  });
+
+  it('routes immutable tree reads through the shared spawn offload seam', async () => {
+    write('docs/note.md', 'unrelated');
+    const currentSha = commit();
+    const routed = vi.spyOn(gitSidecar, 'execFileViaSidecar');
+    expect(await createTestContentEquivalence(root)({ file, recordedSha, currentSha }))
+      .toEqual({ equivalent: true, reason: 'canonical semantic dependency closure matches' });
+    const treeReads = routed.mock.calls.filter(([command, args]) => command === 'git' && args[0] === 'ls-tree');
+    expect(treeReads.map(([, args]) => args.at(-1)).sort()).toEqual([recordedSha, currentSha].sort());
+    expect(treeReads.every(([, , options]) => options.subsystem === 'conformance-test-content'
+      && options.cwd === root && options.timeoutMs === 15_000)).toBe(true);
+  });
+
+  it.each([null, { code: 128, stdout: '', stderr: 'missing object' }])(
+    'refuses missing or failed immutable batch reads instead of accepting an empty graph: %j', async failure => {
+      vi.spyOn(gitBatch, 'runGitBatch').mockImplementationOnce(async commands => commands.map(() => failure));
+      expect(await createTestContentEquivalence(root)({ file, recordedSha, currentSha: recordedSha }))
+        .toEqual({ equivalent: false, reason: 'unreadable input: package.json' });
+    },
+  );
 
   it.each([
     'packages/unit/source.ts', file, 'libs/dependency/source.ts',
@@ -73,8 +123,10 @@ describe('conformance immutable dependency content', () => {
     expect(await compare({ file: '../unknown.test.ts', recordedSha, currentSha })).toMatchObject({ equivalent: false });
   });
 
-  it('reads pinned submodule inputs from Git objects and rejects changed submodule content', async () => {
+  it.each(['absorbed', 'named-absorbed', 'standalone', 'nested-absorbed', 'nested-standalone'])(
+    'reads immutable submodule pins in %s layout and rejects changed or missing pins', async layout => {
     const dependency = mkdtempSync(join(tmpdir(), 'conformance-dependency-'));
+    const nested = mkdtempSync(join(tmpdir(), 'conformance-nested-'));
     try {
       for (const args of [['init', '-q'], ['config', 'user.name', 'Test'], ['config', 'user.email', 'test@example.invalid']]) {
         execFileSync('git', args, { cwd: dependency });
@@ -83,13 +135,36 @@ describe('conformance immutable dependency content', () => {
       writeFileSync(join(dependency, 'source.ts'), 'export const dependency = 1;');
       execFileSync('git', ['add', '.'], { cwd: dependency });
       execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: dependency });
+      if (layout.startsWith('nested-')) {
+        for (const args of [['init', '-q'], ['config', 'user.name', 'Test'], ['config', 'user.email', 'test@example.invalid']]) {
+          execFileSync('git', args, { cwd: nested });
+        }
+        writeFileSync(join(nested, 'leaf.ts'), 'export const leaf = 1;');
+        execFileSync('git', ['add', '.'], { cwd: nested });
+        execFileSync('git', ['commit', '-qm', 'nested fixture'], { cwd: nested });
+        execFileSync('git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', nested, 'nested'], { cwd: dependency });
+        execFileSync('git', ['commit', '-qam', 'nested dependency'], { cwd: dependency });
+      }
       git('rm', '-qr', 'libs/dependency');
-      git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', dependency, 'libs/dependency');
+      const name = layout === 'named-absorbed' ? ['--name', 'upstream-source'] : [];
+      git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', ...name, dependency, 'libs/dependency');
+      const checkout = join(root, 'libs/dependency');
+      if (layout.endsWith('standalone')) {
+        const metadata = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: checkout, encoding: 'utf8' }).trim();
+        rmSync(checkout, { recursive: true, force: true });
+        rmSync(metadata, { recursive: true, force: true });
+        execFileSync('git', ['clone', '-q', '--no-hardlinks', dependency, checkout], { cwd: root });
+      }
+      git('-c', 'protocol.file.allow=always', 'submodule', 'update', '--init', '--recursive');
       const first = commit();
       write('docs/note.md', 'unrelated');
       const second = commit();
       expect(await createTestContentEquivalence(root)({ file, recordedSha: first, currentSha: second }))
+        .toEqual({ equivalent: true, reason: 'canonical semantic dependency closure matches' });
+      write('libs/dependency/source.ts', 'dirty checkout is not the pinned source');
+      expect(await createTestContentEquivalence(root)({ file, recordedSha: first, currentSha: second }))
         .toMatchObject({ equivalent: true });
+      execFileSync('git', ['checkout', '--', 'source.ts'], { cwd: checkout });
       writeFileSync(join(dependency, 'source.ts'), 'export const dependency = 2;');
       execFileSync('git', ['commit', '-qam', 'changed'], { cwd: dependency });
       const next = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dependency, encoding: 'utf8' }).trim();
@@ -97,6 +172,18 @@ describe('conformance immutable dependency content', () => {
       execFileSync('git', ['checkout', '-q', next], { cwd: join(root, 'libs/dependency') });
       expect(await createTestContentEquivalence(root)({ file, recordedSha: first, currentSha: commit() }))
         .toMatchObject({ equivalent: false });
-    } finally { rmSync(dependency, { recursive: true, force: true }); }
+      if (layout.endsWith('absorbed')) {
+        rmSync(checkout, { recursive: true, force: true });
+        expect(await createTestContentEquivalence(root)({ file, recordedSha: first, currentSha: second }))
+          .toMatchObject({ equivalent: true });
+      }
+      git('update-index', '--cacheinfo', '160000,' + 'f'.repeat(40) + ',libs/dependency');
+      git('commit', '-qm', 'unavailable dependency pin');
+      expect(await createTestContentEquivalence(root)({ file, recordedSha: first, currentSha: git('rev-parse', 'HEAD') }))
+        .toMatchObject({ equivalent: false, reason: expect.stringContaining('Git dependency enumeration incomplete') });
+    } finally {
+      rmSync(dependency, { recursive: true, force: true });
+      rmSync(nested, { recursive: true, force: true });
+    }
   });
 });
