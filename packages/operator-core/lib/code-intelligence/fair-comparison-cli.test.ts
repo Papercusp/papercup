@@ -116,6 +116,34 @@ describe('kernel task scope reads', () => {
 });
 
 describe('fresh worker cleanup', () => {
+  it.each([
+    { task: { ok: false as const, taskId: 'worker-task', action: 'kill' as const,
+      error: 'incomplete' as const, detail: 'Descendant cleanup failed for child-task: 1 process remained' },
+    scope: null },
+    { task: { ok: false as const, taskId: 'worker-task', action: 'kill' as const,
+      error: 'not_live' as const, detail: 'terminal row with a confined scope' },
+    scope: { ok: false as const, scopeUnit: 'pc-worker.scope', action: 'kill' as const,
+      error: 'command_failed' as const, detail: 'scope resolution failed' } },
+  ])('preserves both controller outcomes when cleanup refuses ($task.error)', async ({ task, scope }) => {
+    const owned = mkdtempSync(join(tmpdir(), 'fair-worker-controller-refusal-'));
+    const killScopeUnit = vi.fn().mockResolvedValue(scope);
+    const readKernelTasks = vi.fn(() => 0);
+    try {
+      const error = await stopFairWorker({ taskId: 'worker-task', scopeUnit: 'pc-worker.scope',
+        exited: Promise.resolve(), owned, cgroupPaths: ['/user.slice/pc-worker.scope'] },
+      async () => ({ killTask: vi.fn().mockResolvedValue(task), killScopeUnit }), readKernelTasks)
+        .then(() => null, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('isolated files retained');
+      expect((error as Error).message).toContain(task.detail);
+      if (scope) expect((error as Error).message).toContain(scope.detail);
+      expect((error as Error).cause).toEqual({ task, scope });
+      expect(killScopeUnit).toHaveBeenCalledTimes(scope ? 1 : 0);
+      expect(readKernelTasks).not.toHaveBeenCalled();
+      expect(existsSync(owned)).toBe(true);
+    } finally { rmSync(owned, { recursive: true, force: true }); }
+  });
+
   it.each([1, null])('retains evidence after successful close receipts when observed kernel tasks are %s', async kernelTasks => {
     vi.useFakeTimers();
     const owned = mkdtempSync(join(tmpdir(), 'fair-worker-kernel-drain-'));

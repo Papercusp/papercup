@@ -545,8 +545,14 @@ export async function stopFairWorker(
       // A terminal ledger row can outlive its now-empty kernel scope.
       const scope = outcome.error === 'not_live' && scopeUnit
         ? await killScopeUnit(scopeUnit, { escalateAfterMs: 500 }) : null;
-      if (!scope || (!scope.ok && scope.error !== 'already_gone'))
-        throw new Error(`fresh worker task cleanup refused (${outcome.error}); isolated files retained`);
+      if (!scope || (!scope.ok && scope.error !== 'already_gone')) {
+        // The controller detail distinguishes descendant, scope-resolution and
+        // surviving-process failures. Keep it in the printable error as well
+        // as its cause: test reporters may serialize only message and stack.
+        const controls = { task: outcome, scope };
+        throw new Error(`fresh worker task cleanup refused (${outcome.error}); isolated files retained (${JSON.stringify(controls)})`,
+          { cause: controls });
+      }
     }
   }
   if (exited) {
