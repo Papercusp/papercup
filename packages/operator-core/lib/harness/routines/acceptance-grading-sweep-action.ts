@@ -80,7 +80,7 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
     console.log(`${prefix} started`);
     const progress = managedSetInterval(`acceptance-grading-sweep-stage:${sweepId}:${stage}`, 60_000, () => {
       console.warn(`${prefix} still running elapsedMs=${Date.now() - startedAt}`);
-    }, { category: 'watchdog' });
+    }, { category: 'watchdog', classification: 'timeout-reaper' });
     let outcome: 'completed' | 'failed' = 'failed';
     try {
       const result = await work();
