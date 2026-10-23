@@ -86,9 +86,11 @@ if (process.env.PAPERCUSP_TEST_RUNS_DB_URL !== undefined) {
 // Evidence must outlive the private database. Require an explicit reporter-only
 // sink before bootstrapping when the caller asks for durable ledger receipts.
 // Never derive it from a product URL or silently claim a private insert survived.
-if (isolatedRuntime && (process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim() ||
-    process.env.PC_EXECUTED_SOURCE_MAP_RESULT?.trim()) && !process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim()) {
-  console.error('[with-test-pg] evidence preflight failed: PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
+const durableEvidenceRequested = ['PAPERCUSP_TEST_RUN_RECEIPT_FILE',
+  'PC_EXECUTED_SOURCE_MAP_RESULT', 'PC_EXECUTED_SOURCE_MAP_OUT']
+  .some(key => process.env[key]?.trim());
+if (durableEvidenceRequested && !process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim()) {
+  console.error('[with-test-pg] evidence preflight failed: PAPERCUSP_TEST_RUNS_DB_URL is required for durable test receipts');
   process.exit(1);
 }
 

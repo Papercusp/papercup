@@ -121,6 +121,33 @@ describe('effective authority contract (P-024)', () => {
     expect(evaluateEffectivePermission(null as unknown as AuthoritySnapshot, request).allowed).toBe(false);
   });
 
+  it.each([
+    ['operation', 'high', '\uD800'], ['operation', 'low', '\uDFFF'],
+    ['target', 'high', '\uD800'], ['target', 'low', '\uDFFF'],
+  ] as const)('refuses resource %s containing an unpaired %s surrogate', (field, _kind, value) => {
+    const input: PermissionRequest = { ...request, resource: { ...request.resource, [field]: value } };
+    expect(evaluateEffectivePermission(fixture(), input)).toMatchObject({
+      allowed: false, code: 'invalid-request', request: null,
+    });
+    expect(revalidateEffectivePermission(fixture(), input, null)).toMatchObject({
+      allowed: false, code: 'invalid-request', request: null,
+    });
+  });
+
+  it('preserves exact resource authorization for valid non-BMP Unicode', () => {
+    const snapshot = fixture();
+    const input: PermissionRequest = {
+      ...request, resource: { kind: 'filesystem', operation: 'read', target: '/safe/\u{1F680}' },
+    };
+    snapshot.policies[0].rules!.resources = { allow: [resourcePermissionValue(input.resource)] };
+    const decision = evaluateEffectivePermission(snapshot, input);
+    expect(decision).toMatchObject({ allowed: true, request: input });
+    expect(revalidateEffectivePermission(snapshot, input, decision.revisions).allowed).toBe(true);
+    expect(evaluateEffectivePermission(snapshot, {
+      ...input, resource: { ...input.resource, target: '/safe/\u{1F680}-other' },
+    }).allowed).toBe(false);
+  });
+
   it.each(['allowed', 'denied', 'authority-unavailable', 'authority-stale'] as const)(
     'a %s decision retains a detached canonical snapshot of its trusted request', code => {
       const snapshot = fixture();

@@ -202,6 +202,36 @@ describe('tool-delivery acceptance instruments', () => {
       expect(result.invalidArguments.verdict).toBe('unknown');
     }
   });
+  it('accepts reordered argument keys while retaining ordered calls, arrays and exact argument values', () => {
+    const sample = () => {
+      const { rows, experiment } = candidateFixture();
+      const row = rows[0]!;
+      const raw = row.raw_events as any[];
+      raw[1].data.input = { longKey: { nestedValue: 2, a: null }, ordered: [1, 2], a: true };
+      row.transcript_norm_json = [{ toolCalls: [{ name: 'work_items:list',
+        input: { a: true, ordered: [1, 2], longKey: { a: null, nestedValue: 2 } } }] }];
+      return { rows, experiment, row };
+    };
+    const reordered = sample();
+    expect(evaluateToolDeliveryRuns(reordered.rows, schemas, reordered.experiment).manifests).toHaveLength(30);
+    const mutations: Array<(calls: any[]) => void> = [
+      calls => { calls[0].input.longKey.nestedValue = 3; },
+      calls => { calls[0].input.ordered.reverse(); },
+      calls => { calls[0].input.a = 'true'; },
+      calls => { delete calls[0].input.longKey.a; },
+      calls => { calls[0].input.extra = null; },
+      calls => { calls[0].name = 'coord:orient'; },
+      calls => { calls.pop(); },
+      calls => { calls.push(structuredClone(calls[0])); },
+    ];
+    for (const mutate of mutations) {
+      const { rows, experiment, row } = sample();
+      mutate((row.transcript_norm_json as any[])[0].toolCalls);
+      const result = evaluateToolDeliveryRuns(rows, schemas, experiment);
+      expect(result.comprehension.verdict, result.comprehension.reason).toBe('unknown');
+      expect(result.comprehension.reason).toContain('raw/normalized');
+    }
+  });
   it('does not silently discard an extra scenario or an adverse candidate replication', () => {
     const { rows, experiment } = candidateFixture();
     expect(evaluateToolDeliveryRuns([...rows, { ...rows[0]!, id: 'extra', scenario_id: 'outside' }], schemas, experiment)

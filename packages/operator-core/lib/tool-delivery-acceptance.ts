@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { zstdDecompressSync } from 'node:zlib';
 import { getBuildInfo } from './build-info';
 import candidatePreregistration from './llm-testing/fixtures/tool-delivery-full-after-use-20261021.json';
@@ -117,7 +118,8 @@ export function validateToolDeliveryManifests(row: ToolDeliveryRun, experiment: 
     return Array.isArray(recorded) ? recorded.map(call => ({ name: object(call).name, input: object(call).input })) : [];
   }) : [];
   if (!requests || pendingCalls || !Array.isArray(row.transcript_norm_json) ||
-      completedTurns !== row.transcript_norm_json.length || digest(calls) !== digest(normalized)) {
+      // JSONB changes object key order; call/array order and argument values must still match.
+      completedTurns !== row.transcript_norm_json.length || !isDeepStrictEqual(calls, normalized)) {
     return bad('incomplete raw/normalized request and call coverage');
   }
   return { requests, initialBytes: bytes[0], maxBytes: Math.max(...bytes) };
