@@ -535,7 +535,7 @@ dependency_generation_tree_fingerprint() {
     if [ "${DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT:-0}" != '1' ] \
       && find . -xdev -mindepth 1 -maxdepth 1 -printf '' >/dev/null 2>&1; then
       LC_ALL=C find . -xdev -mindepth 1 \
-        \( -type d \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
+        \( -type d \( -name .cache -o -name .bun-cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
         ! -path './.package-lock.json' \
@@ -546,7 +546,7 @@ dependency_generation_tree_fingerprint() {
       # BSD/macOS find has no -printf. Keep the same identity classes with a
       # portable stat record per path. It is slower, but correctness-preserving.
       LC_ALL=C find . -xdev -mindepth 1 \
-        \( -type d \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
+        \( -type d \( -name .cache -o -name .bun-cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
         ! -path './.package-lock.json' -print0 \) \
@@ -2710,7 +2710,7 @@ dependency_generation_source_records() {
     LC_ALL=C find . -xdev -mindepth 1 \
       \( \( -path ./.cache -o -path ./.package-lock.json \
         -o -path ./.papercusp-isolated-snapshot \
-        -o \( -type d \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \) \) \
+        -o \( -type d \( -name .cache -o -name .bun-cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \) \) \
         -prune \) -o \
       \( \( -name '*[[:cntrl:]]*' -o -lname '*[[:cntrl:]]*' \) -printf '\001\n' \) -o \
       -printf '%P\t%y\t%m\t%U\t%G\t%s\t%T@\t%i\t%C@\t%l\n'
@@ -2989,6 +2989,8 @@ dependency_generation_prune_ephemeral() {
   # and Storybook likewise mutate .astro/.vite/.vite-temp or the conventional
   # .cache directories while a dependency generation is being copied. Packages
   # such as Hugging Face transformers download models inside their own .cache.
+  # Bun's .bun-cache also holds mutable install metadata and absolute version
+  # index links; installed package contents remain outside that cache.
   # None belong in an immutable generation: retaining or fingerprinting them can
   # false-fail rc75 on unrelated churn.
   #
@@ -3007,9 +3009,9 @@ dependency_generation_prune_ephemeral() {
   # setup-release-checkout replaces the marker with the NEW generation id.
   # Strip it at the generation boundary just like npm's local bookkeeping.
   rm -f -- "$root/.package-lock.json" "$root/.papercusp-isolated-snapshot"
-  rm -rf -- "$root/.cache"
+  rm -rf -- "$root/.cache" "$root/.bun-cache"
   find "$root" -type d \
-    \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \
+    \( -name .cache -o -name .bun-cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \
     -exec rm -rf -- {} +
 }
 
