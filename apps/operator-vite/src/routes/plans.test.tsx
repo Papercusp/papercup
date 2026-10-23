@@ -98,6 +98,19 @@ describe('selected plan engineering evidence detail', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Include unscoped decision context' }));
     await waitFor(() => expect(calls.filter(call => call.name === 'graph:query').at(-1)?.args.include_context).toBe(true));
   });
+  it('ee.ui-repair-validity: rejects non-work-item IDs with the browser pattern constraint and accepts hyphenated work-item IDs', async () => {
+    const { graph, calls, renderPanel } = fixture();
+    graph.gaps = [{ code: 'no-visible-proof', at: reference('plans:get-specs', { slug: 'ee-feature', specIds: ['EE-1'], revision: 2 }) }];
+    renderPanel(); fireEvent.click(await screen.findByRole('button', { name: 'Bind test evidence for EE-1' }));
+    const owner = screen.getByRole('textbox', { name: 'Owning work item' }) as HTMLInputElement;
+    fireEvent.change(owner, { target: { value: 'EI-123' } });
+    expect(owner.validity.patternMismatch).toBe(true);
+    expect(owner.checkValidity()).toBe(false);
+    fireEvent.change(owner, { target: { value: 'WI-a-123' } });
+    expect(owner.validity.patternMismatch).toBe(false);
+    expect(owner.checkValidity()).toBe(true);
+    expect(calls.every(call => call.name !== 'plans:bind-spec-evidence')).toBe(true);
+  });
   it('ee.ui-repair: binds a recorded run through the existing writer at the selected exact revision and rereads the graph', async () => {
     const { graph, calls, renderPanel } = fixture();
     graph.gaps = [{ code: 'no-visible-proof', at: reference('plans:get-specs', { slug: 'ee-feature', specIds: ['EE-1'], revision: 2 }) }];
