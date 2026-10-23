@@ -10088,7 +10088,9 @@ html[data-visual-effects='minimal'] .pc-header-quote-text {
 [data-route-transition-page="true"] {
   position: relative;
   transform-origin: 50% 44%;
-  will-change: transform, opacity, filter;
+  /* Permanent transform/filter hints contain fixed descendants, trapping
+     fullscreen readers and Work panes inside the route content box. GSAP
+     applies transforms only while a route transition is running. */
 }
 
 .pc-route-transition {
