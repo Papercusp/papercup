@@ -3,12 +3,13 @@ import { z } from 'zod';
 import { applyPayloadTier } from '@papercusp/tooldef';
 import { dispatchProjectedTool, lookupByMcpName, readJsonResult } from '@papercusp/agent-mcp';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { applyResultDoor } from '../../result-door';
 import { parseScratchReference } from '../../scratch-reference';
 import { safeScratchFilesystemPath } from '../../scratch-uri';
+import { readProcessIdentity } from '../../process-identity';
 
 const doorConstants = vi.hoisted(() => vi.fn());
 vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstants }));
@@ -28,7 +29,7 @@ const planMocks = vi.hoisted(() => ({ getPlanRow: vi.fn() }));
 vi.mock('../plans/source', () => ({ getPlanRow: planMocks.getPlanRow }));
 const workItemMocks = vi.hoisted(() => ({ commentWorkItem: vi.fn(), getWorkItemsByIds: vi.fn() }));
 const receiptDb = vi.hoisted(() => {
-  type Row = { idempotency_key: string; rubric_ref: string; state: string; started_at: Date; finished_at: Date | null; result_json: Record<string, unknown> | null; error: string | null };
+  type Row = { idempotency_key: string; rubric_ref: string; state: string; started_at: Date; finished_at: Date | null; result_json: Record<string, unknown> | null; error: string | null; executor_host?: string; executor_pid?: number; executor_process_id?: string };
   const rows = new Map<string, Row>();
   const sql = vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
     // postgres' bulk insert helper is called before its tagged statement.
@@ -1303,12 +1304,39 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
     rubricsMocks.amendRubric.mockReturnValue(slow.promise);
     const first = await body({ ...amendArgs, idempotencyKey: 'stranded-key' });
     expect(first.pending).toBe(true);
+    Object.assign(receiptDb.rows.get('ws-amend-test:acceptance-example:stranded-key')!, {
+      executor_host: hostname(), executor_pid: process.pid, executor_process_id: 'previous-executor-identity',
+    });
     rubricsMocks.findAmendmentDecisionByKey.mockResolvedValue({
       decisionId: 'D-42', subjectPlan: 'example-plan',
     });
     expect(await statusBody({ rubricRef: 'acceptance-example', idempotencyKey: 'stranded-key' }))
       .toMatchObject({ state: 'committed', source: 'decision', decisionId: 'D-42' });
     slow.resolve({ rubricId: 'acceptance-example', kind: 'standard', criteria: [] });
+  });
+
+  it.each([
+    ['dead', 'orphaned'],
+    ['reused-pid', 'orphaned'],
+    ['live', 'running'],
+    ['unknown', 'running'],
+    ['remote', 'running'],
+  ])('reports a running preview with a %s executor as %s', async (executor, state) => {
+    const identity = readProcessIdentity(process.pid);
+    expect(identity).toBeTruthy();
+    const key = `preview-executor-${executor}`;
+    receiptDb.rows.set(`ws-amend-test:acceptance-example:${key}`, {
+      idempotency_key: key, rubric_ref: 'acceptance-example', state: 'running',
+      started_at: new Date(), finished_at: null, result_json: null, error: null,
+      executor_host: executor === 'remote' ? `${hostname()}-remote` : hostname(),
+      executor_pid: executor === 'dead' ? 99999999 : process.pid,
+      ...(executor === 'unknown' ? {} : {
+        executor_process_id: executor === 'live' ? identity! : 'previous-executor-identity',
+      }),
+    });
+    expect(await statusBody({ rubricRef: 'acceptance-example', idempotencyKey: key }))
+      .toMatchObject({ state, source: 'receipt', ...(state === 'orphaned' ? { reclaimableAt: expect.any(Number) } : {}) });
+    expect(rubricsMocks.findAmendmentDecisionByKey).not.toHaveBeenCalled();
   });
 
   it('a slow amend that then fails polls to failed with the error, never to committed', async () => {
