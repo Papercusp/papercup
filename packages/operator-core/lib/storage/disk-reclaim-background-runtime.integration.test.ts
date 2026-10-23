@@ -25,6 +25,7 @@ const censusSelected = [
   'compacts capped native file metadata',
 ];
 const selected = [
+  'discovers fresh policy roots on each pass and refuses symlink roots before reclaiming',
   'waits for first mutex admission within the whole run deadline',
   'refuses effects when first mutex admission exhausts the whole run deadline',
   'stops waiting for first mutex admission when the run deadline expires',
