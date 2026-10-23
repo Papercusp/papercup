@@ -25,7 +25,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { readOperatorDbEnvLocal } from '@papercusp/db-org/operator-db-env';
-import { buildServiceEnvPayloadWithTransport, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
+import { buildServiceEnvPayloadWithTransport, escapeSystemdServiceArgument, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 import { serviceUnitForTask, TASK_ROOT_SLICE } from './task-manager/types';
 import { execFileViaSidecar } from './fleet/git-via-sidecar';
 
@@ -596,7 +596,19 @@ export function launchDetachedCut(
   const app = environment.HARNESS_DATABASE_URL || (!explicitAdmin ? configured.HARNESS_DATABASE_URL : undefined);
   if (app) childEnvironment.HARNESS_DATABASE_URL = app;
   const payload = buildServiceEnvPayloadWithTransport(argv.slice(-3), childEnvironment);
-  const launchArgv = [...argv.slice(0, -3), payload.credentialProperty!, ...payload.argv];
+  // NOTIFY_SOCKET belongs to this new unit, not the calling operator. Capture it
+  // before the exact-environment runner replaces the manager's environment, then
+  // restore only that protocol field for the cut's readiness notification.
+  const serviceCommand = [
+    ...payload.argv.slice(0, -3).map(shellSingleQuote),
+    '/usr/bin/env',
+    '"NOTIFY_SOCKET=$NOTIFY_SOCKET"',
+    ...argv.slice(-3).map(shellSingleQuote),
+  ].join(' ');
+  const launchArgv = [
+    ...argv.slice(0, -3), payload.credentialProperty!,
+    'bash', '-c', escapeSystemdServiceArgument(`exec ${serviceCommand}`),
+  ];
   return new Promise<LaunchCutResult>((resolve) => {
     const base: LaunchCutResult = {
       launched: false,

@@ -109,6 +109,53 @@ describe('detached cut database credentials', () => {
     expect(result).toMatchObject({ launched: false, reason: 'fixture admission failure' });
     expect(fs.existsSync(credentialPath)).toBe(false);
   });
+
+  it.skipIf(process.platform !== 'linux')('preserves the new unit notify socket through the real credential runner', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cut-notify-env-'));
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    // Observe the workload environment without running the cutter or touching
+    // its shared lock/sentinels. The generated wrapper and env runner are real.
+    fs.writeFileSync(path.join(bin, 'bash'), `#!${process.execPath}\n` +
+      'process.stdout.write(JSON.stringify({ notify: process.env.NOTIFY_SOCKET, ' +
+      'database: process.env.DATABASE_URL, provider: process.env.PRIVATE_PROVIDER_KEY }));\n', { mode: 0o755 });
+    const unitSocket = "@fixture unit's notify socket";
+    const database = 'postgres://fixture:secret@localhost/fixture';
+    let observed: Record<string, string> = {};
+    const spawnMock = vi.fn((_binary: string, argv: string[]) => {
+      const credential = argv.find((arg) => arg.startsWith('--property=LoadCredential='))!
+        .slice('--property=LoadCredential='.length);
+      const separator = credential.indexOf(':');
+      fs.copyFileSync(credential.slice(separator + 1), path.join(dir, credential.slice(0, separator)));
+      const payloadIndex = argv.findIndex((arg) => !arg.startsWith('--'));
+      const program = argv[payloadIndex];
+      // systemd resolves the service executable independently of the payload's
+      // PATH and unescapes $$ before executing each ExecStart argument.
+      const result = spawnSync(program === 'bash' ? '/bin/bash' : program,
+        argv.slice(payloadIndex + 1).map((arg) => arg.replaceAll('$$', '$')), {
+          env: { PATH: '/usr/bin:/bin', CREDENTIALS_DIRECTORY: dir,
+            NOTIFY_SOCKET: unitSocket, PRIVATE_PROVIDER_KEY: 'manager-only-secret' },
+          encoding: 'utf8', timeout: 10_000,
+        });
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      observed = JSON.parse(result.stdout);
+      const child = new EventEmitter();
+      queueMicrotask(() => child.emit('close', result.status));
+      return child;
+    });
+    try {
+      const result = await launchDetachedCut({ version: '0.0.27', channel: 'alpha', expectedSourceSha: 'a'.repeat(40),
+        root: '/isolated/papercusp-desktop', runtime: { ownerName: 'Fixture', canonicalDesktopRoot: '/canonical/papercusp-desktop' } },
+      spawnMock as unknown as SpawnLike, { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, DATABASE_URL: database,
+        NOTIFY_SOCKET: '@wrong-operator-socket', PRIVATE_PROVIDER_KEY: 'operator-only-secret' });
+      expect(result.launched).toBe(true);
+      expect(observed).toEqual({ notify: unitSocket, database });
+      expect(result.argv.join(' ')).not.toContain('@wrong-operator-socket');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('version / channel validation', () => {
