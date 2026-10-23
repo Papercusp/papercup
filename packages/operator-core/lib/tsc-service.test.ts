@@ -7,7 +7,7 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { createServer } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -296,12 +296,39 @@ describe('service request phase correlation', () => {
         expect(refreshed.errorCount).toBe(0);
         expect(refreshed.checked.sort()).toEqual(['caller.ts', 'other.ts']);
       }
+      // A timeout destroys the caller's socket. Node also ends the server's writable side
+      // after the peer FIN, which must not be mistaken for a reply sent by this service.
+      await new Promise<void>((resolve, reject) => {
+        const socket = createConnection(socketPath);
+        const prefix = 'requestId=trace-test-disconnect project=tsconfig.json named=1 phase=';
+        const finish = (error?: Error) => {
+          clearTimeout(timer);
+          child.stdout.off('data', observe);
+          socket.destroy();
+          if (error) reject(error);
+          else resolve();
+        };
+        const observe = () => {
+          if (output.includes(`${prefix}client-disconnected`)) finish();
+          else if (output.includes(`${prefix}complete`)) finish(new Error('disconnected request completed instead of cancelling'));
+        };
+        const timer = setTimeout(() => finish(new Error(`disconnect was not observed: ${output}`)), 5_000);
+        child.stdout.on('data', observe);
+        socket.on('error', finish);
+        // Send the full request then FIN immediately, without racing child stdout delivery.
+        socket.on('connect', () => socket.end(`${JSON.stringify({
+          v: 1, requestId: 'trace-test-disconnect', root: dir, project, files: ['other.ts'],
+        })}\n`));
+      });
       // Drain stdout before inspecting the trace and assert that the compiler child also exits.
       child.kill('SIGTERM');
       await closed;
-      for (const phase of ['queued', 'refresh', 'refreshed', 'program-files', 'scope', 'program-diagnostics', 'file-diagnostics', 'render-diagnostics', 'complete']) {
+      for (const phase of ['queued', 'refresh', 'snapshot-update', 'snapshot-updated', 'project-roots-refresh', 'project-roots-refreshed', 'refreshed', 'program-files', 'scope', 'program-diagnostics', 'file-diagnostics', 'render-diagnostics', 'complete']) {
         expect(output).toContain(`requestId=trace-test-123 project=tsconfig.json named=1 phase=${phase}`);
       }
+      expect(output).not.toContain('requestId=trace-test-123 project=tsconfig.json named=1 phase=client-disconnected');
+      expect(output).not.toContain('requestId=trace-test-refresh project=tsconfig.json named=1 phase=client-disconnected');
+      expect(output).not.toContain('requestId=trace-test-disconnect project=tsconfig.json named=1 phase=complete');
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
       await closed;

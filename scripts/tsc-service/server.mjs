@@ -102,7 +102,7 @@ async function resetApi(why) {
 }
 
 /** Take a fresh snapshot covering `projects`, opening and evicting projects as needed. */
-async function refresh(projects) {
+async function refresh(projects, trace) {
   if (!state.api) state.api = new API({ cwd: ROOT });
   const toOpen = projects.filter((p) => !state.open.includes(p));
   state.open = [...state.open.filter((p) => !projects.includes(p)), ...projects];
@@ -112,15 +112,19 @@ async function refresh(projects) {
   state.open = state.open.filter((p) => !toClose.includes(p));
 
   const previous = state.snapshot;
+  trace('snapshot-update');
   let snapshot = await state.api.updateSnapshot({
     ...(toOpen.length > 0 ? { openProjects: toOpen } : {}),
     ...(toClose.length > 0 ? { closeProjects: toClose } : {}),
     ...(previous ? { fileChanges: { invalidateAll: true } } : {}),
   });
+  trace('snapshot-updated');
   // invalidateAll does not re-evaluate a tsconfig's include globs. Re-parse each config and tell
   // the API about both added and removed roots; otherwise deleted roots remain in the loaded program
   // and tsc reports TS6053 for a path that no longer exists.
+  trace('project-roots-refresh');
   snapshot = await refreshProjectRootFiles({ api: state.api, snapshot, projects });
+  trace('project-roots-refreshed');
   previous?.dispose();
   state.snapshot = snapshot;
   state.snapshotAt = Date.now();
@@ -250,7 +254,9 @@ async function drain() {
       const projects = [...new Set(batch.map((item) => item.request.project))];
       try {
         for (const item of batch) item.trace('refresh');
-        await refresh(projects);
+        await refresh(projects, (phase) => {
+          for (const item of batch) item.trace(phase);
+        });
         for (const item of batch) item.trace('refreshed');
       } catch (error) {
         for (const item of batch) item.reply({ ok: false, reason: 'refresh-failed', detail: String(error?.message ?? error) });
@@ -312,10 +318,13 @@ async function shutdown(why) {
 const server = createServer((socket) => {
   let buffer = '';
   let item = null;
+  let replied = false;
   socket.setEncoding('utf8');
   socket.on('error', () => {});
   socket.on('close', () => {
-    if (item && !socket.writableEnded) {
+    // A peer FIN also sets writableEnded under net.Server's default allowHalfOpen=false.
+    // Only our reply establishes completion; a disconnected caller no longer needs a check.
+    if (item && !replied) {
       item.cancelled = true;
       item.trace('client-disconnected');
     }
@@ -329,7 +338,10 @@ const server = createServer((socket) => {
       return;
     }
     const reply = (response) => {
-      if (!socket.destroyed) socket.end(`${JSON.stringify(response)}\n`);
+      if (!socket.destroyed) {
+        replied = true;
+        socket.end(`${JSON.stringify(response)}\n`);
+      }
     };
     let request;
     try {
