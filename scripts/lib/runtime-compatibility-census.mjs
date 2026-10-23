@@ -1,9 +1,9 @@
 /** Bun migration discovery, reusing the release import collector; never a readiness verdict. */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { realpathSync } from 'node:fs';
+import { createReadStream, promises as fs, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
@@ -186,6 +186,181 @@ export function inventorySources(snapshot) {
     limitations: ['Discovery only: classify required/unreachable/external using source reachability proof.',
       'Token and shell/config line candidates do not establish behavior or a complete platform matrix.',
       'Freeze product/OS/arch cells from release producers; unavailable capacity never removes a supported cell.'] };
+}
+
+/** Read static ELF metadata without loading the candidate into this process. */
+export function parseElfDependencies(text) {
+  const elfClass = text.match(/^\s*Class:\s*(\S+)/m)?.[1];
+  const machine = text.match(/^\s*Machine:\s*(.+)/m)?.[1]?.trim();
+  if (!elfClass || !machine) throw new Error('Incomplete ELF header');
+  const values = (tag) => [...text.matchAll(new RegExp(`\\(${tag}\\).*?\\[([^\\]]+)\\]`, 'g'))].map((match) => match[1]);
+  return { elfClass, machine, needed: values('NEEDED'), rpath: values('RPATH'), runpath: values('RUNPATH'), soname: values('SONAME') };
+}
+
+const NATIVE_NAME = /(?:\.node|\.dll|\.dylib|\.wasm|\.so(?:\.[\w.-]+)?)$/i;
+function binaryFormat(bytes) {
+  const magic = bytes.subarray(0, 4).toString('hex');
+  if (magic === '7f454c46') return 'elf';
+  if (magic === '0061736d') return 'wasm';
+  if (bytes[0] === 0x4d && bytes[1] === 0x5a) return 'pe';
+  if (['feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca'].includes(magic)) return 'mach-o-candidate';
+  return null;
+}
+const sameFile = (a, b) => ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every((key) => a[key] === b[key]);
+const inspectElf = (path) => execFileSync('readelf', ['--file-header', '--dynamic', '--wide', '--', path],
+  { encoding: 'utf8', timeout: 10_000, maxBuffer: 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } });
+
+/**
+ * Fingerprint the installed bytes under an explicit, reviewed package population.
+ * Nested node_modules must be supplied as their own package roots. Symlinks that
+ * escape a package stay gaps; a package walk cannot certify the system loader's
+ * resolution, foreign platforms, generated code, or runtime capability behavior.
+ */
+export async function inventoryNativePackages(packages, { maxEntries = 500_000,
+  readelf = inspectElf } = {}) {
+  if (!Array.isArray(packages) || packages.some((pkg) => !pkg.id || !isAbsolute(pkg.path))
+      || new Set(packages.map((pkg) => pkg.id)).size !== packages.length) throw new Error('Unique package IDs and absolute paths required');
+  if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) throw new Error('Positive entry budget required');
+  const roots = [], files = [], links = [], excluded = [], unresolved = [];
+  let entriesRead = 0;
+  for (const pkg of [...packages].sort((a, b) => a.id.localeCompare(b.id))) {
+    const root = { id: pkg.id, path: pkg.path }; roots.push(root);
+    const gap = (path, reason, error) => unresolved.push({ packageId: pkg.id, path, reason, ...(error ? { error: error.code ?? error.message } : {}) });
+    try {
+      root.realPath = await fs.realpath(pkg.path);
+      root.manifestSha256 = hash(await fs.readFile(join(root.realPath, 'package.json')));
+      if (!/^[a-f0-9]{64}$/.test(pkg.manifestSha256 ?? '') || root.manifestSha256 !== pkg.manifestSha256) {
+        gap('package.json', 'manifest-pin-mismatch'); continue;
+      }
+    } catch (error) { gap('package.json', 'package-unavailable', error); continue; }
+    const seen = new Set();
+    const walk = async (path) => {
+      const rel = relative(root.realPath, path);
+      try {
+        const resolved = await fs.realpath(path), target = relative(root.realPath, resolved);
+        if (target === '..' || target.startsWith(`..${sep}`) || isAbsolute(target)) {
+          links.push({ packageId: pkg.id, path: rel, target: resolved }); gap(rel, 'external-symlink'); return;
+        }
+        const stat = await fs.stat(resolved);
+        if ((await fs.lstat(path)).isSymbolicLink()) links.push({ packageId: pkg.id, path: rel, target });
+        if (stat.isDirectory()) {
+          if (seen.has(resolved)) return;
+          seen.add(resolved);
+          for (const child of (await fs.readdir(resolved)).sort()) {
+            if (child === 'node_modules') { excluded.push({ packageId: pkg.id, path: relative(root.realPath, join(resolved, child)), reason: 'separate-package-roots-required' }); continue; }
+            if (entriesRead >= maxEntries) { gap(rel, 'entry-budget'); return; }
+            entriesRead++;
+            await walk(join(resolved, child));
+          }
+          return;
+        }
+        if (!stat.isFile()) { gap(rel, 'nonregular-file'); return; }
+        const handle = await fs.open(resolved, 'r');
+        const header = Buffer.alloc(8);
+        try { await handle.read(header, 0, header.length, 0); } finally { await handle.close(); }
+        const format = binaryFormat(header);
+        if (!format && !NATIVE_NAME.test(rel)) return;
+        const digest = createHash('sha256');
+        for await (const chunk of createReadStream(resolved)) digest.update(chunk);
+        const row = { packageId: pkg.id, path: rel, realPath: resolved, bytes: stat.size, sha256: digest.digest('hex'), format: format ?? 'unknown' };
+        files.push(row);
+        if (!sameFile(stat, await fs.stat(resolved)) || await fs.realpath(path) !== resolved) { gap(rel, 'file-changed-during-read'); return; }
+        if (format === 'elf') {
+          try { row.elf = parseElfDependencies(await readelf(resolved)); }
+          catch (error) { gap(rel, 'elf-inspection-failed', error); }
+          if (!sameFile(stat, await fs.stat(resolved))) gap(rel, 'file-changed-during-inspection');
+        } else if (format !== 'wasm') gap(rel, format ? 'platform-inspection-unavailable' : 'unrecognized-native-file');
+      } catch (error) { gap(rel, 'file-unavailable', error); }
+    };
+    await walk(root.realPath);
+    try {
+      if (hash(await fs.readFile(join(root.realPath, 'package.json'))) !== root.manifestSha256) gap('package.json', 'manifest-changed-during-walk');
+    } catch (error) { gap('package.json', 'manifest-unavailable-after-walk', error); }
+  }
+  const result = { schema: 'papercusp-native-package-inventory-v1', roots, files, links, excluded, unresolved, entriesRead,
+    closureAccepted: false, limitations: ['Static package byte discovery only; not a runtime or supported-platform acceptance verdict.',
+      'DT_NEEDED names and search paths do not prove actual system-library resolution or dynamically opened libraries.',
+      'Nested node_modules are excluded and require explicit package roots; generated and external files require separate evidence.'] };
+  return { ...result, fingerprint: hash(JSON.stringify(result)) };
+}
+
+/**
+ * Follow static DT_NEEDED candidates without executing or loading their bytes.
+ * Cache entries and environment directories are explicit, fingerprinted inputs.
+ * This deliberately does not choose a loader winner: inherited RPATH, hwcaps,
+ * namespaces, preloads and dlopen require separate runtime evidence.
+ */
+export async function inventoryElfLibraryCandidates(files, { libraryCache = [], environmentDirectories = [],
+  maxLibraries = 4096, readelf = inspectElf } = {}) {
+  if (!Array.isArray(files) || files.some((file) => !isAbsolute(file.realPath ?? '') || !/^[a-f0-9]{64}$/.test(file.sha256 ?? ''))
+      || !Array.isArray(libraryCache) || libraryCache.some((row) => !row.name || !isAbsolute(row.path ?? ''))
+      || !Array.isArray(environmentDirectories) || environmentDirectories.some((path) => !isAbsolute(path))
+      || !Number.isSafeInteger(maxLibraries) || maxLibraries < 1) throw new Error('Pinned files, absolute library inputs and positive budget required');
+  const libraries = [], edges = [], unresolved = [], inspected = new Map(), pending = [], traversed = new Set();
+  const gap = (path, reason, extra = {}) => unresolved.push({ path, reason, ...extra });
+  const inspect = async (path) => {
+    let realPath;
+    try { realPath = await fs.realpath(path); }
+    catch (error) { gap(path, 'library-unavailable', { error: error.code ?? error.message }); return null; }
+    if (inspected.has(realPath)) return inspected.get(realPath);
+    inspected.set(realPath, null);
+    if (inspected.size > maxLibraries) { gap(path, 'library-budget'); return null; }
+    try {
+      const before = await fs.stat(realPath);
+      if (!before.isFile()) throw new Error('Not a regular library');
+      const digest = createHash('sha256');
+      for await (const chunk of createReadStream(realPath)) digest.update(chunk);
+      const elf = parseElfDependencies(await readelf(realPath));
+      if (!sameFile(before, await fs.stat(realPath)) || await fs.realpath(path) !== realPath) {
+        gap(path, 'library-changed-during-inspection'); return null;
+      }
+      const row = { realPath, bytes: before.size, sha256: digest.digest('hex'), elf };
+      libraries.push(row); inspected.set(realPath, row); return row;
+    } catch (error) { gap(path, 'library-inspection-failed', { error: error.code ?? error.message }); return null; }
+  };
+  for (const file of files) {
+    const row = await inspect(file.realPath);
+    if (row && row.sha256 !== file.sha256) gap(file.realPath, 'source-pin-mismatch');
+    else if (row) pending.push(row);
+  }
+  for (let index = 0; index < pending.length; index++) {
+    const source = pending[index];
+    if (traversed.has(source.realPath)) continue;
+    traversed.add(source.realPath);
+    const directories = [...environmentDirectories];
+    for (const value of [...source.elf.rpath, ...source.elf.runpath].flatMap((value) => value.split(':'))) {
+      const path = value.replace(/\$\{ORIGIN\}|\$ORIGIN\b/g, () => dirname(source.realPath));
+      if (!path || path.includes('$') || !isAbsolute(path)) gap(source.realPath, 'unsupported-library-search-path', { value });
+      else directories.push(path);
+    }
+    for (const name of source.elf.needed) {
+      const edge = { from: source.realPath, name, candidates: [], incompatible: [], searched: [] };
+      edges.push(edge);
+      if (name.includes('/') && !isAbsolute(name)) { gap(source.realPath, 'relative-needed-path', { name }); continue; }
+      const paths = isAbsolute(name) ? [name] : [...directories.map((directory) => join(directory, name)),
+        ...libraryCache.filter((row) => row.name === name).map((row) => row.path)];
+      for (const path of [...new Set(paths)]) {
+        edge.searched.push(path);
+        try { await fs.lstat(path); }
+        catch (error) { if (error.code !== 'ENOENT') gap(path, 'library-search-failed', { error: error.code ?? error.message }); continue; }
+        const target = await inspect(path);
+        if (!target) continue;
+        if (target.elf.elfClass !== source.elf.elfClass || target.elf.machine !== source.elf.machine) {
+          edge.incompatible.push(target.realPath); continue;
+        }
+        if (!edge.candidates.includes(target.realPath)) edge.candidates.push(target.realPath);
+        pending.push(target);
+      }
+      if (!edge.candidates.length) gap(source.realPath, 'needed-library-unresolved', { name });
+      else if (edge.candidates.length > 1) gap(source.realPath, 'ambiguous-library-candidates', { name });
+    }
+  }
+  const result = { schema: 'papercusp-elf-library-candidates-v1', inputs: { files, libraryCache, environmentDirectories, maxLibraries },
+    libraries, edges, unresolved, closureAccepted: false, actualLoaderResolutionVerified: false,
+    limitations: ['Static matching candidates only; search order and the actual loaded library are not verified.',
+      'Inherited search paths, default directories absent from supplied cache, hwcaps, namespaces, preloads and dlopen remain separate obligations.',
+      'Current host evidence does not establish foreign-platform or immutable release-candidate acceptance.'] };
+  return { ...result, fingerprint: hash(JSON.stringify(result)) };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
