@@ -10,6 +10,7 @@ import { probeCheckResults, probeCheckUnit, runInstrumentChecks, recordRubricChe
 import { retainMeasurementProvenance } from './measurement-provenance';
 import { fillRatingsFromLedger } from './scorecard-ledger-fill';
 import { asStructuredObservation } from './harness/improvements/observation-types';
+import { measurementJsonBytes } from '@papercusp/test-config/execution-details';
 
 const AT = '2026-10-13T04:00:00.000Z';
 const adoption = { key: 'r-31', check: { kind: 'instrument', instrumentKey: 'code-intel:native-adoption-good-use' } };
@@ -45,6 +46,42 @@ describe('historical measurement writer-reader-scorecard roundtrip', () => {
     } });
     expect(saved.evidence).toContain('procedure sha256');
     expect(saved.ledgerResult?.provenance?.procedure.snapshot).toContain('frozen');
+  });
+
+  it('bounds and redacts provenance without changing scalar grades', async () => {
+    const result: Record<string, unknown> = {
+      value: 42, sample_count: 7, password: 'tiny', authorization: { bearer: 'opaque-secret' },
+      nested: { token: 'short' }, huge: '界'.repeat(20_000),
+      values: Array.from({ length: 1000 }, (_, i) => i),
+    };
+    result.cycle = result;
+    const provenance = retainMeasurementProvenance({ startedAt: AT, finishedAt: AT,
+      procedure: { kind: 'command', argv: ['run', '--token', 'short', '--password=hidden'] }, result });
+    const results = probeCheckResults('safe-roundtrip', { c: { kind: 'probe', verdict: 'pass',
+      status: 'fresh', executed: true, observed: result.value, measuredAt: AT, provenance } } as Record<string, { kind: string }>);
+    let persisted: unknown;
+    await recordRubricCheckResults(results, { workspaceId: 'ws', harnessSlug: 'papercusp' }, async (_text, ...values) => {
+      persisted = JSON.parse(JSON.stringify(values.at(-1)));
+      return [{ id: 32 }];
+    });
+    const latest = await readLatestRubricCheckResults({ rubricRef: 'safe-roundtrip', workspaceId: 'ws' }, async () => [{
+      id: 32, status: 'pass', file_path: 'rubric-check/safe-roundtrip/c:0', finished_at: AT,
+      execution_details: persisted, output_tail: null,
+    }]);
+    const out = fillRatingsFromLedger({ criteria: [{ key: 'c', check: { kind: 'probe',
+      probe: { expect: { path: '$.value', op: 'gte', value: 10 } } } }],
+      callerRatings: undefined, latest, rubricRatingScale: ['meets', 'misses'] });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    const saved = asStructuredObservation({ ratings: out.ratings })!.ratings!.c!;
+    expect(saved.rating).toBe('meets');
+    expect(saved.ledgerResult).toMatchObject({ value: 42, provenance: { redacted: true, truncated: true } });
+    expect(saved.ledgerResult?.provenance?.diagnostics).toContainEqual({ path: '$["sample_count"]', value: 7 });
+    expect(saved.ledgerResult?.provenance?.diagnostics.length).toBeLessThanOrEqual(64);
+    expect(measurementJsonBytes(saved.ledgerResult!.provenance!)).toBeLessThanOrEqual(16_384);
+    for (const secret of ['tiny', 'opaque-secret', 'short', 'hidden']) {
+      expect(JSON.stringify({ persisted, saved })).not.toContain(secret);
+    }
   });
 });
 

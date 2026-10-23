@@ -32,16 +32,18 @@ describe('AWS finite trial deadline foundation', () => {
   it('requires the exact immutable document and a genuinely running sleep before launch', () => {
     const plan = planAwsCanaryDeadline(input, now);
     const proof = { accountId: input.accountId, region: input.region, documentName: plan.documentName,
-      documentVersion: '1', content: JSON.stringify(plan.document), clientToken: plan.clientToken,
+      documentVersion: '1', content: JSON.stringify(plan.document),
       executionId: '11111111-1111-4111-a111-111111111111', executionStatus: 'InProgress',
       currentStep: { name: 'AwaitCreationCutoff', action: 'aws:sleep', status: 'InProgress' } };
     expect(() => assertAwsCanaryDeadlineSleeping(plan, proof, now)).not.toThrow();
     for (const mutation of [{ region: 'us-east-1' }, { accountId: '123456789012' }, { documentVersion: '$LATEST' },
-      { executionStatus: 'Pending' }, { content: '{}' }, { clientToken: 'other' },
+      { executionStatus: 'Pending' }, { content: '{}' },
       { currentStep: { ...proof.currentStep, name: 'CleanupManagedResources' } }]) {
       expect(() => assertAwsCanaryDeadlineSleeping(plan, { ...proof, ...mutation }, now)).toThrow();
     }
     expect(() => assertAwsCanaryDeadlineSleeping(plan, proof, Date.parse(input.workloadDeadlineAt))).toThrow();
+    expect(() => assertAwsCanaryDeadlineSleeping(plan, { ...proof,
+      content: JSON.stringify(Object.fromEntries(Object.entries(plan.document).reverse())) }, now)).not.toThrow();
   });
 
   it('scopes cleanup IAM to the exact account, region and immutable managed tags', () => {

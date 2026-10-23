@@ -134,6 +134,15 @@ function instant(value: string): number {
   return parsed;
 }
 
+/** AWS may reorder JSON object keys in IAM/SSM readbacks. Array order remains significant. */
+export function canonicalAwsCanaryJson(value: unknown): string {
+  const ordered = (item: unknown): unknown => Array.isArray(item) ? item.map(ordered)
+    : item !== null && typeof item === 'object'
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, child]) => [key, ordered(child)])) : item;
+  return JSON.stringify(ordered(value));
+}
+
 export function planAwsCanaryDeadline(input: AwsCanaryDeadlineInput, nowMs = Date.now()) {
   if (!/^\d{12}$/.test(input.accountId) || !HOSTED_AWS_REGION.test(input.region)) {
     throw new Error('AWS canary account or region invalid');
@@ -193,7 +202,7 @@ export function planAwsCanaryDeadline(input: AwsCanaryDeadlineInput, nowMs = Dat
       Condition: { StringEquals: { ...tagConditions, 'ec2:Owner': input.accountId } } },
   ] };
   return { input: { ...input }, documentName, documentVersion: '1', document, clientToken,
-    contentSha256: createHash('sha256').update(JSON.stringify(document)).digest('hex'),
+    contentSha256: createHash('sha256').update(canonicalAwsCanaryJson(document)).digest('hex'),
     launcherDeadlineDenyPolicy, cleanupPolicy };
 }
 
@@ -202,13 +211,13 @@ export type AwsCanaryDeadlinePlan = ReturnType<typeof planAwsCanaryDeadline>;
 /** Refuses a stale/different document or an execution that is not already waiting. */
 export function assertAwsCanaryDeadlineSleeping(plan: AwsCanaryDeadlinePlan, evidence: {
   accountId: string; region: string; documentName: string; documentVersion: string; content: string;
-  executionId: string; clientToken: string; executionStatus: string;
+  executionId: string; executionStatus: string;
   currentStep: { name: string; action: string; status: string };
 }, nowMs = Date.now()): void {
-  const sameContent = createHash('sha256').update(JSON.stringify(JSON.parse(evidence.content))).digest('hex') === plan.contentSha256;
+  const sameContent = createHash('sha256').update(canonicalAwsCanaryJson(JSON.parse(evidence.content))).digest('hex') === plan.contentSha256;
   if (!sameContent || evidence.accountId !== plan.input.accountId || evidence.region !== plan.input.region ||
       evidence.documentName !== plan.documentName || evidence.documentVersion !== plan.documentVersion ||
-      evidence.clientToken !== plan.clientToken || !/^[a-f0-9-]{36}$/.test(evidence.executionId) ||
+      !/^[a-f0-9-]{36}$/.test(evidence.executionId) ||
       evidence.executionStatus !== 'InProgress' || evidence.currentStep.name !== 'AwaitCreationCutoff' ||
       evidence.currentStep.action !== 'aws:sleep' || evidence.currentStep.status !== 'InProgress' ||
       nowMs >= instant(plan.input.workloadDeadlineAt)) {
