@@ -2008,7 +2008,7 @@ export async function getWorkItemDetail(
  * (participants are router-assigned by consult:get_feedback), so critique
  * recorded per D-049 (learning-loop-backlog-triage-2026-08-22) lands as
  * work-item comments instead. Mirrors the consult predicate clause for clause:
- * only posts with a non-null author OUTSIDE `excludeAuthors` (the emitter and
+ * only non-empty posts with a non-automation author OUTSIDE `excludeAuthors` (the emitter and
  * the vetted rubric's author — the parties whose "critique" would be
  * self-review) count; distinct qualifying authors become the critics list.
  * Work-item threads have no 'decline' post kind, so there is no declinePosts
@@ -2037,8 +2037,12 @@ export async function readVettingWorkItemCritique(
   const critics = new Set<string>();
   let critiquePosts = 0;
   for (const post of detail.posts) {
-    const author = post.author_id;
-    if (!author || excluded.has(author)) continue;
+    const author = post.author_id?.trim();
+    if (!author || excluded.has(author) || !post.body?.trim()) continue;
+    // Lifecycle comments share this thread with the review. Their authors are
+    // independent of the rubric author, but they did not critique the rubric.
+    // The release reaper predates the system:* author convention.
+    if (/^system(?:$|[-_:/.])/i.test(author) || author === 'release-request-sweep' || author === 'substrate') continue;
     critiquePosts += 1;
     critics.add(author);
   }
