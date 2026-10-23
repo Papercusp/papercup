@@ -49,7 +49,7 @@ import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
 import { createFairWorkerChannel, dispatchFrozenGraphRequest, fairWorkerCompletion, freshFactory, type FrozenFairInputs } from './fair-comparison-cli';
 import { fairObservedScopeCosts, qualifyFairProcessWitness, startFairProcessObserver } from './fair-process-observer';
-import { absCgroupDir, readProcessCgroupPath, sampleCgroup } from '../task-manager/cgroup-read';
+import { absCgroupDir, readCgroupProcs, readProcessCgroupPath, sampleCgroup } from '../task-manager/cgroup-read';
 import { deriveUserManagerRoot, newTaskId, scopeCgroupRelPath, scopeUnitForTask } from '../task-manager/types';
 import { readProcessIdentity } from '../process-identity';
 
@@ -504,7 +504,12 @@ describe('native protocol real confined worker lifecycle', () => {
     } finally { await repetition.arm.close!(); }
     expect(existsSync(identity.treeRoot)).toBe(false);
     expect(existsSync(identity.home)).toBe(false);
-    for (const path of new Set(samples.flatMap(sample => sample.scopeCosts!.map(scope => scope.cgroupPath))))
-      expect(sampleCgroup(absCgroupDir(path)).pidsCurrent ?? 0).toBe(0);
+    for (const path of new Set(samples.flatMap(sample => sample.scopeCosts!.map(scope => scope.cgroupPath)))) {
+      const sample = sampleCgroup(absCgroupDir(path));
+      const processCount = readCgroupProcs(absCgroupDir(path)).length;
+      const diagnostic = { cgroupPath: path, kernelTasks: sample.pidsCurrent, processCount };
+      console.log('NATIVE_FRESH_LSP_CLEANUP_SCOPE=' + JSON.stringify(diagnostic));
+      expect(sample.pidsCurrent ?? 0, JSON.stringify(diagnostic)).toBe(0);
+    }
   }, 300_000);
 });
