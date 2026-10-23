@@ -1081,10 +1081,10 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const compact = compactSchemaForResult(schemaByTool.get('work_items:complete'));
 
     // A successful bug close is rejected without this conditional nested record.
-    // Keep both the field and its four required evidence keys visible even when
+    // Keep both the field and its required evidence keys visible even when
     // the surrounding completion schema exceeds the nested-field budget.
     expect(compact).toContain('rootCauseVerification?:object');
-    expect(compact).toContain('required: hypothesis');
+    expect(compact).toMatch(/required:\s*hypothesis\b/);
     expect(compact).toContain('alternativeHypothesis');
     expect(compact).toContain('distinguishingTest');
     expect(compact).toContain('testResult');
@@ -1664,9 +1664,9 @@ describe('handler — graceful degrade + result shape', () => {
     const out = await callHandler({ query: 'plans:bind-spec-evidence', limit: 1 });
     const description = out.hits.find((hit) => hit.tool === 'plans:bind-spec-evidence')?.description ?? '';
 
-    expect(description).toContain('omit canonicalTestPath for local/Playwright rows');
-    expect(description).toContain('only for a cargo test');
-    expect(description).toContain('or a mutation-probe copy-out run');
+    expect(description).toContain("canonicalTestPath only for cargo's defining .rs");
+    expect(description).toContain('or unavailable copy-out mirror');
+    expect(description).toContain('never ordinary local/Playwright rows');
   });
 
   it('publishes all loop:arm monitor-authority branch requirements in discovery', async () => {
@@ -2238,7 +2238,7 @@ describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () 
   it('prioritizes explicitly named tools and identifies requested names omitted by the result budget', async () => {
     const requested = [
       'work_items:link',
-      'work_items:set_state',
+      'work_items:checkpoint',
       'coord:send',
       'events:status',
       'scheduler:get_next',

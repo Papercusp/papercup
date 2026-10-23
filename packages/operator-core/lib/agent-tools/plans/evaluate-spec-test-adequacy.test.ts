@@ -25,10 +25,17 @@ vi.mock('./source-bar-test-requirements', async (original) => ({
   resolveSourceBarTestRequirements: async () => sourceBarMocks.requirements,
 }));
 
-vi.mock('../../work-items', () => ({ getWorkItem: adhocContractMocks.workItem }));
+vi.mock('../../work-items', async () => {
+  const { ISSUE_FAMILY_ROUTE_KINDS } = await import('../../work-nature/agent-work-predicate');
+  return {
+    ISSUE_FAMILY_KINDS: ISSUE_FAMILY_ROUTE_KINDS,
+    getWorkItem: adhocContractMocks.workItem,
+  };
+});
 vi.mock('./behavior-contract-resolver', () => ({ resolveWorkItemBehaviorContract: adhocContractMocks.contract }));
 
-vi.mock('../../harness-registry', () => ({
+vi.mock('../../harness-registry', async (original) => ({
+  ...(await original<typeof import('../../harness-registry')>()),
   loadHarnessRegistry: async () => ({
     projects: [{ slug: 'papercusp', path: harnessRoot.path }],
   }),
