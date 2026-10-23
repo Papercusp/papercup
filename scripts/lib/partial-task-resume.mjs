@@ -126,6 +126,12 @@ function validNativeProducer(value) {
       !isAbsolute(value.command?.cwd ?? "") || !validIdentity(value.command?.cmd) ||
       !Array.isArray(value.command?.argv) || !value.command.argv.every(arg => typeof arg === "string") ||
       !/^[a-f0-9]{64}$/.test(value.environmentDigest)) return false;
+  if (value.nativeChannel !== undefined) {
+    const channel = value.nativeChannel;
+    if (!isAbsolute(channel?.traceOut ?? "") || !validIdentity(channel.script) || !validIdentity(channel.command) ||
+        !Number.isSafeInteger(channel.step) || channel.step < 0 || channel.step >= 64 ||
+        value.outPath !== `${channel.traceOut}.step-${channel.step}`) return false;
+  }
   return validNativeSpecifications(value.selectedSpecifications);
 }
 
@@ -262,10 +268,42 @@ export function registerPartialNativeProducer(outPath, registration, environment
     environmentDigest: createHash("sha256").update(JSON.stringify(Object.entries(environment)
       .filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b)))).digest("hex") };
   if (!validNativeProducer(value)) throw new Error("native-producer-registration-invalid");
-  const body = JSON.stringify(value);
   const path = `${outPath}.producer.json`;
+  writeNativeEnrollment(path, value);
+  return { path, producer: value };
+}
+
+/** Enroll disjoint original-npm channels before the original command starts.
+ * This is routing preparation only; native spawn/close events must still bind
+ * each enrollment to its actual process before any completion can be accepted.
+ */
+export function registerPartialNativeProducerChannels(outPath, prepared, registration, environment) {
+  if (!isAbsolute(outPath ?? "") || prepared?.status !== "ready" ||
+      !Array.isArray(prepared.channels) || !prepared.channels.length || prepared.channels.length > 64 ||
+      new Set(prepared.channels.map(channel => channel.outPath)).size !== prepared.channels.length ||
+      prepared.channels.some(channel => !validIdentity(channel.script) || !validIdentity(channel.command) ||
+        !Number.isSafeInteger(channel.step) || channel.step < 0 ||
+        channel.outPath !== `${outPath}.step-${channel.step}` ||
+        !validNativeSpecifications(channel.selectedSpecifications)))
+    throw new Error("native-channel-registration-invalid");
+  const producers = prepared.channels.map(channel => registerPartialNativeProducer(channel.outPath, {
+    ...registration, taskKey: channel.taskKey, selectedSpecifications: channel.selectedSpecifications,
+    nativeChannel: { traceOut: outPath, script: channel.script, command: channel.command, step: channel.step },
+  }, environment));
+  const plan = { schemaVersion: 1, kind: "qualification-native-channels", outPath,
+    cwd: registration.command.cwd, channels: prepared.channels.map(channel => ({
+      outPath: channel.outPath, script: channel.script, command: channel.command, step: channel.step,
+    })) };
+  const path = `${outPath}.native-channels.json`;
+  writeNativeEnrollment(path, plan);
+  return { path, producers, operationalAcceptance: false };
+}
+
+function writeNativeEnrollment(path, value) {
+  const body = JSON.stringify(value);
   const sealed = JSON.stringify({ ...value, integrity: { schemaVersion: 1,
     sha256: createHash("sha256").update(body).digest("hex") } });
+  if (Buffer.byteLength(sealed) > 128 * 1024) throw new Error("native-enrollment-byte-limit");
   mkdirSync(dirname(path), { recursive: true });
   const temp = `${path}.${process.pid}-${Date.now()}.tmp`;
   let fd;
@@ -278,7 +316,6 @@ export function registerPartialNativeProducer(outPath, registration, environment
     linkSync(temp, path);
     fd = openSync(dirname(path), "r");
     fsyncSync(fd);
-    return { path, producer: value };
   } finally {
     if (fd !== undefined) closeSync(fd);
     try { unlinkSync(temp); } catch { /* a failed open created no temporary file */ }
@@ -325,6 +362,10 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
     if (!producer || !Number.isSafeInteger(native?.startedAtMs) || native.startedAtMs < producer.registeredAtMs ||
         !isDeepStrictEqual(producer.selectedSpecifications, expected.selectedSpecifications))
       return refused("native-producer-mismatch");
+    // Routing preparation must not broaden acceptance. The channel's real npm
+    // spawn/close and reporter-process binding still need independent custody
+    // verification before this reader can accept its outcomes.
+    if (producer.nativeChannel) return refused("native-channel-custody-unmeasured");
   }
   if (native?.schemaVersion !== "native-vitest-run-v1" || !Array.isArray(native.files) ||
       !Array.isArray(native.gaps) || !Array.isArray(snapshot.rows)) return refused("native-population-unmeasured");

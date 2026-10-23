@@ -9,8 +9,67 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createTextCollector } from '../child-output';
 import { loaderIdentity, nativeProcessTraceEnv, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
+import { registerPartialNativeProducerChannels } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 describe('focused runner startup tracing', () => {
+  it.each(['clean', 'corrupt-plan', 'changed-script', 'claimed-channel'])(
+    'binds original npm occurrences to distinct reporter channels, %s', async fault => {
+      const dir = mkdtempSync(join(tmpdir(), 'native-npm-channels-'));
+      const out = join(dir, 'sources.json');
+      const command = 'node leaf.cjs';
+      const scripts = { test: 'npm run first && npm run second && npm run first',
+        first: command, second: command };
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'channel-fixture', scripts }));
+      writeFileSync(join(dir, 'leaf.cjs'), 'console.log(process.env.PC_EXECUTED_SOURCE_MAP_OUT)');
+      const env = nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+        PAPERCUSP_TEST_STARTUP_TRACE: '0' });
+      const channels = ['first', 'second', 'first'].map((script, step) => ({
+        taskKey: `ws :: test:step:${step}`, script, command, step, outPath: `${out}.step-${step}`,
+        selectedSpecifications: [{ testFile: `file-${step}.test.ts`, pool: 'forks', projectName: null,
+          testNamePattern: null, testIds: null, testTagsFilter: null, testLines: null }],
+      }));
+      try {
+        const enrolled = registerPartialNativeProducerChannels(out, { status: 'ready', channels }, {
+          attemptId: 'attempt', runGroupId: 'group', root: dir, workspaceName: 'ws',
+          sourceCommit: 'a'.repeat(40), registeredAtMs: Date.now(),
+          command: { cmd: 'npm', argv: ['run', '--silent', 'test'], cwd: dir },
+        }, env);
+        expect(enrolled.operationalAcceptance).toBe(false);
+        if (fault === 'corrupt-plan') writeFileSync(enrolled.path, '{}');
+        if (fault === 'changed-script') {
+          scripts.first += ' # changed';
+          writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'channel-fixture', scripts }));
+        }
+        if (fault === 'claimed-channel') writeFileSync(`${out}.step-0.binding.json`, 'earlier-claim');
+        const { stdout, stderr } = await promisify(execFile)('npm', ['run', '--silent', 'test'],
+          { cwd: dir, env, timeout: 20_000 });
+        const expected = fault === 'clean' ? channels.map(channel => channel.outPath) :
+          fault === 'corrupt-plan' ? [out, out, out] :
+          fault === 'changed-script' ? [out, channels[1]!.outPath, out] :
+          [out, channels[1]!.outPath, out];
+        expect(stdout.trim().split('\n')).toEqual(expected);
+        expect(stderr).toBe('');
+        const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json'))
+          .map(name => JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+        const leaves = rows.filter(row => row.event === 'node-entry' && row.argv[1]?.endsWith('leaf.cjs'));
+        expect(leaves).toHaveLength(3);
+        expect(leaves.map(row => row.reporterOut).sort()).toEqual([...expected].sort());
+        const routed = rows.filter(row => row.event === 'child-spawn' && row.nativeChannel);
+        expect(routed).toHaveLength(fault === 'clean' ? 3 : fault === 'corrupt-plan' ? 0 : 1);
+        for (const spawn of routed) {
+          const binding = JSON.parse(readFileSync(`${spawn.nativeChannel.outPath}.binding.json`, 'utf8'));
+          expect(binding).toMatchObject({ childIdentity: spawn.childIdentity,
+            processIdentity: spawn.processIdentity, parentPid: spawn.pid });
+          expect(rows.find(row => row.event === 'child-close' && row.childIdentity === spawn.childIdentity))
+            .toMatchObject({ code: 0, signal: null, childPid: spawn.childPid });
+          expect(leaves.some(row => row.reporterOut === binding.outPath &&
+            (row.ppid === spawn.childPid || row.pid === spawn.childPid))).toBe(true);
+        }
+        if (fault === 'claimed-channel')
+          expect(readFileSync(`${out}.step-0.binding.json`, 'utf8')).toBe('earlier-claim');
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    }, 30_000);
+
   it.each(['event', 'stream'])('never publishes partial %s artifacts when killed after opening the output', async kind => {
     const dir = mkdtempSync(join(tmpdir(), 'native-interrupted-write-'));
     const out = join(dir, 'sources.json');

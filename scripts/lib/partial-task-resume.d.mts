@@ -61,6 +61,15 @@ export function registerPartialNativeProducer(outPath: any, registration: any, e
     path: string;
     producer: any;
 };
+/** Enroll disjoint original-npm channels before the original command starts.
+ * This is routing preparation only; native spawn/close events must still bind
+ * each enrollment to its actual process before any completion can be accepted.
+ */
+export function registerPartialNativeProducerChannels(outPath: any, prepared: any, registration: any, environment: any): {
+    path: string;
+    producers: any;
+    operationalAcceptance: boolean;
+};
 export function readPartialNativeProducer(path: any, expected: any): any;
 /**
  * Read the reporter's existing atomic OUT channel, including a snapshot written before

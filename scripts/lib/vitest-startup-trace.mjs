@@ -3,7 +3,7 @@ import childProcess from 'node:child_process';
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
 import { linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
 /** Reuse the OUT channel and this preload without enabling stderr diagnostics. */
 export function nativeProcessTraceEnv(env = process.env) {
@@ -113,7 +113,7 @@ function installNativeProcessTrace(out) {
   try {
     emit('node-entry', { executable: process.execPath, argv: process.argv.slice(),
       execArgv: process.execArgv.slice(), cwd: process.cwd(), lifecycle: lifecycle(process.env),
-      nodeOptions: loaderIdentity(process.env.NODE_OPTIONS) });
+      nodeOptions: loaderIdentity(process.env.NODE_OPTIONS), reporterOut: process.env.PC_EXECUTED_SOURCE_MAP_OUT ?? null });
   } catch { /* Even an unavailable cwd must not prevent the native entry. */ }
   // A preload's exit listener would run before the program's later listeners
   // and silently lose their writes. Delegate the original emission first and
@@ -138,6 +138,50 @@ function installNativeProcessTrace(out) {
   const originalSpawn = childProcess.spawn;
   childProcess.spawn = function(command, ...args) {
     const childIdentity = randomUUID();
+    let nativeChannel;
+    try {
+      const argv = Array.isArray(args[0]) ? args[0] : [];
+      const optionsIndex = Array.isArray(args[0]) ? 1 : 0;
+      const options = args[optionsIndex] ?? {};
+      const env = options.env ?? process.env;
+      const plan = readNativeEnrollment(`${out}.native-channels.json`);
+      if (plan?.kind === 'qualification-native-channels' && plan.outPath === out &&
+          plan.cwd === String(options.cwd ?? process.cwd()) &&
+          Array.isArray(plan.channels) && plan.channels.length <= 64 &&
+          ['sh', '/bin/sh'].includes(command) && argv.length === 2 && argv[0] === '-c' && !options.shell) {
+        for (const channel of plan.channels) {
+          if (channel.script !== env.npm_lifecycle_event || channel.command !== env.npm_lifecycle_script ||
+              channel.command !== argv[1] || !Number.isSafeInteger(channel.step) || channel.step < 0 ||
+              channel.outPath !== `${out}.step-${channel.step}`) continue;
+          const claim = { schemaVersion: 1, kind: 'native-channel-binding', traceOut: out,
+            outPath: channel.outPath, processIdentity: identity, childIdentity,
+            parentPid: process.pid, script: channel.script, command: channel.command, step: channel.step };
+          const bytes = Buffer.from(JSON.stringify(claim));
+          const path = `${channel.outPath}.binding.json`;
+          publish(path, bytes);
+          // A repeated invocation takes the next unused matching occurrence.
+          if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() ||
+              lstatSync(path).size > 16 * 1024) throw new Error('native-channel-binding-unreadable');
+          const retained = readFileSync(path);
+          if (!retained.equals(bytes)) {
+            const previous = JSON.parse(retained.toString('utf8'));
+            if (previous.kind !== claim.kind || previous.schemaVersion !== 1 ||
+                previous.traceOut !== out || previous.outPath !== channel.outPath ||
+                previous.script !== channel.script || previous.command !== channel.command ||
+                previous.step !== channel.step || !Number.isSafeInteger(previous.parentPid) ||
+                typeof previous.processIdentity !== 'string' || typeof previous.childIdentity !== 'string')
+              throw new Error('native-channel-binding-conflict');
+            continue;
+          }
+          nativeChannel = claim;
+          args[optionsIndex] = { ...options, env: { ...env, PC_EXECUTED_SOURCE_MAP_OUT: channel.outPath } };
+          break;
+        }
+      }
+    } catch {
+      emit('native-channel-unavailable', { childIdentity });
+      // Observation failures preserve the original command and cannot settle a channel.
+    }
     let child;
     try { child = originalSpawn.call(this, command, ...args); }
     catch (error) {
@@ -150,7 +194,8 @@ function installNativeProcessTrace(out) {
       emit('child-spawn', { childIdentity, childPid: child.pid ?? null, command, argv,
         cwd: options.cwd == null ? process.cwd() : String(options.cwd),
         shell: options.shell ?? false, lifecycle: lifecycle(options.env ?? process.env),
-        stdioAccessible: { stdout: Boolean(child.stdout), stderr: Boolean(child.stderr) } });
+        stdioAccessible: { stdout: Boolean(child.stdout), stderr: Boolean(child.stderr) },
+        ...(nativeChannel ? { nativeChannel } : {}) });
       child.once('close', (code, signal) => emit('child-close', {
         childIdentity, childPid: child.pid ?? null, code, signal }));
     } catch { /* Return the exact native child even if observation fails. */ }
@@ -234,8 +279,28 @@ function installNativeProcessTrace(out) {
   }
 }
 
+// Channel children keep their reporter output separate while their native
+// process observations stay with the original npm tree. The enrollment is
+// published before spawn; no race against a parent's post-spawn write is needed.
+function readNativeEnrollment(path) {
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024) return null;
+    const { integrity, ...value } = JSON.parse(readFileSync(path, 'utf8'));
+    return integrity?.schemaVersion === 1 && integrity.sha256 ===
+      createHash('sha256').update(JSON.stringify(value)).digest('hex') ? value : null;
+  } catch { return null; }
+}
+
 if (process.env.PC_EXECUTED_SOURCE_MAP_OUT?.trim()) {
-  installNativeProcessTrace(process.env.PC_EXECUTED_SOURCE_MAP_OUT.trim());
+  const reporterOut = process.env.PC_EXECUTED_SOURCE_MAP_OUT.trim();
+  const producer = readNativeEnrollment(`${reporterOut}.producer.json`);
+  const channel = producer?.nativeChannel;
+  const traceOut = producer?.outPath === reporterOut && isAbsolute(channel?.traceOut ?? '') &&
+    Number.isSafeInteger(channel.step) && reporterOut === `${channel.traceOut}.step-${channel.step}` &&
+    channel.script === process.env.npm_lifecycle_event && channel.command === process.env.npm_lifecycle_script
+    ? channel.traceOut : reporterOut;
+  installNativeProcessTrace(traceOut);
 }
 
 export function loaderIdentity(value = '') {

@@ -63,7 +63,7 @@ async function seed() {
   return { input, deps, bindingId: Number(binding!.id), nativeId: Number(native!.id), reviewer, brief };
 }
 
-async function nativeLaunch(input: BlindReviewReplacementInput, args: Record<string, unknown>, ctx: never, key: symbol) {
+async function nativeLaunch(input: BlindReviewReplacementInput, args: Record<string, unknown>, ctx: unknown, key: symbol) {
   const owner = `su-replacement-new-${input.slug}-${String(args.idempotencyKey).slice(-8)}`;
   const confinement = (ctx as Record<symbol, unknown>)[key];
   const declared = await declareSessionConfinement({ workspaceId: WS, ownerId: owner, confinement: confinement as never });
