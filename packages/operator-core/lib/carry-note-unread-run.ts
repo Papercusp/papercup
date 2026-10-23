@@ -38,7 +38,7 @@
  *
  * WHY BOTH SIGNALS, AND WHY NO "RESULT LINE" SUPPRESSOR. Status vocabulary is a
  * candidate cue, not proof by itself; historical or unrelated prose can contain
- * the same words. A recognized run output must appear in the same sentence, and
+ * the same words. A recognized run output must appear in the same clause, and
  * "launched" also needs a run-like subject. The standalone phrase "in-flight" is
  * more ambiguous, so it only counts when attached to a run-like subject ("test run
  * is in-flight"). This avoids treating unrelated compounds such as "in-flight
@@ -170,7 +170,7 @@ function isRunScopedInFlight(text: string, index: number, length: number): boole
   return RUN_SUBJECT_BEFORE_IN_FLIGHT_RE.test(before) || RUN_SUBJECT_AFTER_IN_FLIGHT_RE.test(after);
 }
 
-const SENTENCE_BOUNDARY_RE = /[\n]|[.!?](?=\s|$)/g;
+const SENTENCE_BOUNDARY_RE = /[\n;]|[.!?](?=\s|$)/g;
 const RUN_SUBJECT_AFTER_LAUNCH_RE =
   /^\W*(?:(?:a|an|the|my|our|this|that|full|affected|verification|separate)\W+){0,3}\b(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b/i;
 
@@ -202,11 +202,11 @@ function runReferenceRange(text: string, index: number, length: number): { start
   const hasReference = (value: string) => new RegExp(RUN_REF_RE.source, RUN_REF_RE.flags).test(value);
   if (hasReference(text.slice(range.start, range.end))) return range;
 
-  // A labeled handle immediately following an admission names that same run.
-  // An unrelated completed log in another sentence must remain unlinked.
-  const separator = /^[.!?]?\s*/.exec(text.slice(range.end))?.[0] ?? '';
+  // An explicitly attached output clause names that same run. A completed
+  // run in another clause must remain unlinked, even within one sentence.
+  const separator = /^[.!?;]?\s*/.exec(text.slice(range.end))?.[0] ?? '';
   const nextStart = range.end + separator.length;
-  if (!/^(?:handle|output|log)\s*:/i.test(text.slice(nextStart))) return null;
+  if (!/^(?:handle|output|log)(?:\s*:|\s+at\b)/i.test(text.slice(nextStart))) return null;
   const next = sentenceRange(text, nextStart, 0);
   return hasReference(text.slice(nextStart, next.end)) ? { start: range.start, end: next.end } : null;
 }

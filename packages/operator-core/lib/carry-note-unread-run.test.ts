@@ -125,6 +125,32 @@ describe('describeUnreadRun', () => {
     expect(advisory?.signals.runRefs).toContain('/tmp/new-typecheck.log');
   });
 
+  it('does not attribute completed test logs to a separate pending typecheck clause', () => {
+    const body = 'Read /tmp/unit.log: 47 tests passed exit0; ' +
+      'read /tmp/integration.log: 126 tests passed exit0; separate typecheck is still running.';
+    expect(describeUnreadRun(body, 0)).toBeNull();
+    expect(naiveUnreadRun(body, 0)).not.toBeNull();
+  });
+
+  it('attributes only the pending typecheck log when completed logs share its sentence', () => {
+    const body = 'Read /tmp/unit.log: 47 tests passed exit0; ' +
+      'read /tmp/integration.log: 126 tests passed exit0; ' +
+      'separate typecheck is still running at /tmp/types.log.';
+    expect(describeUnreadRun(body, 0)?.signals.runRefs).toEqual(['/tmp/types.log']);
+  });
+
+  it('does not borrow a completed log from a later clause for an unreferenced pending run', () => {
+    const body = 'The typecheck is still running; tests completed exit0 at /tmp/unit.log.';
+    expect(describeUnreadRun(body, 0)).toBeNull();
+  });
+
+  it.each(['output at', 'output:', 'log:', 'Handle:'])(
+    'preserves an explicitly attached unread output clause introduced by %s', (label) => {
+      const body = `The typecheck is still running; ${label} /tmp/types.log.`;
+      expect(describeUnreadRun(body, 0)?.signals.runRefs).toEqual(['/tmp/types.log']);
+    },
+  );
+
   it('ignores an unread-run advisory quoted from a checkpoint receipt being reconciled', () => {
     const body = [
       'Reconciled the work_items:checkpoint receipt for contentHash d6260111f61c that warns',
