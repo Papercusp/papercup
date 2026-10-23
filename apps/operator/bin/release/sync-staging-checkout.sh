@@ -148,6 +148,25 @@ STAGING_SYNC_LOCK_READ_FD=""
 STAGING_SYNC_LOCK_WRITE_FD=""
 STAGING_SYNC_LOCK_OWNER_PID="$$"
 
+staging_sync_lock_next_command() {
+  local command_line="" command_chunk="" read_status
+  while kill -0 "$STAGING_SYNC_LOCK_OWNER_PID" 2>/dev/null; do
+    command_chunk=""
+    if IFS= read -r -t 1 command_chunk; then read_status=0; else read_status=$?; fi
+    # read -t consumes partial input even when it times out. Preserve it until
+    # the newline arrives rather than silently discarding a lock command.
+    command_line+="$command_chunk"
+    ((${#command_line} <= 128)) || return 2
+    if ((read_status == 0)); then
+      IFS=' ' read -r staging_lock_command staging_lock_budget <<< "$command_line"
+      return 0
+    fi
+    # Timeouts allow a liveness check; EOF must end the keeper.
+    ((read_status > 128)) || return 1
+  done
+  return 1
+}
+
 staging_sync_lock_start() {
   coproc STAGING_SYNC_LOCK_KEEPER {
     exec 8>"${STAGING_SYNC_LOCK_PATH}.writer"
@@ -160,17 +179,14 @@ staging_sync_lock_start() {
       # STAGING_SYNC_LOCK_KEEPER_PID under nounset and abort on a benign busy
       # lock before it could release its pipe/fd state.
       staging_lock_command=""
-      while kill -0 "$STAGING_SYNC_LOCK_OWNER_PID" 2>/dev/null; do
-        if IFS= read -r -t 1 staging_lock_command; then
-          [[ "$staging_lock_command" == release ]] && break
-        fi
+      while staging_sync_lock_next_command; do
+        [[ "$staging_lock_command" == release ]] && break
       done
       exit 75
     fi
     printf '%s\n' exclusive
     staging_lock_command=""
-    while kill -0 "$STAGING_SYNC_LOCK_OWNER_PID" 2>/dev/null; do
-      if IFS=' ' read -r -t 1 staging_lock_command staging_lock_budget; then
+    while staging_sync_lock_next_command; do
         case "$staging_lock_command" in
           shared)
             if flock -s 9; then printf '%s\n' shared; else printf '%s\n' shared-failed; exit 1; fi
@@ -190,8 +206,8 @@ staging_sync_lock_start() {
             printf '%s\n' released
             exit 0
             ;;
+          *) printf '%s\n' invalid-command; exit 2 ;;
         esac
-      fi
     done
     flock -u 9
     flock -u 8

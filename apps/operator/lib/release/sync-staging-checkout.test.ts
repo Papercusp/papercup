@@ -1043,7 +1043,40 @@ describe('sync-staging-checkout.sh generation admission (EI-26746441745558411)',
     }
   }, 10_000);
 
-  it('fails closed when a keeper stops acknowledging a preparation transition', () => {
+  it('preserves a command fragmented across the keeper liveness deadline', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-admission-fragmented-'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', keeperSource(),
+        'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+        'trap staging_sync_lock_release EXIT',
+        'staging_sync_lock_start',
+        'printf sha >&"$STAGING_SYNC_LOCK_WRITE_FD"',
+        'sleep 1.2',
+        'printf "red\\n" >&"$STAGING_SYNC_LOCK_WRITE_FD"',
+        'IFS= read -r -t 3 acknowledgement <&"$STAGING_SYNC_LOCK_READ_FD"',
+        '[[ "$acknowledgement" == shared ]]',
+        'flock -s -n "$TEST_LOCK" -c true',
+        'if flock -n "$TEST_LOCK.writer" -c true; then exit 90; fi',
+        'staging_sync_lock_exclusive 1',
+        'if flock -s -n "$TEST_LOCK" -c true; then exit 91; fi',
+        'staging_sync_lock_release',
+        'flock -n "$TEST_LOCK" -c true',
+        'flock -n "$TEST_LOCK.writer" -c true',
+        'echo fragmented_command_acknowledged_and_leases_safe',
+      ].join('\n')], {
+        env: { ...process.env, TEST_LOCK: join(root, 'generation.lock') },
+        encoding: 'utf8', timeout: 8_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stdout).toContain('fragmented_command_acknowledged_and_leases_safe');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['shared', 'exclusive'])('fails closed when a keeper stops acknowledging a %s transition', (transition) => {
     const root = mkdtempSync(join(tmpdir(), 'staging-admission-missing-ack-'));
     const pidFile = join(root, 'keeper.pid');
     try {
@@ -1053,21 +1086,26 @@ describe('sync-staging-checkout.sh generation admission (EI-26746441745558411)',
         'trap staging_sync_lock_release EXIT',
         'staging_sync_lock_start',
         'printf "%s" "$STAGING_SYNC_LOCK_PROCESS_PID" > "$TEST_PID_FILE"',
+        'if [[ "$TEST_TRANSITION" == exclusive ]]; then staging_sync_lock_shared; fi',
         'kill -STOP "$STAGING_SYNC_LOCK_PROCESS_PID"',
-        'if staging_sync_lock_shared; then echo UNSAFE_PREPARATION; exit 91; fi',
+        'if [[ "$TEST_TRANSITION" == shared ]]; then',
+        '  if staging_sync_lock_shared; then echo UNSAFE_PREPARATION; exit 91; fi',
+        'else',
+        '  if staging_sync_lock_exclusive 1; then echo UNSAFE_PREPARATION; exit 92; fi',
+        'fi',
         'staging_sync_lock_release',
         'flock -n "$TEST_LOCK" -c true',
         'flock -n "$TEST_LOCK.writer" -c true',
         'echo failed_closed_and_both_leases_free',
       ].join('\n')], {
-        env: { ...process.env, TEST_LOCK: join(root, 'generation.lock'), TEST_PID_FILE: pidFile },
-        encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, TEST_LOCK: join(root, 'generation.lock'), TEST_PID_FILE: pidFile, TEST_TRANSITION: transition },
+        encoding: 'utf8', timeout: 12_000,
       });
       expect(result.error).toBeUndefined();
       expect(result.status, result.stderr || result.stdout).toBe(0);
       expect(result.stdout).not.toContain('UNSAFE_PREPARATION');
       expect(result.stdout).toContain('failed_closed_and_both_leases_free');
-      expect(result.stderr).toContain('shared acknowledgement unavailable');
+      expect(result.stderr).toContain(`${transition} acknowledgement unavailable`);
     } finally {
       if (existsSync(pidFile)) {
         try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* already reaped */ }
