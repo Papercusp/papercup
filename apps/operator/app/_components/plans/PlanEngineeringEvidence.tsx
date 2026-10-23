@@ -125,7 +125,7 @@ export default function PlanEngineeringEvidence({ plan, item, harness, onClose, 
     </> : null}
     {repair ? <form onSubmit={event => { event.preventDefault(); void bind(); }}>
       <h4>Bind recorded test evidence · {repair.id} · revision {repair.revision}</h4>
-      <label>Owning work item<TextInput value={workItem} onChange={event => setWorkItem(event.target.value)} required pattern="WI-[A-Za-z0-9-]+" /></label>
+      <label>Owning work item<TextInput value={workItem} onChange={event => setWorkItem(event.target.value)} required pattern={'WI-[A-Za-z0-9\\-]+'} /></label>
       <label>Recorded test run<TextInput type="number" min="1" step="1" value={testRun} onChange={event => setTestRun(event.target.value)} required /></label>
       <Button type="submit" disabled={busy}>Bind evidence</Button>
       <Button onClick={() => setRepair(null)}>Cancel repair</Button>
