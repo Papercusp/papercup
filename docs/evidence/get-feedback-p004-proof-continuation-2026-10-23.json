@@ -8,7 +8,7 @@
     "takesPrecedenceOverEarlierCalibrationLanguage": true,
     "finding": "Exact ledger reads show execution_details.mutation=NULL in21805373,21806124 and21806212. Their logs explicitly withheld descriptors because the reader URL was the host instead of its/api/health endpoint.",
     "interpretation": "The controls passed and mutations were caught, and binding hashes measured current. Those facts do not establish machine-verified calibration linkage. Treat the earlier descriptor-free mutation rows as unqualified for acceptance.",
-    "adequacy": "The earlier descriptor-free R4 row failed linkage. Required descriptors restored its mechanical PASS. The later scenarioAssociationRepair below establishes governing PASS for all four P004 clauses; broader acceptance and shipment remain open.",
+    "adequacy": "Required descriptors restored R4 mechanical PASS, and D032 produced a four-clause PASS before the completed HTTP binding. The completedRequiredHttpProof below takes precedence for current acceptance: the HTTP receipt is real but stale after a named helper changed; the callable clause currently fails freshness. Broader acceptance and shipment remain open.",
     "retirements": "The31 old-row retirements applied, but stronger proof equivalence remains an open repair until required-descriptor replacements pass adequacy. No P004 acceptance or shipment was certified.",
     "repair": "Use PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED=1 and PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL=http://127.0.0.1:3170/api/health. Preserve a fresh committed source with maintained --retain-for; refuse before tests if descriptor preflight fails.",
     "repairState": "/tmp/gf-p004-required-proof-20261023.state.json",
@@ -43,7 +43,7 @@
     "workflowState": "/tmp/gf-p004-required-proof-20261023.state.json",
     "workflowLog": "/dev/shm/get-feedback-p004-required-proof-20261023.log",
     "retentionMarker": "/tmp/gf-p004-required-proof-20261023.inflight",
-    "http": "The retained workflow log records the HTTP file completed with one passing case and exitStatus=0. Structured workflow state still reports phase=http; canonical ledger/runtime receipt reconciliation and binding remain open. Do not launch a duplicate."
+    "http": "Workflow completed at2026-10-23T08:23:02.540Z and removed its retention marker. Canonical test-run21807673 passed1/0/0 with worktreeDirty:false. Binding66465 preserves the original21-source/3-fixture basis but is stale after scripts/with-test-pg.mjs changed; see completedRequiredHttpProof. No duplicate workflow is running."
   },
   "scenarioAssociationRepair": {
     "decision": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-032",
@@ -69,7 +69,7 @@
       "layerAndSupplementalBindingIds": [66449, 66450, 66451, 66452, 66453, 66454, 66455, 66456, 66457],
       "result": "Independent server measurement returned current for each listed binding, with no stale or unknown reasons. The earlier eleven-row read also confirmed every applicable dimension current. Binding66456 has no explicit case list;66457 supplies the exact unit case association."
     },
-    "adequacy": {
+    "adequacyBeforeHttpBinding": {
       "ok": true,
       "governing": true,
       "evaluatorBuild": { "sha": "e1e3892922", "version": "0.0.0" },
@@ -80,7 +80,53 @@
         { "specId": "GF-P004-disposition", "revision": 2, "verdict": "pass", "wouldBlock": [] }
       ]
     },
-    "preservedLimits": "No production or test source changed and no tests were replayed for this metadata repair. Original clause revisions, proof history and quality cohorts remain. Full executed-source graph, broader native acceptance and exact shipment remain unmeasured or open."
+    "preservedLimits": "No production or test source changed and no tests were replayed for this metadata repair. Original clause revisions, proof history and quality cohorts remain. The pre-HTTP PASS snapshot is historical after binding66465 exposed actual helper drift. Full executed-source graph, broader native acceptance and exact shipment remain unmeasured or open."
+  },
+  "completedRequiredHttpProof": {
+    "workflowState": "/tmp/gf-p004-required-proof-20261023.state.json",
+    "workflowLog": "/dev/shm/get-feedback-p004-required-proof-20261023.log",
+    "finishedAt": "2026-10-23T08:23:02.540Z",
+    "phase": "complete",
+    "retentionMarkerPresent": false,
+    "testRunId": 21807673,
+    "status": "pass",
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "sourceCommit": "e1e3892922a7ecea39a5097f4496245d86e7b7f9",
+    "runtimeReceipt": {
+      "runId": "20261023T081325Z-1483804",
+      "resultSha256": "308f03982fa1dbc89b03fdf86cbb120e6b91b86c7194f335000813e13bd3587d",
+      "sourceSha256": "bf598e6bedb6ae389e4fc905199058f579920159217766de1e4723bd599f492f",
+      "lifecycleSha256": "d90d4ca15866bc5b5a39e98d1c63a8b9c7dfdc75308a3059b4e74f16da1d87c7"
+    },
+    "bindingId": 66465,
+    "originalRecipeBindingId": 39071,
+    "sourcePathCount": 21,
+    "fixturePathCount": 3,
+    "currentness": {
+      "overall": "stale",
+      "source": "stale",
+      "test": "current",
+      "fixture": "stale",
+      "environment": "unknown",
+      "testRun": "current",
+      "staleReasons": ["source-stale", "fixture-stale"],
+      "unknownReasons": ["environment-current-fingerprint-not-supplied"]
+    },
+    "distinguishingObservation": "git diff from the executed e1e3892922 commit across the original21 source paths identifies scripts/with-test-pg.mjs. The change replaces unconditional AsyncExitHook signal unhooking with unhookRegisteredExitSignals. This is actual named source/fixture drift; HEAD movement alone did not cause the refresh requirement.",
+    "currentAdequacyAfterBinding": {
+      "governing": true,
+      "evaluatorBuild": "e1e3892922",
+      "rows": [
+        { "specId": "AUTO-BAR-R-4-P-004", "revision": 4, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-agenda-absence", "revision": 2, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-callable-absence", "revision": 2, "verdict": "fail", "wouldBlock": ["freshness"] },
+        { "specId": "GF-P004-disposition", "revision": 2, "verdict": "pass", "wouldBlock": [] }
+      ]
+    },
+    "next": "Refresh only the HTTP proof on current committed helper bytes using the maintained isolated route and original21-source/3-fixture recipe. Preserve binding66465 and its completed run as historical evidence; do not remove it merely to recover a PASS. Reuse R2, qualified descriptor probes and original cohorts."
   },
   "preservedArtifact": {
     "path": "docs/evidence/get-feedback-p004-and-rubric9-proof-2026-10-23.json",
