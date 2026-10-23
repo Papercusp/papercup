@@ -287,13 +287,13 @@ export default defineTool({
       if (kernel.op !== 'open' && !kernel.id) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ['id'], message: 'id required for an existing kernel' });
       if (kernel.op === 'open' && kernel.id) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ['id'], message: 'open creates a new kernel; omit id' });
     }).optional().describe(
-      'JavaScript VM scoped to owner/workspace/harness: open creates id; run executes; status reads; close cancels. Persist cross-cell state on globalThis, not lexical locals. Each cell uses CURRENT authority. No Python or restart recovery; timeout/cancel loses state; idle expires in 5m. Refused on :3170 and in dryRun. For restart-safe state, persist store(key,value) output and replay it via inputs.',
+      'JavaScript VM scoped to owner/workspace/harness: open creates id; run/status/close execute/read/cancel. State lives on globalThis, not lexical locals; current authority per cell. No Python/restart recovery; timeout/cancel/5m idle loses state. Refused on :3170/dryRun. Persist store output and replay via inputs after restart.',
     ),
     inputs: z.record(z.string().max(200), z.unknown()).optional().describe(
-      'JSON replay state in inputs is deeply frozen. Clone nested values before mutation (for example, `JSON.parse(JSON.stringify(inputs.state))`), or use store/load for state the script updates. Persist returned store/load state and pass it here after restart. Never restores arbitrary globalThis objects/functions.',
+      'Deeply frozen JSON replay state. Clone nested values before mutation (JSON.parse(JSON.stringify(inputs.state))), or use store/load. Persist returned state and replay here after restart; arbitrary globalThis objects/functions cannot be restored.',
     ),
     work_item_id: z.string().min(1).max(120).optional().describe(
-      'Default work-item attribution for nested capability:bash calls. Use the exact held WI-/EI-/F- id when this session holds multiple work-items; an explicit nested work_item_id takes precedence.',
+      'Default attribution for nested capability:bash: use the exact held WI-/EI-/F- id when holding several items. Explicit nested work_item_id overrides it.',
     ),
     script: z
       .string()
