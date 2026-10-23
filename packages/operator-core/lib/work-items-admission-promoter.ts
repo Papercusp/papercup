@@ -3867,8 +3867,15 @@ function endpointProtection(
   // dependencies on a terminal twin cannot defer its pending counterpart forever;
   // classify the twin by its completion below. Keep owner/policy blockers and the
   // stored history intact, and continue enforcing every blocker on open endpoints.
+  // EI-26720509885145560: an overdue claimed review can carry a blocker for that
+  // very review. Let the existing review-only roles resolve their own debt without
+  // removing the marker or reopening the work; other dependencies and merge roles
+  // retain their protections.
   const blockers = activeExternalBlockers(snapshot.payload).filter((blocker) =>
-    !terminalTwin || blocker.kind === 'human' || blocker.capability !== 'live-dependency',
+    (!terminalTwin || blocker.kind === 'human' || blocker.capability !== 'live-dependency') &&
+    !(overdueClaimedReview && blocker.kind === 'runtime' && blocker.capability === 'live-dependency' &&
+      blocker.capabilitySource === 'explicit' &&
+      (blocker.ref === ADMISSION_REVIEW_ALERT_KEY || blocker.ref === `${ADMISSION_REVIEW_ALERT_KEY}:${snapshot.id}`)),
   );
   if (blockers.length > 0) {
     return {

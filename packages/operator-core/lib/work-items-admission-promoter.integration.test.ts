@@ -2316,6 +2316,80 @@ describe('work-item admission promoter (real Postgres)', () => {
       }
     });
 
+    it.each([false, true])('re-reviews its own active review-debt blocker while retaining blocked lifecycle (qualified=%s)', async qualified => {
+      const id = 'WI-self-review-debt';
+      const debt = {
+        ref: qualified ? `work-item-admission-review-debt:${id}` : 'work-item-admission-review-debt',
+        kind: 'runtime', capability: 'live-dependency', capabilitySource: 'explicit',
+        status: 'active', summary: 'Waiting for this item admission review',
+        createdAt: '2026-08-26T10:00:00Z', updatedAt: '2026-08-26T10:00:00Z', createdBy: 'su-worker',
+      };
+      await seedItem({ id, title: 'isolated self review debt', status: 'blocked', admission: 'unreviewed',
+        vector: null, takenBy: 'su-worker', payload: { ...overdueReview, externalBlockers: [debt] } });
+
+      const result = await runWorkItemAdmissionPromoter({ workspaceId: WS, harnessSlug: HARNESS,
+        runId: 'promoter-self-review-debt', sql: db.sql, llmCall: vi.fn(), now: () => NOW, batchSize: 1 });
+
+      expect(result).toMatchObject({ promoted: 1, merged: 0, held: 0, modelCalled: false });
+      const [row] = await db.sql<Array<{ status: string; admission: string; taken_by: string; payload: Record<string, any> }>>`
+        SELECT status, admission, taken_by, payload FROM harness_shared.work_items WHERE feature_id = ${id}`;
+      expect(row).toMatchObject({ status: 'blocked', admission: 'admitted', taken_by: 'su-worker',
+        payload: { admissionReview: { state: 'reviewed', retryAttempts: 1 }, externalBlockers: [debt] } });
+    });
+
+    it.each([
+      { name: 'another runtime dependency', ref: 'runtime:other', kind: 'runtime', capability: 'live-dependency', reason: 'external-blocked' },
+      { name: 'another item review debt', ref: 'work-item-admission-review-debt:WI-other', kind: 'runtime', capability: 'live-dependency', reason: 'external-blocked' },
+      { name: 'a human product decision', ref: 'work-item-admission-review-debt', kind: 'human', capability: 'product-decision', reason: 'external-blocked' },
+      { name: 'a runtime product decision', ref: 'work-item-admission-review-debt', kind: 'runtime', capability: 'product-decision', reason: 'external-blocked' },
+      { name: 'a malformed runtime capability', ref: 'work-item-admission-review-debt', kind: 'runtime', capability: 'unsupported', reason: 'external-blocked' },
+      { name: 'an owner credential', ref: 'work-item-admission-review-debt', kind: 'human', capability: 'credential', reason: 'owner-blocked' },
+    ])('retains $name while reviewing blocked self-debt', async ({ ref, kind, capability, reason }) => {
+      const id = 'WI-self-debt-protected';
+      const debt = {
+        ref: `work-item-admission-review-debt:${id}`, kind: 'runtime', capability: 'live-dependency',
+        capabilitySource: 'explicit', status: 'active', summary: 'Waiting for own admission review',
+        createdAt: '2026-08-26T10:00:00Z', updatedAt: '2026-08-26T10:00:00Z', createdBy: 'su-worker',
+      };
+      const payload = { ...overdueReview, externalBlockers: [debt, { ...debt, ref, kind, capability }] };
+      await seedItem({ id, status: 'blocked', admission: 'unreviewed', takenBy: 'su-worker', vector: null, payload });
+      const llmCall = vi.fn();
+      const result = await runWorkItemAdmissionPromoter({ workspaceId: WS, harnessSlug: HARNESS,
+        runId: 'promoter-self-debt-protected', sql: db.sql, llmCall, now: () => NOW });
+
+      expect(llmCall).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ promoted: 0, merged: 0, held: 0, prescreen: { selfBlocked: 1 } });
+      expect(result.prescreen?.samples).toContainEqual({ itemId: id, class: 'self-blocked', reason, blockedBy: null });
+      const [row] = await db.sql<Array<{ status: string; admission: string; taken_by: string; payload: Record<string, unknown> }>>`
+        SELECT status, admission, taken_by, payload FROM harness_shared.work_items WHERE feature_id = ${id}`;
+      expect(row).toEqual({ status: 'blocked', admission: 'unreviewed', taken_by: 'su-worker', payload });
+    });
+
+    it.each(['r-remedy-keep', 'r-finding-merge'] as const)(
+      'reviews blocked self-debt twins with %s while preserving their claims and merge protection', async verdict => {
+        for (const id of ['WI-self-debt-a', 'WI-self-debt-b']) {
+          await seedItem({ id, admission: 'unreviewed', status: 'blocked', takenBy: `su-${id}`, vector: '[1,0,0]',
+            payload: { ...overdueReview, externalBlockers: [{
+              ref: `work-item-admission-review-debt:${id}`, kind: 'runtime', capability: 'live-dependency',
+              capabilitySource: 'explicit', status: 'active', summary: 'Waiting for own admission review',
+              createdAt: '2026-08-26T10:00:00Z', updatedAt: '2026-08-26T10:00:00Z', createdBy: `su-${id}`,
+            }] } });
+        }
+        const result = await runWorkItemAdmissionPromoter({ workspaceId: WS, harnessSlug: HARNESS,
+          runId: 'promoter-self-debt-twins', sql: db.sql, llmCall: judgementCall(verdict), now: () => NOW });
+        expect(result).toMatchObject({ modelCalled: true, merged: 0,
+          promoted: verdict === 'r-remedy-keep' ? 2 : 0, held: verdict === 'r-remedy-keep' ? 0 : 2 });
+        const rows = await db.sql<Array<{ feature_id: string; status: string; taken_by: string; payload: Record<string, any> }>>`
+          SELECT feature_id, status, taken_by, payload FROM harness_shared.work_items ORDER BY feature_id`;
+        expect(rows).toHaveLength(2);
+        for (const row of rows) {
+          expect(row).toMatchObject({ status: 'blocked', taken_by: `su-${row.feature_id}`,
+            payload: { admissionReview: { retryAttempts: 1 }, externalBlockers: [{ status: 'active' }] } });
+        }
+        if (verdict === 'r-finding-merge') expect(await db.sql`SELECT * FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+      },
+    );
+
     it('holds a claimed overdue row judged a duplicate: never merged, reason persisted, watermark advanced, pair left unadjudicated', async () => {
       await seedItem({ id: 'WI-canonical', admission: 'admitted', vector: '[1,0,0]', createdAtMs: NOW - 30_000 });
       await seedItem({

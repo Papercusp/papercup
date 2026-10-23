@@ -635,6 +635,63 @@ describe('admission endpoint protection — terminal twins', () => {
     });
   });
 
+  describe('overdue review with its own runtime debt (EI-26720509885145560)', () => {
+    const now = Date.parse('2026-10-21T12:00:00Z');
+    const ownDebt = {
+      ...executionBlocker, ref: ADMISSION_REVIEW_ALERT_KEY,
+      summary: 'This item is waiting for its own admission review',
+    };
+    const reviewSnapshot = (ref = ADMISSION_REVIEW_ALERT_KEY) => ({
+      ...snapshot('EI-self-review', { state: 'blocked', admission: 'unreviewed', assignee: 'su-reviewer' }),
+      payload: {
+        admissionReview: { state: 'pending', reviewDueAt: '2026-10-21T11:00:00Z' },
+        externalBlockers: [{ ...ownDebt, ref }],
+      },
+    });
+
+    it.each([ADMISSION_REVIEW_ALERT_KEY, `${ADMISSION_REVIEW_ALERT_KEY}:EI-self-review`])(
+      'allows ordinary overdue review past its own debt %s without removing the blocker', ref => {
+        const current = reviewSnapshot(ref);
+        expect(admissionEndpointBlock(current, now)).toBeNull();
+        expect(current).toMatchObject({ state: 'blocked', assignee: 'su-reviewer',
+          payload: { externalBlockers: [{ ref, status: 'active' }] } });
+      },
+    );
+
+    it.each([
+      { name: 'another runtime dependency', ref: 'runtime:other', kind: 'runtime', capability: 'live-dependency', reason: 'external-blocked' },
+      { name: 'another item review debt', ref: `${ADMISSION_REVIEW_ALERT_KEY}:EI-other`, kind: 'runtime', capability: 'live-dependency', reason: 'external-blocked' },
+      { name: 'a human product decision', ref: ADMISSION_REVIEW_ALERT_KEY, kind: 'human', capability: 'product-decision', reason: 'external-blocked' },
+      { name: 'an owner credential', ref: ADMISSION_REVIEW_ALERT_KEY, kind: 'human', capability: 'credential', reason: 'owner-blocked' },
+      { name: 'a runtime product decision', ref: ADMISSION_REVIEW_ALERT_KEY, kind: 'runtime', capability: 'product-decision', reason: 'external-blocked' },
+      { name: 'a malformed runtime capability', ref: ADMISSION_REVIEW_ALERT_KEY, kind: 'runtime', capability: 'unsupported', reason: 'external-blocked' },
+    ])('preserves $name even while reviewing its own overdue debt', ({ ref, kind, capability, reason }) => {
+      const current = reviewSnapshot();
+      current.payload = { ...current.payload, externalBlockers: [ownDebt, { ...ownDebt, ref, kind, capability }] };
+      expect(admissionEndpointBlock(current, now)).toMatchObject({ reason });
+    });
+
+    it('keeps the exception confined to an overdue claimed pending review', () => {
+      const current = reviewSnapshot();
+      expect(admissionEndpointBlock(current)).toMatchObject({ reason: 'claimed' });
+      expect(admissionEndpointBlock({ ...current, assignee: null }, now)).toMatchObject({ reason: 'blocked-state' });
+      for (const admissionReview of [
+        { state: 'reviewed', reviewDueAt: '2026-10-21T11:00:00Z' },
+        { state: 'pending', reviewDueAt: '2026-10-21T13:00:00Z' },
+        { state: 'pending', reviewDueAt: 'invalid' },
+      ]) {
+        expect(admissionEndpointBlock({ ...current, payload: { ...current.payload, admissionReview } }, now))
+          .toMatchObject({ reason: 'claimed' });
+      }
+      expect(admissionEndpointBlock({ ...current, origin: 'remote' }, now)).toMatchObject({ reason: 'remote-owned' });
+      expect(admissionEndpointBlock({ ...current, payload: { ...current.payload, _claimHold: true } }, now))
+        .toMatchObject({ reason: 'claim-held' });
+      expect(admissionEndpointBlock({ ...current, payload: { ...current.payload,
+        externalBlockers: [{ ...ownDebt, capabilitySource: 'legacy-inferred' }] } }, now))
+        .toMatchObject({ reason: 'external-blocked' });
+    });
+  });
+
   it('preserves owner capability protection on completed twins with execution residue', () => {
     const done = snapshot('EI-owner-blocker', {
       state: 'done',
