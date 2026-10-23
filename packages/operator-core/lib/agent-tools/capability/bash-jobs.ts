@@ -141,7 +141,9 @@ export const BASH_TEST_TASKS_MAX = 8_192;
 
 // An assignment value is one shell word: quoted spaces, escaped spaces and
 // adjacent quoted/unquoted fragments must not hide the executable that follows.
-const TEST_ENV_ASSIGNMENT = String.raw`[A-Za-z_][A-Za-z0-9_]*=(?:[^\s"'\\;&|]+|\\[^\r\n]|"(?:[^"\\]|\\.)*"|'[^']*')*\s+`;
+// Consume one unquoted character per outer iteration. A nested `+` lets a
+// non-matching runner retry exponentially many partitions of a long value.
+const TEST_ENV_ASSIGNMENT = String.raw`[A-Za-z_][A-Za-z0-9_]*=(?:[^\s"'\\;&|]|\\[^\r\n]|"(?:[^"\\]|\\.)*"|'[^']*')*\s+`;
 const TEST_SEGMENT_PREFIX = String.raw`(?:^|(?:&&|\|\||;|\n)\s*)(?:${TEST_ENV_ASSIGNMENT})*`;
 const DIRECT_TEST_RUNNER_RE = new RegExp(
   `${TEST_SEGMENT_PREFIX}(?:(?:npx|bunx|pnpm\\s+exec|yarn\\s+dlx)\\s+)?` +
@@ -156,7 +158,9 @@ const PACKAGE_TEST_SCRIPT_RE = new RegExp(
 // supplies a deadline; these entrypoints also need the finite copy-memory budget.
 const MAINTAINED_VERIFIER_RE = new RegExp(
   `${TEST_SEGMENT_PREFIX}(?:env\\s+(?:--\\s+)?(?:${TEST_ENV_ASSIGNMENT})*)?` +
-    String.raw`(?:bash\s+(?:--\s+)?)?(?:\./|(?:\.\./)+|/(?:[^\s"';&|]+/)*)?scripts/(?:run-operator-e2e-isolated|verify-tauri-headless)\.sh(?:\s|$)`,
+    // A directory atom cannot consume its own separator: otherwise a near
+    // miss retries every partition of a long absolute path.
+    String.raw`(?:bash\s+(?:--\s+)?)?(?:\./|(?:\.\./)+|/+(?:[^/\s"';&|]+/+)*)?scripts/(?:run-operator-e2e-isolated|verify-tauri-headless)\.sh(?:\s|$)`,
   'i',
 );
 
