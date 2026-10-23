@@ -1,5 +1,8 @@
 'use client';
 
+export { StructuredResults } from './structured-results';
+export type { StructuredResultHost, StructuredResultRequest, StructuredResultsProps } from './structured-results';
+
 /**
  * Shared interactive-card presentation.
  *
