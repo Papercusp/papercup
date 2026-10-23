@@ -63,10 +63,13 @@ function fixtureChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEn
 
 // Keep one environment boundary for synchronous and asynchronous fixture
 // children, including the fake ptool and the overlay's guard descendants.
+// Disposable subjects must also start outside the shared checkout: containment
+// includes the caller's cwd, even when the subject itself is a temporary file.
+// Tests exercising a real checkout cwd pass it explicitly.
 const spawn = ((command: string, args: string[], options: SpawnOptions = {}) =>
-  spawnProcess(command, args, { ...options, env: fixtureChildEnv(options.env) })) as typeof spawnProcess;
+  spawnProcess(command, args, { ...options, cwd: options.cwd ?? dir, env: fixtureChildEnv(options.env) })) as typeof spawnProcess;
 const spawnSync = ((command: string, args: string[], options: SpawnSyncOptions = {}) =>
-  spawnProcessSync(command, args, { ...options, env: fixtureChildEnv(options.env) })) as typeof spawnProcessSync;
+  spawnProcessSync(command, args, { ...options, cwd: options.cwd ?? dir, env: fixtureChildEnv(options.env) })) as typeof spawnProcessSync;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'mutation-probe-test-'));
@@ -320,11 +323,14 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
 
   it('runs both baselines and the mutant guard after a valid preflight', () => {
     const marker = join(dir, 'guard-phases');
+    // This receipt control deliberately preserves a checkout-relative cwd.
+    // Its external text subject needs only mirror/flat relocation; automatic
+    // overlays would include the entire shared checkout just because of cwd.
     const args = [
-      '--file', subject, '--mutate', 's/beta/BETA/',
+      '--file', subject, '--mutate', 's/beta/BETA/', '--relocation', 'mirror',
       '--test', `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> ${JSON.stringify(marker)}; grep -q '^beta$' {}`,
     ];
-    const { code, out } = runProbeIO(args);
+    const { code, out } = runProbeIO(args, process.env, resolve(__dirname, '..'));
     expect(code, out).toBe(0);
     expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(['baseline', 'copy-baseline', 'mutant']);
     expect(read()).toBe(ORIGINAL);
@@ -346,6 +352,21 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
         guardExit: 1,
       },
     });
+  });
+
+  it('keeps disposable probe phases in their fixture cwd outside checkout containment', () => {
+    const marker = join(dir, 'guard-cwds');
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/',
+      '--test', `pwd -P >> ${JSON.stringify(marker)}; grep -q '^beta$' {}`,
+    ]);
+    expect(code, out).toBe(0);
+    expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(Array(3).fill(realpathSync(dir)));
+    const evidence = out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)?.[1];
+    expect(evidence, out).toBeTruthy();
+    expect(JSON.parse(evidence!)).toMatchObject({ cwd: realpathSync(dir), result: { verdict: 'caught' } });
+    expect(out).toContain('MUTATION_PROBE_CONTAINMENT status=n/a overlays=0 uncovered=0 failed=0');
+    expect(read()).toBe(ORIGINAL);
   });
 
   it('EI-26470881603162340: disables pc-heavy coalescing on every guard leg, even when the caller enabled it', () => {
@@ -1892,6 +1913,79 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     expect(existsSync(replacement)).toBe(false);
     expect(readFileSync(join(empty, 'dependency.txt'), 'utf8')).toBe('available\n');
     expect(readFileSync(s, 'utf8')).toBe('keep\n');
+  });
+
+  it.skipIf(!containWorks)('isolates child subtrees created by the baseline after split-checkout planning', () => {
+    const { repo, subject: s, guard } = makeBuildOutputRepo('late-child-mounted-repo');
+    const output = join(repo, 'late-output', 'nested', 'state');
+    const empty = join(dir, 'late-child-mount-source');
+    mkdirSync(empty);
+    mkdirSync(join(repo, 'mnt'));
+    const q = (p: string) => JSON.stringify(p);
+    // Planning precedes the real baseline, which first creates this directory.
+    // Later legs must see its baseline contents while discarding their writes.
+    const lateGuard = [
+      `mkdir -p ${q(dirname(output))}`,
+      `cp {} ${q(output)}`,
+      `cmp -s {} ${q(output)}`,
+      guard,
+    ].join(' && ');
+    const r = spawnSync('bwrap', [
+      '--dev-bind', '/', '/', '--bind', empty, join(repo, 'mnt'), '--die-with-parent', '--',
+      'bash', SCRIPT, '--file', s, '--mutate', 's/keep/KEEP/', '--test', lateGuard,
+    ], { encoding: 'utf8', timeout: 60_000, cwd: repo });
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(r.status).toBe(0);
+    expect(readFileSync(output, 'utf8')).toBe('keep\n');
+    expect(readFileSync(s, 'utf8')).toBe('keep\n');
+  });
+
+  it.skipIf(!containWorks).each(['existing', 'baseline-created'] as const)
+  ('preserves %s scratch evidence under a split ancestor', state => {
+    const { repo, subject: s, guard } = makeBuildOutputRepo(`scratch-${state}-mounted-repo`);
+    const scratch = join(repo, '.papercusp', 'scratch');
+    if (state === 'baseline-created') rmSync(scratch, { recursive: true });
+    const mount = join(repo, '.papercusp', 'mnt');
+    const empty = join(dir, `scratch-${state}-mount-source`);
+    mkdirSync(empty);
+    writeFileSync(join(empty, 'dependency.txt'), 'available\n');
+    mkdirSync(mount);
+    const q = (p: string) => JSON.stringify(p);
+    const scratchGuard = `test "$(cat ${q(join(mount, 'dependency.txt'))})" = available && mkdir -p ${q(scratch)} && ${guard}`;
+    const r = spawnSync('bwrap', [
+      '--dev-bind', '/', '/', '--bind', empty, mount, '--die-with-parent', '--',
+      'bash', SCRIPT, '--file', s, '--mutate', 's/keep/KEEP/', '--test', scratchGuard,
+    ], { encoding: 'utf8', timeout: 60_000, cwd: repo });
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    expect(out, out).toMatch(/MUTATION_PROBE_CONTAINMENT status=partial .*failed=0/);
+    expect(out, out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(r.status, out).toBe(0);
+    expect(readdirSync(scratch).sort()).toEqual([
+      'evidence-baseline', 'evidence-copy-baseline', 'evidence-mutant',
+    ]);
+    expect(readFileSync(join(repo, 'out', 'index.html'), 'utf8'), out).toBe('keep\n');
+  });
+
+  it.skipIf(!containWorks)('aborts setup when a newly discovered child cannot be overlaid', () => {
+    const { repo, subject: s, guard } = makeBuildOutputRepo('unrepresentable-child-mounted-repo');
+    const late = join(repo, 'late,output');
+    const empty = join(dir, 'unrepresentable-child-mount-source');
+    mkdirSync(empty);
+    mkdirSync(join(repo, 'mnt'));
+    const q = (p: string) => JSON.stringify(p);
+    const r = spawnSync('bwrap', [
+      '--dev-bind', '/', '/', '--bind', empty, join(repo, 'mnt'), '--die-with-parent', '--',
+      'bash', SCRIPT, '--file', s, '--mutate', 's/keep/KEEP/',
+      '--test', `mkdir -p ${q(late)} && cp {} ${q(join(late, 'state'))} && ${guard}`,
+    ], { encoding: 'utf8', timeout: 60_000, cwd: repo });
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    expect(out).toContain('unrepresentable new child directory');
+    expect(out).toMatch(/MUTATION_PROBE_RESULT verdict=harness-error .*containment_setup_failed=yes/);
+    expect(out).not.toMatch(/verdict=(caught|survived)/);
+    expect(r.status).toBe(2);
+    expect(readFileSync(join(late, 'state'), 'utf8')).toBe('keep\n');
+    expect(existsSync(join(repo, 'out', 'built-by-copy-baseline'))).toBe(false);
   });
 
   /**

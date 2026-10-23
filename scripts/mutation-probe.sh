@@ -70,8 +70,9 @@
 # dir and each root's .papercusp/scratch stay real, so receipts and evidence
 # logs written there persist. A subtree with a mount point under it uses a
 # private shallow copy for its own entries, with child directories rebound
-# separately. Child subtrees added after planning and external aliases can
-# still be uncovered; outside changes are named without attributing a writer.
+# separately. Each leg overlays child directories added after planning too;
+# external aliases can still be uncovered. Outside changes are named without
+# attributing a writer.
 # status line reads MUTATION_PROBE_CONTAINMENT status=contained|partial|
 # uncontained|disabled|sandbox-root|n/a. MUTATION_PROBE_CONTAIN_WRITES=0 turns
 # containment off (leaks are still reported).
@@ -2869,6 +2870,9 @@ contain_path_under() {
 # individual file binds would break atomic replacement with EBUSY.
 contain_plan_dir() {
   local d="$1" mp e has_sub=0
+  for e in ${CONTAIN_PASSTHROUGH[@]+"${CONTAIN_PASSTHROUGH[@]}"}; do
+    [ "$d" != "$e" ] || return 0
+  done
   for mp in ${CONTAIN_MOUNTS[@]+"${CONTAIN_MOUNTS[@]}"}; do
     case "$mp" in
       "$d"/*) has_sub=1; break ;;
@@ -2912,14 +2916,33 @@ contain_write_setup() {
     for p in ${CONTAIN_LEVELS[@]+"${CONTAIN_LEVELS[@]}"}; do
       printf ' %q' "$p"
     done
+    printf ' )\nplanned=('
+    for p in ${CONTAIN_LEVELS[@]+"${CONTAIN_LEVELS[@]}"} ${CONTAIN_OVERLAYS[@]+"${CONTAIN_OVERLAYS[@]}"} ${CONTAIN_PASSTHROUGH[@]+"${CONTAIN_PASSTHROUGH[@]}"}; do
+      printf ' %q' "$p"
+    done
+    printf ' )\npassthroughs=('
+    for p in ${CONTAIN_PASSTHROUGH[@]+"${CONTAIN_PASSTHROUGH[@]}"}; do
+      printf ' %q' "$p"
+    done
     printf ' )\n'
     cat <<'SHALLOW'
 # Snapshot only each split directory's own entries. Hold every child directory
 # BEFORE covering any ancestor, including children created by the baseline.
 # Rebinding these holds preserves dependency mounts without copying the tree.
 contain_abort() { printf '%s\n' "$*" > "$abort"; exit 97; }
+passthrough_paths=()
+passthrough_holds=()
+for p in "${passthroughs[@]}"; do
+  [ -d "$p" ] && [ ! -L "$p" ] || continue
+  h="$work/p${#passthrough_paths[@]}"
+  mkdir -p "$h" && mount --rbind "$p" "$h" \
+    || contain_abort "could not hold passthrough directory $p"
+  passthrough_paths+=("$p")
+  passthrough_holds+=("$h")
+done
 children=()
 holds=()
+unplanned=()
 for i in "${!levels[@]}"; do
   p="${levels[i]}"
   s="$work/s$i"
@@ -2929,10 +2952,17 @@ for i in "${!levels[@]}"; do
     [ -e "$e" ] || [ -L "$e" ] || continue
     if [ -d "$e" ] && [ ! -L "$e" ]; then
       h="$work/c$i.$k"
-      mkdir -p "$h" "$s/${e##*/}" && mount --bind "$e" "$h" \
+      # Inherited submounts can be locked in a user namespace. A nonrecursive
+      # bind drops those mounts and is refused; retain the whole mount tree.
+      mkdir -p "$h" "$s/${e##*/}" && mount --rbind "$e" "$h" \
         || contain_abort "could not hold child directory $e"
       children+=("$e")
       holds+=("$h")
+      known=0
+      for planned_path in "${planned[@]}"; do
+        [ "$e" != "$planned_path" ] || { known=1; break; }
+      done
+      [ "$known" -eq 1 ] || unplanned+=("$e")
       k=$((k + 1))
     elif [ -f "$e" ] || [ -L "$e" ]; then
       cp -Pp -- "$e" "$s/" || contain_abort "could not copy split-directory entry $e"
@@ -2948,28 +2978,36 @@ for i in "${!levels[@]}"; do
   mount --bind "$work/s$i" "$p" || contain_abort "could not isolate split directory $p"
   for j in "${!children[@]}"; do
     [ "${children[j]%/*}" = "$p" ] || continue
-    mount --bind "${holds[j]}" "${children[j]}" \
+    mount --rbind "${holds[j]}" "${children[j]}" \
       || contain_abort "could not restore child directory ${children[j]}"
   done
 done
 SHALLOW
-    i=0
-    for p in ${CONTAIN_PASSTHROUGH[@]+"${CONTAIN_PASSTHROUGH[@]}"}; do
-      printf 'h%d=0; mkdir -p "$work/h%d" && mount --bind %q "$work/h%d" && h%d=1\n' "$i" "$i" "$p" "$i" "$i"
-      i=$((i + 1))
-    done
     i=0
     for p in ${CONTAIN_OVERLAYS[@]+"${CONTAIN_OVERLAYS[@]}"}; do
       printf 'mkdir -p "$work/u%d" "$work/w%d" && mount -t overlay overlay -o %q %q 2>/dev/null || printf "%%s\\n" %q >> "$fail"\n' \
         "$i" "$i" "lowerdir=$p,upperdir=$CONTAIN_WORK/u$i,workdir=$CONTAIN_WORK/w$i" "$p" "$p"
       i=$((i + 1))
     done
-    i=0
-    for p in ${CONTAIN_PASSTHROUGH[@]+"${CONTAIN_PASSTHROUGH[@]}"}; do
-      printf '{ [ "$h%d" = 1 ] && mount --bind "$work/h%d" %q; } || printf "%%s\\n" %q >> "$fail"\n' \
-        "$i" "$i" "$p" "passthrough:$p"
-      i=$((i + 1))
-    done
+    cat <<'LATE_CHILDREN'
+# Baseline/peer-created children were absent from the initial mount plan. A
+# bare rebind would expose their real contents to the mutant. Isolate each one
+# or abort setup; inability to mount is never evidence that the guard caught it.
+for i in "${!unplanned[@]}"; do
+  p="${unplanned[i]}"
+  case "$p" in
+    *,*|*:*|*\\*) contain_abort "unrepresentable new child directory $p" ;;
+  esac
+  mkdir -p "$work/late-u$i" "$work/late-w$i" &&
+    mount -t overlay overlay -o "lowerdir=$p,upperdir=$work/late-u$i,workdir=$work/late-w$i" "$p" \
+    || contain_abort "could not isolate new child directory $p"
+done
+for i in "${!passthrough_paths[@]}"; do
+  p="${passthrough_paths[i]}"
+  mount --rbind "${passthrough_holds[i]}" "$p" \
+    || contain_abort "could not restore passthrough directory $p"
+done
+LATE_CHILDREN
     printf 'exec bwrap --unshare-user --uid %q --gid %q --dev-bind / / "$@"\n' "$(id -u)" "$(id -g)"
   } > "$f" || return 1
   CONTAIN_SETUP="$f"
@@ -3033,19 +3071,13 @@ contain_preflight() {
   while read -r _ _ _ _ p _; do
     CONTAIN_MOUNTS+=("$(printf '%b' "$p")")
   done < /proc/self/mountinfo
+  # Hold evidence directories before any ancestor is covered, including ones
+  # first created by the baseline. Never plan inside this explicit exception.
+  for r in "${CONTAIN_ROOTS[@]}"; do
+    CONTAIN_PASSTHROUGH+=("$r/.papercusp/scratch")
+  done
   for r in "${CONTAIN_ROOTS[@]}"; do
     contain_plan_dir "$r"
-  done
-  # Evidence written to a root's .papercusp/scratch outlives the leg.
-  for r in "${CONTAIN_ROOTS[@]}"; do
-    p="$r/.papercusp/scratch"
-    [ -d "$p" ] && [ ! -L "$p" ] || continue
-    for o in ${CONTAIN_OVERLAYS[@]+"${CONTAIN_OVERLAYS[@]}"}; do
-      if contain_path_under "$p" "$o"; then
-        CONTAIN_PASSTHROUGH+=("$p")
-        break
-      fi
-    done
   done
   if [ "${#CONTAIN_OVERLAYS[@]}" -eq 0 ]; then
     CONTAIN_REASON="no directory of the checkout can be overlaid"
@@ -3138,7 +3170,7 @@ case "$CONTAIN_STATUS" in
   contained)
     log "write containment: CONTAINED — post-baseline guard runs see $(IFS=' '; printf '%s' "${CONTAIN_ROOTS[*]}") copy-on-write; their writes are discarded at exit (the probe scratch and each .papercusp/scratch stay real)" ;;
   partial)
-    log "write containment: PARTIAL — ${#CONTAIN_OVERLAYS[@]} overlay(s) cover planned subtrees; ${#CONTAIN_LEVELS[@]} split director$( [ "${#CONTAIN_LEVELS[@]}" -eq 1 ] && echo y || echo ies) use private shallow copies for their own entries. Child subtrees added after planning and external aliases may remain real; each leg reports outside entry changes without attributing their writer"
+    log "write containment: PARTIAL — ${#CONTAIN_OVERLAYS[@]} overlay(s) cover planned subtrees; ${#CONTAIN_LEVELS[@]} split director$( [ "${#CONTAIN_LEVELS[@]}" -eq 1 ] && echo y || echo ies) use private shallow copies for their own entries. Each leg isolates newly discovered child directories or aborts setup; external aliases may remain real. Outside entry changes are reported without attributing their writer"
     for line in ${CONTAIN_FAILED[@]+"${CONTAIN_FAILED[@]}"}; do
       log "⚠️  write containment could not cover: $line"
     done ;;
