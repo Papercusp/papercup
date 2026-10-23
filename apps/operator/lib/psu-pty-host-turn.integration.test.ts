@@ -184,6 +184,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
     mkdirSync(projects, { recursive: true });
     const transcript = join(projects, 'native.jsonl');
     const releaseBusy = join(root, 'release-busy');
+    const stdinTrace = join(root, 'input.trace');
     const ownerId = uniqueOwner(`SUBMIT-${scenario}`);
     const sock = socketPathFor(ownerId);
     const log = eventLogPathForOwner(ownerId);
@@ -205,7 +206,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
       "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
       "let line='',crs=0;process.stdout.write('READY\\n');",
       rearmed ? "const busy=setInterval(()=>{if(fs.existsSync(process.env.TEST_BUSY_RELEASE))clearInterval(busy);else process.stdout.write('BUSY\\n');},15);" : '',
-      "process.stdin.on('data',data=>{for(const c of data){",
+      "process.stdin.on('data',data=>{fs.appendFileSync(process.env.TEST_INPUT_TRACE,JSON.stringify({atMs:Date.now(),data})+'\\n');for(const c of data){",
       "if(c==='\\x04'){process.exit(0);return;}",
       "if(c!=='\\r'){line+=c;continue;}crs++;process.stdout.write('REPAINT:'+crs+'\\n');",
       "if(process.env.TEST_ACCEPT==='retry'&&crs===2){",
@@ -221,7 +222,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
     ].join('');
     const fixtureEnv = hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
         CLAUDE_CONFIG_DIR: root, TEST_TRANSCRIPT: transcript, TEST_ACCEPT: scenario,
-        TEST_BUSY_RELEASE: releaseBusy,
+        TEST_BUSY_RELEASE: releaseBusy, TEST_INPUT_TRACE: stdinTrace,
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
         PAPERCUSP_PSU_PTY_BUSY_CAP_MS: rearmed ? '100' : '3000',
         PAPERCUSP_PSU_PTY_REARM_CAP_MS: '2000',
@@ -230,6 +231,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '40',
       });
+    new Script(childCode);
     const done = hostThroughPty({
       command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
       bridgeTty: false, onExit: () => {}, env: fixtureEnv,
@@ -308,8 +310,14 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
       expect((captured().match(/REPAINT:/g) ?? []).length).toBe(2);
       expect(existsSync(sock)).toBe(true);
     } finally {
+      const stdinTimeline = existsSync(stdinTrace)
+        ? readFileSync(stdinTrace, 'utf8').split('\n').filter(Boolean).map(line => {
+          const row = JSON.parse(line);
+          return { ms: row.atMs - startedAt, data: row.data };
+        })
+        : [];
       console.info('TAGGED_WAKE_OBSERVATION', JSON.stringify({ scenario, milestones,
-        observedAtMs: Date.now() - startedAt, outputTimeline: outputTimeline.slice(-60),
+        observedAtMs: Date.now() - startedAt, stdinTimeline, outputTimeline: outputTimeline.slice(-60),
         events: events().slice(-12),
         nativeCompleted: nativeLatestTurnCompleted({ agent: 'claude', env: fixtureEnv, completedAtOrAfterMs: startedAt }),
         nativeExecution: nativeLatestExecution({ agent: 'claude', env: fixtureEnv, receivedAtMs: startedAt }),
