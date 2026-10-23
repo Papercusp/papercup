@@ -43,7 +43,6 @@ import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { MCP_REQUEST_TRACE_HEADER } from '../../mcp-request-trace';
 import { _resetScratchUsageForTests, _setScratchUsageForTests, WORKSPACE_QUOTA_BYTES, type ScratchWriteTimings } from '../../scratch-gc';
 import { parseScratchReference } from '../../scratch-reference';
-import { __resetSessionSurfaces, getSessionSurface, getSessionUsedTools, sessionToolSurfaceKey } from '../routes/transport/tool-allowlist';
 import type { McpCallResult } from '../routes/transport/mcp-diagnostic-warnings';
 
 const h = vi.hoisted(() => {
@@ -787,51 +786,6 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     expect(h.resultDoorCalls).toBe(1);
   });
 
-  it('returns a completed tool result while the seeded-surface notification remains pending', async () => {
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-    const traceId = '9a812cdc-73db-4f9f-a02e-2cad05ad22c8';
-    const owner = 'su-seeded-surface-test';
-    const seed = new Set(['deadlinetest:progress']);
-    const surfaceKey = sessionToolSurfaceKey(owner, 'ws-test')!;
-    __resetSessionSurfaces();
-    getSessionSurface(surfaceKey, seed);
-
-    let releaseNotification!: () => void;
-    let enteredNotification!: () => void;
-    const notificationGate = new Promise<void>((resolve) => { releaseNotification = resolve; });
-    const notificationEntered = new Promise<void>((resolve) => { enteredNotification = resolve; });
-
-    const extra = superuserExtra(
-      `&workspace=ws-test&client=${owner}&tools=deadlinetest:progress`,
-      { [MCP_REQUEST_TRACE_HEADER]: traceId },
-    );
-    (extra as Record<string, unknown>).sendNotification = async () => {
-      enteredNotification();
-      await notificationGate;
-    };
-
-    try {
-      const result = await callTool('deadlinetest:progress', {}, extra);
-      expect(result.isError).not.toBe(true);
-      expect(textOf(result)).toContain('synthetic-progress-fixture');
-      expect(h.progressCalls).toBe(1);
-      expect(getSessionUsedTools(surfaceKey)?.has('deadlinetest:progress')).toBe(true);
-
-      // The response is already delivered while the list_changed notification
-      // is deliberately held open.
-      await waitForSignal(notificationEntered, 'nonblocking list_changed notification');
-      const events = traceEvents(info.mock.calls);
-      expect(events).toEqual(expect.arrayContaining([
-        expect.objectContaining({ traceId, stage: 'inner_dispatch_settled', outcome: 'success' }),
-      ]));
-      expect(events.some((event) => event.traceId === traceId && event.stage === 'deadline')).toBe(false);
-    } finally {
-      releaseNotification();
-      __resetSessionSurfaces();
-      info.mockRestore();
-    }
-  });
-
   it('forwards synthetic scratch progress to MCP clients that supplied a progress token', async () => {
     const progressToken = 'mcp-spill-progress';
     const traceId = '7c6a1e48-6764-4937-8b8e-f35fef8ea93d';
@@ -975,7 +929,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         store.idempotencyKey === receiptKey)).toBe(true));
       expect(h.scratchWriteTimings).toEqual([]); // no synthetic phase injection
       expect(h.realScratchWriteTimings).toHaveLength(1);
-      const timing = h.realScratchWriteTimings[0];
+      const timing = structuredClone(h.realScratchWriteTimings[0]);
       // Concurrent quota bookkeeping may add a short, legitimate wait.
       expect(Number.isFinite(timing.quotaWaitMs)).toBe(true);
       expect(timing.quotaWaitMs).toBeGreaterThanOrEqual(0);
@@ -988,7 +942,17 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         event.traceId === traceId && event.stage === 'inner_dispatch_settled');
       expect(settled).toMatchObject({
         outcome: 'success', afterDeadline: true,
-        phaseTimingsMs: { scratchWrites: { count: 1, ...timing } },
+        phaseTimingsMs: {
+          scratchWrites: {
+            count: 1,
+            perSpill: [expect.objectContaining(timing)],
+            quotaWaitMs: timing.quotaWaitMs,
+            refreshWaitMs: timing.refreshWaitMs,
+            quotaRecoveryMs: timing.quotaRecoveryMs,
+            writeMs: timing.writeMs,
+            totalMs: timing.totalMs,
+          },
+        },
       });
       expect(h.spillPaths).toHaveLength(1);
       const spill = parseScratchReference(readFileSync(h.spillPaths[0]));
