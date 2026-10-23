@@ -21,8 +21,8 @@ let pg: DedicatedNativePg, sql: ReturnType<typeof postgres>;
 beforeAll(async () => {
   pg = await startDedicatedNativePg(); sql = postgres(pg.getConnectionUri(), { max: 2, onnotice: () => {} });
   await sql`CREATE SCHEMA harness_shared`;
-  // Exercise the actual reserved migration; rename to .sql only after this passes.
-  await sql.unsafe(await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1566-test-coverage-map.sql.DRAFT', import.meta.url), 'utf8'));
+  // Exercise the armed migration in an isolated real PostgreSQL instance.
+  await sql.unsafe(await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1566-test-coverage-map.sql', import.meta.url), 'utf8'));
 }, 120_000);
 afterAll(async () => { await sql?.end({ timeout: 3 }); await pg?.stop(); });
 
