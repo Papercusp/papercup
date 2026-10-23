@@ -92,7 +92,8 @@ describe('IDOP P-001 frozen baseline', () => {
       expect(row.sourceKind).toBe('real-launched-codex-role-managed-tool-prompts');
       expect(row.advSessionId).toBeGreaterThan(0);
       expect(row.ownerId).toMatch(/^su-/);
-      expect(row.sourceHome).toMatch(new RegExp(`/session-${row.advSessionId}$`));
+      expect(row.sourceHome).toBe(`~/.papercusp/su-codex-homes/session-${row.advSessionId}`);
+      expect(row.nativeTranscript.startsWith(`${row.sourceHome}/sessions/`)).toBe(true);
       expect(row.nativeTranscript).toContain(row.nativeSessionId);
       expect(Date.parse(row.launchAt)).toBeLessThanOrEqual(Date.parse(row.capturedAt));
       const tools = receipt.catalogs[row.catalogSha256];
@@ -130,7 +131,7 @@ describe('IDOP P-001 frozen baseline', () => {
       'docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json'), 'utf8')) as {
       frozenBaselineSha256: string;
       receipts: Array<{
-        identity: string; advSessionId: number; nativeSessionId: string; nativeTranscript: string;
+        identity: string; advSessionId: number; nativeSessionId: string; sourceHome: string; nativeTranscript: string;
         count: number; catalogSha256: string; specificationRevision: string;
         specificationInputRefs: string[]; selectedIdentityInSpecification: boolean; wornLayerLimitation?: string;
       }>;
@@ -152,6 +153,8 @@ describe('IDOP P-001 frozen baseline', () => {
       expect(sha256(JSON.stringify(tools))).toBe(row.catalogSha256);
       expect(row.count).toBe(tools.length);
       expect(new Set(tools.map(tool => tool.name)).size).toBe(row.count);
+      expect(row.sourceHome).toBe(`~/.papercusp/su-codex-homes/session-${row.advSessionId}`);
+      expect(row.nativeTranscript.startsWith(`${row.sourceHome}/sessions/`)).toBe(true);
       expect(row.nativeTranscript).toContain(row.nativeSessionId);
       expect(row.specificationRevision).toMatch(/^[a-f0-9]{64}$/);
       expect(row.selectedIdentityInSpecification).toBe(row.specificationInputRefs.includes(row.identity));
@@ -192,10 +195,31 @@ describe('IDOP P-001 frozen baseline', () => {
   it('binds follow-up evidence to the unchanged frozen artifact and preserves unresolved coverage', () => {
     const audit = JSON.parse(readFileSync(join(root, 'docs/evidence/idop-p001-coverage-audit-2026-10-22.json'), 'utf8'));
     expect(audit.baseline.sha256).toBe(sha256(readFileSync(join(root, IDOP_P001_BASELINE_REL))));
+    expect(audit.modeAutoCatalogMapping.sourceHome).toBe(
+      `~/.papercusp/su-codex-homes/session-${audit.modeAutoCatalogMapping.advSessionId}`);
+    for (const artifact of [audit.launchToolCatalogs, audit.roleLaunchCatalogs, audit.currentLeaderToolReceipt]) {
+      expect(sha256(readFileSync(join(root, artifact.path)))).toBe(artifact.sha256);
+    }
+    const leader = JSON.parse(readFileSync(join(root, audit.currentLeaderToolReceipt.path), 'utf8'));
+    expect(leader.sourceReceipt.path).toMatch(/^~\/\.papercusp\/scratch\//);
     expect(audit.ready).toBe(false);
-    expect(audit.unresolved.map((row: { identity: string }) => row.identity)).toEqual(expect.arrayContaining([
+    const unresolved = audit.unresolved.map((row: { identity: string }) => row.identity) as string[];
+    const resolved = audit.resolvedWornToolMappings as Array<{
+      identity: string; activationEventId: number; catalogSource: string;
+    }>;
+    expect(unresolved.length).toBeGreaterThan(0);
+    expect([...unresolved, ...resolved.map(row => row.identity)].sort()).toEqual([
       'su', 'su.practice', 'su.mode-auto', 'su.mode-audit', 'su.mode-ideate', 'su.fleet-leader', 'su.fleet-member',
-    ]));
+    ].sort());
+    const applied = [...audit.appliedLayerReceipts, leader.appliedActivation] as Array<{
+      id: string; phase: string; stack_refs: string[];
+    }>;
+    for (const mapping of resolved) {
+      expect(audit[mapping.catalogSource]).toBeDefined();
+      const activation = applied.find(row => Number(row.id) === mapping.activationEventId);
+      expect(activation?.phase).toBe('applied');
+      expect(activation?.stack_refs.map(ref => ref.slice(ref.indexOf(':') + 1))).toContain(mapping.identity);
+    }
     const coverage = inspectIdopP001Coverage({ ...baseline,
       observations: [...baseline.observations, ...audit.roleObservations] });
     expect(coverage.complete).toBe(false);
