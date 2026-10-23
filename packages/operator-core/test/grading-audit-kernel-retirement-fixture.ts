@@ -41,8 +41,9 @@ async function scenario(ended: boolean) {
   const issueId = ended ? 'private-kernel-ended' : 'private-kernel-live';
   const label = `grading-audit:${issueId}`;
   const now = new Date().toISOString();
-  const task = await managedSpawn({ class: 'other', title: label,
-    argv: [process.execPath, '-e', ended ? 'process.exit(0)' : 'setTimeout(() => {}, 60000)'],
+  const argv = ['-e', ended ? 'process.exit(0)' : 'setTimeout(() => {}, 60000)'];
+  const task = await managedSpawn(process.execPath, argv, { class: 'other', title: label,
+    argv: [process.execPath, ...argv],
     cwd: root, launchedBy: 'system:test-private-grading-retirement',
     detail: { label } }, { workspaceId: workspace, requireRegistration: true,
     requireConfinement: true, spawnOptions: { stdio: 'ignore' } });
@@ -62,10 +63,10 @@ async function scenario(ended: boolean) {
     assert.equal(changed.length, 1);
   } else assert.equal(await scopeEmpty(task.taskId), false);
 
-  const card = { issueId, createdAt: now, createdBy: 'private-fixture', rubricRef: 'private-standard',
+  const card: ScorecardRow = { issueId, createdAt: now, createdBy: 'private-fixture', rubricRef: 'private-standard',
     ratings: {}, nKeys: 0, missingKeys: [], extraKeys: [], rubricResolved: true,
-    synthesized: false, linkedItems: [], gradingAudit: { state: 'pending',
-      metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF, stampedAt: now } } as ScorecardRow;
+    synthesized: false, score10: null, linkedItems: [], gradingAudit: { state: 'pending',
+      metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF, stampedAt: now } };
   let routes = 0;
   let notifications = 0;
   const deps: DispatchPendingGradingAuditsDeps = {
