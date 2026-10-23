@@ -4897,6 +4897,56 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(complete.ratings['execution-integrity'].evidence).toContain('Every original failure has exactly one');
   });
 
+  it('preserves separate causal pairs backed by the same whole-file recurrence run', () => {
+    const pairs = ['missing-history', 'missing-recovery'];
+    const pairClause = clause({ falsifier: {
+      observation: 'Either original failure recurs.', causalPairing: 'one-to-one', requiredScenarios: pairs,
+    } });
+    const testPath = 'packages/operator-core/lib/history.test.ts';
+    const baseAdequacy = evidence().details.adequacy as Record<string, unknown>;
+    const negatives = pairs.map((pair, index) => evidence({
+      id: 100 + index, evidenceKind: 'counterexample', evidenceRef: `${testPath}#before-${pair}`,
+      testRunProvenance: { filePath: testPath, commitSha: 'abc123', worktreeDirty: false,
+        source: 'mutation-probe', mutationPhase: 'mutant', mutationFailedCaseTitles: [pair] },
+      testRunExecution: { status: 'fail', passed: 0, failed: 1, skipped: 0,
+        collectionFailed: false, testLayer: 'integration' },
+      details: { adequacy: { ...baseAdequacy, outcome: 'killed', targeted: pair,
+        scenarioIds: [pair], causalPairIds: [pair], testCases: [pair] } },
+    }));
+    const recurrences = pairs.map((pair, index) => {
+      const row = successfulTestBinding(testPath, { testCases: pairs });
+      return { ...row, id: 200 + index, details: { adequacy: {
+        ...(row.details.adequacy as object), causalPairIds: [pair], scenarioIds: [pair], testCases: [pair],
+      } } };
+    });
+    for (const rows of [[...negatives, ...recurrences], [...recurrences, ...negatives].reverse()]) {
+      const result = evaluateSpecTestAdequacy({ clause: pairClause, evidence: rows,
+        classRef: 'plan-class-feature-ship' });
+      expect(result.ratings['execution-integrity'].rating).toBe('pass');
+      expect(result.ratings['execution-integrity'].evidence).toContain('Every original failure has exactly one');
+    }
+  });
+
+  it('supersedes a corrected recurrence within its causal pair while retaining its sibling', () => {
+    const base = successfulTestBinding('packages/operator-core/lib/history.test.ts');
+    const recurrence = (id: number, pair: string, executed: boolean) => ({
+      ...base, id, details: { adequacy: { ...(base.details.adequacy as object),
+        causalPairIds: [pair], scenarioIds: [pair], executed } },
+    });
+    const older = recurrence(201, 'missing-history', false);
+    const sibling = recurrence(202, 'missing-recovery', true);
+    const corrected = recurrence(203, 'missing-history', true);
+    expect(latestLogicalEvidence([older, sibling, corrected])).toEqual([sibling, corrected]);
+    const active = activeSpecEvidence([older, sibling, corrected]);
+    expect(active.map(row => row.id).sort()).toEqual([202, 203]);
+    expect(active.find(row => row.id === 203)?.details.adequacy).toMatchObject({
+      causalPairIds: ['missing-history'], executed: true,
+    });
+    expect(active.find(row => row.id === 202)?.details.adequacy).toMatchObject({
+      causalPairIds: ['missing-recovery'],
+    });
+  });
+
   it('rejects a collapsed causal pair even when one row claims every required scenario', () => {
     const pairClause = clause({
       falsifier: {

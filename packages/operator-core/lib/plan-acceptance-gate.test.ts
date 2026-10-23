@@ -31,7 +31,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
 import { readAndEvaluateAcceptanceBarLifecycle, type AcceptanceBarLifecycleVerdict } from './acceptance-bar-lifecycle-evaluator';
-import { nextRepair as acceptanceBarNextRepair } from './acceptance-bar-contract-snapshot';
+import { nextRepair as acceptanceBarNextRepair, readAcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
 import {
   areAcceptanceLineageRelated,
   resolvePlanImplementerIdentities,
@@ -77,6 +77,10 @@ vi.mock('@papercusp/flags/server', () => ({
   getFlag: vi.fn(),
 }));
 vi.mock('./acceptance-bar-lifecycle-evaluator', () => ({ readAndEvaluateAcceptanceBarLifecycle: vi.fn() }));
+vi.mock('./acceptance-bar-contract-snapshot', async (original) => ({
+  ...(await original<typeof import('./acceptance-bar-contract-snapshot')>()),
+  readAcceptanceBarContractSnapshot: vi.fn(),
+}));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(),
@@ -150,6 +154,7 @@ const mockScorecards = vi.mocked(listScorecards);
 const mockFlag = vi.mocked(getFlag);
 const mockPg = vi.mocked(getOrgPg);
 const mockBarLifecycle = vi.mocked(readAndEvaluateAcceptanceBarLifecycle);
+const mockBarSnapshot = vi.mocked(readAcceptanceBarContractSnapshot);
 const mockLineageRelated = vi.mocked(areAcceptanceLineageRelated);
 const mockPlanImplementers = vi.mocked(resolvePlanImplementerIdentities);
 const mockGraderVia = vi.mocked(readGraderSelectionVia);
@@ -214,6 +219,7 @@ const scorecard = (over: Partial<ScorecardRow> = {}): ScorecardRow => ({
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mockBarSnapshot.mockResolvedValue({} as never);
   vi.mocked(planDesignEvidenceGate).mockResolvedValue([]);
   mockBarLifecycle.mockResolvedValue({ phase: 'ship', applicable: false, satisfied: true,
     codes: [], blockingBars: [], contractCodes: [], codeAttribution: [], nextRepair: null,
@@ -637,7 +643,7 @@ describe('evaluatePlanAcceptanceGate', () => {
       mockScorecards.mockResolvedValue([scorecard()]);
       const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { force: { reason: 'seams disclosed' } });
       expect(result).toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready' });
-      expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'ship', { expectedApplicable: true });
+      expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'ship', expect.objectContaining({ expectedApplicable: true }));
       expect(mockRubrics).not.toHaveBeenCalled();
     });
 
@@ -658,7 +664,7 @@ describe('evaluatePlanAcceptanceGate', () => {
         : []));
       expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11'))
         .toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
-      expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', { expectedApplicable: true });
+      expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', expect.objectContaining({ expectedApplicable: true }));
     });
 
     it('does not recruit a grader while pre-grading proof remains inadequate', async () => {
@@ -693,9 +699,30 @@ describe('evaluatePlanAcceptanceGate', () => {
         const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { current });
 
         expect(result).toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
-        expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', {
+        expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', expect.objectContaining({
           expectedApplicable: true, current,
+        }));
+      },
+    );
+
+    it.each(['bar_snapshot_grading_missing', 'bar_snapshot_grading_stale'] as const)(
+      'reads one BAR snapshot when %s defers to strict pre-grading', async (gradingCode) => {
+        const snapshot = {} as Awaited<ReturnType<typeof readAcceptanceBarContractSnapshot>>;
+        mockBarSnapshot.mockResolvedValue(snapshot);
+        const observed: unknown[] = [];
+        mockBarLifecycle.mockImplementation(async (_slug, phase, options) => {
+          observed.push(await options?.snapshot);
+          return verdict(phase, phase === 'ship' ? [gradingCode] : ['bar_snapshot_proof_inadequate']);
         });
+
+        const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { gradingRecruitment: true });
+
+        expect(mockBarSnapshot).toHaveBeenCalledTimes(1);
+        expect(observed).toEqual([snapshot, snapshot]);
+        expect(result).toMatchObject({
+          satisfied: false, code: 'acceptance_bar_contract_not_ready', blockingPhase: 'pre-grading',
+        });
+        expect(mockScorecards).not.toHaveBeenCalled();
       },
     );
 
@@ -715,6 +742,7 @@ describe('evaluatePlanAcceptanceGate', () => {
       expect(lifecycleCalls).toHaveLength(2);
       expect(lifecycleCalls[0]?.[2]).toMatchObject({ snapshot });
       expect(lifecycleCalls[1]?.[2]).toMatchObject({ snapshot });
+      expect(mockBarSnapshot).not.toHaveBeenCalled();
     });
 
     it('threads explicit pending delivery only to pre-grading and retains the strict ship refusal', async () => {
@@ -734,9 +762,9 @@ describe('evaluatePlanAcceptanceGate', () => {
         pendingDeliveryBarKeys: ['R-15'], gradingRecruitment: true,
       }))
         .toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
-      expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', {
+      expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', expect.objectContaining({
         expectedApplicable: true, pendingDeliveryBarKeys: ['R-15'],
-      });
+      }));
       const shipOptions = mockBarLifecycle.mock.calls.find((call) => call[1] === 'ship')?.[2];
       expect(shipOptions).not.toHaveProperty('pendingDeliveryBarKeys');
       expect(mockSpecCoverage).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -808,7 +836,7 @@ describe('evaluatePlanAcceptanceGate', () => {
 
       expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { gradingRecruitment: true }))
         .toMatchObject({ satisfied: false, code: 'acceptance_ungraded', rubricId: 'ar-some-plan' });
-      expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', { expectedApplicable: true });
+      expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', expect.objectContaining({ expectedApplicable: true }));
     });
 
     it('keeps the original BAR refusal if a current-revision card arrives after the stale snapshot', async () => {

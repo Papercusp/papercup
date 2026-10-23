@@ -644,6 +644,67 @@ describe('native affected-task parent receipt transport', () => {
       exitCode: child.status, signal: child.signal, error: null, captureComplete: true,
       stdout: child.stdout, stderr: child.stderr, before: inputs, after: structuredClone(inputs) };
   }
+  it.each(['valid', 'missing', 'symlink', 'corrupt', 'malformed', 'unavailable', 'oversized', 'budget'])
+  ('archives bounded loader-source references without erasing process evidence: %s', scenario => {
+    const root = mkdtempSync(join(tmpdir(), 'native-loader-source-'));
+    try {
+      const out = join(root, 'out.json'), sourceRoot = `${out}.native-processes`;
+      mkdirSync(sourceRoot);
+      const publish = (bytes: Buffer, suffix: string) => {
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        const ref = `${sha256}.${suffix}`;
+        writeFileSync(join(sourceRoot, ref), bytes);
+        return { ref, sha256, byteLength: bytes.length };
+      };
+      const bytes = Buffer.alloc(scenario === 'budget' ? 16 * 1024 * 1024 : 20, 65);
+      const source = { ...publish(bytes, 'source'), status: 'hashed', scope: 'node-loader-returned-source',
+        artifactUnavailable: false };
+      const file = join(sourceRoot, source.ref);
+      if (scenario === 'missing') rmSync(file);
+      if (scenario === 'symlink') {
+        rmSync(file);
+        const other = join(root, 'other'); writeFileSync(other, bytes); symlinkSync(other, file);
+      }
+      if (scenario === 'corrupt' || scenario === 'budget') writeFileSync(file, Buffer.alloc(bytes.length, 66));
+      if (scenario === 'malformed') source.ref = '../outside.source';
+      if (scenario === 'unavailable') source.artifactUnavailable = true;
+      if (scenario === 'oversized') source.byteLength = 16 * 1024 * 1024 + 1;
+      const stream = { ...publish(Buffer.alloc(0), 'stream'), scope: 'node-writable-call-inputs',
+        observedByteLength: 0, captureComplete: true };
+      const event = (event: string, atMs: number, fields = {}) => publish(Buffer.from(JSON.stringify({
+        schemaVersion: 1, kind: 'native-node-process-event', event, atMs, processIdentity: 'loader-fixture',
+        pid: 901, ppid: 1, ...fields,
+      })), 'json');
+      event('node-entry', 100);
+      const loads = scenario === 'budget' ? 5 : 2;
+      for (let i = 0; i < loads; i++) event('module-load-return', 101 + i,
+        { loadId: i + 1, url: 'file:///native-fixture.mjs', source });
+      event('node-exit', 110, { exitListenersComplete: true, streams: { stdout: stream, stderr: stream } });
+      const result = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), {
+        ...nativeObservation(), startedAtMs: 100, finishedAtMs: 110, processTrace: { out, rootPid: 901 },
+      });
+      const trace = result.observation.processTrace, archive = trace.loaderSources!;
+      expect(trace.events).toHaveLength(loads + 2);
+      expect(trace.streams).toHaveLength(2);
+      expect(archive.referencesVisited).toBe(loads);
+      if (scenario === 'valid') {
+        expect(archive).toMatchObject({ status: 'retained', bytesRead: bytes.length, bytesRetained: bytes.length, gaps: [] });
+        expect(archive.entries).toHaveLength(2);
+        expect(archive.entries.map(row => row.loadId)).toEqual([1, 2]);
+        expect(readFileSync(join(result.root, archive.entries[0]!.artifact.ref)).equals(bytes)).toBe(true);
+        expect(archive.entries[0]!.artifact).toEqual(archive.entries[1]!.artifact);
+      } else {
+        expect(archive.status).toBe('partial');
+        expect(archive.entries).toHaveLength(0);
+        expect(archive.gaps.length).toBeGreaterThan(0);
+        expect(archive.bytesRead).toBe(scenario === 'budget' ? 64 * 1024 * 1024 : scenario === 'corrupt' ? loads * bytes.length : 0);
+        if (scenario === 'budget') expect(archive.gaps).toContain('native-loader-source-rejected:total-byte-limit');
+      }
+      expect(result.observation.runtimeClosure).toBe('unmeasured');
+      expect(result.observation.orderedChainQualified).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('retains the actual command and binary streams in immutable independently hashed artifacts', () => {
     const root = mkdtempSync(join(tmpdir(), 'native-task-receipt-'));
     try {

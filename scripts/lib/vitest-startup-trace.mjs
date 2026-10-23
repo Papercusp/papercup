@@ -164,6 +164,48 @@ function installNativeProcessTrace(out) {
   // delegation so a killed/stuck child still names its last file boundary.
   // These are load observations, never claims that a module was evaluated.
   let loadSequence = 0;
+  const sourceByteLimit = 16 * 1024 * 1024, sourceTotalByteLimit = 64 * 1024 * 1024;
+  let sourceBytesHashed = 0;
+  const fingerprintSource = result => {
+    const observation = { scope: 'node-loader-returned-source', byteLimit: sourceByteLimit,
+      totalByteLimit: sourceTotalByteLimit };
+    try {
+      // Hash the loader's returned bytes, which may differ from the file on disk.
+      // Missing source is an explicit gap; never re-read the URL as a substitute.
+      const source = result.source, text = typeof source === 'string';
+      if (source == null) return { ...observation, status: 'unavailable' };
+      const view = ArrayBuffer.isView(source);
+      if (!text && !view && !(source instanceof ArrayBuffer))
+        return { ...observation, status: 'unsupported' };
+      const remaining = sourceTotalByteLimit - sourceBytesHashed;
+      // UTF-8 is at least as long as a string's UTF-16 code-unit count. Bound
+      // even the byte-length scan before touching a very large returned string.
+      const minimumByteLength = text ? source.length : source.byteLength;
+      const limit = minimumByteLength > sourceByteLimit ? 'source-byte-limit' :
+        minimumByteLength > remaining ? 'process-byte-limit' : null;
+      if (limit) return { ...observation, status: 'limit', limit, minimumByteLength };
+      const byteLength = text ? Buffer.byteLength(source) : source.byteLength;
+      if (byteLength > sourceByteLimit || byteLength > remaining)
+        return { ...observation, status: 'limit', byteLength,
+          limit: byteLength > sourceByteLimit ? 'source-byte-limit' : 'process-byte-limit' };
+      const bytes = text ? source : view ?
+        new Uint8Array(source.buffer, source.byteOffset, source.byteLength) : new Uint8Array(source);
+      sourceBytesHashed += byteLength; // Failed hashing attempts consume the same budget.
+      const pin = { ...observation, status: 'hashed', byteLength,
+        sha256: createHash('sha256').update(bytes).digest('hex') };
+      // The reader authenticates this reference before archival. A collision
+      // never overwrites an existing artifact or changes the native load.
+      const ref = `${pin.sha256}.source`;
+      try {
+        publish(join(root, ref), text ? Buffer.from(source) :
+          Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+        return { ...pin, ref };
+      } catch { return { ...pin, artifactUnavailable: true }; }
+    } catch {
+      // Observation must not convert a successful loader return into a failure.
+      return { ...observation, status: 'unavailable', reason: 'source-fingerprint-failed' };
+    }
+  };
   try {
     registerHooks({ load(url, context, nextLoad) {
       if (!url.startsWith('file:')) return nextLoad(url, context);
@@ -178,7 +220,7 @@ function installNativeProcessTrace(out) {
       try {
         const result = nextLoad(url, context);
         emit('module-load-return', { ...fields, elapsedMs: performance.now() - started,
-          format: result.format ?? null });
+          format: result.format ?? null, source: fingerprintSource(result) });
         return result;
       } catch (error) {
         emit('module-load-error', { ...fields, elapsedMs: performance.now() - started,

@@ -205,6 +205,7 @@ import {
   partialTaskSkipListPath,
   readPartialTaskCheckpoint,
   registerPartialNativeProducer,
+  preparePartialNativeProducerSelection,
   writePartialTaskCheckpointAtomic,
 } from "./lib/partial-task-resume.mjs";
 import { ensurePapercuspTmpdir } from "../libs/test-config/src/tmpdir-guard.ts";
@@ -1773,6 +1774,8 @@ const root = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 // cannot boot the binary and a `test` that tries would be red on every change to this package.
 const STANDALONE_PACKAGE_DIRS = [
   "papercusp-desktop",
+  // Shared card/result renderers are a file dependency outside root workspaces.
+  "libs/generic/chat-cards",
   "libs/generic/sse",
   "libs/papercusp/packages/file-claim",
   "tools/perf-test/wdio",
@@ -2131,6 +2134,15 @@ const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
 ]);
 
 const REPO_WIDE_INVARIANT_GUARDS = [
+  {
+    workspace: "@papercusp/operator-core",
+    script: "lint:new-clones",
+    forwardChangedPaths: true,
+    forwardBase: true,
+    appliesTo: (f) => /\.tsx?$/.test(f) ||
+      f === "scripts/new-clones-baseline.json" || f === "scripts/affected-tests.mjs" ||
+      f === "package.json" || f === "packages/operator-core/package.json",
+  },
   {
     workspace: "@papercusp/operator-core",
     script: "lint:condition-rail",
@@ -7608,16 +7620,17 @@ function runCapturedTask(
         const selection = enumerateAffectedTaskSelection([spawnTask], {
           root: ROOT, filterDir: RUN_LOG_ROOT, enumerateSpecifications: true,
         });
-        const entry = selection.tasks.find(task => task.id === taskKey(spawnTask));
-        if (selection.coverage !== "complete" || !entry?.selectedSpecifications)
-          throw new Error("native-producer-selection-unmeasured");
+        const prepared = preparePartialNativeProducerSelection(selection, {
+          id: taskKey(spawnTask), dir: spawnTask.ws.dir, command: spawnTask.ws.scripts[spawnTask.script],
+        }, ROOT);
+        if (prepared.status !== "ready") throw new Error(prepared.reason);
         const identity = partialSourceIdentity();
         if (!identity) throw new Error("native-producer-source-unmeasured");
         const enrolled = registerPartialNativeProducer(qualificationNativeOut, {
           attemptId: qualificationAttemptId, runGroupId: governedEnv.PAPERCUSP_TEST_RUN_GROUP,
           root: ROOT, taskKey: taskKey(context.t), workspaceName: spawnTask.ws.name,
           sourceCommit: identity.sourceCommit, registeredAtMs: Date.now(),
-          selectedSpecifications: entry.selectedSpecifications,
+          selectedSpecifications: prepared.selectedSpecifications,
           command: { cmd, argv, cwd },
         }, governedEnv);
         outSync(`QUALIFICATION_NATIVE_PRODUCER task=${JSON.stringify(taskKey(context.t))} path=${JSON.stringify(enrolled.path)}`);

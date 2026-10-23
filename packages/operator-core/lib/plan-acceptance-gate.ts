@@ -98,7 +98,7 @@ import { listSpecClauses } from './agent-tools/plans/spec-clauses-store';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
 import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
 import { readAndEvaluateAcceptanceBarLifecycle, type AcceptanceBarLifecycleVerdict } from './acceptance-bar-lifecycle-evaluator';
-import type { AcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
+import { readAcceptanceBarContractSnapshot, type AcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
 import { planDesignEvidenceGate } from './agent-tools/work_items/design-evidence-gate';
 import { evaluateIndependentVerificationGate } from './independent-verification-gate';
@@ -945,11 +945,18 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         (section) => section.heading.trim().toLowerCase() === 'requirements' && section.body.trim().length > 0,
       );
       const expectedApplicable = hasRequirements || row?.acceptance_bar_epoch != null;
+      // EI-26619271533407778: the default sweep caller has no resolver snapshot.
+      // Read it once here so a grading gap does not repeat the bounded source
+      // joins, and both lifecycle phases judge the same immutable observation.
+      const barSnapshot = opts.acceptanceBarContractSnapshot ?? readAcceptanceBarContractSnapshot(planSlug, {}, {
+        ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
+        ...(opts.current ? { current: opts.current } : {}),
+      });
       const barLifecycle = await readAndEvaluateAcceptanceBarLifecycle(planSlug, 'ship', {
         expectedApplicable,
         ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
         ...(opts.current ? { current: opts.current } : {}),
-        ...(opts.acceptanceBarContractSnapshot ? { snapshot: opts.acceptanceBarContractSnapshot } : {}),
+        snapshot: barSnapshot,
       });
       nonCodeItemProofs = barLifecycle.nonCodeItemProofs ?? [];
       barContractApplicable = barLifecycle.applicable;
@@ -998,7 +1005,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
           ...(opts.current ? { current: opts.current } : {}),
           ...(opts.pendingDeliveryBarKeys ? { pendingDeliveryBarKeys: opts.pendingDeliveryBarKeys } : {}),
-          ...(opts.acceptanceBarContractSnapshot ? { snapshot: opts.acceptanceBarContractSnapshot } : {}),
+          snapshot: barSnapshot,
         });
         // P-038: the pre-grading verdict IS the explanation of this refusal — the ship-phase
         // codes include grading/author-verdict obligations nobody can work yet. Return it

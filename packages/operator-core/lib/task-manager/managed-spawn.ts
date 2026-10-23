@@ -49,6 +49,7 @@ import {
   newTaskId,
   scopeCgroupRelPath,
   scopeUnitForTask,
+  taskIdFromScopeUnit,
   sliceForClass,
   type TaskRow,
   type TaskSpec,
@@ -170,15 +171,27 @@ let scopeProbe: Promise<{ ok: boolean; reason?: string }> | null = null;
 /**
  * Probe ONCE per operator process whether transient user scopes can be created.
  *
- * A probe beats the alternative — launch into a scope, watch for a launch-failure
+ * An existing kernel-observed task scope, attested by that same user manager,
+ * already proves support. Prefer that read to creating a redundant probe scope
+ * whose short lifetime can discard its resource counters before sampling.
+ * Otherwise a probe beats the alternative — launch into a scope, watch for a launch-failure
  * signature on stderr, then relaunch direct — because that alternative
  * double-spawns on every call on a host where it will never work, and because
  * "did the payload fail or did the SCOPE fail" is genuinely ambiguous to parse
  * (the existing seams carry a regex for exactly that ambiguity). One deterministic
  * probe answers it before any real work is at stake.
  */
-export function probeScopeSupport(spawnFn: typeof spawn = spawn): Promise<{ ok: boolean; reason?: string }> {
-  return scopeProbe ??= probeTransientScopeSupport({ spawnFn });
+export function probeScopeSupport(spawnFn: typeof spawn = spawn, fs: CgroupFs = nodeCgroupFs): Promise<{ ok: boolean; reason?: string }> {
+  if (scopeProbe) return scopeProbe;
+  const cgroupPath = readProcessCgroupPath(process.pid, fs);
+  const manager = deriveUserManagerRoot(cgroupPath);
+  const unit = cgroupPath?.split('/').at(-1);
+  const existingScope = process.platform === 'linux' && process.getuid && manager &&
+    manager.endsWith(`/user@${process.getuid()}.service`) && cgroupPath?.startsWith(`${manager}/papercusp.slice/`) &&
+    unit?.endsWith('.scope') && taskIdFromScopeUnit(unit) &&
+    readCgroupProcs(absCgroupDir(cgroupPath), fs).includes(process.pid)
+    ? { unit, cgroupPath } : undefined;
+  return scopeProbe = probeTransientScopeSupport({ spawnFn, existingScope });
 }
 
 /** Test seam — forget the cached probe. */
@@ -288,7 +301,7 @@ export async function managedSpawn(
       if (!scopeOk) skippedReason = 'confinement disabled by caller';
     } else {
       opts.stage?.('spawn-scope-probe');
-      const probe = await probeScopeSupport(spawnFn);
+      const probe = await probeScopeSupport(spawnFn, fs);
       scopeOk = probe.ok;
       skippedReason = probe.reason;
     }

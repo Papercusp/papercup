@@ -1463,7 +1463,11 @@ export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0,
   // work: deletion must still walk the whole population. This is a conservative proxy.
   const cleanupMs = Math.max(120_000, measurements.cleanup ?? 0, measurements['source.freeze'], measurements['deps.snapshot']);
   const remainingMs = sourceCheckMs * 2 + dependencyCheckMs + cleanupMs + childEstimateMs;
-  const totalMs = Math.ceil((preparationMs + remainingMs) * 1.25);
+  const remainingBudgetMs = Math.ceil(remainingMs * 1.25);
+  // Preparation consumes its margin before child admission reforecasts the
+  // remaining work. Reserve that child margin at launch too: a slower snapshot
+  // both spends preparation time and raises the protected cleanup reserve.
+  const totalMs = Math.ceil((preparationMs + remainingBudgetMs) * 1.25);
   const launchReserveMs = Math.max(30_000, Math.ceil((observedLaunchMs ?? 0) * 1.25));
   // The launcher publishes whole seconds and admission requires strictly more
   // than the forecast. Retain that strict boundary even on exact seconds.
@@ -1474,7 +1478,7 @@ export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0,
       `maxTimeoutMs=${maxTimeoutMs} workEstimateMs=${totalMs} launchReserveMs=${launchReserveMs} — ` +
       'the caller ceiling cannot fit the work forecast plus launch reserve; do not start providers.', 2);
   return { preparationMs, sourceCheckMs, dependencyCheckMs, cleanupMs, childEstimateMs,
-    unknownChild: childEstimateMs === 0, remainingMs: Math.ceil(remainingMs * 1.25),
+    unknownChild: childEstimateMs === 0, remainingMs: remainingBudgetMs,
     totalMs, observedLaunchMs: observedLaunchMs ?? null, launchReserveMs, requiredTimeoutMs };
 }
 

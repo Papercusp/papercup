@@ -401,6 +401,25 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(estimateVerifierCommandBudget(budgetPhases).unknownChild).toBe(true);
   });
 
+  it('reserves preparation growth together with the child reforecast margin before launching', () => {
+    const launch = estimateVerifierCommandBudget(budgetPhases, 600_000);
+    const slowerPhases = Object.fromEntries(Object.entries(budgetPhases)
+      .map(([phase, duration]) => [phase, Math.ceil(duration * 1.25)]));
+    const child = estimateVerifierCommandBudget(slowerPhases, 600_000);
+    const nowMs = child.preparationMs + launch.launchReserveMs;
+
+    // A slower snapshot consumes the preparation clock AND raises the cleanup
+    // reserve at child admission. The launch must cover both without lowering
+    // the child, census, cleanup or absolute-deadline guards.
+    expect(() => admitVerifierCommandBudget(child, { nowMs,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(launch.requiredTimeoutMs) } }))
+      .not.toThrow();
+    expect(() => admitVerifierCommandBudget(child, { nowMs,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(nowMs + child.remainingMs) } }))
+      .toThrow('TASK_DEADLINE_REFUSAL');
+    expect(child.cleanupMs).toBe(slowerPhases['deps.snapshot']);
+  });
+
   it('does not count failed or unfinished phase records as completed budget observations', () => {
     const path = join(tmp, 'verifier-budget-history.jsonl');
     const rows = [
@@ -428,21 +447,21 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       'source.postverify': 23_454, cleanup: 97_791 };
     const options = { observedLaunchMs: 6_802 };
     const estimate = estimateVerifierCommandBudget(measured, 3_600_000, options);
-    expect(estimate).toMatchObject({ totalMs: 7_195_585,
-      observedLaunchMs: 6_802, launchReserveMs: 30_000, requiredTimeoutMs: 7_226_000 });
+    expect(estimate).toMatchObject({ totalMs: 8_652_740,
+      observedLaunchMs: 6_802, launchReserveMs: 30_000, requiredTimeoutMs: 8_683_000 });
     expect(() => admitVerifierCommandBudget(estimate, { nowMs: 6_802, preparation: true,
       env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '7200000' } })).toThrow('TASK_DEADLINE_REFUSAL');
     expect(() => estimateVerifierCommandBudget(measured, 3_600_000,
       { ...options, maxTimeoutMs: 7_200_000 })).toThrow('VERIFIER_LAUNCH_BUDGET_REFUSAL');
     expect(admitVerifierCommandBudget(estimate, { nowMs: 6_802, preparation: true,
       env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(estimate.requiredTimeoutMs) } }))
-      .toMatchObject({ knownEstimateMs: 7_195_585, cleanupReserveMs: 817_932 });
+      .toMatchObject({ knownEstimateMs: 8_652_740, cleanupReserveMs: 817_932 });
     expect(estimateVerifierCommandBudget(measured, 3_600_000,
       { ...options, maxTimeoutMs: estimate.requiredTimeoutMs })).toEqual(estimate);
     const slowerLaunch = estimateVerifierCommandBudget(measured, 3_600_000,
       { observedLaunchMs: 40_000 });
     expect(slowerLaunch).toMatchObject({ totalMs: estimate.totalMs,
-      launchReserveMs: 50_000, requiredTimeoutMs: 7_246_000 });
+      launchReserveMs: 50_000, requiredTimeoutMs: 8_703_000 });
     expect(estimateVerifierCommandBudget(measured).observedLaunchMs).toBeNull();
   });
 

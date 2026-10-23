@@ -67,13 +67,14 @@ describe('focused runner startup tracing', () => {
     expect(nativeProcessTraceEnv(armed).NODE_OPTIONS).toBe(armed.NODE_OPTIONS);
   });
 
-  it('records module-load returns and preserves a delegated loader error object', async () => {
+  it.each(['string', 'view', 'array-buffer'])('fingerprints returned %s source and preserves a delegated loader error object', async representation => {
     const dir = mkdtempSync(join(tmpdir(), 'native-module-load-'));
     const out = join(dir, 'sources.json');
     const good = pathToFileURL(join(dir, 'good.mjs')).href;
     const bad = pathToFileURL(join(dir, 'bad.mjs')).href;
     const preload = new URL('../../../../scripts/lib/vitest-startup-trace.mjs?module-load-contract', import.meta.url).href;
-    writeFileSync(join(dir, 'good.mjs'), 'export const value = 42;');
+    const returnedSource = 'export const value = 42; // λ';
+    writeFileSync(join(dir, 'good.mjs'), 'export const value = -1;');
     writeFileSync(join(dir, 'bad.mjs'), 'export const unreachable = true;');
     const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: '0' };
     delete env.PC_EXECUTED_SOURCE_MAP_OUT;
@@ -82,6 +83,14 @@ describe('focused runner startup tracing', () => {
         const expected = Object.assign(new Error('fixture loader error'), {code:'FIXTURE_LOAD'});
         registerHooks({load(url, context, nextLoad) {
           if (url === ${JSON.stringify(bad)}) throw expected;
+          if (url === ${JSON.stringify(good)}) {
+            const source = ${JSON.stringify(returnedSource)};
+            const padded = Buffer.from('padding' + source + 'suffix');
+            return { ...nextLoad(url, context), source:
+              ${JSON.stringify(representation)} === 'string' ? source :
+              ${JSON.stringify(representation)} === 'view' ? padded.subarray(7, padded.length - 6) :
+              new TextEncoder().encode(source).buffer };
+          }
           return nextLoad(url, context);
         }});
         process.env.PC_EXECUTED_SOURCE_MAP_OUT = ${JSON.stringify(out)};
@@ -99,9 +108,56 @@ describe('focused runner startup tracing', () => {
       const start = rows.find(row => row.event === 'module-load-start' && row.url === good);
       expect(start).toMatchObject({ scope: 'node-sync-load-hook' });
       expect(rows.find(row => row.event === 'module-load-return' && row.url === good))
-        .toMatchObject({ loadId: start.loadId, processIdentity: start.processIdentity, format: 'module', elapsedMs: expect.any(Number) });
+        .toMatchObject({ loadId: start.loadId, processIdentity: start.processIdentity, format: 'module', elapsedMs: expect.any(Number),
+          source: { scope: 'node-loader-returned-source', status: 'hashed',
+            byteLength: Buffer.byteLength(returnedSource),
+            sha256: createHash('sha256').update(returnedSource).digest('hex') } });
+      const pin = rows.find(row => row.event === 'module-load-return' && row.url === good).source;
+      expect(pin.ref).toBe(`${pin.sha256}.source`);
+      expect(readFileSync(join(`${out}.native-processes`, pin.ref)).equals(Buffer.from(returnedSource))).toBe(true);
       expect(rows.find(row => row.event === 'module-load-error' && row.url === bad))
         .toMatchObject({ errorCode: 'FIXTURE_LOAD', errorName: 'Error' });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('bounds per-module and per-process source hashing without changing native loads', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-module-source-bounds-'));
+    const out = join(dir, 'sources.json');
+    const urls = Array.from({ length: 6 }, (_, i) => pathToFileURL(join(dir, `${i}.mjs`)).href);
+    // Resolution precedes load hooks; these bytes must exist but must not be
+    // mistaken for the transformed source returned by the fixture loader.
+    for (let i = 0; i < urls.length; i++) writeFileSync(join(dir, `${i}.mjs`), 'export default -1;');
+    const preload = new URL('../../../../scripts/lib/vitest-startup-trace.mjs?source-bounds', import.meta.url).href;
+    const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: '0' };
+    delete env.PC_EXECUTED_SOURCE_MAP_OUT;
+    try {
+      const source = `import { registerHooks } from 'node:module';
+        const urls = ${JSON.stringify(urls)}, prefix = 'export default 42;';
+        const bounded = prefix + '/*' + 'x'.repeat(16 * 1024 * 1024 - prefix.length - 4) + '*/';
+        registerHooks({load(url, context, nextLoad) {
+          const index = urls.indexOf(url);
+          if (index < 0) return nextLoad(url, context);
+          return { format:'module', shortCircuit:true,
+            source: index === 0 ? bounded + ' ' : index === 5 ? prefix : bounded };
+        }});
+        process.env.PC_EXECUTED_SOURCE_MAP_OUT = ${JSON.stringify(out)};
+        await import(${JSON.stringify(preload)});
+        const values = [];
+        for (const url of urls) values.push((await import(url)).default);
+        process.stdout.write(JSON.stringify(values));`;
+      const { stdout, stderr } = await promisify(execFile)(process.execPath,
+        ['--input-type=module', '-e', source], { env, timeout: 15_000 });
+      expect(JSON.parse(stdout)).toEqual([42, 42, 42, 42, 42, 42]);
+      expect(stderr).toBe('');
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
+        JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+      const observations = urls.map(url => rows.find(row => row.event === 'module-load-return' && row.url === url).source);
+      expect(observations[0]).toMatchObject({ status: 'limit', limit: 'source-byte-limit' });
+      expect(observations.slice(1, 5)).toEqual(Array.from({ length: 4 }, () => expect.objectContaining({
+        status: 'hashed', byteLength: 16 * 1024 * 1024, sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      })));
+      expect(observations[5]).toMatchObject({ status: 'limit', limit: 'process-byte-limit' });
+      expect(observations.filter(row => row.status === 'limit').every(row => !('sha256' in row))).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

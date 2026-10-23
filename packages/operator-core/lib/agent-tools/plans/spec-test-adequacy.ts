@@ -203,8 +203,14 @@ export interface SpecEvidenceForAdequacy {
   supportingBindingIds?: number[];
 }
 
+function causalPairKey(row: SpecEvidenceForAdequacy): string | null {
+  const pairs = detailsOf(row).causalPairIds;
+  return pairs?.length === 1 ? pairs[0]! : null;
+}
+
 function logicalEvidenceReferenceKey(row: SpecEvidenceForAdequacy): string {
-  return JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef]);
+  return JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef,
+    causalPairKey(row)]);
 }
 
 function proofIdentity(row: SpecEvidenceForAdequacy): string {
@@ -261,7 +267,10 @@ export function latestLogicalEvidence<T extends SpecEvidenceForAdequacy>(rows: r
     const targeted = row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample'
       ? detailsOf(row).targeted ?? null
       : null;
-    return JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef, targeted]);
+    // A whole-file run can repair several independent original failures. Each
+    // pair remains one claim, while a later append still corrects that pair.
+    return JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef,
+      targeted, causalPairKey(row)]);
   };
   const newer = (row: T, index: number, prior: { row: T; index: number }): boolean => {
     const rowTs = appendTimestamp(row);
@@ -377,7 +386,8 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     return { key, registrationKey, plane, sources, execution };
   };
   const logicalKey = (row: T) =>
-    JSON.stringify([row.workItemId, row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef]);
+    JSON.stringify([row.workItemId, row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef,
+      causalPairKey(row)]);
   const anchors = new Map<string, { id: number; scope: NonNullable<ReturnType<typeof identity>> }>();
   for (const row of rows) {
     const scope = identity(row);
@@ -403,7 +413,7 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
   }
   // Scenario, causal-pair, and test-case ids are set-valued coverage metadata. When a re-bind
   // changes only that metadata, the newest immutable row must retain the union from
-  // earlier rows for the same proof; otherwise latestLogicalEvidence silently hides
+  // earlier rows for the same proof and causal pair; otherwise latestLogicalEvidence silently hides
   // coverage the unchanged run already established. A new run or changed fingerprint
   // remains a new proof identity and starts a new metadata set.
   const reconciled = latest.map((row) => {

@@ -34,6 +34,12 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, in
     orderedChainQualified: false; runtimeClosure: 'unmeasured'; operationalAcceptance: false;
     steps: never[]; gaps: string[];
     processTrace: { scope: string; gaps: string[];
+      /** Referenced returned-source bytes only; never a complete runtime census. */
+      loaderSources?: { scope: 'referenced-loader-source'; status: 'retained' | 'partial' | 'unobserved';
+        referenceLimit: number; artifactByteLimit: number; totalByteLimit: number;
+        referencesVisited: number; bytesRead: number; bytesRetained: number; gaps: string[];
+        entries: Array<{ processIdentity: string; pid: number; loadId: number; url: string;
+          artifact: { ref: string; sha256: string; byteLength: number } }> };
       /** Observed direct root npm spans only; inherited shell streams remain unknown. */
       npmLifecycle: NativeNpmLifecycleDiagnostics;
       /** Diagnostic bytes and observed process/time binding; never a pass qualification. */

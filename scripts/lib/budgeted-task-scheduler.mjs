@@ -207,7 +207,7 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
           }
           population.artifactsVisited++;
           const name = entry.name;
-          if (!/^[a-f0-9]{64}\.(json|stream)$/.test(name))
+          if (!/^[a-f0-9]{64}\.(json|stream|source)$/.test(name))
             throw new Error("unexpected native process artifact");
           if (!name.endsWith(".json")) continue;
           const file = join(sourceRoot, name), stat = lstatSync(file);
@@ -296,6 +296,68 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
       processTrace.gaps.push(`native-process-trace-unreadable:${String(error?.message ?? error)}`);
     }
   } else processTrace.gaps.push("native-process-trace-unobserved");
+  // Retain only references on already selected process/load observations. A
+  // rejected sidecar leaves that authenticated diagnostic trace available.
+  const loaderSources = processTrace.loaderSources = { scope: 'referenced-loader-source',
+    status: 'unobserved', referenceLimit: 4096, artifactByteLimit: 16 * 1024 * 1024,
+    totalByteLimit: 64 * 1024 * 1024, referencesVisited: 0, bytesRead: 0,
+    bytesRetained: 0, entries: [], gaps: [] };
+  const loads = processTrace.events.filter(row => row.event === 'module-load-return');
+  const sourceGaps = new Set(), retainedSources = new Map();
+  if (!loads.length) sourceGaps.add('native-loader-source-observations-unobserved');
+  if (loads.length > loaderSources.referenceLimit) sourceGaps.add('native-loader-source-reference-limit');
+  for (const row of loads.slice(0, loaderSources.referenceLimit)) {
+    loaderSources.referencesVisited++;
+    try {
+      const pin = row.source;
+      if (!pin || pin.status !== 'hashed' || pin.artifactUnavailable || !pin.ref)
+        throw new Error('source-unobserved-or-unavailable');
+      if (pin.scope !== 'node-loader-returned-source' || !comparisonDigest(pin.sha256) ||
+          pin.ref !== `${pin.sha256}.source` || !Number.isSafeInteger(pin.byteLength) ||
+          pin.byteLength < 0 || pin.byteLength > loaderSources.artifactByteLimit ||
+          !Number.isSafeInteger(row.loadId) || row.loadId < 1 ||
+          typeof row.url !== 'string' || !row.url.startsWith('file:'))
+        throw new Error('malformed-or-oversized-reference');
+      let artifact = retainedSources.get(pin.sha256);
+      if (artifact && artifact.byteLength !== pin.byteLength) throw new Error('length-mismatch');
+      if (!artifact) {
+        const remaining = loaderSources.totalByteLimit - loaderSources.bytesRead;
+        if (pin.byteLength > remaining) throw new Error('total-byte-limit');
+        const path = `${input.processTrace.out}.native-processes`, directory = lstatSync(path);
+        if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error('redirected-directory');
+        const sourceRoot = realpathSync(path), file = join(sourceRoot, pin.ref);
+        const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        let bytes;
+        try {
+          const stat = fstatSync(fd);
+          if (!stat.isFile() || stat.size !== pin.byteLength) throw new Error('length-or-file-type-mismatch');
+          const buffer = Buffer.alloc(Math.min(pin.byteLength + 1, remaining));
+          let length = 0, count;
+          while (length < buffer.length && (count = readSync(fd, buffer, length, buffer.length - length, null)) > 0) {
+            length += count;
+            loaderSources.bytesRead += count; // Rejected bytes consume the same IO budget.
+          }
+          const after = fstatSync(fd), current = lstatSync(file), rootAfter = lstatSync(path);
+          if (length !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs ||
+              after.ctimeMs !== stat.ctimeMs || current.isSymbolicLink() ||
+              current.dev !== stat.dev || current.ino !== stat.ino ||
+              rootAfter.isSymbolicLink() || rootAfter.dev !== directory.dev || rootAfter.ino !== directory.ino ||
+              realpathSync(path) !== sourceRoot)
+            throw new Error('changed-during-capture');
+          bytes = buffer.subarray(0, length);
+        } finally { closeSync(fd); }
+        if (createHash('sha256').update(bytes).digest('hex') !== pin.sha256) throw new Error('digest-mismatch');
+        artifact = persist(bytes, 'loader-source');
+        retainedSources.set(pin.sha256, artifact);
+        loaderSources.bytesRetained += bytes.length;
+      }
+      loaderSources.entries.push({ processIdentity: row.processIdentity, pid: row.pid,
+        loadId: row.loadId, url: row.url, artifact });
+    } catch (error) { sourceGaps.add(`native-loader-source-rejected:${error?.code ?? error?.message ?? 'unknown'}`); }
+  }
+  loaderSources.gaps = [...sourceGaps];
+  loaderSources.status = loads.length ? (sourceGaps.size ? 'partial' : 'retained') : 'unobserved';
+  if (sourceGaps.size) processTrace.gaps.push('native-loader-sources-incomplete');
   // Derive only the root npm process's direct exported spawn/close spans. A
   // descendant inherits npm's lifecycle labels too; those labels alone cannot
   // identify a lifecycle shell or turn its inherited output into step logs.
