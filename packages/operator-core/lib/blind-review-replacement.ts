@@ -199,6 +199,7 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
     let attempt = selected.attempt;
     let outcome: unknown = attempt.launch_result;
     if (selected.launch) {
+      let invoked = false;
       try {
         // Revalidate filesystem custody against the persisted request immediately before launch.
         await validateReplacementProductReads(attempt.request_snapshot.productReads, root);
@@ -207,6 +208,7 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
           return { handler: (args: Record<string, unknown>, ctx: never) => mod.default.handler(args as never, ctx),
             confinementKey: mod.INTERNAL_SCOPED_SESSION_CONFINEMENT };
         }))();
+        invoked = true;
         outcome = await launcher.handler({ harness: input.harness, brief: attempt.request_snapshot.kickoff,
           headless: true, agent: 'codex', account: BLIND_GAP_REVIEW_ACCOUNT, independent: true,
           mcpTarget: 'spawn-host', idempotencyKey: attempt.launch_key }, {
@@ -217,7 +219,9 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
         } as never);
       } catch (error) {
         // A thrown transport/launcher exception may follow spawn. Never release on it.
-        outcome = { uncertain: error instanceof Error ? error.message : String(error) };
+        const message = error instanceof Error ? error.message : String(error);
+        outcome = invoked ? { uncertain: message }
+          : { data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } }, message };
       }
       await sql`UPDATE harness_shared.plan_blind_review_sessions SET launch_result = ${sql.json((outcome ?? null) as never)},
         status = 'uncertain', updated_at = now() WHERE id = ${attempt.id} AND status = 'launching'`;

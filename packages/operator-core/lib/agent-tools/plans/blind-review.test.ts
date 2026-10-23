@@ -68,7 +68,8 @@ describe('plans:blind-review typed recruiter replacement', () => {
     replaceBlindGapReviewer.mockResolvedValue({ ok: true, attempt: { id: 9, status: 'uncertain' } });
     const ctx = { workspaceId: '*', uiClientId: 'su-author', isSuperuser: true };
     const result = await tool.handler(args as never, ctx as never);
-    expect(replaceBlindGapReviewer).toHaveBeenCalledWith({ ...args, harness: 'papercusp', workspaceId: 'ws-resolved',
+    const { op: _op, ...request } = args;
+    expect(replaceBlindGapReviewer).toHaveBeenCalledWith({ ...request, harness: 'papercusp', workspaceId: 'ws-resolved',
       howToRun: undefined, ctx: { ...ctx, workspaceId: 'ws-resolved' } });
     expect(result.isError).toBeUndefined();
   });
