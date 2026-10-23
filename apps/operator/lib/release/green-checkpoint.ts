@@ -10692,6 +10692,21 @@ export function canonicalGreenCheckpointSourceEnv(
   return env;
 }
 
+/** P016 telemetry is separate from deliberately unscoped CI test_runs. */
+export function testFileCoverageScopeEnv(
+  treeDir: string,
+  cfg: { checkpointRoot: string; integrationRoot: string; releaseRoot: string },
+  candidate: string | null | undefined,
+  target: { workspaceId: string; installSlug: string } | null,
+): Record<string, string> {
+  const executionRoot = path.resolve(treeDir), repositoryRoot = path.resolve(cfg.integrationRoot);
+  if (!target || !candidate || !/^[a-f0-9]{40,64}$/.test(candidate)
+    || executionRoot !== path.resolve(cfg.checkpointRoot) || executionRoot === repositoryRoot
+    || executionRoot === path.resolve(cfg.releaseRoot)) return {};
+  return { PC_TEST_FILE_COVERAGE_SCOPE: JSON.stringify({ workspaceId: target.workspaceId,
+    harnessSlug: target.installSlug, executionRoot, repositoryRoot, candidate }) };
+}
+
 /**
  * Per-fork V8 old-space cap (MiB) the gate FORCES onto the spawned vitest forks.
  *
@@ -23298,6 +23313,9 @@ export function realCheckpointDeps(
       const checkpointRoot = path.resolve(cfg.checkpointRoot);
       const integrationRoot = path.resolve(cfg.integrationRoot);
       const releaseRoot = path.resolve(cfg.releaseRoot);
+      // The collector verifies canonical source hashes before rebasing any observation.
+      Object.assign(env, testFileCoverageScopeEnv(treeDir, cfg, execution?.candidate ?? resolveCandidateSha(treeDir),
+        gateVerdictTargetFromEnv() ?? resolveHomeGateVerdictTarget()));
       if (
         path.resolve(treeDir) === checkpointRoot &&
         checkpointRoot !== integrationRoot &&

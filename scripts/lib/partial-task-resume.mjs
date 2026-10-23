@@ -197,6 +197,62 @@ export function preparePartialNativeProducerSelection(selection, task, root) {
   return { status: "ready", reason: null, selectedSpecifications: structuredClone(entry.selectedSpecifications) };
 }
 
+/** Prepare disjoint native output channels from the ORIGINAL npm task inventory.
+ * The independently selected manifest validates source mappings before any channel
+ * is offered. This does not replace npm with leaf commands, enroll a producer, or
+ * settle command/post-suite work. The caller must bind each channel to its actual
+ * native process before using its outcomes.
+ * @param {{selection: any, task: any, root: string, outPath: string, postSuite: any}} input
+ */
+export function preparePartialNativeProducerChannels({ selection, task, root, outPath, postSuite }) {
+  const refused = reason => ({ status: "refused", reason, channels: [], manifest: null,
+    commandUnitIds: [], postSuiteUnitIds: [], operationalAcceptance: false });
+  if (!isAbsolute(root ?? "") || !isAbsolute(outPath ?? "") ||
+      !Array.isArray(selection?.tasks) || selection.tasks.length !== 1 ||
+      !Array.isArray(selection.overlaps) || selection.overlaps.length)
+    return refused("native-channel-selection-unmeasured");
+  const prepared = preparePartialContinuationManifest({ tasks: [task], selection, root, postSuite });
+  if (prepared.status !== "ready") return refused(`native-channel-${prepared.reason}`);
+  const entry = selection.tasks[0];
+  const channels = [];
+  const add = (leaf, step, script, command, commands, residues) => {
+    const taskKey = step === null ? task.id : `${task.id}:step:${step}`;
+    const local = { ...leaf, id: taskKey, dir: task.dir, command,
+      lifecycleCommands: leaf.lifecycleCommands ?? [], commandObligations: commands };
+    const native = preparePartialNativeProducerSelection({ ...selection, tasks: [local], files: local.files,
+      commandObligations: commands.map(value => ({ ...value, task: taskKey })),
+      unenumerated: residues.map(value => ({ ...value, task: taskKey })) }, local, root);
+    if (native.status !== "ready") return native.reason;
+    channels.push({ taskKey, sourceTask: task.id, step, script, command,
+      outPath: step === null ? outPath : `${outPath}.step-${step}`,
+      selectedSpecifications: native.selectedSpecifications });
+    return null;
+  };
+  if (entry.runner === "vitest") {
+    const reason = add(entry, null, entry.script ?? null, task.command, entry.commandObligations ?? [],
+      selection.unenumerated.map(({ task: _task, ...value }) => value));
+    if (reason) return refused(reason);
+  } else if (entry.runner === "command-chain") {
+    if (entry.steps.length > 64) return refused("native-channel-step-limit");
+    for (const [index, step] of entry.steps.entries()) {
+      if (step.lifecycle === true) continue;
+      const leaf = step.discovery[0];
+      if (["command-check", "astro-check"].includes(leaf.runner)) continue;
+      if (leaf.runner !== "vitest") return refused("native-channel-runner-unsupported");
+      const reason = add(leaf, index, step.script, step.command,
+        step.commandObligations.map(({ task: _task, ...value }) => value),
+        step.unenumerated.map(({ task: _task, ...value }) => value));
+      if (reason) return refused(reason);
+    }
+  } else if (!["command-check", "astro-check", "lifecycle-command"].includes(entry.runner)) {
+    return refused("native-channel-runner-unsupported");
+  }
+  return { status: "ready", reason: null, channels, manifest: prepared.manifest,
+    commandUnitIds: prepared.manifest.units.filter(unit => unit.kind === "guard").map(unit => unit.id),
+    postSuiteUnitIds: prepared.manifest.units.filter(unit => unit.kind === "post-suite").map(unit => unit.id),
+    operationalAcceptance: false };
+}
+
 /** Enroll the independent selection and actual command before its native child can start.
  * Extends the existing OUT artifact; the environment is stored only as a digest.
  * Enrollment is immutable and does not authorize reuse or establish runner custody.

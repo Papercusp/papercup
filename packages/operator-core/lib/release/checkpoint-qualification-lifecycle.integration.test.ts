@@ -60,6 +60,7 @@ import {
 import { fireAwaitsForKey, registerAwait } from '../events/await/store';
 import { writeFrozenCandidateRepairQueue } from '../harness/routines/release-actions';
 import { evaluatePartialTaskContinuation, registerPartialNativeProducer } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { vitestConfigLoaderPolicy } from '../../../../scripts/lib/vitest-host-preflight.mjs';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -292,7 +293,8 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: owner.attemptId,
       PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://127.0.0.1:1/native-crash-fixture',
     });
-    const child = spawn(process.execPath, argv, { cwd: fixtureRoot, env, detached: true,
+    const policy = vitestConfigLoaderPolicy(argv, env);
+    const child = spawn(process.execPath, [...policy.vitestArgs, ...policy.configLoaderArgs], { cwd: fixtureRoot, env, detached: true,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     let output = '';
     child.stdout!.on('data', chunk => { output += chunk; });

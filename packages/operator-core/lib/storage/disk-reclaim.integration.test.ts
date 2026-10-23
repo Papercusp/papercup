@@ -172,6 +172,30 @@ const fixtureBuildRemover = (entry: RetentionEntry, ms: number, _observe?: (timi
   }), undefined, dryRun);
 
 describe('retention on a real fixture tree', () => {
+  it('discovers fresh policy roots on each pass and refuses symlink roots before reclaiming', async () => {
+    const { root, options } = await setup();
+    const one = join(root, 'run-one'), owner = join(fixture!, 'owner');
+    await mkdir(one); await mkdir(owner);
+    await writeFile(join(one, 'expired'), 'disposable');
+    await writeFile(join(owner, 'keep'), 'owner data');
+    await symlink(owner, join(root, 'run-alias'));
+    const discovered = { ...options, roots: undefined,
+      policy: [{ ...options.policy[0]!, roots: [join(root, 'run-*')] }] };
+    const first = await runDiskReclaimOnce(discovered);
+    expect(first.complete).toBe(true);
+    expect(first.roots?.map(value => value.path)).toEqual([one]);
+    expect(first.entries).toContainEqual(expect.objectContaining({ path: join(one, 'expired'), status: 'removed' }));
+    await expect(stat(join(one, 'expired'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(join(owner, 'keep'), 'utf8')).toBe('owner data');
+    const two = join(root, 'run-two');
+    await mkdir(two); await writeFile(join(two, 'expired'), 'newly discovered');
+    const second = await runDiskReclaimOnce(discovered);
+    expect(second.complete).toBe(true);
+    expect(second.roots?.map(value => value.path).sort()).toEqual([one, two]);
+    await expect(stat(join(two, 'expired'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(join(owner, 'keep'), 'utf8')).toBe('owner data');
+  });
+
   it('distinguishes preparation, admission, protection and audit waits in the persisted receipt', async () => {
     const { root, options } = await setup();
     let elapsed = 0;

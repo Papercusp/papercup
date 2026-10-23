@@ -803,8 +803,23 @@ export async function scanRetentionRootHolders(root: { path: string; aliases: st
 }
 
 /** Expand policy patterns using the policy's own compiled segment matchers. No symlink traversal. */
-async function policyRoots(policy: CompiledPolicy, home: string, errors: string[]): Promise<Array<{ path: string; classId: string }>> {
+export async function policyRoots(policy: CompiledPolicy, home: string, errors: string[], io: {
+  lstat: typeof lstat; readdir: (path: string) => Promise<string[]>;
+} = { lstat, readdir }): Promise<Array<{ path: string; classId: string }>> {
   const roots: Array<{ path: string; classId: string }> = [];
+  // Policy patterns share long literal prefixes and wildcard parents. Reuse
+  // discovery metadata only for this pass; physical ownership, census and
+  // effect guards below still obtain fresh evidence before any removal.
+  const listings = new Map<string, Promise<string[]>>();
+  const stats = new Map<string, ReturnType<typeof lstat>>();
+  const list = (path: string) => {
+    if (!listings.has(path)) listings.set(path, io.readdir(path));
+    return listings.get(path)!;
+  };
+  const inspect = (path: string) => {
+    if (!stats.has(path)) stats.set(path, io.lstat(path));
+    return stats.get(path)!;
+  };
   for (const cls of policy.classes.values()) {
     if (!cls.enforcers.some((e) => e.kind === 'standing-reclaim' && !e.via)) continue;
     if (cls.keep.kind !== 'max-age' && cls.keep.kind !== 'newest') continue;
@@ -815,11 +830,11 @@ async function policyRoots(policy: CompiledPolicy, home: string, errors: string[
         const next: string[] = [];
         for (const parent of parents) {
           try {
-            const names = literal[i]!.includes('*') || literal[i]!.startsWith('re:') ? await readdir(parent) : [literal[i]!];
+            const names = literal[i]!.includes('*') || literal[i]!.startsWith('re:') ? await list(parent) : [literal[i]!];
             for (const name of names) {
               if (!root.segments[i]!.test(name)) continue;
               const path = join(parent, name);
-              const s = await lstat(path);
+              const s = await inspect(path);
               if (s.isDirectory() && !s.isSymbolicLink()) next.push(path);
             }
           } catch (err) { if (!absent(err)) errors.push(`root:${parent}: ${message(err)}`); }

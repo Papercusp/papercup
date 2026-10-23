@@ -46,10 +46,10 @@ async function resumeContract(current: AuthoritySnapshot, change: () => void) {
   return { initial, decision: await pending, effects };
 }
 
-const cutovers = (['queued', 'in-flight'] as const).flatMap(phase =>
-  authorities.flatMap(authority => (['revocation', 'narrowing'] as const).map(change => ({
-    phase, authority, change, name: `${phase} ${authority.kind}/${authority.id} ${change}`,
-  }))));
+const cutovers = authorities.flatMap(authority =>
+  (['revocation', 'narrowing'] as const).map(change => ({
+    authority, change, name: `${authority.kind}/${authority.id} ${change}`,
+  })));
 
 describe('P-024 shared cutover contract', () => {
   it.each(cutovers)('$name rechecks the deciding revision before the contract effect', async ({ authority, change }) => {

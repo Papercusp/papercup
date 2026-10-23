@@ -937,6 +937,7 @@ function emitMutationProbeWindow() {
 // representation means equals-form callers get the same positional-argument
 // safety checks and changed-path cardinality reporting as space-form callers.
 const VALUE_FLAGS = new Set([
+  "--qualification-work",
   "--base",
   "--range-from",
   "--range-to",
@@ -1028,6 +1029,10 @@ const runIntegration = has("--integration") || integrationOnly;
 const partialResumeRequested =
   has("--partial-resume") || process.env.AFFECTED_PARTIAL_RESUME === "1";
 const qualificationWorkFile = arg("--qualification-work", null);
+if (has('--qualification-work') && !qualificationWorkFile) {
+  errSync('--qualification-work requires an integrity-sealed checkpoint path');
+  process.exit(2);
+}
 const runAll = has("--all");
 // EI-19463337855465369: `--dry-run` is the more common CLI convention (npm,
 // git, rsync, kubectl all use it) and this repo's own agent guidance points
@@ -1165,18 +1170,24 @@ if (syncAstroSelection && !printSelection) {
 // rather than producing a partial report nobody can tell is partial. What was and was
 // not instrumented is REPORTED (see the COVERAGE_PASSTHROUGH line below), because a
 // silently partial lcov is what makes the downstream patch gate vacuous.
-const coverageRequested = has("--coverage");
+// P016/D017: reuse the checkpoint's producer; local runs remain explicitly opt-in.
+const coverageRequested = has("--coverage") || process.env.GREEN_CHECKPOINT === "1";
 
 /** Does this workspace script invoke vitest directly (not via a composite line)? */
 function scriptRunsVitestDirectly(scriptText) {
-  return /(^|[\s;&|])vitest(\s|$)/.test(scriptText ?? "");
+  return !/[;&|]/.test(scriptText ?? "") && /(^|\s)vitest(\s|$)/.test(scriptText ?? "");
 }
 
 /** The coverage args to append for ONE task — empty unless `--coverage` applies. */
 function coverageArgsFor(t) {
   if (!coverageRequested) return [];
   if (t.isInvariantGuard) return [];
-  return scriptRunsVitestDirectly(t.ws.scripts?.[t.script]) ? ["--coverage"] : [];
+  const command = t.ws.scripts?.[t.script];
+  if (!scriptRunsVitestDirectly(command)) return [];
+  // Auto collection is only supported by the already-enrolled shared producer.
+  // A manual --coverage keeps its existing ability to request ordinary LCOV elsewhere.
+  if (!has("--coverage") && !resolveTaskReportExpectation({ command, wsDir: join(ROOT, t.ws.dir) }).expectsReport) return [];
+  return ["--coverage"];
 }
 
 // --related — narrow each affected workspace's run to the TEST FILES that could
@@ -5879,7 +5890,9 @@ if (coverageRequested) {
   for (const t of skipped) {
     const why = t.isInvariantGuard
       ? "repo-wide invariant guard (would clobber the workspace's real report)"
-      : "script does not invoke vitest directly";
+      : !scriptRunsVitestDirectly(t.ws.scripts?.[t.script])
+        ? "script does not invoke vitest directly"
+        : "per-test collector is not enrolled; execution coverage remains unmeasured";
     errSync(`  COVERAGE_SKIPPED\t${t.ws.name} :: ${t.script}\t${why}`);
   }
   if (instrumented.length === 0) {

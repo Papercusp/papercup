@@ -17,6 +17,7 @@ import {
   readPartialNativeProducer,
   preparePartialContinuationManifest,
   preparePartialRemainingSelection,
+  preparePartialNativeProducerChannels,
 } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 const ID = {
@@ -117,6 +118,64 @@ describe('remaining work preserves the original selected population', () => {
         `return { path: arg('--qualification-work', null), positionalArgs };`);
       expect(parse({ argv: ['node', 'affected-tests.mjs', ...argv] })).toEqual({ path: '/snapshot', positionalArgs: [] });
     });
+});
+
+describe('original npm native channel preparation', () => {
+  const fixture = () => {
+    const root = mkdtempSync(join(tmpdir(), 'partial-native-channels-'));
+    const scripts = { test: 'npm run first && npm run second', first: 'vitest run a.test.ts', second: 'vitest run b.test.ts' };
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts }));
+    const task = { id: 'ws :: test', dir: '.', command: scripts.test };
+    const steps = ['first', 'second'].map((script, index) => {
+      const command = scripts[script as 'first' | 'second'];
+      const file = `${index ? 'b' : 'a'}.test.ts`;
+      return { script, command, files: [file], commandObligations: [], unenumerated: [],
+        discovery: [{ runner: 'vitest', command, files: [file], commandObligations: [], lifecycleCommands: [],
+          selectedSpecifications: [{ testFile: file, pool: 'forks', projectName: null,
+            testNamePattern: null, testIds: null, testTagsFilter: null, testLines: null }] }] };
+    });
+    const entry = { ...task, workspace: 'ws', script: 'test', runner: 'command-chain',
+      steps, files: steps.flatMap(step => step.files), commandObligations: [] };
+    const selection = { schemaVersion: 1, kind: 'full-gate', phase: 'selection-preparation', executed: false,
+      tasks: [entry], files: entry.files, unenumerated: [], commandObligations: [], overlaps: [] };
+    const postSuite = { schemaVersion: 1, coverage: 'complete',
+      units: [{ id: 'post:build', kind: 'post-suite', path: 'package.json' }] };
+    const input = { root, outPath: join(root, 'out.json'), task, selection, postSuite };
+    return { root, scripts, input, prepare: () => preparePartialNativeProducerChannels(input) };
+  };
+
+  it('assigns distinct channels to original npm steps and keeps its chain and post guards owed', () => {
+    const { root, input, prepare } = fixture();
+    try {
+      expect(prepare()).toMatchObject({ status: 'ready', operationalAcceptance: false,
+        channels: [{ taskKey: 'ws :: test:step:0', sourceTask: 'ws :: test', step: 0, script: 'first',
+          command: 'vitest run a.test.ts', outPath: `${input.outPath}.step-0`,
+          selectedSpecifications: [{ testFile: 'a.test.ts' }] },
+        { taskKey: 'ws :: test:step:1', sourceTask: 'ws :: test', step: 1, script: 'second',
+          command: 'vitest run b.test.ts', outPath: `${input.outPath}.step-1`,
+          selectedSpecifications: [{ testFile: 'b.test.ts' }] }],
+        commandUnitIds: ['chain:ws :: test'], postSuiteUnitIds: ['post:build'] });
+      expect(input.task.command).toBe('npm run first && npm run second');
+      expect(input.selection.tasks[0]!.steps).toHaveLength(2);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['source', 'order', 'selection', 'overlap', 'post', 'relative-output', 'unsupported-runner'])(
+    'offers no partial channels after %s invalidates the original population', scenario => {
+      const { root, scripts, input, prepare } = fixture();
+      try {
+        if (scenario === 'source') writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { ...scripts, test: 'npm run first' } }));
+        if (scenario === 'order') input.selection.tasks[0]!.steps.reverse();
+        if (scenario === 'selection') input.selection.tasks[0]!.steps[1]!.discovery[0]!.selectedSpecifications = [];
+        if (scenario === 'overlap') input.selection.overlaps.push({ file: 'a.test.ts' } as never);
+        if (scenario === 'post') input.postSuite.units = [];
+        if (scenario === 'relative-output') input.outPath = 'out.json';
+        if (scenario === 'unsupported-runner') input.selection.tasks[0]!.steps[1]!.discovery[0]!.runner = 'node-test';
+        expect(prepare()).toMatchObject({ status: 'refused', channels: [], manifest: null,
+          commandUnitIds: [], postSuiteUnitIds: [], operationalAcceptance: false });
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    },
+  );
 });
 
 describe('partial-task-resume', () => {

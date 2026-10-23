@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { compilePolicy, type RetentionClass } from './retention-policy';
-import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
+import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, policyRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
@@ -174,6 +174,41 @@ describe('bounded scheduled retention drain', () => {
     run.mockClear().mockResolvedValueOnce(partial()).mockResolvedValueOnce(null);
     expect(await drainScheduledDiskReclaim(run)).toMatchObject({ batches: 1, stop: 'time-limit' });
     expect(run.mock.calls[1]).toEqual([1, 900_000]);
+  });
+});
+
+describe('policy root discovery', () => {
+  it('shares prefix metadata within a pass without following symlinks or caching the next pass', async () => {
+    const roots = compilePolicy([
+      { ...policy[0]!, id: 'logs', roots: ['~/.workspaces/*/logs'] },
+      { ...policy[0]!, id: 'restores', roots: ['~/.workspaces/*/restore-*'] },
+    ], '/home/test');
+    const directories: Record<string, string[]> = {
+      '/home/test/.workspaces': ['one', 'alias', 'file', 'unreadable'],
+      '/home/test/.workspaces/one': ['logs', 'restore-old', 'restore-link', 'restore-file'],
+    };
+    let current = 'old';
+    const inspect = vi.fn(async (path: string) => {
+      if (path.endsWith('/unreadable')) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      const symlink = path.endsWith('/alias') || path.endsWith('/restore-link');
+      const file = path.endsWith('/file') || path.endsWith('/restore-file');
+      return { isDirectory: () => !file && !symlink, isSymbolicLink: () => symlink };
+    });
+    const list = vi.fn(async (path: string) => (directories[path] ?? []).map(name => name === 'restore-old' ? `restore-${current}` : name));
+    const io = { lstat: inspect as unknown as typeof import('node:fs/promises').lstat, readdir: list };
+    const errors: string[] = [];
+    expect(await policyRoots(roots, '/home/test', errors, io)).toEqual([
+      { path: '/home/test/.workspaces/one/logs', classId: 'logs' },
+      { path: '/home/test/.workspaces/one/restore-old', classId: 'restores' },
+    ]);
+    expect(errors).toEqual([expect.stringContaining('permission denied'), expect.stringContaining('permission denied')]);
+    expect(inspect.mock.calls.filter(([path]) => path === '/home/test/.workspaces/one')).toHaveLength(1);
+    expect(list.mock.calls.filter(([path]) => path === '/home/test/.workspaces')).toHaveLength(1);
+    current = 'new';
+    expect(await policyRoots(roots, '/home/test', [], io)).toContainEqual({
+      path: '/home/test/.workspaces/one/restore-new', classId: 'restores',
+    });
+    expect(list.mock.calls.filter(([path]) => path === '/home/test/.workspaces')).toHaveLength(2);
   });
 });
 

@@ -64,16 +64,16 @@ async function seed() {
 }
 
 async function nativeLaunch(input: BlindReviewReplacementInput, args: Record<string, unknown>, ctx: never, key: symbol) {
-  const owner = `su-replacement-new-${input.slug}`;
+  const owner = `su-replacement-new-${input.slug}-${String(args.idempotencyKey).slice(-8)}`;
   const confinement = (ctx as Record<symbol, unknown>)[key];
   const declared = await declareSessionConfinement({ workspaceId: WS, ownerId: owner, confinement: confinement as never });
   expect(declared.ok).toBe(true);
   const [native] = await fx.admin<Array<{ id: number }>>`INSERT INTO harness_shared.adv_sessions
     (workspace_id, mode, coord_owner_id, session_id, agent, launch_spec, launch_argv)
-    VALUES (${WS}, 'omp', ${owner}, ${`native-${input.slug}`}, 'codex',
+    VALUES (${WS}, 'omp', ${owner}, ${`native-${owner}`}, 'codex',
       ${fx.admin.json({ launchedBy: BLIND_GAP_REVIEW_ACTOR, headless: true, account: 'auto' } as never)}, '[]') RETURNING id`;
   const launch = { opened: 1, partial: false, ownerIds: [owner], tasks: [{ ownerId: owner }],
-    freshVerdict: { sessions: [{ ownerId: owner, advSessionId: Number(native!.id), sessionId: `native-${input.slug}` }] } };
+    freshVerdict: { sessions: [{ ownerId: owner, advSessionId: Number(native!.id), sessionId: `native-${owner}` }] } };
   await fx.admin`INSERT INTO harness_shared.agent_launch_idempotency (workspace_id, idempotency_key, launched_at, launched_by, summary)
     VALUES (${WS}, ${String(args.idempotencyKey)}, ${Date.now()}, ${BLIND_GAP_REVIEW_ACTOR}, ${fx.admin.json(launch as never)})`;
   return { data: { launch } };
@@ -129,6 +129,43 @@ describe('same-activation replacement on private PostgreSQL', () => {
     expect(launch).toHaveBeenCalledTimes(1);
   });
 
+  it('permits recovery after a confirmed failed start, preserving the ended native identity in ordered history', async () => {
+    const s = await seed();
+    const key = Symbol('confinement');
+    const launch = vi.fn(async (args, ctx) => {
+      const result = await nativeLaunch(s.input, args, ctx, key);
+      if (launch.mock.calls.length === 1) {
+        const receipt = result.data.launch.freshVerdict.sessions[0];
+        await fx.admin`UPDATE harness_shared.adv_sessions SET ended_at = now() WHERE id = ${receipt.advSessionId}`;
+        return { ...result, isError: true, data: { launch: { ...result.data.launch, agentStarted: false } } };
+      }
+      return result;
+    });
+    s.deps.launcher = async () => ({ handler: launch, confinementKey: key });
+    const failed = await replaceBlindGapReviewer(s.input, s.deps);
+    expect(failed).toMatchObject({ ok: true, attempt: { status: 'failed', attemptSeq: 1 } });
+    expect((failed.attempt as { nativeSessionId: string }).nativeSessionId).toBeTruthy();
+    const recovered = await replaceBlindGapReviewer({ ...s.input, requestKey: 'new-after-confirmed-exit' }, s.deps);
+    expect(recovered).toMatchObject({ ok: true, attempt: { status: 'ready', attemptSeq: 2 },
+      attempts: [{ status: 'failed', attemptSeq: 1 }, { status: 'ready', attemptSeq: 2 }] });
+    expect((recovered.attempts as unknown[])[0]).toEqual(failed.attempt);
+    expect(launch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not release a failed-start receipt while its exact native writer is still live', async () => {
+    const s = await seed();
+    const key = Symbol('confinement');
+    const launch = vi.fn(async (args, ctx) => {
+      const result = await nativeLaunch(s.input, args, ctx, key);
+      return { ...result, isError: true, data: { launch: { ...result.data.launch, agentStarted: false } } };
+    });
+    s.deps.launcher = async () => ({ handler: launch, confinementKey: key });
+    expect(await replaceBlindGapReviewer(s.input, s.deps)).toMatchObject({ ok: true, attempt: { status: 'ready', attemptSeq: 1 } });
+    expect(await replaceBlindGapReviewer({ ...s.input, requestKey: 'duplicate' }, s.deps))
+      .toMatchObject({ ok: true, deduped: true, attempt: { status: 'ready', attemptSeq: 1 } });
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a no-receipt timeout reserved across retries with different request keys', async () => {
     const s = await seed();
     const launch = vi.fn(async () => { throw new Error('unknown spawn outcome'); });
@@ -136,6 +173,21 @@ describe('same-activation replacement on private PostgreSQL', () => {
     await replaceBlindGapReviewer(s.input, s.deps);
     const repeated = await replaceBlindGapReviewer({ ...s.input, requestKey: 'retry' }, s.deps);
     expect(repeated).toMatchObject({ ok: true, deduped: true, attempt: { attemptSeq: 1, status: 'uncertain' } });
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses to admit a related native reviewer and keeps its uncertain attempt protected', async () => {
+    const s = await seed();
+    const key = Symbol('confinement');
+    const launch = vi.fn((args, ctx) => nativeLaunch(s.input, args, ctx, key));
+    s.deps.launcher = async () => ({ handler: launch, confinementKey: key });
+    s.deps.lineageRelated = async () => true;
+    expect(await replaceBlindGapReviewer(s.input, s.deps)).toMatchObject({ ok: false, error: 'reviewer_not_independent' });
+    const [attempt] = await fx.admin`SELECT status, reviewer_owner_id FROM harness_shared.plan_blind_review_sessions
+      WHERE replacement_of = ${s.bindingId}`;
+    expect(attempt).toMatchObject({ status: 'uncertain', reviewer_owner_id: null });
+    expect(await replaceBlindGapReviewer({ ...s.input, requestKey: 'must-not-relaunch' }, s.deps))
+      .toMatchObject({ ok: false, error: 'reviewer_not_independent' });
     expect(launch).toHaveBeenCalledTimes(1);
   });
 

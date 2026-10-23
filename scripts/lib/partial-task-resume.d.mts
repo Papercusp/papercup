@@ -23,6 +23,36 @@ export function preparePartialNativeProducerSelection(selection: any, task: any,
     reason: null;
     selectedSpecifications: any;
 };
+/** Prepare disjoint native output channels from the ORIGINAL npm task inventory.
+ * The independently selected manifest validates source mappings before any channel
+ * is offered. This does not replace npm with leaf commands, enroll a producer, or
+ * settle command/post-suite work. The caller must bind each channel to its actual
+ * native process before using its outcomes.
+ * @param {{selection: any, task: any, root: string, outPath: string, postSuite: any}} input
+ */
+export function preparePartialNativeProducerChannels({ selection, task, root, outPath, postSuite }: {
+    selection: any;
+    task: any;
+    root: string;
+    outPath: string;
+    postSuite: any;
+}): {
+    status: string;
+    reason: any;
+    channels: never[];
+    manifest: null;
+    commandUnitIds: never[];
+    postSuiteUnitIds: never[];
+    operationalAcceptance: boolean;
+} | {
+    status: string;
+    reason: null;
+    channels: any[];
+    manifest: any;
+    commandUnitIds: any;
+    postSuiteUnitIds: any;
+    operationalAcceptance: boolean;
+};
 /** Enroll the independent selection and actual command before its native child can start.
  * Extends the existing OUT artifact; the environment is stored only as a digest.
  * Enrollment is immutable and does not authorize reuse or establish runner custody.

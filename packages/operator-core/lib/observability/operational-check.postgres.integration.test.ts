@@ -95,7 +95,11 @@ describe('release writer population with real PostgreSQL null semantics', () => 
       projectId: '7', evidenceRef: 'authenticated-exact-id-query', events });
     expect(await measureOperationalObservability('release', scope)).toMatchObject({ verdict: 'fail',
       detail: expect.stringContaining('Expected ' + kind + ' absent after ingestion bound') });
-    expect(readConfiguredTraceProject).toHaveBeenLastCalledWith(['1'.repeat(32), '2'.repeat(32), '3'.repeat(32)]);
+    // The SQL exposes bigint IDs as text; crossing a decimal-width boundary
+    // may change query order. Prove the exact population without ordering it.
+    const queriedTraceIds = vi.mocked(readConfiguredTraceProject).mock.lastCall?.[0];
+    expect(queriedTraceIds).toHaveLength(3);
+    expect(queriedTraceIds).toEqual(expect.arrayContaining(['1'.repeat(32), '2'.repeat(32), '3'.repeat(32)]));
     if (mixed) {
       events.push({ uuid: 'restored-generation-1', event: '$ai_generation', traceId: '1'.repeat(32),
         spanId: '7'.repeat(16), parentSpanId: '4'.repeat(16), callId: null, timestamp: now - 300_500,

@@ -538,6 +538,7 @@ export function buildDetachedTestRunRequest(opts: {
       runtimeMaxSec: Math.max(1, Math.floor((opts.deadline.taskDeadlineAtMs - Date.now()) / 1_000)),
       ...(opts.workItemId ? { workItemId: opts.workItemId } : {}),
       env: {
+        NODE_ENV: 'test',
         PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: String(opts.deadline.taskDeadlineAtMs),
         PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: String(opts.deadline.childCutoffAtMs),
         PAPERCUSP_TEST_CLEANUP_RESERVE_MS: String(opts.deadline.cleanupReserveMs),
@@ -565,6 +566,7 @@ export function buildDetachedTestRunRequest(opts: {
     ...(opts.testNamePattern ? [`--testNamePattern=${opts.testNamePattern}`] : []),
   ];
   const env: NodeJS.ProcessEnv = {
+    NODE_ENV: 'test',
     PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(detachedRecoveryRouterTimeoutMs(opts.timeoutMs)),
     ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
     ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
@@ -692,6 +694,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
   ].join('\n');
   const root = opts.groups[0]?.root ?? resolveAgentWorkspaceRoot({});
   const env: NodeJS.ProcessEnv = {
+    NODE_ENV: 'test',
     PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(detachedRecoveryRouterTimeoutMs(opts.timeoutMs)),
     ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
     ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
@@ -3718,6 +3721,9 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
 
     const childEnv: NodeJS.ProcessEnv = {
       ...process.env,
+      // Vitest preserves an existing NODE_ENV. The serving operator uses production,
+      // which makes Vite erase builtin identities in jsdom before tests can collect.
+      NODE_ENV: 'test',
       PAPERCUSP_TEST_RUN_GROUP: runId,
       PAPERCUSP_TEST_ATTRIBUTION: '1',
       PAPERCUSP_TEST_FAILURE_DETAILS_PATH: failureDetailsPath,

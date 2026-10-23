@@ -83,7 +83,7 @@ export type LoopNextWakeInput =
 
 /**
  * P-013 (review-system-rework-reduction-2026-09-23) / EI-24023838400909760: did this
- * loop's most recent fire PARK undelivered on a path that will park again?
+ * loop's most recent fire remain undelivered without a durable retry?
  *
  * Measured: a cold loop re-armed and was told `rewakeGuaranteed:true` while its previous
  * fire had parked with "eligible cold loop wake has no injectable psu host"; the next
@@ -91,6 +91,8 @@ export type LoopNextWakeInput =
  * active, in-bounds loop is not a guarantee when its delivery path is the thing that is
  * broken.
  *
+ * A dropped delivery has exhausted its retry budget, even if its captured error still
+ * describes an earlier durable retry. Queue/arm metadata cannot revive that delivery.
  * Two park shapes are EXCLUDED because they already carry a durable retry on a path that
  * demonstrably works: a psu host that accepted the delivery but has not yet proven turn
  * start, and a quota-recovery operation retry. Their reasons end "retry remains durable".
@@ -98,6 +100,7 @@ export type LoopNextWakeInput =
 export function lastLoopFireParked(
   loop: Partial<Pick<LoopStatus, 'lastWakeStatus' | 'lastWakeError'>> | null | undefined,
 ): boolean {
+  if (loop?.lastWakeStatus === 'dropped') return true;
   if (loop?.lastWakeStatus !== 'parked') return false;
   return !/retry remains durable/i.test(loop.lastWakeError ?? '');
 }

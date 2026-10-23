@@ -1472,6 +1472,28 @@ describe('testing:run (integration)', () => {
     expect(runRouterFn).toHaveBeenCalledTimes(1);
   });
 
+  it('starts a real test router in test mode when the operator host is in production', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-production-env-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const capture = join(root, 'observed-test-environment.json');
+    await writeFile(join(root, 'scripts/test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ nodeEnv: process.env.NODE_ENV }));`,
+      "if (process.env.NODE_ENV !== 'test') throw new Error('Production host mode reached the test worker');",
+      "console.log('ROUTE cwd=packages/x runner=node:test\\n  requested real.test.ts\\n# tests 1\\n# pass 1\\n# fail 0\\n# skipped 0\\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');",
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    vi.stubEnv('NODE_ENV', 'production');
+    try {
+      const result = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 30_000 });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, passed: 1, failed: 0 });
+      expect(JSON.parse(await readFile(capture, 'utf8'))).toEqual({ nodeEnv: 'test' });
+      expect(process.env.NODE_ENV).toBe('production');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('binds parked scorecard live setup to its authenticated caller before the router starts', async () => {
     const root = await makeScratchTestCheckout('papercusp-testing-scorecard-profile-');
     const suite = 'packages/operator-core/lib/agent-tools/coordination/parked-agent-audit.e2e.test.ts';

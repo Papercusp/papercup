@@ -122,7 +122,7 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
     if (!brief || brief.activationAuditSeq !== input.activationAuditSeq || !brief.ownerTurns.length) {
       refuse('activation_audit_mismatch', 'Use the exact current activation with authenticated owner turns.');
     }
-    const reads: ProductReadBoundary = { harness: input.harness, docsHarness: input.productReads.docsHarness ?? input.harness,
+    const reads = { harness: input.harness, docsHarness: input.productReads.docsHarness ?? input.harness,
       docsSlugs: [...(input.productReads.docsSlugs ?? [])], testFiles: [...(input.productReads.testFiles ?? [])] };
     const root = await (deps.repoRoot ?? (async (ws, harness) => {
       const entry = (await loadHarnessRegistry(ws, { fresh: true })).projects.find(p => p.slug === harness);
@@ -181,7 +181,7 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
       if (same || active) {
         const attempt = same ?? active!;
         if (attempt.request_hash !== requestHash) refuse('replacement_active', 'A replacement with a different manifest or run instruction is already reserved.');
-        return { attempt, launch: false, excluded: [...new Set([plan.owner, caller, ...implementers].filter((v): v is string => !!v))] };
+        return { attempt, launch: false, excluded: [...new Set([plan.owner, caller, source.reviewer_owner_id, ...implementers].filter((v): v is string => !!v))] };
       }
       const seq = (history.at(-1)?.attempt_seq ?? 0) + 1;
       const launchKey = `blind-review-replacement:${randomUUID()}`;
@@ -194,7 +194,7 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
           ${tx.json(confinement as never)}, 'launching', ${source.id}, ${seq}, ${input.requestKey}, ${requestHash},
           ${caller}, ${tx.json({ productReads: reads, howToRun, kickoff } as never)}, ${launchKey}) RETURNING *`;
       if (!attempt) refuse('reservation_failed', 'The replacement reservation was not persisted.');
-      return { attempt, launch: true, excluded: [...new Set([plan.owner, caller, ...implementers].filter((v): v is string => !!v))] };
+      return { attempt, launch: true, excluded: [...new Set([plan.owner, caller, source.reviewer_owner_id, ...implementers].filter((v): v is string => !!v))] };
     });
     let attempt = selected.attempt;
     let outcome: unknown = attempt.launch_result;
@@ -262,6 +262,26 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
             reviewerOwnerId: receipt.ownerId, reviewId: Number(post.id) }, { sql });
         }
       }
+    }
+    const envelope = obj(outcome);
+    const launchSummary = obj(obj(envelope?.data)?.launch) ?? obj(envelope?.launch) ?? envelope;
+    if (launchSummary?.agentStarted === false) {
+      // A measured failed start can open a process. Retain its native identity,
+      // and release exclusion only when that same native writer is ended, has
+      // no resume reservation, and has not posted. A false/unknown startup bit
+      // alone cannot authorize a second process.
+      await sql`UPDATE harness_shared.plan_blind_review_sessions AS attempt
+         SET status = 'failed', updated_at = now()
+       WHERE attempt.id = ${attempt.id} AND attempt.status = 'ready' AND attempt.review_id IS NULL
+         AND EXISTS (SELECT 1 FROM harness_shared.adv_sessions AS native
+           WHERE native.workspace_id = attempt.workspace_id AND native.id = attempt.adv_session_id
+             AND native.coord_owner_id = attempt.reviewer_owner_id
+             AND native.session_id = attempt.native_session_id
+             AND native.ended_at IS NOT NULL AND native.resume_claim_key IS NULL)
+         AND NOT EXISTS (SELECT 1 FROM harness_shared.plan_blind_reviews AS review
+           WHERE review.workspace_id = attempt.workspace_id AND review.harness_slug = attempt.harness_slug
+             AND review.plan_slug = attempt.plan_slug AND review.activation_audit_seq = attempt.activation_audit_seq
+             AND review.record_kind = 'review' AND review.created_by = attempt.reviewer_owner_id)`;
     }
     const history = await sql<Attempt[]>`
       SELECT * FROM harness_shared.plan_blind_review_sessions WHERE replacement_of = ${attempt.replacement_of} ORDER BY attempt_seq`;

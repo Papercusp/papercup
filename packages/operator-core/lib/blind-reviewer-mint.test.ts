@@ -25,8 +25,80 @@ import {
   resumeBlindGapReviewer,
 } from './blind-reviewer-mint';
 import { INTERNAL_BLIND_REVIEW_RESUME } from './blind-review-session-bindings';
+import { replacementFixture } from './__tests__/_blind-review-replacement-fixture';
 
 const REPO = resolve(__dirname, '../../..');
+
+describe('recruiter replacement protocol', () => {
+  const fixture = () => replacementFixture(REPO, 'packages/operator-core/lib/blind-reviewer-mint.test.ts');
+  it('unauthorized-caller: ignores forged owner fields and refuses the original reviewer itself', async () => {
+    const f = fixture();
+    for (const caller of ['su-stranger', 'su-original']) {
+      expect(await f.run({ ctx: { workspaceId: 'ws-unit', principal: { kind: 'agent', slug: caller, workspaceId: 'ws-unit' }, ownerId: 'su-author' } }))
+        .toMatchObject({ ok: false, error: 'recruiter_only' });
+    }
+    expect(f.launch).not.toHaveBeenCalled();
+    expect(await f.run()).toMatchObject({ ok: true, attempt: { status: 'ready' } });
+  });
+  it('missing-product-test and exact-manifest: corrected nominations are immutable and reach confinement exactly', async () => {
+    const f = fixture();
+    expect(await f.run({ productReads: { testFiles: ['missing-product.test.ts'] } })).toMatchObject({ ok: false, error: 'invalid_product_reads' });
+    const result = await f.run();
+    expect(result).toMatchObject({ ok: true, attempt: { status: 'ready' } });
+    const manifest = f.state.attempts[0].request_snapshot;
+    const confinement = (f.launch.mock.calls[0][1] as Record<symbol, { denyProductReadsOutside: unknown }>)[f.key];
+    expect(confinement.denyProductReadsOutside).toEqual((manifest as { productReads: unknown }).productReads);
+    for (const files of [[], ['packages/operator-core/lib/blind-review-replacement.test.ts'],
+      ['packages/operator-core/lib/blind-reviewer-mint.test.ts', 'packages/operator-core/lib/blind-review-replacement.test.ts']]) {
+      expect(await f.run({ productReads: { testFiles: files } })).toMatchObject({ ok: false, error: 'request_conflict' });
+    }
+    expect(f.state.attempts[0].request_snapshot).toEqual(manifest);
+    expect(f.launch).toHaveBeenCalledTimes(1);
+  });
+  it.each(['conclusive', 'live', 'resuming', 'reserved'])('protected-state-%s: refuses changed eligibility before selecting an attempt', async kind => {
+    const f = fixture();
+    if (kind === 'conclusive') { f.state.material.outcome = 'conclusive'; f.state.material.summary = 'CONCLUSIVE: reviewed'; }
+    if (kind === 'live') f.state.ended = false;
+    if (kind === 'resuming') f.state.sourceStatus = 'resuming';
+    if (kind === 'reserved') f.state.resumeClaim = 'resume-active';
+    expect(await f.run()).toMatchObject({ ok: false, error: 'review_protected' });
+    expect(f.launch).not.toHaveBeenCalled();
+  });
+  it('independent-replacement-identity: rejects related native receipts without releasing their reservation', async () => {
+    const f = fixture(); f.deps.lineageRelated = async () => true;
+    expect(await f.run()).toMatchObject({ ok: false, error: 'reviewer_not_independent' });
+    expect(f.bind).not.toHaveBeenCalled();
+    expect(f.state.attempts[0]).toMatchObject({ status: 'uncertain', reviewer_owner_id: null });
+  });
+  it('recover-failed-launch: records no-process failures, preserves them, then succeeds on a new ordered request', async () => {
+    const f = fixture();
+    f.launch.mockResolvedValueOnce({ isError: true, data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } });
+    expect(await f.run()).toMatchObject({ ok: true, attempt: { attemptSeq: 1, status: 'failed' } });
+    expect(await f.run()).toMatchObject({ ok: true, deduped: true, attempt: { attemptSeq: 1 } });
+    expect(await f.run({ requestKey: 'after-definite-failure' })).toMatchObject({ ok: true, attempt: { attemptSeq: 2, status: 'ready' } });
+    expect(f.state.attempts.map(a => [a.attempt_seq, a.status])).toEqual([[1, 'failed'], [2, 'ready']]);
+    expect(f.launch).toHaveBeenCalledTimes(2);
+  });
+  it('retry-one-active: an interleaved equivalent request observes the same attempt and launches only once', async () => {
+    const f = fixture();
+    let release!: () => void; const gate = new Promise<void>(r => { release = r; });
+    let entered!: () => void; const started = new Promise<void>(r => { entered = r; });
+    f.launch.mockImplementationOnce(async () => { entered(); await gate; return { data: { launch: f.launchSummary } }; });
+    const first = f.run(); await started;
+    const duplicate = await f.run({ requestKey: 'equivalent-other-request' });
+    expect(duplicate).toMatchObject({ ok: true, deduped: true, attempt: { id: 100, status: 'launching' } });
+    release(); expect(await first).toMatchObject({ ok: true, attempt: { id: 100, status: 'ready' } });
+    expect(f.launch).toHaveBeenCalledTimes(1);
+  });
+  it('uncertain-launch-reconciliation: a lost reply stays excluded until the original ledger supplies exact native identity', async () => {
+    const f = fixture(); f.launch.mockRejectedValueOnce(new Error('reply lost'));
+    expect(await f.run()).toMatchObject({ ok: true, attempt: { status: 'uncertain' } });
+    expect(await f.run({ requestKey: 'must-not-launch' })).toMatchObject({ ok: true, deduped: true, attempt: { status: 'uncertain' } });
+    f.state.ledger = f.launchSummary;
+    expect(await f.run()).toMatchObject({ ok: true, deduped: true, attempt: { status: 'ready', nativeSessionId: 'native-new' } });
+    expect(f.launch).toHaveBeenCalledTimes(1);
+  });
+});
 
 /** Static discovery, as in capability-envelope/session-confinement.test.ts: importing the
  * registry would pull ~950 modules with side effects into a unit test. Accepts both quote

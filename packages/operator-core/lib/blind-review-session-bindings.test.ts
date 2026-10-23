@@ -16,6 +16,7 @@ const sqlMock = vi.hoisted(() => {
 const readConfinementMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlMock }) }));
+vi.mock('./pg-read-query', () => ({ boundedPgReadTxn: vi.fn() }));
 vi.mock('./capability-envelope/session-confinement-store', () => ({
   readSessionConfinement: (...args: unknown[]) => readConfinementMock(...args),
 }));
@@ -30,6 +31,28 @@ import {
   verifyBlindReviewSessionBinding,
 } from './blind-review-session-bindings';
 import type { SessionToolConfinement } from './capability-envelope/session-confinement';
+import { resolve } from 'node:path';
+import { replacementFixture } from './__tests__/_blind-review-replacement-fixture';
+
+describe('replacement binding ledger protocol', () => {
+  const fixture = () => replacementFixture(resolve(__dirname, '../../..'), 'packages/operator-core/lib/blind-review-session-bindings.test.ts');
+  it('cross-activation-replay: refuses a current activation that changed after brief creation', async () => {
+    const f = fixture(); f.state.activation = 6;
+    expect(await f.run()).toMatchObject({ ok: false, error: 'activation_audit_mismatch' });
+    expect(f.launch).not.toHaveBeenCalled();
+    f.state.activation = 5;
+    expect(await f.run()).toMatchObject({ ok: true, attempt: { activationAuditSeq: 5 } });
+  });
+  it('replacement-history and append-only-attempts: preserves material and prior request identity across failures and retries', async () => {
+    const f = fixture(); const material = structuredClone(f.state.material);
+    f.launch.mockResolvedValueOnce({ isError: true, data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } });
+    await f.run(); const previous = structuredClone(f.state.attempts[0]);
+    await f.run({ requestKey: 'retry-2' });
+    expect(f.state.attempts[0]).toEqual(previous);
+    expect(f.state.attempts.map(a => [a.attempt_seq, a.request_key])).toEqual([[1, 'request-1'], [2, 'retry-2']]);
+    expect(f.state.material).toEqual(material);
+  });
+});
 
 const CONFINEMENT: SessionToolConfinement = {
   denyTools: [],

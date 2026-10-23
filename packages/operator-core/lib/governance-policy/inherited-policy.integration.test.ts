@@ -204,23 +204,32 @@ describe('P-024 shared evaluator with the versioned governance store', () => {
   it.each(['org-acme', 'dept-eng', 'ws-1'].flatMap(id =>
     (['queued', 'in-flight'] as const).flatMap(phase =>
       (['unchanged', 'revoked', 'narrowed'] as const).map(change => ({ id, phase, change }))),
-  ))('the $phase store contract rechecks $id after $change authority', async ({ id, change }) => {
+  ))('the $phase store contract rechecks $id after $change authority', async ({ id, phase, change }) => {
     await seedTree();
     const initial = evaluateEffectivePermission(await sharedSnapshot(), protectedRequest);
     expect(initial.allowed).toBe(true);
     let resume!: () => void;
     const barrier = new Promise<void>(resolve => { resume = resolve; });
+    let entered = false;
+    let signalEntered!: () => void;
+    const transactionEntered = new Promise<void>(resolve => { signalEntered = resolve; });
     // This is an actual paused database fixture, not a production dispatch or
-    // billing claim. The resumed transaction must observe the committed writer.
-    const pending = (async () => {
-      await barrier;
-      return sql.begin(async tx => {
+    // billing claim. Queued work starts its transaction after the cutover;
+    // in-flight work has already entered it and must reload authority on resume.
+    const execute = () => sql.begin(async tx => {
+        entered = true;
+        signalEntered();
+        if (phase === 'in-flight') await barrier;
         const current = await sharedSnapshot(tx as unknown as postgres.Sql);
         const decision = revalidateEffectivePermission(current, protectedRequest, initial.revisions);
         if (decision.allowed) await tx`INSERT INTO harness_shared.idop_test_effects (target) VALUES (${protectedRequest.resource.target})`;
         return decision;
       });
-    })();
+    const pending = phase === 'queued'
+      ? (async () => { await barrier; return execute(); })()
+      : execute();
+    if (phase === 'in-flight') await transactionEntered;
+    expect(entered).toBe(phase === 'in-flight');
     let changedRevision: { kind: string; id: string; revision: string } | undefined;
     try {
       if (change !== 'unchanged') {

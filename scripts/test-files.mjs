@@ -3291,29 +3291,8 @@ export function formatRouteError(detail) {
   return `TEST_FILE_ROUTE_ERROR ${detail}; ${TESTING_RUN_GUIDANCE}`;
 }
 
-/**
- * @param {string[]} [argv]
- * @param {{runCapturedTestProcessImpl?: typeof runCapturedTestProcess}} [options]
- */
-/** Vite's bundler/runner transforms config before Node can judge source bytes.
- * Native config imports keep the committed-source loader on that boundary and
- * avoid its intentional CommonJS refusal. Apply one choice to list AND run. */
-export function vitestConfigLoaderPolicy(args, env = process.env, execArgv = process.execArgv) {
-  let selected = null;
-  const remaining = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === '--configLoader') selected = args[++i] ?? '';
-    else if (arg.startsWith('--configLoader=')) selected = arg.slice('--configLoader='.length);
-    else remaining.push(arg);
-  }
-  const guarded = `${env.NODE_OPTIONS ?? ''} ${execArgv.join(' ')}`.includes('committed-source-loader.mjs');
-  if (guarded && selected !== null && selected !== 'native') {
-    throw new Error('committed-source config requires --configLoader native; transformed config loaders bypass its source boundary');
-  }
-  if (guarded) selected = 'native';
-  return { configLoaderArgs: selected === null ? [] : ['--configLoader', selected], vitestArgs: remaining };
-}
+import { vitestConfigLoaderPolicy } from './lib/vitest-host-preflight.mjs';
+export { vitestConfigLoaderPolicy };
 
 /** Match with-test-pg's explicit, reporter-only evidence contract before the
  * immutable source/dependency copy. Never infer this sink from a product DSN. */
