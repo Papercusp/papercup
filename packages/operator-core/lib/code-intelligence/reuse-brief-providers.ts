@@ -1,7 +1,6 @@
 /** code-intel-reuse-signals P-009: bounded composition at existing brief surfaces. */
 import { pinModuleState } from '@papercusp/module-singleton';
 import { postgresLineageProvider } from './postgres-lineage';
-import { nativeCoverageBriefProvider } from './test-coverage-map';
 
 export const REUSE_BRIEF_LIMIT = 3_000;
 export const REUSE_BRIEF_DEADLINE_MS = 6_000;
@@ -86,7 +85,13 @@ const sqlProvider = postgresLineageProvider(async (context, signal) => {
 });
 export const registeredReuseBriefProviders = (): readonly ReuseBriefProvider[] =>
   [...registry.values(), ...(registry.has('sql') ? [] : [sqlProvider]),
-    ...(registry.has('coverage') ? [] : [nativeCoverageBriefProvider])];
+    ...(registry.has('coverage') ? [] : [coverageProvider])];
+/** Optional producer packages can publish later than the shared registry. Their
+ * absence must remain an unknown provider result, never a mandatory brief import failure. */
+const coverageProvider: ReuseBriefProvider = { id: 'coverage', async read(context, signal) {
+  const { nativeCoverageBriefProvider } = await import('./test-coverage-map');
+  return nativeCoverageBriefProvider.read(context, signal);
+} };
 export const briefCodePoints = (value: string): number => Array.from(value).length;
 
 /** One collector per dispatch: bulk claims must not overwrite earlier item outcomes. */

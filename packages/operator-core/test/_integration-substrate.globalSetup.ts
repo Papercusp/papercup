@@ -9,19 +9,21 @@ declare module 'vitest' {
   }
 }
 
-// Real private HTTP/MCP transport, with fictional authorities and no database.
-// Keep the integration layer/reporters; only omit substrates this suite never uses.
-const PG_FREE_TESTS = new Set([
+// Self-contained fixtures: no shared baseline. Some own a private native cluster
+// with an explicit teardown; others use no database. Keep integration reporting.
+const NO_SHARED_PG_TESTS = new Set([
   '../lib/agent-tools/capability/vm-copy-authority-bridge.integration.test.ts',
   // Isolated repository fixtures and the provisioned syntax parser; no SQL or PG runtime.
   '../lib/agent-tools/plans/plan-native-declarations.integration.test.ts',
   '../lib/integration-substrate-selection.integration.test.ts',
+  // Owns a dedicated native PG cluster and applies only its isolated migration.
+  '../lib/code-intelligence/test-coverage-map.integration.test.ts',
 ].map(path => fileURLToPath(new URL(path, import.meta.url))));
 
 export function integrationNeedsPostgres(selectedPaths: readonly string[]): boolean {
   // Vitest records selected specifications before globalSetup. Empty, mixed,
   // unknown and full-suite selections retain the existing database setup.
-  return selectedPaths.length === 0 || selectedPaths.some(path => !PG_FREE_TESTS.has(resolve(path)));
+  return selectedPaths.length === 0 || selectedPaths.some(path => !NO_SHARED_PG_TESTS.has(resolve(path)));
 }
 
 type Teardown = () => void | Promise<void>;
