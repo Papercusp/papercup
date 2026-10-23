@@ -14,6 +14,7 @@ import {
   evaluatePartialTaskContinuation,
   readPartialNativeCompletion,
   registerPartialNativeProducer,
+  registerPartialNativeProducerChannels,
   readPartialNativeProducer,
   preparePartialContinuationManifest,
   preparePartialRemainingSelection,
@@ -143,6 +144,28 @@ describe('original npm native channel preparation', () => {
     const input = { root, outPath: join(root, 'out.json'), task, selection, postSuite };
     return { root, scripts, input, prepare: () => preparePartialNativeProducerChannels(input) };
   };
+
+  it('enrolls original command identities immutably without granting operational acceptance', () => {
+    const { root, input, prepare } = fixture();
+    try {
+      const registered = registerPartialNativeProducerChannels(input.outPath, prepare(), {
+        attemptId: 'attempt', runGroupId: 'group', root, workspaceName: 'ws', sourceCommit: ID.sourceCommit,
+        registeredAtMs: 1, command: { cmd: 'npm', argv: ['run', 'test'], cwd: root },
+      }, { PC_EXECUTED_SOURCE_MAP_OUT: input.outPath });
+      expect(registered.operationalAcceptance).toBe(false);
+      expect(registered.producers).toHaveLength(2);
+      const first = registered.producers[0]!;
+      expect(readPartialNativeProducer(first.path, { taskKey: 'ws :: test:step:0' }))
+        .toMatchObject({ command: { cmd: 'npm', argv: ['run', 'test'] }, nativeChannel: {
+          traceOut: input.outPath, script: 'first', command: 'vitest run a.test.ts', step: 0 } });
+      const bytes = readFileSync(first.path);
+      expect(() => registerPartialNativeProducerChannels(input.outPath, prepare(), {
+        attemptId: 'attempt', runGroupId: 'group', root, workspaceName: 'ws', sourceCommit: ID.sourceCommit,
+        registeredAtMs: 1, command: { cmd: 'npm', argv: ['run', 'test'], cwd: root },
+      }, {})).toThrow();
+      expect(readFileSync(first.path)).toEqual(bytes);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 
   it('assigns distinct channels to original npm steps and keeps its chain and post guards owed', () => {
     const { root, input, prepare } = fixture();

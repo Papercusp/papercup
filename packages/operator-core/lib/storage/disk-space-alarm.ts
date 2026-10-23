@@ -38,8 +38,8 @@ const statfs = promisify(statfsCb);
 const GIB = 1024 ** 3;
 const TOAST_RING_BUFFER = 2000;
 
-import { DEFAULT_DISK_POLICY, diskPolicyFromEnv, type DiskAlarmPolicy } from './disk-space-policy';
-export { DEFAULT_DISK_POLICY, diskPolicyFromEnv, type DiskAlarmPolicy } from './disk-space-policy';
+import { criticalWriteHeadroomBytes, DEFAULT_DISK_POLICY, diskPolicyFromEnv, type DiskAlarmPolicy } from './disk-space-policy';
+export { criticalWriteHeadroomBytes, DEFAULT_DISK_POLICY, diskPolicyFromEnv, type DiskAlarmPolicy } from './disk-space-policy';
 
 /** The watched filesystems (one statfs per path). Defaults to the workspaces root plus the
  *  process temp root: test module caches can live on a separate filesystem and fill it while the
@@ -197,52 +197,6 @@ export function detectCriticalWriteHeadroom(
       criticalFreeBytesMin: reserve,
     });
   });
-}
-
-/**
- * Minimum free bytes that keep a filesystem OUTSIDE the alarm's critical byte
- * band. This is the scalar form of {@link detectCriticalWriteHeadroom} for a
- * writer that must budget its own transient demand before it starts.
- *
- * The alarm's byte rule is an OR (absolute floor OR percentage floor), so the
- * equivalent reserve is the larger threshold. Invalid totals retain the
- * absolute floor instead of manufacturing percentage headroom from bad input.
- *
- * EI-23337577023503501: that larger-of pair is then CAPPED at
- * {@link DiskAlarmPolicy.criticalFreeBytesCap}. A writer's demand is absolute and
- * does not grow with the volume it writes to, so past the cap more proportional
- * headroom buys the writer nothing and only manufactures an unreachable floor —
- * on a 7.45 TiB volume the uncapped rule demanded 149 GiB, which froze this
- * repo's green checkpoint at 32 consecutive reds with 47.9 GiB free and every
- * measured run needing single-digit GiB. The cap binds ONLY above the observed
- * demand envelope: it is above every reserve this function's own tests pin
- * (2 GiB @ 20 GiB, 10 GiB @ 500 GiB, 37.5 GiB @ 1875.7 GiB all pass through
- * unchanged), so it loosens nothing that was ever load-bearing.
- */
-export function criticalWriteHeadroomBytes(
-  totalBytes: number,
-  policy: DiskAlarmPolicy = DEFAULT_DISK_POLICY,
-): number {
-  const absolute =
-    Number.isFinite(policy.criticalFreeBytesMin) && policy.criticalFreeBytesMin > 0
-      ? policy.criticalFreeBytesMin
-      : 0;
-  const proportional =
-    Number.isFinite(totalBytes) &&
-    totalBytes > 0 &&
-    Number.isFinite(policy.criticalFreePctMin) &&
-    policy.criticalFreePctMin > 0
-      ? totalBytes * policy.criticalFreePctMin
-      : 0;
-  const cap =
-    Number.isFinite(policy.criticalFreeBytesCap) && policy.criticalFreeBytesCap > 0
-      ? policy.criticalFreeBytesCap
-      : Number.POSITIVE_INFINITY;
-  // Order matters: the cap bounds only the PROPORTIONAL term. The absolute floor
-  // stays a hard minimum, so a misconfigured (tiny) cap can never lower the
-  // reserve below what the alarm itself calls critical — it can only stop the
-  // percentage from inflating it past what a writer can actually use.
-  return Math.max(absolute, Math.min(proportional, cap));
 }
 
 function fmtGiB(bytes: number): string {
