@@ -330,14 +330,29 @@ describe('extNodeCommand — the ext:: interpreter token (EI-20078551747038927)'
     ]);
   });
 
-  it('falls back to bare `node` only when no bundled runtime is visible (the dev tree)', async () => {
+  it('refuses an unmeasured PATH fallback when no retained Node is visible', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'extnode-'));
     vi.stubEnv('PAPERCUSP_SIDECAR_BIN', '');
-    // A packaged Tauri execPath (EI-2114) is NOT a usable interpreter, so it must
-    // not be substituted here — the honest answer is the pre-existing fallback.
+    // PATH may contain Bun named node. Neither that token nor the desktop
+    // executable establishes the explicit retained Node boundary.
     process.execPath = touch(join(tmp, 'MacOS', 'papercusp-desktop'));
 
-    expect(await extNodeCommand()).toBe('node');
+    await expect(extNodeCommand()).rejects.toThrow(/retained Node/);
+  });
+
+  it('returns a fail-soft fetch refusal before spawning git when retained Node is absent', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'extnode-'));
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', '');
+    process.execPath = touch(join(tmp, 'MacOS', 'papercusp-desktop'));
+    const silent = new Duplex({ read() {}, write(_chunk, _enc, cb) { cb(); } });
+
+    const result = await fetchOverDuplex(tmp, silent, ['+refs/heads/work:refs/heads/test'], {
+      timeoutMs: 2_000,
+    });
+    expect(result.code).toBe(-1);
+    expect(result.timedOut).toBe(false);
+    expect(result.stderr).toMatch(/retained Node/);
+    silent.destroy();
   });
 });
 

@@ -14,11 +14,37 @@
 // needs checked, how an API diagnostic is rendered in the CLI's own text format (so the gate's
 // existing parser reads service output unchanged), and the socket client.
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { createConnection } from 'node:net';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import ts from 'typescript';
+
+// Captured when this module loads: reading disk later cannot certify an old daemon
+// as running newly edited code. The server and caller must load the same protocol.
+const serviceSourceSha256 = createHash('sha256')
+  .update(readFileSync(new URL('./tsc-service.mjs', import.meta.url)))
+  .update(readFileSync(new URL('../tsc-service/server.mjs', import.meta.url))).digest('hex');
+const nativePackagePath = createRequire(import.meta.url).resolve('@typescript/native/package.json');
+const nativeVersion = JSON.parse(readFileSync(nativePackagePath, 'utf8')).version;
+
+/** Exact loaded service/compiler identity plus the requested root config and named inputs.
+ * Missing inputs remain explicit nulls; they never certify a successful focused check.
+ * @param {Record<string, any>} request
+ */
+export function tscServiceIdentity(request) {
+  const digest = (file) => {
+    try { return createHash('sha256').update(readFileSync(file)).digest('hex'); }
+    catch { return null; }
+  };
+  const root = typeof request.root === 'string' ? resolve(request.root) : null;
+  const project = typeof request.project === 'string' ? resolve(request.project) : null;
+  return { root, project, scope: request.scope ?? 'dependencies', serviceSourceSha256, compilerVersion: nativeVersion,
+    compilerInstall: dirname(nativePackagePath), projectConfigSha256: project ? digest(project) : null,
+    namedSources: root && Array.isArray(request.files)
+      ? request.files.map(file => ({ path: file, sha256: typeof file === 'string' ? digest(resolve(root, file)) : null })) : [] };
+}
 
 /** Set to `0` to force the full CLI compile (the A/B control, and the escape hatch). */
 export const TSC_SERVICE_ENV = 'PAPERCUSP_TSC_SERVICE';
@@ -812,38 +838,62 @@ export function baselineWithinScope(baselineByFile, judged) {
  *   snapshotAgeMs: number,
  *   queuedMs: number,
  *   checkMs: number,
+ *   requestId?: string,
+ *   kind?: string,
+ *   identity?: object,
+ *   runtime?: { pid: number, startedAt: number },
  * } | { ok: false, reason: string, detail?: string }} TscServiceResponse
  */
 
 /**
- * One request over the socket: a JSON line out, a JSON line back.
+ * One request over the socket: correlated progress lines followed by one terminal result.
+ * Progress never extends the foreground deadline or becomes a successful check.
  *
- * @param {{ socketPath: string, request: Record<string, unknown>, timeoutMs?: number }} opts
+ * @param {{ socketPath: string, request: Record<string, unknown>, timeoutMs?: number, onProgress?: (response: any) => void }} opts
  * @returns {Promise<TscServiceResponse>}
  */
-export function requestTscService({ socketPath, request, timeoutMs = TSC_SERVICE_TIMEOUT_MS }) {
+export function requestTscService({ socketPath, request, timeoutMs = TSC_SERVICE_TIMEOUT_MS, onProgress = () => {} }) {
   const requestId = tscServiceRequestId(request.requestId);
+  const identity = request.identity ?? tscServiceIdentity(request);
   return new Promise((resolvePromise, rejectPromise) => {
     const socket = createConnection(socketPath);
     let buffer = '';
+    let settled = false;
     const fail = (error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       socket.destroy();
-      rejectPromise(new Error(`${error.message} requestId=${requestId}`, { cause: error }));
+      rejectPromise(Object.assign(new Error(`${error.message} requestId=${requestId}`, { cause: error }),
+        { code: error.code ?? 'protocol-error' }));
     };
-    const timer = setTimeout(() => fail(new Error(`no answer within ${timeoutMs} ms`)), timeoutMs);
+    const timer = setTimeout(() => fail(Object.assign(new Error(`no answer within ${timeoutMs} ms`),
+      { code: 'timed-out' })), resolveTscServiceTimeoutMs(timeoutMs));
     socket.setEncoding('utf8');
-    socket.on('connect', () => socket.write(`${JSON.stringify({ ...request, requestId })}\n`));
+    socket.on('connect', () => socket.write(`${JSON.stringify({ ...request, requestId, identity })}\n`));
     socket.on('data', (chunk) => {
+      if (settled) return;
       buffer += chunk;
-      const newline = buffer.indexOf('\n');
-      if (newline < 0) return;
-      clearTimeout(timer);
-      socket.end();
-      try {
-        resolvePromise(JSON.parse(buffer.slice(0, newline)));
-      } catch (error) {
-        rejectPromise(error);
+      if (buffer.length > 8 * 1024 * 1024) return fail(new Error('service response exceeds protocol limit'));
+      let newline;
+      while (!settled && (newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        try {
+          const response = JSON.parse(line);
+          if (response.requestId !== requestId || JSON.stringify(response.identity) !== JSON.stringify(identity)) {
+            return fail(Object.assign(new Error('service response identity mismatch'), { code: 'identity-mismatch' }));
+          }
+          if (response.kind === 'progress' && ['accepted', 'queued'].includes(response.phase)) {
+            onProgress(response);
+            continue;
+          }
+          if (response.kind !== 'result' || typeof response.ok !== 'boolean') return fail(new Error('invalid terminal service response'));
+          settled = true;
+          clearTimeout(timer);
+          socket.end();
+          resolvePromise(response);
+        } catch (error) { fail(error); }
       }
     });
     socket.on('error', fail);
@@ -895,11 +945,13 @@ export async function typecheckViaService({
       socketPath,
       request: { v: 1, root, project, files, ...(scope === undefined ? {} : { scope }) },
       timeoutMs: resolveTscServiceTimeoutMs(timeoutMs),
+      onProgress: (response) => log(`TSC_SERVICE state=${response.phase} requestId=${response.requestId} resultOrigin=pending`),
     });
     if (response.ok) return response;
-    log(`⚠ TSC_SERVICE declined (${response.reason}${response.detail ? `: ${response.detail}` : ''}) — running the full ${label} compile instead.`);
+    log(`⚠ TSC_SERVICE declined (${response.reason}${response.detail ? `: ${response.detail}` : ''}) — running the full ${label} compile instead. state=${response.reason} resultOrigin=full-compile-required`);
   } catch (error) {
-    log(`⚠ TSC_SERVICE request failed at ${socketPath} (${error instanceof Error ? error.message : String(error)}) — running the full ${label} compile instead.`);
+    const state = ['ENOENT', 'ECONNREFUSED'].includes(error?.code) ? 'unavailable' : error?.code ?? 'request-failed';
+    log(`⚠ TSC_SERVICE request failed at ${socketPath} (${error instanceof Error ? error.message : String(error)}) — running the full ${label} compile instead. state=${state} resultOrigin=full-compile-required`);
   }
   return null;
 }

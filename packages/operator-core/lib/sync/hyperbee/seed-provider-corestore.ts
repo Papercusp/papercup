@@ -196,7 +196,7 @@ export async function readSeedFrozenExecution(): Promise<SeedFrozenExecution> {
 const ORIGINAL_BLOCK_HASH = Symbol('proof-verified-original-block-sha256');
 
 /** A local get() alone cannot prove persisted bytes still match the signed head. */
-async function signedSeedSource(core: ReadableCore, sourceKeyHex: string, sourceLength: number) {
+export async function signedSeedSource(core: ReadableCore, sourceKeyHex: string, sourceLength: number) {
   const signed = core as ReadableCore & {
     state: { length: number; fork: number; byteLength: number; signature: Buffer;
       hash(): Buffer; createTreeBatch(): unknown };
@@ -235,7 +235,7 @@ async function signedSeedSource(core: ReadableCore, sourceKeyHex: string, source
   return { log, sourceHead, assertHead, hint: selected.kind === 'found' ? selected.seed : null };
 }
 
-function sourceSpanRecorder(sourceLength: number) {
+export function sourceSpanRecorder(sourceLength: number) {
   const blocks = createHash('sha256');
   const snapshot = createHash('sha256');
   const inventory = createHash('sha256');

@@ -100,6 +100,26 @@ export function sessionId(env = process.env) {
   return typeof sid === 'string' && sid.length > 0 ? sid : null;
 }
 
+/** Shared CTRL parser for the owner fence and emission receipt metadata.
+ * @param {string} text
+ */
+function controlTransitionBlock(text) {
+  // The server renders CTRL as one marker + one JSON line, then separates the
+  // following orientation/memory blocks with a blank line. Keep this parser
+  // deliberately narrow: an unrecognisable first block is not control we can
+  // safely trust, so it is dropped rather than guessed at.
+  const match = /^⟦CTRL:(?:transition|full-resync)⟧[ \t]*([^\r\n]*)(?:\r?\n\r?\n|$)/.exec(text);
+  if (!match) return null;
+
+  let payload;
+  try {
+    payload = JSON.parse(match[1]);
+  } catch {
+    payload = null;
+  }
+  return { header: match[0], payload };
+}
+
 /**
  * Keep a returned CTRL block bound to the session that requested it.
  *
@@ -117,23 +137,11 @@ export function sessionId(env = process.env) {
 export function fenceControlTransition(text, owner) {
   if (typeof text !== 'string' || !text) return null;
   if (!text.startsWith('⟦CTRL:')) return text;
+  const block = controlTransitionBlock(text);
+  if (!block) return null;
+  if (block.payload && typeof block.payload === 'object' && block.payload.targetOwnerId === owner) return text;
 
-  // The server renders CTRL as one marker + one JSON line, then separates the
-  // following orientation/memory blocks with a blank line. Keep this parser
-  // deliberately narrow: an unrecognisable first block is not control we can
-  // safely trust, so it is dropped rather than guessed at.
-  const match = /^⟦CTRL:(?:transition|full-resync)⟧[ \t]*([^\r\n]*)(?:\r?\n\r?\n|$)/.exec(text);
-  if (!match) return null;
-
-  let payload;
-  try {
-    payload = JSON.parse(match[1]);
-  } catch {
-    payload = null;
-  }
-  if (payload && typeof payload === 'object' && payload.targetOwnerId === owner) return text;
-
-  const remainder = text.slice(match[0].length);
+  const remainder = text.slice(block.header.length);
   return remainder || null;
 }
 
@@ -538,7 +546,13 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
 
     const payload = adapter.render(port, safeText, event);
     if (typeof payload !== 'string' || payload.length === 0) return null;
-    if (ledger && response?.deliveryToken) ledger.offer(response.deliveryToken);
+    if (ledger && response?.deliveryToken) ledger.offer(response.deliveryToken, {
+      payload: payload + '\n',
+      client: adapter.client,
+      nativeSessionId: typeof event?.session_id === 'string' ? event.session_id
+        : adapter.client === 'codex' ? env.CODEX_THREAD_ID : null,
+      control: controlTransitionBlock(safeText)?.payload ?? null,
+    });
     return payload;
   } catch {
     // Invariant 1, final backstop: an adapter bug must cost silence, not a turn.

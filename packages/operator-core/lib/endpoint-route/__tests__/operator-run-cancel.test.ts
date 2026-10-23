@@ -7,7 +7,10 @@ import { z } from 'zod';
 import type { CardResponse } from '@papercusp/agent-mcp';
 
 vi.mock('../../auth', () => ({ getSessionUser: vi.fn(), getSessionUserOrDefault: vi.fn(), resolveSessionToken: vi.fn() }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', async original => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: {} }),
+}));
 vi.mock('../../agent-tools/operator/converse-card', () => ({ findConverseRunCards: vi.fn(async () => null) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'workspace-cancel' }));
 vi.mock('../../operator-conversations', () => ({ getConversationById: vi.fn() }));

@@ -7,6 +7,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import type { RecordedLlmBlockCustody } from '@papercusp/test-config/execution-details';
 
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -61,6 +62,20 @@ export function validateToolDeliveryCleanCensus(boundary: ToolDeliveryCleanBound
   if (digest(Object.keys(boundary.sourceHashes).sort()) !== digest(required)) return 'Mandatory source census is incomplete or extended.';
   for (const path of [recorder, ...providers, loader, registration.executionPolicy!.launcherPath!])
     if (!(path in boundary.moduleHashes)) return 'Mandatory loaded module is absent.';
+}
+
+/** Superproject ls-files does not descend into gitlinks. Census every repository,
+ * including ignored configuration that could redirect a submodule's imports. */
+export function toolDeliveryIgnoredCensus(submoduleStatus: string,
+  listIgnored: (directory: string) => readonly string[]): string[] {
+  const directories = submoduleStatus.split('\n').filter(Boolean).map(line => {
+    const match = /^.[a-f0-9]{40} (.+?)(?: \(.+\))?$/.exec(line);
+    if (!match || match[1]!.split('/').some(part => !part || part === '.' || part === '..'))
+      throw new Error('Submodule census path is unavailable.');
+    return match[1]!;
+  });
+  return [...new Set(['', ...directories].flatMap(directory => listIgnored(directory)
+    .map(path => directory ? `${directory}/${path}` : path)))].sort();
 }
 
 /** Resolve symlinks before checking containment. Built-ins alone need no file proof. */
@@ -121,7 +136,10 @@ export async function captureToolDeliveryCleanBoundary(input: {
   const processStartTicks = status.slice(status.lastIndexOf(')') + 2).split(' ')[19]!;
   const installSha256 = digest(['package-lock.json', 'node_modules/.package-lock.json']
     .map(path => [path, hash(readFileSync(resolve(root, path)))]));
-  const ignored = git(['ls-files', '--others', '--ignored', '--exclude-standard', '-z']).split('\0').filter(Boolean).sort();
+  const submoduleStatus = git(['submodule', 'status', '--recursive']);
+  const ignored = toolDeliveryIgnoredCensus(submoduleStatus, directory => git([
+    ...(directory ? ['-C', directory] : []), 'ls-files', '--others', '--ignored', '--exclude-standard', '-z'])
+    .split('\0').filter(Boolean));
   // Installed dependencies are the only admitted ignored inputs. Source-local
   // config/cache roots require an explicit future policy amendment.
   const disallowedIgnoredFiles = ignored.filter(path => !path.split('/').includes('node_modules'));
@@ -129,7 +147,7 @@ export async function captureToolDeliveryCleanBoundary(input: {
   return { sourceRoot: root, ...snapshot,
     stagedDiff: git(['diff', '--cached', '--name-status']),
     unstagedDiff: git(['diff', '--name-status']),
-    submoduleStatus: git(['submodule', 'status', '--recursive']),
+    submoduleStatus,
     untracked: git(['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean).sort(),
     ignoredCensusSha256: digest(ignored), disallowedIgnoredFiles,
     sourceHashes, moduleHashes, installSha256,
@@ -177,7 +195,7 @@ export function toolDeliveryBlockLedgerIdentity(experimentId: string, blockIndex
 }
 export function validateToolDeliveryBlockLedgerIdentity(actual: unknown, experimentId: string,
   blockIndex: number, block: ToolDeliveryCleanBlock): string | undefined {
-  if (digest(actual) !== digest(toolDeliveryBlockLedgerIdentity(experimentId, blockIndex, block)))
+  if (!isDeepStrictEqual(actual, toolDeliveryBlockLedgerIdentity(experimentId, blockIndex, block)))
     return 'Original recorder block identity differs from the exact clean block.';
 }
 

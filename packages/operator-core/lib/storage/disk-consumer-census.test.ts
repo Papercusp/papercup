@@ -37,7 +37,12 @@ describe('streaming retention census evidence', () => {
       const protectedTree = join(root, 'protected'); await fsp.mkdir(protectedTree);
       await fsp.symlink('/never-follow-retention-link', join(protectedTree, 'link'));
       const options = { retainAfterMs: Infinity, includeRecent, collectBuildDirs: true };
-      const expected = await inspectRetentionTrees(root, options);
+      const producerWire = createTextCollector();
+      const expected = await inspectRetentionTrees(root, { ...options, spawn: ((command: string, args: string[]) => {
+        const child = spawnProcess(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        producerWire.attach(child.stdout);
+        return child;
+      }) as CensusSpawn });
       const wire = createTextCollector();
       const native = ((_: string, args: string[]) => {
         // Exercise the real privileged supervisor/timeout as our fixture uid.
@@ -57,6 +62,7 @@ describe('streaming retention census evidence', () => {
       expect(compact.entries.find(entry => entry.path === tree)?.hardlinks?.[0]?.paths).toHaveLength(2);
       expect(compact.entries.find(entry => entry.path === tree)?.buildDirs).toContainEqual(expect.objectContaining({ path: modules }));
       expect(compact.retained).toContainEqual(expect.objectContaining({ path: protectedTree, reason: 'symlink boundary' }));
+      if (!includeRecent) expect(producerWire.text().split('\0').length / 9).toBeLessThan(expected.inspectedNodes / 4);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

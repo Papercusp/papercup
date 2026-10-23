@@ -6,7 +6,10 @@ import { z } from 'zod';
 import type { CardResponse } from '@papercusp/agent-mcp';
 
 vi.mock('../../auth', () => ({ getSessionUser: vi.fn(), resolveSessionToken: vi.fn(async () => 'current') }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', async original => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: {} }),
+}));
 vi.mock('../../agent-tools/operator/converse-card', () => ({ findConverseCard: vi.fn(async () => null) }));
 vi.mock('../../operator-conversations', () => ({ getConversationById: vi.fn() }));
 vi.mock('../telemetry', () => ({
