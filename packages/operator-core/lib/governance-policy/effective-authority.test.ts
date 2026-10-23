@@ -121,6 +121,33 @@ describe('effective authority contract (P-024)', () => {
     expect(evaluateEffectivePermission(null as unknown as AuthoritySnapshot, request).allowed).toBe(false);
   });
 
+  it.each(['allowed', 'denied', 'authority-unavailable', 'authority-stale'] as const)(
+    'a %s decision retains a detached canonical snapshot of its trusted request', code => {
+      const snapshot = fixture();
+      const scopedTools = ['tool:b', 'tool:a', 'tool:a'];
+      const input: PermissionRequest = {
+        ...request, resource: { ...request.resource }, constraints: { tools: scopedTools },
+      };
+      if (code === 'denied') snapshot.policies[0].rules!.resources = { allow: [] };
+      if (code === 'authority-unavailable') snapshot.policies = snapshot.policies.slice(1);
+      const decision = code === 'authority-stale'
+        ? revalidateEffectivePermission(snapshot, input, null)
+        : evaluateEffectivePermission(snapshot, input);
+      const expected = {
+        ...request, resource: { ...request.resource }, constraints: { tools: ['tool:a', 'tool:b'] },
+      };
+      expect(decision).toMatchObject({ code, request: expected });
+      input.resource.target = 'https://changed-after-decision.example';
+      scopedTools.push('tool:changed');
+      expect(decision).toMatchObject({ request: expected });
+    },
+  );
+
+  it('an invalid request is explicit rather than represented as an authorized request snapshot', () => {
+    expect(evaluateEffectivePermission(fixture(), { ...request, action: '' }))
+      .toMatchObject({ code: 'invalid-request', request: null });
+  });
+
   it('revision tokens detect context changes, policy changes, newly required policies and replay', () => {
     const snapshot = fixture();
     const decision = evaluateEffectivePermission(snapshot, request);

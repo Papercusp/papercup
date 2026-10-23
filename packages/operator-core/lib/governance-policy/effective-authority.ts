@@ -68,6 +68,8 @@ export interface AuthorityTrace {
 export type EffectivePermissionDecision = {
   allowed: boolean;
   code: 'allowed' | 'invalid-request' | 'authority-unavailable' | 'authority-malformed' | 'authority-stale' | 'denied';
+  /** Detached canonical request; null only when request validation failed. */
+  request: PermissionRequest | null;
   revisions: AuthorityRevisionVector | null;
   trace: AuthorityTrace[];
   decidingAuthority?: AuthorityRef;
@@ -140,21 +142,31 @@ export function evaluateEffectivePermission(
   const resourceKinds: ScopedResource['kind'][] = ['network', 'filesystem', 'store', 'account', 'recipient', 'processing'];
   if (!request || !validText(request.tool) || !validText(request.action) || !request.resource ||
       !resourceKinds.includes(request.resource.kind) || !validText(request.resource.operation) || !validText(request.resource.target)) {
-    return { allowed: false, code: 'invalid-request', revisions: null, trace: [] };
+    return { allowed: false, code: 'invalid-request', request: null, revisions: null, trace: [] };
   }
   if (request.constraints !== undefined && (!request.constraints || typeof request.constraints !== 'object' ||
       Array.isArray(request.constraints) || Object.entries(request.constraints).some(([category, values]) =>
         !GOVERNED_CATEGORIES.includes(category as GovernedCategory) || !Array.isArray(values) ||
         values.some(value => !validText(value))))) {
-    return { allowed: false, code: 'invalid-request', revisions: null, trace: [] };
+    return { allowed: false, code: 'invalid-request', request: null, revisions: null, trace: [] };
   }
+  const constraints: GovernedRequest = {};
+  for (const category of GOVERNED_CATEGORIES) {
+    const values = request.constraints?.[category];
+    if (values !== undefined) constraints[category] = [...new Set(values)].sort();
+  }
+  const trustedRequest: PermissionRequest = {
+    tool: request.tool, action: request.action,
+    resource: { kind: request.resource.kind, operation: request.resource.operation, target: request.resource.target },
+    ...(request.constraints !== undefined ? { constraints } : {}),
+  };
   const problem = snapshotProblem(snapshot);
-  if (problem) return { allowed: false, ...problem, revisions: null, trace: [] };
+  if (problem) return { allowed: false, ...problem, request: trustedRequest, revisions: null, trace: [] };
   const governed: GovernedRequest = {
-    ...request.constraints,
-    tools: [...(request.constraints?.tools ?? []), request.tool],
-    actions: [...(request.constraints?.actions ?? []), request.action],
-    resources: [...(request.constraints?.resources ?? []), resourcePermissionValue(request.resource)],
+    ...constraints,
+    tools: [...(constraints.tools ?? []), trustedRequest.tool],
+    actions: [...(constraints.actions ?? []), trustedRequest.action],
+    resources: [...(constraints.resources ?? []), resourcePermissionValue(trustedRequest.resource)],
   };
   for (const category of GOVERNED_CATEGORIES) {
     if (governed[category]) governed[category] = [...new Set(governed[category])].sort();
@@ -179,8 +191,8 @@ export function evaluateEffectivePermission(
     if (!verdict.allow && !decidingAuthority) decidingAuthority = { kind: policy.kind, id: policy.id };
   }
   return decidingAuthority
-    ? { allowed: false, code: 'denied', revisions, trace, decidingAuthority }
-    : { allowed: true, code: 'allowed', revisions, trace };
+    ? { allowed: false, code: 'denied', request: trustedRequest, revisions, trace, decidingAuthority }
+    : { allowed: true, code: 'allowed', request: trustedRequest, revisions, trace };
 }
 
 /** Queue/in-flight adapters must reject a token if any authority or context moved. */
