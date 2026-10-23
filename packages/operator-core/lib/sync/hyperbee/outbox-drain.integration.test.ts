@@ -287,6 +287,35 @@ describe('outbox-drain (Stage 3, real PG)', () => {
     expect(await drainOutboxOnce(handle, db.sql, { batch: 2 })).toBe(0);
   });
 
+  it('continues draining old product rows when coordination traffic fills every batch', async () => {
+    const productIds: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      productIds.push(await seedOutbox(db.sql, {
+        table_name: 'harness_features_consolidated', op: 'put',
+        key: `WAITING-${i}`, row: featureRow(`WAITING-${i}`),
+      }));
+    }
+    const { handle, appends } = makeFakeHandle();
+    for (let pass = 0; pass < 3; pass++) {
+      for (let i = 0; i < 4; i++) {
+        const key = `busy-${pass}-${i}`;
+        await seedOutbox(db.sql, {
+          table_name: 'coord_event_log', op: 'put', key,
+          row: { workspace_id: WS, harness_slug: SLUG, msg_id: key, surface: 'test', body: {}, ts: Date.now() },
+        });
+      }
+      const offset = appends.length;
+      expect(await drainOutboxOnce(handle, db.sql, { batch: 4 })).toBe(4);
+      const selected = appends.slice(offset);
+      expect(selected[0].table).toBe('coord-messages');
+      expect(selected.filter(op => op.table === 'coord-messages')).toHaveLength(3);
+      expect(selected.filter(op => op.table !== 'coord-messages').map(op => op.hbKey)).toEqual([`WAITING-${pass}`]);
+      const [product] = await db.sql<{ drained_at: number | null }[]>`
+        SELECT drained_at FROM harness_shared.substrate_outbox WHERE id = ${productIds[pass]}`;
+      expect(product.drained_at).not.toBeNull();
+    }
+  });
+
   // ── EI-22138988923269437: priority lane + starvation guard ─────────────────
   // Regression test for the measured incident: a bulk backfill of a
   // non-priority table (enqueued FIRST, so its ids are numerically smallest)
