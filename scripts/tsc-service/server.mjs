@@ -263,7 +263,7 @@ async function serve({ request, arrivedAt, trace, isCancelled }) {
 }
 
 function validate(request) {
-  if (!request || request.v !== 1) return 'unsupported protocol version';
+  if (!request || request.v !== 2) return 'unsupported protocol version';
   if (typeof request.root !== 'string' || resolve(request.root) !== ROOT) return `this service serves ${ROOT}`;
   if (typeof request.project !== 'string' || !isAbsolute(request.project) || !request.project.endsWith('.json')) {
     return 'project must be an absolute tsconfig path';
@@ -402,10 +402,10 @@ const server = createServer((socket) => {
       reply({ ok: false, reason: 'bad-request', detail: 'not JSON' });
       return;
     }
-    requestId = tscServiceRequestId(request.requestId);
+    requestId = tscServiceRequestId(request?.requestId);
     const invalid = validate(request);
     if (invalid) {
-      const reason = Array.isArray(request.files) && request.files.length > MAX_REQUEST_FILES ? 'scope-too-wide'
+      const reason = Array.isArray(request?.files) && request.files.length > MAX_REQUEST_FILES ? 'scope-too-wide'
         : invalid.startsWith('scope must') ? 'unsupported-scope' : 'bad-request';
       reply({ ok: false, reason, detail: invalid });
       return;

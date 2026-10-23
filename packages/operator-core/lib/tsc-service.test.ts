@@ -321,7 +321,7 @@ describe('service request phase correlation', () => {
         child.stdout.on('data', observe);
         socket.on('error', finish);
         // Send the full request then FIN immediately, without racing child stdout delivery.
-        const request = { v: 1, requestId: 'trace-test-disconnect', root: dir, project, files: ['other.ts'] };
+        const request = { v: 2, requestId: 'trace-test-disconnect', root: dir, project, files: ['other.ts'] };
         socket.on('connect', () => socket.end(`${JSON.stringify({ ...request, identity: tscServiceIdentity(request) })}\n`));
       });
       const recovered = await requestTscService({
@@ -499,7 +499,7 @@ describe('focused service protocol', () => {
         const orphan = createConnection(socketPath);
         const timer = setTimeout(() => { orphan.destroy(); reject(new Error(`no accepted request: ${output()}`)); }, 5_000);
         orphan.on('error', reject);
-        orphan.on('connect', () => orphan.write(JSON.stringify({ ...request, requestId: 'orphan', identity: tscServiceIdentity(request) }) + '\n'));
+        orphan.on('connect', () => orphan.write(JSON.stringify({ ...request, v: 2, requestId: 'orphan', identity: tscServiceIdentity(request) }) + '\n'));
         orphan.once('data', () => {
           // The next caller remains live while the first refresh loses its only observer.
           live = requestTscService({ socketPath, request: { ...request, requestId: 'live-after-orphan' }, timeoutMs: 10_000 });

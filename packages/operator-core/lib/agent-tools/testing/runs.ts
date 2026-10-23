@@ -765,10 +765,6 @@ export default defineTool({
       };
     }
 
-    const picked = latestPerFile
-      ? sql`SELECT DISTINCT ON (file_path) * FROM filtered ORDER BY file_path, finished_at DESC NULLS LAST, id DESC`
-      : sql`SELECT * FROM filtered`;
-
     // Keep the policy that protects ordinary browsing, but report how many
     // otherwise-matching rows it hid. Without this second count, a file-path
     // lookup that found only mutation-probe rows looked exactly like no runs
@@ -783,8 +779,7 @@ export default defineTool({
          AND (${statuses}::text[] IS NULL OR status = ANY(${statuses}::text[]))
          AND (${sinceTs}::timestamptz IS NULL OR started_at >= ${sinceTs}::timestamptz)`;
 
-    const rows = await sql<
-      Array<{
+    type TestRunRow = {
         id: string;
         workspace_id: string | null;
         harness_slug: string | null;
@@ -805,24 +800,57 @@ export default defineTool({
         worktree_dirty: boolean;
         is_scratch_config: boolean;
         total: string;
-      }>
-    >`
-      WITH filtered AS (
-        SELECT * FROM harness_shared.test_runs
-        ${where}
-      ), picked AS (
-        ${picked}
-      )
-      SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details,
-             p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
-             CASE WHEN p.status = ANY(${RED_STATUSES as unknown as string[]}::text[])
-                  THEN left(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
-             p.run_group_id, p.source, p.branch, p.commit_sha,
-             p.loop_lag_p95_ms, p.rss_mb, p.worktree_dirty, p.is_scratch_config,
-             (SELECT count(*) FROM picked)::text AS total
-        FROM picked p
-       ORDER BY p.finished_at DESC NULLS LAST, p.started_at DESC
-       LIMIT ${limit}`;
+      };
+    let rows: TestRunRow[];
+    if (latestPerFile) {
+      // Keep the all-time/global winner set narrow through DISTINCT and the
+      // page sort. The partial covering index matches this exact predicate and
+      // order; fetch wide JSON/text columns only for the selected page.
+      rows = await sql<TestRunRow[]>`
+        WITH filtered AS NOT MATERIALIZED (
+          SELECT id, file_path, finished_at, started_at
+            FROM harness_shared.test_runs
+            ${where}
+        ), latest AS MATERIALIZED (
+          SELECT DISTINCT ON (file_path) id, file_path, finished_at, started_at
+            FROM filtered
+           ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
+        ), page AS MATERIALIZED (
+          SELECT id, count(*) OVER () AS total
+            FROM latest
+           ORDER BY finished_at DESC NULLS LAST, started_at DESC, id DESC
+           LIMIT \${limit}
+        )
+        SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details,
+               p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
+               CASE WHEN p.status = ANY(\${RED_STATUSES as unknown as string[]}::text[])
+                    THEN left(p.output_tail, \${OUTPUT_TAIL_CHARS}) END AS output_tail,
+               p.run_group_id, p.source, p.branch, p.commit_sha,
+               p.loop_lag_p95_ms, p.rss_mb, p.worktree_dirty, p.is_scratch_config,
+               page.total::text AS total
+          FROM page
+          JOIN harness_shared.test_runs AS p ON p.id = page.id
+         ORDER BY p.finished_at DESC NULLS LAST, p.started_at DESC, p.id DESC`;
+    } else {
+      const picked = sql`SELECT * FROM filtered`;
+      rows = await sql<TestRunRow[]>`
+        WITH filtered AS (
+          SELECT * FROM harness_shared.test_runs
+          ${where}
+        ), picked AS (
+          ${picked}
+        )
+        SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details,
+               p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
+               CASE WHEN p.status = ANY(\${RED_STATUSES as unknown as string[]}::text[])
+                    THEN left(p.output_tail, \${OUTPUT_TAIL_CHARS}) END AS output_tail,
+               p.run_group_id, p.source, p.branch, p.commit_sha,
+               p.loop_lag_p95_ms, p.rss_mb, p.worktree_dirty, p.is_scratch_config,
+               (SELECT count(*) FROM picked)::text AS total
+          FROM picked p
+         ORDER BY p.finished_at DESC NULLS LAST, p.started_at DESC
+         LIMIT \${limit}`;
+    }
 
     const omittedRows = shouldCountSourceOmissions
       ? await sql<Array<{ id: string; omitted_by_source_filter: string }>>`

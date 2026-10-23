@@ -870,7 +870,9 @@ export function requestTscService({ socketPath, request, timeoutMs = TSC_SERVICE
     const timer = setTimeout(() => fail(Object.assign(new Error(`no answer within ${timeoutMs} ms`),
       { code: 'timed-out' })), resolveTscServiceTimeoutMs(timeoutMs));
     socket.setEncoding('utf8');
-    socket.on('connect', () => socket.write(`${JSON.stringify({ ...request, requestId, identity })}\n`));
+    // Old v1 daemons reject v2 before refreshing a project. Sending v1 with new
+    // fields would let a stale daemon spend the whole timeout ignoring them.
+    socket.on('connect', () => socket.write(`${JSON.stringify({ ...request, v: 2, requestId, identity })}\n`));
     socket.on('data', (chunk) => {
       if (settled) return;
       buffer += chunk;

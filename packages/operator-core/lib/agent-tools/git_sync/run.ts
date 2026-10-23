@@ -101,7 +101,7 @@ export function gitSyncRunAbortCompletionReceipt(
   if (payload.fired === false) {
     if (
       (resultStatus === 'preview' && payload.dry_run === true) ||
-      (resultStatus === 'refused' && payload.reason === 'request-only-host')
+      (resultStatus === 'refused' && ['request-only-host', 'execution-target-mismatch'].includes(String(payload.reason)))
     ) {
       return {
         status: 'not-recorded',
