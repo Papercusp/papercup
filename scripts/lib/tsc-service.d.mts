@@ -12,6 +12,7 @@ export function tscServiceIdentity(request: Record<string, any>): {
     serviceSourceSha256: string;
     compilerVersion: any;
     compilerInstall: string;
+    compilerArtifactsSha256: string;
     projectConfigSha256: string | null;
     namedSources: {
         path: any;

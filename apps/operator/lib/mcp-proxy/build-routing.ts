@@ -58,13 +58,14 @@ export function applyMcpWorkerSelector(rawBody: Buffer):
     if (!isRecord(message) || message.method !== 'tools/call' || !isRecord(message.params)) continue;
     const params = message.params;
     if (!isRecord(params.arguments)) continue;
+    const outerArgs = params.arguments;
     let name = params.name;
     let args = params.arguments;
     if (name === 'tools:invoke' && isRecord(args.args)) { name = args.name; args = args.args; }
     if (name !== 'git-sync:run' || args.dryRun === true || args.target === undefined) continue;
     const target = normalizeMcpExecutionTarget(args.target);
-    if (!target || args.authenticatedPrincipal !== undefined || params.authenticatedPrincipal !== undefined ||
-        (isRecord(params._meta) && params._meta.authenticatedPrincipal !== undefined))
+    const envelopes = [message, params, message._meta, params._meta, outerArgs, outerArgs._meta, args, args._meta];
+    if (!target || envelopes.some(value => isRecord(value) && Object.hasOwn(value, 'authenticatedPrincipal')))
       return { kind: 'refused', reason: 'invalid-target-or-host-local-principal' };
     if (selected && !sameMcpExecutionTarget(selected, target)) return { kind: 'refused', reason: 'ambiguous-target' };
     const build = isRecord(params._meta) ? normalizeMcpBuild(params._meta[MCP_BUILD_META_KEY]) : null;

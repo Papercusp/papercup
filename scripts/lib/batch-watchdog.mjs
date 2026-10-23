@@ -310,7 +310,8 @@ export function createQualificationYieldBoundary({ budget, identity, unitIds, ba
       unitIds.some(id => typeof id !== 'string' || !id) ||
       typeof readDurableProgress !== 'function' || typeof commitYield !== 'function' || typeof onKill !== 'function')
     throw new TypeError('Invalid qualification yield boundary');
-  const selected = new Set(unitIds), baseline = new Map(), baselineIds = new Set();
+  const units = [...unitIds];
+  const selected = new Set(units), baseline = new Map(), baselineIds = new Set();
   for (const receipt of baselineReceipts) {
     if (!selected.has(receipt?.unitId) || baseline.has(receipt.unitId) ||
         typeof receipt.completionId !== 'string' || !receipt.completionId || baselineIds.has(receipt.completionId))
@@ -347,18 +348,18 @@ export function createQualificationYieldBoundary({ budget, identity, unitIds, ba
             typeof receipt.completionId !== 'string' || !receipt.completionId || completionIds.has(receipt.completionId) ||
             !['pass', 'fail', 'infra'].includes(receipt.state) ||
             !Number.isSafeInteger(receipt.observedAtMs) || receipt.observedAtMs > now() ||
-            (baseline.has(receipt.unitId) ? baseline.get(receipt.unitId) !== receipt.completionId
-              : baselineIds.has(receipt.completionId) || receipt.observedAtMs < budget.startedAtMs)) {
+            (baseline.get(receipt.unitId) !== receipt.completionId &&
+              (baselineIds.has(receipt.completionId) || receipt.observedAtMs < budget.startedAtMs))) {
           kill('durable-progress-invalid'); return;
         }
         completed.set(receipt.unitId, receipt); completionIds.add(receipt.completionId);
       }
       if ([...baseline.keys()].some(id => !completed.has(id))) { kill('durable-progress-regressed'); return; }
-      const fresh = [...completed.values()].filter(receipt => !baseline.has(receipt.unitId));
+      const fresh = [...completed.values()].filter(receipt => baseline.get(receipt.unitId) !== receipt.completionId);
       if (!fresh.length) { kill('durable-progress-stalled'); return; }
       const progress = Object.freeze({ identity,
         completedUnitIds: Object.freeze([...completed.keys()]),
-        pendingUnitIds: Object.freeze(unitIds.filter(id => !completed.has(id))),
+        pendingUnitIds: Object.freeze(units.filter(id => !completed.has(id))),
         newCompletionIds: Object.freeze(fresh.map(receipt => receipt.completionId)), budget });
       if (now() >= budget.yieldDeadlineEpochMs) { kill('yield-deadline'); return; }
       const committed = await commitYield(progress, cancellation.signal);

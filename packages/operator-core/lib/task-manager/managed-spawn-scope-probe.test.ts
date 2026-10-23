@@ -25,6 +25,16 @@ const child = () => Object.assign(new EventEmitter(), { stdout: new PassThrough(
 describe('managed spawn current-scope evidence (P026)', () => {
   beforeEach(() => { resetScopeProbe(); vi.clearAllMocks(); });
 
+  it('refuses a required orphan fuse before enrollment or payload spawn when confinement is unavailable', async () => {
+    const spawnFn = vi.fn();
+    await expect(managedSpawn('node', ['long-test.mjs'], { class: 'test-run', title: 'qualification quantum',
+      argv: [], launchedBy: 'test:qualification', runtimeMaxSec: 10 },
+      { spawnFn, taskId: 'qualified123', requireConfinement: true, scopeAvailable: false }))
+      .rejects.toThrow('Required task confinement is unavailable; no process started');
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(registerTask).not.toHaveBeenCalled();
+  });
+
   it('enrolls and confines the real payload without launching a disposable bootstrap scope', async () => {
     const attestation = child();
     const payload = child();

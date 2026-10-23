@@ -4,14 +4,16 @@
  * needs checked, and rendering API diagnostics in the CLI's own `--pretty false` text so the gate's
  * existing parser reads service output unchanged.
  */
-import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { build } from 'esbuild';
 const nativeDir = dirname(createRequire(import.meta.url).resolve('@typescript/native/package.json'));
 const { API } = await import(pathToFileURL(join(nativeDir, 'dist/api/async/api.js')).href);
 // eslint-disable-next-line import/no-relative-packages
@@ -44,6 +46,147 @@ import {
 } from '../../../scripts/lib/tsc-service.mjs';
 // eslint-disable-next-line import/no-relative-packages
 import { parseTscErrors } from '../../../scripts/lib/tsc-baseline-gate.mjs';
+
+describe('bundled typecheck service identity', () => {
+  const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+  const clientSource = join(repoRoot, 'scripts/lib/tsc-service.mjs');
+  const serverSource = join(repoRoot, 'scripts/tsc-service/server.mjs');
+  const roots: string[] = [];
+  afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+  async function bundled(withSources: boolean) {
+    const root = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'tsc-bundled-identity-'));
+    roots.push(root);
+    const output = join(root, 'apps/operator/dist-host/host.mjs');
+    mkdirSync(dirname(output), { recursive: true });
+    symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+    if (withSources) {
+      for (const [relativePath, source] of [
+        ['scripts/lib/tsc-service.mjs', clientSource],
+        ['scripts/tsc-service/server.mjs', serverSource],
+      ]) {
+        const destination = join(root, relativePath!);
+        mkdirSync(dirname(destination), { recursive: true });
+        writeFileSync(destination, readFileSync(source!));
+      }
+    }
+    await build({
+      stdin: { contents: `export { tscServiceIdentity, tscServiceSocketPath } from ${JSON.stringify(clientSource)}`,
+        resolveDir: repoRoot, sourcefile: 'tsc-identity-entry.mjs' },
+      outfile: output, bundle: true, format: 'esm', platform: 'node', packages: 'external',
+    });
+    return { root, output };
+  }
+
+  it('imports a relocated host bundle and captures its own source identity once', async () => {
+    const { root, output } = await bundled(true);
+    const expected = createHash('sha256').update(readFileSync(clientSource)).update(readFileSync(serverSource)).digest('hex');
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { writeFileSync } from 'node:fs';
+      const service = await import(${JSON.stringify(pathToFileURL(output).href)});
+      const before = service.tscServiceIdentity({});
+      writeFileSync(${JSON.stringify(join(root, 'scripts/lib/tsc-service.mjs'))}, 'changed after module load');
+      console.log(JSON.stringify({ before, after: service.tscServiceIdentity({}) }));
+    `], { cwd: tmpdir(), encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' }, timeout: 20_000 });
+    expect(child.status, child.stderr).toBe(0);
+    const result = JSON.parse(child.stdout);
+    expect(result.before.serviceSourceSha256).toBe(expected);
+    expect(result.after).toEqual(result.before);
+    expect(result.before.compilerVersion).toBeTruthy();
+  });
+
+  it('keeps metadata imports usable without source assets and refuses identity certification', async () => {
+    const { output } = await bundled(false);
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      const service = await import(${JSON.stringify(pathToFileURL(output).href)});
+      let failure;
+      try { service.tscServiceIdentity({}); } catch (error) { failure = error.code; }
+      console.log(JSON.stringify({ socket: service.tscServiceSocketPath({ XDG_RUNTIME_DIR: '/private' }), failure }));
+    `], { cwd: tmpdir(), encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' }, timeout: 20_000 });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({ socket: '/private/papercusp-tsc-service.sock', failure: 'service-identity-unavailable' });
+  });
+
+  it('recovers from orphaned diagnostic RPCs and refuses same-version compiler replacement on a live daemon', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-compiler-replacement-'));
+    roots.push(root);
+    const scoped = join(root, 'node_modules/@typescript');
+    mkdirSync(scoped, { recursive: true });
+    cpSync(nativeDir, join(scoped, 'native'), { recursive: true });
+    const nativePackage = JSON.parse(readFileSync(join(nativeDir, 'package.json'), 'utf8'));
+    const platformName = `${nativePackage.name.split('/').pop()}-${process.platform}-${process.arch}`;
+    symlinkSync(dirname(createRequire(import.meta.url).resolve(`@typescript/${platformName}/package.json`)), join(scoped, platformName), 'dir');
+    symlinkSync(dirname(createRequire(import.meta.url).resolve('typescript/package.json')), join(root, 'node_modules/typescript'), 'dir');
+    for (const [relativePath, source] of [['scripts/lib/tsc-service.mjs', clientSource], ['scripts/tsc-service/server.mjs', serverSource]]) {
+      const destination = join(root, relativePath!);
+      mkdirSync(dirname(destination), { recursive: true });
+      writeFileSync(destination, readFileSync(source!));
+    }
+    const project = join(root, 'tsconfig.json');
+    writeFileSync(project, JSON.stringify({ compilerOptions: { noEmit: true, types: [] }, files: ['a.ts', 'hang.ts'] }));
+    writeFileSync(join(root, 'a.ts'), 'export const a = 1;');
+    writeFileSync(join(root, 'hang.ts'), 'export const hang = 1;');
+    const entry = join(scoped, 'native/dist/api/async/api.js');
+    // Fault injection stays inside this private compiler copy. Refresh and
+    // normal checks use the real native API; this one diagnostic stalls until
+    // the service disposes its unobserved connection.
+    const originalApi = readFileSync(entry, 'utf8');
+    expect(originalApi).toContain('async getSemanticDiagnostics(file) {');
+    writeFileSync(entry, originalApi.replace('async getSemanticDiagnostics(file) {', `async getSemanticDiagnostics(file) {
+      if (file.endsWith('/hang.ts')) {
+        console.log('HUNG_DIAGNOSTIC_READY');
+        return new Promise((resolve, reject) => this.client.connection.onDispose(() => reject(new Error('orphan diagnostic disposed'))));
+      }
+    `));
+    const socketPath = join(root, 'compiler.sock');
+    const child = spawn(process.execPath, [join(root, 'scripts/tsc-service/server.mjs')], { cwd: root,
+      env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_TSC_SERVICE_ROOT: root, PAPERCUSP_TSC_SERVICE_SOCKET: socketPath },
+      stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', data => { output += data; });
+    child.stderr.on('data', data => { output += data; });
+    const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(output)), 10_000);
+        child.stdout.on('data', () => { if (output.includes('listening on')) { clearTimeout(timer); resolve(); } });
+        child.once('error', error => { clearTimeout(timer); reject(error); });
+        child.once('exit', () => { clearTimeout(timer); reject(new Error(output)); });
+      });
+      const runCaller = (files = ['a.ts'], timeoutMs = 10000) => new Promise<any>((resolve, reject) => {
+        const caller = spawn(process.execPath, ['--input-type=module', '-e', `
+          const service = await import(${JSON.stringify(pathToFileURL(join(root, 'scripts/lib/tsc-service.mjs')).href)});
+          const request = { root: ${JSON.stringify(root)}, project: ${JSON.stringify(project)}, files: ${JSON.stringify(files)}, scope: 'named' };
+          const result = await service.requestTscService({ socketPath: ${JSON.stringify(socketPath)}, request, timeoutMs: ${timeoutMs} })
+            .catch(error => ({ ok: false, reason: error.code }));
+          console.log(JSON.stringify({ result, identity: service.tscServiceIdentity(request) }));
+        `], { env: { ...process.env, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+        let stdout = '', stderr = '';
+        caller.stdout.on('data', data => { stdout += data; });
+        caller.stderr.on('data', data => { stderr += data; });
+        caller.once('error', reject);
+        caller.once('close', code => { if (code === 0) resolve(JSON.parse(stdout)); else reject(new Error(stderr)); });
+      });
+      const before = await runCaller();
+      expect(before.result).toMatchObject({ ok: true, kind: 'result', errorCount: 0 });
+      const hanging = runCaller(['hang.ts'], 1000);
+      await expect.poll(() => output, { timeout: 5000 }).toContain('HUNG_DIAGNOSTIC_READY');
+      const queued = runCaller();
+      expect((await hanging).result).toMatchObject({ ok: false, reason: 'timed-out' });
+      expect((await queued).result).toMatchObject({ ok: true, kind: 'result', errorCount: 0 });
+      expect(output).toContain('orphan diagnostic disposed');
+      writeFileSync(entry, readFileSync(entry, 'utf8') + '\n// replacement without version bump\n');
+      const after = await runCaller();
+      expect(after.identity.compilerVersion).toBe(before.identity.compilerVersion);
+      expect(after.identity.compilerInstall).toBe(before.identity.compilerInstall);
+      expect(after.identity.compilerArtifactsSha256).not.toBe(before.identity.compilerArtifactsSha256);
+      expect(after.result).toMatchObject({ ok: false, reason: 'identity-mismatch' });
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      await closed;
+    }
+  }, 30_000);
+});
 
 describe('serviceProjectFromTscCommand', () => {
   it('accepts every leg shape in use today', () => {
@@ -460,7 +603,7 @@ describe('focused service protocol', () => {
   });
 
   it('refuses compiler and source identity mismatches', async () => {
-    for (const key of ['compilerVersion', 'serviceSourceSha256', 'projectConfigSha256', 'namedSources']) {
+    for (const key of ['compilerVersion', 'compilerArtifactsSha256', 'serviceSourceSha256', 'projectConfigSha256', 'namedSources']) {
       await withSocket((request, socket) => socket.end(frame(request, { ok: true,
         identity: { ...request.identity, [key]: 'different' } })), async ({ socketPath, request }) => {
         await expect(requestTscService({ socketPath, request })).rejects.toMatchObject({ code: 'identity-mismatch' });

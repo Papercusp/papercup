@@ -351,6 +351,21 @@ describe('transient service payload escaping', () => {
     expect(taskDeadlineEnv(Number.NaN)).toEqual({});
   });
 
+  it('preserves an earlier inherited deadline including expiry, and only tightens a later deadline', () => {
+    expect(taskDeadlineEnv(600, 1000000, { [TASK_DEADLINE_EPOCH_MS_ENV]: '1100000' }))
+      .toEqual({ [TASK_DEADLINE_EPOCH_MS_ENV]: '1100000' });
+    expect(taskDeadlineEnv(600, 1000000, { [TASK_DEADLINE_EPOCH_MS_ENV]: '999000' }))
+      .toEqual({ [TASK_DEADLINE_EPOCH_MS_ENV]: '999000' });
+    expect(taskDeadlineEnv(600, 1000000, { [TASK_DEADLINE_EPOCH_MS_ENV]: '2000000' }))
+      .toEqual({ [TASK_DEADLINE_EPOCH_MS_ENV]: '1600000' });
+    const built = buildTaskScopeArgvWithTransport(['node', 'test.mjs'], { unit: 'pc-yield123.scope', slice: 'papercusp-test.slice',
+      runtimeMaxSec: 600, env: { [TASK_DEADLINE_EPOCH_MS_ENV]: '999000' } });
+    try {
+      expect(readFileSync(built.transport!.sourcePath, 'utf8').split('\0'))
+        .toContain(`${TASK_DEADLINE_EPOCH_MS_ENV}=999000`);
+    } finally { built.transport?.release(); }
+  });
+
   it('folds the deadline into an exact-env payload without displacing the caller env', () => {
     const before = Date.now();
     const built = buildTaskScopeArgvWithTransport(['/bin/false'], {

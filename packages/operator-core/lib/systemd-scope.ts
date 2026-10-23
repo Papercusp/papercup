@@ -582,10 +582,14 @@ export const TASK_DEADLINE_EPOCH_MS_ENV = 'PAPERCUSP_TASK_DEADLINE_EPOCH_MS';
 export function taskDeadlineEnv(
   runtimeMaxSec: number | null | undefined,
   nowMs: number = Date.now(),
+  inheritedEnv: Readonly<Record<string, string | undefined>> = {},
 ): Record<string, string> {
   if (typeof runtimeMaxSec !== 'number' || !Number.isFinite(runtimeMaxSec) || runtimeMaxSec <= 0) return {};
+  const inheritedDeadline = Number(inheritedEnv[TASK_DEADLINE_EPOCH_MS_ENV]);
+  const ownDeadline = Math.floor(nowMs) + Math.floor(runtimeMaxSec) * 1000;
   return {
-    [TASK_DEADLINE_EPOCH_MS_ENV]: String(Math.floor(nowMs) + Math.floor(runtimeMaxSec) * 1000),
+    [TASK_DEADLINE_EPOCH_MS_ENV]: String(Number.isSafeInteger(inheritedDeadline) && inheritedDeadline > 0
+      ? Math.min(inheritedDeadline, ownDeadline) : ownDeadline),
   };
 }
 
@@ -658,7 +662,7 @@ function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope'
   // where they can be reached instead: a SERVICE takes `--setenv` below, and an envless
   // SCOPE payload is forked from the systemd-run client, so its deadline rides the client's
   // env at the launch site (see managed-spawn.ts).
-  const deadlineEnv = taskDeadlineEnv(props.runtimeMaxSec);
+  const deadlineEnv = taskDeadlineEnv(props.runtimeMaxSec, Date.now(), props.env);
   const payloadEnv = props.env ? { ...props.env, ...deadlineEnv } : null;
   const environmentFdIndex = props.environmentFdIndex;
   if (

@@ -277,6 +277,30 @@ describe('durable qualification quantum', () => {
     expect(s.kills).toEqual(['durable-progress-stalled']); expect(s.commits).toEqual([]); expect(s.yields).toEqual([]);
   });
 
+  it('retains the frozen selected population when the caller changes its array', async () => {
+    const clock = fakeScheduler(), unitIds = ['a', 'b'];
+    const commits: unknown[] = [];
+    createQualificationYieldBoundary({ budget: budget(), identity: 'frozen-attempt-runner', unitIds,
+      readDurableProgress: async () => ({ status: 'ready', identity: 'frozen-attempt-runner', receipts: [
+        { unitId: 'a', completionId: 'new', state: 'pass', observedAtMs: 400 },
+      ] }),
+      commitYield: async progress => { commits.push(progress); return true; },
+      onKill: reason => { throw new Error(JSON.stringify(reason)); },
+      now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer });
+    unitIds.splice(0, unitIds.length, 'forged');
+    clock.advance(500); await flush();
+    expect(commits).toMatchObject([{ completedUnitIds: ['a'], pendingUnitIds: ['b'] }]);
+  });
+
+  it('counts a custody-validated replacement completion as new progress', async () => {
+    const s = setup(async () => ({ status: 'ready', identity: 'frozen-attempt-runner', receipts: [
+      { unitId: 'a', completionId: 'retry', state: 'fail', observedAtMs: 400 },
+    ] }));
+    s.clock.advance(500); await flush();
+    expect(s.kills).toEqual([]);
+    expect(s.commits).toMatchObject([{ completedUnitIds: ['a'], pendingUnitIds: ['b'], newCompletionIds: ['retry'] }]);
+  });
+
   it('kills a blocked worker even while its healthy peer completes', async () => {
     const s = setup();
     s.watchdog.workerStarted('db-blocked', 300); s.watchdog.workerStarted('healthy', 200);

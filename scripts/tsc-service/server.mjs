@@ -52,15 +52,15 @@ let draining = false;
 
 /**
  * The native API runs tsgo in a child process. A client timeout closes its socket, but an
- * in-flight `updateSnapshot` does not observe that cancellation and can otherwise hold the
+ * in-flight compiler RPC does not observe that cancellation and can otherwise hold the
  * single-flight queue long after every caller has fallen back to the CLI. Stop that orphaned
- * refresh only when every request sharing it has disconnected; queued requests are not in this
+ * operation only when every request sharing it has disconnected; queued requests are not in this
  * batch and will get a fresh API after the failed refresh is reset.
  */
 function abortRefreshIfUnobserved(batch) {
   let abortRequested = false;
   const abort = () => {
-    if (abortRequested || batch.some((item) => !item.cancelled)) return;
+    if (abortRequested || batch.some((item) => !item.cancelled && !item.completed)) return;
     const child = state.api?.client?.process;
     if (!child || child.exitCode !== null || child.signalCode !== null || child.killed) return;
     abortRequested = true;
@@ -290,6 +290,7 @@ async function drain() {
       if (batch.length === 0) continue;
       const projects = [...new Set(batch.map((item) => item.request.project))];
       const detachRefreshAbort = abortRefreshIfUnobserved(batch);
+      try {
       let refreshFailed = false;
       let refreshError;
       try {
@@ -302,7 +303,6 @@ async function drain() {
         refreshFailed = true;
         refreshError = error;
       }
-      detachRefreshAbort();
       if (refreshFailed) {
         for (const item of batch) item.reply({ ok: false, reason: 'refresh-failed', detail: String(refreshError?.message ?? refreshError) });
         await resetApi(`refresh failed: ${refreshError?.message ?? refreshError}`);
@@ -337,6 +337,9 @@ async function drain() {
       }
       const rss = tsgoRssBytes();
       if (rss > RSS_RESET_BYTES) await resetApi(`tsgo RSS ${(rss / 1024 ** 3).toFixed(1)} GiB`);
+      } finally {
+        detachRefreshAbort();
+      }
     }
   } finally {
     draining = false;
@@ -388,6 +391,7 @@ const server = createServer((socket) => {
     const reply = (response) => {
       if (!socket.destroyed) {
         replied = true;
+        if (item) item.completed = true;
         const identity = tscServiceIdentity(request ?? {});
         if (response.ok && JSON.stringify(identity) !== JSON.stringify(request.identity)) {
           response = { ok: false, reason: 'identity-mismatch', detail: 'source or config changed during the request' };

@@ -58,6 +58,8 @@ import {
 export interface ManagedSpawnOptions {
   /** Metered executions require enrollment before any process can send. */
   requireRegistration?: boolean;
+  /** A caller that depends on an OS orphan fuse must refuse before spawn if no scope can enforce it. */
+  requireConfinement?: boolean;
   /** Optional tracer; observes spawn and awaited completion phases without secrets. */
   stage?: (name: string) => void;
   /** Observe the child synchronously before post-fork ledger writes can outlive it. */
@@ -271,6 +273,7 @@ export async function managedSpawn(
   // rather than a dashboard blanker.
   opts.stage?.('spawn-read-flag');
   if (!(await isTaskManagerEnabled('task-manager:spawn'))) {
+    if (opts.requireConfinement) throw new Error('Required task confinement is disabled; no process started.');
     if (opts.requireRegistration) throw new Error('Required task enrollment is disabled; no process started.');
     opts.stage?.('spawn-fork');
     const child = spawnFn(command, args as string[], opts.spawnOptions ?? {});
@@ -308,6 +311,9 @@ export async function managedSpawn(
   } else {
     skippedReason = 'confine: false';
   }
+
+  if (opts.requireConfinement && !scopeOk)
+    throw new Error(`Required task confinement is unavailable; no process started: ${skippedReason ?? 'unknown'}`);
 
   const argvSpec: TaskSpec = { ...spec, argv: [command, ...args] };
 
@@ -401,7 +407,7 @@ export async function managedSpawn(
     // invisible to the payload, which is how a bounded run gets SIGKILLed with no verdict.
     launchSpawnOptions = {
       ...launchSpawnOptions,
-      env: { ...process.env, ...taskDeadlineEnv(spec.runtimeMaxSec) },
+      env: { ...process.env, ...taskDeadlineEnv(spec.runtimeMaxSec, Date.now(), process.env) },
     };
   }
 

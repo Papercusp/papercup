@@ -15,7 +15,7 @@
 // existing parser reads service output unchanged), and the socket client.
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createConnection } from 'node:net';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -23,17 +23,50 @@ import ts from 'typescript';
 
 // Captured when this module loads: reading disk later cannot certify an old daemon
 // as running newly edited code. The server and caller must load the same protocol.
-const serviceSourceSha256 = createHash('sha256')
-  .update(readFileSync(new URL('./tsc-service.mjs', import.meta.url)))
-  .update(readFileSync(new URL('../tsc-service/server.mjs', import.meta.url))).digest('hex');
 const nativePackagePath = createRequire(import.meta.url).resolve('@typescript/native/package.json');
-const nativeVersion = JSON.parse(readFileSync(nativePackagePath, 'utf8')).version;
+const nativePackage = JSON.parse(readFileSync(nativePackagePath, 'utf8'));
+const nativeVersion = nativePackage.version;
+// Resolve assets from this installation, including the maintained host bundle.
+// Metadata imports stay usable when assets are absent; certification fails closed.
+const serviceSourceSha256 = (() => {
+  for (const [client, server] of [
+    ['./tsc-service.mjs', '../tsc-service/server.mjs'],
+    ['../../../scripts/lib/tsc-service.mjs', '../../../scripts/tsc-service/server.mjs'],
+  ]) {
+    try { return createHash('sha256').update(readFileSync(new URL(client, import.meta.url)))
+      .update(readFileSync(new URL(server, import.meta.url))).digest('hex'); }
+    catch { /* Try only another installation-relative layout, never cwd. */ }
+  }
+  return null;
+})();
+// Capture runtime JS and executable bytes before the daemon imports the API.
+// Version/path cannot distinguish an in-place compiler replacement.
+const compilerArtifactsSha256 = (() => {
+  try {
+    const hash = createHash('sha256');
+    const visit = (directory) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) visit(path);
+        else if (/\.(?:js|cjs|mjs|json)$/.test(entry.name)) hash.update(relative(dirname(nativePackagePath), path))
+          .update('\0').update(readFileSync(path)).update('\0');
+      }
+    };
+    visit(dirname(nativePackagePath));
+    const base = nativePackage.name.split('/').pop();
+    const platformPackage = createRequire(nativePackagePath).resolve(`@typescript/${base}-${process.platform}-${process.arch}/package.json`);
+    const executable = join(dirname(platformPackage), 'lib', `${base === 'typescript' ? 'tsc' : 'tsgo'}${process.platform === 'win32' ? '.exe' : ''}`);
+    return hash.update(readFileSync(platformPackage)).update(readFileSync(executable)).digest('hex');
+  } catch { return null; }
+})();
 
 /** Exact loaded service/compiler identity plus the requested root config and named inputs.
  * Missing inputs remain explicit nulls; they never certify a successful focused check.
  * @param {Record<string, any>} request
  */
 export function tscServiceIdentity(request) {
+  if (!serviceSourceSha256 || !compilerArtifactsSha256)
+    throw Object.assign(new Error('service/compiler identity assets unavailable'), { code: 'service-identity-unavailable' });
   const digest = (file) => {
     try { return createHash('sha256').update(readFileSync(file)).digest('hex'); }
     catch { return null; }
@@ -41,7 +74,7 @@ export function tscServiceIdentity(request) {
   const root = typeof request.root === 'string' ? resolve(request.root) : null;
   const project = typeof request.project === 'string' ? resolve(request.project) : null;
   return { root, project, scope: request.scope ?? 'dependencies', serviceSourceSha256, compilerVersion: nativeVersion,
-    compilerInstall: dirname(nativePackagePath), projectConfigSha256: project ? digest(project) : null,
+    compilerInstall: dirname(nativePackagePath), compilerArtifactsSha256, projectConfigSha256: project ? digest(project) : null,
     namedSources: root && Array.isArray(request.files)
       ? request.files.map(file => ({ path: file, sha256: typeof file === 'string' ? digest(resolve(root, file)) : null })) : [] };
 }

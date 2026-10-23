@@ -376,6 +376,27 @@ describe('target-preserving worker routing', () => {
     expect(dispatched).toBe(1);
   });
 
+  it('refuses host-local principals throughout direct and deferred envelopes before dispatch', async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const upstream = await listen(stubOperator('must-not-receive-principal', seen));
+    const p = await routed([worker(port(upstream))]);
+    for (const deferred of [false, true]) {
+      for (const location of ['message', 'params', 'messageMeta', 'paramsMeta', 'outer', 'outerMeta', 'inner', 'innerMeta']) {
+        const inner = { target };
+        const outer = deferred ? { name: 'git-sync:run', args: inner } : inner;
+        const message = call(deferred ? 'tools:invoke' : 'git-sync:run', outer) as any;
+        const envelopes: Record<string, any> = { message, params: message.params,
+          messageMeta: message._meta = {}, paramsMeta: message.params._meta = {}, outer,
+          outerMeta: (outer as any)._meta ??= {}, inner, innerMeta: (inner as any)._meta ??= {} };
+        envelopes[location].authenticatedPrincipal = { capabilities: ['all'] };
+        const response = await post(p, JSON.stringify(message));
+        expect(response.status, `${deferred}:${location}`).toBe(400);
+        expect(JSON.parse(response.body)).toMatchObject({ forwardingResult: 'not_applied' });
+        expect(seen).toHaveLength(0);
+      }
+    }
+  });
+
   it('distinguishes no-dispatch, unknown and authenticated completion without replay', async () => {
     const seen: Array<{ label: string; body: string }> = [];
     const upstream = await listen(stubOperator('worker-result', seen));
