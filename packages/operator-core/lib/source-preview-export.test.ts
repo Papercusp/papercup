@@ -945,6 +945,28 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(output).toContain('copy-complete');
   });
 
+  it.each([false, true])('distinguishes copy-lock progress across acquisition retries (scoped counter=%s)', async scoped => {
+    const run = runVerifierDependencyCommand(process.execPath, ['-e', `
+      let tick = 0;
+      const timer = setInterval(() => {
+        tick++;
+        const wait = tick <= 10 ? '100:1' : '100:2';
+        const advances = tick <= 10 ? tick : tick - 10;
+        console.log('copy lock progress: fixture' + (${scoped} ? ' wait=' + wait : '') + ' advances=' + advances);
+        if (tick === 20) { clearInterval(timer); console.log('copy-complete'); }
+      }, 100);
+    `], { cwd: tmp, env: childEnv(), timeoutMs: 1700, maxMs: 6000,
+      stallWindowMs: 500, extensionMs: 500 });
+    if (!scoped) {
+      await expect(run).rejects.toThrow('progress-stalled');
+      return;
+    }
+    const output = await run;
+    expect(output).toContain('wait=100:1 advances=10');
+    expect(output).toContain('wait=100:2 advances=1');
+    expect(output).toContain('copy-complete');
+  });
+
   it.each(['copy', 'copy-lock', 'snapshot'])('rejects chattering stalled %s and joins a TERM-resistant descendant before cleanup', async kind => {
     const destination = join(tmp, 'dependency-copy-writer');
     const pidPath = join(tmp, 'dependency-copy-writer.pid');
