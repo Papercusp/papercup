@@ -239,6 +239,38 @@ describe('tool-delivery acceptance instruments', () => {
     rows[0]!.status = 'failed';
     expect(evaluateToolDeliveryRuns(rows, schemas, experiment).comprehension.verdict).toBe('fail');
   });
+  it('rejects shifting calls between turns even when their global sequence and turn count match', () => {
+    const sample = () => {
+      const { rows, experiment } = candidateFixture();
+      const row = rows.find(row => row.variant === experiment.arms.fullArm)!;
+      const first = row.raw_events as any[];
+      const second = structuredClone(first);
+      second[0].data.usedCanonicalNames = ['work_items:list'];
+      second[1].data.input.limit = 3;
+      row.raw_events = [...first, ...second];
+      row.transcript_norm_json = [
+        { toolCalls: [{ name: 'work_items:list', input: { limit: 2 } }] },
+        { toolCalls: [{ name: 'work_items:list', input: { limit: 3 } }] },
+      ];
+      return { rows, experiment, row };
+    };
+    const valid = sample();
+    expect(evaluateToolDeliveryRuns(valid.rows, schemas, valid.experiment).manifests).toHaveLength(30);
+    for (const direction of ['earlier', 'later', 'missing-calls', 'no-completed-turn'] as const) {
+      const { rows, experiment, row } = sample();
+      const turns = row.transcript_norm_json as any[];
+      if (direction === 'earlier') turns[0].toolCalls.push(turns[1].toolCalls.shift());
+      if (direction === 'later') turns[1].toolCalls.unshift(turns[0].toolCalls.pop());
+      if (direction === 'missing-calls') delete turns[0].toolCalls;
+      if (direction === 'no-completed-turn') {
+        row.raw_events = [(row.raw_events as any[])[0]];
+        row.transcript_norm_json = [];
+      }
+      const result = evaluateToolDeliveryRuns(rows, schemas, experiment);
+      expect(result.comprehension.verdict).toBe('unknown');
+      expect(result.comprehension.reason).toContain('raw/normalized');
+    }
+  });
   it('enforces the preregistered chronological blocks, registration anchor and unretried matrix indices', () => {
     const mutations: Array<(rows: ToolDeliveryRun[], experiment: ToolDeliveryExperiment) => void> = [
       rows => { Object.assign(rows[0]!, { started_at: '2026-10-20T00:00:00Z' }); },

@@ -74,7 +74,8 @@ export function validateToolDeliveryManifests(row: ToolDeliveryRun, experiment: 
       row.scenario_hash !== contract.scenarioHashes[row.scenario_id]) return bad('preregistered model/scenario mismatch');
   if (!Array.isArray(row.raw_events)) return bad('missing persisted definition manifests');
   const used = new Set<string>();
-  const calls: Array<{ name: unknown; input: unknown }> = [];
+  const calls: Array<Array<{ name: unknown; input: unknown }>> = [];
+  let turnCalls: Array<{ name: unknown; input: unknown }> = [];
   const full = new Map(contract.fullDefinitions.map(tool => [tool.name, tool]));
   if (full.size !== contract.fullDefinitions.length || full.size !== contract.compactDefinitions.length ||
       new Set(contract.compactDefinitions.map(tool => tool.name)).size !== full.size ||
@@ -100,7 +101,7 @@ export function validateToolDeliveryManifests(row: ToolDeliveryRun, experiment: 
       bytes.push(Buffer.byteLength(serialized)); requests++; pendingCalls = false;
     } else if (event.name === 'tool_call') {
       if (!requests || typeof data.name !== 'string') return bad('tool call without a request manifest');
-      calls.push({ name: data.name, input: data.input });
+      turnCalls.push({ name: data.name, input: data.input });
       used.add(data.name);
       if (data.name === 'tools:invoke') {
         const nested = object(data.input).name;
@@ -109,16 +110,18 @@ export function validateToolDeliveryManifests(row: ToolDeliveryRun, experiment: 
       pendingCalls = true;
     } else if (event.name === 'done') {
       if (!requests || pendingCalls) return bad('completed turn lacks its final request manifest');
+      calls.push(turnCalls);
+      turnCalls = [];
       completedTurns++;
       responseIndex = 0;
     }
   }
-  const normalized = Array.isArray(row.transcript_norm_json) ? row.transcript_norm_json.flatMap(turn => {
+  const normalized = Array.isArray(row.transcript_norm_json) ? row.transcript_norm_json.map(turn => {
     const recorded = object(turn).toolCalls;
-    return Array.isArray(recorded) ? recorded.map(call => ({ name: object(call).name, input: object(call).input })) : [];
+    return Array.isArray(recorded) ? recorded.map(call => ({ name: object(call).name, input: object(call).input })) : null;
   }) : [];
-  if (!requests || pendingCalls || !Array.isArray(row.transcript_norm_json) ||
-      // JSONB changes object key order; call/array order and argument values must still match.
+  if (!requests || !completedTurns || turnCalls.length || pendingCalls || !Array.isArray(row.transcript_norm_json) ||
+      // JSONB changes object key order; turn/call/array order and argument values must still match.
       completedTurns !== row.transcript_norm_json.length || !isDeepStrictEqual(calls, normalized)) {
     return bad('incomplete raw/normalized request and call coverage');
   }
