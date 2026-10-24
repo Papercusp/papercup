@@ -2,6 +2,7 @@
  * Private R1 browser runtime. Run through the maintained isolated-PG wrapper:
  * node scripts/with-test-pg.mjs --isolated-runtime=operator-api -- node --import tsx
  *   packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts --smoke
+ * Omit --smoke and add --local-gui for the actual local operator browser UI.
  *
  * Uses the production hosted handler, persisted sessions/device grants, and two
  * independently enrolled operator processes. It never provisions paid machines.
@@ -78,6 +79,7 @@ async function waitFor<T>(name: string, probe: () => Promise<T | false>, ms = 12
 
 let server: import('node:https').Server | undefined;
 let hosted: Awaited<ReturnType<typeof import('../../../../apps/operator/bin/hosted-handler').createHostedHandlerFromEnvironment>> | undefined;
+let localGui: import('vite').ViteDevServer | undefined;
 try {
   await stage('source-census');
   const sourcePaths = [
@@ -215,8 +217,21 @@ try {
     secure: true, httpOnly: true, sameSite: 'Lax' } }), { mode: 0o600 });
   const localPort = await freePort();
   const localOrigin = `http://127.0.0.1:${localPort}`;
+  // A local install has its own registry and control partition. Sharing the
+  // hosted control partition makes the fixture's provider rows shadow saved
+  // sign-in rows, hiding the real connector tunnel from the desktop reader.
+  const localWorkspaceId = `${control}-local`;
+  const localWorkspacesRoot = join(privateRoot, 'local-workspaces');
+  await mkdir(join(localWorkspacesRoot, localWorkspaceId), { recursive: true });
+  await writeFile(join(localWorkspacesRoot, 'registry.json'), JSON.stringify({
+    current: localWorkspaceId,
+    workspaces: [{ id: localWorkspaceId, name: 'R1 local browser', createdAt: Date.now() }],
+  }), { mode: 0o600 });
   status.origin = origin; status.localOrigin = localOrigin; status.targets = targets;
+  status.localWorkspaceId = localWorkspaceId;
   start('local', { ...process.env, PAPERCUSP_HONO_PORT: String(localPort), PORT: String(localPort),
+    PAPERCUSP_WORKSPACE: localWorkspaceId, PAPERCUSP_WORKSPACE_ID: localWorkspaceId,
+    PAPERCUSP_WORKSPACES_ROOT: localWorkspacesRoot,
     NODE_EXTRA_CA_CERTS: certPath });
   const { isHostedConnectorLive } = await import('../endpoint-route/hosted-workspace-connector');
   await stage('wait-two-connectors');
@@ -228,12 +243,15 @@ try {
         generation: row.connector!.generation, heartbeatAt: row.connector!.heartbeatAt })) : false;
   });
   await stage('wait-local-saved-inventory');
+  const { readHostedWorkspaceConnector } = await import('../../../../apps/operator/app/cloud-workspaces/hosted-workspace-session-protocol');
   const inventoryResponse = await waitFor('local saved targets', async () => {
     const response = await fetch(`${localOrigin}/api/zero-harness/rest-query?name=workspaceHosts.control`,
       { signal: AbortSignal.timeout(5000) });
     if (!response.ok) return false;
     const body = await response.json();
-    return targets.every(t => body.rows?.some((row: any) => row.id === t.hostId && row.observedState === 'running'))
+    return targets.every(t => body.rows?.some((row: any) => row.id === t.hostId
+      && row.observedState === 'running'
+      && readHostedWorkspaceConnector(row.tunnel)?.routeLabel === `r1-${t.label}`))
       ? { status: response.status, targets: body.rows.filter((row: any) => targets.some(t => t.hostId === row.id)) } : false;
   });
   await stage('verify-remote-destinations');
@@ -251,7 +269,7 @@ try {
       return response.ok && (await response.json()).display_name === name;
     });
     const response = await fetch(`${localOrigin}/api/profile`, { headers: {
-      'x-papercusp-workspace': control, 'x-papercusp-machine': target.hostId },
+      'x-papercusp-workspace': localWorkspaceId, 'x-papercusp-machine': target.hostId },
       signal: AbortSignal.timeout(20_000) });
     const profile = await response.json();
     destinations.push({ hostId: target.hostId, workspaceId: target.workspaceId,
@@ -259,6 +277,17 @@ try {
     await save();
     assert.equal(response.status, 200, `Selected ${target.hostId} profile must be reachable (${profile.error ?? 'no error code'})`);
     assert.equal(profile.display_name, name, `Selected ${target.hostId} must reach its own operator`);
+  }
+  if (process.argv.includes('--local-gui')) {
+    await stage('start-local-gui');
+    process.env.PAPERCUSP_API_TARGET = localOrigin;
+    const { createServer } = await import('vite');
+    localGui = await createServer({ root: join(repo, 'apps/operator-vite'),
+      configFile: join(repo, 'apps/operator-vite/vite.config.ts'),
+      server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false, watch: null } });
+    await localGui.listen();
+    status.localGuiOrigin = localGui.resolvedUrls?.local[0]?.replace(/\/$/, '');
+    assert(status.localGuiOrigin, 'Local GUI must expose its actual loopback origin');
   }
   status.status = 'ready'; status.origin = origin; status.localOrigin = localOrigin;
   status.targets = targets; status.account = { userId, organizationIds: targets.map(t => t.organizationId) };
@@ -274,6 +303,7 @@ try {
   process.exitCode = 1;
 } finally {
   clearTimeout(deadline);
+  await localGui?.close();
   for (const child of children) child.process.kill('SIGTERM');
   await delay(1500);
   for (const child of children) if (child.process.exitCode === null && child.process.signalCode === null)
