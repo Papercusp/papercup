@@ -1,3 +1,4 @@
+export function runtimeFileTraceArguments(output: string, command: string[]): string[];
 export function bindRuntimeModelOpens(text: string, options: {
   processId: number;
   assets: {path: string}[];
