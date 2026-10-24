@@ -13,7 +13,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createServer as netServer } from 'node:net';
 import { createServer as httpsServer } from 'node:https';
-import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { openSync, closeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,17 @@ assert(['127.0.0.1', 'localhost'].includes(admin.hostname) && admin.host === app
 const evidence = process.env.MACHINE_FIRST_RUNTIME_EVIDENCE ?? '/tmp/machine-first-two-target-runtime';
 const privateRoot = join(process.env.HOME!, 'machine-first-two-targets');
 await mkdir(privateRoot, { recursive: true, mode: 0o700 });
+const containerSsh = process.env.MACHINE_FIRST_RUNTIME_CONTAINER_SSH === '1';
+if (containerSsh) {
+  // Only the container fixture may expose traversable parents to its real
+  // customer SSH account. Private files retain their existing 0600 modes.
+  await readFile('/run/.containerenv');
+  const runtimeRoot = dirname(process.env.HOME!);
+  assert(dirname(runtimeRoot) === process.env.PAPERCUSP_TEST_RUNTIME_TMP_BASE
+    && runtimeRoot.split('/').at(-1)!.startsWith('papercusp-test-runtime-'),
+  'Requires wrapper-owned runtime HOME');
+  for (const path of [dirname(process.env.HOME!), process.env.HOME!, privateRoot]) await chmod(path, 0o711);
+}
 const children: Array<{ name: string; process: ChildProcess }> = [];
 const status: Record<string, unknown> = { status: 'starting', controlWorkspace: control,
   sourceRoot: repo, startedAt: new Date().toISOString(), scope: 'two private operator processes on one OS host' };
@@ -93,6 +104,7 @@ try {
     'packages/operator-core/lib/endpoint-route/routes/hosted-cli/store.ts',
     'packages/operator-core/lib/workspace-context-middleware.ts',
     'packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts',
+    'apps/operator/scripts/install-standalone-mcp.sh',
   ];
   status.sourceHashes = Object.fromEntries(await Promise.all(sourcePaths.map(async p =>
     [p, digest(await readFile(join(repo, p), 'utf8'))])));
@@ -174,6 +186,7 @@ try {
     assert(credential, 'Persisted connector enrollment must register');
     const targetHome = join(privateRoot, label), workspaceRoot = join(targetHome, 'project');
     await mkdir(workspaceRoot, { recursive: true });
+    if (containerSsh) await chmod(workspaceRoot, 0o770);
     const targetPort = await freePort(), ingressPort = await freePort();
     const env = { ...process.env, HOME: targetHome, PAPERCUSP_HOME: join(targetHome, '.papercusp'),
       PAPERCUSP_WORKSPACES_ROOT: join(targetHome, 'workspaces'), PAPERCUSP_WORKSPACE: workspaceId,
@@ -249,6 +262,27 @@ try {
       ? rows.map(row => ({ id: row.id, hostId: row.hostId,
         generation: row.connector!.generation, heartbeatAt: row.connector!.heartbeatAt })) : false;
   });
+  if (containerSsh) {
+    await stage('install-target-launchers');
+    // Install the production launcher into each disposable target HOME. A
+    // deferred launch returning psu_not_installed is not routing evidence.
+    // The maintained installer also verifies that target's real MCP endpoint.
+    for (const target of targets) {
+      const fd = openSync(`${evidence}-install-${target.label}.log`, 'w', 0o600);
+      try {
+        execFileSync('bash', ['apps/operator/scripts/install-standalone-mcp.sh'], {
+          cwd: repo,
+          env: { ...process.env, HOME: target.home,
+            PAPERCUSP_HOME: join(target.home, '.papercusp'),
+            PAPERCUSP_OPERATOR_URL: target.origin, PAPERCUSP_MCP_PROXY: '0',
+            PAPERCUSP_WORKSPACE: target.workspaceId, PAPERCUSP_WORKSPACE_ID: target.workspaceId },
+          stdio: ['ignore', fd, fd], timeout: 120_000,
+        });
+        await readFile(join(target.home, '.local/bin/psu'));
+      } finally { closeSync(fd); }
+    }
+    status.targetLaunchersInstalled = true;
+  }
   await stage('wait-local-saved-inventory');
   const { readHostedWorkspaceConnector } = await import('../../../../apps/operator/app/cloud-workspaces/hosted-workspace-session-protocol');
   const inventoryResponse = await waitFor('local saved targets', async () => {
@@ -262,6 +296,13 @@ try {
       ? { status: response.status, targets: body.rows.filter((row: any) => targets.some(t => t.hostId === row.id)) } : false;
   });
   await stage('verify-remote-destinations');
+  if (containerSsh) {
+    const { hostedWorkspaceSshArgs } = await import('./hosted-session-host');
+    const account = execFileSync('/usr/bin/ssh', [...hostedWorkspaceSshArgs({ tty: false }), 'id -un'],
+      { encoding: 'utf8', timeout: 15_000 }).trim();
+    assert.equal(account, 'papercusp-workspace', 'Production loopback SSH must reach the customer account');
+    status.sshPrerequisite = { account, network: 'owned-container-loopback', verified: true };
+  }
   const destinations: Array<{ hostId: string; workspaceId: string; status: number;
     displayName?: string; error?: string }> = [];
   status.destinations = destinations;
@@ -291,6 +332,10 @@ try {
     const { createServer } = await import('vite');
     localGui = await createServer({ root: join(repo, 'apps/operator-vite'),
       configFile: join(repo, 'apps/operator-vite/vite.config.ts'),
+      // Container acceptance mounts source read-only. Keep generated config
+      // modules and dependency optimization out of the shared checkout.
+      configLoader: 'runner',
+      cacheDir: join(privateRoot, 'vite-cache'),
       server: { host: '127.0.0.1', port: localGuiPort!, strictPort: true, hmr: false, watch: null } });
     await localGui.listen();
     status.localGuiOrigin = localGui.resolvedUrls?.local[0]?.replace(/\/$/, '');
