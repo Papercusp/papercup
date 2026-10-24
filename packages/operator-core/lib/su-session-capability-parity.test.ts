@@ -28,6 +28,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 
 import {
   SU_EXEC_COMBINATIONS, SU_EXEC_INVENTORY, SU_EXEC_PTY_CONTROLS,
@@ -112,6 +113,34 @@ describe('SU execution inventory (P-001; qualification is still unknown)', () =>
     }
     expect(SU_EXEC_PTY_CONTROLS.filter(c => c.classification !== 'required')
       .every(c => 'boundary' in c && c.boundary.length > 20)).toBe(true);
+    const files = ['packages/operator-core/lib/su-session-capability-parity.test.ts',
+      'packages/operator-core/lib/su-session-attached-live.integration.test.ts'];
+    const expectedSelectors = {
+      selectionSource: 'criterion.check.cases',
+      preflight: { files, cases: ['SU-EXEC R-1 acceptance contract', 'SU-EXEC R-18 inventory preflight'] },
+      final: { files, cases: ['SU-EXEC R-18 final qualification'],
+        requires: 'measured-population-and-receipt-validation' },
+      accounting: { file: files[0], cases: ['rejects missing rows, false passes, changed scope and hidden PTY fallback'],
+        scope: 'accounting-only' },
+    };
+    const selectorContractMatches = (text: string): boolean => {
+      const block = text.match(/\{\/\* su-exec-selectors:begin \*\/\}\s*```json\s*([\s\S]*?)```\s*\{\/\* su-exec-selectors:end \*\/\}/);
+      if (!block || text.includes('SU-EXEC R-18 acceptance contract')
+        || text.includes('Each check uses the exact case title')) return false;
+      try {
+        return isDeepStrictEqual(JSON.parse(block[1]), expectedSelectors);
+      } catch {
+        return false;
+      }
+    };
+    expect(selectorContractMatches(document), 'documented selectors must match the preflight/final contract').toBe(true);
+    // These broken document controls reproduce the stale instruction and prove
+    // that a missing accounting check or preflight masquerading as final fails.
+    expect(selectorContractMatches(document.replaceAll('SU-EXEC R-18 inventory preflight',
+      'SU-EXEC R-18 acceptance contract'))).toBe(false);
+    expect(selectorContractMatches(document.replace('"scope": "accounting-only"', '"scope": "runtime-parity"'))).toBe(false);
+    expect(selectorContractMatches(document.replace('"SU-EXEC R-18 final qualification"',
+      '"SU-EXEC R-18 inventory preflight"'))).toBe(false);
   });
 
   it('rejects missing rows, false passes, changed scope and hidden PTY fallback', () => {
