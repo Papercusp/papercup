@@ -427,6 +427,15 @@ describe('sync-staging-checkout.sh argument parsing', () => {
     expect(r.stderr).toContain('Usage: sync-staging-checkout.sh');
     expect(r.stdout).toBe('');
   });
+
+  it('rejects extra cleanup-only arguments before touching the live sync workflow', () => {
+    const r = runScriptArgs(['--cleanup-only', '--not-an-option'], {
+      env: { PAPERCUSP_INTEGRATION_ROOT: '/definitely/not-a-live-checkout' },
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('--cleanup-only does not accept additional arguments');
+    expect(r.stdout).toBe('');
+  });
 });
 
 describe('sync-staging-checkout.sh migration restart preflight (EI-24180437038891110)', () => {
@@ -922,6 +931,48 @@ describe('sync-staging-checkout.sh generation admission (EI-26746441745558411)',
     const start = script.indexOf('# Keep the checkout flock in a dedicated coprocess.');
     return script.slice(start, script.indexOf('staging_alias_bootstrap()', start));
   }
+
+  it('runs cleanup-only under the exclusive lock and exits before preparation or restart', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-cleanup-only-'));
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const start = script.indexOf('# Single-flight: a second timer tick');
+    const end = script.indexOf('# WI-5710 — SPA-only advance:', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const driver = script.slice(start, end).replace(
+      'STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"',
+      'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+    );
+    mkdirSync(join(root, '.git'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', keeperSource(),
+        'trap staging_sync_lock_release EXIT',
+        'INTEGRATION_ROOT="$TEST_ROOT"; STAGING_SYNC_CLEANUP_ONLY=1',
+        'log() { printf "%s\\n" "$*"; }',
+        'staging_lock_log() { :; }; staging_sync_checkpoint() { :; }',
+        'staging_lock_attempt_id() { echo fixture; }; staging_lock_now_ms() { echo 0; }',
+        'staging_alias_bootstrap() { :; }',
+        'prune_staging_generations() { if flock -s -n "$TEST_LOCK" -c true; then echo UNEXPECTED_UNLOCKED_GC; exit 91; fi; echo EXCLUSIVE_GC; }',
+        'staging_sync_lock_shared() { echo UNEXPECTED_PREPARATION; exit 92; }',
+        'prepare_staging_candidate() { echo UNEXPECTED_CANDIDATE; exit 93; }',
+        'systemctl() { echo UNEXPECTED_RESTART; exit 94; }',
+        driver,
+      ].join('\n')], {
+        env: { ...process.env, TEST_ROOT: root, TEST_LOCK: join(root, 'generation.lock') },
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stdout).toContain('EXCLUSIVE_GC');
+      expect(result.stdout).toContain('cleanup-only pass complete');
+      expect(result.stdout).not.toContain('UNEXPECTED_');
+      const released = spawnSync('flock', ['-n', join(root, 'generation.lock'), 'true']);
+      expect(released.status).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it('keeps preparation readable while GC and publication remain exclusive', () => {
     const root = mkdtempSync(join(tmpdir(), 'staging-admission-workflow-'));
