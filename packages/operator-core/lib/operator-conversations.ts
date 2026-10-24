@@ -19,6 +19,7 @@ import { and, desc, eq, lt as dlt, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
 import type { ParsedReport } from './operator-converse-tags';
 import { canonicalToolName } from './operator-mcp-tools';
+import { isUuid } from './identity/resolve-plan-author-identity';
 import { parseStructuredResults } from '@papercusp/chat-protocol';
 import type {
   ChatTurn,
@@ -203,7 +204,7 @@ export async function getConversationById(
   workspaceId?: string,
 ): Promise<ConversationRow | null> {
   const id = conversationId?.trim();
-  if (!id) return null;
+  if (!id || !isUuid(id)) return null;
   const ws = resolveConcreteWorkspaceId(workspaceId);
   const { sql } = getOrgPg();
   const rows = (await sql.unsafe(

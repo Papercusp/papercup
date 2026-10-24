@@ -169,6 +169,12 @@ describe('work-item Papercup conversations (real Postgres)', () => {
       status: 'scoped',
     });
     expect(global).toMatchObject({ subjectKind: 'global', subjectRef: null, status: 'active' });
+    // Public route ids are untrusted text. Invalid UUIDs must be lookup
+    // misses, rather than PostgreSQL 22P02 errors escaping as HTTP 500.
+    for (const id of ['spec-fixture-id', 'with spaces', 'with/slash', '../../etc/passwd']) {
+      expect(await getConversationById(id, WS)).toBeNull();
+    }
+    expect(await getConversationById(a.id, WS)).toMatchObject({ id: a.id });
     expect(await getConversationById(a.id, 'ws-other')).toBeNull();
     expect(
       await getWorkItemConversation({
