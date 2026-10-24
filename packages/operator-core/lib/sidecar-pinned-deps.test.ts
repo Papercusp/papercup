@@ -357,6 +357,27 @@ process.exit(result.status ?? 1);`);
       expect(statSync(join(snapshot, 'node_modules/dep/index.js')).ino).toBe(statSync(source).ino);
     });
 
+    it('refuses an actual hardlink failure before copying even when device numbers agree', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      write(join(donor, 'node_modules/dep/index.js'), 'package');
+      write(join(snapshot, '.papercusp-pinned-deps'), 'stale success');
+      expect(statSync(donor).dev).toBe(statSync(snapshot).dev);
+      const bin = join(t, 'bin'); const copied = join(t, 'rsync-called');
+      // Reproduce link(2)'s same-device, different-mount refusal without a
+      // privileged mount or a dependency on this host's /tmp layout.
+      write(join(bin, 'ln'), '#!/usr/bin/env bash\necho "Invalid cross-device link" >&2\nexit 1\n');
+      write(join(bin, 'rsync'), '#!/usr/bin/env bash\ntouch "$PINNED_DEPS_TEST_RSYNC_CALLED"\nexit 0\n');
+      chmodSync(join(bin, 'ln'), 0o755); chmodSync(join(bin, 'rsync'), 0o755);
+      const r = runLib(['snapshot', donor, snapshot], { PATH: `${bin}:${process.env.PATH}`,
+        PINNED_DEPS_TEST_RSYNC_CALLED: copied });
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('hardlink admission failed');
+      expect(r.err).toContain('Invalid cross-device link');
+      expect(existsSync(copied)).toBe(false);
+      expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(false);
+      expect(readFileSync(join(donor, 'node_modules/dep/index.js'), 'utf8')).toBe('package');
+    });
+
     it.each(['completed', 'staging'])('removes disposable caches from a retained %s copy', retained => {
       const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
       write(join(donor, 'node_modules/dep/index.js'), 'package');
