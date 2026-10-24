@@ -2437,7 +2437,7 @@ describe('host-backed benchmark observation with private physical IO', () => {
     const home = join(repoRoot, `${agent}-binding-home`);
     hostHome.byId.set(Number(enrolled.id), home); hostHome.byOwner.set(ownerId, home);
     await sql`INSERT INTO harness_shared.task_ledger (task_id, workspace_id, session_id, detail)
-      VALUES (${task.taskId}, ${workspaceId}, ${nativeSessionId}, ${sql.json(task.detail)})`;
+      VALUES (${task.taskId}, ${workspaceId}, ${nativeSessionId}, ${sql.json(task.detail as { coordOwnerId: string })})`;
     const io = liveCurrentBenchObservationReaderPorts({ ...scope(), runtimeWorkspaceId: workspaceId,
       workerUnit: 'unused-worker', gatewayUnit: 'unused-gateway', gatewayBaseUrl: 'http://127.0.0.1:1' });
     expect(await io.readBinding(task)).toEqual({ ownerId, nativeSessionId,
