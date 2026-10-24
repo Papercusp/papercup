@@ -48,9 +48,13 @@ function nativeFixtureFailureDiagnostic(
     `child output tail:\n${childOutput.slice(-4_000)}`;
 }
 
-async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-touch' | 'grep') {
+async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-touch' | 'grep' | 'reuse') {
     const root = resolve(import.meta.dirname, '../../../..');
-    const sourcePaths = ['packages/operator-core/lib/code-intelligence/push-channel.ts',
+    const sourcePaths = ['packages/operator-core/lib/code-intelligence/__fixtures__/reuse-api-journey.ts',
+      'packages/operator-core/lib/code-intelligence/clone-brief-provider.ts',
+      'packages/operator-core/lib/code-intelligence/reuse-brief-providers.ts',
+      'packages/operator-core/lib/code-intelligence/reuse-authoring.ts',
+      'packages/operator-core/lib/code-intelligence/push-channel.ts',
       'packages/operator-core/lib/code-intelligence/push-snapshot.ts',
       'packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts',
       'packages/operator-core/lib/edit-attribution.ts',
@@ -115,7 +119,8 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
         },
       });
     expect(result.code, nativeFixtureFailureDiagnostic('Private fixture', result)).toBe(0);
-    const prefix = mode === 'incident' ? 'NATIVE_INCIDENT_API_PROOF='
+    const prefix = mode === 'reuse' ? 'NATIVE_REUSE_API_PROOF='
+      : mode === 'incident' ? 'NATIVE_INCIDENT_API_PROOF='
       : mode === 'first-touch' ? 'NATIVE_FIRST_TOUCH_API_PROOF='
       : mode === 'grep' ? 'NATIVE_GREP_API_PROOF=' : 'NATIVE_TASK_BRIEF_API_PROOF=';
     const line = result.output.split('\n').find(row => row.startsWith(prefix));
@@ -129,6 +134,17 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
     return proof;
     } finally { rmSync(artifactRoot, { recursive: true, force: true }); }
 }
+
+describe('native P010 private operator completion reuse delivery', () => {
+  it('delivers sibling, new copy, co-change, SQL reader and changed-line coverage through actual CLI completion', async () => {
+    const proof = await privateNativeJourney('reuse');
+    expect(proof).toMatchObject({ transport: 'real-cli-http', terminal: true,
+      completionSignals: { sibling: true, newCopy: true, cochange: true, sql: true, coverage: true },
+      scope: expect.stringContaining('private current-source') });
+    expect(proof.handlerHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(proof.issued.length).toBeGreaterThanOrEqual(3);
+  }, 120_000 + 180_000 + 20_000);
+});
 
 describe('native P035 private operator installed grep answer', () => {
   it('lets real rg finish, supplies the resolved alias caller and stays quiet for an unresolved symbol', async () => {
