@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { restoreRawJsonbSerializer } from '@papercusp/db-org';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -42,6 +44,10 @@ beforeAll(async () => {
   databaseUrl = url.toString();
   first = postgres(url.toString(), { max: 3, onnotice: () => {} });
   second = postgres(url.toString(), { max: 1, onnotice: () => {} });
+  // Match buildClient's protected raw JSON boundary before Drizzle initializes
+  // the client; keep the second worker plain to exercise both configurations.
+  restoreRawJsonbSerializer(first);
+  drizzle(first);
   await first.unsafe(`CREATE SCHEMA harness_shared;
     CREATE TABLE harness_shared.operator_conversations (id uuid PRIMARY KEY, workspace_id text NOT NULL);
     CREATE TABLE harness_shared.operator_turns (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), conversation_id uuid NOT NULL,

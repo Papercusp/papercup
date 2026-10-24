@@ -24,6 +24,9 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
+import { restoreRawJsonbSerializer } from '@papercusp/db-org';
+import { OperatorChatStore, operatorChatSessionAuthority } from './operator-chat-store';
+import { chatWorkerSourceHash, runOperatorChatWorkers } from '../test/operator-chat-workers';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -49,6 +52,7 @@ const { getOrCreateActiveConversation, appendTurn, maxTurnSeq } = await import(
 );
 
 let rootSql: postgres.Sql;
+let databaseUrl: string;
 
 beforeAll(async () => {
   const adminUri = await getTestPg();
@@ -62,9 +66,11 @@ beforeAll(async () => {
   }
   const u = new URL(adminUri);
   u.pathname = `/${dbName}`;
+  databaseUrl = u.toString();
   // max > 1 is the whole point: concurrent appendTurn calls then run on
   // separate connections and genuinely race the seq assignment.
   rootSql = postgres(u.toString(), { max: 10, onnotice: () => {} });
+  restoreRawJsonbSerializer(rootSql);
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.operator_conversations (
@@ -101,6 +107,12 @@ beforeAll(async () => {
   await rootSql.unsafe(
     readFileSync(resolve(SQL_DIR, '168-operator-conversation-summary.sql'), 'utf8'),
   );
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.users (id text PRIMARY KEY, is_active boolean NOT NULL DEFAULT true);
+    CREATE TABLE harness_shared.user_sessions (token text PRIMARY KEY, workspace_id text NOT NULL,
+      user_id text NOT NULL, expires_at timestamptz NOT NULL, capabilities jsonb NOT NULL DEFAULT '["chat:write"]');
+  `);
+  await rootSql.unsafe(readFileSync(resolve(SQL_DIR, '1569-operator-chat-durable-state.sql'), 'utf8'));
   h.sql = rootSql;
   h.db = drizzle(rootSql);
 }, 90_000);
@@ -110,6 +122,47 @@ afterAll(async () => {
 });
 
 describe('appendTurn concurrency (real PG pool, max>1)', () => {
+  it('P010 two-worker terminal CAS', async () => {
+    const conversation = await getOrCreateActiveConversation('p010-terminal-workers');
+    const unrelated = await getOrCreateActiveConversation('p010-terminal-unrelated');
+    const unrelatedTurn = { id: randomUUID(), text: 'Unrelated session remains intact', seq: 0 };
+    await rootSql.unsafe(`INSERT INTO harness_shared.operator_turns
+      (id,conversation_id,workspace_id,seq,role,text,created_at) VALUES ($1,$2,$3,0,'user',$4,$5)`,
+      [unrelatedTurn.id, unrelated.id, unrelated.workspaceId, unrelatedTurn.text, Date.now()]);
+    const workspaceId = conversation.workspaceId;
+    const turn = { conversationId: conversation.id, turnId: randomUUID() };
+    const scope = { principalId: 'p010-terminal-owner', tenantId: 'tenant', customerId: 'customer', publicOwnerId: 'public-owner' };
+    const token = randomUUID();
+    await rootSql.unsafe('INSERT INTO harness_shared.users VALUES ($1,true)', [scope.principalId]);
+    await rootSql.unsafe(`INSERT INTO harness_shared.user_sessions VALUES ($1,$2,$3,clock_timestamp()+interval '1 hour','["chat:write"]')`,
+      [token, workspaceId, scope.principalId]);
+    const store = new OperatorChatStore({ sql: rootSql, workspaceId, turn, scope,
+      authorize: operatorChatSessionAuthority({ workspaceId, principalId: scope.principalId,
+        credential: { kind: 'user-session', userId: scope.principalId, token },
+        capability: 'chat:write', toolName: 'operator:converse' }) });
+    await store.beginTurn('p010-terminal-run', 'text_typed');
+    const input = { databaseUrl, workspaceId, turn, scope, token,
+      action: { kind: 'finalize' as const, runId: 'p010-terminal-run', status: 'completed' as const, text: 'First winner' } };
+    const results = await runOperatorChatWorkers([input, { ...input, action: { ...input.action, text: 'Second winner' } }]);
+    expect(new Set(results.map(result => result.pid)).size).toBe(2);
+    expect(results.every(result => result.pid !== process.pid && result.sourceHash === chatWorkerSourceHash())).toBe(true);
+    expect(results.filter(result => result.ok)).toHaveLength(1);
+    expect(results.filter(result => !result.ok)).toMatchObject([{ error: 'turn-result-conflict' }]);
+    const rows = await rootSql.unsafe('SELECT id,seq,text,chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+    expect(rows).toHaveLength(1);
+    const winner = results.findIndex(result => result.ok);
+    expect(rows[0]).toMatchObject({ id: turn.turnId, text: winner === 0 ? 'First winner' : 'Second winner',
+      chat_state: { execution: { status: 'completed', runId: 'p010-terminal-run' } } });
+    // A third, newly started worker reconciles commit-success/ack-loss, rather
+    // than replacing the winning text or appending a second terminal row.
+    const [retry] = await runOperatorChatWorkers([{ ...input, action: { ...input.action, text: rows[0].text } }]);
+    expect(retry).toMatchObject({ ok: true, value: { ...turn, seq: rows[0].seq } });
+    expect(await rootSql.unsafe('SELECT id FROM harness_shared.operator_turns WHERE conversation_id=$1', [conversation.id]))
+      .toHaveLength(1);
+    expect(await rootSql.unsafe('SELECT id,text,seq FROM harness_shared.operator_turns WHERE id=$1', [unrelatedTurn.id]))
+      .toEqual([{ id: unrelatedTurn.id, text: unrelatedTurn.text, seq: unrelatedTurn.seq }]);
+  }, 90_000);
+
   it('N concurrent appends to one conversation all land with unique, contiguous seqs', async () => {
     const conv = await getOrCreateActiveConversation();
     const N = 24;
