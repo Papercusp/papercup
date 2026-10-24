@@ -40,6 +40,7 @@ when needed, request a coordinated :3170 restart.
 
 Options:
   -h, --help  Show this help and exit without inspecting or mutating staging.
+  --cleanup-only  Run bounded retired-generation cleanup without preparing or restarting staging.
 
 Configuration is supplied through the PAPERCUSP_* environment variables used
 by the staging sync timer; this command accepts no positional arguments.
@@ -53,6 +54,7 @@ USAGE
 # This script is also used for usage discovery, so --help must be a genuinely
 # side-effect-free operation rather than an argument that falls through into
 # the live sync workflow.
+STAGING_SYNC_CLEANUP_ONLY=0
 if [ "$#" -gt 0 ]; then
   case "$1" in
     -h|--help)
@@ -63,6 +65,14 @@ if [ "$#" -gt 0 ]; then
       fi
       usage
       exit 0
+      ;;
+    --cleanup-only)
+      if [ "$#" -ne 1 ]; then
+        printf 'sync-staging-checkout.sh: --cleanup-only does not accept additional arguments\n' >&2
+        usage >&2
+        exit 2
+      fi
+      STAGING_SYNC_CLEANUP_ONLY=1
       ;;
     *)
       printf 'sync-staging-checkout.sh: unknown argument: %s\n' "$1" >&2
@@ -1360,6 +1370,11 @@ staging_alias_bootstrap || { log "FATAL: could not bootstrap the stable staging 
 # collected on the next timer tick through this same maintained GC path.
 prune_staging_generations
 staging_sync_checkpoint "generation cleanup complete"
+
+if [[ "${STAGING_SYNC_CLEANUP_ONLY:-0}" == 1 ]]; then
+  log "staging generation cleanup-only pass complete"
+  exit 0
+fi
 
 # Immutable candidate preparation cannot invalidate a selected generation.
 # Keep the writer lease, but admit shared readers during the expensive work.
