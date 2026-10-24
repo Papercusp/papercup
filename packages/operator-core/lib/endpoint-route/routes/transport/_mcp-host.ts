@@ -5592,7 +5592,7 @@ export function registerMcpHost(server: McpServer): void {
                     }
                     const total = raced.phaseTimingsMs.scratchWrites ??= {
                       count: 0, perSpill: [], quotaWaitMs: 0, refreshWaitMs: 0,
-                      quotaRecoveryMs: 0, quotaStateReadMs: 0, quotaStatePublishMs: 0,
+                      quotaRecoveryMs: 0, dataLeaseWaitMs: 0, quotaStateReadMs: 0, quotaStatePublishMs: 0,
                       markerProbeMs: 0, localMutexWaitMs: 0, fsMutexAdmissionMs: 0,
                       writeMs: 0, totalMs: 0,
                     };
@@ -5610,6 +5610,7 @@ export function registerMcpHost(server: McpServer): void {
                       'quotaWaitMs',
                       'refreshWaitMs',
                       'quotaRecoveryMs',
+                      'dataLeaseWaitMs',
                       'quotaStateReadMs',
                       'quotaStatePublishMs',
                       'markerProbeMs',
@@ -5649,6 +5650,8 @@ export function registerMcpHost(server: McpServer): void {
                         fallbackRunSizes: 0,
                         deletionMs: 0,
                         deleteAttempts: 0,
+                        deleteErrors: 0,
+                        lastDeleteErrorCode: null,
                         runsDeleted: 0,
                         deletedBytes: 0,
                       };
@@ -5669,6 +5672,7 @@ export function registerMcpHost(server: McpServer): void {
                         'fallbackRunSizes',
                         'deletionMs',
                         'deleteAttempts',
+                        'deleteErrors',
                         'runsDeleted',
                         'deletedBytes',
                       ] as const) {
@@ -5680,6 +5684,9 @@ export function registerMcpHost(server: McpServer): void {
                       }
                       recoveryTotal.currentOperationKind = recovery.currentOperationKind;
                       recoveryTotal.currentOperationElapsedMs = recovery.currentOperationElapsedMs;
+                      if (recovery.lastDeleteErrorCode != null) {
+                        recoveryTotal.lastDeleteErrorCode = recovery.lastDeleteErrorCode;
+                      }
                     }
                     if (raced.innerDispatchSettled) {
                       trace('scratch_write_settled', {

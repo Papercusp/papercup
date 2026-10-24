@@ -601,32 +601,38 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     });
   });
 
-  it('correlates the forwarded trace id across request start, deadline, and late handler settlement', async () => {
+  it.each([
+    [undefined, undefined, 0],
+    [0, 0, 0],
+    [5, 7, 12],
+  ] as const)('correlates the forwarded trace id across request start, deadline, and late handler settlement with %s and %s data-lease waits', async (firstLeaseWaitMs, secondLeaseWaitMs, totalLeaseWaitMs) => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     const traceId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
     const resultDoorDelayMs = 45;
     h.resultDoorDelayMs = resultDoorDelayMs;
     h.scratchWriteTimings = [
       {
-        quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 4, totalMs: 29,
+        quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0,
+        dataLeaseWaitMs: firstLeaseWaitMs, writeMs: 4, totalMs: 29 + (firstLeaseWaitMs ?? 0),
         quotaRecoveryDiagnostics: {
           sizeWalkMs: 4, sizeWalkDirectories: 2, sizeWalkEntries: 5, sizeWalkFiles: 3,
           readdirOperations: 2, statOperations: 3, operationTotalMs: 5, maxOperationMs: 2,
           maxOperationKind: 'readdir', currentOperationKind: null, currentOperationElapsedMs: 0,
           directoryReadErrors: 0, fileStatErrors: 1, runListingMs: 2, runsListed: 3,
           selectedRunSizingMs: 1, runsConsidered: 1, fallbackRunSizes: 1, deletionMs: 1,
-          deleteAttempts: 1, runsDeleted: 1, deletedBytes: 100,
+          deleteAttempts: 1, deleteErrors: 1, lastDeleteErrorCode: 'EACCES', runsDeleted: 1, deletedBytes: 100,
         },
       },
       {
-        quotaWaitMs: 0, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 2, totalMs: 15,
+        quotaWaitMs: 0, refreshWaitMs: 3, quotaRecoveryMs: 10,
+        dataLeaseWaitMs: secondLeaseWaitMs, writeMs: 2, totalMs: 15 + (secondLeaseWaitMs ?? 0),
         quotaRecoveryDiagnostics: {
           sizeWalkMs: 9, sizeWalkDirectories: 4, sizeWalkEntries: 8, sizeWalkFiles: 5,
           readdirOperations: 4, statOperations: 5, operationTotalMs: 8, maxOperationMs: 3,
           maxOperationKind: 'stat', currentOperationKind: null, currentOperationElapsedMs: 0,
           directoryReadErrors: 1, fileStatErrors: 0, runListingMs: 5, runsListed: 6,
           selectedRunSizingMs: 2, runsConsidered: 2, fallbackRunSizes: 0, deletionMs: 3,
-          deleteAttempts: 2, runsDeleted: 2, deletedBytes: 200,
+          deleteAttempts: 2, deleteErrors: 2, lastDeleteErrorCode: 'EPERM', runsDeleted: 2, deletedBytes: 200,
         },
       },
     ];
@@ -675,14 +681,15 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
             advisoryFlagReads: expect.any(Number),
             scratchWrites: expect.objectContaining({
               count: 2, perSpill: h.scratchWriteTimings,
-              quotaWaitMs: 25, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 6, totalMs: 44,
+              quotaWaitMs: 25, refreshWaitMs: 3, quotaRecoveryMs: 10,
+              dataLeaseWaitMs: totalLeaseWaitMs, writeMs: 6, totalMs: 44 + totalLeaseWaitMs,
               quotaRecoveryDiagnostics: expect.objectContaining({
                 sizeWalkMs: 13, sizeWalkDirectories: 6, sizeWalkEntries: 13, sizeWalkFiles: 8,
                 readdirOperations: 6, statOperations: 8, operationTotalMs: 13, maxOperationMs: 3,
                 maxOperationKind: 'stat', currentOperationKind: null, currentOperationElapsedMs: 0,
                 directoryReadErrors: 1, fileStatErrors: 1, runListingMs: 7, runsListed: 9,
                 selectedRunSizingMs: 3, runsConsidered: 3, fallbackRunSizes: 1, deletionMs: 4,
-                deleteAttempts: 3, runsDeleted: 3, deletedBytes: 300,
+                deleteAttempts: 3, deleteErrors: 3, lastDeleteErrorCode: 'EPERM', runsDeleted: 3, deletedBytes: 300,
               }),
             }),
           }),
@@ -714,7 +721,8 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         phaseTimingsMs: expect.objectContaining({
           resultDoor: expect.any(Number),
           scratchWrites: expect.objectContaining({
-            count: 2, perSpill: h.scratchWriteTimings, totalMs: 44,
+            count: 2, perSpill: h.scratchWriteTimings,
+            dataLeaseWaitMs: totalLeaseWaitMs, totalMs: 44 + totalLeaseWaitMs,
           }),
         }),
       }));
@@ -843,6 +851,8 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
           fallbackRunSizes: 0,
           deletionMs: 0,
           deleteAttempts: 0,
+          deleteErrors: 0,
+          lastDeleteErrorCode: null,
           runsDeleted: 0,
           deletedBytes: 0,
         },
