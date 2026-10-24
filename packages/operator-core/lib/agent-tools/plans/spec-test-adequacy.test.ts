@@ -147,6 +147,35 @@ describe('shared adequacy-card binding evidence', () => {
     }
   });
 
+  it('includes a withdrawn renewal predecessor in the disclosed-gap probe without grading it', () => {
+    const selected = [
+      evidence({ id: 41001, evidenceRef: 'surface:first' }),
+      evidence({ id: 41002, evidenceRef: 'surface:second' }),
+    ];
+    const baseline = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: selected, harness: 'papercusp', classRef: 'plan-class-feature-ship',
+    });
+    // A withdrawn row is absent from listSpecEvidence's active population, but
+    // remains explicitly cited by the replacement's persisted renewal metadata.
+    selected[1]!.details.renewal = { priorBindingId: 40999 };
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: selected, harness: 'papercusp', classRef: 'plan-class-feature-ship',
+    });
+    const text = result.scorecardDraft.ratings['disclosed-gap'].evidence;
+    const match = text.match(/Evidence probe: plans:get-spec-evidence (\{[^\n]*\})\. Inspect evidence\[\]/);
+    expect(match).not.toBeNull();
+    const probe = getSpecEvidenceTool.args.parse(JSON.parse(match![1]!));
+    expect(probe.bindingIds).toEqual([40999, 41001, 41002]);
+    expect(probe.includeRetracted).toBe(true);
+    expect(text).toContain('renewal predecessor bindingIds=[40999]');
+    expect(text).toContain('Exclude withdrawn rows before applying activeSpecEvidence');
+    expect(text).toContain('2 raw binding(s), 2 active logical binding(s); active bindingIds=[41001,41002].');
+    expect(result.scorecardDraft.rerunRecipe.args.bindingIds).toEqual([41001, 41002]);
+    for (const criterion of ADEQUACY_CRITERIA) {
+      expect(result.ratings[criterion].rating).toBe(baseline.ratings[criterion].rating);
+    }
+  });
+
   it('keeps the empty evidence probe empty after later bindings are added', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(), evidence: [], harness: 'papercusp', classRef: 'plan-class-feature-ship',

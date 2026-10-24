@@ -2598,9 +2598,22 @@ function ratingRerunProbeReference(
   // neither the selected row count nor the raw history count is the active census.
   const population = criterion === 'disclosed-gap' ? disclosedGapPopulation : undefined;
   const ids = population?.raw.map((row) => row.id);
+  // Renewals can cite a withdrawn predecessor that listSpecEvidence excludes.
+  // Keep those explicit citations readable in the audit probe without adding
+  // withdrawn proof to the evaluator's active evidence population.
+  const predecessorBindingIds = population
+    ? [...new Set(population.raw.flatMap((row) => {
+        const renewal = row.details.renewal;
+        if (!renewal || typeof renewal !== 'object' || Array.isArray(renewal)) return [];
+        const priorBindingId = (renewal as Record<string, unknown>).priorBindingId;
+        return typeof priorBindingId === 'number' && Number.isSafeInteger(priorBindingId) && priorBindingId > 0
+          ? [priorBindingId]
+          : [];
+      }))].sort((a, b) => a - b)
+    : [];
   const probeBindingIds = population
     ? ids!.every((id) => Number.isSafeInteger(id) && id! > 0)
-      ? [...new Set(ids as number[])].sort((a, b) => a - b)
+      ? [...new Set([...(ids as number[]), ...predecessorBindingIds])].sort((a, b) => a - b)
       : undefined
     : bindingIds;
   const probeEvidenceRefs = population
@@ -2622,6 +2635,10 @@ function ratingRerunProbeReference(
     `specFingerprint=${JSON.stringify(rerunRecipe.selection.specFingerprint)}; ` +
     'compare details, fingerprints, currentness, testRunExecution and testRunProvenance with this criterion\'s claim. ' +
     'Require bounded.truncatedByLimit=false before treating the read as complete. ' +
+    (predecessorBindingIds.length > 0
+      ? `Read explicit renewal predecessor bindingIds=${JSON.stringify(predecessorBindingIds)} as retained history. ` +
+        'Exclude withdrawn rows before applying activeSpecEvidence. The following counts describe the evaluator\'s non-withdrawn population. '
+      : '') +
     (population
       ? `Apply activeSpecEvidence to these clause rows: ${population.raw.length} raw binding(s), ${population.active.length} active logical binding(s); ` +
         `active bindingIds=${JSON.stringify(population.active.map((row) => row.id).filter((id) => Number.isSafeInteger(id)).sort((a, b) => a! - b!))}. ` +
