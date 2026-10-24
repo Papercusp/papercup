@@ -72,11 +72,13 @@ const rr = await import('./work-items-release-request');
 const workItems = await import('./work-items');
 const { Governor } = await import('./resource-governor/admission');
 const { PgWorkItemAdmissionQueueStore, WorkItemAdmissionQueueDriver } = await import('./resource-governor/queue');
-const { registerAwait } = await import('./events/await/store');
+const { registerAwait, listRecentDeliveries } = await import('./events/await/store');
+const { setAutoPumpEnabledForTests } = await import('./events/await/engine');
 
 const H = 'papercup';
 const WS = 'default';
 let db: FreshPgDb;
+let previousAutoPump = true;
 
 async function seedIssue(
   id: string,
@@ -106,6 +108,9 @@ async function readClaimReleaseAwaitStates(ids: number[]): Promise<
 }
 
 beforeAll(async () => {
+  // These tests own event publication and queueing, not host discovery or a
+  // detached wake executor. Keep the durable intents available for assertions.
+  previousAutoPump = setAutoPumpEnabledForTests(false);
   db = await createFreshPgDb('wi-release-request');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
@@ -138,6 +143,7 @@ beforeAll(async () => {
   await db.sql.unsafe(POTS_DDL);
 }, 180_000);
 afterAll(async () => {
+  setAutoPumpEnabledForTests(previousAutoPump);
   await db?.cleanup();
 });
 beforeEach(async () => {
@@ -593,8 +599,6 @@ describe('setWorkItemReleaseRequest + resolveWorkItemReleaseRequest (CAS)', () =
 
 describe('EI-21585647336393798 — voluntary release does not self-wake the holder', () => {
   it('retires the holder watch before emitting while still waking another waiter', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
     const id = 'WI-self-release-watch';
     await seedIssue(id, { takenBy: 'holder' });
     const binding = { kind: 'work-item-claim' as const, ref: id };
@@ -633,21 +637,13 @@ describe('EI-21585647336393798 — voluntary release does not self-wake the hold
         cancelled_at: null,
       }),
     ]);
-      // The await-event pump is deliberately detached from releaseWorkItem. Wait for its
-      // durable delivery log before restoring the spy, otherwise the warning lands in the
-      // next test (or fail-on-console observes it after this test has finished).
-      await vi.waitFor(
-        () => expect(warn).toHaveBeenCalledWith(expect.stringContaining('→ other-waiter via inbox')),
-        { timeout: 5_000, interval: 20 },
-      );
-    } finally {
-      warn.mockRestore();
-    }
+    expect(await listRecentDeliveries('holder')).toEqual([]);
+    expect(await listRecentDeliveries('other-waiter')).toEqual([
+      expect.objectContaining({ awaitId: otherAwait.id, status: 'pending' }),
+    ]);
   });
 
   it('keeps the holder notification for an unmarked release path', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
     const id = 'WI-involuntary-release-watch';
     await seedIssue(id, { takenBy: 'holder' });
     const holderAwait = await registerAwait({
@@ -670,15 +666,9 @@ describe('EI-21585647336393798 — voluntary release does not self-wake the hold
       cancelled_at: null,
     });
     expect(state.fired_at).toBeInstanceOf(Date);
-      // Delivery is fire-and-forget; synchronize on the asserted trace while the spy is
-      // still installed so the expected warning cannot leak into the following test.
-      await vi.waitFor(
-        () => expect(warn).toHaveBeenCalledWith(expect.stringContaining('→ holder via inbox')),
-        { timeout: 5_000, interval: 20 },
-      );
-    } finally {
-      warn.mockRestore();
-    }
+    expect(await listRecentDeliveries('holder')).toEqual([
+      expect.objectContaining({ awaitId: holderAwait.id, status: 'pending' }),
+    ]);
   });
 });
 

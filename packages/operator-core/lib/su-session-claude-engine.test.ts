@@ -138,6 +138,7 @@ describe('structured Claude SU engine', () => {
     const barrier = new Promise<void>((resolve) => { release = resolve; });
     nativeFunding.mockImplementationOnce(async () => { await barrier; return { ok: true }; });
     const p = peer(), engine = open(p); await engine.ready;
+    expect(engine.adapter.host.descriptor()).toMatchObject({ identity: { backend: 'claude' }, executionKind: 'programmatic' });
     const dispatch = engine.adapter.host.startCommand(command(engine) as never);
     await vi.waitFor(() => expect(nativeFunding).toHaveBeenCalledOnce());
     expect(nativeFunding).toHaveBeenCalledWith({ workspaceId: 'workspace', ownerId: 'su-test', backend: 'claude' });

@@ -49,6 +49,7 @@ import {
 import { DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
 import { captureTestSourceSnapshot } from './testing-worktree';
 import { cleanupEndedVerifierDirectories, verifierSourceFiles, writeVerifierTaskReceipt } from './verifier-source';
+import { bindFrozenDependencyGeneration } from './dependency-generation-proof';
 import { closeTask } from './task-manager/store';
 import type { TaskRow } from './task-manager/types';
 
@@ -57,7 +58,7 @@ let fx: Superproject;
 let out: string;
 
 describe('immutable generation verifier snapshots', () => {
-  it.each(['complete', 'missing-selector', 'changed-input', 'changed-token', 'changed-publication-after-copy', 'missing-output'])(
+  it.each(['complete', 'verifier-binding', 'missing-selector', 'changed-input', 'changed-token', 'changed-publication-after-copy', 'missing-output'])(
     'materializes leased independent dependencies and refuses incomplete custody (%s)', async defect => {
       const root = mkdtempSync(join(tmpdir(), 'verifier-generation-case-'));
       const donor = join(root, 'donor'), dest = join(root, 'invoked'), store = join(root, 'generations');
@@ -88,12 +89,29 @@ describe('immutable generation verifier snapshots', () => {
         }
         write(donor, 'node_modules/pkg/package.json', '{"name":"pkg","version":"1.0.0"}');
         write(donor, 'node_modules/pkg/index.js', 'published dependency');
+        if (defect === 'verifier-binding') {
+          // A generation can contain its donor's old release provenance. The
+          // verifier producer's own receipt identifies what it actually copied.
+          write(donor, 'node_modules/.papercusp-dependency-generation',
+            `identity=v1-${'f'.repeat(64)}\nsource=${'f'.repeat(64)}\n`);
+          write(donor, 'packages/cli/node_modules/nested/package.json', '{"name":"nested","version":"1.0.0"}');
+        }
         const pkg = '{"name":"cli","bin":{"probe":"dist/run.js"}}';
         write(donor, 'packages/cli/package.json', pkg); write(dest, 'packages/cli/package.json', pkg);
         write(donor, 'packages/cli/dist/run.js', 'console.log("workspace executable");\n');
         write(donor, 'node_modules/.bin/seed', '');
         symlinkSync('../../packages/cli/dist/run.js', join(donor, 'node_modules/.bin/probe'));
         write(dest, '.verifier-source.json', JSON.stringify({ files: [{ path: 'packages/cli/package.json' }] }));
+        let sourceCommit = '';
+        if (defect === 'verifier-binding') {
+          cpSync(join(root, 'apps/operator/bin/release'), join(dest, 'apps/operator/bin/release'),
+            { recursive: true });
+          write(dest, '.gitignore', 'node_modules/\n.verifier-source.json\n');
+          git(dest, ['init', '-q']);
+          git(dest, ['add', 'package.json', 'package-lock.json', 'packages/cli/package.json', '.gitignore']);
+          git(dest, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'frozen input fixture']);
+          sourceCommit = git(dest, ['rev-parse', 'HEAD']).trim();
+        }
         // The reader adapter checks that custody is live while the workspace
         // output child runs, and that materialization released copy capacity.
         write(donor, 'scripts/npm-install-safe.mjs', `
@@ -128,7 +146,7 @@ process.exit(spawnSync(args[0], args.slice(1), { stdio: 'inherit' }).status ?? 1
         const leases = existsSync(join(store, '.leases')) ? readdirSync(join(store, '.leases')) : [];
         expect(leases.filter(p => p.startsWith('selector-'))).toEqual([]);
         expect(spawnSync('flock', ['-n', env.DEPENDENCY_GENERATION_COPY_LOCK_FILE, 'true']).status).toBe(0);
-        if (defect !== 'complete') {
+        if (defect !== 'complete' && defect !== 'verifier-binding') {
           expect(result.status, result.stdout + result.stderr).not.toBe(0);
           expect(existsSync(join(dest, '.papercusp-pinned-deps'))).toBe(false);
           if (defect !== 'missing-output' && defect !== 'changed-publication-after-copy') {
@@ -141,9 +159,62 @@ process.exit(spawnSync(args[0], args.slice(1), { stdio: 'inherit' }).status ?? 1
         const dependency = 'node_modules/pkg/index.js';
         expect(readFileSync(join(dest, dependency), 'utf8')).toBe('published dependency');
         expect(statSync(join(dest, dependency)).ino).not.toBe(statSync(join(generationPath, 'tree', dependency)).ino);
-        expect(spawnSync(process.execPath, [join(dest, 'node_modules/.bin/probe')], { encoding: 'utf8' }))
-          .toMatchObject({ status: 0, stdout: 'workspace executable\n' });
+        const launched = spawnSync(process.execPath, [join(dest, 'node_modules/.bin/probe')],
+          { encoding: 'utf8', env: childEnv() });
+        expect(launched, launched.stderr).toMatchObject({ status: 0, stdout: 'workspace executable\n' });
         expect(readFileSync(join(dest, '.papercusp-pinned-deps'), 'utf8')).toContain('mode=generation-copy');
+        if (defect === 'verifier-binding') {
+          expect(existsSync(join(dest, 'node_modules/.papercusp-isolated-snapshot'))).toBe(false);
+          expect(readFileSync(join(dest, 'node_modules/.papercusp-dependency-generation'), 'utf8'))
+            .toContain(`identity=v1-${'f'.repeat(64)}`);
+          vi.stubEnv('PAPERCUSP_DEPENDENCY_GENERATION_ROOT', store);
+          try {
+            const binding = await bindFrozenDependencyGeneration(dest, sourceCommit);
+            expect(binding.identity.dependencyGeneration).toBe(generationPath.split(sep).at(-1));
+            expect(binding.trees).toEqual(['node_modules', 'packages/cli/node_modules']);
+            await binding.assertUnchanged();
+            const pin = join(dest, '.papercusp-pinned-deps');
+            const original = readFileSync(pin, 'utf8');
+            writeFileSync(pin, original.replace(/^token=.*$/m, `token=v3:${'0'.repeat(64)}`));
+            await expect(bindFrozenDependencyGeneration(dest, sourceCommit)).rejects.toThrow(/token|generation/);
+            await expect(binding.assertUnchanged()).rejects.toThrow(/provenance/);
+            writeFileSync(pin, original);
+            writeFileSync(pin, original.replace(/^input=.*$/m, `input=${'0'.repeat(64)}`));
+            await expect(bindFrozenDependencyGeneration(dest, sourceCommit)).rejects.toThrow(/input/);
+            writeFileSync(pin, original);
+            writeFileSync(pin, original.replace(/^trees=.*$/m, 'trees=1'));
+            await expect(bindFrozenDependencyGeneration(dest, sourceCommit)).rejects.toThrow(/tree count/);
+            writeFileSync(pin, original.replace(/^mode=.*$/m, 'mode=copy'));
+            await expect(bindFrozenDependencyGeneration(dest, sourceCommit)).rejects.toThrow(/provenance/);
+            writeFileSync(pin, original);
+            const selector = join(store, '.inputs', input);
+            const selectorBytes = readFileSync(selector, 'utf8');
+            writeFileSync(selector, selectorBytes.replace(/^identity=.*$/m, `identity=v1-${'0'.repeat(64)}`));
+            await expect(bindFrozenDependencyGeneration(dest, sourceCommit)).rejects.toThrow(/input\/generation mismatch/);
+            await expect(binding.assertUnchanged()).rejects.toThrow(/provenance/);
+            writeFileSync(selector, selectorBytes);
+            const publication = join(generationPath, '.papercusp-dependency-generation');
+            const publicationBytes = readFileSync(publication, 'utf8');
+            chmodSync(publication, 0o644);
+            writeFileSync(publication, publicationBytes.replace(/^publication_token=.*$/m, `publication_token=v3:${'0'.repeat(64)}`));
+            await expect(bindFrozenDependencyGeneration(dest, sourceCommit)).rejects.toThrow(/invalid publication token/);
+            await expect(binding.assertUnchanged()).rejects.toThrow(/provenance/);
+            writeFileSync(publication, publicationBytes);
+            const lock = join(dest, 'package-lock.json');
+            const lockBytes = readFileSync(lock, 'utf8');
+            writeFileSync(lock, '{}');
+            await expect(bindFrozenDependencyGeneration(dest, sourceCommit)).rejects.toThrow(/committed dependency input changed/);
+            await expect(binding.assertUnchanged()).rejects.toThrow(/committed dependency input changed/);
+            writeFileSync(lock, lockBytes);
+            const nested = join(dest, 'packages/cli/node_modules/nested/package.json');
+            const nestedBytes = readFileSync(nested, 'utf8');
+            chmodSync(nested, 0o644);
+            writeFileSync(nested, '{}');
+            await expect(bindFrozenDependencyGeneration(dest, sourceCommit)).rejects.toThrow(/materialized dependency tree drift/);
+            await expect(binding.assertUnchanged()).rejects.toThrow(/materialized dependency tree changed/);
+            writeFileSync(nested, nestedBytes);
+          } finally { vi.unstubAllEnvs(); }
+        }
         write(dest, 'node_modules/.cache/probe', 'disposable cache');
         chmodSync(join(dest, dependency), 0o644);
         write(dest, dependency, 'verifier mutation');

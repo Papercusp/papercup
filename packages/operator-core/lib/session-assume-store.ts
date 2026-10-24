@@ -37,6 +37,7 @@ const receiptSchema = z.object({
     nativeBinding: z.object({ advSessionId: positive, ownerId: text, sourceNativeSessionId: text,
       nativeSessionId: text, transitionKey: text }).strict().optional(),
     nativePid: positive, nativeProcessStart: text, nativeWriterPids: z.array(positive),
+    ptyPid: positive.optional(), ptyProcessStart: text.optional(),
     directedMessage: z.object({ id: text, recipient: text, consumedBy: text, consumptions: positive }).strict(),
     assignment: z.object({ id: text, assignee: text, observedBy: text }).strict(),
   }).strict().optional(),

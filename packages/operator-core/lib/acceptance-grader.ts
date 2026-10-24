@@ -465,6 +465,8 @@ export type AcceptanceGraderTerminalFailureCode =
   | 'startup_connection_stalled'
   | 'startup_first_turn_stalled'
   | 'inference_gateway_error'
+  /** The host observed a completed, non-retryable native error for this controlled mission. */
+  | 'native_turn_failed'
   /**
    * WI-10002155: the launcher's OWN structured receipt said the kickoff was
    * never submitted (`launch.tasks[].kickoffProof.persisted !== true`). This is
@@ -791,6 +793,22 @@ export function classifyAcceptanceGraderTerminalFailure(
   } = {},
 ): AcceptanceGraderTerminalFailure | null {
   const normalized = normalizeAcceptanceGraderLog(rawLog);
+  // EI-26842595242600010: psu-pty-host's writeMeta emits this exact receipt
+  // after the native turn fails. PTY redraws can corrupt the provider screen
+  // and its footer while leaving this host-owned line intact. Restrict it to
+  // controlled audit briefs, and invalidate it when a later turn resumes.
+  const nativeFailure = allowInferenceGatewayError
+    ? [...normalized.matchAll(/^[ \t]*\[psu\] native-turn-failed agent=(?:claude|codex) code=native_error retryable=false retryAfterMs=(?:unknown|\d+)[ \t]*$/gm)].at(-1)
+    : undefined;
+  if (nativeFailure) {
+    const before = normalized.slice(0, nativeFailure.index);
+    const after = normalized.slice(nativeFailure.index! + nativeFailure[0].length);
+    const quoted = (before.match(/^[ \t]*```/gm)?.length ?? 0) % 2 !== 0;
+    if (!quoted && !hasAcceptanceGraderFirstTurnProgress(after) &&
+        !/^[ \t]*(?:●|❯[ \t]*\S|>[ \t]*\S)/mu.test(after)) {
+      return { code: 'native_turn_failed', evidence: nativeFailure[0].trim() };
+    }
+  }
   const legacyQuota = normalized.match(
     /You've reached your [^\n]{1,120} limit\.[\s\S]{0,240}?Run \/usage-credits to continue or switch models with \/model\./i,
   );

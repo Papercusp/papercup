@@ -766,7 +766,7 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       expect(f.sent).toContainEqual(expect.objectContaining({ method: 'thread/resume', params: expect.objectContaining({ threadId: 'native-codex' }) }));
       expect(f.sent.some((frame) => frame.method === 'thread/start')).toBe(false);
     } else expect(f.transport().args.slice(-2)).toEqual(['--resume', 'native-omp']);
-    expect(f.engine.adapter.host.descriptor()).toMatchObject({ identity: { ownerId: 'su-rpc-fixture', harnessSlug: 'project', workspaceId: 'workspace' }, modes: ['auto'], carry: 'warm' });
+    expect(f.engine.adapter.host.descriptor()).toMatchObject({ identity: { ownerId: 'su-rpc-fixture', harnessSlug: 'project', workspaceId: 'workspace' }, executionKind: 'programmatic', modes: ['auto'], carry: 'warm' });
   });
 
   it('fails closed if resume returns a different native identity', async () => {

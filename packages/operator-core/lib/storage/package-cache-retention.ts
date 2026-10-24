@@ -41,6 +41,8 @@ export interface PackageCacheTarget {
 
 export interface PackageCacheMeasurement {
   bytes: number;
+  /** Exact physical allocation under validated live pin scopes, when requested. */
+  pinnedBytes?: number;
   /** A bounded walk stopped before exhausting the tree. Actual bytes are >= bytes. */
   truncated: boolean;
 }
@@ -69,6 +71,9 @@ export interface PackageCacheOutcome {
   afterBytes: number;
   reclaimedBytes: number;
   measurementTruncated: boolean;
+  pinnedBytes?: number;
+  pinnedOverageBytes?: number;
+  unprotectedOverageBytes?: number;
   status: PackageCacheOutcomeStatus;
   note?: string;
 }
@@ -91,7 +96,7 @@ interface PackageCacheRetentionOptions {
   mutexTimeoutMs?: number;
   sampleDisk?: typeof sampleDiskSnapshots;
   sameFilesystem?: (a: string, b: string) => Promise<boolean>;
-  measure?: (path: string) => Promise<PackageCacheMeasurement>;
+  measure?: (path: string, coversPinnedPath?: (path: string) => boolean) => Promise<PackageCacheMeasurement>;
   runCommand?: (target: PackageCacheTarget, cwd: string) => Promise<PackageCacheCommandResult>;
   withMutex?: <T>(name: string, run: () => Promise<T>, options?: Record<string, unknown>) => Promise<T>;
 }
@@ -158,13 +163,14 @@ export function resolvePackageCacheTargets(options: PackageCacheTargetOptions = 
   ];
 }
 
-export async function measurePackageCache(path: string): Promise<PackageCacheMeasurement> {
+export async function measurePackageCache(path: string, coversPinnedPath?: (path: string) => boolean): Promise<PackageCacheMeasurement> {
   path = resolve(path);
   const allocation = new RetentionAllocationCounter();
   try {
     let root;
     try { root = await lstat(path); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { bytes: 0, truncated: false };
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { bytes: 0, truncated: false,
+        ...(coversPinnedPath ? { pinnedBytes: 0 } : {}) };
       throw error;
     }
     if (!root.isDirectory() || root.isSymbolicLink()) return { bytes: 0, truncated: true };
@@ -182,7 +188,7 @@ export async function measurePackageCache(path: string): Promise<PackageCacheMea
     // metadata. One union counter spans every child of the configured root.
     allocation.add(path, root, false);
     const census = await inspectRetentionTrees(path, { retainAfterMs: 0, includeRecent: true,
-      sudo: null, timeoutMs: DEFAULT_MEASURE_BUDGET_MS });
+      sudo: null, timeoutMs: DEFAULT_MEASURE_BUDGET_MS, coversPinnedPath });
     for (const entry of census.entries) add(entry);
     for (const retained of census.retained) if (retained.entry) add(retained.entry);
     const incomplete = census.retained.some(entry => !entry.entry ||
@@ -190,7 +196,16 @@ export async function measurePackageCache(path: string): Promise<PackageCacheMea
     const after = await lstat(path);
     const changed = !after.isDirectory() || after.dev !== root.dev || after.ino !== root.ino || after.ctimeMs !== root.ctimeMs;
     if (!Number.isSafeInteger(allocation.bytes) || allocation.bytes < 0) throw new Error('cache allocation overflow');
-    return { bytes: allocation.bytes, truncated: !!census.error || incomplete || changed };
+    let pinnedBytes: number | undefined;
+    if (coversPinnedPath) {
+      if (census.pinnedBytes === undefined) throw new Error('cache pin allocation is unmeasured');
+      pinnedBytes = census.pinnedBytes + (coversPinnedPath(path) ? root.blocks * 512 : 0);
+      if (!Number.isSafeInteger(pinnedBytes) || pinnedBytes < 0 || pinnedBytes > allocation.bytes) {
+        throw new Error('inconsistent cache pin allocation');
+      }
+    }
+    return { bytes: allocation.bytes, truncated: !!census.error || incomplete || changed,
+      ...(pinnedBytes === undefined ? {} : { pinnedBytes }) };
   } catch {
     return { bytes: allocation.bytes, truncated: true };
   }
@@ -373,15 +388,30 @@ export async function runPackageCacheRetention(
 
           // Native managers can remove arbitrary descendants. Hold the common
           // pin mutex through the command and retain the whole cache on overlap.
-          const command = await withRetentionPinProtection((isPinned) =>
-            isPinned(target.path) ? null : runCommand(target, repoRoot));
-          if (command === null) {
+          // notify-classification: {"id":"packages/operator-core/lib/storage/package-cache-retention.ts#<module>/runPackageCacheRetention/<callback>:a14f201ca0655a70eeba:1","classification":"durable","reason":"The pin-protected cache wrapper can reach alarm paths through measurement; no safe-to-lose proof is recorded.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+          const command = await withRetentionPinProtection(async (isPinned) => {
+            if (!isPinned(target.path)) return runCommand(target, repoRoot);
+            // Symmetric overlap protects this entire opaque store from native
+            // deletion. Only the same snapshot's descendant coverage can
+            // explain cap overage; unrelated siblings never inherit the pin.
+            const after = await measure(target.path, isPinned.coversPath);
+            const exact = !after.truncated && Number.isSafeInteger(after.bytes) && after.bytes >= 0 &&
+              Number.isSafeInteger(after.pinnedBytes) && after.pinnedBytes! >= 0 && after.pinnedBytes! <= after.bytes;
+            const unprotectedOverageBytes = exact ? Math.max(0, after.bytes - Math.max(limit, after.pinnedBytes!)) : undefined;
             outcomes.set(target.manager, {
-              ...belowOutcome(target, before, limit), status: 'pinned',
-              note: 'live retention pin protects this cache or one of its descendants',
+              ...belowOutcome(target, before, limit),
+              afterBytes: after.bytes, reclaimedBytes: Math.max(0, before.bytes - after.bytes),
+              measurementTruncated: !exact,
+              ...(exact ? { pinnedBytes: after.pinnedBytes, pinnedOverageBytes: Math.max(0, after.pinnedBytes! - limit),
+                unprotectedOverageBytes } : {}),
+              status: !exact || unprotectedOverageBytes! > 0 ? 'prune-failed' : 'pinned',
+              note: !exact ? 'live pin prevents native cleanup; exact pinned allocation is unmeasured'
+                : unprotectedOverageBytes! > 0 ? `live pin prevents native cleanup; non-pin cap excess ${unprotectedOverageBytes} bytes remains`
+                : 'live retention pin protects this cache; remaining overage is fully explained by exact pinned allocation',
             });
-            continue;
-          }
+            return null;
+          });
+          if (command === null) continue;
           if (!command.ok) {
             outcomes.set(target.manager, {
               ...belowOutcome(target, before, limit),

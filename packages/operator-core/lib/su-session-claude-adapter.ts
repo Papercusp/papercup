@@ -18,6 +18,7 @@ import {
   type SuSessionCapabilities,
   type SuSessionCommand,
   type SuSessionDescriptor,
+  type SuSessionExecutionKind,
   type SuSessionJsonValue,
   type SuSessionRefusal,
 } from '@papercusp/chat-protocol';
@@ -88,6 +89,7 @@ export interface ClaudeSuSessionControls {
 
 export interface ClaudeSuSessionDescriptorOptions {
   agentChatId: string;
+  executionKind?: SuSessionExecutionKind;
   model?: string | null;
   /** D-026: the approvals mode the engine launched in, when it has one. */
   approvals?: SuApprovalsMode;
@@ -238,8 +240,13 @@ function defaultControls(): ClaudeSuSessionControls {
  */
 export function claudeCapabilities(): SuSessionCapabilities {
   return {
+    version: 2,
+    input: { parts: [], origins: ['owner'] },
     commands: {
       owner_turn: { state: 'supported', implementation: 'native' },
+      queue: { state: 'unsupported', reason: 'explicit queue delivery is not attached to this runtime' },
+      steer: { state: 'unsupported', reason: 'active-turn steering is not attached to this runtime' },
+      handoff: { state: 'unsupported', reason: 'identity-safe execution transfer requires the managed handoff coordinator' },
       interrupt: { state: 'supported', implementation: 'native' },
       resume: {
         state: 'conditional',
@@ -342,6 +349,7 @@ function descriptorFor(
       harnessSlug: binding.harnessSlug,
     },
     lifecycle: 'starting',
+    executionKind: options.executionKind ?? 'pty',
     runtimeGeneration: options.runtimeGeneration ?? 0,
     role: 'su',
     model: options.model ?? null,
@@ -841,6 +849,10 @@ export class ClaudeSuSessionAdapter {
           'Claude native fork must be created through the tracked launcher so it receives a new durable identity',
           true,
         ));
+      case 'queue':
+      case 'steer':
+      case 'handoff':
+        return commandRefusal(refused('unsupported', `${command.type} is not attached to this runtime`, false));
       default:
         return assertNeverSuSession(command);
     }

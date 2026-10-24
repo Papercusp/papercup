@@ -54,12 +54,14 @@ function callOutputs(value: any): Row[] {
   return String(value.type).endsWith('call_output') ? [value] : Object.values(value).flatMap(callOutputs);
 }
 
-async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = false) {
+async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = false, contended = false) {
     const root = mkdtempSync('/tmp/assume-native-journey-');
     const marker = { target: `TARGET_HISTORY_${randomUUID()}`, caller: `CALLER_HISTORY_${randomUUID()}`,
-      checkpoint: `TARGET_CHECKPOINT_${randomUUID()}` };
-    const owners = { caller: `test-assume-caller-${randomUUID()}`, target: `test-assume-target-${randomUUID()}` };
-    const homes = { caller: join(root, 'caller'), target: join(root, 'target') };
+      checkpoint: `TARGET_CHECKPOINT_${randomUUID()}`, rival: `RIVAL_HISTORY_${randomUUID()}`,
+      loserProbe: `LOSER_COMMAND_${randomUUID()}`, loserResponse: `LOSER_RESPONSE_${randomUUID()}` };
+    const owners = { caller: `test-assume-caller-${randomUUID()}`, target: `test-assume-target-${randomUUID()}`,
+      rival: `test-assume-rival-${randomUUID()}` };
+    const homes = { caller: join(root, 'caller'), target: join(root, 'target'), rival: join(root, 'rival') };
     for (const home of Object.values(homes)) mkdirSync(home);
     const stdin = Object.assign(new EventEmitter(), { isTTY: false, resume() {}, pause() {} });
     let output = '';
@@ -67,12 +69,16 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       write(data: string) { output += data; return true; } } };
     let phase: 'seed' | 'caller' | 'target' | 'return' = 'seed';
     let port = 0, issued = false, targetReady = false, returnIssued = false, targetProbed = false;
-    const requests: Array<{ phase: string; body: Row }> = [], errors: string[] = [], nativeResults: string[] = [];
+    const requests: Array<{ phase: string; actor: string; body: Row }> = [], errors: string[] = [], nativeResults: string[] = [];
     const hosts: McpServer[] = [];
     const orders: Row[] = [], inspections = new Map<string, Row>();
     let releaseTarget!: () => void;
     const targetGate = new Promise<void>(resolve => { releaseTarget = resolve; });
     const runs: Array<{ owner: string; signals: EventEmitter; done: Promise<number> }> = [];
+    const callerIssued = new Set<string>();
+    const race: Array<{ owner: string; receipt: Row; workId: string }> = [];
+    let preparedCallers = 0, releaseCallers!: () => void;
+    const callersReady = new Promise<void>(resolve => { releaseCallers = resolve; });
     const transcript = (key: keyof typeof homes, id?: string) => {
       const files = readdirSync(join(homes[key], 'sessions'), { recursive: true }).map(String)
         .filter(path => path.endsWith('.jsonl'));
@@ -106,7 +112,8 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           const result = await inspect(body.request, body.afterExit, body.action);
           res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(result)); return;
         }
-        if (req.url === '/mcp') {
+        if (req.url?.split('?')[0] === '/mcp') {
+          const actor = new URL(req.url, 'http://localhost').searchParams.get('actor');
           const host = new McpServer({ name: 'native-handoff-fixture', version: '1' }); hosts.push(host);
           host.registerTool('handoff_fixture', { inputSchema: {} }, async () => {
             if (phase !== 'caller' && phase !== 'target') throw new Error('Handoff outside an execution phase');
@@ -124,17 +131,26 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
               return { content: [{ type: 'text', text: JSON.stringify(returning) }] };
             }
             if (real) {
-              const id = nativeId('caller');
-              await vi.waitFor(() => expect(JSON.parse(readFileSync(metaPathFor(owners.caller), 'utf8'))
+              const key = actor === 'rival' ? 'rival' : 'caller';
+              const owner = owners[key], id = nativeId(key);
+              await vi.waitFor(() => expect(JSON.parse(readFileSync(metaPathFor(owner), 'utf8'))
                 .nativeSessionId).toBe(id), { timeout: 5000 });
-              const registration = await real.register(owners.caller, id, root, false);
-              productionState.homes.set(String(registration), homes.caller);
-              callerWork = await real.assign(owners.caller);
-              await real.send(owners.caller, 'CALLER_BEFORE_HANDOFF');
-              const plan = await real.prepare(owners.caller, owners.target, mode);
-              accepted = await real.commit(plan);
-              if (accepted.state !== 'handoff-accepted') throw new Error('Production commit: ' + JSON.stringify({
-                state: accepted.state, reason: accepted.reason, trace: real.trace }));
+              const registration = await real.register(owner, id, root, false);
+              productionState.homes.set(String(registration), homes[key]);
+              const workId = await real.assign(owner);
+              await real.send(owner, 'CALLER_BEFORE_HANDOFF');
+              const plan = await real.prepare(owner, owners.target, mode);
+              if (contended) {
+                if (++preparedCallers === 2) releaseCallers();
+                await callersReady;
+              }
+              const receipt = await real.commit(plan);
+              if (contended) race.push({ owner, receipt, workId });
+              if (contended && receipt.state === 'refused')
+                return { content: [{ type: 'text', text: JSON.stringify(receipt) }] };
+              accepted = receipt; callerWork = workId;
+              if (receipt.state !== 'handoff-accepted') throw new Error('Production commit: ' + JSON.stringify({
+                state: receipt.state, reason: receipt.reason, trace: real.trace }));
               await real.send(owners.target, 'DURING_HANDOFF');
               return { content: [{ type: 'text', text: JSON.stringify(accepted) }] };
             }
@@ -169,12 +185,16 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
           await host.connect(transport); await transport.handleRequest(req, res, body); return;
         }
-        if (req.url !== '/v1/responses') { res.writeHead(200); res.end('{}'); return; }
-        requests.push({ phase, body }); res.writeHead(200, { 'content-type': 'text/event-stream' });
+        if (!req.url?.endsWith('/responses')) { res.writeHead(200); res.end('{}'); return; }
+        const actor = req.url.includes('/rival/') ? 'rival' : req.url.includes('/target/') ? 'target' : 'caller';
+        requests.push({ phase, actor, body }); res.writeHead(200, { 'content-type': 'text/event-stream' });
         const finish = (text: string) => res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({
           model: 'gpt-6-sol', text, inputTokens: 0, outputTokens: 0 })));
         if (phase === 'seed') { finish(marker.target); return; }
         if (phase === 'return') { finish('CALLER_RETURNED'); return; }
+        if (contended && phase === 'caller' && JSON.stringify(body).includes(marker.loserProbe)) {
+          finish(marker.loserResponse); return;
+        }
         const outputs = callOutputs(body.input);
         if (real && phase === 'target' && outputs.some(row => row.call_id === 'handoff-target-return')) {
           finish('RETURN_NATIVE_COMPLETE'); return;
@@ -193,11 +213,13 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         const direct = available.find(tool => tool.type === 'function' && tool.name?.endsWith('__handoff_fixture'));
         const executor = available.find(tool => tool.type === 'namespace' &&
           tool.tools?.some((t: Row) => t.type === 'custom' && t.name === 'exec'));
-        if (issued && !returningCall || !namespace && !direct && !executor && !available.some(tool => tool.type === 'tool_search')) {
+        const alreadyIssued = contended && phase === 'caller' ? callerIssued.has(actor) : issued;
+        if (alreadyIssued && !returningCall || !namespace && !direct && !executor && !available.some(tool => tool.type === 'tool_search')) {
           finish('AUXILIARY_RESPONSE'); return;
         }
         const discovery = !namespace && !direct && !executor;
         issued = !discovery;
+        if (contended && phase === 'caller' && !discovery) callerIssued.add(actor);
         const callId = returningCall ? 'handoff-target-return' : `handoff-${phase}`;
         const call = discovery ? { id: 'discover', type: 'tool_search_call', execution: 'client',
           call_id: 'discover-handoff', status: 'completed', arguments: { query: 'handoff_fixture', limit: 1 } } : executor
@@ -214,10 +236,10 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
             text: '', inputTokens: 0, outputTokens: 0 }), output: [call] } }));
       } catch (error) { errors.push(String(error)); if (!res.headersSent) res.writeHead(500); res.end(); }
     });
-    const baseArgs = () => ['--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox',
+    const baseArgs = (key: keyof typeof homes = 'target') => ['--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox',
       ...Object.entries({ model: 'gpt-6-sol', model_provider: 'assume_fixture',
         'model_providers.assume_fixture.name': 'Offline native context fixture',
-        'model_providers.assume_fixture.base_url': `http://127.0.0.1:${port}/v1`,
+        'model_providers.assume_fixture.base_url': `http://127.0.0.1:${port}/v1/${key}`,
         'model_providers.assume_fixture.wire_api': 'responses',
         'model_providers.assume_fixture.requires_openai_auth': false,
         'model_providers.assume_fixture.supports_websockets': false,
@@ -293,10 +315,10 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       }
       port = await new Promise<number>(resolve => server.listen(0, '127.0.0.1',
         () => resolve((server.address() as net.AddressInfo).port)));
-      for (const home of Object.values(homes)) {
+      for (const [key, home] of Object.entries(homes)) {
         writeFileSync(join(home, 'AGENTS.md'), 'Isolated native context fixture persona.');
         writeFileSync(join(home, 'config.toml'),
-          `[mcp_servers.fixture]\nurl = "http://127.0.0.1:${port}/mcp"\n`);
+          `[mcp_servers.fixture]\nurl = "http://127.0.0.1:${port}/mcp?actor=${key}"\n`);
       }
       const seed = start('target', [...baseArgs(), 'Record the target history.']);
       await vi.waitFor(() => expect(output, diagnostics()).toContain(marker.target), { timeout: 20_000 });
@@ -310,8 +332,41 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         targetWork = await real.assign(owners.target);
       }
       phase = 'caller'; issued = false;
-      const caller = start('caller', [...baseArgs(), marker.caller]);
+      let caller = start('caller', [...baseArgs('caller'), marker.caller]);
+      if (contended) start('rival', [...baseArgs('rival'), marker.rival]);
       await vi.waitFor(() => expect(orders, diagnostics()).toHaveLength(1), { timeout: 25_000 });
+      if (contended) {
+        await vi.waitFor(() => expect(race, diagnostics()).toHaveLength(2), { timeout: 10_000 });
+        const winners = race.filter(row => row.receipt.state === 'handoff-accepted');
+        const losers = race.filter(row => row.receipt.state === 'refused');
+        expect(winners).toHaveLength(1); expect(losers).toHaveLength(1);
+        const loser = losers[0];
+        expect(loser.receipt.reason).toBe('custody-reserved');
+        const loserMeta = JSON.parse(readFileSync(metaPathFor(loser.owner), 'utf8'));
+        expect(alive(loserMeta.ptyPid)).toBe(true);
+        expect(await real!.pause(loser.owner)).toBeNull();
+        expect((await real!.load(loser.receipt.preparation))?.state).toBe('refused');
+        const untouched = await real!.probe(loser.owner, loser.workId);
+        expect(untouched.assignment).toMatchObject({ assignee: loser.owner, observedBy: loser.owner });
+        expect(untouched.messages).toHaveLength(1);
+        const loserKey = loser.owner === owners.rival ? 'rival' : 'caller';
+        const loserNative = nativeId(loserKey);
+        expect(await control(loserMeta.sock, { v: 1, mode: 'turn', ownerId: loser.owner,
+          data: marker.loserProbe })).toMatchObject({ ok: true });
+        await vi.waitFor(() => expect(transcript(loserKey)).toContain(marker.loserResponse), { timeout: 15_000 });
+        expect(nativeId(loserKey)).toBe(loserNative);
+        const loserInput = requests.filter(row => row.actor === loserKey).map(row => JSON.stringify(row.body)).join('\n');
+        expect(loserInput).toContain(marker.loserProbe);
+        expect(loserInput).not.toContain(marker.target);
+        expect(loserInput).not.toContain(marker.checkpoint);
+        if (winners[0].owner === owners.rival) {
+          [owners.caller, owners.rival] = [owners.rival, owners.caller];
+          [homes.caller, homes.rival] = [homes.rival, homes.caller];
+          marker.caller = marker.rival;
+        }
+        caller = runs.find(run => run.owner === winners[0].owner)!;
+        expect(orders[0].assume.request.caller.ownerId).toBe(winners[0].owner);
+      }
       const original = orders[0].assume.request.caller;
       await vi.waitFor(() => expect(alive(original.nativePid), diagnostics()).toBe(false), { timeout: 10_000 });
       expect(await caller.done).toBe(75);
@@ -325,7 +380,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       const resume = async (session: Row, options: Row) => {
         await options.managedAssume.verify();
         const key = session.coordOwnerId === owners.target ? 'target' : 'caller';
-        let args = [...baseArgs(), 'resume', session.sessionId];
+        let args = [...baseArgs(key), 'resume', session.sessionId];
         let kickoff = options.kickoff;
         if (options.managedAssume.checkpoint) {
           const carry = prepareIdentityAssumeCheckpoint(session,
@@ -418,6 +473,12 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           expect((await real.load(accepted!.preparation))?.state).toBe('handoff-accepted');
         }
         expect((await real.verify(accepted! as any, observation)).state).toBe('target-verified');
+        if (contended) {
+          const loser = race.find(row => row.receipt.state === 'refused')!;
+          expect(await real.commit(loser.receipt.preparation)).toMatchObject({ state: 'refused', replayed: true });
+          expect(orders).toHaveLength(1);
+          expect(codexThreadWriterHolder(homes.target, runningTargetNative).pid).toBe(writer.pid);
+        }
       }
       releaseTarget();
       await vi.waitFor(() => expect(alive(targetMeta.ptyPid), diagnostics()).toBe(false), { timeout: 10_000 });
@@ -451,6 +512,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       expect(errors, diagnostics()).toEqual([]);
       returned.signals.emit('SIGTERM'); await returned.done;
     } finally {
+      releaseCallers();
       releaseTarget(); for (const run of runs) run.signals.emit('SIGTERM');
       await Promise.allSettled(runs.map(run => run.done));
       await Promise.allSettled(hosts.map(host => host.close()));
@@ -467,3 +529,6 @@ it.each(['native-resume', 'checkpoint'] as const)(
 it.each(['native-resume', 'checkpoint'] as const)(
   'uses production custody and routed responsibilities through the installed native handoff (%s)',
   mode => nativeJourney(mode, true), 180_000);
+
+it('admits exactly one of two installed native callers and preserves the losing caller responsibilities',
+  () => nativeJourney('native-resume', true, true), 180_000);

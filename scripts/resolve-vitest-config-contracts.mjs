@@ -78,13 +78,23 @@ if (process.argv.includes('--astro-selection-child')) {
         throw new Error('astro-input-escapes-repository');
       return result;
     };
+    // D-003: only this install's dependency store gets the existing lexical
+    // node_modules representation. First-party population paths keep the fence.
+    let installedModules;
+    try { installedModules = realpathSync(resolve(repositoryRoot, 'node_modules')); } catch {}
+    const producerPath = file => {
+      const dependency = installedModules && relative(installedModules, realpathSync(file)).replaceAll('\\', '/');
+      if (dependency && !isAbsolute(dependency) && dependency !== '..' && !dependency.startsWith('../'))
+        return `node_modules/${dependency}`;
+      return repositoryPath(file);
+    };
     const files = [...new Set(absoluteFiles.map(repositoryPath))].sort();
     if (!files.length || files.length !== absoluteFiles.length) throw new Error('invalid-astro-file-population');
     const producerFiles = [astroPackage, checkModule, syncModule, languageServerModule, typescriptModule,
       resolve(dirname(languageServerModule), 'check.js'),
       resolve(dirname(astroPackage), 'dist/cli/check/index.js'), resolve(request.root, 'package.json'),
       ...(checker.getTsconfig() ? [checker.getTsconfig()] : [])];
-    const inputs = [...new Set([...files, ...producerFiles.map(repositoryPath)])].sort().map(file => ({
+    const inputs = [...new Set([...files, ...producerFiles.map(producerPath)])].sort().map(file => ({
       path: file, sha256: createHash('sha256').update(readFileSync(resolve(repositoryRoot, file))).digest('hex'),
     }));
     results.push({ ok: true, enumerated: true, repositoryFiles: files, inputs,

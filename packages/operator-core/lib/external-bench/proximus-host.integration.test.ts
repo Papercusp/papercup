@@ -319,7 +319,7 @@ it.each(['direct process', 'controller accounting', 'assignment handoff'] as con
             model: control.arm.model, effort: 'high', account: control.arm.account, driveTimeoutMs: maxWallClockMs,
             preregistration: { preregHash: control.preregHash, config: control.protocol } },
           protocol: control.protocol, context: { workspaceId, principal: { slug: 'offline-proximus' },
-            log: () => {} } as PapercuspUnifiedToolContext,
+            log: () => {} } as unknown as PapercuspUnifiedToolContext,
           scope: { sql: control.sql, workspaceId }, resources: control.resources,
           loopId: control.loopId, hostRunId: 'offline-factory-host', pythonBin,
         }, {

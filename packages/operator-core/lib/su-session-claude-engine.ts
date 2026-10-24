@@ -289,7 +289,7 @@ export function startClaudeSuEngine(
     ok: false, code: 'engine_delivery_unknown', message, retryable: false,
   });
   const adapter = createClaudeSuSessionAdapter(binding, runtime, {
-    ...options, ready: false, runtimeReady: () => ready && !closed, ownerTurnCorrelation: 'transport', cardSource: 'transport',
+    ...options, executionKind: 'programmatic', ready: false, runtimeReady: () => ready && !closed, ownerTurnCorrelation: 'transport', cardSource: 'transport',
     resultErrorSource: 'transport',
     ...(currentApprovals ? { approvals: currentApprovals } : {}),
     ownerTurnReceipts: (identity) => loadSuOwnerTurnReceipts(identity),

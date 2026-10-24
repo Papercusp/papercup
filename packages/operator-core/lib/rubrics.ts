@@ -2473,11 +2473,12 @@ export function rubricCompleteness(rubric: Rubric): RubricCompleteness {
 function migrateLegacyProbeRevision(probe: unknown): unknown {
   if (probe === null || typeof probe !== 'object' || Array.isArray(probe)) return probe;
   const record = probe as Record<string, unknown>;
-  if (typeof record.schemaRevision !== 'string' || record.schemaRevision === LIVE_SCHEMA_REVISION) return probe;
+  if (typeof record.schemaRevision !== 'string') return probe;
 
   // Re-validate through the writer-only `live` sentinel. A successful parse both
-  // proves the old probe still matches the current target contract and returns the
-  // concrete current revision. If it no longer matches, preserve the stale value so
+  // proves the probe still matches the current target contract and returns the
+  // concrete current revision, including for incoming writer-only `live` values.
+  // If it no longer matches, preserve the original value so
   // the normal validation path reports the actionable contract error.
   const migrated = continuityProbeSchema.safeParse({ ...record, schemaRevision: LIVE_SCHEMA_REVISION });
   return migrated.success ? migrated.data : probe;

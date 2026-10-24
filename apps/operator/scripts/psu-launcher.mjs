@@ -7969,6 +7969,12 @@ export function applyCodexGatewayRoute(
  */
 export function prepareCodexGatewayLaunch(env, args = []) {
   if (env.PAPERCUSP_AGENT !== "codex") return args;
+  // A legacy repair can replace a role home with an SU profile. Carry and
+  // host adoption must enforce the recorded role before every native child,
+  // including launches that use the default account and need no route patch.
+  const role = env.PAPERCUSP_AGENT_ROLE;
+  if (role && role !== "su" && codexHomeLaunchReadiness(env.CODEX_HOME, env.PAPERCUSP_SID, role))
+    throw new Error("Codex launch requires its recorded owner and restricted role MCP profile");
   const mode = env[ACCOUNT_ROUTING_MODE_ENV];
   if (mode !== "auto" && mode !== "pin") return args;
   if (!env.CODEX_HOME || (mode === "pin" && !env.PAPERCUSP_ACCOUNT_ID))

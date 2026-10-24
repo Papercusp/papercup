@@ -8,7 +8,7 @@
  * without a process or a database.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import type { SuSessionBackend, SuSessionDescriptor, SuSessionLifecycleState } from '@papercusp/chat-protocol';
+import { isSuSessionExecutionKind, type SuSessionBackend, type SuSessionDescriptor, type SuSessionLifecycleState } from '@papercusp/chat-protocol';
 import { activeWorkspaceId } from './workspace-registry';
 
 export const SU_SESSION_LIFECYCLE_STATES: readonly SuSessionLifecycleState[] = [
@@ -83,6 +83,7 @@ export function isPersistedSuSessionDescriptor(value: unknown): value is SuSessi
       typeof identity.ownerId === 'string' && identity.ownerId.length > 0 &&
       typeof identity.workspaceId === 'string' && identity.workspaceId.length > 0 &&
       descriptor.role === 'su' && isLifecycle(descriptor.lifecycle) &&
+      (descriptor.executionKind === undefined || isSuSessionExecutionKind(descriptor.executionKind)) &&
       typeof descriptor.runtimeGeneration === 'number' &&
       Number.isSafeInteger(descriptor.runtimeGeneration) && descriptor.runtimeGeneration >= 0 &&
       descriptor.backendExtension && typeof descriptor.backendExtension === 'object',

@@ -2001,6 +2001,29 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     })).toBeNull();
   });
 
+  it.each(['claude', 'codex'])('recognizes the host terminal receipt after a damaged %s error screen', (agent) => {
+    const receipt = `[psu] native-turn-failed agent=${agent} code=native_error retryable=false retryAfterMs=unknown`;
+    const raw = `API error · Retrying in 1m 0s · attempt 3/10\r\n\u001b[?25h${receipt}\r\n`;
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
+      code: 'native_turn_failed', evidence: receipt,
+    });
+    expect(classifyAcceptanceGraderTerminalFailure(`${raw}◇ su-fixture · ⟳ off · ▶ auto · 8 peers · plans:get`, {
+      allowInferenceGatewayError: true,
+    })).toMatchObject({ code: 'native_turn_failed' });
+    for (const progress of ['● I resumed the audit.', '• Called scorecards:get', '❯ retry the audit']) {
+      expect(classifyAcceptanceGraderTerminalFailure(`${raw}${progress}`, {
+        allowInferenceGatewayError: true,
+      })).toBeNull();
+    }
+    for (const quoted of [`The report quotes ${receipt}`, `> ${receipt}`, `\`\`\`text\n${receipt}\n\`\`\``]) {
+      expect(classifyAcceptanceGraderTerminalFailure(quoted, { allowInferenceGatewayError: true })).toBeNull();
+    }
+    expect(classifyAcceptanceGraderTerminalFailure(receipt.replace('retryable=false', 'retryable=true'), {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+  });
+
   it('matches a completed inference-gateway 5xx turn only for a controlled caller', () => {
     const raw =
       '\u001b[38;5;220m●\u001b[3GAPI Error: 500 inference-gateway internal error. This is a server-side\r\n' +

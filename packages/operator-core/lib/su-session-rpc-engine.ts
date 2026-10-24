@@ -411,7 +411,7 @@ export function startSuRpcEngine(
     async end() { await close(); return { ok: true as const }; },
   };
   const shared = {
-    ...options, controls, ready: false, runtimeReady: () => ready && !closed,
+    ...options, executionKind: 'programmatic' as const, controls, ready: false, runtimeReady: () => ready && !closed,
     // D-026: a prompted Codex launch is on-request + workspace-write, which is
     // `auto-edit`. OMP has no switchable mode, so its descriptor omits one.
     ...(backend === 'codex' && selectedApprovals ? { approvals: selectedApprovals } : {}),

@@ -40,19 +40,37 @@ function fields(text: string): Map<string, string> {
  * Consumers can repeat assertUnchanged after their own census/security checks.
  */
 export async function bindFrozenDependencyGeneration(root: string, sourceCommit: string) {
-  const marker = fields(await readFile(join(root, 'node_modules/.papercusp-dependency-generation'), 'utf8'));
-  const dependencyGeneration = marker.get('identity') ?? '';
+  const custody: [string, string][] = [];
+  const readCustody = async (path: string) => {
+    const bytes = await readFile(path, 'utf8');
+    custody.push([path, bytes]);
+    return fields(bytes);
+  };
+  const pinPath = join(root, '.papercusp-pinned-deps');
+  let pinBytes: string | undefined;
+  try { pinBytes = await readFile(pinPath, 'utf8'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const verifier = pinBytes !== undefined;
+  if (verifier) custody.push([pinPath, pinBytes!]);
+  const marker = verifier ? fields(pinBytes!)
+    : await readCustody(join(root, 'node_modules/.papercusp-dependency-generation'));
+  if (verifier && marker.get('mode') !== 'generation-copy') throw new Error('unsupported frozen dependency provenance');
+  // The verifier receipt names the copy. An embedded release marker can belong
+  // to the generation's donor and is not this materialization's provenance.
+  const dependencyGeneration = marker.get(verifier ? 'generation' : 'identity') ?? '';
   if (!/^v1-[0-9a-f]{64}$/.test(dependencyGeneration)) throw new Error('invalid frozen dependency generation');
   // Verification must not create ignored bookkeeping in the clean source tree.
   const generationRoot = await shell(root, 'dependency_generation_resolve_root "$1" "" 1', root);
   const generation = join(generationRoot, dependencyGeneration);
   const dependencyInputSha256 = await shell(root, 'dependency_generation_input_fingerprint_ref "$1" "$2"', root, sourceCommit);
   if (!HEX.test(dependencyInputSha256)) throw new Error('invalid committed dependency input fingerprint');
-  const selector = fields(await readFile(join(generationRoot, '.inputs', dependencyInputSha256), 'utf8'));
-  const publication = fields(await readFile(join(generation, '.papercusp-dependency-generation'), 'utf8'));
+  if (verifier && marker.get('input') !== dependencyInputSha256) throw new Error('frozen dependency input mismatch');
+  const selector = await readCustody(join(generationRoot, '.inputs', dependencyInputSha256));
+  const publication = await readCustody(join(generation, '.papercusp-dependency-generation'));
   if (selector.get('input') !== dependencyInputSha256 || selector.get('identity') !== dependencyGeneration ||
       publication.get('identity') !== dependencyGeneration || publication.get('scope') !== 'full' ||
-      marker.get('source') !== publication.get('source')) throw new Error('frozen dependency input/generation mismatch');
+      (!verifier && marker.get('source') !== publication.get('source'))) throw new Error('frozen dependency input/generation mismatch');
+  if (verifier && marker.get('token') !== selector.get('token')) throw new Error('frozen dependency token mismatch');
   await shell(root, 'dependency_generation_select_prevalidated "$1" "$2" "$3"', generationRoot,
     dependencyGeneration, selector.get('token') ?? '');
   const assertSnapshot = async () => {
@@ -64,9 +82,13 @@ export async function bindFrozenDependencyGeneration(root: string, sourceCommit:
   const trees = (await shell(root, 'dependency_generation_enumerate_node_modules "$1"', join(generation, 'tree')))
     .split('\n').filter(Boolean).map(path => relative(join(generation, 'tree'), path).split('\\').join('/')).sort();
   if (!trees.includes('node_modules') || trees.some(tree => !safe(tree))) throw new Error('invalid generation tree census');
-  const materialized = (await shell(root, 'dependency_generation_enumerate_node_modules "$1"', root))
+  if (verifier && marker.get('trees') !== String(trees.length)) throw new Error('materialized generation tree count mismatch');
+  const materializedTrees = async () => (await shell(root, 'dependency_generation_enumerate_node_modules "$1"', root))
     .split('\n').filter(Boolean).map(path => relative(root, path).split('\\').join('/')).sort();
-  if (JSON.stringify(trees) !== JSON.stringify(materialized)) throw new Error('materialized generation tree census mismatch');
+  const assertTreeCensus = async () => {
+    if (JSON.stringify(trees) !== JSON.stringify(await materializedTrees())) throw new Error('materialized generation tree census mismatch');
+  };
+  await assertTreeCensus();
   const projection = async (tree: string) => shell(root,
     'record=$(mktemp); trap \'rm -f "$record" "$record.unsorted"\' EXIT; ' +
     'dependency_generation_source_records "$1" "$record"; ' +
@@ -75,8 +97,10 @@ export async function bindFrozenDependencyGeneration(root: string, sourceCommit:
   const projections: [string, string][] = [];
   const links: string[] = [];
   for (const tree of trees) {
-    const isolated = fields(await readFile(join(root, tree, '.papercusp-isolated-snapshot'), 'utf8'));
-    if (isolated.get('generation') !== dependencyGeneration) throw new Error('materialized dependency pin mismatch');
+    if (!verifier) {
+      const isolated = await readCustody(join(root, tree, '.papercusp-isolated-snapshot'));
+      if (isolated.get('generation') !== dependencyGeneration) throw new Error('materialized dependency pin mismatch');
+    }
     const original = await projection(join(generation, 'tree', tree));
     if (await projection(join(root, tree)) !== original) throw new Error(`materialized dependency tree drift: ${tree}`);
     projections.push([tree, hash(original)]);
@@ -87,11 +111,13 @@ export async function bindFrozenDependencyGeneration(root: string, sourceCommit:
   }
   const manifest = await shell(root, 'dependency_generation_input_manifest_ref "$1" "$2" | LC_ALL=C sort', root, sourceCommit);
   const locks: { path: string; packages: Record<string, DependencyLockEntry> }[] = [];
+  const inputs: [string, string][] = [];
   for (const line of manifest.split('\n')) {
     const [path, digest] = line.split('\t');
     if (!safe(path) || !HEX.test(digest)) throw new Error('invalid committed dependency manifest');
     const bytes = await readFile(join(root, path));
     if (hash(bytes) !== digest) throw new Error('committed dependency input changed');
+    inputs.push([path, digest]);
     if (/\/(package-lock|npm-shrinkwrap)\.json$/.test('/' + path)) {
       const lock = JSON.parse(bytes.toString());
       if (!lock.packages || typeof lock.packages !== 'object') throw new Error('committed lock packages map required');
@@ -99,7 +125,14 @@ export async function bindFrozenDependencyGeneration(root: string, sourceCommit:
     }
   }
   const assertUnchanged = async () => {
+    for (const [path, bytes] of custody) {
+      if (await readFile(path, 'utf8') !== bytes) throw new Error('frozen dependency provenance changed while binding');
+    }
+    for (const [path, digest] of inputs) {
+      if (hash(await readFile(join(root, path))) !== digest) throw new Error('committed dependency input changed');
+    }
     await assertSnapshot();
+    await assertTreeCensus();
     for (const [tree, digest] of projections) {
       if (hash(await projection(join(root, tree))) !== digest) throw new Error('materialized dependency tree changed while binding');
     }

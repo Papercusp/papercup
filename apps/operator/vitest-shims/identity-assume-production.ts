@@ -87,8 +87,14 @@ export async function productionAssumeFixture(workspaceId: string,
       scoped(() => inspectManagedAssumeRequest(request, afterExit, action)),
     load: (plan: AssumePreparation) => scoped(() => createAssumeReceiptStore(plan).load()),
     save: (receipt: AssumeTransitionReceipt) => scoped(() => createAssumeReceiptStore(receipt.preparation).save(receipt)),
-    verify: (receipt: AssumeTransitionReceipt, observation: AssumeExecutionObservation) =>
-      scoped(() => verifyAssumeExecution(receipt, observation, createAssumeReceiptStore(receipt.preparation).save)),
+    verify: (receipt: AssumeTransitionReceipt, observation: AssumeExecutionObservation) => scoped(async () => {
+      const store = createAssumeReceiptStore(receipt.preparation);
+      await store.load(); // initialize the existing receipt CAS, never bypass it
+      return verifyAssumeExecution(receipt, observation, async value => {
+        try { await store.save(value); }
+        catch (error) { trace.push({ stage: 'verify-save', error: String(error) }); throw error; }
+      });
+    }),
     pause: (owner: string) => scoped(() => readAssumeCallerPause(owner)),
     resolve: (id: number) => scoped(() => getAdvSession(id)),
     async finalize(plan: AssumePreparation, transitionKey: string, native: string) {

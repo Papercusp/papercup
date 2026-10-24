@@ -147,11 +147,52 @@ describe('runPackageCacheRetention', () => {
       expiresAt: new Date(Date.now() + (expired ? -1000 : 60_000)).toISOString() },
     { nowMs: Date.now() - 2000 });
     const runCommand = vi.fn(async () => ({ ok: true, exitCode: 0, timedOut: false, output: '' }));
-    const sizes = [measurement(9), measurement(9), measurement(2)];
+    const sizes = [measurement(9), measurement(9), { ...measurement(2), pinnedBytes: 2 }];
     const out = await runPackageCacheRetention({ targets: [{ ...targets[0]!, path: cache }], maxBytes: 8,
       measure: async () => sizes.shift()!, runCommand, withMutex: async (_name, run) => run() });
     expect(out[0]?.status).toBe(expired ? 'pruned' : 'pinned');
     expect(runCommand).toHaveBeenCalledTimes(expired ? 1 : 0);
+  });
+
+  it.each(['root', 'child', 'alias'] as const)('accounts only the exact %s pin allocation and exposes unrelated excess', async (scope) => {
+    const cache = join(sandbox, 'cache'), needed = join(cache, 'needed');
+    mkdirSync(needed, { recursive: true });
+    const proof = join(needed, 'proof'), bulk = join(cache, 'bulk');
+    writeFileSync(proof, Buffer.alloc(64 * 1024, 1));
+    writeFileSync(bulk, Buffer.alloc(128 * 1024, 1));
+    linkSync(proof, join(cache, 'shared-proof'));
+    const alias = join(sandbox, 'cache-alias'); symlinkSync(cache, alias);
+    createRetentionPin({ path: scope === 'root' ? cache : scope === 'alias' ? join(alias, 'needed') : needed,
+      owner: 'test', reason: 'review', expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const runCommand = vi.fn();
+    const out = await runPackageCacheRetention({ targets: [{ ...targets[0]!, path: cache }], maxBytes: 1,
+      runCommand, withMutex: async (_name, run) => run() });
+    const total = [cache, needed, proof, bulk].reduce((sum, path) => sum + lstatSync(path).blocks * 512, 0);
+    const pinned = scope === 'root' ? total : [needed, proof].reduce((sum, path) => sum + lstatSync(path).blocks * 512, 0);
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(out[0]).toMatchObject({ status: scope === 'root' ? 'pinned' : 'prune-failed',
+      beforeBytes: total, afterBytes: total, pinnedBytes: pinned, pinnedOverageBytes: pinned - 1,
+      unprotectedOverageBytes: total - Math.max(1, pinned), measurementTruncated: false });
+    expect(lstatSync(bulk).isFile()).toBe(true);
+    if (scope !== 'root') expect(out[0]?.note).toMatch(/non-pin.*excess/);
+  });
+
+  it.each([
+    { final: { ...measurement(9), pinnedBytes: 9 }, status: 'pinned', truncated: false },
+    { final: { ...measurement(9), pinnedBytes: 2 }, status: 'prune-failed', truncated: false },
+    { final: { ...measurement(9, true), pinnedBytes: 9 }, status: 'prune-failed', truncated: true },
+    { final: measurement(9), status: 'prune-failed', truncated: true },
+    { final: { ...measurement(9), pinnedBytes: 10 }, status: 'prune-failed', truncated: true },
+  ])('requires complete exact allocation before exempting pinned excess: $final', async ({ final, status, truncated }) => {
+    const cache = join(sandbox, 'cache'); mkdirSync(cache);
+    createRetentionPin({ path: cache, owner: 'test', reason: 'review', expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const sizes = [measurement(9), measurement(9), final];
+    const runCommand = vi.fn();
+    const out = await runPackageCacheRetention({ targets: [{ ...targets[0]!, path: cache }], maxBytes: 8,
+      measure: async () => sizes.shift()!, runCommand, withMutex: async (_name, run) => run() });
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(out[0]).toMatchObject({ status, measurementTruncated: truncated });
+    if (status === 'prune-failed') expect(out[0]?.note).toMatch(/unmeasured|non-pin/);
   });
 
   it('refuses native cleanup when the pin store cannot be decoded', async () => {

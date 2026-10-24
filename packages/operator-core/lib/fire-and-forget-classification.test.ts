@@ -185,6 +185,15 @@ describe('fire-and-forget notification census and classification', () => {
     expect(inlineClassifications(c)[0].id).toBe(c.sites[0].id);
   });
 
+  it('limits an explicit source classification to its exact site among nearby identical calls', () => {
+    const source = 'notifyPeer();\nnotifyPeer();';
+    const record = classify(scan(source))[1];
+    const c = scan(`// notify-classification: ${JSON.stringify(record)}\n${source}`);
+    expect(inlineClassifications(c).map(r => r.id)).toEqual([record.id]);
+    expect(validateClassifications(c, inlineClassifications(c))).toEqual([`unclassified: ${c.sites[0].id}`]);
+    expect(validateClassifications(c, [classify(c)[0], ...inlineClassifications(c)])).toEqual([]);
+  });
+
   it('seeds requirements from a measured census without inventing verified delivery', () => {
     const c = scan('notifyOwner();');
     const sourceDigest = createHash('sha256').update(JSON.stringify(c.files)).digest('hex');
@@ -200,8 +209,11 @@ describe('fire-and-forget notification census and classification', () => {
 
   it('includes maintained submodule sources and excludes test/generated sources explicitly', () => {
     expect(inScope('libs/papercusp/src/notify.ts')).toBe(true);
-    for (const path of ['src/a.test.ts', 'src/a.d.ts', 'src/__tests__/a.ts', 'apps/operator/dist-host/a.mjs', 'src/fixtures/a.ts', 'papercusp-desktop/src-tauri/env-sidecars/staging/serve.mjs', 'libs/ui/storybook-static/manager.js']) expect(inScope(path)).toBe(false);
-    const c = censusSources({ 'libs/example/src/a.ts': 'notify();', 'src/a.test.ts': 'notify();' });
+    expect(inScope('apps/operator/lib/identity-assume-production.ts')).toBe(true);
+    expect(inScope('apps/operator/vitest-shims-production/notify.ts')).toBe(true);
+    for (const path of ['src/a.test.ts', 'src/a.d.ts', 'src/__tests__/a.ts', 'apps/operator/dist-host/a.mjs', 'src/fixtures/a.ts', 'apps/operator/vitest-shims/identity-assume-production.ts', 'papercusp-desktop/src-tauri/env-sidecars/staging/serve.mjs', 'libs/ui/storybook-static/manager.js']) expect(inScope(path)).toBe(false);
+    const c = censusSources({ 'libs/example/src/a.ts': 'notify();', 'src/a.test.ts': 'notify();',
+      'apps/operator/vitest-shims/identity-assume-production.ts': 'notify();' });
     expect(c.files.map(f => f.path)).toEqual(['libs/example/src/a.ts']);
   });
 

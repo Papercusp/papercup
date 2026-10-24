@@ -390,6 +390,8 @@ export interface RetentionTreeCensus {
   retained: Array<{ path: string; reason: string; entry?: RetentionTreeCensus['entries'][number] }>;
   inspectedNodes: number;
   retainedRecentTrees: number;
+  /** Descendant allocation covered by an exact pin predicate; absent if unrequested or incomplete. */
+  pinnedBytes?: number;
   timing?: RetentionCensusTiming;
   error?: string;
 }
@@ -630,6 +632,8 @@ export async function inspectRetentionTrees(root: string, opts: {
   /** Caps need recent trees too. Elevation is explicit and scoped by the caller
    * to a policy-authorized agent root; never silently fall back on denial. */
   includeRecent?: boolean; sudo?: string | null;
+  /** Exact allocation only: requires the full uncompacted metadata stream. */
+  coversPinnedPath?: (path: string) => boolean;
   /** Discover build candidates during the existing walk. Tags are validated
    * through directory descriptors by the effect, never followed here. */
   collectBuildDirs?: boolean;
@@ -640,6 +644,10 @@ export async function inspectRetentionTrees(root: string, opts: {
 }): Promise<RetentionTreeCensus> {
   root = resolve(root);
   const result: RetentionTreeCensus = { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0 };
+  if (opts.coversPinnedPath && (!opts.includeRecent || opts.sudo && opts.progressTimeoutMs !== undefined ||
+      opts.excludedPaths?.length || opts.paths)) {
+    return { ...result, error: 'exact pin allocation requires a complete uncompacted census' };
+  }
   const rootStat = await fsp.lstat(root);
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return { ...result, error: 'retention root is not a plain directory' };
   if (opts.paths?.some((path) => resolve(path) !== path || dirname(path) !== root)) return { ...result, error: 'retention target outside root' };
@@ -688,6 +696,7 @@ export async function inspectRetentionTrees(root: string, opts: {
     let lastProgressAfterMs: number | null = null, lastChildPath: string | null = null;
     let timeoutKind: RetentionCensusTiming['timeoutKind'] = null;
     const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; allocation: RetentionAllocationCounter; reason?: string }>();
+    const pinnedAllocation = new RetentionAllocationCounter();
     const ancestors = new Map<string, { path: string; dev: number; ino: number }>();
     let pending = '', fields: string[] = [], stderr = '', stderrOverflow = false, malformed = false, timedOut = false, settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -732,7 +741,14 @@ export async function inspectRetentionTrees(root: string, opts: {
         }
       }
       group.entry.newestWriteMs = Math.max(group.entry.newestWriteMs, newest);
-      try { group.allocation.add(path, { dev: Number(dev), ino: Number(ino), blocks: Number(blocks), nlink: Number(nlink) }, type === 'f'); }
+      try {
+        const stat = { dev: Number(dev), ino: Number(ino), blocks: Number(blocks), nlink: Number(nlink) };
+        group.allocation.add(path, stat, type === 'f');
+        if (opts.coversPinnedPath) {
+          if (aggregate) throw new Error('compacted pin allocation is unmeasured');
+          if (opts.coversPinnedPath(path)) pinnedAllocation.add(path, stat, type === 'f');
+        }
+      }
       catch { malformed = true; }
       if (excluded.includes(path)) group.reason = 'protected policy root';
       else if (type === 'l') group.reason = 'symlink boundary';
@@ -752,6 +768,11 @@ export async function inspectRetentionTrees(root: string, opts: {
         else result.entries.push(entry);
       }
       if (error) { result.error = error; result.entries = []; }
+      else if (opts.coversPinnedPath) {
+        if (!Number.isSafeInteger(pinnedAllocation.bytes) || pinnedAllocation.bytes < 0) {
+          result.error = 'invalid pin allocation'; result.entries = [];
+        } else result.pinnedBytes = pinnedAllocation.bytes;
+      }
       result.timing = { elapsedMs: performance.now() - started, lastProgressAfterMs, lastChildPath,
         timeoutMs: sudo ? Math.max(1, opts.timeoutMs ?? (progressSupervised ? 15 * 60_000 : 60_000)) : opts.timeoutMs ?? null,
         progressTimeoutMs: progressSupervised || !sudo && (opts.timeoutMs === undefined || opts.progressTimeoutMs !== undefined)

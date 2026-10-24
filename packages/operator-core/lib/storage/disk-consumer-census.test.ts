@@ -24,6 +24,18 @@ vi.mock('node:http', async (importOriginal) => ({
 const isRoot = process.getuid?.() === 0;
 
 describe('streaming retention census evidence', () => {
+  it('refuses exact pin allocation from an expiry-compacted census', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-pin-compaction-'));
+    try {
+      const spawn = vi.fn();
+      const result = await inspectRetentionTrees(root, { retainAfterMs: Infinity,
+        coversPinnedPath: () => true, spawn });
+      expect(result.error).toMatch(/pin allocation.*uncompacted/);
+      expect(result.pinnedBytes).toBeUndefined();
+      expect(spawn).not.toHaveBeenCalled();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it.each(['capped', 'uncapped'])('compacts %s native file metadata without changing allocation, boundaries or build evidence', async (mode) => {
     const includeRecent = mode === 'capped';
     const root = mkdtempSync(join(tmpdir(), 'retention-compact-capped-'));

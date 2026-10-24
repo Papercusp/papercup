@@ -338,6 +338,53 @@ function managedHooks(owner: string, includeLifecycle = true) {
   };
 }
 
+describe('Codex managed child preserves its recorded role authority', () => {
+  const routes = ['default', 'auto', 'pin'] as const;
+  const cases = ['scoper', 'judge'].flatMap(role => routes.map(mode => ({ role, mode })));
+
+  function roleHome(role: string, owner: string) {
+    const profile = REAL_CONFIG.replace(
+      '[mcp_servers.papercusp-su]\ncommand = "npx"',
+      `[mcp_servers.papercusp]\nurl = "http://operator/api/mcp?role=${role}&client=${owner}&sig=fixture-signature"`,
+    );
+    writeFileSync(join(dir, 'config.toml'), profile);
+    writeFileSync(join(dir, 'papercusp-diagnostics.json'), JSON.stringify({ lockOwnerSid: owner }));
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify(managedHooks(owner)));
+    expect(codexHomeLaunchReadiness(dir, owner, role)).toBeNull();
+    return profile;
+  }
+
+  it.each(cases)('starts a valid $role child on the $mode account route', ({ role, mode }) => {
+    const owner = 'su-role-carry';
+    roleHome(role, owner);
+    const args = ['resume', 'native-fixture'];
+    const prepared = prepareCodexGatewayLaunch({
+      PAPERCUSP_AGENT: 'codex', PAPERCUSP_AGENT_ROLE: role, PAPERCUSP_SID: owner,
+      CODEX_HOME: dir, PAPERCUSP_ACCOUNT_ROUTING_MODE: mode,
+      ...(mode === 'pin' ? { PAPERCUSP_ACCOUNT_ID: 'fixture-account' } : {}),
+    }, args);
+    expect(prepared.slice(-args.length)).toEqual(args);
+    expect(codexHomeLaunchReadiness(dir, owner, role)).toBeNull();
+  });
+
+  it.each(cases)('refuses a $role child after an SU home repair on the $mode route', ({ role, mode }) => {
+    const owner = 'su-role-carry';
+    roleHome(role, owner);
+    // A legacy server repairs only MCP authority; the prompt, owner and hooks
+    // remain usable. Refusal must come from the role boundary itself.
+    const privileged = REAL_CONFIG.replace('command = "npx"',
+      `url = "http://operator/api/mcp?superuser=1&client=${owner}"`);
+    writeFileSync(join(dir, 'config.toml'), privileged);
+    expect(codexHomeLaunchReadiness(dir, owner, 'su')).toBeNull();
+    expect(() => prepareCodexGatewayLaunch({
+      PAPERCUSP_AGENT: 'codex', PAPERCUSP_AGENT_ROLE: role, PAPERCUSP_SID: owner,
+      CODEX_HOME: dir, PAPERCUSP_ACCOUNT_ROUTING_MODE: mode,
+      ...(mode === 'pin' ? { PAPERCUSP_ACCOUNT_ID: 'fixture-account' } : {}),
+    }, ['resume', 'native-fixture'])).toThrow(/restricted role MCP profile/);
+    expect(readFileSync(join(dir, 'config.toml'), 'utf8')).toBe(privileged);
+  });
+});
+
 describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usable home', () => {
   it('true for a real papercusp home (has the coordination MCP block)', () => {
     writeFileSync(join(dir, 'config.toml'), REAL_CONFIG);

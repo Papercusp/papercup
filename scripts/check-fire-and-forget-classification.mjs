@@ -27,7 +27,7 @@ const transparent = (n) => ts.isParenthesizedExpression(n) || ts.isAsExpression(
 export function inScope(path) {
   return /\.[cm]?[jt]sx?$/.test(path)
     && !/\.(?:d|test|spec|stories)\.[cm]?[jt]sx?$/.test(path)
-    && !/(?:^|\/)(?:node_modules|\.git|\.papercusp|dist[^/]*|build|coverage|vendor|fixtures|__fixtures__|__tests__|test|tests|e2e|docs|env-sidecars|storybook-static|\.astro|\.next|\.output|\.svelte-kit|out|target)(?:\/|$)/.test(path)
+    && !/(?:^|\/)(?:node_modules|\.git|\.papercusp|dist[^/]*|build|coverage|vendor|fixtures|__fixtures__|__tests__|test|tests|vitest-shims|e2e|docs|env-sidecars|storybook-static|\.astro|\.next|\.output|\.svelte-kit|out|target)(?:\/|$)/.test(path)
     && !path.startsWith('apps/operator-docs/');
 }
 
@@ -319,7 +319,10 @@ export function censusSources(sources) {
     if (!roots.length || (!c.discarded && !detached.has(c.owner?.id))) continue;
     const key = `${c.path}#${c.context}:${digest(c.expression).slice(0, 20)}`;
     const ordinal = (occurrences.get(key) ?? 0) + 1; occurrences.set(key, ordinal);
-    sites.push({ id: `${key}:${ordinal}`, path: c.path, line: c.line, context: c.context, expression: c.expression, roots, mode: c.discarded ? 'discarded' : 'detached-wrapper', ...(c.declaration ? { declaration: c.declaration } : {}) });
+    const id = `${key}:${ordinal}`;
+    // An explicit ID prevents nearby or nested calls from inheriting this judgment.
+    const declaration = c.declaration && (!c.declaration.id || c.declaration.id === id) ? c.declaration : undefined;
+    sites.push({ id, path: c.path, line: c.line, context: c.context, expression: c.expression, roots, mode: c.discarded ? 'discarded' : 'detached-wrapper', ...(declaration ? { declaration } : {}) });
   }
   const resolutionFiles = Object.entries(sources).filter(([p]) => /(?:^|\/)(?:package|tsconfig[^/]*)\.json$/.test(p));
   return { schemaVersion: 1, files: [...files, ...resolutionFiles].map(([path, source]) => ({ path, sha256: digest(source) })).sort((a,b) => a.path.localeCompare(b.path)), sites: sites.sort((a, b) => a.id.localeCompare(b.id)), gaps };

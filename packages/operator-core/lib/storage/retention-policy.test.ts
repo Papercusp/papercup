@@ -62,6 +62,18 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
     expect(cls.maxBytes).toBe(AGENT_ROOT_MAX_BYTES);
   });
 
+  it('declares the finite per-physical-store cap of the existing native container owner', () => {
+    const cls = RETENTION_POLICY.find(cls => cls.id === 'container-storage')!;
+    const root = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const owner = readFileSync(join(root, 'bin/reclaim-docker-disk.sh'), 'utf8');
+    const defaultBytes = /CONTAINER_STORE_MAX_BYTES:-([0-9]+)/.exec(owner);
+    expect(cls.keep.kind).toBe('native');
+    expect(cls.maxBytes).toBe(AGENT_ROOT_MAX_BYTES);
+    expect(Number(defaultBytes?.[1])).toBe(cls.maxBytes);
+    expect(del('/var/lib/docker/overlay2/manager-owned')).toBeNull();
+    expect(del('/var/lib/containers/storage/overlay')).toBeNull();
+  });
+
   it('keeps historical and data-side release evidence under the same native retention owner', () => {
     const cls = RETENTION_POLICY.find(cls => cls.id === 'vh-release-runs')!;
     expect(cls.keep).toEqual({ kind: 'newest', keep: 30 });

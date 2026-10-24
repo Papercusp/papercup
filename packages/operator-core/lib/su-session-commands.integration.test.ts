@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { Hono } from 'hono';
-import { SU_SESSION_SCHEMA, type SuSessionDescriptor } from '@papercusp/chat-protocol';
+import { SU_SESSION_SCHEMA, type SuSessionCommand, type SuSessionDescriptor } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../test/_org-test-db';
 
 const fixture = vi.hoisted(() => ({ sql: null as unknown }));
@@ -18,6 +18,7 @@ vi.mock('./su-session-host', async (original) => (process.env.SU_SESSION_HOST_SU
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const { loadSuOwnerTurnReceipts, pgSuSessionCommandStore } = await import('./su-session-commands');
 const { SuSessionHost, _resetSuSessionHostsForTest, registerSuSessionHost } = await import('./su-session-host');
+const { persistSuSessionDescriptor, readDurableSuSession } = await import('./su-session-persistence');
 const { suSessionRoutes } = await import('./endpoint-route/routes/agent-chats/su-session');
 const { registerRoute } = await import('./endpoint-route/define-route');
 const { runWithWorkspace } = await import('./workspace-als');
@@ -82,6 +83,80 @@ async function storedTurns() {
 }
 
 describe('SU command acceptance through real PostgreSQL', () => {
+  it('SU-EXEC R-2 acceptance contract: round-trips four provider/execution combinations with typed commands and durable receipts', async () => {
+    const legacy = descriptor();
+    expect(await persistSuSessionDescriptor(advSessionId, legacy, workspaceId)).toBe(true);
+    const restoredLegacy = await readDurableSuSession({ advSessionId, workspaceId });
+    expect(restoredLegacy?.descriptor).toEqual(legacy);
+    expect(restoredLegacy?.descriptor?.executionKind).toBeUndefined();
+    const legacyExecute = vi.fn(async () => ({ status: 'completed' as const }));
+    const legacyHost = new SuSessionHost({ descriptor: restoredLegacy!.descriptor!, executeCommand: legacyExecute });
+    const unsupported = await legacyHost.acceptCommand({ ...ownerTurn('legacy-queue'), type: 'queue' });
+    expect(await unsupported.terminal).toMatchObject({ refusal: { code: 'unsupported' } });
+    expect(legacyExecute).not.toHaveBeenCalled();
+    legacyHost.dispose();
+    for (const backend of ['claude', 'codex'] as const) {
+      for (const executionKind of ['pty', 'programmatic'] as const) {
+        const snapshot = { ...descriptor(), executionKind,
+          identity: { ...descriptor().identity, backend },
+          backendExtension: backend === 'claude' ? descriptor().backendExtension : { backend, codexHome: null },
+          capabilities: { ...descriptor().capabilities, version: 2,
+            commands: { ...descriptor().capabilities.commands, queue: { state: 'supported', implementation: 'host' },
+              steer: { state: 'supported', implementation: 'host' }, handoff: { state: 'supported', implementation: 'host' } },
+            input: { parts: ['text', 'image', 'file'], origins: ['owner', 'coordination'] } },
+        } as SuSessionDescriptor;
+        await sql`UPDATE harness_shared.adv_sessions SET agent = ${backend} WHERE id = ${advSessionId}`;
+        expect(await persistSuSessionDescriptor(advSessionId, snapshot, workspaceId)).toBe(true);
+        const saved = await readDurableSuSession({ advSessionId, workspaceId });
+        expect(saved?.descriptor).toEqual(snapshot);
+        const execute = vi.fn(async (cmd: SuSessionCommand) => {
+          const turns = await storedTurns();
+          expect(turns.find(turn => (turn.su_command.command as SuSessionCommand).commandId === cmd.commandId)?.su_command.command).toEqual(cmd);
+          return { status: 'completed' as const };
+        });
+        const host = new SuSessionHost({ descriptor: saved!.descriptor!, executeCommand: execute });
+        const prefix = `${backend}-${executionKind}`;
+        const base = { ...ownerTurn(prefix), target: snapshot.identity, expectedRuntimeGeneration: 1 };
+        const inputs = [
+          { ...base, type: 'queue', commandId: `${prefix}-queue`, turnId: `${prefix}-queued`, origin: { kind: 'coordination', actorId: 'su-peer', sourceId: 'coord-1' },
+            input: [{ type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' },
+              { type: 'file', uri: 'attachment:1', mediaType: 'text/plain', name: 'notes.txt' }] },
+          { ...base, type: 'steer', commandId: `${prefix}-steer`, turnId: `${prefix}-steered`, activeTurnId: 'active-1' },
+          { schema: SU_SESSION_SCHEMA, protocolVersion: 1, type: 'handoff', commandId: `${prefix}-handoff`, issuedAt: base.issuedAt,
+            target: snapshot.identity, expectedRuntimeGeneration: 1, provider: backend, executionKind },
+        ];
+        for (const cmd of inputs) expect(await (await host.acceptCommand(cmd)).terminal).toMatchObject({ status: 'completed' });
+        host.dispose();
+        const replacement = new SuSessionHost({ descriptor: snapshot, executeCommand: execute });
+        for (const cmd of inputs) {
+          const replay = await replacement.acceptCommand(cmd);
+          expect(replay.replayed).toBe(true);
+          expect(await replay.terminal).toMatchObject({ status: 'completed' });
+        }
+        expect(execute).toHaveBeenCalledTimes(inputs.length);
+        // Coordination input was preserved and cannot be replayed as an owner directive.
+        const ownerReceipts = await loadSuOwnerTurnReceipts(snapshot.identity);
+        expect(ownerReceipts.some(turn => turn.turnId === `${prefix}-queued`)).toBe(false);
+        expect(ownerReceipts.some(turn => turn.turnId === `${prefix}-steered`)).toBe(true);
+        const turns = await storedTurns();
+        expect(turns.find(turn => (turn.su_command.command as SuSessionCommand).commandId === `${prefix}-queue`))
+          .toMatchObject({ origin: { kind: 'coordination', sourceId: 'coord-1' }, su_command: { command: inputs[0] } });
+        replacement.dispose();
+      }
+    }
+  });
+
+  it('persists legacy control receipts and refuses to re-execute them after host replacement', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed' as const }));
+    const host = new SuSessionHost({ descriptor: descriptor(), executeCommand: execute });
+    const control = { ...ownerTurn('control'), type: 'interrupt', reason: 'owner requested stop' };
+    expect(await (await host.acceptCommand(control)).terminal).toMatchObject({ status: 'completed' });
+    host.dispose();
+    const replacement = new SuSessionHost({ descriptor: descriptor(), executeCommand: execute });
+    expect((await replacement.acceptCommand(control)).replayed).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it('commits the exact owner turn before the HTTP acknowledgement and replays after host replacement', async () => {
     const execute = vi.fn(async () => {
       expect((await storedTurns())[0].content).toBe(ownerTurn().content);
