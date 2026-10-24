@@ -7,9 +7,11 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getBuildInfo } from '../lib/build-info';
 import { readVerifierSourceReceiptSync } from '../lib/verifier-source';
 import { absCgroupDir, walkCgroupTree } from '../lib/task-manager/cgroup-read';
+import { linuxProcessIdentityFromStat, linuxProcStateFromStat } from '../lib/process-identity';
 import { killTask } from '../lib/task-manager/control';
+import { SCOPE_HANDOFF_GRACE_MS, SCOPE_HANDOFF_RECHECK_MS } from '../lib/task-manager/managed-spawn';
 import { getTask, listTasks } from '../lib/task-manager/store';
-import { isTerminalState } from '../lib/task-manager/types';
+import { isTerminalState, type TaskRow } from '../lib/task-manager/types';
 import { ensureGradingAuditRuntime, retireUnusedGradingAuditRuntimes, type GradingAuditRuntimeDeps,
   type GradingAuditRuntimeLocator } from '../lib/release/grading-audit-runtime';
 import { readGradingAuditSourcePin } from '../lib/release/grading-audit-source-pin';
@@ -50,6 +52,46 @@ async function emptyScope(taskId: string) {
   return walkCgroupTree(absCgroupDir(task.cgroupPath)).length === 0;
 }
 
+function runtimeOwnership(task: TaskRow) {
+  const scopePath = task.cgroupPath ? absCgroupDir(task.cgroupPath) : null;
+  const scopeGroups = scopePath ? walkCgroupTree(scopePath) : [];
+  let launcherIdentity: string | null = null;
+  let launcherState: string | null = null;
+  let launcherObservationError: string | null = null;
+  try {
+    if (task.pid) {
+      const stat = readFileSync(`/proc/${task.pid}/stat`, 'utf8');
+      launcherIdentity = linuxProcessIdentityFromStat(readFileSync('/proc/sys/kernel/random/boot_id', 'utf8'), stat);
+      launcherState = linuxProcStateFromStat(stat);
+    }
+  } catch (error) { launcherObservationError = String(error); }
+  const launcherAlive = Boolean(task.processIdentity && launcherIdentity === task.processIdentity
+    && launcherState && !['Z', 'X'].includes(launcherState));
+  return { scopePath, scopeGroups, launcherPid: task.pid, recordedIdentity: task.processIdentity,
+    launcherIdentity, launcherState, launcherAlive, launcherObservationError };
+}
+
+async function assertRetainedRuntime(taskId: string, phase: string) {
+  // managedSpawn stamps its systemd-run client before the payload joins the
+  // scope. An empty first cgroup read cannot establish process retirement.
+  // Reuse the launcher's existing bounded handoff policy if both witnesses
+  // disappear between reads; HTTP health must still prove readiness later.
+  const deadline = Date.now() + SCOPE_HANDOFF_GRACE_MS;
+  for (;;) {
+    const task = await getTask(taskId);
+    assert.ok(task?.confined && task.cgroupPath, 'real confined task ledger identity required');
+    const ownership = runtimeOwnership(task);
+    observations.push({ phase, taskId, state: task.state, ...ownership, observedAt: new Date().toISOString() });
+    retainRuntimeDiagnostics();
+    assert.ok(!isTerminalState(task.state), `retained runtime has terminal ledger state ${task.state}`);
+    if (ownership.scopeGroups.length || ownership.launcherAlive) return;
+    if (Date.now() >= deadline) {
+      assert.fail('Runtime ownership could not be verified: no populated scope or matching live launcher');
+    }
+    await new Promise(done => setTimeout(done, SCOPE_HANDOFF_RECHECK_MS));
+  }
+}
+
 async function acquireReady(input: Parameters<typeof ensureGradingAuditRuntime>[0],
   deps: GradingAuditRuntimeDeps, expectedTaskId?: string) {
   // Exercise the canonical repair contract: unknown readiness preserves one
@@ -72,7 +114,7 @@ async function acquireReady(input: Parameters<typeof ensureGradingAuditRuntime>[
       taskIds.add(task.taskId);
       if (enrolled) assert.equal(task.taskId, enrolled, 'readiness retry restarted the endpoint');
       enrolled = task.taskId;
-      assert.equal(await emptyScope(task.taskId), false);
+      await assertRetainedRuntime(task.taskId, 'unknown-readiness-ownership');
       const locator = task.detail.gradingAuditRuntime as GradingAuditRuntimeLocator;
       assert.ok(readGradingAuditSourcePin(locator.sourceRoot, locator.ownerRef));
       observations.push({ phase: 'unknown-readiness', taskId: task.taskId, baseUrl: locator.baseUrl,
@@ -125,7 +167,7 @@ async function main() {
   const warming = await listTasks({ workspaceId: workspace, labelPrefix: 'grading-audit-runtime:', limit: 200 });
   assert.equal(warming.length, 1);
   taskIds.add(warming[0].taskId);
-  assert.equal(await emptyScope(warming[0].taskId), false, 'readiness deadline retired the warming endpoint');
+  await assertRetainedRuntime(warming[0].taskId, 'initial-unknown-ownership');
   const ready = await acquireReady({ ...input, allowSeed: false }, deps, warming[0].taskId);
   const [first, reused] = await Promise.all([acquireReady(input, deps, ready.taskId),
     acquireReady({ ...input, issueId: 'private-audit-b' }, deps, ready.taskId)]);
@@ -203,6 +245,7 @@ catch (error) {
         }).catch(error => ({ error: String(error) }));
       observations.push({ phase: 'before-teardown', taskId, state: task.state, baseUrl: locator.baseUrl,
         issueIds: locator.issueIds, health, sourcePinPresent: Boolean(readGradingAuditSourcePin(locator.sourceRoot, locator.ownerRef)),
+        ownership: runtimeOwnership(task),
         observedAt: new Date().toISOString() });
       retainRuntimeDiagnostics();
     }
