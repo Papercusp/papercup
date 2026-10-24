@@ -1185,7 +1185,7 @@ describe('dispatchPendingGradingAudits', () => {
       };
       d.listScorecards.mockResolvedValue([source]);
       const task = { taskId: 'retained-auditor', class: 'agent-session', state,
-        detail: { label: `grading-audit:${issueId}` } } as TaskRow;
+        detail: { label: `grading-audit:${issueId}` } } as unknown as TaskRow;
       d.listTasks.mockResolvedValue([task]);
       const readRetainedTaskKernelVerdicts = vi.fn(async () => new Map<string, string>());
       const recertifyStranded = vi.fn(async () => certifyReply(issueId, 'EI-never'));
@@ -1208,7 +1208,7 @@ describe('dispatchPendingGradingAudits', () => {
       const issueId = 'EI-stranded-ended-auditor';
       d.listScorecards.mockResolvedValue([strandedCard(issueId)]);
       const task = { taskId: 'ended-auditor', class: 'agent-session', state: 'running',
-        detail: { label: `grading-audit:${issueId}:recovery` } } as TaskRow;
+        detail: { label: `grading-audit:${issueId}:recovery` } } as unknown as TaskRow;
       d.listTasks.mockResolvedValue([task]);
       const readRetainedTaskKernelVerdicts = vi.fn(async () => new Map([[task.taskId, 'scope collected']]));
       const recertifyStranded = vi.fn(async () => certifyReply(issueId, 'EI-new-card'));
@@ -1227,7 +1227,7 @@ describe('dispatchPendingGradingAudits', () => {
       const issueId = 'EI-stranded-label';
       d.listScorecards.mockResolvedValue([strandedCard(issueId)]);
       d.listTasks.mockResolvedValue([{ taskId: 'sibling-auditor', class: 'agent-session', state: 'running',
-        detail: { label: `grading-audit:${issueId}-other` } } as TaskRow]);
+        detail: { label: `grading-audit:${issueId}-other` } } as unknown as TaskRow]);
       const readRetainedTaskKernelVerdicts = vi.fn(async () => new Map<string, string>());
       const recertifyStranded = vi.fn(async () => certifyReply(issueId, 'EI-new-card'));
 
