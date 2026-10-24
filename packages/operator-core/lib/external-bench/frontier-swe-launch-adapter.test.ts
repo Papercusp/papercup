@@ -74,6 +74,30 @@ function fixture() {
 }
 
 describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
+  it('builds a stock Claude target with its isolated home and gateway, without hook or MCP access', () => {
+    const f = fixture();
+    delete f.input.handle.inContainerCodex;
+    f.input.handle.inContainerClaude = { binPath: '/opt/papercusp/claude', version: '2.1.293', sha256: 'f'.repeat(64),
+      roots: [{ hostRoot: '/tmp/shared-claude', perTaskDir: '/tmp/task-claude' }], hostOwner: { uid: 1000, gid: 1000 } };
+    const target = frontierSweDockerTarget(f.input.handle, f.bridge, f.egress, 'http://127.0.0.1:32002', f.config.mcpOrigin, true, 'claude');
+    expect(target).toMatchObject({ binPath: '/opt/papercusp/claude', sessionRelocation: {
+      sessionEnv: 'CLAUDE_CONFIG_DIR', roots: f.input.handle.inContainerClaude.roots } });
+    expect(target.hookBridge).toBeUndefined();
+    expect(target.originRewrites).toHaveLength(3);
+    expect(target.originRewrites?.every(r => r.to === f.egress.originFor('gw'))).toBe(true);
+  });
+  it.each(['treatment', 'mixed', 'missing', 'unfrozen', 'wrong-bin', 'multiple-roots'])('refuses a %s Claude target', change => {
+    const f = fixture();
+    delete f.input.handle.inContainerCodex;
+    f.input.handle.inContainerClaude = { binPath: '/opt/papercusp/claude', version: '2.1.293', sha256: 'f'.repeat(64),
+      roots: [{ hostRoot: '/tmp/shared-claude', perTaskDir: '/tmp/task-claude' }], hostOwner: { uid: 1000, gid: 1000 } };
+    if (change === 'mixed') f.input.handle.inContainerCodex = fixture().input.handle.inContainerCodex;
+    if (change === 'missing') delete f.input.handle.inContainerClaude;
+    if (change === 'unfrozen') f.input.handle.inContainerClaude!.sha256 = 'unknown';
+    if (change === 'wrong-bin') f.input.handle.inContainerClaude!.binPath = '/usr/bin/claude';
+    if (change === 'multiple-roots') f.input.handle.inContainerClaude!.roots.push({ hostRoot: '/tmp/other', perTaskDir: '/tmp/other-task' });
+    expect(() => frontierSweDockerTarget(f.input.handle, f.bridge, f.egress, 'http://127.0.0.1:32002', f.config.mcpOrigin, change !== 'treatment', 'claude')).toThrow();
+  });
   it.each(['localhost', '[::1]'])('runs the generated wrapper when the private MCP config spells loopback as %s', hostname => {
     const f = fixture(), root = mkdtempSync(join(tmpdir(), 'fswe-origin-'));
     try {
@@ -400,7 +424,7 @@ describe('FrontierSWE typed Proximus host lifecycle', () => {
   it('uses the plain shared seam without starting native hooks, relays, drivers or home mounts', async () => {
     const f = hostFixture();
     Object.assign(f.config, { seam: { version: 'frozen-grader', extraRunArgs: ['--cpus=2'],
-      inContainerCodex: true, egress: f.egress } });
+      inContainerCodex: true, inContainerClaude: { version: '2.1.293', sha256: 'f'.repeat(64) }, egress: f.egress } });
     const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
     expect(vi.mocked(makeFrontierSweCloneGradeSeam).mock.calls.at(-1)?.[0]).toEqual({
       version: 'frozen-grader', extraRunArgs: ['--cpus=2'],
@@ -559,10 +583,11 @@ describe('FrontierSWE typed Proximus host lifecycle', () => {
     await adapter.stop();
   });
 
-  it.each(['native mounts', 'native network', 'treatment', 'judge', 'candidates', 'foreign task'])
+  it.each(['native mounts', 'Claude mounts', 'native network', 'treatment', 'judge', 'candidates', 'foreign task'])
   ('refuses %s before preparing any host assignment', async change => {
     const f = hostFixture();
     if (change === 'native mounts') Object.assign(f.input.handle, { inContainerCodex: fixture().input.handle.inContainerCodex });
+    if (change === 'Claude mounts') Object.assign(f.input.handle, { inContainerClaude: { version: '2.1.293' } });
     if (change === 'native network') Object.assign(f.input.handle, { taskNetwork: 'native-task-network' });
     if (change === 'treatment') f.input.arm = 'papercusp';
     if (change === 'judge') f.input.role = 'judge';

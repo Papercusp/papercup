@@ -13,6 +13,7 @@ import { basename, join } from 'node:path';
 
 import {
   CONTAINER_CODEX_BIN_PATH,
+  resolveContainerClaudeBinary,
   materializeDockerExecWrapper,
   renderDockerExecWrapper,
   validateDockerExecTarget,
@@ -44,6 +45,32 @@ beforeAll(() => {
   );
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+describe('native Claude container binary', () => {
+  function nativeBinary(dir: string, name = 'claude') {
+    const header = Buffer.alloc(20);
+    header.write('7f454c460201', 0, 'hex'); header.writeUInt16LE(62, 18);
+    const binary = join(dir, name);
+    writeFileSync(binary, header, { mode: 0o755 });
+    return binary;
+  }
+  it('pins the versioned ELF target and ignores a host docker-wrapper override', () => {
+    const dir = mkdtempSync(join(root, 'native-'));
+    const binary = nativeBinary(dir, '2.1.293');
+    symlinkSync(binary, join(dir, 'claude'));
+    expect(resolveContainerClaudeBinary({ arch: 'x64', env: { PATH: dir, PAPERCUSP_BACKEND_BIN_CLAUDE: fakeDocker } })).toBe(binary);
+  });
+  it('refuses npm scripts, foreign architectures, directories, nonexecutables and ambiguous mounts', () => {
+    const dir = mkdtempSync(join(root, 'native-refuse-'));
+    const script = join(dir, 'script'); writeFileSync(script, '#!/usr/bin/env node\n', { mode: 0o755 });
+    const data = join(dir, 'data'); writeFileSync(data, 'no', { mode: 0o600 });
+    const binary = nativeBinary(dir);
+    const comma = nativeBinary(dir, 'with,comma');
+    for (const candidate of [script, data, dir, comma]) expect(() => resolveContainerClaudeBinary({ binary: candidate, arch: 'x64' })).toThrow();
+    expect(() => resolveContainerClaudeBinary({ binary, arch: 'arm64' })).toThrow(/architecture/);
+    expect(() => resolveContainerClaudeBinary({ binary, platform: 'darwin' })).toThrow(/Linux/);
+  });
+});
 
 function runWrapper(args: string[], env: Record<string, string>) {
   const { wrapperPath } = materializeDockerExecWrapper(target, {

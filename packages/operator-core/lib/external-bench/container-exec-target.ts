@@ -26,7 +26,7 @@
  * Killing the docker client does not kill the process inside the container; the bench
  * seam's teardown (`docker rm -f`) owns that.
  */
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import type { NativeContainerExecBinding } from '@papercusp/orchestrator/fleet-srt-spawn';
 import { tmpdir } from 'node:os';
@@ -110,6 +110,33 @@ export interface SessionRelocation {
 
 /** Where the bench seam mounts the static musl Codex CLI inside a task container (D-026 step 1). */
 export const CONTAINER_CODEX_BIN_PATH = '/opt/papercusp/codex';
+export const CONTAINER_CLAUDE_BIN_PATH = '/opt/papercusp/claude';
+
+/** Resolve the versioned native executable, never a host launcher or npm script.
+ * Unlike Codex's musl build, this ELF still needs a compatibility probe in the task image. */
+export function resolveContainerClaudeBinary(
+  opts: { binary?: string; env?: NodeJS.ProcessEnv; arch?: string; platform?: string } = {},
+): string {
+  if ((opts.platform ?? process.platform) !== 'linux') throw new Error('container claude: a native Linux executable is required');
+  const env = { ...(opts.env ?? process.env) };
+  delete env[backendBinOverrideEnvKey('claude')];
+  const candidate = opts.binary ?? resolveBackendLaunch('claude', { env })?.bin;
+  if (!candidate || !isAbsolute(candidate)) throw new Error('container claude: no absolute native executable found');
+  const binary = realpathSync(candidate);
+  if (binary.includes(',')) throw new Error('container claude: refusing an ambiguous --mount path');
+  const st = statSync(binary);
+  if (!st.isFile() || (st.mode & 0o111) === 0) throw new Error('container claude: binary must be an executable regular file');
+  const header = Buffer.alloc(20);
+  const fd = openSync(binary, 'r');
+  let bytes: number;
+  try { bytes = readSync(fd, header, 0, header.length, 0); } finally { closeSync(fd); }
+  const machine = ({ x64: 62, arm64: 183 } as Record<string, number>)[opts.arch ?? process.arch];
+  if (bytes !== header.length || header.subarray(0, 6).toString('hex') !== '7f454c460201' ||
+      !machine || header.readUInt16LE(18) !== machine) {
+    throw new Error('container claude: expected a native 64-bit Linux ELF for the host architecture; scripts and host wrappers are unsupported');
+  }
+  return binary;
+}
 
 const MUSL_TARGETS: Record<string, { pkg: string; triple: string }> = {
   x64: { pkg: 'codex-linux-x64', triple: 'x86_64-unknown-linux-musl' },

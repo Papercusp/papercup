@@ -8,7 +8,7 @@ import { createCurrentSuBenchHarness, CURRENT_STOCK_CODEX_BLUEPRINT, requireCurr
 import { createCurrentStockBenchHarness } from './native-harness-runner';
 import { startBenchEgress, sweepBenchEgress, type BenchEgress, type BenchEgressConfig } from './bench-egress';
 import { startCodexHookBridge, type CodexHookBridge } from './codex-hook-bridge';
-import { validateDockerExecTarget, type DockerExecTarget } from './container-exec-target';
+import { CONTAINER_CLAUDE_BIN_PATH, validateDockerExecTarget, type DockerExecTarget } from './container-exec-target';
 import { makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle, type FrontierSweSeamConfig } from './frontier-swe-seam';
 import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
 import { generationStatusForStopReason, type GenerationBudget, type TaskCheckout } from './types';
@@ -44,7 +44,7 @@ interface FrontierSweLaunchIdentity {
   protocolRunId?: string;
   signal?: AbortSignal;
   context: PapercuspUnifiedToolContext;
-  seam?: Omit<FrontierSweSeamConfig, 'egress' | 'inContainerCodex'>;
+  seam?: Omit<FrontierSweSeamConfig, 'egress' | 'inContainerCodex' | 'inContainerClaude'>;
 }
 
 export interface FrontierSweNativeLaunchAdapterConfig extends FrontierSweLaunchIdentity {
@@ -117,12 +117,20 @@ function loopbackOrigins(value: string): string[] {
 
 /** Exported so fail-closed wrapper wiring is tested independently of model spend. */
 export function frontierSweDockerTarget(handle: FrontierSweEnvHandle, bridge: CodexHookBridge,
-  egress: BenchEgress, gatewayOrigin: string, mcpOrigin: string, stockNative = false): DockerExecTarget {
-  const mounts = handle.inContainerCodex;
-  if (!mounts || !handle.taskNetwork) throw new Error('FrontierSWE native assignment requires its Codex mounts and task network.');
+  egress: BenchEgress, gatewayOrigin: string, mcpOrigin: string, stockNative = false,
+  agent: 'codex' | 'claude' = 'codex'): DockerExecTarget {
+  if (handle.inContainerClaude && handle.inContainerCodex) throw new Error('FrontierSWE native assignment refuses mixed CLI mounts.');
+  if (agent === 'claude' && (!stockNative || !handle.inContainerClaude ||
+      handle.inContainerClaude.binPath !== CONTAINER_CLAUDE_BIN_PATH || handle.inContainerClaude.roots.length !== 1 ||
+      !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(handle.inContainerClaude.version) ||
+      !/^[a-f0-9]{64}$/.test(handle.inContainerClaude.sha256))) {
+    throw new Error('FrontierSWE Claude target requires frozen stock-native mounts.');
+  }
+  const mounts = agent === 'claude' ? handle.inContainerClaude : handle.inContainerCodex;
+  if (!mounts || !handle.taskNetwork) throw new Error('FrontierSWE native assignment requires its CLI mounts and task network.');
   const target: DockerExecTarget = {
     kind: 'docker-exec', containerId: handle.containerId, workdir: '/app', binPath: mounts.binPath,
-    sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: mounts.roots },
+    sessionRelocation: { sessionEnv: agent === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME', roots: mounts.roots },
     ...(stockNative ? {} : { hookBridge: { url: egress.originFor('hooks'), recordDir: bridge.recordDir } }),
     originRewrites: [
       ...loopbackOrigins(gatewayOrigin).map(from => ({ from, to: egress.originFor('gw') })),
@@ -330,7 +338,7 @@ async function startFrontierSweNativeAdapter(config: FrontierSweNativeLaunchAdap
 function startFrontierSweProximusAdapter(config: FrontierSweProximusLaunchAdapterConfig) {
   // Preserve the maintained grader/resource overrides, stripping native-only
   // options even when a JavaScript caller supplies extra keys.
-  const { egress: _egress, inContainerCodex: _native, ...plainSeam } = (config.seam ?? {}) as FrontierSweSeamConfig;
+  const { egress: _egress, inContainerCodex: _native, inContainerClaude: _claude, ...plainSeam } = (config.seam ?? {}) as FrontierSweSeamConfig;
   const seam = makeFrontierSweCloneGradeSeam(plainSeam);
   let closed = false, inFlight: Promise<AgentRunOutput> | undefined;
   let stopping: Promise<{ errors: string[] }> | undefined;
@@ -341,7 +349,7 @@ function startFrontierSweProximusAdapter(config: FrontierSweProximusLaunchAdapte
     const run = async (): Promise<AgentRunOutput> => {
       if (input.arm !== 'baseline' || input.task.benchmark !== 'frontier-swe' ||
           !['worker', 'solver'].includes(input.role) || input.candidates?.length ||
-          input.handle.instanceId !== input.task.instanceId || input.handle.inContainerCodex || input.handle.taskNetwork)
+          input.handle.instanceId !== input.task.instanceId || input.handle.inContainerCodex || input.handle.inContainerClaude || input.handle.taskNetwork)
         throw new Error('FrontierSWE Proximus requires a single stock solver and a plain task handle.');
       // Preparation receives its own task/handle snapshot; a caller mutation
       // across the await cannot redirect the host execution or its submission.
