@@ -57,6 +57,7 @@
 #                             [--dependency-generation-root <dir>]
 #                             [--integration <dir>] [--release <dir>]
 #                             [--prepare-existing]
+#                             [--dependencies-only]
 #                             [--source-only]
 #                             [--source-root-mode worktree|clone]
 #                             [--spa-only]
@@ -71,10 +72,14 @@
 # default `allow-live-tree`, where a drifted submodule beats no serving operator.
 # Either way the run emits a `CANDIDATE_SOURCE_INTEGRITY ... live_tree=N` line.
 #
-# `--prepare-existing` is a dependency-only recovery mode for a clone that has
+# `--prepare-existing` is a recovery mode for a clone that has
 # already been pinned and had its submodules checked out by an earlier step. It
 # validates the existing HEAD, then skips the destructive superproject checkout,
-# clean, and submodule replacement stages while still running dependency setup.
+# clean, and submodule replacement stages while still preparing the runtime.
+# Add `--dependencies-only` to materialize dependencies and check native addons,
+# then stop before workspace builds, public assets, rootfs and SPA provisioning.
+# This preserves an exact source/dependency input for source-based verification;
+# it does not remove any outputs already present in the existing checkout.
 #
 # Env overrides: PAPERCUSP_INTEGRATION_ROOT, PAPERCUSP_RELEASE_ROOT.
 set -euo pipefail
@@ -150,6 +155,7 @@ trap release_dependency_generation_lease_on_exit EXIT
 BUILD_SPA="0"
 SPA_ONLY="0"
 PREPARE_EXISTING="0"
+DEPENDENCIES_ONLY="0"
 SOURCE_ONLY="0"
 SOURCE_ROOT_MODE="worktree"
 REF_WAS_SET="0"
@@ -170,6 +176,7 @@ while [ $# -gt 0 ]; do
     --build-spa) BUILD_SPA="1"; shift ;;
     --spa-only) SPA_ONLY="1"; PREPARE_EXISTING="1"; BUILD_SPA="1"; shift ;;
     --prepare-existing) PREPARE_EXISTING="1"; shift ;;
+    --dependencies-only) DEPENDENCIES_ONLY="1"; shift ;;
     --source-only) SOURCE_ONLY="1"; shift ;;
     --source-root-mode) SOURCE_ROOT_MODE="$2"; shift 2 ;;
     *) echo "[setup-release] unknown arg: $1" >&2; exit 2 ;;
@@ -207,6 +214,11 @@ if [ -n "$NODE_MODULES_GENERATION_TOKEN" ] && [ -z "$NODE_MODULES_GENERATION_ID"
 fi
 if [ "$SOURCE_ONLY" = "1" ] && [ "$PREPARE_EXISTING" = "1" ]; then
   echo "[setup-release] --source-only and --prepare-existing are mutually exclusive" >&2
+  exit 2
+fi
+if [ "$DEPENDENCIES_ONLY" = "1" ] \
+  && { [ "$PREPARE_EXISTING" != "1" ] || [ "$BUILD_SPA" = "1" ]; }; then
+  echo "[setup-release] --dependencies-only requires --prepare-existing and cannot build the SPA" >&2
   exit 2
 fi
 
@@ -1875,7 +1887,9 @@ build_pinned_workspace_runtime_outputs() {
     fi
   done
 }
-build_pinned_workspace_runtime_outputs
+if [ "${DEPENDENCIES_ONLY:-0}" != "1" ]; then
+  build_pinned_workspace_runtime_outputs
+fi
 
 # 3d. Native-addon ABI guard (infra-fail-fast-build-integrity-2026-06-19 P-003) -
 # The copied node_modules (step 3) carry whatever Node ABI the
@@ -1939,6 +1953,14 @@ rebuild_stale_native_addons() {
   return $_result
 }
 rebuild_stale_native_addons
+
+# Source-based verification admits installed dependencies but rejects unrelated
+# ignored execution inputs. Keep all dependency/native checks above this boundary;
+# a deploy's generated runtime files are deliberately prepared only below it.
+if [ "$DEPENDENCIES_ONLY" = "1" ]; then
+  log "SETUP_RELEASE_DEPENDENCIES_ONLY ref=$REF sha=$TARGET_SHA status=ready"
+  exit 0
+fi
 
 # 3b. Gitignored RUNTIME ASSETS under apps/operator/public --------------------
 # EI-19373176486666620. Step 1's `clean -fdqx -e node_modules` is deliberately
