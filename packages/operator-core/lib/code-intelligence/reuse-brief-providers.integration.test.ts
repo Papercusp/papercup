@@ -149,6 +149,25 @@ describe('P010 optional plan-authoring delivery', () => {
     } finally { warn.mockRestore(); }
   });
 
+  it.each(['text', 'anchor'] as const)('keeps explicit %s paths scoped when prose matches unrelated symbols', async kind => {
+    const fixture = deliveryFixture(), root = await mkdtemp(join(tmpdir(), 'authoring-explicit-'));
+    const snapshot = { ...fixture.snapshot, symbols: new Map([['copy', Array.from({ length: 20 }, (_, i) => ({
+      id: `copy-${i}`, name: 'copy', path: `unrelated-${i}.ts`, line: 1, column: 1,
+      sha256: 'a'.repeat(64), signature: 'copy()', aliases: [], callers: [],
+    }))]]) };
+    try {
+      for (const [path, source] of Object.entries(fixture.sources)) await writeFile(join(root, path), source);
+      const result = await authoringReuse(ctx(`explicit-${kind}`), { ...input,
+        text: kind === 'text' ? 'Improve copy aggregation in b.ts' : 'Improve copy aggregation',
+        ...(kind === 'anchor' ? { paths: ['b.ts'] } : {}),
+      }, { root: async () => root, snapshot: () => snapshot,
+        providers: [cloneBriefProvider({ snapshot: () => snapshot })], recordIssued: async () => true });
+      expect(result?.hints[0]?.text).toContain('Copy family a.ts:1 original');
+      if (!result || !('observations' in result)) throw new Error('Expected scoped authoring advice');
+      expect(result.observations[0]?.status).toBe('issued');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('discovers symbol source paths from the registered harness for anchorless authoring', async () => {
     const fixture = deliveryFixture(), root = await mkdtemp(join(tmpdir(), 'authoring-harness-'));
     const snapshot = { ...fixture.snapshot, symbols: new Map([['copy', [{ id: 'copy-id', name: 'copy',

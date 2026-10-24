@@ -38,12 +38,15 @@ export async function authoringReuse(ctx: UnifiedToolContext, input: {
     const root = await realpath(rootPath), snapshot = (deps.snapshot ?? (() => peekPushSnapshot(input.harness)))();
     const paths = new Set(input.paths ?? []);
     for (const match of input.text.matchAll(/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:tsx?|sql)\b/g)) paths.add(match[0]);
-    // Exact symbol tokens discover candidates; a name alone never establishes
-    // a clone or source ownership. The provider re-parses all selected bytes.
-    const tokens = new Set(input.text.match(/[A-Za-z_$][\w$]*/g) ?? []);
-    for (const symbols of snapshot?.symbols?.values() ?? []) {
-      for (const symbol of symbols) if (tokens.has(symbol.name)) paths.add(symbol.path);
-      if (paths.size > 12) break;
+    // Explicit anchors/path mentions define the scope. Only anchorless prose
+    // discovers symbol candidates: common words can name many unrelated symbols.
+    // The provider still re-parses all selected bytes before issuing advice.
+    if (!paths.size) {
+      const tokens = new Set(input.text.match(/[A-Za-z_$][\w$]*/g) ?? []);
+      for (const symbols of snapshot?.symbols?.values() ?? []) {
+        for (const symbol of symbols) if (tokens.has(symbol.name)) paths.add(symbol.path);
+        if (paths.size > 12) break;
+      }
     }
     if (paths.size > 12) return { status: 'unknown' as const, hints: [] };
     const sourceFiles: { path: string; sha256: string }[] = [];
