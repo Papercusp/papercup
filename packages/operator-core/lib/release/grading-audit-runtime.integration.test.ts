@@ -13,6 +13,7 @@ const options = isolatedWorkerOptions(480_000);
 it('retains one real exact-build endpoint, recovers process loss, and retires its last audit reference', async context => {
   const runId = await recordIsolatedIntegrationProof({
     root, filePath: 'packages/operator-core/lib/release/grading-audit-runtime.integration.test.ts',
+    retainedArtifacts: ['phases/execute/grading-runtime-host.log'],
     sourcePaths: [
       'packages/operator-core/test/grading-audit-runtime-fixture.ts',
       'packages/operator-core/lib/release/grading-audit-runtime.ts',

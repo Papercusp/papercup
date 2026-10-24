@@ -1,7 +1,7 @@
 /** Real process/ledger acceptance, invoked only by the isolated integration suite. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getBuildInfo } from '../lib/build-info';
@@ -63,6 +63,9 @@ async function main() {
   const evaluatorBuild = { ...parentBuild, sha: selected?.sourceCommit.slice(0, 12) ?? parentBuild.sha };
   assert.ok(evaluatorBuild.sha && evaluatorBuild.sha !== 'unknown');
   const deps: GradingAuditRuntimeDeps = {
+    // The private supervisor removes its state directory during teardown.
+    // Keep the real endpoint's startup evidence with the original worker.
+    logDir: evidenceDir,
     currentSource: () => ({ schemaVersion: 1, sourceRoot, bundlePath: prepared.path,
       evaluatorBuild, bundleSha256: prepared.sha256, ownerRef: '' }),
   };
@@ -84,6 +87,7 @@ async function main() {
   assert.ok(stopped.ok, JSON.stringify(stopped));
   assert.equal(await emptyScope(first.taskId), true);
   const recovered = await ensureGradingAuditRuntime({ ...input, allowSeed: false }, {
+    logDir: evidenceDir,
     currentSource: () => { throw new Error('mutable staging alias has advanced'); },
   });
   taskIds.add(recovered.taskId);
@@ -129,5 +133,8 @@ catch (error) {
       assert.equal(await emptyScope(taskId), true, 'owned runtime survived teardown');
     }
   }
+  const logs = readdirSync(evidenceDir).filter(name => /^grading-audit-runtime-[a-f0-9]+\.log$/.test(name)).sort();
+  writeFileSync(join(evidenceDir, 'grading-runtime-host.log'), logs.map(name =>
+    `--- ${name} ---\n${readFileSync(join(evidenceDir, name), 'utf8')}`).join('\n'));
   await getOrgPg().sql.end({ timeout: 1 });
 }

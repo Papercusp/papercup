@@ -16,6 +16,7 @@ import { presentedSecretsFromHeaders, scrubErrorText } from '../lib/inference-ga
 import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registry';
 import { PANEL_LABELS, type PanelKey, type SystemHealth } from '../lib/system-health/types';
 import { readVerifierSourceReceiptSync, verifierSourceFiles, type VerifierSourceFile } from '../lib/verifier-source';
+import { linuxProcStateFromStat, linuxStartTicksFromProcStat } from '../lib/process-identity';
 import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
   CommittedReaderPreparationHandoff } from './isolated-integration-proof';
 // @ts-ignore -- reuse the maintained JS router's watchdog policy, as isolated-integration-proof does.
@@ -270,6 +271,13 @@ export interface PrivateHostStopObservation {
   closeObserved: boolean;
   signal?: NodeJS.Signals;
   accepted?: boolean;
+  /** Diagnostic kernel evidence, never a replacement for exit/close events. */
+  kernelProcess?: {
+    status: 'present' | 'absent' | 'unavailable' | 'unsupported';
+    state: string | null;
+    startTicks: string | null;
+    waitChannel: string | null;
+  };
 }
 
 /** Stop admission before reaping descendants that can keep the host's pipes open.
@@ -284,10 +292,27 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
   let sigtermAccepted: boolean | null = null, sigkillAccepted: boolean | null = null;
   let phase = 'start';
   const observations: PrivateHostStopObservation[] = [];
+  const kernelProcess = (): NonNullable<PrivateHostStopObservation['kernelProcess']> => {
+    const unknown = { state: null, startTicks: null, waitChannel: null };
+    if (process.platform !== 'linux') return { ...unknown, status: 'unsupported' };
+    if (!host.pid) return { ...unknown, status: 'unavailable' };
+    try {
+      const stat = readFileSync(`/proc/${host.pid}/stat`, 'utf8');
+      let waitChannel: string | null = null;
+      try { waitChannel = readFileSync(`/proc/${host.pid}/wchan`, 'utf8').trim() || null; }
+      catch { /* the process may exit between these two diagnostic reads */ }
+      return { status: 'present', state: linuxProcStateFromStat(stat),
+        startTicks: linuxStartTicksFromProcStat(stat), waitChannel };
+    } catch (error) {
+      return { ...unknown, status: (error as NodeJS.ErrnoException).code === 'ENOENT'
+        ? 'absent' : 'unavailable' };
+    }
+  };
   const snapshot = (name: string): PrivateHostStopObservation => ({
     pid: host.pid ?? null, phase: name, elapsedMs: Date.now() - started,
     exitCode: host.exitCode, signalCode: host.signalCode,
     sigtermAccepted, sigkillAccepted, exitObserved, closeObserved,
+    kernelProcess: kernelProcess(),
   });
   const record = (name: string, detail: Partial<PrivateHostStopObservation> = {}) => {
     const observation = { ...snapshot(name), ...detail };

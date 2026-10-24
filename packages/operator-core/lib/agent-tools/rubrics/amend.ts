@@ -655,10 +655,11 @@ export default defineTool({
       const receipt = (includeProgress = false) => ({
         idempotencyKey: receiptKey, rubricRef: args.rubricRef, registered,
         poll: { tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef, idempotencyKey: receiptKey } },
-        // A foreground snapshot only: another worker's status read cannot see
-        // these in-memory phases. Never refresh its timestamp on a key replay.
+        // A foreground snapshot; shared status carries its separately published
+        // observation. Never refresh a retained snapshot's timestamp on replay.
         ...(includeProgress && progress ? { progress: { ...progress, observedAt: Date.now() } } : {}),
       });
+      // notify-classification: {"classification":"durable","reason":"Tracked amendment preview can request an independent review; preserve that terminal handoff obligation through this wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const run = trackAmendRun(receiptKey, args.rubricRef, async (onPhase): Promise<Record<string, unknown>> => {
         const reportPhase = (phase: string) => {
           onPhase(phase);
@@ -734,6 +735,7 @@ export default defineTool({
         return { ok: true, dryRun: true, preview, review };
       }, {
         onRegistered: () => { registered = true; },
+        persistPreviewProgress: true,
         omittedReviewRecovery: { ownerId: identity.ownerId, retryArgs: { ...args } },
       });
       const settled = await settleWithin(run, remainingBudget(), ctx.signal);

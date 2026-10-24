@@ -57,7 +57,7 @@ async function freePort() {
 function start(name: string, env: NodeJS.ProcessEnv) {
   const fd = openSync(`${evidence}-${name}.log`, 'w', 0o600);
   const child = spawn(process.execPath, ['--import', 'tsx', 'apps/operator/bin/serve.ts'],
-    { cwd: repo, env, stdio: ['ignore', fd, fd] });
+    { cwd: repo, env: { ...env, PAPERCUSP_USE_EMBEDDED_PG: '0' }, stdio: ['ignore', fd, fd] });
   closeSync(fd);
   child.on('error', () => { stopping = true; });
   children.push({ name, process: child });
@@ -116,9 +116,11 @@ try {
   const { createHostedHandlerFromEnvironment } = await import('../../../../apps/operator/bin/hosted-handler');
   await stage('hosted-handler-compose');
   hosted = await createHostedHandlerFromEnvironment(config);
+  const { publicManualHostedUpgradeHeaders } = await import('../llm-testing/public-manual-hosted-fixture');
   server = serve({ fetch: hosted.handler, port, hostname: '127.0.0.1', createServer: httpsServer,
     serverOptions: { key: await readFile(keyPath), cert: await readFile(certPath) } }) as import('node:https').Server;
   server.on('upgrade', (req, socket, head) => {
+    req.headers = publicManualHostedUpgradeHeaders(req, origin);
     void hosted!.upgrade(req, socket, head).then(handled => { if (!handled) socket.destroy(); }, () => socket.destroy());
   });
   await stage('private-identity-seed');
@@ -213,6 +215,7 @@ try {
     secure: true, httpOnly: true, sameSite: 'Lax' } }), { mode: 0o600 });
   const localPort = await freePort();
   const localOrigin = `http://127.0.0.1:${localPort}`;
+  status.origin = origin; status.localOrigin = localOrigin; status.targets = targets;
   start('local', { ...process.env, PAPERCUSP_HONO_PORT: String(localPort), PORT: String(localPort),
     NODE_EXTRA_CA_CERTS: certPath });
   const { isHostedConnectorLive } = await import('../endpoint-route/hosted-workspace-connector');
@@ -220,6 +223,7 @@ try {
   const current = await waitFor('two connectors', async () => {
     const rows = (await Promise.all(targets.map(t => cli.listWorkspaces(t.organizationId)))).flat();
     return rows.length === 2 && rows.every(row => isHostedConnectorLive(row.connector, new Date()))
+      && targets.every(t => hosted!.relay.appConnector(t.workspaceId)?.binding.hostId === t.hostId)
       ? rows.map(row => ({ id: row.id, hostId: row.hostId,
         generation: row.connector!.generation, heartbeatAt: row.connector!.heartbeatAt })) : false;
   });
@@ -233,7 +237,9 @@ try {
       ? { status: response.status, targets: body.rows.filter((row: any) => targets.some(t => t.hostId === row.id)) } : false;
   });
   await stage('verify-remote-destinations');
-  const destinations = [];
+  const destinations: Array<{ hostId: string; workspaceId: string; status: number;
+    displayName?: string; error?: string }> = [];
+  status.destinations = destinations;
   for (const target of targets) {
     // Set a real workspace-scoped product preference at the destination, then
     // independently read it through the local selector's production transport.
@@ -248,10 +254,11 @@ try {
       'x-papercusp-workspace': control, 'x-papercusp-machine': target.hostId },
       signal: AbortSignal.timeout(20_000) });
     const profile = await response.json();
-    assert.equal(response.status, 200, `Selected ${target.hostId} profile must be reachable`);
-    assert.equal(profile.display_name, name, `Selected ${target.hostId} must reach its own operator`);
     destinations.push({ hostId: target.hostId, workspaceId: target.workspaceId,
-      status: response.status, displayName: profile.display_name });
+      status: response.status, displayName: profile.display_name, error: profile.error });
+    await save();
+    assert.equal(response.status, 200, `Selected ${target.hostId} profile must be reachable (${profile.error ?? 'no error code'})`);
+    assert.equal(profile.display_name, name, `Selected ${target.hostId} must reach its own operator`);
   }
   status.status = 'ready'; status.origin = origin; status.localOrigin = localOrigin;
   status.targets = targets; status.account = { userId, organizationIds: targets.map(t => t.organizationId) };

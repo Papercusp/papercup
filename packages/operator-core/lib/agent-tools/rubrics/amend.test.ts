@@ -31,6 +31,10 @@ const workItemMocks = vi.hoisted(() => ({ commentWorkItem: vi.fn(), getWorkItems
 const receiptDb = vi.hoisted(() => {
   type Row = { idempotency_key: string; rubric_ref: string; state: string; started_at: Date; finished_at: Date | null; result_json: Record<string, unknown> | null; error: string | null; executor_host?: string; executor_pid?: number; executor_process_id?: string };
   const rows = new Map<string, Row>();
+  const progressControl = {
+    beforeWrite: undefined as (() => Promise<void>) | undefined,
+    afterWrite: undefined as (() => void) | undefined,
+  };
   const sql = vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
     // postgres' bulk insert helper is called before its tagged statement.
     if (!Array.isArray(parts) || !('raw' in parts)) return [];
@@ -41,7 +45,8 @@ const receiptDb = vi.hoisted(() => {
       const [workspace, rubric, key] = values as string[];
       const id = `${workspace}:${rubric}:${key}`;
       if (rows.has(id)) return [];
-      rows.set(id, { idempotency_key: key!, rubric_ref: rubric!, state: 'running', started_at: new Date(), finished_at: null, result_json: null, error: null });
+      rows.set(id, { idempotency_key: key!, rubric_ref: rubric!, state: 'running', started_at: new Date(), finished_at: null,
+        result_json: values[6] ? JSON.parse(String(values[6])) : null, error: null });
       return [{ idempotency_key: key }];
     }
     if (query.includes('SELECT idempotency_key')) {
@@ -50,10 +55,25 @@ const receiptDb = vi.hoisted(() => {
       return row ? [row] : [];
     }
     if (query.includes('UPDATE harness_shared.rubric_amend_receipts')) {
+      if (query.includes('SET result_json = jsonb_set(')) {
+        await progressControl.beforeWrite?.();
+        const [snapshot, workspace, rubric, key, token] = values as string[];
+        const row = rows.get(`${workspace}:${rubric}:${key}`);
+        if (row && (!query.includes("AND state = 'running'") || row.state === 'running')
+          && (!query.includes("AND result_json->>'_progressRun'") || row.result_json?._progressRun === token)) {
+          row.result_json = { ...row.result_json, progress: JSON.parse(snapshot!) };
+          progressControl.afterWrite?.();
+          return [{ idempotency_key: key }];
+        }
+        progressControl.afterWrite?.();
+        return [];
+      }
       const failed = query.includes("SET state = 'failed'");
       const [workspace, rubric, key] = values.slice(failed ? 2 : 3) as string[];
       const row = rows.get(`${workspace}:${rubric}:${key}`);
       if (row) {
+        if (query.includes('AND (NOT') && values.at(-2) === true
+          && (row.state !== 'running' || row.result_json?._progressRun !== values.at(-1))) return [];
         row.state = failed ? 'failed' : String(values[0]);
         row.result_json = JSON.parse(String(values[1]));
         row.error = failed ? String(values[0]) : values[2] as string | null;
@@ -63,7 +83,7 @@ const receiptDb = vi.hoisted(() => {
     }
     throw new Error(`unexpected receipt SQL: ${query}`);
   });
-  return { rows, sql };
+  return { rows, sql, progressControl };
 });
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -121,6 +141,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   rubricsMocks.applyRubricAmendment.mockReset();
   receiptDb.rows.clear();
+  receiptDb.progressControl.beforeWrite = undefined;
+  receiptDb.progressControl.afterWrite = undefined;
   rubricsMocks.getRubric.mockResolvedValue(undefined);
   planMocks.getPlanRow.mockResolvedValue(null);
 });
@@ -1387,6 +1409,107 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
     } finally {
       slow.resolve({ state: 'routed', conversationId: 'conv-late', next: 'retain this review' });
     }
+  });
+
+  it('shares preview progress with a fresh status module without refreshing its observation or starting another review', async () => {
+    const slow = deferred<Record<string, unknown>>();
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue({ approvalRequired: true, approval: {}, changes: [] });
+    reviewMocks.openAcceptanceBarAmendmentReview.mockImplementationOnce(input => {
+      input.onPhase?.('review-route');
+      return slow.promise;
+    });
+    const args = { ...amendArgs, dryRun: true, reviewPreviewPost: 'thread-post:42' };
+    try {
+      const answered = await body(args);
+      vi.resetModules();
+      const workerB = (await import('./amend-status')).default;
+      const read = async () => ((await workerB.handler(answered.receipt.poll.args, {} as never)) as { data: any }).data;
+      await vi.waitFor(async () => expect(await read()).toMatchObject({ state: 'running', progress: {
+        phase: 'review-route', phaseStartedAt: expect.any(Number), observedAt: expect.any(Number),
+      } }));
+      const first = await read();
+      expect(first.result).toBeUndefined();
+      expect((await read()).progress).toEqual(first.progress);
+      expect((await body(args)).pending).toBe(true);
+      expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledTimes(1);
+      slow.resolve({ state: 'routed', conversationId: 'conv-progress' });
+      await vi.waitFor(async () => expect(await read()).toMatchObject({ state: 'previewed',
+        result: { review: { conversationId: 'conv-progress' } } }));
+      expect((await read()).progress).toBeUndefined();
+    } finally { slow.resolve({ state: 'routed' }); }
+  });
+
+  it.each(['terminal', 'new-attempt'])('fences a delayed preview progress write after %s', async mode => {
+    const slow = deferred<Record<string, unknown>>();
+    const blockedWrite = deferred<void>();
+    const writeFinished = deferred<void>();
+    receiptDb.progressControl.beforeWrite = () => blockedWrite.promise;
+    receiptDb.progressControl.afterWrite = () => writeFinished.resolve();
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue({ approvalRequired: true, approval: {}, changes: [] });
+    reviewMocks.openAcceptanceBarAmendmentReview.mockImplementationOnce(input => {
+      input.onPhase?.('review-route');
+      return slow.promise;
+    });
+    try {
+      const answered = await body({ ...amendArgs, dryRun: true, reviewPreviewPost: 'thread-post:42' });
+      const row = [...receiptDb.rows.values()][0]!;
+      expect(row.result_json?._progressRun).toEqual(expect.any(String));
+      if (mode === 'terminal') {
+        slow.resolve({ state: 'routed', conversationId: 'conv-terminal' });
+        await vi.waitFor(() => expect(row.state).toBe('previewed'));
+      } else {
+        row.result_json = { _progressRun: 'new-owner-attempt', progress: { phase: 'new-phase' } };
+      }
+      const before = JSON.stringify(row.result_json);
+      blockedWrite.resolve();
+      await writeFinished.promise;
+      expect(JSON.stringify(row.result_json)).toBe(before);
+      if (mode === 'terminal') {
+        expect(await statusBody(answered.receipt.poll.args)).toMatchObject({ state: 'previewed' });
+        expect((await body({ ...amendArgs, dryRun: true, reviewPreviewPost: 'thread-post:42' })).review)
+          .toEqual({ state: 'routed', conversationId: 'conv-terminal' });
+      } else {
+        slow.resolve({ state: 'routed', conversationId: 'conv-superseded' });
+        await vi.waitFor(() => expect(receiptDb.sql.mock.calls.some(([parts]) => Array.isArray(parts)
+          && parts.join('?').includes('SET state = ?'))).toBe(true));
+        expect(JSON.stringify(row.result_json)).toBe(before);
+      }
+    } finally {
+      blockedWrite.resolve();
+      slow.resolve({ state: 'routed' });
+      await writeFinished.promise;
+    }
+  });
+
+  it('a failed progress publication does not delay or fail the preview result', async () => {
+    const slow = deferred<Record<string, unknown>>();
+    receiptDb.progressControl.beforeWrite = async () => { throw new Error('progress storage unavailable'); };
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue({ approvalRequired: true, approval: {}, changes: [] });
+    reviewMocks.openAcceptanceBarAmendmentReview.mockImplementationOnce(input => {
+      input.onPhase?.('review-route');
+      return slow.promise;
+    });
+    const args = { ...amendArgs, dryRun: true, reviewPreviewPost: 'thread-post:42' };
+    try {
+      const answered = await body(args);
+      expect(answered.pending).toBe(true);
+      slow.resolve({ state: 'routed', conversationId: 'conv-progress-failure' });
+      await vi.waitFor(async () => expect(await statusBody(answered.receipt.poll.args)).toMatchObject({
+        state: 'previewed', result: { ok: true, review: { conversationId: 'conv-progress-failure' } },
+      }));
+      expect((await body(args)).review).toEqual({ state: 'routed', conversationId: 'conv-progress-failure' });
+    } finally { slow.resolve({ state: 'routed' }); }
+  });
+
+  it('keeps apply phase tracking off the shared progress writer', async () => {
+    const { trackAmendRun } = await import('./amend-receipts');
+    expect(await trackAmendRun('apply-progress-guard', 'acceptance-example', async onPhase => {
+      onPhase('acceptance-locked-plan-read');
+      onPhase('acceptance-write-rubric');
+      return { ok: true };
+    })).toEqual({ ok: true });
+    expect(receiptDb.sql.mock.calls.some(([parts]) => Array.isArray(parts)
+      && parts.join('?').includes('SET result_json = jsonb_set('))).toBe(false);
   });
 
   it('separate slow preview-only dry runs get fresh pollable receipts without applying the amendment', async () => {

@@ -2392,7 +2392,13 @@ exec "$REGRESSION_REAL_GIT" "$@"
     expect(git(releaseRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
   });
 
-  it.each([true, false])('dependencies-only=%s preserves native checks and limits generated inputs', (dependenciesOnly) => {
+  it.each([
+    { dependenciesOnly: true, fault: 'none' },
+    { dependenciesOnly: false, fault: 'none' },
+    { dependenciesOnly: true, fault: 'input-mismatch' },
+    { dependenciesOnly: true, fault: 'native-missing' },
+    { dependenciesOnly: true, fault: 'native-probe-drift' },
+  ])('dependencies-only=$dependenciesOnly fault=$fault preserves frozen input readiness', ({ dependenciesOnly, fault }) => {
     const workspace = 'libs/generic/sse';
     const asset = 'apps/operator/public/runtime/asset.js';
     const rootfs = 'papercusp-desktop/src-tauri/resources/papercup-runtime.tar.gz';
@@ -2419,7 +2425,10 @@ exec "$REGRESSION_REAL_GIT" "$@"
     symlinkSync('../../' + workspace, join(integrationRoot, 'node_modules/@papercusp/sse'));
     addPkg(integrationRoot, 'better-sqlite3');
     writeFileSync(join(integrationRoot, 'node_modules/better-sqlite3/index.js'),
-      "module.exports = class { constructor() { require('node:fs').writeFileSync(process.env.PREPARATION_NATIVE_PROBE, 'checked'); } prepare() { return { get() { return { result:1 }; } }; } close() {} };");
+      fault === 'native-missing' ? "throw new Error('missing native binding');" :
+        "module.exports = class { constructor() { require('node:fs').writeFileSync(process.env.PREPARATION_NATIVE_PROBE, 'checked'); " +
+        (fault === 'native-probe-drift' ? "require('node:fs').writeFileSync(__dirname + '/probe-generated.node', 'changed'); " : '') +
+        "} prepare() { return { get() { return { result:1 }; } }; } close() {} };");
     git(integrationRoot, 'add', '-A');
     git(integrationRoot, 'commit', '-q', '-m', 'preparation fixture');
     targetSha = git(integrationRoot, 'rev-parse', 'HEAD');
@@ -2431,12 +2440,24 @@ exec "$REGRESSION_REAL_GIT" "$@"
     const generationRoot = join(dirname(releaseRoot), 'generations');
     const env = { ...sourceCloneEnv(), PREPARATION_NATIVE_PROBE: nativeProbe };
     const published = spawnSync('bash', ['-c',
-      'set -euo pipefail; source "$1"; dependency_generation_ensure "$2" "$3"; printf "FIXTURE_ID=%s\\n" "$DEPENDENCY_GENERATION_ID"',
+      'set -euo pipefail; source "$1"; dependency_generation_ensure "$2" "$3"; ' +
+        'dependency_generation_publish_input_selector "$3" "$(dependency_generation_input_fingerprint_ref "$2" HEAD)"; ' +
+        'printf "FIXTURE_ID=%s\\n" "$DEPENDENCY_GENERATION_ID"',
       'fixture', DEPENDENCY_GENERATION_SCRIPT, integrationRoot, generationRoot,
     ], { encoding: 'utf8', timeout: 30_000, env });
     expect(published.status, published.stdout + published.stderr).toBe(0);
     const identity = /^FIXTURE_ID=(v1-[0-9a-f]{64})$/m.exec(published.stdout)?.[1];
     expect(identity).toBeDefined();
+    if (fault === 'input-mismatch') {
+      writeFileSync(join(integrationRoot, 'package-lock.json'), JSON.stringify({
+        lockfileVersion: 3, packages: { '': { name: 'different-inputs' } },
+      }));
+      git(integrationRoot, 'add', 'package-lock.json');
+      git(integrationRoot, 'commit', '-q', '-m', 'different target dependency inputs');
+      targetSha = git(integrationRoot, 'rev-parse', 'HEAD');
+      git(releaseRoot, 'fetch', '-q', 'origin');
+      git(releaseRoot, 'checkout', '-q', '--detach', targetSha);
+    }
     const result = spawnSync('bash', [SCRIPT_PATH, '--prepare-existing',
       ...(dependenciesOnly ? ['--dependencies-only'] : []),
       '--integration', integrationRoot, '--release', releaseRoot, '--ref', targetSha,
@@ -2444,6 +2465,17 @@ exec "$REGRESSION_REAL_GIT" "$@"
       '--node-modules-generation-id', identity!, '--dependency-generation-root', generationRoot,
     ], { encoding: 'utf8', timeout: 30_000, env });
 
+    if (fault !== 'none') {
+      expect(result.status, result.stdout + result.stderr).not.toBe(0);
+      expect(result.stdout).not.toContain('SETUP_RELEASE_DEPENDENCIES_ONLY');
+      expect(result.stdout).toContain(fault === 'input-mismatch' ? 'committed input/generation mismatch' :
+        fault === 'native-missing' ? 'publish a native-complete generation' : 'materialized dependency tree drift');
+      expect(result.stdout).not.toContain('rebuilding in the release checkout');
+      if (fault === 'input-mismatch') {
+        expect(existsSync(join(releaseRoot, 'node_modules'))).toBe(false);
+      }
+      return;
+    }
     expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(readFileSync(nativeProbe, 'utf8')).toBe('checked');
     expect(readFileSync(join(releaseRoot, 'node_modules/.papercusp-dependency-generation'), 'utf8'))

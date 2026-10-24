@@ -51,6 +51,7 @@ export default defineTool({
       decisionId: z.string().optional(),
       ageSec: z.number().optional(),
       reclaimableAt: z.number().optional(),
+      progress: z.object({ phase: z.string(), phaseStartedAt: z.number(), observedAt: z.number() }).optional(),
     })
     .passthrough(),
   async handler(args) {
@@ -90,6 +91,7 @@ export default defineTool({
         ageSec: Math.round(((receipt.finishedAt ?? Date.now()) - receipt.startedAt) / 1000),
         ...(receipt.result ? { result: receipt.result } : {}),
         ...(receipt.error ? { error: receipt.error } : {}),
+        ...(receipt.progress ? { progress: receipt.progress } : {}),
       });
     }
     const decision = await findAmendmentDecisionByKey(args.rubricRef, args.idempotencyKey);

@@ -47,6 +47,27 @@ it('retains teardown signal evidence on a forced-exit timeout and removes its li
   expect(child.listenerCount('close')).toBe(0);
 });
 
+it.skipIf(process.platform !== 'linux')('retains missing kernel-process evidence without treating it as an exit', async () => {
+  vi.useFakeTimers();
+  const child = Object.assign(new EventEmitter(), {
+    pid: Number.MAX_SAFE_INTEGER, exitCode: null, signalCode: null, stdout: null, stderr: null,
+    kill: vi.fn(() => true),
+  }) as unknown as import('node:child_process').ChildProcess;
+  const stopped = stopPrivateOperatorHost(child, undefined, 10);
+  const rejected = expect(stopped).rejects.toMatchObject({
+    message: 'Private host forced exit did not settle',
+    privateHostStop: {
+      phase: 'forced exit', exitObserved: false, closeObserved: false,
+      kernelProcess: { status: 'absent', state: null, startTicks: null, waitChannel: null },
+      observations: expect.arrayContaining([
+        expect.objectContaining({ phase: 'signal', signal: 'SIGKILL',
+          kernelProcess: expect.objectContaining({ status: 'absent' }) }),
+      ]),
+    },
+  });
+  await Promise.all([rejected, vi.advanceTimersByTimeAsync(21)]);
+});
+
 it('observes real private-host exit before dependent cleanup and ignores diagnostic callback failures', async () => {
   const child = spawn(process.execPath, ['-e',
     "process.on('SIGTERM',()=>process.exit(0));process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
@@ -55,7 +76,9 @@ it('observes real private-host exit before dependent cleanup and ignores diagnos
   try {
     await once(child.stdout!, 'data');
     let afterExit = false;
-    const observations: Array<{ phase: string }> = [];
+    const observations: Array<{ phase: string; kernelProcess?: {
+      status: string; state: string | null; startTicks: string | null;
+    } }> = [];
     await stopPrivateOperatorHost(child, async () => {
       expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
       afterExit = true;
@@ -69,6 +92,13 @@ it('observes real private-host exit before dependent cleanup and ignores diagnos
       expect.objectContaining({ phase: 'complete', closeObserved: true }),
     ]));
     expect(child.exitCode).toBe(0);
+    if (process.platform === 'linux') {
+      expect(observations.find(o => o.phase === 'start')?.kernelProcess).toEqual(
+        expect.objectContaining({ status: 'present', state: expect.stringMatching(/^[A-Za-z]$/),
+          startTicks: expect.stringMatching(/^\d+$/) }),
+      );
+      expect(observations.find(o => o.phase === 'complete')?.kernelProcess?.status).toBe('absent');
+    }
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     await closed;
