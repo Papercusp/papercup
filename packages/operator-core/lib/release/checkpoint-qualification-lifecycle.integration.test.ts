@@ -438,12 +438,18 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         // and lease the maintained, already-published exact-input generation;
         // link its actual dependency bytes and copy its real immutable marker.
         // This never installs packages or invents a generation for this fixture.
+        // Hermetic setup clears live generation-root environment overrides.
+        // A maintained committed clone has a local origin: read its existing
+        // store record, then still select by THIS checkout's exact inputs.
+        const origin = execFileSync('git', ['-C', sourceRoot, 'remote', 'get-url', 'origin'],
+          { encoding: 'utf8', timeout: 10_000 }).trim();
+        const storeOwner = origin.startsWith('/') && existsSync(origin) ? origin : sourceRoot;
         const selected = execFileSync('bash', ['-c',
-          'source "$1"; store=$(dependency_generation_resolve_root "$2"); ' +
+          'source "$1"; store=$(dependency_generation_resolve_root "$4"); ' +
           'dependency_generation_select_inputs "$2" "$store" || exit $?; ' +
           'dependency_generation_acquire_selector_lease "$store" "$DEPENDENCY_GENERATION_ID" "$3" "$DEPENDENCY_GENERATION_TOKEN" || exit $?; ' +
           'printf "FIXTURE_GENERATION=%s\\nFIXTURE_LEASE=%s\\n" "$DEPENDENCY_GENERATION_PATH" "$DEPENDENCY_GENERATION_SELECTOR_LEASE"',
-          '--', generationScript, sourceRoot, String(process.pid)],
+          '--', generationScript, sourceRoot, String(process.pid), storeOwner],
         { encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
         const generation = selected.split('\n').find(line => line.startsWith('FIXTURE_GENERATION='))?.slice('FIXTURE_GENERATION='.length);
         dependencyLease = selected.split('\n').find(line => line.startsWith('FIXTURE_LEASE='))?.slice('FIXTURE_LEASE='.length);
