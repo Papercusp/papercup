@@ -23,6 +23,7 @@ import {
   governorReceiptSnapshotValueTransform,
   isSnapshotBlock,
   isSnapshotOp,
+  summarizeOp,
   type GovernorReceiptSnapshotFilterStats,
   type SnapshotPayload,
 } from './log-snapshot';
@@ -152,13 +153,7 @@ export function encodeStoredBlock(op: PeerLogOp): Uint8Array {
  * other op keeps only what `isSnapshotOp` and span checks look at. This is what lets
  * the prior-snapshot seek run on the main thread without holding GBs of decoded rows.
  */
-export function summarizeOp(op: PeerLogOp): PeerLogOp {
-  if (isSnapshotOp(op)) {
-    const payload = (op.value ?? {}) as SnapshotPayload;
-    return { ...op, value: { ...payload, rows: [] } };
-  }
-  return { type: op.type, table: op.table, hbKey: op.hbKey, ts: op.ts, schema_version: op.schema_version } as PeerLogOp;
-}
+export { summarizeOp } from './log-snapshot';
 
 /** One transfer-ready reply. */
 export interface SnapshotFoldReply {

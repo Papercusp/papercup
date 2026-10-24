@@ -339,6 +339,7 @@ it('preserves the classified Codex home failure when refusing carry before stopp
   const sock = socketPathFor(ownerId);
   const log = eventLogPathForOwner(ownerId);
   const { io, captured } = fakeIo();
+  const diagnostic = vi.spyOn(process.stderr, 'write');
   let mints = 0;
   const failure = { stage: 'response', reason: 'http-error', status: 503 };
   const childCode = "process.stdin.setRawMode(true);process.stdout.write('READY\\n');" +
@@ -365,11 +366,15 @@ it('preserves the classified Codex home failure when refusing carry before stopp
       reason: 'codex-route-unavailable', homeEnsureFailure: failure }));
     expect(mints).toBe(0);
     expect(events.some(event => event.kind === 'respawn-predecessor-stop-started')).toBe(false);
+    expect(diagnostic.mock.calls.some(([value]) => String(value).includes(
+      `carry-respawn NOT completed for ${ownerId}: Codex home preparation failed (HTTP 503)`,
+    ))).toBe(true);
     await injectIntoHost(sock, { mode: 'raw', ownerId, data: 'still here' });
     expect(await waitForOutput(captured, 'ORIGINAL-ALIVE')).toBe(true);
   } finally {
     await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
     await done;
+    diagnostic.mockRestore();
     rmSync(root, { recursive: true, force: true });
     rmSync(log, { force: true });
   }

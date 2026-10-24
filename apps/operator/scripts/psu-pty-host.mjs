@@ -17440,6 +17440,16 @@ export function hostThroughPty(o) {
               recycling = false;
               appendHostEvent(ownerId, 'respawn-failed', { mode: respawnMode, reason: 'codex-route-unavailable',
                 ...(homeEnsureFailure ? { homeEnsureFailure } : {}) });
+              // The hook already reported QUEUED. A post-ACK preparation
+              // failure must also reach the terminal; the host ledger alone
+              // leaves the owner expecting a successor that cannot start.
+              const status = Number.isInteger(homeEnsureFailure?.status)
+                ? ` (HTTP ${homeEnsureFailure.status})` : '';
+              writeTerminalDiagnostic(
+                `psu-pty-host: ${respawnMode} NOT completed for ${ownerId}: ` +
+                `Codex home preparation failed${status}. The current session is intact; ` +
+                'the operator repair must succeed before the managed carry can finish.\n',
+              );
               return settleQuotaRecovery(false, 'codex-route-unavailable');
             }
           }
