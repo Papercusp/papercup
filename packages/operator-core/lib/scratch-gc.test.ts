@@ -2144,6 +2144,80 @@ describe('deferred scratch quota recovery', () => {
     await refreshScratchUsage('ws-Q');
   });
 
+  it.each(['EACCES', 'EPERM', 'EROFS'])('recovers a fresh write past an undeletable FIFO candidate (%s)', async (code) => {
+    const blocked = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 20_000);
+    const reclaimable = makeSparseRun('ws-Q', UUID(2), 2 * 1024 ** 3, 10_000);
+    const target = makeSparseRun('ws-Q', UUID(3), 2 * 1024 ** 3);
+    _setScratchUsageForTests('ws-Q', 6 * 1024 ** 3 + markerBytes('ws-Q'));
+    const remove = vi.mocked(rmAsync);
+    const originalRemove = remove.getMockImplementation()!;
+    const failure = Object.assign(new Error('legacy scratch is read-only'), { code });
+    remove.mockImplementation(async (...args) => {
+      if (String(args[0]) === blocked) throw failure;
+      return originalRemove(...args);
+    });
+    const timings: ScratchWriteTimings[] = [];
+    const filePath = join(target, 'fresh-result');
+    try {
+      await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 64,
+        onTiming: (row) => timings.push(row) }, () => writeFile(filePath, Buffer.alloc(64)));
+      expect(existsSync(blocked)).toBe(true);
+      expect(existsSync(reclaimable)).toBe(false);
+      expect(readFileSync(filePath)).toHaveLength(64);
+      expect(scratchUsageBytes('ws-Q')).toBe(4 * 1024 ** 3 + markerBytes('ws-Q') + 64);
+      expect(timings.at(-1)?.quotaRecoveryDiagnostics).toMatchObject({
+        deleteAttempts: 2, deleteErrors: 1, lastDeleteErrorCode: code, runsDeleted: 1,
+        deletedBytes: 2 * 1024 ** 3,
+      });
+      await refreshScratchUsage('ws-Q');
+    } finally {
+      remove.mockImplementation(originalRemove);
+    }
+  });
+
+  it.each(['EACCES', 'EPERM', 'EROFS'])('keeps unreclaimed bytes charged and refuses a write (%s)', async (code) => {
+    const blocked = makeSparseRun('ws-Q', UUID(1), WORKSPACE_QUOTA_BYTES, 10_000);
+    const target = makeRunDir('ws-Q', 'quota', UUID(2), 0);
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + markerBytes('ws-Q'));
+    const remove = vi.mocked(rmAsync);
+    const originalRemove = remove.getMockImplementation()!;
+    remove.mockImplementation(async (...args) => {
+      if (String(args[0]) === blocked) throw Object.assign(new Error('read-only scratch'), { code });
+      return originalRemove(...args);
+    });
+    const write = vi.fn(async () => {});
+    try {
+      await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(target, 'fresh-result'),
+        bytes: 64 }, write)).rejects.toMatchObject({ code: 'SCRATCH_QUOTA_EXCEEDED' });
+      expect(write).not.toHaveBeenCalled();
+      expect(existsSync(blocked)).toBe(true);
+      expect(scratchUsageBytes('ws-Q')).toBe(WORKSPACE_QUOTA_BYTES + markerBytes('ws-Q'));
+    } finally {
+      remove.mockImplementation(originalRemove);
+    }
+  });
+
+  it('propagates an unexpected eviction I/O failure before invoking a fresh writer', async () => {
+    const blocked = makeSparseRun('ws-Q', UUID(1), WORKSPACE_QUOTA_BYTES, 10_000);
+    const target = makeRunDir('ws-Q', 'quota', UUID(2), 0);
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + markerBytes('ws-Q'));
+    const remove = vi.mocked(rmAsync);
+    const originalRemove = remove.getMockImplementation()!;
+    const failure = Object.assign(new Error('storage I/O failure'), { code: 'EIO' });
+    remove.mockImplementation(async (...args) => {
+      if (String(args[0]) === blocked) throw failure;
+      return originalRemove(...args);
+    });
+    const write = vi.fn(async () => {});
+    try {
+      await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(target, 'fresh-result'),
+        bytes: 64 }, write)).rejects.toBe(failure);
+      expect(write).not.toHaveBeenCalled();
+    } finally {
+      remove.mockImplementation(originalRemove);
+    }
+  });
+
   it('invalidates the local run index when another process advances the shared quota revision', async () => {
     const oldest = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 10_000);
     const otherRuns = Array.from({ length: 12 }, (_, i) =>
@@ -2330,6 +2404,47 @@ describe('deferred scratch quota recovery', () => {
     expect(timings.find((row) => !row.progress)?.awaitSubphaseTimingsMs).toEqual(expect.objectContaining({
       'scratch-data-read-admission.lock-root.mkdir': expect.any(Number),
     }));
+  });
+
+  it('records failed data read-lease admission before a scratch payload runs', async () => {
+    const workspaceId = 'ws-Q';
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    const digest = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
+    const mutexName = `papercusp-scratch-data-${digest}`;
+    let releaseHolder!: () => void;
+    let startedHolder!: () => void;
+    const holderGate = new Promise<void>((resolveGate) => { releaseHolder = resolveGate; });
+    const holderStarted = new Promise<void>((resolveStarted) => { startedHolder = resolveStarted; });
+    const holder = withFsMutex(mutexName, async () => {
+      startedHolder();
+      await holderGate;
+    });
+    const timings: ScratchWriteTimings[] = [];
+    let payloadRan = false;
+    try {
+      await holderStarted;
+      await expect(writeWithScratchQuota({
+        workspaceId,
+        filePath: join(workspaceRoot, 'data-timeout', 'spill'),
+        bytes: 1,
+        mutexTimeoutMs: 40,
+        captureSubphaseTimings: true,
+        onTiming: (row) => timings.push(row),
+      }, async () => { payloadRan = true; })).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      const settled = timings.filter((row) => !row.progress);
+      expect(settled).toHaveLength(1);
+      expect(settled[0].dataLeaseWaitMs).toBeGreaterThanOrEqual(40);
+      expect(settled[0].awaitSubphaseTimingsMs).toMatchObject({
+        'scratch-data-read-admission.lock-root.ensure': expect.any(Number),
+        'scratch-data-read-admission.writer-check': expect.any(Number),
+        'scratch-data-read-admission.retry-wait': expect.any(Number),
+      });
+      expect(settled[0].quotaWaitMs).toBe(0);
+      expect(payloadRan).toBe(false);
+    } finally {
+      releaseHolder();
+      await Promise.allSettled([holder]);
+    }
   });
 
   it('reports the request trace ID from a filesystem scratch mutex owner', async () => {

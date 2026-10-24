@@ -62,6 +62,16 @@ export async function withIsolatedIntegrationSourceObserver<T>(
 /** Shared with the cheap context guard so the expensive fixture uses the tested API. */
 export const isolatedIntegrationCases = it.for([false, true]);
 
+/** The model-request census is produced only by the managed-carry protocol. */
+export function currentSuNativeRetainedArtifacts(managedCarry: boolean): string[] {
+  return [
+    'phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
+    ...(managedCarry ? ['phases/execute/native-model-requests.json'] : []),
+    'phases/prepare/bundle-restricted-hold-inputs.json',
+    'phases/prepare/hono-host.mjs.build-steps.jsonl',
+  ];
+}
+
 /** Cleanup logs must not displace a worker's original structured assertion. */
 export function isolatedWorkerFailureDetail(output: string): string {
   const lines = output.split('\n');
@@ -562,14 +572,30 @@ export async function retainIsolatedLifecycleBeforeSourceCheck(evidenceDir: stri
 }
 
 
+/** Reject an enclosing router deadline that cannot cover a declared proof run.
+ * This does not widen any child's deadline or count as execution evidence.
+ */
+export function assertIsolatedFileRunBudget(requiredMs: number, env: NodeJS.ProcessEnv = process.env) {
+  assert.ok(Number.isSafeInteger(requiredMs) && requiredMs > 0 && requiredMs <= MAX_TEST_FILE_RUN_TIMEOUT_MS,
+    'required proof file budget must fit the maintained router ceiling');
+  const availableMs = testFileRunTimeoutMs(env, 1);
+  assert.ok(availableMs >= requiredMs,
+    `Isolated proof requires PAPERCUSP_TEST_FILE_TIMEOUT_MS >= ${requiredMs}; enclosing router has ${availableMs}. ` +
+    'Refusing before proof source observation or private worker allocation.');
+}
+
 export async function recordIsolatedIntegrationProof(options: {
   root: string; filePath: string; sourcePaths: string[];
+  /** Explicit encompassing allowance for multi-process proofs; validated before allocation. */
+  minimumFileRunTimeoutMs?: number;
   /** Required original receipts, relative to the run directory. Missing files fail retention. */
   retainedArtifacts?: readonly string[];
   prepare?: (evidenceDir: string) => Promise<void | CommittedReaderPreparationHandoff> | void | CommittedReaderPreparationHandoff;
   requiredPreparation?: CommittedReaderObservationIdentity;
   execute: (observe: (child: ChildProcess) => void, evidenceDir: string) => Promise<void>;
 }): Promise<string> {
+  if (options.minimumFileRunTimeoutMs !== undefined)
+    assertIsolatedFileRunBudget(options.minimumFileRunTimeoutMs);
   const { root, filePath } = options;
   const paths = [...new Set([filePath, 'scripts/lib/isolated-runtime-start.mjs', ...options.sourcePaths])].sort();
   let source: any;

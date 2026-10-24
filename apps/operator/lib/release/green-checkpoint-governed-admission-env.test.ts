@@ -15,6 +15,17 @@ const OPERATOR_URL = "postgresql://harness_admin:secret@localhost:5432/papercusp
 const BASE_SOURCE = { PATH: "/usr/bin", HOME: "/home/x" } as const;
 
 describe("buildGreenCheckpointEnv governed-admission target (WI-6554700010018666)", () => {
+  it.each([
+    ["detached manual launch", undefined],
+    ["scheduled launch with inherited auditing", "1"],
+  ])("keeps valid unchanged passes out of audit reruns for %s", (_launch, auditRate) => {
+    const source = { ...BASE_SOURCE, AFFECTED_TEST_REUSE_AUDIT_RATE: auditRate };
+    const env = buildGreenCheckpointEnv(null, source);
+    expect(env.AFFECTED_TEST_REUSE_AUDIT_RATE).toBe("0");
+    expect(env.AFFECTED_TEST_REUSE).toBeUndefined();
+    expect(source.AFFECTED_TEST_REUSE_AUDIT_RATE).toBe(auditRate);
+  });
+
   it("binds native completion to the logical attempt and the gate's own physical run", () => {
     const source = { ...BASE_SOURCE, [CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]: 'logical-attempt',
       PAPERCUSP_TEST_RUN_GROUP: 'host-leaked-group' };

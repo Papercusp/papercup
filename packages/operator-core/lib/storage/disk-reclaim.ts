@@ -130,7 +130,8 @@ export interface DiskReclaimOptions {
   roots?: Array<{ path: string; classId: string }>;
   /** Inspection bounds apply independently to each policy root; an incomplete root cannot starve another. */
   nowMs?: number; maxEntries?: number; budgetMs?: number;
-  /** Per-root wall time for holder checks, audit waits and removals. In-flight operations finish safely. */
+  /** Per-root admission window for holder checks, audit waits and removals.
+   * Admitted native operations retain the whole-pass deadline to finish safely. */
   effectBudgetMs?: number;
   /** Whole-pass deadline, including all roots and delegates. */
   runBudgetMs?: number;
@@ -1287,7 +1288,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               if (options.inspectTrees && (retainAfterMs !== undefined || capped) && !regularFile) {
                 const census = await outsideInspectionBudget(() => options.inspectTrees!(entry.root, {
                   retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped, paths: [entry.path], collectBuildDirs,
-                  timeoutMs: Math.max(1, effectDeadline - Date.now()),
+                  timeoutMs: Math.max(1, runDeadline - Date.now()),
                 }));
                 if (census.error) throw new Error(census.error);
                 const current = census.entries.find((candidate) => candidate.path === entry.path);
@@ -1307,7 +1308,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (regularFile && !receipt.dryRun && options.acquireRegularFileLease) {
               try {
                 regularLease = await measureEffect('freshHolderScanMs', () => outsideInspectionBudget(() =>
-                  options.acquireRegularFileLease!(fresh, Math.max(1, effectDeadline - Date.now()))));
+                  options.acquireRegularFileLease!(fresh, Math.max(1, runDeadline - Date.now()))));
               } catch {
                 regularLease = undefined;
               }
@@ -1327,7 +1328,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               if (!isDeepStrictEqual(fresh.buildDirs, entry.buildDirs)) { outcome.status = 'changed'; continue; }
               const result = await measureEffect('removalMs', () => outsideInspectionBudget(() => (options.removeEntry ??
                 ((value, ms, observe, dryRun) => removePrivilegedRetentionEntry(value, ms, nativeRetentionCommand, observe, dryRun)))
-                (entry, Math.max(1, effectDeadline - Date.now()), (timing) => { outcome.nativeCommand = timing; }, receipt.dryRun)));
+                (entry, Math.max(1, runDeadline - Date.now()), (timing) => { outcome.nativeCommand = timing; }, receipt.dryRun)));
               if (!result) throw new Error('build removal receipt unavailable');
               outcome.bytes = 0; outcome.reason = 'source entry retained after build inspection';
               for (const removed of result.removed) {
@@ -1345,7 +1346,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               continue;
             }
             await measureEffect('removalMs', () => outsideInspectionBudget(() => options.removeEntry
-              ? options.removeEntry(entry, Math.max(1, effectDeadline - Date.now()), (timing) => { outcome.nativeCommand = timing; })
+              ? options.removeEntry(entry, Math.max(1, runDeadline - Date.now()), (timing) => { outcome.nativeCommand = timing; })
               : rm(entry.path, { recursive: true, force: false })));
             outcome.status = 'removed';
             if (cap && remainingUsage) { remainingUsage.remove(entry.path); cap.afterBytes = remainingUsage.bytes; }

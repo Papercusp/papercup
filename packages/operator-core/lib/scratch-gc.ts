@@ -370,6 +370,16 @@ function withScratchWorkspaceDataReadLease<T>(
   // ScratchWriteTimings phase. fs-mutex reports waitedMs from Date.now(), so mixing the two put
   // the lease wait on a different clock from the totalMs it is a part of.
   const admissionStartedAt = performance.now();
+  const observeAdmission = onAcquired
+    ? (info: { waitedMs: number; admissionSubphaseTimingsMs?: Record<string, number> }) => onAcquired({
+        waitedMs: Math.max(0, performance.now() - admissionStartedAt),
+        localWaitMs: 0,
+        fsMutexAdmissionMs: info.waitedMs,
+        ...(info.admissionSubphaseTimingsMs
+          ? { admissionSubphaseTimingsMs: { ...info.admissionSubphaseTimingsMs } }
+          : {}),
+      })
+    : undefined;
   return withFsMutex(mutexName, run, {
     mode: 'read',
     intent: {
@@ -382,16 +392,8 @@ function withScratchWorkspaceDataReadLease<T>(
     ...(mutexTimeoutMs != null ? { timeoutMs: mutexTimeoutMs } : {}),
     waitingNoticeIntervalMs: 5_000,
     onWaiting,
-    onAcquired: onAcquired
-      ? (info) => onAcquired({
-          waitedMs: Math.max(0, performance.now() - admissionStartedAt),
-          localWaitMs: 0,
-          fsMutexAdmissionMs: info.waitedMs,
-          ...(info.admissionSubphaseTimingsMs
-            ? { admissionSubphaseTimingsMs: { ...info.admissionSubphaseTimingsMs } }
-            : {}),
-        })
-      : undefined,
+    onAcquired: observeAdmission,
+    onTimedOut: observeAdmission,
   }).catch((error) => { throw normalizeScratchMutexTimeout(error, mutexTimeoutMs); });
 }
 
@@ -1212,6 +1214,19 @@ async function evictWorkspaceQuotaLocked(
       const deletionStartedAt = performance.now();
       try {
         if (!(await removeUnpinnedScratchPath(run.dir))) continue;
+      } catch (error) {
+        const code = scratchFsErrorCode(error);
+        if (code !== 'EACCES' && code !== 'EPERM' && code !== 'EROFS') throw error;
+        // One read-only legacy run must not prevent reclaiming another candidate for
+        // an unrelated result write. Keep its full measured size charged: a failed
+        // recursive removal may have deleted only part of the run, never all of it.
+        // The final reservation still refuses if the remaining candidates cannot
+        // restore quota. Do not chmod immutable evidence or bypass retention pins.
+        if (diagnostics) {
+          diagnostics.deleteErrors += 1;
+          diagnostics.lastDeleteErrorCode = code;
+        }
+        continue;
       } finally {
         if (diagnostics) diagnostics.deletionMs += Math.max(0, performance.now() - deletionStartedAt);
       }
@@ -1716,6 +1731,9 @@ export interface ScratchQuotaRecoveryDiagnostics {
   fallbackRunSizes: number;
   deletionMs: number;
   deleteAttempts: number;
+  /** Candidate-local permission failures; their bytes remain charged to quota. */
+  deleteErrors: number;
+  lastDeleteErrorCode: string | null;
   runsDeleted: number;
   deletedBytes: number;
 }
@@ -1742,6 +1760,8 @@ function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagnostics {
     fallbackRunSizes: 0,
     deletionMs: 0,
     deleteAttempts: 0,
+    deleteErrors: 0,
+    lastDeleteErrorCode: null,
     runsDeleted: 0,
     deletedBytes: 0,
   };

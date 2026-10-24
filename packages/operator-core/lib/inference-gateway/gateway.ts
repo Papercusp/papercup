@@ -1211,6 +1211,9 @@ const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-
  */
 export interface GatewayCarryTrialAttempt {
   readonly attemptId: string;
+  /** Server-minted model request identity, shared by every selected-provider
+   * attempt for one incoming HTTP request. Absent only on legacy records. */
+  readonly gatewayRequestId?: string;
   readonly manifestSha256: string;
   readonly armId: string;
   readonly transport: 'oauth-http' | 'bearer-http' | 'anthropic-http';
@@ -2475,9 +2478,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const credential = authorization ?? apiKey!;
     const body = Buffer.from(init.body).toString('utf8');
     const attemptId = randomUUID();
+    const requestSpan = requestTelemetryByRequest.get(req)?.span;
+    if (!requestSpan) throw trialRefusal();
     const native = transport === 'anthropic-http' ? null : readGatewayNativeCorrelation(JSON.parse(body));
     const attempt: GatewayCarryTrialAttempt = Object.freeze({
-      attemptId, manifestSha256: binding.manifestSha256, armId: binding.armId,
+      attemptId, gatewayRequestId: `${gatewayProcessInstanceId}:${requestSpan.requestId}`,
+      manifestSha256: binding.manifestSha256, armId: binding.armId,
       transport, accountId, target, body,
       bodySha256: createHash('sha256').update(init.body).digest('hex'),
       ...(native?.status === 'observed' ? { nativeSessionId: native.threadId!, nativeTurnId: native.turnId! } : {}),

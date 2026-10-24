@@ -327,7 +327,7 @@ export interface SessionDirGcResult {
   skipped?: 'degraded-protected-set';
   caps?: Array<{
     root: string; maxBytes: number; beforeBytes: number | null; afterBytes: number | null;
-    pinnedBytes: number | null; overByBytes: number | null; error?: string;
+    pinnedBytes: number | null; overByBytes: number | null; pinnedOverageBytes: number | null; error?: string;
   }>;
 }
 
@@ -623,7 +623,7 @@ export async function runSessionDirGc(
   return withFsMutex('papercusp-disk-retention', async () => {
     const read = await readRetentionPinsAsync();
     if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
-    const { inspectRetentionTrees } = await import('./storage/disk-consumer-census');
+    const { inspectRetentionTrees, RetentionAllocationCounter } = await import('./storage/disk-consumer-census');
     const newestWrites = new Map<string, number>();
     const measure = async (root: SessionDirRoot) => {
       try {
@@ -643,14 +643,28 @@ export async function runSessionDirGc(
         const partial = census.retained.find((entry) => ['foreign ownership boundary', 'filesystem boundary'].includes(entry.reason));
         if (partial) throw new Error(`${partial.reason}: ${partial.path}`);
         const entries = [...census.entries, ...census.retained.flatMap((entry) => entry.entry ? [entry.entry] : [])];
-        let bytes = 0, pinnedBytes = 0;
+        const allocatedUnionBytes = (selected: typeof entries) => {
+          const counter = new RetentionAllocationCounter();
+          for (const entry of selected) {
+            // Each entry already deduplicates its own hardlinks. Replay shared
+            // allocations through the existing counter across home boundaries.
+            const shared = entry.hardlinks ?? [];
+            const exclusiveBytes = entry.bytes - shared.reduce((total, link) => total + link.bytes, 0);
+            if (!Number.isSafeInteger(exclusiveBytes) || exclusiveBytes < 0) throw new Error('invalid session allocation census');
+            counter.bytes += exclusiveBytes;
+            for (const link of shared) counter.add(link.paths[0]!, {
+              dev: link.dev, ino: link.ino, blocks: link.bytes / 512, nlink: 2,
+            }, true);
+          }
+          return counter.bytes;
+        };
+        const pinnedEntries: typeof entries = [];
         for (const entry of entries) {
-          bytes += entry.bytes;
           const logical = join(resolve(root.root), basename(entry.path));
           newestWrites.set(logical, entry.newestWriteMs);
-          if (pinProtectsPath(logical, read.pins, nowMs) || pinProtectsPath(entry.path, read.pins, nowMs)) pinnedBytes += entry.bytes;
+          if (pinProtectsPath(logical, read.pins, nowMs) || pinProtectsPath(entry.path, read.pins, nowMs)) pinnedEntries.push(entry);
         }
-        return { bytes, pinnedBytes };
+        return { bytes: allocatedUnionBytes(entries), pinnedBytes: allocatedUnionBytes(pinnedEntries) };
       } catch (error) { return { bytes: null, pinnedBytes: null, error: String(error) }; }
     };
     const before = [];
@@ -673,11 +687,19 @@ export async function runSessionDirGc(
       const after = await measure(root);
       const maxBytes = root.maxBytes ?? AGENT_ROOT_MAX_BYTES;
       const error = before[index]!.error ?? after.error;
+      const overByBytes = after.bytes === null ? null : Math.max(0, after.bytes - maxBytes);
+      const pinnedOverageBytes = after.pinnedBytes === null ? null : Math.max(0, after.pinnedBytes - maxBytes);
       result.caps.push({ root: root.root, maxBytes, beforeBytes: before[index]!.bytes,
         afterBytes: after.bytes, pinnedBytes: after.pinnedBytes,
-        overByBytes: after.bytes === null ? null : Math.max(0, after.bytes - maxBytes),
+        overByBytes, pinnedOverageBytes,
         ...(error ? { error } : {}) });
       if (error) result.errors.push({ path: root.root, error: `session cap measurement incomplete: ${error}` });
+      // Live/fresh/unarchived homes stay protected. Their excess is not the
+      // live-pin exception, and a preview does not claim to have enforced caps.
+      else if (!opts.dryRun && overByBytes !== null && pinnedOverageBytes !== null && overByBytes > pinnedOverageBytes) {
+        result.errors.push({ path: root.root,
+          error: `session cap remains exceeded beyond live-pin overage: ${overByBytes} byte(s) over cap, ${pinnedOverageBytes} accounted for by live pins` });
+      }
     }
     return result;
   });

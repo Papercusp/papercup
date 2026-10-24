@@ -456,7 +456,7 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         if (!generation || !dependencyLease) throw new Error('immutable fixture dependency selection unmeasured');
         const modules = join(generation, 'tree/node_modules');
         mkdirSync(join(root, 'node_modules'));
-        for (const entry of readdirSync(modules))
+        for (const entry of readdirSync(modules).filter(entry => entry !== '.papercusp-dependency-generation'))
           symlinkSync(join(modules, entry), join(root, 'node_modules', entry));
         const marker = Object.fromEntries(readFileSync(join(generation, '.papercusp-dependency-generation'), 'utf8')
           .trim().split('\n').map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));

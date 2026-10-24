@@ -527,6 +527,7 @@ async function sessionDirGcTick(): Promise<void> {
             (r.errors.length ? `, ${r.errors.length} error(s)` : '') +
             ` (retention ${Math.round(retentionMs / 3_600_000)}h, archive ${archiveOn ? 'on' : 'off'})`,
         );
+        for (const error of r.errors) console.warn(`[session-dir-gc]   ! ${error.path}: ${error.error}`);
       } catch (e) {
         console.warn(`[session-dir-gc] tick failed: ${(e as Error)?.message ?? e}`);
       }

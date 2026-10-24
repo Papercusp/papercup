@@ -246,7 +246,11 @@ if (phase) {
 } else {
   const options = isolatedTestFileWorkerOptions(process.env, 1);
   it('retains the private registered-sweep recovery and disposable-runtime cleanup proof', async context => {
+    // Thirteen sequential child routers cover fresh-process no-op and crash
+    // boundaries. Require an explicit full-proof allowance before allocation;
+    // phaseEnv above retains each ordinary single-file child deadline.
     const runId = await recordIsolatedIntegrationProof({ root, filePath,
+      minimumFileRunTimeoutMs: 90 * 60_000,
       sourcePaths: [filePath, 'packages/operator-core/lib/acceptance-grading-sweep-run.ts',
         'packages/operator-core/lib/acceptance-awaiting-plans.ts', 'packages/operator-core/lib/acceptance-grading-sweep-dispatch.ts',
         'packages/operator-core/lib/acceptance-grader.ts', 'packages/operator-core/lib/harness/routines/acceptance-grading-sweep-action.ts',

@@ -9,6 +9,52 @@ const source = readFileSync(process.env.VERIFY_TAURI_SOURCE_PATH || resolve(repo
 const launcher = source.match(/write_and_launch_tauri\(\) \{[\s\S]*?\n\}/)?.[0];
 if (!launcher) throw new Error('Maintained native launcher was not found');
 
+describe('verifier disk reservation cleanup', () => {
+  const cleanup = source.match(/^release_verifier_disk_reservations\(\) \{[\s\S]*?^\}/m)?.[0];
+  if (!cleanup) throw new Error('Maintained verifier reservation cleanup was not found');
+
+  function probe(setup: string) {
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-disk-cleanup-'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', setup, cleanup, 'release_verifier_disk_reservations',
+        'printf "remaining=%s\\n" "${#VERIFIER_DISK_RESERVATIONS[@]}"',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: { ...process.env,
+        DESKTOP_DIR: resolve(repo, 'papercusp-desktop'), FIXTURE_DIR: dir,
+      } });
+      return { ...result, reservationExists: existsSync(resolve(dir, 'reservation')) };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it('does not invoke an uninitialized helper before any reservation was acquired', () => {
+    const result = probe('VERIFIER_DISK_RESERVATIONS=("")');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toBe('remaining=0\n');
+  });
+
+  it('loads the maintained helper to release an early cargo reservation owned by this shell', () => {
+    const result = probe([
+      // Seed a real receipt without loading helper functions into the caller.
+      '( . "$DESKTOP_DIR/bin/lib/disk-preflight.sh"; printf "pid=%s\\nstart=%s\\n" "$$" "$(papercusp_proc_starttime "$$")" > "$FIXTURE_DIR/reservation" )',
+      'VERIFIER_DISK_RESERVATIONS=("$FIXTURE_DIR/reservation")',
+    ].join('\n'));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.reservationExists).toBe(false);
+    expect(result.stdout).toBe('remaining=0\n');
+  });
+
+  it('releases each nonempty receipt with the initialized helper and clears the list', () => {
+    const result = probe([
+      'VERIFIER_DISK_RESERVATIONS=(first "" second)',
+      'papercusp_release_disk_reservation() { printf "released=%s\\n" "$PAPERCUSP_DISK_RESERVATION_FILE"; }',
+    ].join('\n'));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('released=first\nreleased=second\nremaining=0\n');
+  });
+});
+
 describe('native budget calibration lifetime', () => {
   const start = source.indexOf('# Share source-preview\'s absolute task admission');
   const end = source.indexOf('# WI-10005763', start);

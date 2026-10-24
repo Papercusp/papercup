@@ -74,7 +74,7 @@ import {
 } from './converse-toolset';
 import { parseChatEnvelope, type ChatEvent, type ChatEventEnvelope, type ChatEventV1, type ChatTurnToolCall } from '@papercusp/chat-protocol';
 import { getOrgPg } from '@papercusp/db-org';
-import { admitConverseTurn } from './converse-turn';
+import { admitConverseTurn, converseToolResultBlocks } from './converse-turn';
 import {
   buildOperatorPrompt,
   type ConverseSessionUser,
@@ -240,7 +240,8 @@ export async function resolveConverseBrain(
  * either host round-trips it. Every frame this tool streams goes through here
  * so the wire cannot drift from the protocol type.
  */
-function emitChatEvent(ctx: { emit: (event: string, data: unknown) => void }, ev: ChatEvent): void {
+type ConverseEvent = ChatEvent | Extract<ChatEventV1, { type: 'result' }>;
+function emitChatEvent(ctx: { emit: (event: string, data: unknown) => void }, ev: ConverseEvent): void {
   ctx.emit(ev.type, ev);
 }
 
@@ -523,11 +524,11 @@ export default defineTool({
     const collectedTools: ChatTurnToolCall[] = [];
     let finalizationAttempted = false;
     const emission: { failure?: { error: unknown } } = {};
-    const emit = async (event: ChatEvent): Promise<void> => {
+    const emit = async (event: ConverseEvent): Promise<void> => {
       if (durableTurn) {
         await durableTurn.publish(event as ChatEventV1, committed => {
           ctx.emit('chat-event', committed);
-          emitChatEvent(ctx, committed.event as ChatEvent);
+          emitChatEvent(ctx, committed.event as ConverseEvent);
         });
       } else emitChatEvent(ctx, event);
     };
@@ -722,6 +723,11 @@ export default defineTool({
             // Owner/private tools never publish their return bodies here.
             onToolResult: (result: { name: string; output: string; isError: boolean; callId?: string }) => {
               durableTurn?.observeToolResult(result);
+              if (hostTrust === 'owner') {
+                const blocks = converseToolResultBlocks(result, workspaceId);
+                if (blocks.length) void emit({ type: 'result', blocks })
+                  .catch(error => { emission.failure ??= { error }; });
+              }
               if (hostTrust !== 'public') return;
               const name = canonicalToolName(result.name);
               if (!PUBLIC_MANUAL_TOOLS.includes(`mcp__agentmcp__${name}`)) return;

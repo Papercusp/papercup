@@ -930,7 +930,7 @@ describe('retention on a real fixture tree', () => {
         expect(opts?.timeoutMs).toBeGreaterThan(0); expect(opts?.timeoutMs).toBeLessThanOrEqual(60_000);
         run(command, args, opts?.stdin); return { ok: true, detail: 'completed' };
       };
-      const receipt = await runDiskReclaimOnce({ ...options,
+      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 60_000,
         inspectTrees: (root, opts) => inspectRetentionTrees(root, { ...opts, requirePrivilege: true }),
         removeEntry: (entry, ms) => removePrivilegedRetentionEntry(entry, ms, execute) });
       expect(receipt.errors).toEqual([]); expect(receipt.complete).toBe(true);
@@ -1514,6 +1514,61 @@ describe('retention on a real fixture tree', () => {
       expect(receipt.effects?.[0]).toMatchObject({ processed: 0, remaining: 1, nextPath: path, stopped: true });
       expect(scanHolders).toHaveBeenCalledOnce();
       await expect(stat(path)).resolves.toBeDefined();
+    } finally { now.mockRestore(); }
+  });
+  it('lets an admitted native removal finish within the pass deadline before stopping root admissions', async () => {
+    const { root, options } = await setup();
+    const paths = [join(root, 'old-a'), join(root, 'old-b')];
+    for (const path of paths) await writeFile(path, 'expired');
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const timeouts: number[] = [];
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 1_000, effectBudgetMs: 100,
+        scanHolders: async () => {
+          clock += 45;
+          return { complete: true, byPath: new Map<string, string[]>() };
+        },
+        removeEntry: async (entry, timeoutMs) => {
+          timeouts.push(timeoutMs);
+          // Model an enrolled worker that needs 20ms after its safety checks.
+          // A nearly spent root admission window must not kill that worker.
+          clock += 20;
+          if (timeoutMs < 20) throw new Error('delegate timeout');
+          await rm(entry.path);
+        },
+      });
+      expect(timeouts).toEqual([910]);
+      expect(receipt.entries.filter(entry => entry.status === 'removed').map(entry => entry.path)).toEqual([paths[0]]);
+      expect(receipt.entries.filter(entry => entry.status === 'failed')).toEqual([]);
+      expect(receipt.effects?.[0]).toMatchObject({ processed: 1, remaining: 1, nextPath: paths[1], stopped: true });
+      expect(receipt.complete).toBe(false);
+      await expect(stat(paths[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
+    } finally { now.mockRestore(); }
+  });
+  it('still bounds an admitted native removal by the remaining whole pass', async () => {
+    const { root, options } = await setup();
+    const path = join(root, 'old'); await writeFile(path, 'expired');
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const timeouts: number[] = [];
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 100, effectBudgetMs: 1_000,
+        scanHolders: async () => {
+          clock += 45;
+          return { complete: true, byPath: new Map<string, string[]>() };
+        },
+        removeEntry: async (entry, timeoutMs) => {
+          timeouts.push(timeoutMs);
+          clock += 5;
+          await rm(entry.path);
+        },
+      });
+      expect(timeouts).toEqual([10]);
+      expect(receipt.complete).toBe(true);
+      expect(receipt.entries[0]).toMatchObject({ path, status: 'removed' });
+      await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { now.mockRestore(); }
   });
   it('finishes an in-flight removal audit without falsely leaving a fully processed root partial', async () => {

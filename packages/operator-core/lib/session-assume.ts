@@ -33,7 +33,7 @@ const targetSchema = z.object({
   nativeSessionId: nonempty, backend: z.enum(['claude', 'codex', 'omp']),
   executionNativeSessionId: nonempty,
   binding: z.object({
-    coordOwnerId: nonempty, sessionId: nonempty, startedAt: nonempty,
+    coordOwnerId: nonempty, sessionId: nonempty.nullable(), startedAt: nonempty,
     ompThreadId: nonempty.nullable().optional(),
   }).strict(),
   writerGeneration: nonempty,
@@ -42,11 +42,12 @@ const targetSchema = z.object({
   context: assumeContextSchema,
 }).strict();
 
-const preparationSchema = z.object({
+export const assumePreparationSchema = z.object({
   version: z.literal(1), requestId: z.string().min(1).max(120),
   authorizationRef: nonempty, preparedAt: z.number().int().nonnegative(),
   expiresAt: z.number().int().nonnegative(), caller: callerSchema, target: targetSchema,
 }).strict();
+const preparationSchema = assumePreparationSchema;
 
 export type AssumeContext = z.infer<typeof assumeContextSchema>;
 export type AssumeCaller = z.infer<typeof callerSchema>;
@@ -109,7 +110,8 @@ function targetRefusal(actor: AssumeActor, request: AssumeRequest, target: Assum
   if (target.ownerId === actor.ownerId) return refuse('self-target');
   if (target.workspaceId !== actor.workspaceId) return refuse('foreign-workspace');
   if (target.ownerId !== request.targetOwnerId || target.binding.coordOwnerId !== target.ownerId ||
-      target.binding.sessionId !== target.nativeSessionId) return refuse('invalid-target');
+      (target.backend === 'omp' ? target.binding.ompThreadId !== target.nativeSessionId
+        : target.binding.sessionId !== target.nativeSessionId)) return refuse('invalid-target');
   if (!target.ended || target.liveHost || target.writer === 'held') return refuse('target-live');
   if (target.writer !== 'free') return refuse('writer-unknown');
   if (target.context.mode !== request.contextMode ||
@@ -209,9 +211,12 @@ export function assumeTransitionKey(plan: AssumePreparation): string {
 }
 
 export function assumePreparationFingerprint(plan: AssumePreparation): string {
+  // PostgreSQL jsonb changes object-key order. Normalize through the typed
+  // schema so reloading the same durable preparation keeps its fingerprint.
+  const canonical = preparationSchema.parse(plan);
   return createHash('sha256').update(JSON.stringify({
-    version: plan.version, requestId: plan.requestId, authorizationRef: plan.authorizationRef,
-    caller: plan.caller, target: plan.target,
+    version: canonical.version, requestId: canonical.requestId, authorizationRef: canonical.authorizationRef,
+    caller: canonical.caller, target: canonical.target,
   })).digest('hex');
 }
 

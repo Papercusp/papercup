@@ -318,6 +318,33 @@ function mechanicalDeps() {
   };
 }
 
+describe('completion phase attribution', () => {
+  it('keeps a delayed deliverable read visible before the missing-attestation refusal', async () => {
+    const active = new Set<string>();
+    const completed: string[] = [];
+    const phases: NonNullable<Parameters<typeof specTestAdequacyCompletionGate>[0]['phases']> = {
+      async track<T>(phase: string, work: () => T | Promise<T>): Promise<T> {
+        active.add(phase);
+        try { return await work(); }
+        finally { active.delete(phase); completed.push(phase); }
+      },
+    };
+    let release!: (value: Map<string, boolean>) => void;
+    let entered!: () => void;
+    const enteredRead = new Promise<void>((resolve) => { entered = resolve; });
+    const pendingRead = new Promise<Map<string, boolean>>((resolve) => { release = resolve; });
+    const deps = { ...passingDeps(), readCodeDeliverables: async () => { entered(); return pendingRead; } };
+    const pendingGate = specTestAdequacyCompletionGate({ workItem: WORK_ITEM, phases }, deps);
+    await enteredRead;
+    expect([...active]).toEqual(['completion:spec:code-deliverables']);
+    expect(completed).toContain('completion:spec:behavior-contract');
+    release(new Map());
+    expect(await pendingGate).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(active.size).toBe(0);
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+});
+
 describe('item-close contribution boundary', () => {
   function contributionWorld() {
     const deps = mechanicalDeps();

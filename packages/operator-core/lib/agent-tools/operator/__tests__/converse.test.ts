@@ -17,7 +17,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const durableMocks = vi.hoisted(() => ({ admit: vi.fn(), bind: vi.fn(), finish: vi.fn(), observe: vi.fn(), publish: vi.fn(), watch: vi.fn() }));
-vi.mock('../converse-turn', () => ({ admitConverseTurn: durableMocks.admit }));
+vi.mock('../converse-turn', async importOriginal => ({
+  ...await importOriginal<typeof import('../converse-turn')>(), admitConverseTurn: durableMocks.admit,
+}));
 vi.mock('../../../operator-conversation-compaction', () => ({ maybeCompactConversation: vi.fn(async () => undefined) }));
 vi.mock('@papercusp/db-org', async original => ({ ...(await original<Record<string, unknown>>()), getOrgPg: () => ({ sql: {} }) }));
 
@@ -243,6 +245,19 @@ afterEach(() => {
 });
 
 describe('operator:converse — mcpUrl / state-channel shape', () => {
+  it('P010 scoped converse lifecycle publishes owner report references through the durable queue without leaking tool bodies', async () => {
+    vi.mocked(runAgentChat).mockImplementation(async function* (opts): AnyGen {
+      opts.onToolResult?.({ name: 'reports:publish', callId: 'report-call', isError: false,
+        output: JSON.stringify({ ok: true, report_id: 'report-a', workspace_id: 'ws-real', body_md: 'PRIVATE BODY' }) });
+      yield { type: 'delta', text: '<say>Report ready.</say>' };
+    });
+    const ctx = makeCtx();
+    await handler({ messages: [], conversationId: 'conv-a', retainSession: false }, ctx);
+    expect(durableMocks.publish).toHaveBeenCalledWith({ type: 'result', blocks: [{ id: 'report:report-a',
+      kind: 'report', title: 'Report', sources: [{ ref: 'report:report-a' }],
+      actions: [{ id: 'open', kind: 'open', label: 'Open report', ref: 'report:report-a' }] }] }, expect.any(Function));
+    expect(JSON.stringify(ctx.emit.mock.calls)).not.toContain('PRIVATE BODY');
+  });
   it('P010 scoped converse lifecycle reserves before provider and finalizes the same turn with stable calls and a durable receipt', async () => {
     vi.mocked(runAgentChat).mockImplementation(async function* (opts): AnyGen {
       expect(durableMocks.admit).toHaveBeenCalledOnce();

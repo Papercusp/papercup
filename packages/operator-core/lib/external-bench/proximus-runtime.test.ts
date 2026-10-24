@@ -4,16 +4,216 @@ import { describe, expect, it, vi } from 'vitest';
 import { currentProtocolFixture, allCapabilities } from './reproducibility/_protocol-test-fixture';
 import { currentBenchmarkProtocolSchema, currentBenchProviderAgent, PROXIMUS_CLIENT_VERSION,
   PROXIMUS_SOURCE_REVISION, type CurrentBenchmarkProtocol } from './reproducibility/schema';
-import { measureProximusRuntime, proximusHostProcess, proximusRunSpec, runProximusHost } from './proximus-runtime';
+import { measureProximusRuntime, proximusHostProcess, proximusRunSpec, runProximusHost,
+  readProximusAttemptPopulation, readProximusBilling } from './proximus-runtime';
 import { currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
   requireCurrentBenchHostReferenceGateway, type CurrentBenchNativeInputCeiling } from './current-su';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import type { GatewayCarryTrialAttempt } from '../inference-gateway/gateway';
 import { currentBenchLaunchSelection } from './run-launcher';
-import type { LearningSpendReservation, ReserveLearningSpendInput } from '../learning-governor/store';
+import type { LearningSpendReservation, LearningSpendReservationCensus, ReserveLearningSpendInput } from '../learning-governor/store';
 import type { Sql } from 'postgres';
 
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+
+describe('Proximus terminal provider-attempt population', () => {
+  const binding = { workspaceId: 'offline-workspace', loopId: 'offline-loop', runId: 'offline-run',
+    preregHash: digest('frozen-protocol'), assignmentId: 'bench-assignment:proximus-task' };
+  const requestId = '11111111-1111-4111-8111-111111111111:1';
+  const reservation = (id: string, outcome: string, gatewayRequestId = requestId): LearningSpendReservation => {
+    const identity = { attemptId: id, gatewayRequestId, manifestSha256: binding.preregHash,
+      armId: binding.assignmentId, transport: 'bearer-http', accountId: 'offline-account',
+      credentialHeader: 'authorization', credentialSha256: digest('credential'),
+      target: 'https://api.openai.com/v1/responses', bodySha256: digest('request'), clockId: 'host-clock' };
+    const result = { ...identity, reservationRef: id, outcome, responseStatus: outcome === 'send-refused' || outcome === 'fetch-failed' ? null : 200,
+      costUsdMeasurementMissing: outcome !== 'send-refused', ...(outcome === 'send-refused' ? { costUsd: 0 } : {}),
+      ...(['response-completed', 'response-incomplete'].includes(outcome) ? { responseSha256: digest(id), responseBytes: 100 } : {}),
+      ...(outcome === 'response-completed' ? { providerCompletion: { responseId: `response-${id}`, model: 'offline-model', providerEffort: 'high',
+        usage: { inputTokenBasis: 'inclusive', inputTokens: 10, outputTokens: 2, cacheReadTokens: 3, cacheCreationTokens: 0 } } } : {}) };
+    return { id, workspaceId: binding.workspaceId, loopId: binding.loopId, potSlug: null, attemptKind: 'evaluation',
+      requestedUsd: 1, reservedUsd: 1, usedUsd: 0, status: outcome === 'send-refused' ? 'cancelled' : 'open',
+      signalOrigin: 'organic', runRef: `manifest:${binding.preregHash}/attempt:${id}`,
+      note: JSON.stringify({ nativeGatewayAttempt: identity, nativeGatewayAttemptResult: result }),
+      resources: { armId: binding.assignmentId, inputTokens: 100, outputTokens: 10 }, createdAt: 1,
+      settledAt: outcome === 'send-refused' ? 2 : null };
+  };
+  const census = (reservations: LearningSpendReservation[]): Extract<LearningSpendReservationCensus, { status: 'complete' }> => ({ status: 'complete',
+    source: 'learning-spend-reservations', reservations, populationSha256: digest(JSON.stringify({ version: 1,
+      workspaceId: binding.workspaceId, loopId: binding.loopId, sinceMs: null, reservations })) });
+  function changeNote(row: LearningSpendReservation, change: (note: any) => void) {
+    const note = JSON.parse(row.note!); change(note); row.note = JSON.stringify(note);
+  }
+  const billRow = (id: string) => ({ sample_id: `sample-${id}`, gateway_request_id: requestId,
+    gateway_attempt_id: id, provider_response_id: `response-${id}`, manifest_sha256: binding.preregHash,
+    assignment_id: binding.assignmentId, run_id: binding.runId, account_id: 'offline-account',
+    provider: 'openai', model: 'offline-model', cost_source: 'provider', cost_bound: null,
+    price_table_version: null, cost_micros: '250000.000000',
+    response_id_source: 'authenticated-gateway-provider-response', grain: 'request' });
+  const billSql = (rows: unknown[]) => vi.fn(async () => rows) as unknown as Sql;
+  it('reconciles distinct provider attempts using exact canonical samples, with zero only for unsent refusals', async () => {
+    const rows = [reservation('refused', 'send-refused'), reservation('a', 'response-completed'), reservation('b', 'response-completed')];
+    const sql = billSql([billRow('a'), { ...billRow('b'), cost_micros: '0.000000' }]);
+    const result = await readProximusBilling(sql, binding, async () => census(rows));
+    expect(result).toEqual({ status: 'complete', knownSubtotalMicros: '250000', billedInferenceMicros: '250000',
+      missingAttemptIds: [], samples: [
+        { attemptId: 'a', sampleId: 'sample-a', billedInferenceMicros: '250000' },
+        { attemptId: 'b', sampleId: 'sample-b', billedInferenceMicros: '0' }], populationSha256: census(rows).populationSha256 });
+    expect((sql as unknown as ReturnType<typeof vi.fn>).mock.calls[0].slice(1)).toEqual([binding.workspaceId, [requestId]]);
+  });
+  it('retains known subtotal while failed, partial or missing sends keep the total unknown', async () => {
+    const rows = [reservation('failed', 'fetch-failed'), reservation('partial', 'response-incomplete'),
+      reservation('missing', 'response-completed'), reservation('known', 'response-completed')];
+    expect(await readProximusBilling(billSql([billRow('known')]), binding, async () => census(rows)))
+      .toMatchObject({ status: 'incomplete', knownSubtotalMicros: '250000', billedInferenceMicros: null,
+        missingAttemptIds: ['failed', 'partial', 'missing'] });
+  });
+  it('allows exact zero for an entirely refused population and reconciles Anthropic without native IDs', async () => {
+    expect(await readProximusBilling(billSql([]), binding, async () => census([reservation('refused', 'send-refused')])))
+      .toMatchObject({ status: 'complete', knownSubtotalMicros: '0', billedInferenceMicros: '0', samples: [] });
+    const rows = [reservation('anthropic', 'response-completed')];
+    changeNote(rows[0], n => {
+      for (const value of [n.nativeGatewayAttempt, n.nativeGatewayAttemptResult])
+        Object.assign(value, { transport: 'anthropic-http', credentialHeader: 'x-api-key', target: 'https://api.anthropic.com/v1/messages' });
+    });
+    expect(await readProximusBilling(billSql([{ ...billRow('anthropic'), provider: 'anthropic' }]), binding, async () => census(rows)))
+      .toMatchObject({ status: 'complete', billedInferenceMicros: '250000' });
+  });
+  it('detaches billing rows and assignment identity before awaiting later evidence', async () => {
+    const rows = [reservation('a', 'response-completed')], bills = [billRow('a')], callerBinding = { ...binding };
+    const sql = vi.fn(async () => { callerBinding.workspaceId = 'changed'; return bills; }) as unknown as Sql;
+    let reads = 0;
+    const result = await readProximusBilling(sql, callerBinding, async () => {
+      if (++reads > 2) bills[0].cost_micros = '999999';
+      return census(rows);
+    });
+    expect(result).toMatchObject({ status: 'complete', billedInferenceMicros: '250000' });
+    expect((sql as unknown as ReturnType<typeof vi.fn>).mock.calls[0].slice(1)).toEqual([binding.workspaceId, [requestId]]);
+  });
+  it.each(['estimated', 'bound', 'version', 'account', 'model', 'provider', 'request', 'attempt', 'response',
+    'manifest', 'assignment', 'run', 'source', 'grain', 'negative', 'fractional', 'nan', 'duplicate sample', 'duplicate attempt', 'foreign row'])
+    ('refuses ambiguous or non-bill-grade samples: %s', async change => {
+      const rows = [reservation('a', 'response-completed')], bill = billRow('a'), bills = [bill];
+      if (change === 'estimated') bill.cost_source = 'estimated';
+      if (change === 'bound') Object.assign(bill, { cost_bound: 'lower' });
+      if (change === 'version') Object.assign(bill, { price_table_version: 'estimated-table' });
+      if (change === 'account') bill.account_id = 'other';
+      if (change === 'model') bill.model = 'other';
+      if (change === 'provider') bill.provider = 'anthropic';
+      if (change === 'request') bill.gateway_request_id = requestId.replace(':1', ':2');
+      if (change === 'attempt') bill.gateway_attempt_id = 'other';
+      if (change === 'response') bill.provider_response_id = 'other';
+      if (change === 'manifest') bill.manifest_sha256 = digest('other');
+      if (change === 'assignment') bill.assignment_id = 'bench-assignment:other';
+      if (change === 'run') bill.run_id = 'other';
+      if (change === 'source') bill.response_id_source = 'caller';
+      if (change === 'grain') bill.grain = 'session';
+      if (change === 'negative') bill.cost_micros = '-1';
+      if (change === 'fractional') bill.cost_micros = '0.1';
+      if (change === 'nan') bill.cost_micros = 'NaN';
+      if (change === 'duplicate sample') bills.push({ ...bill });
+      if (change === 'duplicate attempt') bills.push({ ...bill, sample_id: 'different-sample' });
+      if (change === 'foreign row') bills.push(billRow('other'));
+      expect(await readProximusBilling(billSql(bills), binding, async () => census(rows)))
+        .toEqual({ status: 'unavailable', reason: 'invalid-billing' });
+    });
+  it('does not convert a missing ledger, failed bill read or changing population into a zero bill', async () => {
+    const rows = [reservation('a', 'response-completed')];
+    expect(await readProximusBilling(billSql([]), binding, async () => undefined))
+      .toEqual({ status: 'unavailable', reason: 'ledger-unavailable' });
+    expect(await readProximusBilling(vi.fn(async () => { throw new Error('offline'); }) as unknown as Sql, binding, async () => census(rows)))
+      .toEqual({ status: 'unavailable', reason: 'billing-unavailable' });
+    let reads = 0;
+    expect(await readProximusBilling(billSql([billRow('a')]), binding, async () => census(++reads > 2 ?
+      [...rows, reservation('late', 'fetch-failed')] : rows)))
+      .toEqual({ status: 'unavailable', reason: 'ledger-changed' });
+  });
+  it('retains retries under one server request and accepts terminal unknown usage without claiming a bill', async () => {
+    const rows = [reservation('refused', 'send-refused'), reservation('failed', 'fetch-failed'),
+      reservation('incomplete', 'response-incomplete'), reservation('success', 'response-completed')];
+    // Even a settled amount or a caller quote cannot become actual billing evidence.
+    rows[3].usedUsd = 0.75; rows[3].status = 'settled'; rows[3].settledAt = 2;
+    changeNote(rows[3], n => { n.nativeGatewayAttemptResult.costUsd = 99; n.diagnosticContext = { cost_usd: 99 }; });
+    const read = vi.fn(async () => census(rows));
+    const result = await readProximusAttemptPopulation(binding, read);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ status: 'terminal', usageComplete: false, billingStatus: 'unreconciled',
+      requests: [{ gatewayRequestId: requestId, attemptIds: rows.map(r => r.id) }],
+      attempts: rows.map(r => ({ attemptId: r.id })) });
+    expect(JSON.stringify(result)).not.toMatch(/credential|costUsd|cost_usd|nativeSessionId/);
+  });
+  it('counts distinct successful requests even when their token signatures are identical', async () => {
+    const rows = [reservation('first', 'response-completed'), reservation('second', 'response-completed', requestId.replace(':1', ':2'))];
+    const result = await readProximusAttemptPopulation(binding, async () => census(rows));
+    expect(result).toMatchObject({ status: 'terminal', usageComplete: true, billingStatus: 'unreconciled' });
+    if (result.status === 'terminal') expect(result.requests).toHaveLength(2);
+  });
+  it('retains the authenticated Anthropic transport and exact cache usage', async () => {
+    const rows = [reservation('anthropic', 'response-completed')];
+    changeNote(rows[0], n => {
+      for (const value of [n.nativeGatewayAttempt, n.nativeGatewayAttemptResult])
+        Object.assign(value, { transport: 'anthropic-http', credentialHeader: 'x-api-key', target: 'https://api.anthropic.com/v1/messages' });
+      n.nativeGatewayAttemptResult.providerCompletion.usage.cacheCreationTokens = 4;
+    });
+    expect(await readProximusAttemptPopulation(binding, async () => census(rows)))
+      .toMatchObject({ status: 'terminal', usageComplete: true, attempts: [{ transport: 'anthropic-http',
+        providerCompletion: { usage: { inputTokens: 10, cacheReadTokens: 3, cacheCreationTokens: 4 } } }] });
+  });
+  it('keeps unknown cache usage explicit and strips extra nested provider fields', async () => {
+    const rows = [reservation('success', 'response-completed')];
+    changeNote(rows[0], n => {
+      n.nativeGatewayAttemptResult.providerCompletion.usage.cacheReadTokens = null;
+      n.nativeGatewayAttemptResult.providerCompletion.costUsd = 42;
+      n.nativeGatewayAttemptResult.providerCompletion.usage.body = 'private';
+    });
+    const result = await readProximusAttemptPopulation(binding, async () => census(rows));
+    expect(result).toMatchObject({ status: 'terminal', usageComplete: false, billingStatus: 'unreconciled' });
+    expect(JSON.stringify(result)).not.toMatch(/private|costUsd/);
+  });
+  it.each(['missing result', 'missing request id', 'mismatched identity', 'native identity', 'nonterminal',
+    'invalid tokens', 'duplicate provider response', 'foreign workspace', 'duplicate reservation', 'borrowed request',
+    'invalid digest', 'wrong ledger scope', 'invalid refusal'] as const)('refuses %s instead of asserting a terminal population', async change => {
+    const rows = [reservation('success', 'response-completed')];
+    if (change === 'missing result') changeNote(rows[0], n => { delete n.nativeGatewayAttemptResult; });
+    if (change === 'missing request id') changeNote(rows[0], n => { delete n.nativeGatewayAttempt.gatewayRequestId; delete n.nativeGatewayAttemptResult.gatewayRequestId; });
+    if (change === 'mismatched identity') changeNote(rows[0], n => { n.nativeGatewayAttemptResult.gatewayRequestId = requestId.replace(':1', ':2'); });
+    if (change === 'native identity') changeNote(rows[0], n => { n.nativeGatewayAttempt.nativeSessionId = 'invented'; n.nativeGatewayAttemptResult.nativeSessionId = 'invented'; });
+    if (change === 'nonterminal') rows[0] = reservation('success', 'response-headers');
+    if (change === 'invalid tokens') changeNote(rows[0], n => { n.nativeGatewayAttemptResult.providerCompletion.usage.cacheReadTokens = 11; });
+    if (change === 'duplicate provider response') { rows.push(reservation('duplicate', 'response-completed'));
+      changeNote(rows[1], n => { n.nativeGatewayAttemptResult.providerCompletion.responseId = 'response-success'; }); }
+    if (change === 'foreign workspace') rows[0].workspaceId = 'other-workspace';
+    if (change === 'duplicate reservation') rows.push(structuredClone(rows[0]));
+    if (change === 'borrowed request') { rows.push(reservation('other-arm', 'response-completed'));
+      rows[1].resources!.armId = 'bench-assignment:other';
+      changeNote(rows[1], n => { n.nativeGatewayAttempt.armId = n.nativeGatewayAttemptResult.armId = rows[1].resources!.armId; }); }
+    if (change === 'invalid refusal') { rows[0] = reservation('refused', 'send-refused'); rows[0].usedUsd = 1; }
+    const snapshot = census(rows);
+    if (change === 'invalid digest') snapshot.populationSha256 = digest('unrelated');
+    if (change === 'wrong ledger scope') snapshot.populationSha256 = digest(JSON.stringify({ version: 1,
+      workspaceId: binding.workspaceId, loopId: binding.loopId, sinceMs: 1, reservations: rows }));
+    expect((await readProximusAttemptPopulation(binding, async () => snapshot)).status).toBe('unavailable');
+  });
+  it('refuses a population that changes across reads, including an in-place mutation by a shared reader', async () => {
+    const snapshot = census([reservation('success', 'response-completed')]);
+    let reads = 0;
+    const result = await readProximusAttemptPopulation(binding, async () => {
+      if (reads++) Object.assign(snapshot, census([...snapshot.reservations, reservation('late', 'fetch-failed')]));
+      return snapshot;
+    });
+    expect(result).toEqual({ status: 'unavailable', reason: 'ledger-changed' });
+  });
+  it('keeps other assignments separate and refuses missing or unreadable ledger evidence', async () => {
+    const rows = [reservation('success', 'response-completed'), reservation('other', 'response-headers', requestId.replace(':1', ':2'))];
+    rows[1].resources!.armId = 'bench-assignment:other';
+    changeNote(rows[1], n => { n.nativeGatewayAttempt.armId = n.nativeGatewayAttemptResult.armId = rows[1].resources!.armId; });
+    expect(await readProximusAttemptPopulation(binding, async () => census(rows)))
+      .toMatchObject({ status: 'terminal', attempts: [{ attemptId: 'success' }] });
+    expect(await readProximusAttemptPopulation(binding, async () => census([])))
+      .toEqual({ status: 'unavailable', reason: 'no-attempts' });
+    expect(await readProximusAttemptPopulation(binding, async () => { throw new Error('offline'); }))
+      .toEqual({ status: 'unavailable', reason: 'ledger-unavailable' });
+  });
+});
 vi.mock('node:child_process', async importOriginal => {
   const original = await importOriginal<typeof import('node:child_process')>();
   return { ...original, spawn: vi.fn(original.spawn) };

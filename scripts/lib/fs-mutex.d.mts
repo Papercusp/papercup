@@ -130,7 +130,7 @@ export function withFsMutex<T>(name: string, fn: (context?: {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 /**
@@ -170,7 +170,7 @@ export function withFsMutexBudget<T>(name: string, fn: (workers: number) => Prom
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export function withFsMutexRead<T>(name: string, fn: () => Promise<T>, opts?: {
@@ -186,6 +186,11 @@ export function withFsMutexRead<T>(name: string, fn: () => Promise<T>, opts?: {
     waitingNoticeIntervalMs?: number;
     onAcquired?: (info: {
         waitedMs: number;
+        admissionSubphaseTimingsMs?: Record<string, number>;
+    }) => void;
+    onTimedOut?: (info: {
+        waitedMs: number;
+        timeoutMs: number;
         admissionSubphaseTimingsMs?: Record<string, number>;
     }) => void;
     io?: FsMutexIo;

@@ -242,6 +242,41 @@ describe('R-2 — a successful close lacking a declared kind\'s catalog proof is
     expect(missingFor(r, 'logic')).toContain('`testResult` reporting a passing run');
   });
 
+  it.each([
+    '5 PASS, 0 FAIL, 0 SKIP',
+    '5 passed, 0 failed',
+    '5 passed, 0 failures',
+    '5 pass, 0 fail',
+    'PASS suite\nTests: 5 passed, 0 FAIL',
+    '5 passed, 0 FAIL; integration: 2 passed, 0 FAIL',
+  ])('accepts an explicit zero-failure summary: %s', async (testResult) => {
+    for (const kind of ['logic', 'test-only'] as const) {
+      const proof = { testsRun: 'testing:run { files: ["a.test.ts"] }', testResult };
+      for (const over of [{ root: proof }, { kindEvidence: [{ kind, ...proof }] }]) {
+        const r = await evaluateChangeKindGate(input({ kinds: [kind], ...over }));
+        expect(r, `${kind}: ${testResult}`).toMatchObject({ applicable: true, outcome: 'pass' });
+      }
+    }
+  });
+
+  it.each([
+    '5 passed, 1 fail',
+    '5 PASS, 1 FAILED',
+    '5 passed, 2 failures',
+    '5 PASS, 10 FAIL',
+    '5 passed, 0 FAIL; integration: 1 FAIL',
+    '5 passed, 0 failed\nFAIL a.test.ts',
+    '5 passed; FAIL',
+  ])('refuses a positive failure count or unqualified failure: %s', async (testResult) => {
+    for (const kind of ['logic', 'test-only'] as const) {
+      const proof = { testsRun: 'testing:run { files: ["a.test.ts"] }', testResult };
+      for (const over of [{ root: proof }, { kindEvidence: [{ kind, ...proof }] }]) {
+        const r = expectRefused(await evaluateChangeKindGate(input({ kinds: [kind], ...over })));
+        expect(missingFor(r, kind)).toContain('`testResult` reporting a passing run');
+      }
+    }
+  });
+
   it.each(['config', 'docs'] as const)('a %s close without a read-back is refused', async (kind) => {
     const r = expectRefused(await evaluateChangeKindGate(input({ kinds: [kind], root: { testsRun: 'npm test', testResult: 'pass' } })));
     expect(missingFor(r, kind)).toContain('`readBack` with');

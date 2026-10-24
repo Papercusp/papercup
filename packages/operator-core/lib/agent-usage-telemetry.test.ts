@@ -267,6 +267,44 @@ describe('recordUsageHeaders (rate-limit header parsing)', () => {
 });
 
 describe('recordUsageSample (best-effort persistence + cost honesty)', () => {
+  const providerRequest = { gatewayRequestId: '11111111-1111-4111-8111-111111111111:1',
+    gatewayAttemptId: 'attempt-1', providerResponseId: 'response-1',
+    manifestSha256: 'a'.repeat(64), assignmentId: 'bench-assignment:task' };
+  const requestSample = (): UsageSample => ({ bucketKey: 'b', provider: 'openai', modelClass: 'default',
+    source: 'headers', accountId: 'account-1', runId: 'run-1', model: 'model-1', costUsd: 0.25, providerRequest });
+  it('preserves exact host request attribution without inventing native session or turn IDs', async () => {
+    await recordUsageSample(requestSample());
+    const row = lastInsert();
+    expect(JSON.parse(String(row.usage_provenance))).toEqual({ grain: 'request', costBound: null,
+      ...providerRequest, providerResponseIdSource: 'authenticated-gateway-provider-response' });
+    expect(row.session_id).toBeNull();
+    expect(row.cost_source).toBe('provider');
+    expect(row.price_table_version).toBeNull();
+  });
+  it('keeps exact request estimates labeled estimated, including tier bounds', async () => {
+    costFromTokens.mockReturnValue({ priced: true, usd: 0.1, bound: 'lower' });
+    const sample = requestSample(); delete sample.costUsd; sample.inputTokens = 2;
+    await recordUsageSample(sample);
+    const row = lastInsert();
+    expect(row.cost_source).toBe('estimated');
+    expect(JSON.parse(String(row.usage_provenance))).toMatchObject({ ...providerRequest, costBound: 'lower' });
+  });
+  it.each(['request', 'attempt', 'response', 'manifest', 'assignment', 'account', 'run', 'model', 'provider', 'negative cost'])
+    ('does not persist invalid host request attribution: %s', async change => {
+      const sample = { ...requestSample(), providerRequest: { ...providerRequest } };
+      if (change === 'request') sample.providerRequest.gatewayRequestId = 'caller-invented';
+      if (change === 'attempt') sample.providerRequest.gatewayAttemptId = '';
+      if (change === 'response') sample.providerRequest.providerResponseId = '';
+      if (change === 'manifest') sample.providerRequest.manifestSha256 = 'wrong';
+      if (change === 'assignment') sample.providerRequest.assignmentId = 'other';
+      if (change === 'account') delete sample.accountId;
+      if (change === 'run') delete sample.runId;
+      if (change === 'model') delete sample.model;
+      if (change === 'provider') sample.provider = 'unknown';
+      if (change === 'negative cost') sample.costUsd = -1;
+      await recordUsageSample(sample);
+      expect(sqlCalls).toHaveLength(0);
+    });
   it('swallows a thrown getOrgPg/sql error (resolves without throwing into the agent path)', async () => {
     sqlShouldThrow.value = true;
     await expect(

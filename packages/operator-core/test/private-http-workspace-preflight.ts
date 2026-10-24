@@ -258,27 +258,90 @@ export function privateClaudeModelConfig(argv: readonly string[], env: NodeJS.Pr
     mcpWorkspace: mcp.searchParams.get('workspace') };
 }
 
-/** Stop admission before reaping descendants that can keep the host's pipes open. */
-export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: () => Promise<void>, graceMs = 5_000) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+export interface PrivateHostStopObservation {
+  pid: number | null;
+  phase: string;
+  elapsedMs: number;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  sigtermAccepted: boolean | null;
+  sigkillAccepted: boolean | null;
+  exitObserved: boolean;
+  closeObserved: boolean;
+  signal?: NodeJS.Signals;
+  accepted?: boolean;
+}
+
+/** Stop admission before reaping descendants that can keep the host's pipes open.
+ * A rejected stop retains observations on the error, independently of the optional
+ * diagnostic sink. Neither a signal attempt nor ended pipes prove process exit. */
+export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: () => Promise<void>, graceMs = 5_000,
+  observe?: (observation: PrivateHostStopObservation) => void) {
+  const started = Date.now();
+  const alreadyExited = host.exitCode !== null || host.signalCode !== null;
+  const pipesEnded = () => [host.stdout, host.stderr].every(stream => !stream || stream.destroyed || stream.readableEnded);
+  let exitObserved = alreadyExited, closeObserved = alreadyExited && pipesEnded();
+  let sigtermAccepted: boolean | null = null, sigkillAccepted: boolean | null = null;
+  let phase = 'start';
+  const observations: PrivateHostStopObservation[] = [];
+  const snapshot = (name: string): PrivateHostStopObservation => ({
+    pid: host.pid ?? null, phase: name, elapsedMs: Date.now() - started,
+    exitCode: host.exitCode, signalCode: host.signalCode,
+    sigtermAccepted, sigkillAccepted, exitObserved, closeObserved,
+  });
+  const record = (name: string, detail: Partial<PrivateHostStopObservation> = {}) => {
+    const observation = { ...snapshot(name), ...detail };
+    observations.push(observation);
+    try { observe?.(observation); } catch { /* diagnostics must not prevent teardown */ }
+  };
+  let resolveExit!: () => void, resolveClose!: () => void;
+  const exited = new Promise<void>(done => { resolveExit = done; });
+  const closed = new Promise<void>(done => { resolveClose = done; });
+  const onExit = () => { exitObserved = true; record('exit'); resolveExit(); };
+  const onClose = () => { closeObserved = true; record('close'); resolveClose(); };
+  if (exitObserved) resolveExit();
+  else host.once('exit', onExit);
+  if (closeObserved) resolveClose();
+  else host.once('close', onClose);
   const bounded = async (promise: Promise<void>, label: string) => {
+    phase = label;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([promise, new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`Private host ${label} did not settle`)), graceMs);
       })]);
     } finally { clearTimeout(timer); }
   };
-  const alreadyExited = host.exitCode !== null || host.signalCode !== null;
-  const exited = alreadyExited ? Promise.resolve() : new Promise<void>(done => host.once('exit', () => done()));
-  const pipesEnded = () => [host.stdout, host.stderr].every(stream => !stream || stream.destroyed || stream.readableEnded);
-  const closed = alreadyExited && pipesEnded() ? Promise.resolve() : new Promise<void>(done => host.once('close', () => done()));
-  if (!alreadyExited) {
-    host.kill('SIGTERM');
-    try { await bounded(exited, 'exit'); }
-    catch { host.kill('SIGKILL'); await bounded(exited, 'forced exit'); }
+  const signal = (value: 'SIGTERM' | 'SIGKILL') => {
+    phase = 'signal';
+    let accepted = false;
+    try { accepted = host.kill(value); }
+    finally {
+      if (value === 'SIGTERM') sigtermAccepted = accepted;
+      else sigkillAccepted = accepted;
+      record('signal', { signal: value, accepted });
+    }
+  };
+  try {
+    record('start');
+    if (!alreadyExited) {
+      signal('SIGTERM');
+      try { await bounded(exited, 'exit'); }
+      catch { signal('SIGKILL'); await bounded(exited, 'forced exit'); }
+    }
+    phase = 'dependent cleanup';
+    await afterExit?.();
+    await bounded(closed, 'stdio drainage');
+    record('complete');
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    record('failed');
+    Object.assign(failure, { privateHostStop: { ...snapshot(phase), observations } });
+    throw failure;
+  } finally {
+    host.removeListener('exit', onExit);
+    host.removeListener('close', onClose);
   }
-  await afterExit?.();
-  await bounded(closed, 'stdio drainage');
 }
 
 /** Prepared ESM bundles must not inherit test transformers or Vitest's passive

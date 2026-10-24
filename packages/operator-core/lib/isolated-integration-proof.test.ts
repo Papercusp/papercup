@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
-import { assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedWorkerOptions, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
+import { assertIsolatedFileRunBudget, assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedWorkerOptions, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
 import { assertPrivateUnrelatedCheckpointObservation, privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost, type PrivateUnrelatedCheckpointObservation } from '../test/private-http-workspace-preflight';
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -18,6 +18,26 @@ it('keeps isolated worker phase ceilings independent of a widened outer file bud
   expect(widened.testTimeoutMs).toBeLessThan(outerFileMs);
   expect(widened.phaseTimeouts).toMatchObject({ bootstrapMaxMs: 600_000,
     executeMs: 480_000, executeMaxMs: 480_000, teardownMaxMs: 600_000 });
+});
+
+it('rejects a short enclosing proof budget before reading source or allocating a worker', async () => {
+  vi.stubEnv('PAPERCUSP_TEST_FILE_TIMEOUT_MS', '');
+  const execute = vi.fn();
+  try {
+    await expect(recordIsolatedIntegrationProof({ root: join(tmpdir(), 'proof-source-must-not-be-read'),
+      filePath: 'never-run.test.ts', sourcePaths: [], minimumFileRunTimeoutMs: 90 * 60_000,
+      execute })).rejects.toThrow('PAPERCUSP_TEST_FILE_TIMEOUT_MS >= 5400000');
+    expect(execute).not.toHaveBeenCalled();
+  } finally { vi.unstubAllEnvs(); }
+});
+
+it('admits the exact declared proof budget without changing child phase ceilings', () => {
+  const requiredMs = 90 * 60_000;
+  expect(() => assertIsolatedFileRunBudget(requiredMs,
+    { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(requiredMs - 1) })).toThrow('enclosing router');
+  const env = { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(requiredMs) };
+  expect(() => assertIsolatedFileRunBudget(requiredMs, env)).not.toThrow();
+  expect(isolatedWorkerOptions(480_000, env)).toEqual(isolatedWorkerOptions(480_000, {}));
 });
 
 function unrelatedCheckpointObservation(): PrivateUnrelatedCheckpointObservation {

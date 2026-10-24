@@ -24,6 +24,40 @@ import { SuNativeCards } from './su-session-native-cards';
 import type { SuSessionEventInput } from './su-session-host';
 import { approvalCardText } from './su-session-approval-display';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
+import { SU_EXEC_COMBINATIONS, SU_EXEC_SCENARIOS, SU_EXEC_REQUEST_SCENARIOS, suExecScenariosFor, suExecQualificationPopulation,
+  suExecQualificationDefects } from './__fixtures__/su-execution-parity';
+
+describe('SU execution live qualification inventory (P-001)', () => {
+  it('SU-EXEC R-1 acceptance contract', () => {
+    // This case freezes the live drill population. It deliberately cannot certify
+    // a native execution from this file's older Claude-only identity smoke.
+    const population = suExecQualificationPopulation();
+    for (const combination of SU_EXEC_COMBINATIONS) {
+      const rows = population.filter(row => row.provider === combination.provider && row.execution === combination.execution);
+      expect(rows.map(row => row.scenario)).toEqual(suExecScenariosFor(combination).map(scenario => scenario.id));
+      expect(rows.every(row => row.state === 'unknown')).toBe(true);
+      for (const request of SU_EXEC_REQUEST_SCENARIOS.filter(request => request.provider === combination.provider)) {
+        expect(rows.some(row => row.scenario === request.id)).toBe(true);
+      }
+    }
+    for (const id of ['assets', 'request-families', 'fork', 'wake-receipts', 'cold-carry', 'same-provider-handoff', 'provider-transfer']) {
+      expect(SU_EXEC_SCENARIOS.find(scenario => scenario.id === id)?.falsifier).toBeTruthy();
+    }
+    expect(suExecQualificationDefects(population).length).toBeGreaterThan(0);
+  });
+
+  it('SU-EXEC R-18 acceptance contract', () => {
+    for (const row of suExecQualificationPopulation()) {
+      expect(row.ownerItem).toMatch(/^P-\d{3}$/);
+      expect(row.host).toBe('linux/x64/current-build');
+      expect(row.evidenceRefs).toEqual([]);
+      expect(row.negativeControlRefs).toEqual([]);
+    }
+    // No missing mandatory live proof may become a healthy/parity verdict.
+    const missing = suExecQualificationPopulation().filter(row => row.execution === 'pty');
+    expect(suExecQualificationDefects(missing)).toContainEqual(expect.stringContaining('missing'));
+  });
+});
 
 type StartedTool = Extract<SuSessionEventInput, { type: 'tool'; phase: 'started' }>;
 type OpenedCard = Extract<SuSessionEventInput, { type: 'card'; phase: 'opened' }>;

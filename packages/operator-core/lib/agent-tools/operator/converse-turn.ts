@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
-import { chatEventChannel, parseChatEnvelope, type ChatEventEnvelope, type ChatEventV1,
+import { chatEventChannel, parseChatEnvelope, parseStructuredResults, type ChatResultBlock, type ChatEventEnvelope, type ChatEventV1,
   type ChatTurnSource } from '@papercusp/chat-protocol';
 import { OperatorChatStore, operatorChatSessionAuthority,
   type OperatorChatCredential, type OperatorChatStoreOptions } from '../../operator-chat-store';
@@ -11,6 +11,39 @@ import { TurnRecovery, type TurnCheckpoint, type TurnIdentity } from '@papercusp
 import { operatorChatParentAuthority, operatorChatTurnChannel } from '../../operator-chat-store';
 import { hubListen } from '../../pg-listen-hub';
 
+/** References from successful native tool receipts only. Resource content and
+ * access are resolved again by the host; private tool bodies never enter chat. */
+export function converseToolResultBlocks(result: { name: string; output: string; isError: boolean },
+  workspaceId: string): ChatResultBlock[] {
+  if (result.isError || !['reports:publish', 'reports:get'].includes(canonicalToolName(result.name))
+    || result.output.length > 65536 || !workspaceId) return [];
+  let value: unknown = result.output;
+  for (let depth = 0; depth < 6; depth++) {
+    if (typeof value === 'string') {
+      try { value = JSON.parse(value); } catch { return []; }
+      continue;
+    }
+    if (Array.isArray(value)) {
+      if (value.length !== 1) return [];
+      value = value[0]; continue;
+    }
+    if (!value || typeof value !== 'object') return [];
+    const record = value as Record<string, unknown>;
+    if (record.isError === true || record.ok === false || record.error != null) return [];
+    if (record.ok === true && record.workspace_id === workspaceId && typeof record.report_id === 'string'
+      && /^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/.test(record.report_id)) {
+      const ref = `report:${record.report_id}`;
+      const parsed = parseStructuredResults([{ id: ref, kind: 'report', title: 'Report',
+        sources: [{ ref }], actions: [{ id: 'open', kind: 'open', label: 'Open report', ref }] }]);
+      return parsed.ok ? parsed.value : [];
+    }
+    if (record.structuredContent != null) value = record.structuredContent;
+    else if (record.content != null) value = record.content;
+    else if (record.type === 'text') value = record.text;
+    else return [];
+  }
+  return [];
+}
 type Parent = Omit<NonNullable<UnifiedToolContext['chatParent']>, 'credentialSha256'>;
 type Credential = Extract<OperatorChatCredential, { kind: 'system' | 'pi' }>;
 

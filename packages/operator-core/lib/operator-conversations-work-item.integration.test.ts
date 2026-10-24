@@ -225,4 +225,21 @@ describe('work-item Papercup conversations (real Postgres)', () => {
       })).id,
     ).toBe(conversation.id);
   });
+
+  it('hydrates canonical result references from the existing durable state without confusing them with curator reports', async () => {
+    const conversation = await getOrCreateWorkItemConversation({ workspaceId: WS, harnessSlug: 'papercusp', workItemId: 'WI-result-view' });
+    const turn = await appendTurn({ conversationId: conversation.id, role: 'assistant', text: '' });
+    const block = { id: 'report-one', kind: 'report', title: 'Saved result', sources: [{ ref: 'report:r-one' }] };
+    await rootSql.unsafe('UPDATE harness_shared.operator_turns SET chat_state=$1::jsonb WHERE id=$2',
+      [JSON.stringify({ schemaVersion: 1, results: [block] }), turn.id]);
+    const hydrated = (await listTurns(conversation.id)).find(item => item.id === turn.id)!;
+    expect(hydrated.results).toEqual([block]);
+    expect(hydrated.report).toBeNull();
+    await rootSql.unsafe('UPDATE harness_shared.operator_turns SET chat_state=$1::jsonb WHERE id=$2',
+      [JSON.stringify({ schemaVersion: 1, results: [{ ...block, sources: [] }] }), turn.id]);
+    await expect(listTurns(conversation.id)).rejects.toThrow('invalid-turn-results');
+    await rootSql.unsafe('UPDATE harness_shared.operator_turns SET chat_state=$1::jsonb WHERE id=$2',
+      [JSON.stringify({ schemaVersion: 2, results: [block] }), turn.id]);
+    await expect(listTurns(conversation.id)).rejects.toThrow('unsupported-turn-state');
+  });
 });

@@ -983,6 +983,26 @@ describe('P010 durable PG turn ports (independent connections; no actual-host cl
     expect(effects).toBe(1);
   });
 
+  it('P010 durable result references survive replay retention and worker replacement without dispatch', async () => {
+    const s = store();
+    expect(await worker(s).start(turn, ['read'])).toMatchObject({ ok: true });
+    const block = { id: 'document-one', kind: 'document' as const, title: 'First title',
+      sources: [{ ref: 'document:one' }], actions: [{ id: 'open', kind: 'open', label: 'Open', ref: 'document:one' }] };
+    await s.appendEvent({ ...envelope(1), event: { type: 'result', blocks: [block] } });
+    for (let i = 2; i <= 6; i++) await s.appendEvent(envelope(i));
+    expect((await store(second).replay(turn, 2)).events.some(event =>
+      (event as ChatEventEnvelope).event.type === 'result')).toBe(false);
+    let rows = await second.unsafe<{ results: unknown }[]>(
+      "SELECT chat_state->'results' AS results FROM harness_shared.operator_turns WHERE id=$1", [turn.turnId]);
+    expect(rows[0].results).toEqual([block]);
+    await store(second).appendEvent({ ...envelope(7), event: { type: 'result', blocks: [{ ...block, title: 'Current title' }] } });
+    rows = await first.unsafe("SELECT chat_state->'results' AS results FROM harness_shared.operator_turns WHERE id=$1", [turn.turnId]);
+    expect(rows[0].results).toEqual([{ ...block, title: 'Current title' }]);
+    await first.unsafe("UPDATE harness_shared.operator_turns SET chat_state=jsonb_set(chat_state,'{results}', $1::jsonb) WHERE id=$2",
+      [first.json([{ ...block, sources: [] }]), turn.turnId]);
+    await expect(store(second).replay(turn, 2)).rejects.toThrow('invalid-state');
+  });
+
   it('bounded PG replay keeps the stable cursor and reconciles duplicate event acknowledgement', async () => {
     const s = store();
     await worker(s).start(turn, ['read']);

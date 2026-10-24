@@ -144,9 +144,9 @@ describe('session root caps', () => {
     }
     vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(parent, 'leases'));
     vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
-    createRetentionPin({ path: pinned, owner: 'fixture', reason: 'cap exemption',
-      expiresAt: new Date(Date.now() + 60_000).toISOString() });
     try {
+      createRetentionPin({ path: pinned, owner: 'fixture', reason: 'cap exemption',
+        expiresAt: new Date(Date.now() + 60_000).toISOString() });
       const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
         protectedIdentity: empty, archiveGuard: false });
       expect(result.errors).toEqual([]);

@@ -11172,6 +11172,10 @@ export function buildGreenCheckpointEnv(
   frozenCandidateOpenedAtMs?: number,
 ): NodeJS.ProcessEnv {
   const env = canonicalGreenCheckpointSourceEnv(source);
+  // Main qualification resumes valid passes instead of spending its budget on
+  // audit-only reruns. Pin the common environment for scheduled and detached
+  // manual launches; the reuse validator still invalidates changed inputs.
+  env.AFFECTED_TEST_REUSE_AUDIT_RATE = "0";
   // This control value is the launcher's immutable ceiling, independent of test inputs.
   const callerDeadline = Number(source[TASK_DEADLINE_EPOCH_MS_ENV]);
   if (Number.isSafeInteger(callerDeadline) && callerDeadline > 0)
@@ -23963,6 +23967,7 @@ export function realCheckpointDeps(
         // judge sidecar reviewBy by the frozen queue's clock, like the post-suite leg does.
         execution?.frozenCandidateOpenedAtMs,
       );
+      log(`TEST_PASS_REUSE_POLICY auditRate=${env.AFFECTED_TEST_REUSE_AUDIT_RATE} reason=related-inputs-only`);
       // This is the one candidate-suite call site. Grant dirty-checkout restoration only when
       // the executed tree is the configured checkpoint checkout and that checkout is not the
       // protected integration tree. The helper in affected-tests re-verifies Git's actual roots

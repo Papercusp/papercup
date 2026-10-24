@@ -3533,6 +3533,42 @@ async function completeOne(
   ctx: UnifiedToolContext,
   recoveredAttempt?: import('../../blueprint/operation-service').DeferredOperationCompletionFence & { invocationId: string },
 ): Promise<BulkItemResult> {
+  const phases = ctx.phases;
+  if (!phases) return completeOneTracked(it, ident, ctx, recoveredAttempt);
+  let slow = false;
+  const report = (event: 'pending' | 'progress' | 'settled'): void => {
+    try {
+      console.info(`[work-item-completion-phase] ${JSON.stringify({
+        event, workItemId: it.id,
+        traceId: ctx.requestOrigin?.mcpRequestTraceId ?? null,
+        dispatchCallId: ctx.dispatchCallId ?? null,
+        phases: phases.snapshot(),
+      })}`);
+    } catch { /* Observation must not change completion or authorize a retry. */ }
+  };
+  const timer = setTimeout(() => { slow = true; report('pending'); }, 5_000);
+  timer.unref?.();
+  const track: typeof phases.track = (phase, work) => {
+    const pending = phases.track(phase, work);
+    if (slow) report('progress');
+    return pending;
+  };
+  try {
+    return await completeOneTracked(it, ident, { ...ctx, phases: { ...phases, track } }, recoveredAttempt);
+  } finally {
+    clearTimeout(timer);
+    if (slow) report('settled');
+  }
+}
+
+async function completeOneTracked(
+  it: CompleteItem,
+  ident: { ownerId: string; ownerLabel?: string; adoptedName?: string | null },
+  ctx: UnifiedToolContext,
+  recoveredAttempt?: import('../../blueprint/operation-service').DeferredOperationCompletionFence & { invocationId: string },
+): Promise<BulkItemResult> {
+  const track = <T>(phase: string, work: () => Promise<T>): Promise<T> =>
+    ctx.phases ? ctx.phases.track(`completion:${phase}`, work) : work();
   // EI-20724228359175431: pull the truncation marker off BEFORE anything downstream
   // sees it (rendering, evidence extraction, the broadcast record). It is purely an
   // internal signal for the caller-facing warning below.
@@ -3564,7 +3600,7 @@ async function completeOne(
   const { value: sanitizedCompletion, stripped: nulBytesStripped } = stripNulBytesDeep(it.completion);
   if (nulBytesStripped) it.completion = sanitizedCompletion;
 
-  const existing = await getWorkItem(it.id, it.harness);
+  const existing = await track('work-item', () => getWorkItem(it.id, it.harness));
   if (existing && recoveredAttempt) {
     (await import('../../blueprint/operation-service')).assertDeferredOperationCompletionFence(recoveredAttempt, existing);
   }
@@ -3895,10 +3931,10 @@ async function completeOne(
     existing.takenAt &&
     !(typeof it.completion.duplicateOf === 'string' && it.completion.duplicateOf.trim())
   ) {
-    const mechanics = await readWorkItemMechanics(
+    const mechanics = await track('mechanics', () => readWorkItemMechanics(
       { id: it.id, harness: it.harness ?? existing.harness ?? null, assignee: existing.assignee, takenAt: existing.takenAt },
       pgMechanicsLedger(ctx.workspaceId ?? ctx.principal?.workspaceId ?? null),
-    ).catch(() => null);
+    )).catch(() => null);
     const filled = prefillCompletionFromMechanics(it.completion, mechanics);
     if (filled.prefill) {
       it.completion = filled.completion;
@@ -4105,8 +4141,9 @@ async function completeOne(
   let deferredContributions: import('./item-close-contributions').DeferredContribution[] | undefined;
   if (shouldEvaluateSpecAdequacyAtCompletion) {
     try {
-      const gate = await specTestAdequacyCompletionGate({
+      const gate = await track('spec-adequacy', () => specTestAdequacyCompletionGate({
         workItem: existing,
+        ...(ctx.phases ? { phases: ctx.phases } : {}),
         attestation: it.specAdequacy,
         workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
         completion: it.completion,
@@ -4118,7 +4155,7 @@ async function completeOne(
               ],
             }
           : {}),
-      });
+      }));
       if (!gate.ok) {
         const pendingGradingAuditTargetIds = gate.pendingGradingAuditTargetIds;
         const failedGradingAuditTargetIds = gate.failedGradingAuditTargetIds;

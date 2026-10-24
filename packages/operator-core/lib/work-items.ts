@@ -10187,6 +10187,9 @@ export async function releaseWorkItem(
   opts: {
     harness?: string;
     expectedAssignee?: string;
+    /** Internal managed-takeover release: keep the caller's subscriptions
+     * paused for return. Accepted only under its durable exact pause marker. */
+    retainPausedCallerBindings?: { ownerId: string; transitionKey: string };
     /** EI-15019 (default true — unchanged for every existing caller): pass false for
      *  an INTERNAL claim-then-immediate-release round-trip (e.g. claim-spec-store.ts's
      *  tier-3 quarantine of a spec-mismatched issue) that never exposed any observable
@@ -10219,6 +10222,15 @@ export async function releaseWorkItem(
     phase: 'work_items:release:read-preflight',
   });
   if (!wi) return null;
+  if (opts.retainPausedCallerBindings) {
+    const retained = opts.retainPausedCallerBindings;
+    const { readAssumeCallerPause } = await import('./session-assume-pause');
+    const pause = await readAssumeCallerPause(retained.ownerId);
+    if (!pause || pause.transitionKey !== retained.transitionKey ||
+        opts.expectedAssignee !== retained.ownerId || wi.assignee !== retained.ownerId) {
+      throw new Error('assume-caller-pause-required');
+    }
+  }
   if (hasResourceGovernorReceiptPayload(wi.payload)) {
     throw new ResourceGovernorReleaseRequiredError(id);
   }
@@ -10249,7 +10261,7 @@ export async function releaseWorkItem(
       await releaseWorkItemLease({ harness: wi.harness, workItemId: id, owner: wi.assignee });
     }
     if (released && wasClaimed) {
-      await retireVoluntaryReleaseClaimWatch(wi, opts.releasingOwnerId);
+      if (!opts.retainPausedCallerBindings) await retireVoluntaryReleaseClaimWatch(wi, opts.releasingOwnerId);
       // P-009: the agent has put this work DOWN — clear its goal stamp so later
       // calls are not attributed to a goal it no longer holds. Only when the
       // released item is the one currently stamped: a release of some OTHER item
@@ -10322,7 +10334,7 @@ export async function releaseWorkItem(
     const updated = await releaseIssue(id, { expectedAssignee: opts.expectedAssignee });
     const released = updated ? issueToWorkItem(updated) : null;
     await emitReleased(released);
-    if (released) {
+    if (released && !opts.retainPausedCallerBindings) {
       await withOrgTxnTimeoutPhase(
         'work_items:release:retire-lifecycle-bindings',
         () => retireLifecycleBindingsForWorkItem(released),
@@ -10373,7 +10385,7 @@ export async function releaseWorkItem(
     });
   }
   await emitReleased(released);
-  if (released) await retireLifecycleBindingsForWorkItem(released);
+  if (released && !opts.retainPausedCallerBindings) await retireLifecycleBindingsForWorkItem(released);
   return released;
 }
 

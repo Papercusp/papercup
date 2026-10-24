@@ -159,6 +159,12 @@ describe('recordAgentLaunchResult durable completion evidence', () => {
 });
 
 describe('claimAgentLaunch crash recovery', () => {
+  it('retains takeover execution fences when pruning ordinary launch receipts', async () => {
+    launchCoreSql.mockResolvedValueOnce([]).mockResolvedValueOnce([{ idempotency_key: 'new' }]);
+    await claimAgentLaunch({ workspaceId: 'ws-test', idempotencyKey: 'new', failClosed: true });
+    expect(launchCoreSql.mock.calls[0][0].join(' ')).toContain("AND NOT (summary ? 'sessionAssume')");
+  });
+
   it('stores a caller-supplied replay identity atomically with the claim', async () => {
     const initialSummary = {
       requestKind: 'goals:start',

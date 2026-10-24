@@ -96,6 +96,9 @@ export interface SessionBriefLifecycle {
   released?: SessionBriefReleaseMarker;
   poisoned?: SessionBriefPoisonMarker;
   shutdown?: SessionBriefShutdownMarker;
+  /** Presence is a reversible wake fence. Malformed markers also fence: only
+   * the takeover adapter may authenticate and remove its exact generation. */
+  assumeCaller?: unknown;
 }
 
 export interface SessionBriefRecord {
@@ -427,6 +430,9 @@ function parseSessionBriefLifecycle(value: unknown): SessionBriefLifecycle | nul
   const poisoned = (lifecycle as { poisoned?: unknown }).poisoned;
   const shutdown = (lifecycle as { shutdown?: unknown }).shutdown;
   const result: SessionBriefLifecycle = {};
+  if (Object.prototype.hasOwnProperty.call(lifecycle, 'assumeCaller')) {
+    result.assumeCaller = (lifecycle as { assumeCaller: unknown }).assumeCaller;
+  }
   if (shutdown && typeof shutdown === 'object' && !Array.isArray(shutdown)) {
     const marker = shutdown as Partial<SessionBriefShutdownMarker>;
     if (
@@ -515,7 +521,9 @@ function lifecycleWriteReadByConsumer(
  * design: a temporary brief-store outage must not turn every ordinary wake
  * into a permanent drop; each marker is durable when the store is available.
  */
-export async function getSessionBriefLifecycle(ownerId: string): Promise<SessionBriefLifecycle | null> {
+export async function getSessionBriefLifecycle(
+  ownerId: string, options: { failClosed?: boolean } = {},
+): Promise<SessionBriefLifecycle | null> {
   try {
     if (!ownerId) return null;
     const rows = await getOrgPg().sql`
@@ -524,8 +532,17 @@ export async function getSessionBriefLifecycle(ownerId: string): Promise<Session
        WHERE owner_id = ${ownerId}
        LIMIT 1
     `;
-    return parseSessionBriefLifecycle((rows[0] as Record<string, unknown> | undefined)?.control_state);
-  } catch {
+    const controlState = (rows[0] as Record<string, unknown> | undefined)?.control_state;
+    if (options.failClosed && controlState != null) {
+      if (typeof controlState !== 'object' || Array.isArray(controlState)) throw new Error('session-control-invalid');
+      const lifecycle = (controlState as Record<string, unknown>).lifecycle;
+      if (lifecycle != null && (typeof lifecycle !== 'object' || Array.isArray(lifecycle))) {
+        throw new Error('session-lifecycle-invalid');
+      }
+    }
+    return parseSessionBriefLifecycle(controlState);
+  } catch (error) {
+    if (options.failClosed) throw error;
     return null;
   }
 }

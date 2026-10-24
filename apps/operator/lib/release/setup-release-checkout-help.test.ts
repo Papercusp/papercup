@@ -58,6 +58,7 @@ describe('setup-release-checkout.sh --help', () => {
       '--node-modules-generation-id', '--node-modules-generation-token',
       '--node-modules-workspace-dir', '--dependency-generation-root', '--source-integrity',
       '--integration', '--release', '--build-spa', '--prepare-existing', '--source-only',
+      '--dependencies-only',
     ]) {
       expect(r.stdout).toContain(`[${flag}`);
     }

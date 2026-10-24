@@ -114,6 +114,7 @@ interface OperatorTurnRow {
    *  text_typed/voice_*. deterministic-status-cards-2026-07-17 P-003. */
   source?: "text_typed" | "voice_stt" | "voice_tts" | "system";
   tools?: ChatToolCall[] | null;
+  results?: ChatResultBlock[] | null;
   report?: ParsedReport | null;
 }
 
@@ -150,6 +151,7 @@ function turnRowToChatMessage(t: OperatorTurnRow): ChatMessage {
     seq: typeof t.seq === "number" ? t.seq : undefined,
     ts: createdAtIso(t.createdAt),
     tools: Array.isArray(t.tools) ? t.tools : undefined,
+    results: t.results?.length ? t.results : undefined,
     report: reportForTurn(t),
   };
 }

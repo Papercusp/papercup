@@ -159,6 +159,25 @@ describe('session:assume preparation and exact custody', () => {
     const retry = await prepared(fixture());
     expect(assumeTransitionKey(retry.preparation)).toBe(assumeTransitionKey(result.preparation));
   });
+
+  it('preserves preparation identity after jsonb reorders nested object keys', async () => {
+    const { preparation } = await prepared(fixture());
+    const reorder = (value: unknown): unknown => Array.isArray(value) ? value.map(reorder)
+      : value && typeof value === 'object'
+        ? Object.fromEntries(Object.entries(value).reverse().map(([key, child]) => [key, reorder(child)])) : value;
+    expect(assumePreparationFingerprint(reorder(preparation) as typeof preparation))
+      .toBe(assumePreparationFingerprint(preparation));
+  });
+
+  it('pins OMP native identity without inventing a registration session_id', async () => {
+    const f = fixture();
+    f.target.backend = 'omp';
+    f.target.binding.sessionId = null;
+    f.target.binding.ompThreadId = f.target.nativeSessionId;
+    const { preparation } = await prepared(f);
+    expect(preparation.target.binding.sessionId).toBeNull();
+    expect(await validateAssume(actor, (await prepared(f)).token, f.deps)).toMatchObject({ ok: true });
+  });
 });
 
 function transitionFixture() {

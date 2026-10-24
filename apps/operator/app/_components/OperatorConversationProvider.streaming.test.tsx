@@ -312,6 +312,17 @@ describe("OperatorConversationProvider streamed say projection", () => {
       .map(([, init]) => JSON.parse(String(init?.body))).filter(body => body.role === "assistant")).toEqual([]);
   });
 
+  it("P010 history hydration preserves the durable structured result view", async () => {
+    const block = { id: "history-result", kind: "document", title: "Saved document", sources: [{ ref: "document:one" }] };
+    SYNC.turnPage = { turns: [{ id: "history-turn", conversationId: "saved-conversation", seq: 4,
+      role: "assistant", text: "", createdAt: 1000, results: [block] }], hasMoreEarlier: false };
+    render(<OperatorConversationProvider target={{ kind: "work-item", conversationId: "saved-conversation" }}><Probe /></OperatorConversationProvider>);
+    await waitFor(() => {
+      const row = screen.getByTestId("messages").querySelector('[data-role="assistant"]');
+      expect(JSON.parse(row?.getAttribute("data-results") ?? "null")).toEqual([block]);
+    });
+  });
+
   it.each(["eof", "socket-error", "crlf"])("P010 browser resumes canonical events after %s without repeating text, tools or provider admission", async failure => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     const identity = { conversationId: "conversation-1", turnId: "11111111-2222-4333-8444-555555555555" };

@@ -143,7 +143,8 @@ const BUILD_IDENTITY_RE = /\b[0-9a-f]{7,40}\b|\bVERIFY_TAURI_ASSERT_SNAPSHOT_CON
 /** A test file named directly, for runners the regex above does not list. */
 const TEST_FILE_RE = /[\w./-]+\.(?:test|spec)\.[cm]?[jt]sx?\b|[\w./-]*_test\.(?:go|py)\b|\btest_\w+\.py\b/i;
 const PASSING_RESULT_RE = /\b(?:pass(?:ed|es|ing)?|green|ok)\b|\b0\s+fail(?:ed|ures?|ing)?\b/i;
-const FAILING_RESULT_RE = /\b[1-9]\d*\s+(?:failed|failing|failures?)\b|\bFAIL\b/;
+const FAILING_COUNT_RE = /\b[1-9]\d*\s+fail(?:ed|ures?|ing)?\b/i;
+const FAILING_RESULT_RE = /\bFAIL\b/;
 /** The live operator database on this box: a migration applied there is not disposable. */
 const LIVE_OPERATOR_DB_RE = /^papercusp$|(?:127\.0\.0\.1|localhost):5432\/papercusp\b/i;
 /** The shared operator runtimes: a job run there is not isolated. */
@@ -180,8 +181,10 @@ function citesPassingTestRun(e: ChangeKindEvidence): string[] {
     missing.push('`testsRun` naming the test command or test files that ran (for example `testing:run { files }`)');
   }
   const result = e.testResult ?? '';
+  // A runner's explicit zero count is not a FAIL verdict; retain other FAIL markers.
+  const uncountedResult = result.replace(/\b0\s+FAIL\b/g, '');
   if (!result) missing.push('`testResult` reporting the run passed');
-  else if (FAILING_RESULT_RE.test(result) || !PASSING_RESULT_RE.test(result)) {
+  else if (FAILING_COUNT_RE.test(result) || FAILING_RESULT_RE.test(uncountedResult) || !PASSING_RESULT_RE.test(result)) {
     missing.push(`\`testResult\` reporting a passing run (got "${result.slice(0, 120)}")`);
   }
   return missing;

@@ -27,6 +27,15 @@
  * would still show three green checkmarks against the real tables.
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+
+import {
+  SU_EXEC_COMBINATIONS, SU_EXEC_INVENTORY, SU_EXEC_PTY_CONTROLS,
+  SU_EXEC_CODEX_REQUESTS, SU_EXEC_CLAUDE_QUERY_METHODS, SU_EXEC_SCENARIOS,
+  SU_EXEC_CLAUDE_REQUESTS, SU_EXEC_NATIVE_REQUESTS, SU_EXEC_REQUEST_SCENARIOS,
+  SU_EXEC_CLAUDE_CONTROLS,
+  suExecQualificationPopulation, suExecQualificationDefects,
+} from './__fixtures__/su-execution-parity';
 
 import {
   SU_SESSION_COMMAND_TYPES,
@@ -44,6 +53,73 @@ const ENGINES: ReadonlyArray<readonly [string, SuSessionCapabilities]> = [
   ['codex', codexCapabilities()],
   ['omp', ompCapabilities()],
 ];
+
+describe('SU execution inventory (P-001; qualification is still unknown)', () => {
+  it('SU-EXEC R-1 acceptance contract', () => {
+    const ptySource = readFileSync(new URL('../../../apps/operator/scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+    const decoder = ptySource.slice(ptySource.indexOf('export function decodeControl('));
+    const decodedModes = [...new Set([...decoder.matchAll(/o\.mode === '([^']+)'/g)].map(match => match[1]))];
+    expect(SU_EXEC_PTY_CONTROLS.map(control => control.mode).sort()).toEqual(decodedModes.sort());
+    expect(SU_EXEC_COMBINATIONS.map(c => `${c.provider}/${c.execution}`).sort()).toEqual([
+      'claude/programmatic', 'claude/pty', 'codex/programmatic', 'codex/pty',
+    ]);
+    expect(SU_EXEC_SCENARIOS.map(s => s.requirement)).toEqual(Array.from({ length: 19 }, (_, i) => `R-${i + 1}`));
+    expect(SU_EXEC_CODEX_REQUESTS).toContain('item/permissions/requestApproval');
+    expect(SU_EXEC_CODEX_REQUESTS).toContain('mcpServer/elicitation/request');
+    expect(SU_EXEC_CLAUDE_QUERY_METHODS).toContain('reconnectMcpServer');
+    expect(SU_EXEC_CLAUDE_QUERY_METHODS).toContain('backgroundTasks');
+    for (const [provider, methods] of [['codex', SU_EXEC_CODEX_REQUESTS], ['claude', SU_EXEC_CLAUDE_REQUESTS]] as const) {
+      expect(SU_EXEC_NATIVE_REQUESTS.filter(request => request.provider === provider).map(request => request.method).sort())
+        .toEqual([...methods].sort());
+    }
+    expect(SU_EXEC_CLAUDE_CONTROLS.map(control => control.method)).toEqual([...SU_EXEC_CLAUDE_QUERY_METHODS]);
+    for (const scenario of [...SU_EXEC_SCENARIOS, ...SU_EXEC_REQUEST_SCENARIOS]) {
+      expect(scenario.sources.length).toBeGreaterThan(0);
+      expect(scenario.action.length).toBeGreaterThan(20);
+      expect(scenario.falsifier.length).toBeGreaterThan(20);
+      for (const source of scenario.sources) {
+        expect(readFileSync(new URL(`../../../${source}`, import.meta.url), 'utf8').length).toBeGreaterThan(0);
+      }
+    }
+    const population = suExecQualificationPopulation();
+    expect(new Set(population.map(row => row.id)).size).toBe(population.length);
+    expect(population.every(row => row.state === 'unknown' && row.evidenceRefs.length === 0)).toBe(true);
+    expect(suExecQualificationDefects(population).length).toBeGreaterThan(0);
+  });
+
+  it('SU-EXEC R-18 acceptance contract', () => {
+    expect(SU_EXEC_INVENTORY.replicationDoc).toBe('agent-insights/su-execution-backend-acceptance');
+    expect(SU_EXEC_INVENTORY.evidencePolicy.mandatoryGapMayBeDeferred).toBe(false);
+    const document = readFileSync(new URL('../../../apps/operator-docs/src/content/docs/agent-insights/su-execution-backend-acceptance.mdx', import.meta.url), 'utf8');
+    for (const term of ['REPLICATION DRILL', 'Sensitive input handling', 'native-only', 'rollback', 'owner-required',
+      'never persist plaintext secrets', 'explicit refusal', 'fixture revision']) {
+      expect(document.toLowerCase()).toContain(term.toLowerCase());
+    }
+    expect(SU_EXEC_PTY_CONTROLS.filter(c => c.classification !== 'required')
+      .every(c => 'boundary' in c && c.boundary.length > 20)).toBe(true);
+  });
+
+  it('rejects missing rows, false passes, changed scope and hidden PTY fallback', () => {
+    // Synthetic receipts calibrate this structural guard; they are not runtime evidence.
+    const complete = suExecQualificationPopulation().map(row => ({ ...row, state: 'passed' as const,
+      actualExecution: row.execution, evidenceRefs: ['synthetic:positive-control'],
+      negativeControlRefs: ['synthetic:negative-control'] }));
+    expect(suExecQualificationDefects(complete)).toEqual([]);
+    expect(suExecQualificationDefects(complete.slice(1))).toContainEqual(expect.stringContaining('missing'));
+    const missingProof = complete.map((row, i) => i === 0 ? { ...row, evidenceRefs: [] } : row);
+    expect(suExecQualificationDefects(missingProof)).toContainEqual(expect.stringContaining('proof incomplete'));
+    const fallback = complete.map(row => row.execution === 'programmatic' ? { ...row, actualExecution: 'pty' as const } : row);
+    expect(suExecQualificationDefects(fallback)).toContainEqual(expect.stringContaining('fallback'));
+    const wrongVersion = complete.map((row, i) => i === 0 ? { ...row, nativeVersion: 'unqualified' } : row);
+    expect(suExecQualificationDefects(wrongVersion)).toContainEqual(expect.stringContaining('nativeVersion changed'));
+    const wrongSdk = complete.map(row => row.sdkVersion ? { ...row, sdkVersion: 'unqualified' } : row);
+    expect(suExecQualificationDefects(wrongSdk)).toContainEqual(expect.stringContaining('sdkVersion changed'));
+    const missingFamily = complete.filter(row => !row.scenario.endsWith('item/permissions/requestApproval'));
+    expect(suExecQualificationDefects(missingFamily)).toContainEqual(expect.stringContaining('missing'));
+    expect(suExecQualificationDefects([...complete, complete[0]]))
+      .toContainEqual(expect.stringContaining('duplicate'));
+  });
+});
 
 /**
  * Reasons that parse as prose but explain nothing to an owner staring at the PUI.

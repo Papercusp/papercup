@@ -7,8 +7,8 @@ import type { ParsedReport } from './operator-converse-tags';
 import { coerceAskChoiceOptions } from './ask-choice-options';
 import { canonicalToolName } from './operator-mcp-tools';
 import { readSuperuserToken } from './superuser-token';
-import { chatEventChannel, parseChatEnvelope, parseChatState,
-  type ChatEventEnvelope, type ChatTurnSource, type ChatTurnToolCall } from '@papercusp/chat-protocol';
+import { chatEventChannel, collectTurnResults, parseChatEnvelope, parseChatState, parseStructuredResults,
+  type ChatEventEnvelope, type ChatResultBlock, type ChatTurnSource, type ChatTurnToolCall } from '@papercusp/chat-protocol';
 import type { DispatchAdmission, ReplayWindow, TurnCheckpoint, TurnCheckpointStore,
   TurnIdentity } from '@papercusp/chat-protocol/recovery';
 import type { InteractionIdentity, InteractionMutation, InteractionRecord, InteractionResult,
@@ -30,6 +30,8 @@ interface StoredTurn {
   scope: InteractionScope;
   checkpoint: TurnCheckpoint | null;
   events: ChatEventEnvelope[];
+  /** Durable materialized result view survives the bounded replay window. */
+  results?: ChatResultBlock[];
   interactions: Record<string, InteractionRecord>;
   interactionBindings?: Record<string, OperatorChatInteractionBinding>;
   execution?: {
@@ -490,6 +492,8 @@ export class OperatorChatStore implements TurnCheckpointStore {
         || (i > 0 && parsed.value.sequence !== (events[i - 1] as ChatEventEnvelope).sequence + 1);
     })) throw new Error('invalid-state');
     const stored = structuredClone(value) as unknown as StoredTurn;
+    if (stored.results !== undefined && (!Array.isArray(stored.results)
+      || (stored.results.length > 0 && !parseStructuredResults(stored.results).ok))) throw new Error('invalid-state');
     if (stored.interactionBindings !== undefined) {
       if (!object(stored.interactionBindings)) throw new Error('invalid-state');
       const dispatches = new Set<string>(), nativeCalls = new Set<string>();
@@ -611,6 +615,15 @@ export class OperatorChatStore implements TurnCheckpointStore {
         || state.events.some(item => item.eventId === event.eventId)) throw new Error('event-conflict');
       checkpoint.state.lastSequence = event.sequence;
       checkpoint.state.revision++;
+      if (event.event.type === 'result') {
+        const prior = state.results === undefined ? collectTurnResults(state.events, this.options.turn)
+          : { ok: true as const, value: state.results };
+        const next = parseStructuredResults(event.event.blocks);
+        if (!prior.ok || !next.ok) throw new Error('invalid-state');
+        const results = new Map(prior.value.map(block => [block.id, block]));
+        for (const block of next.value) results.set(block.id, block);
+        state.results = [...results.values()];
+      }
       state.events = [...state.events, event].slice(-this.replayLimit);
       await this.save(tx, state);
       return event;

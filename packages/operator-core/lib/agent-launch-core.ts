@@ -1383,6 +1383,9 @@ export async function claimAgentLaunch(opts: {
     await sql`
       DELETE FROM harness_shared.agent_launch_idempotency
        WHERE launched_at < ${now - LAUNCH_CLAIM_TTL_MS}
+         -- Takeover uncertainty is a durable execution fence, not an ordinary
+         -- launch cache entry. Age alone never proves that its writer exited.
+         AND NOT (summary ? 'sessionAssume')
     `;
     const won = await sql<Array<{ idempotency_key: string }>>`
       INSERT INTO harness_shared.agent_launch_idempotency AS existing

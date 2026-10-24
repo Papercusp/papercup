@@ -4147,7 +4147,8 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const spawnManaged = deps.spawnManagedPty ?? spawnPty;
   const kill = deps.kill ?? killPty;
   const presence = deps.presence ?? getPresence;
-  const getSessionLifecycle = deps.getSessionLifecycle ?? getSessionBriefLifecycle;
+  const getSessionLifecycle = deps.getSessionLifecycle ??
+    ((ownerId: string) => getSessionBriefLifecycle(ownerId, { failClosed: true }));
   const readLockGrantOwnership = deps.readLockGrantOwnership ?? readCurrentLockGrantOwnership;
   const lockGrantOwnershipLookupTimeoutMs =
     deps.lockGrantOwnershipLookupTimeoutMs ?? LOCK_GRANT_OWNERSHIP_LOOKUP_TIMEOUT_MS;
@@ -4327,7 +4328,12 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // wake can outlive the stand-down cue by minutes (especially on a cold
     // carry respawn), so every handle-less/plan-run/pty/resume path must share
     // this terminal gate before it can inject, spawn, or resume anything.
-    const lifecycle = await getSessionLifecycle(d.subscriberId).catch(() => null);
+    let lifecycle: SessionBriefLifecycle | null;
+    try { lifecycle = await getSessionLifecycle(d.subscriberId); }
+    catch { return { kind: 'park', reason: 'session lifecycle custody is unknown; wake retained for retry' }; }
+    if (lifecycle && Object.prototype.hasOwnProperty.call(lifecycle, 'assumeCaller')) {
+      return { kind: 'park', reason: 'caller is paused for a managed identity transition; wake retained for return' };
+    }
     const released = lifecycle?.released;
     if (released) {
       return {

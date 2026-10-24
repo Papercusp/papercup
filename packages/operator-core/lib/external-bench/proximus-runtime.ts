@@ -6,7 +6,12 @@ import type { FrontierSweEnvHandle } from './frontier-swe-seam';
 import { spawn } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { CurrentBenchHostReferenceGateway } from './current-su';
+import type { CurrentBenchAccountingBinding, CurrentBenchHostReferenceGateway } from './current-su';
+import type { LearningSpendReservationCensus } from '../learning-governor/store';
+import type { GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
+import { createHash } from 'node:crypto';
+import { isModelRequestId } from '../observability/tracing';
+import type { Sql } from 'postgres';
 
 export function proximusRunSpec(config: unknown, execution: Parameters<typeof requireCurrentBenchmarkAssignment>[1] & {
   handle: Pick<FrontierSweEnvHandle, 'containerId' | 'image' | 'instanceId'>;
@@ -55,6 +60,188 @@ export type ProximusRunSpec = ReturnType<typeof proximusRunSpec>;
 export interface ProximusRuntimeReceipt {
   schemaVersion: 1; runtimeRevision: string; sourceRevision: string;
   clientVersion: string; harborVersion: string; fileCount: number;
+}
+
+type ProximusTerminalAttempt = {
+  attemptId: string; gatewayRequestId: string; accountId: string;
+  transport: 'bearer-http' | 'anthropic-http'; bodySha256: string;
+  outcome: 'send-refused' | 'fetch-failed' | 'response-completed' | 'response-incomplete';
+  responseStatus: number | null;
+  responseSha256?: string; responseBytes?: number;
+  providerCompletion?: Extract<GatewayCarryTrialAttemptResult, { outcome: 'response-completed' }>['providerCompletion'];
+};
+export type ProximusAttemptPopulation = {
+  status: 'terminal'; source: 'learning-spend-reservations'; populationSha256: string;
+  attempts: ProximusTerminalAttempt[];
+  requests: { gatewayRequestId: string; attemptIds: string[] }[];
+  usageComplete: boolean; billingStatus: 'unreconciled';
+} | { status: 'unavailable'; reason: 'ledger-unavailable' | 'ledger-changed' | 'invalid-ledger' | 'no-attempts' };
+
+/** Reuse the full reservation census; one gateway request may have several
+ * provider attempts. Terminal includes failed/partial sends with UNKNOWN usage.
+ * This proves ledger coverage only: neither process terminality, confinement,
+ * nor actual billing follows from these two stable reads. The host launcher
+ * must establish those properties separately before accepting a benchmark. */
+export async function readProximusAttemptPopulation(binding: CurrentBenchAccountingBinding,
+  readCensus: () => Promise<LearningSpendReservationCensus | undefined>): Promise<ProximusAttemptPopulation> {
+  let before: LearningSpendReservationCensus | undefined, after: LearningSpendReservationCensus | undefined;
+  try {
+    // Detach both snapshots before another await: adapters may reuse objects.
+    before = structuredClone(await readCensus());
+    after = structuredClone(await readCensus());
+  } catch { return { status: 'unavailable', reason: 'ledger-unavailable' }; }
+  if (before?.status !== 'complete' || after?.status !== 'complete')
+    return { status: 'unavailable', reason: 'ledger-unavailable' };
+  if (before.populationSha256 !== after.populationSha256 || JSON.stringify(before.reservations) !== JSON.stringify(after.reservations))
+    return { status: 'unavailable', reason: 'ledger-changed' };
+  const invalid = (): ProximusAttemptPopulation => ({ status: 'unavailable', reason: 'invalid-ledger' });
+  const text = (v: unknown): v is string => typeof v === 'string' && !!v.trim() && v.length <= 4096;
+  const sha = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
+  const count = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+  try {
+    if (!text(binding.workspaceId) || !text(binding.loopId) || !text(binding.runId) || !sha(binding.preregHash) ||
+        !binding.assignmentId.startsWith('bench-assignment:') ||
+        before.source !== 'learning-spend-reservations' || after.source !== before.source ||
+        before.populationSha256 !== createHash('sha256').update(JSON.stringify({ version: 1,
+          workspaceId: binding.workspaceId, loopId: binding.loopId, sinceMs: null, reservations: before.reservations })).digest('hex')) return invalid();
+    const ids = new Set<string>(), responseIds = new Set<string>(), foreignRequests = new Set<string>();
+    const requests = new Map<string, string[]>(), attempts: ProximusTerminalAttempt[] = [];
+    let usageComplete = true;
+    for (const row of before.reservations) {
+      if (!text(row.id) || ids.has(row.id) || row.workspaceId !== binding.workspaceId || row.loopId !== binding.loopId ||
+          row.attemptKind !== 'evaluation' || row.runRef !== `manifest:${binding.preregHash}/attempt:${row.id}`) return invalid();
+      ids.add(row.id);
+      const note = JSON.parse(row.note ?? 'null'), attempt = note?.nativeGatewayAttempt;
+      if (!attempt || attempt.attemptId !== row.id || attempt.manifestSha256 !== binding.preregHash ||
+          !text(attempt.armId) || attempt.armId !== row.resources?.armId || !isModelRequestId(attempt.gatewayRequestId)) return invalid();
+      if (attempt.armId !== binding.assignmentId) { foreignRequests.add(attempt.gatewayRequestId); continue; }
+      const result = note.nativeGatewayAttemptResult as GatewayCarryTrialAttemptResult | undefined;
+      const identityKeys = ['attemptId', 'gatewayRequestId', 'manifestSha256', 'armId', 'transport', 'accountId',
+        'credentialHeader', 'credentialSha256', 'target', 'bodySha256', 'clockId'] as const;
+      if (!result || result.reservationRef !== row.id || identityKeys.some(key => result[key] !== attempt[key]) ||
+          ![attempt.accountId, attempt.clockId].every(text) || ![attempt.bodySha256, attempt.credentialSha256].every(sha) ||
+          attempt.nativeSessionId !== undefined || attempt.nativeTurnId !== undefined ||
+          result.nativeSessionId !== undefined || result.nativeTurnId !== undefined ||
+          !['open', 'settled', 'cancelled'].includes(row.status) ||
+          ![row.requestedUsd, row.reservedUsd, row.usedUsd].every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0) ||
+          (attempt.transport === 'bearer-http' ? attempt.target !== 'https://api.openai.com/v1/responses' || attempt.credentialHeader !== 'authorization'
+            : attempt.transport !== 'anthropic-http' || attempt.target !== 'https://api.anthropic.com/v1/messages' || attempt.credentialHeader !== 'x-api-key')) return invalid();
+      const entry: ProximusTerminalAttempt = { attemptId: row.id, gatewayRequestId: attempt.gatewayRequestId,
+        accountId: attempt.accountId, transport: attempt.transport, bodySha256: attempt.bodySha256,
+        outcome: result.outcome as ProximusTerminalAttempt['outcome'], responseStatus: result.responseStatus };
+      if (result.outcome === 'send-refused') {
+        if (result.responseStatus !== null || result.costUsd !== 0 || result.costUsdMeasurementMissing !== false ||
+            row.status !== 'cancelled' || row.usedUsd !== 0) return invalid();
+      } else {
+        if (result.costUsdMeasurementMissing !== true) return invalid();
+        if (result.outcome === 'fetch-failed') {
+          if (result.responseStatus !== null) return invalid();
+          usageComplete = false;
+        } else if (result.outcome === 'response-completed' || result.outcome === 'response-incomplete') {
+          if (!count(result.responseStatus) || result.responseStatus < 100 || result.responseStatus > 599 ||
+              !sha(result.responseSha256) || !count(result.responseBytes)) return invalid();
+          entry.responseSha256 = result.responseSha256; entry.responseBytes = result.responseBytes;
+          if (result.outcome === 'response-completed') {
+            const p = result.providerCompletion, u = p?.usage;
+            if (result.responseStatus < 200 || result.responseStatus >= 300 || result.responseBytes === 0 ||
+                !text(p?.responseId) || responseIds.has(p.responseId) || !text(p.model) ||
+                p.providerEffort !== null && !text(p.providerEffort) || !u || u.inputTokenBasis !== 'inclusive' ||
+                !count(u.inputTokens) || !count(u.outputTokens) ||
+                u.cacheReadTokens !== null && !count(u.cacheReadTokens) || u.cacheCreationTokens !== null && !count(u.cacheCreationTokens) ||
+                (u.cacheReadTokens ?? 0) + (u.cacheCreationTokens ?? 0) > u.inputTokens) return invalid();
+            responseIds.add(p.responseId);
+            // Whitelist nested evidence too; caller quotes/output never escape.
+            entry.providerCompletion = { responseId: p.responseId, model: p.model, providerEffort: p.providerEffort,
+              usage: { inputTokenBasis: u.inputTokenBasis, inputTokens: u.inputTokens, outputTokens: u.outputTokens,
+                cacheReadTokens: u.cacheReadTokens, cacheCreationTokens: u.cacheCreationTokens } };
+            if (u.cacheReadTokens === null || u.cacheCreationTokens === null) usageComplete = false;
+          } else usageComplete = false;
+        } else return invalid();
+      }
+      requests.set(entry.gatewayRequestId, [...(requests.get(entry.gatewayRequestId) ?? []), row.id]);
+      attempts.push(entry);
+    }
+    if ([...requests.keys()].some(id => foreignRequests.has(id))) return invalid();
+    return attempts.length ? { status: 'terminal', source: before.source, populationSha256: before.populationSha256,
+      attempts, requests: [...requests].map(([gatewayRequestId, attemptIds]) => ({ gatewayRequestId, attemptIds })),
+      usageComplete, billingStatus: 'unreconciled' } : { status: 'unavailable', reason: 'no-attempts' };
+  } catch { return invalid(); }
+}
+export type ProximusBilling = {
+  status: 'complete' | 'incomplete'; knownSubtotalMicros: string; billedInferenceMicros: string | null;
+  missingAttemptIds: string[]; populationSha256: string;
+  samples: { attemptId: string; sampleId: string; billedInferenceMicros: string }[];
+} | { status: 'unavailable'; reason: 'ledger-unavailable' | 'ledger-changed' | 'invalid-ledger' | 'no-attempts' |
+  'billing-unavailable' | 'invalid-billing' };
+
+/** Exact request billing uses the existing canonical usage table, independently
+ * of reservation amounts and agent-reported context costs. This grants no send
+ * authority, proves no confinement, and does not settle spend reservations. */
+export async function readProximusBilling(sql: Sql, input: CurrentBenchAccountingBinding,
+  readCensus: () => Promise<LearningSpendReservationCensus | undefined>): Promise<ProximusBilling> {
+  const binding = { ...input };
+  const population = await readProximusAttemptPopulation(binding, readCensus);
+  if (population.status !== 'terminal') return population;
+  type BillRow = {
+    sample_id: string; gateway_request_id: string; gateway_attempt_id: string; provider_response_id: string;
+    manifest_sha256: string; assignment_id: string; run_id: string; account_id: string; provider: string; model: string;
+    cost_source: string | null; cost_bound: string | null; price_table_version: string | null;
+    cost_micros: string | null; response_id_source: string | null; grain: string | null;
+  };
+  let rows: BillRow[];
+  try {
+    rows = structuredClone(await sql<BillRow[]>`
+      SELECT id::text AS sample_id,
+             usage_provenance->>'gatewayRequestId' AS gateway_request_id,
+             usage_provenance->>'gatewayAttemptId' AS gateway_attempt_id,
+             usage_provenance->>'providerResponseId' AS provider_response_id,
+             usage_provenance->>'manifestSha256' AS manifest_sha256,
+             usage_provenance->>'assignmentId' AS assignment_id,
+             usage_provenance->>'providerResponseIdSource' AS response_id_source,
+             usage_provenance->>'grain' AS grain,
+             run_id, account_id, provider, model, cost_source, price_table_version,
+             usage_provenance->>'costBound' AS cost_bound,
+             (cost_usd::numeric * 1000000)::text AS cost_micros
+        FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${binding.workspaceId}
+         AND usage_provenance->>'gatewayRequestId' = ANY(${population.requests.map(r => r.gatewayRequestId)}::text[])
+       ORDER BY id`);
+  } catch { return { status: 'unavailable', reason: 'billing-unavailable' }; }
+  const after = await readProximusAttemptPopulation(binding, readCensus);
+  if (after.status !== 'terminal') return after;
+  if (after.populationSha256 !== population.populationSha256) return { status: 'unavailable', reason: 'ledger-changed' };
+  const invalid = (): ProximusBilling => ({ status: 'unavailable', reason: 'invalid-billing' });
+  const attempts = new Map(population.attempts.map(a => [a.attemptId, a]));
+  const seenSamples = new Set<string>(), bills = new Map<string, { sampleId: string; micros: bigint }>();
+  try {
+    for (const row of rows) {
+      const attempt = attempts.get(row.gateway_attempt_id), completion = attempt?.providerCompletion;
+      if (!attempt || attempt.outcome !== 'response-completed' || !completion ||
+          !row.sample_id?.trim() || seenSamples.has(row.sample_id) || bills.has(attempt.attemptId) ||
+          row.gateway_request_id !== attempt.gatewayRequestId || row.account_id !== attempt.accountId ||
+          row.provider_response_id !== completion.responseId || row.model !== completion.model ||
+          row.provider !== (attempt.transport === 'bearer-http' ? 'openai' : 'anthropic') ||
+          row.manifest_sha256 !== binding.preregHash || row.assignment_id !== binding.assignmentId || row.run_id !== binding.runId ||
+          row.grain !== 'request' || row.response_id_source !== 'authenticated-gateway-provider-response' ||
+          row.cost_source !== 'provider' || row.cost_bound !== null || row.price_table_version !== null) return invalid();
+      const money = typeof row.cost_micros === 'string' ? /^(\d+)(?:\.0+)?$/.exec(row.cost_micros) : null;
+      if (!money) return invalid();
+      seenSamples.add(row.sample_id);
+      bills.set(attempt.attemptId, { sampleId: row.sample_id, micros: BigInt(money[1]!) });
+    }
+    let subtotal = 0n;
+    const missingAttemptIds: string[] = [], samples: Extract<ProximusBilling, { knownSubtotalMicros: string }>['samples'] = [];
+    for (const attempt of population.attempts) {
+      if (attempt.outcome === 'send-refused') continue;
+      const bill = bills.get(attempt.attemptId);
+      if (!bill) { missingAttemptIds.push(attempt.attemptId); continue; }
+      subtotal += bill.micros;
+      samples.push({ attemptId: attempt.attemptId, sampleId: bill.sampleId, billedInferenceMicros: bill.micros.toString() });
+    }
+    return { status: missingAttemptIds.length ? 'incomplete' : 'complete', knownSubtotalMicros: subtotal.toString(),
+      billedInferenceMicros: missingAttemptIds.length ? null : subtotal.toString(), missingAttemptIds, samples,
+      populationSha256: population.populationSha256 };
+  } catch { return invalid(); }
 }
 interface ProximusHostProcessInput {
   pythonBin: string; operation: 'measure' | 'run'; maxWallClockMs: number;

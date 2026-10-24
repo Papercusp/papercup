@@ -1078,7 +1078,7 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 /**
@@ -1216,7 +1216,7 @@ export async function withFsMutexBudget(name, fn, opts) {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutexRead(name, fn, opts = {}) {
@@ -1225,7 +1225,9 @@ export async function withFsMutexRead(name, fn, opts = {}) {
   const io = opts.io ?? {};
   const writeFileIo = io.writeFile ?? writeFile;
   const admissionSubphaseTimingsMs =
-    typeof opts.onAcquired === "function" ? {} : undefined;
+    typeof opts.onAcquired === "function" || typeof opts.onTimedOut === "function"
+      ? {}
+      : undefined;
   const measureAdmissionSubphase = admissionSubphaseTimingsMs
     ? async (name, operation) => {
       const phaseStartedAt = performance.now();
@@ -1284,7 +1286,7 @@ export async function withFsMutexRead(name, fn, opts = {}) {
       // A reserved writer already prevents admission. Publishing markers on
       // every retry in that state makes its drain observe readers that will
       // never enter, and a stream of newcomers can keep that drain occupied.
-      if (!(await writerLockIsHeld(writerDir, staleMs, io))) {
+      if (!(await measureAdmissionSubphase("writer-check", () => writerLockIsHeld(writerDir, staleMs, io)))) {
         await mkdir(readerDir);
         markerCreated = true;
         await writeFileIo(
@@ -1294,7 +1296,7 @@ export async function withFsMutexRead(name, fn, opts = {}) {
         // Keep this second check: a writer can reserve after the preflight
         // but before publication. Its drain must see our marker until we
         // notice that reservation and remove it.
-        ready = !(await writerLockIsHeld(writerDir, staleMs, io));
+        ready = !(await measureAdmissionSubphase("writer-check", () => writerLockIsHeld(writerDir, staleMs, io)));
       }
     } catch (error) {
       if (error.code !== "EEXIST") {
@@ -1319,12 +1321,25 @@ export async function withFsMutexRead(name, fn, opts = {}) {
       opts.onWaiting({ owner: await readOwner(writerDir, io), elapsedMs: elapsed });
     }
     if (elapsed > timeoutMs) {
-      const currentOwner = await readOwner(writerDir, io);
-      throw new Error(
+      const currentOwner = await measureAdmissionSubphase("writer-owner-read", () => readOwner(writerDir, io));
+      const observation = {
+        waitedMs: Date.now() - startedAt,
+        timeoutMs,
+        ...(admissionSubphaseTimingsMs
+          ? { admissionSubphaseTimingsMs: { ...admissionSubphaseTimingsMs } }
+          : {}),
+      };
+      const error = Object.assign(new Error(
         `Timed out after ${timeoutMs}ms waiting for fs-mutex writer ("${name}"); holder: ${currentOwner}`,
-      );
+      ), { code: "ETIMEDOUT", ...observation });
+      try {
+        opts.onTimedOut?.(observation);
+      } catch {
+        // Diagnostic callbacks must never replace the admission timeout.
+      }
+      throw error;
     }
-    await sleep(retryMs);
+    await measureAdmissionSubphase("retry-wait", () => sleep(retryMs));
   }
 
   try {

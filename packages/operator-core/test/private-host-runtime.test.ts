@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -20,24 +20,29 @@ afterEach(() => {
 
 it('retains teardown signal evidence on a forced-exit timeout and removes its listeners', async () => {
   vi.useFakeTimers();
+  const directory = mkdtempSync(join(tmpdir(), 'private-stop-evidence-'));
+  dirs.push(directory);
+  const trace = join(directory, 'host-stop.jsonl');
   const child = Object.assign(new EventEmitter(), {
     pid: 12345, exitCode: null, signalCode: null, stdout: null, stderr: null,
     kill: vi.fn(() => false),
   }) as unknown as import('node:child_process').ChildProcess;
   const observations: unknown[] = [];
-  const stopped = stopPrivateOperatorHost(child, undefined, 10,
-    (observation) => observations.push(observation));
+  const stopped = stopPrivateOperatorHost(child, undefined, 10, observation => {
+    observations.push(observation);
+    appendFileSync(trace, JSON.stringify(observation) + '\n');
+  });
   const rejected = expect(stopped).rejects.toMatchObject({
     message: 'Private host forced exit did not settle',
     privateHostStop: { pid: 12345, phase: 'forced exit', sigtermAccepted: false,
       sigkillAccepted: false, exitObserved: false, closeObserved: false },
   });
-  await vi.advanceTimersByTimeAsync(21);
-  await rejected;
+  await Promise.all([rejected, vi.advanceTimersByTimeAsync(21)]);
   expect(observations).toEqual(expect.arrayContaining([
     expect.objectContaining({ phase: 'signal', signal: 'SIGTERM', accepted: false }),
     expect.objectContaining({ phase: 'signal', signal: 'SIGKILL', accepted: false }),
   ]));
+  expect(readFileSync(trace, 'utf8').trim().split('\n').map(line => JSON.parse(line))).toEqual(observations);
   expect(child.listenerCount('exit')).toBe(0);
   expect(child.listenerCount('close')).toBe(0);
 });
@@ -68,6 +73,68 @@ it('observes real private-host exit before dependent cleanup and ignores diagnos
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     await closed;
   }
+});
+
+it('waits for delayed exit before cleanup and separately waits for pipe closure', async () => {
+  vi.useFakeTimers();
+  const child = Object.assign(new EventEmitter(), {
+    pid: 12345, exitCode: null as number | null, signalCode: null,
+    stdout: { destroyed: false, readableEnded: false }, stderr: null,
+    kill: vi.fn(() => true),
+  });
+  const cleanup = vi.fn(async () => { expect(child.exitCode).toBe(0); });
+  let settled = false;
+  const stopped = stopPrivateOperatorHost(child as unknown as import('node:child_process').ChildProcess,
+    cleanup, 10).then(() => { settled = true; });
+  await vi.advanceTimersByTimeAsync(9);
+  expect(cleanup).not.toHaveBeenCalled();
+  child.exitCode = 0;
+  child.emit('exit', 0, null);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(cleanup).toHaveBeenCalledOnce();
+  expect(settled).toBe(false);
+  child.emit('close', 0, null);
+  await stopped;
+  expect(child.kill.mock.calls).toEqual([['SIGTERM']]);
+  expect(child.listenerCount('exit')).toBe(0);
+  expect(child.listenerCount('close')).toBe(0);
+});
+
+it('retains a stdio timeout after process exit and safely stops an already closed host again', async () => {
+  vi.useFakeTimers();
+  const child = Object.assign(new EventEmitter(), {
+    pid: 12345, exitCode: 0, signalCode: null,
+    stdout: { destroyed: false, readableEnded: false }, stderr: null,
+    kill: vi.fn(() => true),
+  });
+  const stopped = stopPrivateOperatorHost(child as unknown as import('node:child_process').ChildProcess,
+    undefined, 10);
+  const rejected = expect(stopped).rejects.toMatchObject({
+    privateHostStop: { phase: 'stdio drainage', exitObserved: true, closeObserved: false,
+      sigtermAccepted: null, sigkillAccepted: null },
+  });
+  await Promise.all([rejected, vi.advanceTimersByTimeAsync(11)]);
+  expect(child.listenerCount('close')).toBe(0);
+  child.stdout.destroyed = true;
+  await stopPrivateOperatorHost(child as unknown as import('node:child_process').ChildProcess, undefined, 10);
+  expect(child.kill).not.toHaveBeenCalled();
+});
+
+it('retains a signal exception without running dependent cleanup', async () => {
+  const denied = Object.assign(new Error('signal denied'), { code: 'EPERM' });
+  const child = Object.assign(new EventEmitter(), {
+    pid: 12345, exitCode: null, signalCode: null, stdout: null, stderr: null,
+    kill: vi.fn(() => { throw denied; }),
+  });
+  const cleanup = vi.fn();
+  await expect(stopPrivateOperatorHost(child as unknown as import('node:child_process').ChildProcess,
+    cleanup)).rejects.toMatchObject({
+      code: 'EPERM', privateHostStop: { phase: 'signal', sigtermAccepted: false,
+        exitObserved: false, closeObserved: false },
+    });
+  expect(cleanup).not.toHaveBeenCalled();
+  expect(child.listenerCount('exit')).toBe(0);
+  expect(child.listenerCount('close')).toBe(0);
 });
 
 function privateBudgetEnvironment() {

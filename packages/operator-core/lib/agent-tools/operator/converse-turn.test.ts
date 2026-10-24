@@ -20,7 +20,30 @@ vi.mock('../../operator-chat-store', () => ({
 }));
 vi.mock('./converse-chat-binding', () => ({ mintConverseChatBinding: mocks.mint,
   readConverseCardBinding: mocks.readBinding, verifyConverseCardBinding: mocks.verifyBinding }));
-import { admitConverseTurn, findConverseTurn, watchConverseTurn } from './converse-turn';
+import { admitConverseTurn, converseToolResultBlocks, findConverseTurn, watchConverseTurn } from './converse-turn';
+
+describe('P010 native report result references', () => {
+  const receipt = { ok: true, workspace_id: 'ws-a', report_id: 'report-a', body_md: 'private body', title: 'private title' };
+  const result = (value: unknown) => ({ name: 'reports:publish', output: JSON.stringify(value), isError: false });
+  it('extracts stable scoped references from direct and native MCP receipts without copying private content', () => {
+    for (const value of [receipt, { content: [{ type: 'text', text: JSON.stringify(receipt) }] },
+      [{ type: 'text', text: JSON.stringify(receipt) }], { structuredContent: receipt }]) {
+      const blocks = converseToolResultBlocks(result(value), 'ws-a');
+      expect(blocks).toEqual([{ id: 'report:report-a', kind: 'report', title: 'Report',
+        sources: [{ ref: 'report:report-a' }], actions: [{ id: 'open', kind: 'open', label: 'Open report', ref: 'report:report-a' }] }]);
+      expect(JSON.stringify(blocks)).not.toContain('private');
+    }
+  });
+  it('refuses foreign, failed, ambiguous, malformed and unrelated tool output', () => {
+    for (const value of [{ ...receipt, workspace_id: 'ws-b' }, { ...receipt, ok: false },
+      { ...receipt, error: 'denied' }, { isError: true, structuredContent: receipt },
+      { content: [{ type: 'text', text: JSON.stringify(receipt) }, { type: 'text', text: JSON.stringify(receipt) }] },
+      { ...receipt, report_id: '' }]) expect(converseToolResultBlocks(result(value), 'ws-a')).toEqual([]);
+    expect(converseToolResultBlocks({ ...result(receipt), isError: true }, 'ws-a')).toEqual([]);
+    expect(converseToolResultBlocks({ ...result(receipt), name: 'docs:get' }, 'ws-a')).toEqual([]);
+    expect(converseToolResultBlocks({ ...result(receipt), output: 'x'.repeat(65537) }, 'ws-a')).toEqual([]);
+  });
+});
 
 const input = () => ({
   options: { sql: {} as never, workspaceId: 'ws-a', turn: { conversationId: 'conv-a', turnId: 'turn-a' },

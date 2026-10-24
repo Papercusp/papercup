@@ -492,6 +492,41 @@ describe('withFsMutexRead wait observations', () => {
     }
   });
 
+  it.each([false, true])('reports failed reader admission even when the timeout observer throws: %s', async (observerThrows) => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-timeout-observation-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const writerDir = join(dir, 'reader-timeout.lock');
+    await mkdir(writerDir);
+    await writeFile(join(writerDir, 'owner.json'), JSON.stringify({ pid: process.pid, host: hostname() }));
+    const timeouts: { waitedMs: number; timeoutMs: number; admissionSubphaseTimingsMs?: Record<string, number> }[] = [];
+    let readerEntered = false;
+    let acquired = false;
+    try {
+      await expect(withFsMutexRead('reader-timeout', async () => { readerEntered = true; }, {
+        timeoutMs: 40,
+        retryMs: 2,
+        onAcquired: observerThrows ? () => { acquired = true; } : undefined,
+        onTimedOut: (info) => {
+          timeouts.push(info);
+          if (observerThrows) throw new Error('timeout observer failed');
+        },
+      })).rejects.toMatchObject({ code: 'ETIMEDOUT', timeoutMs: 40 });
+      expect(timeouts).toHaveLength(1);
+      expect(timeouts[0].waitedMs).toBeGreaterThanOrEqual(40);
+      expect(timeouts[0].admissionSubphaseTimingsMs).toMatchObject({
+        'lock-root.ensure': expect.any(Number),
+        'writer-check': expect.any(Number),
+        'retry-wait': expect.any(Number),
+      });
+      expect(readerEntered).toBe(false);
+      expect(acquired).toBe(false);
+      expect(await readdir(join(dir, 'reader-timeout.readers'))).toEqual([]);
+      expect((await lstat(writerDir)).isDirectory()).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the one-shot default and cleans up after a bounded timeout', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-default-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;

@@ -19,6 +19,7 @@ import { and, desc, eq, lt as dlt, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
 import type { ParsedReport } from './operator-converse-tags';
 import { canonicalToolName } from './operator-mcp-tools';
+import { parseStructuredResults } from '@papercusp/chat-protocol';
 import type {
   ChatTurn,
   ChatTurnRole,
@@ -63,6 +64,10 @@ const turnCols = {
   // self-contained — no generated-schema regen needed in the shared tree.
   // structured-report-protocol-2026-06-05 D-003.
   report: dsql<ParsedReport | null>`report`.as('report'),
+  // JSON row projection also reads legacy/candidate schemas before the additive
+  // chat_state migration; an absent optional column yields no result view.
+  results: dsql<unknown>`to_jsonb(operator_turns) -> 'chat_state' -> 'results'`.as('results'),
+  results_schema_version: dsql<unknown>`to_jsonb(operator_turns) -> 'chat_state' -> 'schemaVersion'`.as('results_schema_version'),
 } as const;
 
 // The row types below are the converse STORE's projection of the one wire
@@ -625,6 +630,10 @@ export function normalizeTurnTools(tools: unknown): TurnToolCall[] | null {
 }
 
 function rowToTurn(r: Record<string, unknown>): TurnRow {
+  if (r.results_schema_version != null && r.results_schema_version !== 1) throw new Error('unsupported-turn-state');
+  const results = r.results == null || (Array.isArray(r.results) && r.results.length === 0)
+    ? { ok: true as const, value: [] } : parseStructuredResults(r.results);
+  if (!results.ok) throw new Error('invalid-turn-results');
   return {
     id: String(r.id),
     conversationId: String(r.conversation_id),
@@ -636,6 +645,7 @@ function rowToTurn(r: Record<string, unknown>): TurnRow {
     audioUrl: r.audio_url == null ? null : String(r.audio_url),
     createdAt: Number(r.created_at),
     tools: normalizeTurnTools(r.tools),
+    ...(results.value.length ? { results: results.value } : {}),
     report:
       r.report && typeof r.report === 'object' && !Array.isArray(r.report)
         ? (r.report as ParsedReport)
