@@ -28,7 +28,7 @@ import { readProcessIdentity } from '../process-identity';
 import { createInferenceGateway, type GatewayDeps } from '../inference-gateway/gateway';
 import { createFailoverPool } from '../inference-gateway/account-failover';
 import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
-import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
+import { closedClaudeSessionPopulation, closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
 import { registerLearningLoop, reserveLearningSpend, recordLearningSpendAttemptResult, getLearningSpendPositions,
   settleLearningSpend, listLearningSpendEvents } from '../learning-governor/store';
 import type { GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
@@ -53,14 +53,17 @@ const goalAdmission = vi.hoisted(() => vi.fn());
 // the trusted composition seam rather than querying an unrelated live org DB.
 const operationPolicy = vi.hoisted(() => vi.fn<NonNullable<GatewayDeps['readAcceptedOperationModelPolicy']>>());
 const operationAttestation = vi.hoisted(() => vi.fn<NonNullable<GatewayDeps['recordAcceptedOperationModelAttestation']>>());
-const hostHome = vi.hoisted(() => ({ path: '', byId: new Map<number, string>() }));
+const hostHome = vi.hoisted(() => ({ path: '', byId: new Map<number, string>(), byOwner: new Map<string, string>() }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch },
   INTERNAL_SCOPED_INFERENCE_GATEWAY: Symbol.for('benchmark-test-private-route'),
   INTERNAL_SCOPED_SESSION_CONFINEMENT: Symbol.for('benchmark-test-server-ceiling') }));
 vi.mock('../task-manager/control', () => ({ killTask: native.kill }));
 // Only the private home allocator is substituted. SQL bindings, filesystem
 // bytes, process pins, request observation and HTTP reads use production IO.
-vi.mock('@papercusp/orchestrator/session-launch-dirs', () => ({ codexHomeForSessionKey: (id: number | string) => hostHome.byId.get(Number(id)) ?? hostHome.path }));
+vi.mock('@papercusp/orchestrator/session-launch-dirs', () => ({
+  codexHomeForSessionKey: (id: number | string) => hostHome.byId.get(Number(id)) ?? hostHome.path,
+  sessionClaudeConfigDir: (ownerId: string) => hostHome.byOwner.get(ownerId) ?? hostHome.path,
+}));
 
 const workspaceId = 'bench-current-private';
 const handle = { slug: 'xbench-current-private', featureId: 'xbench-private-task', worktreePath: '/private/task' };
@@ -198,6 +201,7 @@ beforeEach(async () => {
   operationAttestation.mockReset().mockResolvedValue(undefined);
   vi.clearAllMocks();
   hostHome.byId.clear();
+  hostHome.byOwner.clear();
   await sql`TRUNCATE agent_lock_waiters, agent_file_locks`;
   await sql`TRUNCATE harness_shared.bench_runs CASCADE`;
   await sql`TRUNCATE harness_shared.coord_event_log, harness_shared.carry_notes, harness_shared.event_key_fires, harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.benchmark_rollout, harness_shared.work_items,
@@ -1774,7 +1778,7 @@ describe('legacy SQL usage measurement', () => {
 });
 
 describe('production native accounting with private PG and full source bytes', () => {
-  async function costFixture(maxWallClockMs = 100, repeated = false) {
+  async function costFixture(maxWallClockMs = 100, repeated = false, agent: 'codex' | 'claude' = 'codex') {
     const fixtureProtocol = repeated ? controlledProtocolFixture() : currentProtocolFixture('PRIVATE', maxWallClockMs);
     if (repeated) {
       fixtureProtocol.runId = 'PRIVATE';
@@ -1782,15 +1786,21 @@ describe('production native accounting with private PG and full source bytes', (
       fixtureProtocol.arms.find(arm => arm.id === 'repeated-session')!.id = 'baseline';
     }
     const opts: CurrentSuBenchOptions = { workspaceId, runId: 'PRIVATE', armId: repeated ? 'baseline' : 'papercusp', seed: 1,
-      agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto',
+      agent, model: 'configured-alias', effort: 'high', account: 'auto',
       preregistration: { preregHash: createHash('sha256').update(repeated ? canonicalJson(fixtureProtocol) : 'private-cost-protocol')
         .digest('hex'), config: fixtureProtocol } };
     const label = currentBenchLaunchRequest(opts, handle, 'Private cost fixture.').label;
     async function addSource(home: string, ownerId: string) {
-      const nativeSessionId = randomUUID(), nativeTurnId = randomUUID();
-      const dir = join(home, 'sessions', '2026', '10', '10'); mkdirSync(dir, { recursive: true });
-      const file = join(dir, `rollout-2026-10-10T00-00-00-${nativeSessionId}.jsonl`);
-      const transcript = [
+      const nativeSessionId = randomUUID(), nativeTurnId = randomUUID(), nativeMessageId = `msg_${randomUUID()}`;
+      const dir = agent === 'claude' ? join(home, 'projects', 'private-project') : join(home, 'sessions', '2026', '10', '10');
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, agent === 'claude' ? `${nativeSessionId}.jsonl` : `rollout-2026-10-10T00-00-00-${nativeSessionId}.jsonl`);
+      const transcript = (agent === 'claude' ? [
+        { type: 'assistant', sessionId: nativeSessionId, message: { id: nativeMessageId,
+          model: 'configured-alias', stop_reason: 'end_turn', usage: {
+            input_tokens: 80, output_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 0,
+          } } },
+      ] : [
         { type: 'session_meta', payload: { id: nativeSessionId, cli_version: '0.162.0' } },
         { type: 'turn_context', payload: { turn_id: nativeTurnId, model: 'configured-alias', effort: 'high' } },
         { type: 'event_msg', payload: { type: 'token_count', info: {
@@ -1798,9 +1808,10 @@ describe('production native accounting with private PG and full source bytes', (
           last_token_usage: { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 10 },
         } } },
         { type: 'event_msg', payload: { type: 'task_complete', turn_id: nativeTurnId } },
-      ].map(record => JSON.stringify(record) + '\n').join('');
+      ]).map(record => JSON.stringify(record) + '\n').join('');
       writeFileSync(file, transcript);
-      const population = closedCodexSessionPopulation({ transcript, file, fileGeneration: 0, nativeSessionId });
+      const population = (agent === 'claude' ? closedClaudeSessionPopulation : closedCodexSessionPopulation)(
+        { transcript, file, fileGeneration: 0, nativeSessionId });
       if (!population.ok) throw new Error(population.detail);
       await sql`INSERT INTO harness_shared.interactive_usage_files VALUES
         (${workspaceId}, ${file}, ${Buffer.byteLength(transcript)}, '{"initialized":true,"fileGeneration":0}'::jsonb)`;
@@ -1808,15 +1819,18 @@ describe('production native accounting with private PG and full source bytes', (
         (workspace_id, session_id, usage_event_key, usage_provenance, cost_source, cost_usd,
          identity_activation_event_id, identity_owner_id, identity_principal_id, identity_specification_revision, identity_state_revision)
         VALUES (${workspaceId}, ${nativeSessionId}, ${population.usageEventKeys[0]},
-          ${sql.json({ turnId: nativeTurnId, costBound: null })}, 'provider', 0.002,
+          ${sql.json(agent === 'claude' ? { adapter: 'claude', sourceId: `message:${nativeMessageId}`,
+            providerResponseId: nativeMessageId, providerResponseIdSource: 'native-message-id', costBound: null }
+            : { turnId: nativeTurnId, costBound: null })}, 'provider', 0.002,
           'private-cost-activation', ${ownerId}, 'private-cost-principal', 'private-spec', 'private-state')`;
-      return { file, nativeSessionId, nativeTurnId };
+      return { file, nativeSessionId, nativeTurnId, nativeMessageId };
     }
     async function addParticipant(taskId: string, ownerId: string, parentTaskId: string | null = null) {
       const home = join(repoRoot, taskId), source = await addSource(home, ownerId);
       const [a] = await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent)
-        VALUES (${workspaceId}, ${ownerId}, ${source.nativeSessionId}, 'codex') RETURNING id`;
+        VALUES (${workspaceId}, ${ownerId}, ${source.nativeSessionId}, ${agent}) RETURNING id`;
       hostHome.byId.set(Number(a.id), home);
+      hostHome.byOwner.set(ownerId, home);
       await sql`INSERT INTO harness_shared.task_ledger (task_id, workspace_id, session_id, detail, class, state, parent_task_id)
         VALUES (${taskId}, ${workspaceId}, ${source.nativeSessionId},
           ${sql.json({ coordOwnerId: ownerId, ...(parentTaskId === null ? { label } : {}) })}, 'agent-session', 'exited', ${parentTaskId})`;
@@ -1840,13 +1854,14 @@ describe('production native accounting with private PG and full source bytes', (
       const hosted = startHost ? await controller.startNativeGateway(() => {},
         async () => ({ port: 32103, stop: async () => {} } as never)) : undefined;
       if (hosted) gateways.push(hosted); else controller.revoke();
-      async function addAttempt(source: { nativeSessionId: string; nativeTurnId: string },
+      async function addAttempt(source: { nativeSessionId: string; nativeTurnId: string; nativeMessageId?: string },
         outcome: 'response-completed' | 'fetch-failed' = 'response-completed') {
         const id = randomUUID(), identity = { attemptId: id, manifestSha256: binding.preregHash, armId: binding.assignmentId,
-          nativeSessionId: source.nativeSessionId, nativeTurnId: source.nativeTurnId, transport: 'bearer-http' as const,
-          accountId: 'private-provider-account', credentialHeader: 'authorization' as const,
+          ...(agent === 'claude' ? {} : { nativeSessionId: source.nativeSessionId, nativeTurnId: source.nativeTurnId }),
+          transport: agent === 'claude' ? 'anthropic-http' as const : 'bearer-http' as const,
+          accountId: 'private-provider-account', credentialHeader: agent === 'claude' ? 'x-api-key' as const : 'authorization' as const,
           credentialSha256: 'b'.repeat(64), bodySha256: 'c'.repeat(64), clockId: 'private-host-clock',
-          target: 'https://api.openai.com/v1/responses' };
+          target: agent === 'claude' ? 'https://api.anthropic.com/v1/messages' : 'https://api.openai.com/v1/responses' };
         const receipt = await reserveLearningSpend(sql, { workspaceId, loopId, requestedUsd: 0.003, floorUsd: 0,
           attemptKind: 'evaluation', note: JSON.stringify({ nativeGatewayAttempt: identity }),
           exact: { reservationId: id, binding: binding.preregHash, expectedBudgetUsd: 60,
@@ -1863,7 +1878,7 @@ describe('production native accounting with private PG and full source bytes', (
         if (outcome === 'response-completed') {
           const terminal: GatewayCarryTrialAttemptResult = { ...identity, reservationRef: id, outcome, responseStatus: 200,
             costUsdMeasurementMissing: true, responseSha256: 'd'.repeat(64), responseBytes: 300,
-            providerCompletion: { responseId: `response-${id}`, model: 'configured-alias', providerEffort: 'high',
+            providerCompletion: { responseId: agent === 'claude' ? source.nativeMessageId! : `response-${id}`, model: 'configured-alias', providerEffort: 'high',
               usage: { inputTokenBasis: 'inclusive', inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheCreationTokens: 0 } } };
           expect(await recordLearningSpendAttemptResult(sql, { workspaceId, reservationId: id, result: terminal })).toEqual({ ok: true });
         }
@@ -2152,6 +2167,38 @@ describe('production native accounting with private PG and full source bytes', (
         usageEventKey: expect.stringMatching(/^[a-f0-9]{64}$/), sampleId: expect.any(String),
         activationEventId: 'private-cost-activation' } });
   });
+  it('settles Claude message bills once using the exact closed source and Anthropic response', async () => {
+    const f = await costFixture(100, false, 'claude'), accounting = await f.accountingFixture();
+    const result = await accounting.read(); await accounting.read();
+    expect(result).toMatchObject({ tokensIn: 80, tokensOut: 10, tokensCacheRead: 20,
+      costUsdMeasurementMissing: false, armMeta: { nativeCostAccounting: { billedCostUsd: 0.002,
+        sources: [{ agent: 'claude', nativeTurnIds: [], nativeMessageIds: [f.solver.nativeMessageId] }] } } });
+    expect(() => requireCurrentBenchNativeRunCost(result)).not.toThrow();
+    const final = await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId, includeReservations: true });
+    expect(final.positions).toMatchObject({ usedUsd: 0.002, unsettledUsd: 0 });
+    expect(await listLearningSpendEvents(sql, { workspaceId, loopId: accounting.binding.loopId })).toHaveLength(1);
+    if (final.census?.status !== 'complete') throw new Error('Incomplete Claude settlement census');
+    const proof = JSON.parse(final.census.reservations[0].note!).nativeGatewaySettlement;
+    expect(proof).toMatchObject({ nativeSessionId: f.solver.nativeSessionId, nativeMessageId: f.solver.nativeMessageId,
+      billedInferenceMicros: '2000', sourceSha256: createHash('sha256').update(readFileSync(f.solver.file)).digest('hex') });
+    expect(proof).not.toHaveProperty('nativeTurnId');
+  });
+  it.each(['wrong-message', 'unknown-bill', 'wrong-bill-message', 'partial-source', 'carry-source'] as const)(
+    'keeps Claude spend open for %s', async fault => {
+      const f = await costFixture(100, false, 'claude'), accounting = await f.accountingFixture();
+      if (fault === 'wrong-message') await sql`UPDATE harness_shared.learning_spend_reservations SET note =
+        jsonb_set(note::jsonb, '{nativeGatewayAttemptResult,providerCompletion,responseId}', '"msg_foreign"'::jsonb)::text`;
+      if (fault === 'unknown-bill') await sql`UPDATE harness_shared.agent_usage_samples SET cost_source = 'estimated'`;
+      if (fault === 'wrong-bill-message') await sql`UPDATE harness_shared.agent_usage_samples SET usage_provenance =
+        jsonb_set(usage_provenance, '{providerResponseId}', '"msg_foreign"'::jsonb)`;
+      if (fault === 'partial-source') writeFileSync(f.solver.file, readFileSync(f.solver.file, 'utf8').replace('"end_turn"', 'null'));
+      if (fault === 'carry-source') await f.addSource(f.solver.home, f.solver.ownerId);
+      expect(await accounting.read()).toMatchObject({ costUsdMeasurementMissing: true,
+        armMeta: { nativeCostAccounting: { billedCostUsd: null } } });
+      expect((await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId })).positions)
+        .toMatchObject({ usedUsd: 0, unsettledUsd: 0.003 });
+      expect(await listLearningSpendEvents(sql, { workspaceId, loopId: accounting.binding.loopId })).toHaveLength(0);
+    });
   it('refuses settlement when the reservation changed after its bill was matched', async () => {
     const f = await costFixture(), accounting = await f.accountingFixture();
     const before = await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId, includeReservations: true });

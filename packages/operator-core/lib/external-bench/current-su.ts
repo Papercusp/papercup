@@ -24,7 +24,7 @@ import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult } from '.
 import type { LearningReservationResourceBudget, LearningSpendReservationCensus } from '../learning-governor/store';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import type { CredentialResolver } from '../inference-gateway/credential-store';
-import type { ClosedCodexSessionUsage } from '../session-transcript-resolvers';
+import type { ClosedClaudeSessionUsage, ClosedCodexSessionUsage } from '../session-transcript-resolvers';
 import { priceRun } from '@papercusp/bench-metrics';
 import { currentProtocolPriceTable } from './reproducibility/schema';
 import { readGatewayNativeCorrelation } from '../inference-gateway/request-stage-telemetry';
@@ -35,8 +35,16 @@ import { openAiCacheGeneration } from '../inference-gateway/cache-policy';
 import { CONTAINER_CODEX_BIN_PATH, materializeDockerExecWrapper, validateDockerExecTarget, type DockerExecTarget } from './container-exec-target';
 
 interface NativeCostParticipant {
-  taskId: string; ownerId: string; codexHome: string; terminal: boolean;
+  taskId: string; ownerId: string; terminal: boolean;
+  agent?: 'codex' | 'claude'; codexHome?: string; claudeConfigDir?: string;
   startedAtMs?: number | null; endedAtMs?: number | null;
+}
+type ClosedNativeSessionUsage = ClosedCodexSessionUsage | ClosedClaudeSessionUsage;
+type NativeSourceUsage = Extract<ClosedNativeSessionUsage, { ok: true }>;
+function nativeCostHome(participant: NativeCostParticipant): string {
+  return participant.agent === 'claude'
+    ? !participant.codexHome && participant.claudeConfigDir?.trim() || ''
+    : (!participant.agent || participant.agent === 'codex') && !participant.claudeConfigDir && participant.codexHome?.trim() || '';
 }
 export interface CurrentBenchAccountingBinding {
   readonly workspaceId: string; readonly loopId: string; readonly runId: string;
@@ -51,7 +59,7 @@ export interface CurrentBenchTaskRequestCensus {
 }
 interface NativeAccountingSource {
   participant: NativeCostParticipant; nativeSessionId: string;
-  usage: Extract<ClosedCodexSessionUsage, { ok: true }>;
+  usage: NativeSourceUsage;
   billed?: NativeBillPopulation;
 }
 interface NativeBillPopulation {
@@ -78,16 +86,26 @@ export function currentBenchAttemptPopulationMatches(binding: CurrentBenchAccoun
         canonicalJson(before.reservations) !== canonicalJson(after.reservations) ||
         !population.participants.length || population.participants.some(p => !p.terminal) || !population.sources.length) return false;
     const expected = new Map<string, string[]>(), keys = new Set<string>(), sessions = new Set<string>();
-    const signature = (session: string, turn: string, model: string, input: number, output: number, read: number, write: number) =>
-      canonicalJson([session, turn, model, input, output, read, write]);
+    const messageSessions = new Map<string, string>();
+    const signature = (agent: 'codex' | 'claude', session: string, request: string, model: string,
+      input: number, output: number, read: number, write: number) =>
+      canonicalJson([agent, session, request, model, input, output, read, write]);
     for (const source of population.sources) {
       if (!population.participants.some(p => canonicalJson(p) === canonicalJson(source.participant)) ||
-          sessions.has(source.nativeSessionId) || !source.usage.ok || !/^[a-f0-9]{64}$/.test(source.usage.sourceSha256)) return false;
+          !nativeCostHome(source.participant) || !source.nativeSessionId || sessions.has(source.nativeSessionId) ||
+          !source.usage.ok || !/^[a-f0-9]{64}$/.test(source.usage.sourceSha256)) return false;
+      const claude = source.participant.agent === 'claude';
+      if (claude !== ('nativeMessageIds' in source.usage)) return false;
       sessions.add(source.nativeSessionId);
       for (const event of source.usage.events) {
-        if (!event.turnId || event.inputTotalTokens == null || keys.has(event.usageEventKey)) return false;
+        const request = claude ? event.providerResponseId : event.turnId;
+        if (!request || event.inputTotalTokens == null || keys.has(event.usageEventKey)) return false;
+        if (claude) {
+          if (event.turnId || event.sourceId !== `message:${request}` || messageSessions.has(request)) return false;
+          messageSessions.set(request, source.nativeSessionId);
+        }
         keys.add(event.usageEventKey);
-        const key = signature(source.nativeSessionId, event.turnId, event.model, event.inputTotalTokens,
+        const key = signature(claude ? 'claude' : 'codex', source.nativeSessionId, request, event.model, event.inputTotalTokens,
           event.usage.outputTokens, event.usage.cacheReadTokens, event.usage.cacheCreationTokens);
         expected.set(key, [...(expected.get(key) ?? []), event.usageEventKey]);
       }
@@ -102,7 +120,7 @@ export function currentBenchAttemptPopulationMatches(binding: CurrentBenchAccoun
       if (attempt.armId !== binding.assignmentId) {
         // Other frozen assignments share this loop, but cannot borrow a native
         // request belonging to this assignment's host-owned source census.
-        if (sessions.has(attempt.nativeSessionId)) return false;
+        if (sessions.has(attempt.nativeSessionId) || messageSessions.has(note?.nativeGatewayAttemptResult?.providerCompletion?.responseId)) return false;
         continue;
       }
       const result = note.nativeGatewayAttemptResult as GatewayCarryTrialAttemptResult | undefined;
@@ -113,17 +131,23 @@ export function currentBenchAttemptPopulationMatches(binding: CurrentBenchAccoun
             row.status !== 'cancelled' || row.usedUsd !== 0) return false;
         continue;
       }
-      if (result.outcome !== 'response-completed' || !result.nativeSessionId || !result.nativeTurnId ||
-          !sessions.has(result.nativeSessionId) || result.responseStatus < 200 || result.responseStatus >= 300 ||
+      if (result.outcome !== 'response-completed' || result.responseStatus < 200 || result.responseStatus >= 300 ||
           !/^[a-f0-9]{64}$/.test(result.responseSha256) || !Number.isSafeInteger(result.responseBytes) || result.responseBytes <= 0 ||
-          !['bearer-http', 'oauth-http'].includes(result.transport)) return false;
+          !['bearer-http', 'oauth-http', 'anthropic-http'].includes(result.transport)) return false;
       const provider = result.providerCompletion, u = provider.usage;
       if (!provider.responseId || responses.has(provider.responseId) || u.inputTokenBasis !== 'inclusive' ||
           ![u.inputTokens, u.outputTokens, u.cacheReadTokens, u.cacheCreationTokens].every(n =>
             typeof n === 'number' && Number.isSafeInteger(n) && n >= 0) ||
           u.cacheReadTokens! + u.cacheCreationTokens! > u.inputTokens) return false;
       responses.add(provider.responseId);
-      const key = signature(result.nativeSessionId, result.nativeTurnId, provider.model,
+      const claude = result.transport === 'anthropic-http';
+      const session = claude ? messageSessions.get(provider.responseId) : result.nativeSessionId;
+      const request = claude ? provider.responseId : result.nativeTurnId;
+      // Anthropic's message id is measured from the response and closed source.
+      // Its transport carries no caller-supplied native session or turn identity.
+      if (!session || !request || !sessions.has(session) || claude &&
+          (result.nativeSessionId !== undefined || result.nativeTurnId !== undefined)) return false;
+      const key = signature(claude ? 'claude' : 'codex', session, request, provider.model,
         u.inputTokens, u.outputTokens, u.cacheReadTokens!, u.cacheCreationTokens!);
       const matches = expected.get(key);
       // Token equality cannot distinguish two native requests with the same
@@ -137,8 +161,8 @@ export function currentBenchAttemptPopulationMatches(binding: CurrentBenchAccoun
 
 export interface CurrentBenchNativeCostReaderPorts {
   readParticipants(): Promise<NativeCostParticipant[]>;
-  readRuntime(participant: NativeCostParticipant): Promise<{ complete: boolean; sessions: readonly { nativeSessionId: string; usage: ClosedCodexSessionUsage }[] }>;
-  readBilled(participant: NativeCostParticipant, nativeSessionId: string, usage: Extract<ClosedCodexSessionUsage, { ok: true }>): Promise<NativeBillPopulation>;
+  readRuntime(participant: NativeCostParticipant): Promise<{ complete: boolean; sessions: readonly { nativeSessionId: string; usage: ClosedNativeSessionUsage }[] }>;
+  readBilled(participant: NativeCostParticipant, nativeSessionId: string, usage: NativeSourceUsage): Promise<NativeBillPopulation>;
   /** Full source-bound gateway attempt reconciliation is separate from a native
    * transcript census. Omission keeps efficiency claims closed. */
   readAttemptAccountingComplete?(population: NativeAccountingPopulation): Promise<boolean>;
@@ -147,6 +171,8 @@ export interface CurrentBenchNativeCostReaderPorts {
 export interface CurrentBenchNativeSessionCost {
   nativeSessionId: string; sourceSha256: string; sourceComplete: boolean;
   usageEventKeys: string[]; nativeTurnIds: string[];
+  /** Claude request identities are provider messages, never synthetic turns. */
+  agent?: 'claude'; nativeMessageIds?: string[];
   /** Uncached input; cache tokens remain separate, as in BenchRunCost. */
   tokensIn: number; tokensOut: number; tokensCacheRead: number; tokensCacheWrite: number; turns: number;
   normalizedCostUsd: number; billedKnownSubtotalUsd: number | null; billedCostUsd: number | null;
@@ -183,8 +209,13 @@ export function requireCurrentBenchNativeRunCost(input: unknown): CurrentBenchNa
           !Array.isArray(s.usageEventKeys) || !s.usageEventKeys.length ||
           s.usageEventKeys.some(key => typeof key !== 'string' || !key || events.has(key)) ||
           new Set(s.usageEventKeys).size !== s.usageEventKeys.length || !Array.isArray(s.nativeTurnIds) ||
-          !s.nativeTurnIds.length || s.nativeTurnIds.some(id => typeof id !== 'string' || !id) ||
-          new Set(s.nativeTurnIds).size !== s.nativeTurnIds.length || s.turns !== s.nativeTurnIds.length ||
+          (s.agent === 'claude' ? s.nativeTurnIds.length !== 0 || !Array.isArray(s.nativeMessageIds) ||
+            !s.nativeMessageIds.length || s.nativeMessageIds.some(id => typeof id !== 'string' || !id) ||
+            new Set(s.nativeMessageIds).size !== s.nativeMessageIds.length || s.turns !== s.nativeMessageIds.length ||
+            s.usageEventKeys.length !== s.nativeMessageIds.length
+          : s.agent !== undefined || s.nativeMessageIds !== undefined || !s.nativeTurnIds.length ||
+            s.nativeTurnIds.some(id => typeof id !== 'string' || !id) ||
+            new Set(s.nativeTurnIds).size !== s.nativeTurnIds.length || s.turns !== s.nativeTurnIds.length) ||
           ![s.tokensIn, s.tokensOut, s.tokensCacheRead, s.tokensCacheWrite, s.turns].every(count) ||
           !money(s.normalizedCostUsd) || !money(s.billedCostUsd) || s.billedCostUsd !== s.billedKnownSubtotalUsd) throw invalid();
       ids.add(s.nativeSessionId); for (const key of s.usageEventKeys) events.add(key);
@@ -278,19 +309,20 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
     const accountingSources: NativeAccountingSource[] = [];
     let missingSources = 0, missingBills = 0, billedKnownSubtotalUsd = 0;
     for (const participant of participants) {
-      const binding = canonicalJson([participant.taskId, participant.ownerId, participant.codexHome]);
-      if (!participant.taskId || !participant.ownerId || !participant.codexHome || bindings.has(binding)) {
+      const home = nativeCostHome(participant), homeKey = canonicalJson([participant.agent ?? 'codex', home]);
+      const binding = canonicalJson([participant.taskId, participant.ownerId, homeKey]);
+      if (!participant.taskId || !participant.ownerId || !home || bindings.has(binding)) {
         complete = false; missingSources++; continue;
       }
       ids.add(participant.taskId); bindings.add(binding);
       if (!participant.terminal) complete = false;
       // Recovery tasks can share one exact host home; its full source census is
       // charged once rather than once per task-ledger row.
-      if (homes.has(participant.codexHome)) {
-        if (homes.get(participant.codexHome) !== participant.ownerId) { complete = false; missingSources++; }
+      if (homes.has(homeKey)) {
+        if (homes.get(homeKey) !== participant.ownerId) { complete = false; missingSources++; }
         continue;
       }
-      homes.set(participant.codexHome, participant.ownerId);
+      homes.set(homeKey, participant.ownerId);
       const runtime = await io.readRuntime(participant).catch(() => ({ complete: false, sessions: [] }));
       if (!runtime.complete || !runtime.sessions.length) complete = false;
       if (!runtime.sessions.length) missingSources++;
@@ -299,6 +331,9 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
         nativeSessions.add(source.nativeSessionId);
         if (!source.usage.ok) { missingSources++; complete = false; if (!source.usage.knownSubtotal) continue; }
         const usage = source.usage.ok ? source.usage : source.usage.knownSubtotal!;
+        if ((participant.agent === 'claude') !== ('nativeMessageIds' in usage)) {
+          missingSources++; complete = false; continue;
+        }
         if (usage.events.some(event => eventKeys.has(event.usageEventKey)) ||
             new Set(usage.events.map(event => event.usageEventKey)).size !== usage.events.length) {
           missingSources++; complete = false; continue;
@@ -309,10 +344,12 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
           for (const event of usage.events) priced += priceRun({ tokensIn: event.usage.inputTokens, tokensOut: event.usage.outputTokens,
             tokensCacheRead: event.usage.cacheReadTokens, tokensCacheWrite: event.usage.cacheCreationTokens }, event.model, table);
         } catch { missingSources++; complete = false; continue; }
-        const session = { nativeSessionId: source.nativeSessionId, sourceSha256: usage.sourceSha256,
+        const requests = 'nativeMessageIds' in usage ? usage.nativeMessageIds : usage.nativeTurnIds;
+        const session: CurrentBenchNativeSessionCost = { nativeSessionId: source.nativeSessionId, sourceSha256: usage.sourceSha256,
           sourceComplete: source.usage.ok, usageEventKeys: usage.events.map(event => event.usageEventKey),
-          nativeTurnIds: [...usage.nativeTurnIds], tokensIn: 0, tokensOut: 0, tokensCacheRead: 0,
-          tokensCacheWrite: 0, turns: usage.nativeTurnIds.length, normalizedCostUsd: priced,
+          ...('nativeMessageIds' in usage ? { agent: 'claude' as const, nativeMessageIds: [...requests], nativeTurnIds: [] }
+            : { nativeTurnIds: [...requests] }), tokensIn: 0, tokensOut: 0, tokensCacheRead: 0,
+          tokensCacheWrite: 0, turns: requests.length, normalizedCostUsd: priced,
           billedKnownSubtotalUsd: null as number | null, billedCostUsd: null as number | null };
         for (const event of usage.events) {
           eventKeys.add(event.usageEventKey); result.tokensIn += event.usage.inputTokens; result.tokensOut += event.usage.outputTokens;
@@ -320,7 +357,7 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
           session.tokensIn += event.usage.inputTokens; session.tokensOut += event.usage.outputTokens;
           session.tokensCacheRead += event.usage.cacheReadTokens; session.tokensCacheWrite += event.usage.cacheCreationTokens;
         }
-        result.turns += usage.nativeTurnIds.length; result.costUsd += priced;
+        result.turns += requests.length; result.costUsd += priced;
         sources.push(session);
         const billed = await io.readBilled(participant, source.nativeSessionId, usage).catch(() => ({ knownSubtotalUsd: 0, complete: false }));
         if (source.usage.ok) accountingSources.push({ participant, nativeSessionId: source.nativeSessionId, usage,
@@ -385,7 +422,7 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
   const io: CurrentBenchNativeCostReaderPorts = {
     async readParticipants() {
       const { resolveDb } = await import('./reproducibility/db');
-      const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
+      const { codexHomeForSessionKey, sessionClaudeConfigDir } = await import('@papercusp/orchestrator/session-launch-dirs');
       const { sql } = resolveDb({ ...db, workspaceId });
       const rows = await sql<{ task_id: string; state: string; owner_id: string | null; adv_id: number | null; agent: string | null;
         started_at: Date | string; ended_at: Date | string | null }[]>`
@@ -401,23 +438,28 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
           LEFT JOIN harness_shared.adv_sessions a ON a.workspace_id = t.workspace_id AND a.coord_owner_id = t.detail->>'coordOwnerId'
          WHERE t.class = 'agent-session' ORDER BY t.task_id, a.id LIMIT 1001`;
       return rows.map(row => ({ taskId: row.task_id, ownerId: row.owner_id ?? '',
-        codexHome: row.agent === 'codex' && row.adv_id != null ? codexHomeForSessionKey(row.adv_id) : '',
+        ...(row.agent === 'claude' && row.owner_id && row.adv_id != null
+          ? { agent: 'claude' as const, claudeConfigDir: sessionClaudeConfigDir(row.owner_id) }
+          : { codexHome: row.agent === 'codex' && row.adv_id != null ? codexHomeForSessionKey(row.adv_id) : '' }),
         terminal: ['exited', 'killed', 'timed_out'].includes(row.state),
         startedAtMs: new Date(row.started_at).getTime(), endedAtMs: row.ended_at == null ? null : new Date(row.ended_at).getTime() }));
     },
     async readRuntime(participant) {
       const { resolveDb } = await import('./reproducibility/db');
-      const { readClosedCodexRuntimeUsage } = await import('../session-transcript-resolvers');
+      const { readClosedCodexRuntimeUsage, readClosedClaudeRuntimeUsage } = await import('../session-transcript-resolvers');
       const { sql } = resolveDb({ ...db, workspaceId });
-      return readClosedCodexRuntimeUsage(sql, { workspaceId, codexHome: participant.codexHome });
+      return participant.agent === 'claude'
+        ? readClosedClaudeRuntimeUsage(sql, { workspaceId, claudeConfigDir: nativeCostHome(participant) })
+        : readClosedCodexRuntimeUsage(sql, { workspaceId, codexHome: nativeCostHome(participant) });
     },
     async readBilled(participant, nativeSessionId, usage) {
       const { resolveDb } = await import('./reproducibility/db');
       const { readIdentityTurnBilledCost } = await import('../cupboard/shadow-metering-reader');
       const { sql } = resolveDb({ ...db, workspaceId });
-      const rows = await sql<{ usage_event_key: string; native_turn_id: string | null; session_id: string | null;
+      const rows = await sql<{ usage_event_key: string; native_turn_id: string | null; native_message_id: string | null; session_id: string | null;
         owner_id: string | null; principal_id: string | null; specification_revision: string | null; state_revision: string | null }[]>`
-        SELECT u.usage_event_key, u.usage_provenance->>'turnId' AS native_turn_id, a.session_id,
+        SELECT u.usage_event_key, u.usage_provenance->>'turnId' AS native_turn_id,
+          u.usage_provenance->>'providerResponseId' AS native_message_id, a.session_id,
           a.identity_owner_id AS owner_id, a.identity_principal_id AS principal_id,
           a.identity_specification_revision AS specification_revision, a.identity_state_revision AS state_revision
         FROM harness_shared.agent_usage_samples u JOIN harness_shared.agent_usage_samples_identity_attribution a
@@ -425,10 +467,12 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
         WHERE u.workspace_id = ${workspaceId} AND u.usage_event_key = ANY(${[...usage.usageEventKeys]}::text[])`;
       let complete = rows.length === usage.usageEventKeys.length, knownSubtotalUsd = 0;
       const samples: NonNullable<NativeBillPopulation['samples']>[number][] = [];
-      for (const nativeTurnId of usage.nativeTurnIds) {
-        const expected = usage.events.filter(event => event.turnId === nativeTurnId).map(event => event.usageEventKey).sort();
+      const claude = 'nativeMessageIds' in usage;
+      for (const requestId of claude ? usage.nativeMessageIds : usage.nativeTurnIds) {
+        const expected = usage.events.filter(event => (claude ? event.providerResponseId : event.turnId) === requestId)
+          .map(event => event.usageEventKey).sort();
         if (!expected.length) continue;
-        const group = rows.filter(row => row.native_turn_id === nativeTurnId), first = group[0];
+        const group = rows.filter(row => (claude ? row.native_message_id : row.native_turn_id) === requestId), first = group[0];
         if (!first?.principal_id || !first.specification_revision || !first.state_revision ||
             canonicalJson(group.map(row => row.usage_event_key).sort()) !== canonicalJson(expected) ||
             group.some(row => row.session_id !== nativeSessionId || row.owner_id !== participant.ownerId ||
@@ -438,9 +482,11 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
         // The full native source supplies this event population; the second
         // runtime read below brackets it before settlement. A partial source
         // may retain its earlier closed subtotal but cannot enter settlement.
-        const cost = await readIdentityTurnBilledCost(sql, { workspaceId, ownerId: participant.ownerId,
-          nativeSessionId, nativeTurnId, principalId: first.principal_id, specificationRevision: first.specification_revision,
-          stateRevision: first.state_revision, usageEventKeys: expected });
+        const identity = { workspaceId, ownerId: participant.ownerId, nativeSessionId,
+          principalId: first.principal_id, specificationRevision: first.specification_revision,
+          stateRevision: first.state_revision, usageEventKeys: expected };
+        const cost = claude ? await readIdentityTurnBilledCost(sql, { ...identity, nativeMessageId: requestId })
+          : await readIdentityTurnBilledCost(sql, { ...identity, nativeTurnId: requestId });
         if (!cost.ok || cost.billedInferenceMicros > BigInt(Number.MAX_SAFE_INTEGER)) { complete = false; continue; }
         knownSubtotalUsd += Number(cost.billedInferenceMicros) / 1_000_000;
         samples.push(...cost.samples);
@@ -457,10 +503,11 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
       // Re-read every host runtime while the reservation population is bracketed.
       // A changed carry file, new request or failed native frontier invalidates
       // an earlier token snapshot even when task identities remain unchanged.
-      for (const home of new Set(population.participants.map(p => p.codexHome))) {
-        const participant = population.participants.find(p => p.codexHome === home)!;
+      const homeKey = (p: NativeCostParticipant) => canonicalJson([p.agent ?? 'codex', nativeCostHome(p)]);
+      for (const home of new Set(population.participants.map(homeKey))) {
+        const participant = population.participants.find(p => homeKey(p) === home)!;
         const current = await io.readRuntime(participant);
-        const expected = population.sources.filter(s => s.participant.codexHome === home)
+        const expected = population.sources.filter(s => homeKey(s.participant) === home)
           .map(s => [s.nativeSessionId, s.usage.sourceSha256]).sort();
         if (!current.complete || current.sessions.some(s => !s.usage.ok) ||
             canonicalJson(current.sessions.map(s => [s.nativeSessionId, s.usage.ok ? s.usage.sourceSha256 : null]).sort()) !==
@@ -486,9 +533,14 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
         const note = JSON.parse(row.note!), result = note.nativeGatewayAttemptResult as GatewayCarryTrialAttemptResult | undefined;
         if (note.nativeGatewayAttempt.armId !== binding.assignmentId || result?.outcome === 'send-refused') continue;
         if (result?.outcome !== 'response-completed') return false;
-        const source = population.sources.find(source => source.nativeSessionId === result.nativeSessionId);
+        const claude = result.transport === 'anthropic-http';
+        const source = population.sources.find(source => claude
+          ? source.participant.agent === 'claude' && 'nativeMessageIds' in source.usage &&
+            source.usage.nativeMessageIds.includes(result.providerCompletion.responseId)
+          : source.participant.agent !== 'claude' && source.nativeSessionId === result.nativeSessionId);
         const u = result.providerCompletion.usage;
-        const event = source?.usage.events.find(event => event.turnId === result.nativeTurnId &&
+        const event = source?.usage.events.find(event => (claude
+          ? event.providerResponseId === result.providerCompletion.responseId : event.turnId === result.nativeTurnId) &&
           event.model === result.providerCompletion.model && event.inputTotalTokens === u.inputTokens &&
           event.usage.outputTokens === u.outputTokens && event.usage.cacheReadTokens === u.cacheReadTokens &&
           event.usage.cacheCreationTokens === u.cacheCreationTokens);
@@ -497,7 +549,8 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
         bills.delete(event!.usageEventKey);
         const usedUsd = Number(BigInt(bill.sample.billedInferenceMicros!)) / 1_000_000;
         const proof = { ...bill.sample, billedInferenceMicros: bill.sample.billedInferenceMicros!,
-          nativeSessionId: source.nativeSessionId, nativeTurnId: result.nativeTurnId!, sourceSha256: source.usage.sourceSha256 };
+          nativeSessionId: source.nativeSessionId, ...(claude ? { nativeMessageId: result.providerCompletion.responseId }
+            : { nativeTurnId: result.nativeTurnId! }), sourceSha256: source.usage.sourceSha256 };
         if (row.status !== 'open' && (row.status !== 'settled' || row.usedUsd !== usedUsd ||
             canonicalJson(note.nativeGatewaySettlement) !== canonicalJson(proof))) return false;
         settlements.push({ row, usedUsd, proof });

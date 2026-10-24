@@ -17,7 +17,7 @@ import {
   type CurrentBenchNativeInputCeiling,
   type CurrentBenchIdentity, type CurrentBenchTask, type CurrentSuBenchOptions, type CurrentSuBenchPorts,
 } from './current-su';
-import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
+import { closedClaudeSessionPopulation, closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
 import type { BenchHarnessOps } from './bench-harness-live';
 import type { BenchmarkContextReceipt } from './reproducibility/context';
 import { evaluateSessionConfinement, type SessionToolConfinement } from '../capability-envelope/session-confinement';
@@ -283,6 +283,104 @@ describe('source-bound current benchmark cost', () => {
   it('joins provider request evidence to host-native turn/model/inclusive cache usage without releasing unknown billing headroom', () => {
     const f = attemptFixture(); expect(f.matches()).toBe(true);
     expect(f.row.status).toBe('open'); expect(f.row.usedUsd).toBe(0);
+  });
+  function claudeAttemptFixture() {
+    const f = attemptFixture();
+    const nativeSessionId = 'claude-native-cost-1', messageId = 'msg_exact_native_1';
+    const transcript = JSON.stringify({ type: 'assistant', sessionId: nativeSessionId,
+      message: { id: messageId, model: 'configured-alias', stop_reason: 'end_turn', usage: {
+        input_tokens: 75, output_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 5,
+      } } }) + '\n';
+    const parsed = closedClaudeSessionPopulation({ transcript, file: '/private/claude.jsonl', fileGeneration: 0, nativeSessionId });
+    if (!parsed.ok) throw new Error(parsed.detail);
+    const usage = { ...parsed, file: '/private/claude.jsonl', sourceSha256: createHash('sha256').update(transcript).digest('hex') };
+    const participant = { taskId: f.participant.taskId, ownerId: f.participant.ownerId, agent: 'claude' as const,
+      claudeConfigDir: '/private/claude-home', terminal: true };
+    const { nativeSessionId: _session, nativeTurnId: _turn, ...request } = f.identity;
+    const identity = { ...request, transport: 'anthropic-http' as const,
+      target: 'https://api.anthropic.com/v1/messages', credentialHeader: 'x-api-key' as const };
+    const result = { ...identity, reservationRef: identity.attemptId, outcome: 'response-completed', responseStatus: 200,
+      costUsdMeasurementMissing: true, responseSha256: 'd'.repeat(64), responseBytes: 300,
+      providerCompletion: { responseId: messageId, model: 'configured-alias', providerEffort: null,
+        usage: { inputTokenBasis: 'inclusive', inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheCreationTokens: 5 } } };
+    const population = { participants: [participant], sources: [{ participant, nativeSessionId, usage }] };
+    const save = () => { f.row.note = JSON.stringify({ nativeGatewayAttempt: identity, nativeGatewayAttemptResult: result }); };
+    save();
+    return { ...f, identity, result, population, usage, participant, nativeSessionId, save,
+      matches: () => currentBenchAttemptPopulationMatches(f.binding, population, f.census, structuredClone(f.census)) };
+  }
+  it('joins Claude through the measured provider message without requiring or inventing native turns', () => {
+    const f = claudeAttemptFixture();
+    expect(f.matches()).toBe(true);
+    expect(f.identity).not.toHaveProperty('nativeTurnId');
+    expect(f.row.status).toBe('open');
+  });
+  it('retains Claude message identities in complete normalized and billed source receipts', async () => {
+    const f = claudeAttemptFixture();
+    Object.assign(f.protocol.priceSchedule.rates[0], { cacheWriteUsdPerMillion: 1.25 });
+    const ports: CurrentBenchNativeCostReaderPorts = { readParticipants: async () => [f.participant],
+      readRuntime: async () => ({ complete: true, sessions: [{ nativeSessionId: f.nativeSessionId, usage: f.usage }] }),
+      readBilled: async () => ({ knownSubtotalUsd: 0.002, complete: true }),
+      readAttemptAccountingComplete: async population => currentBenchAttemptPopulationMatches(f.binding, population, f.census, f.census) };
+    const cost = await currentBenchNativeCostReader(f.protocol, ports)();
+    expect(cost).toMatchObject({ tokensIn: 75, tokensOut: 10, tokensCacheRead: 20, tokensCacheWrite: 5, turns: 1,
+      costUsdMeasurementMissing: false, armMeta: { nativeCostAccounting: { billedCostUsd: 0.002,
+        sources: [{ agent: 'claude', nativeTurnIds: [], nativeMessageIds: ['msg_exact_native_1'] }] } } });
+    expect(currentBenchNativeSessionCostDelta(null, cost, f.nativeSessionId)).toMatchObject({ agent: 'claude', nativeTurnIds: [],
+      nativeMessageIds: ['msg_exact_native_1'] });
+    for (const fault of ['invented-turn', 'duplicate-message', 'missing-message', 'wrong-agent']) {
+      const changed = structuredClone(cost), source = changed.armMeta.nativeCostAccounting.sources[0];
+      if (fault === 'invented-turn') source.nativeTurnIds.push('synthetic-turn');
+      if (fault === 'duplicate-message') source.nativeMessageIds!.push(source.nativeMessageIds![0]);
+      if (fault === 'missing-message') delete source.nativeMessageIds;
+      if (fault === 'wrong-agent') delete source.agent;
+      expect(() => currentBenchNativeSessionCostDelta(null, changed, f.nativeSessionId)).toThrow(/incomplete/);
+    }
+  });
+  it('distinguishes equal-token Claude requests through their exact provider message IDs', () => {
+    const f = claudeAttemptFixture(), other = structuredClone(f.row), note = JSON.parse(other.note!);
+    const secondId = 'msg_exact_native_2';
+    f.usage.nativeMessageIds = [...f.usage.nativeMessageIds, secondId];
+    f.usage.events = [...f.usage.events, { ...f.usage.events[0], providerResponseId: secondId,
+      sourceId: `message:${secondId}`, usageEventKey: 'second-native-message' }];
+    other.id = 'second-claude-attempt'; other.runRef = `manifest:${f.binding.preregHash}/attempt:${other.id}`;
+    note.nativeGatewayAttempt.attemptId = other.id;
+    note.nativeGatewayAttemptResult.attemptId = other.id; note.nativeGatewayAttemptResult.reservationRef = other.id;
+    note.nativeGatewayAttemptResult.providerCompletion.responseId = secondId;
+    other.note = JSON.stringify(note); f.census.reservations.push(other);
+    expect(f.matches()).toBe(true);
+  });
+  it.each(['wrong-message', 'wrong-model', 'wrong-input', 'wrong-cache-read', 'wrong-cache-write', 'unknown-cache',
+    'wrong-transport', 'invented-turn', 'invented-session', 'duplicate-message', 'codex-source', 'claude-source-as-codex',
+    'foreign-arm-message', 'foreign-arm-result-message', 'incomplete-response', 'duplicate-event'] as const)
+  ('keeps Claude attempt accounting closed for %s', change => {
+    const f = claudeAttemptFixture();
+    if (change === 'wrong-message') f.result.providerCompletion.responseId = 'msg_foreign';
+    if (change === 'wrong-model') f.result.providerCompletion.model = 'other-model';
+    if (change === 'wrong-input') f.result.providerCompletion.usage.inputTokens++;
+    if (change === 'wrong-cache-read') f.result.providerCompletion.usage.cacheReadTokens++;
+    if (change === 'wrong-cache-write') f.result.providerCompletion.usage.cacheCreationTokens++;
+    if (change === 'unknown-cache') f.result.providerCompletion.usage.cacheReadTokens = null as never;
+    if (change === 'wrong-transport') Object.assign(f.identity, { transport: 'bearer-http' });
+    if (change === 'invented-turn') Object.assign(f.identity, { nativeTurnId: 'invented-codex-turn' });
+    if (change === 'invented-session') Object.assign(f.identity, { nativeSessionId: 'unmeasured-session' });
+    if (change === 'duplicate-message') f.usage.events = [...f.usage.events,
+      { ...f.usage.events[0], usageEventKey: 'duplicate-message-key' }];
+    if (change === 'codex-source') Object.assign(f.population.sources[0], { usage: attemptFixture().usage });
+    if (change === 'claude-source-as-codex') Object.assign(f.participant, { agent: 'codex' });
+    if (change === 'foreign-arm-message' || change === 'foreign-arm-result-message') {
+      const other = structuredClone(f.row), note = JSON.parse(other.note!);
+      other.id = 'other-claude-assignment'; other.runRef = `manifest:${f.binding.preregHash}/attempt:${other.id}`;
+      other.resources!.armId = 'bench-assignment:other';
+      Object.assign(note.nativeGatewayAttempt, { attemptId: other.id, armId: other.resources!.armId });
+      Object.assign(note.nativeGatewayAttemptResult, note.nativeGatewayAttempt, { reservationRef: other.id });
+      if (change === 'foreign-arm-message') f.census.reservations = [];
+      other.note = JSON.stringify(note); f.census.reservations.push(other);
+    }
+    if (change === 'incomplete-response') f.result.outcome = 'response-incomplete';
+    if (change === 'duplicate-event') f.usage.events = [...f.usage.events, f.usage.events[0]];
+    f.save();
+    expect(f.matches()).toBe(false);
   });
   it.each(['missing', 'extra', 'wrong-turn', 'wrong-session', 'wrong-model', 'wrong-cache', 'unknown-cache',
     'failed-fetch', 'headers-only', 'incomplete-response', 'live', 'foreign-loop', 'foreign-workspace',
