@@ -1,7 +1,7 @@
 /** R22: real CLI completion with actual history, tests and per-file coverage. */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -19,9 +19,9 @@ export function privateReuseTestEnvironment(env: NodeJS.ProcessEnv, workspace: s
     PAPERCUSP_TEST_RUN_SOURCE: 'local' };
 }
 
-export async function runNativeReuseJourney({ call, workspace, root, owner, repo, handlerHash }: {
+export async function runNativeReuseJourney({ call, workspace, root, owner, repo, handlerHash, claimOnly = false }: {
   call: (name: string, args: Record<string, unknown>) => Promise<Record<string, any>>;
-  workspace: string; root: string; owner: string; repo: string; handlerHash: string;
+  workspace: string; root: string; owner: string; repo: string; handlerHash: string; claimOnly?: boolean;
 }) {
   const git = (...args: string[]) => {
     const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', timeout: 10_000 });
@@ -87,9 +87,22 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
   await writeFile(snapshotPath, JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
     index: { backend: 'first-party-imports', lastCommit: baseline }, edges: [],
     clones: { schema: 'clone-advisory-v1', files: cloneFiles } }));
+  // D026: a real persisted planning timestamp and one explicitly controlled CLI
+  // session qualify provenance. This does not represent a model-session census.
+  const planSlug = `p010-controlled-claim-${new Date().toISOString().slice(0, 10)}`;
+  if (claimOnly) {
+    const planned = await call('plans:new', { harness: workspace, slug: planSlug,
+      title: 'Controlled private P010 claim fixture',
+      content: '## Product shaping\nControlled CLI composition proof; no model pickup or live user cohort.\n\n'
+        + '## Phase 1 — Fixture\n- **P-001** `todo` Inspect src/target.ts controlled reuse consequences importance: normal\n',
+      projection: { pick: ['ok', 'results[].ok', 'results[].slug', 'slug'] } });
+    assert.notEqual(planned.ok, false, JSON.stringify(planned));
+  }
   const created = await call('work_items:create', { harness: workspace, kind: 'change',
-    title: 'Private native P010 completion consequences', assign_to: 'self', state: 'wip',
+    title: claimOnly ? 'Controlled CLI P010 claim composition' : 'Private native P010 completion consequences',
+    assign_to: 'self', state: 'wip',
     changeKinds: ['logic'], changeKindReason: 'Private source fixture validated through an actual complete test population.',
+    ...(claimOnly ? { plan_item: { slug: planSlug, item: 'P-001' } } : {}),
     payload: { paths: ['src/target.ts'] }, projection: { pick: ['results[].id', 'results[].item.id'] } });
   const id = created.results?.[0]?.id ?? created.results?.[0]?.item?.id;
   assert(id, JSON.stringify(created));
@@ -101,8 +114,32 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
   assert.equal(claimed.results?.[0]?.ok, true, JSON.stringify(claimed));
   console.log('NATIVE_INCIDENT_API_STAGE=reuse-fixture-owned');
   const before = await readFile(join(root, 'src/target.ts'), 'utf8');
-  await call('capability:edit', { file_path: join(root, 'src/target.ts'), old_string: before,
-    new_string: '// touched clone sibling in this private task\n' + before + aggregate('plantedCopy') });
+  const edited = '// touched clone sibling in this private task\n' + before + (claimOnly ? '' : aggregate('plantedCopy'));
+  let controlledSession: { id: number; session: string; editedAt: string } | undefined;
+  if (claimOnly) {
+    const { recordAdvSession } = await import('../../adv-sessions.ts');
+    const session = `controlled-cli-${randomUUID()}`;
+    const sessionRow = await recordAdvSession({ workspaceId: workspace, planSlug, mode: 'console',
+      label: 'Controlled P010 CLI fixture; no model invoked', cwd: root, coordOwnerId: owner, sessionId: session });
+    assert(sessionRow, 'Maintained controlled CLI session writer must persist its actual start');
+    // The CLI shell performs the real write. Its subsequent Write report names
+    // that exact operation/session; no direct session-less Edit is fabricated.
+    const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+    const script = 'require("node:fs").writeFileSync(process.argv[1], process.argv[2])';
+    const written = await call('capability:bash', { cwd: root, work_item_id: id,
+      command: [process.execPath, '-e', script, join(root, 'src/target.ts'), edited].map(quote).join(' '),
+      timeout: 10_000 });
+    assert.equal(written.exit_code, 0, JSON.stringify(written));
+    assert.equal(await readFile(join(root, 'src/target.ts'), 'utf8'), edited);
+    const editedAt = new Date().toISOString();
+    await call('activity:report', { owner, session_id: session, adv_session_id: sessionRow,
+      harness_slug: workspace, kind: 'tool', tool_name: 'Write', phase: 'post', status: 'ok', cwd: root,
+      tool_use_id: `controlled-write-${randomUUID()}`, summary: 'Actual controlled CLI fixture write; no model invocation',
+      tool_input: { file_path: join(root, 'src/target.ts'), content: edited } });
+    controlledSession = { id: sessionRow, session, editedAt };
+  } else {
+    await call('capability:edit', { file_path: join(root, 'src/target.ts'), old_string: before, new_string: edited });
+  }
   // with-test-pg preserves the parent's durable evidence destination on purpose.
   // This nested run instead feeds the private operator's completion reader.
   Object.assign(process.env, privateReuseTestEnvironment(process.env, workspace, root));
@@ -131,7 +168,58 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
     sourceVersion: hash(JSON.stringify(sourceFiles.map(source => [source.path, source.sha256]))), commit: baseline,
     repository: { workspaceId: workspace, rootPath: root, harness: workspace }, sourceFiles },
   new AbortController().signal, { runGroupId: run.runId, testFiles: ['src/target.test.ts'] });
-  assert(coverage, 'Actual attributed run must have source-bound per-file coverage');
+  if (!coverage) {
+    // Keep the actual writer scope/run in the primary error: private teardown
+    // and bounded child tails must not erase why the completion preflight failed.
+    const stored = await getOrgPg().sql`SELECT workspace_id, harness_slug, root_path, run_group_id,
+      test_file, jsonb_array_length(snapshot->'sources') AS source_count
+      FROM harness_shared.test_coverage_maps WHERE root_path = ${root} LIMIT 5`;
+    assert.fail('Actual attributed run must have source-bound per-file coverage: ' + JSON.stringify({
+      expected: { workspace, harness: workspace, root, runGroup: run.runId }, stored,
+      run: { ok: run.ok, passed: run.passed, failed: run.failed, skipped: run.skipped, testRunIds: run.testRunIds },
+    }));
+  }
+  if (claimOnly) {
+    const { buildTaskBrief } = await import('../task-brief.ts');
+    const itemRead = await call('work_items:get', { id, harness: workspace, payloadTier: 'full',
+      projection: { pick: ['results[].workItem'] } });
+    const item = itemRead.results?.[0]?.workItem;
+    assert(item && item.sourcePlanSlug === planSlug, JSON.stringify(itemRead));
+    const base = await buildTaskBrief({ workItem: item, workspaceId: workspace, harness: workspace });
+    assert.equal(base.status, 'current', JSON.stringify(base));
+    const response = await call('work_items:claim', { row: `${id},self,${workspace}`, payloadTier: 'full',
+      projection: { pick: ['results[].ok', 'results[].taskBrief'] } });
+    const brief = response.results?.[0]?.taskBrief;
+    assert(brief && brief.status === 'current', JSON.stringify(response));
+    assert.deepEqual({ ...brief, graph: { ...brief.graph,
+      relationships: brief.graph.relationships.slice(0, base.graph.relationships.length) } }, base);
+    const contributions = brief.graph.relationships.flatMap((line: string) => {
+      try { const row = JSON.parse(line); return row.provider ? [row] : []; } catch { return []; }
+    });
+    const { REUSE_PROVIDER_POLICY, briefCodePoints } = await import('../reuse-brief-providers.ts');
+    const expected = ['clones', 'cochange', 'provenance', 'sql', 'coverage'];
+    assert.deepEqual(contributions.map((row: { provider: string }) => row.provider), expected, JSON.stringify(response));
+    for (const row of contributions) {
+      const policy = REUSE_PROVIDER_POLICY[row.provider as keyof typeof REUSE_PROVIDER_POLICY];
+      assert(briefCodePoints(row.text) <= policy.cap && row.sourceVersion === brief.sourceFingerprint && row.indexVersion);
+    }
+    assert(briefCodePoints(JSON.stringify(brief)) <= 3_000, JSON.stringify(brief));
+    const issued = await getOrgPg().sql<{ subject: string; chars: number }[]>`SELECT subject, chars
+      FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace} AND owner_id = ${owner}
+        AND subject::jsonb->>'workItem' = ${id} AND subject::jsonb->>'surface' = 'claim'`;
+    const finalInvocation = issued.map(row => JSON.parse(row.subject)).find(row => row.provider === 'provenance')?.invocation;
+    const finalIssued = issued.filter(row => JSON.parse(row.subject).invocation === finalInvocation);
+    assert(finalInvocation, JSON.stringify(issued));
+    assert.deepEqual(finalIssued.map(row => JSON.parse(row.subject).provider).sort(), [...expected].sort());
+    assert(finalIssued.every(row => JSON.parse(row.subject).sourceVersion === brief.sourceFingerprint
+      && JSON.parse(row.subject).indexVersion && row.chars > 0));
+    console.log('NATIVE_REUSE_CLAIM_API_PROOF=' + JSON.stringify({ workspace, fixtureWorkItem: id,
+      planSlug, baseline, handlerHash, sourceFingerprint: brief.sourceFingerprint, controlledSession,
+      transport: 'real-cli-http', expectedProviders: expected, response, base, issued: finalIssued,
+      testRunIds: run.testRunIds, runGroupId: run.runId,
+      scope: 'controlled private current-source CLI fixture; no model invocation, live user census or final shipment' }));
+    return;
+  }
   const current = await readFile(join(root, 'src/target.ts'), 'utf8');
   const copyStart = current.slice(0, current.indexOf('export function plantedCopy')).split('\n').length;
   const uncovered = queryTestCoverage({ root, question: { path: 'src/target.ts',

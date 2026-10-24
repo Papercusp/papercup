@@ -4,13 +4,49 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { createHash } from 'node:crypto';
 import { writeSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { nativeCliCall, nativeCliTestTimeout, nativeFixtureProcess, scopedNativeFixtureArgs } from './native-cli.fixture';
 import './scoped-contracts.e2e.test';
 import { privateReuseTestEnvironment } from './__fixtures__/reuse-api-journey';
 
+/** Resolve HEAD inside the owning repository, including test-config's submodule. */
+function requireCommittedNativeSource(root: string, path: string, expectedHash: string) {
+  const owner = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    cwd: dirname(join(root, path)), encoding: 'utf8', timeout: 10_000,
+  });
+  expect(owner.status, `Native source repository unavailable: ${path}`).toBe(0);
+  const repository = owner.stdout.trim();
+  const blob = spawnSync('git', ['show', `HEAD:${relative(repository, join(root, path))}`], {
+    cwd: repository, encoding: 'buffer', timeout: 10_000,
+  });
+  expect(blob.status, `Native source must be committed before replay: ${path}`).toBe(0);
+  expect(createHash('sha256').update(blob.stdout).digest('hex'),
+    `Native source differs from its repository HEAD: ${path}; let git-sync commit it before replay`)
+    .toBe(expectedHash);
+}
+
 describe('private native reuse evidence routing', () => {
+  it('checks the owning repository HEAD and refuses an edited nested fixture before native startup', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-committed-source-'));
+    const nested = join(root, 'nested');
+    mkdirSync(nested);
+    try {
+      const source = 'export const fixture = 1;\n';
+      writeFileSync(join(nested, 'fixture.ts'), source);
+      for (const args of [['init', '-q'], ['add', 'fixture.ts'],
+        ['-c', 'user.name=Native fixture', '-c', 'user.email=fixture@example.invalid',
+          '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture baseline']]) {
+        expect(spawnSync('git', args, { cwd: nested, encoding: 'utf8' }).status).toBe(0);
+      }
+      const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+      expect(() => requireCommittedNativeSource(root, 'nested/fixture.ts', hash(source))).not.toThrow();
+      writeFileSync(join(nested, 'fixture.ts'), source + '// edited\n');
+      expect(() => requireCommittedNativeSource(root, 'nested/fixture.ts', hash(source + '// edited\n')))
+        .toThrow('Native source differs from its repository HEAD');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('binds the inner reporter to its private reader while preserving the parent evidence environment', () => {
     const parent = { HARNESS_ADMIN_DATABASE_URL: 'postgresql://fixture:private@127.0.0.1:42577/papercusp',
       PAPERCUSP_PG_PORT: '42577', PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://parent@localhost:5432/ledger',
@@ -67,7 +103,7 @@ function nativeFixtureFailureDiagnostic(
     `child output tail:\n${childOutput.slice(-4_000)}`;
 }
 
-async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-touch' | 'grep' | 'reuse') {
+async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-touch' | 'grep' | 'reuse' | 'reuse-claim') {
     const root = resolve(import.meta.dirname, '../../../..');
     const sourcePaths = ['packages/operator-core/lib/code-intelligence/__fixtures__/reuse-api-journey.ts',
       'packages/operator-core/lib/code-intelligence/clone-brief-provider.ts',
@@ -92,20 +128,20 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
       'packages/operator-core/lib/code-intelligence/packer-facade.ts',
       'packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts',
       'packages/operator-core/lib/agent-tools/coordination/tools/orient.ts',
-      'packages/operator-core/lib/agent-tools/work_items/complete.ts'];
+      'packages/operator-core/lib/agent-tools/work_items/complete.ts',
+      ...(mode.startsWith('reuse') ? ['libs/test-config/src/test-coverage-provider.ts',
+        'libs/test-config/src/admin-test-runs-reporter.ts',
+        'libs/test-config/src/test-coverage-map.ts', 'libs/test-config/src/vitest-config.ts'] : [])];
     const sourceHashes = () => Object.fromEntries(sourcePaths.map(path =>
       [path, createHash('sha256').update(readFileSync(join(root, path))).digest('hex')]));
     const beforeHashes = sourceHashes();
     // Native Node children execute committed source under the inherited guard.
     // Refuse before bundling/allocating PG if their fixture would be substituted.
-    const fixturePath = 'packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts';
-    const fixtureBlob = spawnSync('git', ['show', `HEAD:${fixturePath}`], {
-      cwd: root, encoding: 'buffer', timeout: 10_000,
-    });
-    expect(fixtureBlob.status, 'Native fixture must be committed before its guarded child can run').toBe(0);
-    expect(createHash('sha256').update(fixtureBlob.stdout).digest('hex'),
-      'Native fixture differs from HEAD; let git-sync commit it before replay (the child would substitute old assertions)')
-      .toBe(beforeHashes[fixturePath]);
+    const committedPaths = ['packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts',
+      ...(mode.startsWith('reuse') ? ['packages/operator-core/lib/code-intelligence/__fixtures__/reuse-api-journey.ts',
+        'libs/test-config/src/test-coverage-provider.ts', 'libs/test-config/src/admin-test-runs-reporter.ts',
+        'libs/test-config/src/test-coverage-map.ts', 'libs/test-config/src/vitest-config.ts'] : [])];
+    for (const path of committedPaths) requireCommittedNativeSource(root, path, beforeHashes[path]!);
     // Prepare the maintained ESM handler artifact before allocating private PG.
     // A direct tsx import of apps/operator's CommonJS entry is intentionally
     // refused by the committed-source guard.
@@ -138,7 +174,8 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
         },
       });
     expect(result.code, nativeFixtureFailureDiagnostic('Private fixture', result)).toBe(0);
-    const prefix = mode === 'reuse' ? 'NATIVE_REUSE_API_PROOF='
+    const prefix = mode === 'reuse-claim' ? 'NATIVE_REUSE_CLAIM_API_PROOF='
+      : mode === 'reuse' ? 'NATIVE_REUSE_API_PROOF='
       : mode === 'incident' ? 'NATIVE_INCIDENT_API_PROOF='
       : mode === 'first-touch' ? 'NATIVE_FIRST_TOUCH_API_PROOF='
       : mode === 'grep' ? 'NATIVE_GREP_API_PROOF=' : 'NATIVE_TASK_BRIEF_API_PROOF=';
@@ -162,6 +199,17 @@ describe('native P010 private operator completion reuse delivery', () => {
       scope: expect.stringContaining('private current-source') });
     expect(proof.handlerHash).toMatch(/^[a-f0-9]{64}$/);
     expect(proof.issued.length).toBeGreaterThanOrEqual(3);
+  }, 120_000 + 180_000 + 20_000);
+});
+
+describe('native P010 controlled CLI claim reuse delivery', () => {
+  it('preserves the anchored base and issues five capped providers with actual controlled edit provenance', async () => {
+    const proof = await privateNativeJourney('reuse-claim');
+    expect(proof).toMatchObject({ transport: 'real-cli-http',
+      expectedProviders: ['clones', 'cochange', 'provenance', 'sql', 'coverage'],
+      scope: expect.stringContaining('controlled private current-source CLI fixture') });
+    expect(proof.controlledSession.id).toBeGreaterThan(0);
+    expect(proof.issued).toHaveLength(5);
   }, 120_000 + 180_000 + 20_000);
 });
 
