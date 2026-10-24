@@ -611,7 +611,7 @@ describe('focused service protocol', () => {
   type Request = Record<string, any>;
   async function withSocket(
     handle: (request: Request, socket: import('node:net').Socket) => void,
-    check: (args: { socketPath: string; request: Request; lines: string[]; call: () => ReturnType<typeof typecheckViaService> }) => Promise<void>,
+    check: (args: { socketPath: string; request: Request; lines: string[]; call: (timeoutMs?: number) => ReturnType<typeof typecheckViaService> }) => Promise<void>,
   ) {
     const root = mkdtempSync(join(tmpdir(), 'tsc-protocol-'));
     const socketPath = join(root, 'service.sock');
@@ -633,8 +633,8 @@ describe('focused service protocol', () => {
     const lines: string[] = [];
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
     try {
-      await check({ socketPath, request, lines, call: () => typecheckViaService({ root, project, files: request.files,
-        label: 'test', timeoutMs: 50, env: { PAPERCUSP_TSC_SERVICE_SOCKET: socketPath }, log: line => lines.push(line) }) });
+      await check({ socketPath, request, lines, call: timeoutMs => typecheckViaService({ root, project, files: request.files,
+        label: 'test', timeoutMs, env: { PAPERCUSP_TSC_SERVICE_SOCKET: socketPath }, log: line => lines.push(line) }) });
     } finally {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>(resolve => server.close(() => resolve()));
@@ -693,10 +693,11 @@ describe('focused service protocol', () => {
   it('distinguishes unavailable, unsupported and timed-out requests', async () => {
     await expect(requestTscService({ socketPath: join(tmpdir(), `absent-${Date.now()}.sock`), request: {} }))
       .rejects.toMatchObject({ code: 'ENOENT' });
-    await withSocket((request, socket) => socket.end(frame(request, { ok: false, reason: 'declaration-emit-project' })),
+    // A normal refusal may arrive after the timeout-specific case's short deadline.
+    await withSocket((request, socket) => setTimeout(() => socket.end(frame(request, { ok: false, reason: 'declaration-emit-project' })), 100),
       async ({ call, lines }) => { expect(await call()).toBeNull(); expect(lines.join('\n')).toContain('state=declaration-emit-project'); });
     await withSocket(() => {}, async ({ call, lines }) => {
-      expect(await call()).toBeNull();
+      expect(await call(50)).toBeNull();
       expect(lines.join('\n')).toContain('state=timed-out');
     });
   });
