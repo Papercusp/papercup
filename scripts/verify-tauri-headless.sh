@@ -1348,6 +1348,11 @@ VERIFIER_DISK_RESERVATIONS=("${NATIVE_CARGO_DISK_RESERVATION_FILE:-}")
 release_verifier_disk_reservations() {
   local reservation
   for reservation in "${VERIFIER_DISK_RESERVATIONS[@]}"; do
+    [ -n "$reservation" ] || continue
+    # An early snapshot failure can precede disk admission's helper load.
+    if ! declare -F papercusp_release_disk_reservation >/dev/null; then
+      . "$DESKTOP_DIR/bin/lib/disk-preflight.sh" || return $?
+    fi
     PAPERCUSP_DISK_RESERVATION_FILE="$reservation" papercusp_release_disk_reservation
   done
   VERIFIER_DISK_RESERVATIONS=()
