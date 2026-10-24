@@ -4,11 +4,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { materializeDockerExecWrapper } from './container-exec-target';
-import { currentNativeCostFixture } from './reproducibility/_protocol-test-fixture';
+import { currentNativeCostFixture, currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
 import type { CurrentBenchTaskRequestCensus } from './run-launcher';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { CurrentSuBenchOptions, CurrentSuBenchObservations } from './current-su';
-import { requireCurrentBenchNativeRunCost } from './current-su';
+import { currentBenchAssignmentId, currentBenchGatewayController, requireCurrentBenchNativeRunCost } from './current-su';
 import { requireProximusHostConfinement } from './proximus-runtime';
 import type { BenchEgress } from './bench-egress';
 import type { CodexHookBridge } from './codex-hook-bridge';
@@ -74,6 +74,114 @@ function fixture() {
 }
 
 describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
+  async function claudeFixture(clientVersion = 'claude/2.1.293') {
+    const f = fixture(), protocol = currentProtocolFixture(f.config.runId);
+    const arm = protocol.arms[1]; arm.agent = 'claude'; arm.runtime.clientVersion = clientVersion;
+    protocol.priceSchedule.rates[0].cacheWriteUsdPerMillion = 1.25;
+    Object.assign(f.options, { armId: 'baseline', agent: 'claude', seed: 1, model: arm.model,
+      effort: arm.effort, account: arm.account, preregistration: { preregHash: 'a'.repeat(64), config: protocol } });
+    f.input.arm = 'baseline'; f.input.task.instanceId = 't1';
+    delete f.input.handle.inContainerCodex;
+    f.input.handle.inContainerClaude = { binPath: '/opt/papercusp/claude', version: '2.1.293', sha256: 'f'.repeat(64),
+      roots: [{ hostRoot: '/tmp/shared-claude', perTaskDir: '/tmp/task-claude' }], hostOwner: { uid: 1000, gid: 1000 } };
+    f.config.execution = 'claude-native';
+    f.config.seam = { inContainerClaude: { version: '2.1.293', sha256: 'f'.repeat(64), homesRoot: '/tmp/shared-claude' } };
+    const provider = vi.fn(async () => null), reserve = vi.fn(async () => { throw new Error('No provider execution in this test'); });
+    const governor: Parameters<typeof currentBenchGatewayController>[1] = {
+      enabled: async () => true, getSql: async () => ({} as never), reserve,
+      settle: vi.fn(async () => ({ ok: false as const, reason: 'not-found' as const, reservation: null })),
+      recordAttemptResult: vi.fn(async () => ({ ok: true })), log: () => {},
+    };
+    const controller = currentBenchGatewayController({ workspaceId: f.options.workspaceId, loopId: 'claude-adapter-loop',
+      token: 'a'.repeat(64), preregHash: f.options.preregistration.preregHash, protocol, armId: 'baseline', taskId: 't1', seed: 1,
+      resources: { inputTokens: 10_000, outputTokens: 1000, requestsPerArm: 50,
+        armIds: protocol.arms.map(a => currentBenchAssignmentId(protocol.runId, a.id, 't1', 1)),
+        usdPerArm: 3, maxOpenUsd: 3, wallClockMs: 1000, wallClockMsPerArm: 100 },
+      authenticateProvider: provider }, governor);
+    const hosted = await controller.startNativeGateway(() => {}, async () => ({ port: 32002, stop: async () => {} } as never));
+    Object.assign(f.observations, hosted);
+    f.assignment.stop = vi.fn(async () => { f.order.push('assignment-stop'); await hosted.stop(); });
+    f.assignment.readRequestCensus = vi.fn(async () => ({ binding: hosted.nativeAccountingBinding, populationSha256: 'e'.repeat(64),
+      requests: [{ reservationId: 'request-1', nativeSessionId: '11111111-1111-4111-8111-111111111111',
+        nativeTurnId: '', bodySha256: 'b'.repeat(64) }] }));
+    return { ...f, protocol, hosted, controller, provider, reserve };
+  }
+  it('starts the frozen stock Claude seam and composes the existing metered native driver with gateway-only egress', async () => {
+    const f = await claudeFixture();
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    try {
+      expect(vi.mocked(makeFrontierSweCloneGradeSeam).mock.calls.at(-1)?.[0]).toMatchObject({
+        inContainerClaude: { version: '2.1.293', sha256: 'f'.repeat(64) } });
+      expect(vi.mocked(makeFrontierSweCloneGradeSeam).mock.calls.at(-1)?.[0]?.inContainerCodex).toBeUndefined();
+      expect(vi.mocked(f.ports.startEgress).mock.calls[0][0].endpoints).toEqual([{ name: 'gw', listenPort: 8788, perTask: true }]);
+      const result = await adapter.runAgent(f.input);
+      expect(result).toMatchObject({ status: 'completed', modelCalls: 1, costUsd: 0.2, executionPath: 'stock-native-reference' });
+      expect(f.spinRunAndCost.mock.calls[0][0].blueprintId).toBe('native-claude');
+      const [opts, , observed] = vi.mocked(f.ports.createDriver).mock.calls[0];
+      expect(opts.agent).toBe('claude'); expect(observed.nativeGateway).toBe(f.hosted.nativeGateway);
+      expect(observed.containerExec).toMatchObject({ binPath: '/opt/papercusp/claude',
+        sessionRelocation: { sessionEnv: 'CLAUDE_CONFIG_DIR' } });
+      expect(observed.containerExec?.hookBridge).toBeUndefined();
+      expect(observed.containerExec?.originRewrites?.every(r => r.to === f.egress.originFor('gw'))).toBe(true);
+      expect(f.assignment.readModelCalls).not.toHaveBeenCalled();
+      expect(f.provider).not.toHaveBeenCalled(); expect(f.reserve).not.toHaveBeenCalled();
+      expect(f.assignment.stop).toHaveBeenCalledOnce(); expect(f.assignment.checkout.cleanup).toHaveBeenCalledOnce();
+      expect(f.unbind).toHaveBeenCalledOnce();
+    } finally { await adapter.stop(); f.controller.revoke(); }
+  });
+  it.each(['missing', 'invalid-version', 'invalid-hash', 'implicit-codex'])('refuses %s Claude startup before allocating services', async fault => {
+    const f = fixture(); f.config.execution = 'claude-native';
+    f.config.seam = { inContainerClaude: { version: '2.1.293', sha256: 'f'.repeat(64) } };
+    if (fault === 'missing') delete f.config.seam.inContainerClaude;
+    if (fault === 'invalid-version') f.config.seam.inContainerClaude!.version = 'latest';
+    if (fault === 'invalid-hash') f.config.seam.inContainerClaude!.sha256 = 'unknown';
+    if (fault === 'implicit-codex') delete f.config.execution;
+    await expect(startFrontierSweLaunchAdapter(f.config, f.ports)).rejects.toThrow(/explicitly selected frozen CLI/);
+    expect(f.ports.startBridge).not.toHaveBeenCalled(); expect(f.ports.startEgress).not.toHaveBeenCalled();
+  });
+  it.each(['treatment', 'agent', 'model', 'effort', 'account', 'client-version', 'mount-version', 'mount-hash', 'task',
+    'missing-census', 'unissued-gateway', 'copied-gateway', 'revoked-gateway', 'binding', 'protocol'])('refuses %s Claude assignment before driving and still cleans it', async fault => {
+    const f = await claudeFixture(fault === 'client-version' ? 'claude/1.0.0' : undefined);
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    if (fault === 'treatment') { f.options.armId = 'papercusp'; f.input.arm = 'papercusp'; }
+    if (fault === 'agent') f.options.agent = 'codex';
+    if (fault === 'model') f.options.model = 'foreign';
+    if (fault === 'effort') f.options.effort = 'low';
+    if (fault === 'account') f.options.account = 'foreign';
+    if (fault === 'mount-version') f.input.handle.inContainerClaude!.version = '1.0.0';
+    if (fault === 'mount-hash') f.input.handle.inContainerClaude!.sha256 = 'e'.repeat(64);
+    if (fault === 'task') f.input.task.instanceId = 'foreign';
+    if (fault === 'missing-census') delete f.assignment.readRequestCensus;
+    if (fault === 'unissued-gateway') f.observations.nativeGateway = { baseURL: 'http://127.0.0.1:32002', token: 'b'.repeat(64) };
+    if (fault === 'copied-gateway') f.observations.nativeGateway = { ...f.hosted.nativeGateway };
+    if (fault === 'revoked-gateway') await f.hosted.stop();
+    if (fault === 'binding') f.observations.nativeAccountingBinding = { ...f.hosted.nativeAccountingBinding, loopId: 'foreign' };
+    if (fault === 'protocol') f.options.preregistration.config = { ...f.protocol, runId: 'foreign' };
+    try {
+      await expect(adapter.runAgent(f.input)).rejects.toThrow();
+      expect(f.ports.createDriver).not.toHaveBeenCalled(); expect(f.egress.bindTaskEndpoint).not.toHaveBeenCalled();
+      expect(f.assignment.stop).toHaveBeenCalledOnce(); expect(f.assignment.checkout.cleanup).toHaveBeenCalledOnce();
+      expect(f.provider).not.toHaveBeenCalled(); expect(f.reserve).not.toHaveBeenCalled();
+    } finally { await adapter.stop(); f.controller.revoke(); }
+  });
+  it('retains the startup binary pins after caller and seam-config mutation', async () => {
+    const f = await claudeFixture(), adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    f.config.seam!.inContainerClaude!.sha256 = 'e'.repeat(64);
+    vi.mocked(makeFrontierSweCloneGradeSeam).mock.calls.at(-1)![0]!.inContainerClaude!.version = '1.0.0';
+    try { expect((await adapter.runAgent(f.input)).status).toBe('completed'); }
+    finally { await adapter.stop(); f.controller.revoke(); }
+  });
+  it('preserves measured Claude spend but refuses completion when the host request census is unavailable', async () => {
+    const f = await claudeFixture(), adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    f.assignment.readRequestCensus = vi.fn(async () => { throw new Error('Incomplete host request census'); });
+    try {
+      expect(await adapter.runAgent(f.input)).toMatchObject({ status: 'error', modelCalls: 0, costUsd: 0.2,
+        error: 'Incomplete host request census', armMeta: { modelCallsMeasurementMissing: true } });
+      expect(f.assignment.readModelCalls).not.toHaveBeenCalled();
+      expect(f.assignment.stop).toHaveBeenCalledOnce(); expect(f.unbind).toHaveBeenCalledOnce();
+      expect(f.assignment.checkout.cleanup).toHaveBeenCalledOnce();
+    } finally { await adapter.stop(); f.controller.revoke(); }
+  });
   it('builds a stock Claude target with its isolated home and gateway, without hook or MCP access', () => {
     const f = fixture();
     delete f.input.handle.inContainerCodex;
