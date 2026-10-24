@@ -17,6 +17,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   TSC_SERVICE_MAX_CHECKED_FILES,
+  TSC_SERVICE_TIMEOUT_MS,
   checkedSetForCooperatively,
   namedSetFor,
   refreshProjectRootFiles,
@@ -57,8 +58,9 @@ let draining = false;
  * The native API runs tsgo in a child process. A client timeout closes its socket, but an
  * in-flight compiler RPC does not observe that cancellation and can otherwise hold the
  * single-flight queue long after every caller has fallen back to the CLI. Stop that orphaned
- * operation only when every request sharing it has disconnected; queued requests are not in this
- * batch and will get a fresh API after the failed refresh is reset.
+ * operation when no request still needs it. Independently bound the batch by the existing service
+ * timeout: a connected or suspended caller cannot leave this queue awaiting an RPC indefinitely.
+ * Queued requests are not in this batch and get a fresh API after the failed operation is reset.
  */
 function abortRefreshIfUnobserved(batch) {
   let abortRequested = false;
@@ -68,7 +70,7 @@ function abortRefreshIfUnobserved(batch) {
     if (!child || child.exitCode !== null || child.signalCode !== null || child.killed) return;
     abortRequested = true;
     for (const item of batch) item.trace('refresh-abort-no-clients');
-    log(`terminating tsgo refresh after all ${batch.length} requesting client(s) disconnected`);
+    log(`terminating tsgo work with no pending observers in its ${batch.length}-request batch`);
     try {
       // Reject the pending JSON-RPC request immediately so drain() can reset the dead API and
       // continue with queued work instead of waiting for a response from the terminated child.
@@ -82,8 +84,21 @@ function abortRefreshIfUnobserved(batch) {
       log(`could not terminate unobserved tsgo refresh: ${error?.message ?? error}`);
     }
   };
+  const deadline = setTimeout(() => {
+    const pending = batch.filter((item) => !item.cancelled && !item.completed);
+    if (pending.length === 0) return;
+    for (const item of pending) {
+      item.trace('request-deadline-exceeded');
+      item.reply({ ok: false, reason: 'request-deadline-exceeded',
+        detail: `compiler batch exceeded ${TSC_SERVICE_TIMEOUT_MS} ms` });
+    }
+    // Replying releases observers even if their own foreground timers are suspended.
+    // Reuse the same owned-child disposal/reset path as caller cancellation.
+    abort();
+  }, TSC_SERVICE_TIMEOUT_MS);
   for (const item of batch) item.abortRefreshIfUnobserved = abort;
   return () => {
+    clearTimeout(deadline);
     for (const item of batch) delete item.abortRefreshIfUnobserved;
   };
 }
@@ -271,6 +286,7 @@ async function serve({ request, arrivedAt, trace, isCancelled }) {
 
 function validate(request) {
   if (!request || request.v !== 2) return 'unsupported protocol version';
+  if (request.operation !== undefined && request.operation !== 'identity') return 'unsupported operation';
   if (typeof request.root !== 'string' || resolve(request.root) !== ROOT) return `this service serves ${ROOT}`;
   if (typeof request.project !== 'string' || !isAbsolute(request.project) || !request.project.endsWith('.json')) {
     return 'project must be an absolute tsconfig path';
@@ -396,7 +412,7 @@ const server = createServer((socket) => {
     let requestId = tscServiceRequestId();
     let request;
     const reply = (response) => {
-      if (!socket.destroyed) {
+      if (!socket.destroyed && !replied) {
         replied = true;
         if (item) item.completed = true;
         const identity = tscServiceIdentity(request ?? {});
@@ -428,6 +444,15 @@ const server = createServer((socket) => {
     }
     if (identity.projectConfigSha256 === null || identity.namedSources.some(source => source.sha256 === null)) {
       reply({ ok: false, reason: 'source-unavailable', detail: 'requested config or source cannot be read' });
+      return;
+    }
+    // Runtime witnesses must remain observable while a compiler request is
+    // queued or stalled. This path never loads or refreshes a compiler program.
+    if (request.operation === 'identity') {
+      try { assertTscCompilerIdentityCurrent(); }
+      catch (error) { reply({ ok: false, reason: error.code, detail: error.message }); return; }
+      reply({ ok: true, identityOnly: true, output: '', errorCount: 0, checked: [],
+        namedNotInProgram: [], counts: {} });
       return;
     }
     socket.write(`${JSON.stringify({ kind: 'progress', requestId, identity, phase: draining ? 'queued' : 'accepted' })}\n`);

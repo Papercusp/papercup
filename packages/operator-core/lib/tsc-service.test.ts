@@ -109,7 +109,10 @@ describe('bundled typecheck service identity', () => {
     expect(JSON.parse(child.stdout)).toEqual({ socket: '/private/papercusp-tsc-service.sock', failure: 'service-identity-unavailable' });
   });
 
-  it('recovers from orphaned diagnostic RPCs and refuses same-version compiler replacement on a live daemon', async () => {
+  it.each([
+    { release: 'client cancellation', serviceTimeoutMs: 30_000, clientTimeoutMs: 1_000, expectedReason: 'timed-out' },
+    { release: 'server deadline', serviceTimeoutMs: 4_000, clientTimeoutMs: 15_000, expectedReason: 'request-deadline-exceeded' },
+  ])('recovers from orphaned diagnostic RPCs and refuses same-version compiler replacement on a live daemon ($release)', async ({ serviceTimeoutMs, clientTimeoutMs, expectedReason }) => {
     const root = mkdtempSync(join(tmpdir(), 'tsc-compiler-replacement-'));
     roots.push(root);
     const scoped = join(root, 'node_modules/@typescript');
@@ -148,7 +151,8 @@ describe('bundled typecheck service identity', () => {
     `));
     const socketPath = join(root, 'compiler.sock');
     const child = spawn(process.execPath, [join(root, 'scripts/tsc-service/server.mjs')], { cwd: root,
-      env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_TSC_SERVICE_ROOT: root, PAPERCUSP_TSC_SERVICE_SOCKET: socketPath },
+      env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_TSC_SERVICE_ROOT: root, PAPERCUSP_TSC_SERVICE_SOCKET: socketPath,
+        PAPERCUSP_TSC_SERVICE_TIMEOUT_MS: String(serviceTimeoutMs) },
       stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     child.stdout.on('data', data => { output += data; });
@@ -161,10 +165,10 @@ describe('bundled typecheck service identity', () => {
         child.once('error', error => { clearTimeout(timer); reject(error); });
         child.once('exit', () => { clearTimeout(timer); reject(new Error(output)); });
       });
-      const runCaller = (files = ['a.ts'], timeoutMs = 10000) => new Promise<any>((resolve, reject) => {
+      const runCaller = (files = ['a.ts'], timeoutMs = 10000, operation?: string) => new Promise<any>((resolve, reject) => {
         const caller = spawn(process.execPath, ['--input-type=module', '-e', `
           const service = await import(${JSON.stringify(pathToFileURL(join(root, 'scripts/lib/tsc-service.mjs')).href)});
-          const request = { root: ${JSON.stringify(root)}, project: ${JSON.stringify(project)}, files: ${JSON.stringify(files)}, scope: 'named' };
+          const request = { root: ${JSON.stringify(root)}, project: ${JSON.stringify(project)}, files: ${JSON.stringify(files)}, scope: 'named', operation: ${JSON.stringify(operation)} };
           const result = await service.requestTscService({ socketPath: ${JSON.stringify(socketPath)}, request, timeoutMs: ${timeoutMs} })
             .catch(error => ({ ok: false, reason: error.code }));
           console.log(JSON.stringify({ result, identity: service.tscServiceIdentity(request) }));
@@ -177,10 +181,14 @@ describe('bundled typecheck service identity', () => {
       });
       const before = await runCaller();
       expect(before.result).toMatchObject({ ok: true, kind: 'result', errorCount: 0 });
-      const hanging = runCaller(['hang.ts'], 1000);
+      const hanging = runCaller(['hang.ts'], clientTimeoutMs);
       await expect.poll(() => output, { timeout: 5000 }).toContain('HUNG_DIAGNOSTIC_READY');
+      const observed = await runCaller(['a.ts'], 1000, 'identity');
+      expect(observed.result).toMatchObject({ ok: true, identityOnly: true, checked: [],
+        runtime: { pid: child.pid }, identity: before.identity });
+      expect((await runCaller(['a.ts'], 1000, 'unsupported')).result.ok).toBe(false);
       const queued = runCaller();
-      expect((await hanging).result).toMatchObject({ ok: false, reason: 'timed-out' });
+      expect((await hanging).result).toMatchObject({ ok: false, reason: expectedReason });
       expect((await queued).result).toMatchObject({ ok: true, kind: 'result', errorCount: 0 });
       expect(output).toContain('orphan diagnostic disposed');
       // Exercise a previously loaded caller's identity, after the API has
