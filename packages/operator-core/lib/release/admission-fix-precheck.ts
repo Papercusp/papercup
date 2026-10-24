@@ -219,8 +219,12 @@ export type FixPrecheckProgressCallback = (progress: FixPrecheckProgress) => Pro
 /** The seam the admit door injects: measure `files` at `commit` (a real, unpublished object in the root's store). */
 export type FixPrecheckRunner = (input: {
   commit: string;
+  /** Required for resumable groups: verify the materialized tree before measuring files. */
+  expectedTree?: string;
   files: readonly string[];
   onProgress?: FixPrecheckProgressCallback;
+  /** Proof persistence, unlike progress, must succeed before the next file starts. */
+  onFileResult?: (result: FixPrecheckFileResult) => Promise<void> | void;
 }) => Promise<FixPrecheckRunResult>;
 
 export type FixPrecheckVerdict =
@@ -872,7 +876,9 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
   const setupTimeoutMs = opts.setupTimeoutMs ?? ADMISSION_PRECHECK_SETUP_BUDGET_MS;
   const log = opts.log ?? (() => {});
   const logDir = opts.logDir ?? papercuspPath('checkpoint-logs');
-  return async ({ commit, files, onProgress }) => {
+  return async ({ commit, expectedTree, files, onProgress, onFileResult }) => {
+    if (files.length > ADMISSION_PRECHECK_MAX_FILES)
+      return { ran: false, reason: 'runner-failed', detail: `execution group exceeds ${ADMISSION_PRECHECK_MAX_FILES}-file bound` };
     // WI-10006014: one durable log per pre-check (setup + every file), named in every
     // runner-failed detail, so a failure is attributable after the in-memory output is gone.
     const logFile = path.join(
@@ -1035,6 +1041,11 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         detail: `${infra ? `infra=${infra} ` : ''}setup-release-checkout exited ${setup.exitCode ?? setup.signal} for ${commit.slice(0, 12)}${timeoutNote}; log=${logFile}: ${setup.output.slice(-600)}`,
       };
     }
+    if (expectedTree) {
+      const tree = await exec(['git', 'rev-parse', 'HEAD^{tree}'], { cwd: precheckRoot, timeoutMs: 10_000, logFile });
+      if (tree.exitCode !== 0 || tree.output.trim() !== expectedTree)
+        return { ran: false, reason: 'runner-failed', detail: `materialized tree differs from immutable pre-check identity; log=${logFile}` };
+    }
     // A foreign Papercusp fork registers the aggregate gate command, which
     // deliberately rejects exact filenames. Resolve its existing file script
     // from the pinned checkout rather than running that aggregate once per file.
@@ -1084,7 +1095,9 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         logFile,
       }, { currentFile: file, completedCount: index, totalCount: files.length });
       const c = classifyTestFileRun(r);
-      results.push({ path: file, status: c.status, ...(c.detail ? { detail: c.detail } : {}), exitCode: r.exitCode, durationMs: r.durationMs });
+      const result: FixPrecheckFileResult = { path: file, status: c.status, ...(c.detail ? { detail: c.detail } : {}), exitCode: r.exitCode, durationMs: r.durationMs };
+      results.push(result);
+      await onFileResult?.(result);
     }
     return { ran: true, commit, results, setup: { durationMs: setup.durationMs } };
   };

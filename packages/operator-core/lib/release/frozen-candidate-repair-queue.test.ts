@@ -83,6 +83,18 @@ describe('frozen-candidate repair queue', () => {
     };
     const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(pending)));
     expect(parsed?.admissionPrecheck).toEqual(pending.admissionPrecheck);
+    const measurement = { schemaVersion: 1 as const, identity: 'a'.repeat(64), results: [
+      { path: 'lib/a.test.ts', status: 'fail' as const, exitCode: 1, durationMs: 12, detail: 'native assertion failed' },
+    ] };
+    const measured = { ...pending, admissionPrecheck: { ...pending.admissionPrecheck!, measurement } };
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(measured)))?.admissionPrecheck?.measurement).toEqual(measurement);
+    for (const bad of [
+      { ...measurement, identity: 'stale' },
+      { ...measurement, results: [...measurement.results, ...measurement.results] },
+      { ...measurement, results: [{ path: 'foreign.test.ts', status: 'pass' }] },
+      { ...measurement, results: [{ path: 'lib/a.test.ts', status: 'skip' }] },
+      { ...measurement, results: [{ path: 'lib/a.test.ts', status: 'pass', durationMs: -1 }] },
+    ]) expect(parseFrozenCandidateRepairQueue({ ...measured, admissionPrecheck: { ...measured.admissionPrecheck, measurement: bad } })?.admissionPrecheck).toBeUndefined();
     expect(parseFrozenCandidateRepairQueue({
       ...pending,
       admissionPrecheck: { ...pending.admissionPrecheck, runnerPid: -1 },

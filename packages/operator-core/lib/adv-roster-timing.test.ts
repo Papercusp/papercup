@@ -1,0 +1,77 @@
+import { beforeEach, expect, it, vi } from 'vitest';
+
+const state = vi.hoisted(() => ({ listPresence: vi.fn() }));
+vi.mock('./agent-tools/coordination/presence', async (original) => ({
+  ...await original<typeof import('./agent-tools/coordination/presence')>(),
+  listPresence: state.listPresence,
+}));
+vi.mock('@papercusp/db-org', async (original) => ({
+  ...await original<typeof import('@papercusp/db-org')>(),
+  getOrgPg: vi.fn(),
+}));
+vi.mock('@papercusp/flags/server', async (original) => ({
+  ...await original<typeof import('@papercusp/flags/server')>(),
+  getFlag: vi.fn(async () => false),
+}));
+vi.mock('./agent-tools/coordination/wake-mode', async (original) => ({
+  ...await original<typeof import('./agent-tools/coordination/wake-mode')>(),
+  getDefaultWakeMode: vi.fn(async () => 'auto'),
+  getWakeModeOverridesFor: vi.fn(async () => new Map()),
+}));
+vi.mock('./agent-tools/coordination/pending-wakes', async (original) => ({
+  ...await original<typeof import('./agent-tools/coordination/pending-wakes')>(),
+  countAllPendingWakes: vi.fn(async () => new Map()),
+}));
+vi.mock('./fleet/assignments', async (original) => ({
+  ...await original<typeof import('./fleet/assignments')>(),
+  listFleetAssignments: vi.fn(async () => []),
+}));
+vi.mock('./deployment/account-owner-pins', async (original) => ({
+  ...await original<typeof import('./deployment/account-owner-pins')>(),
+  getOwnerPinsMap: vi.fn(async () => new Map()),
+}));
+
+import { getOrgPg } from '@papercusp/db-org';
+import { mergeRosterWithAssignments } from './adv-roster';
+import { mockOrgPgSql } from './testing/mock-org-pg';
+
+type Timing = Parameters<NonNullable<NonNullable<Parameters<typeof mergeRosterWithAssignments>[0]>['onTiming']>>[0];
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  state.listPresence.mockResolvedValue([]);
+  mockOrgPgSql(vi.mocked(getOrgPg), vi.fn(async () => []));
+});
+
+it('reports a pending source while its independent siblings run and retains the normal result', async () => {
+  let release!: (rows: []) => void;
+  state.listPresence.mockReturnValueOnce(new Promise<[]>(resolve => { release = resolve; }));
+  const events: Timing[] = [];
+  const pending = mergeRosterWithAssignments({ workspaceId: 'test-roster-timing', onTiming: event => events.push(event) });
+  await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+    phase: 'initial.spawn-runs', state: 'completed',
+  })));
+  expect(events).toContainEqual(expect.objectContaining({ phase: 'initial.presence', state: 'started' }));
+  expect(events).not.toContainEqual(expect.objectContaining({ phase: 'initial-sources', state: 'completed' }));
+  release([]);
+  expect(await pending).toEqual({ active: [], orphanedClaims: [] });
+  for (const phase of ['initial-sources', 'federation', 'owner-enrichment', 'transcript-freshness']) {
+    expect(events).toContainEqual(expect.objectContaining({ phase, state: 'completed', elapsedMs: expect.any(Number) }));
+  }
+  expect(events.every(event => event.elapsedMs >= 0)).toBe(true);
+});
+
+it('preserves a primary-source error and reports which phase failed', async () => {
+  const failure = new Error('presence unavailable');
+  state.listPresence.mockRejectedValueOnce(failure);
+  const events: Timing[] = [];
+  await expect(mergeRosterWithAssignments({ onTiming: event => events.push(event) })).rejects.toBe(failure);
+  expect(events).toContainEqual(expect.objectContaining({ phase: 'initial.presence', state: 'failed' }));
+  expect(events).toContainEqual(expect.objectContaining({ phase: 'initial-sources', state: 'failed' }));
+  expect(events).not.toContainEqual(expect.objectContaining({ phase: 'owner-enrichment', state: 'started' }));
+});
+
+it('keeps an observer exception from changing roster availability', async () => {
+  expect(await mergeRosterWithAssignments({ onTiming: () => { throw new Error('diagnostic sink failed'); } }))
+    .toEqual({ active: [], orphanedClaims: [] });
+});

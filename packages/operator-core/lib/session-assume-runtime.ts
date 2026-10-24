@@ -2,6 +2,7 @@
  * caller recovery and resume reservation. No public argument can supply these
  * ports, an authorization reference, an environment or a runtime witness. */
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveAgentIdentity, isTransportOnlyIdentity } from './agent-tools/coordination/identity';
@@ -9,10 +10,13 @@ import { resolveResumeTarget } from './agent-launch-core';
 import { inspectBlindReviewResumeTarget } from './blind-review-session-bindings';
 import { readSessionConfinement } from './capability-envelope/session-confinement-store';
 import { decodeOperatorSecretKey } from './operator-secret-key';
-import { createAssumeCallerAdapters, type AssumeCallerHostFence } from './session-assume-caller';
+import { createAssumeCallerAdapters, readAssumeCallerCheckpoint, type AssumeCallerHostFence } from './session-assume-caller';
 import { createAssumeCustodyAdapters } from './session-assume-custody';
 import { readAssumeCaller, readAssumeTarget } from './session-assume-preparation';
 import { createAssumeReceiptStore } from './session-assume-store';
+import { ownsAssumeCallerPause, readAssumeCallerPause } from './session-assume-pause';
+import { findLiveHostAsync } from './events/await/psu-pty-discovery';
+import { assumePreparationSchema, assumePreparationFingerprint } from './session-assume';
 import type { AssumeActor, AssumePreparation, AssumePreparationDeps, AssumeRequest, AssumeTransitionDeps } from './session-assume';
 
 interface AssumeAuthorizationPorts {
@@ -98,4 +102,55 @@ export function createAssumeTransitionDeps(plan: AssumePreparation,
   host: AssumeCallerHostFence & Pick<AssumeTransitionDeps, 'handoff'>): AssumeTransitionDeps {
   return { now: Date.now, ...createAssumeReceiptStore(plan), ...createAssumeCustodyAdapters(plan),
     ...createAssumeCallerAdapters(host), handoff: (value, recovery) => host.handoff(value, recovery) };
+}
+
+/** Internal launcher inspection over existing receipts, pause and keyed lease.
+ * The HTTP boundary requires the local superuser principal. No public argument
+ * can create a preparation, authorize a transition or manufacture a lease. */
+export async function inspectManagedAssumeRequest(value: unknown, afterExit = false, action = 'observe') {
+  if (!['freeze', 'queue', 'thaw', 'observe'].includes(action) || afterExit && action === 'thaw')
+    throw new Error('assume-host-invalid-action');
+  const text = z.string().min(1).max(4096);
+  const hash = z.string().regex(/^[a-f0-9]{64}$/);
+  const request = z.object({ transitionKey: z.string().regex(/^session-assume:[a-f0-9]{64}$/),
+    preparationHash: hash, recoveryRef: text, recoveryHash: hash, expiresAt: z.number().int().positive(),
+    caller: z.object({ ownerId: text, workspaceId: text, nativeSessionId: text,
+      nativePid: z.number().int().positive(), hostId: text, attachmentId: text,
+      childGeneration: z.number().int().positive() }).strict() }).strict().parse(value);
+  const { sql } = getOrgPg();
+  const [row] = await sql<Array<{ summary: { sessionAssume?: { preparation?: unknown } } }>>`
+    SELECT summary FROM harness_shared.agent_launch_idempotency
+     WHERE workspace_id = ${request.caller.workspaceId} AND idempotency_key = ${request.transitionKey}
+  `;
+  const plan = assumePreparationSchema.parse(row?.summary?.sessionAssume?.preparation);
+  const store = createAssumeReceiptStore(plan);
+  const receipt = await store.load();
+  if (!receipt?.recovery || !receipt.durable ||
+      !['caller-checkpointed', 'caller-quiesced', 'target-custody-acquired', 'handoff-requested', 'handoff-accepted'].includes(receipt.state) ||
+      (afterExit && receipt.state !== 'handoff-accepted') || plan.target.context.mode !== 'native-resume' ||
+      receipt.transitionKey !== request.transitionKey || assumePreparationFingerprint(plan) !== request.preparationHash ||
+      request.expiresAt !== plan.expiresAt || (action !== 'thaw' && Date.now() >= plan.expiresAt) ||
+      !['ownerId', 'workspaceId', 'nativeSessionId', 'nativePid', 'hostId', 'attachmentId'].every(
+        key => plan.caller[key as keyof typeof plan.caller] === request.caller[key as keyof typeof request.caller]) ||
+      receipt.recovery.checkpointRef !== request.recoveryRef || receipt.recovery.checkpointSha256 !== request.recoveryHash)
+    throw new Error('assume-host-receipt-mismatch');
+  const [pause, host, callerPolicy, targetPolicy] = await Promise.all([
+    readAssumeCallerPause(plan.caller.ownerId), findLiveHostAsync(plan.caller.ownerId),
+    readSessionConfinement(plan.caller.ownerId, plan.caller.workspaceId),
+    readSessionConfinement(plan.target.ownerId, plan.target.workspaceId),
+  ]);
+  const managed = host as (typeof host & { childGeneration?: number;
+    identityAssume?: { hostId: string; attachmentId: string } });
+  if (callerPolicy || targetPolicy || !ownsAssumeCallerPause(pause, plan, receipt.recovery) ||
+      (afterExit ? !!host : !managed || managed.ptyPid !== request.caller.nativePid ||
+        managed.childGeneration !== request.caller.childGeneration ||
+        managed.identityAssume?.hostId !== request.caller.hostId || managed.identityAssume?.attachmentId !== request.caller.attachmentId))
+    throw new Error('assume-host-custody-changed');
+  await readAssumeCallerCheckpoint(plan, receipt.recovery);
+  // Thaw is rollback of the still-running exact caller; it must remain possible
+  // after the target lease expired. The host refuses thaw once replacement began.
+  if (action !== 'thaw' && !await createAssumeCustodyAdapters(plan).checkCustody(plan))
+    throw new Error('assume-target-custody-changed');
+  return { ok: true as const, transitionKey: receipt.transitionKey, preparationHash: receipt.preparationFingerprint,
+    state: receipt.state, preparation: plan, recovery: receipt.recovery };
 }

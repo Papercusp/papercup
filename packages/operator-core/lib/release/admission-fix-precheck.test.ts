@@ -831,6 +831,58 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     expect(new Set(logFiles).size).toBe(1);
     expect(logFiles[0]).toMatch(/^\/tmp\/l\/admission-precheck-/);
   });
+
+  it('persists each native file result before starting the next file and preserves its failure', async () => {
+    const events: string[] = [];
+    const tree = 'd'.repeat(40);
+    const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {
+      if (argv[0] === 'git') return { exitCode: 0, signal: null, timedOut: false, output: tree, durationMs: 1 };
+      if (argv[1] === 'scripts/test-files.mjs') {
+        events.push(`run:${argv[2]}`);
+        return { exitCode: 1, signal: null, timedOut: false, output: 'Tests 1 failed (1)', durationMs: 3 };
+      }
+      return { exitCode: 0, signal: null, timedOut: false, output: 'setup ok', durationMs: 1 };
+    });
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, logDir: '/tmp/l', runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    const out = await runner({ commit: C, expectedTree: tree, files: ['lib/a.test.ts', 'lib/b.test.ts'],
+      onFileResult: async result => {
+        expect(result.status).toBe('fail');
+        expect(result.exitCode).toBe(1);
+        await Promise.resolve();
+        events.push(`persist:${result.path}`);
+      } });
+    expect(events).toEqual(['run:lib/a.test.ts', 'persist:lib/a.test.ts', 'run:lib/b.test.ts', 'persist:lib/b.test.ts']);
+    expect(out).toMatchObject({ ran: true, results: [{ path: 'lib/a.test.ts', status: 'fail' }, { path: 'lib/b.test.ts', status: 'fail' }] });
+  });
+
+  it('a durable file-result write failure stops execution before the next file', async () => {
+    const files: string[] = [];
+    const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {
+      if (argv[1] === 'scripts/test-files.mjs') files.push(argv[2]!);
+      return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 };
+    });
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    await expect(runner({ commit: C, files: ['lib/a.test.ts', 'lib/b.test.ts'], onFileResult: () => { throw new Error('durable write failed'); } }))
+      .rejects.toThrow('durable write failed');
+    expect(files).toEqual(['lib/a.test.ts']);
+  });
+
+  it('refuses a materialized tree mismatch before executing any test file', async () => {
+    const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => ({ exitCode: 0, signal: null, timedOut: false,
+      output: argv[0] === 'git' ? 'e'.repeat(40) : 'setup ok', durationMs: 1 }));
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    expect(await runner({ commit: C, expectedTree: 'd'.repeat(40), files: ['lib/a.test.ts'] }))
+      .toMatchObject({ ran: false, reason: 'runner-failed', detail: expect.stringContaining('materialized tree differs') });
+    expect(exec.mock.calls.some(([argv]) => argv[1] === 'scripts/test-files.mjs')).toBe(false);
+  });
+
+  it('refuses an execution group above the unchanged 200-file cap before setup', async () => {
+    const exec = vi.fn();
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec });
+    expect(await runner({ commit: C, files: Array.from({ length: 201 }, (_, i) => `lib/${i}.test.ts`) }))
+      .toMatchObject({ ran: false, reason: 'runner-failed', detail: expect.stringContaining('200-file bound') });
+    expect(exec).not.toHaveBeenCalled();
+  });
 });
 
 describe('resolveCanonicalIntegrationRoot (P-006 / R6)', () => {

@@ -2,13 +2,14 @@
  * Saved psu sign-ins supply identity; every request rechecks live membership,
  * inventory and a single-use ticket. No controller SSH/admin identity is lent
  * to a cloud customer, and a refusal never falls through to this machine. */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { loadPsuConnectionStore } from '../../../../apps/operator/scripts/psu-connection-front-controller.mjs';
 import { isLoopbackRequest } from '../superuser-token';
 import { activeWorkspaceId, isKnownWorkspace } from '../workspace-registry';
 import type { WorkspaceContextTransport } from '../workspace-context-middleware';
 import { OperatorRelayChannel, OperatorRelayError, type RelaySocketFactory } from './operator-relay-client';
 import { HOSTED_PRINCIPAL_USER_HEADER } from './hosted-operator-http';
+import { HOSTED_CONNECTOR_LIVENESS_FRESH_MS } from '../endpoint-route/hosted-workspace-connector';
 
 interface HostedSignIn {
   kind: string;
@@ -22,6 +23,9 @@ interface HostedMachine {
   displayName: string;
   reachable: boolean;
   state: string;
+  connector?: {
+    state: string; routeLabel: string; transport: string; generation: number; lastSeenAt: string | null;
+  } | null;
 }
 export interface LocalMachineOperatorTransportOptions {
   readProfiles?: () => HostedSignIn[];
@@ -35,7 +39,7 @@ export interface LocalMachineOperatorTransport extends WorkspaceContextTransport
   mergeControlRows(request: Request, rows: unknown[]): Promise<unknown[]>;
 }
 
-function localOwner(request: Request): boolean {
+async function localOwner(request: Request): Promise<boolean> {
   const headers = new Headers(request.headers);
   // A hosted request can arrive over loopback too. Its ticket grants only its
   // bound customer workspace, never this process owner's saved sign-ins.
@@ -44,9 +48,11 @@ function localOwner(request: Request): boolean {
   if (!headers.has('host')) headers.set('host', url.host);
   if (!isLoopbackRequest(headers)) return false;
   const origin = headers.get('origin');
-  return !origin || origin === url.origin || [
+  if (!origin || origin === url.origin || [
     'http://localhost:1420', 'http://tauri.localhost', 'https://tauri.localhost',
-  ].includes(origin);
+  ].includes(origin)) return true;
+  const { configuredLocalBrowserOrigins } = await import('../endpoint-route/route-stack');
+  return configuredLocalBrowserOrigins().has(origin);
 }
 const refusal = (error: string, status: number) => Response.json({ ok: false, error }, { status });
 
@@ -77,7 +83,7 @@ export function createLocalMachineOperatorTransport(options: LocalMachineOperato
     return rows.flat();
   }
   async function mergeControlRows(request: Request, rows: unknown[]): Promise<unknown[]> {
-    if (!localOwner(request)) return rows;
+    if (!await localOwner(request)) return rows;
     const authorized = await inventory(request.signal);
     const existing = new Set(rows.map(row => (row as { id?: string })?.id));
     const machines = new Map<string, HostedMachine>();
@@ -90,12 +96,17 @@ export function createLocalMachineOperatorTransport(options: LocalMachineOperato
       region: '', size: '', image: '', diskGiB: 0, network: '',
       desiredState: 'running', observedState: workspace.reachable ? 'running' : 'degraded',
       recoverability: { kind: 'none', label: 'Managed by workspace' }, capabilities: {},
+      ...(workspace.connector ? { hostedConnector: {
+        ...workspace.connector, customerWorkspaceId: workspace.id,
+        liveUntil: workspace.reachable && workspace.connector.lastSeenAt
+          ? Date.parse(workspace.connector.lastSeenAt) + HOSTED_CONNECTOR_LIVENESS_FRESH_MS : null,
+      } } : {}),
     }))];
   }
   return {
     mergeControlRows,
     async forwardMachineRequest(request, machine) {
-      if (!localOwner(request)) return refusal('local_machine_selection_requires_local_owner', 403);
+      if (!await localOwner(request)) return refusal('local_machine_selection_requires_local_owner', 403);
       try {
         const url = new URL(request.url);
         // The selector's inventory belongs to this GUI's control plane even
@@ -111,6 +122,27 @@ export function createLocalMachineOperatorTransport(options: LocalMachineOperato
         if (matches.length !== 1) return refusal(matches.length ? 'machine_signin_ambiguous' : 'machine_signin_required', 403);
         const { profile, workspace } = matches[0]!;
         if (!workspace.reachable) return refusal('selected_machine_unavailable', 503);
+        if (request.method === 'GET' && url.pathname === '/api/hosted/auth/session') {
+          return Response.json({ ok: true, session: { workspaceId: workspace.id } });
+        }
+        if (request.method === 'POST' && /^\/api\/hosted\/workspaces\/[^/]+\/connectors\/session-ticket$/.test(url.pathname)) {
+          const body = await request.json();
+          if (url.pathname !== `/api/hosted/workspaces/${encodeURIComponent(workspace.id)}/connectors/session-ticket`
+            || body.hostId !== machine || body.routeLabel !== workspace.connector?.routeLabel
+            || body.transport !== 'websocket' || body.audience !== 'workspace-operator')
+            return refusal('machine_workspace_mismatch', 403);
+          // Reuse one customer terminal across reconnects. This key is scoped by
+          // the CLI token on the control plane and by workspace on the host.
+          const session = `gui-${createHash('sha256').update(workspace.id).digest('hex').slice(0, 24)}`;
+          const opened = await control(profile,
+            `/hosted/cli/workspaces/${encodeURIComponent(workspace.id)}/terminal`, {
+              method: 'POST', body: JSON.stringify({ session }), signal: request.signal,
+            });
+          const ticket = new URL(opened.socketUrl).searchParams.get('ticket');
+          if (opened.ok !== true || !ticket || !/^ht_[A-Za-z0-9_-]{43}$/.test(ticket))
+            return refusal('machine_ticket_invalid', 502);
+          return Response.json({ ok: true, ticket, socketOrigin: new URL(profile.origin).origin });
+        }
         const requestedWorkspace = request.headers.get('x-papercusp-workspace') ?? url.searchParams.get('ws');
         if (requestedWorkspace && requestedWorkspace !== workspace.id && !localWorkspace(requestedWorkspace))
           return refusal('machine_workspace_mismatch', 403);

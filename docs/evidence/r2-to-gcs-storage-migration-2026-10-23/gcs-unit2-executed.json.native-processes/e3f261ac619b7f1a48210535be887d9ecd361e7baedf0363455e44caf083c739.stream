@@ -1,0 +1,3 @@
+src/blob-store.test.ts
+src/gcs-credentials.test.ts
+src/gcs-object-store.test.ts

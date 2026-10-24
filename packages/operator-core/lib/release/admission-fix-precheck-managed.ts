@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { getTask } from '../task-manager/store';
 import { managedSpawn, type ManagedSpawnResult } from '../task-manager/managed-spawn';
 import { isValidTaskId, type TaskRow } from '../task-manager/types';
@@ -16,13 +17,18 @@ import {
   createCheckpointTreeFixPrecheckRunner,
   evaluateFixPrecheck,
   precheckPopulation,
+  ADMISSION_PRECHECK_MAX_FILES,
+  type FixPrecheckFileResult,
+  type FixPrecheckRunner,
   type FixPrecheckProgress,
   type FixPrecheckRunResult,
   type FixPrecheckVerdict,
 } from './admission-fix-precheck';
+import { ADMISSION_RADIUS_CAP } from './admission-jobs';
 import type {
   FrozenCandidateRepairQueue,
   FrozenCandidateRepairQueueRead,
+  FrozenRepairAdmissionPrecheck,
   RepairSignatureEntry,
 } from './frozen-candidate-repair-queue';
 
@@ -182,18 +188,13 @@ export interface AdmissionPrecheckWorkerDeps {
     target: AdmissionPrecheckQueueTarget,
     update: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
   ) => Promise<unknown>;
-  createRunner: (options: { integrationRoot: string; checkpointRoot: string; testRunHarness: string }) => (
-    input: {
-      commit: string;
-      files: readonly string[];
-      onProgress?: (progress: FixPrecheckProgress) => Promise<void> | void;
-    },
-  ) => Promise<FixPrecheckRunResult>;
+  createRunner: (options: { integrationRoot: string; checkpointRoot: string; testRunHarness: string }) => FixPrecheckRunner;
   now?: () => number;
 }
 
 export type AdmissionPrecheckWorkerOutcome =
   | { status: 'settled'; verdict: FixPrecheckVerdict }
+  | { status: 'interrupted'; reason: string }
   | { status: 'proposed' }
   | { status: 'ignored'; reason: string };
 
@@ -203,6 +204,123 @@ const defaultWorkerDeps: AdmissionPrecheckWorkerDeps = {
   transition: applyFrozenCandidateRepairQueueTransition,
   createRunner: createCheckpointTreeFixPrecheckRunner,
 };
+
+/** Ordered membership and every classification/queue pin are part of the resume identity. */
+export function admissionPrecheckMeasurementIdentity(operation: FrozenRepairAdmissionPrecheck, signature: readonly RepairSignatureEntry[]): string {
+  return createHash('sha256').update(JSON.stringify({ operationId: operation.operationId, candidate: operation.candidate,
+    repairHead: operation.repairHead, builtCommit: operation.builtCommit, builtTree: operation.builtTree,
+    sourceCommit: operation.sourceCommit, files: operation.files, radius: operation.radius, signature })).digest('hex');
+}
+
+export function validateAdmissionPrecheckResults(files: readonly string[], results: readonly FixPrecheckFileResult[], complete = false): void {
+  const seen = new Set<string>();
+  for (const result of results) {
+    if (!files.includes(result.path) || seen.has(result.path) || !['pass', 'fail', 'unmeasured'].includes(result.status))
+      throw new Error('duplicate, foreign or invalid per-file measurement');
+    seen.add(result.path);
+  }
+  if (complete && (results.length !== files.length || files.some(file => !seen.has(file))))
+    throw new Error('incomplete execution-group measurement');
+}
+
+async function runBoundedAdmissionPrecheck(
+  input: AdmissionPrecheckWorkerInput,
+  queue: FrozenCandidateRepairQueue,
+  deps: AdmissionPrecheckWorkerDeps,
+  runner: FixPrecheckRunner,
+): Promise<AdmissionPrecheckWorkerOutcome> {
+  const operation = queue.admissionPrecheck!;
+  const identity = admissionPrecheckMeasurementIdentity(operation, queue.signature);
+  const now = deps.now ?? Date.now;
+  const assertFresh = (fresh: FrozenCandidateRepairQueue): FrozenRepairAdmissionPrecheck => {
+    const current = fresh.admissionPrecheck;
+    if (!current || current.status !== 'running' || current.operationId !== input.operationId ||
+        current.runnerTaskId !== input.taskId || fresh.candidate !== operation.candidate || fresh.repairHead !== operation.repairHead ||
+        admissionPrecheckMeasurementIdentity(current, fresh.signature) !== identity)
+      throw new Error('pre-check immutable operation identity changed');
+    return current;
+  };
+  const unavailable = async (detail: string): Promise<AdmissionPrecheckWorkerOutcome> => {
+    const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files, ...(operation.radius ? { radius: operation.radius } : {}) });
+    const verdict = evaluateFixPrecheck(population, { ran: false, reason: 'runner-failed', detail });
+    await deps.transition(input.queueTarget, fresh => {
+      assertFresh(fresh);
+      return admissionPrecheckSettlementTransition(fresh, input.operationId, verdict, now());
+    });
+    return { status: 'settled', verdict };
+  };
+  if (!operation.builtTree || new Set(operation.files).size !== operation.files.length)
+    return unavailable('wide pre-check requires a built-tree identity and unique immutable population');
+  const saved = operation.measurement;
+  if (saved && saved.identity !== identity) return unavailable('saved measurement identity does not match commit/tree/population');
+  try { validateAdmissionPrecheckResults(operation.files, saved?.results ?? []); }
+  catch (error) { return unavailable(String(error)); }
+  let completed = [...(saved?.results ?? [])];
+  try {
+    await deps.transition(input.queueTarget, fresh => {
+      const current = assertFresh(fresh);
+      if (JSON.stringify(current.measurement?.results ?? []) !== JSON.stringify(completed))
+        throw new Error('saved measurement moved before resume');
+      return { ...fresh, admissionPrecheck: { ...current, measurement: { schemaVersion: 1, identity, results: completed } } };
+    });
+    const pending = operation.files.filter(file => !completed.some(result => result.path === file));
+    const groupSize = Math.min(ADMISSION_RADIUS_CAP, ADMISSION_PRECHECK_MAX_FILES);
+    for (let start = 0; start < pending.length; start += groupSize) {
+      if (now() >= operation.expiresAtMs) return unavailable('bounded pre-check deadline expired before complete aggregation');
+      const files = pending.slice(start, start + groupSize);
+      const before = completed.length;
+      const record = async (result: FixPrecheckFileResult): Promise<void> => {
+        validateAdmissionPrecheckResults(files, [result]);
+        if (completed.some(prior => prior.path === result.path)) throw new Error('duplicate per-file measurement');
+        await deps.transition(input.queueTarget, fresh => {
+          const current = assertFresh(fresh);
+          const prior = current.measurement;
+          if (!prior || prior.identity !== identity || JSON.stringify(prior.results) !== JSON.stringify(completed))
+            throw new Error('persisted measurement moved while recording a file');
+          const results = [...completed, result];
+          const at = now();
+          return { ...fresh, updatedAtMs: Math.max(fresh.updatedAtMs + 1, at), admissionPrecheck: { ...current,
+            measurement: { schemaVersion: 1, identity, results }, completedCount: results.length, totalCount: operation.files.length,
+            currentFile: result.path, heartbeatAtMs: at, updatedAtMs: Math.max(current.updatedAtMs + 1, at) } };
+        });
+        completed = [...completed, result];
+      };
+      let run: FixPrecheckRunResult;
+      try {
+        run = await runner({ commit: operation.builtCommit, expectedTree: operation.builtTree, files, onFileResult: record,
+          onProgress: async progress => {
+            await deps.transition(input.queueTarget, fresh => {
+              assertFresh(fresh);
+              return admissionPrecheckProgressTransition(fresh, input.operationId, { ...progress, completedCount: before + progress.completedCount, totalCount: operation.files.length });
+            });
+          } });
+      } catch (error) {
+        // A replacement task resumes this SAME operation from its durable per-file rows.
+        // No failed or unmeasured completed file is ever rerun into a pass.
+        return { status: 'interrupted', reason: String(error) };
+      }
+      if (!run.ran) return { status: 'interrupted', reason: run.detail };
+      if (run.commit !== operation.builtCommit) return unavailable('execution-group commit mismatch');
+      try { validateAdmissionPrecheckResults(files, run.results, true); }
+      catch (error) { return unavailable(String(error)); }
+      for (const result of run.results) {
+        const prior = completed.find(item => item.path === result.path);
+        if (prior && JSON.stringify(prior) !== JSON.stringify(result)) return unavailable('native final result disagrees with persisted per-file evidence');
+        if (!prior) await record(result);
+      }
+    }
+    if (now() >= operation.expiresAtMs) return unavailable('bounded pre-check deadline expired before settlement');
+    validateAdmissionPrecheckResults(operation.files, completed, true);
+    const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files, ...(operation.radius ? { radius: operation.radius } : {}) });
+    const verdict = evaluateFixPrecheck(population, { ran: true, commit: operation.builtCommit,
+      results: operation.files.map(file => completed.find(result => result.path === file)!) }, { actor: operation.actor });
+    await deps.transition(input.queueTarget, fresh => {
+      assertFresh(fresh);
+      return admissionPrecheckSettlementTransition(fresh, input.operationId, verdict, now());
+    });
+    return { status: 'settled', verdict };
+  } catch (error) { return { status: 'interrupted', reason: String(error) }; }
+}
 
 export async function runAdmissionPrecheckWorker(
   input: AdmissionPrecheckWorkerInput,
@@ -244,6 +362,8 @@ export async function runAdmissionPrecheckWorker(
     ...(input.testCommand ? { testCommand: input.testCommand } : {}),
     ...(input.clearEnv ? { clearEnv: input.clearEnv } : {}),
   });
+  if (operation.files.length > ADMISSION_RADIUS_CAP || operation.measurement)
+    return runBoundedAdmissionPrecheck(input, queue, deps, runner);
   let run: FixPrecheckRunResult;
   try {
     run = await runner({
@@ -325,6 +445,10 @@ export async function runAdmissionPrecheckWorkerFromEnvironment(
   try {
     const result = await runAdmissionPrecheckWorker(input);
     if (result.status === 'ignored') console.warn(`[release:repair-queue] pre-check ${input.operationId} ignored: ${result.reason}`);
+    if (result.status === 'interrupted') {
+      console.error(`[release:repair-queue] pre-check ${input.operationId} interrupted with durable progress: ${result.reason}`);
+      return 1;
+    }
     return 0;
   } catch (error) {
     console.error(`[release:repair-queue] pre-check ${input.operationId} worker failed`, error);

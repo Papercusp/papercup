@@ -1668,9 +1668,32 @@ export async function mergeRosterWithAssignments(
      * not pass this for a caller that displays the full active roster.
      */
     thinkingFor?: (entry: RosterEntry) => boolean;
+    /** Optional diagnostics for the existing read; never changes its result or deadline. */
+    onTiming?: (event: {
+      phase: string;
+      state: 'started' | 'completed' | 'failed';
+      elapsedMs: number;
+    }) => void;
   } = {},
 ): Promise<RosterWithAssignments> {
   const workspaceId = opts.workspaceId ?? null;
+  const timeRead = async <T>(phase: string, read: () => T | Promise<T>): Promise<T> => {
+    if (!opts.onTiming) return read();
+    const startedAt = performance.now();
+    const report = (state: 'started' | 'completed' | 'failed') => {
+      try { opts.onTiming?.({ phase, state, elapsedMs: Math.max(0, performance.now() - startedAt) }); }
+      catch { /* diagnostics cannot change roster availability */ }
+    };
+    report('started');
+    try {
+      const value = await read();
+      report('completed');
+      return value;
+    } catch (error) {
+      report('failed');
+      throw error;
+    }
+  };
   const [
     presenceAll,
     advByOwner,
@@ -1681,22 +1704,22 @@ export async function mergeRosterWithAssignments(
     runInfoByOwner,
     loopArmedOwners,
     nurseryByOwner,
-  ] = await Promise.all([
-    listPresence(),
-    advSessionsByCoordOwner(),
-    listFleetAssignments({ workspaceId }).catch(() => []),
-    spawnedAgentNativeSessionsByOwner(),
-    getDefaultWakeMode().catch(() => 'auto' as WakeMode),
-    countAllPendingWakes().catch(() => new Map<string, number>()),
-    spawnedAgentRunInfoByOwner(),
-    activeLoopOwners().catch(() => new Set<string>()),
+  ] = await timeRead('initial-sources', () => Promise.all([
+    timeRead('initial.presence', () => listPresence()),
+    timeRead('initial.sessions', () => advSessionsByCoordOwner()),
+    timeRead('initial.assignments', () => listFleetAssignments({ workspaceId }).catch(() => [])),
+    timeRead('initial.native-sessions', () => spawnedAgentNativeSessionsByOwner()),
+    timeRead('initial.wake-mode', () => getDefaultWakeMode().catch(() => 'auto' as WakeMode)),
+    timeRead('initial.pending-wakes', () => countAllPendingWakes().catch(() => new Map<string, number>())),
+    timeRead('initial.spawn-runs', () => spawnedAgentRunInfoByOwner()),
+    timeRead('initial.loops', () => activeLoopOwners().catch(() => new Set<string>())),
     // EI-348: nursery liveness join — needs only os.hostname() (sync, no
     // dependency on the other reads), so it belongs in this batch, not a
     // sequential await after it (WI-3924: every needless serialization point
     // adds to the roster-merge baseline the search-transcripts endpoint pays
     // on every query).
-    runningSpawnLivenessByOwner(os.hostname()),
-  ]);
+    timeRead('initial.spawn-liveness', () => runningSpawnLivenessByOwner(os.hostname())),
+  ]));
   const localPresence = scopePresenceToWorkspace(presenceAll, workspaceId);
   // Shared-hive federation: when presence-gossip is on, fold in cross-machine agents
   // (session-grain remote rows, each with its real ownerId + machineLabel) so the
@@ -1705,17 +1728,19 @@ export async function mergeRosterWithAssignments(
   // off) is unchanged. Enrichment (adv_sessions/claims/pid/thinking) is local-only;
   // federated rows degrade gracefully (no runId, no pid probe, thinking=false).
   let presence = localPresence;
-  try {
-    if (await getFlag(FLAGS.PRESENCE_GOSSIP, 'system')) {
-      const fed = (await listFederatedPresence({ workspaceId }).catch(() => [])).filter(
-        (r) => r.remoteSession,
-      );
-      const localOwners = new Set(localPresence.map((p) => p.ownerId));
-      presence = [...localPresence, ...fed.filter((r) => !localOwners.has(r.ownerId))];
+  await timeRead('federation', async () => {
+    try {
+      if (await getFlag(FLAGS.PRESENCE_GOSSIP, 'system')) {
+        const fed = (await listFederatedPresence({ workspaceId }).catch(() => [])).filter(
+          (r) => r.remoteSession,
+        );
+        const localOwners = new Set(localPresence.map((p) => p.ownerId));
+        presence = [...localPresence, ...fed.filter((r) => !localOwners.has(r.ownerId))];
+      }
+    } catch {
+      presence = localPresence;
     }
-  } catch {
-    presence = localPresence;
-  }
+  });
   // #3: per-owner fleet label + the fleet's accent color, for the pui roster grouping —
   // and the official standing-modes read (EI-7626), both batched, in parallel.
   const presenceOwnerIds = presence.map((p) => p.ownerId);
@@ -1729,24 +1754,24 @@ export async function mergeRosterWithAssignments(
     accountPinByOwner,
     displayNameByOwner,
     wipByOwner,
-  ] = await Promise.all([
-    resolveFleetInfoByOwner(presence),
-    agentModesByOwner(presence),
+  ] = await timeRead('owner-enrichment', () => Promise.all([
+    timeRead('owners.fleets', () => resolveFleetInfoByOwner(presence)),
+    timeRead('owners.modes', () => agentModesByOwner(presence)),
     // adv-hud P-001: the open-await join (HUD's Blocked column). Batched here
     // rather than awaited after — a serial hop would add to the roster-merge
     // baseline every caller pays (see the perf docs' serial-loop anti-pattern).
     // Scoped by the roster's OWNER IDS, not workspace — see openAwaitsByOwner.
-    openAwaitsByOwner(presenceOwnerIds),
+    timeRead('owners.awaits', () => openAwaitsByOwner(presenceOwnerIds)),
     // WI-10005228: both joins are only ever looked up by a presence owner
     // (mergeRosterEntries keys them by p.ownerId), so they read exactly those
     // owners here, after presence is known, instead of every row ever written
     // (10,342 wake overrides / 14,160 briefs against ~100 live agents) in the
     // first batch. Same batch as the other owner-scoped joins: no serial hop added.
-    getWakeModeOverridesFor(presenceOwnerIds).catch(() => new Map<string, WakeMode>()),
+    timeRead('owners.wake-modes', () => getWakeModeOverridesFor(presenceOwnerIds).catch(() => new Map<string, WakeMode>())),
     // P-007 finding (see sessionBriefHarnessByOwner docblock): harnessSlug
     // fallback for interactive psu/su sessions, which spawnedAgentRunInfoByOwner
     // alone never covers.
-    sessionBriefHarnessByOwner(presenceOwnerIds),
+    timeRead('owners.briefs', () => sessionBriefHarnessByOwner(presenceOwnerIds)),
     // WI-6636: the SHARED liveness oracle. This roster used to derive liveness
     // from heartbeat freshness alone and so disagreed with every other surface —
     // it read 110 parked agents as "Stalled" on the default HUD board while
@@ -1759,7 +1784,7 @@ export async function mergeRosterWithAssignments(
     // whole roster. Fail-soft is the caller's choice per the oracle's contract:
     // an empty map degrades every entry to sessionState null ("unknown"), which
     // deriveColumn treats as "fall back to the heartbeat legs", never as dead.
-    resolveSessionStates(
+    timeRead('owners.liveness', () => resolveSessionStates(
       presence.map((p) => ({
         ownerId: p.ownerId,
         heartbeatAt: p.heartbeatAt,
@@ -1769,7 +1794,7 @@ export async function mergeRosterWithAssignments(
         source: p.source,
         agentRole: p.agentRole ?? null,
       })),
-    ).catch(() => new Map()),
+    ).catch(() => new Map())),
     // P-003 (hud-chat-owner-controls): the workspace's dynamic account pins, so
     // the chat footer's ACCOUNT pill can read its current value synchronously
     // off the row it already rendered from (D-005 §6 / D-009 §D) instead of a
@@ -1779,15 +1804,15 @@ export async function mergeRosterWithAssignments(
     // roster-merge baseline every caller pays. Fail-soft: an empty map means
     // every entry reads `accountPin: null`, which is what an unpinned agent
     // reads anyway.
-    getOwnerPinsMap(workspaceId ?? activeWorkspaceId()).catch(() => new Map<string, OwnerPin>()),
+    timeRead('owners.account-pins', () => getOwnerPinsMap(workspaceId ?? activeWorkspaceId()).catch(() => new Map<string, OwnerPin>())),
     // hud-session-display-names P-004: the card headline's two data layers —
     // the owner-keyed manual name and each owner's in-flight work item. ONE
     // query per workspace each (R10), batched HERE beside the other joins for
     // the same reason they are: a serial hop lands on the roster-merge baseline
     // every caller pays. Both are fail-open internally (R9).
-    displayNamesByOwner(presence),
-    wipItemsByOwner(presence),
-  ]);
+    timeRead('owners.display-names', () => displayNamesByOwner(presence)),
+    timeRead('owners.work-items', () => wipItemsByOwner(presence)),
+  ]));
   const entries = mergeRosterEntries(
     presence,
     advByOwner,
@@ -1820,7 +1845,7 @@ export async function mergeRosterWithAssignments(
   // transcript-stat cost (see the opts.thinkingFor doc comment above for the
   // safety condition this relies on).
   const transcriptFreshnessCandidates = opts.thinkingFor ? active.filter(opts.thinkingFor) : active;
-  await resolveTranscriptFreshnessForEntries(transcriptFreshnessCandidates);
+  await timeRead('transcript-freshness', () => resolveTranscriptFreshnessForEntries(transcriptFreshnessCandidates));
   return {
     active,
     // WI-5975: explicit single-arg — `.map(summarizeOrphan)` would pass the array

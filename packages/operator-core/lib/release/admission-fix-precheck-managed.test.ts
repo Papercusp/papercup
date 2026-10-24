@@ -9,12 +9,14 @@ import {
   ADMISSION_PRECHECK_WORKER_MODE_ENV,
   admissionPrecheckProgressTransition,
   admissionPrecheckSettlementTransition,
+  admissionPrecheckMeasurementIdentity,
   buildAdmissionPrecheckSpawnPlan,
   parseAdmissionPrecheckWorkerInput,
   runAdmissionPrecheckWorker,
   startAdmissionPrecheckWorker,
   type AdmissionPrecheckWorkerInput,
 } from './admission-fix-precheck-managed';
+import { ADMISSION_PRECHECK_MAX_FILES, type FixPrecheckRunner } from './admission-fix-precheck';
 import type { FrozenCandidateRepairQueue, FrozenRepairAdmissionPrecheck } from './frozen-candidate-repair-queue';
 
 const operation = (overrides: Partial<FrozenRepairAdmissionPrecheck> = {}): FrozenRepairAdmissionPrecheck => ({
@@ -67,6 +69,115 @@ const input: AdmissionPrecheckWorkerInput = {
 };
 
 describe('managed R6 admission pre-check runner (WI-10006003)', () => {
+  const wide = (size = 81) => {
+    const files = ['lib/red.test.ts', ...Array.from({ length: size - 1 }, (_, i) => `lib/file-${i}.test.ts`)];
+    return queue(operation({ files, totalCount: files.length, radius: { status: 'measured', reason: 'ok',
+      guarded: files.slice(1), reportOnly: [], legs: Object.fromEntries(files.map(file => [file, '@t/core'])) } }));
+  };
+
+  it('bounds two-plus native groups without raising the existing cap and never passes a partial aggregate', async () => {
+    let persisted = wide();
+    const sizes: number[] = [];
+    const runner: FixPrecheckRunner = async run => {
+      expect(persisted.admissionPrecheck?.status).toBe('running');
+      expect(run.expectedTree).toBe('d'.repeat(40));
+      sizes.push(run.files.length);
+      const results = run.files.map(path => ({ path, status: 'pass' as const }));
+      for (const result of results) await run.onFileResult?.(result);
+      expect(persisted.admissionPrecheck?.status).toBe('running');
+      return { ran: true, commit: run.commit, results };
+    };
+    const outcome = await runAdmissionPrecheckWorker(input, {
+      getTask: async () => ({ state: 'running', confined: true }), readQueue: async () => ({ status: 'value', queue: persisted }),
+      transition: async (_target, update) => { persisted = update(persisted); }, createRunner: () => runner, now: () => 30,
+    });
+    expect(ADMISSION_PRECHECK_MAX_FILES).toBe(200);
+    expect(sizes).toEqual([40, 40, 1]);
+    expect(sizes.every(size => size <= ADMISSION_PRECHECK_MAX_FILES)).toBe(true);
+    expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: true, ran: true } });
+    expect(persisted.admissionPrecheck?.measurement?.results.map(result => result.path)).toEqual(persisted.admissionPrecheck?.files);
+    expect(persisted.admissionPrecheck?.completedCount).toBe(81);
+  });
+
+  it.each(['fail', 'unmeasured'] as const)('retains a completed %s across interruption and a replacement task', async status => {
+    let persisted = wide();
+    const originalFiles = [...persisted.admissionPrecheck!.files];
+    let calls = 0;
+    const interrupted: FixPrecheckRunner = async run => {
+      if (++calls === 2) throw new Error('simulated worker death');
+      const results = run.files.map((path, i) => ({ path, status: i === 1 ? status : 'pass' as const }));
+      for (const result of results) await run.onFileResult?.(result);
+      return { ran: true, commit: run.commit, results };
+    };
+    const deps = { getTask: async () => ({ state: 'running' as const, confined: true }),
+      readQueue: async () => ({ status: 'value' as const, queue: persisted }),
+      transition: async (_target: unknown, update: (q: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue) => { persisted = update(persisted); }, now: () => 30 };
+    expect(await runAdmissionPrecheckWorker(input, { ...deps, createRunner: () => interrupted })).toMatchObject({ status: 'interrupted' });
+    expect(persisted.admissionPrecheck).toMatchObject({ status: 'running', completedCount: 40 });
+    const saved = JSON.parse(JSON.stringify(persisted));
+    persisted = saved;
+    persisted.admissionPrecheck!.runnerTaskId = 'replacement-task';
+    const resumed: string[] = [];
+    const outcome = await runAdmissionPrecheckWorker({ ...input, taskId: 'replacement-task' }, { ...deps, createRunner: () => async run => {
+      resumed.push(...run.files);
+      return { ran: true, commit: run.commit, results: run.files.map(path => ({ path, status: 'pass' as const })) };
+    } });
+    expect(resumed).toEqual(originalFiles.slice(40));
+    expect(persisted.admissionPrecheck!.files).toEqual(originalFiles);
+    expect(persisted.admissionPrecheck!.measurement!.results[1]!.status).toBe(status);
+    expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: false, code: status === 'fail' ? 'admission-imports-red' : 'admission-precheck-unavailable' } });
+  });
+
+  it.each(['commit', 'tree', 'population', 'partition'] as const)('refuses saved evidence under changed %s identity', async change => {
+    let persisted = wide();
+    const op = persisted.admissionPrecheck!;
+    op.measurement = { schemaVersion: 1, identity: admissionPrecheckMeasurementIdentity(op, persisted.signature), results: [{ path: op.files[0]!, status: 'pass' }] };
+    if (change === 'commit') op.builtCommit = 'f'.repeat(40);
+    if (change === 'tree') op.builtTree = 'f'.repeat(40);
+    if (change === 'population') op.files = [...op.files].reverse();
+    if (change === 'partition') op.radius!.reportOnly = [...op.radius!.guarded.splice(0, 1)];
+    const runner = vi.fn();
+    const outcome = await runAdmissionPrecheckWorker(input, {
+      getTask: async () => ({ state: 'running', confined: true }), readQueue: async () => ({ status: 'value', queue: persisted }),
+      transition: async (_target, update) => { persisted = update(persisted); }, createRunner: () => runner, now: () => 30,
+    });
+    expect(runner).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: false, code: 'admission-precheck-unavailable' } });
+  });
+
+  it.each(['missing', 'duplicate', 'foreign', 'skipped', 'stale'] as const)('refuses %s group evidence before terminal pass', async fault => {
+    let persisted = wide(41);
+    const outcome = await runAdmissionPrecheckWorker(input, {
+      getTask: async () => ({ state: 'running', confined: true }), readQueue: async () => ({ status: 'value', queue: persisted }),
+      transition: async (_target, update) => { persisted = update(persisted); }, now: () => 30,
+      createRunner: () => async run => {
+        const results = run.files.map(path => ({ path, status: 'pass' as const }));
+        if (fault === 'missing') results.pop();
+        if (fault === 'duplicate') results[1] = results[0]!;
+        if (fault === 'foreign') results[0] = { path: 'foreign.test.ts', status: 'pass' };
+        if (fault === 'skipped') (results[0] as { status: string }).status = 'skip';
+        return { ran: true, commit: fault === 'stale' ? '0'.repeat(40) : run.commit, results };
+      },
+    });
+    expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: false, code: 'admission-precheck-unavailable' } });
+    expect(persisted.admissionPrecheck?.status).toBe('failed');
+  });
+
+  it('a concurrent immutable identity change cannot be overwritten by a stale worker', async () => {
+    let persisted = wide(41);
+    const outcome = await runAdmissionPrecheckWorker(input, {
+      getTask: async () => ({ state: 'running', confined: true }), readQueue: async () => ({ status: 'value', queue: persisted }),
+      transition: async (_target, update) => { persisted = update(persisted); }, now: () => 30,
+      createRunner: () => async run => {
+        persisted = { ...persisted, admissionPrecheck: { ...persisted.admissionPrecheck!, builtTree: 'e'.repeat(40) } };
+        await run.onFileResult?.({ path: run.files[0]!, status: 'pass' });
+        throw new Error('must not reach publication');
+      },
+    });
+    expect(outcome.status).toBe('interrupted');
+    expect(persisted.admissionPrecheck).toMatchObject({ status: 'running', builtTree: 'e'.repeat(40), measurement: { results: [] } });
+  });
+
   it('hands a proposal to the confined worker without reading or mutating admission state', async () => {
     const proposalInput = { ...input, proposal: { candidate: 'a'.repeat(40), repairHead: 'b'.repeat(40) } };
     const runProposal = vi.fn(async () => undefined);

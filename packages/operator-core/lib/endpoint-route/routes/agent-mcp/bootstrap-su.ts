@@ -3881,7 +3881,22 @@ const sessionResumed = defineTool({
         resumeClaimKey?: unknown;
         localLivenessEvidence?: unknown;
         allowRetired?: unknown;
+        assumeHost?: { request?: unknown; afterExit?: unknown; action?: unknown };
       };
+      if (body.assumeHost !== undefined) {
+        // Extend the existing managed resume control plane; never let a normal
+        // authenticated app principal inspect administrative custody receipts.
+        const principal = await requirePrincipal(req.headers, { kind: ['system'], trust: ['trusted'] });
+        if (principal.slug !== 'system:superuser' || principal.authMethod !== 'bearer-token' ||
+            typeof body.assumeHost?.afterExit !== 'boolean') return jsonRes({ ok: false }, 403);
+        if (body.assumeHost.action !== undefined && (typeof body.assumeHost.action !== 'string' ||
+            !['freeze', 'queue', 'thaw', 'observe'].includes(body.assumeHost.action))) return jsonRes({ ok: false }, 400);
+        try {
+          const { inspectManagedAssumeRequest } = await import('../../../session-assume-runtime');
+          return jsonRes(await inspectManagedAssumeRequest(body.assumeHost.request, body.assumeHost.afterExit,
+            body.assumeHost.action as string | undefined));
+        } catch { return jsonRes({ ok: false, reason: 'assume-custody-unverified' }, 409); }
+      }
       if (body.allowRetired !== undefined && typeof body.allowRetired !== 'boolean') {
         return jsonRes({ error: 'allowRetired must be boolean' }, 400);
       }

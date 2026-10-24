@@ -48,6 +48,7 @@ const tauriApiCors = cors({
     // Without this the browser/dev path's CORS preflight strips the custom
     // header before it reaches workspaceContextMiddleware.
     'x-papercusp-workspace',
+    'x-papercusp-machine',
   ],
   credentials: true,
   maxAge: 600,

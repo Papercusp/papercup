@@ -4574,12 +4574,13 @@ async function completeOneTracked(
     );
     if (planSlug) {
       try {
-        const assessment = await conformanceClosureAssessment({
+        const assessment = await track('conformance', () => conformanceClosureAssessment({
           workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
           harnessSlug: planHarnessSlug,
           planSlug, planItemIds, completion: it.completion, item: existing,
           skipConformance: duplicateCloseCoverageException,
-        });
+          ...(ctx.phases ? { phases: ctx.phases } : {}),
+        }));
         const refusal = assessment.refusal;
         const details: ConformanceContractDetails = {
           mappedRequirements: assessment.mappedRequirements,

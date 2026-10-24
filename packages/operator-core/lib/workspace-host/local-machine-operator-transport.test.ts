@@ -113,6 +113,12 @@ it('uses current CLI authorization and single-use tickets to deliver two windows
       expect.objectContaining({ kind: 'workspace', id: 'host-b', name: 'Machine b', observedState: 'running' }),
     ]);
     expect(JSON.stringify(localInventory)).not.toContain(token);
+    expect(await transport.mergeControlRows(new Request('http://localhost/api', {
+      headers: { origin: 'http://localhost:3055' },
+    }), [])).toMatchObject([{ id: 'host-a', observedState: 'running' }, { id: 'host-b', observedState: 'running' }]);
+    expect(await transport.mergeControlRows(new Request('http://localhost/api', {
+      headers: { origin: 'http://localhost:9999' },
+    }), [])).toEqual([]);
     const hostedRequest = new Request('http://localhost/api/zero-harness/rest-query', {
       headers: { [HOSTED_PRINCIPAL_USER_HEADER]: 'customer' },
     });
@@ -124,6 +130,13 @@ it('uses current CLI authorization and single-use tickets to deliver two windows
         cookie: 'local-cookie', authorization: 'Bearer local-controller' };
       const registry = await app.request('/api/workspaces', { headers });
       expect(await registry.json()).toMatchObject({ current: `ws-${id}`, workspaces: [{ id: `ws-${id}` }] });
+      const session = await app.request('/api/hosted/auth/session', { headers });
+      expect(await session.json()).toEqual({ ok: true, session: { workspaceId: `ws-${id}` } });
+      const ticketResponse = await app.request(`/api/hosted/workspaces/ws-${id}/connectors/session-ticket`, {
+        method: 'POST', headers, body: JSON.stringify({ hostId: `host-${id}`, routeLabel: `route-${id}`,
+          transport: 'websocket', audience: 'workspace-operator' }),
+      });
+      expect(await ticketResponse.json()).toMatchObject({ ok: true, socketOrigin: brokerOrigin, ticket: expect.stringMatching(/^ht_/) });
       const launched = await app.request('/api/adv/sessions/launch-su', {
         method: 'POST', headers, body: JSON.stringify({ agent: 'codex', harness: 'example' }),
       });
@@ -140,7 +153,7 @@ it('uses current CLI authorization and single-use tickets to deliver two windows
     ]);
     expect(seen.every(row => !row.path.includes('desktopHost'))).toBe(true);
     expect(seen[0].body).toContain('codex');
-    expect(ticketCount).toBe(4);
+    expect(ticketCount).toBe(6);
     const count = seen.length;
     reachable = false;
     expect(await transport.mergeControlRows(new Request('http://localhost/api'), []))

@@ -27,7 +27,7 @@ import {
 } from './repair-manifest';
 import { createHash } from 'node:crypto';
 import { casesForFile, newRepairSignatureKeys } from './case-level-signature';
-import type { AdmissionRadius, FixPrecheckVerdict } from './admission-fix-precheck';
+import type { AdmissionRadius, FixPrecheckFileResult, FixPrecheckVerdict } from './admission-fix-precheck';
 import { roundMeasurementFromKinds, type FrozenRepairRoundMeasurement } from './round-one-measurement';
 
 /**
@@ -509,6 +509,8 @@ export interface FrozenRepairAdmissionPrecheck {
    * treat every radius file as admitted (refusable) and lose each file's leg.
    */
   radius?: AdmissionRadius;
+  /** Additive JSON state on the existing operation; a different identity never reuses proof. */
+  measurement?: { schemaVersion: 1; identity: string; results: FixPrecheckFileResult[] };
 }
 
 export interface FrozenCandidateRepairQueue {
@@ -2111,6 +2113,24 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
   }
   const radius = row.radius === undefined ? undefined : parseAdmissionRadius(row.radius, files);
   if (radius === null) return undefined;
+  let measurement: FrozenRepairAdmissionPrecheck['measurement'];
+  if (row.measurement !== undefined) {
+    const value = row.measurement as Record<string, unknown> | null;
+    if (!value || typeof value !== 'object' || value.schemaVersion !== 1 ||
+        typeof value.identity !== 'string' || !/^[0-9a-f]{64}$/.test(value.identity) || !Array.isArray(value.results)) return undefined;
+    const seen = new Set<string>();
+    const results: FixPrecheckFileResult[] = [];
+    for (const entry of value.results) {
+      if (!entry || typeof entry !== 'object' || !files.includes(entry.path) || seen.has(entry.path) ||
+          !['pass', 'fail', 'unmeasured'].includes(entry.status) ||
+          (entry.detail !== undefined && typeof entry.detail !== 'string') ||
+          (entry.exitCode !== undefined && entry.exitCode !== null && !Number.isInteger(entry.exitCode)) ||
+          (entry.durationMs !== undefined && (typeof entry.durationMs !== 'number' || !Number.isFinite(entry.durationMs) || entry.durationMs < 0))) return undefined;
+      seen.add(entry.path);
+      results.push({ ...entry });
+    }
+    measurement = { schemaVersion: 1, identity: value.identity, results };
+  }
   const verdict = row.verdict;
   if (row.status === 'running' && verdict !== undefined) return undefined;
   if (
@@ -2128,6 +2148,7 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     ...(typeof row.sourceCommit === 'string' ? { sourceCommit: row.sourceCommit } : {}),
     ...(Array.isArray(row.ledgerRowIds) ? { ledgerRowIds: [...row.ledgerRowIds] as number[] } : {}),
     ...(nonBlank(row.builtTree) ? { builtTree: row.builtTree } : {}),
+    ...(measurement ? { measurement } : {}),
     files: [...(row.files as string[])],
     actor: row.actor as string,
     ...(typeof row.runnerPid === 'number' ? { runnerPid: row.runnerPid } : {}),
