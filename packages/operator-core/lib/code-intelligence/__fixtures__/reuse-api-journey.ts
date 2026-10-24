@@ -104,6 +104,14 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
     planItem = added.results?.[0]?.itemId;
     assert.equal(added.results?.[0]?.ok, true, JSON.stringify(added));
     assert(planItem, 'Maintained plan-item writer must persist the controlled anchor: ' + JSON.stringify(added));
+    // Read the same indexed boundary that work_items:create validates, before
+    // spending the rest of the native journey on an unusable anchor.
+    const { getPlanItemRow } = await import('../../agent-tools/plans/source.ts');
+    const persisted = await getPlanItemRow(planSlug, { workspaceId: workspace, harnessSlug: workspace });
+    assert(persisted?.items.some(item => item.id === planItem),
+      'Controlled plan anchor must survive persisted index readback: ' + JSON.stringify({
+        workspace, planSlug, planItem, added, persisted,
+      }));
   }
   const created = await call('work_items:create', { harness: workspace, kind: 'change',
     title: claimOnly ? 'Controlled CLI P010 claim composition' : 'Private native P010 completion consequences',
