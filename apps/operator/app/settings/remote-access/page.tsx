@@ -28,6 +28,7 @@ import { Checkbox } from '@/app/harness/Checkbox';
 import { ConfirmModal } from '@/app/harness/ConfirmModal';
 import { RadioGroup } from '@/app/harness/RadioGroup';
 import { Select } from '@/app/harness/Select';
+import { TextInput } from '@/app/harness/TextInput';
 import { StepOwnTunnel, type OwnTunnelStatusView } from '@/app/_components/SetupWizard/StepOwnTunnel';
 import { connectionConfirmationCopy, connectionStatusCopy, normalizeBrowserSession, normalizeHostedConnectorStatus,
   normalizePortalRelayStatus, normalizeRemoteAccessEntry, normalizeSshProfile,
@@ -278,11 +279,11 @@ export default function RemoteAccessSettingsPage() {
       <header>
         <h1>Remote access</h1>
         <p className="pc-settings-intro">
-          Review machine connections, browser sign-in, apps and phones that reach a workspace, and take that access back.
+          Connect a computer, phone or app. Choose how to connect, then manage existing access below.
         </p>
       </header>
 
-      <section className="pc-settings-section" data-testid="remote-access-switch">
+      <section className="pc-settings-section" aria-label="Selected workspace">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <h2 style={{ margin: 0 }}>Workspace</h2>
           <Select
@@ -297,35 +298,44 @@ export default function RemoteAccessSettingsPage() {
           />
         </div>
         {error && <p className="pc-settings-note" role="alert">Could not load remote access: {String(error)}</p>}
-        {row && (
-          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
-            <div style={{ minWidth: 0, flex: '1 1 220px' }}>
-              <div data-testid="remote-access-state" data-enabled={row.remoteAccess.enabled ? 'true' : 'false'} style={{ fontWeight: 600 }}>
-                Remote access is {row.remoteAccess.enabled ? 'on' : 'off'}
-              </div>
-              <div className="pc-settings-hint">
-                {row.remoteAccess.enabled
-                  ? 'Connected apps and service keys can reach this workspace within their scopes.'
-                  : 'Every connected app, service key and OAuth client of this workspace is refused. Paired phones are not affected.'}
-                {row.remoteAccess.changedAt ? ` Changed ${when(row.remoteAccess.changedAt)}.` : ''}
-              </div>
-            </div>
-            <button
-              type="button"
-              data-testid="remote-access-toggle"
-              disabled={busy !== null}
-              onClick={() => void setSwitch(!row.remoteAccess.enabled)}
-              style={row.remoteAccess.enabled ? { color: 'var(--bad, #f87171)' } : undefined}
-            >
-              {row.remoteAccess.enabled ? 'Turn off now' : 'Turn on'}
-            </button>
-          </div>
-        )}
         {!row && loading && <p className="pc-settings-hint">Loading…</p>}
       </section>
 
-      <section className="pc-settings-section" data-testid="remote-access-route">
-        <h2>Route</h2>
+      <section id="connect-computer" className="pc-settings-section" aria-labelledby="connection-methods-title">
+        <h2 id="connection-methods-title">What would you like to connect?</h2>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 12 }}>
+          <div style={entryStyle}>
+            <h3>Another computer over SSH</h3>
+            <p>Open its terminal or Papercusp in your browser. Use this on your private network or VPN.</p>
+            <a href="#ssh-setup">Set up a computer</a>
+          </div>
+          <div style={entryStyle}>
+            <h3>This workspace over the internet</h3>
+            <p>Let outside apps reach this computer through the Papercusp relay or your own tunnel.</p>
+            <a href="#internet-access">Choose internet access</a>
+          </div>
+          <div style={entryStyle}>
+            <h3>A phone</h3>
+            <p>Pair the Papercusp phone app with this workspace.</p>
+            <button type="button" onClick={() => void setPairOpen(true)}>Set up a phone</button>
+          </div>
+          <div style={entryStyle}>
+            <h3>An app or AI assistant</h3>
+            <p>Give an app permission to use selected tools in this workspace.</p>
+            <button type="button" onClick={() => void setWizard('choose')}>Set up an app</button>
+          </div>
+        </div>
+      </section>
+
+      <SshConnectionSetup />
+
+      <section id="internet-access" className="pc-settings-section" data-testid="remote-access-route">
+        <h2>Reach this workspace over the internet</h2>
+        <p className="pc-settings-hint">Choose one way for outside apps to reach this computer. Use the Papercusp relay for guided sign-in without router changes, or bring your own tunnel.</p>
+        {row?.portalRelayError && <p className="pc-settings-note">Relay status unavailable: {row.portalRelayError}</p>}
+        {row?.portalRelay && <PortalRelayCard workspaceId={row.workspaceId} relay={row.portalRelay} busy={busy !== null} run={run} />}
+        <details open={tunnelOpen || tunnel?.configured || undefined} style={{ marginTop: 16 }}>
+        <summary>Use your own tunnel (advanced)</summary>
         {row?.ownTunnelError && <p className="pc-settings-note">Tunnel status unavailable: {row.ownTunnelError}</p>}
         {tunnel && tunnel.configured ? (
           <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '4px 16px', marginTop: 8 }}>
@@ -350,7 +360,7 @@ export default function RemoteAccessSettingsPage() {
           </div>
         ) : (
           <p className="pc-settings-hint">
-            No route yet. Outside apps reach this computer through a tunnel in your own account (Cloudflare, or one you run).
+            Set up a tunnel in your own account, using Cloudflare or a tunnel you run yourself.
           </p>
         )}
         <div className="pc-settings-actions" style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -376,15 +386,14 @@ export default function RemoteAccessSettingsPage() {
             <StepOwnTunnel />
           </div>
         )}
-        {row?.portalRelayError && <p className="pc-settings-note">Relay status unavailable: {row.portalRelayError}</p>}
-        {row?.portalRelay && <PortalRelayCard workspaceId={row.workspaceId} relay={row.portalRelay} busy={busy !== null} run={run} />}
+        </details>
       </section>
 
       {ws && <MachineConnectionInventory key={ws} row={row?.workspaceId === ws ? row : { workspaceId: ws }} run={run} busy={busy !== null} />}
 
       <section className="pc-settings-section" data-testid="remote-access-list">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-          <h2 style={{ margin: 0 }}>Apps and devices</h2>
+          <h2 style={{ margin: 0 }}>Connected apps and phones</h2>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button type="button" data-testid="remote-access-connect" onClick={() => void setWizard('choose')}>
               Connect an app
@@ -394,6 +403,27 @@ export default function RemoteAccessSettingsPage() {
             </button>
           </div>
         </div>
+        {row && (
+          <div data-testid="remote-access-switch" style={{ marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 0, flex: '1 1 220px' }}>
+              <div data-testid="remote-access-state" data-enabled={row.remoteAccess.enabled ? 'true' : 'false'} style={{ fontWeight: 600 }}>
+                App and service access is {row.remoteAccess.enabled ? 'on' : 'off'}
+              </div>
+              <div className="pc-settings-hint">
+                {row.remoteAccess.enabled
+                  ? 'Connected apps and service keys can reach this workspace within their scopes.'
+                  : 'Every connected app, service key and OAuth client of this workspace is refused. Paired phones are not affected.'}
+                {' '}This switch does not disconnect SSH computers, the relay or browser sessions.
+                {row.remoteAccess.changedAt ? ` Changed ${when(row.remoteAccess.changedAt)}.` : ''}
+              </div>
+            </div>
+            <button type="button" data-testid="remote-access-toggle" disabled={busy !== null}
+              onClick={() => void setSwitch(!row.remoteAccess.enabled)}
+              style={row.remoteAccess.enabled ? { color: 'var(--bad, #f87171)' } : undefined}>
+              {row.remoteAccess.enabled ? 'Turn off apps and services' : 'Turn on apps and services'}
+            </button>
+          </div>
+        )}
         {issued && <IssuedKeyBox issued={issued} onDone={() => setIssued(null)} />}
         {row && entries.length === 0 && (
           <p className="pc-settings-hint" style={{ marginTop: 12 }}>No apps or devices are connected to this workspace.</p>
@@ -523,6 +553,62 @@ const entryStyle = {
   padding: '12px 16px',
 } as const;
 
+/** Generate only argv values accepted by the existing psu SSH profile command. */
+function SshConnectionSetup() {
+  const [host, setHost] = useState('');
+  const [user, setUser] = useState('');
+  const [name, setName] = useState('my-computer');
+  const address = host.trim();
+  const username = user.trim();
+  const profile = name.trim();
+  const validHost = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,252}$/.test(address);
+  const validUser = username === '' || /^[A-Za-z_][A-Za-z0-9._-]{0,63}$/.test(username);
+  const validName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(profile);
+  const valid = validHost && validUser && validName;
+  const problem = address && !validHost ? 'Enter a hostname, IP address or SSH alias, without a username, URL or spaces.' :
+    !validUser ? 'Enter only your SSH username, without spaces or an address.' :
+    !validName ? 'Use 1–64 letters, digits, dots, underscores or hyphens for the connection name, starting with a letter or digit.' : null;
+  return <section id="ssh-setup" className="pc-settings-section" data-testid="ssh-connection-setup" aria-labelledby="ssh-setup-title">
+    <h2 id="ssh-setup-title">Connect a computer over SSH</h2>
+    <p>Set up once, then use the saved connection. An address works directly; an SSH alias is optional. You’ll need the psu utility on the computer you are using now.</p>
+    <details>
+      <summary>Prepare the computer you want to reach</summary>
+      <p>Install Papercusp and tmux, enable SSH, and authorize the SSH public key from the computer you are using now. Keep both computers on the same private network or VPN.</p>
+      <p>Papercusp on the remote computer must listen on loopback port 3070. Keep its SSH host fingerprint handy so you can verify it when connecting.</p>
+    </details>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 12, marginTop: 12 }}>
+      <label>Computer address or SSH alias
+        <TextInput value={host} onChange={event => setHost(event.target.value)} placeholder="laptop.local or 100.64.0.2" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={{ width: '100%', marginTop: 4 }} />
+      </label>
+      <label>SSH username (optional)
+        <TextInput value={user} onChange={event => setUser(event.target.value)} placeholder="Uses your SSH default" autoCapitalize="none" autoCorrect="off" spellCheck={false} style={{ width: '100%', marginTop: 4 }} />
+      </label>
+      <label>Saved connection name
+        <TextInput value={name} onChange={event => setName(event.target.value)} autoCapitalize="none" autoCorrect="off" spellCheck={false} style={{ width: '100%', marginTop: 4 }} />
+      </label>
+    </div>
+    {problem && <p role="alert">{problem}</p>}
+    {!address && <p className="pc-settings-hint">Enter the computer’s address to get commands you can copy. Run them in a terminal on the computer you are using now.</p>}
+    {valid && <>
+      <h3>1. Check SSH access</h3>
+      <p className="pc-settings-hint">Run this on the computer you are using now. Confirm the host fingerprint matches the remote computer before accepting it. Once signed in, run <code>exit</code> to return here.</p>
+      <CopyField label="Test SSH connection" value={`ssh ${username ? `${username}@` : ''}${address}`} />
+      <h3>2. Save the connection once</h3>
+      <CopyField label="Save SSH connection" value={`psu --connect-add-ssh=${profile} --connect-host=${address}${username ? ` --connect-user=${username}` : ''}`} />
+      <h3>3. Connect whenever you need</h3>
+      <CopyField label="Open remote terminal" value={`psu --connect=${profile}`} />
+      <CopyField label="Open Papercusp in your browser" value={`psu --connect=${profile} --connect-gui`} />
+      <p className="pc-settings-hint">Keep the terminal open while using the browser connection. The remote computer must be online.</p>
+    </>}
+    <details style={{ marginTop: 12 }}>
+      <summary>Custom SSH settings and removing access</summary>
+      <p>For a custom port or identity key, use your existing OpenSSH configuration and enter its host alias above. Your SSH client keeps control of keys and host verification.</p>
+      {validName && <p>To forget this connection, run <code>psu --connect-remove={profile}</code> on the computer where you saved it.</p>}
+      <p>Forgetting a saved connection does not revoke its SSH key or stop running agents. Remove the authorized key on the remote computer to revoke SSH access.</p>
+    </details>
+  </section>;
+}
+
 /** Each row keeps its own authority. A browser sign-in never certifies a live machine channel. */
 function MachineConnectionInventory({ row, run, busy }: {
   row: Pick<RemoteAccessOverviewRow, 'workspaceId' | 'sshProfiles' | 'sshProfilesError' | 'hostedConnectors' | 'hostedConnectorsError'>;
@@ -597,7 +683,7 @@ function MachineConnectionInventory({ row, run, busy }: {
     <div className="pc-settings-hint">Last seen: {entry.lastSeen ? when(entry.lastSeen) : 'unknown'}</div>
   </>;
   return <section className="pc-settings-section" data-testid="machine-connection-inventory">
-    <h2>Machine connections and browser</h2>
+    <h2>Connected computers and browser sessions</h2>
     <h3>Saved SSH profiles</h3>
     <p className="pc-settings-hint">These profiles belong to this computer and can be used with any workspace. Saving a profile does not prove the machine is online.</p>
     {row.sshProfilesError ? <p role="status">{row.sshProfilesError}</p> : !row.sshProfiles ?
@@ -690,7 +776,7 @@ export function PortalRelayCard(props: {
         Portal relay · {inventory.authoritySummary} · Scope: {inventory.scope} · Transport: {inventory.transport.toUpperCase()}
       </p>
       <p className="pc-settings-hint">
-        Instead of your own tunnel, this computer can keep a connection to Papercusp so outside apps reach it with no router changes.
+        This computer connects to Papercusp so outside apps can reach this workspace. Sign in and approve a code; no SSH or router setup is needed for this method.
       </p>
       {relay.state === 'off' && !relay.consent.agreed && (
         <div data-testid="portal-relay-notice">
@@ -834,7 +920,7 @@ function CopyField({ label, value, rows = 1 }: { label: string; value: string; r
         <span className="pc-settings-eyebrow" style={{ margin: 0 }}>{label}</span>
         <button type="button" onClick={copy}>{copied ? 'Copied ✓' : 'Copy'}</button>
       </div>
-      <textarea readOnly value={value} rows={rows} onFocus={(e) => e.currentTarget.select()} style={{ width: '100%', fontFamily: 'ui-monospace, monospace' }} />
+      <textarea aria-label={label} readOnly value={value} rows={rows} onFocus={(e) => e.currentTarget.select()} style={{ width: '100%', fontFamily: 'ui-monospace, monospace' }} />
     </div>
   );
 }

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withNuqsTestingAdapter } from "nuqs/adapters/testing";
 import { parseAsString, useQueryState } from "nuqs";
@@ -93,25 +93,15 @@ describe("persistent machine selection", () => {
     expect(transitions.every((params) => params.get("app") === "desktops" && params.get("desktopHost") === "b")).toBe(true);
   });
 
-  it("offers personal terminal and GUI connection instructions without a hosted workspace", async () => {
+  it("opens the shared Remote access setup without requiring a hosted workspace", async () => {
     render(<MachineSwitcher localMode={false} workspaceSelected={false} />);
-    const help = screen.getByRole("button", { name: "Connect your computer" });
-    expect(help.dataset.connectionClass).toBe("ssh-profile");
+    const help = screen.getByRole("link", { name: "Connect your computer" });
+    expect(help.getAttribute("href")).toBe("/settings/remote-access#connect-computer");
     fireEvent.focus(help);
     const tooltip = await screen.findByRole("tooltip");
-    expect(tooltip.textContent).toBe("SSH connection profile");
+    expect(tooltip.textContent).toBe("Choose a connection method");
     expect(help.getAttribute("aria-describedby")).toBe(tooltip.id);
-    fireEvent.click(help);
-    const dialog = screen.getByRole("dialog", { name: "Connect your computer" });
-    expect(screen.getByTestId("machine-connection-authority").textContent).toContain("SSH machine access");
-    expect(dialog.textContent).toContain("portal relay and phone pairing are managed separately");
-    expect(within(dialog).getByRole("link", { name: "Remote access" }).getAttribute("href"))
-      .toBe("/settings/remote-access");
-    expect(dialog.textContent).toContain("--connect-add-ssh=my-computer");
-    expect(dialog.textContent).toContain("--connect-gui");
-    expect(dialog.textContent).toContain("Forgetting an entry alone does not revoke");
     expect(query).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 

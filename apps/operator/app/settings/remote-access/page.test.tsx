@@ -131,6 +131,60 @@ afterEach(() => {
 });
 
 describe('Remote access screen', () => {
+  it('offers computer, internet, phone and app setup together and links to the setup sections', () => {
+    render(<RemoteAccessSettingsPage />);
+    expect(screen.getByRole('link', { name: 'Set up a computer' }).getAttribute('href')).toBe('#ssh-setup');
+    expect(screen.getByRole('heading', { name: 'Connect a computer over SSH' }).closest('section')?.id).toBe('ssh-setup');
+    expect(screen.getByRole('link', { name: 'Choose internet access' }).getAttribute('href')).toBe('#internet-access');
+    expect(screen.getByRole('heading', { name: 'Reach this workspace over the internet' }).closest('section')?.id).toBe('internet-access');
+    fireEvent.click(screen.getByRole('button', { name: 'Set up a phone' }));
+    expect(H.setters.pair).toHaveBeenCalledWith(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Set up an app' }));
+    expect(H.setters.connect).toHaveBeenCalledWith('choose');
+    expect(posts).toEqual([]);
+  });
+
+  it('generates copyable setup and everyday commands for a computer address without requiring an SSH alias', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    render(<RemoteAccessSettingsPage />);
+    expect(screen.queryByRole('textbox', { name: 'Save SSH connection' })).toBeNull();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Computer address or SSH alias' }), { target: { value: '100.64.0.2' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'SSH username (optional)' }), { target: { value: 'alice' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Saved connection name' }), { target: { value: 'laptop' } });
+    const command = (label: string) => (screen.getByRole('textbox', { name: label }) as HTMLTextAreaElement).value;
+    expect(command('Test SSH connection')).toBe('ssh alice@100.64.0.2');
+    expect(command('Save SSH connection')).toBe('psu --connect-add-ssh=laptop --connect-host=100.64.0.2 --connect-user=alice');
+    expect(command('Open remote terminal')).toBe('psu --connect=laptop');
+    expect(command('Open Papercusp in your browser')).toBe('psu --connect=laptop --connect-gui');
+    const saveField = screen.getByRole('textbox', { name: 'Save SSH connection' }).parentElement!;
+    fireEvent.click(within(saveField).getByRole('button', { name: 'Copy' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(command('Save SSH connection')));
+    expect(within(saveField).getByRole('button', { name: 'Copied ✓' })).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'SSH username (optional)' }), { target: { value: '' } });
+    expect(command('Test SSH connection')).toBe('ssh 100.64.0.2');
+    expect(command('Save SSH connection')).toBe('psu --connect-add-ssh=laptop --connect-host=100.64.0.2');
+    expect(posts).toEqual([]);
+  });
+
+  it.each([
+    ['Computer address or SSH alias', 'host;touch /tmp/unwanted'],
+    ['Computer address or SSH alias', '$(whoami)'],
+    ['Computer address or SSH alias', '-oProxyCommand=command'],
+    ['Computer address or SSH alias', 'alice@laptop.local'],
+    ['SSH username (optional)', 'alice;command'],
+    ['Saved connection name', 'laptop --other-option'],
+    ['Saved connection name', ''],
+  ])('does not offer shell commands for invalid %s: %j', (label, value) => {
+    render(<RemoteAccessSettingsPage />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Computer address or SSH alias' }), { target: { value: 'laptop.local' } });
+    fireEvent.change(screen.getByRole('textbox', { name: label }), { target: { value } });
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.queryByRole('textbox', { name: 'Save SSH connection' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Test SSH connection' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Open remote terminal' })).toBeNull();
+  });
+
   it('renders actual SSH and hosted sources with distinct authority, liveness and removal consequences', async () => {
     H.rows = [{ ...overview(),
       sshProfiles: [{ id: 'laptop', host: 'laptop.private', scope: 'This computer', state: 'unknown' }],
@@ -344,7 +398,8 @@ describe('Remote access screen', () => {
     render(<RemoteAccessSettingsPage />);
     expect(screen.getByTestId('remote-access-state').textContent).toContain('off');
     expect(screen.getByText(/Paired phones are not affected/)).toBeTruthy();
-    expect(screen.getByTestId('remote-access-toggle').textContent).toBe('Turn on');
+    expect(screen.getByTestId('remote-access-toggle').textContent).toBe('Turn on apps and services');
+    expect(screen.getByText(/This switch does not disconnect SSH computers/)).toBeTruthy();
   });
 
   it('asks before revoking, then revokes the key with its kind (R-40)', async () => {
