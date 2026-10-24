@@ -262,6 +262,35 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
       .toThrow(/seed_mode_conflict/);
   });
 
+  it('explicit seedless passes the real audited Server guard and records its source-bound reason', () => {
+    const seedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-cut-seedless-'));
+    const guard = fileURLToPath(new URL('../../../papercusp-desktop/bin/lib/release-seed-guard.sh', import.meta.url));
+    try {
+      for (const mode of [{}, { reuseSeed: true }, { seedless: true }]) {
+        const env = buildCutEnv({}, sourceSha, { ownerName: 'Avi', ...mode });
+        const result = spawnSync('bash', ['-c',
+          'source "$1"; release_seed_guard "gui server" dogfood "$2"; result=$?; printf "status=%s reason=%s\\n" "$PROVENANCE_SEED_STATUS" "$PROVENANCE_SEED_REASON"; exit "$result"',
+          'test', guard, seedDir], {
+          encoding: 'utf8',
+          env: { ...process.env, PAPERCUSP_RELEASE_AUDIT: '1',
+            PAPERCUSP_ALLOW_SEEDLESS_RELEASE: '0', PAPERCUSP_ALLOW_SEEDLESS_REASON: '', ...env },
+        });
+        expect(result.error).toBeUndefined();
+        if ('seedless' in mode) {
+          expect(result.status, result.stderr).toBe(0);
+          expect(result.stdout).toContain('status=absent-allowed');
+          expect(result.stdout).toContain(`seedless:true source=${sourceSha}`);
+        } else {
+          expect(result.status).toBe(1);
+          expect(result.stdout).toContain('status=refused');
+          expect(env).not.toHaveProperty('PAPERCUSP_ALLOW_SEEDLESS_RELEASE');
+        }
+      }
+    } finally {
+      fs.rmSync(seedDir, { recursive: true, force: true });
+    }
+  });
+
   it('defers tags only by explicit opt-in while keeping publish disabled and exact source binding', () => {
     const env = buildCutEnv({}, sourceSha, { ...runtime, deferTag: true });
     expect(env).toMatchObject({ PAPERCUSP_RELEASE_DEFER_TAG: '1', PAPERCUSP_PUBLISH_GITHUB: '0',
@@ -421,6 +450,8 @@ describe('buildCutArgv', () => {
     );
     const seedlessInner = seedlessArgv[seedlessArgv.length - 1];
     expect(seedlessInner).toContain("PAPERCUSP_SKIP_SEED_CUT='1'");
+    expect(seedlessInner).toContain("PAPERCUSP_ALLOW_SEEDLESS_RELEASE='1'");
+    expect(seedlessInner).toContain(`PAPERCUSP_ALLOW_SEEDLESS_REASON='release:cut seedless:true source=${sourceSha};`);
     expect(seedlessInner).not.toContain('git restore -- package.json');
   });
   it('full-history is rendered into the detached command as a present-empty value', () => {

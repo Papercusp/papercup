@@ -306,6 +306,13 @@ export function buildCutEnv(
     );
   }
   if (runtime.reuseSeed || runtime.seedless) env.PAPERCUSP_SKIP_SEED_CUT = '1';
+  if (runtime.seedless) {
+    // Skipping the cut only reuses the seed directory. The audited Server
+    // producer separately requires an explicit, recorded seedless decision.
+    env.PAPERCUSP_ALLOW_SEEDLESS_RELEASE = '1';
+    env.PAPERCUSP_ALLOW_SEEDLESS_REASON =
+      `release:cut seedless:true source=${expectedSourceSha}; placeholder-only seed; first boot uses cold-join`;
+  }
   if (runtime.seedUuidIdempotency) {
     const { plansPath, plansSha256, sourceStoreDir, censusPath, censusSha256 } = runtime.seedUuidIdempotency;
     if (runtime.reuseSeed || runtime.seedless || !plansPath?.startsWith('/')
