@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import * as ts from 'typescript';
-import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 
 const dirs: string[] = [];
@@ -104,6 +104,41 @@ it('observes real private-host exit before dependent cleanup and ignores diagnos
     await closed;
   }
 });
+
+it.skipIf(process.platform !== 'linux')('distinguishes a real stopped child and observes forced exit before declaring cleanup complete', async () => {
+  const child = spawn(process.execPath, ['-e',
+    "process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
+  { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
+  const closed = once(child, 'close');
+  try {
+    await once(child.stdout!, 'data');
+    expect(child.kill('SIGSTOP')).toBe(true);
+    await vi.waitFor(() => {
+      const stat = readFileSync(`/proc/${child.pid}/stat`, 'utf8');
+      expect(stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[0]).toBe('T');
+    });
+    const observations: PrivateHostStopObservation[] = [];
+    await stopPrivateOperatorHost(child, undefined, 200, observation => observations.push(observation));
+    const start = observations.find(o => o.phase === 'start');
+    expect(start?.kernelProcess).toMatchObject({ status: 'present', state: 'T', startTicks: expect.stringMatching(/^\d+$/) });
+    expect(observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'signal', signal: 'SIGTERM', accepted: true }),
+      expect.objectContaining({ phase: 'signal', signal: 'SIGKILL', accepted: true }),
+      expect.objectContaining({ phase: 'exit', exitObserved: true, signalCode: 'SIGKILL' }),
+      expect.objectContaining({ phase: 'complete', exitObserved: true, closeObserved: true,
+        kernelProcess: expect.objectContaining({ status: 'absent' }) }),
+    ]));
+    for (const observation of observations.filter(o => o.kernelProcess?.status === 'present')) {
+      expect(observation.kernelProcess?.startTicks).toBe(start?.kernelProcess?.startTicks);
+    }
+    expect(child.signalCode).toBe('SIGKILL');
+    expect(child.listenerCount('exit')).toBe(0);
+    expect(child.listenerCount('close')).toBe(0);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+  }
+}, 10_000);
 
 it('waits for delayed exit before cleanup and separately waits for pipe closure', async () => {
   vi.useFakeTimers();
