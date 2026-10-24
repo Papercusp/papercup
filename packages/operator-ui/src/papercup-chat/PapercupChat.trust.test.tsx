@@ -19,6 +19,15 @@ import type { CardPresentation, ChatResultBlock, ChatTurn, OpenCardSnapshot, Rep
 import { ChatMarkdown, PapercupChat, askTranscriptPlaceholder, lookedAtTools, papercupChatUrlTransform } from './PapercupChat';
 import type { PapercupChatController } from './use-papercup-chat';
 
+const reportMarkdownParses = vi.hoisted(() => vi.fn());
+vi.mock('./remark-work-refs', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./remark-work-refs')>();
+  return { ...original, remarkWorkRefs: (...args: Parameters<typeof original.remarkWorkRefs>) => {
+    reportMarkdownParses();
+    return original.remarkWorkRefs(...args);
+  } };
+});
+
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => ({ data: [], loading: false, error: null }),
 }));
@@ -360,6 +369,26 @@ describe('PapercupChat — the view over a controller', () => {
       }
     },
   );
+
+  it('reuses default report markdown on status refresh and still updates changed text and trust', () => {
+    reportMarkdownParses.mockClear();
+    const turn = (status: string, text = '**Escalation** resolved in WI-4321'): ChatTurn => ({
+      id: 'stable-report', role: 'assistant', text: '', createdAt: 1000,
+      report: { title: 'Progress', plans: [{ title: 'Work', items: [{ id: 'P-001', status, text }] }] },
+    });
+    const view = render(<PapercupChat chat={controller({ turns: [turn('wip')] })} hostTrust="owner" harnessSlug="papercusp" />);
+    const initialParses = reportMarkdownParses.mock.calls.length;
+    expect(initialParses).toBeGreaterThan(0);
+    view.rerender(<PapercupChat chat={controller({ turns: [turn('done')] })} hostTrust="owner" harnessSlug="papercusp" />);
+    expect(reportMarkdownParses).toHaveBeenCalledTimes(initialParses);
+    expect(screen.getByTitle('done')).toBeTruthy();
+    view.rerender(<PapercupChat chat={controller({ turns: [turn('done', 'Updated **WI-6601**')] })} hostTrust="owner" harnessSlug="papercusp" />);
+    expect(reportMarkdownParses.mock.calls.length).toBeGreaterThan(initialParses);
+    expect(screen.getByLabelText('WI-6601')).toBeTruthy();
+    view.rerender(<PapercupChat chat={controller({ turns: [turn('done', 'Updated **WI-6601**')] })} hostTrust="public" harnessSlug="papercusp" />);
+    expect(screen.queryByLabelText('WI-6601')).toBeNull();
+    expect(screen.getByText('WI-6601').closest('strong')).toBeTruthy();
+  });
 
   it('public host: shows the capability notice, the transcript, provenance and the Looked at line', () => {
     const chat = controller({ turns });

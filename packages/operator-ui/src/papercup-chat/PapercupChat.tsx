@@ -591,7 +591,7 @@ const REPORT_ITEM_COMPONENTS: Record<string, unknown> = {
  * The default now CARRIES the behaviour — a host opts OUT by passing its own
  * `renderReport`, instead of having to know to opt in.
  */
-function ReportItemText({
+const ReportItemText = memo(function ReportItemText({
   text,
   hostTrust,
   harnessSlug,
@@ -643,7 +643,7 @@ function ReportItemText({
       {withHardBreaks(text)}
     </ReactMarkdown>
   );
-}
+});
 
 export function PapercupChat(props: PapercupChatProps) {
   const {
