@@ -217,6 +217,11 @@ try {
     secure: true, httpOnly: true, sameSite: 'Lax' } }), { mode: 0o600 });
   const localPort = await freePort();
   const localOrigin = `http://127.0.0.1:${localPort}`;
+  const localGuiPort = process.argv.includes('--local-gui') ? await freePort() : undefined;
+  const portalOrigin = `http://127.0.0.1:${await freePort()}`;
+  // Browser POSTs carry Origin even behind the dev/Portal proxy. Configure only
+  // this rig's exact origins through the production launcher's existing hints.
+  status.portalOrigin = portalOrigin;
   // A local install has its own registry and control partition. Sharing the
   // hosted control partition makes the fixture's provider rows shadow saved
   // sign-in rows, hiding the real connector tunnel from the desktop reader.
@@ -232,6 +237,8 @@ try {
   start('local', { ...process.env, PAPERCUSP_HONO_PORT: String(localPort), PORT: String(localPort),
     PAPERCUSP_WORKSPACE: localWorkspaceId, PAPERCUSP_WORKSPACE_ID: localWorkspaceId,
     PAPERCUSP_WORKSPACES_ROOT: localWorkspacesRoot,
+    OPERATOR_E2E_BASE_URL: localGuiPort ? `http://127.0.0.1:${localGuiPort}` : localOrigin,
+    OPERATOR_BASE_URL: portalOrigin,
     NODE_EXTRA_CA_CERTS: certPath });
   const { isHostedConnectorLive } = await import('../endpoint-route/hosted-workspace-connector');
   await stage('wait-two-connectors');
@@ -284,7 +291,7 @@ try {
     const { createServer } = await import('vite');
     localGui = await createServer({ root: join(repo, 'apps/operator-vite'),
       configFile: join(repo, 'apps/operator-vite/vite.config.ts'),
-      server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false, watch: null } });
+      server: { host: '127.0.0.1', port: localGuiPort!, strictPort: true, hmr: false, watch: null } });
     await localGui.listen();
     status.localGuiOrigin = localGui.resolvedUrls?.local[0]?.replace(/\/$/, '');
     assert(status.localGuiOrigin, 'Local GUI must expose its actual loopback origin');
