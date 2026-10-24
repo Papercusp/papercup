@@ -12,6 +12,8 @@ declare module 'vitest' {
 // Self-contained fixtures: no shared baseline. Some own a private native cluster
 // with an explicit teardown; others use no database. Keep integration reporting.
 const NO_SHARED_PG_TESTS = new Set([
+  // Installed Codex processes use an isolated home and local provider/MCP server; no SQL.
+  '../lib/codex-managed-tools.native.integration.test.ts',
   '../lib/agent-tools/capability/vm-copy-authority-bridge.integration.test.ts',
   // Isolated repository fixtures and the provisioned syntax parser; no SQL or PG runtime.
   '../lib/agent-tools/plans/plan-native-declarations.integration.test.ts',

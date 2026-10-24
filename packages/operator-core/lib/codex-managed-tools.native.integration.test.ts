@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, inject, it } from 'vitest';
 import { codexGatewayConfigToml, codexManagedFeaturesToml } from '@papercusp/orchestrator/codex-gateway-config';
 import type { CapabilityPolicyRequest, CapabilityPolicySurface } from '@papercusp/orchestrator/managed-capability-policy';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
@@ -229,6 +229,7 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
 
 describe('Codex managed replacement installed-client census', () => {
   it('uses admitted production config to remove native shell while preserving callable MCP', async ({ task }) => {
+    expect(inject('papercuspTestLayer')).toBe('integration');
     const observedVersion = execFileSync(wellKnownBackendBin('codex') ?? resolveOnPath('codex')!,
       ['--version'], { encoding: 'utf8', timeout: 5000 }).trim().match(/\d+\.\d+\.\d+/)?.[0];
     const policy: Omit<CapabilityPolicyRequest, 'client'> = {
