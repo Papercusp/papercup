@@ -47,7 +47,8 @@ it.skipIf(!live)('ee.live-boundary: records an actual sampled serving graph boun
   const before = await health();
   const response = await fetch(origin.origin + '/api/agent-mcp/run-tool', { method: 'POST', headers,
     body: JSON.stringify({ name: 'graph:query', harness: input.harness, confirmed: true,
-      args: { op: 'evidence', harnesses: [input.harness], file_path: input.symbol.path, name: input.symbol.name } }),
+      args: { op: 'evidence', harnesses: [input.harness], file_path: input.symbol.path, name: input.symbol.name,
+        payloadTier: 'full' } }),
     signal: AbortSignal.timeout(120_000) });
   expect(response.status).toBe(200);
   const envelope = await response.json() as { ok: boolean; result: unknown };

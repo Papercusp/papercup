@@ -15,7 +15,10 @@ const record = (value: unknown): Record<string, unknown> => value && typeof valu
 // Opening the Evidence panel or an exact reference is the owner's explicit read action.
 export const invokeEngineeringReference: Invoke = async (ref, harness, signal, confirmed = true) => {
   const response = await fetch('/api/agent-mcp/run-tool', { method: 'POST', signal,
-    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: ref.tool, args: ref.args, harness, confirmed }) });
+    // This caller parses canonical records; an agent-context preview can omit
+    // their exact selectors or execution receipt without an HTTP error.
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: ref.tool,
+      args: { ...ref.args, payloadTier: 'full' }, harness, confirmed }) });
   const envelope = record(await response.json());
   if (!response.ok || envelope.ok === false) throw new Error(String(envelope.message ?? envelope.error ?? 'Evidence read failed.'));
   let value = envelope.result;

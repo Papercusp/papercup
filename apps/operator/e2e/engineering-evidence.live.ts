@@ -26,7 +26,7 @@ test('ee.current-or-shipped: exact native graph, browser references and negative
   };
   async function call(name: string, args: Record<string, unknown>): Promise<any> {
     const response = await request.post(config.origin + '/api/agent-mcp/run-tool', { headers,
-      data: { name, args, harness: input.harness, confirmed: true }, timeout: 90_000 });
+      data: { name, args: { ...args, payloadTier: 'full' }, harness: input.harness, confirmed: true }, timeout: 90_000 });
     expect(response.status(), name).toBe(200);
     const envelope = await response.json(); expect(envelope.ok).toBe(true);
     let result = envelope.result;

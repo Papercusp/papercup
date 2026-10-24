@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { applyPayloadTier, serializeToolResponse } from '@papercusp/tooldef';
 import PlanEngineeringEvidence from '@/app/_components/plans/PlanEngineeringEvidence';
 
 // See inbox.test.tsx — the component moved to components/route-content/
@@ -44,7 +45,7 @@ describe('/plans portal embed route', () => {
 
 describe('selected plan engineering evidence detail', () => {
   const reference = (tool: string, args: Record<string, unknown>) => ({ tool, args });
-  function fixture() {
+  function fixture(applyWireBudget = false) {
     const nodes = [
       { id: 'item', kind: 'item', state: 'current', data: { item: 'P-001' }, ref: reference('plans:get', { slug: 'ee-feature', itemIds: ['P-001'] }) },
       { id: 'spec', kind: 'spec', state: 'current', data: { id: 'EE-1', revision: 2 }, ref: reference('plans:get-specs', { slug: 'ee-feature', specIds: ['EE-1'], revision: 2 }) },
@@ -64,11 +65,28 @@ describe('selected plan engineering evidence detail', () => {
       const value = call.name === 'graph:query' ? { data: { status: 'measured', evidence: graph } }
         : { ok: true, resolved: call.args, record: call.name === 'plans:get-specs' ? 'EXACT_SPEC_REVISION_TWO'
           : call.name === 'plans:get' ? 'EXACT_DECISION' : call.name === 'testing:runs' ? 'EXACT_CASE_OCCURRENCE_TWO' : 'BOUND_TEST_EVIDENCE' };
-      return new Response(JSON.stringify({ ok: true, result: { structuredContent: value } }), { status: 200 });
+      const result = applyWireBudget && call.name === 'graph:query'
+        ? serializeToolResponse(applyPayloadTier({ toolName: call.name, tier: 'full', shape: undefined,
+          response: { data: { status: 'measured', evidence: graph } }, args: call.args,
+          explicitFullRequest: call.args.payloadTier === 'full', ceilingChars: 6000, log: () => {} }),
+        { defaultCompact: false, includeStructured: true })
+        : { structuredContent: value };
+      return new Response(JSON.stringify({ ok: true, result }), { status: 200 });
     }));
     const renderPanel = () => render(<PlanEngineeringEvidence plan="ee-feature" item="P-001" harness="papercusp" onClose={() => {}} />);
     return { graph, calls, renderPanel };
   }
+  it('ee.ui-wire-budget: retains exact records beyond the ordinary HTTP preview budget', async () => {
+    const { graph, renderPanel } = fixture(true);
+    graph.nodes.unshift(...Array.from({ length: 40 }, (_, index) => ({ id: `context-${index}`,
+      kind: 'decision', state: 'historical', data: { decision: `D-context-${index}`, title: 'Context '.repeat(160) },
+      ref: reference('plans:get', { slug: 'ee-feature', decisionId: `D-context-${index}` }) })));
+    expect(JSON.stringify(graph).length).toBeGreaterThan(30_000);
+    renderPanel();
+    expect(await screen.findByRole('button', { name: 'EE-1 · revision 2' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'ee.intent-exact · occurrence 2' })).toBeTruthy();
+    expect(screen.getByText('· current · Observed instrumented boundary')).toBeTruthy();
+  });
   it('ee.ui-ref-resolution: opens actual detail references with the exact requirement revision, decision and recorded run/case selectors', async () => {
     const { calls, renderPanel } = fixture(); renderPanel();
     fireEvent.click(await screen.findByRole('button', { name: 'EE-1 · revision 2' }));
@@ -78,7 +96,7 @@ describe('selected plan engineering evidence detail', () => {
     fireEvent.click(screen.getByRole('button', { name: 'D-001 · Explicit rule' })); await screen.findByText(/EXACT_DECISION/);
     expect(calls.at(-1)?.args).toMatchObject({ decisionId: 'D-001' });
     fireEvent.click(screen.getByRole('button', { name: 'ee.intent-exact · occurrence 2' })); await screen.findByText(/EXACT_CASE_OCCURRENCE_TWO/);
-    expect(calls.at(-1)?.args).toEqual({ testRunIds: [72101], cases: true });
+    expect(calls.at(-1)?.args).toEqual({ testRunIds: [72101], cases: true, payloadTier: 'full' });
   });
   it('ee.ui-knowledge-labels: keeps static links, test results, boundary observations and stale/history/unknown states distinct', async () => {
     const { graph, renderPanel } = fixture(); graph.nodes[0]!.state = 'unknown'; renderPanel();
@@ -121,7 +139,7 @@ describe('selected plan engineering evidence detail', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Bind evidence' }));
     await waitFor(() => expect(calls.some(call => call.name === 'plans:bind-spec-evidence')).toBe(true));
     expect(calls.find(call => call.name === 'plans:bind-spec-evidence')).toEqual({ name: 'plans:bind-spec-evidence', harness: 'papercusp', confirmed: true,
-      args: { slug: 'ee-feature', harness: 'papercusp', binding: { workItemId: 'WI-123', specId: 'EE-1', specRevision: 2, fromTestRun: 72101 } } });
+      args: { slug: 'ee-feature', harness: 'papercusp', payloadTier: 'full', binding: { workItemId: 'WI-123', specId: 'EE-1', specRevision: 2, fromTestRun: 72101 } } });
     await waitFor(() => expect(calls.filter(call => call.name === 'graph:query').length).toBe(2));
   });
 });
