@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { deriveRecipeAuthority } from '../../recipe-authority-derive';
+import { runOrchestrationScript } from '../../../../../libs/generic/tooldef/src/code-orchestration/run-script';
 
 // This exact source is persisted with recipes:revise, then read back for equality.
 const script = readFileSync(new URL('./fixtures/check-git-sync-progress-after-timeout-wake.recipe.txt', import.meta.url), 'utf8');
@@ -69,6 +70,25 @@ describe('saved git-sync progress recipe', () => {
     const current = run(script, subject, [{ ...target, health: {} } as typeof target]);
     expect((await current.result).routine).toMatchObject({ contentErrors: { total: null, omitted: null, artifact: null },
       localCommit: { headSha: null, lastSyncedAt: null }, remotePublication: 'not-measured' });
+  });
+
+  it.each([{}, { last_errors: ['previous attempt failed'] }])('handles sparse writer health with the live field-read tracker: %j', async health => {
+    const facade = {
+      routines: { list: async () => ({ count: 1, routines: [{ ...target, lastFiredAt: null, health }] }) },
+      locks: { list: async () => ({ resources: [{ resource: subject.resource }], holders: [],
+        draining: false, registryCount: { truncatedByLimit: false } }) },
+    } as unknown as Parameters<typeof runOrchestrationScript>[1];
+    const options = { inputs: subject };
+    // Prove the production tracker detects the unsafe read that live replay exposed.
+    const unsafe = await runOrchestrationScript(script.replace(
+      "lastError: preview(optional(h, 'last_error'))", 'lastError: preview(h.last_error)'), facade, options);
+    expect(unsafe.fieldMisses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'routines.0.health', read: 'last_error' }),
+    ]));
+    const safe = await runOrchestrationScript(script, facade, options);
+    expect(safe.ok).toBe(true);
+    expect(safe.fieldMisses).toBeUndefined();
+    expect(safe.result).toMatchObject({ routine: { lastError: null, contentErrors: { total: null } } });
   });
 
   it('reports an absent requested routine without substituting an unrelated row', async () => {

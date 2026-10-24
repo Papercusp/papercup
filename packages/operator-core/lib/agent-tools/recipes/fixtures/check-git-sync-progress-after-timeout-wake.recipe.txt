@@ -18,6 +18,9 @@ const holders = (Array.isArray(lockRead.holders) ? lockRead.holders : registered
   .filter(h => h.resource === resource);
 const row = rows[0];
 const h = row?.health ?? {};
+// Routine health projects only metadata keys that have actually been written.
+const optional = (value, key) => value != null && key in value ? value[key] : null;
+const contentErrors = optional(h, 'last_content_errors');
 const preview = value => typeof value === 'string'
   ? { text: value.slice(0, 512), omittedChars: Math.max(0, value.length - 512) }
   : null;
@@ -31,16 +34,16 @@ return {
     active: row?.active ?? null,
     paused: row?.paused ?? null,
     lastFiredAt: row?.lastFiredAt ?? null,
-    lastStatus: h.last_status ?? null,
-    lastError: preview(h.last_error),
-    localCommit: { headSha: h.head_sha ?? null, lastSyncedAt: h.last_synced_at ?? null },
+    lastStatus: optional(h, 'last_status'),
+    lastError: preview(optional(h, 'last_error')),
+    localCommit: { headSha: optional(h, 'head_sha'), lastSyncedAt: optional(h, 'last_synced_at') },
     // A local commit clock does not establish successful remote publication.
     remotePublication: 'not-measured',
     contentErrors: {
-      preview: Array.isArray(h.last_content_errors) ? h.last_content_errors.slice(0, 20).map(preview) : null,
-      total: h.last_content_error_count ?? null,
-      omitted: h.last_content_errors_omitted ?? null,
-      artifact: h.last_content_errors_artifact ?? null,
+      preview: Array.isArray(contentErrors) ? contentErrors.slice(0, 20).map(preview) : null,
+      total: optional(h, 'last_content_error_count'),
+      omitted: optional(h, 'last_content_errors_omitted'),
+      artifact: optional(h, 'last_content_errors_artifact'),
     },
   },
   lock: {
