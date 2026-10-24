@@ -3,6 +3,7 @@
  */
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { fork, spawn } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import postgres, { type Sql } from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
@@ -10,12 +11,21 @@ import { captureIsolatedWorker, isolatedTestFileWorkerOptions, recordIsolatedInt
   from '../test/isolated-integration-proof';
 import { acceptanceGradingDispatchId } from './acceptance-grading-sweep-dispatch';
 import type { AwaitingAcceptancePlanRow } from './acceptance-awaiting-plans';
+// @ts-ignore -- share the maintained router's single-file deadline contract.
+import { defaultTestFileRunTimeoutMs } from '../../../scripts/test-files.mjs';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, submissions: 0 }));
 const filePath = 'packages/operator-core/lib/acceptance-grading-sweep-run.integration.test.ts';
 const root = resolve(import.meta.dirname, '../../..');
 const phase = process.env.PAPERCUSP_GRADING_PROOF_PHASE;
 const privateDriver = process.env.PAPERCUSP_TEST_RUN_GROUP?.endsWith(':grading-proof');
+// The enclosing proof may have a much larger allowance. A phase owns one
+// ordinary file run, so do not feed that encompassing override back into it.
+const phaseEnv = { ...process.env,
+  PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(defaultTestFileRunTimeoutMs(1)) };
+const phaseOptions = isolatedTestFileWorkerOptions(phaseEnv, 1);
+const phaseTimeoutMs = phaseOptions.phaseTimeouts.executeMs + phaseOptions.killGraceMs
+  + phaseOptions.drainGraceMs + 20_000;
 
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }),
@@ -160,15 +170,34 @@ if (phase) {
     await sql`INSERT INTO harness_shared.plan_audits VALUES (${workspace}, ${slug}, 'completion', ${date})`;
   }
   async function runPhase(mode: string, crash = false) {
+    const evidenceDir = mkdtempSync(join(process.env.PC_GRADING_PROOF_EVIDENCE_DIR!, 'phase-' + mode + '-'));
     const child = spawn(process.execPath, ['--import', './scripts/lib/committed-source-loader.mjs', 'scripts/test-files.mjs', filePath], {
-      cwd: root, env: { ...process.env, PAPERCUSP_GRADING_PROOF_PHASE: mode,
-        PAPERCUSP_GRADING_PROOF_DSN: db.url }, stdio: ['ignore', 'pipe', 'pipe'], timeout: 180_000,
+      cwd: root, env: { ...phaseEnv, PAPERCUSP_GRADING_PROOF_PHASE: mode,
+        PAPERCUSP_GRADING_PROOF_DSN: db.url }, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let output = '';
-    for (const stream of [child.stdout, child.stderr]) stream.on('data', bytes => { output = (output + bytes).slice(-24_000); });
-    const code = await new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
-    expect(code, output).toBe(crash ? 1 : 0);
-    if (!crash) expect(output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+    const result = await captureIsolatedWorker(child, evidenceDir, {
+      timeoutMs: phaseOptions.phaseTimeouts.executeMs,
+      killGraceMs: phaseOptions.killGraceMs, drainGraceMs: phaseOptions.drainGraceMs,
+    });
+    const diagnostic = evidenceDir + '\n' + result.output.slice(-24_000);
+    expect(result, diagnostic).toMatchObject({ code: crash ? 1 : 0, signal: null,
+      timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+    if (crash) {
+      const workerExits = result.output.split('\n').flatMap(line => {
+        if (!line.startsWith('TEST_FILE_STARTUP_TRACE ')) return [];
+        try { return [JSON.parse(line.slice('TEST_FILE_STARTUP_TRACE '.length))]; }
+        catch { return []; }
+      });
+      // A failed router or arbitrary nonzero exit is not a crash witness.
+      // The caller separately requires the committed, phase-specific SQL row.
+      expect(workerExits, diagnostic).toContainEqual(expect.objectContaining({
+        event: 'worker-exit', signal: 'SIGKILL', code: null, started: true,
+      }));
+    } else {
+      expect(result.output, diagnostic).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+      expect(result.output, diagnostic).toContain('skippedTests=0');
+      expect(result.output, diagnostic).not.toContain('finalizationError=true');
+    }
   }
   it('pages beyond the first100, wraps and filters scope before limiting the real SQL population', async () => {
     for (let i = 0; i < 205; i++) await seed('p-' + String(i).padStart(3, '0'), 'allowed', 'proof-ws', 6);
@@ -193,7 +222,7 @@ if (phase) {
     await seed('no-action');
     await runPhase('no-action'); await runPhase('no-action');
     await sql`TRUNCATE harness_shared.harness_plans, harness_shared.plan_audits`;
-  }, 600_000);
+  }, 4 * phaseTimeoutMs);
   it.each(['before-admission', 'after-admission', 'after-effect'])(
     'recovers a multi-plan pass after a fresh-process crash %s without logical duplication', async boundary => {
       await sql`TRUNCATE dbos.workflow_status CASCADE`;
@@ -213,7 +242,7 @@ if (phase) {
       expect(workflows.map(r => r.workflow_uuid)).toEqual(expected);
       expect(workflows.every(r => r.status === 'SUCCESS')).toBe(true);
       expect((await sql<{ episode: string }[]>`SELECT episode FROM proof_launch_effects ORDER BY episode`).map(r => r.episode)).toEqual(expected);
-    }, 600_000);
+    }, 3 * phaseTimeoutMs);
 } else {
   const options = isolatedTestFileWorkerOptions(process.env, 1);
   it('retains the private registered-sweep recovery and disposable-runtime cleanup proof', async context => {
@@ -225,6 +254,7 @@ if (phase) {
         'scripts/with-test-pg.mjs'],
       execute: async (observe, evidenceDir) => {
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
+          PC_GRADING_PROOF_EVIDENCE_DIR: evidenceDir,
           PAPERCUSP_TEST_RUN_GROUP: (process.env.PAPERCUSP_TEST_RUN_GROUP ?? '') + ':grading-proof' };
         for (const key of ['PC_EXECUTED_SOURCE_MAP_OUT', 'PC_EXECUTED_SOURCE_MAP_RESULT', 'PC_EXECUTED_SOURCE_MAP_WORKSPACE',
           'PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PAPERCUSP_TEST_RUNS_DB_URL', 'PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE']) delete env[key];
