@@ -34,6 +34,7 @@ import type { OpAAD } from './hive-epoch-crypto';
 // Lazy native load only (no keychain), so still safe in the fold worker bundle.
 import { loadSodium, openOpCiphertext } from './hive-epoch-aead';
 import { operationGroupKey } from './merge-rules';
+import { stampOpHlc } from './hlc-stamp';
 
 /** Reserved table tag identifying a snapshot op. No projection is registered for
  *  it, so non-snapshot-aware readers drop it (harmless). */
@@ -1744,6 +1745,8 @@ export interface SnapshotFoldWorkerLike {
     author_pubkey: string;
     ts: number;
     schema_version: number;
+    /** Fresh envelope clock allocated by the producer; captured row clocks stay unchanged. */
+    hlc?: string;
     maxChunkBytes?: number;
     excludeTables: readonly string[];
     /** See `SnapshotPayload.ownPrefix`. */
@@ -1969,6 +1972,9 @@ async function produceLogSnapshotOffloaded(
         author_pubkey: ownLog.keyHex,
         ts: opts.now,
         schema_version: opts.schemaVersion,
+        // Raw append preserves bytes. Stamp this newly built snapshot event on the
+        // producer's clock before serialization, rather than restamping stored rows.
+        hlc: stampOpHlc({ ts: opts.now }).hlc,
         maxChunkBytes: opts.maxChunkBytes,
         excludeTables,
         // WI-10005425: byte-identical to the inline path, which marks its own-log set too.

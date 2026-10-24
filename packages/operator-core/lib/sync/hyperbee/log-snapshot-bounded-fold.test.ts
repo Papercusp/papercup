@@ -41,6 +41,7 @@ import { encodeStoredBlock } from './snapshot-fold-protocol';
 import { openOwnLog, type OwnLog, type PeerLogOp } from './peer-log';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import { shouldDropGovernorReceiptSnapshotRow, type GovernorReceiptSnapshotFilter } from './governor-receipt-snapshot-filter';
+import { processHlc } from '@papercusp/locks-core';
 
 const NOW = 50_000_000_000;
 const SV = CURRENT_SCHEMA_VERSION;
@@ -437,7 +438,11 @@ function recordingWorker(record: { foldStarts: number[]; aborted: { value: boole
 
 describe('R-1 resume: an interrupted fold continues from its persisted cursor', () => {
   it('resumes AT the saved cursor (not index 0) and appends the bytes of an uninterrupted fold', async () => {
-    const ops = history(SNAPSHOT_READ_CONCURRENCY * 5 + 13, 256);
+    // Both logs replay the same captured HLCs. Letting appendBatch stamp each
+    // independently would compare two different source histories.
+    const ops = history(SNAPSHOT_READ_CONCURRENCY * 5 + 13, 256).map((op, i) => ({
+      ...op, hlc: `${String(NOW - 1000 + i).padStart(15, '0')}:00000`,
+    }));
     const interrupted = await freshLog();
     const reference = await freshLog();
     await interrupted.appendBatch(ops);
@@ -463,6 +468,9 @@ describe('R-1 resume: an interrupted fold continues from its persisted cursor', 
     // Run 2: resumes. The first window scanned starts at the cursor, never at 0.
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     cleanups.push(() => errors.mockRestore());
+    // Only new envelope clocks are controlled; every captured row remains verbatim.
+    const clock = vi.spyOn(processHlc(), 'now').mockReturnValue({ ms: NOW, count: 0 });
+    cleanups.push(() => clock.mockRestore());
     const second = { foldStarts: [] as number[], aborted: { value: false } };
     const resumed = await produceLogSnapshot(interrupted, {
       ...base,
@@ -474,13 +482,11 @@ describe('R-1 resume: an interrupted fold continues from its persisted cursor', 
     expect(errors).toHaveBeenCalledWith(expect.stringContaining(`resuming the fold from checkpoint cursor ${savedCursor}`));
     expect(store.bytes, 'a successful append clears the superseded checkpoint').toBeNull();
 
-    // Same bytes as a fold that was never interrupted (the old inline folder).
     const inline = await produceLogSnapshot(reference, base);
     expect({ ...resumed, appendsHeldMs: 0 }).toEqual({ ...inline, appendsHeldMs: 0 });
     for (let i = 0; i < interrupted.length; i++) {
-      expect(Buffer.from((await interrupted.getRaw!(i))!).equals(Buffer.from((await reference.getRaw!(i))!))).toBe(
-        true,
-      );
+      expect(Buffer.from((await interrupted.getRaw!(i))!).equals(Buffer.from((await reference.getRaw!(i))!)),
+        `block ${i}`).toBe(true);
     }
   });
 

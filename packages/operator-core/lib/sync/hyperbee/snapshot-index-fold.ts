@@ -330,6 +330,8 @@ export class SnapshotIndexFolder {
     author_pubkey: string;
     ts: number;
     schema_version: number;
+    /** Optional fresh envelope clock; omitted by pure historical fold utilities. */
+    hlc?: string;
     maxChunkBytes?: number;
     excludeTables?: readonly string[];
     /** WI-10005425 — see `SnapshotPayload.ownPrefix`. */
@@ -366,17 +368,20 @@ export class SnapshotIndexFolder {
     const chunkCount = chunks.length;
     const blocks = chunks.map((rows, chunkIdx) => {
       const shell = JSON.stringify(
-        buildSnapshotChunkOp({
-          rows: [ROWS_SENTINEL as unknown as SnapshotRow],
-          coversUpTo: args.coversUpTo,
-          chunkIdx,
-          chunkCount,
-          author_pubkey: args.author_pubkey,
-          ts: args.ts,
-          schema_version: args.schema_version,
-          ...(args.excludeTables ? { excludeTables: args.excludeTables } : {}),
-          ...(args.ownPrefix ? { ownPrefix: true } : {}),
-        }),
+        {
+          ...buildSnapshotChunkOp({
+            rows: [ROWS_SENTINEL as unknown as SnapshotRow],
+            coversUpTo: args.coversUpTo,
+            chunkIdx,
+            chunkCount,
+            author_pubkey: args.author_pubkey,
+            ts: args.ts,
+            schema_version: args.schema_version,
+            ...(args.excludeTables ? { excludeTables: args.excludeTables } : {}),
+            ...(args.ownPrefix ? { ownPrefix: true } : {}),
+          }),
+          ...(args.hlc ? { hlc: args.hlc } : {}),
+        },
       );
       const at = shell.indexOf(ROWS_SENTINEL_JSON);
       if (at < 0 || shell.indexOf(ROWS_SENTINEL_JSON, at + 1) >= 0) {

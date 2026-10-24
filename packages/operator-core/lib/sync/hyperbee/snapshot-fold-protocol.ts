@@ -59,6 +59,8 @@ export type SnapshotFoldRequest =
       author_pubkey: string;
       ts: number;
       schema_version: number;
+      /** Producer-allocated envelope clock; never applied to captured rows. */
+      hlc?: string;
       maxChunkBytes?: number;
       excludeTables: string[];
       /** WI-10005425 — see `SnapshotPayload.ownPrefix`. */
@@ -304,6 +306,7 @@ export function createSnapshotFoldHandler(
             author_pubkey: req.author_pubkey,
             ts: req.ts,
             schema_version: req.schema_version,
+            ...(req.hlc ? { hlc: req.hlc } : {}),
             maxChunkBytes: req.maxChunkBytes,
             excludeTables: req.excludeTables,
             ...(req.ownPrefix ? { ownPrefix: true } : {}),
