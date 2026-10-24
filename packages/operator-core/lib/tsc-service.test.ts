@@ -188,8 +188,10 @@ describe('bundled typecheck service identity', () => {
         runtime: { pid: child.pid }, identity: before.identity });
       expect((await runCaller(['a.ts'], 1000, 'unsupported')).result.ok).toBe(false);
       const queued = runCaller();
-      expect((await hanging).result).toMatchObject({ ok: false, reason: expectedReason });
-      expect((await queued).result).toMatchObject({ ok: true, kind: 'result', errorCount: 0 });
+      const expired = await hanging;
+      const recovered = await queued;
+      expect(expired.result).toMatchObject({ ok: false, reason: expectedReason });
+      expect(recovered.result).toMatchObject({ ok: true, kind: 'result', errorCount: 0 });
       expect(output).toContain('orphan diagnostic disposed');
       // Exercise a previously loaded caller's identity, after the API has
       // already reset once. Alter only the PRIVATE executable, preserving its
@@ -221,6 +223,12 @@ describe('bundled typecheck service identity', () => {
       expect(after.identity.compilerInstall).toBe(before.identity.compilerInstall);
       expect(after.identity.compilerArtifactsSha256).not.toBe(before.identity.compilerArtifactsSha256);
       expect(after.result).toMatchObject({ ok: false, reason: 'identity-mismatch' });
+      if (expectedReason === 'request-deadline-exceeded') {
+        console.info('TSC_SERVICE_RECOVERY_RECEIPT ' + JSON.stringify({ runtime: before.result.runtime,
+          serviceSourceSha256: before.identity.serviceSourceSha256, serviceTimeoutMs, clientTimeoutMs,
+          terminalReason: expired.result.reason, recoveryOk: recovered.result.ok,
+          recoveryChecked: recovered.result.checked, recoveryErrorCount: recovered.result.errorCount }));
+      }
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
       await closed;
@@ -232,13 +240,21 @@ describe('native compiler ownership during reset', () => {
   it.each([false, true])('reaps the child after client disposal rejects (ignores EOF=%s)', async ignoresEof => {
     const child = spawn(process.execPath, ['-e', ignoresEof
       ? "process.on('SIGTERM', () => {}); process.stdin.resume(); process.stdin.on('end', () => {}); console.log('ready'); setInterval(() => {}, 1000);"
-      : "process.stdin.resume(); console.log('ready');"], { stdio: ['pipe', 'pipe', 'pipe'] });
+      : "process.stdin.resume(); console.log('ready');"], {
+      env: { ...process.env, NODE_OPTIONS: '' }, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', data => { stderr = (stderr + String(data)).slice(-1_000); });
     const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
     try {
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('compiler fixture did not start')), 5_000);
+        const timer = setTimeout(() => reject(new Error(`compiler fixture did not start: ${stderr}`)), 5_000);
         child.stdout.once('data', () => { clearTimeout(timer); resolve(); });
         child.once('error', error => { clearTimeout(timer); reject(error); });
+        child.once('exit', (code, signal) => {
+          clearTimeout(timer);
+          reject(new Error(`compiler fixture exited before readiness: code=${code} signal=${signal}: ${stderr}`));
+        });
       });
       const api = { client: { process: child, close: async () => { throw new Error('snapshot connection already disposed'); } },
         clearSourceFileCache: vi.fn() };
@@ -686,7 +702,13 @@ describe('focused service protocol', () => {
   });
 
   it('refuses response identity mismatches', async () => {
-    await withSocket((request, socket) => socket.end(frame(request, { ok: true, requestId: 'another-request' })),
+    const success = { ok: true, output: '', errorCount: 0, checked: ['a.ts'], namedNotInProgram: [], counts: {} };
+    // Calibrate the complete terminal result before changing only its correlation.
+    await withSocket((request, socket) => socket.end(frame(request, success)),
+      async ({ socketPath, request }) => {
+        await expect(requestTscService({ socketPath, request })).resolves.toMatchObject(success);
+      });
+    await withSocket((request, socket) => socket.end(frame(request, { ...success, requestId: 'another-request' })),
       async ({ socketPath, request }) => {
         await expect(requestTscService({ socketPath, request })).rejects.toMatchObject({ code: 'identity-mismatch' });
       });
