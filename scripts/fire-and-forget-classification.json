@@ -116259,14 +116259,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/sync-resolver/adv-roster-read.ts#<module>/readAdvRosterUncached:34c8c452ba8a1d07a89c:1",
-      "path": "packages/operator-core/lib/sync-resolver/adv-roster-read.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/sync-resolver/adv-roster-read.ts#<module>/refreshRosterCache:90f63f49ecd70cd41694:1",
       "path": "packages/operator-core/lib/sync-resolver/adv-roster-read.ts",
       "classification": "durable",
