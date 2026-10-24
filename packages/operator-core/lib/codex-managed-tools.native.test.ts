@@ -7,7 +7,8 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { codexGatewayConfigToml } from '@papercusp/orchestrator/codex-gateway-config';
+import { codexGatewayConfigToml, codexManagedFeaturesToml } from '@papercusp/orchestrator/codex-gateway-config';
+import type { CapabilityPolicyRequest } from '@papercusp/orchestrator/managed-capability-policy';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
 
@@ -40,7 +41,8 @@ async function stopCensusProcess({ child, closed }: ReturnType<typeof spawnCensu
   await closed;
 }
 
-async function captureSurface(features: Record<string, boolean>, captureNested = true, model = 'gpt-6.1-sol') {
+async function captureSurface(features: Record<string, boolean>, captureNested = true, model = 'gpt-6.1-sol',
+  capabilityPolicy?: Omit<CapabilityPolicyRequest, 'client'>) {
   const codex = wellKnownBackendBin('codex') ?? resolveOnPath('codex');
   if (!codex) throw new Error('Installed Codex is required for native-tool removal evidence');
   const catalogJson = execFileSync(codex, ['debug', 'models'], { encoding: 'utf8', timeout: 5000 });
@@ -110,7 +112,8 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
   writeFileSync(join(home, 'config.toml'), [
     `model = ${JSON.stringify(measuredModel)}`, `model_catalog_json = ${JSON.stringify(catalogPath)}`,
     ...gateway.root, ...gateway.tables,
-    '[features]', ...Object.entries(features).map(([key, value]) => `${key} = ${value}`),
+    ...(capabilityPolicy ? codexManagedFeaturesToml({ capabilityPolicy, disableMemories: false }) : ['[features]']),
+    ...Object.entries(features).map(([key, value]) => `${key} = ${value}`),
     '[mcp_servers.managed_surface]', `url = "${baseURL}/mcp"`, 'required = true',
     'startup_timeout_sec = 10', 'tool_timeout_sec = 10',
   ].join('\n'));
@@ -185,6 +188,31 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
 }
 
 describe('Codex managed replacement installed-client census', () => {
+  it('uses admitted production config to remove native shell while preserving callable MCP', async ({ task }) => {
+    const observedVersion = execFileSync(wellKnownBackendBin('codex') ?? resolveOnPath('codex')!,
+      ['--version'], { encoding: 'utf8', timeout: 5000 }).trim().match(/\d+\.\d+\.\d+/)?.[0];
+    const policy: Omit<CapabilityPolicyRequest, 'client'> = {
+      surface: 'launch', clientVersions: { codex: observedVersion! },
+      readiness: [{ family: 'shell-ssh-interpreters', cutoverReady: true, openGapIds: [] }],
+      cutoverStaging: { 'shell-ssh-interpreters': 'full' },
+      adoption: [{ client: 'codex', family: 'shell-ssh-interpreters',
+        managedPathProven: true, nativeBypassRefused: true, atClientVersion: observedVersion }],
+      matrix: [{ client: 'codex', family: 'shell-ssh-interpreters',
+        allScenariosPassed: true, declaredScenarioCount: 7, unmet: [] }],
+    };
+    const features = { code_mode: true, code_mode_host: true };
+    const retained = await captureSurface(features, true, 'gpt-6.1-sol', { ...policy, cutoverStaging: {} });
+    const removed = await captureSurface(features, true, 'gpt-6.1-sol', policy);
+    const drift = await captureSurface(features, true, 'gpt-6.1-sol', { ...policy,
+      clientVersions: { codex: 'unvalidated-client-version' } });
+    task.meta.nativeToolSurface = { retained, removed, drift };
+    expect(retained.nestedNames).toContain('exec_command');
+    expect(removed.nestedNames).not.toContain('exec_command');
+    expect(removed.nestedNames).not.toContain('write_stdin');
+    expect(drift.nestedNames).toContain('exec_command');
+    // captureSurface also verifies that the actual inner MCP catalog is callable.
+  }, 90_000);
+
   it.runIf(process.platform !== 'win32')('stops a home writer that outlives its client before cleanup', async () => {
     const home = mkdtempSync(join(tmpdir(), 'codex-census-lifecycle-'));
     const marker = join(home, 'writer');

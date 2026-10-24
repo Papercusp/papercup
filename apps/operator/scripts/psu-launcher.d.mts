@@ -522,6 +522,37 @@ export function suLaunchArgs(backend: any, { promptFile, coordExtPath, injectHoo
     bin: string;
     args: any[];
 };
+/** Shared effective bootstrap inputs for the native launcher and structured
+ * engines. Transport adapters translate argv; they do not select another
+ * account, model or authority from their caller's environment.
+ * @param {any} boot
+ * @param {{model?: string|null, resumeSession?: string|null, nativeSessionId?: string|null, allowSubagents?: boolean, compactionLimit?: number|null, inheritedEnv?: NodeJS.ProcessEnv, executionKind?: 'pty'|'programmatic', accountRoute?: string|null}} options
+ */
+export function prepareSuLaunch(boot: any, { model, resumeSession, nativeSessionId, allowSubagents, compactionLimit, inheritedEnv, executionKind, accountRoute, }?: {
+    model?: string | null;
+    resumeSession?: string | null;
+    nativeSessionId?: string | null;
+    allowSubagents?: boolean;
+    compactionLimit?: number | null;
+    inheritedEnv?: NodeJS.ProcessEnv;
+    executionKind?: "pty" | "programmatic";
+    accountRoute?: string | null;
+}): {
+    cwd: any;
+    env: {
+        [x: string]: string | undefined;
+    };
+    model: any;
+    modelArgs: any[];
+    extraArgs: any[];
+    bin: string;
+    args: any[];
+};
+/** @param {NodeJS.ProcessEnv} envelopeEnv
+ * @param {NodeJS.ProcessEnv} inheritedEnv */
+export function prepareSuLaunchEnvironment(envelopeEnv: NodeJS.ProcessEnv, inheritedEnv?: NodeJS.ProcessEnv): {
+    [x: string]: string | undefined;
+};
 /**
  * improve-fleet-launch-autokickoff (EI-5503): the TRAILING POSITIONAL kickoff arg(s)
  * to append to the backend CLI argv — the first user turn that makes a SCRIPTED plan

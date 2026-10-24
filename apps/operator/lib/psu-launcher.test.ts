@@ -9504,9 +9504,10 @@ describe("suWrapperExtraArgs (P-032 omp-parity passthrough)", () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const apiImpl = vi.fn(async () => ({
-        agent: 'codex', sessionId: 'budget-test', cwd: '/unused',
+        status: 'ok', agent: 'codex', sessionId: 'budget-test', cwd: '/unused',
         promptFile: '/unused/prompt.md', compactionLimit: current,
-        envelopeEnv: { CODEX_HOME: '/unused/codex-home' },
+        envelopeEnv: { CODEX_HOME: '/unused/codex-home', PAPERCUSP_SID: 'su-budget-test',
+          PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto' },
       }));
       const runWrapperImpl = vi.fn<(options: { args: string[]; envelopeEnv: Record<string, string> }) => void>();
       await launchFreshSu({ agent: 'codex', workspace: 'budget-test' }, {

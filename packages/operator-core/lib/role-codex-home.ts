@@ -63,6 +63,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir as osHomedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { parse as parseToml } from '@iarna/toml';
+import { CODEX_CAPABILITY_CONTROLS } from '@papercusp/orchestrator/managed-capability-policy';
 import {
   codexHomeForSessionKey,
   codexSqliteHomeForSessionKey,
@@ -194,12 +195,15 @@ function materializeHomeModelCatalog(
   return gatewayRouted ? null : materializeStrippedCodexModelCatalog({ codexHome });
 }
 
-function codexIsolationPreamble(headless = false): string {
+function codexIsolationPreamble(
+  headless = false,
+  capabilityPolicy?: NonNullable<Parameters<typeof codexManagedFeaturesToml>[0]>['capabilityPolicy'],
+): string {
   return [
     '# psu prompt isolation (P-004 / D-001): no cwd AGENTS.md read; native memory off.',
     'project_doc_max_bytes = 0',
     '',
-    ...codexManagedFeaturesToml({ headless }),
+    ...codexManagedFeaturesToml({ headless, capabilityPolicy }),
   ].join('\n');
 }
 
@@ -1514,6 +1518,7 @@ function codexAgentsPrompt(promptText: string, lockRuntime: CodexLockRuntimeVerd
  * or url.
  */
 export type WriteRoleCodexHomeOptions = {
+  capabilityPolicy?: NonNullable<Parameters<typeof codexManagedFeaturesToml>[0]>['capabilityPolicy'];
   sessionKey: string | number;
   /** Repair managed files in place without removing the native resume history. */
   preserveExisting?: boolean;
@@ -1597,7 +1602,7 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
     `log_dir = "${tomlEscape(logDir)}"`,
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
-    codexIsolationPreamble(opts.headless),
+    codexIsolationPreamble(opts.headless, opts.capabilityPolicy),
     ...inheritedCodexTrustToml(opts.trustDir),
     ...gatewayConfig.tables,
     ...CODEX_TUI_TOML,
@@ -1701,6 +1706,7 @@ export type { CodexHomeDiagnostics, CodexPapercuspDiagnostics } from './codex-ho
 /** Inputs the su `config.toml` is rendered from — the subset of
  *  `writeSuCodexHome`'s options that end up IN the file. */
 export interface SuCodexConfigInput {
+  capabilityPolicy?: NonNullable<Parameters<typeof codexManagedFeaturesToml>[0]>['capabilityPolicy'];
   /** Host confinement policy: only the declared native role and assignment
    * may populate this home's readable context and connectors. */
   denyAmbientContext?: true;
@@ -1811,7 +1817,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     ...(opts.logDir ? [`log_dir = "${tomlEscape(opts.logDir)}"`] : []),
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
-    codexIsolationPreamble(opts.headless),
+    codexIsolationPreamble(opts.headless, opts.capabilityPolicy),
     ...inheritedCodexTrustToml(opts.trustDir, opts.denyAmbientContext !== true),
     ...gatewayConfig.tables,
     ...CODEX_TUI_TOML,
@@ -1942,6 +1948,14 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
   try {
     const current = readFileSync(configPath, 'utf8');
     const parsedCurrent = parseToml(current) as { features?: Record<string, unknown> };
+    const expectedFeatures = (parseToml(codexIsolationPreamble(opts.headless, opts.capabilityPolicy)) as {
+      features?: Record<string, unknown>;
+    }).features;
+    // Resume repair must both restore an admitted control and remove stale
+    // controls after rollback or version drift. Checking only present expected
+    // keys would leave yesterday's shell_tool=false silently active.
+    const capabilityPolicyReady = Object.values(CODEX_CAPABILITY_CONTROLS).every(control =>
+      Object.keys(control.features).every(key => parsedCurrent.features?.[key] === expectedFeatures?.[key]));
     const subagentPolicyReady =
       parsedCurrent.features?.multi_agent === false &&
       parsedCurrent.features?.goals === false &&
@@ -1970,6 +1984,7 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
       current.includes('[tui]\nterminal_title = []\nalternate_screen = "never"\n') &&
       gatewayReady &&
       headlessPolicyReady &&
+      capabilityPolicyReady &&
       subagentPolicyReady &&
       (!opts.denyAmbientContext || current === suCodexConfigToml({ ...opts, logDir, codexHome, sqliteHome }));
   } catch {
@@ -2049,6 +2064,7 @@ export async function ensureSuCodexHomeConfigAsync(
 }
 
 type WriteSuCodexHomeOptions = {
+  capabilityPolicy?: SuCodexConfigInput['capabilityPolicy'];
   /** Same host-owned context ceiling consulted by bootstrap and MCP. */
   denyAmbientContext?: true;
   sessionKey: string | number;

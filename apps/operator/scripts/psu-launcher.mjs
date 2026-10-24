@@ -2607,6 +2607,64 @@ export function suLaunchArgs(
   );
 }
 
+/** Shared effective bootstrap inputs for the native launcher and structured
+ * engines. Transport adapters translate argv; they do not select another
+ * account, model or authority from their caller's environment.
+ * @param {any} boot
+ * @param {{model?: string|null, resumeSession?: string|null, nativeSessionId?: string|null, allowSubagents?: boolean, compactionLimit?: number|null, inheritedEnv?: NodeJS.ProcessEnv, executionKind?: 'pty'|'programmatic', accountRoute?: string|null}} options
+ */
+export function prepareSuLaunch(boot, {
+  model, resumeSession, nativeSessionId = boot.nativeSessionId,
+  allowSubagents = false, compactionLimit = boot.compactionLimit,
+  inheritedEnv = process.env, executionKind = "pty", accountRoute,
+} = {}) {
+  const refuse = (code, message) => {
+    throw Object.assign(new Error(message), { code });
+  };
+  if (boot.status !== "ok" || !["claude", "codex", "omp"].includes(boot.agent))
+    refuse("unsupported_su_launch", "SU launch requires a supported, successful bootstrap");
+  if (!boot.cwd || !boot.promptFile || !boot.envelopeEnv?.PAPERCUSP_SID)
+    refuse("incomplete_su_bootstrap", "SU launch is missing its cwd, persona or durable owner");
+  if (!["pty", "programmatic"].includes(executionKind))
+    refuse("unsupported_execution_kind", "SU launch has an unsupported execution kind");
+  const env = prepareSuLaunchEnvironment(boot.envelopeEnv, inheritedEnv);
+  // Bootstrap already checked pool membership, provider, authentication failure
+  // and route eligibility. Consumers must keep that route, never substitute a
+  // system login for a refused auto request or pin.
+  if (boot.agent !== "omp" && accountRoute != null && accountRoute.trim()) {
+    const raw = accountRoute.trim();
+    const lower = raw.toLowerCase();
+    const mode = ["default", "none", "system"].includes(lower) ? "default"
+      : ["auto", "gateway"].includes(lower) ? "auto" : "pin";
+    if ((env.PAPERCUSP_ACCOUNT_ROUTING_MODE || "default") !== mode
+      || (mode === "pin" && env.PAPERCUSP_ACCOUNT_ID !== raw))
+      refuse("account_route_mismatch", "SU launch account route differs from its resolved bootstrap");
+  }
+  if (executionKind === "programmatic") delete env.PAPERCUSP_TTY;
+  const requestedModel = requestedRoleModelFromBootstrap(boot, model);
+  const effectiveModel = boot.agent === "omp" ? normalizeOmpModelSpec(requestedModel) : requestedModel;
+  const launch = suLaunchArgs(boot.agent, {
+    promptFile: boot.promptFile, coordExtPath: boot.coordExtPath,
+    injectHookPath: resolveOmpInjectHookPath(boot.agent),
+    nativeSessionId: resumeSession ? null : nativeSessionId,
+    allowSubagents, allowNativeLsp: env.PAPERCUSP_OMP_NATIVE_LSP === "1",
+  });
+  const settings = boot.agent === "claude" ? readClaudeLaunchSettings(env) : null;
+  const modelArgs = modelArgsFor(boot.agent, effectiveModel, { compactionLimit, claudeSettings: settings });
+  return {
+    ...launch, cwd: boot.cwd, env, model: effectiveModel, modelArgs,
+    extraArgs: suWrapperExtraArgs(boot.agent, {
+      model: effectiveModel, resumeSession, compactionLimit, claudeSettings: settings,
+    }),
+  };
+}
+
+/** @param {NodeJS.ProcessEnv} envelopeEnv
+ * @param {NodeJS.ProcessEnv} inheritedEnv */
+export function prepareSuLaunchEnvironment(envelopeEnv, inheritedEnv = process.env) {
+  return { ...sanitizeInheritedEnv(inheritedEnv), ...envelopeEnv };
+}
+
 /**
  * improve-fleet-launch-autokickoff (EI-5503): the TRAILING POSITIONAL kickoff arg(s)
  * to append to the backend CLI argv — the first user turn that makes a SCRIPTED plan
@@ -12985,7 +13043,7 @@ export function runWrapper(options) {
   // (owner-reported 2026-07-13). Resume/fork pass preserveCwd:true; fresh
   // launches keep the guard.
   if (!preserveCwd) cwd = repoCwdOrRedirect(cwd);
-  const env = { ...sanitizeInheritedEnv(inheritedEnv), ...envelopeEnv };
+  const env = prepareSuLaunchEnvironment(envelopeEnv, inheritedEnv);
   // Derive from this child's argv, never an inherited parent or stale envelope.
   // Use our HTTP carrier without restoring Claude's ancestry marker.
   applyNativeSessionEnv(env, args);
@@ -18999,44 +19057,22 @@ export async function launchFreshSu(selections, args, {
     if (portFailure) throw portFailure;
     process.exit(1);
   }
-  const { bin, args: baseArgs } = suLaunchArgs(res.agent, {
-    promptFile: res.promptFile,
-    coordExtPath: res.coordExtPath,
-    injectHookPath: resolveOmpInjectHookPath(res.agent),
-    // Force the recorded native session id on a FRESH launch — but not when
-    // this invocation is itself resuming one: claude rejects --session-id with
-    // --resume/--continue *unless* --fork-session is also present (that exception
-    // is what launchTrackedFork relies on; see resumeArgsFor).
-    nativeSessionId: args.resumeSession ? null : res.nativeSessionId,
-    // Subagent-launch deny is DEFAULT-ON (claude-only); `--allow-subagents` (or the
-    // picker) opts THIS su launch back in. See suLaunchArgs / NO_SUBAGENTS_DENY_FLAG.
+  const preparation = prepareSuLaunch(res, {
+    model: args.model, resumeSession: args.resumeSession,
     allowSubagents: args.allowSubagents,
-    // P-021/D-013: may this omp session KEEP its native `lsp` builtin? bootstrap-su
-    // resolves FLAGS.OMP_NATIVE_LSP_BUILTIN *and* the local-model tier gate
-    // server-side and threads the answer here. Absent ⇒ strip, byte-identical to
-    // the pre-P-021 behavior. See ompLspArgs.
-    allowNativeLsp: res.envelopeEnv?.PAPERCUSP_OMP_NATIVE_LSP === "1",
+    compactionLimit: res.compactionLimit ?? args.compactionLimit,
+    accountRoute: args.account,
   });
+  const { bin, args: baseArgs } = preparation;
   const requestedLaunchModel = requestedRoleModelFromBootstrap(res, args.model);
-  const launchModel =
-    res.agent === "omp"
-      ? normalizeOmpModelSpec(requestedLaunchModel)
-      : requestedLaunchModel;
+  const launchModel = preparation.model;
   const launchModelNotice =
     res.agent === "omp"
       ? ompModelCompatibilityNotice(requestedLaunchModel)
       : null;
   if (launchModelNotice) console.error(launchModelNotice);
   // model/resume passthrough (raw-CLI flags: claude/omp --model/-r, codex -m/resume).
-  const extra = suWrapperExtraArgs(res.agent, {
-    model: launchModel,
-    compactionLimit: res.compactionLimit ?? args.compactionLimit,
-    resumeSession: args.resumeSession,
-    claudeSettings:
-      res.agent === "claude"
-        ? readClaudeLaunchSettings({ ...process.env, ...(res.envelopeEnv ?? {}) })
-        : null,
-  });
+  const extra = preparation.extraArgs;
   if (args.addDir?.length && res.agent === "omp") {
     console.error(
       "psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.",

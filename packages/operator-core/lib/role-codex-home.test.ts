@@ -27,6 +27,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseToml } from '@iarna/toml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CapabilityPolicyRequest } from '@papercusp/orchestrator/managed-capability-policy';
 
 // os.homedir() reads the OS password DB on Linux, NOT $HOME — so we mock it
 // to a throwaway dir. (A holder var, set per-test, keeps the hoisted mock in
@@ -785,6 +786,37 @@ describe('writeRoleCodexHome', () => {
 });
 
 describe('writeSuCodexHome', () => {
+  it('reconciles admitted shell controls on resume and removes them after version drift', async () => {
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+    const policy: Omit<CapabilityPolicyRequest, 'client'> = {
+      surface: 'launch', clientVersions: { codex: '0.163.0' },
+      readiness: [{ family: 'shell-ssh-interpreters', cutoverReady: true, openGapIds: [] }],
+      cutoverStaging: { 'shell-ssh-interpreters': 'full' },
+      adoption: [{ client: 'codex', family: 'shell-ssh-interpreters',
+        managedPathProven: true, nativeBypassRefused: true, atClientVersion: '0.163.0' }],
+      matrix: [{ client: 'codex', family: 'shell-ssh-interpreters',
+        allScenariosPassed: true, declaredScenarioCount: 7, unmet: [] }],
+    };
+    const input = { sessionKey: 'managed-shell-control', sid: 'su-managed-shell-control',
+      mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'ROLE', capabilityPolicy: policy };
+    const home = writeSuCodexHome(input);
+    const features = () => (parseToml(readFileSync(home.configPath, 'utf8')) as {
+      features: Record<string, unknown>;
+    }).features;
+    expect(features().shell_tool).toBe(false);
+    const resumed = { ...input, capabilityPolicy: { ...policy, surface: 'resume' as const } };
+    expect(ensureSuCodexHomeConfig(resumed).repaired).toBe(false);
+    expect(ensureSuCodexHomeConfig({ ...resumed, capabilityPolicy: {
+      ...resumed.capabilityPolicy, clientVersions: { codex: '0.163.1' },
+    } }).repaired).toBe(true);
+    expect(features().shell_tool).toBeUndefined();
+    const wake = { ...input, capabilityPolicy: { ...policy, surface: 'wake' as const } };
+    expect(ensureSuCodexHomeConfig(wake).repaired).toBe(true);
+    expect(features().shell_tool).toBe(false);
+    expect(ensureSuCodexHomeConfig(wake).repaired).toBe(false);
+    expect(readFileSync(home.configPath, 'utf8')).toContain('[mcp_servers.papercusp-su]');
+  });
+
   it('keeps a frozen native home free of user capabilities and preserves that boundary during config repair', async () => {
     const user = join(fakeHome, '.codex');
     for (const dir of ['skills', 'plugins', 'prompts']) {
