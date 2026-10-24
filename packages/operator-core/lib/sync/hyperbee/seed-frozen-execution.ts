@@ -2,8 +2,8 @@
  * tree fingerprints; npm's ephemeral hidden lock is deliberately not an input. */
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { lstat, open, readdir, readFile, realpath, type FileHandle } from 'node:fs/promises';
+import { constants, readFileSync, type BigIntStats } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve, posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -57,6 +57,50 @@ interface PackageRow { path: string; name: string; version: string; entry: LockE
 const safe = (path: string) => path.length > 0 && !path.startsWith('/')
   && !path.split('/').some(p => !p || p === '.' || p === '..') && !/[\x00-\x1f\\]/.test(path);
 
+/** Miniflare writes tooling metadata, not an installed package. Admit only its
+ * identified shape, and never expose its contents (including JSON parser errors).
+ * The generation binder separately fingerprints these bytes before and after. */
+async function assertMiniflareToolingCache(root: string, path: string) {
+  const directory = join(root, path), parent = dirname(directory), member = join(directory, 'cf.json');
+  const same = (a: BigIntStats, b: BigIntStats) =>
+    (['dev', 'ino', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs'] as const).every(key => a[key] === b[key]);
+  const exactMembers = async () => {
+    const names = await readdir(directory);
+    if (names.length !== 1 || names[0] !== 'cf.json') throw new Error();
+  };
+  let directoryHandle: FileHandle | undefined, fileHandle: FileHandle | undefined;
+  try {
+    const parentBefore = await lstat(parent, { bigint: true });
+    const directoryBefore = await lstat(directory, { bigint: true });
+    if (!parentBefore.isDirectory() || !directoryBefore.isDirectory()) throw new Error();
+    directoryHandle = await open(directory,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (!same(directoryBefore, await directoryHandle.stat({ bigint: true }))) throw new Error();
+    await exactMembers();
+    const fileBefore = await lstat(member, { bigint: true });
+    if (!fileBefore.isFile() || fileBefore.nlink !== 1n) throw new Error();
+    fileHandle = await open(member, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const assertIdentity = async () => {
+      if (!same(parentBefore, await lstat(parent, { bigint: true })) ||
+          !same(directoryBefore, await lstat(directory, { bigint: true })) ||
+          !same(directoryBefore, await directoryHandle!.stat({ bigint: true })) ||
+          !same(fileBefore, await lstat(member, { bigint: true })) ||
+          !same(fileBefore, await fileHandle!.stat({ bigint: true }))) throw new Error();
+    };
+    await assertIdentity();
+    const bytes = await fileHandle.readFile('utf8');
+    await assertIdentity();
+    await exactMembers();
+    await assertIdentity();
+    const value: unknown = JSON.parse(bytes);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+  } catch {
+    throw new Error(`invalid Miniflare tooling cache: ${path}`);
+  } finally {
+    await Promise.all([fileHandle?.close(), directoryHandle?.close()]);
+  }
+}
+
 /** Package paths come from the complete generation tree census, including nested
  * installations. Workspace links bind to the committed link target's metadata. */
 export async function readSeedInstalledPackages(root: string, trees: readonly string[],
@@ -93,18 +137,18 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
     }
   }
   const actual = new Map<string, PackageRow>();
-  const exclude = async (path: string, requireMetadata = false) => {
+  const exclude = async (path: string, metadataMode: 'optional' | 'required' | 'none' = 'optional') => {
     let metadata: { name?: unknown; version?: unknown } | undefined;
-    try {
+    try { if (metadataMode !== 'none') {
       const file = join(root, path, 'package.json');
       if (!(await lstat(file)).isFile()) throw new Error('excluded metadata must be a regular file');
       metadata = JSON.parse(await readFile(file, 'utf8'));
-    } catch (error) {
+    } } catch (error) {
       if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
     }
     // npm aliases retain the real package name in package.json; directory names
     // (and their reify leftovers) may differ. Report those exact metadata bytes.
-    if (requireMetadata && (typeof metadata?.name !== 'string' || !metadata.name
+    if (metadataMode === 'required' && (typeof metadata?.name !== 'string' || !metadata.name
         || typeof metadata.version !== 'string' || !metadata.version)) {
       throw new Error(`excluded reify entry metadata mismatch: ${path}`);
     }
@@ -114,9 +158,14 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
   const scan = async (nm: string) => {
     for (const name of (await readdir(join(root, nm))).sort()) {
       if (name.startsWith('.')) {
+        if (name === '.mf') {
+          const path = `${nm}/${name}`;
+          await assertMiniflareToolingCache(root, path);
+          await exclude(path, 'none'); continue;
+        }
         const leftover = ROOT_TOOLING.has(name) ? null : REIFY_LEFTOVER.exec(name);
         if (!ROOT_TOOLING.has(name) && !leftover) throw new Error(`unknown hidden dependency entry: ${nm}/${name}`);
-        await exclude(`${nm}/${name}`, Boolean(leftover)); continue;
+        await exclude(`${nm}/${name}`, leftover ? 'required' : 'optional'); continue;
       }
       const names: string[] = [];
       if (name.startsWith('@')) {
@@ -124,7 +173,7 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
           if (!child.startsWith('.')) { names.push(`${name}/${child}`); continue; }
           const leftover = REIFY_LEFTOVER.exec(child);
           if (!leftover) throw new Error(`unknown hidden dependency entry: ${nm}/${name}/${child}`);
-          await exclude(`${nm}/${name}/${child}`, true);
+          await exclude(`${nm}/${name}/${child}`, 'required');
         }
       } else names.push(name);
       for (const name of names) {
