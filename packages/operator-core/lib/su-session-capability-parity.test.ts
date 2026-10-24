@@ -33,7 +33,7 @@ import {
   SU_EXEC_COMBINATIONS, SU_EXEC_INVENTORY, SU_EXEC_PTY_CONTROLS,
   SU_EXEC_CODEX_REQUESTS, SU_EXEC_CLAUDE_QUERY_METHODS, SU_EXEC_SCENARIOS,
   SU_EXEC_CLAUDE_REQUESTS, SU_EXEC_NATIVE_REQUESTS, SU_EXEC_REQUEST_SCENARIOS,
-  SU_EXEC_CLAUDE_CONTROLS,
+  SU_EXEC_CLAUDE_CONTROLS, SU_EXEC_CONTROL_SCENARIOS,
   suExecQualificationPopulation, suExecQualificationDefects,
 } from './__fixtures__/su-execution-parity';
 
@@ -73,7 +73,22 @@ describe('SU execution inventory (P-001; qualification is still unknown)', () =>
         .toEqual([...methods].sort());
     }
     expect(SU_EXEC_CLAUDE_CONTROLS.map(control => control.method)).toEqual([...SU_EXEC_CLAUDE_QUERY_METHODS]);
-    for (const scenario of [...SU_EXEC_SCENARIOS, ...SU_EXEC_REQUEST_SCENARIOS]) {
+    for (const combination of SU_EXEC_COMBINATIONS) {
+      const controls = SU_EXEC_CONTROL_SCENARIOS.filter(row => row.provider === combination.provider
+        && row.execution === combination.execution);
+      expect(controls.map(row => row.mode).sort()).toEqual(decodedModes.sort());
+      for (const control of controls) {
+        expect(control.boundary.length).toBeGreaterThan(20);
+        expect(control.disposition).toBe(control.mode === 'compact' ? 'explicit-refusal'
+          : ['raw', 'osc'].includes(control.mode)
+            ? combination.execution === 'pty' ? 'terminal-presentation' : 'explicit-refusal'
+            : 'semantic-equivalent');
+        for (const target of [...control.testTargets, control.liveTestTarget]) {
+          expect(readFileSync(new URL(`../../../${target}`, import.meta.url), 'utf8').length).toBeGreaterThan(0);
+        }
+      }
+    }
+    for (const scenario of [...SU_EXEC_SCENARIOS, ...SU_EXEC_REQUEST_SCENARIOS, ...SU_EXEC_CONTROL_SCENARIOS]) {
       expect(scenario.sources.length).toBeGreaterThan(0);
       expect(scenario.action.length).toBeGreaterThan(20);
       expect(scenario.falsifier.length).toBeGreaterThan(20);
@@ -116,6 +131,13 @@ describe('SU execution inventory (P-001; qualification is still unknown)', () =>
     expect(suExecQualificationDefects(wrongSdk)).toContainEqual(expect.stringContaining('sdkVersion changed'));
     const missingFamily = complete.filter(row => !row.scenario.endsWith('item/permissions/requestApproval'));
     expect(suExecQualificationDefects(missingFamily)).toContainEqual(expect.stringContaining('missing'));
+    const missingControl = complete.filter(row => row.id !== 'codex/programmatic/pty-control:delivery-cancel');
+    expect(suExecQualificationDefects(missingControl))
+      .toContain('codex/programmatic/pty-control:delivery-cancel: missing or duplicate row');
+    const unprovedRefusal = complete.map(row => row.id === 'claude/programmatic/pty-control:raw'
+      ? { ...row, negativeControlRefs: [] } : row);
+    expect(suExecQualificationDefects(unprovedRefusal))
+      .toContain('claude/programmatic/pty-control:raw: proof incomplete');
     expect(suExecQualificationDefects([...complete, complete[0]]))
       .toContainEqual(expect.stringContaining('duplicate'));
   });

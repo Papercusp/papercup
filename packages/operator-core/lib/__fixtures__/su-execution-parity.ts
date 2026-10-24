@@ -4,7 +4,7 @@
  * P-017/P-018 must attach exact scenario receipts before a cell can pass.
  */
 export const SU_EXEC_INVENTORY = {
-  revision: 2,
+  revision: 3,
   plan: 'interchangeable-su-execution-backends-2026-10-23',
   ownerItem: 'P-001',
   host: { os: 'linux', arch: 'x64', runtime: 'current-build', otherHosts: 'unqualified' },
@@ -88,6 +88,67 @@ const CLAUDE = 'packages/operator-core/lib/su-session-claude-engine.ts';
 const CARDS = 'packages/operator-core/lib/su-session-native-cards.ts';
 const LAUNCH = 'packages/operator-core/lib/su-session-attached-launch.ts';
 const PTY = 'apps/operator/scripts/psu-pty-host.mjs';
+
+/** Acceptance targets, not assertions that the current implementations pass. */
+const CONTROL_DUTIES = {
+  turn: { requirement: 'R-4', item: 'P-004',
+    action: 'Queue, steer and refocus once with the addressed owner and durable command identity.',
+    falsifier: 'A duplicate or stale delivery executes a second turn or reaches another owner.' },
+  'delivery-cancel': { requirement: 'R-9', item: 'P-010',
+    action: 'Cancel the exact delivery and settle its receipt without injecting an agent turn.',
+    falsifier: 'A cancelled delivery is injected or its receipt acknowledges another generation.' },
+  raw: { requirement: 'R-15', item: 'P-016',
+    action: 'Keep raw keys on PTY; programmatic execution refuses raw bytes and exposes semantic interruption separately.',
+    falsifier: 'Raw bytes become a programmatic owner turn, or refusing bytes removes semantic human control.' },
+  osc: { requirement: 'R-15', item: 'P-016',
+    action: 'Keep colour escapes on the PTY display; programmatic execution refuses terminal escapes and retains structured state.',
+    falsifier: 'A display escape reaches native input or terminal colour substitutes for structured session state.' },
+  reset: { requirement: 'R-10', item: 'P-011',
+    action: 'Reset context at a clean boundary with durable carry and one successor generation.',
+    falsifier: 'A reset erases owner obligations or races an in-flight native tool operation.' },
+  recycle: { requirement: 'R-10', item: 'P-011',
+    action: 'Replace the native child at a clean boundary while retaining logical identity and carry dispositions.',
+    falsifier: 'Both child generations execute or the new child loses an unresolved owner obligation.' },
+  'carry-respawn': { requirement: 'R-10', item: 'P-011',
+    action: 'Persist deterministic carry, fence the old child and verify successor bootstrap before accepting commands.',
+    falsifier: 'An unready successor consumes a wake or native process handles are treated as durable state.' },
+  compact: { requirement: 'R-15', item: 'P-016',
+    action: 'Return the retired-control refusal without injecting any part of the control envelope.',
+    falsifier: 'The retired compact envelope is silently accepted or typed as an owner turn.' },
+  shutdown: { requirement: 'R-8', item: 'P-009',
+    action: 'Validate shutdown authority, settle pending state and stop only the owned native child.',
+    falsifier: 'Shutdown kills a foreign child or reports completion while its owned child remains unmanaged.' },
+  'hooks-observe': { requirement: 'R-14', item: 'P-015',
+    action: 'Report generation-scoped hooks and lifecycle observations without creating an agent turn.',
+    falsifier: 'A stale observation is accepted for another child or an unmeasured value is reported healthy.' },
+  'mcp-reconnect': { requirement: 'R-3', item: 'P-003',
+    action: 'Reconnect the scoped MCP server and verify the native tool catalog without broadening authority.',
+    falsifier: 'Reconnect is reported healthy from a saved descriptor or silently falls back to a PTY process.' },
+} as const;
+
+/** Every decoder control has an explicit cell for each provider/execution pair.
+ * Programmatic terminal presentation is a typed refusal, not a parity waiver.
+ * Existing suites are mapped as drill targets; qualification remains unknown. */
+export const SU_EXEC_CONTROL_SCENARIOS = SU_EXEC_COMBINATIONS.flatMap(combination =>
+  SU_EXEC_PTY_CONTROLS.map(control => ({
+    ...CONTROL_DUTIES[control.mode],
+    ...combination,
+    id: `pty-control:${control.mode}`,
+    mode: control.mode,
+    classification: control.classification,
+    disposition: control.classification === 'retired' ? 'explicit-refusal'
+      : control.classification === 'native-presentation'
+        ? combination.execution === 'pty' ? 'terminal-presentation' : 'explicit-refusal'
+        : 'semantic-equivalent',
+    boundary: 'boundary' in control ? control.boundary : 'Owner-required semantics apply to both execution kinds.',
+    sources: combination.execution === 'pty' ? [PTY]
+      : [HOST, combination.provider === 'claude' ? CLAUDE : RPC],
+    testTargets: combination.execution === 'pty'
+      ? ['apps/operator/scripts/psu-pty-host.test.ts']
+      : ['packages/operator-core/lib/su-session-host.test.ts',
+        `packages/operator-core/lib/su-session-${combination.provider === 'claude' ? 'claude' : 'rpc'}-engine.test.ts`],
+    liveTestTarget: 'packages/operator-core/lib/su-session-attached-live.integration.test.ts',
+  })));
 
 /** Distinct native requests must acquire distinct receipts. Authentication and
  * attestation are host controls, never ordinary question cards. A classification
@@ -222,7 +283,9 @@ export type SuExecCombination = (typeof SU_EXEC_COMBINATIONS)[number];
 
 export function suExecScenariosFor(combination: SuExecCombination) {
   return [...SU_EXEC_SCENARIOS,
-    ...SU_EXEC_REQUEST_SCENARIOS.filter(scenario => scenario.provider === combination.provider)];
+    ...SU_EXEC_REQUEST_SCENARIOS.filter(scenario => scenario.provider === combination.provider),
+    ...SU_EXEC_CONTROL_SCENARIOS.filter(scenario => scenario.provider === combination.provider
+      && scenario.execution === combination.execution)];
 }
 
 export interface SuExecQualificationRow {

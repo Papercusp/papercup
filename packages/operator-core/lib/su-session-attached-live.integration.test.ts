@@ -24,7 +24,7 @@ import { SuNativeCards } from './su-session-native-cards';
 import type { SuSessionEventInput } from './su-session-host';
 import { approvalCardText } from './su-session-approval-display';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
-import { SU_EXEC_COMBINATIONS, SU_EXEC_SCENARIOS, SU_EXEC_REQUEST_SCENARIOS, suExecScenariosFor, suExecQualificationPopulation,
+import { SU_EXEC_COMBINATIONS, SU_EXEC_SCENARIOS, SU_EXEC_REQUEST_SCENARIOS, SU_EXEC_PTY_CONTROLS, suExecScenariosFor, suExecQualificationPopulation,
   suExecQualificationDefects } from './__fixtures__/su-execution-parity';
 
 describe('SU execution live qualification inventory (P-001)', () => {
@@ -36,6 +36,8 @@ describe('SU execution live qualification inventory (P-001)', () => {
       const rows = population.filter(row => row.provider === combination.provider && row.execution === combination.execution);
       expect(rows.map(row => row.scenario)).toEqual(suExecScenariosFor(combination).map(scenario => scenario.id));
       expect(rows.every(row => row.state === 'unknown')).toBe(true);
+      expect(rows.filter(row => row.scenario.startsWith('pty-control:')).map(row => row.scenario).sort())
+        .toEqual(SU_EXEC_PTY_CONTROLS.map(control => `pty-control:${control.mode}`).sort());
       for (const request of SU_EXEC_REQUEST_SCENARIOS.filter(request => request.provider === combination.provider)) {
         expect(rows.some(row => row.scenario === request.id)).toBe(true);
       }
