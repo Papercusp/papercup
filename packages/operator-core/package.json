@@ -52,6 +52,7 @@
     "lint:attributor-runner-coverage": "vitest run lib/__tests__/attributor-runner-coverage.test.ts",
     "lint:guard-reachability": "node ../../scripts/check-lint-guard-reachability.mjs",
     "lint:condition-rail": "tsx ../../scripts/condition-rail-inventory.mjs --lint",
+    "lint:fire-and-forget-classification": "bash ../../scripts/pc-heavy.sh node ../../scripts/check-fire-and-forget-classification.mjs",
     "gen:gitnexus-bridge:check": "node ../../scripts/gen-gitnexus-bridge-runtime.mjs --check",
     "gen:contract:check": "tsx ../../scripts/gen-testing-domains-contract.ts --check",
     "gen:tool-delivery:check": "tsx ../../scripts/gen-tool-delivery.ts --check",
