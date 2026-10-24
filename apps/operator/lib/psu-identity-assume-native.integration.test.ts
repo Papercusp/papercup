@@ -19,6 +19,8 @@ import { launchIdentityAssumeHandoff, makeIdentityAssumeHostPort,
   prepareIdentityAssumeCheckpoint } from '../scripts/psu-identity-assume.mjs';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from
   '../../../packages/operator-core/lib/inference-gateway/codex-cli-bridge';
+import { readProcessIdentity } from '../../../packages/operator-core/lib/process-identity';
+import type { AssumeExecutionObservation } from '../../../packages/operator-core/lib/session-assume';
 
 type Row = Record<string, any>;
 const productionState = vi.hoisted(() => ({ sql: undefined as any, homes: new Map<string, string>() }));
@@ -64,7 +66,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
     const io = { stdin, stdout: { isTTY: false, columns: 120, rows: 40,
       write(data: string) { output += data; return true; } } };
     let phase: 'seed' | 'caller' | 'target' | 'return' = 'seed';
-    let port = 0, issued = false, targetReady = false;
+    let port = 0, issued = false, targetReady = false, returnIssued = false, targetProbed = false;
     const requests: Array<{ phase: string; body: Row }> = [], errors: string[] = [], nativeResults: string[] = [];
     const hosts: McpServer[] = [];
     const orders: Row[] = [], inspections = new Map<string, Row>();
@@ -87,7 +89,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp))).at(-1)!.payload.id as string;
     };
     let real: Awaited<ReturnType<typeof import('../vitest-shims/identity-assume-production').productionAssumeFixture>> | undefined;
-    let accepted: Row | undefined, targetWork = '';
+    let accepted: Row | undefined, returning: Row | undefined, targetWork = '', callerWork = '';
     const routed: Row[] = [];
     const inspect = async (request: Row, afterExit = false, action = 'observe') => {
       if (real) return real.inspect(request, afterExit, action);
@@ -108,10 +110,18 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           const host = new McpServer({ name: 'native-handoff-fixture', version: '1' }); hosts.push(host);
           host.registerTool('handoff_fixture', { inputSchema: {} }, async () => {
             if (phase !== 'caller' && phase !== 'target') throw new Error('Handoff outside an execution phase');
-            if (real && phase === 'target') {
+            if (real && phase === 'target' && !targetProbed) {
+              targetProbed = true;
               const result = await real.probe(owners.target, targetWork);
               routed.push(result);
               return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+            }
+            if (real && phase === 'target') {
+              const plan = await real.prepare(owners.target, owners.caller, 'native-resume');
+              returning = await real.commit(plan);
+              if (returning.state !== 'handoff-accepted') throw new Error('Production return refused: ' +
+                JSON.stringify({ state: returning.state, reason: returning.reason, trace: real.trace }));
+              return { content: [{ type: 'text', text: JSON.stringify(returning) }] };
             }
             if (real) {
               const id = nativeId('caller');
@@ -119,6 +129,8 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
                 .nativeSessionId).toBe(id), { timeout: 5000 });
               const registration = await real.register(owners.caller, id, root, false);
               productionState.homes.set(String(registration), homes.caller);
+              callerWork = await real.assign(owners.caller);
+              await real.send(owners.caller, 'CALLER_BEFORE_HANDOFF');
               const plan = await real.prepare(owners.caller, owners.target, mode);
               accepted = await real.commit(plan);
               if (accepted.state !== 'handoff-accepted') throw new Error('Production commit: ' + JSON.stringify({
@@ -163,11 +175,17 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           model: 'gpt-6-sol', text, inputTokens: 0, outputTokens: 0 })));
         if (phase === 'seed') { finish(marker.target); return; }
         if (phase === 'return') { finish('CALLER_RETURNED'); return; }
-        const results = callOutputs(body.input).filter(row => row.call_id === `handoff-${phase}`);
+        const outputs = callOutputs(body.input);
+        if (real && phase === 'target' && outputs.some(row => row.call_id === 'handoff-target-return')) {
+          finish('RETURN_NATIVE_COMPLETE'); return;
+        }
+        const results = outputs.filter(row => row.call_id === `handoff-${phase}`);
+        let returningCall = false;
         if (results.length) {
           nativeResults.push(JSON.stringify(results).slice(0, 1800));
           if (phase === 'target') { targetReady = true; await targetGate; }
-          finish('HANDOFF_NATIVE_COMPLETE'); return;
+          if (real && phase === 'target' && !returnIssued) { returnIssued = true; returningCall = true; }
+          else { finish('HANDOFF_NATIVE_COMPLETE'); return; }
         }
         const available = [...(body.tools ?? []), ...(body.input ?? []).flatMap(
           (item: Row) => Array.isArray(item.tools) ? item.tools : [])];
@@ -175,17 +193,18 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         const direct = available.find(tool => tool.type === 'function' && tool.name?.endsWith('__handoff_fixture'));
         const executor = available.find(tool => tool.type === 'namespace' &&
           tool.tools?.some((t: Row) => t.type === 'custom' && t.name === 'exec'));
-        if (issued || !namespace && !direct && !executor && !available.some(tool => tool.type === 'tool_search')) {
+        if (issued && !returningCall || !namespace && !direct && !executor && !available.some(tool => tool.type === 'tool_search')) {
           finish('AUXILIARY_RESPONSE'); return;
         }
         const discovery = !namespace && !direct && !executor;
         issued = !discovery;
+        const callId = returningCall ? 'handoff-target-return' : `handoff-${phase}`;
         const call = discovery ? { id: 'discover', type: 'tool_search_call', execution: 'client',
           call_id: 'discover-handoff', status: 'completed', arguments: { query: 'handoff_fixture', limit: 1 } } : executor
           ? { id: `call-${phase}`, type: 'custom_tool_call', namespace: executor.name, name: 'exec',
-            call_id: `handoff-${phase}`, status: 'completed',
+            call_id: callId, status: 'completed',
             input: "const tool=ALL_TOOLS.find(t=>t.name.endsWith('__handoff_fixture')); if(!tool)throw new Error('Missing handoff fixture');text(await tools[tool.name]({}));" }
-          : { id: `call-${phase}`, type: 'function_call', call_id: `handoff-${phase}`, status: 'completed',
+          : { id: `call-${phase}`, type: 'function_call', call_id: callId, status: 'completed',
             ...(namespace ? { namespace: namespace.name } : {}), name: direct?.name ?? 'handoff_fixture', arguments: '{}' };
         const event = (type: string, payload: Row) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
         res.end(event('response.output_item.added', { output_index: 0,
@@ -317,7 +336,19 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         }
         // Explicit phase prompt avoids relying on PTY ready-prompt timing.
         args.push(kickoff);
-        return start(key, args, options.managedAssume);
+        const run = start(key, args, options.managedAssume);
+        if (real) {
+          await vi.waitFor(() => {
+            const meta = JSON.parse(readFileSync(metaPathFor(owners[key]), 'utf8'));
+            expect(alive(meta.ptyPid)).toBe(true);
+            expect(meta.nativeSessionId).toBe(latestNativeId(key));
+            expect(meta.nativeSessionId === session.sessionId).toBe(!options.managedAssume.checkpoint);
+          }, { timeout: 10_000 });
+          const receipt = key === 'target' ? accepted! : returning!;
+          await real.finalize(receipt.preparation, receipt.transitionKey, latestNativeId(key));
+          await options.managedAssume.restoreReturn?.();
+        }
+        return run;
       };
       const launch = (handoff: Row) => launchIdentityAssumeHandoff(handoff, { inspect,
         resolveSession: async (id: number) => real ? real.resolve(id) : ({ id, coordOwnerId: id === 2 ? owners.target : owners.caller,
@@ -343,7 +374,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           assignment: { id: targetWork, assignee: owners.target, observedBy: owners.target } });
         expect(routed[0].messages).toHaveLength(2);
         expect(new Set(routed[0].messages.map((row: Row) => row.id)).size).toBe(2);
-        expect((await real.probe(owners.caller, targetWork)).messages).toEqual([]);
+        expect((await real.pending(owners.caller)).map(row => row.summary)).toEqual(['CALLER_BEFORE_HANDOFF']);
         expect((await real.probe(owners.target, targetWork)).messages).toEqual([]);
         const after = await real.send(owners.target, 'AFTER_HANDOFF');
         expect((await real.probe(owners.target, targetWork)).messages.map(row => row.id)).toEqual([after.msg_id]);
@@ -351,14 +382,49 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         expect((await real.pause(owners.caller))?.transitionKey).toBe(accepted!.transitionKey);
         expect((await real.commit(accepted!.preparation)).replayed).toBe(true);
         expect(orders).toHaveLength(1);
-        targetRun.signals.emit('SIGTERM'); releaseTarget(); await targetRun.done;
-        expect(errors, diagnostics()).toEqual([]);
-        return;
+        const binding = await real.resolve(accepted!.preparation.target.advSessionId);
+        expect(binding?.sessionId).toBe(runningTargetNative);
+        const writer = codexThreadWriterHolder(homes.target, runningTargetNative);
+        expect(writer.pid).toBe(targetMeta.ptyPid);
+        const message = routed[0].messages[0];
+        const observation: AssumeExecutionObservation = {
+          transitionKey: accepted!.transitionKey, observedAt: Date.now(),
+          hostId: targetMeta.identityAssume.hostId, attachmentId: targetMeta.identityAssume.attachmentId,
+          callerNativePid: original.nativePid, callerExited: alive(original.nativePid) === false,
+          targetOwnerId: routed[0].ownerId, targetNativeSessionId: runningTargetNative,
+          backend: 'codex', contextSha256: accepted!.preparation.target.context.sha256,
+          nativePid: targetMeta.ptyPid, nativeProcessStart: readProcessIdentity(targetMeta.ptyPid)!,
+          nativeWriterPids: writer.held && writer.pid ? [writer.pid] : [],
+          ...(mode === 'checkpoint' ? { nativeBinding: {
+            advSessionId: binding!.id, ownerId: binding!.coordOwnerId!, sourceNativeSessionId: targetNative,
+            nativeSessionId: binding!.sessionId!, transitionKey: accepted!.transitionKey,
+          } } : {}),
+          directedMessage: { id: message.id, recipient: message.to[0], consumedBy: routed[0].ownerId, consumptions: 1 },
+          assignment: routed[0].assignment,
+        };
+        // These counterexamples must leave the persisted accepted receipt unchanged.
+        for (const changed of [
+          { ...observation, hostId: 'unrelated-host' },
+          { ...observation, nativeWriterPids: [targetMeta.ptyPid, process.pid] },
+          { ...observation, callerExited: false },
+          { ...observation, targetOwnerId: owners.caller },
+          { ...observation, contextSha256: hash('wrong-context') },
+        ]) {
+          expect((await real.verify(accepted! as any, changed)).state).toBe('handoff-accepted');
+          expect((await real.load(accepted!.preparation))?.state).toBe('handoff-accepted');
+        }
+        expect((await real.verify(accepted! as any, observation)).state).toBe('target-verified');
       }
       releaseTarget();
       await vi.waitFor(() => expect(alive(targetMeta.ptyPid), diagnostics()).toBe(false), { timeout: 10_000 });
       expect(await targetRun.done).toBe(75);
       expect(orders).toHaveLength(2); expect(alive(targetMeta.ptyPid)).toBe(false);
+      if (real) {
+        const consumed = readHostHandoffForParentPid(process.pid, { ownerId: owners.target });
+        expect(consumed).not.toBeNull(); orders[1] = consumed;
+        expect(alive(orders[1].fromPid)).toBe(false);
+        await real.depart(owners.target);
+      }
       phase = 'return'; issued = false;
       const returned = await launch(orders[1]);
       await vi.waitFor(() => expect(output, diagnostics()).toContain('CALLER_RETURNED'), { timeout: 20_000 });
@@ -367,6 +433,17 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       expect(latestNativeId('caller')).toBe(callerNative);
       expect(requests.filter(row => row.phase === 'return').some(row => JSON.stringify(row.body).includes(marker.caller))).toBe(true);
       expect(transcript('caller', callerNative)).toContain('CALLER_RETURNED');
+      if (real) {
+        const originalReceipt = await real.load(accepted!.preparation);
+        expect(originalReceipt?.callerReturn?.transitionKey).toBe(returning!.transitionKey);
+        expect(await real.pause(owners.caller)).toBeNull();
+        const restored = await real.probe(owners.caller, callerWork);
+        expect(restored.assignment).toMatchObject({ assignee: owners.caller, observedBy: owners.caller });
+        expect(restored.messages).toHaveLength(1);
+        expect((await real.probe(owners.caller, callerWork)).messages).toEqual([]);
+        expect((await real.commit(returning!.preparation)).replayed).toBe(true);
+        expect(orders).toHaveLength(2);
+      }
       expect(errors, diagnostics()).toEqual([]);
       returned.signals.emit('SIGTERM'); await returned.done;
     } finally {

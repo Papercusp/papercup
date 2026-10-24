@@ -1063,6 +1063,13 @@ const releaseRequestSweepCheck: PeriodicCheck = {
     ): Promise<void> => {
       const { job } = row;
       const resolution = job.resolution;
+      // Older sweeps could persist a successor as the target of a request
+      // addressed to its predecessor. Retire those jobs before any side effect.
+      if (resolution === 'consequence-reclaim' && job.reclaimHolder !== job.holder) {
+        console.warn(`[release-request-sweep] ${row.id}: retiring reclaim aimed at a replacement holder`);
+        await settleReleaseRequestConsequence(sql, row);
+        return;
+      }
       const messageId = 'release-request-consequence:' + row.workspaceId + ':' + row.id + ':' + job.id;
       const deadlineIso = new Date(job.deadlineAt).toISOString();
       const noteBody =
@@ -1198,6 +1205,19 @@ const releaseRequestSweepCheck: PeriodicCheck = {
     const due = await findDueReleaseRequests(sql, { nowMs: Date.now() });
     for (const row of due) {
       const { request: req } = row;
+      // The deadline belongs to the original holder. A transfer already
+      // answered that request; a delayed tick must never retarget its successor.
+      if (row.holderNow !== req.holder) {
+        await resolveWorkItemReleaseRequest(row.id, {
+          harness: row.harness ?? undefined,
+          resolution: 'superseded',
+          expectedBy: req.by,
+          expectedHolder: req.holder,
+          expectedDeadlineAt: req.deadlineAt,
+          expectedLastProgressAt: row.lastProgressAt,
+        }).catch(() => null);
+        continue;
+      }
       const resolution: import('../work-items-release-request').ReleaseRequestConsequenceResolution =
         req.onSilence === 'reclaim' ? 'consequence-reclaim' : req.onSilence === 'escalate' ? 'consequence-escalate' : 'consequence-nothing';
       const consequenceJob = {
@@ -1209,11 +1229,11 @@ const releaseRequestSweepCheck: PeriodicCheck = {
         onSilence: req.onSilence,
         deadlineAt: req.deadlineAt,
         requestedAt: req.requestedAt,
-        reclaimHolder: row.holderNow ?? req.holder,
+        reclaimHolder: req.holder,
         paths: row.paths,
       };
       if (req.onSilence === 'reclaim') {
-        const holder = row.holderNow ?? req.holder;
+        const holder = req.holder;
         if (holder === req.holder && hasWorkItemProgressAfterReleaseRequest(req, row.lastProgressAt)) {
           const responded = await resolveWorkItemReleaseRequest(row.id, {
             harness: row.harness ?? undefined,

@@ -5,6 +5,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { createOrgTestDb, type OrgTestDb } from '../../../packages/operator-core/test/_org-test-db';
 import { setupBaselineCoordFixture } from '../../../packages/operator-core/lib/_baseline-coord-fixture';
 import { prepareAssume, validateAssume, commitAssume, type AssumePreparation,
+  verifyAssumeExecution, type AssumeExecutionObservation,
   type AssumeTransitionReceipt } from '../../../packages/operator-core/lib/session-assume';
 import { readAssumeCaller, readAssumeTarget } from '../../../packages/operator-core/lib/session-assume-preparation';
 import { createAssumeTransitionDeps, inspectManagedAssumeRequest } from '../../../packages/operator-core/lib/session-assume-runtime';
@@ -19,7 +20,8 @@ import { getWorkItem } from '../../../packages/operator-core/lib/work-items';
 import { sendMessage, readInbox, appendAck, readAckedMsgIds } from
   '../../../packages/operator-core/lib/agent-tools/coordination/messages';
 import { resolveAgentIdentity } from '../../../packages/operator-core/lib/agent-tools/coordination/identity';
-import { getAdvSession } from '../../../packages/operator-core/lib/adv-sessions';
+import { getAdvSession, finalizeAdvSessionResume, reanchorAdvSessionNativeId } from '../../../packages/operator-core/lib/adv-sessions';
+import { cleanupScopedNativeFixtureDatabase } from './scoped-native-fixture-cleanup';
 
 export async function productionAssumeFixture(workspaceId: string,
   onDatabase: (sql: OrgTestDb['adminSql']) => void) {
@@ -84,8 +86,22 @@ export async function productionAssumeFixture(workspaceId: string,
       scoped(() => inspectManagedAssumeRequest(request, afterExit, action)),
     load: (plan: AssumePreparation) => scoped(() => createAssumeReceiptStore(plan).load()),
     save: (receipt: AssumeTransitionReceipt) => scoped(() => createAssumeReceiptStore(receipt.preparation).save(receipt)),
+    verify: (receipt: AssumeTransitionReceipt, observation: AssumeExecutionObservation) =>
+      scoped(() => verifyAssumeExecution(receipt, observation, createAssumeReceiptStore(receipt.preparation).save)),
     pause: (owner: string) => scoped(() => readAssumeCallerPause(owner)),
     resolve: (id: number) => scoped(() => getAdvSession(id)),
+    async finalize(plan: AssumePreparation, transitionKey: string, native: string) {
+      return scoped(async () => {
+        if (!await finalizeAdvSessionResume(plan.target.advSessionId, transitionKey))
+          throw new Error('Native fixture resume finalization refused');
+        if (native !== plan.target.nativeSessionId) {
+          const result = await reanchorAdvSessionNativeId(plan.target.advSessionId, native);
+          if (!result.reanchored || result.owner !== plan.target.ownerId)
+            throw new Error('Native fixture checkpoint reanchor refused');
+        }
+        return getAdvSession(plan.target.advSessionId);
+      });
+    },
     async depart(owner: string) {
       await sql`UPDATE harness_shared.adv_sessions SET ended_at = now(), ended_by = 'self', pid = NULL
         WHERE id = ${records.get(owner)!}`;
@@ -113,8 +129,14 @@ export async function productionAssumeFixture(workspaceId: string,
           assignment: { id: work?.id, assignee: work?.assignee, observedBy: who.ownerId } };
       });
     },
+    pending: (owner: string) => scoped(async () => {
+      const acked = await readAckedMsgIds(owner);
+      return (await readInbox(owner)).filter(row => !acked.has(row.msg_id));
+    }),
     async dispose() {
-      try { await fixture.dispose(); } finally { await database.cleanup(); }
+      await cleanupScopedNativeFixtureDatabase({ adminSql: database.adminSql, cleanup: async () => {
+        try { await fixture.dispose(); } finally { await database.cleanup(); }
+      } });
     },
   };
 }

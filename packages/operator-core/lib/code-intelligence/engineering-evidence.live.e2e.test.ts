@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { expect, it } from 'vitest';
 import { parseExecutionBoundaryReceipt } from '@papercusp/test-config/execution-details';
 import type { EngineeringQueryReport } from './engineering-evidence';
+import { verifyProducerBuildIdentity } from './engineering-evidence-producer';
 
 const live = process.env.PAPERCUSP_ENGINEERING_PRODUCER_LIVE === '1';
 
@@ -27,6 +28,7 @@ it.skipIf(!live)('ee.live-boundary: records an actual sampled serving graph boun
   expect(input.harness).toBe(process.env.PAPERCUSP_TEST_RUN_HARNESS);
   expect(input.clientId).toBe(process.env.PAPERCUSP_SID);
   expect(input.buildSha).toMatch(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/);
+  verifyProducerBuildIdentity(input.buildSha);
   const origin = new URL(input.origin);
   expect(['http://127.0.0.1:3170', 'http://127.0.0.1:3070']).toContain(origin.origin);
   expect(origin.href).toBe(origin.origin + '/');
@@ -84,6 +86,7 @@ it.skipIf(!live)('ee.live-boundary: records an actual sampled serving graph boun
   expect(report.evidence?.nodes.some(node => node.kind === 'item'
     && node.data.plan === input.plan && node.data.item === input.item)).toBe(true);
   expect(await health()).toBe(before);
+  verifyProducerBuildIdentity(input.buildSha);
   context.task.meta.papercuspExecutionObservations = [receipt!];
   mkdirSync(dirname(outputPath!), { recursive: true });
   writeFileSync(outputPath!, JSON.stringify({ input, observedAt: new Date().toISOString(), before,

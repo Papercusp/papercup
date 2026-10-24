@@ -74,6 +74,9 @@ def prepare(manifest, database, directory, receipt, restore_data=False):
     def sql(statement):
         return native(['psql', '-X', '-v', 'ON_ERROR_STOP=1', '-At', '-d', database], input=statement).strip()
 
+    data_directory = Path(sql("SELECT current_setting('data_directory')")).resolve()
+    if not data_directory.name.startswith(('papercusp-test-pg-', 'papercusp-native-pg-')):
+        raise ValueError('destination must be a maintained disposable PostgreSQL cluster')
     # Refuse a populated/existing application schema before any restore mutation.
     if sql("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname='" + schema + "')") != 'f':
         raise ValueError('destination schema must not exist')
