@@ -86,6 +86,8 @@ export interface OperatorHttpRoute {
  * portal surface that needs it, or it answers 403 `route_not_relayed`.
  */
 export const OPERATOR_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<OperatorHttpRoute> = [
+  // Native WebViews use the existing public liveness probe during boot.
+  { method: 'GET', pattern: /^\/api\/health$/, surface: 'native operator liveness' },
   // Sync transport behind useSyncQuery (chat lists, session rosters).
   { method: 'GET', pattern: /^\/api\/zero-harness\/rest-query$/, surface: 'sync read' },
   { method: 'GET', pattern: /^\/api\/zero-harness\/sse$/, surface: 'sync stream' },
