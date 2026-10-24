@@ -10,10 +10,10 @@ import {
 const root = resolve(import.meta.dirname, '../../../..');
 const options = isolatedWorkerOptions(480_000);
 
-it('retains one real exact-build endpoint, recovers process loss, and retires its last audit reference', async context => {
+it('retains one real exact-build endpoint across unknown readiness, recovers process loss, and retires its last audit reference', async context => {
   const runId = await recordIsolatedIntegrationProof({
     root, filePath: 'packages/operator-core/lib/release/grading-audit-runtime.integration.test.ts',
-    retainedArtifacts: ['phases/execute/grading-runtime-host.log'],
+    retainedArtifacts: ['phases/execute/grading-runtime-host.log', 'phases/execute/grading-runtime-diagnostics.json'],
     sourcePaths: [
       'packages/operator-core/test/grading-audit-runtime-fixture.ts',
       'packages/operator-core/lib/release/grading-audit-runtime.ts',
@@ -49,6 +49,7 @@ it('retains one real exact-build endpoint, recovers process loss, and retires it
         expect(receipt).toMatchObject({
           workspace: expect.stringMatching(/^test-runtime-/), reused: true, recovered: true,
           confined: true, exactHealth: true, partialReferenceRetained: true, scopeEmpty: true, pinRemoved: true,
+          warmingRetained: true, transientProbeRetained: true,
           bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         });
         console.info(line);
