@@ -4,6 +4,7 @@ import { resolve, join } from 'node:path';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
+import { observeIsolatedWorkerLifetime } from '../test/isolated-integration-proof';
 
 const run = promisify(execFile);
 const root = resolve(import.meta.dirname, '../../..');
@@ -230,6 +231,7 @@ describe('isolated PostgreSQL mutation evidence', () => {
 
 describe('isolated PostgreSQL signal cleanup', () => {
   it.each(['supervisor', 'process-group'] as const)('finishes owned cleanup after SIGINT to %s', async target => {
+    const evidenceDir = mkdtempSync(join(tmpdir(), 'private-pg-signal-lifecycle-'));
     const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
       '--isolated-runtime', '--', process.execPath, '-e',
       "console.log('SIGNAL_CLEANUP_WORKER_READY');setInterval(() => {}, 1000)"], {
@@ -239,6 +241,8 @@ describe('isolated PostgreSQL signal cleanup', () => {
       // Proof mode reports the owned lifecycle to its actual parent channel.
       detached: target === 'process-group', stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
+    // Admission waits for the real observer to pin the worker and owned PG.
+    const observation = observeIsolatedWorkerLifetime(child, root, evidenceDir);
     let output = '';
     let errors = '';
     child.stdout.on('data', chunk => { output += chunk; });
@@ -254,6 +258,8 @@ describe('isolated PostgreSQL signal cleanup', () => {
         await new Promise(done => setTimeout(done, 100));
       }
       expect(output, errors.slice(-1500)).toContain('SIGNAL_CLEANUP_WORKER_READY');
+      expect(observation.observationError).toBeUndefined();
+      expect(observation.lifecycle).toBeDefined();
       if (target === 'process-group') process.kill(-child.pid!, 'SIGINT');
       else child.kill('SIGINT');
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -266,15 +272,23 @@ describe('isolated PostgreSQL signal cleanup', () => {
         .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)))
         .find(row => row.stage === 'complete');
       expect(receipt, output.slice(-2000) + errors.slice(-500)).toMatchObject({ runtimeRemoved: true, pgDataRemoved: true });
+      expect(observation.observationError).toBeUndefined();
+      expect(observation.ended).toMatchObject({
+        childPid: observation.lifecycle.worker.pid, runtimeRemoved: true, pgDataRemoved: true,
+      });
       expect(existsSync(receipt.dataDir)).toBe(false);
       expect(existsSync(receipt.runtimeRoot)).toBe(false);
     } finally {
-      if (!finished && child.exitCode === null && child.signalCode === null) {
-        child.kill('SIGTERM');
-        const timer = setTimeout(() => {
-          try { target === 'process-group' ? process.kill(-child.pid!, 'SIGKILL') : child.kill('SIGKILL'); } catch { /* already closed */ }
-        }, 5000);
-        await closed.finally(() => clearTimeout(timer));
+      try {
+        if (!finished && child.exitCode === null && child.signalCode === null) {
+          child.kill('SIGTERM');
+          const timer = setTimeout(() => {
+            try { target === 'process-group' ? process.kill(-child.pid!, 'SIGKILL') : child.kill('SIGKILL'); } catch { /* already closed */ }
+          }, 5000);
+          await closed.finally(() => clearTimeout(timer));
+        }
+      } finally {
+        rmSync(evidenceDir, { recursive: true, force: true });
       }
     }
   }, 220_000);
