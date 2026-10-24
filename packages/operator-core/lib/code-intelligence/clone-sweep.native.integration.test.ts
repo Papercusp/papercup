@@ -109,12 +109,12 @@ const journey = String.raw`
   }
 `;
 
-it('runs two real managed sweep children against one private corpus without refiling, then tears down', async () => {
+it('runs two real managed sweep children against one private corpus without refiling, then tears down', async (context) => {
   const calibration = new CloneIndex();
   calibration.update({ path: 'packages/a/a.ts', source: cloneCorpusSource });
   calibration.update({ path: 'apps/b/b.ts', source: cloneCorpusSource.replace('sum(', 'sumAgain(') });
   expect(calibration.families('renamed'), 'native corpus must admit one family at the production mass floor').toHaveLength(1);
-  await recordIsolatedIntegrationProof({ root,
+  const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/code-intelligence/clone-sweep.native.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'scripts/clone-family-sweep.mts',
       'scripts/lib/tracked-files.mjs', 'packages/operator-core/lib/code-intelligence/clone-sweep.ts',
@@ -148,4 +148,6 @@ it('runs two real managed sweep children against one private corpus without refi
       expect(existsSync(complete.dataDir)).toBe(false);
     },
   });
+  // The reporter hashes this run's original lifecycle artifacts for the test ledger.
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
 }, deadlines.testTimeoutMs);
