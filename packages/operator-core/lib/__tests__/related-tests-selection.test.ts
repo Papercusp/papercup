@@ -452,6 +452,7 @@ describe('original gate selection preparation', () => {
     const parent = join(repo, '.papercusp/scratch');
     mkdirSync(parent, { recursive: true });
     const dir = mkdtempSync(join(parent, 'astro-selection-fixture-'));
+    const external = mkdtempSync(join(tmpdir(), 'astro-external-input-'));
     try {
       mkdirSync(join(dir, 'src'), { recursive: true });
       writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
@@ -481,6 +482,8 @@ describe('original gate selection preparation', () => {
       expect(diagnostics.elapsedMs).toBeGreaterThanOrEqual(diagnostics.phases.syncMs);
       expect(result.runtimeClosure).toBe('unmeasured');
       expect(result.operationalAcceptance).toBe(false);
+      expect(result.commandObligations[0].inputs.some((input: { path: string }) =>
+        input.path.startsWith('node_modules/astro/'))).toBe(true);
       expect(preparePartialContinuationManifest({ root: repo,
         tasks: [{ id: '@probe/astro :: test', dir: relativeDir, command: 'astro check' }],
         selection: result, postSuite: { schemaVersion: 1, coverage: 'complete',
@@ -489,7 +492,22 @@ describe('original gate selection preparation', () => {
         { id: 'command:@probe/astro :: test:0', kind: 'guard' },
         { id: 'post:lint', kind: 'post-suite' },
       ] } });
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+      // An external first-party input stays outside the boundary even when
+      // its path contains node_modules; it is not this install's dependency.
+      mkdirSync(join(external, 'node_modules'), { recursive: true });
+      const escaped = join(external, 'node_modules', 'escaped.ts');
+      writeFileSync(escaped, 'export const escaped = true;');
+      writeFileSync(join(dir, 'tsconfig.json'), JSON.stringify({ extends: 'astro/tsconfigs/strict',
+        files: [escaped], include: ['.astro/types.d.ts', 'src/**/*'], exclude: ['dist'] }));
+      const refused = enumerateAffectedTaskSelection([{ ws: { name: '@probe/astro', dir: relativeDir,
+        scripts: { test: 'astro check' } }, script: 'test' }], { root: repo, syncAstro: true });
+      expect(refused.files).toEqual([]);
+      expect(refused.unenumerated).toMatchObject([{ reason: 'astro-input-escapes-repository' }]);
+      expect(refused.operationalAcceptance).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(external, { recursive: true, force: true });
+    }
   }, 40_000);
 
   it('retains the voice guard native input census as an unexecuted command obligation', () => {
