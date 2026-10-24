@@ -73,7 +73,10 @@ export default function(pi) {
         PAPERCUSP_NATIVE_TOOL_CENSUS_FILE: resultPath },
     });
     expect(result.status, `${result.error?.message ?? ''}\n${result.stderr}\n${result.stdout.slice(-1500)}`).toBe(0);
-    const census = JSON.parse(readFileSync(resultPath, 'utf8')) as { names: string[]; calls: number; turns: number };
+    const census = JSON.parse(readFileSync(resultPath, 'utf8')) as {
+      names: string[]; calls: number; turns: number;
+      descriptions: { name: string; description: string }[];
+    };
     return { version: execFileSync(omp, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim(), ...census };
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -88,7 +91,12 @@ describe('OMP managed replacement installed-client census', () => {
       nativeNames: [...baseline.names, ...restricted.names], managedNames: [canary] });
     task.meta.nativeToolSurface = { baseline, restricted, inventory };
     expect(inventory.rows.every(row => row.gap === null || row.gap === 'client-version-drift' ||
-      row.gap === 'native-semantics-unmeasured')).toBe(true);
+      row.gap === 'native-parity-unverified')).toBe(true);
+    expect(baseline.descriptions.find(row => row.name === 'eval')?.description).toMatch(/persistent kernel/i);
+    const hubDescription = baseline.descriptions.find(row => row.name === 'hub')?.description;
+    expect(hubDescription).toMatch(/coordination|peer messaging/i);
+    expect(hubDescription).toMatch(/background.job/i);
+    expect(hubDescription).toMatch(/process/i);
     // OMP can defer an MCP extension's schema from context.tools; actual
     // execution is the positive control for that interface.
     expect(baseline.calls).toBe(1);
