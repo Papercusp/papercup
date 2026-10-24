@@ -282,9 +282,11 @@ describe('PapercupChat — the view over a controller', () => {
   };
   const resultTurn: ChatTurn = { id: 'result-turn', role: 'assistant', text: '', createdAt: 1000, results: [resultBlock] };
 
-  it.each(['owner', 'public'] as const)('renders scoped results through the current %s host without dispatching on replay', async hostTrust => {
+  it.each(['owner', 'public'] as const)('P010 inert scoped results: renders through the current %s host without dispatching on replay', async hostTrust => {
     const resolve = vi.fn(async () => ({ ok: true as const, value: { ...resultBlock,
-      title: 'Authorized document', text: '**Safe result** <img src=x onerror=alert(1)> [unsafe](javascript:alert(1)) WI-4321' } }));
+      title: 'Authorized document', text: '**Safe result** <script>alert(1)</script> <img src=x onerror=alert(1)> '
+        + '<b onclick="alert(1)">handler</b> [unsafe](javascript:alert(1)) [data](data:text/html,x) '
+        + '[Safe link](https://example.com/result) WI-4321' } }));
     const activate = vi.fn(async () => ({ ok: true as const, value: undefined }));
     const context = { authorizationKey: 'caller:one:revision1', host: { resolve, activate } };
     const view = render(<PapercupChat chat={controller({ turns: [resultTurn] })} hostTrust={hostTrust}
@@ -295,7 +297,10 @@ describe('PapercupChat — the view over a controller', () => {
     const result = view.container.querySelector('[data-result-id="shared-result-one"]')!;
     expect(result.textContent).toContain('Document source');
     expect(result.querySelector('strong')?.textContent).toBe('Safe result');
-    expect(result.querySelector('img, [onerror], a[href^="javascript:"]')).toBeNull();
+    expect(result.querySelector('script, img, [onerror], [onclick], a[href^="javascript:"], a[href^="data:"]')).toBeNull();
+    const safeLink = result.querySelector('a[href="https://example.com/result"]');
+    expect(safeLink?.getAttribute('target')).toBe('_blank');
+    expect(safeLink?.getAttribute('rel')).toContain('noopener');
     expect(result.querySelector('[data-ref-kind]') !== null).toBe(hostTrust === 'owner');
     expect(screen.queryByText(/returned no answer/)).toBeNull();
     expect(activate).not.toHaveBeenCalled();
@@ -308,7 +313,7 @@ describe('PapercupChat — the view over a controller', () => {
       expect.objectContaining({ authorizationKey: context.authorizationKey }));
   });
 
-  it('withholds result contents and actions when the host supplies no authorization boundary', () => {
+  it('P010 inert scoped results: withholds contents and actions without a host authorization boundary', () => {
     const view = render(<PapercupChat chat={controller({ turns: [resultTurn] })} hostTrust="owner" />);
     expect(screen.getByText('This result is unavailable.')).toBeTruthy();
     expect(view.container.querySelector('[data-result-id]')).toBeNull();
@@ -316,7 +321,7 @@ describe('PapercupChat — the view over a controller', () => {
     expect(screen.queryByRole('button', { name: 'Open document' })).toBeNull();
   });
 
-  it('hides a formerly authorized result immediately when the host authorization epoch changes', async () => {
+  it('P010 inert scoped results: hides a formerly authorized result when the host authorization epoch changes', async () => {
     const resolve = vi.fn(async (request: { authorizationKey: string }) => request.authorizationKey === 'allowed'
       ? { ok: true as const, value: { ...resultBlock, title: 'Previously authorized document' } }
       : { ok: false as const, code: 'unauthorized' as const });

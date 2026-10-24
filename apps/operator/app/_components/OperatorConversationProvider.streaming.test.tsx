@@ -323,7 +323,7 @@ describe("OperatorConversationProvider streamed say projection", () => {
     });
   });
 
-  it.each(["eof", "socket-error", "crlf"])("P010 browser resumes canonical events after %s without repeating text, tools or provider admission", async failure => {
+  it.each(["eof", "socket-error", "crlf"])("P010 disconnect versus cancel: resumes after %s without repeating text, tools or provider admission", async failure => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     const identity = { conversationId: "conversation-1", turnId: "11111111-2222-4333-8444-555555555555" };
     const receipt = { ...identity, seq: 104 };
@@ -404,7 +404,7 @@ describe("OperatorConversationProvider streamed say projection", () => {
       expect(writes.filter(body => body.role === "assistant")).toEqual([]);
     });
 
-  it("P010 browser explicitly cancels the prior durable turn when a new user turn aborts its generation", async () => {
+  it("P010 disconnect versus cancel: explicitly cancels the prior durable turn when a new user turn aborts its generation", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     const identity = { conversationId: "conversation-1", turnId: "11111111-2222-4333-8444-555555555555" };
     const replacement = { ...identity, turnId: "66666666-7777-4888-8999-aaaaaaaaaaaa", seq: 106 };
