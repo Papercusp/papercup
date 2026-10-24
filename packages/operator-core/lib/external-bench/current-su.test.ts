@@ -1642,6 +1642,27 @@ function fixture(opts = options) {
   return { row, ports, lifecycle, context, run: () => currentSuBenchHarnessDriver(lifecycle, ports, opts).spinRunAndCost(request) };
 }
 describe('current native benchmark execution', () => {
+  it('runs the frozen Claude stock baseline only through its matching native blueprint and measured identity', async () => {
+    const protocol = currentProtocolFixture();
+    protocol.arms[1].agent = 'claude'; protocol.arms[1].runtime.clientVersion = 'claude/2.1.0';
+    const opts: CurrentSuBenchOptions = { ...options, agent: 'claude', armId: 'baseline',
+      preregistration: { ...options.preregistration, config: protocol } };
+    const f = fixture(opts), launchNative = vi.fn(async () => ({ agentStarted: true, tasks: [{ taskId: f.row.taskId }] }));
+    vi.mocked(f.ports.readIdentity).mockResolvedValue({ ...identity, clientVersion: 'claude/2.1.0' });
+    const { launch, ...common } = f.ports;
+    const stock = currentStockBenchHarnessDriver(f.lifecycle, { ...common, launchNative }, opts);
+    const rejected = await stock.spinRunAndCost({ ...request, blueprintId: 'native-codex' });
+    expect(rejected.telemetry.generationError).toMatch(/blueprint/);
+    expect(launchNative).not.toHaveBeenCalled();
+    const result = await stock.spinRunAndCost({ ...request, blueprintId: 'native-claude' });
+    expect(result.telemetry.stopReason).toBe('done');
+    expect(result.telemetry.armMeta?.currentExecution).toMatchObject({ kind: 'stock-native',
+      configured: { agent: 'claude' }, protocolIdentity: { status: 'matched' },
+      measured: { clientVersion: 'claude/2.1.0' } });
+    expect(launchNative).toHaveBeenCalledOnce(); expect(launch).not.toHaveBeenCalled();
+    expect(f.ports.verifyPreregistration).toHaveBeenCalled(); expect(f.ports.verifyContext).toHaveBeenCalled();
+    expect(f.ports.killTask).toHaveBeenCalledWith(f.row.taskId);
+  });
   it('stock shares protocol/context/accounting checks without invoking a su launch or accepting its blueprint', async () => {
     const opts = { ...options, armId: 'baseline' };
     const f = fixture(opts), launchNative = vi.fn(async () => ({ agentStarted: true, tasks: [{ taskId: f.row.taskId }] }));
@@ -2267,6 +2288,29 @@ describe('current benchmark restart and live binding', () => {
       const again = native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-backend-bin')] as typeof override;
       expect(readFileSync(again.codex.command, 'utf8')).toContain('fswe-task-1');
     } finally { await hosted.stop(); rmSync(snapshotRoot, { recursive: true, force: true }); }
+  });
+  it('issues and revokes the frozen Claude baseline route through the existing host controller', async () => {
+    const f = budgetFixture(); f.input.protocol.arms[1].agent = 'claude';
+    const controller = currentBenchGatewayController({ ...f.input, armId: 'baseline' }, f.governor);
+    const stop = vi.fn(async () => {}), start = vi.fn(async () => ({ port: 32112, stop } as never));
+    try {
+      const hosted = await controller.startNativeGateway(() => {}, start);
+      expect(start).toHaveBeenCalledOnce();
+      expect(hosted.nativeGateway.baseURL).toBe('http://127.0.0.1:32112');
+      expect(hosted.nativeAccountingBinding.assignmentId).toBe(currentBenchAssignmentId(f.input.protocol.runId, 'baseline', 't1', 1));
+      const opts = { ...options, agent: 'claude' as const, armId: 'baseline',
+        preregistration: { preregHash: f.input.preregHash, config: f.input.protocol } };
+      const verify = beginCurrentBenchNativeSession(hosted, opts, handle);
+      verify();
+      const body = JSON.stringify({ model: opts.model, output_config: { effort: opts.effort }, max_tokens: 10 });
+      const attempt = { ...f.attempt, armId: hosted.nativeAccountingBinding.assignmentId,
+        transport: 'anthropic-http' as const, target: 'https://api.anthropic.com/v1/messages', body, bodySha256: f.digest(body) };
+      expect(await controller.gateway.carryTrial.authorizeAttempt(attempt)).not.toBeNull();
+      expect(f.input.authenticateProvider).toHaveBeenCalledOnce(); expect(f.reserve).toHaveBeenCalledOnce();
+      await hosted.stop(); expect(stop).toHaveBeenCalledOnce();
+      expect(verify).toThrow(/active host-owned/);
+      expect(await controller.gateway.carryTrial.authorizeAttempt({ ...attempt, attemptId: randomUUID() })).toBeNull();
+    } finally { controller.revoke(); f.revoke(); }
   });
   it('refuses an unsupported native client before starting a service', async () => {
     const f = budgetFixture(); f.input.protocol.arms[0].agent = 'claude';
