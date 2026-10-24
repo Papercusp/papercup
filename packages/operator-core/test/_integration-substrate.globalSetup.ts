@@ -30,6 +30,8 @@ const NO_SHARED_PG_TESTS = new Set([
   '../lib/release/grading-audit-runtime.integration.test.ts',
   // Archives and DDL controls own a disposable native cluster, without a baseline.
   '../lib/search/bench/selected-corpus-schema.integration.test.ts',
+  // Runs the ingest and completion readers in its own disposable current-build runtime.
+  '../lib/search/session-ingest-loop-namespace.integration.test.ts',
 ].map(path => fileURLToPath(new URL(path, import.meta.url))));
 
 export function integrationNeedsPostgres(selectedPaths: readonly string[]): boolean {
