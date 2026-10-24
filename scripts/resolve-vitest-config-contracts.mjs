@@ -83,9 +83,17 @@ if (process.argv.includes('--astro-selection-child')) {
     let installedModules;
     try { installedModules = realpathSync(resolve(repositoryRoot, 'node_modules')); } catch {}
     const producerPath = file => {
-      const dependency = installedModules && relative(installedModules, realpathSync(file)).replaceAll('\\', '/');
+      const physical = realpathSync(file);
+      const dependency = installedModules && relative(installedModules, physical).replaceAll('\\', '/');
       if (dependency && !isAbsolute(dependency) && dependency !== '..' && !dependency.startsWith('../'))
         return `node_modules/${dependency}`;
+      // lint:as-committed mirrors package directories and links their contents.
+      // Accept a producer alias only when this install resolves it to this file.
+      const marker = '/node_modules/';
+      for (let index = physical.indexOf(marker); index >= 0; index = physical.indexOf(marker, index + 1)) {
+        const alias = `node_modules/${physical.slice(index + marker.length)}`;
+        try { if (realpathSync(resolve(repositoryRoot, alias)) === physical) return alias; } catch {}
+      }
       return repositoryPath(file);
     };
     const files = [...new Set(absoluteFiles.map(repositoryPath))].sort();

@@ -19,7 +19,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { killSpawnedProcessTree } from './lib/batch-watchdog.mjs';
-import { runGovernedTestProcess } from './lib/governed-test-process.mjs';
+import { governedProcessIdempotencyKey, runGovernedTestProcess } from './lib/governed-test-process.mjs';
 
 function ping(socketPath, timeoutMs, signal) {
   return new Promise((done) => {
@@ -117,9 +117,12 @@ export async function runWithPrivatePodman(command, args, options = {}) {
   return runGovernedTestProcess({
     env,
     owner,
+    executionApi: options.executionApi,
     namespace: 'with-private-podman',
     admissionClass: 'process',
-    idempotencyKey: `with-private-podman:${owner}`,
+    // Each fresh evidence directory owns a separate service/workload lifetime.
+    // The session identity alone would reuse its first terminal receipt.
+    idempotencyKey: governedProcessIdempotencyKey('with-private-podman', `${owner}:${resolve(evidenceDir)}`),
     demand: { cpuWeight: 1, memoryBytes: 1024 * 1024 * 1024,
       diskBytes: 256 * 1024 * 1024, fileDescriptors: 16 },
     timeoutMs: runTimeoutMs,

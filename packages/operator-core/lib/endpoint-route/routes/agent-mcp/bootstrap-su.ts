@@ -3306,6 +3306,7 @@ export const bootstrapSu = defineTool({
     {
       const launchSpecRecord: SuLaunchSpecRecord = {
         v: 1,
+        turnProvenanceDir: envelope.env.PAPERCUSP_TURN_PROVENANCE_DIR,
         ...(codexSqliteHome ? { codexSqliteHome } : {}),
         agent,
         workspaceId: workspace,

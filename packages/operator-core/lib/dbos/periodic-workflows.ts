@@ -881,7 +881,7 @@ const outboxBackstopGcWorkflow = idempotentRegisterWorkflow('outboxBackstopGc', 
 );
 DBOS.registerScheduled(outboxBackstopGcWorkflow, { name: 'outboxBackstopGc', crontab: '0 0 */6 * * *' });
 
-// Hourly at :30 (off the :00 stampede): prune old TERMINAL
+// Every half hour at :15/:45 (off the :00 stampede): prune old TERMINAL
 // dbos.workflow_status + operation_outputs rows (R4-5 / EI-1607 defense-in-depth) —
 // 325k+ workflow rows accrue with no DBOS-native retention, bloating the system DB +
 // the scheduler/recovery scans that walk it. Default ON; only terminal statuses,

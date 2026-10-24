@@ -101,6 +101,7 @@ beforeAll(async () => {
 }, 60_000);
 
 beforeEach(() => {
+  _resetRosterCacheForTests();
   mergeRosterWithAssignments.mockReset().mockResolvedValue({ active: [], orphanedClaims: [] });
   listEndedAdvSessions.mockReset().mockResolvedValue([]);
   listPendingWorkbenchLaunches.mockReset().mockResolvedValue([]);
@@ -281,6 +282,90 @@ describe('readAdvRoster — the read deadline (WI-39825)', () => {
       expect(degraded[0]?.reason).toContain('does not exist');
     });
   }
+});
+
+describe('primary roster work outlives a caller deadline', () => {
+  beforeEach(() => _resetRosterCacheForTests());
+
+  it('a timed-out poll shares unfinished primary work with the next poll, across ended limits', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const primary = { active: [{ id: 'late-live' }], orphanedClaims: [] };
+    let finish!: (value: typeof primary) => void;
+    const work = new Promise(resolve => { finish = resolve; });
+    mergeRosterWithAssignments.mockReturnValue(work);
+    let next: ReturnType<typeof readAdvRoster> | undefined;
+    try {
+      await expect(readAdvRoster({ workspaceId: 'ws-overlap', endedLimit: 10, budgetMs: 30 }))
+        .rejects.toThrow('roster active exceeded the read budget');
+      expect(warn).toHaveBeenCalledWith('[advRoster.list] active read failed:', expect.objectContaining({
+        reason: 'roster active exceeded the read budget',
+      }));
+      next = readAdvRoster({ workspaceId: 'ws-overlap', endedLimit: 50, budgetMs: 500 });
+      await vi.waitFor(() => expect(listEndedAdvSessions).toHaveBeenCalledTimes(2));
+      expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(1);
+      finish(primary);
+      expect((await next).active).toEqual(primary.active);
+
+      mergeRosterWithAssignments.mockResolvedValueOnce({ active: [{ id: 'fresh-live' }], orphanedClaims: [] });
+      expect((await readAdvRoster({ workspaceId: 'ws-overlap', budgetMs: 500 })).active)
+        .toEqual([{ id: 'fresh-live' }]);
+      expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(2);
+    } finally {
+      finish(primary);
+      await next?.catch(() => undefined);
+      warn.mockRestore();
+    }
+  });
+
+  it('does not join unfinished primary work from another workspace', async () => {
+    let finish!: (value: { active: { id: string }[]; orphanedClaims: never[] }) => void;
+    const work = new Promise(resolve => { finish = resolve; });
+    mergeRosterWithAssignments.mockImplementation(({ workspaceId }) => workspaceId === 'ws-pending'
+      ? work : Promise.resolve({ active: [{ id: 'other-workspace' }], orphanedClaims: [] }));
+    const first = readAdvRoster({ workspaceId: 'ws-pending', budgetMs: 500 });
+    try {
+      // Overlap the actual reads after the dynamic mock factories finish;
+      // racing importActual with a second import can expose Vitest's real module.
+      await vi.waitFor(() => expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(1));
+      expect((await readAdvRoster({ workspaceId: 'ws-independent', budgetMs: 500 })).active)
+        .toEqual([{ id: 'other-workspace' }]);
+      finish({ active: [{ id: 'original-workspace' }], orphanedClaims: [] });
+      expect((await first).active).toEqual([{ id: 'original-workspace' }]);
+      expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(2);
+    } finally {
+      finish({ active: [], orphanedClaims: [] });
+      await first.catch(() => undefined);
+    }
+  });
+
+  it('a second caller deadline retains the original pending-phase evidence', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let fail!: (error: Error) => void;
+    const work = new Promise((_, reject) => { fail = reject; });
+    mergeRosterWithAssignments.mockImplementation(({ onTiming }) => {
+      onTiming({ phase: 'transcript-freshness', state: 'started', elapsedMs: 0 });
+      return work;
+    });
+    try {
+      for (let i = 0; i < 2; i++) {
+        await expect(readAdvRoster({ workspaceId: 'ws-shared-timing', budgetMs: 30 }))
+          .rejects.toThrow('roster active exceeded the read budget');
+      }
+      expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenLastCalledWith('[advRoster.list] active read failed:', expect.objectContaining({
+        phases: [expect.objectContaining({ phase: 'transcript-freshness', state: 'started' })],
+      }));
+      fail(new Error('original merge failed'));
+      await work.catch(() => undefined);
+      await new Promise(resolve => setImmediate(resolve));
+      mergeRosterWithAssignments.mockResolvedValueOnce({ active: [], orphanedClaims: [] });
+      await expect(readAdvRoster({ workspaceId: 'ws-shared-timing', budgetMs: 500 })).resolves.toMatchObject({ active: [] });
+      expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(2);
+    } finally {
+      fail(new Error('test cleanup'));
+      warn.mockRestore();
+    }
+  });
 });
 
 /**

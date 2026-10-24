@@ -300,6 +300,28 @@ describe('session-dir relocation (D-026 step 3)', () => {
 });
 
 describe('config origin rewrite (D-033 step 2)', () => {
+  it.each([true, false])('rewrites only the isolated Claude gateway and refuses an unmapped origin (mapped=%s)', mapped => {
+    const base = mkdtempSync(join(root, 'claude-origin-')), homes = join(base, 'homes');
+    const home = join(homes, 'claude-session'); mkdirSync(home, { recursive: true });
+    const log = join(base, 'docker.json'), docker = join(base, 'docker');
+    writeFileSync(docker, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)}, JSON.stringify({args: process.argv.slice(2), env: process.env}));\n`, { mode: 0o755 });
+    const { wrapperPath } = materializeDockerExecWrapper({ ...target, binPath: '/opt/claude',
+      sessionRelocation: { sessionEnv: 'CLAUDE_CONFIG_DIR', roots: [{ hostRoot: homes, perTaskDir: join(base, 'task-homes') }] },
+      originRewrites: mapped ? [{ from: 'http://127.0.0.1:32001', to: 'http://egress:8788' }] : [] },
+      { dir: mkdtempSync(join(base, 'wrapper-')), dockerBin: docker, dockerHost: '',
+        forwardEnvPatterns: ['^CLAUDE_CONFIG_DIR$', '^ANTHROPIC_(BASE_URL|AUTH_TOKEN)$'] });
+    const result = spawnSync(wrapperPath, ['-p'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin',
+      CLAUDE_CONFIG_DIR: home, ANTHROPIC_BASE_URL: 'http://127.0.0.1:32001', ANTHROPIC_AUTH_TOKEN: 'secret-test-token' } });
+    expect(result.status, result.stderr).toBe(mapped ? 0 : 126);
+    if (mapped) {
+      const observed = JSON.parse(readFileSync(log, 'utf8'));
+      expect(observed.env.ANTHROPIC_BASE_URL).toBe('http://egress:8788');
+      expect(observed.env.ANTHROPIC_AUTH_TOKEN).toBe('secret-test-token');
+      expect(observed.args).toContain('CLAUDE_CONFIG_DIR');
+      expect(observed.args).not.toContain('secret-test-token');
+    } else { expect(existsSync(log)).toBe(false); expect(result.stderr).toMatch(/loopback origin/); }
+  });
+
   const GW = 'http://papercusp-egress:41001', MCP = 'http://papercusp-egress:41002';
   const config = [
     '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT',

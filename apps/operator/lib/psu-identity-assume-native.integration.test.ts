@@ -13,7 +13,8 @@ import net from 'node:net';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
-import { hostThroughPty, metaPathFor, handoffPathFor, readHostHandoffForParentPid } from '../scripts/psu-pty-host.mjs';
+import { hostThroughPty, metaPathFor, handoffPathFor, readHostHandoffForParentPid,
+  resolveLinuxCodexStartupPid, readLinuxStartupCounters } from '../scripts/psu-pty-host.mjs';
 import { mintCarryRespawnArgs, codexThreadWriterHolder, codexNativeIdForPty } from '../scripts/psu-launcher.mjs';
 import { launchIdentityAssumeHandoff, makeIdentityAssumeHostPort,
   prepareIdentityAssumeCheckpoint } from '../scripts/psu-identity-assume.mjs';
@@ -417,7 +418,20 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       expect(targetMeta.ptyPid).not.toBe(original.nativePid);
       const runningTargetNative = latestNativeId('target');
       expect(runningTargetNative === targetNative).toBe(mode === 'native-resume');
-      expect(codexThreadWriterHolder(homes.target, runningTargetNative)).toMatchObject({ held: true });
+      // A user namespace may hide locks from the global /proc/locks view.
+      // The managed startup child is authoritative; its fdinfo still proves
+      // the exact thread flock, as in the launcher's native identity oracle.
+      const observedProcesses: Array<{ pid: number; comm: string | null }> = [];
+      const nativePid = resolveLinuxCodexStartupPid(targetMeta.ptyPid, {
+        readCounters(pid: number, read: typeof readFileSync = readFileSync) {
+          const counters = readLinuxStartupCounters(pid, read);
+          observedProcesses.push({ pid, comm: counters?.comm ?? null });
+          return counters;
+        },
+      });
+      expect(nativePid, JSON.stringify({ ptyPid: targetMeta.ptyPid, observedProcesses })).not.toBeNull();
+      expect(codexThreadWriterHolder(homes.target, runningTargetNative,
+        { holderPid: nativePid })).toMatchObject({ held: true, pid: nativePid });
       const targetInput = requests.filter(row => row.phase === 'target').map(row => JSON.stringify(row.body)).join('\n');
       expect(targetInput).not.toContain(marker.caller);
       expect(targetInput.includes(marker.target)).toBe(mode === 'native-resume');
@@ -439,7 +453,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         expect(orders).toHaveLength(1);
         const binding = await real.resolve(accepted!.preparation.target.advSessionId);
         expect(binding?.sessionId).toBe(runningTargetNative);
-        const writer = codexThreadWriterHolder(homes.target, runningTargetNative);
+        const writer = codexThreadWriterHolder(homes.target, runningTargetNative, { holderPid: nativePid });
         // The npm Codex launcher can parent a different native lock holder.
         // Use the maintained exact startup-process oracle, not a loose scan.
         expect(codexNativeIdForPty(homes.target, targetMeta.ptyPid)).toBe(runningTargetNative);
@@ -477,7 +491,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           const loser = race.find(row => row.receipt.state === 'refused')!;
           expect(await real.commit(loser.receipt.preparation)).toMatchObject({ state: 'refused', replayed: true });
           expect(orders).toHaveLength(1);
-          expect(codexThreadWriterHolder(homes.target, runningTargetNative).pid).toBe(writer.pid);
+          expect(codexThreadWriterHolder(homes.target, runningTargetNative, { holderPid: nativePid }).pid).toBe(writer.pid);
         }
       }
       releaseTarget();

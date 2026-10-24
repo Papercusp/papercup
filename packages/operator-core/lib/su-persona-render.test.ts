@@ -298,6 +298,12 @@ describe('parseSuLaunchSpecRecord', () => {
     expect(parseSuLaunchSpecRecord(JSON.parse(JSON.stringify(record)))).toEqual(record);
   });
 
+  it('retains the launch-selected provenance directory without inventing a legacy binding', () => {
+    const record = { ...good, turnProvenanceDir: '/launch-state/workspace-a/turn-provenance' };
+    expect(parseSuLaunchSpecRecord(JSON.parse(JSON.stringify(record)))).toEqual(record);
+    expect(parseSuLaunchSpecRecord(good)).not.toHaveProperty('turnProvenanceDir');
+  });
+
   it('retains an exact named selection pin and rejects malformed pins', () => {
     const selectedIdentity = { ref: 'composition:review-suite', sourceRevision: 'a'.repeat(64) };
     expect(parseSuLaunchSpecRecord({ ...good, stack: ['domain:review-domain'], selectedIdentity }))

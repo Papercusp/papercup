@@ -232,9 +232,15 @@ async function parseSessionPortBody(req: Request): Promise<SessionPortRequestBod
   }
 }
 
-async function resolveSessionPortInspection(req: Request, body: SessionPortRequestBody, diagnostics?: RouteDiagnostics) {
-  const measure = <T>(phase: string, work: () => T | PromiseLike<T>): Promise<T> =>
-    diagnostics ? diagnostics.measure(phase, work) : Promise.resolve().then(work);
+async function resolveSessionPortInspection(req: Request, body: SessionPortRequestBody, diagnostics?: RouteDiagnostics, signal?: AbortSignal) {
+  const measure = async <T>(phase: string, work: () => T | PromiseLike<T>): Promise<T> => {
+    signal?.throwIfAborted();
+    const result = await (diagnostics ? diagnostics.measure(phase, work) : Promise.resolve().then(work));
+    // A slow read can settle after the route watchdog fires. Stop here before
+    // starting another read, archive operation, or launch-preparation phase.
+    signal?.throwIfAborted();
+    return result;
+  };
   const protocolError = sessionPortProtocolError(body.protocolVersion, body.transformVersion);
   if (protocolError) return { response: protocolError } as const;
   const sourceAdvSessionId = Number(body.sourceAdvSessionId);
@@ -264,7 +270,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     ? body.workspace.trim()
     : activeWorkspaceId();
   await measure('port.storage-ready', () => store.assertSessionPortStorageReady());
-  const trackedRow = await measure('port.tracked-source', () => getAdvSessionInWorkspace(sourceAdvSessionId, workspaceId));
+  const trackedRow = await measure('port.tracked-source', () => getAdvSessionInWorkspace(sourceAdvSessionId, workspaceId, { signal }));
   if (!trackedRow) return { response: json({ ok: false, error: 'tracked source session not found in target workspace' }, 404) } as const;
   service.resolveSessionPortTargetOwner(trackedRow.coordOwnerId ?? '', body.targetOwnerId);
   // consult-backed-parking-2026-10-12#P-010 (D-009): a port that continues the
@@ -2344,7 +2350,8 @@ const sessionPortInspect = defineTool({
     const parsed = await parseSessionPortBody(req);
     if (parsed instanceof Response) return parsed;
     try {
-      const resolved = await resolveSessionPortInspection(req, parsed, ctx?.routeDiagnostics);
+      const resolved = await resolveSessionPortInspection(req, parsed, ctx?.routeDiagnostics, ctx?.signal);
+      ctx?.signal?.throwIfAborted();
       if ('response' in resolved && resolved.response) return resolved.response;
       const recordTelemetry = () => recordSessionPortTelemetry(telemetryFromInspection(
         resolved.inspection.source.workspaceId,
@@ -2379,7 +2386,8 @@ const sessionPortPrepare = defineTool({
       return json({ ok: false, error: 'expectedSourceHash from inspect is required' }, 400);
     }
     try {
-      const resolved = await resolveSessionPortInspection(req, parsed, ctx?.routeDiagnostics);
+      const resolved = await resolveSessionPortInspection(req, parsed, ctx?.routeDiagnostics, ctx?.signal);
+      ctx?.signal?.throwIfAborted();
       if ('response' in resolved && resolved.response) return resolved.response;
       const { readSuperuserToken } = await import('../../../superuser-token');
       const tokenKey = readSuperuserToken();

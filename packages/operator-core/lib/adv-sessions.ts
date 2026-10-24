@@ -14,7 +14,7 @@
 
 import { createDedicatedOrgPg, DbCallDeadlineError, getOrgPg, withWorkspace } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
-import { boundedOrgTxn } from './pg-bounded-txn';
+import { boundedOrgTxn, OrgTxnTimeoutError } from './pg-bounded-txn';
 import { activeWorkspaceId } from './workspace-registry';
 import type { SuAgent } from './su-agents';
 import { caveat, type FieldCaveat } from './field-reliability';
@@ -2784,11 +2784,16 @@ export async function getLatestActiveAdvSessionByOwner(
 }
 
 /** Explicit workspace lookup for a server-side port request. getAdvSession()
- * remains active-workspace scoped for legacy UI callers. */
-export async function getAdvSessionInWorkspace(id: number, workspaceId: string): Promise<AdvSessionRow | null> {
+ * remains active-workspace scoped for legacy UI callers. The port watchdog
+ * cancels this bounded read rather than leaving its query running after abort. */
+export async function getAdvSessionInWorkspace(
+  id: number,
+  workspaceId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<AdvSessionRow | null> {
+  options.signal?.throwIfAborted();
   try {
-    const { sql } = getOrgPg();
-    const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+    const rows = await boundedOrgTxn((sql) => sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id,
              to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
              plan_slug, agent, role, feature, mode, terminal_bin, pid,
@@ -2801,9 +2806,12 @@ export async function getAdvSessionInWorkspace(id: number, workspaceId: string):
              to_jsonb(a)->'port_metadata' AS port_metadata
         FROM harness_shared.adv_sessions a
        WHERE workspace_id = ${workspaceId} AND id = ${id}
-       LIMIT 1`;
+       LIMIT 1`, { readOnly: true, signal: options.signal, phase: 'adv-sessions:port-tracked-source' });
     return rows[0] ? mapAdvSessionRow(rows[0]) : null;
   } catch (e) {
+    options.signal?.throwIfAborted();
+    // An unavailable read is not evidence that the source session is missing.
+    if (e instanceof OrgTxnTimeoutError || e instanceof DbCallDeadlineError) throw e;
     warnUnlessMissingTable(e, 'getAdvSessionInWorkspace');
     return null;
   }

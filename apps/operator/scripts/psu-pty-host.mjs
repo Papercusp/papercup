@@ -3311,13 +3311,25 @@ function isLinuxCodexProcess(counters) {
     (counters.comm === 'codex' || counters.comm?.startsWith('codex-')));
 }
 
+function readLinuxProcessThreads(pid, readDir) {
+  try {
+    const tids = readDir(`/proc/${pid}/task`).map(String).filter((tid) => /^\d+$/.test(tid));
+    if (tids.length > 0) return { tids, threads: tids.length };
+  } catch {
+    // A process may exit during discovery; retain the main-thread fallback.
+  }
+  return { tids: [String(pid)], threads: null };
+}
+
 /** Resolve the Rust Codex runtime behind the npm/node launcher that owns the
  * PTY. The launcher stays alive for the whole session, so sampling its PID
  * produces a confident but irrelevant zero-IO trace. Linux exposes a cheap,
- * race-tolerant descendant index at /proc/PID/task/PID/children; walk only a
- * few generations and accept a process whose kernel comm identifies Codex. */
+ * race-tolerant descendant index under each /proc/PID/task/TID/children;
+ * worker-thread forks need every TID, just like the diagnostic tree reader.
+ * Walk only a few generations and accept a kernel-identified Codex process. */
 export function resolveLinuxCodexStartupPid(rootPid, {
   readFile = readFileSync,
+  readDir = readdirSync,
   readCounters = readLinuxStartupCounters,
   maxDepth = 4,
 } = {}) {
@@ -3333,17 +3345,19 @@ export function resolveLinuxCodexStartupPid(rootPid, {
       return current.pid;
     }
     if (current.depth >= maxDepth) continue;
-    let children = '';
-    try {
-      children = readFile(`/proc/${current.pid}/task/${current.pid}/children`, 'utf8');
-    } catch {
-      continue;
-    }
-    for (const token of String(children).trim().split(/\s+/)) {
-      if (!token) continue;
-      const childPid = Number(token);
-      if (Number.isInteger(childPid) && childPid > 0 && !seen.has(childPid)) {
-        queue.push({ pid: childPid, depth: current.depth + 1 });
+    for (const tid of readLinuxProcessThreads(current.pid, readDir).tids) {
+      let children = '';
+      try {
+        children = readFile(`/proc/${current.pid}/task/${tid}/children`, 'utf8');
+      } catch {
+        continue;
+      }
+      for (const token of String(children).trim().split(/\s+/)) {
+        if (!token) continue;
+        const childPid = Number(token);
+        if (Number.isInteger(childPid) && childPid > 0 && !seen.has(childPid)) {
+          queue.push({ pid: childPid, depth: current.depth + 1 });
+        }
       }
     }
   }
@@ -3629,17 +3643,7 @@ export function collectCodexStuckProcessTree(rootPid, {
     if (open < 0 || close < open) continue;
     const wchan = readProcText(readFile, `/proc/${current.pid}/wchan`)?.trim() ?? null;
     const cmdline = readProcText(readFile, `/proc/${current.pid}/cmdline`);
-    let threads = null;
-    let tids = [String(current.pid)];
-    try {
-      const listed = readDir(`/proc/${current.pid}/task`).map(String).filter((t) => /^\d+$/.test(t));
-      if (listed.length > 0) {
-        tids = listed;
-        threads = listed.length;
-      }
-    } catch {
-      // Fall back to the main thread's own child list.
-    }
+    const { tids, threads } = readLinuxProcessThreads(current.pid, readDir);
     procs.push({
       pid: current.pid,
       ppid: current.ppid,

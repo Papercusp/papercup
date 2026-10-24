@@ -296,7 +296,7 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
   const callers: string[] = [];
   const routingProof = '../lib/blueprint/launch-blueprint-account-route.e2e.test.ts';
   const nativeProof = '../lib/external-bench/current-su-native.integration.test.ts';
-  const preparationProofs = [routingProof, nativeProof];
+  const preparationProofs = [routingProof, nativeProof, 'grading-audit-runtime-fixture.ts'];
   for (const file of [...readdirSync(import.meta.dirname).filter(name =>
     name.endsWith('-http-fixture.ts') || name === 'knowledge-native-fixture.ts'), ...preparationProofs]) {
     const source = ts.createSourceFile(file, readFileSync(join(import.meta.dirname, file), 'utf8'),
@@ -330,7 +330,7 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
     visit(source);
   }
   expect(callers.sort()).toEqual([routingProof, nativeProof, 'blog-post-http-fixture.ts', 'consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
-    'customer-data-support-http-fixture.ts', 'governance-http-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
+    'customer-data-support-http-fixture.ts', 'governance-http-fixture.ts', 'grading-audit-runtime-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
     'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
 });
 

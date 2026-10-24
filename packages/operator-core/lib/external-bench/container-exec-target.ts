@@ -501,6 +501,17 @@ function pingBridge(b, s) {
 function rewriteOrigins(o, sessionEnv) {
   const home = process.env[sessionEnv];
   if (!home) refuse(sessionEnv + ' is unset; cannot rewrite its config origins');
+  if (sessionEnv === 'CLAUDE_CONFIG_DIR') {
+    // Claude's scoped native route is environment-only; a clean assignment
+    // has no Codex config.toml. Rewrite the exact origin, never the route token.
+    const value = process.env.ANTHROPIC_BASE_URL;
+    let origin;
+    try { origin = new URL(value).origin; } catch { refuse('Claude scoped gateway origin is invalid'); }
+    const next = o.map[origin] ? o.map[origin] + value.slice(origin.length) : value;
+    if (new RegExp(o.loopback, 'i').test(next)) refuse('Claude scoped gateway still names a loopback origin with no egress mapping');
+    process.env.ANTHROPIC_BASE_URL = next;
+    return;
+  }
   const file = path.join(home, 'config.toml');
   let text = '';
   try { text = fs.readFileSync(file, 'utf8'); } catch (e) { refuse('cannot read ' + file + ' to rewrite its origins: ' + e.message); }

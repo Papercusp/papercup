@@ -98,6 +98,20 @@ export interface ReadAdvRosterOptions {
   nowMs?: () => number;
 }
 
+type PrimaryRosterSnapshot = Awaited<ReturnType<typeof import('../adv-roster').mergeRosterWithAssignments>>;
+interface PrimaryRosterTiming {
+  startedAtMs: number;
+  phases: Map<string, {
+    state: 'started' | 'completed' | 'failed';
+    elapsedMs: number;
+    observedAtMs: number;
+  }>;
+}
+// A caller's deadline does not cancel the underlying merge. Keep that work
+// single-flight until IT settles, including polls with a different endedLimit.
+const primaryRosterInFlight = new Map<string, Promise<PrimaryRosterSnapshot>>();
+const primaryRosterTimings = new WeakMap<Promise<PrimaryRosterSnapshot>, PrimaryRosterTiming>();
+
 /**
  * Read the Sessions roster: the live fleet plus the ended / pending / starting
  * sections, bounded by one shared deadline. This is the UNCACHED read — see
@@ -134,23 +148,22 @@ async function readAdvRosterUncached(opts: ReadAdvRosterOptions = {}) {
   const withinBudget = createReadDeadline(budgetMs);
   // Keep the real cold-read failure attributable; a later fast probe cannot
   // explain which database or host-discovery leg was pending at its deadline.
-  const activeStartedAt = performance.now();
-  const activePhases = new Map<string, {
-    state: 'started' | 'completed' | 'failed';
-    elapsedMs: number;
-    observedAtMs: number;
-  }>();
-  const activeRead = withinBudget(mergeRosterWithAssignments({
+  const freshTiming: PrimaryRosterTiming = { startedAtMs: performance.now(), phases: new Map() };
+  const primaryRead = dedupeInFlight(primaryRosterInFlight, JSON.stringify(workspaceId), () =>
+    mergeRosterWithAssignments({
       workspaceId,
       onTiming: ({ phase, state, elapsedMs }) => {
-        activePhases.set(phase, { state, elapsedMs, observedAtMs: performance.now() });
+        freshTiming.phases.set(phase, { state, elapsedMs, observedAtMs: performance.now() });
       },
-    }), 'roster active').catch((error) => {
+    }));
+  const activeTiming = primaryRosterTimings.get(primaryRead) ?? freshTiming;
+  primaryRosterTimings.set(primaryRead, activeTiming);
+  const activeRead = withinBudget(primaryRead, 'roster active').catch((error) => {
     try {
       console.warn('[advRoster.list] active read failed:', {
         reason: classifyReadFailure(error).reason,
-        elapsedMs: Math.round(performance.now() - activeStartedAt),
-        phases: [...activePhases].map(([phase, timing]) => ({
+        elapsedMs: Math.round(performance.now() - activeTiming.startedAtMs),
+        phases: [...activeTiming.phases].map(([phase, timing]) => ({
           phase,
           state: timing.state,
           elapsedMs: Math.round(timing.state === 'started'
@@ -298,6 +311,7 @@ function refreshRosterCache(key: string, opts: ReadAdvRosterOptions): Promise<Ro
 export function _resetRosterCacheForTests(): void {
   rosterCache.clear();
   rosterInFlight.clear();
+  primaryRosterInFlight.clear();
 }
 
 /**

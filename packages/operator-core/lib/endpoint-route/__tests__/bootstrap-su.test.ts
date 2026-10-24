@@ -1986,6 +1986,24 @@ describe('bootstrap-su', () => {
       } }));
   });
 
+  it('persists the exact launch-envelope provenance directory for indexed ingestion', async () => {
+    const { buildConsoleEnvelope } = await import('../../console-launcher');
+    const envelopeMock = vi.mocked(buildConsoleEnvelope);
+    const original = envelopeMock.getMockImplementation()!;
+    const dir = '/scoped/selected-workspace/turn-provenance';
+    envelopeMock.mockImplementationOnce(async opts => {
+      const result = await original(opts);
+      return { ...result, env: { ...result.env, PAPERCUSP_TURN_PROVENANCE_DIR: dir } };
+    });
+    const response = await callPost({ agent: 'codex' });
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.envelopeEnv.PAPERCUSP_TURN_PROVENANCE_DIR).toBe(dir);
+    const { recordSuLaunchSpec } = await import('../../adv-sessions');
+    expect(recordSuLaunchSpec).toHaveBeenCalledWith(expect.anything(), result.envelopeEnv.PAPERCUSP_SID,
+      expect.objectContaining({ turnProvenanceDir: dir, workspaceId: result.workspaceId }));
+  });
+
   it('pins every component of a selected named composition at bootstrap', async () => {
     const { resolveNamedIdentityCompositionSelection } = await import('../../agent-identities/source');
     const dir = mkdtempSync(join(tmpdir(), 'bootstrap-named-composition-'));

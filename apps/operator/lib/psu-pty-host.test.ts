@@ -5552,6 +5552,27 @@ describe('Codex startup process trace (EI-24353430528930250)', () => {
     expect(resolveLinuxCodexStartupPid(100, { readFile: read })).toBe(200);
   });
 
+  it('selects the exact Codex child forked by a nonleader launcher thread', () => {
+    const counters = new Map([
+      [100, { pid: 100, comm: 'node-MainThread' }],
+      [200, { pid: 200, comm: 'codex' }],
+    ]);
+    const readFile = (path: string) => {
+      if (path === '/proc/100/task/100/children') return '';
+      if (path === '/proc/100/task/101/children') throw new Error('thread exited');
+      if (path === '/proc/100/task/102/children') return '200 200\n';
+      throw new Error(`unexpected proc path: ${path}`);
+    };
+    expect(resolveLinuxCodexStartupPid(100, {
+      readCounters: (pid: number) => counters.get(pid) ?? null,
+      readFile,
+      readDir: (path: string) => {
+        expect(path).toBe('/proc/100/task');
+        return ['100', '101', '102'];
+      },
+    })).toBe(200);
+  });
+
   it('samples only Codex on Linux, ends at the bound and stops on child replacement', () => {
     let elapsedMs = 0;
     let tick: (() => void) | undefined;

@@ -358,6 +358,7 @@ async function handleLaunchSu(req: Request): Promise<Response> {
     const durable = await readDurableSuSession({ advSessionId: row.id, workspaceId: activeWorkspaceId() });
     if (durable?.descriptor && durable.agentChatId && durable.harnessSlug) {
       const { launchAttachedSuSession } = await import('../../../su-session-attached-launch');
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts#<module>/handleLaunchSu:be212eb39a69156106ed:1","classification":"durable","reason":"Attached-session resume can reach owner and agent notifications; retain the existing delivery obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return launchAttachedSuSession(req, {
         agent,
         ...executionRequest,
@@ -472,6 +473,7 @@ async function handleLaunchSu(req: Request): Promise<Response> {
     const { launchAttachedSuSession } = await import('../../../su-session-attached-launch');
     const launchContext =
       kickoffKind === 'new-plan' ? await buildKickoffPromptFile({ kind: 'new-plan', harnessSlug: harness }) : null;
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts#<module>/handleLaunchSu:e40640477042d9434ac8:1","classification":"durable","reason":"Attached-session launch can reach owner and agent notifications; retain the existing delivery obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return launchAttachedSuSession(req, {
       agent,
       ...executionRequest,

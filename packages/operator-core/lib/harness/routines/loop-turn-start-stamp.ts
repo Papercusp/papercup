@@ -23,6 +23,8 @@
  */
 import type { ActivityRecord, TelemetryStore } from '@papercusp/activity-bridge';
 import type { Sql } from 'postgres';
+import { isAbsolute } from 'node:path';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { LOOP_TURN_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import { classify, parseEnvelope, readLedgerRows, type LedgerRow } from '../../turn-provenance/turn-provenance';
 
@@ -132,6 +134,7 @@ export interface IndexedNativeLoopTurn {
 export function indexedLoopTurnStartRecord(
   turn: IndexedNativeLoopTurn,
   ledgerRows?: LedgerRow[],
+  target?: { dir: string; workspaceId: string },
 ): ActivityRecord | null {
   const owner = turn.owner?.trim();
   const submittedAt = turn.ts === null ? NaN : new Date(turn.ts).getTime();
@@ -141,7 +144,10 @@ export function indexedLoopTurnStartRecord(
       !Number.isFinite(submittedAt)) return null;
   const envelope = parseEnvelope(turn.text);
   if (envelope?.origin !== 'loop-fire') return null;
-  const rows = ledgerRows ?? readLedgerRows(owner, { nowMs: submittedAt });
+  // Native transcript rows use the corpus namespace 'default'; it is not the
+  // target workspace. Explicit non-corpus namespaces must match the launch.
+  if (target && turn.workspace_id !== 'default' && turn.workspace_id !== target.workspaceId) return null;
+  const rows = ledgerRows ?? readLedgerRows(owner, { nowMs: submittedAt, dir: target?.dir });
   const enrollment = rows.find(row => row.nonce === envelope.nonce);
   if (!enrollment || enrollment.sid !== owner || enrollment.origin !== 'loop-fire' ||
       !Number.isFinite(enrollment.ts) || enrollment.ts > submittedAt ||
@@ -160,6 +166,7 @@ export function indexedLoopTurnStartRecord(
     detail: {
       ...record.detail,
       source: 'session-ingest',
+      ...(target ? { provenanceWorkspaceId: target.workspaceId } : {}),
       indexedTurn: {
         workspaceId: turn.workspace_id,
         sourceKind: turn.source_kind,
@@ -170,8 +177,54 @@ export function indexedLoopTurnStartRecord(
   };
 }
 
+export interface IndexedLoopLaunchBinding {
+  owner: string;
+  workspace_id: string;
+  agent: string;
+  session_id: string | null;
+  omp_thread_id: string | null;
+  spec_workspace: string | null;
+  provenance_dir: string | null;
+}
+
+/** An ADV launch receipt, never transcript cwd or the ingest host's environment,
+ * selects the ledger. Missing/ambiguous legacy receipts remain unknown. */
+export function indexedLoopLaunchBinding(
+  turn: IndexedNativeLoopTurn,
+  launches: IndexedLoopLaunchBinding[],
+  workspaceId: string,
+): { dir: string; workspaceId: string } | null {
+  const matches = launches.filter(row => row.owner === turn.owner &&
+    row.workspace_id === workspaceId && row.spec_workspace === workspaceId &&
+    row.agent === turn.source_kind &&
+    (row.agent === 'omp' ? row.omp_thread_id : row.session_id) === turn.session_id &&
+    typeof row.provenance_dir === 'string' && isAbsolute(row.provenance_dir));
+  if (matches.length !== 1) return null;
+  return { dir: matches[0]!.provenance_dir!, workspaceId };
+}
+
 export async function recordIndexedLoopTurnStarts(sql: Sql, turns: IndexedNativeLoopTurn[]): Promise<void> {
-  const records = turns.map(turn => indexedLoopTurnStartRecord(turn)).filter(record => record !== null);
+  const candidates = turns.filter(turn => turn.owner && turn.speaker === 'user' &&
+    turn.turn_origin === 'loop-fire' && ['claude', 'codex', 'omp'].includes(turn.source_kind));
+  if (!candidates.length) return;
+  const workspaceId = activeWorkspaceId();
+  const owners = [...new Set(candidates.map(turn => turn.owner!))];
+  const sessions = [...new Set(candidates.map(turn => turn.session_id))];
+  const launches = await sql<IndexedLoopLaunchBinding[]>`
+    SELECT coord_owner_id AS owner, workspace_id, agent, session_id, omp_thread_id,
+           launch_spec->>'workspaceId' AS spec_workspace,
+           launch_spec->>'turnProvenanceDir' AS provenance_dir
+      FROM harness_shared.adv_sessions
+     WHERE workspace_id = ${workspaceId}
+       AND coord_owner_id = ANY(${sql.array(owners)}::text[])
+       AND (session_id = ANY(${sql.array(sessions)}::text[])
+         OR omp_thread_id = ANY(${sql.array(sessions)}::text[]))
+  `;
+  const records = candidates.flatMap(turn => {
+    const target = indexedLoopLaunchBinding(turn, launches, workspaceId);
+    const record = target ? indexedLoopTurnStartRecord(turn, undefined, target) : null;
+    return record ? [record] : [];
+  });
   if (!records.length) return;
   const { createPgTelemetryStore } = await import('../../activity-pg-store');
   // Reuse the ingest client and its statement-timeout budget. In particular, do

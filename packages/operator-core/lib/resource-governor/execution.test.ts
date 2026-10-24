@@ -81,6 +81,48 @@ describe('governed execution lifecycle', () => {
     expect(governedExecutionLeaseTtlForTimeout(60 * 60_000)).toBe(30 * 60_000);
   });
 
+  it('reports enqueue, lease, and running phase durations without changing admission', async () => {
+    const d = deps();
+    const phases: Array<{ phase: string; state: string; elapsedMs: number }> = [];
+    const execution = await beginGovernedExecution(
+      { idempotencyKey: 'timed-admission', admissionClass: 'process' },
+      { owner: 'child', onAdmissionPhase: (event) => phases.push(event) },
+      d,
+    );
+
+    expect(phases.map(({ phase, state }) => [phase, state])).toEqual([
+      ['enqueue', 'pending'],
+      ['enqueue', 'fulfilled'],
+      ['lease-receipt', 'pending'],
+      ['lease-receipt', 'fulfilled'],
+      ['mark-running', 'pending'],
+      ['mark-running', 'fulfilled'],
+    ]);
+    expect(phases.every(({ elapsedMs }) => Number.isFinite(elapsedMs) && elapsedMs >= 0)).toBe(true);
+    await execution.cancel('test cleanup');
+  });
+
+  it('reports a rejected lease phase and preserves its failure', async () => {
+    const d = deps();
+    vi.spyOn(d.driver, 'leaseReceipt').mockRejectedValueOnce(new Error('lease unavailable'));
+    const phases: Array<{ phase: string; state: string; elapsedMs: number }> = [];
+
+    await expect(beginGovernedExecution(
+      { idempotencyKey: 'timed-lease-failure', admissionClass: 'process' },
+      { owner: 'child', onAdmissionPhase: (event) => phases.push(event) },
+      d,
+    )).rejects.toThrow('lease unavailable');
+
+    expect(phases.map(({ phase, state }) => [phase, state])).toEqual([
+      ['enqueue', 'pending'],
+      ['enqueue', 'fulfilled'],
+      ['lease-receipt', 'pending'],
+      ['lease-receipt', 'rejected'],
+    ]);
+    expect(phases.every(({ elapsedMs }) => Number.isFinite(elapsedMs) && elapsedMs >= 0)).toBe(true);
+    expect(d.current()).toMatchObject({ state: 'cancelled' });
+  });
+
   it('retains the durable lease through detached release failures and retries exact measured demand', async () => {
     vi.useFakeTimers();
     const warning = vi.spyOn(console, 'error').mockImplementation(() => {});

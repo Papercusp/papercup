@@ -57,6 +57,14 @@ export type GovernedExecutionSettlement =
   | { readonly kind: 'release'; readonly actualDemand?: ResourceDemand }
   | { readonly kind: 'cancel'; readonly reason: string };
 
+export type GovernedExecutionAdmissionPhase = 'enqueue' | 'lease-receipt' | 'mark-running';
+export type GovernedExecutionAdmissionPhaseState = 'pending' | 'fulfilled' | 'rejected';
+export interface GovernedExecutionAdmissionPhaseEvent {
+  readonly phase: GovernedExecutionAdmissionPhase;
+  readonly state: GovernedExecutionAdmissionPhaseState;
+  readonly elapsedMs: number;
+}
+
 const detachedSettlements = new WeakSet<GovernedExecution>();
 
 /**
@@ -95,6 +103,8 @@ export function settleGovernedExecutionInBackground(
 export interface GovernedExecutionInput<T = unknown> {
   readonly owner: string;
   readonly leaseTtlMs?: number;
+  /** Observation-only phase timings; observer failures never change admission. */
+  readonly onAdmissionPhase?: (event: GovernedExecutionAdmissionPhaseEvent) => void;
   /**
    * Caller lifetime for this execution. When it aborts, the durable receipt
    * is cancelled even if the bounded operation itself does not understand
@@ -289,10 +299,29 @@ export function runGovernedOperation<T>(
 
 export async function beginGovernedExecution<T = unknown>(
   request: AdmissionRequest,
-  input: Pick<GovernedExecutionInput<T>, 'owner' | 'leaseTtlMs'>,
+  input: Pick<GovernedExecutionInput<T>, 'owner' | 'leaseTtlMs' | 'onAdmissionPhase'>,
   deps: GovernedExecutionDeps,
 ): Promise<GovernedExecution> {
-  const outcome = await deps.governor.admit(request);
+  const reportPhase = (event: GovernedExecutionAdmissionPhaseEvent): void => {
+    try { input.onAdmissionPhase?.(event); } catch { /* diagnostics cannot own admission */ }
+  };
+  const measurePhase = async <R>(
+    phase: GovernedExecutionAdmissionPhase,
+    run: () => Promise<R>,
+  ): Promise<R> => {
+    const startedAt = performance.now();
+    const elapsedMs = (): number => Math.max(0, Math.round(performance.now() - startedAt));
+    reportPhase({ phase, state: 'pending', elapsedMs: 0 });
+    try {
+      const result = await run();
+      reportPhase({ phase, state: 'fulfilled', elapsedMs: elapsedMs() });
+      return result;
+    } catch (error) {
+      reportPhase({ phase, state: 'rejected', elapsedMs: elapsedMs() });
+      throw error;
+    }
+  };
+  const outcome = await measurePhase('enqueue', () => deps.governor.admit(request));
   if (outcome.kind !== 'queued') {
     throw new Error(`governed execution requires a durable queued receipt; received '${outcome.kind}'`);
   }
@@ -339,11 +368,11 @@ export async function beginGovernedExecution<T = unknown>(
 
   let claim: AdmissionQueueLeaseClaim | null = null;
   try {
-    claim = await deps.driver.leaseReceipt({
+    claim = await measurePhase('lease-receipt', () => deps.driver.leaseReceipt({
       receiptId: outcome.receipt.receiptId,
       owner: input.owner,
       ttlMs: input.leaseTtlMs ?? GOVERNED_EXECUTION_LEASE_TTL_MS,
-    });
+    }));
   } catch (error) {
     throw await cancelStartFailure(
       error,
@@ -357,7 +386,7 @@ export async function beginGovernedExecution<T = unknown>(
 
   let running: Awaited<ReturnType<GovernedExecutionDeps['driver']['markRunning']>>;
   try {
-    running = await deps.driver.markRunning(claim.receiptId, claim.lease.leaseId);
+    running = await measurePhase('mark-running', () => deps.driver.markRunning(claim.receiptId, claim.lease.leaseId));
   } catch (error) {
     throw await cancelStartFailure(
       error,

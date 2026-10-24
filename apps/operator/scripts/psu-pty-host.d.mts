@@ -1231,10 +1231,12 @@ export function readLinuxStartupCounters(pid: any, readFile?: typeof readFileSyn
 /** Resolve the Rust Codex runtime behind the npm/node launcher that owns the
  * PTY. The launcher stays alive for the whole session, so sampling its PID
  * produces a confident but irrelevant zero-IO trace. Linux exposes a cheap,
- * race-tolerant descendant index at /proc/PID/task/PID/children; walk only a
- * few generations and accept a process whose kernel comm identifies Codex. */
-export function resolveLinuxCodexStartupPid(rootPid: any, { readFile, readCounters, maxDepth, }?: {
+ * race-tolerant descendant index under each /proc/PID/task/TID/children;
+ * worker-thread forks need every TID, just like the diagnostic tree reader.
+ * Walk only a few generations and accept a kernel-identified Codex process. */
+export function resolveLinuxCodexStartupPid(rootPid: any, { readFile, readDir, readCounters, maxDepth, }?: {
     readFile?: typeof readFileSync | undefined;
+    readDir?: typeof readdirSync | undefined;
     readCounters?: typeof readLinuxStartupCounters | undefined;
     maxDepth?: number | undefined;
 }): any;
@@ -6330,4 +6332,5 @@ export type McpReconnectMacroBudgets = {
 };
 import { readSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { stageAgentIdentityTty } from '../../../libs/papercusp-shared/src/agent/loopback-identity-tty.mjs';

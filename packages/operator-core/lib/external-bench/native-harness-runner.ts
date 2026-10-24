@@ -34,7 +34,7 @@ import { promises as fs } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { createScopedNativeSandboxSpawn } from '@papercusp/orchestrator/fleet-srt-spawn';
 import { SCOPED_INFERENCE_GATEWAY_ENV } from '@papercusp/orchestrator/codex-gateway-config';
-import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { currentBenchAssignmentId, currentBenchAttemptLabel, currentStockBenchHarnessDriver, liveCurrentSuBenchPorts,
   requireCurrentBenchHostBinding, beginCurrentBenchNativeSession, type CurrentSuBenchOptions, type CurrentSuBenchObservations,
   type CurrentStockBenchPorts } from './current-su';
@@ -70,10 +70,12 @@ const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(
 export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx: PapercuspUnifiedToolContext,
   observations: CurrentSuBenchObservations, db: Pick<DbScope, 'sql'> = {}) {
   const common = liveCurrentSuBenchPorts(ctx, observations, opts, db);
+  const agent = opts.agent;
+  const homeEnv = agent === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME';
   const containerExec = observations.containerExec && structuredClone(observations.containerExec);
   if (containerExec) {
     validateDockerExecTarget(containerExec);
-    if (containerExec.hookBridge || containerExec.sessionRelocation?.sessionEnv !== 'CODEX_HOME' || !containerExec.originRewrites)
+    if (containerExec.hookBridge || containerExec.sessionRelocation?.sessionEnv !== homeEnv || !containerExec.originRewrites)
       throw new Error('Stock native container requires a relocated clean home and gateway rewrite without host hooks.');
   }
   const pending = new Map<string, Promise<void>>();
@@ -98,10 +100,10 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
         { runAgentChat }] = await Promise.all([import('../adv-sessions'), import('../task-manager/store'), import('../agent-chat-stream')]);
       const ownerId = `benchmark-stock-${randomUUID()}`;
       const label = `${currentBenchAttemptLabel(opts.runId, handle)}solver`;
-      const sessionKey = await recordAdvSession({ agent: 'codex', role: null, mode: 'console', workspaceId: opts.workspaceId,
+      const sessionKey = await recordAdvSession({ agent, role: null, mode: 'console', workspaceId: opts.workspaceId,
         coordOwnerId: ownerId, cwd: handle.worktreePath, label });
       if (sessionKey == null) throw new Error('Stock benchmark session enrollment failed; no native process started.');
-      const home = codexHomeForSessionKey(sessionKey);
+      const home = agent === 'claude' ? sessionClaudeConfigDir(ownerId) : codexHomeForSessionKey(sessionKey);
       let child: import('node:child_process').ChildProcess | undefined, taskId: string | undefined;
       let wrapperDir: string | undefined;
       let nativeSessionId: string | undefined, linked = Promise.resolve();
@@ -113,9 +115,10 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
           await fs.mkdir(dirname(home), { recursive: true });
           // Never reuse an old home or import host context/credentials.
           await fs.mkdir(home, { mode: 0o700 });
-          const stream = runAgentChat({ backend: 'codex', agentCmd: 'codex', model: `${opts.model}:${opts.effort}`,
+          const stream = runAgentChat({ backend: agent === 'claude' ? 'claude-code' : 'codex', agentCmd: agent, model: `${opts.model}:${opts.effort}`,
             cwd: handle.worktreePath, promptText: buildNativeHarnessPrompt(task) + context.contextText,
-            isolateConfig: true, isolateDir: home, codexGateway: observations.nativeGateway,
+            isolateConfig: true, isolateDir: home,
+            ...(agent === 'claude' ? { statelessGateway: observations.nativeGateway } : { codexGateway: observations.nativeGateway }),
             permissionMode: 'bypassPermissions', ownerId, signal: opts.signal,
             onNativeSession: id => {
               if (nativeSessionId && nativeSessionId !== id) { error = 'Stock native session changed during one assignment.'; child?.kill('SIGTERM'); return; }
@@ -146,12 +149,16 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
               const host = requireCurrentBenchHostBinding(observations, opts);
               verifySession();
               if (opts.signal?.aborted) throw new Error('Stock native assignment was cancelled before process creation.');
-              if (!['codex', 'codex.js'].includes(basename(command)) || options.cwd !== handle.worktreePath || options.env?.CODEX_HOME !== home)
+              if (!(agent === 'claude' ? ['claude'] : ['codex', 'codex.js']).includes(basename(command)) ||
+                  options.cwd !== handle.worktreePath || options.env?.[homeEnv] !== home)
                 throw new Error('Stock native identity transport cannot be observed in this host.');
               const env: NodeJS.ProcessEnv = { PATH: options.env.PATH, LANG: options.env.LANG, LC_ALL: options.env.LC_ALL,
-                TERM: options.env.TERM, TZ: options.env.TZ, HOME: home, CODEX_HOME: home, PAPERCUSP_AGENT: 'codex',
+                TERM: options.env.TERM, TZ: options.env.TZ, HOME: home, [homeEnv]: home, PAPERCUSP_AGENT: agent,
                 PAPERCUSP_SID: ownerId, PAPERCUSP_OPERATOR_URL: observations.nativeGateway!.baseURL,
                 [SCOPED_INFERENCE_GATEWAY_ENV]: JSON.stringify(observations.nativeGateway) };
+              if (agent === 'claude') Object.assign(env, { XDG_CONFIG_HOME: join(home, '.config'),
+                ANTHROPIC_BASE_URL: observations.nativeGateway!.baseURL, ANTHROPIC_AUTH_TOKEN: observations.nativeGateway!.token,
+                CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' });
               if (task.instanceId !== host.taskId) throw new Error('Stock native task differs from its host assignment.');
               const register = async (binary: string, argv: string[], spawnOptions: import('node:child_process').SpawnOptions) => managedSpawn(binary, argv,
                   { class: 'agent-session', title: label, argv: [], cwd: handle.worktreePath, harnessSlug: handle.slug,
@@ -164,9 +171,14 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
                 // Docker is the native OS boundary. Host SRT would conceal its
                 // socket/mounts; the existing wrapper relocates only this clean
                 // home, rewrites its gateway and runs in the task's /app.
-                const wrapper = materializeDockerExecWrapper(containerExec);
+                const wrapper = materializeDockerExecWrapper(containerExec, agent === 'claude' ? {
+                  // Only this assignment's route token and clean-home selectors
+                  // cross into the task. No ambient provider, MCP or host config.
+                  forwardEnvPatterns: ['^CLAUDE_CONFIG_DIR$', '^CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC$', '^DISABLE_AUTOUPDATER$',
+                    '^XDG_CONFIG_HOME$', '^ANTHROPIC_(BASE_URL|AUTH_TOKEN)$', '^PAPERCUSP_(AGENT|SID)$', '^LANG$', '^LC_', '^TZ$'],
+                } : {});
                 wrapperDir = wrapper.dir;
-                spawned = await register(wrapper.wrapperPath, ['--no-daemon', ...args],
+                spawned = await register(wrapper.wrapperPath, agent === 'codex' ? ['--no-daemon', ...args] : args,
                   { ...options, cwd: handle.worktreePath, env });
               } else {
                 const sandbox = createScopedNativeSandboxSpawn({ env, cwd: handle.worktreePath });
@@ -199,9 +211,9 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
           if (nativeSessionId) {
             const [{ ingestInteractiveUsage }, { defaultAdapters }] = await Promise.all([
               import('../interactive-usage/ingest-claude-transcripts'), import('../interactive-usage/ingest-adapters')]);
-            const adapter = defaultAdapters().find(value => value.name === 'codex');
-            if (!adapter) throw new Error('Canonical Codex usage adapter is unavailable.');
-            await ingestInteractiveUsage({ adapters: [{ ...adapter, root: join(home, 'sessions'), ownerId, advSessionId: sessionKey }],
+            const adapter = defaultAdapters().find(value => value.name === agent);
+            if (!adapter) throw new Error(`Canonical ${agent} usage adapter is unavailable.`);
+            await ingestInteractiveUsage({ adapters: [{ ...adapter, root: join(home, agent === 'claude' ? 'projects' : 'sessions'), ownerId, advSessionId: sessionKey }],
               includeIsolationRoots: false, maxFilesPerTick: 1000, maxBytesPerFile: 8_388_608 }, { ...db, workspaceId: opts.workspaceId });
           }
         }

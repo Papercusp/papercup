@@ -285,6 +285,8 @@ export interface SuLaunchSpecRecord {
   headless?: boolean;
   /** Native SQLite binding, persisted on the exact ADV launch row. */
   codexSqliteHome?: string;
+  /** Exact ledger directory selected by this session's launch envelope. */
+  turnProvenanceDir?: string;
   fleet: { slug: string | null; role: string | null } | null;
   /** Resolved launch binding and the last artifact/state receipts (P-008). */
   stack?: string[];
@@ -519,6 +521,7 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
     loopArmed: r.loopArmed === true,
     ...(typeof r.headless === 'boolean' ? { headless: r.headless } : {}),
     ...(typeof r.codexSqliteHome === 'string' ? { codexSqliteHome: r.codexSqliteHome } : {}),
+    ...(typeof r.turnProvenanceDir === 'string' ? { turnProvenanceDir: r.turnProvenanceDir } : {}),
     fleet:
       r.fleet && typeof r.fleet === 'object'
         ? {

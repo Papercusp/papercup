@@ -100,6 +100,39 @@ http.createServer((req,res)=>{res.end(req.url==='/_ping'?'OK':'unexpected')}).li
   assert.throws(() => process.kill(receipt.apiPid, 0), { code: 'ESRCH' });
 });
 
+test('successive owned runs in one session do not reuse a settled admission receipt', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'pc-podman-successive-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const podman = join(dir, 'podman');
+  await writeFile(podman, `#!/usr/bin/env node
+require('node:http').createServer((_req,res)=>res.end('OK')).listen(process.argv.at(-1).slice(7));
+`);
+  await chmod(podman, 0o755);
+  const settled = new Set();
+  const executionApi = {
+    admissionContextFromEnvironment: () => null,
+    async runGovernedOperation(operation, run) {
+      assert.equal(settled.has(operation.idempotencyKey), false, 'settled receipt is not leaseable');
+      try { return await run({ receiptId: `run-${settled.size}`, workspaceId: operation.workspaceId }); }
+      finally { settled.add(operation.idempotencyKey); }
+    },
+  };
+  for (const label of ['first', 'second']) {
+    const evidenceDir = join(dir, label);
+    const marker = join(dir, `${label}.txt`);
+    const code = await runWithPrivatePodman(process.execPath,
+      ['-e', 'require("node:fs").writeFileSync(process.argv[1], "ran")', marker], {
+        podman, evidenceDir, executionApi,
+        env: { ...process.env, PAPERCUSP_SID: 'same-podman-session', PAPERCUSP_WORKSPACE_ID: 'podman-test' },
+      });
+    assert.equal(code, 0);
+    assert.equal(await readFile(marker, 'utf8'), 'ran');
+    const receipt = JSON.parse(await readFile(join(evidenceDir, 'receipt.json'), 'utf8'));
+    assert.deepEqual(receipt.cleanup, { apiStopped: true, commandStopped: true });
+  }
+  assert.equal(settled.size, 2);
+});
+
 test('explicit storage pins the API store even with inherited rootless configuration', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'pc-podman-storage-'));
   t.after(() => rm(dir, { recursive: true, force: true }));

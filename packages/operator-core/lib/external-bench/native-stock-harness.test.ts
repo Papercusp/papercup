@@ -24,8 +24,8 @@ vi.mock('../task-manager/store', () => ({ bindLiveAgentSessionTasksToNativeSessi
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: h.managed }));
 vi.mock('../agent-chat-stream', () => ({ runAgentChat: h.run }));
 vi.mock('../interactive-usage/ingest-claude-transcripts', () => ({ ingestInteractiveUsage: h.ingest }));
-vi.mock('../interactive-usage/ingest-adapters', () => ({ defaultAdapters: () => [{ name: 'codex' }] }));
-vi.mock('@papercusp/orchestrator/session-launch-dirs', () => ({ codexHomeForSessionKey: () => h.home }));
+vi.mock('../interactive-usage/ingest-adapters', () => ({ defaultAdapters: () => [{ name: 'codex' }, { name: 'claude' }] }));
+vi.mock('@papercusp/orchestrator/session-launch-dirs', () => ({ codexHomeForSessionKey: () => h.home, sessionClaudeConfigDir: () => h.home }));
 vi.mock('@papercusp/orchestrator/fleet-srt-spawn', () => ({
   createScopedNativeSandboxSpawn: h.sandbox,
 }));
@@ -84,6 +84,67 @@ afterEach(async () => {
 });
 
 describe('current stock native factory', () => {
+  it('enrolls Claude with its scoped transport and ingests only its retained projects', async () => {
+    h.run.mockImplementation(async function* (options) {
+      await options.spawnProcess!('claude', ['-p'], { cwd: root, env: { PATH: '/private/runtime', CLAUDE_CONFIG_DIR: h.home,
+        ANTHROPIC_API_KEY: 'HOST_SECRET_SENTINEL', ANTHROPIC_AUTH_TOKEN: 'HOST_SECRET_SENTINEL', NODE_OPTIONS: 'HOST_INJECTION' } });
+      options.onNativeSession!('native-claude'); terminal();
+      yield { type: 'result', finalText: 'done', costUsd: 0, tokensIn: 0, tokensOut: 0 };
+    });
+    const value = factory({ ...opts(), agent: 'claude' });
+    await value.ports.launchNative(input()); await value.ports.getTask('stock-task');
+    expect(h.record).toHaveBeenCalledWith(expect.objectContaining({ agent: 'claude' }));
+    expect(h.run.mock.calls[0][0]).toMatchObject({ backend: 'claude-code', agentCmd: 'claude', isolateConfig: true,
+      isolateDir: h.home, statelessGateway: { baseURL: 'http://127.0.0.1:32001', token: 'a'.repeat(64) } });
+    expect(h.run.mock.calls[0][0].codexGateway).toBeUndefined();
+    const env = h.managed.mock.calls[0][3].spawnOptions.env;
+    expect(env).toMatchObject({ HOME: h.home, CLAUDE_CONFIG_DIR: h.home, XDG_CONFIG_HOME: join(h.home, '.config'),
+      PAPERCUSP_AGENT: 'claude', ANTHROPIC_BASE_URL: 'http://127.0.0.1:32001', ANTHROPIC_AUTH_TOKEN: 'a'.repeat(64),
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' });
+    for (const key of ['CODEX_HOME', 'ANTHROPIC_API_KEY', 'NODE_OPTIONS', 'OPENAI_API_KEY']) expect(env[key]).toBeUndefined();
+    expect(h.bind).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'native-claude', initialTaskId: 'stock-task' }), undefined);
+    expect(h.ingest).toHaveBeenCalledWith(expect.objectContaining({ includeIsolationRoots: false,
+      adapters: [expect.objectContaining({ name: 'claude', root: join(h.home, 'projects'), ownerId: h.owner, advSessionId: 1 })] }),
+      { workspaceId: 'private-stock' });
+    for (const path of ['.credentials.json', 'settings.json', 'CLAUDE.md']) expect(existsSync(join(h.home, path))).toBe(false);
+  });
+
+  it('relocates Claude into its container without Codex flags or host credentials', async () => {
+    const homes = join(root, 'homes'); h.home = join(homes, 'claude-stock');
+    const target: DockerExecTarget = { kind: 'docker-exec', containerId: 'private-claude', workdir: '/app', binPath: '/opt/claude',
+      sessionRelocation: { sessionEnv: 'CLAUDE_CONFIG_DIR', roots: [{ hostRoot: homes, perTaskDir: join(root, 'task-homes') }] },
+      originRewrites: [{ from: 'http://127.0.0.1:32001', to: 'http://papercusp-egress:8788' }] };
+    const log = join(root, 'claude-exec.json');
+    writeFileSync(join(root, 'docker'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)}, JSON.stringify({args: process.argv.slice(2), env: process.env}));\n`, { mode: 0o755 });
+    h.run.mockImplementation(async function* (options) {
+      await options.spawnProcess!('claude', ['-p', '--model', 'frozen-model'], { cwd: root,
+        env: { PATH: `${root}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: h.home, ANTHROPIC_API_KEY: 'HOST_SECRET_SENTINEL' } });
+      options.onNativeSession!('native-claude'); terminal();
+      yield { type: 'result', finalText: 'done', costUsd: 0, tokensIn: 0, tokensOut: 0 };
+    });
+    h.managed.mockImplementation(async (command, args, _meta, registration) => {
+      const result = spawnSync(command, args, { ...registration.spawnOptions, encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0); return { child: h.child, taskId: 'stock-task' };
+    });
+    const value = factory({ ...opts(), agent: 'claude' }, target);
+    await value.ports.launchNative(input()); await value.ports.getTask('stock-task');
+    const observed = JSON.parse(readFileSync(log, 'utf8'));
+    expect(observed.args.slice(-5)).toEqual(['private-claude', '/opt/claude', '-p', '--model', 'frozen-model']);
+    expect(observed.args).not.toContain('--no-daemon'); expect(observed.args).not.toContain('ANTHROPIC_API_KEY');
+    expect(observed.args).toContain('CLAUDE_CONFIG_DIR'); expect(observed.args).toContain('ANTHROPIC_AUTH_TOKEN');
+    expect(observed.env.ANTHROPIC_BASE_URL).toBe('http://papercusp-egress:8788');
+    expect(observed.env.ANTHROPIC_AUTH_TOKEN).toBe('a'.repeat(64));
+    expect(lstatSync(h.home).isSymbolicLink()).toBe(true); expect(h.sandbox).not.toHaveBeenCalled();
+  });
+
+  it.each(['codex', 'different-claude'])('refuses a Claude command/home conflict before managed spawn (%s)', async command => {
+    h.run.mockImplementation(async function* (options) {
+      await options.spawnProcess!(command, [], { cwd: root, env: { CLAUDE_CONFIG_DIR: command === 'codex' ? h.home : '/other' } });
+    });
+    await expect(factory({ ...opts(), agent: 'claude' }).ports.launchNative(input())).rejects.toThrow(/identity transport/);
+    expect(h.managed).not.toHaveBeenCalled(); expect(h.end).toHaveBeenCalledOnce();
+  });
+
   it('refuses a reused host allowance before enrolling another native session', async () => {
     h.begin.mockImplementation(() => { throw new Error('allowance already used'); });
     await expect(factory().ports.launchNative(input())).rejects.toThrow('allowance already used');
@@ -123,7 +184,11 @@ describe('current stock native factory', () => {
     expect(h.sandbox).not.toHaveBeenCalled();
     const argv = JSON.parse(readFileSync(argvLog, 'utf8'));
     expect(argv.slice(0, 4)).toEqual(['exec', '-i', '-w', '/app']);
-    expect(argv.slice(-5)).toEqual(['private-task-container', '/opt/papercusp/codex', '--no-daemon', 'exec', '--json']);
+    expect(argv.slice(argv.indexOf('private-task-container') + 1, -6)).toEqual([
+      '/bin/sh', '-c', 'exec "$@"', expect.stringMatching(/^[a-f0-9]{64}$/),
+    ]);
+    expect(argv.slice(-6)).toEqual(['/opt/papercusp/codex', '-c',
+      'projects={"/app"={trust_level="trusted"}}', '--no-daemon', 'exec', '--json']);
     expect(argv).not.toContain('OPENAI_API_KEY');
     expect(lstatSync(h.home).isSymbolicLink()).toBe(true);
     expect(readFileSync(join(h.home, 'config.toml'), 'utf8')).toContain('http://papercusp-egress:8788/v1');

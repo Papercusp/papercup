@@ -27,6 +27,7 @@ import { recordLoopTurnStart } from './loop-turn-start-stamp';
 import { ledgerPathForSid, readLedgerRows, tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { persistMonitorNoDeltaBudget } from './monitor-standdown';
 import { reconcileLoopRoutines } from './reconcile-loop-routines';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 const privateDb = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('@papercusp/db-org', async original => ({
@@ -99,6 +100,13 @@ describe('indexed native producer integration', () => {
     expect(tagged.ledgerWritten).toBe(true);
     const user = { workspace_id: 'default', source_kind: source, session_id: `native-${owner}`, turn_idx: 0,
       ts: new Date(now - 2000).toISOString(), owner, harness_slug: null, cwd: null, speaker: 'user', text: tagged.taggedText };
+    // The indexed producer now requires the exact launch-selected namespace.
+    const workspace = activeWorkspaceId();
+    await sql`INSERT INTO harness_shared.adv_sessions
+      (workspace_id, agent, mode, coord_owner_id, session_id, omp_thread_id, launch_spec)
+      VALUES (${workspace}, ${source}, 'omp', ${owner},
+              ${source === 'omp' ? null : user.session_id}, ${source === 'omp' ? user.session_id : null},
+              ${JSON.stringify({ workspaceId: workspace, turnProvenanceDir: provenanceDir })}::text::jsonb)`;
     const reply = { ...user, turn_idx: 1, ts: new Date(now - 1000).toISOString(), speaker: 'assistant', text: 'Finished this exact fire.' };
     const awaits = await sql<Array<{ id: number }>>`INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
       VALUES (${WS}, ${owner}, ${'test:' + loop.id}) RETURNING id`;
