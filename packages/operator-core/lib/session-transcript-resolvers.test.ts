@@ -20,6 +20,8 @@ import {
   __resetTranscriptResolverCaches,
   readClosedCodexSessionUsage,
   readClosedCodexRuntimeUsage,
+  readClosedClaudeSessionUsage,
+  readClosedClaudeRuntimeUsage,
   readClosedCodexTurnInput,
   readClosedCodexTurnToolResult,
 } from './session-transcript-resolvers';
@@ -331,6 +333,97 @@ describe('complete closed Codex source accounting', () => {
     await fixture(async ({ home, file, sql }) => {
       await fs.writeFile(file.replace('00-00-00', '01-00-00'), transcript);
       expect(await readClosedCodexRuntimeUsage(sql, { workspaceId: 'bench-private', codexHome: home })).toEqual({ complete: false, sessions: [] });
+    });
+  });
+});
+
+describe('complete closed Claude source accounting', () => {
+  const session = '11111111-2222-3333-4444-555555555555';
+  const oldSession = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const line = (value: unknown) => JSON.stringify(value) + '\n';
+  const transcript = line({ type: 'assistant', sessionId: session, isSidechain: false,
+    message: { id: 'msg-source', model: 'claude-sonnet-4-6', stop_reason: 'end_turn',
+      usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 20, cache_creation_input_tokens: 0 } } });
+  async function fixture(run: (f: { home: string; file: string; sql: Sql; calls: unknown[][] }) => Promise<void>,
+    frontier: unknown = { byte_offset: String(Buffer.byteLength(transcript)), parser_state: { initialized: true, fileGeneration: 0 } }) {
+    const home = await fs.mkdtemp(join(tmpdir(), 'claude-complete-source-'));
+    const project = join(home, 'projects', '-task'); await fs.mkdir(project, { recursive: true });
+    const file = join(project, `${session}.jsonl`); await fs.writeFile(file, transcript);
+    const calls: unknown[][] = [];
+    const sql = (async (_s: TemplateStringsArray, ...values: unknown[]) => { calls.push(values); return frontier ? [frontier] : []; }) as unknown as Sql;
+    try { await run({ home, file, sql, calls }); } finally { await fs.rm(home, { recursive: true, force: true }); }
+  }
+  const read = (sql: Sql, home: string) => readClosedClaudeSessionUsage(sql, {
+    workspaceId: 'bench-private', claudeConfigDir: home, nativeSessionId: session,
+  });
+  const runtime = (sql: Sql, home: string) => readClosedClaudeRuntimeUsage(sql, { workspaceId: 'bench-private', claudeConfigDir: home });
+
+  it('binds canonical message tokens to the exact whole source and atomic workspace frontier', async () => {
+    await fixture(async ({ home, file, sql, calls }) => {
+      const result = await read(sql, home);
+      expect(result).toMatchObject({ ok: true, file, sourceSha256: createHash('sha256').update(transcript).digest('hex'),
+        nativeMessageIds: ['msg-source'], events: [{ inputTotalTokens: 30, providerResponseId: 'msg-source' }] });
+      expect(calls).toEqual([['bench-private', file]]);
+      expect(result).not.toHaveProperty('billedInferenceMicros');
+    });
+  });
+  it.each([null, { byte_offset: '1', parser_state: { initialized: true } },
+    { byte_offset: String(Buffer.byteLength(transcript)), parser_state: { initialized: false } },
+    { byte_offset: String(Buffer.byteLength(transcript)), parser_state: { initialized: true, bootstrapOffset: 0 } }])
+  ('keeps absent, behind or bootstrap frontiers incomplete: %j', async frontier => {
+    await fixture(async ({ home, sql }) => { expect(await read(sql, home)).toMatchObject({ ok: false }); }, frontier);
+  });
+  it.each(['partial', 'open', 'malformed'] as const)('retains earlier closed messages as a subtotal with a later %s record', async kind => {
+    await fixture(async ({ home, file, sql }) => {
+      const suffix = kind === 'partial' ? '{"type":"assistant"' : kind === 'malformed' ? 'unreadable\n' :
+        line({ type: 'assistant', sessionId: session, message: { id: 'msg-open', model: 'claude-sonnet-4-6', stop_reason: null,
+          usage: { input_tokens: 1, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
+      await fs.appendFile(file, suffix);
+      expect(await read(sql, home)).toMatchObject({ ok: false, knownSubtotal: { ok: true,
+        nativeMessageIds: ['msg-source'], closedByteOffset: Buffer.byteLength(transcript),
+        sourceSha256: createHash('sha256').update(transcript + suffix).digest('hex') } });
+    });
+  });
+  it('allows the host-issued home to relocate while rejecting links below it', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      const mounted = home + '-mounted';
+      try {
+        await fs.rename(home, mounted); await fs.symlink(mounted, home);
+        expect(await runtime(sql, home)).toMatchObject({ complete: true });
+        const outside = join(mounted, 'foreign.jsonl'); await fs.rename(file, outside); await fs.symlink(outside, file);
+        expect(await read(sql, home)).toMatchObject({ ok: false });
+      } finally { await fs.rm(mounted, { recursive: true, force: true }); }
+    });
+  });
+  it('censuses earlier carry sessions and rejects duplicated native identities', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      await fs.writeFile(file.replace(session, oldSession), transcript.replace(session, oldSession).replace('msg-source', 'msg-oldsrc'));
+      const result = await runtime(sql, home);
+      expect(result.complete).toBe(true);
+      expect(result.sessions.map(s => s.nativeSessionId)).toEqual([session, oldSession]);
+      const other = join(home, 'projects', '-other'); await fs.mkdir(other);
+      await fs.writeFile(join(other, `${session}.jsonl`), transcript);
+      expect(await runtime(sql, home)).toEqual({ complete: false, sessions: [] });
+    });
+  });
+  it.each(['append', 'same-size rewrite'] as const)('refuses an earlier source changing by %s during the census', async change => {
+    await fixture(async ({ home, file, sql, calls }) => {
+      await fs.writeFile(file.replace(session, oldSession), transcript.replace(session, oldSession).replace('msg-source', 'msg-oldsrc'));
+      const changing = (async (...args: unknown[]) => {
+        const rows = await (sql as unknown as (...args: unknown[]) => Promise<unknown>)(...args);
+        if (calls.length === 2) await (change === 'append' ? fs.appendFile(file, line({ type: 'summary' })) :
+          fs.writeFile(file, transcript.replace('"output_tokens":5', '"output_tokens":6')));
+        return rows;
+      }) as unknown as Sql;
+      expect(await runtime(changing, home)).toMatchObject({ complete: false });
+      expect(calls).toHaveLength(2);
+    });
+  });
+  it('refuses an unaccounted nested subagent transcript rather than silently excluding its usage', async () => {
+    await fixture(async ({ home, sql }) => {
+      const nested = join(home, 'projects', '-task', session, 'subagents'); await fs.mkdir(nested, { recursive: true });
+      await fs.writeFile(join(nested, 'agent-sub.jsonl'), transcript);
+      expect(await runtime(sql, home)).toEqual({ complete: false, sessions: [] });
     });
   });
 });
