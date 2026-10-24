@@ -96,6 +96,7 @@ describe('session root caps', () => {
       const options = { roots: [{ root, keyKind: 'owner' as const, label: 'fixture', maxBytes: 1 }],
         protectedIdentity: empty, archiveGuard: false };
       const kept = await runSessionDirGc(options);
+      expect(read).toHaveBeenCalledExactlyOnceWith({ nowMs: expect.any(Number) });
       expect(crossed).toBe(true); expect(Date.now()).toBeGreaterThan(expiry);
       expect(kept.removed).toEqual([]); expect(existsSync(home)).toBe(true);
       expect(kept.caps![0]!.pinnedBytes).toBe(kept.caps![0]!.afterBytes);
@@ -106,6 +107,17 @@ describe('session root caps', () => {
       expect(expired.caps![0]).toMatchObject({ afterBytes: 0, pinnedBytes: 0 });
       expect(expired.errors).toEqual([]);
     } finally { read.mockRestore(); inspect.mockRestore(); vi.unstubAllEnvs(); }
+  });
+
+  it('keeps archive eligibility at the earlier lifecycle time when the pin snapshot is later', () => {
+    const root = tmpRoot();
+    const home = seedDir(root, 'not-yet-eligible', DEFAULT_RETENTION_MS - 1);
+    const result = sweepStaleSessionDirs({ protectedIdentity: empty,
+      candidates: [{ path: home, key: 'not-yet-eligible', keyKind: 'owner', mtimeMs: NOW - DEFAULT_RETENTION_MS + 1 }],
+      nowMs: NOW, pinNowMs: NOW + 2, retentionPins: [] });
+    expect(result.removed).toEqual([]);
+    expect(result.keptFresh).toBe(1);
+    expect(existsSync(home)).toBe(true);
   });
 
   it.each(['file', 'directory', 'shared inode', 'overlapping pins'])('charges only a live child pin allocation (%s), retaining the whole home', async (kind) => {

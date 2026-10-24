@@ -351,6 +351,8 @@ export function sweepStaleSessionDirs(opts: {
   unarchivedPaths?: ReadonlySet<string>;
   /** Production supplies a snapshot read under the storage:pin mutex. */
   retentionPins?: readonly RetentionPin[];
+  /** Time of that final pin snapshot; lifecycle/archive eligibility keeps nowMs. */
+  pinNowMs?: number;
   /** Full last-write evidence from the bounded native census, when available. */
   newestWrites?: ReadonlyMap<string, number>;
 }): SessionDirGcResult {
@@ -367,7 +369,8 @@ export function sweepStaleSessionDirs(opts: {
   });
   const removed: string[] = [];
   const errors: Array<{ path: string; error: string }> = [];
-  const read = opts.retentionPins ? { pins: opts.retentionPins, errors: [] } : readRetentionPins({ nowMs: opts.nowMs });
+  const pinNowMs = opts.pinNowMs ?? opts.nowMs;
+  const read = opts.retentionPins ? { pins: opts.retentionPins, errors: [] } : readRetentionPins({ nowMs: pinNowMs });
   if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
   let keptPinned = 0;
   // Pressure must never make a newer collectible session precede an older one.
@@ -376,7 +379,7 @@ export function sweepStaleSessionDirs(opts: {
     (opts.newestWrites?.get(a.path) ?? a.mtimeMs) - (opts.newestWrites?.get(b.path) ?? b.mtimeMs) || a.path.localeCompare(b.path))) {
     let physical = c.path;
     try { physical = realpathSync(c.path); } catch { /* A missing candidate cannot have a physical alias. */ }
-    if (pinProtectsPath(c.path, read.pins, opts.nowMs) || pinProtectsPath(physical, read.pins, opts.nowMs)) {
+    if (pinProtectsPath(c.path, read.pins, pinNowMs) || pinProtectsPath(physical, read.pins, pinNowMs)) {
       keptPinned++;
       continue;
     }
@@ -621,7 +624,8 @@ export async function runSessionDirGc(
   }
 
   return withFsMutex('papercusp-disk-retention', async () => {
-    const read = await readRetentionPinsAsync();
+    const pinNowMs = Date.now();
+    const read = await readRetentionPinsAsync({ nowMs: pinNowMs });
     if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
     const { inspectRetentionTrees, RetentionAllocationCounter } = await import('./storage/disk-consumer-census');
     const newestWrites = new Map<string, number>();
@@ -671,8 +675,7 @@ export async function runSessionDirGc(
         // subtree/inode union qualifies for pinned overage, not sibling bulk.
         const contains = (outer: string, inner: string) => outer === inner || inner.startsWith(outer === sep ? sep : outer + sep);
         const logical = resolve(root.root);
-        const pinPaths = [...new Set(read.pins.filter(pin => Date.parse(pin.expiresAt) > Date.now())
-          .flatMap(pin => pin.paths).map(path => resolve(path)).flatMap(path =>
+        const pinPaths = [...new Set(read.pins.flatMap(pin => pin.paths).map(path => resolve(path)).flatMap(path =>
             contains(path, physical) || contains(path, logical) ? [physical] :
               contains(physical, path) ? [path] : contains(logical, path) ? [join(physical, relative(logical, path))] : []))]
           .sort((a, b) => a.length - b.length || a.localeCompare(b));
@@ -711,6 +714,7 @@ export async function runSessionDirGc(
       dryRun: opts.dryRun,
       unarchivedPaths,
       retentionPins: read.pins,
+      pinNowMs,
       newestWrites,
     });
     result.caps = [];
