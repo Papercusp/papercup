@@ -1176,6 +1176,69 @@ describe('dispatchPendingGradingAudits', () => {
       expect(result.recertifications).toEqual([expect.objectContaining({ issueId, state: 'deduped' })]);
     });
 
+    it.each(['pending', 'running'] as const)('preserves an expired audit epoch while its exact auditor is %s', async (state) => {
+      const d = deps();
+      const issueId = 'EI-stranded-live-auditor';
+      const source = strandedCard(issueId);
+      source.gradingAudit!.dispatchReservation = {
+        key: `grading-audit:${issueId}`, reservedAt: '2026-10-14T13:35:00.000Z',
+      };
+      d.listScorecards.mockResolvedValue([source]);
+      const task = { taskId: 'retained-auditor', class: 'agent-session', state,
+        detail: { label: `grading-audit:${issueId}` } } as TaskRow;
+      d.listTasks.mockResolvedValue([task]);
+      const readRetainedTaskKernelVerdicts = vi.fn(async () => new Map<string, string>());
+      const recertifyStranded = vi.fn(async () => certifyReply(issueId, 'EI-never'));
+
+      const result = await reconcilePendingGradingAudits({ targetIds: [issueId], ctx }, {
+        ...d, now: () => nowMs, getEvaluatorBuild: liveBuild, recertifyStranded, readRetainedTaskKernelVerdicts,
+      });
+
+      expect(d.reserve).not.toHaveBeenCalled();
+      expect(d.release).not.toHaveBeenCalled();
+      expect(recertifyStranded).not.toHaveBeenCalled();
+      expect(readRetainedTaskKernelVerdicts).toHaveBeenCalledWith([task], 'ws-test');
+      expect(result.recertifications).toEqual([expect.objectContaining({
+        issueId, state: 'deduped', reason: expect.stringContaining('retained-auditor'),
+      })]);
+    });
+
+    it('permits recertification after the exact retained auditor is independently kernel-ended', async () => {
+      const d = deps();
+      const issueId = 'EI-stranded-ended-auditor';
+      d.listScorecards.mockResolvedValue([strandedCard(issueId)]);
+      const task = { taskId: 'ended-auditor', class: 'agent-session', state: 'running',
+        detail: { label: `grading-audit:${issueId}:recovery` } } as TaskRow;
+      d.listTasks.mockResolvedValue([task]);
+      const readRetainedTaskKernelVerdicts = vi.fn(async () => new Map([[task.taskId, 'scope collected']]));
+      const recertifyStranded = vi.fn(async () => certifyReply(issueId, 'EI-new-card'));
+
+      const result = await reconcilePendingGradingAudits({ targetIds: [issueId], ctx }, {
+        ...d, now: () => nowMs, getEvaluatorBuild: liveBuild, recertifyStranded, readRetainedTaskKernelVerdicts,
+      });
+
+      expect(d.reserve).toHaveBeenCalledOnce();
+      expect(recertifyStranded).toHaveBeenCalledOnce();
+      expect(result.recertifications).toEqual([expect.objectContaining({ state: 'recertified' })]);
+    });
+
+    it('does not let a sibling audit label block recertification', async () => {
+      const d = deps();
+      const issueId = 'EI-stranded-label';
+      d.listScorecards.mockResolvedValue([strandedCard(issueId)]);
+      d.listTasks.mockResolvedValue([{ taskId: 'sibling-auditor', class: 'agent-session', state: 'running',
+        detail: { label: `grading-audit:${issueId}-other` } } as TaskRow]);
+      const readRetainedTaskKernelVerdicts = vi.fn(async () => new Map<string, string>());
+      const recertifyStranded = vi.fn(async () => certifyReply(issueId, 'EI-new-card'));
+
+      await reconcilePendingGradingAudits({ targetIds: [issueId], ctx }, {
+        ...d, now: () => nowMs, getEvaluatorBuild: liveBuild, recertifyStranded, readRetainedTaskKernelVerdicts,
+      });
+
+      expect(readRetainedTaskKernelVerdicts).not.toHaveBeenCalled();
+      expect(recertifyStranded).toHaveBeenCalledOnce();
+    });
+
     it('reports a certification that superseded nothing, or threw, and keeps going', async () => {
       const d = deps();
       d.listScorecards.mockResolvedValue([strandedCard('EI-stranded-a'), strandedCard('EI-stranded-b')]);

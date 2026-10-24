@@ -3578,12 +3578,41 @@ async function recertifyStrandedSpecAdequacyCards(
   const reserve = deps.reserve ?? reservePendingGradingAudit;
   const release = deps.release ?? releasePendingGradingAudit;
   const recertify = deps.recertifyStranded ?? defaultRecertifyStranded;
+  const readTasks = deps.listTasks ?? listTasks;
   const results: StrandedRecertifyReceipt[] = [];
   for (const receipt of candidates) {
     const issueId = receipt.issueId;
     const call = receipt.stranded!.recertify!;
     const key = `${STRANDED_RECERTIFY_KEY_PREFIX}${issueId}`;
     try {
+      // An expired lease does not establish that the exact-build auditor ended.
+      // Taking a recertification epoch would invalidate its completed audit even
+      // if certification cannot produce a replacement card. Preserve unknown
+      // liveness; reuse the canonical kernel proof for genuinely ended scopes.
+      if (!workspaceId) throw new Error('Recertification requires a concrete workspace');
+      const labelPrefix = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${issueId}`;
+      const taskLimit = 10;
+      const tasks = await readTasks({
+        workspaceId, states: ['pending', 'running'], classes: ['agent-session'], labelPrefix, limit: taskLimit,
+      });
+      const exactTasks = tasks.filter(task => {
+        const label = task.detail?.label;
+        return (task.state === 'pending' || task.state === 'running') && typeof label === 'string' &&
+          (label === labelPrefix || label.startsWith(`${labelPrefix}:`));
+      });
+      const kernelEnded = exactTasks.length > 0
+        ? await (deps.readRetainedTaskKernelVerdicts ?? readRetainedTaskKernelVerdicts)(exactTasks, workspaceId)
+        : new Map<string, string>();
+      const retainedTasks = exactTasks.filter(task => !kernelEnded.has(task.taskId));
+      if (retainedTasks.length > 0 || tasks.length >= taskLimit) {
+        results.push({
+          issueId, state: 'deduped', call,
+          reason: retainedTasks.length > 0
+            ? `retained grading auditor owns this card: ${retainedTasks.map(task => task.taskId).join(', ')}`
+            : 'retained auditor scan reached its page limit; liveness remains unknown',
+        });
+        continue;
+      }
       // The stranded receipt is produced only after this dispatcher has proven that
       // the live build descends from the card's recorded evaluator build. A prior
       // exact-build dispatcher can therefore leave a generation-incompatible
