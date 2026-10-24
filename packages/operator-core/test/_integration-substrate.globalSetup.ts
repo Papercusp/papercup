@@ -26,6 +26,8 @@ const NO_SHARED_PG_TESTS = new Set([
   '../lib/harness/routines/reconcile-loop-routines.integration.test.ts',
   // Owns its native PG cluster, confined endpoint, and observed teardown.
   '../lib/release/grading-audit-runtime.integration.test.ts',
+  // Archives and DDL controls own a disposable native cluster, without a baseline.
+  '../lib/search/bench/selected-corpus-schema.integration.test.ts',
 ].map(path => fileURLToPath(new URL(path, import.meta.url))));
 
 export function integrationNeedsPostgres(selectedPaths: readonly string[]): boolean {
