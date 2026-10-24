@@ -82,6 +82,12 @@
 # it does not remove any outputs already present in the existing checkout.
 #
 # Env overrides: PAPERCUSP_INTEGRATION_ROOT, PAPERCUSP_RELEASE_ROOT.
+
+# EI-26824212147685395: allocation and dependency waits can outlive edits to
+# this shared checkout. Parse the whole body before executing it, as in the
+# sourced dependency-generation.sh, so Bash never resumes at an old byte offset
+# in rewritten source. Keep resource paths anchored to this script's location.
+{
 set -euo pipefail
 
 # EI-24760202132078287: usage discovery must be non-mutating, so it is handled
@@ -2131,3 +2137,4 @@ if [ "$BUILD_SPA" = "1" ]; then
 fi
 
 log "release checkout ready at $RELEASE_ROOT (detached $TARGET_SHA)"
+}  # end self-read guard (EI-26824212147685395)
