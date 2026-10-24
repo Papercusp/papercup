@@ -1943,6 +1943,16 @@ snapshot_operator_source() {
   snapshot_root="$OPERATOR_SOURCE_ROOT"
   log "operator source/dependency snapshot frozen at $OPERATOR_SOURCE_ROOT — IMMUTABLE for this run"
 }
+preflight_verifier_runtime_assets() {
+  local source_repo="$1" setup_snapshot="$WORK/setup-porcupine-runtime.sh"
+  # Read the pin from the selected commit, before copying dependencies. The
+  # donor supplies bytes only; its mutable setup code never executes here.
+  git -C "$source_repo" cat-file blob \
+    "$VERIFY_TAURI_SOURCE_REF:apps/operator/scripts/setup-porcupine-runtime.sh" > "$setup_snapshot" || return $?
+  bash "$setup_snapshot" --check-source \
+    "$REPO_DIR/apps/operator/public/porcupine/porcupine_params.pv"
+}
+
 snapshot_committed_operator_source() {
   # REPO_DIR remains the canonical coordination/fence/dependency donor domain.
   # Only runtime source and desktop execution move to the verified archive.
@@ -1967,6 +1977,7 @@ snapshot_committed_operator_source() {
   # verifier-prepare repeats this check after export as the race guard.
   node "$source_repo/scripts/source-preview.mjs" verifier-inputs-check \
     --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" "${input_args[@]}" || return $?
+  preflight_verifier_runtime_assets "$source_repo" || return $?
   source_bytes="$(node "$source_repo/scripts/source-preview.mjs" verifier-measure \
     --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF")" || return 1
   case "$source_bytes" in
@@ -2132,6 +2143,10 @@ prepare_verifier_spa() {
     return 3
   }
   log "building frozen operator SPA through the maintained workspace prebuild and singleflight builder"
+  # The ignored model is absent from a Git archive. Seed a private copy through
+  # the frozen helper's checksum contract before npm's normal asset prebuild.
+  bash "$OPERATOR_SOURCE_ROOT/apps/operator/scripts/setup-porcupine-runtime.sh" --source \
+    "$REPO_DIR/apps/operator/public/porcupine/porcupine_params.pv" || return $?
   # Keep npm's asset prebuild and the existing admission/atomic-output contract.
   # Reset inherited build seams and pin output to this run's private work tree.
   (

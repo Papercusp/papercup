@@ -8,6 +8,7 @@
  * own source. Pin the startup snapshot/re-exec contract on the real script.
  */
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -42,7 +43,7 @@ const assertionExecIdx = src.lastIndexOf('log "running assertion command: $*"');
 const operatorSnapshotIdx = src.indexOf("snapshot_operator_source() {");
 const dependencySnapshotSource = src.slice(src.indexOf("snapshot_verifier_pinned_deps() {"), operatorSnapshotIdx);
 const operatorSnapshotCallIdx = src.indexOf("verifier_run_step operator-source-snapshot");
-const normalizeOperatorSourceTestStub = 'normalize_operator_source_root() { OPERATOR_SOURCE_ROOT="$1"; }';
+const normalizeOperatorSourceTestStub = 'normalize_operator_source_root() { OPERATOR_SOURCE_ROOT="$1"; }; preflight_verifier_runtime_assets() { :; }';
 const lockCensusStartIdx = src.indexOf("verify_operator_source_lock_census() {");
 const lockCensusSource = src.slice(lockCensusStartIdx, operatorSnapshotIdx);
 const operatorSnapshotSource = `${src.slice(operatorSnapshotIdx, operatorSnapshotCallIdx)}\n${normalizeOperatorSourceTestStub}`;
@@ -50,6 +51,71 @@ const operatorSnapshotSource = `${src.slice(operatorSnapshotIdx, operatorSnapsho
 function committedSnapshotSource(end = operatorSnapshotCallIdx) {
   return `${src.slice(src.indexOf('snapshot_committed_operator_source() {'), end)}\n${normalizeOperatorSourceTestStub}`;
 }
+
+describe('WI-6554700010027579 — committed native runtime asset inputs', () => {
+  const setupSource = readFileSync(resolve(__dirname, '../scripts/setup-porcupine-runtime.sh'), 'utf8');
+  const model = 'pinned fixture wake-word model\n';
+  const digest = createHash('sha256').update(model).digest('hex');
+  const setup = setupSource.replace(/^PORCUPINE_SHA256="[a-f0-9]+"/m, `PORCUPINE_SHA256="${digest}"`);
+  const preflight = src.match(/preflight_verifier_runtime_assets\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+
+  it.each(['valid', 'missing', 'corrupt'])('checks the selected commit pin without network or output mutation: %s', mode => {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-model-preflight-'));
+    try {
+      const work = resolve(fixture, 'work');
+      const donor = resolve(fixture, 'donor');
+      mkdirSync(work); mkdirSync(resolve(donor, 'apps/operator/public/porcupine'), { recursive: true });
+      const cached = resolve(donor, 'apps/operator/public/porcupine/porcupine_params.pv');
+      if (mode !== 'missing') writeFileSync(cached, mode === 'valid' ? model : 'wrong model');
+      writeFileSync(resolve(fixture, 'selected-setup.sh'), setup);
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'WORK="$TEST_ROOT/work"; REPO_DIR="$TEST_ROOT/donor"; VERIFY_TAURI_SOURCE_REF=selected-commit',
+        'git() { printf "%s\\n" "$*" > "$TEST_ROOT/git-args"; cat "$TEST_ROOT/selected-setup.sh"; }',
+        'curl() { echo unexpected-network >&2; return 99; }; export -f curl',
+        preflight, 'preflight_verifier_runtime_assets /selected/source',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: { ...process.env, TEST_ROOT: fixture } });
+      expect(result.status, result.stderr).toBe(mode === 'valid' ? 0 : 1);
+      expect(readFileSync(resolve(fixture, 'git-args'), 'utf8')).toContain(
+        '-C /selected/source cat-file blob selected-commit:apps/operator/scripts/setup-porcupine-runtime.sh');
+      expect(result.stderr).not.toContain('unexpected-network');
+      expect(existsSync(resolve(fixture, 'public'))).toBe(false);
+      if (mode !== 'valid') expect(result.stderr).toContain('required cached model');
+      const committed = committedSnapshotSource();
+      expect(committed.indexOf('preflight_verifier_runtime_assets "$source_repo"')).toBeGreaterThan(0);
+      expect(committed.indexOf('preflight_verifier_runtime_assets "$source_repo"'))
+        .toBeLessThan(committed.indexOf('verifier-measure'));
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
+  it.each(['valid', 'corrupt', 'missing'])('seeds only copied checksum-valid bytes before SPA prebuild: %s', mode => {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-model-seed-'));
+    try {
+      const app = resolve(fixture, 'apps/operator');
+      mkdirSync(resolve(app, 'scripts'), { recursive: true });
+      const helper = resolve(app, 'scripts/setup-porcupine-runtime.sh');
+      writeFileSync(helper, setup);
+      const cached = resolve(fixture, 'cached.pv');
+      if (mode !== 'missing') writeFileSync(cached, mode === 'valid' ? model : 'corrupt donor');
+      const result = spawnSync('bash', ['-c',
+        'curl() { echo unexpected-network >&2; return 99; }; export -f curl; bash "$1" --source "$2"',
+        'fixture', helper, cached], { encoding: 'utf8', timeout: 5_000 });
+      expect(result.status, result.stderr).toBe(mode === 'valid' ? 0 : 1);
+      expect(result.stderr).not.toContain('unexpected-network');
+      const dest = resolve(app, 'public/porcupine/porcupine_params.pv');
+      expect(existsSync(dest)).toBe(mode === 'valid');
+      if (mode === 'valid') {
+        expect(readFileSync(dest, 'utf8')).toBe(model);
+        writeFileSync(cached, 'later donor change');
+        expect(readFileSync(dest, 'utf8')).toBe(model);
+      }
+      const build = src.match(/prepare_verifier_spa\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+      expect(build.indexOf('setup-porcupine-runtime.sh" --source')).toBeGreaterThan(0);
+      expect(build.indexOf('setup-porcupine-runtime.sh" --source'))
+        .toBeLessThan(build.indexOf('run prebuild'));
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+});
 
 describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown', () => {
   function finishFixture(exitCode: number, options: { copyFails?: boolean; noArtifacts?: boolean; noHarness?: boolean } = {}) {
