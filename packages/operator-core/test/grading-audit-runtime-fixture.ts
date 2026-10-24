@@ -18,7 +18,7 @@ import { isTerminalState, type TaskRow } from '../lib/task-manager/types';
 import { ensureGradingAuditRuntime, retireUnusedGradingAuditRuntimes, type GradingAuditRuntimeDeps,
   type GradingAuditRuntimeLocator } from '../lib/release/grading-audit-runtime';
 import { readGradingAuditSourcePin } from '../lib/release/grading-audit-source-pin';
-import { assertPrivateManagedTaskRoute, preparePrivateHttpWorkspaces, preparePrivateOperatorApiBundle,
+import { assertPrivateManagedTaskRoute, preparePrivateHttpWorkspaces, preparePrivateOperatorApiBundle, privateGitCloneBundleEnv,
   privateBundleRuntimeEnv } from './private-http-workspace-preflight';
 // @ts-ignore -- share the maintained dependency process-group and progress contract.
 import { runVerifierDependencyCommand } from '../../../scripts/source-preview.mjs';
@@ -181,6 +181,8 @@ async function main() {
   mkdirSync(output, { recursive: true });
   const prepared = await preparePrivateOperatorApiBundle(sourceRoot, output, { builder: {
     timeoutMs: 240_000, maxMs: 420_000,
+    env: privateGitCloneBundleEnv(sourceRoot, cloned.sha),
+    retainedEvidenceDir: join(evidenceDir, 'grading-runtime-builds/initial'),
   } });
   // The maintained archive builder stamps twelve source characters. The
   // unbundled worker's Git abbreviation is independently configurable.
@@ -278,7 +280,9 @@ async function main() {
   renameSync(dirname(sourceRoot), movedHome);
   sourceRoot = join(movedHome, 'checkout');
   const rebuilt = await preparePrivateOperatorApiBundle(sourceRoot,
-    join(sourceRoot, 'apps/operator/dist-host'), { builder: { timeoutMs: 240_000, maxMs: 420_000 } });
+    join(sourceRoot, 'apps/operator/dist-host'), { builder: { timeoutMs: 240_000, maxMs: 420_000,
+      env: privateGitCloneBundleEnv(sourceRoot, cloned.sha),
+      retainedEvidenceDir: join(evidenceDir, 'grading-runtime-builds/recovered') } });
   let acceptancePending = true;
   const acceptanceRef = 'private-source-acceptance';
   const acceptanceDeps: GradingAuditRuntimeDeps = { logDir: evidenceDir,

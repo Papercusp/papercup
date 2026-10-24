@@ -16,7 +16,9 @@ it('retains one real exact-build endpoint across unknown readiness, recovers pro
   const runId = await recordIsolatedIntegrationProof({
     root, filePath: 'packages/operator-core/lib/release/grading-audit-runtime.integration.test.ts',
     minimumFileRunTimeoutMs: options.testTimeoutMs,
-    retainedArtifacts: ['phases/execute/grading-runtime-host.log', 'phases/execute/grading-runtime-diagnostics.json'],
+    retainedArtifacts: ['phases/execute/grading-runtime-host.log', 'phases/execute/grading-runtime-diagnostics.json',
+      'phases/execute/grading-runtime-builds/**/*.log', 'phases/execute/grading-runtime-builds/**/*.json',
+      'phases/execute/grading-runtime-builds/**/*.jsonl'],
     sourcePaths: [
       'packages/operator-core/test/grading-audit-runtime-fixture.ts',
       'packages/operator-core/lib/release/grading-audit-runtime.ts',

@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import * as ts from 'typescript';
-import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 
 const dirs: string[] = [];
@@ -358,6 +358,10 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
               ? [[property.name.getText(source), Number(property.initializer.text)]] : []));
           expect(values.timeoutMs, `${file} must retain the existing stall checkpoint`).toBe(240_000);
           expect(values.maxMs, `${file} must retain the existing absolute ceiling`).toBe(420_000);
+          if (file === 'grading-audit-runtime-fixture.ts')
+            expect(policy.properties.some(property => ts.isPropertyAssignment(property)
+              && property.name.getText(source) === 'retainedEvidenceDir'),
+            'initial and recovery grading builds must retain diagnostics outside disposable source').toBe(true);
         }
       }
       ts.forEachChild(node, visit);
@@ -365,7 +369,7 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
     visit(source);
   }
   expect(callers.sort()).toEqual([routingProof, nativeProof, 'blog-post-http-fixture.ts', 'consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
-    'customer-data-support-http-fixture.ts', 'governance-http-fixture.ts', 'grading-audit-runtime-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
+    'customer-data-support-http-fixture.ts', 'governance-http-fixture.ts', 'grading-audit-runtime-fixture.ts', 'grading-audit-runtime-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
     'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
 });
 
@@ -495,6 +499,25 @@ it('stops builder descendants on timeout and retains the original diagnostics', 
   } finally {
     if (descendant) { try { process.kill(descendant, 'SIGKILL'); } catch { /* already stopped */ } }
   }
+});
+
+it.each(['synchronous', 'progress'] as const)('retains original %s builder failure evidence after disposable output cleanup', async mode => {
+  const output = mkdtempSync(join(tmpdir(), 'private-builder-output-')); dirs.push(output);
+  const retained = mkdtempSync(join(tmpdir(), 'private-builder-retained-')); dirs.push(retained);
+  const journal = join(output, 'hono-host.mjs.build-steps.jsonl');
+  const builder = { command: 'bash',
+    args: ['-c', 'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; bundle_host_run_step source-guard bash -c "echo ORIGINAL_BUILD_REFUSAL >&2; exit 78"',
+      '_', common, journal], timeoutMs: 2000, retainedEvidenceDir: retained,
+    ...(mode === 'progress' ? { maxMs: 3000, pollMs: 20 } : {}) };
+  await expect(Promise.resolve().then(() => buildPrivateOperatorApiBundle(output, output, builder)))
+    .rejects.toThrow(/exited 78/);
+  const names = ['operator-api-build.log', 'operator-api-build-result.json', 'hono-host.mjs.build-steps.jsonl'];
+  const originals = names.map(name => readFileSync(join(output, name)));
+  rmSync(output, { recursive: true, force: true });
+  names.forEach((name, index) => expect(readFileSync(join(retained, name))).toEqual(originals[index]));
+  expect(readFileSync(join(retained, names[0]), 'utf8')).toContain('ORIGINAL_BUILD_REFUSAL');
+  expect(JSON.parse(readFileSync(join(retained, names[1]), 'utf8')))
+    .toMatchObject({ status: 78, steps: { last: { step: 'source-guard', event: 'end', status: 78 } } });
 });
 
 it('retains completed step timing and the failing command status', () => {
@@ -637,6 +660,35 @@ it('retains and rejects an async builder launch failure without waiting for the 
   const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
   expect(receipt.error).toMatchObject({ code: 'ENOENT' });
   expect(receipt.progress).toEqual({ extensions: 0, completedSteps: 0 });
+});
+
+it('hands a verified Git clone to the real source guard without its donor archive identity', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-clone-source-')); dirs.push(root);
+  const git = (args: string[]) => execFileSync('git', ['-C', root, ...args],
+    { encoding: 'utf8', timeout: 10_000 }).trim();
+  git(['init', '--quiet']);
+  git(['-c', 'user.name=Private fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '--allow-empty', '-m', 'selected source']);
+  const selectedCommit = git(['rev-parse', 'HEAD']);
+  const env = { VERIFY_TAURI_SOURCE_RECEIPT: '/donor/source.json', VERIFY_TAURI_SOURCE_REF: selectedCommit,
+    NODE_OPTIONS: '--import=/selected/scripts/lib/committed-source-loader.mjs', OTHER: 'keep' };
+  const script = readFileSync(resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host.sh'), 'utf8');
+  const guard = script.slice(script.indexOf('if [[ -f "$REPO_ROOT/.verifier-source.json" ]]'),
+    script.indexOf('BUNDLED_SOURCE_SHA_DEFINE=()'));
+  expect(guard).toContain('pinned source receipt requires its archive marker');
+  const run = (environment: NodeJS.ProcessEnv) => spawnSync('bash', ['-c', guard + '\nprintf "%s" "$SOURCE_SHA"'],
+    { env: { PATH: process.env.PATH, REPO_ROOT: root, ...environment }, encoding: 'utf8', timeout: 10_000 });
+  expect(run(env)).toMatchObject({ status: 78,
+    stderr: 'bundle-host.sh: pinned source receipt requires its archive marker\n' });
+  const environment = privateGitCloneBundleEnv(root, selectedCommit, env);
+  expect(environment).toEqual({ NODE_OPTIONS: env.NODE_OPTIONS, OTHER: 'keep' });
+  expect(run(environment)).toMatchObject({ status: 0, stdout: git(['rev-parse', '--short', 'HEAD']) });
+  expect(env.VERIFY_TAURI_SOURCE_RECEIPT).toBe('/donor/source.json');
+  expect(() => privateGitCloneBundleEnv(root, '0'.repeat(40), env)).toThrow('differs from the selected commit');
+  mkdirSync(join(root, 'nested'));
+  expect(() => privateGitCloneBundleEnv(join(root, 'nested'), selectedCommit, env)).toThrow('own its Git source root');
+  writeFileSync(join(root, '.verifier-source.json'), '{}');
+  expect(() => privateGitCloneBundleEnv(root, selectedCommit, env)).toThrow('not an archive');
 });
 
 it.each(['--import=tsx', '--import "tsx"', '--loader=tsx/esm', '--require tsx/cjs',

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -947,8 +947,26 @@ function assertPrivatePreparationEvidence() {
   'PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
 }
 
+/** A nested Git clone has its own source pin, not its donor archive's marker. */
+export function privateGitCloneBundleEnv(root: string, selectedCommit: string,
+  env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  assert.match(selectedCommit, /^[a-f0-9]{40}$/, 'Private clone needs the full selected source commit');
+  assert.ok(!existsSync(join(root, '.verifier-source.json')), 'Private clone must be a Git checkout, not an archive');
+  const git = (args: string[]) => execFileSync('git', ['-C', root, ...args],
+    { encoding: 'utf8', timeout: 10_000 }).trim();
+  assert.equal(realpathSync(git(['rev-parse', '--show-toplevel'])), realpathSync(root),
+    'Private clone must own its Git source root');
+  assert.equal(git(['rev-parse', 'HEAD']), selectedCommit, 'Private clone source differs from the selected commit');
+  const environment = { ...env };
+  delete environment.VERIFY_TAURI_SOURCE_RECEIPT;
+  delete environment.VERIFY_TAURI_SOURCE_REF;
+  return environment;
+}
+
 type PrivateBundleBuilder = { command?: string; args?: string[]; timeoutMs: number; maxMs?: number; pollMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** Original diagnostics must outlive a disposable bundle/source directory. */
+  retainedEvidenceDir?: string;
   onProgress?: (progress: { step: string; completedSteps: number }) => void };
 type PrivateBundleReceipt = { path: string; sha256: string };
 export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
@@ -1007,6 +1025,13 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
     }
     writeFileSync(join(evidenceDir, 'operator-api-build-result.json'), JSON.stringify({ ...receipt,
       endedAt: new Date().toISOString(), elapsedMs: Date.now() - started }));
+    if (builder?.retainedEvidenceDir) {
+      mkdirSync(builder.retainedEvidenceDir, { recursive: true });
+      for (const name of ['operator-api-build.log', 'operator-api-build-result.json', 'hono-host.mjs.build-steps.jsonl']) {
+        const original = join(evidenceDir, name);
+        if (existsSync(original)) copyFileSync(original, join(builder.retainedEvidenceDir, name));
+      }
+    }
   };
   const command = builder?.command ?? 'bash';
   const args = builder?.args ?? [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path];
