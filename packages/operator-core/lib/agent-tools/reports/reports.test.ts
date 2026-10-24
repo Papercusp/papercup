@@ -442,6 +442,20 @@ describe('visibility matrix (R-7) — every read passes a viewer', () => {
     const out = body(await getTool.handler({ id: 'rpt_secret' } as never, CTX as never) as Out);
     expect(out.results[0]).toMatchObject({ ok: false, id: 'rpt_secret', error: 'not_found' });
   });
+  it('records the exact successful full report edition readback in native invocation metadata', async () => {
+    const metadata = vi.fn();
+    const out = body(await getTool.handler({ id: 'rpt_1' } as never, { ...CTX, metadata } as never) as Out);
+    const full = out.results[0].report;
+    expect(metadata).toHaveBeenCalledWith({ reportReadbacks: [{ id: 'rpt_1',
+      bodySha256: full.body_sha256, bodyBytes: full.body_bytes,
+      visibility: full.visibility, publishedAt: full.published_at }] });
+  });
+  it('never stamps a successful readback for an absent or invisible report', async () => {
+    getReportM.mockResolvedValue(null);
+    const metadata = vi.fn();
+    await getTool.handler({ id: 'rpt_secret' } as never, { ...CTX, metadata } as never);
+    expect(metadata).toHaveBeenCalledWith({ reportReadbacks: [] });
+  });
 });
 
 describe('reports:get — judge-only scorecard citation scope', () => {

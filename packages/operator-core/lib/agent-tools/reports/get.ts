@@ -129,6 +129,8 @@ export default defineTool({
       }
     }
 
+    const reportReadbacks: Array<{ id: string; bodySha256: string; bodyBytes: number;
+      visibility: string; publishedAt: string }> = [];
     const env = await runBulk(
       ids,
       async (id) => {
@@ -141,15 +143,21 @@ export default defineTool({
           ? (await listReportLineage(sql, workspaceId, report.lineageId, viewer)).map(toReportSummary)
           : undefined;
 
+        const full = toReportFull(report);
+        // Native semantic receipt: only the exact full, visible edition returned by this handler.
+        // No body text is copied into telemetry, and not_found never produces a successful receipt.
+        reportReadbacks.push({ id: report.reportId, bodySha256: full.body_sha256,
+          bodyBytes: full.body_bytes, visibility: full.visibility, publishedAt: full.published_at });
         return {
           ok: true as const,
           id,
-          report: toReportFull(report),
+          report: full,
           ...(lineage ? { lineage } : {}),
         };
       },
       { keyOf: (id) => ({ id }) },
     );
+    ctx.metadata?.({ reportReadbacks });
     return bulkContent(env);
   },
 });

@@ -1,7 +1,19 @@
-import { describe, expect, it, vi } from 'vitest';
-import { CARRY_SHIPMENT_PLAN, measureCarryDrillShipment, type CarryShipmentReceipts } from './carry-drill-shipment';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { CARRY_SHIPMENT_PLAN, CARRY_SHIPMENT_SOURCE_PATHS, measureCarryDrillShipment, type CarryShipmentReceipts } from './carry-drill-shipment';
+import { reportBodySha256 } from './report-library';
 import type { ColdBootDrillHostEvent, measureCarryDrillLifecycle } from './cold-boot-drill-live';
 import { mockResolvedTyped } from './testing/typed-mock';
+
+const checkout = vi.hoisted(() => ({ root: '' }));
+vi.mock('./module-repo-root', async importOriginal => {
+  const original = await importOriginal<typeof import('./module-repo-root')>();
+  return { ...original, moduleRepoRoot: (url: string) =>
+    checkout.root && url.endsWith('/carry-drill-shipment.ts') ? checkout.root : original.moduleRepoRoot(url) };
+});
 
 const sha = 'a'.repeat(40), at = (second: number) => `2026-10-22T00:00:${String(second).padStart(2,'0')}.000Z`;
 const input = { workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: CARRY_SHIPMENT_PLAN,
@@ -9,7 +21,8 @@ const input = { workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: CA
 function nativeEvidence() {
   const call = (tool: string, op: string, second: number) => ({ id: String(second), tool, status: 'ok', at: at(second),
     durationMs: 1000, args: { op, drillId: input.drillId } as Record<string, unknown>,
-    servingHost: 'port-3070', servingProcess: 'linux:boot:123', servingSha: sha.slice(0,10) });
+    servingHost: 'port-3070', servingProcess: 'linux:boot:123', servingSha: sha.slice(0,10),
+    metadata: {} as Record<string, unknown> });
   const receipts: CarryShipmentReceipts = {
     deployment: { id: '42', kind: 'deploy', status: 'ok', at: at(2), detail: { fullTargetSha: sha } },
     promotions: [{ id: '41', kind: 'green_checkpoint', status: 'advanced', at: at(1), detail: { candidate: sha } }],
@@ -20,6 +33,10 @@ function nativeEvidence() {
       body: `${input.ownerId} ${input.drillId} ${sha}` },
   };
   const host: ColdBootDrillHostEvent[] = [{ kind: 'shutdown-accepted', ts: at(11) }, { kind: 'host-teardown', ts: at(12) }];
+  Object.assign(receipts.invocations[4], { metadata: { reportReadbacks: [{
+    id: input.reportId, bodySha256: reportBodySha256(receipts.report!.body),
+    bodyBytes: Buffer.byteLength(receipts.report!.body), visibility: 'owner', publishedAt: at(8),
+  }] } });
   const deps = {
     lifecycle: vi.fn<typeof measureCarryDrillLifecycle>(async () => ({ verdict: 'pass', reason: 'native', scope: 'selected-codex-interactive-drill',
       ownerId: input.ownerId, drillId: input.drillId, requestedAt: at(3) })),
@@ -103,4 +120,74 @@ describe('objective carry shipment joins native existing receipts', () => {
     h.receipts.promotions[0].detail.candidate = sha.slice(0,12);
     expect((await measureCarryDrillShipment(input,h.deps)).verdict).toBe('pass');
   });
+  it.each(['missing', 'soft-failure', 'not-found', 'foreign-id', 'partial-body', 'partial-bytes', 'wrong-visibility', 'wrong-edition'])(
+    'does not equate dispatch success with complete report readback: %s', async defect => {
+      const h = nativeEvidence();
+      const metadata = (h.receipts.invocations[4] as unknown as { metadata: Record<string, unknown> }).metadata;
+      const readback = (metadata.reportReadbacks as Array<Record<string, unknown>>)[0];
+      if (defect === 'missing') delete metadata.reportReadbacks;
+      if (defect === 'soft-failure') metadata.resultOutcome = 'soft-failure';
+      if (defect === 'not-found') metadata.reportReadbacks = [];
+      if (defect === 'foreign-id') readback.id = 'rpt-foreign';
+      if (defect === 'partial-body') readback.bodySha256 = reportBodySha256(h.receipts.report!.body.slice(0, 8));
+      if (defect === 'partial-bytes') readback.bodyBytes = 8;
+      if (defect === 'wrong-visibility') readback.visibility = 'pot';
+      if (defect === 'wrong-edition') readback.publishedAt = at(7);
+      expect((await measureCarryDrillShipment(input, h.deps)).verdict).not.toBe('pass');
+    });
+});
+
+describe('carry shipment compares the independent canonical source population', () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    checkout.root = '';
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  function repositories() {
+    const root = mkdtempSync(join(tmpdir(), 'carry-shipment-source-'));
+    roots.push(root);
+    const canonical = join(root, 'canonical'), deployed = join(root, 'deployed');
+    const extra = 'packages/operator-core/lib/carry-note.ts';
+    const paths = [...CARRY_SHIPMENT_SOURCE_PATHS, extra];
+    mkdirSync(canonical);
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args,
+      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    git(canonical, 'init', '-q');
+    git(canonical, 'config', 'user.email', 'fixture@example.test');
+    git(canonical, 'config', 'user.name', 'Fixture');
+    for (const path of paths) { mkdirSync(dirname(join(canonical, path)), { recursive: true }); writeFileSync(join(canonical, path), 'initial\n'); }
+    git(canonical, 'add', '.'); git(canonical, 'commit', '-qm', 'initial');
+    const deployedSha = git(canonical, 'rev-parse', 'HEAD');
+    git(root, 'clone', '-q', canonical, deployed);
+    checkout.root = deployed;
+    const h = nativeEvidence();
+    h.receipts.deployment!.detail.fullTargetSha = deployedSha;
+    h.receipts.promotions[0].detail.candidate = deployedSha;
+    for (const call of h.receipts.invocations) call.servingSha = deployedSha.slice(0, 10);
+    h.receipts.report!.body = `${input.ownerId} ${input.drillId} ${deployedSha}`;
+    Object.assign(h.receipts.invocations[4], { metadata: { reportReadbacks: [{
+      id: input.reportId, bodySha256: reportBodySha256(h.receipts.report!.body),
+      bodyBytes: Buffer.byteLength(h.receipts.report!.body), visibility: 'owner', publishedAt: at(8),
+    }] } });
+    const source = { root: canonical, reviewedPaths: paths, changedPaths: paths };
+    const deps = { ...h.deps, containsSource: undefined, sourceAuthority: async () => source };
+    return { canonical, extra, git, h, source, deps };
+  }
+  it('rejects canonical carry changes even when the evaluator and deployed checkout agree with themselves', async () => {
+    const f = repositories();
+    expect(await measureCarryDrillShipment(input, f.deps)).toMatchObject({ verdict: 'pass',
+      source: { canonicalRoot: f.canonical, canonicalCommit: f.git(f.canonical, 'rev-parse', 'HEAD'),
+        paths: expect.arrayContaining([f.extra]) } });
+    writeFileSync(join(f.canonical, f.extra), 'new carry behavior\n');
+    f.git(f.canonical, 'add', '.'); f.git(f.canonical, 'commit', '-qm', 'carry change');
+    expect((await measureCarryDrillShipment(input, f.deps)).verdict).toBe('fail');
+  });
+  it.each(['unreviewed-change', 'dirty-source', 'missing-source'])(
+    'keeps incomplete canonical population evidence non-pass: %s', async defect => {
+      const f = repositories();
+      if (defect === 'unreviewed-change') f.source.reviewedPaths = f.source.reviewedPaths.filter(p => p !== f.extra);
+      if (defect === 'dirty-source') writeFileSync(join(f.canonical, f.extra), 'uncommitted carry change\n');
+      if (defect === 'missing-source') f.source.reviewedPaths.push('packages/operator-core/lib/missing-carry.ts');
+      expect((await measureCarryDrillShipment(input, f.deps)).verdict).not.toBe('pass');
+    });
 });
