@@ -157,7 +157,6 @@ async function restoreAssumeResponsibilities(plan: AssumePreparation, recovery: 
       harness: item.harness, workItemId: item.id });
     if (!current || (current.assignee && current.assignee !== plan.caller.ownerId) ||
         checkpoint.checkpoint !== item.checkpoint || checkpoint.updatedAtMs !== item.updatedAtMs) return false;
-    // notify-classification: {"classification":"durable","reason":"Restoring the caller's work claim must retain assignment and coordination consequences across caller interruption.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     if (!current.assignee && !(await runWithWorkspace(plan.caller.workspaceId, () => claimWorkItem(item.id, plan.caller.ownerId,
       { harness: item.harness ?? undefined, assignedBy: plan.caller.ownerId })))) return false;
   }

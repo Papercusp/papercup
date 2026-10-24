@@ -12,7 +12,7 @@ import net from 'node:net';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
-import { hostThroughPty, metaPathFor } from '../scripts/psu-pty-host.mjs';
+import { hostThroughPty, metaPathFor, handoffPathFor } from '../scripts/psu-pty-host.mjs';
 import { mintCarryRespawnArgs, codexThreadWriterHolder } from '../scripts/psu-launcher.mjs';
 import { launchIdentityAssumeHandoff, makeIdentityAssumeHostPort,
   prepareIdentityAssumeCheckpoint } from '../scripts/psu-identity-assume.mjs';
@@ -177,7 +177,7 @@ it.each(['native-resume', 'checkpoint'] as const)(
           // This same-process fixture cannot exit its Vitest parent. Pin the
           // real departed native PID as the predecessor for the helper seam.
           orders.push({ ...record, ownerId: owners[key], fromPid: record.assume.request.caller.nativePid });
-          return join(root, 'fixture-orders');
+          return handoffPathFor(owners[key]);
         } });
       const done = hostThroughPty({ command: 'codex', args, cwd: root, ownerId: owners[key],
         env: hermeticEnv({ CODEX_HOME: homes[key], TERM: 'xterm-256color', PAPERCUSP_AGENT: 'codex',
@@ -193,8 +193,11 @@ it.each(['native-resume', 'checkpoint'] as const)(
     try {
       port = await new Promise<number>(resolve => server.listen(0, '127.0.0.1',
         () => resolve((server.address() as net.AddressInfo).port)));
-      for (const home of Object.values(homes)) writeFileSync(join(home, 'config.toml'),
-        `[mcp_servers.fixture]\nurl = "http://127.0.0.1:${port}/mcp"\n`);
+      for (const home of Object.values(homes)) {
+        writeFileSync(join(home, 'AGENTS.md'), 'Isolated native context fixture persona.');
+        writeFileSync(join(home, 'config.toml'),
+          `[mcp_servers.fixture]\nurl = "http://127.0.0.1:${port}/mcp"\n`);
+      }
       const seed = start('target', [...baseArgs(), 'Record the target history.']);
       await vi.waitFor(() => expect(output, diagnostics()).toContain(marker.target), { timeout: 20_000 });
       seed.signals.emit('SIGTERM'); await seed.done;
@@ -202,19 +205,24 @@ it.each(['native-resume', 'checkpoint'] as const)(
       phase = 'caller'; issued = false;
       const caller = start('caller', [...baseArgs(), marker.caller]);
       await vi.waitFor(() => expect(orders, diagnostics()).toHaveLength(1), { timeout: 25_000 });
-      expect(await caller.done).toBe(75);
       const original = orders[0].assume.request.caller;
-      expect(alive(original.nativePid)).toBe(false);
+      await vi.waitFor(() => expect(alive(original.nativePid), diagnostics()).toBe(false), { timeout: 10_000 });
+      expect(await caller.done).toBe(75);
       const callerNative = nativeId('caller');
       const resume = async (session: Row, options: Row) => {
         await options.managedAssume.verify();
         const key = session.coordOwnerId === owners.target ? 'target' : 'caller';
         let args = [...baseArgs(), 'resume', session.sessionId];
-        if (options.managedAssume.checkpoint) args = prepareIdentityAssumeCheckpoint(session,
-          options.managedAssume.checkpoint, args, { mint: mintCarryRespawnArgs,
-            codexHome: homes[key], personaFile: null, home: root }).args;
+        let kickoff = options.kickoff;
+        if (options.managedAssume.checkpoint) {
+          const carry = prepareIdentityAssumeCheckpoint(session,
+            options.managedAssume.checkpoint, args, { mint: mintCarryRespawnArgs,
+              codexHome: homes[key], personaFile: null, home: root });
+          args = carry.args;
+          kickoff = [carry.carryText || options.managedAssume.checkpoint.body, kickoff].join('\n\n');
+        }
         // Explicit phase prompt avoids relying on PTY ready-prompt timing.
-        args.push(options.kickoff);
+        args.push(kickoff);
         return start(key, args, options.managedAssume);
       };
       const launch = (handoff: Row) => launchIdentityAssumeHandoff(handoff, { inspect,
@@ -235,7 +243,9 @@ it.each(['native-resume', 'checkpoint'] as const)(
       expect(targetInput.includes(marker.target)).toBe(mode === 'native-resume');
       expect(targetInput.includes(marker.checkpoint)).toBe(mode === 'checkpoint');
       expect(orders).toHaveLength(1);
-      releaseTarget(); expect(await targetRun.done).toBe(75);
+      releaseTarget();
+      await vi.waitFor(() => expect(alive(targetMeta.ptyPid), diagnostics()).toBe(false), { timeout: 10_000 });
+      expect(await targetRun.done).toBe(75);
       expect(orders).toHaveLength(2); expect(alive(targetMeta.ptyPid)).toBe(false);
       phase = 'return'; issued = false;
       const returned = await launch(orders[1]);

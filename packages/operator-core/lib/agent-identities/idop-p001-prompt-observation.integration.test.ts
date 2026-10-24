@@ -55,12 +55,23 @@ function syntheticArchive(): { manifest: IdopPromptObservation; files: Map<strin
 
 let archive: ReturnType<typeof syntheticArchive>;
 
+// Bind the case identities persisted by the ordinary test reporter to the bytes
+// actually selected here. Passing titles must distinguish retained launch proof
+// from the portable fixture without relying on an inherited environment claim.
+const manifestPath = process.env.PAPERCUSP_IDOP_PROMPT_MANIFEST;
+const manifestBytes = manifestPath ? readFileSync(manifestPath) : undefined;
+const selectedManifest = manifestBytes
+  ? JSON.parse(manifestBytes.toString('utf8')) as IdopPromptObservation
+  : undefined;
+const archiveSelection = selectedManifest
+  ? `retained manifest sha256=${hash(manifestBytes!)} nativeSession=${selectedManifest.sourceSession.nativeSessionId}`
+  : 'portable synthetic fixture; no retained launch selected';
+
 beforeAll(async () => {
   // The ordinary suite is portable. An explicit manifest runs these same cases
   // against the retained real launch; no real prompt bytes enter a repo fixture.
-  const manifestPath = process.env.PAPERCUSP_IDOP_PROMPT_MANIFEST;
-  if (!manifestPath) { archive = syntheticArchive(); return; }
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as IdopPromptObservation;
+  if (!selectedManifest) { archive = syntheticArchive(); return; }
+  const manifest = selectedManifest;
   const files = new Map(manifest.files.map(entry => [entry.path, readFileSync(homePath(entry.path))]));
   const stream = createReadStream(homePath(manifest.sourceSession.nativeTranscript));
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
@@ -87,12 +98,14 @@ function replaceFile(manifest: IdopPromptObservation, files: Map<string, Buffer>
   Object.assign(manifest.files.find(entry => entry.path === ref)!, { sha256: hash(bytes), bytes: bytes.length });
 }
 
-describe('P-001 launch input replay and native delivery integration', () => {
+describe('P-001 portable prompt archive fixture', () => {
   it('also exercises the portable public fixture used by the ordinary suite', () => {
     const { manifest, files, original } = syntheticArchive();
     expect(verify(manifest, files, original).renderedPromptSha256).toBe(manifest.renderedPrompt.sha256);
   });
+});
 
+describe(`P-001 launch input replay and native delivery integration [${archiveSelection}]`, () => {
   it('replays the source artifact and matches the original native message exactly', () => {
     const receipt = verify();
     expect(receipt.nativeSessionId).toBe(archive.manifest.sourceSession.nativeSessionId);
