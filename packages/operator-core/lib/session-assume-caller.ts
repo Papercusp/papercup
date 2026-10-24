@@ -241,19 +241,52 @@ export function createAssumeCallerAdapters(host: AssumeCallerHostFence):
         }
         const { sql } = getOrgPg();
         await sql.begin(async tx => {
+          // Serialize retries against the same lifecycle marker. A host may
+          // refuse (or lose) its thaw ACK after these writes committed.
+          const locked = await tx`SELECT owner_id FROM harness_shared.session_briefs
+            WHERE owner_id = ${plan.caller.ownerId} AND workspace_id = ${plan.caller.workspaceId}
+              AND control_state #> '{lifecycle,assumeCaller}' = ${JSON.stringify(pause)}::text::jsonb
+            FOR UPDATE`;
+          if (locked.length !== 1) throw new Error('assume-caller-pause-changed');
+          const restoredLoops: Array<{ id: string; revision: string }> = [];
           for (const paused of pause!.pausedLoops ?? []) {
             const loop = saved.loops.find(loop => loop.id === paused.id && loop.active);
             if (!loop) throw new Error('assume-caller-loop-invalid');
-            const rows = await tx`
+            const restored = pause!.restoredLoops?.find(loop => loop.id === paused.id);
+            if (restored) {
+              const rows = await tx`
+                SELECT id FROM harness_shared.routines
+                 WHERE id = ${loop.id} AND workspace_id = ${plan.caller.workspaceId}
+                   AND target_owner_id = ${plan.caller.ownerId} AND active = true
+                   AND updated_at::text = ${restored.revision}
+                   AND (to_jsonb(routines) - 'active' - 'updated_at' - 'active_changed_at') =
+                       (${JSON.stringify(loop.configuration)}::text::jsonb - 'active' - 'updated_at' - 'active_changed_at')
+                 FOR UPDATE
+              `;
+              if (rows.length !== 1) throw new Error('assume-caller-loop-changed');
+              restoredLoops.push(restored);
+              continue;
+            }
+            const rows = await tx<Array<{ id: string; revision: string }>>`
               UPDATE harness_shared.routines SET active = true, updated_at = now()
                WHERE id = ${loop.id} AND workspace_id = ${plan.caller.workspaceId}
                  AND target_owner_id = ${plan.caller.ownerId}
                  AND updated_at::text = ${paused.revision} AND active = false
                  AND (to_jsonb(routines) - 'active' - 'updated_at' - 'active_changed_at') =
                      (${JSON.stringify(loop.configuration)}::text::jsonb - 'active' - 'updated_at' - 'active_changed_at')
-              RETURNING id
+              RETURNING id, updated_at::text AS revision
             `;
             if (rows.length !== 1) throw new Error('assume-caller-loop-changed');
+            restoredLoops.push(rows[0]);
+          }
+          if (!pause!.restoredLoops) {
+            // Loop writes and their retry pins become durable together; no
+            // active loop is mistaken for an unrelated owner/config change.
+            await tx`UPDATE harness_shared.session_briefs
+              SET control_state = jsonb_set(control_state, '{lifecycle,assumeCaller}',
+                    ${JSON.stringify({ ...pause, restoredLoops })}::text::jsonb),
+                  control_generation = control_generation + 1, control_updated_at = now()
+              WHERE owner_id = ${plan.caller.ownerId} AND workspace_id = ${plan.caller.workspaceId}`;
           }
         });
         await requireCaller(plan, readCaller);

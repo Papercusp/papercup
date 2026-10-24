@@ -10,12 +10,13 @@ export const assumeCallerPauseSchema = z.object({
   nativeSessionId: text, incarnation: text, hostId: text, attachmentId: text,
   checkpointRef: text, checkpointSha256: z.string().regex(/^[a-f0-9]{64}$/),
   pausedLoops: z.array(z.object({ id: text, revision: text }).strict()).optional(),
+  restoredLoops: z.array(z.object({ id: text, revision: text }).strict()).optional(),
 }).strict();
 export type AssumeCallerPause = z.infer<typeof assumeCallerPauseSchema>;
 
 export function ownsAssumeCallerPause(pause: AssumeCallerPause | null, plan: AssumePreparation, recovery: AssumeCallerRecovery): boolean {
   if (!pause) return false;
-  const { pausedLoops: _pausedLoops, ...identity } = pause;
+  const { pausedLoops: _pausedLoops, restoredLoops: _restoredLoops, ...identity } = pause;
   return JSON.stringify(identity) === JSON.stringify(assumeCallerPause(plan, recovery));
 }
 

@@ -160,6 +160,50 @@ describe('session:assume production receipt adapter (real PG)', () => {
     expect(loop).toMatchObject({ active: false, trigger_config: { newerOwnerChoice: true } });
   });
 
+  it.each(['refused', 'lost'] as const)('retries exact loop restoration after a %s host thaw acknowledgement', async failure => {
+    const { plan } = receiptFixture();
+    const loopId = randomUUID();
+    await fixture.admin`INSERT INTO harness_shared.routines
+      (id, install_slug, name, workspace_id, target_owner_id, active, trigger_kind, trigger_config, target_role)
+      VALUES (${loopId}, 'fixture-harness', ${loopRoutineName(plan.caller.ownerId)}, ${workspaceId}, ${plan.caller.ownerId}, true, 'cron', '{}'::jsonb, 'su')`;
+    const thaw = vi.fn(async () => true);
+    if (failure === 'lost') thaw.mockRejectedValueOnce(new Error('lost thaw ACK'));
+    else thaw.mockResolvedValueOnce(false);
+    const adapter = createAssumeCallerAdapters({ freeze: async () => true, thaw, readCaller: async () => plan.caller });
+    const recovery = await adapter.checkpointCaller(plan);
+    await adapter.quiesceCaller(plan, recovery);
+    expect(await adapter.restoreCaller(plan, recovery)).toBe(false);
+    const pause = await readAssumeCallerPause(plan.caller.ownerId);
+    const [restored] = await fixture.admin`SELECT active, updated_at::text AS revision FROM harness_shared.routines WHERE id = ${loopId}`;
+    expect(restored.active).toBe(true);
+    expect(pause?.restoredLoops).toEqual([{ id: loopId, revision: restored.revision }]);
+    expect(await adapter.restoreCaller(plan, recovery)).toBe(true);
+    expect(thaw).toHaveBeenCalledTimes(2);
+    expect(await readAssumeCallerPause(plan.caller.ownerId)).toBeNull();
+    const [unchanged] = await fixture.admin`SELECT updated_at::text AS revision FROM harness_shared.routines WHERE id = ${loopId}`;
+    expect(unchanged.revision).toBe(restored.revision);
+  });
+
+  it('refuses a retry if an already restored loop changed before the thaw acknowledgement', async () => {
+    const { plan } = receiptFixture();
+    const loopId = randomUUID();
+    await fixture.admin`INSERT INTO harness_shared.routines
+      (id, install_slug, name, workspace_id, target_owner_id, active, trigger_kind, trigger_config, target_role)
+      VALUES (${loopId}, 'fixture-harness', ${loopRoutineName(plan.caller.ownerId)}, ${workspaceId}, ${plan.caller.ownerId}, true, 'cron', '{}'::jsonb, 'su')`;
+    const thaw = vi.fn(async () => false);
+    const adapter = createAssumeCallerAdapters({ freeze: async () => true, thaw, readCaller: async () => plan.caller });
+    const recovery = await adapter.checkpointCaller(plan);
+    await adapter.quiesceCaller(plan, recovery);
+    expect(await adapter.restoreCaller(plan, recovery)).toBe(false);
+    await fixture.admin`UPDATE harness_shared.routines SET trigger_config = '{"newerOwnerChoice":true}'::jsonb, updated_at = now() WHERE id = ${loopId}`;
+    thaw.mockResolvedValue(true);
+    expect(await adapter.restoreCaller(plan, recovery)).toBe(false);
+    expect(thaw).toHaveBeenCalledOnce();
+    expect(await readAssumeCallerPause(plan.caller.ownerId)).not.toBeNull();
+    const [loop] = await fixture.admin`SELECT active, trigger_config FROM harness_shared.routines WHERE id = ${loopId}`;
+    expect(loop).toMatchObject({ active: true, trigger_config: { newerOwnerChoice: true } });
+  });
+
   it('restores nonempty caller work without cancelling its bound awaits or moving work to the target', async () => {
     const { plan } = receiptFixture();
     const id = `WI-assume-${randomUUID()}`;

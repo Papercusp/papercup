@@ -46,7 +46,7 @@ import {
 // (fetchPresenceFleet, a soft label not on PresenceRecord), and the fleet's bound
 // scheme resolves the colored group header the pui Fleet tab draws.
 import { fetchPresenceFleet } from './agent-tools/coordination/presence-fleet';
-import { getFleetScheme } from './agent-fleets-store';
+import { getFleetSchemes } from './agent-fleets-store';
 // hive-agent-tabs-psu-tui P-001: the shared pane-kind taxonomy (one source of
 // truth) — stamp each roster entry so pui renders/colors per type.
 import { classifyAgentPane, type AgentPaneKind, type DriveMode } from '@papercusp/agent-mcp';
@@ -1312,21 +1312,40 @@ export interface RosterWithAssignments {
  * ACCENT (scheme.cursor hex), for the pui Fleet-tab roster grouping (#3). The
  * fleet label rides on coord_presence (fetchPresenceFleet — a soft label NOT on
  * PresenceRecord); the accent resolves ONCE per distinct (workspace, fleet) via
- * getFleetScheme. Best-effort: a presence-fleet read failure yields an empty map
+ * one scoped getFleetSchemes read per workspace. Best-effort: a presence-fleet read failure yields an empty map
  * (the roster degrades to flat/ungrouped), and an unresolved scheme leaves the
  * color null (the pui draws a neutral header).
  */
 async function resolveFleetInfoByOwner(
   presence: PresenceRecord[],
+  timeRead: <T>(phase: string, read: () => T | Promise<T>) => Promise<T>,
 ): Promise<Map<string, FleetInfo>> {
   const out = new Map<string, FleetInfo>();
   let fleetByOwner: Awaited<ReturnType<typeof fetchPresenceFleet>>;
   try {
-    fleetByOwner = await fetchPresenceFleet(presence.map((p) => p.ownerId));
+    fleetByOwner = await timeRead('owners.fleets.memberships', () =>
+      fetchPresenceFleet(presence.map((p) => p.ownerId)));
   } catch {
     return out; // presence-fleet read failed → no grouping (flat roster)
   }
   const colorCache = new Map<string, string | null>(); // `${workspaceId}\0${slug}` → accent
+  const byWorkspace = new Map<string, Set<string>>();
+  for (const p of presence) {
+    const slug = fleetByOwner.get(p.ownerId)?.fleetSlug;
+    if (!slug) continue;
+    let slugs = byWorkspace.get(p.workspaceId);
+    if (!slugs) byWorkspace.set(p.workspaceId, slugs = new Set());
+    slugs.add(slug);
+  }
+  // Distinct fleet bindings used to be awaited one by one. Under concurrent
+  // cold docs reads those round trips exhausted the primary roster deadline.
+  await timeRead('owners.fleets.schemes', () => Promise.all(
+    [...byWorkspace].map(async ([workspaceId, slugs]) => {
+      const schemes = await getFleetSchemes(workspaceId, [...slugs]).catch(() => null);
+      if (!schemes) return;
+      for (const [slug, scheme] of schemes) colorCache.set(`${workspaceId}\0${slug}`, scheme.cursor);
+    }),
+  ));
   for (const p of presence) {
     const membership = fleetByOwner.get(p.ownerId);
     const slug = membership?.fleetSlug ?? null;
@@ -1335,10 +1354,6 @@ async function resolveFleetInfoByOwner(
       continue;
     }
     const key = `${p.workspaceId}\0${slug}`;
-    if (!colorCache.has(key)) {
-      const scheme = await getFleetScheme(p.workspaceId, slug).catch(() => null);
-      colorCache.set(key, scheme?.cursor ?? null);
-    }
     out.set(p.ownerId, {
       fleetSlug: slug,
       fleetColor: colorCache.get(key) ?? null,
@@ -1755,7 +1770,7 @@ export async function mergeRosterWithAssignments(
     displayNameByOwner,
     wipByOwner,
   ] = await timeRead('owner-enrichment', () => Promise.all([
-    timeRead('owners.fleets', () => resolveFleetInfoByOwner(presence)),
+    timeRead('owners.fleets', () => resolveFleetInfoByOwner(presence, timeRead)),
     timeRead('owners.modes', () => agentModesByOwner(presence)),
     // adv-hud P-001: the open-await join (HUD's Blocked column). Batched here
     // rather than awaited after — a serial hop would add to the roster-merge

@@ -13,7 +13,7 @@ import { findLiveHostAsync } from './events/await/psu-pty-discovery';
 import { nativeSessionHandleForAdvSession } from './native-session-handles';
 import { findCodexRolloutPathByUuid, findOmpSessionPath } from './session-transcript-resolvers';
 import { codexThreadWriterHolder, sessionProcessHolder } from '../../../apps/operator/scripts/psu-launcher.mjs';
-import type { AssumeActor, AssumeCaller, AssumeContext, AssumeRequest, AssumeTarget } from './session-assume';
+import type { AssumeActor, AssumeCaller, AssumeContext, AssumePreparation, AssumeRequest, AssumeTarget } from './session-assume';
 
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const backendOf = (value: string | null): AssumeTarget['backend'] | null =>
@@ -82,6 +82,26 @@ export async function readAssumeCheckpoint(target: Pick<ResumeTarget, 'ownerId' 
   return { mode: 'checkpoint', ref: `carry-note:${scope}`, sha256: sha256(row.note), revision: row.revision };
 }
 
+/** Read the exact pinned body only inside the authorized host commit path.
+ * body_ts is the body revision; updated_ts also changes on attestations. */
+export async function readAssumeCheckpointBody(plan: AssumePreparation): Promise<string> {
+  const target = plan.target;
+  const scope = loopScope(target.harnessSlug, target.ownerId);
+  if (target.context.mode !== 'checkpoint' || target.context.ref !== `carry-note:${scope}`)
+    throw new Error('assume-checkpoint-unavailable');
+  const { sql } = getOrgPg();
+  const [row] = await sql<Array<{ note: string }>>`
+    SELECT note FROM harness_shared.carry_notes
+     WHERE workspace_id = ${target.workspaceId} AND scope = ${scope}
+       AND body_ts::text = ${target.context.revision}
+       AND body_ts >= extract(epoch FROM ${target.binding.startedAt}::timestamptz) * 1000
+     LIMIT 1
+  `;
+  if (!row?.note?.trim() || sha256(row.note) !== target.context.sha256)
+    throw new Error('assume-checkpoint-changed');
+  return row.note;
+}
+
 export async function readAssumeCaller(actor: AssumeActor): Promise<AssumeCaller | null> {
   const [target, host] = await Promise.all([
     resolveResumeTarget({ agentId: actor.ownerId }), findLiveHostAsync(actor.ownerId),
@@ -131,7 +151,11 @@ export async function readAssumeTarget(request: AssumeRequest, workspaceId: stri
       context: { mode: request.contextMode, ref: nativeId, sha256: '0'.repeat(64), revision: 'unavailable' } };
   }
   let context: AssumeContext | null;
-  if (request.contextMode === 'checkpoint') context = await readAssumeCheckpoint(target);
+  if (request.contextMode === 'checkpoint') {
+    // The existing managed carry has no OMP consumer. Refuse before custody.
+    if (backend === 'omp') return null;
+    context = await readAssumeCheckpoint(target);
+  }
   else {
     const root = native.backend === 'codex' ? join(native.codexHome, 'sessions')
       : native.backend === 'claude' && native.configDir ? join(native.configDir, 'projects')
@@ -148,7 +172,7 @@ export async function readAssumeTarget(request: AssumeRequest, workspaceId: stri
   const freshId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
   return { ownerId: target.ownerId, workspaceId: target.workspaceId, harnessSlug: target.harnessSlug,
     advSessionId: target.advSessionId, role: target.role ?? 'su', nativeSessionId: nativeId,
-    executionNativeSessionId: request.contextMode === 'native-resume' ? nativeId : freshId,
+    executionNativeSessionId: request.contextMode === 'native-resume' ? nativeId : backend === 'codex' ? null : freshId,
     backend, binding: target.binding,
     writerGeneration: sha256(JSON.stringify([target.binding, writer, lock?.reason])),
     writer, ended: true, liveHost: false, context };

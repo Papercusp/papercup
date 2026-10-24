@@ -1358,8 +1358,28 @@ async function allocateSchemeForWorkspace(workspaceId: string, sql?: Sql): Promi
  * binding if present, else a deterministic slug-hash fallback for legacy rows.
  * Always returns a real catalog scheme.
  */
-export function resolveFleetScheme(record: AgentFleetRecord): ColorScheme {
+export function resolveFleetScheme(record: Pick<AgentFleetRecord, 'colorScheme' | 'fleetSlug'>): ColorScheme {
   return schemeByName(record.colorScheme) ?? schemeForSlug(record.fleetSlug);
+}
+
+/** Resolve only the requested fleet bindings in one workspace-scoped read. */
+export async function getFleetSchemes(
+  workspaceId: string,
+  fleetSlugs: readonly string[],
+  sql?: Sql,
+): Promise<Map<string, ColorScheme>> {
+  const out = new Map<string, ColorScheme>();
+  const slugs = [...new Set(fleetSlugs.filter((slug) => slug.length > 0))];
+  if (slugs.length === 0) return out;
+  const rows = (await pg(sql).unsafe(
+    `SELECT fleet_slug, color_scheme FROM harness_shared.agent_fleets
+      WHERE workspace_id = $1 AND fleet_slug = ANY($2::text[])`,
+    [workspaceId, slugs],
+  )) as unknown as Array<{ fleet_slug: string; color_scheme: string | null }>;
+  for (const row of rows) {
+    out.set(row.fleet_slug, resolveFleetScheme({ fleetSlug: row.fleet_slug, colorScheme: row.color_scheme }));
+  }
+  return out;
 }
 
 /** The bound scheme for a fleet slug, or null if the fleet doesn't exist. */

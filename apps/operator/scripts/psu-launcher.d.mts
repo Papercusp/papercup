@@ -3512,6 +3512,11 @@ export function spawnInherit(options: SpawnInheritOptions): void;
  * @property {any} [sessionPort]
  * @property {boolean} [preserveCwd]
  * @property {any} [hostHandoff] already-consumed host handoff orders
+ * @property {boolean} [skipHostHandoff] exact target launch must not adopt stale target orders
+ * @property {Record<string, any>} [inheritedEnv] machine environment for an identity transition
+ * @property {string|null} [identityAssumeAttachmentId] retained session surface across identity change
+ * @property {string|null} [identityAssumeHostId] retained logical managed host across identity change
+ * @property {any} [initialCarryRespawn] target checkpoint's existing native bootstrap binding
  * @property {(...args:any[])=>any} [reportSessionEndedImpl]
  * @property {()=>any} [onSpawn]
  * @property {(()=>any)|null} [onSpawnFailure]
@@ -5432,6 +5437,26 @@ export type RunWrapperOptions = {
      * already-consumed host handoff orders
      */
     hostHandoff?: any;
+    /**
+     * exact target launch must not adopt stale target orders
+     */
+    skipHostHandoff?: boolean | undefined;
+    /**
+     * machine environment for an identity transition
+     */
+    inheritedEnv?: Record<string, any> | undefined;
+    /**
+     * retained session surface across identity change
+     */
+    identityAssumeAttachmentId?: string | null | undefined;
+    /**
+     * retained logical managed host across identity change
+     */
+    identityAssumeHostId?: string | null | undefined;
+    /**
+     * target checkpoint's existing native bootstrap binding
+     */
+    initialCarryRespawn?: any;
     reportSessionEndedImpl?: ((...args: any[]) => any) | undefined;
     onSpawn?: (() => any) | undefined;
     onSpawnFailure?: (() => any) | null | undefined;
@@ -5480,14 +5505,7 @@ import { buildFrameworkInstallSpec } from "../../../packages/operator-core/lib/f
 /** Spawn an installer SpawnSpec inheriting this terminal (installs are interactive). */
 declare function runInstallerInherit(spec: any): Promise<any>;
 import { readHostHandoffForParentPid } from "./psu-pty-host.mjs";
-/**
- * Continue a host-code handoff without running bootstrap-su a second time.
- * The shim re-executes this launcher with its original argv, but the original
- * bootstrap result (adv row, Codex home, and route identity) was only held in
- * the predecessor process. Consuming the handoff before the normal launch
- * flow keeps the successor on that exact row/home instead of minting a sibling.
- */
-declare function launchHostHandoff(handoff: any): Promise<void>;
+declare function launchHostHandoff(handoff: any): Promise<any>;
 import { runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
 import { readClaudeLaunchSettings } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 import { nativeSessionIdFromLaunchArgs } from "./psu-pty-host.mjs";

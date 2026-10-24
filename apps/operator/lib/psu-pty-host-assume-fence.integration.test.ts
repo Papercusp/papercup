@@ -62,7 +62,15 @@ it('holds real PTY owner input and refuses wake/raw/recycle effects until exact 
     expect(onReexec).not.toHaveBeenCalled();
     expect(await send('thaw')).toMatchObject({ ok: true, phase: 'released' });
     await vi.waitFor(() => expect(output).toContain('INPUT:HELD_OWNER'), { timeout: 3000 });
+    // Simulate a caller that lost the first ACK. The same released custody is
+    // acknowledged without replaying the owner input that was just drained.
+    expect(await send('thaw')).toMatchObject({ ok: true, phase: 'released' });
+    expect(output.split('INPUT:HELD_OWNER')).toHaveLength(2);
     expect(await send('freeze')).toMatchObject({ ok: false, reason: 'assume-replayed-transition' });
+    const next = { ...request, transitionKey: `session-assume:${'e'.repeat(64)}` };
+    expect(await send('freeze', next)).toMatchObject({ ok: true, phase: 'frozen' });
+    expect(await send('thaw')).toMatchObject({ ok: false });
+    expect(await send('thaw', next)).toMatchObject({ ok: true, phase: 'released' });
   } finally {
     signals.emit('SIGTERM');
     await done;

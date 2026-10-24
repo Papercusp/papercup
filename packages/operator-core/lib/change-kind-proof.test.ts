@@ -110,6 +110,46 @@ function missingFor(r: Extract<ChangeKindGateResult, { outcome: 'refuse' }>, kin
   return m!.missing.join(' | ');
 }
 
+describe('root completion proof representations', () => {
+  it.each(['logic', 'test-only'] as const)('accepts command and result arrays for %s', async (kind) => {
+    const result = await evaluateChangeKindGate(input({
+      kinds: [kind],
+      root: {
+        testsRun: ['npm run test:file -- first.test.ts', 'npm run test:file -- second.test.ts'],
+        testResult: ['2 passed', '0 failed'],
+      },
+    }));
+    expect(result).toMatchObject({ applicable: true, outcome: 'pass', kinds: [kind] });
+  });
+
+  it('refuses a failing result anywhere in an accepted result array', async () => {
+    const result = expectRefused(await evaluateChangeKindGate(input({
+      kinds: ['test-only'],
+      root: { testsRun: ['npm run test:file -- first.test.ts'], testResult: ['2 passed', '1 failed'] },
+    })));
+    expect(missingFor(result, 'test-only')).toContain('`testResult` reporting a passing run');
+  });
+
+  it('refuses an empty command array even when the result passes', async () => {
+    const result = expectRefused(await evaluateChangeKindGate(input({
+      kinds: ['test-only'],
+      root: { testsRun: [], testResult: '2 passed' },
+    })));
+    expect(missingFor(result, 'test-only')).toContain('`testsRun` naming the test command');
+  });
+
+  it('does not turn non-string command entries into proof', async () => {
+    const result = expectRefused(await evaluateChangeKindGate(input({
+      kinds: ['test-only'],
+      root: {
+        testsRun: ['npm run test:file -- first.test.ts', 7] as unknown as string[],
+        testResult: '2 passed',
+      },
+    })));
+    expect(missingFor(result, 'test-only')).toContain('`testsRun` naming the test command');
+  });
+});
+
 describe('R-2 — a successful close lacking a declared kind\'s catalog proof is refused, naming each missing proof', () => {
   it('a ui-declared close citing only Vitest is refused for the missing real-app run artifact', async () => {
     const r = expectRefused(

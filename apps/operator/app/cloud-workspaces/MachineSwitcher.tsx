@@ -1,7 +1,7 @@
 "use client";
 
 import { parseAsString, useQueryStates } from "nuqs";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSyncQuery } from "@papercusp/sync";
 import { getBrowserMachineId, setBrowserMachineId } from "@papercusp/operator-core/lib/browser-workspace";
 import { Select } from "@/app/harness/Select";
@@ -33,9 +33,20 @@ function AuthorizedMachineSwitcher({ localMode, onSelect, connectHref }: Machine
     desktopHost: parseAsString, host: parseAsString, desktop: parseAsString,
     desktopPins: parseAsString, desktopFilter: parseAsString,
   }, { history: "push" });
+  const value = target.desktopHost ?? target.host ?? getBrowserMachineId() ?? null;
+  const machines = (control.data ?? []).filter((row): row is WorkspaceHostControlRow =>
+    row.kind === "workspace" && row.observedState !== "absent" && row.observedState !== "destroying");
+  const defaultMachine = preferredDesktopWorkspace(machines)?.id ?? (localMode ? LOCAL_DESKTOP_HOST : null);
+  useEffect(() => {
+    if (value !== null || control.loading || control.error || !defaultMachine) return;
+    // The visible default must also route workspace reads and launches. This
+    // establishes this window's context without an app or lifecycle action.
+    setBrowserMachineId(defaultMachine);
+    void setTarget(desktopMachineSelection(defaultMachine), { history: "replace" });
+  }, [value, control.loading, control.error, defaultMachine, setTarget]);
   return <MachineSwitcherView
     localMode={localMode === true}
-    value={target.desktopHost ?? target.host ?? getBrowserMachineId() ?? null}
+    value={value}
     rows={control.data ?? []}
     loading={control.loading}
     error={control.error?.message ?? null}

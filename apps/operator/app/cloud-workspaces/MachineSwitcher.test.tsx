@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { withNuqsTestingAdapter } from "nuqs/adapters/testing";
 import { parseAsString, useQueryState } from "nuqs";
 import MachineSwitcher, { MachineSwitcherView } from "./MachineSwitcher";
+import { getBrowserMachineId } from "@papercusp/operator-core/lib/browser-workspace";
 import type { WorkspaceHostControlRow } from "./workspace-view-model";
 
 const query = vi.hoisted(() => vi.fn());
@@ -18,13 +19,39 @@ vi.mock("@/app/harness/Select", () => ({
     {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
   </select>,
 }));
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); window.sessionStorage.clear(); });
 const rows = [
   { kind: "workspace", id: "a", name: "Home desktop", observedState: "running" },
   { kind: "workspace", id: "b", name: "Laptop", observedState: "stopped" },
 ] as WorkspaceHostControlRow[];
 
 describe("persistent machine selection", () => {
+  it.each([true, false])("binds the visible default to request routing (localMode=%s) without moving apps", async (localMode) => {
+    query.mockReturnValue({ data: rows, loading: false, error: null });
+    const update = vi.fn();
+    const onSelect = vi.fn();
+    render(<MachineSwitcher localMode={localMode} onSelect={onSelect} />, {
+      wrapper: withNuqsTestingAdapter({ searchParams: "?app=mail&ws=own", onUrlUpdate: update }),
+    });
+    await vi.waitFor(() => expect(getBrowserMachineId()).toBe("a"));
+    await vi.waitFor(() => expect(update).toHaveBeenCalled());
+    const params = update.mock.calls.at(-1)![0].searchParams as URLSearchParams;
+    expect(params.get("desktopHost")).toBe("a");
+    expect(params.get("app")).toBe("mail");
+    expect(params.get("ws")).toBe("own");
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("does not establish an implicit target from a refused inventory", () => {
+    query.mockReturnValue({ data: rows, loading: false, error: new Error("denied") });
+    const update = vi.fn();
+    render(<MachineSwitcher onSelect={vi.fn()} />, {
+      wrapper: withNuqsTestingAdapter({ searchParams: "?app=mail", onUrlUpdate: update }),
+    });
+    expect(getBrowserMachineId()).toBeUndefined();
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("uses the authorized inventory, shows availability and leaves missing selections explicit", () => {
     const onSelect = vi.fn();
     render(<MachineSwitcherView localMode={false} value="removed" rows={rows}

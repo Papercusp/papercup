@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { expect, it, vi } from 'vitest';
+import { beforeAll, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { measureProximusRuntime, proximusHostProcess, runProximusHost, requireProximusHostConfinement,
@@ -28,13 +28,27 @@ import type { BenchTask } from './types';
 
 const exec = promisify(execFile);
 // Maintained Debian SCM image supplies the real bash, timeout and git used by
-// upstream submissions. Require the immutable local image; never pull at run time.
+// upstream submissions. Materialize a missing immutable fixture during suite
+// preparation; the confined worker never receives Docker or registry access.
 const image = 'buildpack-deps@sha256:1314fd2a9c83b257b37132883b3c8e326d3909211bdcb419c9757399ebc34bf3';
 const token = 'offline_assignment_' + 'x'.repeat(48);
 const workspaceId = 'proximus-controller-private';
 const phase = (name: string) => process.stderr.write(`PROXIMUS_FIXTURE_PHASE ${name}\n`);
+beforeAll(async () => {
+  phase('immutable fixture image preparation');
+  try { await exec('docker', ['image', 'inspect', image], { timeout: 30_000 }); }
+  catch (error) {
+    // A missing local cache entry is a dependency to materialize. Daemon,
+    // permission and transport failures retain their actual diagnosis.
+    if (!(error as { stderr?: string }).stderr?.includes('No such image:')) throw error;
+    phase('materializing pinned fixture image');
+    await exec('docker', ['pull', image], { timeout: 90_000, maxBuffer: 2 * 1024 * 1024 });
+    await exec('docker', ['image', 'inspect', image], { timeout: 30_000 });
+  }
+}, 150_000);
 type AuthorizationEvidence = { model: unknown; effort: unknown; outputLimit: unknown;
-  accountId: string; bodySha256: string; authorized: boolean };
+  accountId: string; bodySha256: string; authorized: boolean;
+  reservedOutputTokens: number | null; outputBudget: number };
 const privateDb = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined }));
 // Only host DB/workspace selection is replaced. The controller, governor,
 // SQL mutations, HTTP transport and canonical usage writer remain real.
@@ -65,7 +79,11 @@ async function controllerFixture(input: { measured: ProximusRuntimeReceipt;
   protocol.grader.images = { t1: image };
   currentBenchmarkProtocolSchema.parse(protocol);
   const preregHash = createHash('sha256').update(JSON.stringify(protocol)).digest('hex'), loopId = 'offline-proximus-loop';
-  const resources = { inputTokens: 100_000, outputTokens: 1000, requestsPerArm: 3, usdPerArm: 3,
+  const requestsPerArm = 3, outputTokenLimit = protocol.priceSchedule.rates[0].outputTokenCeiling!;
+  // Resource counters retain each request's ceiling, independently of final
+  // usage/monetary settlement. Mirror the production launcher multiplication.
+  const resources = { inputTokens: protocol.priceSchedule.rates[0].inputTokenCeiling! * requestsPerArm,
+    outputTokens: outputTokenLimit * requestsPerArm, requestsPerArm, usdPerArm: 3,
     maxOpenUsd: protocol.maxInFlightUsd, wallClockMs: 180_000, wallClockMsPerArm: 180_000,
     armIds: protocol.arms.map(a => currentBenchAssignmentId(protocol.runId, a.id, 't1', 1)) };
   const admin = postgres(await getTestPg(), { max: 1, onnotice: () => {} });
@@ -108,18 +126,21 @@ async function controllerFixture(input: { measured: ProximusRuntimeReceipt;
       readNativeInputCeiling: count.read }, { readAccount: async (_ws, id) => id === account.id ? account : null,
       credentialResolver: (_provider, ref) => makeBearerCredentialResolver(ref) });
     const controller = currentBenchGatewayController({ workspaceId, loopId, token, preregHash, protocol, resources,
-      armId: 'baseline', taskId: 't1', seed: 1, outputTokenLimit: 1000, authenticateProvider: auth.authenticateProvider },
+      armId: 'baseline', taskId: 't1', seed: 1, outputTokenLimit, authenticateProvider: auth.authenticateProvider },
       { enabled: async () => true, getSql: async () => sql!, log: () => {} });
     hosted = await controller.startHostGateway(() => {}, options => startGatewayService({ ...options,
       carryTrial: { ...options.carryTrial!, async authorizeAttempt(attempt) {
         const body = JSON.parse(attempt.body);
         const evidence: AuthorizationEvidence = { model: body.model, effort: body.reasoning?.effort ?? null,
           outputLimit: body.max_output_tokens ?? null, accountId: attempt.accountId,
-          bodySha256: attempt.bodySha256, authorized: false };
+          bodySha256: attempt.bodySha256, authorized: false, reservedOutputTokens: null, outputBudget: resources.outputTokens };
         input.evidence.push(evidence);
         const save = () => writeFileSync(join(input.scratch, 'authorization-evidence.json'), JSON.stringify(input.evidence));
         save();
         const receipt = await options.carryTrial!.authorizeAttempt(attempt);
+        const positions = await getLearningSpendPositions(sql!, { workspaceId, loopId, includeReservations: true });
+        if (positions.census?.status === 'complete') evidence.reservedOutputTokens = positions.census.reservations
+          .reduce((total, reservation) => total + (reservation.resources?.outputTokens ?? 0), 0);
         evidence.authorized = !!receipt; save();
         phase(`authorization ${JSON.stringify(evidence)}`);
         // A fixture mismatch needs one witnessed refusal, not several minutes
@@ -141,7 +162,6 @@ async function controllerFixture(input: { measured: ProximusRuntimeReceipt;
 it.each(['direct process', 'controller accounting'] as const)
 ('runs the official Proximus tool/submit loop against its bound task and grades the resulting workspace (%s)', async mode => {
   phase('image/runtime preparation');
-  await exec('docker', ['image', 'inspect', image], { timeout: 30_000 });
   const project = fileURLToPath(new URL('../../vendor/proximus', import.meta.url));
   const lock = createHash('sha256').update(readFileSync(join(project, 'uv.lock'))).digest('hex').slice(0, 16);
   const runtime = await exec('uv', ['run', '--frozen', '--no-dev', '--python', '3.12', '--project', project,
@@ -251,6 +271,8 @@ it.each(['direct process', 'controller accounting'] as const)
       expect(await readBill()).toMatchObject({ status: 'complete', billedInferenceMicros: '3000', missingAttemptIds: [] });
       expect(authorizationEvidence).toHaveLength(3);
       expect(authorizationEvidence.every(attempt => attempt.authorized)).toBe(true);
+      expect(authorizationEvidence.map(attempt => attempt.reservedOutputTokens)).toEqual([1000, 2000, 3000]);
+      expect(authorizationEvidence.every(attempt => attempt.outputBudget === 3000)).toBe(true);
       phase('canonical accounting reconciled');
     }
     const answer = await exec('docker', ['exec', handle.containerId, 'cat', '/app/answer.txt'], { timeout: 30_000 });

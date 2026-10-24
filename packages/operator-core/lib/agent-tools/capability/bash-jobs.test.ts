@@ -1892,6 +1892,23 @@ describe('background job deadlines (WI-6677)', () => {
   });
 
   it.each([
+    ['env-wrapped isolated e2e', 'env REF=committed npm run test:e2e:isolated -- e2e/chat-streaming.spec.ts', true],
+    ['env-wrapped direct runner', 'env READY=1 npx vitest run', true],
+    ['env with quoted assignments', 'env READY="two words" pnpm exec playwright test', true],
+    ['assignments before env', 'OUTER=1 env -- INNER=1 npm run test:file -- example.test.ts', true],
+    ['maintained env verifier', 'env READY=1 bash scripts/verify-tauri-headless.sh', true],
+    ['diagnostic with runner argument', 'env READY=1 printf "npm run test:file"', false],
+    ['runner text in assignment only', 'env MESSAGE="npx vitest run" printf ready', false],
+    ['long env assignment near miss', 'env REF=' + 'a'.repeat(160) + ' printf ready', false],
+    ['long env assignment before runner', 'env REF=' + 'a'.repeat(160) + ' npm run test:e2e:isolated', true],
+  ])('budgets env command semantics for %s', (_label, command, expected) => {
+    expect(runInNewContext('classify(command)', {
+      classify: isBackgroundTestCommand,
+      command,
+    }, { timeout: 1_000 })).toBe(expected);
+  });
+
+  it.each([
     ['unquoted assignment near miss', `REF=${'a'.repeat(80)} printf ready`, false],
     ['unquoted assignment before a verifier', `REF=${'a'.repeat(80)} bash scripts/verify-tauri-headless.sh`, true],
     ['absolute path near miss', `bash /${'segment/'.repeat(32)}scripts/unrelated.sh`, false],

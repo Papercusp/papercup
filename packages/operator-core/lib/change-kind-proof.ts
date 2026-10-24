@@ -56,8 +56,8 @@ const CUTOVER_MS = Date.parse(CHANGE_KIND_GATE_CUTOVER);
 /** The root completion fields a single-kind close may use as its proof. */
 export interface RootCompletionProof {
   summary?: string;
-  testsRun?: string;
-  testResult?: string;
+  testsRun?: string | readonly string[];
+  testResult?: string | readonly string[];
   filesChanged?: readonly string[];
   filesDeleted?: readonly string[];
 }
@@ -138,6 +138,14 @@ const trimmed = (v: string | null | undefined): string | undefined => {
   return t ? t : undefined;
 };
 
+/** Root completion evidence accepts either text or a list of text entries. */
+function rootProofText(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    return value.every((entry) => typeof entry === 'string') ? trimmed(value.join('\n')) : undefined;
+  }
+  return typeof value === 'string' ? trimmed(value) : undefined;
+}
+
 /** A git/build sha, or the headless runner's snapshot-contains assertion. */
 const BUILD_IDENTITY_RE = /\b[0-9a-f]{7,40}\b|\bVERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS\b/i;
 /** A test file named directly, for runners the regex above does not list. */
@@ -163,8 +171,8 @@ function evidenceFor(
     ? {
         kind,
         ...(trimmed(root.summary) ? { summary: trimmed(root.summary)! } : {}),
-        ...(trimmed(root.testsRun) ? { testsRun: trimmed(root.testsRun)! } : {}),
-        ...(trimmed(root.testResult) ? { testResult: trimmed(root.testResult)! } : {}),
+        ...(rootProofText(root.testsRun) ? { testsRun: rootProofText(root.testsRun)! } : {}),
+        ...(rootProofText(root.testResult) ? { testResult: rootProofText(root.testResult)! } : {}),
       }
     : { kind };
   return entry ? { ...base, ...stripUndefined(entry) } : base;

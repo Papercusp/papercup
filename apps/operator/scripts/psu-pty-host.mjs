@@ -3977,6 +3977,9 @@ export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
   'PAPERCUSP_PROFILE',
   // A successor must remain in the predecessor's explicit mutex domain.
   'PAPERCUSP_FS_MUTEX_LOCK_DIR',
+  // Bootstrap pins the shared ledger independently of the workspace home.
+  // Native hooks and server injectors must keep that same ledger after adoption.
+  'PAPERCUSP_TURN_PROVENANCE_DIR',
   'PAPERCUSP_FLEET_SLUG',
   'PAPERCUSP_FLEET_ROLE',
   // Codex's effective provider is selected from this marker when the successor
@@ -7153,7 +7156,7 @@ export function decodeQuotaRecovery(o) {
  */
 export function makeIdentityAssumeFence({ identity, canFreeze, now = Date.now }) {
   let lease = null;
-  const completed = new Set();
+  const completed = new Map();
   const hash = (v) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
   const text = (v) => typeof v === 'string' && v.length > 0 && v.length <= 4096;
   const pin = (value) => value && {
@@ -7209,10 +7212,16 @@ export function makeIdentityAssumeFence({ identity, canFreeze, now = Date.now })
       return { ok: true, phase: 'starting', request: structuredClone(lease.request) };
     },
     thaw(request) {
+      // An ACK can be lost after the exact fence was released. Repeating only
+      // that release is safe while the same native caller still owns the host;
+      // freeze/queue/begin remain permanently closed to this transition.
+      if (!lease && request && same(request.caller, current()) &&
+          completed.get(request.transitionKey) === requestKey(request))
+        return { ok: true, phase: 'released' };
       if (!lease || !same(lease.request.caller, current()) || requestKey(request) !== lease.key)
         return refusal('assume-fence-mismatch');
       if (lease.phase === 'starting') return refusal('assume-replacement-started');
-      completed.add(lease.request.transitionKey);
+      completed.set(lease.request.transitionKey, lease.key);
       lease = null;
       return { ok: true, phase: 'released' };
     },
@@ -11739,7 +11748,7 @@ export function hostThroughPty(o) {
   const identityAssumeSupported = typeof identityAssume?.verify === 'function' &&
     typeof identityAssume?.prepare === 'function' && typeof onReexec === 'function' && reexecExitCodeFrom(env) != null;
   if (identityAssumeSupported) {
-    baseMeta.identityAssume = { version: 1, hostId: randomBytes(24).toString('hex'),
+    baseMeta.identityAssume = { version: 1, hostId: identityAssume.hostId || randomBytes(24).toString('hex'),
       attachmentId: identityAssume.attachmentId || randomBytes(24).toString('hex') };
     identityAssumeFence = makeIdentityAssumeFence({
       identity: () => ({ ownerId, workspaceId: env.PAPERCUSP_WORKSPACE_ID || env.PAPERCUSP_WORKSPACE,
@@ -14844,7 +14853,7 @@ export function hostThroughPty(o) {
         try {
           // The launcher checks the exact durable preparation and pause/lease,
           // not a public caller-supplied grant. Recheck after every await.
-          if (!await identityAssume.verify(msg.request) || ownerEpoch !== ownerInputGeneration)
+          if (!await identityAssume.verify(msg.request, msg.action) || ownerEpoch !== ownerInputGeneration)
             return { ok: false, reason: 'assume-custody-unverified' };
           const result = msg.action === 'freeze' ? identityAssumeFence.freeze(msg.request)
             : msg.action === 'queue' ? identityAssumeFence.queue(msg.request) : identityAssumeFence.thaw(msg.request);
@@ -16898,6 +16907,10 @@ export function hostThroughPty(o) {
         }
       };
       const finishExit = async () => {
+        // cleanup() sends SIGKILL but can finish before node-pty reaps the
+        // process. Identity replacement needs the native exit event AND an
+        // absent exact PID; sending a signal alone cannot authorize a spawn.
+        const callerExited = reexecRequested?.callerExit ? await reexecRequested.callerExit : true;
         await metadataClosed;
         releaseDiscovery();
         const [screenDrained, diagnosticsDrained] = await Promise.all([
@@ -16919,6 +16932,11 @@ export function hostThroughPty(o) {
         // BEFORE the successor asserts them (host:2739 — a second host on a live
         // discovery key strands the first).
         if (reexecRequested) {
+          if (!callerExited) {
+            appendHostEvent(ownerId, 'identity-assume-caller-exit-unverified', { childPid: child.pid });
+            resolve(1);
+            return; // Keep durable receipt/pause; never adopt uncertain orders.
+          }
           resolve(reexecRequested.code);
           reexecRequested.go();
           return;
@@ -16945,7 +16963,17 @@ export function hostThroughPty(o) {
       }
     };
     completeIdentityAssume = (orders) => {
+      const departingChild = child;
+      const callerExit = new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(false), RECYCLE_FORCE_KILL_WAIT_MS);
+        departingChild.onExit(() => {
+          clearTimeout(timer);
+          try { process.kill(departingChild.pid, 0); resolve(false); }
+          catch (error) { resolve(error?.code === 'ESRCH'); }
+        });
+      });
       reexecRequested = { code: orders.code,
+        callerExit,
         go: () => onReexec({ ...orders, mode: 'identity-assume' }) };
       cleanup(0);
     };

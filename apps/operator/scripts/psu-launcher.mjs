@@ -104,7 +104,10 @@ import {
   reexecExitCodeFrom,
   missingReexecLoopDiagnosis,
   warnMissingReexecLoop,
+  writeHostHandoff,
 } from "./psu-pty-host.mjs";
+import { makeIdentityAssumeHostPort, launchIdentityAssumeHandoff, prepareIdentityAssumeCheckpoint,
+  completeIdentityAssumeDeparture } from "./psu-identity-assume.mjs";
 
 /**
  * WI-10001537: `reexecExitCodeFrom`, plus a one-line operator warning when its
@@ -12933,6 +12936,11 @@ function repoCwdOrRedirect(cwd) {
  * @property {any} [sessionPort]
  * @property {boolean} [preserveCwd]
  * @property {any} [hostHandoff] already-consumed host handoff orders
+ * @property {boolean} [skipHostHandoff] exact target launch must not adopt stale target orders
+ * @property {Record<string, any>} [inheritedEnv] machine environment for an identity transition
+ * @property {string|null} [identityAssumeAttachmentId] retained session surface across identity change
+ * @property {string|null} [identityAssumeHostId] retained logical managed host across identity change
+ * @property {any} [initialCarryRespawn] target checkpoint's existing native bootstrap binding
  * @property {(...args:any[])=>any} [reportSessionEndedImpl]
  * @property {()=>any} [onSpawn]
  * @property {(()=>any)|null} [onSpawnFailure]
@@ -12950,9 +12958,14 @@ export function runWrapper(options) {
     sessionPort = null,
     preserveCwd = false,
     hostHandoff: initialHostHandoff = null,
+    skipHostHandoff = false,
     reportSessionEndedImpl = reportSessionEnded,
     onSpawn = () => {},
     onSpawnFailure = null,
+    inheritedEnv = process.env,
+    identityAssumeAttachmentId = null,
+    identityAssumeHostId = null,
+    initialCarryRespawn = null,
   } = options;
   // EI-10938's `.papercusp` state-dir → checkout redirect is correct for a FRESH
   // launch, but a RESUME/FORK MUST keep the recorded cwd: `claude --resume` /
@@ -12964,13 +12977,13 @@ export function runWrapper(options) {
   // (owner-reported 2026-07-13). Resume/fork pass preserveCwd:true; fresh
   // launches keep the guard.
   if (!preserveCwd) cwd = repoCwdOrRedirect(cwd);
-  const env = { ...sanitizeInheritedEnv(process.env), ...envelopeEnv };
+  const env = { ...sanitizeInheritedEnv(inheritedEnv), ...envelopeEnv };
   // Derive from this child's argv, never an inherited parent or stale envelope.
   // Use our HTTP carrier without restoring Claude's ancestry marker.
   applyNativeSessionEnv(env, args);
   // Consume the host's per-process envelope after the independence sanitizer.
   // The native child retains it for managed carry; unrelated launches strip it.
-  const scopedGateway = envelopeEnv?.[SCOPED_INFERENCE_GATEWAY_ENV] ?? process.env[SCOPED_INFERENCE_GATEWAY_ENV];
+  const scopedGateway = envelopeEnv?.[SCOPED_INFERENCE_GATEWAY_ENV] ?? inheritedEnv[SCOPED_INFERENCE_GATEWAY_ENV];
   if (scopedGateway !== undefined) env[SCOPED_INFERENCE_GATEWAY_ENV] = scopedGateway;
   const backend = resolveBackendLaunch(wrapperBin, { env });
   if (!backend)
@@ -13135,7 +13148,7 @@ export function runWrapper(options) {
   // self-validating; a null here is the ordinary cold-launch case.
   const hostHandoff =
     initialHostHandoff ||
-    (ownerId
+    (ownerId && !skipHostHandoff
       ? readHostHandoff(ownerId, {
           // WI-6554700010008431: name why consumed orders were refused.
           onReject: (rejection) => {
@@ -13147,7 +13160,7 @@ export function runWrapper(options) {
           },
         })
       : null);
-  let adoptedCarryRespawn = null;
+  let adoptedCarryRespawn = initialCarryRespawn;
   if (hostHandoff) {
     // Use the predecessor's argv VERBATIM. It was minted from an argv that had
     // already been through this launcher's whole normalization pass, so
@@ -13261,6 +13274,10 @@ export function runWrapper(options) {
         cwd,
         env,
         ownerId,
+        identityAssume: makeIdentityAssumeHostPort({ ownerId, inspect: inspectIdentityAssume,
+          writeHandoff: writeHostHandoff, reexecCode: reexecExitCodeFrom(env),
+          attachmentId: identityAssumeAttachmentId, hostId: identityAssumeHostId,
+          headless: env.PAPERCUSP_PSU_HEADLESS === '1' }),
         spawnPty: createScopedNativeSandboxSpawn({ env, cwd }),
         // headless-fleet-launch P-001/D-004: never bridge a human TTY for a headless
         // member. It resolves false anyway when stdio is detached (stdin.isTTY undefined),
@@ -13417,13 +13434,19 @@ export function runWrapper(options) {
         // cause on an interactive launch (never for a headless member, a nested
         // psu, or the kill switch) — see missingReexecLoopDiagnosis.
         onReexec: reexecExitCodeAnnounced(env)
-          ? ({ code }) => {
+          ? (orders) => {
               try {
                 if (supervisorBeat) clearInterval(supervisorBeat);
               } catch {
                 /* the exit below reclaims it regardless */
               }
-              process.exit(code);
+              void completeIdentityAssumeDeparture(orders, {
+                advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
+                reportEnd: reportSessionEndedImpl, exit: code => process.exit(code),
+              }).catch(error => {
+                process.stderr.write(`psu: identity handoff stopped: ${error?.message ?? error}\n`);
+                process.exit(1);
+              });
             }
           : null,
         // WI-38054: the managed-PTY path had no `signal` parameter at all, which is
@@ -14426,6 +14449,7 @@ async function launchResume(
     launchMode = null,
     ownerId = null,
     originalRouting = null,
+    managedAssume = null,
   } = {},
 ) {
   if (originalRouting) {
@@ -14614,7 +14638,8 @@ async function launchResume(
         process.exit(2);
       }
     }
-    const governedReservation = consumeGovernedResumeReservation(process.env, session);
+    const governedReservation = consumeGovernedResumeReservation(managedAssume
+      ? { [GOVERNED_RESUME_RESERVATION_ENV]: JSON.stringify(managedAssume.reservation) } : process.env, session);
     const claim = await acquireSessionResumeWithRecovery(session.id, {
       ...(governedReservation ? { resumeClaimKey: governedReservation.claimKey } : {}),
       ...(localLivenessEvidence ? { localLivenessEvidence } : {}),
@@ -14852,6 +14877,7 @@ async function launchResume(
     if (session.agent === "claude" && session.coordOwnerId && !fork) {
       const persona = await refreshPersonaRender(session.coordOwnerId);
       personaFile = persona.promptFile;
+      if (managedAssume && !personaFile) throw new Error('assume-target-persona-unavailable');
       if (!personaFile && persona.reason !== "no-launch-spec")
         console.error(
           `psu: persona re-render unavailable (${persona.reason}) — resuming without --system-prompt-file; a later /clear or respawn of this process starts on the stock prompt`,
@@ -14870,7 +14896,7 @@ async function launchResume(
         : null;
     const resumeSubagentNotice = codexResumeSubagentNotice(session.agent, allowSubagents, { fork });
     if (resumeSubagentNotice) console.error(resumeSubagentNotice);
-    const { bin, args } = resumeArgsFor(session, {
+    const { bin, args: resumeArgs } = resumeArgsFor(session, {
       coordExtPath,
       injectHookPath,
       env,
@@ -14885,6 +14911,17 @@ async function launchResume(
       claudeSettings:
         session.agent === "claude" ? readClaudeLaunchSettings(env) : null,
     });
+    let args = resumeArgs;
+    let assumeCarry = null;
+    if (managedAssume?.checkpoint) {
+      assumeCarry = prepareIdentityAssumeCheckpoint(session, managedAssume.checkpoint, args, {
+        mint: mintCarryRespawnArgs, codexHome: env.CODEX_HOME, personaFile, home: homedir(),
+      });
+      args = assumeCarry.args;
+      // Only the pinned target checkpoint is delivered. The caller's native
+      // transcript/launch prompt never participates in this fresh context.
+      kickoff = [assumeCarry.carryText || managedAssume.checkpoint.body, kickoff].filter(Boolean).join('\n\n');
+    }
     if (brain && session.agent === "claude")
       args.push(NATIVE_SCHEDULER_DENY_FLAG);
     // notify-send lockout rides resumeArgsFor for claude already; nothing extra here.
@@ -14941,6 +14978,16 @@ async function launchResume(
         "psu: kickoff — seeding the resumed session's first turn (suppress with --no-kickoff)",
       );
     }
+    if (managedAssume) {
+      await managedAssume.verify();
+      // Configuration/persona refresh above may await I/O. Reprobe the exact
+      // native writer immediately before the synchronous managed spawn door.
+      const processWriter = sessionProcessHolder(session.agent === 'omp' ? session.ompThreadId : session.sessionId);
+      const lock = session.agent === 'codex' ? codexThreadWriterHolder(env.CODEX_HOME, session.sessionId) : null;
+      if (findLiveHostFor(session.coordOwnerId) || processWriter.held || processWriter.reason !== 'clean-scan' ||
+          (lock && (lock.held || !['free', 'no-lock-file'].includes(lock.reason))))
+        throw new Error('assume-target-writer-unavailable');
+    }
     runWrapper({
       wrapperBin: bin,
       args,
@@ -14955,6 +15002,11 @@ async function launchResume(
         : null,
       onSpawn: finalizeResumeClaim,
       onSpawnFailure: cleanupResumeClaim,
+      ...(managedAssume ? { inheritedEnv: managedAssume.inheritedEnv,
+        identityAssumeAttachmentId: managedAssume.attachmentId,
+        identityAssumeHostId: managedAssume.hostId, skipHostHandoff: true,
+        ...(assumeCarry ? { initialCarryRespawn: { nativeId: assumeCarry.nativeId,
+          launchContextPath: assumeCarry.launchContextPath } } : {}) } : {}),
     });
   } catch (error) {
     // Everything above runWrapper is post-claim setup. A config repair, model
@@ -18209,7 +18261,25 @@ export async function ensureBackendInstalled(
  * the predecessor process. Consuming the handoff before the normal launch
  * flow keeps the successor on that exact row/home instead of minting a sibling.
  */
+async function inspectIdentityAssume(request, afterExit = false, action = 'observe') {
+  return api('/api/agent-mcp/console/bootstrap-su/session-resumed', {
+    method: 'POST', body: JSON.stringify({ assumeHost: { request, afterExit, action } }),
+  });
+}
+
 async function launchHostHandoff(handoff) {
+  if (handoff?.mode === 'identity-assume') {
+    return launchIdentityAssumeHandoff(handoff, { inspect: inspectIdentityAssume,
+      resolveSession: id => resolveDirectTrackedResumeSession([], String(id)),
+      accountFor: session => chooseResumeAccount(session, { picker: false,
+        account: session.account || session.launchArgv?.find(arg => String(arg).startsWith('--account='))?.slice(10) || 'default',
+        model: session.model || null }),
+      resume: launchResume, baseEnv: process.env,
+      isAlive: pid => {
+        if (!Number.isSafeInteger(pid) || pid < 1) return null;
+        try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'ESRCH' ? false : null; }
+      } });
+  }
   const childEnv =
     handoff?.childEnv &&
     typeof handoff.childEnv === "object" &&

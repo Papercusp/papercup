@@ -19761,7 +19761,8 @@
     "preregistrationAndOutsideLineageSelectionApprovalRequired": true,
     "neverRetryMeasuredReplication": true,
     "requireCleanRuntime": true,
-    "launcherPath": "packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs"
+    "launcherPath": "packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs",
+    "measurementController": "separate-root"
   },
   "supersedesUnexecuted": {
     "experimentId": "session-tool-delivery-clean-source-v2-20261023",
@@ -19800,12 +19801,12 @@
     "note": "D097 three actual serialized FULL code__run description changes; COMPACT unchanged. Preparation only."
   },
   "measurementAmendment": {
-    "decisionRef": "deterministic-tool-definition-delivery-2026-09-21#D-098",
-    "registeredAt": "2026-10-24T03:22:24.348Z",
+    "decisionRef": "deterministic-tool-definition-delivery-2026-09-21#D-099",
+    "registeredAt": "2026-10-24T04:16:06.519Z",
     "sourceReplacements": {
       "packages/operator-core/lib/tool-delivery-acceptance.ts": {
         "originalSha256": "b789d9b6815e3648fe2ca87650aeefde14d3d3358761db700c494e9ab022b461",
-        "sha256": "9cc0b7147722236856eaf2f87d0790b3abff883297062a956bb34fb96a2d70bc"
+        "sha256": "e182956c2a0f4dadd375d6650becb8b70916424702412e14035d37c9946a6c8b"
       },
       "packages/operator-core/lib/tool-delivery-fidelity-custody.test.ts": {
         "originalSha256": "bf593debf85d20fb173fa386c19d2bce471995124b65a5460a4c801587bc0155",
@@ -19813,21 +19814,21 @@
       }
     },
     "addedFiles": {
-      "packages/operator-core/lib/tool-delivery-clean-runtime.ts": "9aa143efb1dde2eafbcfbfd43f16f097053c1ca94a689e64a97a13b03574bd9b",
-      "packages/operator-core/lib/tool-delivery-clean-runtime.test.ts": "ffc3b4491d4cb98ff658613c552c2f48d2258f0bd897a6cfc1bfd3d582faf0c0",
+      "packages/operator-core/lib/tool-delivery-clean-runtime.ts": "43e8ca849c26e6634193d331cc9e9061b2b4e5033d9f636e6a67a8ceda28ff13",
+      "packages/operator-core/lib/tool-delivery-clean-runtime.test.ts": "99457b0662edb32860ebc0fa964697298ecc60fec4105a0bd1024731e4e9a96a",
       "packages/operator-core/lib/llm-testing/test-run-ledger.ts": "0189f069b512736e7e3104a957e55c2570154c4fcde754cedf6cfbd65f473795",
-      "libs/test-config/src/execution-details.ts": "846311678757c027c3ee5d9b65b3aa19522c543c3710644774a8131f53b8abe0",
+      "libs/test-config/src/execution-details.ts": "0f393dfb0472da15ff6fa6a62bb91c897e3b1e3b663904b9adcfd9e45302f4aa",
       "libs/test-config/src/execution-details.test.ts": "f7029a90928b9efd1e569890638574f3aea37b672b44d915a9e3a2890a1bd35c",
-      "packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs": "e9464d7e23ca0fb4531f36892c323b60b635eb53a784ee8bcd1f1111be71770e",
+      "packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs": "d2d9376f84a3293004331286e950ac2c9b5aed9625d257f4ee63eae164286eff",
       "packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.d.mts": "d38c6392bb8e3927ec945d6efe8a0aeaa673ea003f56f2b2258b8697bcd1d98a"
     },
     "addedSubmodules": {
-      "libs/test-config": "7683eeaa29ee5270e9ae26389a46fb86f153ba34"
+      "libs/test-config": "b2f9ff3e7b0966c1d9e376492160801880b1a87e"
     }
   },
   "sourceGraphQualification": {
     "status": "PENDING_EXACT_REVIEW",
-    "note": "Captured graph is immutable. Additional canonical source differences are not authorized measurement repins; current execution must refuse until exact qualification.",
-    "decisionRef": "deterministic-tool-definition-delivery-2026-09-21#D-098"
+    "decisionRef": "deterministic-tool-definition-delivery-2026-09-21#D-099",
+    "note": "D099: execute the complete unchanged captured graph and original recorder from the real captured commit; bind a separately committed clean measurement controller, its actual entrypoint, loaded graph and dependency installation at every block. Controller declared treatment sources still equal frozen pins. Controller-only test-config contract adds two storage-integration routing entries (three unrelated test files); original captured contract and gitlink are unchanged. Independent qualification, selection and vetting remain mandatory."
   }
 }

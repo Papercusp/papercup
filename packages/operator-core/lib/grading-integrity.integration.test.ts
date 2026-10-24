@@ -174,10 +174,11 @@ it('atomically rebinds a recovered evaluator and rolls it back when auditor inde
     evaluatorBuild: { sha: 'exact-evaluator', version: '1.2.3' }, bundleSha256: 'b'.repeat(64),
     expiresAtSec: Math.floor(Date.now() / 1000) + 3600 };
   type RenewalDeps = NonNullable<Parameters<typeof notifyRetainedGradingAuditor>[1]>;
-  const { PgCoordLog } = await import('@papercusp/coordination/event-log');
+  const { PgCoordLog, ensureCoordEventLogTable } = await import('@papercusp/coordination/event-log');
+  await ensureCoordEventLogTable(h.sql);
   const log = new PgCoordLog({ getSql: () => h.sql, workspaceId, ensureSchema: async () => {} });
   const resolveParties = vi.fn<NonNullable<RenewalDeps['resolveParties']>>(async ids =>
-    new Map(ids.map(id => [id, id])));
+    new Map(ids.filter((id): id is string => typeof id === 'string').map(id => [id, id])));
   const send = vi.fn<NonNullable<RenewalDeps['send']>>(async (identity, options) =>
     options.persistEnvelope!({ msg_id: options.msgId!, from: identity.ownerId, to: options.to,
       kind: 'message', ts: now.toISOString(), summary: options.summary, body: options.body }));
@@ -185,7 +186,9 @@ it('atomically rebinds a recovered evaluator and rolls it back when auditor inde
     keys: [], woken: 1, queued: 1, pickupConfirmed: false } as unknown as Awaited<ReturnType<NonNullable<RenewalDeps['wake']>>>);
   const deps = { append: log.appendLineIfAbsent.bind(log), resolveParties, send, wake };
   const input = { card: target, task, reservation, workspaceId, runtime };
-  expect(await notifyRetainedGradingAuditor(input, deps)).toMatchObject({ state: 'delivered' });
+  const delivered = await notifyRetainedGradingAuditor(input, deps);
+  expect(delivered.reason).toBeUndefined();
+  expect(delivered).toMatchObject({ state: 'delivered' });
   expect((await getTask(task.taskId, db.sql))?.detail).toMatchObject({
     keep: 'unrelated', gradingAuditRuntimeBinding: runtime,
     gradingAudit: { issueId, evidenceFingerprint: 'fixture-evidence', reservation },

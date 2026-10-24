@@ -144,7 +144,9 @@ export const BASH_TEST_TASKS_MAX = 8_192;
 // Consume one unquoted character per outer iteration. A nested `+` lets a
 // non-matching runner retry exponentially many partitions of a long value.
 const TEST_ENV_ASSIGNMENT = String.raw`[A-Za-z_][A-Za-z0-9_]*=(?:[^\s"'\\;&|]|\\[^\r\n]|"(?:[^"\\]|\\.)*"|'[^']*')*\s+`;
-const TEST_SEGMENT_PREFIX = String.raw`(?:^|(?:&&|\|\||;|\n)\s*)(?:${TEST_ENV_ASSIGNMENT})*`;
+// `env NAME=value runner` and shell assignments must receive the same budget.
+// Keep this prefix shared so npm/direct runners cannot miss the verifier's case.
+const TEST_SEGMENT_PREFIX = String.raw`(?:^|(?:&&|\|\||;|\n)\s*)(?:${TEST_ENV_ASSIGNMENT})*(?:env\s+(?:--\s+)?(?:${TEST_ENV_ASSIGNMENT})*)?`;
 const DIRECT_TEST_RUNNER_RE = new RegExp(
   `${TEST_SEGMENT_PREFIX}(?:(?:npx|bunx|pnpm\\s+exec|yarn\\s+dlx)\\s+)?` +
     String.raw`(?:vitest|jest|mocha|ava|pytest|playwright\s+test|cargo\s+test|go\s+test)(?:\s|$)`,
@@ -157,7 +159,7 @@ const PACKAGE_TEST_SCRIPT_RE = new RegExp(
 // Maintained verification scripts are test launchers too. Confinement alone
 // supplies a deadline; these entrypoints also need the finite copy-memory budget.
 const MAINTAINED_VERIFIER_RE = new RegExp(
-  `${TEST_SEGMENT_PREFIX}(?:env\\s+(?:--\\s+)?(?:${TEST_ENV_ASSIGNMENT})*)?` +
+  TEST_SEGMENT_PREFIX +
     // A directory atom cannot consume its own separator: otherwise a near
     // miss retries every partition of a long absolute path.
     String.raw`(?:bash\s+(?:--\s+)?)?(?:\./|(?:\.\./)+|/+(?:[^/\s"';&|]+/+)*)?scripts/(?:run-operator-e2e-isolated|verify-tauri-headless)\.sh(?:\s|$)`,

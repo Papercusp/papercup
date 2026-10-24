@@ -73,6 +73,23 @@ describe('identity takeover host custody and response boundary', () => {
     expect(s.fence.thaw(s.r).ok).toBe(true);
   });
 
+  it('replays only the exact thaw ACK after response loss without reopening takeover', () => {
+    const s = setup();
+    expect(s.fence.freeze(s.r).ok).toBe(true);
+    expect(s.fence.thaw(s.r)).toEqual({ ok: true, phase: 'released' });
+    s.now(s.r.expiresAt + 1);
+    expect(s.fence.thaw(s.r)).toEqual({ ok: true, phase: 'released' });
+    expect(s.fence.thaw({ ...s.r, recoveryHash: 'd'.repeat(64) }).ok).toBe(false);
+    s.current({ ...caller, childGeneration: caller.childGeneration + 1 });
+    expect(s.fence.thaw(s.r).ok).toBe(false);
+    s.current(caller); s.now(1_000);
+    expect(s.fence.freeze(s.r)).toEqual({ ok: false, reason: 'assume-replayed-transition' });
+    const next = { ...s.r, transitionKey: `session-assume:${'e'.repeat(64)}` };
+    expect(s.fence.freeze(next).ok).toBe(true);
+    expect(s.fence.thaw(s.r).ok).toBe(false);
+    expect(s.fence.blocksInput()).toBe(true);
+  });
+
   it('refuses a busy host and malformed or excessive lease durations', () => {
     const s = setup(); s.busy();
     expect(s.fence.freeze(s.r)).toEqual({ ok: false, reason: 'assume-input-busy' });
