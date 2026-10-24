@@ -1090,7 +1090,7 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @template T
  * @param {string} name
  * @param {(workers: number) => Promise<T>} fn
- * @param {{ workers: number, workerMemoryMb: number, workerBudget: number, memoryBudgetMb: number, maxConcurrentTasks: number, resource: string, timeoutMs?: number, retryMs?: number, lockRootDir?: string, remainingMs?: () => number, onWaiting?: (info: {owner: string, elapsedMs: number}) => void, onAcquired?: (info: {waitedMs: number}) => void }} opts
+ * @param {{ workers: number, workerMemoryMb: number, workerBudget: number, memoryBudgetMb: number, maxConcurrentTasks: number, resource: string, intent?: Record<string, string | number | boolean>, timeoutMs?: number, retryMs?: number, lockRootDir?: string, remainingMs?: () => number, onWaiting?: (info: {owner: string, elapsedMs: number}) => void, onAcquired?: (info: {waitedMs: number}) => void }} opts
  * @returns {Promise<T>}
  */
 export async function withFsMutexBudget(name, fn, opts) {
@@ -1112,25 +1112,34 @@ export async function withFsMutexBudget(name, fn, opts) {
     workerBudget: opts.workerBudget, memoryBudgetMb: opts.memoryBudgetMb,
     maxConcurrentTasks: opts.maxConcurrentTasks, resource: opts.resource };
   const owner = { pid: process.pid, ...processIdentity(process.pid), host: hostname(),
-    name, startedAt: new Date(started).toISOString(), admission: request };
+    name, startedAt: new Date(started).toISOString(), admission: request,
+    ownerId: process.env.PAPERCUSP_SID,
+    taskId: process.env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID,
+    intent: opts.intent };
   const remaining = () => opts.remainingMs ? opts.remainingMs() : timeoutMs - (Date.now() - started);
   const readAdmission = async path => {
     const value = JSON.parse(await readOwner(path));
     const a = value.admission;
-    if (!a || typeof a.resource !== 'string' || !a.resource ||
-        !['workers', 'workerMemoryMb', 'workerBudget', 'memoryBudgetMb', 'maxConcurrentTasks']
-          .every(key => Number.isSafeInteger(a[key]) && a[key] > 0)) return null;
-    return a;
+    const valid = a && typeof a.resource === 'string' && a.resource &&
+        ['workers', 'workerMemoryMb', 'workerBudget', 'memoryBudgetMb', 'maxConcurrentTasks']
+          .every(key => Number.isSafeInteger(a[key]) && a[key] > 0);
+    return { owner: value, admission: valid ? a : null };
   };
   const allocation = (candidate, active) => {
-    if (active.some(a => !a || a.resource === '*' || candidate.resource === '*' || a.resource === candidate.resource)) return 0;
+    if (active.some(a => !a)) return { workers: 0, constraints: ['unknown-reader'] };
+    if (active.some(a => a.resource === '*' || candidate.resource === '*' || a.resource === candidate.resource))
+      return { workers: 0, constraints: ['resource-exclusion'] };
     const taskCap = Math.min(candidate.maxConcurrentTasks, ...active.map(a => a.maxConcurrentTasks));
-    if (active.length >= taskCap) return 0;
     const workers = Math.min(candidate.workerBudget, ...active.map(a => a.workerBudget)) - active.reduce((n, a) => n + a.workers, 0);
     const memory = Math.min(candidate.memoryBudgetMb, ...active.map(a => a.memoryBudgetMb)) - active.reduce((n, a) => n + a.workers * a.workerMemoryMb, 0);
-    return Math.max(0, Math.min(candidate.workers, workers, Math.floor(memory / candidate.workerMemoryMb)));
+    const constraints = [];
+    if (active.length >= taskCap) constraints.push('task-cap');
+    if (workers < 1) constraints.push('worker-budget');
+    if (memory < candidate.workerMemoryMb) constraints.push('memory-reservation');
+    return { workers: constraints.length ? 0 : Math.max(0, Math.min(candidate.workers, workers, Math.floor(memory / candidate.workerMemoryMb))),
+      constraints, availableWorkers: workers, availableMemoryMb: memory, activeTasks: active.length, taskCap };
   };
-  let granted = 0, announced = -Infinity;
+  let granted = 0, announced = -Infinity, waitState;
   await mkdir(queue, { recursive: true });
   await mkdir(readers, { recursive: true });
   await mkdir(ticket);
@@ -1139,12 +1148,21 @@ export async function withFsMutexBudget(name, fn, opts) {
     while (!granted) {
       if (remaining() <= 0) throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${writer})`);
       await withFsMutex(`${name}-allocator`, async () => {
-        if (await writerLockIsHeld(writer, staleMs)) return;
-        const active = [];
+        if (await writerLockIsHeld(writer, staleMs)) {
+          let writerOwner;
+          try { writerOwner = JSON.parse(await readOwner(writer)); } catch { writerOwner = { unreadable: true }; }
+          waitState = { constraints: ['writer'], writer: writerOwner };
+          return;
+        }
+        const activeLeases = [];
         for (const lease of await listReaderLocks(readers)) {
           if (await reclaimAbandonedLock(lease, staleMs)) continue;
-          try { active.push(await readAdmission(lease)); } catch { active.push(null); }
+          try { activeLeases.push(await readAdmission(lease)); }
+          catch { activeLeases.push({ owner: { lease, unreadable: true }, admission: null }); }
         }
+        const active = activeLeases.map(lease => lease.admission);
+        waitState = { ...allocation(request, active), request,
+          readerCount: activeLeases.length, readers: activeLeases.slice(0, 8).map(lease => lease.owner) };
         // Keep the existing FIFO ticket format and dead-owner recovery. Skip
         // only predecessors whose resource/budget cannot currently be admitted.
         const entries = (await readdir(queue)).filter(n => n.endsWith('.ticket')).sort();
@@ -1153,10 +1171,14 @@ export async function withFsMutexBudget(name, fn, opts) {
           if (path === ticket) break;
           if (await reclaimAbandonedLock(path, staleMs)) continue;
           let previous;
-          try { previous = await readAdmission(path); } catch { return; }
-          if (!previous || allocation(previous, active) > 0) return;
+          try { previous = await readAdmission(path); }
+          catch { previous = { owner: { ticket: entry, unreadable: true }, admission: null }; }
+          if (!previous.admission || allocation(previous.admission, active).workers > 0) {
+            waitState = { ...waitState, constraints: ['queue-predecessor'], predecessor: previous.owner };
+            return;
+          }
         }
-        const workers = allocation(request, active);
+        const { workers } = allocation(request, active);
         if (!workers || remaining() <= 0) return;
         await mkdir(reader);
         await writeFile(join(reader, 'owner.json'), JSON.stringify({ ...owner,
@@ -1173,7 +1195,10 @@ export async function withFsMutexBudget(name, fn, opts) {
         const elapsedMs = Date.now() - started;
         if (elapsedMs - announced >= 60_000) {
           announced = elapsedMs;
-          opts.onWaiting?.({ owner: await readOwner(writer), elapsedMs });
+          if (opts.onWaiting) {
+            const primary = waitState?.writer ?? waitState?.predecessor ?? waitState?.readers?.[0] ?? {};
+            opts.onWaiting({ owner: JSON.stringify({ ...primary, admissionWait: waitState }), elapsedMs });
+          }
         }
         await sleep(Math.max(1, Math.min(retryMs, remaining())));
       }

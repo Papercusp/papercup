@@ -67,5 +67,36 @@ export interface ProbeOptions {
   maxOutputBytes?: number;
 }
 export function evaluateCapability(request: CapabilityRequest, observation: CapabilityObservation): CapabilityResult;
+export type InstallScenario = 'clean-install' | 'upgrade' | 'restart' | 'node-rollback';
+export type HostRuntimePath = 'absent' | 'poisoned';
+export interface InstalledArtifactBinding {
+  cellId: string;
+  installerSha256: string;
+  artifactSha256: string;
+  previousArtifactSha256: string;
+  runtimeRegistrationId: string;
+  runtimeClosureRoot: string;
+  candidate: CandidateIdentity;
+  runtime: RuntimeIdentity;
+  rollbackRuntime: RuntimeIdentity;
+  expected: Record<InstallScenario, unknown>;
+}
+export interface InstalledArtifactReceipt {
+  cellId: string;
+  scenario: InstallScenario;
+  hostRuntimePath: HostRuntimePath;
+  observation: CapabilityObservation;
+}
+export function evaluateInstalledArtifactMatrix(input: {
+  requiredScope: string[];
+  bindings: InstalledArtifactBinding[];
+  receipts: InstalledArtifactReceipt[];
+}): {
+  schema: 'papercusp-installed-artifact-matrix-v1';
+  status: 'passed' | 'failed';
+  reasons: string[];
+  cells: Array<{ cellId: string; status: 'passed' | 'failed'; reasons: string[] }>;
+  coverage: { population: string[]; checked: string[]; notChecked: string[]; notApplicable: string[]; residue: string[] };
+};
 export function measureRuntime(executable: string, options?: ProbeOptions): Promise<RuntimeIdentity>;
 export function runCapability(request: CapabilityRequest & { probePath: string }, options?: ProbeOptions): Promise<CapabilityResult>;

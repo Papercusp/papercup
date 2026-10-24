@@ -25,6 +25,7 @@ export function assertCleanCohortAuthority(registration: {
   measurementAmendment: { sourceReplacements: Record<string, { sha256: string }> };
 }, portableSha256: string, expected: CleanCohortApproval | undefined, live: CleanCohortAuthority): void;
 export function claimCleanCohort(directory: string, marker: Record<string, unknown>): void;
+export function assertCleanCohortCatalogDefinitions(actual: unknown, expected: unknown): void;
 export function parseCleanCohortArgs(argv: string[]): {
   experimentId: string; fixture: string; readinessPath: string | undefined;
 };

@@ -52,7 +52,7 @@ import {
 import { resolveTaskTimeoutMs } from '../../../../scripts/lib/batch-watchdog.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — plain-Node entrypoint, consumed directly by scripts/*.mjs.
-import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
+import { withFsMutex, withFsMutexBudget } from '../../../../scripts/lib/fs-mutex.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS_SRC = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
@@ -2269,6 +2269,68 @@ describe('runBudgetedTasks', () => {
 });
 
 describe('task-sized shared admission (EI-26797533961242022)', () => {
+  it('reports a blocking reader and exact reservation constraints when no writer exists', async () => {
+    const release = deferred<string>();
+    let started = false, peerStarted = false;
+    const notices: string[] = [];
+    const options = { ...config, admissionTimeoutMs: 8_000,
+      taskAdmissionKey: (task: string) => task, onAdmissionNotice: () => {} };
+    const holder = withFsMutexBudget(admissionMutexName(), async () => {
+      started = true; return release.promise;
+    }, { workers: 3, workerBudget: 4, maxConcurrentTasks: 2, resource: 'reader-holder',
+      workerMemoryMb: 131_072, memoryBudgetMb: 524_288,
+      intent: { purpose: 'retained-matrix' }, timeoutMs: 8_000 });
+    let peer: ReturnType<typeof runBudgetedTasks> | undefined;
+    try {
+      await until(() => started, 'the high-reservation reader');
+      peer = runBudgetedTasks(['peer'], { ...options, maxConcurrentTasks: 1, memoryBudgetMb: 4096,
+        onAdmissionNotice: line => { notices.push(line); },
+        runTask: async () => { peerStarted = true; return 'peer'; } });
+      await until(() => notices.length > 0, 'the reader-aware wait notice');
+      expect(notices[0]).toContain(`pid=${process.pid}`);
+      expect(notices[0]).toContain('resource=reader-holder');
+      expect(notices[0]).toContain('purpose=retained-matrix');
+      expect(notices[0]).toContain('constraints=task-cap,memory-reservation');
+      expect(notices[0]).toContain('availableMemoryMb=-389120');
+      expect(notices[0]).toContain('readers=1[');
+      expect(notices[0]).not.toContain('(owner unknown)');
+      expect(peerStarted).toBe(false);
+    } finally {
+      release.resolve('holder');
+      await Promise.allSettled([holder, ...(peer ? [peer] : [])]);
+    }
+    expect(peerStarted).toBe(true);
+  }, 20_000);
+
+  it('identifies an eligible FIFO predecessor separately from resident readers', async () => {
+    const root = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR!;
+    const queue = join(root, `${admissionMutexName()}.queue`);
+    const ticket = join(queue, '0000000000000-predecessor.ticket');
+    mkdirSync(ticket, { recursive: true });
+    writeFileSync(join(ticket, 'owner.json'), JSON.stringify({ pid: process.pid,
+      startedAt: new Date().toISOString(), ownerId: 'fixture-owner', taskId: 'fixture-task',
+      admission: { workers: 1, workerMemoryMb: 1024, workerBudget: 4, memoryBudgetMb: 4096,
+        maxConcurrentTasks: 2, resource: 'older-config' } }));
+    let notice: string | undefined, ran = false;
+    const run = withFsMutexBudget(admissionMutexName(), async () => { ran = true; }, {
+      workers: 1, workerMemoryMb: 1024, workerBudget: 4, memoryBudgetMb: 4096,
+      maxConcurrentTasks: 2, resource: 'new-config', timeoutMs: 8_000, retryMs: 5,
+      onWaiting: info => { notice = formatAdmissionHolder(info.owner); },
+    });
+    try {
+      await until(() => !!notice, 'the eligible predecessor notice');
+      expect(notice).toContain('constraints=queue-predecessor');
+      expect(notice).toContain('owner=fixture-owner task=fixture-task');
+      expect(notice).toContain(`predecessorPid=${process.pid} predecessorResource=older-config`);
+      expect(notice).toContain('readers=0[');
+      expect(ran).toBe(false);
+    } finally {
+      rmSync(ticket, { recursive: true, force: true });
+      await run;
+    }
+    expect(ran).toBe(true);
+  }, 20_000);
+
   it.each(['wildcard', 'memory'])('keeps %s exclusions across independent invocations', async mode => {
     const release = deferred<string>();
     let started = false, queued = false, peerStarted = false;

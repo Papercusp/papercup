@@ -1295,8 +1295,18 @@ export type AdvSessionResumeReservation =
       leaseExpiresAt: string;
     }
   | { status: 'live'; acquired: false }
+  | { status: 'binding-changed'; acquired: false }
   | { status: 'retired'; acquired: false }
   | { status: 'missing'; acquired: false };
+
+/** Optional strict pin for an ended-only identity transition. Ordinary resume
+ * keeps its existing recovery policy; takeover cannot use stale-active recovery
+ * or reconcile a different incarnation under the same textual owner id. */
+export interface AdvSessionResumePin {
+  workspaceId: string;
+  binding: AdvSessionExpectedBinding;
+  requireTerminal: true;
+}
 
 /** Fence every registration for an owner before terminating its process. Pending
  * reservations are invalidated so a prepared resume cannot finalize after kill. */
@@ -1327,6 +1337,7 @@ export async function acquireAdvSessionResume(
   staleActiveSec: number = RESUME_CLAIM_WINDOW_SEC,
   localLivenessEvidence?: unknown,
   allowRetired: boolean = false,
+  expected?: AdvSessionResumePin,
 ): Promise<AdvSessionResumeReservation> {
   const key = resumeClaimKey.trim();
   if (!key) throw new Error('resumeClaimKey must be non-empty');
@@ -1344,15 +1355,31 @@ export async function acquireAdvSessionResume(
         started_at: Date | string;
         resume_claim_key: string | null;
         resume_claimed_at: Date | string | null;
+        workspace_id: string;
+        coord_owner_id: string | null;
+        session_id: string | null;
+        omp_thread_id: string | null;
+        binding_started_at: string;
       }>
     >`
-      SELECT agent, ended_at, ended_by, retired_at, started_at, resume_claim_key, resume_claimed_at
+      SELECT agent, ended_at, ended_by, retired_at, started_at, resume_claim_key, resume_claimed_at,
+             workspace_id, coord_owner_id, session_id, omp_thread_id, started_at::text AS binding_started_at
         FROM harness_shared.adv_sessions
        WHERE id = ${id}
        FOR UPDATE
     `;
     if (!row) return { status: 'missing', acquired: false } as const;
+    if (expected && (
+      row.workspace_id !== expected.workspaceId ||
+      row.coord_owner_id !== expected.binding.coordOwnerId ||
+      row.session_id !== expected.binding.sessionId ||
+      row.binding_started_at !== expected.binding.startedAt ||
+      (expected.binding.ompThreadId !== undefined && row.omp_thread_id !== expected.binding.ompThreadId)
+    )) return { status: 'binding-changed', acquired: false } as const;
     if (row.retired_at != null && !allowRetired) return { status: 'retired', acquired: false } as const;
+    if (expected?.requireTerminal && row.ended_at == null && row.ended_by == null) {
+      return { status: 'live', acquired: false } as const;
+    }
 
     const nowMs = Date.now();
     const claimedAtMs = row.resume_claimed_at == null ? null : new Date(row.resume_claimed_at).getTime();

@@ -15,6 +15,8 @@ let bundle: string;
 it('routes a real authorized git-sync mutation to the exact private worker and removes private state', async context => {
   const runId = await recordIsolatedIntegrationProof({ root, filePath,
     sourcePaths: [fixture, 'scripts/with-test-pg.mjs',
+      'packages/operator-core/test/isolated-integration-proof.ts',
+      'packages/operator-core/test/private-http-workspace-preflight.ts',
       'apps/operator/lib/mcp-proxy/build-routing.ts', 'apps/operator/lib/mcp-proxy/proxy.ts',
       'packages/operator-core/lib/agent-tools/git_sync/run.ts',
       'packages/operator-core/lib/harness/git-sync/git-sync-action.ts',

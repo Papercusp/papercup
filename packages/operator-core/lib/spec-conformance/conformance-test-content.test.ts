@@ -71,9 +71,44 @@ describe('conformance immutable dependency content', () => {
     expect(calls.some(([commands]) => commands.length >= 40)).toBe(true);
     expect(calls.length).toBeLessThan(12);
     const objects = calls.flatMap(([commands]) => commands.map(command => JSON.stringify(command)));
-    // Each object belongs to one immutable snapshot; the second test does not
-    // reread either snapshot's manifests or shared runner graph.
-    expect(objects.length).toBe(new Set(objects).size * 2);
+    // Immutable blobs shared by snapshots and concurrent proofs are read once.
+    expect(objects.length).toBe(new Set(objects).size);
+  });
+
+  it('shares pinned submodule trees and blobs through 32 non-equivalent historical closures', async () => {
+    const dependency = mkdtempSync(join(tmpdir(), 'conformance-history-dependency-'));
+    try {
+      for (const args of [['init', '-q'], ['config', 'user.name', 'Test'], ['config', 'user.email', 'test@example.invalid']]) {
+        execFileSync('git', args, { cwd: dependency });
+      }
+      writeFileSync(join(dependency, 'package.json'), JSON.stringify({ name: '@fixture/dependency' }));
+      writeFileSync(join(dependency, 'source.ts'), 'export const dependency = 1;');
+      execFileSync('git', ['add', '.'], { cwd: dependency });
+      execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: dependency });
+      git('rm', '-qr', 'libs/dependency');
+      git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', dependency, 'libs/dependency');
+      const history: string[] = [];
+      for (let index = 0; index < 33; index++) {
+        write('packages/unit/source.ts', `export const answer = ${index};`);
+        history.push(commit());
+      }
+      const currentSha = history.pop()!;
+      const routed = vi.spyOn(gitSidecar, 'execFileViaSidecar');
+      const batch = vi.spyOn(gitBatch, 'runGitBatch');
+      const compare = createTestContentEquivalence(root);
+      for (const recordedSha of history) {
+        expect(await compare({ file, recordedSha, currentSha })).toEqual({
+          equivalent: false, reason: 'semantic dependency closure changed',
+        });
+      }
+      const childTrees = routed.mock.calls.filter(([, args]) => args.includes('ls-tree') && args.includes('--git-dir'));
+      expect(childTrees).toHaveLength(1);
+      const commands = batch.mock.calls.flatMap(([commands]) => commands.map(command => JSON.stringify(command)));
+      expect(commands.length).toBe(new Set(commands).size);
+      expect(batch.mock.calls.length).toBeLessThan(10);
+    } finally {
+      rmSync(dependency, { recursive: true, force: true });
+    }
   });
 
   it('routes immutable tree reads through the shared spawn offload seam', async () => {

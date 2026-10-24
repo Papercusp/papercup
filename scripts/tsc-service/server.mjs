@@ -25,13 +25,14 @@ import {
   tscServiceIdentity,
   assertTscCompilerIdentityCurrent,
   closeTscServiceCompiler,
+  takeTscServiceProjectBatch,
   tscServiceSocketPath,
 } from '../lib/tsc-service.mjs';
 
 const ROOT = resolve(process.env.PAPERCUSP_TSC_SERVICE_ROOT ?? join(dirname(fileURLToPath(import.meta.url)), '../..'));
 const IDLE_MS = (Number(process.env.PAPERCUSP_TSC_SERVICE_IDLE_SEC) || 20 * 60) * 1000;
-// Two operator-sized programs fit the unit's 16 GB; a third project evicts the least recently used.
-const MAX_OPEN_PROJECTS = Number(process.env.PAPERCUSP_TSC_SERVICE_MAX_PROJECTS) || 2;
+// A single current operator program can approach MemoryHigh. Never retain another
+// project's program while opening it, including projects coalesced in one queue batch.
 // Past this the tsgo child is restarted between batches (the next request reloads, ~2.5 s).
 const RSS_RESET_BYTES = (Number(process.env.PAPERCUSP_TSC_SERVICE_RSS_RESET_GIB) || 12) * 1024 ** 3;
 const MAX_REQUEST_FILES = 500;
@@ -141,19 +142,23 @@ async function resetApi(why) {
 /** Take a fresh snapshot covering `projects`, opening and evicting projects as needed. */
 async function refresh(projects, trace) {
   assertTscCompilerIdentityCurrent();
+  if (state.open.some(project => !projects.includes(project)))
+    await resetApi('switching compiler project');
   if (!state.api) state.api = new API({ cwd: ROOT });
   const toOpen = projects.filter((p) => !state.open.includes(p));
-  state.open = [...state.open.filter((p) => !projects.includes(p)), ...projects];
-  const toClose = state.open.length > MAX_OPEN_PROJECTS
-    ? state.open.slice(0, state.open.length - MAX_OPEN_PROJECTS).filter((p) => !projects.includes(p))
-    : [];
-  state.open = state.open.filter((p) => !toClose.includes(p));
+  state.open = projects;
 
   const previous = state.snapshot;
+  // release is asynchronous native RPC. Waiting before updateSnapshot prevents
+  // two complete snapshots (and queued releases) from accumulating during refresh.
+  if (previous) {
+    trace('snapshot-release');
+    await previous.dispose();
+    state.snapshot = null;
+  }
   trace('snapshot-update');
   let snapshot = await state.api.updateSnapshot({
     ...(toOpen.length > 0 ? { openProjects: toOpen } : {}),
-    ...(toClose.length > 0 ? { closeProjects: toClose } : {}),
     ...(previous ? { fileChanges: { invalidateAll: true } } : {}),
   });
   assertTscCompilerIdentityCurrent();
@@ -164,7 +169,6 @@ async function refresh(projects, trace) {
   trace('project-roots-refresh');
   snapshot = await refreshProjectRootFiles({ api: state.api, snapshot, projects });
   trace('project-roots-refreshed');
-  previous?.dispose();
   state.snapshot = snapshot;
   state.snapshotAt = Date.now();
   dependencyCache.clear();
@@ -289,7 +293,7 @@ async function drain() {
     while (queue.length > 0) {
       // Everything queued now arrived before the refresh below starts, so one snapshot is fresh
       // for the whole batch.
-      const batch = queue.splice(0).filter((item) => !item.cancelled);
+      const batch = takeTscServiceProjectBatch(queue);
       if (batch.length === 0) continue;
       const projects = [...new Set(batch.map((item) => item.request.project))];
       const detachRefreshAbort = abortRefreshIfUnobserved(batch);

@@ -10,7 +10,7 @@ import { buildTaskScopeArgv, userManagerBusReachable } from '../systemd-scope';
 import { runQualificationCommand } from './checkpoint-qualification-command';
 import type { recordStoredQualificationChildScope } from './checkpoint-qualification-transaction';
 
-// Only the task ledger is replaced. The payloads, systemd scopes, cgroups,
+// This integration suite exercises real OS boundaries. Only the task ledger is replaced. The payloads, systemd scopes, cgroups,
 // cancellation, timeout and scope-death control path are real OS operations.
 vi.mock('../task-manager/enabled', () => ({ isTaskManagerEnabled: async () => true }));
 vi.mock('../task-manager/store', () => ({ registerTask: vi.fn(async () => ({})),

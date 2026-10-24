@@ -84,8 +84,9 @@ describe('runPackageCacheRetention', () => {
       expiresAt: new Date(Date.now() + (expired ? -1000 : 60_000)).toISOString() },
     { nowMs: Date.now() - 2000 });
     const runCommand = vi.fn(async () => ({ ok: true, exitCode: 0, timedOut: false, output: '' }));
+    const sizes = [measurement(9), measurement(9), measurement(2)];
     const out = await runPackageCacheRetention({ targets: [{ ...targets[0]!, path: cache }], maxBytes: 8,
-      measure: async () => measurement(9), runCommand, withMutex: async (_name, run) => run() });
+      measure: async () => sizes.shift()!, runCommand, withMutex: async (_name, run) => run() });
     expect(out[0]?.status).toBe(expired ? 'pruned' : 'pinned');
     expect(runCommand).toHaveBeenCalledTimes(expired ? 1 : 0);
   });
@@ -299,6 +300,26 @@ describe('runPackageCacheRetention', () => {
     ]);
     expect(out.map((row) => row.status)).toEqual(['pruned', 'below-threshold', 'pruned']);
     expect(out.map((row) => row.reclaimedBytes)).toEqual([7, 0, 3]);
+  });
+
+  it.each([
+    { after: measurement(8), status: 'pruned', note: undefined },
+    { after: measurement(9), status: 'prune-failed', note: /still measures above the high-water mark/ },
+    { after: measurement(1, true), status: 'prune-failed', note: /final measurement was truncated/ },
+  ])('verifies the cap after native cleanup: $status, $after', async ({ after, status, note }) => {
+    const sizes = [measurement(10), measurement(10), after];
+    const runCommand = vi.fn(async () => ({ ok: true, exitCode: 0, timedOut: false, output: 'ok' }));
+    const out = await runPackageCacheRetention({
+      targets: [targets[0]!], maxBytes: 8,
+      measure: async () => sizes.shift()!, runCommand,
+      withMutex: async (_name, run) => run(),
+    });
+
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(out[0]).toMatchObject({ status, maxBytes: 8, afterBytes: after.bytes,
+      reclaimedBytes: 10 - after.bytes, measurementTruncated: after.truncated });
+    if (note) expect(out[0]?.note).toMatch(note);
+    else expect(out[0]?.note).toBeUndefined();
   });
 
   it('does not run a stale cleanup when the cache fell below the threshold while waiting', async () => {

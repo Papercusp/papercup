@@ -15,6 +15,11 @@ export function closeTscServiceCompiler(api: any, { graceMs, killWaitMs }?: {
     graceMs?: number;
     killWaitMs?: number;
 }): Promise<void>;
+/** Coalesce one project's live callers without retaining several full programs.
+ * Keep other projects queued in arrival order; cancelled work must not load a program.
+ * @param {any[]} queue
+ */
+export function takeTscServiceProjectBatch(queue: any[]): any[];
 /** Exact loaded service/compiler identity plus the requested root config and named inputs.
  * Missing inputs remain explicit nulls; they never certify a successful focused check.
  * @param {Record<string, any>} request

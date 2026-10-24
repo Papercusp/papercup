@@ -15,9 +15,15 @@ import { moduleRepoRoot } from '../module-repo-root';
 const SHA = /^[a-f0-9]{7,40}$/i;
 type Repository = { cwd: string; gitDir?: string };
 type Entry = { repo: Repository; oid: string; mode: string; type: string };
+type ContentCache = {
+  trees: Map<string, Promise<Buffer>>;
+  submodules: Map<string, Promise<Repository>>;
+  blobs: Map<string, string>;
+  blobLoads: Promise<void>;
+};
 type Snapshot = {
   files: Map<string, Entry>; texts: Map<string, string>; unscanned: string[];
-  textLoads: Promise<void>;
+  cache: ContentCache;
 };
 export type TestContentEquivalence = (input: {
   file: string; recordedSha: string; currentSha: string;
@@ -70,10 +76,12 @@ async function submoduleRepository(root: string, parent: Repository, ref: string
   throw new Error('pinned submodule object unavailable: ' + path);
 }
 
-async function snapshot(root: string, sha: string): Promise<Snapshot> {
-  const result: Snapshot = { files: new Map(), texts: new Map(), unscanned: [], textLoads: Promise.resolve() };
+async function snapshot(root: string, sha: string, cache: ContentCache): Promise<Snapshot> {
+  const result: Snapshot = { files: new Map(), texts: new Map(), unscanned: [], cache };
   const walk = async (repo: Repository, ref: string, prefix: string) => {
-    const tree = await git(repo, ['ls-tree', '-rz', '--full-tree', ref]);
+    const key = JSON.stringify([repo.cwd, repo.gitDir, ref]);
+    if (!cache.trees.has(key)) cache.trees.set(key, git(repo, ['ls-tree', '-rz', '--full-tree', ref]));
+    const tree = await cache.trees.get(key)!;
     for (const record of tree.toString('utf8').split('\0').filter(Boolean)) {
       const tab = record.indexOf('\t');
       const [mode, type, oid] = record.slice(0, tab).split(' ');
@@ -87,7 +95,11 @@ async function snapshot(root: string, sha: string): Promise<Snapshot> {
       // Release archives have no submodule .git. Read its existing object database;
       // never checkout, update, or read the submodule's moving HEAD as source.
       try {
-        const child = await submoduleRepository(root, repo, ref, local, path, oid);
+        const childKey = JSON.stringify([repo.cwd, repo.gitDir, path, oid]);
+        if (!cache.submodules.has(childKey)) {
+          cache.submodules.set(childKey, submoduleRepository(root, repo, ref, local, path, oid));
+        }
+        const child = await cache.submodules.get(childKey)!;
         await walk(child, oid, path + '/');
         result.files.delete(path);
       } catch {
@@ -100,15 +112,22 @@ async function snapshot(root: string, sha: string): Promise<Snapshot> {
 }
 
 async function loadTexts(view: Snapshot, files: readonly string[]): Promise<void> {
-  // Several test proofs share this immutable snapshot. Recheck the cache after
-  // earlier loads settle so concurrent proofs never fork again for the same blob.
-  const load = view.textLoads.then(async () => {
+  // Different commits often share most blobs. Serialize cache fills across the
+  // request so concurrent snapshots also read each immutable object only once.
+  const { cache } = view;
+  const objectKey = (entry: Entry) => JSON.stringify([entry.repo.cwd, entry.repo.gitDir, entry.oid]);
+  const load = cache.blobLoads.then(async () => {
     const missing = [...new Set(files)].filter(file => !view.texts.has(file));
-    for (let offset = 0; offset < missing.length; offset += 64) {
-      const batch = missing.slice(offset, offset + 64);
-      const commands = batch.map(file => {
-        const entry = view.files.get(file);
-        if (!entry || entry.type !== 'blob' || entry.mode === '120000') throw new Error('unreadable input: ' + file);
+    const uncached = new Map<string, { file: string; entry: Entry }>();
+    for (const file of missing) {
+      const entry = view.files.get(file);
+      if (!entry || entry.type !== 'blob' || entry.mode === '120000') throw new Error('unreadable input: ' + file);
+      if (!cache.blobs.has(objectKey(entry))) uncached.set(objectKey(entry), { file, entry });
+    }
+    const objects = [...uncached];
+    for (let offset = 0; offset < objects.length; offset += 64) {
+      const batch = objects.slice(offset, offset + 64);
+      const commands = batch.map(([, { entry }]) => {
         return {
           repo: entry.repo.cwd,
           args: [...(entry.repo.gitDir ? ['--git-dir', entry.repo.gitDir, '--work-tree', entry.repo.cwd] : []),
@@ -120,13 +139,15 @@ async function loadTexts(view: Snapshot, files: readonly string[]): Promise<void
       });
       for (let index = 0; index < batch.length; index++) {
         const result = results[index];
-        if (!result || result.code !== 0) throw new Error('unreadable input: ' + batch[index]);
-        view.texts.set(batch[index]!, result.stdout);
+        const [key, { file }] = batch[index]!;
+        if (!result || result.code !== 0) throw new Error('unreadable input: ' + file);
+        cache.blobs.set(key, result.stdout);
       }
     }
+    for (const file of missing) view.texts.set(file, cache.blobs.get(objectKey(view.files.get(file)!))!);
   });
   // A failed read still rejects its caller; it must not poison later queued reads.
-  view.textLoads = load.catch(() => {});
+  cache.blobLoads = load.catch(() => {});
   await load;
 }
 
@@ -198,9 +219,10 @@ async function dependencyProof(view: Snapshot, file: string): Promise<ResolvedDe
 export function createTestContentEquivalence(root = moduleRepoRoot(import.meta.url)): TestContentEquivalence {
   const snapshots = new Map<string, Promise<Snapshot>>();
   const proofs = new Map<string, Promise<ResolvedDependencyClosureProof>>();
+  const cache: ContentCache = { trees: new Map(), submodules: new Map(), blobs: new Map(), blobLoads: Promise.resolve() };
   const proof = (sha: string, file: string) => {
     const key = JSON.stringify([sha, file]);
-    if (!snapshots.has(sha)) snapshots.set(sha, snapshot(root, sha));
+    if (!snapshots.has(sha)) snapshots.set(sha, snapshot(root, sha, cache));
     if (!proofs.has(key)) proofs.set(key, snapshots.get(sha)!.then(view => dependencyProof(view, file)));
     return proofs.get(key)!;
   };

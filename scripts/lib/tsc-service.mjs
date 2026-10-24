@@ -112,6 +112,21 @@ export async function closeTscServiceCompiler(api, { graceMs = 1_000, killWaitMs
   }
 }
 
+/** Coalesce one project's live callers without retaining several full programs.
+ * Keep other projects queued in arrival order; cancelled work must not load a program.
+ * @param {any[]} queue
+ */
+export function takeTscServiceProjectBatch(queue) {
+  const pending = queue.splice(0).filter(item => !item.cancelled);
+  const project = pending[0]?.request.project;
+  const batch = [];
+  for (const item of pending) {
+    if (item.request.project === project) batch.push(item);
+    else queue.push(item);
+  }
+  return batch;
+}
+
 /** Exact loaded service/compiler identity plus the requested root config and named inputs.
  * Missing inputs remain explicit nulls; they never certify a successful focused check.
  * @param {Record<string, any>} request

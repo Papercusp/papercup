@@ -13,7 +13,8 @@ import fidelityRegistration from './llm-testing/fixtures/tool-delivery-fidelity-
 import sourceV2Registration from './llm-testing/fixtures/tool-delivery-clean-source-v2-20261023.json';
 import { toolDeliveryPreregistration } from './tool-delivery-acceptance';
 import { findBoxIdentityPaths, findOwnerNameLeaks } from '../../../scripts/lib/identity-leak-patterns.mjs';
-import { assertCleanCohortAuthority, claimCleanCohort, parseCleanCohortArgs } from './llm-testing/tool-delivery-clean-cohort.mjs';
+import { assertCleanCohortAuthority, assertCleanCohortCatalogDefinitions,
+  claimCleanCohort, parseCleanCohortArgs } from './llm-testing/tool-delivery-clean-cohort.mjs';
 
 const cleanup: string[] = [];
 afterEach(() => cleanup.splice(0).forEach(path => rmSync(path, { recursive: true, force: true })));
@@ -36,6 +37,25 @@ function fixture() {
 }
 
 describe('prospective clean tool-delivery execution admission', () => {
+  it('compares actual request JSON while rejecting model-visible guidance and schema drift', () => {
+    const expected = [{ type: 'function', name: 'sample', parameters: {
+      type: 'object', properties: { value: { type: 'string' } },
+    } }];
+    const actual = [{ ...expected[0], description: undefined, parameters: {
+      ...expected[0]!.parameters, description: undefined,
+      properties: { value: { type: 'string', description: undefined } },
+    } }];
+    // JSON equality is the provider-facing contract, even when raw JS shapes differ.
+    expect(actual).not.toStrictEqual(expected);
+    expect(JSON.stringify(actual)).toBe(JSON.stringify(expected));
+    expect(() => assertCleanCohortCatalogDefinitions(actual, expected)).not.toThrow();
+    expect(() => assertCleanCohortCatalogDefinitions([
+      { ...actual[0], description: 'Changed model-visible guidance' },
+    ], expected)).toThrow('Model-facing catalog request differs');
+    expect(() => assertCleanCohortCatalogDefinitions([
+      { ...actual[0], parameters: { ...actual[0]!.parameters, required: ['value'] } },
+    ], expected)).toThrow('Model-facing catalog request differs');
+  });
   it('selects only registered cohorts and keeps preparation separate from execution', () => {
     const args = ['retained', 'private'];
     expect(parseCleanCohortArgs(args).readinessPath).toBeUndefined();

@@ -37,6 +37,7 @@ vi.mock('../work-items', async (importOriginal) => {
 });
 
 import { judgeTestsFromLedger, lifecycleOnlyAdmissionRefusal, productionConformanceDeps } from './conformance-run-deps';
+import * as testContent from './conformance-test-content';
 
 const PLAN = 'cloud-portal-chat-and-guide-recovery-2026-10-09';
 const CONDITION = `spec-conformance-drift:papercusp/${PLAN}/R-9`;
@@ -270,6 +271,64 @@ describe('conformance test-run evidence', () => {
     expect(phases.snapshot().activePhases).toEqual([]);
     expect(phases.toMetadata()?.phases.map((phase) => phase.phase)).toEqual(['conformance:tests:ledger', contentPhase]);
     expect(contentEquivalence).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not inspect historical content after selecting a newer current-build failure', async () => {
+    const current = { ...testRunRow('fail'), commit_sha: 'b'.repeat(40) };
+    const historical = { ...testRunRow('pass'), finished_at: new Date(finishedAt.getTime() - 1000) };
+    sqlMock.mockImplementationOnce(async () => [historical, current] as never[]);
+    const contentEquivalence = vi.fn(async () => ({ equivalent: true, reason: 'same' }));
+    expect(await judgeTestsFromLedger({ files: [file], workspaceId: 'workspace',
+      currentBuildSha: 'b'.repeat(40), now: () => finishedAt, contentEquivalence }))
+      .toMatchObject({ verdict: 'fail' });
+    expect(contentEquivalence).not.toHaveBeenCalled();
+  });
+
+  it('stops at the newest equivalent candidate after rejecting a newer changed closure', async () => {
+    const rows = [1, 2, 3].map((id) => ({ ...testRunRow('pass'), id,
+      commit_sha: String(id).repeat(40), finished_at: new Date(finishedAt.getTime() - id * 1000),
+      execution_details: { ...testRunRow('pass').execution_details, commitSha: String(id).repeat(40) } }));
+    sqlMock.mockImplementationOnce(async () => [...rows].reverse() as never[]);
+    const contentEquivalence = vi.fn(async ({ recordedSha }: { recordedSha: string }) =>
+      ({ equivalent: recordedSha === '2'.repeat(40), reason: 'closure result' }));
+    expect(await judgeTestsFromLedger({ files: [file], workspaceId: 'workspace',
+      currentBuildSha: 'b'.repeat(40), now: () => finishedAt, contentEquivalence }))
+      .toMatchObject({ verdict: 'pass' });
+    expect(contentEquivalence.mock.calls.map(([input]) => input.recordedSha)).toEqual(['1'.repeat(40), '2'.repeat(40)]);
+  });
+
+  it('retains the newest incompatible diagnostic after all 32 historical candidates differ', async () => {
+    const rows = Array.from({ length: 32 }, (_, index) => {
+      const sha = (index + 1).toString(16).padStart(40, '0');
+      return { ...testRunRow('pass'), id: index + 1, commit_sha: sha,
+        finished_at: new Date(finishedAt.getTime() - index * 1000),
+        execution_details: { ...testRunRow('pass').execution_details, commitSha: sha } };
+    });
+    sqlMock.mockImplementationOnce(async () => [...rows].reverse() as never[]);
+    const contentEquivalence = vi.fn(async () => ({ equivalent: false, reason: 'changed closure' }));
+    const result = await judgeTestsFromLedger({ files: [file], workspaceId: 'workspace',
+      currentBuildSha: 'b'.repeat(40), now: () => finishedAt, contentEquivalence });
+    expect(result).toMatchObject({ verdict: 'error' });
+    expect(result.detail).toContain('test_runs #1; changed closure');
+    expect(contentEquivalence).toHaveBeenCalledTimes(32);
+  });
+
+  it('shares one immutable content provider across checks, with a separate cache for each run', async () => {
+    const compare = vi.fn(async () => ({ equivalent: true, reason: 'same' }));
+    const factory = vi.spyOn(testContent, 'createTestContentEquivalence').mockReturnValue(compare);
+    try {
+      const deps = productionConformanceDeps({ workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: PLAN });
+      const request = { barKey: 'R-1', role: 'done-when' as const, checkId: 'R-1:done-when',
+        check: { kind: 'tests' as const, files: [file] } };
+      await deps.evaluateCheck(request);
+      await deps.evaluateCheck(request);
+      expect(factory).toHaveBeenCalledTimes(1);
+      await productionConformanceDeps({ workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: PLAN })
+        .evaluateCheck(request);
+      expect(factory).toHaveBeenCalledTimes(2);
+    } finally {
+      factory.mockRestore();
+    }
   });
 
   it('passes the caller tracker from the production adapter to its test-ledger reader', async () => {

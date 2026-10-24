@@ -51,7 +51,7 @@ export async function startDesktopGridFixtureServer(
     optimizeDeps: {
       entries: [fixture],
       noDiscovery: true,
-      include: ['react', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime',
+      include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime',
         'lucide-react', '@radix-ui/react-slot', 'nuqs', 'nuqs/adapters/react'],
     },
     plugins: [{

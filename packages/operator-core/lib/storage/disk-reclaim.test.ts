@@ -31,10 +31,19 @@ describe('per-root allocated-byte caps', () => {
   const capped = () => compilePolicy(policy.map((cls) => cls.id === 'scratch' ? { ...cls, maxBytes: 100 } : cls), '/home/test');
   const sized = (name: string, age: number, bytes: number) => ({ ...entry(`/scratch/${name}`, 'scratch', age), bytes });
   it('keeps finite caps on the shipped generic agent classes', () => {
-    const genericAgentClasses = RETENTION_POLICY.filter((cls) =>
+    // Match the route policyRoots actually discovers. Age/count classes owned
+    // by another collector need that owner's proof, even when this policy
+    // declares maxBytes; a declaration cannot prove delegated enforcement.
+    const ageCountAgentClasses = RETENTION_POLICY.filter((cls) =>
       cls.origin === 'agent' && (cls.keep.kind === 'max-age' || cls.keep.kind === 'newest'));
-    expect(genericAgentClasses.length).toBeGreaterThan(0);
-    for (const cls of genericAgentClasses) {
+    const genericAgentClasses = ageCountAgentClasses.filter((cls) =>
+      cls.enforcers.some((enforcer) => enforcer.kind === 'standing-reclaim' && !enforcer.via));
+    expect(genericAgentClasses.map(cls => cls.id).sort()).toEqual([
+      'agent-evidence', 'offload-work-copies', 'papercusp-home-run-dirs', 'papercusp-scratch',
+      'repo-scratch', 'tmp-scratch', 'workspace-db-dumps', 'workspace-restores',
+    ]);
+    // Preserve the original declaration check for delegated classes too.
+    for (const cls of ageCountAgentClasses) {
       const bytes = retentionRootSizeCap(cls);
       expect(Number.isSafeInteger(bytes), cls.id).toBe(true);
       expect(bytes, cls.id).toBeGreaterThan(0);

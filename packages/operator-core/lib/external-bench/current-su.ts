@@ -1061,6 +1061,27 @@ export interface CurrentBenchHostGateway {
   issueSessionBudget(budget: GenerationBudget, beforeCost?: CurrentBenchNativeRunCost | null): CurrentBenchSessionBudget;
   stop(): Promise<void>;
 }
+/** An official host reference has no Codex session/home or native-launch grant. */
+export interface CurrentBenchHostReferenceGateway {
+  readonly agent: 'proximus';
+  readonly gateway: Readonly<ScopedInferenceGateway>;
+  readonly accountingBinding: CurrentBenchAccountingBinding;
+  stop(): Promise<void>;
+}
+const currentBenchHostReferences = new WeakMap<CurrentBenchHostReferenceGateway, {
+  protocol: string; assignmentId: string; active(): boolean;
+}>();
+
+/** Copied fields/URLs never substitute for the controller's live host grant. */
+export function requireCurrentBenchHostReferenceGateway(receipt: CurrentBenchHostReferenceGateway,
+  protocol: CurrentBenchmarkProtocol, execution: { armId: string; taskId: string; seed: number }) {
+  const issued = currentBenchHostReferences.get(receipt);
+  if (!issued?.active() || issued.protocol !== canonicalJson(currentBenchmarkProtocolSchema.parse(protocol)) ||
+      issued.assignmentId !== currentBenchAssignmentId(protocol.runId, execution.armId, execution.taskId, execution.seed)) {
+    throw new Error('Proximus requires its live controller-issued host gateway and exact frozen assignment.');
+  }
+  return receipt;
+}
 export interface CurrentBenchSessionBudget {
   readonly index: number;
   readonly binding: CurrentBenchAccountingBinding;
@@ -1103,6 +1124,7 @@ export function currentBenchGatewayController(input: {
 }, governor?: GovernorGlueDeps): ReturnType<typeof createNativeGymGatewayController> & {
   readonly accountingBinding: CurrentBenchAccountingBinding;
   startNativeGateway(log?: (message: string) => void, start?: Parameters<typeof startNativeGymGateway>[3]): Promise<CurrentBenchHostGateway>;
+  startHostGateway(log?: (message: string) => void, start?: Parameters<typeof startNativeGymGateway>[3]): Promise<CurrentBenchHostReferenceGateway>;
 } {
   const protocol = currentBenchmarkProtocolSchema.parse(input.protocol);
   const arm = protocol.arms.find(arm => arm.id === input.armId);
@@ -1183,6 +1205,32 @@ export function currentBenchGatewayController(input: {
   let live = true, starting = false;
   const revoke = () => { live = false; controller.revoke(); };
   return { ...controller, accountingBinding, revoke,
+    async startHostGateway(log = () => {}, start) {
+      if (!live || starting || arm.agent !== 'proximus')
+        throw new Error('Benchmark host reference gateway is revoked, already started or unsupported.');
+      starting = true;
+      let service: Awaited<ReturnType<typeof startNativeGymGateway>> | undefined;
+      try {
+        // Same authenticated final-provider reservations and response ledger;
+        // this path grants no psu/native launch, session budget or home access.
+        service = await startNativeGymGateway(controller.gateway, workspaceId, log, start);
+        if (!live) throw new Error('Benchmark host reference gateway was revoked during startup.');
+        let stopped = false, stopping: Promise<void> | undefined;
+        const receipt: CurrentBenchHostReferenceGateway = Object.freeze({ agent: 'proximus' as const,
+          gateway: snapshotScopedInferenceGateway(service.transport.statelessGateway), accountingBinding,
+          stop() {
+            stopped = true; revoke();
+            return stopping ??= Promise.resolve().then(() => service!.stop());
+          } });
+        currentBenchHostReferences.set(receipt, { protocol: canonicalJson(protocol), assignmentId,
+          active: () => live && !stopped });
+        return receipt;
+      } catch (error) {
+        revoke();
+        await service?.stop();
+        throw error;
+      }
+    },
     async startNativeGateway(log = () => {}, start) {
       // The maintained scoped native launcher currently supports only fresh
       // Codex sessions. Refuse unsupported clients before binding a listener.

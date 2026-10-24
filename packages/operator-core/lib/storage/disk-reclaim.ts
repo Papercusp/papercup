@@ -1083,6 +1083,11 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           ? started - Math.min(keep.maxAgeHours, keep.buildDirMaxAgeHours ?? keep.maxAgeHours) * HOUR : undefined;
         try {
           const names = await measure('rootEntriesReadMs', () => readdir(root.path));
+          // No child can be selected from this snapshot. Avoid native startup
+          // and two durable census writes for each empty uncapped root. Caps
+          // still require their complete allocation census; any later arrival
+          // remains untouched until a fresh pass inspects it.
+          if (names.length === 0 && !capped) continue;
           const excluded = names.map((name) => join(root.path, name)).filter((path) =>
             (!capped && root.classId === 'papercusp-scratch' && workspaceIds.includes(path.slice(root.path.length + 1))) ||
             (!capped && rootProtectedPaths().some((protectedPath) => overlap(path, protectedPath))) ||

@@ -46,7 +46,7 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
         pidIdentity: 'test', root: process.cwd(), taskKey, runnerIdentity: 'test', updates: [],
         manifest: { schemaVersion: 1, units: [{ id: 'test:worker', kind: 'test', path: 'worker' }] },
         retryStates: [], runContext: 'green-checkpoint' },
-      // Startup-hook coverage lives in checkpoint-qualification-process.test.ts.
+      // Startup-hook coverage lives in checkpoint-qualification-process.integration.test.ts.
       // These fixed 4s/6s budgets measure the driver/OS path after builtin startup.
       cwd: process.cwd(), env: { ...process.env, NODE_OPTIONS: '' }, signal: controller.signal,
       deadlineEpochMs: Date.now() + 15_000,

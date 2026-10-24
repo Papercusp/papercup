@@ -2103,7 +2103,12 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
   else if (v.candidateSource) detail.candidateSource = v.candidateSource;
   if (v.diagnostic) detail.diagnostic = v.diagnostic;
   if (v.promotionPending === true) detail.promotionPending = true;
-  if (v.candidate) detail.candidate = v.candidate.slice(0, 12);
+  if (v.candidate) {
+    detail.candidate = v.candidate.slice(0, 12);
+    // Preserve the exact immutable identity beside the display prefix. Historical
+    // acceptance joins cannot reconstruct forty bytes from the current gate.
+    detail.fullCandidate = v.candidate;
+  }
   // P-012: the append-only green_checkpoint event IS the per-candidate ledger — every fresh cut
   // records its source, and every measured first round its red legs ([] = green at R1).
   if (v.freezeCut) {

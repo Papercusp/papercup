@@ -19,6 +19,14 @@ const fixtures = {
 };
 const planSlug = 'deterministic-tool-definition-delivery-2026-09-21';
 
+/** Compare the definitions sent over JSON, including meaningful schema/guidance drift. */
+export function assertCleanCohortCatalogDefinitions(actual, expected) {
+  // Optional schema properties can be enumerable with value undefined. They are
+  // absent from both the provider request and the persisted registration JSON.
+  assert.deepEqual(JSON.parse(JSON.stringify(actual)), expected,
+    'Model-facing catalog request differs from preregistration.');
+}
+
 /** Only registered prospective identities are selectable; no arbitrary fixture path. */
 export function parseCleanCohortArgs(argv) {
   assert.ok(argv.length >= 2 && argv.length <= 6 && argv.length % 2 === 0,
@@ -158,7 +166,8 @@ export async function main(argv = process.argv.slice(2)) {
     const sql = getLongLivedAdminPool('llm-testing-storage', { max: 2, prepare: false });
     for (const arm of ['compact', 'full']) {
       const built = await buildShippingSeedCatalog(arm);
-      assert.deepEqual(catalogToResponsesTools(built.catalog), registration.experiment.manifestContract[`${arm}Definitions`]);
+      assertCleanCohortCatalogDefinitions(catalogToResponsesTools(built.catalog),
+        registration.experiment.manifestContract[`${arm}Definitions`]);
       assert.deepEqual([...built.catalog.canonicalBySanitized.entries()], registration.experiment.manifestContract.canonicalBySanitized);
     }
     const expectedBlocks = frozen.configuration.armOrder.flatMap(b => b.arms.map(arm => ({ scenario: b.scenario,

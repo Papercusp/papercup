@@ -190,29 +190,44 @@ export async function judgeTestsFromLedger(
   const equivalentRows = new Set<typeof candidates[number]>();
   const equivalenceProblems = new Map<typeof candidates[number], string>();
   const contentEquivalence = input.contentEquivalence ?? createTestContentEquivalence();
-  for (const row of candidates) {
-    const sha = row.commit_sha?.trim();
-    if (!matchingBuildSha || !sha || !SPEC_CONFORMANCE_BUILD_SHA_RE.test(sha) || sameBuildSha(sha, matchingBuildSha)) continue;
-    const details = parseTestRunExecutionDetails(row.execution_details);
-    // Content cannot recover unknown runtime identity, a dirty observation, or
-    // external integration state. Filtered evidence still reaches the existing
-    // full-file/named-case checks below; content equality never grants coverage.
-    if (!details || details.testLayer !== 'unit' || details.filePath !== row.file_path
-      || row.worktree_dirty !== false || details.worktreeDirty || details.commitSha !== row.commit_sha) continue;
-    const proof = await trackPhase(input.phases, `conformance:tests:contentEquivalence:${row.id}:${row.file_path}`,
-      () => contentEquivalence({ file: row.file_path, recordedSha: sha, currentSha: matchingBuildSha }));
-    if (proof.equivalent) equivalentRows.add(row);
-    else equivalenceProblems.set(row, proof.reason);
-  }
-  const priority = (row: typeof candidates[number]) => !matchingBuildSha || !row.commit_sha?.trim()
-    || (SPEC_CONFORMANCE_BUILD_SHA_RE.test(row.commit_sha.trim()) && sameBuildSha(row.commit_sha.trim(), matchingBuildSha))
-    || equivalentRows.has(row) ? 0 : 1;
-  const ordered = [...candidates].sort((a, b) => priority(a) - priority(b)
-    || Number(a.status === 'pass' && a.worktree_dirty === true) - Number(b.status === 'pass' && b.worktree_dirty === true)
+  // Among compatible rows preserve dirty-pass penalty, recency, then id. Walk
+  // that order until the first compatible row: no later proof can outrank it.
+  const ordered = [...candidates].sort((a, b) =>
+    Number(a.status === 'pass' && a.worktree_dirty === true) - Number(b.status === 'pass' && b.worktree_dirty === true)
     || (finishedAtMs(b.finished_at) || 0) - (finishedAtMs(a.finished_at) || 0)
     || Number(b.id) - Number(a.id));
+  const candidatesByFile = new Map<string, typeof candidates>();
+  for (const row of ordered) {
+    const group = candidatesByFile.get(row.file_path) ?? [];
+    group.push(row);
+    candidatesByFile.set(row.file_path, group);
+  }
   const byFile = new Map<string, typeof candidates[number]>();
-  for (const row of ordered) if (!byFile.has(row.file_path)) byFile.set(row.file_path, row);
+  for (const [file, group] of candidatesByFile) {
+    // If no row is compatible, retain the same best diagnostic fallback.
+    byFile.set(file, group[0]!);
+    for (const row of group) {
+      const sha = row.commit_sha?.trim();
+      if (!matchingBuildSha || !sha || (SPEC_CONFORMANCE_BUILD_SHA_RE.test(sha) && sameBuildSha(sha, matchingBuildSha))) {
+        byFile.set(file, row);
+        break;
+      }
+      if (!SPEC_CONFORMANCE_BUILD_SHA_RE.test(sha)) continue;
+      const details = parseTestRunExecutionDetails(row.execution_details);
+      // Content cannot recover unknown runtime identity, a dirty observation,
+      // external integration state or missing full-file/named-case coverage.
+      if (!details || details.testLayer !== 'unit' || details.filePath !== row.file_path
+        || row.worktree_dirty !== false || details.worktreeDirty || details.commitSha !== row.commit_sha) continue;
+      const proof = await trackPhase(input.phases, `conformance:tests:contentEquivalence:${row.id}:${row.file_path}`,
+        () => contentEquivalence({ file: row.file_path, recordedSha: sha, currentSha: matchingBuildSha }));
+      if (proof.equivalent) {
+        equivalentRows.add(row);
+        byFile.set(file, row);
+        break;
+      }
+      equivalenceProblems.set(row, proof.reason);
+    }
+  }
   const rows = [...byFile.values()];
   const currentBuildProblems = rows.flatMap((row) => {
     if (row.status === 'error') return [];
@@ -427,6 +442,7 @@ export async function planApprovedDeviations(
 export function productionConformanceDeps(input: ProductionConformanceDepsInput): ConformanceRunDeps {
   const sql = () => getOrgPg().sql;
   const nowIso = () => new Date().toISOString();
+  const contentEquivalence = createTestContentEquivalence();
   return {
     phases: input.phases,
     async evaluateCheck(request: ConformanceCheckRequest) {
@@ -441,6 +457,7 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
           files: check.files,
           workspaceId: input.workspaceId,
           phases: input.phases,
+          contentEquivalence,
           ...(cases ? { cases } : {}),
         }, sql());
       }

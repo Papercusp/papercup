@@ -34,6 +34,7 @@ import {
   readStoredQualification,
   recordStoredQualificationRunnerProgress,
   recordStoredQualificationWorkProgress,
+  recordStoredQualificationWorkYield,
   recordStoredQualificationNativeCompletion,
   recordStoredQualificationNativeProducer,
   recoverStoredQualificationNativeCompletions,
@@ -65,6 +66,7 @@ import { nativeProcessTraceEnv } from '../../../../scripts/lib/vitest-startup-tr
 import { syncBudgetedTaskNativeExecutionReceipt, writeBudgetedTaskNativeExecutionReceipt } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 import { vitestConfigLoaderPolicy } from '../../../../scripts/lib/vitest-host-preflight.mjs';
 import { captureRuntimeProofIdentity, runtimeProofFingerprint } from '../../../../scripts/lib/runtime-compatibility.mjs';
+import { createQualificationYieldBoundary, resolveQualificationYieldBudget } from '../../../../scripts/lib/batch-watchdog.mjs';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -368,7 +370,8 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
     }
   }, 150_000);
 
-  it.each(['SIGTERM', 'SIGKILL'] as const)('keeps a real acknowledged file banked across %s and executes only its unfinished peer', async signal => {
+  it.each(['SIGTERM', 'SIGKILL', 'primary-yield'] as const)('keeps a real acknowledged file banked across %s and executes only its unfinished peer', async scenario => {
+    const signal = scenario === 'primary-yield' ? 'SIGTERM' : scenario;
     const sourceRoot = fileURLToPath(new URL('../../../../', import.meta.url));
     const directory = mkdtempSync(join(tmpdir(), 'qualification-banked-native-'));
     const root = join(directory, 'source');
@@ -468,7 +471,7 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         runId: 'native-banked-run-one', leaseDurationMs: 120_000 };
       const outPath = join(directory, 'prefix.json');
       Object.assign(env, { PC_COMPLETION_CONTINUATION_FIXTURE: '1',
-        PC_COMPLETION_CRASH_WINDOW: 'after-first-bank', PC_COMPLETION_CRASH_SIGNAL: signal,
+        PC_COMPLETION_CRASH_WINDOW: scenario === 'primary-yield' ? scenario : 'after-first-bank', PC_COMPLETION_CRASH_SIGNAL: signal,
         PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/durable-completion-fixture',
         PC_EXECUTED_SOURCE_MAP_OUT: outPath, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1',
         PC_EXECUTED_INPUTS_DIR: join(directory, 'inputs-one'), PAPERCUSP_TEST_RUN_GROUP: owner.runId,
@@ -499,7 +502,16 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       expect(specifications).toHaveLength(2);
       await seed();
       expect((await beginStoredQualification(target, owner)).status).toBe('updated');
+      const quantumStartedAtMs = Date.now();
       const first = start(env);
+      const firstBank = new Promise<void>((resolve, reject) => {
+        first.child.on('message', message => {
+          if ((message as { kind?: string })?.kind === 'native-first-bank-ready') resolve();
+        });
+        first.child.once('close', () => {
+          if (scenario === 'primary-yield') reject(new Error(`native fixture exited before durable yield: ${first.output()}`));
+        });
+      });
       await new Promise<void>((resolve, reject) => {
         first.child.once('error', reject);
         first.child.once('close', () => reject(new Error(`native fixture exited before enrollment: ${first.output()}`)));
@@ -533,10 +545,67 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       };
       const classifier = await enroll(input, outPath, specifications);
       first.child.send({ kind: 'native-producer-registered' });
-      expect(await first.closed, first.output()).toEqual({ code: null, signal });
+      if (scenario === 'primary-yield') {
+        await firstBank;
+        const budget = resolveQualificationYieldBudget({ startedAtMs: quantumStartedAtMs,
+          quantumMs: Date.now() - quantumStartedAtMs + 50, deadlineEpochMs: Date.now() + 20_000,
+          orphanDeadlineEpochMs: Date.now() + 25_000, yieldReserveMs: 5_000, cleanupReserveMs: 2_000 });
+        if (budget.status !== 'ready') throw new Error(`yield budget refused: ${budget.reason}`);
+        const identity = partialCurrentExecutionFingerprint({ ...input, sourceCommit: candidate })!;
+        let receipts: Array<{ unitId: string; completionId: string }> = [];
+        let boundary: ReturnType<typeof createQualificationYieldBoundary> | undefined;
+        try {
+          await new Promise<void>((resolve, reject) => {
+            boundary = createQualificationYieldBoundary({ identity, budget,
+              unitIds: input.manifest.units.map(unit => unit.id),
+              readDurableProgress: async () => {
+                const recovered = await recoverStoredQualificationNativeCompletions(target, input, classifier);
+                expect(recovered.status).toBe('updated');
+                const stored = await readStoredQualification(target);
+                if (stored.status !== 'present' || !stored.transaction.continuation)
+                  throw new Error('yield progress missing');
+                receipts = stored.transaction.continuation.receipts;
+                return { status: 'ready', identity, receipts: stored.transaction.continuation.receipts };
+              },
+              commitYield: async (cursor, signal) => {
+                const saved = await recordStoredQualificationWorkYield(target, input, {
+                  runnerId: input.runnerId, runId: input.runId, savedAtMs: Date.now(),
+                  executionCutoffEpochMs: cursor.budget.executionCutoffEpochMs,
+                  yieldDeadlineEpochMs: cursor.budget.yieldDeadlineEpochMs,
+                  cleanupDeadlineEpochMs: cursor.budget.cleanupDeadlineEpochMs,
+                  orphanDeadlineEpochMs: cursor.budget.orphanDeadlineEpochMs,
+                  callerDeadlineEpochMs: cursor.budget.callerDeadlineEpochMs,
+                  completed: cursor.completedUnitIds.map(unitId => ({ unitId,
+                    completionId: receipts.find(receipt => receipt.unitId === unitId)!.completionId })),
+                  pendingUnitIds: [...cursor.pendingUnitIds],
+                }, signal);
+                return saved.status === 'updated';
+              },
+              onYield: () => resolve(), onKill: decision => reject(new Error(`primary yield killed: ${decision.reason}`)),
+            });
+          });
+          expect(boundary!.state).toBe('yielded');
+          const yielded = await readStoredQualification(target);
+          expect(yielded).toMatchObject({ transaction: { outcome: { kind: 'pending' },
+            currentPhysicalRunner: { id: owner.runnerId }, continuation: { lastYield: {
+              runnerId: owner.runnerId, runId: owner.runId,
+              completed: receipts.map(({ unitId, completionId }) => ({ unitId, completionId })),
+              pendingUnitIds: input.manifest.units.map(unit => unit.id).filter(id => !receipts.some(receipt => receipt.unitId === id)),
+              callerDeadlineEpochMs: budget.callerDeadlineEpochMs,
+            } } } });
+          expect(await probeRunnerLiveness(yielded.status === 'present' ? yielded.transaction.currentPhysicalRunner : null)).toBe('live');
+          // Cleanup starts only after the cursor is read back, before handoff.
+          process.kill(-first.child.pid!, signal);
+        } finally { boundary?.stop(); }
+      }
+      // Native Vitest handles a parent-requested TERM and exits with 128+15.
+      // The crash fixtures remove that handler and retain the signal directly.
+      expect(await first.closed, first.output()).toEqual(scenario === 'primary-yield'
+        ? { code: 143, signal: null } : { code: null, signal });
       stop(first.child);
       expect(first.output()).toContain('COMPLETION_ACK ids=');
-      expect(first.output()).toContain(`REAL_COMPLETION_WRITE_INTERRUPTED phase=after-first-bank signal=${signal}`);
+      if (scenario !== 'primary-yield')
+        expect(first.output()).toContain(`REAL_COMPLETION_WRITE_INTERRUPTED phase=after-first-bank signal=${signal}`);
       const prefixBytes = readFileSync(outPath);
       const snapshot = JSON.parse(prefixBytes.toString('utf8'));
       expect(snapshot.worktreeDirty).toBe(false);
@@ -558,7 +627,8 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       expect(await recoverStoredQualificationNativeCompletions(target, input, classifier)).toMatchObject({ status: 'conflict' });
       const recovered = await recoverStoredQualificationNativeCompletions(target, resumed, classifier);
       expect({ status: recovered.status, ...('refusalReason' in recovered ? { refusalReason: recovered.refusalReason } : {}) })
-        .toEqual({ status: 'updated' });
+        // Primary yield already authenticated and banked this exact completion.
+        .toEqual({ status: scenario === 'primary-yield' ? 'idempotent' : 'updated' });
       const stored = await readStoredQualification(target);
       if (stored.status !== 'present') throw new Error('banked qualification missing');
       const grade = () => evaluatePartialTaskContinuation({ root, taskKey: input.taskKey,
@@ -675,7 +745,7 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         continuation: { receipts: expect.arrayContaining(remaining.map(spec => expect.objectContaining({ unitId: spec.testFile }))) } } });
       expect(git('status', '--porcelain')).toBe('');
       expect(await recordStoredQualificationComposedVerdict(target, resumed, { candidate, runId: resumed.runId,
-        reason: 'advanced', green: true, terminalEvent: { status: 'real-native-guard-post-composition', detail: { signal } } }, options))
+        reason: 'advanced', green: true, terminalEvent: { status: 'real-native-guard-post-composition', detail: { scenario, signal } } }, options))
         .toMatchObject({ status: 'updated', transaction: { outcome: { kind: 'green' }, currentPhysicalRunner: null } });
     } finally {
       for (const child of children) stop(child);

@@ -366,10 +366,15 @@ export async function runPackageCacheRetention(
             afterBytes: after.bytes,
             reclaimedBytes: Math.max(0, before.bytes - after.bytes),
             measurementTruncated: before.truncated || after.truncated,
-            status: 'pruned',
-            note: overHighWater(after, limit)
-              ? 'native cleanup completed, but the cache still measures above the high-water mark'
-              : undefined,
+            // A zero exit code proves the native command ran, not that its
+            // retention objective was met. Keep unmet/unknown caps visible to
+            // the existing telemetry-retention warning path.
+            status: overHighWater(after, limit) ? 'prune-failed' : 'pruned',
+            note: after.truncated
+              ? 'native cleanup completed, but its final measurement was truncated; the high-water bound is unverified'
+              : after.bytes > limit
+                ? 'native cleanup completed, but the cache still measures above the high-water mark'
+                : undefined,
           });
         }
         return outcomes;

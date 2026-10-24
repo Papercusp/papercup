@@ -3613,6 +3613,7 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       failingTests: Array.from({ length: 30 }, (_, i) => `t${i}.test.ts`),
     });
     expect(d.candidate).toBe('a'.repeat(12));
+    expect(d.fullCandidate).toBe('a'.repeat(40));
     expect(d.from).toBe('b'.repeat(12));
     expect(d.advancedTo).toBe('c'.repeat(12));
     expect((d.failingTests as string[]).length).toBe(20);

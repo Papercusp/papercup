@@ -126,6 +126,47 @@ beforeEach(() => {
   acquireRetries.length = 0;
 });
 
+describe('ended-only takeover reservation pin', () => {
+  const pin = { workspaceId: 'workspace-a', requireTerminal: true as const,
+    binding: { coordOwnerId: 'su-target', sessionId: 'native-target', startedAt: '2026-10-23 20:00:00.123456-04' } };
+  const row = () => ({ agent: 'codex', ended_at: new Date(), ended_by: 'self', retired_at: null,
+    started_at: new Date(0), binding_started_at: pin.binding.startedAt,
+    workspace_id: pin.workspaceId, coord_owner_id: pin.binding.coordOwnerId, session_id: pin.binding.sessionId,
+    omp_thread_id: null, resume_claim_key: null, resume_claimed_at: null });
+
+  it.each(['workspace_id', 'coord_owner_id', 'session_id', 'binding_started_at'] as const)(
+    'compares %s while holding the same row lock that grants custody', async field => {
+      const changed = { ...row(), [field]: 'changed' };
+      advSessionRowsMock.mockResolvedValueOnce([changed]);
+      expect(await acquireAdvSessionResume(42, 'takeover-key', 120, undefined, undefined, false, pin))
+        .toEqual({ status: 'binding-changed', acquired: false });
+      expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+      const statement = (advSessionRowsMock.mock.calls[0][0] as readonly string[]).join(' ');
+      expect(statement).toContain('FOR UPDATE');
+      expect(statement).toContain('started_at::text AS binding_started_at');
+    },
+  );
+
+  it('refuses an ended-to-live change even for a replay key and an expired reservation', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([{ ...row(), ended_at: null, ended_by: null,
+      resume_claim_key: 'takeover-key', resume_claimed_at: new Date(0) }]);
+    expect(await acquireAdvSessionResume(42, 'takeover-key', 120, undefined,
+      { version: 1, kind: 'no-live-codex-writer' }, false, pin))
+      .toEqual({ status: 'live', acquired: false });
+    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('grants only the matching ended incarnation without clearing its terminal marker', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([row()])
+      .mockResolvedValueOnce([{ lease_expires_at: new Date(Date.now() + 120_000) }]);
+    expect(await acquireAdvSessionResume(42, 'takeover-key', 120, undefined, undefined, false, pin))
+      .toMatchObject({ status: 'acquired', acquired: true, replayed: false });
+    const update = (advSessionRowsMock.mock.calls[1][0] as readonly string[]).join(' ');
+    expect(update).toContain('resume_claim_key =');
+    expect(update).not.toContain('ended_at =');
+  });
+});
+
 describe('deliberate retirement resume fence (WI-6554700010010429)', () => {
   it.each([['explicit relaunch', new Date(), true], ['crash recovery', null, false]] as const)(
     'allows %s while leaving retirement intact during acquisition', async (_name, retiredAt, allowRetired) => {

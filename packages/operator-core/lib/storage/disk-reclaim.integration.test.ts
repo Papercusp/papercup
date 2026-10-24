@@ -641,9 +641,50 @@ describe('retention on a real fixture tree', () => {
     expect((await stat(join(source, 'source.ts'))).size).toBe(8192);
   });
 
+  it('preserves the pass budget for expired entries after empty uncapped roots', async () => {
+    const { root, options } = await setup();
+    const empty = [join(root, 'empty-one'), join(root, 'empty-two'), join(root, 'empty-three')];
+    const ready = join(root, 'ready');
+    for (const path of [...empty, ready]) await mkdir(path);
+    const expired = join(ready, 'expired'); await writeFile(expired, 'old data');
+    const roots = [...empty, ready].map(path => ({ path, classId: 'fixture' }));
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const inspectTrees = vi.fn(inspectRetentionTrees);
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, roots, runBudgetMs: 100_000, budgetMs: 100_000,
+        policy: options.policy.map(cls => ({ ...cls, roots: [...empty, ready] })), inspectTrees,
+        record: async (phase, details) => {
+          // Each enrolled census has durable progress writes. Empty roots must
+          // not spend those waits before a root with actual candidates starts.
+          if (phase === 'progress' && (details as { phase?: string }).phase === 'census-start') clock += 60_000;
+        },
+      });
+      expect(receipt.complete, receipt.errors.join('; ')).toBe(true);
+      expect(receipt.roots?.map(value => value.path)).toEqual([...empty, ready]);
+      expect(inspectTrees.mock.calls.map(([path]) => path)).toEqual([ready]);
+      expect(receipt.entries).toContainEqual(expect.objectContaining({ path: expired, status: 'removed' }));
+      await expect(stat(expired)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { now.mockRestore(); }
+  });
+
+  it('still requires the complete census for an empty capped root', async () => {
+    const { root, options } = await setup();
+    const inspectTrees = vi.fn(async () => ({ entries: [], retained: [], inspectedNodes: 0,
+      retainedRecentTrees: 0, error: 'allocation census unavailable' }));
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees,
+      policy: options.policy.map(cls => ({ ...cls, maxBytes: 4096 })),
+    });
+    expect(inspectTrees).toHaveBeenCalledWith(root, expect.objectContaining({ includeRecent: true }));
+    expect(receipt.complete).toBe(false);
+    expect(receipt.errors).toContain(`inspect:${root}: allocation census unavailable`);
+    expect(receipt.entries.filter(entry => entry.status === 'removed')).toEqual([]);
+  });
+
   it('starts the next pass after a root whose census spent the preceding deadline', async () => {
     const { root, options } = await setup();
     const blocked = join(root, 'data-device'); await mkdir(blocked);
+    await writeFile(join(blocked, 'slow-candidate'), 'requires census');
     const ready = join(root, 'root-device'); await mkdir(ready);
     const expired = join(ready, 'expired'); await writeFile(expired, 'old root-disk data');
     const roots = [blocked, ready].map(path => ({ path, classId: 'fixture' }));
@@ -676,6 +717,7 @@ describe('retention on a real fixture tree', () => {
   it.each([false, true])('reclaims a pressured device before a healthy census consumes the run deadline (alias=%s)', async alias => {
     const { root, options } = await setup();
     const healthy = join(root, 'healthy-device'); await mkdir(healthy);
+    await writeFile(join(healthy, 'slow-candidate'), 'requires census');
     const pressured = join(root, 'pressured-device'); await mkdir(pressured);
     const expired = join(pressured, 'expired'); await writeFile(expired, 'old root-disk data');
     const roots = [healthy, pressured].map(path => ({ path, classId: 'fixture' }));
@@ -778,6 +820,7 @@ describe('retention on a real fixture tree', () => {
 
   it('persists root census timeout attribution without copying allocation inventories', async () => {
     const { root, options } = await setup();
+    await mkdir(join(root, 'large'));
     const events: Array<{ phase: string; [key: string]: unknown }> = [];
     const timing = { elapsedMs: 200, lastProgressAfterMs: 150, lastChildPath: join(root, 'large'),
       timeoutMs: 200, progressTimeoutMs: 50, timeoutKind: 'absolute' as const };
@@ -791,7 +834,8 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.complete).toBe(false);
     expect(receipt.censuses).toEqual([{ root, classId: 'fixture', elapsedMs: expect.any(Number),
       inspectedNodes: 123, timing, error: 'retention native census timed out' }]);
-    expect(events).toContainEqual({ phase: 'census-start', root, classId: 'fixture' });
+    expect(events).toContainEqual({ phase: 'census-start', root, classId: 'fixture',
+      timings: expect.objectContaining({ auditMs: expect.any(Number) }) });
     expect(events).toContainEqual({ phase: 'census-finish', ...receipt.censuses![0] });
     expect(JSON.stringify({ censuses: receipt.censuses, events })).not.toContain('private allocation graph');
     expect(receipt.entries.some(entry => entry.status === 'removed')).toBe(false);
@@ -995,6 +1039,7 @@ describe('retention on a real fixture tree', () => {
     managedProbe.active = true;
     try {
       await spawned;
+      await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
       await applyEventSubstrateMigrationsForTest(db.sql, {
         label: 'disk-reclaim.integration.test.ts privileged release holder', ...COORD_SUBSCRIPTION_SUBSTRATE,
         extra: [...COORD_SUBSCRIPTION_SUBSTRATE.extra,
@@ -1297,9 +1342,11 @@ describe('retention on a real fixture tree', () => {
       expect(receipt.errors).toEqual([expect.stringContaining(`incomplete retention effects:${root}:`)]);
       expect(receipt.effects).toEqual([
         expect.objectContaining({ root, selected: 2, processed: 1, remaining: 1, nextPath: paths[1], elapsedMs: 300, stopped: true,
-          timings: { initialHolderScanMs: 100, freshHolderScanMs: 200, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0 } }),
+          timings: { initialHolderScanMs: 100, freshHolderScanMs: 200, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0,
+            progressRecordMs: 0, yieldWaitMs: 0, leaseReleaseMs: 0 } }),
         expect.objectContaining({ root: secondRoot, selected: 1, processed: 1, remaining: 0, nextPath: null, elapsedMs: 200, stopped: false,
-          timings: { initialHolderScanMs: 100, freshHolderScanMs: 100, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0 } }),
+          timings: { initialHolderScanMs: 100, freshHolderScanMs: 100, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0,
+            progressRecordMs: 0, yieldWaitMs: 0, leaseReleaseMs: 0 } }),
       ]);
       expect(progress).toContainEqual(receipt.effects![0]);
       expect(delegate).toHaveBeenCalledOnce();
@@ -1725,9 +1772,12 @@ describe('retention on a real fixture tree', () => {
     } });
     try {
       await entered;
-      const second = await runDiskReclaimOnce(options);
+      const second = await runDiskReclaimOnce({ ...options, runBudgetMs: 1000 });
       expect(second.complete).toBe(false);
-      expect(second.errors.join(' ')).toContain('Timed out after 1000ms waiting for fs-mutex');
+      expect(second.errors.join(' ')).toMatch(/Timed out after \d+ms waiting for fs-mutex/);
+      expect(second.mutexTimeout?.phase).toBe('initial');
+      expect(second.mutexTimeout?.timeoutMs).toBeGreaterThan(0);
+      expect(second.mutexTimeout?.timeoutMs).toBeLessThanOrEqual(1000);
       expect(second.entries).toEqual([]);
       expect(await stat(path)).toBeTruthy();
     } finally { releaseFirst(); }
@@ -2014,7 +2064,8 @@ describe('retention on a real fixture tree', () => {
     for (const path of paths) expect(await stat(path)).toBeTruthy();
   });
   it('reserves the shared run budget for later independent owners and policy census', async () => {
-    const { options } = await setup();
+    const { root, options } = await setup();
+    await writeFile(join(root, 'requires-census'), 'expired');
     const started = Date.now();
     let clock = started;
     const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);

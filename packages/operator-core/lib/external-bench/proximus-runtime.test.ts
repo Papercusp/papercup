@@ -5,7 +5,7 @@ import { currentBenchmarkProtocolSchema, currentBenchProviderAgent, PROXIMUS_CLI
   PROXIMUS_SOURCE_REVISION, type CurrentBenchmarkProtocol } from './reproducibility/schema';
 import { proximusRunSpec } from './proximus-runtime';
 import { currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
-  type CurrentBenchNativeInputCeiling } from './current-su';
+  requireCurrentBenchHostReferenceGateway, type CurrentBenchNativeInputCeiling } from './current-su';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import type { GatewayCarryTrialAttempt } from '../inference-gateway/gateway';
 import { currentBenchLaunchSelection } from './run-launcher';
@@ -124,8 +124,8 @@ function providerFixture(provider: 'openai' | 'anthropic') {
     sourceSha256: f.rate.inputTokenCeilingSourceSha256!, validUntilMonotonicMs: processMonotonicClock.now() + 10_000,
     validateAuthorization: vi.fn(() => {}) };
   type Ports = NonNullable<Parameters<typeof currentBenchProviderAuthenticator>[1]>;
-  const ports: Ports = { readAccount: vi.fn(async () => ({ id: attempt.accountId, provider: claude ? 'claude' : 'codex',
-    credentialRef: 'token:offline' })), credentialResolver: vi.fn(() => ({ kind: 'token', authMode: claude ? 'api-key' : 'oauth',
+  const ports: Ports = { readAccount: vi.fn<Ports['readAccount']>(async () => ({ id: attempt.accountId, provider: claude ? 'claude' : 'codex',
+    credentialRef: 'token:offline' })), credentialResolver: vi.fn<Ports['credentialResolver']>(() => ({ kind: 'token', authMode: claude ? 'api-key' : 'oauth',
       current: async () => secret, invalidate: () => {} })) };
   const input = { workspaceId: 'bench-private', preregHash, protocol: f.protocol, armId: f.arm.id, taskId: 't1', seed: 1,
     readNativeInputCeiling: vi.fn(async () => ceiling) };
@@ -204,6 +204,47 @@ describe('Proximus uses existing final-provider accounting authority', () => {
     try {
       await expect(controller.startNativeGateway(() => {}, start)).rejects.toThrow(/unsupported/);
       expect(start).not.toHaveBeenCalled();
+    } finally { controller.revoke(); f.auth.revoke(); }
+  });
+  it.each(['openai', 'anthropic'] as const)('issues an explicit %s host grant and revokes copied/stale/foreign grants', async provider => {
+    const f = providerFixture(provider), stop = vi.fn(async () => {});
+    const controller = currentBenchGatewayController({ ...f.input,
+      loopId: 'offline-loop', token: digest('offline-gateway-token'), authenticateProvider: f.auth.authenticateProvider,
+      resources: { inputTokens: 20_000, outputTokens: 100, requestsPerArm: 2,
+        armIds: f.protocol.arms.map(a => currentBenchAssignmentId(f.protocol.runId, a.id, 't1', 1)),
+        usdPerArm: 3, maxOpenUsd: 3, wallClockMs: 2_000, wallClockMsPerArm: 1_000 } });
+    const start = vi.fn(async () => ({ port: 32105, stop } as never));
+    try {
+      const hosted = await controller.startHostGateway(() => {}, start);
+      const assignment = { armId: f.arm.id, taskId: 't1', seed: 1 };
+      expect(requireCurrentBenchHostReferenceGateway(hosted, f.protocol, assignment)).toBe(hosted);
+      expect(hosted.agent).toBe('proximus');
+      expect(hosted.gateway.baseURL).toBe('http://127.0.0.1:32105');
+      expect('nativeGateway' in hosted).toBe(false);
+      expect('issueSessionBudget' in hosted).toBe(false);
+      expect(() => requireCurrentBenchHostReferenceGateway({ ...hosted }, f.protocol, assignment)).toThrow(/controller-issued/);
+      expect(() => requireCurrentBenchHostReferenceGateway(hosted, f.protocol, { ...assignment, seed: 2 })).toThrow(/assignment/);
+      const changed = structuredClone(f.protocol); changed.runId = 'another-run';
+      expect(() => requireCurrentBenchHostReferenceGateway(hosted, changed, assignment)).toThrow(/assignment/);
+      await expect(controller.startHostGateway(() => {}, start)).rejects.toThrow(/already started/);
+      expect(start).toHaveBeenCalledTimes(1);
+      await hosted.stop(); await hosted.stop();
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(() => requireCurrentBenchHostReferenceGateway(hosted, f.protocol, assignment)).toThrow(/live/);
+    } finally { controller.revoke(); f.auth.revoke(); }
+  });
+  it('closes a host listener if authority is revoked while it starts', async () => {
+    const f = providerFixture('openai'), stop = vi.fn(async () => {});
+    const controller = currentBenchGatewayController({ ...f.input,
+      loopId: 'offline-loop', token: digest('offline-gateway-token'), authenticateProvider: f.auth.authenticateProvider,
+      resources: { inputTokens: 20_000, outputTokens: 100, requestsPerArm: 2,
+        armIds: f.protocol.arms.map(a => currentBenchAssignmentId(f.protocol.runId, a.id, 't1', 1)),
+        usdPerArm: 3, maxOpenUsd: 3, wallClockMs: 2_000, wallClockMsPerArm: 1_000 } });
+    try {
+      await expect(controller.startHostGateway(() => {}, async () => {
+        controller.revoke(); return { port: 32106, stop } as never;
+      })).rejects.toThrow(/revoked during startup/);
+      expect(stop).toHaveBeenCalledTimes(1);
     } finally { controller.revoke(); f.auth.revoke(); }
   });
 });

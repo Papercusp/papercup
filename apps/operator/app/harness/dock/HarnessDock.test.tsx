@@ -120,8 +120,12 @@ describe('HarnessDock (shared DockWorkspace adapter)', () => {
   it.each(dockWorkbenchMock.panels)('fullscreens $title and restores the same mounted pane with Escape', async panel => {
     render(<HarnessDock layoutName="default" />);
     const api = { getPanel: vi.fn(id => dockWorkbenchMock.panels.find(p => p.id === id)),
-      maximizeGroup: vi.fn(), exitMaximizedGroup: vi.fn() };
+      groups: [], width: 488, height: 568,
+      maximizeGroup: vi.fn(), exitMaximizedGroup: vi.fn(), layout: vi.fn() };
     act(() => lastDockProps().onApiReady?.(api));
+    Object.defineProperties(screen.getByTestId('dock-fullscreen-surface'), {
+      clientWidth: { value: 488 }, clientHeight: { value: 568 },
+    });
     const draft = screen.getByRole('textbox', { name: `${panel.title} draft` });
     fireEvent.change(draft, { target: { value: 'Unsaved text survives' } });
     fireEvent.click(screen.getByRole('button', { name: `Fullscreen ${panel.title}` }));
@@ -130,6 +134,8 @@ describe('HarnessDock (shared DockWorkspace adapter)', () => {
     expect(screen.getByRole('textbox', { name: `${panel.title} draft` })).toBe(draft);
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(api.exitMaximizedGroup).toHaveBeenCalledTimes(1));
+    expect(api.layout).toHaveBeenCalledWith(488, 568);
+    expect(api.layout.mock.invocationCallOrder[0]).toBeLessThan(api.exitMaximizedGroup.mock.invocationCallOrder[0]);
     expect(screen.getByTestId('dock-fullscreen-surface').style.position).not.toBe('fixed');
     expect((draft as HTMLInputElement).value).toBe('Unsaved text survives');
   });
@@ -137,7 +143,8 @@ describe('HarnessDock (shared DockWorkspace adapter)', () => {
   it('restores through the visible control and clears the selected pane from URL state', async () => {
     render(<HarnessDock layoutName="default" />);
     const panel = dockWorkbenchMock.panels[0];
-    const api = { getPanel: vi.fn(() => panel), maximizeGroup: vi.fn(), exitMaximizedGroup: vi.fn() };
+    const api = { getPanel: vi.fn(() => panel), groups: [], width: 488, height: 568,
+      maximizeGroup: vi.fn(), exitMaximizedGroup: vi.fn(), layout: vi.fn() };
     act(() => lastDockProps().onApiReady?.(api));
     fireEvent.click(screen.getByRole('button', { name: `Fullscreen ${panel.title}` }));
     await waitFor(() => expect(api.maximizeGroup).toHaveBeenCalledWith(panel));
@@ -151,7 +158,8 @@ describe('HarnessDock (shared DockWorkspace adapter)', () => {
     const originalTitle = panel.title;
     try {
       const view = rtlRender(<NuqsTestingAdapter hasMemory><HarnessDock layoutName="default" /></NuqsTestingAdapter>);
-      const api = { getPanel: vi.fn(() => panel), maximizeGroup: vi.fn(), exitMaximizedGroup: vi.fn() };
+      const api = { getPanel: vi.fn(() => panel), groups: [], width: 488, height: 568,
+        maximizeGroup: vi.fn(), exitMaximizedGroup: vi.fn(), layout: vi.fn() };
       act(() => lastDockProps().onApiReady?.(api));
       const control = () => document.querySelector<HTMLButtonElement>(`button[data-dock-pane-id="${panel.id}"]`);
       expect(control()).not.toBeNull();

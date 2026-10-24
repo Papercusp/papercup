@@ -25,6 +25,7 @@ import {
   checkedSetFor,
   checkedSetForCooperatively,
   closeTscServiceCompiler,
+  takeTscServiceProjectBatch,
   formatTscServiceBanner,
   lineAndCharacter,
   lineStarts,
@@ -136,7 +137,10 @@ describe('bundled typecheck service identity', () => {
     // the service disposes its unobserved connection.
     const originalApi = readFileSync(entry, 'utf8');
     expect(originalApi).toContain('async getSemanticDiagnostics(file) {');
-    writeFileSync(entry, originalApi.replace('async getSemanticDiagnostics(file) {', `async getSemanticDiagnostics(file) {
+    expect(originalApi).toContain('async updateSnapshot(params) {');
+    writeFileSync(entry, originalApi.replace('async updateSnapshot(params) {', `async updateSnapshot(params) {
+      if (this.activeSnapshots.size > 0) throw new Error('previous native snapshot still retained');
+    `).replace('async getSemanticDiagnostics(file) {', `async getSemanticDiagnostics(file) {
       if (file.endsWith('/hang.ts')) {
         console.log('HUNG_DIAGNOSTIC_READY');
         return new Promise((resolve, reject) => this.client.connection.onDispose(() => reject(new Error('orphan diagnostic disposed'))));
@@ -239,6 +243,20 @@ describe('native compiler ownership during reset', () => {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       await closed;
     }
+  });
+});
+
+describe('shared compiler project admission', () => {
+  it('coalesces one project while preserving other callers and dropping cancelled requests', () => {
+    const request = (project: string, cancelled = false) => ({ request: { project }, cancelled });
+    const cancelled = request('cancelled', true);
+    const a1 = request('a'), b1 = request('b'), a2 = request('a'), c1 = request('c'), b2 = request('b');
+    const queue = [cancelled, a1, b1, a2, c1, b2];
+    expect(takeTscServiceProjectBatch(queue)).toEqual([a1, a2]);
+    expect(queue).toEqual([b1, c1, b2]);
+    expect(takeTscServiceProjectBatch(queue)).toEqual([b1, b2]);
+    expect(takeTscServiceProjectBatch(queue)).toEqual([c1]);
+    expect(takeTscServiceProjectBatch(queue)).toEqual([]);
   });
 });
 

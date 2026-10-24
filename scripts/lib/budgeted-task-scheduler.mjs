@@ -2719,6 +2719,12 @@ export function formatAdmissionHolder(ownerText, now = Date.now()) {
 
   const bits = [];
   if (parsed.pid != null) bits.push(`pid=${parsed.pid}`);
+  if (parsed.ownerId) bits.push(`owner=${parsed.ownerId}`);
+  if (parsed.taskId) bits.push(`task=${parsed.taskId}`);
+  if (parsed.admission) {
+    for (const key of ['resource', 'workers', 'workerMemoryMb', 'workerBudget', 'memoryBudgetMb', 'maxConcurrentTasks'])
+      if (parsed.admission[key] != null) bits.push(`${key}=${parsed.admission[key]}`);
+  }
   const acquiredAtMs = parsed.acquiredAt ? Date.parse(parsed.acquiredAt) : NaN;
   if (Number.isFinite(acquiredAtMs)) {
     const heldMs = now - acquiredAtMs;
@@ -2732,6 +2738,15 @@ export function formatAdmissionHolder(ownerText, now = Date.now()) {
     for (const [key, value] of Object.entries(intent)) bits.push(`${key}=${value}`);
   } else {
     bits.push("intent=undeclared");
+  }
+  const wait = parsed.admissionWait;
+  if (wait && typeof wait === 'object') {
+    bits.push(`constraints=${(Array.isArray(wait.constraints) ? wait.constraints : []).join(',') || 'none'}`);
+    for (const key of ['availableWorkers', 'availableMemoryMb', 'activeTasks', 'taskCap'])
+      if (wait[key] != null) bits.push(`${key}=${wait[key]}`);
+    if (Array.isArray(wait.readers)) bits.push(`readers=${wait.readerCount}[${wait.readers.filter(reader => reader && typeof reader === 'object').map(reader =>
+      `pid=${reader.pid ?? 'unknown'} owner=${reader.ownerId ?? 'unknown'} task=${reader.taskId ?? 'unknown'} resource=${reader.admission?.resource ?? 'unknown'}`).join('; ')}]`);
+    if (wait.predecessor) bits.push(`predecessorPid=${wait.predecessor.pid ?? 'unknown'} predecessorResource=${wait.predecessor.admission?.resource ?? 'unknown'}`);
   }
   return bits.length > 0 ? bits.join(" ") : raw;
 }
@@ -2899,6 +2914,7 @@ export async function runBudgetedTasks(tasks, options) {
             workerBudget: budget.effectiveWorkerBudget, memoryBudgetMb: budget.memoryBudgetMb,
             maxConcurrentTasks: budget.maxConcurrentTasks,
             resource: options.taskAdmissionKey(task) || '*',
+            intent: { ...options.admissionIntent, taskIndex: index },
             timeoutMs, remainingMs: () => timeoutMs - spend(),
             onWaiting: ({ owner, elapsedMs }) => notify(
               `AFFECTED_TESTS_ADMISSION_QUEUED task-sized lease waiting ${elapsedMs}ms; holder: ${formatAdmissionHolder(owner)}`,
