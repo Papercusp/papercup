@@ -3,9 +3,10 @@ import { EventEmitter, once } from 'node:events';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
+import { runHarness } from '@papercusp/verification-harness';
 import * as ts from 'typescript';
 import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
@@ -518,6 +519,41 @@ it.each(['synchronous', 'progress'] as const)('retains original %s builder failu
   expect(readFileSync(join(retained, names[0]), 'utf8')).toContain('ORIGINAL_BUILD_REFUSAL');
   expect(JSON.parse(readFileSync(join(retained, names[1]), 'utf8')))
     .toMatchObject({ status: 78, steps: { last: { step: 'source-guard', event: 'end', status: 78 } } });
+});
+
+it('admits the grading lifecycle diagnostic manifest through the real retention harness', async () => {
+  const path = resolve(import.meta.dirname, '../lib/release/grading-audit-runtime.integration.test.ts');
+  const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+  const artifacts: string[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isPropertyAssignment(node) && node.name.getText(source) === 'retainedArtifacts') {
+      expect(ts.isArrayLiteralExpression(node.initializer)).toBe(true);
+      if (ts.isArrayLiteralExpression(node.initializer))
+        for (const element of node.initializer.elements) {
+          expect(ts.isStringLiteral(element)).toBe(true);
+          if (ts.isStringLiteral(element)) artifacts.push(element.text);
+        }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  expect(artifacts).toHaveLength(8);
+  const root = mkdtempSync(join(tmpdir(), 'grading-retention-manifest-')); dirs.push(root);
+  const result = await runHarness({
+    contract: { name: 'grading-retention-admission', phases: [{ id: 'execute' }] },
+    evidenceRoot: root, retainedArtifacts: artifacts,
+    runPhase: async ({ evidenceDir }) => {
+      for (const artifact of artifacts) {
+        expect(artifact.startsWith('phases/execute/')).toBe(true);
+        const file = join(evidenceDir, artifact.slice('phases/execute/'.length));
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, `original:${artifact}`);
+      }
+      return { ok: true };
+    },
+  });
+  for (const artifact of artifacts)
+    expect(readFileSync(join(result.evidenceDir, artifact), 'utf8')).toBe(`original:${artifact}`);
 });
 
 it('retains completed step timing and the failing command status', () => {
