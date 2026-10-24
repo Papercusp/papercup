@@ -2,8 +2,8 @@
  * WI-224710: fleet-logs retention GC — age bound, total-bytes ceiling, and
  * the never-throws / best-effort contract.
  */
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync, utimesSync, chmodSync, symlinkSync, statSync, openSync, closeSync, renameSync, linkSync, ftruncateSync } from 'node:fs';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync, utimesSync, chmodSync, symlinkSync, statSync, lstatSync, openSync, closeSync, renameSync, linkSync, ftruncateSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { openWriterPidsMany } from './native-bg-task-ledger';
 import { tmpdir } from 'node:os';
@@ -60,20 +60,24 @@ function writeAged(dir: string, name: string, bytes: number, ageMs: number): str
   return p;
 }
 
+const allocatedBytes = (path: string) => statSync(path).blocks * 512;
+
 describe('runFleetLogsGc', () => {
   const scanIdlePaths = async () => ({ complete: true, byPath: new Map<string, string[]>() });
   it('pins survive both age and byte-ceiling eviction while unpinned logs are removed', async () => {
     const dir = join(sandbox, 'logs'); mkdirSync(dir);
     const pinned = writeAged(dir, 'pinned.log', 100, FLEET_LOGS_GC_DEFAULT_RETENTION_MS + 1000);
     const unpinned = writeAged(dir, 'unpinned.log', 100, 1000);
+    const bytes = allocatedBytes(pinned);
+    const beforeBytes = bytes + allocatedBytes(unpinned);
     createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'review log', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
     const result = await runFleetLogsGc({ dirs: [dir], scanOpenPaths: scanIdlePaths, maxTotalBytes: 0 });
     expect(existsSync(pinned)).toBe(true);
     expect(existsSync(unpinned)).toBe(false);
     expect(result.dirs[0]!.bytesRemaining).toBe(100);
     expect(result.dirs[0]!.cap).toMatchObject({ root: dir, classId: 'fleet-logs', maxBytes: 0,
-      beforeBytes: 200, afterBytes: 100, pinnedBytes: 100, pinnedPaths: [pinned],
-      overByBytes: 100, pinnedOverageBytes: 100 });
+      beforeBytes, afterBytes: bytes, pinnedBytes: bytes, pinnedPaths: [pinned],
+      overByBytes: bytes, pinnedOverageBytes: bytes });
     expect(result.dirs[0]!.errors).toEqual([]);
   });
 
@@ -82,15 +86,16 @@ describe('runFleetLogsGc', () => {
     const pinned = writeAged(dir, 'pinned.log', 100, 3000);
     const open = writeAged(dir, 'open.log', 100, 2000);
     const idle = writeAged(dir, 'idle.log', 100, 1000);
+    const bytes = allocatedBytes(pinned);
     createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'evidence', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
-    const options = { dirs: [dir], maxTotalBytes: 80,
+    const options = { dirs: [dir], maxTotalBytes: bytes - 20,
       scanOpenPaths: async () => ({ complete: true, byPath: new Map([[open, ['123']]]) }) };
     const preview = await runFleetLogsGc({ ...options, dryRun: true });
     expect(preview.dirs[0]!.errors).toEqual([]);
     expect(existsSync(idle)).toBe(true);
     const result = await runFleetLogsGc(options);
-    expect(result.dirs[0]!.cap).toMatchObject({ afterBytes: 200, pinnedBytes: 100,
-      overByBytes: 120, pinnedOverageBytes: 20 });
+    expect(result.dirs[0]!.cap).toMatchObject({ afterBytes: bytes * 2, pinnedBytes: bytes,
+      overByBytes: bytes + 20, pinnedOverageBytes: 20 });
     expect(result.dirs[0]!.cap).toEqual(preview.dirs[0]!.cap);
     expect(result.dirs[0]!.errors).toContainEqual({ path: dir,
       error: expect.stringContaining('cap retains non-pin excess') });
@@ -102,24 +107,26 @@ describe('runFleetLogsGc', () => {
   it('reports pinned fresh and open logs even when no deletion is attempted', async () => {
     const dir = join(sandbox, 'logs'); mkdirSync(dir);
     const pinned = writeAged(dir, 'fresh.log', 100, 1000);
+    const bytes = allocatedBytes(pinned);
     createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'active evidence', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
-    const result = await runFleetLogsGc({ dirs: [dir], maxTotalBytes: 200,
+    const result = await runFleetLogsGc({ dirs: [dir], maxTotalBytes: bytes * 2,
       scanOpenPaths: async () => ({ complete: false, byPath: new Map([[pinned, ['123']]]) }) });
-    expect(result.dirs[0]!.cap).toMatchObject({ beforeBytes: 100, afterBytes: 100,
-      pinnedBytes: 100, pinnedPaths: [pinned], overByBytes: 0, pinnedOverageBytes: 0 });
+    expect(result.dirs[0]!.cap).toMatchObject({ beforeBytes: bytes, afterBytes: bytes,
+      pinnedBytes: bytes, pinnedPaths: [pinned], overByBytes: 0, pinnedOverageBytes: 0 });
     expect(existsSync(pinned)).toBe(true);
   });
 
   it('expired pins stop contributing to the cap receipt and dry-run predicts the actual retained bytes', async () => {
     const dir = join(sandbox, 'logs'); mkdirSync(dir);
     const path = writeAged(dir, 'expired.log', 100, FLEET_LOGS_GC_DEFAULT_RETENTION_MS + 1000);
+    const bytes = allocatedBytes(path);
     const now = Date.now();
     createRetentionPin({ path, owner: 'reviewer', reason: 'old evidence', expiresAt: new Date(now - 1000).toISOString() }, { nowMs: now - 2000 });
     const preview = await runFleetLogsGc({ dirs: [dir], scanOpenPaths: scanIdlePaths, maxTotalBytes: 0, dryRun: true });
     expect(existsSync(path)).toBe(true);
     const actual = await runFleetLogsGc({ dirs: [dir], scanOpenPaths: scanIdlePaths, maxTotalBytes: 0 });
     expect(actual.dirs[0]!.cap).toEqual(preview.dirs[0]!.cap);
-    expect(actual.dirs[0]!.cap).toMatchObject({ beforeBytes: 100, afterBytes: 0,
+    expect(actual.dirs[0]!.cap).toMatchObject({ beforeBytes: bytes, afterBytes: 0,
       pinnedBytes: 0, pinnedPaths: [], overByBytes: 0, pinnedOverageBytes: 0 });
     expect(existsSync(path)).toBe(false);
   });
@@ -166,8 +173,7 @@ describe('runFleetLogsGc', () => {
   it('enforces the total-bytes ceiling oldest-first even within the retention window', async () => {
     const dir = join(sandbox, 'fleet-logs');
     mkdirSync(dir, { recursive: true });
-    // All three are within the age retention window, but the directory
-    // (300 bytes) exceeds a 250-byte ceiling — the oldest one must go.
+    // All three are within the age window, but only two allocations fit.
     const oldest = writeAged(dir, 'a.log', 100, 3 * 60 * 60 * 1000);
     const middle = writeAged(dir, 'b.log', 100, 2 * 60 * 60 * 1000);
     const newest = writeAged(dir, 'c.log', 100, 1 * 60 * 60 * 1000);
@@ -176,13 +182,13 @@ describe('runFleetLogsGc', () => {
       scanOpenPaths: scanIdlePaths,
       dirs: [dir],
       retentionMs: 30 * 24 * 60 * 60 * 1000, // nothing ages out
-      maxTotalBytes: 250,
+      maxTotalBytes: allocatedBytes(middle) + allocatedBytes(newest),
     });
 
     const [d] = result.dirs;
     expect(d.removedByAge).toBe(0);
     expect(d.removedByCeiling).toBe(1);
-    expect(d.bytesRemaining).toBeLessThanOrEqual(250);
+    expect(d.cap!.overByBytes).toBe(0);
     expect(existsSync(oldest)).toBe(false);
     expect(existsSync(middle)).toBe(true);
     expect(existsSync(newest)).toBe(true);
@@ -201,7 +207,7 @@ describe('runFleetLogsGc', () => {
       scanOpenPaths: scanIdlePaths,
       dirs: [dir],
       retentionMs: 3 * 24 * 60 * 60 * 1000,
-      maxTotalBytes: 1000,
+      maxTotalBytes: allocatedBytes(fresh),
     });
 
     const [d] = result.dirs;
@@ -368,6 +374,130 @@ describe('runFleetLogsGc', () => {
  */
 const DAY = 24 * 60 * 60 * 1000;
 const noOpenPaths = async () => ({ byPath: new Map<string, string[]>(), complete: true });
+
+describe.each(['fleet', 'launch'] as const)('allocated root caps: %s', (owner) => {
+  let controls: string;
+  beforeEach(() => {
+    // The complete population must not include this test's own active mutex
+    // receipt or pin-store files; they are intentionally not eviction candidates.
+    controls = mkdtempSync(join(tmpdir(), 'fleet-root-cap-controls-'));
+    process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = join(controls, 'leases');
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(controls, 'mutex');
+  });
+  afterEach(() => { rmSync(controls, { recursive: true, force: true }); });
+  const sweep = async (dir: string, maxTotalBytes: number, dryRun = false) => {
+    if (owner === 'launch') return runLaunchContextGc({ dir, maxTotalBytes, dryRun, liveRenderPaths: new Set() });
+    const result = await runFleetLogsGc({ dirs: [dir], maxTotalBytes, dryRun, scanOpenPaths: noOpenPaths });
+    return result.dirs[0]!;
+  };
+  const allocation = (path: string) => statSync(path).blocks * 512;
+
+  it('counts retained nested allocation and the root inode as non-pin residual', async () => {
+    const nested = join(sandbox, 'nested'); mkdirSync(nested);
+    const data = writeAged(nested, 'data', 65536, 1000);
+    const bytes = allocation(sandbox) + allocation(nested) + allocation(data);
+    const result = await sweep(sandbox, 1);
+    expect(existsSync(data)).toBe(true);
+    expect(result.cap).toMatchObject({ beforeBytes: bytes, afterBytes: bytes, pinnedBytes: 0,
+      overByBytes: bytes - 1, pinnedOverageBytes: 0 });
+    expect(result.errors).toContainEqual({ path: sandbox, error: expect.stringContaining('cap retains non-pin excess') });
+  });
+
+  it('counts nested hardlinks once without following a symlink outside the root', async () => {
+    const root = join(sandbox, 'root'); const nested = join(root, 'nested'); mkdirSync(nested, { recursive: true });
+    const data = writeAged(nested, 'data', 65536, 1000);
+    linkSync(data, join(root, 'alias'));
+    const outside = writeAged(sandbox, 'owner-data', 1024 * 1024, 1000);
+    const mirror = join(root, 'mirror'); symlinkSync(outside, mirror);
+    const bytes = allocation(root) + allocation(nested) + allocation(data) + lstatSync(mirror).blocks * 512;
+    const result = await sweep(root, 1);
+    expect(result.cap).toMatchObject({ beforeBytes: bytes, afterBytes: bytes });
+    expect(existsSync(join(root, 'alias'))).toBe(false);
+    expect(existsSync(data) && existsSync(outside)).toBe(true);
+    expect(lstatSync(mirror).isSymbolicLink()).toBe(true);
+    expect(result.errors).toContainEqual({ path: root, error: expect.stringContaining('cap retains non-pin excess') });
+  });
+
+  it('returns unknown cap usage and refuses effects when the complete-root census fails', async () => {
+    const data = writeAged(sandbox, 'stale', 100, 10 * DAY);
+    const census = await import('./storage/disk-consumer-census');
+    const inspect = vi.spyOn(census, 'inspectRetentionTrees').mockResolvedValue({ entries: [], retained: [],
+      inspectedNodes: 0, retainedRecentTrees: 0, error: 'fixture root coverage incomplete' });
+    try {
+      const result = await sweep(sandbox, 1);
+      expect(result.cap).toBeNull();
+      expect(result.errors).toContainEqual({ path: sandbox, error: expect.stringContaining('root coverage incomplete') });
+      expect(existsSync(data)).toBe(true);
+    } finally { inspect.mockRestore(); }
+  });
+
+  it('retains a sparse logical-large file below its allocated cap', async () => {
+    const path = writeAged(sandbox, 'sparse.log', 1, 1000);
+    const fd = openSync(path, 'r+');
+    try { ftruncateSync(fd, 1024 * 1024); } finally { closeSync(fd); }
+    const bytes = allocation(path);
+    expect(bytes).toBeLessThan(statSync(path).size);
+    const result = await sweep(sandbox, bytes);
+    expect(existsSync(path)).toBe(true);
+    expect(result.cap).toMatchObject({ beforeBytes: bytes, afterBytes: bytes, overByBytes: 0 });
+  });
+
+  it('counts hardlink allocation once and attributes the shared inode to its pin', async () => {
+    const pinned = writeAged(sandbox, 'pinned.log', 65536, 2000);
+    const alias = join(sandbox, 'alias.log'); linkSync(pinned, alias);
+    createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'shared evidence', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    const bytes = allocation(pinned);
+    const result = await sweep(sandbox, bytes);
+    expect(existsSync(alias)).toBe(true);
+    expect(result.cap).toMatchObject({ beforeBytes: bytes, afterBytes: bytes, pinnedBytes: bytes,
+      overByBytes: 0, pinnedOverageBytes: 0 });
+    expect(result.errors).toEqual([]);
+    const pressure = await sweep(sandbox, 0);
+    expect(existsSync(alias)).toBe(false);
+    expect(existsSync(pinned)).toBe(true);
+    expect(pressure.cap).toMatchObject({ beforeBytes: bytes, afterBytes: bytes, pinnedBytes: bytes,
+      overByBytes: bytes, pinnedOverageBytes: bytes });
+    expect(pressure.errors).toEqual([]);
+  });
+
+  it('does not subtract allocation until the last in-root hardlink is removed', async () => {
+    const oldest = writeAged(sandbox, 'oldest.log', 65536, 3000);
+    const alias = join(sandbox, 'middle.log'); linkSync(oldest, alias);
+    const newest = writeAged(sandbox, 'newest.log', 65536, 1000);
+    const bytes = allocation(oldest);
+    const preview = await sweep(sandbox, bytes, true);
+    expect(preview.cap).toMatchObject({ beforeBytes: bytes + allocation(newest), afterBytes: allocation(newest) });
+    const actual = await sweep(sandbox, bytes);
+    expect(actual.cap).toEqual(preview.cap);
+    expect(existsSync(oldest) || existsSync(alias)).toBe(false);
+    expect(existsSync(newest)).toBe(true);
+    expect(actual.errors).toEqual([]);
+  });
+
+  it('reports allocated excess retained by a live non-pin file', async () => {
+    const path = writeAged(sandbox, 'live.log', 1, 1000);
+    const bytes = allocation(path);
+    const result = owner === 'launch'
+      ? await runLaunchContextGc({ dir: sandbox, maxTotalBytes: bytes - 1, liveRenderPaths: new Set([path]) })
+      : (await runFleetLogsGc({ dirs: [sandbox], maxTotalBytes: bytes - 1,
+        scanOpenPaths: async () => ({ complete: true, byPath: new Map([[path, ['123']]]) }) })).dirs[0]!;
+    expect(result.cap).toMatchObject({ afterBytes: bytes, pinnedBytes: 0, overByBytes: 1, pinnedOverageBytes: 0 });
+    expect(result.errors).toContainEqual({ path: sandbox, error: expect.stringContaining('cap retains non-pin excess') });
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('caps distinct physical roots independently', async () => {
+    const a = join(sandbox, 'a'); const b = join(sandbox, 'b'); mkdirSync(a); mkdirSync(b);
+    const first = writeAged(a, 'a.log', 65536, 1000);
+    const second = writeAged(b, 'b.log', 65536, 1000);
+    const bytes = allocation(first);
+    const results = owner === 'fleet'
+      ? (await runFleetLogsGc({ dirs: [a, b], maxTotalBytes: bytes, scanOpenPaths: noOpenPaths })).dirs
+      : [await sweep(a, bytes), await sweep(b, bytes)];
+    expect(results.map(r => r.cap)).toEqual([a, b].map(root => expect.objectContaining({ root, beforeBytes: bytes, afterBytes: bytes })));
+    expect(existsSync(first) && existsSync(second)).toBe(true);
+  });
+});
 
 /** Recursively force every file AND directory mtime to `ageMs` in the past.
  *  Depth-first so a parent is stamped last — stamping a child would otherwise
@@ -906,10 +1036,11 @@ describe('runLaunchContextGc', () => {
     const newest = writeAged(dir, 'a-newest.md', 8, 1000);
     const oldest = writeAged(dir, 'z-oldest.md', 8, 3000);
     const middle = writeAged(dir, 'm-middle.md', 8, 2000);
-    const result = await runLaunchContextGc({ dir, liveRenderPaths: new Set(), maxTotalBytes: 8 });
+    const bytes = allocatedBytes(newest);
+    const result = await runLaunchContextGc({ dir, liveRenderPaths: new Set(), maxTotalBytes: bytes });
     expect(result.candidates.filter((c) => c.removed).map((c) => c.path)).toEqual([oldest, middle]);
     expect(existsSync(newest)).toBe(true);
-    expect(result.cap).toMatchObject({ maxBytes: 8, beforeBytes: 24, afterBytes: 8, overByBytes: 0 });
+    expect(result.cap).toMatchObject({ maxBytes: bytes, beforeBytes: bytes * 3, afterBytes: bytes, overByBytes: 0 });
   });
 
   it('reports pinned overage and holds live renders under byte pressure', async () => {
@@ -917,12 +1048,14 @@ describe('runLaunchContextGc', () => {
     const pinned = writeAged(dir, 'pinned.md', 12, 3000);
     const live = writeAged(dir, 'live.md', 8, 2000);
     const idle = writeAged(dir, 'idle.md', 8, 1000);
+    const bytes = allocatedBytes(pinned);
     createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'prompt evidence', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
-    const result = await runLaunchContextGc({ dir, liveRenderPaths: new Set([live]), maxTotalBytes: 8 });
+    const result = await runLaunchContextGc({ dir, liveRenderPaths: new Set([live]), maxTotalBytes: bytes - 1 });
     expect(result.candidates.find((c) => c.path === pinned)?.skipped).toBe('pinned');
     expect(result.candidates.find((c) => c.path === live)?.skipped).toBe('live-session');
     expect(existsSync(idle)).toBe(false);
-    expect(result.cap).toMatchObject({ beforeBytes: 28, afterBytes: 20, pinnedBytes: 12, pinnedPaths: [pinned], overByBytes: 12, pinnedOverageBytes: 4 });
+    expect(result.cap).toMatchObject({ beforeBytes: bytes * 3, afterBytes: bytes * 2, pinnedBytes: bytes,
+      pinnedPaths: [pinned], overByBytes: bytes + 1, pinnedOverageBytes: 1 });
     expect(result.errors).toContainEqual({ path: dir,
       error: expect.stringContaining('cap retains non-pin excess') });
   });
@@ -930,18 +1063,19 @@ describe('runLaunchContextGc', () => {
   it('permits pinned-only render overage while reporting unpinned live-render excess', async () => {
     const dir = join(sandbox, 'renders'); mkdirSync(dir);
     const render = writeAged(dir, 'live.md', 20, 2000);
-    const options = { dir, liveRenderPaths: new Set([render]), maxTotalBytes: 8 };
+    const bytes = allocatedBytes(render);
+    const options = { dir, liveRenderPaths: new Set([render]), maxTotalBytes: bytes - 1 };
     const preview = await runLaunchContextGc({ ...options, dryRun: true });
     expect(preview.errors).toEqual([]);
     const unpinned = await runLaunchContextGc(options);
-    expect(unpinned.cap).toMatchObject({ afterBytes: 20, pinnedBytes: 0,
-      overByBytes: 12, pinnedOverageBytes: 0 });
+    expect(unpinned.cap).toMatchObject({ afterBytes: bytes, pinnedBytes: 0,
+      overByBytes: 1, pinnedOverageBytes: 0 });
     expect(unpinned.errors).toContainEqual({ path: dir,
       error: expect.stringContaining('cap retains non-pin excess') });
     createRetentionPin({ path: render, owner: 'reviewer', reason: 'live evidence', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
     const pinned = await runLaunchContextGc(options);
-    expect(pinned.cap).toMatchObject({ afterBytes: 20, pinnedBytes: 20,
-      overByBytes: 12, pinnedOverageBytes: 12 });
+    expect(pinned.cap).toMatchObject({ afterBytes: bytes, pinnedBytes: bytes,
+      overByBytes: 1, pinnedOverageBytes: 1 });
     expect(pinned.errors).toEqual([]);
     expect(existsSync(render)).toBe(true);
   });
@@ -952,7 +1086,7 @@ describe('runLaunchContextGc', () => {
     const newer = writeAged(dir, 'newer.md', 8, 1000);
     const now = Date.now();
     createRetentionPin({ path: older, owner: 'reviewer', reason: 'short review', expiresAt: new Date(now + 1000).toISOString() });
-    const options = { dir, liveRenderPaths: new Set<string>(), maxTotalBytes: 8, now: now + 2000 };
+    const options = { dir, liveRenderPaths: new Set<string>(), maxTotalBytes: allocatedBytes(newer), now: now + 2000 };
     const preview = await runLaunchContextGc({ ...options, dryRun: true });
     expect(preview.candidates.filter((c) => c.removed).map((c) => c.path)).toEqual([older]);
     expect(existsSync(older)).toBe(true);
