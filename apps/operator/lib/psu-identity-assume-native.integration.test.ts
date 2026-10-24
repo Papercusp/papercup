@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import net from 'node:net';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -71,6 +71,11 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
     let phase: 'seed' | 'caller' | 'target' | 'return' = 'seed';
     let port = 0, issued = false, targetReady = false, returnIssued = false, targetProbed = false;
     const requests: Array<{ phase: string; actor: string; body: Row }> = [], errors: string[] = [], nativeResults: string[] = [];
+    const activeExecutions = new Map<string, string>();
+    const ownsPhase = (actor: string | null, execution: string | null) =>
+      actor !== null && execution !== null && activeExecutions.get(actor) === execution &&
+      (phase === 'seed' || phase === 'target' ? actor === 'target' :
+        actor === 'caller' || phase === 'caller' && contended && actor === 'rival');
     const hosts: McpServer[] = [];
     const orders: Row[] = [], inspections = new Map<string, Row>();
     let releaseTarget!: () => void;
@@ -114,10 +119,12 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(result)); return;
         }
         if (req.url?.split('?')[0] === '/mcp') {
-          const actor = new URL(req.url, 'http://localhost').searchParams.get('actor');
+          const query = new URL(req.url, 'http://localhost').searchParams;
+          const actor = query.get('actor'), execution = query.get('execution');
           const host = new McpServer({ name: 'native-handoff-fixture', version: '1' }); hosts.push(host);
           host.registerTool('handoff_fixture', { inputSchema: {} }, async () => {
             if (phase !== 'caller' && phase !== 'target') throw new Error('Handoff outside an execution phase');
+            if (!ownsPhase(actor, execution)) throw new Error('Handoff from an inactive native execution');
             if (real && phase === 'target' && !targetProbed) {
               targetProbed = true;
               const result = await real.probe(owners.target, targetWork);
@@ -187,10 +194,13 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           await host.connect(transport); await transport.handleRequest(req, res, body); return;
         }
         if (!req.url?.endsWith('/responses')) { res.writeHead(200); res.end('{}'); return; }
-        const actor = req.url.includes('/rival/') ? 'rival' : req.url.includes('/target/') ? 'target' : 'caller';
+        const [, , actor, execution] = req.url.split('?')[0].split('/');
         requests.push({ phase, actor, body }); res.writeHead(200, { 'content-type': 'text/event-stream' });
         const finish = (text: string) => res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({
           model: 'gpt-6-sol', text, inputTokens: 0, outputTokens: 0 })));
+        // A parked loser's late provider request still belongs to that caller.
+        // It cannot advance the target/return phase or consume its responsibilities.
+        if (!ownsPhase(actor, execution)) { finish('INACTIVE_NATIVE_EXECUTION'); return; }
         if (phase === 'seed') { finish(marker.target); return; }
         if (phase === 'return') { finish('CALLER_RETURNED'); return; }
         if (contended && phase === 'caller' && JSON.stringify(body).includes(marker.loserProbe)) {
@@ -237,10 +247,13 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
             text: '', inputTokens: 0, outputTokens: 0 }), output: [call] } }));
       } catch (error) { errors.push(String(error)); if (!res.headersSent) res.writeHead(500); res.end(); }
     });
-    const baseArgs = (key: keyof typeof homes = 'target') => ['--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox',
+    const baseArgs = (key: keyof typeof homes = 'target') => {
+      const execution = randomUUID(); activeExecutions.set(key, execution);
+      return ['--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox',
       ...Object.entries({ model: 'gpt-6-sol', model_provider: 'assume_fixture',
         'model_providers.assume_fixture.name': 'Offline native context fixture',
-        'model_providers.assume_fixture.base_url': `http://127.0.0.1:${port}/v1/${key}`,
+        'model_providers.assume_fixture.base_url': `http://127.0.0.1:${port}/v1/${key}/${execution}`,
+        'mcp_servers.fixture.url': `http://127.0.0.1:${port}/mcp?actor=${key}&execution=${execution}`,
         'model_providers.assume_fixture.wire_api': 'responses',
         'model_providers.assume_fixture.requires_openai_auth': false,
         'model_providers.assume_fixture.supports_websockets': false,
@@ -249,6 +262,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         'features.apps': false, 'features.hooks': false, web_search: 'disabled',
         [`projects.${JSON.stringify(root)}.trust_level`]: 'trusted' })
         .flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])];
+    };
     const start = (key: keyof typeof homes, args: string[], inherited?: Row) => {
       const signals = new EventEmitter();
       if (production) {
@@ -324,6 +338,8 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       const seed = start('target', [...baseArgs(), 'Record the target history.']);
       await vi.waitFor(() => expect(output, diagnostics()).toContain(marker.target), { timeout: 20_000 });
       seed.signals.emit('SIGTERM'); await seed.done;
+      const seedExecution = activeExecutions.get('target')!;
+      activeExecutions.delete('target');
       const targetNative = nativeId('target');
       if (real) {
         const registration = await real.register(owners.target, targetNative, root, true);
@@ -334,6 +350,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       }
       phase = 'caller'; issued = false;
       let caller = start('caller', [...baseArgs('caller'), marker.caller]);
+      let losingActor: 'caller' | 'rival' | undefined;
       if (contended) start('rival', [...baseArgs('rival'), marker.rival]);
       await vi.waitFor(() => expect(orders, diagnostics()).toHaveLength(1), { timeout: 25_000 });
       if (contended) {
@@ -351,6 +368,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         expect(untouched.assignment).toMatchObject({ assignee: loser.owner, observedBy: loser.owner });
         expect(untouched.messages).toHaveLength(1);
         const loserKey = loser.owner === owners.rival ? 'rival' : 'caller';
+        losingActor = loserKey;
         const loserNative = nativeId(loserKey);
         expect(await control(loserMeta.sock, { v: 1, mode: 'turn', ownerId: loser.owner,
           data: marker.loserProbe })).toMatchObject({ ok: true });
@@ -411,6 +429,21 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           workspaceId: original.workspaceId, agent: 'codex', role: 'su', sessionId: id === 2 ? targetNative : callerNative }),
         accountFor: async () => ({ mode: 'default' }), resume, isAlive: alive, baseEnv: {} });
       phase = 'target'; issued = false;
+      if (contended) {
+        // Exercise delayed replies before starting the replacement. Neither a
+        // losing caller nor the old target incarnation may manufacture readiness.
+        for (const [actor, execution] of [[losingActor!, activeExecutions.get(losingActor!)!],
+          ['target', seedExecution]]) {
+          const staleReply = fetch(`http://127.0.0.1:${port}/v1/${actor}/${execution}/responses`, {
+            method: 'POST', body: JSON.stringify({ input: [{ type: 'function_call_output',
+              call_id: 'handoff-target', output: 'LATE_NATIVE_OUTPUT' }] }),
+          }).then(response => response.text());
+          await vi.waitFor(() => expect(requests.some(row => row.actor === actor &&
+            JSON.stringify(row.body).includes('LATE_NATIVE_OUTPUT'))).toBe(true));
+          expect(targetReady).toBe(false); expect(routed).toHaveLength(0);
+          expect(await staleReply).toContain('INACTIVE_NATIVE_EXECUTION');
+        }
+      }
       const targetRun = await launch(orders[0]);
       await vi.waitFor(() => expect(targetReady, diagnostics()).toBe(true), { timeout: 25_000 });
       const targetMeta = JSON.parse(readFileSync(metaPathFor(owners.target), 'utf8'));
@@ -422,17 +455,43 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       // The managed startup child is authoritative; its fdinfo still proves
       // the exact thread flock, as in the launcher's native identity oracle.
       const observedProcesses: Array<{ pid: number; comm: string | null }> = [];
+      const processTreeReads: Row[] = [];
       const nativePid = resolveLinuxCodexStartupPid(targetMeta.ptyPid, {
+        readDir: new Proxy(readdirSync, { apply(target, receiver, args) {
+          try {
+            const entries = Reflect.apply(target, receiver, args);
+            processTreeReads.push({ path: String(args[0]), entries });
+            return entries;
+          } catch (error) {
+            processTreeReads.push({ path: String(args[0]), error: (error as NodeJS.ErrnoException).code });
+            throw error;
+          }
+        } }),
+        readFile: new Proxy(readFileSync, { apply(target, receiver, args) {
+          try {
+            const value = Reflect.apply(target, receiver, args);
+            if (String(args[0]).endsWith('/children'))
+              processTreeReads.push({ path: String(args[0]), children: String(value).trim() });
+            return value;
+          } catch (error) {
+            processTreeReads.push({ path: String(args[0]), error: (error as NodeJS.ErrnoException).code });
+            throw error;
+          }
+        } }),
         readCounters(pid: number, read: typeof readFileSync = readFileSync) {
           const counters = readLinuxStartupCounters(pid, read);
           observedProcesses.push({ pid, comm: counters?.comm ?? null });
           return counters;
         },
       });
-      expect(nativePid, JSON.stringify({ ptyPid: targetMeta.ptyPid, observedProcesses })).not.toBeNull();
+      const rootExecutable = readlinkSync(`/proc/${targetMeta.ptyPid}/exe`);
+      expect(nativePid, JSON.stringify({ ptyPid: targetMeta.ptyPid, rootExecutable,
+        rootWriter: codexThreadWriterHolder(homes.target, runningTargetNative, { holderPid: targetMeta.ptyPid }),
+        observedProcesses, processTreeReads })).not.toBeNull();
       expect(codexThreadWriterHolder(homes.target, runningTargetNative,
         { holderPid: nativePid })).toMatchObject({ held: true, pid: nativePid });
-      const targetInput = requests.filter(row => row.phase === 'target').map(row => JSON.stringify(row.body)).join('\n');
+      const targetInput = requests.filter(row => row.phase === 'target' && row.actor === 'target' &&
+        !JSON.stringify(row.body).includes('LATE_NATIVE_OUTPUT')).map(row => JSON.stringify(row.body)).join('\n');
       expect(targetInput).not.toContain(marker.caller);
       expect(targetInput.includes(marker.target)).toBe(mode === 'native-resume');
       expect(targetInput.includes(marker.checkpoint)).toBe(mode === 'checkpoint');

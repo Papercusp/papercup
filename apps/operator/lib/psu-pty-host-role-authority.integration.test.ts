@@ -5,8 +5,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
-import { codexHomeLaunchReadiness, prepareCodexGatewayLaunch } from '../scripts/psu-launcher.mjs';
-import { hostThroughPty, socketPathFor, eventLogPathForOwner } from '../scripts/psu-pty-host.mjs';
+import { buildResumeEnv, codexHomeLaunchReadiness, prepareCodexGatewayLaunch } from '../scripts/psu-launcher.mjs';
+import { HOST_HANDOFF_ENV_KEYS, hostThroughPty, socketPathFor, eventLogPathForOwner } from '../scripts/psu-pty-host.mjs';
 import { injectIntoHost, injectIntoHostWithConfirmation } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 
 // EI-26842368936683990: exercise the real carry preflight and PTY/socket seam.
@@ -35,8 +35,11 @@ it.each(['scoper', 'judge'])('keeps the %s predecessor alive after a privileged 
   const stdout = { isTTY: false, columns: 120, rows: 30,
     write(chunk: string) { output += chunk; return true; } };
   const signalSource = new EventEmitter();
-  const env = hermeticEnv({ PAPERCUSP_AGENT: 'codex', PAPERCUSP_AGENT_ROLE: role,
-    PAPERCUSP_SID: ownerId, CODEX_HOME: root, PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default',
+  const resumed = buildResumeEnv({ agent: 'codex', role, coordOwnerId: ownerId, id: 7 },
+    { accountEnv: { mode: 'default', env: {} } });
+  const adopted = JSON.parse(JSON.stringify(Object.fromEntries(Object.entries(resumed)
+    .filter(([key]) => HOST_HANDOFF_ENV_KEYS.includes(key)))));
+  const env = hermeticEnv({ ...adopted, CODEX_HOME: root,
     PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30', PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500',
     PAPERCUSP_PSU_PTY_REARM_CAP_MS: '1000' });
   const childCode = "process.stdin.setRawMode(true);process.stdout.write('ROLE-READY\\n');" +

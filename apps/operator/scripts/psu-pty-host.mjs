@@ -3966,6 +3966,8 @@ export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
   'PAPERCUSP_HOSTED_NATIVE_SLOT',
   'PAPERCUSP_SID',
   'PAPERCUSP_AGENT',
+  // Recorded role authority must survive the same-host adoption preflight.
+  'PAPERCUSP_AGENT_ROLE',
   'PAPERCUSP_ADV_SESSION_ID',
   // Keep the proven launcher actor through host-code adoption. Without it,
   // the successor advertises human-owned provenance and quota recovery refuses.
@@ -5538,7 +5540,16 @@ export function makeCarryRearmController({
   };
   const keyFor = (msg) => {
     const drillId = String(msg?.drillId || '');
-    return drillId || `${NON_DRILL_REARM_KEY}:${rearmModeOf(msg)}`;
+    if (drillId) return drillId;
+    const mode = rearmModeOf(msg);
+    // A loop fire must keep its own text and provenance through the retry.
+    // Sharing turn mode with inbox wakes let the newest inbox payload replace
+    // a loop while settlement marked BOTH IDs delivered. Reuse the host's
+    // loop-instance coalescing key; successive fires of that loop still fold.
+    const routineId = String(msg?.routineId ?? '').trim();
+    return mode === 'turn' && routineId
+      ? `${NON_DRILL_REARM_KEY}:${turnCoalesceKey(msg.data, routineId)}`
+      : `${NON_DRILL_REARM_KEY}:${mode}`;
   };
   const settle = (key, outcome, messagesOverride = null) => {
     const messages = messagesOverride ?? [...(pendingMessages.get(key) ?? [])];
@@ -5701,6 +5712,7 @@ export function makeCarryRearmController({
           reason: 'busy-gate-expired',
           capMs,
           ...(msg?.deliveryId ? { deliveryId: String(msg.deliveryId) } : {}),
+          ...(mode === 'turn' && msg?.routineId ? { routineId: msg.routineId } : {}),
         };
       // R-1 JOIN KEY. Every terminal row of a production re-arm names EVERY
       // delivery id it settles (a supersede folds later messages into the same
@@ -5873,6 +5885,9 @@ export function makeCarryRearmController({
                     ...extra,
                     rearmed: true,
                     reason: outcome.delivered ? 'delivered' : String(outcome.reason ?? 'undelivered'),
+                    deliveredDeliveryId: deliver.deliveryId ?? null,
+                    deliveredRoutineId: deliver.routineId ?? null,
+                    deliveredFireNumber: deliver.fireNumber ?? null,
                     observedMaxQuietMs,
                     attempts: attemptsMade,
                     ...terminalIds(),

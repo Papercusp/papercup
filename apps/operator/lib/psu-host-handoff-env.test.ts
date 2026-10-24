@@ -77,6 +77,14 @@ describe('host-code handoff launch provenance (EI-25370180511092356)', () => {
     Object.entries(env).filter(([key, value]) => HOST_HANDOFF_ENV_KEYS.includes(key) && value.length > 0),
   );
 
+  it.each(['scoper', 'judge'])('retains the recorded %s authority across serialized adoption', (role) => {
+    const successor: Record<string, string> = { PAPERCUSP_AGENT_ROLE: 'su' };
+    const carried = carryEnv({ PAPERCUSP_SID: 'su-original', PAPERCUSP_AGENT_ROLE: role });
+    applyHostHandoffEnv(successor, JSON.parse(JSON.stringify(carried)));
+    expect(successor.PAPERCUSP_AGENT_ROLE).toBe(role);
+    expect(successor.PAPERCUSP_SID).toBe('su-original');
+  });
+
   it('retains the original launching actor for a fleetless headless successor', () => {
     const carried = carryEnv({
       PAPERCUSP_SID: 'su-original',

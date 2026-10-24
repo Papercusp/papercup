@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -571,7 +572,22 @@ describe('pruneWorkspaceHostCutIntermediates on a real worktree (WI-10003700)', 
     mkdirSync(repo);
     git(repo, 'init', '-q');
     git(repo, 'commit', '-q', '--allow-empty', '-m', 'seed');
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(workDir, 'retention-pins'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(workDir, 'retention-mutex'));
   });
+  afterEach(() => vi.unstubAllEnvs());
+
+  function pin(paths: string[], expiresAt = Date.now() + 3_600_000): void {
+    const root = join(workDir, 'retention-pins');
+    mkdirSync(root, { recursive: true });
+    const id = randomUUID();
+    const tag = 'agent-pin-' + Buffer.from(JSON.stringify({
+      version: 1, id, owner: 'release-cut-test', reason: 'retained build proof', createdAt: new Date().toISOString(),
+    })).toString('base64url');
+    writeFileSync(join(root, `lease-agent-pin-${id}.tsv`),
+      `schema=papercusp-release-retention/v1\ntag=${tag}\nexpires_ns=${BigInt(expiresAt) * 1_000_000n}\n`
+      + paths.map(path => `path=${path}\n`).join(''));
+  }
 
   function cutDir(): string {
     const dir = join(workDir, 'cut');
@@ -621,6 +637,67 @@ describe('pruneWorkspaceHostCutIntermediates on a real worktree (WI-10003700)', 
     removeReleaseSourceWorktree(other, join(dir, 'source'));
     expect(existsSync(join(dir, 'source'))).toBe(false);
     expect(worktrees(repo)).toEqual([realpathSync(repo)]);
+  });
+
+  it.each([
+    ['source', 'source.ready.json'],
+    ['source.ready.json', 'source'],
+    ['sidecar/node/bin', 'sidecar.ready.json'],
+    ['sidecar.ready.json', 'sidecar/node/bin'],
+    ['extracted/app/bin', 'extracted/app/bin'],
+    ['vite-build.lock', 'vite-build.lock'],
+  ])('keeps a live pin on %s and its paired state %s', async (pinned, paired) => {
+    const dir = cutDir();
+    pin([join(dir, pinned)]);
+
+    const removed = await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir });
+
+    expect(existsSync(join(dir, pinned))).toBe(true);
+    expect(existsSync(join(dir, paired))).toBe(true);
+    expect(removed).not.toContain(join(dir, paired));
+    expect(existsSync(join(dir, 'publication/server.tgz'))).toBe(true);
+    if (pinned.startsWith('source')) expect(worktrees(repo)).toHaveLength(2);
+  });
+
+  it('keeps the entire intermediate set for a containing work-dir pin through a physical alias', async () => {
+    const dir = cutDir();
+    const alias = join(workDir, 'cut-alias');
+    symlinkSync(dir, alias);
+    pin([alias]);
+
+    expect(await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir })).toEqual([]);
+    expect(worktrees(repo)).toHaveLength(2);
+    for (const kept of ['source.ready.json', 'sidecar.ready.json', 'sidecar', 'extracted', 'vite-build.lock']) {
+      expect(existsSync(join(dir, kept)), kept).toBe(true);
+    }
+  });
+
+  it('allows expired pins and protects only the exact sibling scope', async () => {
+    const dir = cutDir();
+    pin([join(dir, 'source')], Date.now() - 60_000);
+    pin([join(dir, 'sidecar-other')]);
+
+    const removed = await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir });
+
+    expect(removed).toHaveLength(6);
+    expect(worktrees(repo)).toEqual([realpathSync(repo)]);
+    expect(existsSync(join(dir, 'publication/evidence/summary.json'))).toBe(true);
+  });
+
+  it.each(['malformed', 'unreadable'])('fails closed before removing markers when a pin is %s', async kind => {
+    const dir = cutDir();
+    const root = join(workDir, 'retention-pins');
+    mkdirSync(root, { recursive: true });
+    const file = join(root, 'lease-agent-pin-invalid.tsv');
+    if (kind === 'malformed') writeFileSync(file, 'invalid pin');
+    else mkdirSync(file);
+
+    await expect(pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir }))
+      .rejects.toThrow('retention pins unreadable');
+    for (const kept of ['source', 'source.ready.json', 'sidecar', 'sidecar.ready.json', 'extracted', 'vite-build.lock']) {
+      expect(existsSync(join(dir, kept)), kept).toBe(true);
+    }
+    expect(worktrees(repo)).toHaveLength(2);
   });
 
   it('never deletes a registration that points at a different checkout', async () => {

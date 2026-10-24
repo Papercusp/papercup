@@ -83,6 +83,7 @@ import {
   type ReleaseTaskStageContext,
   type ReleaseTaskStageInput,
 } from '../../../../scripts/lib/release-task-journal.mjs';
+import { withRetentionPinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 import {
   WORKSPACE_HOST_EVIDENCE_FILES,
   WORKSPACE_HOST_PUBLISHED_SIGNING_KEY_NAME,
@@ -892,28 +893,34 @@ export function removeReleaseSourceWorktree(repoRoot: string, source: string): v
  * Every one of them is re-derivable from `--source-sha`; together they are ~89% of a work dir.
  * Ready markers go FIRST: a marker that outlived its directory would let a later build skip a leg
  * whose bytes are gone, whereas a directory without its marker is refused with a clear message.
+ * A live pin on either a tree or its ready marker protects both. Read pins and remove eligible
+ * children under the shared storage:pin mutex so the native writer cannot bypass a live pin.
  */
 export async function pruneWorkspaceHostCutIntermediates(
   input: { repoRoot: string; workDir: string },
   removeSource: (repoRoot: string, source: string) => void = removeReleaseSourceWorktree,
 ): Promise<string[]> {
   const paths = workspaceHostCutPaths(input.workDir);
-  const removed: string[] = [];
-  for (const marker of [paths.sourceReady, paths.sidecarReady]) {
-    if (!existsSync(marker)) continue;
-    await rm(marker, { force: true });
-    removed.push(marker);
-  }
-  if (existsSync(paths.source)) {
-    removeSource(input.repoRoot, paths.source);
-    removed.push(paths.source);
-  }
-  for (const target of [paths.sidecar, paths.extracted, join(input.workDir, 'vite-build.lock')]) {
-    if (!existsSync(target)) continue;
-    await rm(target, { recursive: true, force: true });
-    removed.push(target);
-  }
-  return removed;
+  return withRetentionPinProtection(async isPinned => {
+    const removed: string[] = [];
+    for (const [target, marker] of [[paths.source, paths.sourceReady], [paths.sidecar, paths.sidecarReady]]) {
+      if (isPinned(target) || isPinned(marker)) continue;
+      if (existsSync(marker)) {
+        await rm(marker, { force: true });
+        removed.push(marker);
+      }
+      if (!existsSync(target)) continue;
+      if (target === paths.source) removeSource(input.repoRoot, target);
+      else await rm(target, { recursive: true, force: true });
+      removed.push(target);
+    }
+    for (const target of [paths.extracted, join(input.workDir, 'vite-build.lock')]) {
+      if (isPinned(target) || !existsSync(target)) continue;
+      await rm(target, { recursive: true, force: true });
+      removed.push(target);
+    }
+    return removed;
+  });
 }
 
 // ─── Orchestration ──────────────────────────────────────────────────────────────
@@ -1188,7 +1195,7 @@ export async function runWorkspaceHostReleaseCut(
   if (!options.keepIntermediates && (!options.publish || !options.publisherArgs.includes('--plan-only'))) {
     await deps.verifyBuild(result, options.workDir);
     pruned = await deps.pruneIntermediates({ repoRoot: options.repoRoot, workDir: options.workDir });
-    deps.log(pruned.length > 0 ? `pruned intermediates: ${pruned.join(', ')}` : 'no intermediates left to prune');
+    deps.log(pruned.length > 0 ? `pruned intermediates: ${pruned.join(', ')}` : 'no eligible intermediates pruned');
   }
   return {
     taskId: state.taskId,

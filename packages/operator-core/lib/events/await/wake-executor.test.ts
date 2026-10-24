@@ -4795,9 +4795,9 @@ describe('executeWake — the liveness ladder', () => {
     { repairResult: { ok: false, reason: 'unused' },
       error: 'Invalid character at row 102\nAuthorization = "Bearer opaque-test-bearer-value-for-resume-repair"',
       reason: 'Invalid character at row 102\nAuthorization = "Bearer [redacted]"' },
-  ])(
-    'parks a Codex auto-route resume when home repair cannot restore the gateway ($reason)',
-    async ({ repairResult, reason, error }) => {
+  ].flatMap(row => ['default', 'auto', 'pin'].map(route => ({ ...row, route }))))(
+    'parks a Codex $route resume when home repair is incomplete ($reason)',
+    async ({ repairResult, reason, error, route }) => {
       const advSessionId = 1002;
       const home = codexHomeForAdvSession(advSessionId);
       const nativeId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
@@ -4826,7 +4826,8 @@ describe('executeWake — the liveness ladder', () => {
                 agent: 'codex',
                 sessionId: nativeId,
                 coordOwnerId: 'su-codex-route',
-                launchArgv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=auto'],
+                launchArgv: ['psu', '--no-picker', '--agent=codex', '--headless',
+                  `--account=${route === 'pin' ? 'original-account' : route}`],
               }),
             ) as never,
             claimResume,
@@ -4837,7 +4838,7 @@ describe('executeWake — the liveness ladder', () => {
 
         expect(out).toEqual({
           kind: 'park',
-          reason: expect.stringContaining(`Codex auto gateway route repair did not complete (${reason})`),
+          reason: expect.stringContaining(`Codex ${route} home repair did not complete (${reason})`),
         });
         expect(repair).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -4845,8 +4846,8 @@ describe('executeWake — the liveness ladder', () => {
             owner: 'su-codex-route',
             codexHome: home,
             headless: true,
-            requireGatewayProvider: true,
-            codexGatewayAccountId: null,
+            requireGatewayProvider: route === 'auto',
+            codexGatewayAccountId: route === 'pin' ? 'original-account' : null,
           }),
         );
         expect(claimResume).not.toHaveBeenCalled();

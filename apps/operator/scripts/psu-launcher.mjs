@@ -6812,6 +6812,7 @@ export function resumeEnvFor(
   if (fork) {
     return {
       PAPERCUSP_AGENT: session.agent,
+      ...(session.role ? { PAPERCUSP_AGENT_ROLE: session.role } : {}),
       PAPERCUSP_SID: ownerId || mintSid(),
       ...(session.workspaceId
         ? { PAPERCUSP_WORKSPACE: session.workspaceId }
@@ -6823,6 +6824,7 @@ export function resumeEnvFor(
   }
   return {
     PAPERCUSP_AGENT: session.agent,
+    ...(session.role ? { PAPERCUSP_AGENT_ROLE: session.role } : {}),
     PAPERCUSP_SID: session.coordOwnerId || mintSid(),
     ...(session.workspaceId
       ? { PAPERCUSP_WORKSPACE: session.workspaceId }

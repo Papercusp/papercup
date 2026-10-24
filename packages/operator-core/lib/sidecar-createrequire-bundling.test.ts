@@ -195,7 +195,9 @@ describe.skipIf(!existsSync(BUILD_SCRIPT))('desktop sidecar createRequire bundli
   });
 
   it('every createRequire third-party dep is copied into the .deb sidecar', () => {
-    const script = readFileSync(BUILD_SCRIPT, 'utf8');
+    const script = readFileSync(BUILD_SCRIPT, 'utf8')
+      + '\n' + readFileSync(join(REPO_ROOT, 'papercusp-desktop/bin/lib/host-runtime-closure.sh'), 'utf8')
+      + '\n' + readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh'), 'utf8');
     const copied = copiedPackages(script);
 
     const missing = [...found.entries()]

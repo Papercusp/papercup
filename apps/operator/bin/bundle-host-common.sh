@@ -250,6 +250,32 @@ bundle_host_spawner() { # <repo root> <out dir> [esbuild boundary args...]
   rm -f "$stamp"
 }
 
+# The installed PRIMARY and launcher recipes are shared with disposable setup.
+# Callers retain their platform boundary and version/dogfood defines.
+bundle_host_primary() { # <repo root> <out dir> [esbuild boundary args...]
+  local repo_root="$1" out_dir="$2"
+  shift 2
+  local output="$out_dir/serve.mjs" tmp="$out_dir/serve.new.mjs"
+  mkdir -p "$out_dir" || return 1
+  bundle_host_run_step primary-compile bundle_host_esbuild "$repo_root" "$repo_root/apps/operator/bin/serve.ts" \
+    --bundle --platform=node --format=esm --target=node22 \
+    --outfile="$tmp" --metafile="$output.meta.json" --banner:js="$HOST_BANNER" \
+    "${HOST_BANNER_DEFINES[@]}" "$@" || return 1
+  bundle_host_run_step primary-ascii-and-syntax node "$repo_root/apps/operator/bin/ascii-escape-bundle.mjs" "$tmp" --check || return 1
+  mv -f "$tmp" "$output"
+}
+
+bundle_host_launcher() { # <repo root> <output> <source stem> [compaction args...]
+  local repo_root="$1" output="$2" stem="$3"
+  shift 3
+  mkdir -p "$(dirname "$output")" || return 1
+  # These ARE the CLI entrypoints; never suppress isCliEntry() here.
+  bundle_host_run_step "launcher-$stem" bundle_host_esbuild "$repo_root" "$repo_root/apps/operator/scripts/$stem.mjs" \
+    --bundle --platform=node --format=esm --target=node22 \
+    --outfile="$output" --metafile="$output.meta.json" --banner:js="$HOST_BANNER" \
+    "${HOST_BANNER_DEFINES[@]}" --external:@lydell/* "$@"
+}
+
 bundle_host_workers() {
   local repo_root="$1" out_dir="$2" source output tmp
   # A private dependency snapshot still shares npx's package cache with every

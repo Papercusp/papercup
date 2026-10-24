@@ -1676,8 +1676,9 @@ export function resumeEnvFor(session: any, { mintSid, fork, ownerId }?: {
     PAPERCUSP_ADV_SESSION_ID?: string | undefined;
     PAPERCUSP_HARNESS_SLUG?: any;
     PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
+    PAPERCUSP_AGENT_ROLE?: any;
+    PAPERCUSP_AGENT: any;
 };
 /**
  * Decide how the account is chosen for a RESUME launch. Pure — exported for
@@ -1727,8 +1728,9 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_ADV_SESSION_ID?: string | undefined;
     PAPERCUSP_HARNESS_SLUG?: any;
     PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
+    PAPERCUSP_AGENT_ROLE?: any;
+    PAPERCUSP_AGENT: any;
 } | {
     PAPERCUSP_ACCOUNT_ID?: string | undefined;
     PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
@@ -1743,8 +1745,9 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_ADV_SESSION_ID?: string | undefined;
     PAPERCUSP_HARNESS_SLUG?: any;
     PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
+    PAPERCUSP_AGENT_ROLE?: any;
+    PAPERCUSP_AGENT: any;
 } | {
     PAPERCUSP_ACCOUNT_ID?: string | undefined;
     PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
@@ -1759,8 +1762,9 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_ADV_SESSION_ID?: string | undefined;
     PAPERCUSP_HARNESS_SLUG?: any;
     PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
+    PAPERCUSP_AGENT_ROLE?: any;
+    PAPERCUSP_AGENT: any;
 } | {
     PAPERCUSP_ACCOUNT_ID?: string | undefined;
     PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
@@ -1775,8 +1779,9 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_ADV_SESSION_ID?: string | undefined;
     PAPERCUSP_HARNESS_SLUG?: any;
     PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
+    PAPERCUSP_AGENT_ROLE?: any;
+    PAPERCUSP_AGENT: any;
 };
 /** Restore the per-session OMP store a tracked launch created. Fresh OMP
  * launches pin BOTH variables because PI_CODING_AGENT_DIR overrides

@@ -383,6 +383,31 @@ describe('Codex managed child preserves its recorded role authority', () => {
     }, ['resume', 'native-fixture'])).toThrow(/restricted role MCP profile/);
     expect(readFileSync(join(dir, 'config.toml'), 'utf8')).toBe(privileged);
   });
+
+  it.each(cases.flatMap(row => [false, true].map(fork => ({ ...row, fork }))))(
+    'guards the recorded $role across resume construction on $mode (fork=$fork)',
+    ({ role, mode, fork }) => {
+      const owner = 'su-role-resume';
+      const session = { agent: 'codex', role, coordOwnerId: owner, id: 7 };
+      const env = {
+        ...launcher.buildResumeEnv(session, {
+          fork, ownerId: owner,
+          accountEnv: { mode, id: mode === 'pin' ? 'fixture-account' : null, env: {} },
+        }),
+        CODEX_HOME: dir,
+      };
+      const args = ['resume', 'native-fixture'];
+      roleHome(role, owner);
+      expect(prepareCodexGatewayLaunch(env, args).slice(-args.length)).toEqual(args);
+      const privileged = REAL_CONFIG.replace('command = "npx"',
+        `url = "http://operator/api/mcp?superuser=1&client=${owner}"`);
+      writeFileSync(join(dir, 'config.toml'), privileged);
+      expect(codexHomeLaunchReadiness(dir, owner, 'su')).toBeNull();
+      expect(() => prepareCodexGatewayLaunch(env, args)).toThrow(/restricted role MCP profile/);
+      expect(env.PAPERCUSP_AGENT_ROLE).toBe(role);
+      expect(readFileSync(join(dir, 'config.toml'), 'utf8')).toBe(privileged);
+    },
+  );
 });
 
 describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usable home', () => {
