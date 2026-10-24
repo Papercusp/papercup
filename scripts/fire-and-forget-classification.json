@@ -90931,14 +90931,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts#<module>/handler:81efdb5e004ecec25cfa:1",
-      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches notify, notifyAttentionOnce, notifyInvalidate, notifySyncInvalidate, notifyWorkspace; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts#<module>/handler:b174f31bd98a3e2ea567:1",
       "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts",
       "classification": "durable",
@@ -90959,14 +90951,6 @@
       "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts",
       "classification": "durable",
       "reason": "No safe-to-lose proof recorded. This call reaches notify, notifyAttentionOnce, notifyInvalidate, notifySyncInvalidate, notifyWorkspace; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts#<module>/handler:bd2aa118e07f2334d37a:1",
-      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
       "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
       "deliveryState": "unverified"
     },
@@ -91028,30 +91012,6 @@
     },
     {
       "id": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts#<module>/handler:d5546fbf68ab3aec7a14:6",
-      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches notify, notifyAttentionOnce, notifyInvalidate, notifySyncInvalidate, notifyWorkspace; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts#<module>/handler:d5546fbf68ab3aec7a14:7",
-      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches notify, notifyAttentionOnce, notifyInvalidate, notifySyncInvalidate, notifyWorkspace; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts#<module>/handler:d5546fbf68ab3aec7a14:8",
-      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches notify, notifyAttentionOnce, notifyInvalidate, notifySyncInvalidate, notifyWorkspace; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts#<module>/handler:d5546fbf68ab3aec7a14:9",
       "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts",
       "classification": "durable",
       "reason": "No safe-to-lose proof recorded. This call reaches notify, notifyAttentionOnce, notifyInvalidate, notifySyncInvalidate, notifyWorkspace; retain its terminal delivery obligation, including through aliases/wrappers.",
@@ -114963,31 +114923,7 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/session-assume-caller.ts#<module>/completeAssumeCallerReturn:0ff8b8c25ea913b70961:1",
-      "path": "packages/operator-core/lib/session-assume-caller.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/session-assume-caller.ts#<module>/createAssumeCallerAdapters/quiesceCaller/<callback>:4f3b9bec61979bb9d16d:1",
-      "path": "packages/operator-core/lib/session-assume-caller.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/session-assume-caller.ts#<module>/restoreAssumeResponsibilities:8ac52058d885a2eafaa1:1",
-      "path": "packages/operator-core/lib/session-assume-caller.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/session-assume-caller.ts#<module>/restoreAssumeResponsibilities:9cbe084ca612628484f3:1",
       "path": "packages/operator-core/lib/session-assume-caller.ts",
       "classification": "durable",
       "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
@@ -114999,30 +114935,6 @@
       "path": "packages/operator-core/lib/session-assume-caller.ts",
       "classification": "durable",
       "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, notifyAgentOrdersChanged, notifyInvalidate, notifySyncInvalidate, send; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/session-assume-runtime.ts#<module>/inspectManagedAssumeRequest:482fdececbcb64f73a5d:1",
-      "path": "packages/operator-core/lib/session-assume-runtime.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/session-assume-runtime.ts#<module>/inspectManagedAssumeRequest:ccdbfba3a129f5542b55:1",
-      "path": "packages/operator-core/lib/session-assume-runtime.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/session-assume-runtime.ts#<module>/inspectManagedAssumeRequest:eaea71699ab8fc7910b7:1",
-      "path": "packages/operator-core/lib/session-assume-runtime.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
       "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
       "deliveryState": "unverified"
     },
