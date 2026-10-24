@@ -114915,14 +114915,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/session-assume-caller.ts#<module>/restoreAssumeResponsibilities/<callback>:3449d4ce00f9004bdfb6:1",
-      "path": "packages/operator-core/lib/session-assume-caller.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, notifyAgentOrdersChanged, notifyInvalidate, notifySyncInvalidate, send; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/session-dir-gc.ts#<module>/runSessionDirGc:66a8069bcfedc729c5a6:1",
       "path": "packages/operator-core/lib/session-dir-gc.ts",
       "classification": "durable",
