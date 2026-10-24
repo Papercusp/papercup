@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,7 +18,8 @@ import { runTopology } from './run-topology';
 import { resolveCoordinationSpec } from './coordination-topology';
 import type { BenchHarnessRun } from './types';
 import { frontierSweDockerTarget, startFrontierSweLaunchAdapter, type FrontierSweLaunchAdapterPorts,
-  type FrontierSweLaunchAdapterConfig, type FrontierSweNativeAssignment } from './frontier-swe-launch-adapter';
+  type FrontierSweNativeLaunchAdapterConfig, type FrontierSweNativeAssignment,
+  type FrontierSweProximusLaunchAdapterConfig, type FrontierSweProximusAssignment } from './frontier-swe-launch-adapter';
 
 vi.mock('./frontier-swe-seam', () => ({ makeFrontierSweCloneGradeSeam: vi.fn(config => ({ modality: 'in-container', config })) }));
 
@@ -49,7 +50,7 @@ function fixture() {
     sweep: vi.fn(async () => { order.push('sweep'); return { errors: [] }; }),
     createDriver: vi.fn(() => ({ spinRunAndCost })),
   };
-  const config: FrontierSweLaunchAdapterConfig = {
+  const config: FrontierSweNativeLaunchAdapterConfig = {
     runId: options.runId, context: { workspaceId: 'benchmarks' } as PapercuspUnifiedToolContext,
     mcpOrigin: 'http://127.0.0.1:9071', hookRecordDir: bridge.recordDir,
     startAssignment: vi.fn(async () => { order.push('assignment-start'); return assignment; }),
@@ -114,6 +115,7 @@ describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
   it('retains the task container submission at zero matched spend without opening a native session', async () => {
     const f = repeatedFixture(); f.assignment.repeatedSession = { treatmentCostUsd: 0, maxSessions: 4 };
     const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    expectTypeOf(adapter.egress).toMatchTypeOf<BenchEgress>();
     try {
       const result = await adapter.runAgent(f.input);
       expect(result).toMatchObject({
@@ -356,5 +358,154 @@ describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
     const f = fixture(); vi.mocked(makeFrontierSweCloneGradeSeam).mockImplementationOnce(() => { throw new Error('missing musl binary'); });
     await expect(startFrontierSweLaunchAdapter(f.config, f.ports)).rejects.toThrow('missing musl binary');
     expect(f.order).toEqual(['bridge-start', 'egress-start', 'egress-stop', 'sweep', 'bridge-stop']);
+  });
+});
+
+describe('FrontierSWE typed Proximus host lifecycle', () => {
+  function hostFixture() {
+    const native = fixture(), input = { ...native.input, arm: 'baseline', handle: {
+      containerId: 'host-task-container', instanceId: native.input.task.instanceId, image: 'immutable-host-task-image',
+    } };
+    const evidence: Awaited<ReturnType<FrontierSweProximusAssignment['execute']>> = {
+      process: { status: 'completed', runtime: { schemaVersion: 1, runtimeRevision: 'a'.repeat(64),
+        sourceRevision: 'b'.repeat(40), clientVersion: 'harbor-proximus@0.1.0a1', harborVersion: '0.23.0', fileCount: 100 },
+        diagnosticContext: { cost_usd: 999, tokens: 999 }, billingStatus: 'unreconciled' },
+      attempts: { status: 'unavailable', reason: 'no-attempts' },
+      billing: { status: 'unavailable', reason: 'no-attempts' },
+    };
+    const assignment: FrontierSweProximusAssignment = {
+      agent: 'proximus', runId: 'host-protocol', armId: 'baseline', workspaceId: 'benchmarks',
+      taskId: input.task.instanceId, containerId: input.handle.containerId, image: input.handle.image,
+      execute: vi.fn(async () => evidence), stop: vi.fn(async () => {}),
+    };
+    const config: FrontierSweProximusLaunchAdapterConfig = {
+      execution: 'proximus-host', runId: 'host-arm-runtime', protocolRunId: 'host-protocol',
+      context: { workspaceId: 'benchmarks' } as PapercuspUnifiedToolContext,
+      startAssignment: vi.fn(async () => assignment),
+    };
+    return { ...native, input, assignment, config, evidence };
+  }
+
+  it('uses the plain shared seam without starting native hooks, relays, drivers or home mounts', async () => {
+    const f = hostFixture();
+    Object.assign(f.config, { seam: { version: 'frozen-grader', extraRunArgs: ['--cpus=2'],
+      inContainerCodex: true, egress: f.egress } });
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    expect(vi.mocked(makeFrontierSweCloneGradeSeam).mock.calls.at(-1)?.[0]).toEqual({
+      version: 'frozen-grader', extraRunArgs: ['--cpus=2'],
+    });
+    const result = await adapter.runAgent(f.input);
+    expect(result).toMatchObject({ status: 'error', modelCalls: 0, tokensIn: 0, costUsd: 0,
+      submission: { containerId: f.input.handle.containerId, instanceId: f.input.task.instanceId },
+      executionPath: 'stock-native-reference', armMeta: { costUsdMeasurementMissing: true,
+        requestConfinementMeasurementMissing: true, modelCallsMeasurementMissing: true,
+        hostReference: { agent: 'proximus', processStatus: 'completed', billing: { status: 'unavailable' } } } });
+    expect(result.armMeta).not.toHaveProperty('nativeUsage');
+    expect(result.armMeta).not.toHaveProperty('nativeCostAccounting');
+    expect(result.armMeta?.hostReference).not.toHaveProperty('diagnosticContext');
+    for (const port of Object.values(f.ports)) expect(port).not.toHaveBeenCalled();
+    expect(f.assignment.stop).toHaveBeenCalledOnce();
+    expect(await adapter.stop()).toEqual({ errors: [] });
+  });
+
+  it('withholds official grading and tears down the task when host acceptance is incomplete', async () => {
+    const f = hostFixture(), grade = vi.fn(), teardown = vi.fn(async () => {});
+    vi.mocked(makeFrontierSweCloneGradeSeam).mockReturnValueOnce({ modality: 'in-container',
+      clone: async () => f.input.handle, grade, teardown });
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    try {
+      const result = await runTopology({ runId: f.config.runId, seed: 0, cap: 1, now: Date.now,
+        spec: resolveCoordinationSpec({ id: 'baseline', spine: { claimModel: 'self-claim-fifo' } }),
+        backlog: [f.input.task], budget: f.input.attemptBudget, seam: adapter.seam, runAgent: adapter.runAgent,
+        rowMeta: { suite: 'frontier-swe', modelId: 'offline-model', harnessVersion: 'offline-source',
+          preregHash: 'a'.repeat(64), rolloutId: f.config.runId, graderFamily: 'frontier-swe', graderVersion: 'frozen-grader',
+          priceTableVersion: 'offline-prices' },
+      });
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toMatchObject({ generationStatus: 'error', armMeta: { costUsdMeasurementMissing: true } });
+      expect(grade).not.toHaveBeenCalled(); expect(teardown).toHaveBeenCalledOnce();
+      expect(f.assignment.stop).toHaveBeenCalledOnce();
+    } finally { await adapter.stop(); }
+  });
+
+  it.each(['agent', 'runId', 'armId', 'workspaceId', 'taskId', 'containerId', 'image'])
+  ('stops a foreign %s assignment before executing it', async field => {
+    const f = hostFixture(); Object.assign(f.assignment, { [field]: 'foreign' });
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    await expect(adapter.runAgent(f.input)).rejects.toThrow('differs');
+    expect(f.assignment.execute).not.toHaveBeenCalled(); expect(f.assignment.stop).toHaveBeenCalledOnce();
+    await adapter.stop();
+  });
+
+  it.each(['native mounts', 'native network', 'treatment', 'judge', 'candidates', 'foreign task'])
+  ('refuses %s before preparing any host assignment', async change => {
+    const f = hostFixture();
+    if (change === 'native mounts') Object.assign(f.input.handle, { inContainerCodex: fixture().input.handle.inContainerCodex });
+    if (change === 'native network') Object.assign(f.input.handle, { taskNetwork: 'native-task-network' });
+    if (change === 'treatment') f.input.arm = 'papercusp';
+    if (change === 'judge') f.input.role = 'judge';
+    if (change === 'candidates') f.input.candidates = [{ index: 0, submission: {} }];
+    if (change === 'foreign task') f.input.handle.instanceId = 'foreign';
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    await expect(adapter.runAgent(f.input)).rejects.toThrow('plain task handle');
+    expect(f.config.startAssignment).not.toHaveBeenCalled(); await adapter.stop();
+  });
+
+  it('detaches host evidence and never treats diagnostic context cost as accounting', async () => {
+    const f = hostFixture(), adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    const result = await adapter.runAgent(f.input);
+    f.evidence.process.runtime.fileCount = 999;
+    expect(result.armMeta?.hostReference).toMatchObject({ runtime: { fileCount: 100 } });
+    expect(result.costUsd).toBe(0); expect(result.tokensIn).toBe(0);
+    expect(result.armMeta?.costUsdMeasurementMissing).toBe(true); await adapter.stop();
+  });
+
+  it('rechecks cancellation after preparation and still stops the issued assignment', async () => {
+    const f = hostFixture(), abort = new AbortController(); f.config.signal = abort.signal;
+    vi.mocked(f.config.startAssignment).mockImplementationOnce(async () => { abort.abort(); return f.assignment; });
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    await expect(adapter.runAgent(f.input)).rejects.toThrow('cancelled');
+    expect(f.assignment.execute).not.toHaveBeenCalled(); expect(f.assignment.stop).toHaveBeenCalledOnce();
+    await adapter.stop();
+  });
+
+  it('passes a detached task to preparation and preserves the original submission identity across awaits', async () => {
+    const f = hostFixture();
+    vi.mocked(f.config.startAssignment).mockImplementationOnce(async trial => {
+      f.input.task.instanceId = 'changed-by-caller'; f.input.handle.containerId = 'changed-by-caller';
+      expect(trial.task.instanceId).toBe(f.assignment.taskId);
+      expect(trial.handle.containerId).toBe(f.assignment.containerId);
+      return f.assignment;
+    });
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    const result = await adapter.runAgent(f.input);
+    expect(result.submission).toEqual({ containerId: f.assignment.containerId, instanceId: f.assignment.taskId });
+    await adapter.stop();
+  });
+
+  it('stops the host assignment after a process failure', async () => {
+    const f = hostFixture(); vi.mocked(f.assignment.execute).mockRejectedValueOnce(new Error('process failed'));
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    await expect(adapter.runAgent(f.input)).rejects.toThrow('process failed');
+    expect(f.assignment.stop).toHaveBeenCalledOnce(); await adapter.stop();
+  });
+
+  it('reports failed assignment cleanup to both the trial and adapter owner', async () => {
+    const f = hostFixture(); vi.mocked(f.assignment.stop).mockRejectedValueOnce(new Error('gateway remains live'));
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    await expect(adapter.runAgent(f.input)).rejects.toThrow('gateway remains live');
+    expect(await adapter.stop()).toEqual({ errors: ['Error: gateway remains live'] });
+  });
+
+  it('serializes host trials and waits for their cleanup before adapter shutdown', async () => {
+    const f = hostFixture(); let release!: () => void;
+    vi.mocked(f.assignment.execute).mockImplementationOnce(() => new Promise(resolve => { release = () => resolve(f.evidence); }));
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports), running = adapter.runAgent(f.input);
+    await vi.waitFor(() => expect(f.assignment.execute).toHaveBeenCalledOnce());
+    await expect(adapter.runAgent(f.input)).rejects.toThrow('one metered assignment');
+    const stopped = adapter.stop(); expect(f.assignment.stop).not.toHaveBeenCalled();
+    release(); await running; expect(await stopped).toEqual({ errors: [] });
+    expect(adapter.stop()).toBe(stopped); expect(f.assignment.stop).toHaveBeenCalledOnce();
+    await expect(adapter.runAgent(f.input)).rejects.toThrow('stopped');
   });
 });

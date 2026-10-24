@@ -13,7 +13,7 @@ import { currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, currentBenchAssig
 import { liveBenchHarnessOps } from '../lib/external-bench/bench-harness-live';
 import { retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from './isolated-integration-proof';
 import { psuLaunchLogPath } from '../lib/psu-launch-log.mjs';
-import { startFrontierSweLaunchAdapter } from '../lib/external-bench/frontier-swe-launch-adapter';
+import { startFrontierSweLaunchAdapter, type FrontierSweNativeLaunchAdapter } from '../lib/external-bench/frontier-swe-launch-adapter';
 import { startCodexHookBridge, type CodexHookBridge } from '../lib/external-bench/codex-hook-bridge';
 import { startBenchEgress, sweepBenchEgress } from '../lib/external-bench/bench-egress';
 import type { FrontierSweEnvHandle } from '../lib/external-bench/frontier-swe-seam';
@@ -279,7 +279,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
   const ctx = { workspaceId: workspace, isSuperuser: true, uiClientId: `su-private-native-${randomUUID()}`,
     principal: { slug: 'system:superuser' } } as PapercuspUnifiedToolContext;
   const phase = (name: string) => { progress(name); console.log('CURRENT_SU_NATIVE_PHASE ' + name); };
-  let adapter: Awaited<ReturnType<typeof startFrontierSweLaunchAdapter>> | undefined;
+  let adapter: FrontierSweNativeLaunchAdapter | undefined;
   let bridge: CodexHookBridge | undefined;
   let handle: FrontierSweEnvHandle | undefined;
   try {

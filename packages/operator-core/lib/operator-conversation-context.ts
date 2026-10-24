@@ -69,8 +69,8 @@ export class OperatorConversationContext implements ContextHost {
         if (!await this.options.authorize(tx)) throw new Error('unauthorized');
       }
       const rows = await tx.unsafe(
-        `SELECT to_jsonb(c) -> 'context_state' AS context_state
-           FROM harness_shared.operator_conversations c
+        `SELECT context_state
+           FROM harness_shared.operator_conversations
           WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
         [this.scope.conversationId, this.options.workspaceId]);
       if (!rows.length) throw new Error('unauthorized');
