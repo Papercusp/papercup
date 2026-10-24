@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 import {
   censusSources, inScope, validateClassifications, inlineClassifications, validateSeed, seedClassifications,
   type NotifyCensus, type NotifyClassification,
@@ -13,6 +18,50 @@ const classify = (c: NotifyCensus): NotifyClassification[] => c.sites.map(s => (
 }));
 
 describe('fire-and-forget notification census and classification', () => {
+  it('keeps a bundled host import free of census CLI startup effects', async () => {
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+    const scratch = mkdtempSync(join(tmpdir(), 'notification-census-bundled-import-'));
+    try {
+      symlinkSync(join(root, 'node_modules'), join(scratch, 'node_modules'), 'dir');
+      const outfile = join(scratch, 'hono-host.mjs');
+      await build({
+        stdin: {
+          contents: `import { censusSources } from './scripts/check-fire-and-forget-classification.mjs';
+console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOwner();' }).sites.length }));`,
+          resolveDir: root,
+        },
+        outfile, bundle: true, platform: 'node', format: 'esm', packages: 'external',
+      });
+      const output = execFileSync(process.execPath, [outfile], {
+        cwd: scratch, encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      expect(JSON.parse(output)).toEqual({ sites: 1 });
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('still executes the census CLI directly and through a symlinked checkout path', () => {
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+    const scratch = mkdtempSync(join(tmpdir(), 'notification-census-cli-control-'));
+    try {
+      symlinkSync(join(root, 'scripts'), join(scratch, 'scripts'), 'dir');
+      const census = scan('void notifyOwner();');
+      const seedFrom = join(scratch, 'census.json');
+      writeFileSync(seedFrom, JSON.stringify({
+        ...census, sourceDigest: createHash('sha256').update(JSON.stringify(census.files)).digest('hex'),
+      }));
+      for (const scripts of [join(root, 'scripts'), join(scratch, 'scripts')]) {
+        const output = execFileSync(process.execPath, [join(scripts, 'check-fire-and-forget-classification.mjs'), '--seed-from', seedFrom], {
+          encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        expect(JSON.parse(output).seedIds).toEqual(census.sites.map(site => site.id));
+      }
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
   it('finds void, discarded promises, catch chains and stored un-awaited promises', () => {
     const c = scan('void notifyOwner(); sendAgent().catch(log); escalate(); const p = notify();');
     expect(c.sites).toHaveLength(4);

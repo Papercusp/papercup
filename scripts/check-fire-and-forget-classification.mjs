@@ -10,7 +10,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { posix, resolve } from 'node:path';
+import { basename, posix, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { coverageOf, listTrackedFiles } from './lib/tracked-files.mjs';
 
@@ -422,4 +422,7 @@ function main() {
   console.log(JSON.stringify({ scope: 'classification guard; not a durable-delivery verdict', sites: census.sites.length, files: census.files.length, sourceDigest: census.sourceDigest, coverage: census.coverage, unverifiedDurable: registry.records.filter(r => r.classification === 'durable' && r.deliveryState !== 'verified').length, errors }));
   process.exitCode = errors.length ? 1 : 0;
 }
-if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) main();
+// Bundling changes import.meta.url to the host entrypoint. URL equality alone
+// would then run this CLI while the host imports its reusable census functions.
+if (process.argv[1] && basename(process.argv[1]) === 'check-fire-and-forget-classification.mjs'
+  && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) main();
