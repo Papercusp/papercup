@@ -16,6 +16,8 @@ const NO_SHARED_PG_TESTS = new Set([
   // Isolated repository fixtures and the provisioned syntax parser; no SQL or PG runtime.
   '../lib/agent-tools/plans/plan-native-declarations.integration.test.ts',
   '../lib/integration-substrate-selection.integration.test.ts',
+  // Exercises the installed compiler socket and process identity; no database access.
+  '../lib/tsc-service.integration.test.ts',
   // Real graph facade over isolated filesystem/AST fixtures; no database reads.
   '../lib/code-intelligence/reuse-graph.integration.test.ts',
   // Owns a dedicated native PG cluster and applies only its isolated migration.
