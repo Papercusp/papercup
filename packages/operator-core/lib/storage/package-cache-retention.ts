@@ -9,10 +9,10 @@
  * a safe install in any checkout on this host.
  */
 import { spawn } from 'node:child_process';
-import { stat } from 'node:fs/promises';
+import { lstat, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
-import { dirSizeBytesAsync, type DiskWalkBudget } from './disk';
+import { inspectRetentionTrees, RetentionAllocationCounter } from './disk-consumer-census';
 import { criticalWriteHeadroomBytes, diskPolicyFromEnv, sampleDiskSnapshots } from './disk-space-alarm';
 import { withRetentionPinProtection } from './retention-pins';
 
@@ -26,7 +26,6 @@ export const PRESSURE_PACKAGE_CACHE_MAX_BYTES = 1024 ** 3;
 const DEFAULT_MEASURE_BUDGET_MS = 30_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_MUTEX_TIMEOUT_MS = 300_000;
-const MAX_MEASURED_FILES = 2_000_000;
 const COMMAND_OUTPUT_CHARS = 4_000;
 
 export type PackageCacheManager = 'npm' | 'bun' | 'pnpm';
@@ -159,9 +158,41 @@ export function resolvePackageCacheTargets(options: PackageCacheTargetOptions = 
 }
 
 export async function measurePackageCache(path: string): Promise<PackageCacheMeasurement> {
-  const budget: DiskWalkBudget = { deadlineMs: Date.now() + DEFAULT_MEASURE_BUDGET_MS };
-  const bytes = await dirSizeBytesAsync(path, MAX_MEASURED_FILES, budget);
-  return { bytes, truncated: Boolean(budget.truncated) };
+  path = resolve(path);
+  const allocation = new RetentionAllocationCounter();
+  try {
+    let root;
+    try { root = await lstat(path); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { bytes: 0, truncated: false };
+      throw error;
+    }
+    if (!root.isDirectory() || root.isSymbolicLink()) return { bytes: 0, truncated: true };
+    const add = (entry: { path: string; bytes: number; hardlinks?: Array<{ dev: number; ino: number; bytes: number; paths: string[] }> }) => {
+      const shared = entry.hardlinks ?? [];
+      const exclusive = entry.bytes - shared.reduce((sum, link) => sum + link.bytes, 0);
+      if (!Number.isSafeInteger(exclusive) || exclusive < 0) throw new Error('invalid cache allocation census');
+      allocation.bytes += exclusive;
+      for (const link of shared) {
+        if (!Number.isSafeInteger(link.bytes) || link.bytes < 0 || !link.paths.length) throw new Error('invalid cache hardlink census');
+        allocation.add(link.paths[0]!, { dev: link.dev, ino: link.ino, blocks: link.bytes / 512, nlink: 2 }, true);
+      }
+    };
+    // Reuse the bounded native no-follow worker, including its per-child inode
+    // metadata. One union counter spans every child of the configured root.
+    allocation.add(path, root, false);
+    const census = await inspectRetentionTrees(path, { retainAfterMs: 0, includeRecent: true,
+      sudo: null, timeoutMs: DEFAULT_MEASURE_BUDGET_MS });
+    for (const entry of census.entries) add(entry);
+    for (const retained of census.retained) if (retained.entry) add(retained.entry);
+    const incomplete = census.retained.some(entry => !entry.entry ||
+      ['filesystem boundary', 'foreign ownership boundary'].includes(entry.reason));
+    const after = await lstat(path);
+    const changed = !after.isDirectory() || after.dev !== root.dev || after.ino !== root.ino || after.ctimeMs !== root.ctimeMs;
+    if (!Number.isSafeInteger(allocation.bytes) || allocation.bytes < 0) throw new Error('cache allocation overflow');
+    return { bytes: allocation.bytes, truncated: !!census.error || incomplete || changed };
+  } catch {
+    return { bytes: allocation.bytes, truncated: true };
+  }
 }
 
 function appendBounded(current: string, chunk: unknown): string {
@@ -216,9 +247,8 @@ export function runPackageCacheCommand(
 }
 
 function overHighWater(measurement: PackageCacheMeasurement, maxBytes: number): boolean {
-  // A partial size is a lower bound. Cleanup is cache-only + manager-native, so
-  // an inconclusive large walk should reclaim rather than silently bless an
-  // unbounded tree as small.
+  // A partial size needs attention and cannot bless a cache as below threshold.
+  // The writer must establish complete measurement before native mutation.
   return measurement.truncated || measurement.bytes > maxBytes;
 }
 
@@ -326,6 +356,11 @@ export async function runPackageCacheRetention(
         for (const target of eligible) {
           const limit = await threshold(target);
           const before = await measure(target.path);
+          if (limit !== null && before.truncated) {
+            outcomes.set(target.manager, { ...belowOutcome(target, before, limit), status: 'prune-failed',
+              note: 'cache measurement is incomplete or its root is unsafe; native cleanup was not admitted' });
+            continue;
+          }
           if (limit === null || !overHighWater(before, limit)) {
             outcomes.set(target.manager, {
               ...unchanged(target, before, limit),

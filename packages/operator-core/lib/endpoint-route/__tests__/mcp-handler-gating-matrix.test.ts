@@ -1166,6 +1166,8 @@ const POWER_CLAIMS = {
 
 interface ToolsListEntry {
   name: string;
+  description?: string;
+  inputSchema?: unknown;
   annotations?: Record<string, unknown>;
   _meta?: Record<string, unknown>;
 }
@@ -1336,6 +1338,45 @@ async function withSdkHost<T>(extra: unknown, run: (client: Client) => Promise<T
     await cleanupWire();
   }
 }
+
+describe('tools/list schema cache preserves actual-use detail', () => {
+  it.each(['full-first', 'compact-first'])('isolates discovery schemas and compact schemas with %s', async order => {
+    const name = 'gating-cache:detail';
+    const pluginName = 'gating-cache-regression';
+    const schema = {
+      type: 'object',
+      properties: { value: { type: 'string', description: 'Original argument guidance must survive promotion.' } },
+      additionalProperties: false,
+    };
+    registerProjectedTool({
+      pluginName, description: 'Original complete definition. Further guidance for continued use.',
+      // MCP discovery and flattened model schemas need not share an object.
+      inputSchema: structuredClone(schema), discoveryInputSchema: schema,
+      capabilities: [], expose: { mcp: { name } }, fn: probeFn(name),
+    });
+    const { recordSessionToolUse, sessionToolSurfaceKey } = await import('../routes/transport/tool-allowlist');
+    const owner = `su-schema-cache-${order}`;
+    const listing = async (compact: boolean) => (await listTools(superuserExtra(
+      `&workspace=ws-test&client=${owner}-${compact ? 'compact' : 'full'}&tools=${name}` +
+      (compact ? `&tools_compact=${name}` : ''),
+    ))).tools.find(tool => tool.name === name)!;
+    try {
+      let full: Awaited<ReturnType<typeof listing>>;
+      let compact: Awaited<ReturnType<typeof listing>>;
+      if (order === 'full-first') { full = await listing(false); compact = await listing(true); }
+      else { compact = await listing(true); full = await listing(false); }
+      expect(full.inputSchema).toEqual(schema);
+      expect(compact.inputSchema).not.toEqual(schema);
+      expect(recordSessionToolUse(sessionToolSurfaceKey(`${owner}-compact`, 'ws-test'), [name])).toBe(true);
+      const promoted = await listing(true);
+      expect(promoted.description).toBe(full.description);
+      expect(promoted.inputSchema).toEqual(schema);
+      expect((await listing(false)).inputSchema).toEqual(schema);
+    } finally {
+      unregisterProjectedToolsForPlugin(pluginName);
+    }
+  });
+});
 
 function assertCatalogParity(native: { tools: { name: string }[] }, http: unknown) {
   expect(native).toEqual(http);

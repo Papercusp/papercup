@@ -176,6 +176,47 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(radiusFor(['wide/src/core.ts'], { cap: 1 }).guarded).toEqual(expected);
   });
 
+  it('retains related tests when independent pinned workspaces share a package name', async () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'admission-duplicate-workspace-'));
+    try {
+      init(fixture);
+      put(fixture, {
+        'package.json': JSON.stringify({ private: true, workspaces: ['left', 'right', 'consumer', 'empty'] }),
+        ...Object.fromEntries(['left', 'right'].flatMap(dir => [
+          [`${dir}/package.json`, JSON.stringify({ name: '@t/duplicate', exports: './core.ts' })],
+          [`${dir}/vitest.config.ts`, 'export default {};'],
+          [`${dir}/core.ts`, 'export const core = 1;'],
+          [`${dir}/core.test.ts`, "import './core';"],
+        ])),
+        'consumer/package.json': JSON.stringify({ name: '@t/consumer', dependencies: { '@t/duplicate': '*' } }),
+        'consumer/vitest.config.ts': 'export default {};',
+        'consumer/uses.test.ts': "import '@t/duplicate';",
+        'empty/package.json': JSON.stringify({ name: '@t/empty', dependencies: { '@t/duplicate': '*' } }),
+        'empty/vitest.config.ts': 'export default {};',
+        'empty/core.ts': 'export const core = 1;',
+      });
+      git(fixture, 'add', '.');
+      git(fixture, 'commit', '-q', '-m', 'same-name pinned workspaces');
+      const pinned = git(fixture, 'rev-parse', 'HEAD');
+      for (const dir of ['left', 'right']) {
+        const result = await executeAdmissionJob({ kind: 'precheck-population', input: {
+          root: fixture, commit: pinned, signature: [], admittedPaths: [`${dir}/core.ts`],
+        } });
+        // The production discovery job must preserve both the local test and its bare importer.
+        expect(result).toMatchObject({ ok: true, population: { radius: {
+          status: 'measured', guarded: ['consumer/uses.test.ts', `${dir}/core.test.ts`],
+          detail: expect.stringContaining('full=@t/empty:no-test-files'),
+        } } });
+      }
+      // The same empty workspace is still unmeasured when it owns the changed source.
+      expect(await executeAdmissionJob({ kind: 'precheck-population', input: {
+        root: fixture, commit: pinned, signature: [], admittedPaths: ['empty/core.ts'],
+      } })).toMatchObject({ ok: true, population: { radius: {
+        status: 'skipped', reason: 'selection-full:no-test-files',
+      } } });
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
   it('a source no test reaches is skipped loudly, not silently measured as empty', () => {
     expect(radiusFor(['pkg-b/src/lonely.ts'])).toMatchObject({ status: 'skipped', reason: 'selection-full:empty-selection', guarded: [] });
   });

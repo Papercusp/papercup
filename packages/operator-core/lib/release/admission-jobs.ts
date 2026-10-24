@@ -333,7 +333,8 @@ export function ordinaryAdmissionRadius(input: {
     ownerMemo.clear();
     const workspaces = [...roots].map(dir => ({ dir, ...manifests.get(dir)!, name: legOf(manifests.get(dir)!.repo, dir) }));
     const byName = new Map(workspaces.map(ws => [ws.name, ws]));
-    if (byName.size !== workspaces.length) throw new Error('ambiguous pinned workspace names');
+    // Names route dependency expansion; directory identity retains every same-name
+    // workspace below, and the shared selector follows all of their export targets.
     const reverseDeps = new Map<string, Set<string>>();
     for (const ws of workspaces) {
       for (const name of Object.keys({ ...ws.manifest.dependencies, ...ws.manifest.devDependencies, ...ws.manifest.peerDependencies })) {
@@ -416,8 +417,8 @@ export function ordinaryAdmissionRadius(input: {
         rootDir: wsRoot, changedPaths: sources.map(file => resolve(root, file)), aliases, index, fs, crossRoot, judgedSha: input.commit,
         threshold: Number.POSITIVE_INFINITY,
       });
-      if (selection.mode === 'full' && (selection.reason === 'empty-selection' || selection.reason === 'no-test-files'))
-        return result('skipped', `selection-full:${selection.reason}`, `leg ${leg}: local source has no measurable test reachability`);
+      // Local orphan sources were refused individually above. A reverse dependent
+      // with no test files contributes its explicit empty census, not an orphan.
       if (selection.mode === 'full') fullReasons.push(`${leg}:${selection.reason}`);
       const ownedByPlaywright = playwrightOwnedTest(wsRoot, { readFile });
       for (const abs of selection.mode === 'full' ? index.files.filter(isTestFile).sort() : selection.selected) {

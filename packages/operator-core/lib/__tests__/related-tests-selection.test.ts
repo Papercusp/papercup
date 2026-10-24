@@ -1046,6 +1046,33 @@ describe('cross-root selection (WI-6554700010018067)', () => {
     expect(r.reason).toBe('no-changed-paths-in-scope');
   });
 
+  it('keeps both same-name package targets independently of inventory order', () => {
+    const twin = { ...packages[0]!, dir: '/repo/twin' };
+    const files = { ...base,
+      '/repo/twin/lib/leaf.ts': 'export const leaf = 2;',
+      '/repo/twin/lib/index.ts': "export * from './other';",
+      '/repo/twin/lib/other.ts': 'export const other = 2;',
+    };
+    for (const candidates of [[...packages, twin], [twin, ...packages]]) {
+      for (const changed of [`${CORE}/lib/leaf.ts`, '/repo/twin/lib/leaf.ts']) {
+        expect(select([changed], files, { packages: candidates }).selected)
+          .toEqual([`${APP}/uses-leaf.test.ts`]);
+      }
+    }
+  });
+
+  it('a resolved same-name package cannot hide another candidate with a graph hole', () => {
+    const twin = { ...packages[0]!, dir: '/repo/twin' };
+    const files = { ...base, '/repo/twin/lib/unrelated.ts': 'export const other = 2;' };
+    for (const candidates of [[...packages, twin], [twin, ...packages]]) {
+      const crossRoot = { packages: candidates };
+      expect(select(['/repo/twin/lib/unrelated.ts'], files, crossRoot).selected)
+        .toContain(`${APP}/uses-leaf.test.ts`);
+      const index = buildIndex({ rootDir: APP, fs: vfs(files), crossRoot });
+      expect(index.unresolved.has(`${APP}/uses-leaf.test.ts`)).toBe(true);
+    }
+  });
+
   it('runs nothing in a dependent no test of which reaches the change', () => {
     const r = select([`${CORE}/lib/leaf.test.ts`]);
     expect(r.mode).toBe('related');

@@ -38,6 +38,35 @@ afterEach(() => {
 });
 
 describe('workspaces-tauri', () => {
+  it('discovers the selected machine before its URL update has flushed', async () => {
+    window.history.replaceState(null, '', '/?desktopHost=machine-a&ws=workspace-a');
+    const registry = { current: 'workspace-b', workspaces: [{ id: 'workspace-b', name: 'B' }] };
+    vi.stubGlobal('fetch', fetchMock.mockResolvedValue({ ok: true, json: async () => registry }));
+    const { installWorkspaceHeaderFetch } = await import('../transport-adapters/workspace-header-fetch');
+    installWorkspaceHeaderFetch();
+    const { listWorkspaces } = await import('../workspaces-tauri');
+
+    expect(await listWorkspaces('machine-b')).toEqual(registry);
+    const headers = new Headers(fetchMock.mock.calls[0][1].headers);
+    expect(headers.get('x-papercusp-machine')).toBe('machine-b');
+    expect(headers.get('x-papercusp-workspace')).toBe('');
+    expect(new URL(window.location.href).searchParams.get('desktopHost')).toBe('machine-a');
+  });
+
+  it('avoids the local native registry when a remote selection precedes the URL flush', async () => {
+    window.history.replaceState(null, '', '/?desktopHost=local&ws=local');
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {},
+      location: { href: window.location.href }, sessionStorage: window.sessionStorage });
+    commands.workspacesList.mockResolvedValue({ current: 'local', workspaces: [] });
+    const remote = { current: 'remote', workspaces: [{ id: 'remote', name: 'Remote' }] };
+    vi.stubGlobal('fetch', fetchMock.mockResolvedValue({ ok: true, json: async () => remote }));
+    const { listWorkspaces } = await import('../workspaces-tauri');
+
+    expect(await listWorkspaces('machine-b')).toEqual(remote);
+    expect(commands.workspacesList).not.toHaveBeenCalled();
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('x-papercusp-machine')).toBe('machine-b');
+  });
+
   it('discovers a machine registry without sending the previous workspace through the installed fetch adapter', async () => {
     window.history.replaceState(null, '', '/?desktopHost=local&ws=previous-machine-workspace');
     const registry = { current: 'new-workspace', workspaces: [{ id: 'new-workspace', name: 'New' }] };

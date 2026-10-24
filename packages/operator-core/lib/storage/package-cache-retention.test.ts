@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { linkSync, lstatSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRetentionPin } from './retention-pins';
 import {
   PACKAGE_CACHE_MUTEX_NAME,
   PRESSURE_PACKAGE_CACHE_MAX_BYTES,
+  measurePackageCache,
   resolvePackageCacheTargets,
   runPackageCacheRetention,
   type PackageCacheMeasurement,
@@ -65,6 +66,46 @@ describe('resolvePackageCacheTargets', () => {
   });
 });
 
+describe('measurePackageCache allocated no-follow census', () => {
+  it('counts sparse files and cross-directory hardlinks by their physical allocation once', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'package-cache-allocation-'));
+    try {
+      const a = join(root, 'a'), b = join(root, 'b');
+      mkdirSync(a); mkdirSync(b);
+      const sparse = join(a, 'sparse'), shared = join(a, 'shared');
+      writeFileSync(sparse, ''); truncateSync(sparse, 8 * 1024 ** 2);
+      writeFileSync(shared, Buffer.alloc(64 * 1024, 1));
+      linkSync(shared, join(b, 'alias'));
+      const measured = await measurePackageCache(root);
+      const expected = [root, a, b, sparse, shared].reduce((sum, path) => sum + lstatSync(path).blocks * 512, 0);
+      expect(measured).toEqual({ bytes: expected, truncated: false });
+      expect(measured.bytes).toBeLessThan(8 * 1024 ** 2);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('counts only a child symlink allocation and refuses a symlink cache root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'package-cache-no-follow-'));
+    try {
+      const cache = join(root, 'cache'), outside = join(root, 'outside');
+      mkdirSync(cache); mkdirSync(outside);
+      writeFileSync(join(outside, 'owner-data'), Buffer.alloc(1024 ** 2, 1));
+      const link = join(cache, 'link'); symlinkSync(outside, link);
+      expect(await measurePackageCache(cache)).toEqual({ bytes: (lstatSync(cache).blocks + lstatSync(link).blocks) * 512, truncated: false });
+      const alias = join(root, 'alias'); symlinkSync(cache, alias);
+      expect((await measurePackageCache(alias)).truncated).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('distinguishes absent caches from an invalid regular-file root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'package-cache-root-'));
+    try {
+      expect(await measurePackageCache(join(root, 'absent'))).toEqual({ bytes: 0, truncated: false });
+      const file = join(root, 'file'); writeFileSync(file, 'invalid root');
+      expect((await measurePackageCache(file)).truncated).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe('runPackageCacheRetention', () => {
   let sandbox: string;
   beforeEach(() => {
@@ -99,6 +140,18 @@ describe('runPackageCacheRetention', () => {
       measure: async () => measurement(9), runCommand, withMutex: async (_name, run) => run() });
     expect(runCommand).not.toHaveBeenCalled();
     expect(out[0]?.note).toContain('retention pins unreadable');
+  });
+
+  it('refuses native cleanup of an invalid cache root instead of following its symlink', async () => {
+    const outside = join(sandbox, 'outside'), alias = join(sandbox, 'alias');
+    mkdirSync(outside); writeFileSync(join(outside, 'owner-data'), Buffer.alloc(64 * 1024, 1));
+    symlinkSync(outside, alias);
+    const runCommand = vi.fn(async () => ({ ok: true, exitCode: 0, timedOut: false, output: '' }));
+    const out = await runPackageCacheRetention({ targets: [{ ...targets[0]!, path: alias }], maxBytes: 1,
+      runCommand, withMutex: async (_name, run) => run() });
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(out[0]?.status).toBe('prune-failed');
+    expect(out[0]?.note).toContain('measurement');
   });
 
   it('detects pressure on each cache filesystem for the ordinary janitor without a pressurePath', async () => {

@@ -4029,6 +4029,7 @@ registerSuNativeToolDispatcher(dispatchNativeMcpTargetOnOwner);
 
 export function registerMcpHost(server: McpServer): void {
   server.server.setRequestHandler(sdk.ListToolsRequestSchema, async (_req: unknown, extra: unknown) =>
+    // notify-classification: {"classification":"durable","reason":"The tools-list phase wrapper reaches send consequences through its callback; required notices retain custody independently of this request wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     withMcpToolsListPhaseTrace(extra, async (phases) => {
     const listStartedAt = Date.now();
     // Shared visibility walk — see resolveVisibleToolListings above
@@ -4078,7 +4079,12 @@ export function registerMcpHost(server: McpServer): void {
         // adding the effect-derived hint to the standard field.
         const projected = typeof tt.name === 'string' ? lookupByMcpName(tt.name) : undefined;
         const registryRevision = listingRegistryRevision(t);
-        const listingVariant = projected && tt.inputSchema === projected.inputSchema ? 'full' : 'derived';
+        // MCP can advertise the lossless discovery schema instead of the
+        // flattened model schema. Both are original FULL definitions. A compact
+        // or otherwise derived schema must not share a cache slot with either.
+        const listingVariant = projected && tt.inputSchema === projected.discoveryInputSchema
+          ? 'discovery'
+          : projected && tt.inputSchema === projected.inputSchema ? 'model' : null;
         if (projected?.effect) {
           const existingAnnotations =
             out.annotations && typeof out.annotations === 'object' && !Array.isArray(out.annotations)
@@ -4116,11 +4122,15 @@ export function registerMcpHost(server: McpServer): void {
             // deep-clone/GC burst without serving a stale vocabulary.
             await applyEntityRefEnums(def!.args, advertised);
             out.inputSchema = sanitizeToolSchema(advertised);
-          } else {
+          } else if (listingVariant) {
             out.inputSchema = sanitizeToolSchemaCached(
               `${registryRevision}:${tt.name ?? '(anonymous)'}:${listingVariant}`,
               advertised,
             );
+          } else {
+            // A shared "derived" key aliases compact, pinned and wrapped
+            // schemas. Their identity is not proven by the registry revision.
+            out.inputSchema = sanitizeToolSchema(advertised);
           }
         }
         // outputSchema (P-010) gets the same boolean-subschema objectification,

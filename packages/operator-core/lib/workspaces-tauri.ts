@@ -33,8 +33,7 @@ export function isDesktop(): boolean {
 }
 
 /** Native registry commands always address this computer, regardless of URL. */
-function useNativeWorkspaceCommands(): boolean {
-  const machine = getBrowserMachineId();
+function useNativeWorkspaceCommands(machine = getBrowserMachineId()): boolean {
   return isDesktopRuntime() && (!machine || machine === 'local');
 }
 
@@ -63,7 +62,7 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set('content-type', 'application/json');
   const machine = getBrowserMachineId();
-  if (machine) headers.set('x-papercusp-machine', machine);
+  if (machine && !headers.has('x-papercusp-machine')) headers.set('x-papercusp-machine', machine);
   const r = await fetch(path, {
     ...init,
     headers: Object.fromEntries(headers),
@@ -74,8 +73,10 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   return j as T;
 }
 
-export async function listWorkspaces(): Promise<WorkspaceRegistry> {
-  if (useNativeWorkspaceCommands()) {
+export async function listWorkspaces(machine = getBrowserMachineId()): Promise<WorkspaceRegistry> {
+  // A selector's React state changes before nuqs flushes window.location.
+  // Pin discovery to that selection instead of consulting the previous URL.
+  if (useNativeWorkspaceCommands(machine)) {
     try {
       return (await commands.workspacesList()) as Registry;
     } catch (e) {
@@ -87,7 +88,10 @@ export async function listWorkspaces(): Promise<WorkspaceRegistry> {
   // from the previous machine may not exist on the newly selected one. An
   // explicit empty header prevents the window adapter from stamping that pin;
   // the selected-machine header and its authorization still apply.
-  return http<WorkspaceRegistry>('/api/workspaces', { headers: { 'x-papercusp-workspace': '' } });
+  return http<WorkspaceRegistry>('/api/workspaces', { headers: {
+    'x-papercusp-workspace': '',
+    ...(machine ? { 'x-papercusp-machine': machine } : {}),
+  } });
 }
 
 export async function createWorkspace(name: string): Promise<Workspace> {
