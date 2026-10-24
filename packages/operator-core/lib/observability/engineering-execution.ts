@@ -26,19 +26,27 @@ export async function readEngineeringExecution(scope: { workspaceId: string; har
   const details = run.execution_details;
   const hints = parseTestBoundaryObservations(details?.boundaryObservations);
   if (!hints?.length) { gap(details?.boundaryObservations === undefined ? 'execution-not-recorded' : 'execution-correlation-invalid'); return result; }
+  const start = new Date(details?.runStartedAt ?? run.started_at).getTime();
+  const end = new Date(run.finished_at).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    gap('execution-outside-run'); return result;
+  }
   const identities = hints.map(({ caseKey, occurrence }) => ({ case_key: caseKey, occurrence }));
   const cases = await sql`SELECT case_key,occurrence FROM harness_shared.test_case_runs WHERE test_run_id=${runId}
     AND (case_key,occurrence) IN (SELECT case_key,occurrence
       FROM jsonb_to_recordset(${sql.json(identities)}::jsonb) AS requested(case_key text,occurrence integer)) LIMIT 33`;
   if (cases.length > 32) { gap('execution-case-limit'); return result; }
   const calls = [...new Set(hints.map(row => row.receipt.callId))];
+  // The telemetry writer stamps dispatch settlement before the caller receives
+  // its result, so a reporter-observed call settles inside this run's window.
+  // Use the existing workspace/harness/time index before matching JSON call IDs;
+  // historical tests may reuse a call label and must not pollute this run.
   const invocations = await sql`SELECT id::text, status, serving_build_sha, metadata_json->'otel' AS otel
     FROM harness_shared.tool_invocations WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harness}
+      AND invoked_at >= ${new Date(start)} AND invoked_at <= ${new Date(end)}
       AND tool_name='graph:query' AND metadata_json->'otel'->>'callId'=ANY(${calls}::text[])
     ORDER BY id LIMIT 33`;
   if (invocations.length > 32) { gap('execution-invocation-limit'); return result; }
-  const start = new Date(details?.runStartedAt ?? run.started_at).getTime();
-  const end = new Date(run.finished_at).getTime();
   const seen = new Set<string>();
   for (const hint of hints) {
     const receipt = hint.receipt;

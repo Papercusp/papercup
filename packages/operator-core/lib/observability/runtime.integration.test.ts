@@ -205,7 +205,7 @@ describe('production observability composition', () => {
     const [run] = await sql`INSERT INTO harness_shared.test_runs
       (workspace_id,harness_slug,file_path,framework,status,commit_sha,started_at,finished_at,execution_details)
       VALUES (${ctx.workspaceId},'papercusp','observability/runtime.integration.test.ts','vitest','pass',
-        ${receipt.buildSha},${new Date(receipt.startedAt - 1)},${new Date(receipt.endedAt + 1)},
+        ${receipt.buildSha},${new Date(receipt.startedAt - 1)},${new Date(Math.max(Date.now(), receipt.endedAt + 1))},
         ${sql.json({ boundaryObservations: hints })}) RETURNING id`;
     await sql`INSERT INTO harness_shared.test_case_runs (test_run_id,case_index,case_key,occurrence,status)
       VALUES (${run!.id},0,${caseKey},1,'pass')`;
@@ -233,6 +233,27 @@ describe('production observability composition', () => {
     expect(joined.observations).toEqual([{ runId, caseKey: 'ee.observed-boundary', occurrence: 1,
       invocationId: expect.any(String), receipt }]);
     task.meta.papercuspExecutionObservations = [receipt];
+  });
+  it('ee.execution-window: excludes older invocations that reused a recorded call identity', async () => {
+    const response = await evidenceInvocation('ee-reused-call');
+    const receipt = response.boundaryObservation!;
+    const sql = fixture.db!.adminSql;
+    // A reused call label outside this framework run must not create an
+    // ambiguous match or make the lookup scan unrelated historical calls.
+    await sql`INSERT INTO harness_shared.tool_invocations
+      (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,
+        status,serving_build_sha,invoked_at,metadata_json)
+      SELECT workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,status,serving_build_sha,
+        ${new Date(receipt.startedAt - 60_000)},metadata_json
+        FROM harness_shared.tool_invocations
+       WHERE workspace_id=${ctx.workspaceId} AND harness_slug='papercusp'
+         AND metadata_json->'otel'->>'callId'='ee-reused-call' LIMIT 1`;
+    const runId = await correlatedRun(receipt, 'ee.execution-window');
+    const joined = await readExecution(runId);
+    expect(joined.status).toBe('observed');
+    expect(joined.gaps).toEqual([]);
+    expect(joined.observations).toHaveLength(1);
+    expect(joined.observations[0]?.receipt).toEqual(receipt);
   });
   it('ee.parent-only: a real parent dispatch span never observes an uninstrumented child', async () => {
     const response = await evidenceInvocation('ee-parent-only', undefined, false);
