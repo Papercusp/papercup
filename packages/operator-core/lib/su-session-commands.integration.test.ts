@@ -83,7 +83,7 @@ async function storedTurns() {
 }
 
 describe('SU command acceptance through real PostgreSQL', () => {
-  it('SU-EXEC R-2 acceptance contract: round-trips four provider/execution combinations with typed commands and durable receipts', async () => {
+  it('old-client-compatibility: preserves legacy descriptors and refuses unadvertised extended commands', async () => {
     const legacy = descriptor();
     expect(await persistSuSessionDescriptor(advSessionId, legacy, workspaceId)).toBe(true);
     const restoredLegacy = await readDurableSuSession({ advSessionId, workspaceId });
@@ -98,6 +98,9 @@ describe('SU command acceptance through real PostgreSQL', () => {
     expect(await unsupported.terminal).toMatchObject({ refusal: { code: 'unsupported' } });
     expect(legacyExecute).not.toHaveBeenCalled();
     legacyHost.dispose();
+  });
+
+  it('durable-descriptor-command-receipt-roundtrip: preserves four provider/execution combinations with typed commands and receipts', async () => {
     for (const backend of ['claude', 'codex'] as const) {
       for (const executionKind of ['pty', 'programmatic'] as const) {
         const snapshot = { ...descriptor(), executionKind,
