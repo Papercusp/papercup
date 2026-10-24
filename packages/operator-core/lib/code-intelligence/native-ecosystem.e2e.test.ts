@@ -167,8 +167,9 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
         onOutput: (text, timing) => {
           const lines = (pendingStage + text).split('\n');
           pendingStage = lines.pop()!.slice(-2_000);
-          for (const line of lines) if (line.startsWith('NATIVE_INCIDENT_API_STAGE=')) {
-            writeSync(2, `NATIVE_INCIDENT_API_PROGRESS=${JSON.stringify({
+          for (const line of lines) {
+            if (/^NATIVE_REUSE_(?:BINDING|COMPLETION)_DIAGNOSTIC=/.test(line)) writeSync(2, line + '\n');
+            if (line.startsWith('NATIVE_INCIDENT_API_STAGE=')) writeSync(2, `NATIVE_INCIDENT_API_PROGRESS=${JSON.stringify({
               stage: line.slice('NATIVE_INCIDENT_API_STAGE='.length), ...timing })}\n`);
           }
         },

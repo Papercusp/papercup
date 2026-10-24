@@ -487,10 +487,16 @@ describe('P039 completion source brief delivery', () => {
       harness: 'papercup', paths: ['packages/operator-core/lib/code-intelligence/task-brief.ts'],
     }), expect.objectContaining({ runs: expect.any(Function) }));
     const readRuns = completionBriefPort.read.mock.calls[0]![1].runs;
-    const invocation = { invoked_at: new Date(), duration_ms: 10, files: ['target.test.ts'], work_item_id: 'WI-brief' };
-    dbMocks.planItemStatusRows.mockResolvedValueOnce([invocation]).mockResolvedValueOnce([
-      { file_path: 'target.test.ts', status: 'pass', run_group_id: 'bound-run' },
-    ]);
+    // Telemetry stamps dispatch SETTLEMENT; the test finished before that stamp.
+    // Model the real ledger's window predicate so a start/end mix-up cannot pass
+    // by returning a matching row regardless of the SQL parameters.
+    const settledAt = new Date();
+    const invocation = { invoked_at: settledAt, duration_ms: 30_000, files: ['target.test.ts'], work_item_id: 'WI-brief' };
+    const testFinishedAt = settledAt.getTime() - 250;
+    dbMocks.planItemStatusRows.mockResolvedValueOnce([invocation]).mockImplementationOnce(
+      (_sql: TemplateStringsArray, _paths: string[], from: Date, to: Date) => Promise.resolve(
+        from.getTime() <= testFinishedAt && testFinishedAt <= to.getTime()
+          ? [{ file_path: 'target.test.ts', status: 'pass', run_group_id: 'bound-run' }] : []));
     expect(await readRuns(['target.test.ts'])).toEqual([{ path: 'target.test.ts', status: 'pass', runGroupId: 'bound-run' }]);
     dbMocks.planItemStatusRows.mockResolvedValueOnce([invocation]).mockResolvedValueOnce([
       { file_path: 'target.test.ts', status: 'pass', run_group_id: 'bound-run' },

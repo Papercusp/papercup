@@ -3486,7 +3486,10 @@ async function latestTestingRunForOwner(
     if (!row) return null;
     const files = Array.isArray(row.files) ? row.files.filter((f): f is string => typeof f === 'string') : [];
     return {
-      invokedAt: new Date(row.invoked_at),
+      // The telemetry writer stamps invoked_at at dispatch settlement (EI-7040).
+      // Consumers need the invocation START to include test rows produced during
+      // the call; treating settlement as start excludes the very run we bound.
+      invokedAt: new Date(new Date(row.invoked_at).getTime() - Math.max(0, row.duration_ms ?? 0)),
       durationMs: row.duration_ms ?? null,
       workItemId: row.work_item_id ?? null,
       files,

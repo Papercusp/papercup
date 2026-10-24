@@ -158,6 +158,20 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
   assert.equal(run.skipped, 0, JSON.stringify(run));
   assert.equal(run.testRunIds?.length, 1, JSON.stringify(run));
   assert.equal(typeof run.runId, 'string', JSON.stringify(run));
+  // Preserve the real telemetry clock and ledger receipt outside PG teardown.
+  // invoked_at is the dispatch-settle time, not when testing:run began.
+  const bindingRows = await getOrgPg().sql<{ invoked_at: Date; duration_ms: number | null }[]>`
+    SELECT invoked_at, duration_ms FROM harness_shared.tool_invocations
+    WHERE workspace_id = ${workspace} AND coord_owner_id = ${owner}
+      AND tool_name = 'testing:run' AND args_json->>'work_item_id' = ${id}
+    ORDER BY invoked_at DESC LIMIT 1`;
+  const testRows = await getOrgPg().sql<{ file_path: string; finished_at: Date; run_group_id: string }[]>`
+    SELECT file_path, finished_at, run_group_id FROM harness_shared.test_runs
+    WHERE run_group_id = ${run.runId} AND file_path = 'src/target.test.ts'`;
+  console.log('NATIVE_REUSE_BINDING_DIAGNOSTIC=' + JSON.stringify({ workspace, workItem: id,
+    runGroupId: run.runId, testRunIds: run.testRunIds, invocations: bindingRows, tests: testRows }));
+  assert.equal(bindingRows.length, 1, 'Actual attributed testing:run must be durably recorded before completion');
+  assert.equal(testRows.length, 1, 'Actual test-file receipt must be retained for the same run group');
   // Refuse a completion replay whose telemetry cannot support a negative
   // execution claim. This reads the real run's coverage, without seeding it.
   const { readNativeCoverageScope, queryTestCoverage } = await import('../test-coverage-map.ts');
@@ -241,7 +255,10 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
   const completionSignals = { sibling: /Untouched sibling.*sibling/.test(text), newCopy: /New copy.*plantedCopy/.test(text),
     cochange: /Untouched src\/partner/.test(text), sql: /SQL reader left unchecked[^\"]*reader\.ts/.test(text),
     coverage: /no recorded test executed changed lines/.test(text) };
-  assert(Object.values(completionSignals).every(Boolean), JSON.stringify({ completionSignals, closed }));
+  console.log('NATIVE_REUSE_COMPLETION_DIAGNOSTIC=' + JSON.stringify({ completionSignals,
+    tests: receipt.completionBrief.tests, limitations: receipt.completionBrief.limitations }));
+  assert(Object.values(completionSignals).every(Boolean), JSON.stringify({ completionSignals,
+    tests: receipt.completionBrief.tests, limitations: receipt.completionBrief.limitations }));
   const issued = await getOrgPg().sql<{ subject: string; chars: number }[]>`SELECT subject, chars
     FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace} AND owner_id = ${owner}
       AND subject::jsonb->>'workItem' = ${id} AND subject::jsonb->>'surface' = 'completion'`;
