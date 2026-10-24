@@ -29,6 +29,16 @@ describe('integration selection without a PostgreSQL dependency', () => {
     expect(integrationNeedsPostgres([native, native + '.unknown'])).toBe(true);
     expect(integrationNeedsPostgres([])).toBe(true);
   });
+  it('keeps grouped coverage and in-memory provider fixtures independent of shared PG', async () => {
+    const fixtures = ['test-coverage-map', 'reuse-brief-providers'].map(name =>
+      fileURLToPath(new URL(`./code-intelligence/${name}.integration.test.ts`, import.meta.url)));
+    const baseline = vi.fn(async () => { throw new Error('Shared PG must not initialize'); });
+    const org = vi.fn(async () => { throw new Error('Shared org must not initialize'); });
+    await setupIntegrationSubstrate({}, fixtures, { baseline, org });
+    expect(baseline).not.toHaveBeenCalled();
+    expect(org).not.toHaveBeenCalled();
+    expect(integrationNeedsPostgres([...fixtures, fixtures[0] + '.unknown'])).toBe(true);
+  });
   it('keeps integration evidence and matches the selected database substrate', () => {
     expect(inject('papercuspTestLayer')).toBe('integration');
     const substrate = inject('operatorIntegrationSubstrate');

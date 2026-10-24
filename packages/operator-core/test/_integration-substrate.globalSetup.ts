@@ -20,6 +20,8 @@ const NO_SHARED_PG_TESTS = new Set([
   '../lib/code-intelligence/reuse-graph.integration.test.ts',
   // Owns a dedicated native PG cluster and applies only its isolated migration.
   '../lib/code-intelligence/test-coverage-map.integration.test.ts',
+  // Supplies explicit in-memory providers; never initializes the native SQL adapters.
+  '../lib/code-intelligence/reuse-brief-providers.integration.test.ts',
   // Owns a dedicated native cluster and migrates its private org database.
   '../lib/harness/routines/reconcile-loop-routines.integration.test.ts',
 ].map(path => fileURLToPath(new URL(path, import.meta.url))));
