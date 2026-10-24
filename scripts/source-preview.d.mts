@@ -151,6 +151,19 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
         sha256: string;
     };
 }>;
+/** @typedef {<T>(phase: string, operation: () => T | Promise<T>) => Promise<T>} VerifierPhaseRunner */
+/** Append outside the owned tree synchronously: a blocked event loop or SIGKILL
+ * must leave the last started phase readable without claiming it completed.
+ * Mirror exact records into the existing checkpoint-log store so temporary
+ * receipt cleanup cannot erase a later command's reviewed budget evidence.
+ * @param {string} path
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string} childDiagnosticsPath
+ * @returns {VerifierPhaseRunner & { archivePath: string }}
+ */
+export function verifierPhaseRunner(path: string, env: NodeJS.ProcessEnv, childDiagnosticsPath: string): VerifierPhaseRunner & {
+    archivePath: string;
+};
 /** Run a bounded dependency preflight without abandoning writers in its owned tree.
  * The maintained helpers emit measured byte, lock and completed-tree counters;
  * only increases extend the watchdog. Join its process group before cleanup.

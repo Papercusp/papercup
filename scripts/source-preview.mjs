@@ -50,7 +50,8 @@ import { createProgressAwareWatchdog } from './lib/batch-watchdog.mjs';
 import { processGroupLifetime } from '@papercusp/operator-core/lib/fleet/process-group-lifetime';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fs, appendFileSync, closeSync, existsSync, fstatSync, ftruncateSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync, writeSync } from 'node:fs';
+import { promises as fs, appendFileSync, closeSync, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync, writeSync } from 'node:fs';
+import { papercuspHome } from '@papercusp/host-platform/home';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { constants, homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -682,21 +683,32 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
 
 /** Append outside the owned tree synchronously: a blocked event loop or SIGKILL
  * must leave the last started phase readable without claiming it completed.
+ * Mirror exact records into the existing checkpoint-log store so temporary
+ * receipt cleanup cannot erase a later command's reviewed budget evidence.
  * @param {string} path
  * @param {NodeJS.ProcessEnv} env
  * @param {string} childDiagnosticsPath
- * @returns {VerifierPhaseRunner}
+ * @returns {VerifierPhaseRunner & { archivePath: string }}
  */
-function verifierPhaseRunner(path, env, childDiagnosticsPath) {
+export function verifierPhaseRunner(path, env, childDiagnosticsPath) {
   writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
+  const archiveDir = env.PAPERCUSP_CHECKPOINT_LOG_DIR || join(papercuspHome(env), 'checkpoint-logs');
+  mkdirSync(archiveDir, { recursive: true, mode: 0o700 });
+  const archivePath = join(archiveDir,
+    `verifier-phases-${createHash('sha256').update(resolve(path)).digest('hex')}.jsonl`);
+  writeFileSync(archivePath, '', { flag: 'wx', mode: 0o600 });
   const started = performance.now();
   let sequence = 0;
-  const record = (phase, event, fields = {}) => appendFileSync(path, `${JSON.stringify({
-    schemaVersion: 'verifier-phase-v1', sequence: ++sequence,
-    taskId: env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID ?? null,
-    phase, event, elapsedMs: Math.round(performance.now() - started), ...fields,
-  })}\n`);
-  return async (phase, operation) => {
+  const record = (phase, event, fields = {}) => {
+    const bytes = `${JSON.stringify({
+      schemaVersion: 'verifier-phase-v1', sequence: ++sequence,
+      taskId: env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID ?? null,
+      phase, event, elapsedMs: Math.round(performance.now() - started), ...fields,
+    })}\n`;
+    appendFileSync(archivePath, bytes);
+    appendFileSync(path, bytes);
+  };
+  const run = async (phase, operation) => {
     const before = performance.now();
     record(phase, 'started');
     try {
@@ -712,6 +724,7 @@ function verifierPhaseRunner(path, env, childDiagnosticsPath) {
       throw error;
     }
   };
+  return Object.assign(run, { archivePath });
 }
 
 /** Retain bounded child tails outside the cleaned source tree, including failures
@@ -1061,6 +1074,9 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     ownership = writeVerifierTaskReceipt(owned, sourceRepo, env, taskReceiptPath);
     const tracedPhase = verifierPhaseRunner(`${resolve(receiptPath)}.phases.jsonl`, env,
       `${receiptPath}.child.json`);
+    process.stderr.write(`VERIFIER_PHASE_ARCHIVE ${JSON.stringify({
+      path: `${resolve(receiptPath)}.phases.jsonl`, archivePath: tracedPhase.archivePath,
+    })}\n`);
     const measurements = {};
     runPhase = async (phase, operation) => {
       // Synchronous archive/census work delays JS signal delivery. Yield before
