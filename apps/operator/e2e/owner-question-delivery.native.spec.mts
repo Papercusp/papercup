@@ -4,7 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
-import { ownerQuestionDelivery } from '../lib/owner-question-native-contract';
+import { ownerQuestionDelivery } from '../lib/owner-question-native-contract.mts';
 
 // Run with scripts/run-operator-e2e-isolated.sh and
 // VERIFY_TAURI_ISOLATED_SEED=ready. Exercise the real owner UI and disposable
