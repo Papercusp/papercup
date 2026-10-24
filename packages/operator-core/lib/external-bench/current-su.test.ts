@@ -11,6 +11,7 @@ import {
   currentBenchObservationReader, liveCurrentBenchObservationReaderPorts, type CurrentBenchObservationReaderPorts,
   currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
   currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
+  currentBenchAnthropicInputContract, currentBenchAnthropicInputReader,
   currentBenchCodexSubscriptionContract, currentBenchCodexSubscriptionInputReader, currentBenchCodexSubscriptionTarget,
   currentBenchNativeCostReader, currentBenchNativeSessionCostDelta, type CurrentBenchNativeCostReaderPorts,
   currentBenchAttemptPopulationMatches,
@@ -1159,6 +1160,112 @@ describe('registered benchmark provider authentication', () => {
       vi.mocked(f.ceiling.validateAuthorization).mockImplementation(() => { throw new Error('native contract revoked'); });
       expect(() => authority.validateAuthorization()).toThrow(/native contract revoked/);
     } finally { f.revoke(); }
+  });
+});
+
+describe('Anthropic provider-enforced model input limits', () => {
+  function fixture() {
+    const f = providerAuthFixture(), input = { model: 'claude-pinned-model', inputTokens: 10_000, outputTokens: 128 };
+    const body = { model: input.model, max_tokens: 10, output_config: { effort: 'high' },
+      system: [{ type: 'text', text: 'private instructions', cache_control: { type: 'ephemeral', ttl: '1h' } }],
+      messages: [{ role: 'user', content: 'private native input' }],
+      tools: [{ name: 'shell', input_schema: { type: 'object', properties: {} } }] };
+    const bytes = JSON.stringify(body);
+    const attempt: GatewayCarryTrialAttempt = { ...f.attempt, transport: 'anthropic-http',
+      target: 'https://api.anthropic.com/v1/messages', credentialHeader: 'x-api-key',
+      credentialSha256: f.digest(NEVER_EMIT_MARKER), anthropicVersion: '2023-06-01', anthropicBeta: null,
+      body: bytes, bodySha256: f.digest(bytes) };
+    const model = { type: 'model', id: input.model, max_input_tokens: input.inputTokens, max_tokens: input.outputTokens };
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(model, { headers: { 'request-id': 'req-model-1' } }));
+    const reader = currentBenchAnthropicInputReader(input, { fetch });
+    return { ...f, input, body, attempt, model, fetch, reader, credential: { secret: NEVER_EMIT_MARKER } };
+  }
+  it('binds the contract to both full model limits and refuses unsafe model paths', () => {
+    const contract = currentBenchAnthropicInputContract('claude-pinned-model', 10_000, 128);
+    expect(contract).not.toBe(currentBenchAnthropicInputContract('claude-pinned-model', 10_001, 128));
+    expect(contract).not.toBe(currentBenchAnthropicInputContract('claude-pinned-model', 10_000, 129));
+    expect(() => currentBenchAnthropicInputContract('../models', 10_000, 128)).toThrow(/Anthropic input contract/);
+  });
+  it('uses only the authenticated Models API, preserves full-window evidence and revokes synchronously', async () => {
+    const f = fixture();
+    try {
+      const proof = await f.reader.read(f.attempt, f.credential);
+      expect(proof).toMatchObject({ model: f.input.model, inputTokens: 10_000,
+        evidence: { kind: 'provider-model-limit', model: f.input.model, inputTokens: 10_000, outputTokens: 128,
+          bodySha256: f.attempt.bodySha256, responseSha256: f.digest(JSON.stringify(f.model)),
+          requestId: 'req-model-1', anthropicVersion: '2023-06-01' } });
+      expect(f.fetch).toHaveBeenCalledExactlyOnceWith('https://api.anthropic.com/v1/models/claude-pinned-model',
+        expect.objectContaining({ method: 'GET', redirect: 'error',
+          headers: { 'x-api-key': NEVER_EMIT_MARKER, 'anthropic-version': '2023-06-01', accept: 'application/json' } }));
+      expect(f.fetch.mock.calls[0]![1]).not.toHaveProperty('body');
+      expect(JSON.stringify(proof)).not.toContain(NEVER_EMIT_MARKER);
+      proof!.validateAuthorization(); f.reader.revoke();
+      expect(() => proof!.validateAuthorization()).toThrow(/expired or revoked/);
+      expect(await f.reader.read(f.attempt, f.credential)).toBeNull();
+    } finally { f.reader.revoke(); f.revoke(); }
+  });
+  it.each(['alias', 'larger-input', 'smaller-input', 'output', 'missing', 'estimate', 'null', 'type', 'oversized', 'error', 'revoked'])(
+    'refuses %s metadata instead of treating it as an input bound', async changed => {
+      const f = fixture();
+      try {
+        if (changed === 'alias') f.model.id = 'resolved-different-model';
+        if (changed === 'larger-input') f.model.max_input_tokens++;
+        if (changed === 'smaller-input') f.model.max_input_tokens--;
+        if (changed === 'output') f.model.max_tokens++;
+        if (changed === 'missing') delete (f.model as Partial<typeof f.model>).max_input_tokens;
+        if (changed === 'null') f.model.max_input_tokens = null as never;
+        if (changed === 'type') f.model.type = 'message';
+        if (changed === 'estimate') f.fetch.mockImplementation(async () => Response.json({ input_tokens: 7 }));
+        if (changed === 'oversized') f.fetch.mockImplementation(async () => new Response(' '.repeat(16_385)));
+        if (changed === 'error') f.fetch.mockRejectedValue(new Error('unavailable'));
+        if (changed === 'revoked') f.fetch.mockImplementation(async () => { f.reader.revoke(); return Response.json(f.model); });
+        expect(await f.reader.read(f.attempt, f.credential)).toBeNull();
+      } finally { f.reader.revoke(); f.revoke(); }
+    });
+  it.each(['beta', 'missing-beta', 'version', 'missing-version', 'oauth', 'credential', 'route', 'hash', 'clock',
+    'aborted', 'output', 'hosted-tool', 'remote-file', 'image', 'context', 'unknown'])(
+    'refuses %s before making even a model metadata request', async changed => {
+      const f = fixture(), body = JSON.parse(f.attempt.body);
+      const patch: Partial<GatewayCarryTrialAttempt> = {};
+      if (changed === 'beta') patch.anthropicBeta = 'context-1m-2025-08-07';
+      if (changed === 'missing-beta') patch.anthropicBeta = undefined;
+      if (changed === 'version') patch.anthropicVersion = '2099-01-01';
+      if (changed === 'missing-version') patch.anthropicVersion = undefined;
+      if (changed === 'oauth') patch.credentialHeader = 'authorization';
+      if (changed === 'credential') patch.credentialSha256 = f.digest('foreign');
+      if (changed === 'route') patch.target = 'https://api.anthropic.com.evil.invalid/v1/messages';
+      if (changed === 'clock') patch.clockId = 'foreign';
+      if (changed === 'aborted') patch.signal = AbortSignal.abort();
+      if (changed === 'output') delete body.max_tokens;
+      if (changed === 'hosted-tool') body.tools = [{ type: 'web_search_20250305', name: 'web_search' }];
+      if (changed === 'remote-file') body.messages[0].content = [{ type: 'document', source: { type: 'file', file_id: 'file-1' } }];
+      if (changed === 'image') body.messages[0].content = [{ type: 'image', source: { type: 'url', url: 'https://remote.invalid' } }];
+      if (changed === 'context') body.context_management = { edits: [] };
+      if (changed === 'unknown') body.unknown_provider_feature = true;
+      const bytes = JSON.stringify(body), attempt = { ...f.attempt, body: bytes, bodySha256: f.digest(bytes), ...patch };
+      if (changed === 'hash') attempt.bodySha256 = f.digest('foreign');
+      try {
+        expect(await f.reader.read(attempt, f.credential)).toBeNull();
+        expect(f.fetch).not.toHaveBeenCalled();
+      } finally { f.reader.revoke(); f.revoke(); }
+    });
+  it('authenticates a frozen Claude API-key arm through the default model-limit reader', async () => {
+    const f = fixture(), baseline = providerAuthFixture();
+    const arm = baseline.input.protocol.arms[0], rate = baseline.input.protocol.priceSchedule.rates[0];
+    arm.agent = 'claude'; rate.model = f.input.model;
+    for (const value of baseline.input.protocol.arms) value.model = f.input.model;
+    rate.outputTokenCeiling = 128; rate.cacheWriteUsdPerMillion = 25;
+    rate.inputTokenCeilingSourceSha256 = currentBenchAnthropicInputContract(rate.model, 10_000, 128);
+    baseline.ports.readAccount.mockResolvedValue({ ...baseline.account, provider: 'claude' });
+    baseline.ports.credentialResolver.mockReturnValue({ ...baseline.resolver, kind: 'apikey', authMode: 'api-key' });
+    const { readNativeInputCeiling: _custom, ...input } = baseline.input;
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(f.fetch);
+    const auth = currentBenchProviderAuthenticator(input, baseline.ports);
+    try {
+      expect(await auth.authenticateProvider({ ...f.attempt, manifestSha256: input.preregHash,
+        armId: baseline.attempt.armId })).toMatchObject({ inputTokens: 10_000, outputTokens: 10, requestedUsd: 0.25002,
+        inputEvidence: { kind: 'provider-model-limit', outputTokens: 128 } });
+    } finally { auth.revoke(); fetch.mockRestore(); baseline.revoke(); f.reader.revoke(); f.revoke(); }
   });
 });
 

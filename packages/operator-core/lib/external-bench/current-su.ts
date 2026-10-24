@@ -808,6 +808,117 @@ export function currentBenchOpenAiInputReader(input: { model: string; inputToken
   } };
 }
 
+const anthropicMessagesTarget = 'https://api.anthropic.com/v1/messages';
+const anthropicModelsTarget = 'https://api.anthropic.com/v1/models/';
+const anthropicInputVersion = '2023-06-01';
+
+/** Reserve the complete provider-enforced window, never a token-count estimate.
+ * Aliases, OAuth and context-changing betas are excluded. ModelInfo documents
+ * max_input_tokens/max_tokens in the maintained provider SDK:
+ * https://github.com/anthropics/anthropic-sdk-typescript/blob/main/src/resources/models.ts */
+export function currentBenchAnthropicInputContract(model: string, inputTokens: number, outputTokens: number): string {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(model) ||
+      ![inputTokens, outputTokens].every(value => Number.isSafeInteger(value) && value > 0)) {
+    throw new Error('Invalid Anthropic input contract.');
+  }
+  return createHash('sha256').update(canonicalJson({ version: 1, kind: 'provider-model-limit',
+    model, inputTokens, outputTokens, target: anthropicMessagesTarget, modelTarget: anthropicModelsTarget + model,
+    anthropicVersion: anthropicInputVersion, anthropicBeta: null, credentialHeader: 'x-api-key',
+    input: 'self-contained-text-and-local-tools', aliases: 'refused', hostedTools: 'refused' })).digest('hex');
+}
+
+function selfContainedAnthropicInput(body: Record<string, unknown>): boolean {
+  const object = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
+  const keys = (value: Record<string, unknown>, allowed: string[]) => Object.keys(value).every(key => allowed.includes(key));
+  const cache = (value: unknown) => value === undefined || object(value) && value.type === 'ephemeral' &&
+    (value.ttl === undefined || value.ttl === '5m' || value.ttl === '1h') && keys(value, ['type', 'ttl']);
+  const text = (value: unknown) => object(value) && value.type === 'text' && typeof value.text === 'string' &&
+    cache(value.cache_control) && keys(value, ['type', 'text', 'cache_control']);
+  const textContent = (value: unknown) => typeof value === 'string' || Array.isArray(value) && value.every(text);
+  if (!keys(body, ['model', 'messages', 'system', 'tools', 'tool_choice', 'max_tokens', 'metadata', 'stream',
+    'temperature', 'top_p', 'top_k', 'stop_sequences', 'output_config', 'thinking', 'cache_control']) ||
+      !cache(body.cache_control) || body.system !== undefined && !textContent(body.system) ||
+      body.metadata !== undefined && (!object(body.metadata) || !keys(body.metadata, ['user_id']) ||
+        typeof body.metadata.user_id !== 'string') ||
+      body.output_config !== undefined && (!object(body.output_config) || !keys(body.output_config, ['effort'])) ||
+      body.thinking !== undefined && (!object(body.thinking) || !keys(body.thinking, ['type', 'budget_tokens']) ||
+        !['enabled', 'disabled', 'adaptive'].includes(String(body.thinking.type)))) return false;
+  if (body.tools !== undefined && (!Array.isArray(body.tools) || !body.tools.every(tool => object(tool) &&
+      (tool.type === undefined || tool.type === 'custom') && typeof tool.name === 'string' && !!tool.name.trim() &&
+      object(tool.input_schema) && tool.input_schema.type === 'object' && cache(tool.cache_control) &&
+      keys(tool, ['type', 'name', 'description', 'input_schema', 'cache_control', 'strict'])))) return false;
+  if (body.tool_choice !== undefined && (!object(body.tool_choice) ||
+      !['auto', 'any', 'none', 'tool'].includes(String(body.tool_choice.type)) ||
+      !keys(body.tool_choice, ['type', 'name', 'disable_parallel_tool_use']))) return false;
+  return Array.isArray(body.messages) && body.messages.length > 0 && body.messages.every(message =>
+    object(message) && keys(message, ['role', 'content']) && ['user', 'assistant'].includes(String(message.role)) &&
+    (textContent(message.content) || Array.isArray(message.content) && message.content.every(part => object(part) &&
+      (text(part) || part.type === 'tool_use' && typeof part.id === 'string' && typeof part.name === 'string' &&
+        object(part.input) && cache(part.cache_control) && keys(part, ['type', 'id', 'name', 'input', 'cache_control']) ||
+      part.type === 'tool_result' && typeof part.tool_use_id === 'string' && textContent(part.content) &&
+        cache(part.cache_control) && keys(part, ['type', 'tool_use_id', 'content', 'is_error', 'cache_control']) ||
+      part.type === 'thinking' && typeof part.thinking === 'string' && typeof part.signature === 'string' &&
+        keys(part, ['type', 'thinking', 'signature']) ||
+      part.type === 'redacted_thinking' && typeof part.data === 'string' && keys(part, ['type', 'data'])))));
+}
+
+/** Read fresh model limits with the final selected API key. Exact model ID,
+ * version and credential are required; aliases and all beta headers refuse.
+ * This metadata read never issues a generation or an estimated count request. */
+export function currentBenchAnthropicInputReader(input: { model: string; inputTokens: number; outputTokens: number },
+  ports: { fetch: typeof globalThis.fetch } = { fetch: globalThis.fetch },
+): { read: (attempt: GatewayCarryTrialAttempt, credential: CurrentBenchInputCredential) => Promise<CurrentBenchNativeInputCeiling | null>;
+  revoke: () => void } {
+  const { model, inputTokens, outputTokens } = input, send = ports.fetch;
+  const sourceSha256 = currentBenchAnthropicInputContract(model, inputTokens, outputTokens);
+  let live = true;
+  return { revoke() { live = false; }, async read(value, credential) {
+    const attempt = Object.freeze({ ...value }), secret = credential.secret;
+    try {
+      const body = JSON.parse(attempt.body);
+      if (!live || attempt.signal.aborted || attempt.clockId !== processMonotonicClock.id ||
+          attempt.transport !== 'anthropic-http' || attempt.target !== anthropicMessagesTarget ||
+          attempt.credentialHeader !== 'x-api-key' || !secret ||
+          attempt.credentialSha256 !== createHash('sha256').update(secret).digest('hex') ||
+          attempt.anthropicVersion !== anthropicInputVersion || attempt.anthropicBeta !== null ||
+          attempt.bodySha256 !== createHash('sha256').update(attempt.body).digest('hex') ||
+          body.model !== model || !Number.isSafeInteger(body.max_tokens) || body.max_tokens <= 0 ||
+          body.max_tokens > outputTokens || !selfContainedAnthropicInput(body)) return null;
+      const response = await send(anthropicModelsTarget + model, { method: 'GET', redirect: 'error',
+        headers: { 'x-api-key': secret, 'anthropic-version': anthropicInputVersion, accept: 'application/json' },
+        signal: AbortSignal.any([attempt.signal, AbortSignal.timeout(3000)]) });
+      if (response.status !== 200 || !response.body) { await response.body?.cancel(); return null; }
+      const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+      let bytes = 0;
+      try {
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          bytes += chunk.value.byteLength;
+          if (bytes > 16_384) { await reader.cancel(); return null; }
+          chunks.push(chunk.value);
+        }
+      } finally { reader.releaseLock(); }
+      const responseBytes = Buffer.concat(chunks), measured = JSON.parse(responseBytes.toString('utf8'));
+      if (!live || attempt.signal.aborted || measured.type !== 'model' || measured.id !== model ||
+          measured.max_input_tokens !== inputTokens || measured.max_tokens !== outputTokens) return null;
+      const validUntilMonotonicMs = processMonotonicClock.now() + 5000;
+      const requestId = response.headers.get('request-id');
+      return { model, inputTokens, sourceSha256, validUntilMonotonicMs,
+        evidence: Object.freeze({ kind: 'provider-model-limit', sourceSha256, bodySha256: attempt.bodySha256,
+          responseSha256: createHash('sha256').update(responseBytes).digest('hex'),
+          requestId: requestId !== null && /^[a-zA-Z0-9_-]{1,128}$/.test(requestId) ? requestId : null,
+          model, inputTokens, outputTokens, anthropicVersion: anthropicInputVersion }),
+        validateAuthorization() {
+          if (!live || attempt.signal.aborted || processMonotonicClock.now() >= validUntilMonotonicMs) {
+            throw new Error('Anthropic benchmark input authority expired or revoked.');
+          }
+        } };
+    } catch { return null; }
+  } };
+}
+
 /** Subscription admission (D-023). There is no provider count and no output
  * field, so the bound is the frozen provider-intrinsic contract. It only accepts
  * the final ChatGPT backend body, and only when max_output_tokens is absent, so
@@ -912,9 +1023,12 @@ export function createNativeProviderAuthenticator(input: {
   if (arm.agent === 'proximus' && subscription) throw new Error('Proximus supports only the API-key payer.');
   const route = providerAgent === 'claude' ? { transport: 'anthropic-http', target: 'https://api.anthropic.com/v1/messages' } as const
     : currentBenchCodexRoute(payer);
-  const contract = providerAgent === 'codex' ? currentBenchRateContract(payer, rate) : null;
+  const contract = providerAgent === 'codex' ? currentBenchRateContract(payer, rate) :
+    !subscription && rate.inputTokenCeiling !== undefined && rate.outputTokenCeiling !== undefined
+    ? currentBenchAnthropicInputContract(arm.model, rate.inputTokenCeiling, rate.outputTokenCeiling) : null;
   const providerReader = input.readNativeInputCeiling !== undefined || contract === null ||
-    rate.inputTokenCeilingSourceSha256 !== contract ? null : subscription
+    rate.inputTokenCeilingSourceSha256 !== contract ? null : providerAgent === 'claude'
+    ? currentBenchAnthropicInputReader({ model: arm.model, inputTokens: rate.inputTokenCeiling!, outputTokens: rate.outputTokenCeiling! }) : subscription
     ? currentBenchCodexSubscriptionInputReader({ model: arm.model, inputTokens: rate.inputTokenCeiling!, outputTokens: rate.outputTokenCeiling! })
     : currentBenchOpenAiInputReader({ model: arm.model, inputTokens: rate.inputTokenCeiling! });
   const readNativeInputCeiling = input.readNativeInputCeiling ?? providerReader?.read;

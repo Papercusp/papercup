@@ -2871,6 +2871,75 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
   );
 
   it(
+    'refreshes a same-ID loop checkpoint after the busy gate hands delivery to native rearm',
+    async () => {
+      const ownerId = uniqueOwner('LOOP-REARM-REFRESH');
+      const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = bridgedIo();
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', busyThenIdleChildCode(500, 50, 6_000, releaseBusy)],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_IDLE_MS: '60',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        },
+        ownerId,
+        advSessionId: 35_095,
+        io,
+        bridgeTty: true,
+        onExit: () => {},
+      });
+      const envelope = {
+        mode: 'turn' as const,
+        ownerId,
+        deliveryId: 'loop-rearm-refresh',
+        routineId: 'rt-loop-rearm-refresh',
+        fireNumber: 26,
+      };
+      try {
+        expect(await waitForHost(ownerId)).not.toBeNull();
+        expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+        expect(await injectIntoHostWithConfirmation(sock, {
+          ...envelope, data: 'STALE rearmed checkpoint',
+        })).toMatchObject({ ok: true, reason: 'accepted' });
+
+        // Hold the child busy until the socket's first waiter has actually
+        // handed off. This distinguishes rearm refresh from coalescer refresh.
+        await vi.waitFor(() => {
+          const events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          expect(events, hostTestDiagnostics(ownerId, captured)).toContain('"kind":"wake-rearm-queued"');
+        }, { timeout: 3_000 });
+        expect(await injectIntoHostWithConfirmation(sock, {
+          ...envelope, data: 'FRESH rearmed checkpoint',
+        })).toMatchObject({ ok: true, reason: 'pending-delivery-id' });
+        writeFileSync(releaseBusy, 'release\n');
+
+        expect(await waitForOutput(captured, 'ECHO:FRESH rearmed checkpoint', 3_000),
+          hostTestDiagnostics(ownerId, captured)).toBe(true);
+        expect(captured()).not.toContain('ECHO:STALE rearmed checkpoint');
+        expect((captured().match(/ECHO:FRESH rearmed checkpoint/g) ?? []).length).toBe(1);
+      } finally {
+        writeFileSync(releaseBusy, 'release\n');
+        await done;
+        rmSync(releaseBusy, { force: true });
+      }
+      expect(existsSync(sock)).toBe(false);
+    },
+    20_000,
+  );
+
+  it(
     'keeps a folded delivery ID retryable when its parent waiter defers at the busy cap (F03)',
     async () => {
       const busyMs = 1_500;
