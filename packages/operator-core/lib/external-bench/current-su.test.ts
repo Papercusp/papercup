@@ -2291,6 +2291,7 @@ describe('current benchmark restart and live binding', () => {
   });
   it('issues and revokes the frozen Claude baseline route through the existing host controller', async () => {
     const f = budgetFixture(); f.input.protocol.arms[1].agent = 'claude';
+    f.input.protocol.priceSchedule.rates[0].cacheWriteUsdPerMillion = 1.25;
     const controller = currentBenchGatewayController({ ...f.input, armId: 'baseline' }, f.governor);
     const stop = vi.fn(async () => {}), start = vi.fn(async () => ({ port: 32112, stop } as never));
     try {
