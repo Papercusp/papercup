@@ -435,7 +435,9 @@ async function sampleCandidates(sql: Sql, source: SourceName, workspaceId: strin
   );
 }
 
-async function main(): Promise<number> {
+/** Callable by the runtime qualifier; uses the same registered adapter and CLI
+ * arguments as the standalone entrypoint. The caller owns process cleanup. */
+export async function runBm25HybridRecall(): Promise<number> {
   const perSource = Number(argValue('--pairs') ?? '60');
   const seed = argValue('--seed') ?? 'r13-20261011';
   const replayFrom = argValue('--replay-from');
@@ -1114,7 +1116,7 @@ function renderMarkdown(a: {
   ].join('\n');
 }
 
-if (isCliEntry(import.meta.url)) main().then(
+if (isCliEntry(import.meta.url)) runBm25HybridRecall().then(
   (code) => process.exit(code),
   (e) => {
     console.error(e);
