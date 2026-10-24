@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { codexGatewayConfigToml } from '@papercusp/orchestrator/codex-gateway-config';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
+import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
 
 declare module 'vitest' {
   interface TaskMeta {
@@ -85,7 +86,9 @@ async function captureSurface(features: Record<string, boolean>) {
     };
     walk(request.tools);
     expect(JSON.stringify(request), stderr).toContain(managedTool);
-    return { version: execFileSync(codex, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim(), names };
+    return { version: execFileSync(codex, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim(), names,
+      hasNativeExecution: JSON.stringify(request.tools).includes('exec_command') ||
+        JSON.stringify(request.tools).includes('write_stdin') };
   } finally {
     child.kill('SIGTERM');
     server.closeAllConnections();
@@ -95,6 +98,20 @@ async function captureSurface(features: Record<string, boolean>) {
 }
 
 describe('Codex managed replacement installed-client census', () => {
+  it('records the code-mode host tool surface separately from direct native execution', async ({ task }) => {
+    const codeMode = await captureSurface({ code_mode_host: true });
+    const managedOnly = await captureSurface({ code_mode_host: false, shell_tool: false,
+      view_image: false, sleep_tool: false, computer_use: false, browser_use: false,
+      multi_agent: false, goals: false, image_generation: false });
+    const inventory = nativeToolInventory({ client: 'codex', clientVersion: codeMode.version,
+      nativeNames: codeMode.names.filter(name => name !== 'multi_agent_v1'),
+      managedNames: [managedTool] });
+    task.meta.nativeToolSurface = { codeMode, managedOnly, inventory };
+    expect(inventory.rows.every(row => row.gap === null || row.gap === 'client-version-drift')).toBe(true);
+    expect(codeMode.names).not.toEqual(managedOnly.names);
+    expect(managedOnly.names).not.toContain('exec_command');
+    expect(managedOnly.names).not.toContain('write_stdin');
+  }, 60_000);
   it('measures native shell removal while retaining the managed MCP surface', async ({ task }) => {
     const baseline = await captureSurface({ code_mode_host: false });
     const restricted = await captureSurface({ code_mode_host: false, shell_tool: false });

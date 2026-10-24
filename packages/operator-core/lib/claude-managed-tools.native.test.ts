@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
+import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
 
 declare module 'vitest' {
   interface TaskMeta {
@@ -81,7 +82,10 @@ describe('Claude managed replacement installed-client census', () => {
     const denied = ['Bash', 'Read', 'Edit', 'Write'];
     const baseline = await captureSurface([]);
     const restricted = await captureSurface(denied);
-    task.meta.nativeToolSurface = { baseline, restricted };
+    const inventory = nativeToolInventory({ client: 'claude', clientVersion: baseline.version,
+      nativeNames: [...baseline.names, ...restricted.names], managedNames: [canary] });
+    task.meta.nativeToolSurface = { baseline, restricted, inventory };
+    expect(inventory.rows.every(row => row.gap === null || row.gap === 'client-version-drift')).toBe(true);
     for (const name of denied) {
       expect(baseline.names).toContain(name);
       expect(restricted.names).not.toContain(name);

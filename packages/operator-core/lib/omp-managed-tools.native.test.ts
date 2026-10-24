@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
+import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
 
 declare module 'vitest' {
   interface TaskMeta {
@@ -40,7 +41,9 @@ export default function(pi) {
     streamSimple(model, context) {
       if (++turns > 2) throw new Error('Unexpected inference turn');
       const names = (context.tools ?? []).map(tool => tool.name);
-      writeFileSync(process.env.PAPERCUSP_NATIVE_TOOL_CENSUS_FILE, JSON.stringify({ names, calls, turns }));
+      writeFileSync(process.env.PAPERCUSP_NATIVE_TOOL_CENSUS_FILE, JSON.stringify({ names, calls, turns,
+        descriptions: (context.tools ?? []).filter(tool => ['eval', 'hub'].includes(tool.name))
+          .map(tool => ({ name: tool.name, description: String(tool.description ?? '').slice(0, 3500) })) }));
       const tool = turns === 1;
       const content = tool
         ? [{ type: 'toolCall', id: 'native-canary', name: '${canary}', arguments: {} }]
@@ -64,8 +67,10 @@ export default function(pi) {
       '--model', 'surface-fixture/proof', '--thinking', 'off', '--auto-approve',
       ...(noTools ? ['--no-tools'] : []), 'Run the local tool-surface census.'], {
       cwd: home, encoding: 'utf8', timeout: 25_000, maxBuffer: 2 * 1024 * 1024,
-      env: { ...process.env, PI_CODING_AGENT_DIR: home, PI_CONFIG_DIR: home,
-        PAPERCUSP_SID: '', PAPERCUSP_NATIVE_TOOL_CENSUS_FILE: resultPath },
+      env: { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8', HOME: home,
+        XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.local', 'share'),
+        PI_CODING_AGENT_DIR: home, PI_CONFIG_DIR: home,
+        PAPERCUSP_NATIVE_TOOL_CENSUS_FILE: resultPath },
     });
     expect(result.status, `${result.error?.message ?? ''}\n${result.stderr}\n${result.stdout.slice(-1500)}`).toBe(0);
     const census = JSON.parse(readFileSync(resultPath, 'utf8')) as { names: string[]; calls: number; turns: number };
@@ -79,7 +84,11 @@ describe('OMP managed replacement installed-client census', () => {
   it('removes built-in execution tools while an extension tool still executes', ({ task }) => {
     const baseline = captureSurface(false);
     const restricted = captureSurface(true);
-    task.meta.nativeToolSurface = { baseline, restricted };
+    const inventory = nativeToolInventory({ client: 'omp', clientVersion: baseline.version,
+      nativeNames: [...baseline.names, ...restricted.names], managedNames: [canary] });
+    task.meta.nativeToolSurface = { baseline, restricted, inventory };
+    expect(inventory.rows.every(row => row.gap === null || row.gap === 'client-version-drift' ||
+      row.gap === 'native-semantics-unmeasured')).toBe(true);
     // OMP can defer an MCP extension's schema from context.tools; actual
     // execution is the positive control for that interface.
     expect(baseline.calls).toBe(1);
