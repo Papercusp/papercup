@@ -82,7 +82,8 @@ async function adminGet(
   params: Record<string, string | number | boolean> = {},
 ): Promise<{ status: number; json: unknown }> {
   const url = new URL(`${baseURL}/api/admin/plans/${verb}`);
-  url.searchParams.set('harness', harnessSlug);
+  // Transcript lookup is keyed by runId; its tool schema has no harness argument.
+  if (verb !== 'run-transcript') url.searchParams.set('harness', harnessSlug);
   for (const [k, v] of Object.entries(params)) {
     url.searchParams.set(k, String(v));
   }
