@@ -10,6 +10,7 @@ const {
   dedicatedSessionBeginMock,
   dedicatedSessionEndMock,
   dedicatedPoolCalls,
+  samplePgBouncerPoolsMock,
   workspaceCalls,
   acquireTimeouts,
   acquireRetries,
@@ -30,6 +31,7 @@ const {
     dedicatedSessionBeginMock: dedicatedBegin,
     dedicatedSessionEndMock: dedicatedEnd,
     dedicatedPoolCalls: [] as Array<{ label: string; options?: { max?: number; sessionAffinity?: boolean } }>,
+    samplePgBouncerPoolsMock: vi.fn(async () => ({ ok: true })),
     workspaceCalls: [] as Array<{
       workspaceId: string;
       options?: {
@@ -83,6 +85,9 @@ vi.mock('@papercusp/db-org', async (orig) => {
     }) as typeof actual.withAcquisitionDeadline,
   };
 });
+vi.mock('./endpoint-route/routes/transport/pgbouncer-pool-sample.mjs', () => ({
+  samplePgBouncerPools: samplePgBouncerPoolsMock,
+}));
 
 import {
   isDeadTerminalLaunch,
@@ -96,6 +101,7 @@ import {
   advSessionLivenessEvidenceCoversAgent,
   ADV_SESSION_LIVENESS_EVIDENCE_AGENT,
   getLatestActiveAdvSessionByOwner,
+  latestAdvSessionByCoordOwner,
   readAdvSessionLaunchRecordByOwner,
   readSuLaunchSpecByOwner,
   listResumableSessions,
@@ -122,6 +128,8 @@ beforeEach(() => {
   dedicatedSessionEndMock.mockReset();
   dedicatedSessionEndMock.mockResolvedValue(undefined);
   dedicatedPoolCalls.length = 0;
+  samplePgBouncerPoolsMock.mockReset();
+  samplePgBouncerPoolsMock.mockResolvedValue({ ok: true });
   advSessionBeginMock.mockReset();
   advSessionBeginMock.mockImplementation(async (fn: (tx: typeof advSessionRowsMock) => unknown) => fn(advSessionRowsMock));
   acquireTimeouts.length = 0;
@@ -617,6 +625,96 @@ describe('getLatestActiveAdvSessionByOwner', () => {
   it('does not query for a blank owner id', async () => {
     await expect(getLatestActiveAdvSessionByOwner('   ')).resolves.toBeNull();
     expect(advSessionRowsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('latestAdvSessionByCoordOwner acquisition fallback', () => {
+  const row = {
+    id: 541,
+    workspace_id: 'workspace-a',
+    plan_slug: null,
+    agent: 'codex',
+    role: null,
+    feature: null,
+    mode: 'console' as const,
+    terminal_bin: null,
+    pid: null,
+    window_id: null,
+    omp_thread_id: null,
+    label: null,
+    cwd: null,
+    coord_owner_id: 'su-owner-lookup',
+    session_id: 'native-session',
+    started_at: '2026-10-24T08:00:00.000Z',
+    ended_at: null,
+    exit_code: null,
+    ended_by: null,
+    ended_signal: null,
+  };
+
+  it.each([
+    'boundedOrgTxn:begin(admin)',
+    'boundedOrgTxn:setup-read-only(admin)',
+    'boundedOrgTxn:setup-timeouts(admin)',
+  ])('uses the dedicated direct-session lookup after %s', async (label) => {
+    const timeout = new DbCallDeadlineError(label, 1_500, 1_606, 'org-admin');
+    advSessionBeginMock.mockRejectedValueOnce(timeout);
+    dedicatedSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const query = Array.isArray(args[0]) ? args[0].join(' ') : String(args[0] ?? '');
+      return query.includes('FROM harness_shared.adv_sessions') ? [row] : [];
+    });
+
+    await expect(latestAdvSessionByCoordOwner('su-owner-lookup')).resolves.toMatchObject({
+      id: 541,
+      coordOwnerId: 'su-owner-lookup',
+      sessionId: 'native-session',
+    });
+    await vi.waitFor(() => expect(samplePgBouncerPoolsMock).toHaveBeenCalledTimes(1));
+
+    expect(advSessionBeginMock).toHaveBeenCalledTimes(1);
+    expect(dedicatedPoolCalls).toEqual([{
+      label: 'latest-adv-session-owner-fallback',
+      options: { max: 1, sessionAffinity: true },
+    }]);
+    expect(dedicatedSessionEndMock).toHaveBeenCalledWith({ timeout: 5 });
+    expect(samplePgBouncerPoolsMock).toHaveBeenCalledWith(
+      'latest-adv-session-owner-acquire-deadline',
+      expect.objectContaining({ pid: process.pid, requestFingerprint: expect.stringMatching(/^[a-f0-9]{16}$/) }),
+    );
+  });
+
+  it('does not use the dedicated path for a query error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    advSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const query = Array.isArray(args[0]) ? args[0].join(' ') : String(args[0] ?? '');
+      if (query.includes('FROM harness_shared.adv_sessions')) {
+        throw Object.assign(new Error('permission denied'), { code: '42501' });
+      }
+      return [];
+    });
+
+    try {
+      await expect(latestAdvSessionByCoordOwner('su-owner-lookup')).resolves.toBeNull();
+      expect(dedicatedPoolCalls).toHaveLength(0);
+      expect(samplePgBouncerPoolsMock).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not use the dedicated path for an acquisition deadline from another pool', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    advSessionBeginMock.mockRejectedValueOnce(
+      new DbCallDeadlineError('boundedOrgTxn:begin(admin)', 1_500, 1_606, 'org-app'),
+    );
+
+    try {
+      await expect(latestAdvSessionByCoordOwner('su-owner-lookup')).resolves.toBeNull();
+      expect(dedicatedPoolCalls).toHaveLength(0);
+      expect(samplePgBouncerPoolsMock).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

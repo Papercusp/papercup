@@ -12,6 +12,7 @@
  * `adv:sessions_list` MCP tool (later).
  */
 
+import { createHash } from 'node:crypto';
 import { createDedicatedOrgPg, DbCallDeadlineError, getOrgPg, withWorkspace } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
 import { boundedOrgTxn, OrgTxnTimeoutError } from './pg-bounded-txn';
@@ -3276,32 +3277,76 @@ export async function firstAdvSessionStartByCoordOwner(coordOwnerId: string): Pr
  * advSessionsByCoordOwner above.
  */
 export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promise<AdvSessionRow | null> {
+  const queryLatest = (tx: TransactionSql) => tx<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+    SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+           window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
+      FROM harness_shared.adv_sessions
+     WHERE coord_owner_id = ${coordOwnerId}
+     ORDER BY id DESC
+     LIMIT 1
+  `;
+
   try {
-    const rows = await boundedOrgTxn(
-      (tx) => tx<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
-        SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-               window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
-          FROM harness_shared.adv_sessions
-         WHERE coord_owner_id = ${coordOwnerId}
-         ORDER BY id DESC
-         LIMIT 1
-      `,
-      {
-        acquireTimeoutMs: 1_500,
-        acquireRetries: 0,
-        connectionSetupRetries: 0,
-        statementTimeoutMs: 1_500,
-        lockTimeoutMs: 1_000,
-        readOnly: true,
-        phase: 'adv-sessions:latest-by-coord-owner',
-      },
-    );
+    const rows = await boundedOrgTxn(queryLatest, {
+      acquireTimeoutMs: 1_500,
+      acquireRetries: 0,
+      connectionSetupRetries: 0,
+      statementTimeoutMs: 1_500,
+      lockTimeoutMs: 1_000,
+      readOnly: true,
+      phase: 'adv-sessions:latest-by-coord-owner',
+    });
     const r = rows[0];
     return r ? mapAdvSessionRow(r) : null;
   } catch (e) {
+    if (isBoundedOrgAdminAcquisitionDeadline(e)) {
+      // Preserve a bounded snapshot of PgBouncer and PostgreSQL activity for
+      // the next occurrence. It runs out of band and cannot extend the lookup.
+      const requestFingerprint = createHash('sha256').update(coordOwnerId, 'utf8').digest('hex').slice(0, 16);
+      void import('./endpoint-route/routes/transport/pgbouncer-pool-sample.mjs')
+        .then(({ samplePgBouncerPools }) => samplePgBouncerPools(
+          'latest-adv-session-owner-acquire-deadline',
+          { pid: process.pid, requestFingerprint },
+        ))
+        .catch(() => undefined);
+
+      try {
+        const { sql } = createDedicatedOrgPg('latest-adv-session-owner-fallback', {
+          max: 1,
+          // Bypass the shared transaction path that missed its acquisition
+          // deadline; the historical sample cannot locate the physical queue.
+          // Keep the fallback caller-owned and bounded.
+          sessionAffinity: true,
+        });
+        try {
+          const rows = await boundedOrgTxn(queryLatest, {
+            client: sql,
+            acquireTimeoutMs: 7_500,
+            acquireRetries: 0,
+            statementTimeoutMs: 1_500,
+            lockTimeoutMs: 1_000,
+            readOnly: true,
+          });
+          const r = rows[0];
+          return r ? mapAdvSessionRow(r) : null;
+        } finally {
+          await sql.end({ timeout: 5 });
+        }
+      } catch (fallbackError) {
+        warnUnlessMissingTable(fallbackError, 'latestAdvSessionByCoordOwner dedicated fallback');
+        return null;
+      }
+    }
     warnUnlessMissingTable(e, 'latestAdvSessionByCoordOwner');
     return null;
   }
+}
+
+/** Only transaction begin/setup deadlines qualify for the isolated read path. */
+function isBoundedOrgAdminAcquisitionDeadline(error: unknown): error is DbCallDeadlineError {
+  return error instanceof DbCallDeadlineError
+    && error.pool === 'org-admin'
+    && (error.label === 'boundedOrgTxn:begin(admin)' || error.label.startsWith('boundedOrgTxn:setup-'));
 }
 
 /**

@@ -276,6 +276,15 @@ async function main() {
     console.log('CODEX_BUDGET_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
     return;
   }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'loop-namespace-native') {
+    const receipt = await (await import('./loop-namespace-native-scenario')).measureLoopNamespaceNativeScenario({
+      workspace, base, headers, evidenceDir,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('LOOP_NAMESPACE_NATIVE_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
+    return;
+  }
   if (blueprintRoute) {
     const receipt = await blueprintRoute.execute(stopHost);
     await stopHost();
