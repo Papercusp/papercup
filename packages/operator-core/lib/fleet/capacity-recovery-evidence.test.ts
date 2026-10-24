@@ -3,11 +3,15 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { canonicalJson } from '@papercusp/hash-chain';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { formatSpecRef } from '../scheduler/claim-spec';
 import { BRIEF_ADMIN, computeIdentityHash, JUDGE_PROMPT_SCAFFOLD_VERSION } from '@papercusp/testing-shell/llm';
 import { S42_CASES, S42_ITEM, S42_PROMPT } from '../llm-testing/scenarios/su/S42-drain-watch-recheck';
 import { LUNA_CAPACITY_PLAN, LUNA_CAPACITY_INSTRUMENTS, lunaCapacityInstruments, validateCapacityRecoveryProof, validateCapacityShipmentProof,
   validateCapacityDiagnosticProof, validateCapacityContinuationProof, validateCapacityContractProof, validateCapacityNativeLlmRun,
+  validateCapacityShipmentEvidence, capacityBarEvidenceFingerprint, type NativeCapacityBarEvidence,
+  validateCapacityShipmentAcceptance, type NativeCapacityAcceptanceReceipt,
+  validateCapacityShipmentRelease,
   validateCapacityBriefReceipt, validateCapacityOutputReceipt, validateCapacityAdmissionReceipt,
   validateCapacityDiagnosticOutputs, type NativeCapacityOutput,
   validateCapacityRecoveryOperations, capacityWriterAuditRef, type NativeCapacityRecoveryOperation,
@@ -61,6 +65,149 @@ function shipment(): CapacityShipmentProof {
     probe: { runtime: 'release-operator', sourceDigest: hash('b'), buildDigest: hash('c'), observedAt: stamp(4),
       verdict: 'pass', receiptRef: 'release-probe' } };
 }
+
+describe('canonical R1–R5 shipment evidence', () => {
+  function native() {
+    const proof = shipment();
+    const rows: NativeCapacityBarEvidence[] = proof.evidence.map((e, n) => ({ id: n + 1, barKey: e.barKey,
+      specId: 'spec-' + e.barKey, specRevision: 3, currentRevision: 3, currentness: 'current',
+      sourceFingerprint: 'sha256-file-set-v1:' + proof.candidate.sourceDigest, sourceMatchesCandidate: true,
+      commitSha: proof.candidate.commit, worktreeDirty: false, testRunId: n + 20,
+      status: 'pass', passed: 1, failed: 0, collectionFailed: false, observedAt: stamp(1) }));
+    for (const e of proof.evidence) {
+      e.receiptRef = 'spec-evidence-set:' + e.barKey;
+      e.fingerprint = capacityBarEvidenceFingerprint(rows.filter(r => r.barKey === e.barKey));
+    }
+    const instruments = [{ barKey: 'R-2', key: LUNA_CAPACITY_INSTRUMENTS.diagnostic, value: 1 },
+      { barKey: 'R-4', key: LUNA_CAPACITY_INSTRUMENTS.continuation, value: 1 },
+      { barKey: 'R-5', key: LUNA_CAPACITY_INSTRUMENTS.recovery, value: 1 }];
+    return { proof, rows, instruments };
+  }
+  it('joins native binding/run population and fresh prerequisite instruments, independent of row order', () => {
+    const n = native();
+    expect(validateCapacityShipmentEvidence(n.proof, n.rows.reverse(), n.instruments)).toEqual({ status: 'pass', violations: [] });
+  });
+  it.each(['currentness', 'commitSha', 'sourceFingerprint', 'sourceMatchesCandidate', 'worktreeDirty', 'status', 'failed',
+    'collectionFailed', 'specRevision', 'testRunId', 'observedAt'] as const)('rejects native %s drift even with a refreshed artifact digest', field => {
+    const n = native(), r = n.rows[0];
+    const corrupt = { currentness: 'stale', commitSha: 'f'.repeat(40), sourceFingerprint: hash('f'),
+      sourceMatchesCandidate: false, worktreeDirty: true, status: 'fail', failed: 1, collectionFailed: true, specRevision: 1,
+      testRunId: null, observedAt: stamp(3) };
+    Object.assign(r, { [field]: corrupt[field] });
+    n.proof.evidence[0].fingerprint = capacityBarEvidenceFingerprint([r]);
+    n.proof.evidence[0].observedAt = r.observedAt;
+    expect(validateCapacityShipmentEvidence(n.proof, n.rows, n.instruments).violations).toContain('native-shipment-evidence:R-1');
+  });
+  it('refuses missing/duplicate populations, forged receipts and unknown or failed instruments', () => {
+    for (const mutate of [
+      (n: ReturnType<typeof native>) => { n.rows.pop(); },
+      (n: ReturnType<typeof native>) => { n.rows.push(n.rows[0]); },
+      (n: ReturnType<typeof native>) => { n.proof.evidence[0].fingerprint = hash('f'); },
+      (n: ReturnType<typeof native>) => { n.proof.evidence[0].receiptRef = 'unresolved'; },
+      (n: ReturnType<typeof native>) => { n.instruments[0].value = 0; },
+      (n: ReturnType<typeof native>) => { n.instruments[0] = n.instruments[1]; },
+    ]) {
+      const n = native(); mutate(n);
+      expect(validateCapacityShipmentEvidence(n.proof, n.rows, n.instruments).status).toBe('fail');
+    }
+  });
+});
+
+describe('native independent candidate acceptance', () => {
+  function reviewed() {
+    const proof = shipment(); proof.acceptance.ref = 'conv-acceptance'; proof.acceptance.receiptRef = 'thread-post:10';
+    const native: NativeCapacityAcceptanceReceipt = { conversationId: 'conv-acceptance', acceptedPostId: 10,
+      state: 'resolved', postId: 10, reviewerId: 'independent', createdAt: stamp(2), authorId: 'author',
+      implementerIds: ['author'], lineageIndependent: true, body: { verdict: 'accept', plan: LUNA_CAPACITY_PLAN,
+        candidate: proof.candidate, evidence: structuredClone(proof.evidence), pendingFindings: [] } };
+    return { proof, native };
+  }
+  it('requires the native accepted post, outside-lineage reviewer and exact current proof set', () => {
+    const n = reviewed();
+    expect(validateCapacityShipmentAcceptance(n.proof, n.native)).toEqual({ status: 'pass', violations: [] });
+  });
+  it('refuses invented, unresolved, related, superseded and unsettled acceptance', () => {
+    for (const mutate of [
+      (n: ReturnType<typeof reviewed>) => { n.native.acceptedPostId = 9; },
+      (n: ReturnType<typeof reviewed>) => { n.native.state = 'open'; },
+      (n: ReturnType<typeof reviewed>) => { n.native.reviewerId = 'foreign'; },
+      (n: ReturnType<typeof reviewed>) => { n.native.createdAt = stamp(3); },
+      (n: ReturnType<typeof reviewed>) => { n.native.authorId = null; },
+      (n: ReturnType<typeof reviewed>) => { n.native.implementerIds = ['unlisted']; },
+      (n: ReturnType<typeof reviewed>) => { n.native.lineageIndependent = false; },
+      (n: ReturnType<typeof reviewed>) => { (n.native.body as { pendingFindings: string[] }).pendingFindings.push('finding'); },
+      (n: ReturnType<typeof reviewed>) => { (n.native.body as { evidence: unknown[] }).evidence.pop(); },
+      (n: ReturnType<typeof reviewed>) => { (n.native.body as { verdict: string }).verdict = 'object'; },
+    ]) {
+      const n = reviewed(); mutate(n);
+      expect(validateCapacityShipmentAcceptance(n.proof, n.native).status).toBe('fail');
+    }
+  });
+});
+
+describe('native green, deploy and released-process custody', () => {
+  const millis = (minute: number, delta: number) => new Date(Date.parse(stamp(minute)) + delta).toISOString();
+  function released() {
+    const proof = shipment();
+    proof.green.receiptRef = 'gate-action-green'; proof.release.receiptRef = 'gate-action-deploy';
+    const path = 'src/feature.ts', source = { path, sha256: hash('6'), gitBlob: '9'.repeat(40) };
+    const result = { repoRoot: '/repo', submodule: null, acceptedSource: { expectedSha256: source.sha256,
+      observedSha256: source.sha256, matches: true, runtimeContainment: { 'release-operator': true } },
+      observingRuntime: { host: 'port-3070', processId: 'release-process', buildSha: proof.release.commit,
+        artifact: { status: 'measured', sourceSha: proof.release.commit, bundleSha256: proof.release.buildDigest,
+          manifestSha256: hash('8'), evidenceRef: 'boot-manifest', sourceBlobs: { [path]: source.gitBlob } } } };
+    const runtime: NativeCapacityOutput = { sourceMatches: true, capture: { invocationId: 17, result }, native: {
+      id: 17, toolName: 'dev:pipeline_position', status: 'ok', workspaceId: 'papercusp-workspace', actorId: 'independent',
+      invokedAt: millis(4, 1000), durationMs: 1000, servingHost: 'port-3070', servingProcessId: 'release-process',
+      servingBuildSha: proof.release.commit, args: { path, sourceRuntimeOnly: true, expectedSourceSha256: source.sha256 },
+      metadata: { operationalOutput: { schemaVersion: 1, observedAt: stamp(4),
+        sha256: createHash('sha256').update(canonicalJson(result)).digest('hex') } } } };
+    proof.probe.receiptRef = 'native-release-file-set:' + createHash('sha256')
+      .update(canonicalJson([{ path, invocationId: 17 }])).digest('hex');
+    const ownership = { certainty: 'claim-row-locked-through-effect', workItem: 'WI-gate', holder: 'gate-owner' };
+    const native = {
+      greenAction: { id: 'gate-action-green', actor: 'gate-owner', action: 'release:checkpoint-run', details: {
+        schemaVersion: 2, phase: 'settled', ownerId: 'gate-owner', ownership: { ...ownership },
+        target: { candidate: proof.candidate.commit }, effect: { status: 'detached-launch-accepted' }, settledAt: stamp(1) } },
+      deployAction: { id: 'gate-action-deploy', actor: 'gate-owner', action: 'release:deploy', details: {
+        schemaVersion: 2, phase: 'settled', ownerId: 'gate-owner', ownership: { ...ownership },
+        target: { op: 'trigger', greenPinSha: proof.release.commit }, effect: { status: 'detached-launch-accepted' }, settledAt: millis(2, 20000) } },
+      green: { id: 'pipeline-green', kind: 'green_checkpoint', status: 'advanced', createdAt: millis(2, 10000),
+        detail: { green: true, fullCandidate: proof.candidate.commit, runId: proof.green.runId, diagnostic: false, candidateSource: 'staging' } },
+      release: { id: proof.release.deployId, kind: 'deploy', status: 'ok', createdAt: proof.release.deployedAt,
+        detail: { fullTargetSha: proof.release.commit } }, runtime: [runtime],
+    };
+    return { proof, native, current: { root: '/repo', sources: [source], startedAt: stamp(0), finishedAt: stamp(6), now: stamp(7) } };
+  }
+  it('joins locked ownership through launch to exact historical green/deploy outcomes and boot artifact', () => {
+    const n = released();
+    expect(validateCapacityShipmentRelease(n.proof, n.native, n.current)).toEqual({ status: 'pass', violations: [] });
+  });
+  it('rejects forged owners, refused/force launches, display-only SHAs, and absent or substituted runtime proof', () => {
+    for (const mutate of [
+      (n: ReturnType<typeof released>) => { n.native.greenAction.actor = 'other'; },
+      (n: ReturnType<typeof released>) => { n.native.greenAction.details.ownership.holder = 'other'; },
+      (n: ReturnType<typeof released>) => { n.native.greenAction.details.ownership.certainty = 'no-linked-condition-observed'; },
+      (n: ReturnType<typeof released>) => { n.native.greenAction.details.phase = 'intent'; },
+      (n: ReturnType<typeof released>) => { n.native.greenAction.details.effect.status = 'refused'; },
+      (n: ReturnType<typeof released>) => { n.native.green.detail.fullCandidate = n.proof.candidate.commit.slice(0, 12); },
+      (n: ReturnType<typeof released>) => { n.native.green.detail.runId = 'another-run'; },
+      (n: ReturnType<typeof released>) => { n.native.green.detail.diagnostic = true; },
+      (n: ReturnType<typeof released>) => { n.native.green.detail.candidateSource = 'pinned'; },
+      (n: ReturnType<typeof released>) => { n.native.deployAction.details.target.op = 'force'; },
+      (n: ReturnType<typeof released>) => { n.native.deployAction.details.target.greenPinSha = 'f'.repeat(40); },
+      (n: ReturnType<typeof released>) => { n.native.release.status = 'failed'; },
+      (n: ReturnType<typeof released>) => { n.native.release.detail.fullTargetSha = 'f'.repeat(40); },
+      (n: ReturnType<typeof released>) => { n.native.runtime = []; },
+      (n: ReturnType<typeof released>) => { n.native.runtime.push(n.native.runtime[0]); },
+      (n: ReturnType<typeof released>) => { n.native.runtime[0].sourceMatches = false; },
+      (n: ReturnType<typeof released>) => { n.native.runtime[0].native.servingProcessId = 'other'; },
+    ]) {
+      const n = released(); mutate(n);
+      expect(validateCapacityShipmentRelease(n.proof, n.native, n.current).status).toBe('fail');
+    }
+  });
+});
 
 describe('native leader-brief receipt custody', () => {
   function observation() {
@@ -348,7 +495,7 @@ describe('native managed recovery action custody', () => {
       control: { ...base(21, 'coord:wake', 'leader', millis(2, 1000)), args: { to: 'member' } },
       claim: { ...base(23, 'scheduler:get_next', 'member', millis(4, 500)), metadata: { schedulerDisposition: {
         kind: 'claimed', workItemId: 'WI-next', specId: 'member-override', revision: 4 } } },
-      delivery: { id: 22, workspaceId: 'papercusp-workspace', subscriberId: 'member', eventKey: 'coord:inbox-wake:member',
+      delivery: { id: 22, workspaceId: DEFAULT_COORD_WORKSPACE, subscriberId: 'member', eventKey: 'coord:inbox-wake:member',
         source: 'leader', status: 'delivered', turnProof: 'observed', createdAt: millis(2, 500), deliveredAt: millis(2, 1000), turnStartedAt: stamp(3) },
       claimAudit: { id: 24, workItemId: 'WI-next', memberId: 'member', outcome: 'won', takenAt: stamp(4),
         detail: { specId: 'member-override', revision: 4 } }, writers: [{ id: 25, actorId: 'member' }] }];
@@ -381,6 +528,7 @@ describe('native managed recovery action custody', () => {
     ['unqualified source', o => { o.operations[0].controlSourceMatches = false; }, 'native-recovery-control:member'],
     ['failed control', o => { o.operations[0].control.status = 'error'; }, 'native-recovery-control:member'],
     ['unobserved queued wake', o => { o.operations[0].delivery.turnProof = 'awaiting'; }, 'native-recovery-turn:member'],
+    ['tenant namespace substituted for coordination namespace', o => { o.operations[0].delivery.workspaceId = 'papercusp-workspace'; }, 'native-recovery-turn:member'],
     ['different delivery source', o => { o.operations[0].delivery.source = 'other'; }, 'native-recovery-turn:member'],
     ['different member turn', o => { o.operations[0].delivery.subscriberId = 'other'; }, 'native-recovery-turn:member'],
     ['forged turn time', o => { o.operations[0].delivery.turnStartedAt = stamp(4); }, 'native-recovery-turn:member'],

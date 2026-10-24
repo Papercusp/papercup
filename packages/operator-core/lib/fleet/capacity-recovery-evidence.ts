@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { computeIdentityHash, JUDGE_PROMPT_SCAFFOLD_VERSION, type PersonaTraits } from '@papercusp/testing-shell/llm';
 import { canonicalJson } from '@papercusp/hash-chain';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { formatSpecRef } from '../scheduler/claim-spec';
 import type { CommandInstrument } from '../rubric-instrument-registry';
 import { judgeS42Run, S42_CASES } from '../llm-testing/scenarios/su/S42-drain-watch-recheck';
@@ -65,6 +66,73 @@ export const shipmentProofSchema = z.object({ schemaVersion: z.literal('luna-cap
     buildDigest: digest, observedAt: time, verdict: z.literal('pass'), receiptRef: text }).strict(),
 }).strict();
 export type CapacityShipmentProof = z.infer<typeof shipmentProofSchema>;
+export interface NativeCapacityBarEvidence {
+  id: number; barKey: string; specId: string; specRevision: number; currentRevision: number;
+  currentness: string; sourceFingerprint: string; sourceMatchesCandidate: boolean;
+  commitSha: string | null; worktreeDirty: boolean | null;
+  testRunId: number | null; status: string | null; passed: number; failed: number;
+  collectionFailed: boolean; observedAt: string;
+}
+/** Fingerprint the exact native binding/run population, independent of query order.
+ * Artifact-authored digests cannot substitute for the records this joins. */
+export function capacityBarEvidenceFingerprint(rows: NativeCapacityBarEvidence[]): string {
+  return createHash('sha256').update(canonicalJson([...rows].sort((a, b) => a.id - b.id))).digest('hex');
+}
+export function validateCapacityShipmentEvidence(input: unknown, rows: NativeCapacityBarEvidence[],
+  instruments: Array<{ barKey: string; key: string; value: number | null }>): CapacityProofVerdict {
+  const parsed = shipmentProofSchema.safeParse(input);
+  if (!parsed.success) return { status: 'fail', violations: ['native-shipment-proof-missing'] };
+  const p = parsed.data, errors: string[] = [];
+  const bars = ['R-1', 'R-2', 'R-3', 'R-4', 'R-5'];
+  if (!rows.length || rows.length >= 200 || !unique(rows.map(r => String(r.id)))
+    || rows.some(r => !bars.includes(r.barKey))) errors.push('native-shipment-evidence-population');
+  for (const e of p.evidence) {
+    const group = rows.filter(r => r.barKey === e.barKey);
+    if (!group.length || group.some(r => r.currentness !== 'current' || r.specRevision !== r.currentRevision
+      || r.commitSha !== p.candidate.commit || r.worktreeDirty !== false
+      || !r.sourceMatchesCandidate || !/^sha256-file-set-v1:[a-f0-9]{64}$/.test(r.sourceFingerprint)
+      || !r.testRunId || !['pass', 'passed'].includes(r.status ?? '') || r.failed !== 0
+      || r.passed < 1 || r.collectionFailed || !Number.isFinite(Date.parse(r.observedAt))
+      || Date.parse(r.observedAt) > Date.parse(p.acceptance.acceptedAt))
+      || e.receiptRef !== 'spec-evidence-set:' + e.barKey
+      || e.fingerprint !== capacityBarEvidenceFingerprint(group)
+      || Date.parse(e.observedAt) !== Math.max(...group.map(r => Date.parse(r.observedAt))))
+      errors.push('native-shipment-evidence:' + e.barKey);
+  }
+  const expected = [{ barKey: 'R-2', key: LUNA_CAPACITY_INSTRUMENTS.diagnostic },
+    { barKey: 'R-4', key: LUNA_CAPACITY_INSTRUMENTS.continuation },
+    { barKey: 'R-5', key: LUNA_CAPACITY_INSTRUMENTS.recovery }];
+  if (instruments.length !== expected.length || expected.some(e =>
+    instruments.filter(i => i.barKey === e.barKey && i.key === e.key && i.value === 1).length !== 1))
+    errors.push('native-shipment-current-instruments');
+  return { status: errors.length ? 'fail' : 'pass', violations: [...new Set(errors)] };
+}
+/** Read from the existing resolved independent consult and its authenticated post;
+ * the author cannot supply a reviewer identity or a pending-findings assertion. */
+export interface NativeCapacityAcceptanceReceipt {
+  conversationId: string; acceptedPostId: number | null; state: string;
+  postId: number; reviewerId: string; createdAt: string; body: unknown;
+  authorId: string | null; implementerIds: string[]; lineageIndependent: boolean;
+}
+export function validateCapacityShipmentAcceptance(input: unknown, native: NativeCapacityAcceptanceReceipt): CapacityProofVerdict {
+  const p = shipmentProofSchema.safeParse(input);
+  if (!p.success) return { status: 'fail', violations: ['native-shipment-proof-missing'] };
+  const proof = p.data, a = proof.acceptance, body = record(native.body), errors: string[] = [];
+  if (native.state !== 'resolved' || native.acceptedPostId !== native.postId
+    || a.ref !== native.conversationId || a.receiptRef !== 'thread-post:' + native.postId
+    || native.reviewerId !== a.reviewerId || native.createdAt !== a.acceptedAt
+    || !native.authorId || native.authorId !== a.authorId || !native.implementerIds.length
+    || !sameSet(native.implementerIds, a.implementerIds) || !native.lineageIndependent)
+    errors.push('native-shipment-acceptance-custody');
+  if (body.verdict !== 'accept' || body.plan !== LUNA_CAPACITY_PLAN
+    || canonicalJson(body.candidate) !== canonicalJson(proof.candidate)
+    || canonicalJson(body.evidence) !== canonicalJson(proof.evidence)
+    || !Array.isArray(body.pendingFindings) || body.pendingFindings.length !== 0)
+    errors.push('native-shipment-acceptance-candidate-or-findings');
+  if (proof.provenance && canonicalJson(body.provenance) !== canonicalJson(proof.provenance))
+    errors.push('native-shipment-provenance-not-reviewed');
+  return { status: errors.length ? 'fail' : 'pass', violations: errors };
+}
 export const diagnosticProofSchema = z.object({ schemaVersion: z.literal('luna-capacity-diagnostic-v1'),
   plan: z.literal(LUNA_CAPACITY_PLAN), candidate,
   runtime: z.object({ id: z.literal('staging-operator'), containsSource: z.literal(true),
@@ -154,6 +222,80 @@ const record = (v: unknown): Record<string, unknown> =>
 export interface NativeCapacityOutput {
   capture: z.infer<typeof capacityBriefCaptureSchema>; native: NativeCapacityBriefReceipt; sourceMatches: boolean;
 }
+export interface NativeCapacityPipelineReceipt {
+  id: string; kind: string; status: string; createdAt: string; detail: unknown;
+}
+export interface NativeCapacityGateActionReceipt {
+  id: string; actor: string; action: string; details: unknown;
+}
+/** Canonical action receipts lock the owning claim through launch; pipeline
+ * events prove the later verdict/deployment, rather than merely enqueueing it. */
+export function validateCapacityShipmentRelease(input: unknown, native: {
+  greenAction: NativeCapacityGateActionReceipt; deployAction: NativeCapacityGateActionReceipt;
+  green: NativeCapacityPipelineReceipt; release: NativeCapacityPipelineReceipt;
+  runtime: NativeCapacityOutput[];
+}, current: { root: string; sources: Array<{ path: string; sha256: string; gitBlob: string }>;
+  now: string; startedAt: string; finishedAt: string }): CapacityProofVerdict {
+  const parsed = shipmentProofSchema.safeParse(input);
+  if (!parsed.success) return { status: 'fail', violations: ['native-shipment-proof-missing'] };
+  const p = parsed.data, errors: string[] = [];
+  const ga = record(native.greenAction.details), da = record(native.deployAction.details);
+  const go = record(ga.ownership), target = record(ga.target), dt = record(da.target);
+  const green = record(native.green.detail), release = record(native.release.detail);
+  if (native.greenAction.id !== p.green.receiptRef || native.greenAction.action !== 'release:checkpoint-run'
+    || native.greenAction.actor !== p.green.actorId || ga.ownerId !== p.green.ownerId
+    || ga.schemaVersion !== 2 || ga.phase !== 'settled' || go.certainty !== 'claim-row-locked-through-effect'
+    || go.holder !== p.green.ownerId || !text.safeParse(go.workItem).success
+    || target.candidate !== p.candidate.commit || record(ga.effect).status !== 'detached-launch-accepted'
+    || !Number.isFinite(Date.parse(String(ga.settledAt)))
+    || Date.parse(String(ga.settledAt)) > Date.parse(native.green.createdAt)) errors.push('native-shipment-gate-owner');
+  if (native.green.kind !== 'green_checkpoint' || green.green !== true
+    || !['advanced', 'advanced-prefix', 'up-to-date'].includes(native.green.status)
+    || green.fullCandidate !== p.candidate.commit || green.runId !== p.green.runId
+    || green.diagnostic === true || green.candidateSource === 'pinned'
+    || Date.parse(native.green.createdAt) > Date.parse(p.release.deployedAt)) errors.push('native-shipment-green-verdict');
+  const deployOwnership = record(da.ownership);
+  if (native.deployAction.id !== p.release.receiptRef || native.deployAction.action !== 'release:deploy'
+    || da.schemaVersion !== 2 || da.phase !== 'settled' || da.ownerId !== p.green.ownerId
+    || !['claim-row-locked-through-effect', 'no-linked-condition-observed'].includes(String(deployOwnership.certainty))
+    || (deployOwnership.certainty === 'claim-row-locked-through-effect' && deployOwnership.holder !== p.green.ownerId)
+    || dt.op !== 'trigger' || dt.greenPinSha !== p.release.commit
+    || record(da.effect).status !== 'detached-launch-accepted'
+    || !(Date.parse(native.green.createdAt) <= Date.parse(String(da.settledAt))
+      && Date.parse(String(da.settledAt)) <= Date.parse(native.release.createdAt))) errors.push('native-shipment-deploy-action');
+  if (native.release.id !== p.release.deployId || native.release.kind !== 'deploy' || native.release.status !== 'ok'
+    || release.fullTargetSha !== p.release.commit || native.release.createdAt !== p.release.deployedAt)
+    errors.push('native-shipment-deploy-verdict');
+  const paths: string[] = [], observations: number[] = [], receipts: Array<{ path: string; invocationId: number }> = [];
+  for (const output of native.runtime) {
+    const { capture, native: run, sourceMatches } = output;
+    errors.push(...validateCapacityOutputReceipt(capture, run, { ...current, sourceMatches,
+      toolName: 'dev:pipeline_position', actorId: run.actorId ?? '' }).violations);
+    const args = record(run.args), data = capture.result, accepted = record(data.acceptedSource);
+    const observer = record(data.observingRuntime), artifact = record(observer.artifact);
+    const source = current.sources.find(s => s.path === args.path);
+    if (!source || args.sourceRuntimeOnly !== true || args.expectedSourceSha256 !== source.sha256
+      || data.repoRoot !== current.root || data.submodule != null || accepted.matches !== true
+      || accepted.expectedSha256 !== source.sha256 || accepted.observedSha256 !== source.sha256
+      || record(accepted.runtimeContainment)['release-operator'] !== true
+      || observer.host !== 'port-3070' || run.servingHost !== observer.host
+      || !run.servingProcessId || observer.processId !== run.servingProcessId
+      || observer.buildSha !== run.servingBuildSha || !p.release.commit.startsWith(String(observer.buildSha))
+      || artifact.status !== 'measured' || artifact.sourceSha !== p.release.commit
+      || artifact.bundleSha256 !== p.release.buildDigest || !digest.safeParse(artifact.manifestSha256).success
+      || !text.safeParse(artifact.evidenceRef).success || record(artifact.sourceBlobs)[source.path] !== source.gitBlob)
+      errors.push('native-shipment-release-runtime');
+    const at = Date.parse(String(record(record(run.metadata).operationalOutput).observedAt));
+    if (at < Date.parse(p.release.deployedAt)) errors.push('native-shipment-probe-before-deploy');
+    paths.push(String(args.path)); observations.push(at); receipts.push({ path: String(args.path), invocationId: capture.invocationId });
+  }
+  receipts.sort((a, b) => a.path.localeCompare(b.path));
+  if (!current.sources.length || !sameSet(paths, current.sources.map(s => s.path)) || !unique(paths)
+    || Date.parse(p.probe.observedAt) !== Math.max(...observations)
+    || p.probe.receiptRef !== 'native-release-file-set:' + createHash('sha256').update(canonicalJson(receipts)).digest('hex'))
+    errors.push('native-shipment-probe-population');
+  return { status: errors.length ? 'fail' : 'pass', violations: [...new Set(errors)] };
+}
 export interface NativeCapacityRecoveryOperation {
   memberId: string;
   control: NativeCapacityBriefReceipt; claim: NativeCapacityBriefReceipt;
@@ -192,7 +334,9 @@ export function validateCapacityRecoveryOperations(input: unknown, operations: N
       || r.control.receiptRef !== 'tool-invocation:' + c.id || Date.parse(r.control.invokedAt) !== controlStart
       || controlStart < Date.parse(window.startedAt) || Date.parse(c.invokedAt) > Date.parse(window.finishedAt))
       errors.push('native-recovery-control:' + r.memberId);
-    if (d.workspaceId !== 'papercusp-workspace' || d.subscriberId !== r.memberId
+    // Wake receipts use the coordination store's namespace, independently of
+    // the tenant-scoped invocation and scheduler receipts joined above/below.
+    if (d.workspaceId !== DEFAULT_COORD_WORKSPACE || d.subscriberId !== r.memberId
       || d.source !== proof.snapshot.leaderId || d.eventKey !== 'coord:inbox-wake:' + r.memberId
       || d.status !== 'delivered' || !['observed', 'host-attested'].includes(d.turnProof ?? '')
       || r.turn.id !== 'event-wake-delivery:' + d.id || d.turnStartedAt !== r.turn.startedAt

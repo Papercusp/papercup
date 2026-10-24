@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { listSpecEvidence } from '../packages/operator-core/lib/agent-tools/plans/spec-evidence-store';
 import type { inspectCommittedOperationalEvidence } from '../packages/operator-core/lib/agent-tools/testing/record-run';
 import type { NativeCapacityLlmRun, NativeCapacityBriefReceipt } from '../packages/operator-core/lib/fleet/capacity-recovery-evidence';
@@ -123,7 +124,7 @@ async function readRecoveryOperations(root: string, row: Awaited<ReturnType<type
       delivered_at: Date | null; turn_started_at: Date | null }>>`
       SELECT id, workspace_id, subscriber_id, event_key, source, status, turn_proof, created_at, delivered_at, turn_started_at
         FROM harness_shared.event_wake_deliveries
-       WHERE workspace_id = 'papercusp-workspace' AND id = ${receiptId(r.turn.id, 'event-wake-delivery:')}`;
+       WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND id = ${receiptId(r.turn.id, 'event-wake-delivery:')}`;
     const claimStart = new Date(Date.parse(claim.invokedAt) - (claim.durationMs ?? 0)).toISOString();
     const audits = await sql<Array<{ id: number; feature_id: string; claimer_pubkey: string; outcome: string; attempt_ts: Date; detail: string | null }>>`
       SELECT id, feature_id, claimer_pubkey, outcome, attempt_ts, detail FROM harness_shared.claim_audit
@@ -236,6 +237,89 @@ try {
   if (!clauses.length || clauses.length > 100 || rubrics.length !== 1 || !rubrics[0].barSetHash
     || rubrics[0].readCompat || !rubrics[0].barContract) throw new Error('canonical-contract-missing-or-ambiguous');
   const specSetHash = computeSpecSetHash(clauses.filter(c => ['draft', 'active', 'accepted', 'exempt'].includes(c.lifecycleStatus)));
+  // R6 re-observes the current prerequisite instruments; it never calls itself.
+  // Bind the exact canonical records as well as their passing measurements.
+  const readShipmentEvidence = async (proof: unknown) => {
+    const { validateCapacityShipmentEvidence, shipmentProofSchema, LUNA_CAPACITY_INSTRUMENTS } =
+      await import('../packages/operator-core/lib/fleet/capacity-recovery-evidence');
+    const candidateCommit = shipmentProofSchema.parse(proof).candidate.commit;
+    const { runInstrument } = await import('../packages/operator-core/lib/rubric-instrument-registry');
+    const bars = new Map(clauses.filter(c => c.sourceBar && ['R-1', 'R-2', 'R-3', 'R-4', 'R-5'].includes(c.sourceBar.barKey))
+      .map(c => [c.specId, c.sourceBar!.barKey]));
+    const evidence = await listSpecEvidence({ workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp',
+      planSlugs: [LUNA_CAPACITY_PLAN], specIds: [...bars.keys()], evidenceKinds: ['test', 'operational'],
+      current: true, currentness: ['current'], limit: 200 });
+    const readings = await Promise.all([
+      { barKey: 'R-2', key: LUNA_CAPACITY_INSTRUMENTS.diagnostic },
+      { barKey: 'R-4', key: LUNA_CAPACITY_INSTRUMENTS.continuation },
+      { barKey: 'R-5', key: LUNA_CAPACITY_INSTRUMENTS.recovery },
+    ].map(async i => ({ ...i, value: (await runInstrument(i.key)).value })));
+    return validateCapacityShipmentEvidence(proof, await Promise.all(evidence.map(async e => ({
+      id: e.id, barKey: bars.get(e.specId)!, specId: e.specId, specRevision: e.specRevision,
+      currentRevision: e.currentRevision, currentness: e.currentness.overall,
+      sourceFingerprint: e.fingerprints.sourceFingerprint, commitSha: e.testRunProvenance?.commitSha ?? null,
+      sourceMatchesCandidate: await matchesMeasuredSource(root, e, candidateCommit),
+      worktreeDirty: e.testRunProvenance?.worktreeDirty ?? null, testRunId: e.testRunId,
+      status: e.testRunExecution?.status ?? null, passed: e.testRunExecution?.passed ?? 0,
+      failed: e.testRunExecution?.failed ?? -1, collectionFailed: e.testRunExecution?.collectionFailed ?? true,
+      observedAt: e.observedAt,
+    }))), readings);
+  };
+  const readShipmentAcceptance = async (input: unknown) => {
+    const { shipmentProofSchema, validateCapacityShipmentAcceptance } =
+      await import('../packages/operator-core/lib/fleet/capacity-recovery-evidence');
+    const { getConversation, getThreadPost } = await import('../packages/operator-core/lib/agent-tools/coordination/conversations');
+    const { resolvePlanImplementerIdentities, areAcceptanceLineageRelated } =
+      await import('../packages/operator-core/lib/acceptance-author-identity');
+    const a = shipmentProofSchema.parse(input).acceptance;
+    if (!/^thread-post:[1-9][0-9]*$/.test(a.receiptRef)) throw new Error('native-acceptance-post-reference');
+    const [conversation, post, implementers] = await Promise.all([
+      getConversation(a.ref), getThreadPost(Number(a.receiptRef.slice('thread-post:'.length))),
+      resolvePlanImplementerIdentities(LUNA_CAPACITY_PLAN, { workspaceId: 'papercusp-workspace' }),
+    ]);
+    if (!conversation || !post?.author_id) throw new Error('native-acceptance-receipt-missing');
+    const author = rubrics[0].createdBy ?? rubrics[0].proposedBy ?? null;
+    const identities = [...new Set([...implementers, ...(author ? [author] : [])])];
+    const related = await Promise.all(identities.map(id => areAcceptanceLineageRelated(id, post.author_id,
+      { workspaceId: 'papercusp-workspace' })));
+    return validateCapacityShipmentAcceptance(input, { conversationId: conversation.conversation.id,
+      acceptedPostId: conversation.conversation.accepted_post_id, state: conversation.conversation.state,
+      postId: post.id, reviewerId: post.author_id, createdAt: post.created_ts, body: JSON.parse(post.body),
+      authorId: author, implementerIds: identities, lineageIndependent: identities.length > 0 && related.every(r => r === false) });
+  };
+  const readShipmentRelease = async (input: unknown, row: Awaited<ReturnType<typeof listSpecEvidence>>[number],
+    artifact: Awaited<ReturnType<typeof inspectCommittedOperationalEvidence>>['artifact']) => {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { shipmentProofSchema, capacityRuntimeCapturesSchema, validateCapacityShipmentRelease } =
+      await import('../packages/operator-core/lib/fleet/capacity-recovery-evidence');
+    const { readCommittedFiles, REPO_FILE_SET_READ_LIMITS } =
+      await import('../packages/operator-core/lib/agent-tools/plans/committed-tree-reader');
+    const proof = shipmentProofSchema.parse(input), { sql } = getOrgPg();
+    // Exact historical receipt IDs only: this does not read or operate the live gate.
+    const actions = await sql<Array<{ id: string; actor: string; action: string; details: unknown }>>`
+      SELECT id, actor, action, details FROM harness_shared.audit_log WHERE workspace_id = 'papercusp-workspace'
+       AND id IN (${proof.green.receiptRef}, ${proof.release.receiptRef})`;
+    const pipelines = await sql<Array<{ id: string; kind: string; status: string; detail: unknown; created_at: Date }>>`
+      SELECT id::text, kind, status, detail, created_at FROM harness_shared.pipeline_events
+       WHERE workspace_id = 'papercusp-workspace' AND install_slug = 'papercusp'
+         AND ((kind = 'green_checkpoint' AND detail->>'runId' = ${proof.green.runId})
+           OR (kind = 'deploy' AND id::text = ${proof.release.deployId})) LIMIT 3`;
+    const green = pipelines.filter(p => p.kind === 'green_checkpoint'), release = pipelines.filter(p => p.kind === 'deploy');
+    const ga = actions.find(a => a.id === proof.green.receiptRef), da = actions.find(a => a.id === proof.release.receiptRef);
+    if (!ga || !da || green.length !== 1 || release.length !== 1) throw new Error('native-shipment-release-receipts-missing-or-ambiguous');
+    const recipe = repoFilesEvidenceMeasurementSchema.parse(row.details?.currentMeasurement);
+    const paths = await expandRepoFilesEvidenceSourcePathsAtRoot(root, recipe);
+    const files = await readCommittedFiles(root, proof.release.commit, paths, {}, REPO_FILE_SET_READ_LIMITS);
+    const runtime = await Promise.all(capacityRuntimeCapturesSchema.parse(artifact.capacityShipmentRuntimeCaptures).map(async capture => {
+      const native = await nativeToolReceipt(capture.invocationId);
+      return { capture, native, sourceMatches: await matchesMeasuredSource(root, row, native.servingBuildSha) };
+    }));
+    const pipeline = (p: typeof pipelines[number]) => ({ ...p, createdAt: p.created_at.toISOString() });
+    return validateCapacityShipmentRelease(input, { greenAction: ga, deployAction: da,
+      green: pipeline(green[0]), release: pipeline(release[0]), runtime }, { root,
+      sources: paths.map(path => ({ path, sha256: files.get(path)?.sha256 ?? '', gitBlob: files.get(path)?.gitBlob ?? '' })),
+      now: new Date().toISOString(), startedAt: artifact.startedAt, finishedAt: artifact.finishedAt });
+  };
   const specIds: Record<string, string> = { recovery: 'LUNA-CAPACITY-005', shipment: 'LUNA-CAPACITY-006',
     diagnostic: 'LUNA-CAPACITY-002', continuation: 'LUNA-CAPACITY-004' };
   const rows = await listSpecEvidence({ workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp',
@@ -285,6 +369,9 @@ try {
       result.violations.push(...(await readRecoveryOperations(root, row, artifact.artifact)).violations.map(v => row.id + ':' + v));
     }
     if (phase === 'diagnostic') result.violations.push(...(await readDiagnosticOutputs(root, row, artifact.artifact)).violations.map(v => row.id + ':' + v));
+    if (phase === 'shipment') result.violations.push(...(await readShipmentEvidence(artifact.artifact.capacityRecoveryProof)).violations.map(v => row.id + ':' + v));
+    if (phase === 'shipment') result.violations.push(...(await readShipmentAcceptance(artifact.artifact.capacityRecoveryProof)).violations.map(v => row.id + ':' + v));
+    if (phase === 'shipment') result.violations.push(...(await readShipmentRelease(artifact.artifact.capacityRecoveryProof, row, artifact.artifact)).violations.map(v => row.id + ':' + v));
     result.violations.push(...validateCapacityContractProof(artifact.artifact.capacityRecoveryProof,
       { specSetHash, barSetHash: rubrics[0].barSetHash, sourceFingerprint }).violations.map(v => row.id + ':' + v));
     const verdict = phase === 'recovery' ? validateCapacityRecoveryProof(artifact.artifact.capacityRecoveryProof)
