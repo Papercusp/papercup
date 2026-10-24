@@ -731,8 +731,33 @@ export async function defaultEnsureCodexHomeForWake(
       import('../../capability-envelope/session-confinement-store')
         .then(() => import('../../capability-envelope/session-confinement-port')),
     ]);
-    const persistedRecord = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(input.owner, input.advSessionId));
+    const rawRecord = await readSuLaunchSpecByOwner(input.owner, input.advSessionId);
+    const persistedRecord = parseSuLaunchSpecRecord(rawRecord);
     const sessionRow = input.sessionRow ?? (await getAdvSession(input.advSessionId).catch(() => null));
+    const savedRole = rawRecord && typeof rawRecord === 'object'
+      ? (rawRecord as { role?: unknown }).role : null;
+    const restrictedSavedRole = typeof savedRole === 'string' && savedRole !== 'su';
+    if (restrictedSavedRole || (sessionRow?.role && sessionRow.role !== 'su')) {
+      // Do not let an unreadable/conflicting role record fall through to the
+      // legacy SU builder. Interactive recovery uses this same gated writer.
+      if (!sessionRow || sessionRow.coordOwnerId !== input.owner || sessionRow.agent !== 'codex'
+        || !sessionRow.role || sessionRow.role === 'su'
+        || (savedRole && savedRole !== sessionRow.role)) {
+        return { ok: false, repaired: false, reason: 'role-launch-provenance-unavailable' };
+      }
+      const { repairRoleCodexHome } = await import('../../role-codex-home-repair');
+      const result = await repairRoleCodexHome({
+        advSessionId: input.advSessionId, owner: input.owner, sessionRow, rawRecord,
+        operatorBaseUrl: resolveResumedSessionOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL)
+          || `http://localhost:${process.env.PAPERCUSP_HONO_PORT ?? '3070'}`,
+        body: { requireGatewayProvider: input.requireGatewayProvider, headless: input.headless },
+      });
+      if (result.status !== 200 || !result.body.ok || result.body.repaired !== true) {
+        return { ok: false, repaired: false,
+          reason: result.body.error ?? result.body.reason ?? 'role-home-repair-failed' };
+      }
+      return { ok: true, repaired: true };
+    }
     const record =
       persistedRecord ??
       fallbackCodexLaunchSpecFromAdvSession(sessionRow, input.owner);
