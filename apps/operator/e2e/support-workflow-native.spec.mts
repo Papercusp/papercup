@@ -49,7 +49,7 @@ async function navigate(params: Record<string, string> = {}) {
   url.search = new URLSearchParams({ tab: 'enterprise', welcome: '0',
     ws: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE!, ...params }).toString();
   await native('navigate', url.toString(), '--json');
-  await check('new URL(location.href).searchParams.get("tab")==="enterprise" && !!document.querySelector("section[aria-label=\"Enterprise workspace\"]") && document.querySelector(".pc-wf__title")?.textContent==="Enterprise"');
+  await check(`new URL(location.href).searchParams.get("tab")==="enterprise" && !!document.querySelector('section[aria-label="Enterprise workspace"]') && document.querySelector(".pc-wf__title")?.textContent==="Enterprise"`);
 }
 
 async function fixtureProcess(seed: boolean, permissions?: {
@@ -209,7 +209,7 @@ test.describe('P-012 current-build native acceptance', () => {
     test.setTimeout(180_000);
     try {
       await navigate();
-      await check('(() => { const s=document.querySelector("section[aria-label=\"Enterprise workspace\"]"); return !!s?.querySelector("[aria-label=\"Enterprise journey\"]") && !!s.querySelector("[aria-label=\"Departmental workflow\"]") && s.querySelectorAll("nav[aria-label=\"Supporting workspace evidence\"] button").length===6 && Array.from(s.querySelectorAll("button")).some(b=>b.textContent?.includes("Manage workflows")); })()');
+      await check(`(() => { const s=document.querySelector('section[aria-label="Enterprise workspace"]'); return !!s?.querySelector('[aria-label="Enterprise journey"]') && !!s.querySelector('[aria-label="Departmental workflow"]') && s.querySelectorAll('nav[aria-label="Supporting workspace evidence"] button').length===6 && Array.from(s.querySelectorAll("button")).some(b=>b.textContent?.includes("Manage workflows")); })()`);
       // The check command must reject a missing subject. eval/probe success
       // alone cannot establish either a positive or a negative UI assertion.
       const negative = await native('check', '--selector', '#p012-deliberately-absent-control', '--json')
