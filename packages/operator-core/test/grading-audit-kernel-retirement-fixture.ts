@@ -14,6 +14,7 @@ import type { ScorecardRow } from '../lib/scorecards';
 import { absCgroupDir, walkCgroupTree } from '../lib/task-manager/cgroup-read';
 import { killTask } from '../lib/task-manager/control';
 import { managedSpawn } from '../lib/task-manager/managed-spawn';
+import { reconcileTick } from '../lib/task-manager/reconcile-tick';
 import { getTask } from '../lib/task-manager/store';
 import { isTerminalState } from '../lib/task-manager/types';
 import { runWithWorkspace } from '../lib/workspace-als';
@@ -69,13 +70,26 @@ async function scenario(ended: boolean) {
     assert.equal(await scopeEmpty(task.taskId), true);
     // Model a lost exit observer only in this disposable database, after the
     // real child and scope have stopped. Preserve its exact kernel identity.
+    // The canonical grace uses the newer of started_at and last_seen_at, so
+    // both timestamps must describe an old auditor rather than a new launch.
     const changed = await getOrgPg().sql`
       UPDATE harness_shared.task_ledger
       SET state='running', ended_at=NULL, exit_code=NULL, exit_reason=NULL,
-          last_seen_at=now()-interval '1 hour'
+          started_at=now()-interval '1 hour', last_seen_at=now()-interval '1 hour'
       WHERE task_id=${task.taskId} AND workspace_id=${workspace}
       RETURNING task_id`;
     assert.equal(changed.length, 1);
+    const stale = await getTask(task.taskId);
+    assert.ok(stale, 'private stale auditor row required');
+    const kernel = await reconcileTick({ workspaceId: workspace, dryRun: true,
+      listLive: async () => [stale] });
+    const control = { taskId: task.taskId, startedAt: stale.startedAt,
+      lastSeenAt: stale.lastSeenAt, degraded: kernel.degraded,
+      degradedReason: kernel.degradedReason, scan: kernel.scan, result: kernel.result };
+    writeFileSync(join(evidenceDir, 'grading-kernel-ended-control.json'), JSON.stringify(control, null, 2));
+    assert.equal(kernel.degraded, false, JSON.stringify(control));
+    assert.ok(kernel.result.endedUnobserved.some(row => row.taskId === task.taskId),
+      'private stale auditor must have a positive canonical kernel verdict: ' + JSON.stringify(control));
   } else {
     // Registration alone does not prove that the live control has executed.
     // Keep it alive until owned teardown, and preserve scope-launch failures.
