@@ -38,6 +38,106 @@ vi.mock('../work-items', async (importOriginal) => {
 
 import { judgeTestsFromLedger, lifecycleOnlyAdmissionRefusal, productionConformanceDeps } from './conformance-run-deps';
 import * as testContent from './conformance-test-content';
+import { buildRubricCheckLedgerRow, type RubricCheckResult } from '../check-results-ledger';
+import type { RequirementRealizationReader } from '../rubrics-criterion-checks';
+import { runPlanConformance } from './conformance-run';
+import { evaluateConformanceClosure } from './closure-guard';
+
+describe('requirements checks through conformance and discharge closure', () => {
+  const planContent = `---
+slug: realization-fixture
+status: active
+---
+## Requirements
+**R-1 — Realized implementation.**
+\`\`\`requirement
+${JSON.stringify({
+  intent: { request: 'Implement the promised behavior.', sourceRefs: ['P-001'] },
+  acceptance: { condition: 'Implementation is verified.', falsifier: 'The implementation lacks evidence.' },
+  verification: { method: 'Join activation and completion evidence.', check: { kind: 'requirements' } },
+})}
+\`\`\`
+## Design
+### Bar-to-work map for this plan
+| bar | implementing plan items | evidence plane |
+|---|---|---|
+| R-1 | P-001 | tree |
+## Build
+- **P-001** \`wip\` Implement the behavior
+`;
+
+  function realization(options: { verified?: boolean; empty?: boolean; nonCode?: boolean } = {}): RequirementRealizationReader {
+    return async () => ({
+      planSlug: 'realization-fixture',
+      mappings: options.empty ? [] : [{ id: 'M-001', sourceRefs: ['owner directive #1'],
+        requirement: 'Implement the promised behavior.', planTargets: ['P-001'], disposition: 'covered' }],
+      itemAudits: options.verified === false ? [] : [{ auditSeq: 1, entry: { itemId: 'P-001',
+        verdict: options.nonCode ? 'not-code' : 'implemented', note: 'Verified outcome.',
+        citations: options.nonCode ? [{ kind: 'doc', ref: 'guide', reason: 'Described outcome.' }]
+          : [{ kind: 'code', path: 'packages/operator-core/lib/spec-conformance/conformance-run-deps.ts', line: 1 }] } }],
+      planItems: [{ itemId: 'P-001', status: 'wip', itemText: 'Implement the behavior' }],
+      nonCodeItemProofs: options.nonCode ? [{ planItemId: 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'] }] : [],
+    });
+  }
+
+  it.each([
+    ['verified code before the item closes', {}, 'pass'],
+    ['missing implementation audit', { verified: false }, 'fail'],
+    ['empty activation population', { empty: true }, 'error'],
+    ['unfinished non-code work with a claimed proof', { nonCode: true }, 'fail'],
+  ] as const)('records %s and preserves the discharge gate', async (_label, options, verdict) => {
+    const input = { workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: 'realization-fixture',
+      readRequirementRealization: realization(options) };
+    const runtime = productionConformanceDeps(input);
+    const recorded: RubricCheckResult[] = [];
+    const run = await runPlanConformance({ ...input, planContent }, {
+      ...runtime,
+      readLatestVerdicts: async () => new Map(), listOpenDriftAlarms: async () => [],
+      approvedDeviations: async () => new Set(),
+      recordResults: async results => {
+        recorded.push(...results);
+        results.forEach(result => buildRubricCheckLedgerRow(result, {
+          workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
+        }));
+        return results.map((_, index) => index + 1);
+      },
+    });
+    expect(run.unevaluable).toEqual([]);
+    expect(recorded).toMatchObject([{ verdict, check: { kind: 'requirements', id: 'R-1:done-when' } }]);
+    expect(run.executed).toBe(1);
+    expect(run.alarmsOpened).toEqual([]);
+    const refusal = await evaluateConformanceClosure({ planContent, planItemIds: ['P-001'],
+      completion: { discharges: ['R-1'] } }, {
+      listOpenDriftAlarms: async () => [], readDoneWhenVerdict: async () => recorded[0]?.verdict ?? null,
+    });
+    if (verdict === 'pass') expect(refusal).toBeNull();
+    else expect(refusal).toMatchObject({ code: 'conformance_done_when_not_passing', requirements: ['R-1'] });
+  });
+
+  it('reports an unreadable subject as an error, never an unevaluable check or pass', async () => {
+    const input = { workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: 'realization-fixture',
+      readRequirementRealization: async () => null };
+    expect(await productionConformanceDeps(input).evaluateCheck({ barKey: 'R-1', role: 'done-when',
+      checkId: 'R-1:done-when', check: { kind: 'requirements' } }))
+      .toMatchObject({ kind: 'requirements', verdict: 'error', value: null });
+  });
+
+  it('scopes the production realization reads to the requested workspace and harness', async () => {
+    sqlCalls.length = 0;
+    sqlMock.mockClear();
+    const result = await productionConformanceDeps({ workspaceId: 'realization-workspace',
+      harnessSlug: 'realization-harness', planSlug: 'realization-fixture' }).evaluateCheck({
+      barKey: 'R-1', role: 'done-when', checkId: 'R-1:done-when', check: { kind: 'requirements' },
+    });
+    expect(result).toMatchObject({ kind: 'requirements', verdict: 'error', value: null,
+      detail: expect.stringContaining('requirements_scope_empty') });
+    expect(sqlCalls).toHaveLength(3);
+    for (const call of sqlCalls) expect(call.values).toContain('realization-workspace');
+    const scoped = sqlCalls.filter(call => call.query.includes('harness_slug ='));
+    expect(scoped).toHaveLength(2);
+    for (const call of scoped) expect(call.values).toContain('realization-harness');
+  });
+});
 
 const PLAN = 'cloud-portal-chat-and-guide-recovery-2026-10-09';
 const CONDITION = `spec-conformance-drift:papercusp/${PLAN}/R-9`;

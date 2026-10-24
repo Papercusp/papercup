@@ -4,6 +4,7 @@
  *   - tests checks       → judged from the test-run ledger (latest row per named file);
  *   - probe checks       → evaluateCriterionProbeChecks through the re-score dispatcher;
  *   - instrument checks  → runInstrumentChecks (registered command instruments);
+ *   - requirements checks → the canonical activation/completion realization judge;
  *   - verdict history    → readLatestRubricCheckResults under `conformance:<harness>/<plan>`;
  *   - ledger writes      → recordRubricCheckResults (framework 'rubric-check');
  *   - drift alarms       → upsertConditionWorkItem (unique condition key = one open alarm per
@@ -34,9 +35,14 @@ import {
 } from '../check-results-ledger';
 import {
   evaluateCriterionProbeChecks,
+  evaluateCriterionRequirementChecks,
   loadCriterionCheckCases,
   type CriterionCaseLoader,
+  type RequirementRealizationReader,
 } from '../rubrics-criterion-checks';
+import { getEffectiveItemAudits, getLatestActivationAudit, getPlanItemStatuses } from '../plan-audits';
+import { isNonCodeAuditVerdict } from '../plan-verification-profile';
+import { runWithWorkspace } from '../workspace-als';
 import { resolveTestCaseFilter, type RecordedTestCase } from '../testing-case-filter';
 import { rescoreProbeDispatcher } from '../harness/routines/rubric-rescore-action';
 import { upsertConditionWorkItem } from '../coord/condition-upsert';
@@ -421,6 +427,8 @@ export interface ProductionConformanceDepsInput {
   dispatchTool?: Parameters<typeof rescoreProbeDispatcher>[1];
   /** Injectable probe evaluator for focused tests; production uses the continuity evaluator. */
   evaluateProbes?: typeof evaluateCriterionProbeChecks;
+  /** Same realization data used by scorecard grading; injectable without replacing its judge. */
+  readRequirementRealization?: RequirementRealizationReader;
   /**
    * Requirements carrying an approved deviation (R-17, P-028). Defaults to
    * {@link planApprovedDeviations}: re-derived from the plan's CURRENT text on every
@@ -443,6 +451,23 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
   const sql = () => getOrgPg().sql;
   const nowIso = () => new Date().toISOString();
   const contentEquivalence = createTestContentEquivalence();
+  const readRequirementRealization: RequirementRealizationReader = input.readRequirementRealization ??
+    (() => runWithWorkspace(input.workspaceId, async () => {
+      const [activationAudit, itemAudits, planItems] = await Promise.all([
+        getLatestActivationAudit(input.planSlug, { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug }),
+        getEffectiveItemAudits(input.planSlug),
+        getPlanItemStatuses(input.planSlug, { harnessSlug: input.harnessSlug }),
+      ]);
+      // Reuse the scorecard reader's operational proof, without calling closure or
+      // changing item status. A code audit can therefore be measured before close.
+      const proof = itemAudits.some(({ entry }) => isNonCodeAuditVerdict(entry.verdict))
+        ? await (await import('../acceptance-bar-lifecycle-evaluator')).readAndEvaluateAcceptanceBarLifecycle(
+            input.planSlug, 'pre-grading', { harnessSlug: input.harnessSlug },
+          )
+        : null;
+      return { planSlug: input.planSlug, mappings: activationAudit?.activation?.mappings ?? [],
+        itemAudits, planItems, nonCodeItemProofs: proof?.nonCodeItemProofs };
+    }));
   return {
     phases: input.phases,
     async evaluateCheck(request: ConformanceCheckRequest) {
@@ -477,6 +502,28 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
         const results = await runInstrumentChecks({ rubricRef: request.checkId, criteria: [{ key: request.checkId, check }],
           workspaceId: input.workspaceId, harnessSlug: input.harnessSlug });
         return foldResults('instrument', results, nowIso());
+      }
+      if (check.kind === 'requirements') {
+        const evaluation = await evaluateCriterionRequirementChecks({
+          criteria: [{ key: request.checkId, check }],
+          ratings: { [request.checkId]: { rating: 'unknown' } },
+          readRequirementRealization,
+        });
+        if (!evaluation.ok) return {
+          kind: 'requirements', verdict: 'error', value: null, unit: null, measuredAt: nowIso(),
+          detail: `${evaluation.error}: ${evaluation.detail}`,
+        };
+        const run = evaluation.checkRuns[request.checkId];
+        if (run?.kind !== 'requirements') return {
+          kind: 'requirements', verdict: 'error', value: null, unit: null, measuredAt: nowIso(),
+          detail: 'requirements check produced no realization measurement',
+        };
+        return { kind: 'requirements', verdict: run.verdict, value: run.unrealized,
+          unit: 'unrealized requirements', measuredAt: run.measuredAt,
+          detail: `${run.unrealized} of ${run.mappingsJudged} realizing mappings unverified; ` +
+            `${run.checkedTargets} targets checked; ${run.exemptMappings} exempt mappings; ` +
+            `${run.droppedTargets} dropped targets` +
+            (run.unrealizedRequirements?.length ? `: ${run.unrealizedRequirements.join('; ')}` : '') };
       }
       return null;
     },

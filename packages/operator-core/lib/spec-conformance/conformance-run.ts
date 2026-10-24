@@ -34,7 +34,7 @@ import { evaluateRequirementEnforcement, type RequirementEnforcement } from './c
 
 export type ConformanceCheckVerdict = RubricCheckVerdict;
 export type ConformanceCheckRole = 'falsifier' | 'done-when';
-export type ConformanceRecordedKind = 'probe' | 'instrument' | 'tests';
+export type ConformanceRecordedKind = 'probe' | 'instrument' | 'tests' | 'requirements';
 
 /** Results-ledger namespace of one plan's conformance verdicts. */
 export function conformanceLedgerRef(harnessSlug: string, planSlug: string): string {
@@ -315,7 +315,8 @@ export async function runPlanConformance(
         evaluated = await track(`check:${request.checkId}`, () => deps.evaluateCheck(request));
       } catch (error) {
         evaluated = {
-          kind: request.check.kind === 'instrument' || request.check.kind === 'probe' ? request.check.kind : 'tests',
+          kind: request.check.kind === 'instrument' || request.check.kind === 'probe' || request.check.kind === 'requirements'
+            ? request.check.kind : 'tests',
           verdict: 'error',
           value: null,
           unit: null,
