@@ -1339,9 +1339,10 @@ export function currentBenchGatewayController(input: {
       }
     },
     async startNativeGateway(log = () => {}, start) {
-      // The maintained scoped native launcher currently supports only fresh
-      // Codex sessions. Refuse unsupported clients before binding a listener.
-      if (!live || starting || arm.agent !== 'codex') throw new Error('Benchmark host gateway is revoked, already started or unsupported.');
+      // Claude uses the maintained isolated stock runner. Its treatment route
+      // is not supported by the su launcher; refuse it before any listener.
+      if (!live || starting || arm.agent !== 'codex' && !(arm.id === 'baseline' && arm.agent === 'claude'))
+        throw new Error('Benchmark host gateway is revoked, already started or unsupported.');
       starting = true;
       let service: Awaited<ReturnType<typeof startNativeGymGateway>> | undefined;
       try {
@@ -1752,6 +1753,7 @@ export interface CurrentStockBenchPorts extends Omit<CurrentSuBenchPorts, 'launc
   launchNative(input: { handle: BenchHarnessHandle; task: BenchTask; context: BenchmarkContextReceipt }): Promise<unknown>;
 }
 export const CURRENT_STOCK_CODEX_BLUEPRINT = 'native-codex';
+export const CURRENT_STOCK_CLAUDE_BLUEPRINT = 'native-claude';
 /** Validate the controller-issued object, its live lifetime and frozen scope. */
 export function requireCurrentBenchHostBinding(observations: Pick<CurrentSuBenchObservations, 'nativeGateway' | 'nativeAccountingBinding'>,
   opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration' | 'armId' | 'seed'>) {
@@ -1889,7 +1891,8 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
   return currentBenchHarnessDriver(lifecycle, ports, opts, 'current-su');
 }
 export function currentStockBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentStockBenchPorts, opts: CurrentSuBenchOptions) {
-  if (opts.armId !== 'baseline' || opts.agent !== 'codex') throw new Error('Stock benchmark requires the frozen native Codex baseline.');
+  if (opts.armId !== 'baseline' || !['codex', 'claude'].includes(opts.agent))
+    throw new Error('Stock benchmark requires the frozen supported native baseline.');
   return currentBenchHarnessDriver(lifecycle, ports, opts, 'stock-native');
 }
 function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuBenchPorts | CurrentStockBenchPorts,
@@ -1900,7 +1903,8 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
   const ops: BenchHarnessOps = {
     ...lifecycle,
     async createHarness(input) {
-      if (input.blueprintId !== (kind === 'stock-native' ? CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT))
+      const blueprint = opts.agent === 'claude' ? CURRENT_STOCK_CLAUDE_BLUEPRINT : CURRENT_STOCK_CODEX_BLUEPRINT;
+      if (input.blueprintId !== (kind === 'stock-native' ? blueprint : FULL_SPINE_BLUEPRINT))
         throw new Error(kind === 'stock-native' ? 'Stock native driver refuses a different execution blueprint.' : 'Current su driver refuses a retired treatment blueprint.');
       return lifecycle.createHarness(input);
     },
