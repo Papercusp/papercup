@@ -1,4 +1,5 @@
 import { lstat, mkdir, mkdtemp, opendir, readFile, readdir, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir, hostname } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -834,7 +835,7 @@ describe('withFsMutex', () => {
     let reserved = false;
     const io = {
       writeFile: async (...args: Parameters<typeof writeFile>) => {
-        if (String(args[0]).startsWith(readersDir) && !reserved) {
+        if (String(args[0]).endsWith('/owner.json') && !reserved) {
         reserved = true;
         await mkdir(writerDir);
         await writeFile(join(writerDir, 'owner.json'), JSON.stringify({
@@ -1200,6 +1201,59 @@ describe('fs-mutex lease reclamation', () => {
         timeoutMs: 1_000, staleMs: 1, retryMs: 5,
       })).resolves.toBe('recovered');
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not expose an interrupted reader publication to a writer', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-publication-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const moduleUrl = new URL('../../../../scripts/lib/fs-mutex.mjs', import.meta.url).href;
+    const childSource = [
+      'import { withFsMutexRead } from ' + JSON.stringify(moduleUrl) + ';',
+      'const io = { writeFile: async (path) => {',
+      '  if (path.endsWith("owner.json")) {',
+      '    process.send("owner-write-started");',
+      '    await new Promise(() => {});',
+      '  }',
+      '} };',
+      'await withFsMutexRead("interrupted-reader-publication", async () => {}, {',
+      '  lockRootDir: process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR, io,',
+      '  timeoutMs: 1000, staleMs: 5000, retryMs: 5,',
+      '});',
+    ].join('\n');
+    const childEnv = { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: dir };
+    // test:file injects the committed-source loader through NODE_OPTIONS. This
+    // child must exercise the working-tree implementation under test, not the
+    // committed blob silently substituted into spawned Node processes.
+    delete childEnv.NODE_OPTIONS;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', childSource], {
+      env: childEnv,
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    });
+    const childExited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    const publicationStarted = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('reader did not reach owner publication')), 3000);
+      child.once('message', (message) => {
+        clearTimeout(timer);
+        resolve(String(message));
+      });
+      child.once('exit', (code, signal) => {
+        clearTimeout(timer);
+        reject(new Error('reader exited before publication: ' + code + '/' + signal));
+      });
+    });
+
+    try {
+      await expect(publicationStarted).resolves.toBe('owner-write-started');
+      child.kill('SIGKILL');
+      await childExited;
+      await expect(withFsMutex('interrupted-reader-publication', async () => 'writer-acquired', {
+        lockRootDir: dir, timeoutMs: 100, staleMs: 5000, retryMs: 5,
+      })).resolves.toBe('writer-acquired');
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await childExited;
       await rm(dir, { recursive: true, force: true });
     }
   });

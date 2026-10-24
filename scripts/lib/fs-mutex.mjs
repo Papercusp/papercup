@@ -1255,10 +1255,13 @@ export async function withFsMutexRead(name, fn, opts = {}) {
   const retryMs =
     opts.retryMs ?? intEnv("PAPERCUSP_FS_MUTEX_RETRY_MS", DEFAULT_RETRY_MS);
   const startedAt = Date.now();
-  const readerDir = join(
-    readersDir,
-    `${process.pid}-${Date.now()}-${randomUUID()}.lock`,
-  );
+  const readerMarkerName = `${process.pid}-${Date.now()}-${randomUUID()}.lock`;
+  const readerDir = join(readersDir, readerMarkerName);
+  // Publish from a sibling path so a killed reader cannot leave an ownerless
+  // directory inside the set that writers drain. The rename stays on the same
+  // filesystem and makes the fully written lease visible in one operation.
+  const readerStagingRoot = join(root, `${safeName(name)}.readers-staging`);
+  const readerStagingDir = join(readerStagingRoot, readerMarkerName);
   const owner = {
     pid: process.pid,
     ...processIdentity(process.pid),
@@ -1281,24 +1284,31 @@ export async function withFsMutexRead(name, fn, opts = {}) {
       : 0;
   for (;;) {
     let markerCreated = false;
+    let stagingCreated = false;
     let ready = false;
     try {
       // A reserved writer already prevents admission. Publishing markers on
       // every retry in that state makes its drain observe readers that will
       // never enter, and a stream of newcomers can keep that drain occupied.
       if (!(await measureAdmissionSubphase("writer-check", () => writerLockIsHeld(writerDir, staleMs, io)))) {
-        await mkdir(readerDir);
-        markerCreated = true;
+        await mkdir(readerStagingRoot, { recursive: true });
+        await mkdir(readerStagingDir);
+        stagingCreated = true;
         await writeFileIo(
-          join(readerDir, "owner.json"),
+          join(readerStagingDir, "owner.json"),
           `${JSON.stringify(owner, null, 2)}\n`,
         );
+        await rename(readerStagingDir, readerDir);
+        stagingCreated = false;
+        markerCreated = true;
         // Keep this second check: a writer can reserve after the preflight
         // but before publication. Its drain must see our marker until we
         // notice that reservation and remove it.
         ready = !(await measureAdmissionSubphase("writer-check", () => writerLockIsHeld(writerDir, staleMs, io)));
       }
     } catch (error) {
+      if (stagingCreated)
+        await rm(readerStagingDir, { recursive: true, force: true });
       if (error.code !== "EEXIST") {
         if (markerCreated)
           await rm(readerDir, { recursive: true, force: true });
