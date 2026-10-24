@@ -20,7 +20,8 @@ export function cloneBriefProvider(deps: { snapshot?: () => PushSnapshot | null 
     if (!ctx.repository || ctx.repository.workspaceId !== ctx.workspaceId || !ctx.sourceVersion || !ctx.sourceFiles?.length) return unknown();
     if (hash(JSON.stringify(ctx.sourceFiles.map(file => [file.path, file.sha256]))) !== ctx.sourceVersion) return unknown();
     const root = await realpath(ctx.repository.rootPath);
-    const snapshot = (deps.snapshot ?? (() => peekPushSnapshot('papercusp')))();
+    const snapshot = (deps.snapshot ?? (() => peekPushSnapshot(ctx.repository!.harness ?? 'papercusp')))();
+    const baseline = snapshot?.commit ?? ctx.commit;
     const paths = new Set(ctx.sourceFiles.filter(file => eligible(file.path)).map(file => file.path));
     if (!paths.size || paths.size > 50) return unknown();
     // A missing inventory cannot establish a repository-wide absence. Current
@@ -63,15 +64,15 @@ export function cloneBriefProvider(deps: { snapshot?: () => PushSnapshot | null 
         citedPaths.add(fn.path);
       }
       // "New" requires an actual historical source, not a missing cache entry.
-      if (ctx.surface === 'completion' && snapshot?.commit && /^[a-f0-9]{40,64}$/.test(snapshot.commit)) {
+      if (ctx.surface === 'completion' && baseline && /^[a-f0-9]{40,64}$/.test(baseline)) {
         for (const fn of touched.slice(0, 2)) {
           let before: string;
-          try { before = (await run('git', ['-C', root, 'show', `${snapshot.commit}:${fn.path}`],
+          try { before = (await run('git', ['-C', root, 'show', `${baseline}:${fn.path}`],
             { encoding: 'utf8', timeout: 200, maxBuffer: CLONE_MAX_SOURCE_BYTES, signal })).stdout; }
           catch { continue; }
           const old = extractCloneFile({ path: fn.path, source: before });
           if (old.status === 'indexed' && !old.functions.some(row => row.name === fn.name && row.renamed === fn.renamed)) {
-            lines.push(`New copy ${fn.path}:${fn.line} ${fn.name} since ${snapshot.commit.slice(0, 12)}; static match.`);
+            lines.push(`New copy ${fn.path}:${fn.line} ${fn.name} since ${baseline.slice(0, 12)}; static match.`);
             citedPaths.add(fn.path);
           }
         }

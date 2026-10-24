@@ -32,16 +32,17 @@ export async function authoringReuse(ctx: UnifiedToolContext, input: {
   const result = await withBoundedTimeout(async signal => {
     const identity = resolveAgentIdentity(ctx);
     const rootPath = deps.root ? await deps.root(input.workspaceId, input.harness)
+      // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/reuse-authoring.ts#<module>/authoringReuse/<callback>:2ef58b637d7c379cbfa6:1","classification":"durable","reason":"Harness discovery reaches notification paths through the shared authoring graph; retain the terminal obligation pending P-009 review.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       : (await loadHarnessRegistry(input.workspaceId)).projects.find(row => row.slug === input.harness)?.path;
     if (!rootPath) return undefined;
-    const root = await realpath(rootPath), snapshot = (deps.snapshot ?? (() => peekPushSnapshot('papercusp')))();
+    const root = await realpath(rootPath), snapshot = (deps.snapshot ?? (() => peekPushSnapshot(input.harness)))();
     const paths = new Set(input.paths ?? []);
     for (const match of input.text.matchAll(/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:tsx?|sql)\b/g)) paths.add(match[0]);
     // Exact symbol tokens discover candidates; a name alone never establishes
     // a clone or source ownership. The provider re-parses all selected bytes.
     const tokens = new Set(input.text.match(/[A-Za-z_$][\w$]*/g) ?? []);
-    for (const [path, symbols] of snapshot?.symbols ?? []) {
-      if (symbols.some(symbol => tokens.has(symbol.name))) paths.add(path);
+    for (const symbols of snapshot?.symbols?.values() ?? []) {
+      for (const symbol of symbols) if (tokens.has(symbol.name)) paths.add(symbol.path);
       if (paths.size > 12) break;
     }
     if (paths.size > 12) return { status: 'unknown' as const, hints: [] };
@@ -64,13 +65,15 @@ export async function authoringReuse(ctx: UnifiedToolContext, input: {
       planItems: input.item ? [input.item] : [], paths: [...paths], sourceFiles: sourceFiles.length ? sourceFiles : undefined,
       sourceVersion: createHash('sha256').update(sourceFiles.length
         ? JSON.stringify(sourceFiles.map(file => [file.path, file.sha256])) : input.text).digest('hex'),
-      itemText: input.text, repository: { workspaceId: input.workspaceId, rootPath: root }, commit };
+      itemText: input.text, repository: { workspaceId: input.workspaceId, rootPath: root, harness: input.harness }, commit };
     const registered = registeredReuseBriefProviders();
     const history = boundChangeHistoryProviders({ harness: input.harness, root: async () => root,
       plannedAt: async () => {
         const { readPlanBySlug } = await import('../agent-tools/plans/source');
+        // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/reuse-authoring.ts#<module>/authoringReuse/<callback>/plannedAt:a420e840f1446c45a0ed:1","classification":"durable","reason":"Plan history lookup reaches shared notification paths; no reviewed safe-to-lose exemption exists for their terminal consequences.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         return (await readPlanBySlug(input.plan, { harnessSlug: input.harness, workspaceId: input.workspaceId }))?.row.created ?? null;
       } });
+    // notify-classification: {"id":"packages/operator-core/lib/code-intelligence/reuse-authoring.ts#<module>/authoringReuse/<callback>:29cff27bb9cca60acf47:1","classification":"durable","reason":"Reuse provider composition can reach notification paths through its providers; retain their terminal delivery obligations without claiming delivery is proved.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const composed = await composeReuseBrief({ base: { hints: [] as ReuseContribution[] }, context, deadline: deadline - 150,
       providers: deps.providers ?? [...registered, ...history.filter(provider => !registered.some(row => row.id === provider.id))],
       append: (base, contribution) => ({ hints: [...base.hints, contribution] }) });

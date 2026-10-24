@@ -490,12 +490,14 @@ function preservesBriefBase(base: unknown, next: unknown): boolean {
 export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: TaskBriefDeps,
   deadline: number): Promise<TaskBrief> {
   if (!ref.reuse?.owner || !ref.reuse.invocation) return base;
+  const harness = ref.workItem?.harness ?? ref.harness;
   const context: ReuseProviderContext = { surface: 'claim', workspaceId: ref.workspaceId ?? activeWorkspaceId(),
     owner: ref.reuse.owner, invocation: ref.reuse.invocation, workItem: ref.workItem?.id ?? undefined,
     itemText: ref.intent ?? [ref.workItem?.title, ref.workItem?.summary].filter(Boolean).join('\n'),
     plan: ref.workItem?.sourcePlanSlug ?? undefined, planItems: ref.workItem?.sourcePlanItemIds ?? [],
     paths: base.scope.paths, sourceVersion: base.sourceFingerprint, commit: base.commit,
-    repository: base.repository, sourceFiles: base.files.map(file => ({ path: file.path, sha256: file.sha256 })) };
+    repository: base.repository ? { ...base.repository, ...(harness ? { harness } : {}) } : undefined,
+    sourceFiles: base.files.map(file => ({ path: file.path, sha256: file.sha256 })) };
   // D011: append to the existing representation; preserve mandatory fields and
   // never manufacture parallel top-level anchor sections.
   const append: TaskBriefReuseAdapter = (brief, value) => ({ ...brief,
@@ -504,7 +506,6 @@ export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: 
     impact: append, tests: append, coChange: append, whatChangedSincePlanning: append,
     ...Object.fromEntries(reuseAdapters),
   };
-  const harness = ref.workItem?.harness ?? ref.harness;
   const history = harness ? boundChangeHistoryProviders({ harness,
     root: () => deps.root(context.workspaceId, harness),
     plannedAt: async () => {
@@ -733,7 +734,7 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
       const context: ReuseProviderContext = { surface: 'completion', workspaceId: ref.workspaceId,
         owner: ref.reuse.owner, invocation: ref.reuse.invocation, workItem: ref.workItem, paths: brief.scope.paths,
         sourceVersion: hash(JSON.stringify([...captured])), commit: cochange?.commit ?? null,
-        repository: { workspaceId: ref.workspaceId, rootPath: root }, sourceFiles,
+        repository: { workspaceId: ref.workspaceId, rootPath: root, harness: ref.harness }, sourceFiles,
         changedLines: Object.keys(changedLines).length ? changedLines : undefined, staticTests: paths };
       const { coverageBriefProvider, sourceBoundCoverageSnapshots } = await import('./test-coverage-map');
       const receipt = deps.coverage ? (await withBoundedTimeout(signal => deps.coverage!(context, signal), {

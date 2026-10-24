@@ -29,7 +29,7 @@ export interface ReuseProviderContext {
   /** Actual item text supplied by the authoring/anchorless-claim entry. */
   itemText?: string;
   /** Authority and hashes from the mandatory brief capture, never the operator cwd. */
-  repository?: { workspaceId: string; rootPath: string };
+  repository?: { workspaceId: string; rootPath: string; harness?: string };
   sourceFiles?: readonly { path: string; sha256: string }[];
   /** Independently checked source paths from bound evidence; missing is unknown. */
   checkedPaths?: readonly string[];

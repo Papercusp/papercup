@@ -10,6 +10,7 @@ import { authoringReuse } from './reuse-authoring';
 import type { ReuseIssuedRecord } from './reuse-brief-ledger';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { cloneAdvisoryFixture } from './__fixtures__/clone-advisory-fixture';
+import * as pushSnapshots from './push-snapshot';
 import { briefCodePoints, composeReuseBrief, registerReuseBriefProvider,
   type ReuseBriefProvider, type ReuseContribution, type ReuseProviderContext, type ReuseProviderId } from './reuse-brief-providers';
 
@@ -71,6 +72,14 @@ describe('P010 source-checked clone delivery', () => {
       const result = await provider.read(ctx, new AbortController().signal);
       expect(result.lines).toContainEqual(expect.stringContaining('New copy b.ts:2 planted since'));
       expect(result.lines).toContainEqual(expect.stringContaining('Untouched sibling a.ts:1 original'));
+      // A registered disposable repository has no prepared inventory yet. Its
+      // own captured files + real HEAD must still establish a new scoped copy.
+      const scopedFiles = [...sourceFiles, { path: 'a.ts', sha256: createHash('sha256').update(fixture.sources['a.ts']).digest('hex') }];
+      const scoped = await cloneBriefProvider({ snapshot: () => null }).read({ ...ctx, commit: baseline,
+        sourceFiles: scopedFiles, sourceVersion: createHash('sha256').update(JSON.stringify(scopedFiles.map(f => [f.path, f.sha256]))).digest('hex'),
+        repository: { ...ctx.repository, harness: 'disposable-fixture' } }, new AbortController().signal);
+      expect(scoped.lines).toContainEqual(expect.stringContaining('New copy b.ts:2 planted since'));
+      expect(scoped.lines).toContainEqual(expect.stringContaining('Untouched sibling a.ts:1 original'));
       const noneFiles = [{ path: 'none.ts', sha256: createHash('sha256').update(fixture.sources['none.ts']).digest('hex') }];
       const none = await provider.read({ ...ctx, paths: ['none.ts'], sourceFiles: noneFiles,
         sourceVersion: createHash('sha256').update(JSON.stringify(noneFiles.map(f => [f.path, f.sha256]))).digest('hex') }, new AbortController().signal);
@@ -138,6 +147,22 @@ describe('P010 optional plan-authoring delivery', () => {
       expect(warn).toHaveBeenCalledTimes(2);
       expect(warn.mock.calls[1]?.join(' ')).toContain('registry unavailable');
     } finally { warn.mockRestore(); }
+  });
+
+  it('discovers symbol source paths from the registered harness for anchorless authoring', async () => {
+    const fixture = deliveryFixture(), root = await mkdtemp(join(tmpdir(), 'authoring-harness-'));
+    const snapshot = { ...fixture.snapshot, symbols: new Map([['copy', [{ id: 'copy-id', name: 'copy',
+      path: 'b.ts', line: 1, column: 1, sha256: createHash('sha256').update(fixture.sources['b.ts']).digest('hex'),
+      signature: 'copy(values: number[])', aliases: [], callers: [] }]]]) };
+    const peek = vi.spyOn(pushSnapshots, 'peekPushSnapshot').mockImplementation(harness => harness === input.harness ? snapshot : null);
+    try {
+      for (const [path, source] of Object.entries(fixture.sources)) await writeFile(join(root, path), source);
+      const result = await authoringReuse(ctx('plans-new-symbol'), { ...input, text: 'Improve copy aggregation' }, {
+        root: async () => root, providers: [cloneBriefProvider()], recordIssued: async () => true,
+      });
+      expect(result?.hints[0]?.text).toContain('Copy family a.ts:1 original');
+      expect(peek.mock.calls.every(([harness]) => harness === input.harness)).toBe(true);
+    } finally { peek.mockRestore(); await rm(root, { recursive: true, force: true }); }
   });
 });
 
