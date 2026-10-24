@@ -11,11 +11,13 @@
  */
 import {
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -155,6 +157,34 @@ describe('session root caps', () => {
       expect(cap.afterBytes).toBe(cap.pinnedBytes);
       expect(cap.overByBytes).toBeGreaterThan(0);
       expect(cap.pinnedOverageBytes).toBe(cap.overByBytes);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('counts a shared hardlink once across pinned and live homes', async () => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const pinned = seedDir(root, 'pinned', DEFAULT_RETENTION_MS * 3);
+    const live = seedDir(root, 'live', DEFAULT_RETENTION_MS * 3);
+    const data = join(pinned, 'data');
+    writeFileSync(data, Buffer.alloc(64 * 1024)); linkSync(data, join(live, 'data'));
+    for (const path of [pinned, live]) utimesSync(path, 1, 1);
+    const pinnedBytes = (statSync(pinned).blocks + statSync(data).blocks) * 512;
+    const allocatedBytes = pinnedBytes + statSync(live).blocks * 512;
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(parent, 'leases'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    try {
+      createRetentionPin({ path: pinned, owner: 'fixture', reason: 'shared cap evidence',
+        expiresAt: new Date(Date.now() + 60_000).toISOString() });
+      const result = await runSessionDirGc({
+        roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: allocatedBytes }],
+        protectedIdentity: { ownerIds: new Set(['live']), sessionKeys: new Set() }, archiveGuard: false,
+      });
+      expect(result.caps![0]!.afterBytes).toBe(allocatedBytes);
+      expect(result.caps![0]!.pinnedBytes).toBe(pinnedBytes);
+      expect(result.caps![0]!.overByBytes).toBe(0);
+      expect(result.errors).toEqual([]);
+      expect(result.removed).toEqual([]);
+      expect(existsSync(data)).toBe(true);
+      expect(existsSync(join(live, 'data'))).toBe(true);
     } finally { vi.unstubAllEnvs(); }
   });
 });

@@ -38,8 +38,11 @@ it('completes a source-bound request through the installed focused socket servic
   expect(result).toMatchObject({ kind: 'result', ok: true, requestId: request.requestId, identity,
     errorCount: 0, checked: request.files, namedNotInProgram: [] });
   expect(result).not.toHaveProperty('fallback');
-  expect(progress).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'progress',
-    requestId: request.requestId, identity, phase: 'accepted' })]));
+  expect(progress.length, 'the service must acknowledge this request before its terminal result').toBeGreaterThan(0);
+  for (const entry of progress) {
+    expect(entry).toMatchObject({ kind: 'progress', requestId: request.requestId, identity });
+    expect(['accepted', 'queued']).toContain((entry as { phase: string }).phase);
+  }
   const runtime = result.runtime as { pid: number; startedAt: number };
   expect(runtime.pid).toBeGreaterThan(0);
   expect(runtime.startedAt).toBeGreaterThan(0);

@@ -875,15 +875,24 @@ it.each(['anthropic', 'codex'] as const)(
       requestAbsorbMs: 0, selfHeal: { enabled: false },
     });
     const port = await gateway.listen(0);
-    const response = protocol === 'anthropic' ? await sendAnthropicTrial(port) :
-      await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
-        body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK' }) });
+    const send = () => fetch(`http://127.0.0.1:${port}/v1/${protocol === 'anthropic' ? 'messages' : 'responses'}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}`,
+        [MODEL_REQUEST_ID_HEADER]: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:999' },
+      body: protocol === 'anthropic' ? anthropicTrialBody() : JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK' }),
+    });
+    const response = await send();
     expect(response.status).toBe(200); await response.text();
     expect(writes).toBe(1); expect(results).toHaveLength(1); expect(changedObserver).not.toHaveBeenCalled();
     const { body: _privateBody, signal: _signal, ...identity } = attempts[0]!;
     expect(results[0]).toEqual({ ...identity, reservationRef: `fixture:${identity.attemptId}`,
       outcome: 'response-headers', responseStatus: 200, costUsdMeasurementMissing: true });
+    expect(isModelRequestId(attempts[0]!.gatewayRequestId)).toBe(true);
+    expect(attempts[0]!.gatewayRequestId).toBe(response.headers.get(MODEL_REQUEST_ID_HEADER));
+    expect(attempts[0]!.gatewayRequestId).not.toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:999');
+    const next = await send(); await next.text();
+    expect(next.status).toBe(200);
+    expect(attempts[1]!.gatewayRequestId).toBe(next.headers.get(MODEL_REQUEST_ID_HEADER));
+    expect(attempts[1]!.gatewayRequestId).not.toBe(attempts[0]!.gatewayRequestId);
     expect(JSON.stringify(results)).not.toMatch(/PRIVATE_|costUsd"/);
   });
 
@@ -936,10 +945,15 @@ it('carry trial reports separate results for each selected-provider failover att
   expect(attempts.map(a => a.accountId)).toEqual(['account-a', 'account-b']);
   expect(results.map(r => r.attemptId)).toEqual(attempts.map(a => a.attemptId));
   expect(new Set(results.map(r => r.attemptId)).size).toBe(2);
+  expect(isModelRequestId(attempts[0]!.gatewayRequestId)).toBe(true);
+  expect(attempts.map(a => a.gatewayRequestId)).toEqual([
+    response.headers.get(MODEL_REQUEST_ID_HEADER), response.headers.get(MODEL_REQUEST_ID_HEADER),
+  ]);
   expect(results.map(r => r.responseStatus)).toEqual([429, 200]);
   for (let i = 0; i < results.length; i++) {
     expect(results[i]).toMatchObject({ credentialSha256: attempts[i]!.credentialSha256,
-      bodySha256: attempts[i]!.bodySha256, reservationRef: `fixture:${attempts[i]!.attemptId}`,
+      bodySha256: attempts[i]!.bodySha256, gatewayRequestId: attempts[i]!.gatewayRequestId,
+      reservationRef: `fixture:${attempts[i]!.attemptId}`,
       costUsdMeasurementMissing: true });
     expect(results[i]).not.toHaveProperty('costUsd');
   }

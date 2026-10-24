@@ -2042,7 +2042,7 @@ export function OperatorConversationProvider({
           stream.tools && stream.tools.length > 0
             ? stream.tools.slice()
             : undefined;
-        const resultBlocks = parseStructuredResults(stream.results ?? []);
+        const resultBlocks = stream.results?.length ? parseStructuredResults(stream.results) : { ok: true as const, value: [] };
         if (!resultBlocks.ok) throw new Error("Invalid saved reply results.");
         const collectedResults = resultBlocks.value.length ? resultBlocks.value : undefined;
         // The report is PERSISTED (it is the Inbox's durable store — the

@@ -290,7 +290,7 @@ export default defineTool({
       'JavaScript VM scoped to owner/workspace/harness: open creates id; run/status/close execute/read/cancel. State lives on globalThis, not lexical locals; current authority per cell. No Python/restart recovery; timeout/cancel/5m idle loses state. Refused on :3170/dryRun. Persist store output and replay via inputs after restart.',
     ),
     inputs: z.record(z.string().max(200), z.unknown()).optional().describe(
-      'Deeply frozen JSON replay state. Clone nested values before mutation (JSON.parse(JSON.stringify(inputs.state))), or use store/load. Persist returned state and replay here after restart; arbitrary globalThis objects/functions cannot be restored.',
+      'JSON replay state is deeply frozen. Clone nested values before mutation (JSON.parse(JSON.stringify(inputs.state))), or use store/load for state the script updates. Persist returned state and replay here after restart; arbitrary globalThis objects/functions cannot be restored.',
     ),
     work_item_id: z.string().min(1).max(120).optional().describe(
       'Default attribution for nested capability:bash: use the exact held WI-/EI-/F- id when holding several items. Explicit nested work_item_id overrides it.',
