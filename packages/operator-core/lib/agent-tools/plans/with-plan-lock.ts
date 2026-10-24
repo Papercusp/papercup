@@ -84,6 +84,7 @@ import {
 } from './rubric-loss-guard';
 import { RUBRIC_TEMPLATE_NAME, rubricTemplateDataSchema } from './rubric-template';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { ctxToPlanSourceOpts } from './_ctx-opts';
 import {
   resolvePlanScope,
   syntheticPlanPath,
@@ -596,9 +597,13 @@ export async function withPlanLock<T>(
   if (typeof opts.slug !== 'string' || !VALID_PLAN_SLUG.test(opts.slug)) {
     throw new Error(`withPlanLock: invalid plan slug ${JSON.stringify(opts.slug)}`);
   }
+  // The admitted workspace must survive home-harness writes too: resolving
+  // only the optional lock arguments otherwise falls back to the dogfood
+  // tenant, while readers retain the caller's concrete workspace.
+  const contextScope = await ctxToPlanSourceOpts(_ctx);
   const { workspaceId, harnessSlug } = await resolvePlanScope({
-    harnessSlug: opts.harnessSlug,
-    workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug ?? contextScope.harnessSlug,
+    workspaceId: opts.workspaceId ?? contextScope.workspaceId,
   });
   const slug = opts.slug;
   const filePath = syntheticPlanPath(harnessSlug, slug);
