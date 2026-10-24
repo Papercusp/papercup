@@ -421,6 +421,20 @@ test('P010 owner public session journeys', async ({ page, request }, info) => {
     for (const [index, session] of sessions.entries()) await save(publicTurns[index],
       { kind: 'pi', sessionId: session.id, bearer: session.bearer }, `P010 public session ${index} persisted reply`);
 
+    const fixture = await sql.unsafe(`SELECT id,workspace_id,status,subject_kind,subject_ref,
+      current_database() AS database,inet_server_port() AS port FROM harness_shared.operator_conversations
+      WHERE id=$1`, [conversationId]);
+    const current = await request.get(`${baseURL}/api/zero-harness/rest-query`, {
+      params: { name: 'operatorConversations.current', args: JSON.stringify({ workspaceId: workspace }) },
+      headers: { 'x-papercusp-workspace': workspace },
+    });
+    const currentBody = await current.json();
+    await info.attach('p010-owner-public-fixture-readback', { body: JSON.stringify({ fixture,
+      status: current.status(), current: currentBody }), contentType: 'application/json' });
+    expect(fixture).toMatchObject([{ id: conversationId, workspace_id: workspace, status: 'active', subject_ref: null }]);
+    expect(current.status()).toBe(200);
+    expect(currentBody.rows).toMatchObject([{ id: conversationId, workspaceId: workspace }]);
+
     await page.goto(`${baseURL}/?chat=true`);
     const sidebar = page.getByRole('complementary', { name: 'Papercup chat' });
     await expect(sidebar).toContainText('P010 owner persisted reply');
