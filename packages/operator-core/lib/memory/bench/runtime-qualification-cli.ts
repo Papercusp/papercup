@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { validateRuntimeSourceCapture } from './runtime-source-capture.mjs';
 import { bindRuntimeModelOpens, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
 import { bindNativeLoaderClosure, fingerprintFile, type NativeProfilerRequestWindow } from './measurement-manifest';
-import { embedViaWorker, shutdownLocalEmbedder, getWorkerState, validNativeRuntimeSample,
+import { embedViaWorker, shutdownLocalEmbedder, getWorkerState, validNativeRuntimeSample, observeWorkerNativeInference,
   type WorkerNativeInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { GEMMA_MODEL, gemmaPrompt, mrlTruncate } from '../../../../../libs/generic/memory/src/gemma-embedder';
 
@@ -32,15 +32,17 @@ async function child(output: string) {
   if (process.env.PAPERCUSP_EMBED_DEVICE !== 'cpu' || process.env.PAPERCUSP_TRANSFORMERS_LOCAL_ONLY !== '1')
     throw new Error('runtime qualification requires explicit CPU/local-only policy');
   const native: WorkerNativeInferenceTrace[] = [];
+  const stopObserving = observeWorkerNativeInference(event => native.push(event));
   let vector: number[] = [], failure: string | undefined;
   try {
     vector = mrlTruncate(await embedViaWorker(gemmaPrompt('query', 'Verify a preserved local search embedding configuration.'),
-      { model: GEMMA_MODEL, pooling:'mean', normalize:false, onNativeInferenceTrace: event => native.push(event) }));
+      { model: GEMMA_MODEL, pooling:'mean', normalize:false }));
     if (vector.length !== 768 || vector.some(value => !Number.isFinite(value))
       || Math.abs(Math.hypot(...vector) - 1) > 1e-6) throw new Error('runtime vector invariant failed');
     if (!native.length || native.some(event => !validNativeRuntimeSample(event))) throw new Error('native runtime samples invalid');
   } catch (error) { failure = String(error); process.exitCode = 1; }
   finally {
+    stopObserving();
     await shutdownLocalEmbedder();
     const worker = getWorkerState();
     if (worker.alive || worker.pendingCount) { failure = 'worker cleanup incomplete'; process.exitCode = 1; }
