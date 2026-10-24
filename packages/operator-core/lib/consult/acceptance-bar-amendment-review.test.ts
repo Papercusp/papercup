@@ -718,7 +718,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     });
   });
 
-  it('launches ONE headless, independent judge under the system principal, never as the requester', async () => {
+  it('launches ONE headless, independent judge on the recruiting runtime under the system principal', async () => {
     const d = deps();
     const result = await launchFreshAmendmentReviewer(input, d as never);
     expect(d.resolveScreen).toHaveBeenCalledWith({ rubricId: 'acceptance-demo', applierId: 'su-implementer' });
@@ -727,6 +727,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     expect(args).toMatchObject({
       harness: 'papercusp',
       headless: true,
+      mcpTarget: 'spawn-host',
       independent: true,
       account: 'auto',
       count: 1,

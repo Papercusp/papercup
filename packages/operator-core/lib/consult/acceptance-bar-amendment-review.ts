@@ -706,6 +706,10 @@ export async function launchFreshAmendmentReviewer(
       brief: buildAmendmentReviewBrief({ ...input, previewPostRef }, target),
       ...(target.harness ? { harness: target.harness } : {}),
       headless: true,
+      // Review the candidate on the runtime that recruited it. The stable
+      // proxy can still serve an older bootstrap/profile contract, which can
+      // prevent the current launcher from starting its restricted judge.
+      mcpTarget: 'spawn-host',
       // Never the requester's fleet, and routed through the inference gateway
       // so one walled credential cannot strand an unattended reviewer
       // (the same two fences the acceptance grader's fresh judge carries).
