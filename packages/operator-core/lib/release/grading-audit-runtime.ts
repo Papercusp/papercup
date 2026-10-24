@@ -282,25 +282,34 @@ export async function ensureGradingAuditRuntime(input: {
       await (deps.stop ?? stopRuntime)(sibling.taskId);
     }
     const readBuild = deps.probe ?? probe;
-    if (isLive && sameBuild(await readBuild(locator.baseUrl) ?? { sha: null, version: '' }, input.evaluatorBuild)) {
+    const liveBuild = isLive ? await readBuild(locator.baseUrl) : null;
+    if (isLive && !liveBuild) {
+      // HTTP readiness is not process-lifetime evidence. Preserve the enrolled
+      // task and every audit reference so the existing repair sweep can reuse
+      // it after startup or a missed probe, rather than restarting its warmup.
+      await (deps.attach ?? attach)(taskId, input.workspaceId, issueIds);
+      throw new Error('Audit runtime readiness is unknown');
+    }
+    if (isLive && sameBuild(liveBuild!, input.evaluatorBuild)) {
       await (deps.attach ?? attach)(taskId, input.workspaceId, issueIds);
     } else {
       if (isLive) await (deps.stop ?? stopRuntime)(taskId);
       taskId = await (deps.spawn ?? ((workspaceId, current) => spawnRuntime(workspaceId, current, deps.logDir)))(
         input.workspaceId, locator);
       let ready = false;
-      try {
-        for (let attempt = 0; attempt < 30; attempt += 1) {
-          const actual = await readBuild(locator.baseUrl);
-          if (actual && !sameBuild(actual, input.evaluatorBuild)) throw new Error('Audit runtime evaluator identity mismatch');
-          if (actual) { ready = true; break; }
-          await (deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(1000);
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const actual = await readBuild(locator.baseUrl);
+        if (actual && !sameBuild(actual, input.evaluatorBuild)) {
+          await (deps.stop ?? stopRuntime)(taskId);
+          throw new Error('Audit runtime evaluator identity mismatch');
         }
-        if (!ready) throw new Error('Audit runtime readiness is unknown');
-      } catch (error) {
-        await (deps.stop ?? stopRuntime)(taskId);
-        throw error;
+        if (actual) { ready = true; break; }
+        await (deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(1000);
       }
+      // Keep an unready task under its existing confined deadline. Its locator
+      // and pin let the next canonical repair retry the same exact evaluator;
+      // expiry and authoritative task termination still govern replacement.
+      if (!ready) throw new Error('Audit runtime readiness is unknown');
     }
     return { taskId, baseUrl: locator.baseUrl, evaluatorBuild: input.evaluatorBuild,
       bundleSha256: locator.bundleSha256, expiresAtSec: locator.expiresAtSec };

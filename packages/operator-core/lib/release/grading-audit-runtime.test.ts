@@ -82,13 +82,32 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     }));
   });
 
-  it('stops an unreachable owned endpoint before replacing it, and requires exact readiness', async () => {
+  it('preserves the enrolled runtime and references when live endpoint readiness is unknown', async () => {
     const f = fixture();
     const old = await ensureGradingAuditRuntime(f.input, f.deps);
     f.deps.probe = vi.fn().mockResolvedValueOnce(null).mockResolvedValue(f.input.evaluatorBuild);
-    const recovered = await ensureGradingAuditRuntime(f.input, f.deps);
-    expect(recovered.taskId).not.toBe(old.taskId);
-    expect(f.stop).toHaveBeenCalledWith(old.taskId);
+    await expect(ensureGradingAuditRuntime({ ...f.input, issueId: 'EI-b' }, f.deps)).rejects.toThrow('readiness is unknown');
+    expect(f.stop).not.toHaveBeenCalled();
+    expect(f.deps.spawn).toHaveBeenCalledTimes(1);
+    expect((f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator).issueIds).toEqual(['EI-a', 'EI-b']);
+    const recovered = await ensureGradingAuditRuntime({ ...f.input, issueId: 'EI-c' }, f.deps);
+    expect(recovered.taskId).toBe(old.taskId);
+    expect(f.deps.spawn).toHaveBeenCalledTimes(1);
+    expect((f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator).issueIds).toEqual(['EI-a', 'EI-b', 'EI-c']);
+  });
+
+  it('retains a newly enrolled warming runtime after the readiness window and reuses it once ready', async () => {
+    const f = fixture();
+    f.deps.probe = vi.fn().mockResolvedValue(null);
+    await expect(ensureGradingAuditRuntime(f.input, f.deps)).rejects.toThrow('readiness is unknown');
+    expect(f.stop).not.toHaveBeenCalled();
+    expect(f.rows[0].state).toBe('running');
+    expect(f.deps.spawn).toHaveBeenCalledTimes(1);
+    expect(readGradingAuditSourcePin(f.source.sourceRoot, f.source.ownerRef, 1000)).not.toBeNull();
+    f.deps.probe = vi.fn().mockResolvedValue(f.input.evaluatorBuild);
+    expect((await ensureGradingAuditRuntime({ ...f.input, issueId: 'EI-b' }, f.deps)).taskId).toBe('runtime-0');
+    expect(f.deps.spawn).toHaveBeenCalledTimes(1);
+    expect((f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator).issueIds).toEqual(['EI-a', 'EI-b']);
   });
 
   it('recovers a crash between atomic pin publication and task registration', async () => {
@@ -156,10 +175,10 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect(f.deps.probe).not.toHaveBeenCalled();
   });
 
-  it.each(['sha', 'version', 'unknown'] as const)('refuses %s readiness and retires the failed child', async mode => {
+  it.each(['sha', 'version'] as const)('refuses %s readiness and retires the mismatched child', async mode => {
     const f = fixture();
-    f.deps.probe = async () => mode === 'unknown' ? null : { ...f.input.evaluatorBuild, [mode]: 'wrong' };
-    await expect(ensureGradingAuditRuntime(f.input, f.deps)).rejects.toThrow(mode === 'unknown' ? 'unknown' : 'mismatch');
+    f.deps.probe = async () => ({ ...f.input.evaluatorBuild, [mode]: 'wrong' });
+    await expect(ensureGradingAuditRuntime(f.input, f.deps)).rejects.toThrow('mismatch');
     expect(f.stop).toHaveBeenCalledWith('runtime-0');
   });
 
