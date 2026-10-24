@@ -2181,6 +2181,14 @@ const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // P-008: notification aliases and wrappers cross workspace boundaries.
+    workspace: "@papercusp/operator-core",
+    script: "lint:fire-and-forget-classification",
+    appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f) ||
+      /(?:^|\/)(?:package|tsconfig[^/]*)\.json$/.test(f) ||
+      f === "scripts/fire-and-forget-classification.json" || f === ".gitmodules",
+  },
+  {
     workspace: "@papercusp/operator-core",
     script: "lint:new-clones",
     forwardChangedPaths: true,
