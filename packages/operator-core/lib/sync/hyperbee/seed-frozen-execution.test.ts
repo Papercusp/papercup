@@ -245,7 +245,28 @@ describe('D177 installed dependency census', () => {
     await expect(readSeedInstalledPackages(root, ['packages/workspace/node_modules'], locks)).rejects.toThrow('name/version mismatch');
     pkg(root, path, '@types/node', '2.0.0');
     delete (locks[0].packages as Record<string, unknown>)[path];
-    await expect(readSeedInstalledPackages(root, ['packages/workspace/node_modules'], locks)).rejects.toThrow('no committed lock entry');
+    await expect(readSeedInstalledPackages(root, ['packages/workspace/node_modules'], locks)).rejects.toThrow('name/version mismatch');
+  });
+  it('binds materialized workspace-local dependencies omitted by the root lock without admitting drift', async () => {
+    const root = temp(), tree = 'packages/workspace/template-kit/node_modules';
+    const path = `${tree}/@types/node`;
+    pkg(root, path, '@types/node', '2.0.0');
+    const locks: Parameters<typeof readSeedInstalledPackages>[2] = [
+      { path: 'package-lock.json', packages: {
+        'packages/workspace': { name: '@fixture/workspace', version: '0.1.0' },
+      } },
+      { path: 'packages/workspace/package-lock.json', packages: {
+        'template-kit/node_modules/@types/node': { version: '2.0.0' },
+        'template-kit/node_modules/vestigial': { version: '1.0.0' },
+      } },
+    ];
+    expect((await readSeedInstalledPackages(root, [tree], locks)).map(row => [row.path, row.version]))
+      .toEqual([[path, '2.0.0']]);
+    pkg(root, path, '@types/node', '3.0.0');
+    await expect(readSeedInstalledPackages(root, [tree], locks)).rejects.toThrow('name/version mismatch');
+    pkg(root, path, '@types/node', '2.0.0');
+    delete (locks[1].packages as Record<string, unknown>)['template-kit/node_modules/@types/node'];
+    await expect(readSeedInstalledPackages(root, [tree], locks)).rejects.toThrow('no committed lock entry');
   });
   it('censuses nested and scoped packages and permits a missing optional entry', async () => {
     const root = temp();

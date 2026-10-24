@@ -110,18 +110,20 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
     ?? locks.find(lock => lock.path === 'package-lock.json');
   let workspaceDirs = new Set<string>();
   if (rootLock && Object.keys(rootLock.packages).some(path => path && !path.startsWith('node_modules/'))) {
-    // Reuse the maintained lock census's authority rule: a root workspace's
-    // historical local lock is subsumed, including its package-local installs.
+    // Reuse the maintained lock census's workspace classification. Root entries
+    // win over historical workspace-local locks; those locks can still bind a
+    // physically installed nested dependency omitted from the root graph.
     // Dynamic URL import keeps this source-only helper independent of JS typings.
     const appRoot = resolveOperatorAppRootFromModuleDir(dirname(fileURLToPath(import.meta.url)));
     const censusUrl = pathToFileURL(resolve(appRoot, '../../scripts/check-lockfile-census.mjs'));
     const { rootWorkspaceDirs } = await import(censusUrl.href);
     workspaceDirs = rootWorkspaceDirs({ packages: rootLock.packages });
   }
-  const expected = new Map<string, { entry: LockEntry; lock: typeof locks[number]; key: string }>();
+  const expected = new Map<string, { entry: LockEntry; lock: typeof locks[number]; key: string;
+    required: boolean }>();
   const installedTreePrefixes = trees.map(tree => `${tree}/`);
   for (const lock of [...locks].sort((a, b) => a.path.length - b.path.length)) {
-    if (lock !== rootLock && workspaceDirs.has(posix.dirname(lock.path))) continue;
+    const supplemental = lock !== rootLock && workspaceDirs.has(posix.dirname(lock.path));
     for (const [key, entry] of Object.entries(lock.packages)) {
       if (!key.includes('node_modules/')) continue;
       if (!safe(key)) throw new Error('invalid committed package path');
@@ -133,7 +135,10 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
       // obligations. Entries inside any published tree still require an exact
       // lock match below.
       if (!installedTreePrefixes.some(prefix => path.startsWith(prefix))) continue;
-      expected.set(path, { entry, lock, key });
+      if (supplemental && expected.has(path)) continue;
+      // A subsumed local lock is evidence for an actual installed package, not
+      // an obligation to install its vestigial graph. Never replace a root pin.
+      expected.set(path, { entry, lock, key, required: !supplemental });
     }
   }
   const actual = new Map<string, PackageRow>();
@@ -201,8 +206,8 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
     }
   };
   for (const tree of trees) await scan(tree);
-  for (const [path, { entry }] of expected) {
-    if (!actual.has(path) && !entry.optional) throw new Error(`non-optional committed package missing: ${path}`);
+  for (const [path, { entry, required }] of expected) {
+    if (!actual.has(path) && required && !entry.optional) throw new Error(`non-optional committed package missing: ${path}`);
   }
   excludedEntries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   return [...actual.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
