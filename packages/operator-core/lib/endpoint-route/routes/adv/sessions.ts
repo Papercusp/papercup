@@ -1675,6 +1675,9 @@ const ensureCodexHome = defineTool({
       requireGatewayProvider?: unknown;
       model?: unknown;
       headless?: unknown;
+      sourcePolicy?: unknown;
+      expectedSpecificationRevision?: unknown;
+      expectedAccountRoute?: unknown;
     } = {};
     try {
       const text = await measure('handler.parse-body', () => req.text());
@@ -1693,6 +1696,14 @@ const ensureCodexHome = defineTool({
       return new Response(JSON.stringify({ ok: false, error: 'invalid owner' }), {
         status: 400,
         headers: JSON_HEADERS,
+      });
+    }
+    const preserveArtifact = body.sourcePolicy === 'preserved-artifact';
+    if ((body.sourcePolicy !== undefined && !preserveArtifact) ||
+        (preserveArtifact && (typeof body.expectedSpecificationRevision !== 'string' ||
+          !/^[a-f0-9]{64}$/.test(body.expectedSpecificationRevision)))) {
+      return new Response(JSON.stringify({ ok: false, error: 'invalid-source-policy' }), {
+        status: 400, headers: JSON_HEADERS,
       });
     }
     const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection }, { ensureSuCodexHomeConfigAsync }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }, { wakeAccountRouteFromArgv }, { codexWakeGatewayInputs }, { sessionAllowsAmbientContext }] =
@@ -1715,6 +1726,91 @@ const ensureCodexHome = defineTool({
       measure('handler.read-session-row', () => getAdvSession(advSessionId)),
     ]);
     const persistedRecord = parseSuLaunchSpecRecord(rawRecord);
+    if (preserveArtifact) {
+      const refuse = (error: string) => new Response(JSON.stringify({ ok: false, owner, advSessionId, error }), {
+        status: 409, headers: JSON_HEADERS,
+      });
+      // An explicit preservation request never enters the funded renderer or
+      // the legacy ADV fallback, even when rebuilding would succeed.
+      const record = persistedRecord;
+      if (sessionRow?.coordOwnerId !== owner || sessionRow.agent !== 'codex' ||
+          (sessionRow.role && sessionRow.role !== 'su')) return refuse('preserved-owner-mismatch');
+      if (!record || record.agent !== 'codex' ||
+          record.specificationRevision !== body.expectedSpecificationRevision) return refuse('preserved-revision-mismatch');
+      let pinned;
+      try {
+        pinned = await measure('handler.verify-preserved-artifact', () =>
+          pinnedSuRecoveryPrompt(record, { allowUnselected: true }));
+      } catch { return refuse('preserved-artifact-invalid'); }
+      const stateReceipt = record.specificationArtifact?.inputs.find(entry =>
+        entry.kind === 'setting' && entry.ref === 'launch-state-v1');
+      const savedStack = stateReceipt?.kind === 'setting' && stateReceipt.value && typeof stateReceipt.value === 'object'
+        ? (stateReceipt.value as { stack?: unknown }).stack : undefined;
+      if (!pinned || pinned.specificationRevision !== body.expectedSpecificationRevision ||
+          !record.stack || JSON.stringify(record.stack) !== JSON.stringify(savedStack)) {
+        return refuse('preserved-artifact-invalid');
+      }
+      const route = wakeAccountRouteFromArgv(sessionRow.launchArgv, owner);
+      if (!record.model || !route) return refuse('preserved-route-unavailable');
+      const accountRoute = { mode: route.mode, accountId: route.accountId };
+      const requestedRoute = body.expectedAccountRoute as { mode?: unknown; accountId?: unknown } | null | undefined;
+      if ((body.model !== undefined && body.model !== record.model) ||
+          (body.headless !== undefined && body.headless !== record.headless) ||
+          (body.requireGatewayProvider === true && route.mode !== 'auto') ||
+          (body.expectedAccountRoute !== undefined && (!requestedRoute ||
+            requestedRoute.mode !== accountRoute.mode || requestedRoute.accountId !== accountRoute.accountId))) {
+        return refuse('preserved-route-mismatch');
+      }
+      // Funding is checked for the exact verified stack. It may refuse it, but
+      // cannot drop a layer and render a cheaper replacement.
+      const { admitIdentityActivation } = await import('../../../cupboard/identity-activation-gate-io');
+      const admission = await measure('handler.preserved-artifact-funding', () => admitIdentityActivation({
+        stack: record.stack!, repoDir: sessionRow.cwd ?? undefined, workspaceId: record.workspaceId,
+      }));
+      if (!admission.ok) return new Response(JSON.stringify({
+        ok: false, owner, advSessionId, error: admission.code, detail: admission.detail, refused: admission.refused,
+      }), { status: 402, headers: JSON_HEADERS });
+      const [allowsAmbientContext, compactionLimit, connection] = await Promise.all([
+        sessionAllowsAmbientContext({ ownerId: owner, workspaceId: record.workspaceId }),
+        compactionLimitForResumeRow({ coordOwnerId: owner, launchArgv: sessionRow.launchArgv }, record.model),
+        buildLaunchSpec({
+          kind: 'su', agent: 'codex', workspaceId: record.workspaceId,
+          operatorBaseUrl: new URL(req.url).origin, harnessSlug: record.harnessSlug,
+          profile: record.profile, contextSize: record.contextSize, personaTier: record.personaTier,
+          model: record.model, stack: [], modes: [],
+        }),
+      ]);
+      const [currentRecord, currentSession] = await Promise.all([
+        readSuLaunchSpecByOwner(owner, advSessionId), getAdvSession(advSessionId),
+      ]);
+      if (JSON.stringify(currentRecord) !== JSON.stringify(rawRecord) ||
+          currentSession?.coordOwnerId !== owner || currentSession.agent !== 'codex' ||
+          currentSession.role !== sessionRow.role || currentSession.cwd !== sessionRow.cwd ||
+          JSON.stringify(currentSession.launchArgv) !== JSON.stringify(sessionRow.launchArgv)) {
+        return refuse('preserved-source-drift');
+      }
+      const gateway = codexWakeGatewayInputs(route);
+      const recovered = await measure('handler.ensure-codex-home-config', () => ensureSuCodexHomeConfigAsync({
+        sessionKey: advSessionId, recordedSqliteHome: record.codexSqliteHome,
+        mcpUrl: connection.mcpUrl, sid: owner, model: record.model!, token: readSuperuserToken(),
+        codexGatewayAccountId: gateway.codexGatewayAccountId,
+        codexGatewayAuto: gateway.requireGatewayProvider,
+        codexGatewayPriority: route.mode === 'default' ? null : 'su',
+        headless: record.headless ?? sessionRow.launchArgv?.includes('--headless') === true,
+        compactionLimit, trustDir: sessionRow.cwd, projectDir: sessionRow.cwd,
+        promptText: pinned.promptText, recoverMissingHome: true,
+        ...(!allowsAmbientContext ? { denyAmbientContext: true } : {}),
+      }));
+      if (recovered.sqliteHome !== record.codexSqliteHome &&
+          !(await recordSuLaunchSpec(advSessionId, owner, { ...record, codexSqliteHome: recovered.sqliteHome }))) {
+        throw new Error('preserved Codex SQLite receipt was not persisted');
+      }
+      return new Response(JSON.stringify({
+        ok: true, owner, advSessionId, ...recovered, reason: 'preserved-artifact',
+        preservedSpecificationRevision: pinned.specificationRevision, preservedModel: record.model,
+        preservedAccountRoute: accountRoute,
+      }), { status: 200, headers: JSON_HEADERS });
+    }
     if (sessionRow?.coordOwnerId && sessionRow.coordOwnerId !== owner) {
       return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'owner-mismatch' }), {
         status: 200,

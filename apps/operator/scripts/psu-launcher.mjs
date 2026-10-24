@@ -13375,6 +13375,8 @@ export function runWrapper(options) {
               accountId: options.routeMode === 'auto' ? null : env.PAPERCUSP_ACCOUNT_ID || null,
               priority: env.PAPERCUSP_AGENT_ROLE || "su",
               headless: env.PAPERCUSP_PSU_HEADLESS === "1",
+              sourcePolicy: options.sourcePolicy,
+              expectedSpecificationRevision: options.expectedSpecificationRevision,
               env,
               onFailure: (detail) => { failure = detail; },
             },
@@ -17016,7 +17018,7 @@ export function codexForkMcpUrlForOwner(codexHome, ownerId) {
  * @param {string | null} owner
  * @param {string | null} codexHome
  * @param {string | number | null} advSessionId
- * @param {{requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string, diagnostic: {attemptId: string, startedAtMs: number, elapsedMs: number, target: {kind: string, protocol: string, port: number} | null, phaseTimingsMs: Record<string, number>}}) => void, token?: string | null, timeoutMs?: number, now?: () => number}} options
+ * @param {{sourcePolicy?: 'preserved-artifact' | null, expectedSpecificationRevision?: string | null, requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string, diagnostic: {attemptId: string, startedAtMs: number, elapsedMs: number, target: {kind: string, protocol: string, port: number} | null, phaseTimingsMs: Record<string, number>}}) => void, token?: string | null, timeoutMs?: number, now?: () => number}} options
  */
 export async function ensureCodexHomeViaOperator(
   owner,
@@ -17026,6 +17028,8 @@ export async function ensureCodexHomeViaOperator(
     requireGatewayProvider = false,
     model = null,
     headless = null,
+    sourcePolicy = null,
+    expectedSpecificationRevision = null,
     routeMode = null,
     accountId = null,
     priority = null,
@@ -17077,6 +17081,14 @@ export async function ensureCodexHomeViaOperator(
   // home under an overridden root, so a damaged config.toml reached the
   // readiness check unrepaired (WI-10006770).
   if (codexHome !== suCodexHomeForAdvSession(advSessionId, env)) return failed('foreign-home');
+  const preserveArtifact = sourcePolicy === 'preserved-artifact';
+  if ((sourcePolicy !== null && !preserveArtifact) || (preserveArtifact &&
+      (typeof expectedSpecificationRevision !== 'string' || !/^[a-f0-9]{64}$/.test(expectedSpecificationRevision))))
+    return failed('invalid-source-policy');
+  // Returning container ownership is an effect. The preservation policy cannot
+  // perform it before the canonical receipt has been verified and admitted.
+  if (preserveArtifact && env[NATIVE_CONTAINER_EXEC_ENV] !== undefined)
+    return failed('preserved-ownership-route-unavailable');
   try {
     if (env[NATIVE_CONTAINER_EXEC_ENV] !== undefined) {
       stage = 'home-ownership';
@@ -17129,6 +17141,10 @@ export async function ensureCodexHomeViaOperator(
           requireGatewayProvider,
           ...(model ? { model } : {}),
           ...(typeof headless === "boolean" ? { headless } : {}),
+          ...(preserveArtifact ? {
+            sourcePolicy, expectedSpecificationRevision,
+            ...(routeMode ? { expectedAccountRoute: { mode: routeMode, accountId: routeMode === 'pin' ? accountId : null } } : {}),
+          } : {}),
         }),
       },
     ));
@@ -17138,6 +17154,18 @@ export async function ensureCodexHomeViaOperator(
     const r = await traceStep('response', () => res.json().catch(() => null));
     if (!r || typeof r !== 'object') return failed('invalid-response');
     if (r.ok !== true) return failed('operator-refused');
+    if (preserveArtifact) {
+      // The server already restored the canonical route. Never patch it from
+      // the launcher's possibly newer environment after this exact replay.
+      if (r.owner !== owner || Number(r.advSessionId) !== Number(advSessionId) ||
+          r.preservedSpecificationRevision !== expectedSpecificationRevision ||
+          r.reason !== 'preserved-artifact' ||
+          (model && r.preservedModel !== model) ||
+          (routeMode && (r.preservedAccountRoute?.mode !== routeMode ||
+            r.preservedAccountRoute?.accountId !== (routeMode === 'pin' ? accountId : null))))
+        return failed('preserved-receipt-mismatch');
+      return r;
+    }
     // The canonical writer refreshes config.toml and may remove the launch's
     // gateway selector. Reapply the explicit route after every carry refresh.
     // Default/unspecified launches keep their existing provider semantics.

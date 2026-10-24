@@ -637,6 +637,89 @@ describe('Codex resume reconciles project MCP servers', () => {
   });
 });
 
+describe('Codex explicit preserved artifact request', () => {
+  const owner = 'su-preserved-launcher';
+  const revision = 'a'.repeat(64);
+  it('binds owner, ADV, revision and account without rewriting the repaired home', async () => {
+    const home = join(dir, 'session-7');
+    mkdirSync(home);
+    writeFileSync(join(home, 'config.toml'), 'UNCHANGED CONFIG BYTES\n');
+    const fetchImpl = vi.fn(async (_url, init) => {
+      expect(JSON.parse(init.body)).toEqual({ owner, advSessionId: 7, requireGatewayProvider: false,
+        sourcePolicy: 'preserved-artifact', expectedSpecificationRevision: revision,
+        model: 'gpt-6.1-sol:xhigh', expectedAccountRoute: { mode: 'pin', accountId: 'fixture-pool' } });
+      return { ok: true, status: 200, json: async () => ({ ok: true, owner, advSessionId: 7,
+        reason: 'preserved-artifact', preservedSpecificationRevision: revision,
+        preservedModel: 'gpt-6.1-sol:xhigh', preservedAccountRoute: { mode: 'pin', accountId: 'fixture-pool' } }) };
+    });
+    expect(await launcher.ensureCodexHomeViaOperator(owner, home, 7, {
+      env: { PAPERCUSP_SU_CODEX_HOMES_DIR: dir }, operatorUrl: 'http://operator', fetchImpl,
+      sourcePolicy: 'preserved-artifact', expectedSpecificationRevision: revision,
+      model: 'gpt-6.1-sol:xhigh', routeMode: 'pin', accountId: 'fixture-pool',
+    })).toMatchObject({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe('UNCHANGED CONFIG BYTES\n');
+  });
+  it.each(['revision', 'owner', 'adv', 'route', 'rebuilt'])('rejects a %s response with sanitized diagnostic linkage', async defect => {
+    const failures: any[] = [];
+    const receipt = { ok: true, owner, advSessionId: 7, reason: 'preserved-artifact',
+      preservedSpecificationRevision: revision, preservedAccountRoute: { mode: 'default', accountId: null } };
+    if (defect === 'revision') receipt.preservedSpecificationRevision = 'b'.repeat(64);
+    if (defect === 'owner') receipt.owner = 'su-other';
+    if (defect === 'adv') receipt.advSessionId = 8;
+    if (defect === 'route') receipt.preservedAccountRoute.mode = 'auto';
+    if (defect === 'rebuilt') receipt.reason = 'freshly-rendered';
+    const result = await launcher.ensureCodexHomeViaOperator(owner, join(dir, 'session-7'), 7, {
+      env: { PAPERCUSP_SU_CODEX_HOMES_DIR: dir }, operatorUrl: 'http://operator',
+      sourcePolicy: 'preserved-artifact', expectedSpecificationRevision: revision, routeMode: 'default',
+      onFailure: failure => failures.push(failure),
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => receipt }),
+    });
+    expect(result).toBeNull();
+    expect(failures).toMatchObject([{ stage: 'response', reason: 'preserved-receipt-mismatch', status: 200,
+      diagnostic: { attemptId: expect.any(String) } }]);
+    expect(JSON.stringify(failures)).not.toContain(owner);
+  });
+  it.each([null, 'bad-revision'])('refuses incomplete pins (%s) before requesting or touching home', async revision => {
+    const fetchImpl = vi.fn();
+    expect(await launcher.ensureCodexHomeViaOperator(owner, join(dir, 'session-7'), 7, {
+      env: { PAPERCUSP_SU_CODEX_HOMES_DIR: dir }, sourcePolicy: 'preserved-artifact',
+      expectedSpecificationRevision: revision, fetchImpl,
+    })).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it('refuses an unqualified container ownership return before any subprocess or request', async () => {
+    const fetchImpl = vi.fn();
+    const failures: any[] = [];
+    expect(await launcher.ensureCodexHomeViaOperator(owner, join(dir, 'session-7'), 7, {
+      env: { PAPERCUSP_SU_CODEX_HOMES_DIR: dir, PAPERCUSP_NATIVE_CONTAINER_EXEC: 'invalid-boundary-must-not-be-parsed' },
+      sourcePolicy: 'preserved-artifact', expectedSpecificationRevision: revision, fetchImpl,
+      onFailure: failure => failures.push(failure),
+    })).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(failures).toMatchObject([{ stage: 'scope', reason: 'preserved-ownership-route-unavailable' }]);
+  });
+  it('retains the home bytes on funding refusal and correlates the request safely', async () => {
+    const home = join(dir, 'session-7');
+    mkdirSync(home);
+    writeFileSync(join(home, 'config.toml'), 'ORIGINAL BYTES\n');
+    const failures: any[] = [];
+    let attempt: string | null = null;
+    expect(await launcher.ensureCodexHomeViaOperator(owner, home, 7, {
+      env: { PAPERCUSP_SU_CODEX_HOMES_DIR: dir }, operatorUrl: 'http://operator',
+      sourcePolicy: 'preserved-artifact', expectedSpecificationRevision: revision, routeMode: 'auto',
+      onFailure: failure => failures.push(failure),
+      fetchImpl: async (_url, init) => {
+        attempt = new Headers(init.headers).get('x-papercusp-repair-attempt');
+        return { ok: false, status: 402 };
+      },
+    })).toBeNull();
+    expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe('ORIGINAL BYTES\n');
+    expect(failures).toMatchObject([{ stage: 'response', reason: 'http-error', status: 402,
+      diagnostic: { attemptId: attempt } }]);
+  });
+});
+
 describe('Codex managed carry keeps the selected account route', () => {
   it.runIf(process.getuid?.() !== 0).each([false, true])(
     'distinguishes successful HTTP repair from private config route refusal (private=%s)', async privateConfig => {
