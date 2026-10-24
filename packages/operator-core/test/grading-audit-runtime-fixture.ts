@@ -2,8 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { adminUrl, appUrl } from '@papercusp/db-org/connection';
@@ -47,6 +46,7 @@ const taskIds = new Set<string>();
 const evidenceDir = process.env.GRADING_RUNTIME_EVIDENCE_DIR!;
 const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
 const observations: object[] = [];
+let fixtureScratch: string | undefined;
 
 function retainRuntimeDiagnostics() {
   const logs = readdirSync(evidenceDir).filter(name => /^grading-audit-runtime-[a-f0-9]+\.log$/.test(name)).sort();
@@ -147,12 +147,11 @@ async function main() {
   const root = resolve(import.meta.dirname, '../../..');
   // Keep the maintained builder's complete output in the same physical layout
   // production retains; the disposable supervisor owns this whole generation.
-  // The isolated supervisor gives this child its own temp root. Evidence lives
-  // outside that root, so it cannot also serve as an admitted scratch checkout.
-  const fixtureScratch = mkdtempSync(join(tmpdir(), 'grading-runtime-'));
+  // Linux can expose the same device through distinct mounts that reject
+  // hardlinks. A sibling of the frozen donor shares its actual mount; private
+  // TMPDIR may be a different bind mount even when stat().dev agrees.
+  fixtureScratch = mkdtempSync(join(dirname(root), 'grading-runtime-'));
   accessSync(fixtureScratch, constants.W_OK | constants.X_OK);
-  assert.equal(statSync(root).dev, statSync(fixtureScratch).dev,
-    'The private source and runtime scratch must share a filesystem for the locked hardlink snapshot');
   let sourceRoot = join(fixtureScratch, '.candidate-runtime-proof', 'checkout');
   const parentBuild = getBuildInfo();
   assert.ok(parentBuild.sha && parentBuild.sha !== 'unknown');
@@ -366,4 +365,5 @@ catch (error) {
   }
   retainRuntimeDiagnostics();
   await getOrgPg().sql.end({ timeout: 1 });
+  if (fixtureScratch) rmSync(fixtureScratch, { recursive: true, force: true });
 }
