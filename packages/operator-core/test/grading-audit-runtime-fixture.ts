@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { adminUrl, appUrl } from '@papercusp/db-org/connection';
@@ -144,7 +145,10 @@ async function main() {
   const root = resolve(import.meta.dirname, '../../..');
   // Keep the maintained builder's complete output in the same physical layout
   // production retains; the disposable supervisor owns this whole generation.
-  let sourceRoot = join(evidenceDir, '.candidate-runtime-proof', 'checkout');
+  // The isolated supervisor gives this child its own temp root. Evidence lives
+  // outside that root, so it cannot also serve as an admitted scratch checkout.
+  const fixtureScratch = mkdtempSync(join(tmpdir(), 'grading-runtime-'));
+  let sourceRoot = join(fixtureScratch, '.candidate-runtime-proof', 'checkout');
   const parentBuild = getBuildInfo();
   assert.ok(parentBuild.sha && parentBuild.sha !== 'unknown');
   mkdirSync(dirname(sourceRoot), { recursive: true });
@@ -252,7 +256,7 @@ async function main() {
   // Git checkout, then run the maintained builder at its new physical root.
   // Both artifacts retain their own compiler manifest and byte digest.
   const oldSourceRoot = sourceRoot;
-  const movedHome = join(evidenceDir, '.candidate-runtime-rematerialized');
+  const movedHome = join(fixtureScratch, '.candidate-runtime-rematerialized');
   renameSync(dirname(sourceRoot), movedHome);
   sourceRoot = join(movedHome, 'checkout');
   const rebuilt = await preparePrivateOperatorApiBundle(sourceRoot,
