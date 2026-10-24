@@ -104,6 +104,20 @@ describe('committed reporter database route', () => {
     } finally { rmSync(original, { recursive: true, force: true }); }
   });
 
+  it('requires an explicit reporter sink and pins a receipt file for test:file', () => {
+    const receiptFile = join(tmpdir(), 'committed-test-run-receipts.jsonl');
+    expect(() => mod.lintAsCommittedChildEnv({
+      DATABASE_URL: 'postgres://product.invalid',
+      HARNESS_ADMIN_DATABASE_URL: 'postgres://temporary.invalid',
+    }, null, receiptFile)).toThrow(/PAPERCUSP_TEST_RUNS_DB_URL/);
+
+    const child = mod.lintAsCommittedChildEnv({
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgres://ledger.invalid',
+    }, null, receiptFile);
+    expect(child.PAPERCUSP_TEST_RUNS_DB_URL).toBe('postgres://ledger.invalid');
+    expect(child.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBe(receiptFile);
+  });
+
   // WI-6554700010012470: a kept clone reused WITHOUT lintAsCommittedChildEnv (mutation-probe's
   // overlay, a direct test:file in the root) must still route to the operator database. The
   // failing consumer was connection.ts (getOrgPg) via the box-wide discovery file, so the

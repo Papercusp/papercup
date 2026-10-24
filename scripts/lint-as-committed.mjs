@@ -115,8 +115,15 @@ import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-c
 import { applyEnvLocal, parseEnvFile, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
 import { withFsMutex } from './lib/fs-mutex.mjs';
 
+export function requireDurableTestRunSink(environment = process.env) {
+  if (typeof environment.PAPERCUSP_TEST_RUNS_DB_URL !== 'string' ||
+      !environment.PAPERCUSP_TEST_RUNS_DB_URL.trim()) {
+    throw new Error('PAPERCUSP_TEST_RUNS_DB_URL is required for durable test:file reporter receipts');
+  }
+}
+
 /** Child environment for commands executing against the isolated committed clone. */
-export function lintAsCommittedChildEnv(environment = process.env, repoRoot = null) {
+export function lintAsCommittedChildEnv(environment = process.env, repoRoot = null, testRunReceiptFile = null) {
   const child = {
     ...environment,
     npm_config_workspaces: undefined,
@@ -127,6 +134,12 @@ export function lintAsCommittedChildEnv(environment = process.env, repoRoot = nu
   // a frozen resolver may discover a desktop PG and publish proof elsewhere.
   // The shared resolver preserves explicit DSNs and dedicated-PG isolation.
   if (repoRoot) applyEnvLocal({ root: join(repoRoot, 'apps', 'operator'), env: child });
+  if (testRunReceiptFile !== null) {
+    if (typeof testRunReceiptFile !== 'string' || !testRunReceiptFile.trim())
+      throw new Error('test-run receipt file must be an explicit path');
+    requireDurableTestRunSink(environment);
+    child.PAPERCUSP_TEST_RUN_RECEIPT_FILE = testRunReceiptFile;
+  }
   // Each immutable clone has a fresh tmp path. Keep resumable verdict storage
   // scoped to its source repository instead, separately from ordinary/gate
   // caches. The affected runner still checks command and dependency contents.
@@ -1121,6 +1134,16 @@ async function main() {
     process.exit(2);
   }
 
+  if (args.scripts.includes('test:file')) {
+    try {
+      requireDurableTestRunSink(process.env);
+    } catch (error) {
+      console.error('lint-as-committed: ' +
+        (error instanceof Error ? error.message : String(error)));
+      process.exit(2);
+    }
+  }
+
   let repoRoot;
   try {
     repoRoot = git(['rev-parse', '--show-toplevel'], process.cwd());
@@ -1463,16 +1486,38 @@ async function main() {
         continue;
       }
 
-      const run = spawnSync('npm', [...(args.workspace ? ['--workspace', args.workspace] : []), 'run', script,
-        ...(args.forward.length > 0 ? ['--', ...args.forward] : [])], {
-        cwd: workRoot,
-        encoding: 'utf8',
-        stdio: 'inherit',
-        // Astro reads clone-specific Vite resolution from this marker. Keep Node's own
-        // symlink resolution unchanged: --preserve-symlinks makes Node 25 reject remapped
-        // workspace TypeScript imports under node_modules before lints can execute.
-        env: childEnvironment,
-      });
+      let testReceiptDir = null;
+      let scriptEnvironment = childEnvironment;
+      if (script === 'test:file') {
+        try {
+          testReceiptDir = mkdtempSync(join(tmpdir(), 'papercusp-lint-as-committed-receipts-'));
+          const receiptFile = join(testReceiptDir, 'receipts.jsonl');
+          writeFileSync(receiptFile, '', { flag: 'wx', mode: 0o600 });
+          scriptEnvironment = lintAsCommittedChildEnv(childEnvironment, null, receiptFile);
+        } catch (err) {
+          if (testReceiptDir) rmSync(testReceiptDir, { recursive: true, force: true });
+          const note = err instanceof Error ? err.message : String(err);
+          console.error('lint-as-committed: cannot prepare durable test receipt: ' + note);
+          results.push({ script, status: 'error', note });
+          continue;
+        }
+      }
+
+      let run;
+      try {
+        run = spawnSync('npm', [...(args.workspace ? ['--workspace', args.workspace] : []), 'run', script,
+          ...(args.forward.length > 0 ? ['--', ...args.forward] : [])], {
+          cwd: workRoot,
+          encoding: 'utf8',
+          stdio: 'inherit',
+          // Astro reads clone-specific Vite resolution from this marker. Keep Node's own
+          // symlink resolution unchanged: --preserve-symlinks makes Node 25 reject remapped
+          // workspace TypeScript imports under node_modules before lints can execute.
+          env: scriptEnvironment,
+        });
+      } finally {
+        if (testReceiptDir) rmSync(testReceiptDir, { recursive: true, force: true });
+      }
 
       if (run.error) {
         results.push({ script, status: 'error', note: run.error.message });
