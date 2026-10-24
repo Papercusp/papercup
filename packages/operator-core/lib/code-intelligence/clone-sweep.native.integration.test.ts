@@ -56,7 +56,7 @@ const journey = String.raw`
   const schedule = { kind: 'cron', cron: '0 2 * * *', tzid: 'America/New_York',
     concurrency: 'skip', catchup: 'skip-old',
     action: { system: 'clone-family-sweep', input: { harness: workspaceId, clonePolicy: 'reuse-signals-v1' } } };
-  const privateTasks = () => listTasks({ workspaceId, launchedBy: 'system:clone-family-sweep', limit: 100 });
+  const privateTasks = () => listTasks({ workspaceId, launchedBy: 'system:clone-family-sweep', includeEnded: true, limit: 100 });
   const dueNow = async id => {
     await sql.unsafe('UPDATE harness_shared.routines SET next_fire_at = $1 WHERE id = $2',
       [new Date(Date.now() - 1000), id]);
