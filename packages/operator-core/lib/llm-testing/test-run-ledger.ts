@@ -157,7 +157,7 @@ export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedge
  * `operator/S01-….ts`, `sn-S01-…` in `papercup/SN01-….ts`), and ONE file may define
  * many scenarios (`S33-goal-agenda.ts` builds `` `su-S33-agenda-${c}` ``). So the file
  * is found by CONTENT: the non-test source (target dir first, then the whole tree)
- * holding the id as a string literal, else the longest templated prefix of it. A tie
+ * holding the id as a string literal, else the longest template/concatenation prefix. A tie
  * or no match returns undefined — never a guessed path, because a wrong path
  * silently drops the ledger row or misattributes the evidence.
  */
@@ -201,14 +201,17 @@ function listScenarioSources(dir: string): string[] {
 }
 
 /**
- * Infinity for an exact quoted id; else the length of the longest `` `prefix${ `` it extends.
+ * Infinity for an exact quoted id; else the longest template or quoted-concatenation prefix.
  * A role-only prefix (one segment, e.g. `su-`, `sn-`) counts only when `allowRolePrefix`.
  */
 function idMatchScore(source: string, id: string, allowRolePrefix: boolean): number {
   for (const q of ["'", '"', '`']) if (source.includes(`${q}${id}${q}`)) return Number.POSITIVE_INFINITY;
   let best = 0;
-  for (const m of source.matchAll(/`([A-Za-z0-9_-]+)\$\{/g)) {
-    const prefix = m[1]!;
+  const prefixes = [
+    ...Array.from(source.matchAll(/`([A-Za-z0-9_-]+)\$\{/g), m => m[1]!),
+    ...Array.from(source.matchAll(/(['"])([A-Za-z0-9_-]+)\1\s*\+/g), m => m[2]!),
+  ];
+  for (const prefix of prefixes) {
     if (!prefix.includes('-') || !id.startsWith(prefix) || id.length <= prefix.length) continue;
     if (!allowRolePrefix && prefix.split('-').filter(Boolean).length < 2) continue;
     best = Math.max(best, prefix.length);

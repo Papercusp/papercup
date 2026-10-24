@@ -256,6 +256,31 @@ describe('resolveScenarioSourceFile', () => {
     }
   });
 
+  it('keeps generated scenario source custody instead of selecting a role fixture', () => {
+    for (const arrival of ['preexisting', 'during-registration', 'empty']) {
+      expect(resolveScenarioSourceFile('su-S42-drain-watch-' + arrival, 'su', SCENARIOS_ROOT)).toBe(
+        join(SCENARIOS_ROOT, 'su', 'S42-drain-watch-recheck.ts'),
+      );
+    }
+    const dir = mkdtempSync(join(tmpdir(), 'scen-resolve-'));
+    try {
+      mkdirSync(join(dir, 'su'));
+      writeFileSync(join(dir, 'su', '_helpers.ts'), 'export const id = (n: string) => `su-${n}`;\n');
+      writeFileSync(join(dir, 'su', 'S50-family.ts'), "export const id = (c: string) => 'su-S50-' + c;\n");
+      writeFileSync(join(dir, 'su', 'S51-family.ts'), 'export const id = (c: string) => "su-S51-" + c;\n');
+      for (const family of ['S50', 'S51']) {
+        expect(resolveScenarioSourceFile('su-' + family + '-case', 'su', dir)).toBe(
+          join(dir, 'su', family + '-family.ts'),
+        );
+      }
+      // Equal family matches stay ambiguous rather than attributing a native run by guess.
+      writeFileSync(join(dir, 'su', 'S50-duplicate.ts'), "export const id = (c: string) => 'su-S50-' + c;\n");
+      expect(resolveScenarioSourceFile('su-S50-case', 'su', dir)).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('a bare role prefix claims ids only inside the target dir, never across the tree', () => {
     // A fixture builder like `su-${n}` in a helper file once captured su-S37a (target
     // su-code, no su-code dir) and misattributed its llm ledger rows.
