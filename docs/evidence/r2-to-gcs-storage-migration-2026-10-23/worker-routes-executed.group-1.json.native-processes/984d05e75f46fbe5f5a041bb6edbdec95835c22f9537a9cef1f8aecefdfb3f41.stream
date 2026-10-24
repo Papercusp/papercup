@@ -1,0 +1,4 @@
+[unit] src/__tests__/creator-drafts.test.ts
+[unit] src/__tests__/release-mirror.test.ts
+[unit] src/__tests__/self-describing-artifacts.test.ts
+[unit] src/routes/workspace-host-artifacts.test.ts

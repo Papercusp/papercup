@@ -2660,13 +2660,15 @@ type GitSyncActivityMarker = {
   /** The per-fire lock owner ties this durable marker back to the live resource lease. */
   owner: string;
   owner_pid: number;
+  /** Exact DBOS correlation; manual fires outside a workflow explicitly record null. */
+  workflow_id: string | null;
   git_commands: GitSyncCommandSnapshot;
   timeout?: GitSyncTimeoutSnapshot;
   settlement_progress?: GitSyncSettlementProgress;
   /** EI-24496143892913296: the post-legs leg that just started (e.g. 'git-sync:ref-announce'). */
   leg?: string;
 };
-type GitSyncActivityFields = Omit<GitSyncActivityMarker, 'owner' | 'owner_pid' | 'git_commands' | 'timeout'>;
+type GitSyncActivityFields = Omit<GitSyncActivityMarker, 'owner' | 'owner_pid' | 'workflow_id' | 'git_commands' | 'timeout'>;
 
 /**
  * Writer-backed liveness for the whole git-sync action, not just its local commit
@@ -3722,6 +3724,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     ...activity,
     owner: lockOwner,
     owner_pid: process.pid,
+    workflow_id: ctx.workflowId ?? null,
     git_commands: snapshotGitCommands(),
     ...(timeoutSnapshot ? { timeout: timeoutSnapshot } : {}),
   });

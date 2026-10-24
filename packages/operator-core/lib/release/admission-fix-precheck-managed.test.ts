@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createRequire } from 'node:module';
 import type { managedSpawn } from '../task-manager/managed-spawn';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -244,8 +245,8 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       execPath: '/node',
       spawnerPid: 42,
     })).toEqual({
-      cmd: 'npx',
-      args: ['tsx', '/repo/packages/operator-core/lib/release/admission-fix-precheck-worker-bin.ts'],
+      cmd: '/node',
+      args: ['--import', createRequire(import.meta.url).resolve('tsx'), '/repo/packages/operator-core/lib/release/admission-fix-precheck-worker-bin.ts'],
       env: { PAPERCUSP_DESKTOP_PARENT_PID: '42' },
       mode: 'dev-tsx',
     });

@@ -1,0 +1,1 @@
+{"schemaVersion":1,"kind":"native-node-process-event","event":"child-close","processIdentity":"4962e1b6-11e4-49c0-9146-8caa745acf26","pid":1384045,"ppid":1384039,"atMs":1792811538698,"childIdentity":"faa0eb20-aec0-4b25-be1d-c14524e8e58d","childPid":1388877,"code":null,"signal":"SIGKILL"}

@@ -26,6 +26,12 @@ export function assertCleanCohortAuthority(registration: {
 }, portableSha256: string, expected: CleanCohortApproval | undefined, live: CleanCohortAuthority): void;
 export function claimCleanCohort(directory: string, marker: Record<string, unknown>): void;
 export function assertCleanCohortCatalogDefinitions(actual: unknown, expected: unknown): void;
+export function assertCleanCohortCapturedInputs(input: {
+  captured?: { installSha256: string; executableSha256: string; nodeVersion: string; moduleHashes: Record<string, string> };
+  actual: { installSha256: string; executableSha256: string; nodeVersion: string; moduleHashes: Record<string, string> };
+  amendment: { addedFiles: Record<string, string>; sourceReplacements: Record<string, { sha256: string }> };
+  fixture: string; portableSha256: string; readHash: (path: string) => string;
+}): void;
 export function parseCleanCohortArgs(argv: string[]): {
   experimentId: string; fixture: string; readinessPath: string | undefined;
 };

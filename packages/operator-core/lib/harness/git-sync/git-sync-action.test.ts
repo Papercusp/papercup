@@ -1598,10 +1598,11 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     // 35 virtual milliseconds, including the not-yet-expired boundary.
   }, 15_000);
 
-  it('stamps every whole-fire metadata marker with its per-fire lock owner and PID', async () => {
+  it('stamps every whole-fire metadata marker with its per-fire lock owner, PID and workflow identity', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);
+    const workflowId = '57405569-c444-4c6f-86f3-eecd68ffec36';
 
-    await action(ctx);
+    await action({ ...ctx, workflowId });
 
     const patches = gitSyncActivityPatches();
     expect(patches.length).toBeGreaterThan(1);
@@ -1609,6 +1610,20 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     expect(owner).toMatch(new RegExp(`^system:git-sync:${process.pid}:`));
     expect(primaryLockOwners()).toEqual(new Set([owner]));
     expect(patches.every((patch) => patch.owner === owner && patch.owner_pid === process.pid)).toBe(true);
+    expect(patches.every((patch) => patch.workflow_id === workflowId)).toBe(true);
+    expect(patches.at(-1)).toMatchObject({ active: false, phase: 'complete', workflow_id: workflowId });
+  });
+
+  it('preserves workflow identity in the terminal error marker', async () => {
+    const workflowId = 'sched-.routinesTick-2026-10-24T03:00:00.000Z-11';
+    runGitSyncMock.mockRejectedValue(new Error('git exploded'));
+
+    await expect(action({ ...ctx, workflowId })).rejects.toThrow('git exploded');
+
+    const patches = gitSyncActivityPatches();
+    expect(patches.length).toBeGreaterThan(1);
+    expect(patches.every((patch) => patch.workflow_id === workflowId)).toBe(true);
+    expect(patches.at(-1)).toMatchObject({ active: false, phase: 'error', workflow_id: workflowId });
   });
 
   it('persists count-bearing completion-settlement progress for routine health readers', async () => {
@@ -1688,6 +1703,10 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     expect(loadHarnessRegistryMock).toHaveBeenCalled();
     expect(loadHarnessRegistryMock.mock.calls.every(([workspaceId]) => workspaceId === 'ws-42')).toBe(true);
     expect(runGitSyncMock).not.toHaveBeenCalledWith('papercup', expect.objectContaining({ repoPath: ambientSibling }));
+    const patches = gitSyncActivityPatches();
+    expect(patches.length).toBeGreaterThan(1);
+    expect(patches.every((patch) => patch.workflow_id === null)).toBe(true);
+    expect(patches.at(-1)).toMatchObject({ active: false, phase: 'complete', workflow_id: null });
   });
 });
 
