@@ -35,6 +35,7 @@ import { connectionConfirmationCopy, connectionStatusCopy, normalizeBrowserSessi
   type ConnectionInventoryEntry, type SshProfileConnectionSource } from './connection-inventory';
 import type { CloudWorkspacesControlRow, WorkspaceHostControlRow } from '../../cloud-workspaces/workspace-view-model';
 import { useVisibleRefresh } from '@/app/_components/desktop-grid/use-visible-refresh';
+import { buildSshConnectionCommands } from './ssh-connection-commands';
 
 export type EntryKind = 'mobile' | 'app' | 'service';
 
@@ -558,22 +559,18 @@ function SshConnectionSetup() {
   const [host, setHost] = useState('');
   const [user, setUser] = useState('');
   const [name, setName] = useState('my-computer');
-  const address = host.trim();
-  const username = user.trim();
-  const profile = name.trim();
-  const validHost = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,252}$/.test(address);
-  const validUser = username === '' || /^[A-Za-z_][A-Za-z0-9._-]{0,63}$/.test(username);
-  const validName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(profile);
-  const valid = validHost && validUser && validName;
-  const problem = address && !validHost ? 'Enter a hostname, IP address or SSH alias, without a username, URL or spaces.' :
-    !validUser ? 'Enter only your SSH username, without spaces or an address.' :
-    !validName ? 'Use 1–64 letters, digits, dots, underscores or hyphens for the connection name, starting with a letter or digit.' : null;
+  const { address, profile, validName, problem, commands } = buildSshConnectionCommands({ host, user, name });
   return <section id="ssh-setup" className="pc-settings-section" data-testid="ssh-connection-setup" aria-labelledby="ssh-setup-title">
     <h2 id="ssh-setup-title">Connect a computer over SSH</h2>
     <p>Set up once, then use the saved connection. An address works directly; an SSH alias is optional. You’ll need the psu utility on the computer you are using now.</p>
     <details>
       <summary>Prepare the computer you want to reach</summary>
       <p>Install Papercusp and tmux, enable SSH, and authorize the SSH public key from the computer you are using now. Keep both computers on the same private network or VPN.</p>
+      <ol>
+        <li>On the computer you are using now, find your public key: on Linux or macOS run <code>cat ~/.ssh/id_ed25519.pub</code>; in Windows PowerShell run <code>Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub</code>. If you have no SSH key, run <code>ssh-keygen -t ed25519</code> and accept the default location. Reuse an existing key rather than replacing it.</li>
+        <li>On the remote computer, add that public key as a new line in your SSH account’s <code>~/.ssh/authorized_keys</code>. On Linux or macOS, create the directory if needed with <code>mkdir -p ~/.ssh</code>, then set permissions with <code>chmod 700 ~/.ssh</code> and <code>chmod 600 ~/.ssh/authorized_keys</code>. For a Windows administrator account, ask its SSH administrator to authorize the key in the configured administrator key file.</li>
+        <li>Copy only the public key ending in <code>.pub</code>. Keep the private key on the computer you are using now. Continue with “Check SSH access” below to confirm the setup.</li>
+      </ol>
       <p>Papercusp on the remote computer must listen on loopback port 3070. Keep its SSH host fingerprint handy so you can verify it when connecting.</p>
     </details>
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 12, marginTop: 12 }}>
@@ -589,15 +586,15 @@ function SshConnectionSetup() {
     </div>
     {problem && <p role="alert">{problem}</p>}
     {!address && <p className="pc-settings-hint">Enter the computer’s address to get commands you can copy. Run them in a terminal on the computer you are using now.</p>}
-    {valid && <>
+    {commands && <>
       <h3>1. Check SSH access</h3>
       <p className="pc-settings-hint">Run this on the computer you are using now. Confirm the host fingerprint matches the remote computer before accepting it. Once signed in, run <code>exit</code> to return here.</p>
-      <CopyField label="Test SSH connection" value={`ssh ${username ? `${username}@` : ''}${address}`} />
+      <CopyField label="Test SSH connection" value={commands.test} />
       <h3>2. Save the connection once</h3>
-      <CopyField label="Save SSH connection" value={`psu --connect-add-ssh=${profile} --connect-host=${address}${username ? ` --connect-user=${username}` : ''}`} />
+      <CopyField label="Save SSH connection" value={commands.save} />
       <h3>3. Connect whenever you need</h3>
-      <CopyField label="Open remote terminal" value={`psu --connect=${profile}`} />
-      <CopyField label="Open Papercusp in your browser" value={`psu --connect=${profile} --connect-gui`} />
+      <CopyField label="Open remote terminal" value={commands.terminal} />
+      <CopyField label="Open Papercusp in your browser" value={commands.gui} />
       <p className="pc-settings-hint">Keep the terminal open while using the browser connection. The remote computer must be online.</p>
     </>}
     <details style={{ marginTop: 12 }}>

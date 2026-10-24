@@ -167,6 +167,16 @@ describe('Remote access screen', () => {
     expect(posts).toEqual([]);
   });
 
+  it('makes the one-time public-key authorization step actionable without exposing a private key', () => {
+    render(<RemoteAccessSettingsPage />);
+    const preparation = screen.getByText('Prepare the computer you want to reach').closest('details')!;
+    expect(preparation.textContent).toContain('cat ~/.ssh/id_ed25519.pub');
+    expect(preparation.textContent).toContain('ssh-keygen -t ed25519');
+    expect(preparation.textContent).toContain('~/.ssh/authorized_keys');
+    expect(preparation.textContent).toContain('Reuse an existing key rather than replacing it');
+    expect(preparation.textContent).toContain('Keep the private key');
+  });
+
   it.each([
     ['Computer address or SSH alias', 'host;touch /tmp/unwanted'],
     ['Computer address or SSH alias', '$(whoami)'],
