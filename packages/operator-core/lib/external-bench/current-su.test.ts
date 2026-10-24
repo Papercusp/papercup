@@ -1226,7 +1226,7 @@ describe('Anthropic provider-enforced model input limits', () => {
     'aborted', 'output', 'hosted-tool', 'remote-file', 'image', 'context', 'unknown'])(
     'refuses %s before making even a model metadata request', async changed => {
       const f = fixture(), body = JSON.parse(f.attempt.body);
-      const patch: Partial<GatewayCarryTrialAttempt> = {};
+      const patch: { -readonly [K in keyof GatewayCarryTrialAttempt]?: GatewayCarryTrialAttempt[K] } = {};
       if (changed === 'beta') patch.anthropicBeta = 'context-1m-2025-08-07';
       if (changed === 'missing-beta') patch.anthropicBeta = undefined;
       if (changed === 'version') patch.anthropicVersion = '2099-01-01';

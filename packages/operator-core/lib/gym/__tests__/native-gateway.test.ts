@@ -180,7 +180,7 @@ describe('native Gym governor-backed provider controller', () => {
   });
   it.each(['beta', 'missing-beta', 'version', 'oauth', 'route', 'model', 'input', 'output', 'response', 'body', 'request-id', 'missing-cap'])(
     'refuses Anthropic model-limit proof with %s drift before reserving', async changed => {
-      const f = modelLimitFixture(), patch: Partial<GatewayCarryTrialAttempt> = {};
+      const f = modelLimitFixture(), patch: { -readonly [K in keyof GatewayCarryTrialAttempt]?: GatewayCarryTrialAttempt[K] } = {};
       if (changed === 'beta') patch.anthropicBeta = 'context-1m-2025-08-07';
       if (changed === 'missing-beta') patch.anthropicBeta = undefined;
       if (changed === 'version') patch.anthropicVersion = '2099-01-01';
