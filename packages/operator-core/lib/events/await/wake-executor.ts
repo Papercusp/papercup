@@ -75,6 +75,7 @@ import {
   fallbackCodexLaunchSpecFromAdvSession,
   getAdvSession,
   getAdvSessionInWorkspace,
+  LATEST_ADV_SESSION_BY_COORD_OWNER_MAX_DURATION_MS,
   latestAdvSessionByCoordOwner,
   workspaceForCoordOwner,
   claimAdvSessionResume,
@@ -4807,10 +4808,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // A delayed wake can outlive the adv-session row it captured. Elect the
       // current row for this coord owner before Channel 2 can resume a dead
       // predecessor while its carry successor already exists.
+      // This lookup has a primary transaction and an independent dedicated
+      // fallback. Bound the caller across both phases plus cleanup; the former
+      // 1.5s wrapper returned "unverifiable" before the fallback could finish.
       const latest = await withWakeTimeout(
         getLatestSessionForOwner(d.subscriberId),
         `latest adv-session/${d.subscriberId}`,
-        1_500,
+        LATEST_ADV_SESSION_BY_COORD_OWNER_MAX_DURATION_MS,
       ).catch(() => null);
       if (!latest || latest.coordOwnerId !== d.subscriberId) {
         return {

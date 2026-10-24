@@ -79,6 +79,7 @@ import {
 } from 'node:fs';
 import net from 'node:net';
 import { createTerminalOutput } from './psu-terminal-output.mjs';
+import { createPendingCarryFence } from './psu-carry-fence.mjs';
 import { observeClaudeDialogWrites } from './hooks/cc/dialog-answer-provenance.mjs';
 
 /**
@@ -5471,6 +5472,7 @@ export function makeCarryRearmController({
   // Age may not expire a production continuation. Epoch supersession MUST:
   // an obsolete request must neither suppress wakes nor replace its successor.
   isSuperseded = (_msg) => false,
+  isCancelled = (_msg) => false,
   // Production carry-respawns are admitted only when the effective per-owner
   // wake mode is explicitly `auto`. Null/throws fail closed and leave the carry
   // pending for a paced re-read; non-carry wake modes keep their own delivery
@@ -5593,9 +5595,9 @@ export function makeCarryRearmController({
      *  @param {string | null} [mode]
      */
     pendingCount(mode = null) {
-      if (mode == null) return pending.size + inFlight.size;
-      return [...pending].filter((key) => rearmModeOf(latest.get(key)) === mode).length +
-        [...inFlight].filter((msg) => rearmModeOf(msg) === mode).length;
+      const counts = (msg) => !isCancelled(msg) && (mode == null || rearmModeOf(msg) === mode);
+      return [...pending].filter((key) => counts(latest.get(key))).length +
+        [...inFlight].filter(counts).length;
     },
     /** Whether a message is still owned by the detached re-arm loop. */
     isPendingMessage(msg) {
@@ -5748,12 +5750,13 @@ export function makeCarryRearmController({
         let attemptsMade = 0;
         let deferReason = 'busy-gate-expired';
         const dropSuperseded = (candidate) => {
-          if (!isSuperseded(candidate)) return false;
+          const reason = isCancelled(candidate) ? 'carry-fenced' : isSuperseded(candidate) ? 'superseded' : null;
+          if (!reason) return false;
           emitEvent(droppedKind, {
-            ...extra, ...dropDiagnostics(), rearmed: true, reason: 'superseded',
+            ...extra, ...dropDiagnostics(), rearmed: true, reason,
             observedMaxQuietMs, attempts: attemptsMade, ...terminalIds(),
           });
-          settle(key, { delivered: false, reason: 'superseded' });
+          settle(key, { delivered: false, reason });
           return true;
         };
         try {
@@ -7323,6 +7326,7 @@ export function decodeControl(payload) {
         o.mode === 'reset' ||
         o.mode === 'recycle' ||
         o.mode === 'carry-respawn' ||
+        o.mode === 'carry-fence' ||
         o.mode === 'compact' ||
         o.mode === 'shutdown' ||
         o.mode === 'hooks-observe' ||
@@ -7360,6 +7364,9 @@ export function decodeControl(payload) {
       if (o.mode === 'identity-assume') return {
         mode: 'identity-assume', data: '', gated: false,
         ownerId: o.ownerId, action: o.action, request: o.request,
+      };
+      if (o.mode === 'carry-fence') return {
+        mode: 'carry-fence', data: '', gated: false, ownerId: o.ownerId, request: o.request,
       };
       if (o.mode === 'hooks-observe') return {
         mode: 'hooks-observe', data: '', gated: true,
@@ -7417,6 +7424,12 @@ export function decodeControl(payload) {
           mode: 'carry-respawn',
           data: String(o.data ?? ''),
           systemPromptAddendum: String(o.systemPromptAddendum ?? ''),
+          ...('carryNonce' in o ? {
+            carryNonce: o.carryNonce, workspaceId: o.workspaceId,
+            expectedAdvSessionId: o.expectedAdvSessionId, expectedNativeSessionId: o.expectedNativeSessionId,
+            expectedHostStartedAt: o.expectedHostStartedAt, expectedChildGeneration: o.expectedChildGeneration,
+            expectedHostCodeVersion: o.expectedHostCodeVersion,
+          } : {}),
           ...(typeof o.sourceTranscriptPath === 'string' && o.sourceTranscriptPath
             ? { sourceTranscriptPath: o.sourceTranscriptPath.slice(0, 4096) } : {}),
           // P-020 drill correlation is additive on the v1 envelope. An ordinary
@@ -11744,7 +11757,7 @@ export function hostThroughPty(o) {
     // host never adopts newer host code (shouldAdoptHostCode, D-008), so a host
     // loaded before that fix lacks the cap and scripts/mcp-reconnect.mjs sends the
     // agent to the carry-respawn rung instead of queueing a reconnect that no-ops.
-    caps: ['carry-respawn', 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
+    caps: ['carry-respawn', 'pending-carry-fence-v1', 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
       ...(env.PAPERCUSP_AGENT === 'codex' ? ['codex-hooks-observe-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume', 'quota-recovery-reroute'] : [])],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
@@ -11782,6 +11795,13 @@ export function hostThroughPty(o) {
         nativeStartPending.size === 0 && (!launchKickoff || childPromptReady),
     });
   }
+  const pendingCarryFence = createPendingCarryFence({
+    identity: () => ({ ownerId, workspaceId: env.PAPERCUSP_WORKSPACE_ID || env.PAPERCUSP_WORKSPACE || 'default',
+      advSessionId: baseMeta.advSessionId, nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
+      hostStartedAt: baseMeta.startedAt, childGeneration, hostCodeVersion: baseMeta.hostCodeVersion }),
+    canFence: () => !hostCleanedUp && !shuttingDown && !recycling && !parked &&
+      !parkPromise && !unparkPromise && !identityAssumeChecking && !identityAssumeFence?.blocksInput(),
+  });
   // WI-6554700010013215: discovery persistence is off the PTY host's event
   // loop. The old synchronous writeFileSync+renameSync path was observed in
   // D-state inside __start_renaming, stopping keystrokes and PTY output while
@@ -14225,6 +14245,7 @@ export function hostThroughPty(o) {
         });
       }
       return recycleChild(message?.data, {
+        carryRequest: message,
         systemPromptAddendum: message?.systemPromptAddendum ?? '',
         sourceTranscriptPath: message?.sourceTranscriptPath ?? null,
         drillId,
@@ -14237,6 +14258,7 @@ export function hostThroughPty(o) {
     },
     onSettlement: (messages, outcome) => {
       for (const message of messages) {
+        pendingCarryFence.end(message);
         const deliveryId = message?.deliveryId;
         if (!deliveryId) continue;
         if (outcome?.delivered) {
@@ -14258,6 +14280,7 @@ export function hostThroughPty(o) {
       isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs }),
     isSuperseded: (msg) =>
       isCarryRespawnSuperseded(msg.receivedAtMs, lastRespawnAtMs),
+    isCancelled: (msg) => pendingCarryFence.isFenced(msg),
   });
 
   // ── Process-free parking (psu-process-free-parking-2026-10-06 P-017) ───────
@@ -15101,6 +15124,12 @@ export function hostThroughPty(o) {
         });
         return { ok: false, reason: refusalReason };
       }
+      if (msg.mode === 'carry-fence') {
+        const receipt = msg.ownerId === ownerId && msg.request?.ownerId === ownerId
+          ? pendingCarryFence.fence(msg.request) : { ok: false, reason: 'carry-fence-owner-mismatch' };
+        appendHostEvent(ownerId, receipt.ok ? 'pending-carry-fenced' : 'pending-carry-fence-refused', receipt);
+        return receipt;
+      }
       if (msg.mode === 'delivery-cancel') {
         if (!msg.ownerId || msg.ownerId !== ownerId || !msg.deliveryId) {
           appendHostEvent(ownerId, 'delivery-cancellation-refused', {
@@ -15348,6 +15377,8 @@ export function hostThroughPty(o) {
       // makeCarryRearmController). Cleared exactly once, whichever way this
       // attempt concludes, via the runGatedDelivery().finally() below.
       if (msg.mode === 'carry-respawn') {
+        const refusal = pendingCarryFence.admit(msg);
+        if (refusal) return { ok: false, reason: refusal };
         carryRearm.beginFirstAttempt(msg);
       }
       // P-001a: a same-source turn already waiting at the gates absorbs this one —
@@ -15807,6 +15838,7 @@ export function hostThroughPty(o) {
           // promise settles permanently deduped failed carries and made a
           // transient argv/spawn/native-proof failure look successful.
           const recycleResult = await recycleChild(msg.data, {
+            carryRequest: msg.mode === 'carry-respawn' ? msg : null,
             systemPromptAddendum:
               msg.mode === "carry-respawn" ? msg.systemPromptAddendum : "",
             sourceTranscriptPath: msg.sourceTranscriptPath ?? null,
@@ -16221,6 +16253,7 @@ export function hostThroughPty(o) {
           // before this can fire, so pendingCount() never dips to 0 mid-transfer.
           if (msg.mode === 'carry-respawn') {
             carryRearm.endFirstAttempt(msg);
+            if (!carryRearm.isPendingMessage(msg)) pendingCarryFence.end(msg);
           }
         });
       // The host has accepted the request for processing, but has not yet
@@ -17106,6 +17139,7 @@ export function hostThroughPty(o) {
         sessionClass = '',
         quotaRecovery = null,
         carryProofRetryCount = 0,
+        carryRequest = null,
         // WI-10004943: spawn a fresh child on the launch argv and return without
         // a first prompt; the launch closure re-delivers its own kickoff.
         freshChildOnly = false,
@@ -17161,6 +17195,12 @@ export function hostThroughPty(o) {
       if (recycling) return settleQuotaRecovery(false, 'recycle-already-running');
       if (rerouteBoundary()) return settleQuotaRecovery(false, 'stale-quota-reroute');
       if (quotaOwnerBoundary()) return settleQuotaRecovery(false, 'owner-input-or-native-work');
+      // Synchronous linearization point before any preparation, host adoption,
+      // home mutation or child replacement. Fencing after this point refuses.
+      if (carryRequest) {
+        const refusal = pendingCarryFence.begin(carryRequest);
+        if (refusal) return settleQuotaRecovery(false, refusal);
+      }
       if (reroute !== undefined) {
         if (Date.now() - explicitQuotaRecoveryWindowAt >= 3_600_000) {
           explicitQuotaRecoveryWindowAt = Date.now();

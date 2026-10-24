@@ -1109,6 +1109,19 @@ export interface InjectHostResult {
   reason?: string | null;
   /** Present only for a pinned, confirmed hooks-observe receipt. */
   observation?: Record<string, unknown>;
+  /** Exact nonce/incarnation receipt; a socket close never establishes a fence. */
+  carryFence?: Record<string, unknown>;
+}
+
+export function qualifyCarryFenceAck(request: Record<string, unknown>, ack: Record<string, unknown>): boolean {
+  const identity = ack.identity as Record<string, unknown> | undefined;
+  return ack.ok === true && ack.reason === 'carry-fenced' && !!identity &&
+    typeof request.nonce === 'string' && request.nonce.length > 0 && ack.nonce === request.nonce &&
+    typeof request.fenceId === 'string' && request.fenceId.length > 0 && ack.fenceId === request.fenceId &&
+    identity.ownerId === request.ownerId && identity.workspaceId === request.workspaceId &&
+    identity.advSessionId === request.expectedAdvSessionId && identity.nativeSessionId === request.expectedNativeSessionId &&
+    identity.hostStartedAt === request.expectedHostStartedAt && identity.childGeneration === request.expectedChildGeneration &&
+    identity.hostCodeVersion === request.expectedHostCodeVersion;
 }
 
 export function qualifyHooksObservationAck(request: Record<string, unknown>, ack: Record<string, unknown>): boolean {
@@ -1442,6 +1455,7 @@ export async function injectIntoHostWithConfirmation(
       | 'reset'
       | 'recycle'
       | 'carry-respawn'
+      | 'carry-fence'
       | 'mcp-reconnect'
       | 'hooks-observe'
       | 'identity-assume'
@@ -1500,6 +1514,8 @@ export async function injectIntoHostWithConfirmation(
      * findLiveHost was just called with).
      */
     ownerId?: string;
+    workspaceId?: string;
+    carryNonce?: string;
     /** EI-19311270129974785: the SENDER's durable `event_wake_deliveries.id` for
      * this wake, when the message represents one (a loop-wake / event-wake
      * `turn`/`reset`/`recycle`/`carry-respawn` delivery — never a one-shot
@@ -1547,6 +1563,17 @@ export async function injectIntoHostWithConfirmation(
   },
   timeoutMs = 2000,
 ): Promise<InjectHostResult> {
+  if (msg.mode === 'carry-fence') {
+    const request = msg.request;
+    const host = msg.ownerId ? await findLiveHostAsync(msg.ownerId, undefined, { workspaceId: String(request?.workspaceId ?? '') }) : null;
+    if (!request || request.ownerId !== msg.ownerId || !host || host.sock !== sock ||
+      !hostSupports(host, 'pending-carry-fence-v1') ||
+      !request.expectedNativeSessionId || !request.expectedHostCodeVersion ||
+      host.nativeSessionId !== request.expectedNativeSessionId || host.hostCodeVersion !== request.expectedHostCodeVersion ||
+      String(host.advSessionId) !== request.expectedAdvSessionId || host.startedAt !== request.expectedHostStartedAt ||
+      host.childGeneration !== request.expectedChildGeneration)
+      return { ok: false, confirmation: 'error', reason: 'carry-fence-capability-or-custody-unavailable' };
+  }
   if (msg.mode === 'hooks-observe') {
     // The receipt follows bounded command, browser and cleanup paints. A
     // legacy 2s delivery-ACK budget would expire before that receipt exists.
@@ -1585,6 +1612,8 @@ export async function injectIntoHostWithConfirmation(
     fireNumber?: number;
     routineId?: string;
     ownerId?: string;
+    workspaceId?: string;
+    carryNonce?: string;
     deliveryId?: string;
     cancelDeliveryIds?: string[];
     handledMsgIds?: string[];
@@ -1599,7 +1628,7 @@ export async function injectIntoHostWithConfirmation(
     mode: msg.mode,
     data: msg.data,
   };
-  if (msg.mode === 'identity-assume') {
+  if (msg.mode === 'identity-assume' || msg.mode === 'carry-fence') {
     envelope.action = msg.action;
     envelope.request = msg.request;
   }
@@ -1622,6 +1651,8 @@ export async function injectIntoHostWithConfirmation(
   if (msg.fireNumber !== undefined) envelope.fireNumber = msg.fireNumber;
   if (msg.routineId !== undefined) envelope.routineId = msg.routineId;
   if (msg.ownerId !== undefined) envelope.ownerId = msg.ownerId;
+  if (msg.workspaceId !== undefined) envelope.workspaceId = msg.workspaceId;
+  if (msg.carryNonce !== undefined) envelope.carryNonce = msg.carryNonce;
   if (msg.deliveryId !== undefined) envelope.deliveryId = msg.deliveryId;
   if (msg.cancelDeliveryIds !== undefined) envelope.cancelDeliveryIds = msg.cancelDeliveryIds;
   if (msg.handledMsgIds !== undefined) envelope.handledMsgIds = msg.handledMsgIds;
@@ -1644,6 +1675,7 @@ export async function injectIntoHostWithConfirmation(
       reason?: string,
       transportErrorCode?: string,
       observation?: Record<string, unknown>,
+      carryFence?: Record<string, unknown>,
     ) => {
       if (settled) return;
       settled = true;
@@ -1666,7 +1698,7 @@ export async function injectIntoHostWithConfirmation(
       // Omit `reason` entirely when the host sent none, so this stays shape-compatible
       // with every existing exact-equality assertion on InjectHostResult.
       resolve({ ok, confirmation, ...(reason === undefined ? {} : { reason }),
-        ...(observation ? { observation } : {}) });
+        ...(observation ? { observation } : {}), ...(carryFence ? { carryFence } : {}) });
     };
     if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES) {
       finish(false, 'oversize');
@@ -1700,6 +1732,13 @@ export async function injectIntoHostWithConfirmation(
         ) {
           ackReceived = true;
           const ackReason = (parsed as { reason?: unknown }).reason;
+          if (msg.mode === 'carry-fence' && (parsed as { ok: boolean }).ok) {
+            const receipt = parsed as Record<string, unknown>;
+            const qualified = !!msg.request && qualifyCarryFenceAck(msg.request, receipt);
+            finish(qualified, 'acked', qualified ? 'carry-fenced' : 'carry-fence-unqualified-receipt',
+              undefined, undefined, qualified ? receipt : undefined);
+            return;
+          }
           if (msg.mode === 'hooks-observe' && (parsed as { ok: boolean }).ok) {
             const receipt = parsed as Record<string, unknown>;
             const qualified = qualifyHooksObservationAck(msg, receipt);
@@ -1726,8 +1765,9 @@ export async function injectIntoHostWithConfirmation(
       // before writing back. Either way this is the EXACT pre-fix fallback:
       // bare close alone still resolves true. Once a real ack DID arrive,
       // `finish` already ran above and this is a no-op (the `settled` guard).
-      if (!ackReceived) finish(msg.mode !== 'hooks-observe', 'assumed-close',
-        msg.mode === 'hooks-observe' ? 'observation-unconfirmed' : undefined);
+      if (!ackReceived) finish(msg.mode !== 'hooks-observe' && msg.mode !== 'carry-fence', 'assumed-close',
+        msg.mode === 'hooks-observe' ? 'observation-unconfirmed' :
+          msg.mode === 'carry-fence' ? 'carry-fence-unconfirmed' : undefined);
     });
     const t = setTimeout(() => {
       try {

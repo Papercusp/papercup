@@ -366,6 +366,15 @@ describe('pinnedSuRecoveryPrompt', () => {
     expect(pinnedSuRecoveryPrompt(record!)).toEqual({
       promptText: 'PINNED V1 INSTRUCTIONS', specificationRevision: launch.specificationRevision,
     });
+    const ordinary = { ...record!, selectedIdentity: undefined };
+    expect(pinnedSuRecoveryPrompt(ordinary)).toBeNull();
+    expect(pinnedSuRecoveryPrompt(ordinary, { allowUnselected: true })).toEqual({
+      promptText: 'PINNED V1 INSTRUCTIONS', specificationRevision: launch.specificationRevision,
+    });
+    expect(pinnedSuRecoveryPrompt({ ...ordinary, specificationArtifact: undefined },
+      { allowUnselected: true })).toBeNull();
+    expect(() => pinnedSuRecoveryPrompt({ ...ordinary, specificationRevision: 'b'.repeat(64) },
+      { allowUnselected: true })).toThrow('does not match the launch receipt');
     expect(() => pinnedSuRecoveryPrompt({
       ...record!, specificationArtifact: {
         ...launch.specificationArtifact,

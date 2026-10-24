@@ -333,6 +333,7 @@
     // WI-10006057 — imported by psu-launcher.mjs and its TypeScript test.
     "apps/operator/scripts/psu-operator-down-diagnosis.mjs",
     "apps/operator/scripts/psu-pty-host.mjs",
+    "apps/operator/scripts/psu-carry-fence.mjs",
     // WI-10007614: the asynchronous TTY bridge and offline customer diagnostics.
     "apps/operator/scripts/psu-terminal-output.mjs",
     "apps/operator/scripts/hooks/cc/dialog-answer-provenance.mjs",

@@ -311,11 +311,12 @@ export interface SelectedIdentityPin {
 /** Recover only a verified, previously delivered prompt when a pinned source
  * has moved and a missing Codex home needs its instructions restored. No new
  * activation is implied by replaying the immutable launch artifact. */
-export function pinnedSuRecoveryPrompt(record: SuLaunchSpecRecord): {
+export function pinnedSuRecoveryPrompt(record: SuLaunchSpecRecord, options: { allowUnselected?: boolean } = {}): {
   promptText: string;
   specificationRevision: string;
 } | null {
-  if (!record.selectedIdentity || !record.specificationArtifact || !record.specificationRevision) return null;
+  if ((!record.selectedIdentity && !options.allowUnselected) ||
+      !record.specificationArtifact || !record.specificationRevision) return null;
   const artifact = replayAgentSpecification(record.specificationArtifact);
   if (artifact.specificationRevision !== record.specificationRevision) {
     throw new Error('pinned SU recovery artifact does not match the launch receipt');

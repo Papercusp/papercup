@@ -5410,6 +5410,41 @@ describe('executeWake — the liveness ladder', () => {
     expect(injectPsuHost).toHaveBeenCalledTimes(1);
   });
 
+  it('lets the bounded owner-session fallback finish after the primary acquisition deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const current = session({ workspaceId: 'tenant-ws', pid: 8888 });
+      const getSession = vi.fn(async () => null);
+      const getLatestSessionForOwner = vi.fn(
+        () => new Promise((resolve) => setTimeout(() => resolve(current), 15_000)),
+      );
+      const getSessionInWorkspace = vi.fn(async (id: number, workspaceId: string) =>
+        id === current.id && workspaceId === current.workspaceId ? current : null,
+      );
+      const injectPsuHost = vi.fn(async () => true);
+      const pending = executeWake(
+        work({ workspaceId: DEFAULT_COORD_WORKSPACE, wakeHandle: advHandle({ pid: 9999 }) }),
+        deps({
+          getSession: getSession as never,
+          getLatestSessionForOwner: getLatestSessionForOwner as never,
+          getSessionInWorkspace: getSessionInWorkspace as never,
+          alive: vi.fn((pid: number | null) => pid === current.pid),
+          findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/su-abc.sock' })) as never,
+          injectPsuHost: injectPsuHost as never,
+        }),
+      );
+
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      await expect(pending).resolves.toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+      expect(getLatestSessionForOwner).toHaveBeenCalledWith('su-abc');
+      expect(getSessionInWorkspace).toHaveBeenCalledWith(current.id, 'tenant-ws');
+      expect(injectPsuHost).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('parks a captured adv-session whose owner differs from the wake subscriber before any side effect', async () => {
     const foreignOwner = 'su-foreign-session';
     const getSession = vi.fn(async () => session({ coordOwnerId: foreignOwner }));

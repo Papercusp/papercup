@@ -583,7 +583,8 @@ describe('ensure-codex-home pinned-source recovery', () => {
     expect(mocks.ensureHome).not.toHaveBeenCalled();
   });
 
-  it('keeps the verified identity usable when the serving renderer cannot tile newer prompt source', async () => {
+  it.each([true, false])('keeps verified instructions usable across renderer skew (selected identity: %s)', async selected => {
+    if (!selected) mocks.readRecord.mockResolvedValue({ ...savedRecord, selectedIdentity: undefined });
     mocks.rebuild.mockRejectedValue(Object.assign(new Error('su.md tiling is unsound: unclassified heading'), {
       code: 'su-tiling-unsound',
     }));
@@ -596,6 +597,7 @@ describe('ensure-codex-home pinned-source recovery', () => {
       sid: OWNER, promptText: 'PINNED V1 INSTRUCTIONS',
     }));
     expect(mocks.funding).toHaveBeenCalledWith(expect.objectContaining({ stack: savedRecord.stack }));
+    expect(mocks.pinnedPrompt).toHaveBeenCalledWith(expect.anything(), { allowUnselected: true });
     expect(mocks.recordLaunchSpec).not.toHaveBeenCalled();
     expect(mocks.requestActivation).not.toHaveBeenCalled();
   });

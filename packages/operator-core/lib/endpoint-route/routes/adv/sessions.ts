@@ -1845,8 +1845,13 @@ const ensureCodexHome = defineTool({
         }), { status: 402, headers: JSON_HEADERS });
       }
       const message = error instanceof Error ? error.message : String(error);
-      if (!message.startsWith('selected identity ')) throw error;
-      const pinned = pinnedSuRecoveryPrompt(repairRecord);
+      const { isSuTilingError } = await import('@papercusp/orchestrator/blueprint');
+      // A long-lived renderer can see prompt headings from a newer checkout.
+      // Replaying the verified launch artifact keeps that rollout recoverable
+      // without activating source this serving build cannot compose.
+      const rendererSkew = isSuTilingError(error);
+      if (!rendererSkew && !message.startsWith('selected identity ')) throw error;
+      const pinned = pinnedSuRecoveryPrompt(repairRecord, { allowUnselected: rendererSkew });
       if (!pinned) throw error;
       // The pinned bytes are the prior render, so the same gate applies to them
       // (P-016 D-012). They cannot be degraded, only refused.
@@ -1883,7 +1888,7 @@ const ensureCodexHome = defineTool({
       }
       return new Response(JSON.stringify({
         ok: true, owner, advSessionId, ...recovered,
-        reason: 'pinned-source-stale',
+        reason: rendererSkew ? 'pinned-renderer-skew' : 'pinned-source-stale',
         preservedSpecificationRevision: pinned.specificationRevision,
       }), { status: 200, headers: JSON_HEADERS });
     }

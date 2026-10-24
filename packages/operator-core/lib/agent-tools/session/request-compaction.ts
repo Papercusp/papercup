@@ -28,7 +28,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveWakeMode } from '../coordination/wake-mode';
-import { injectIntoHost, selfCompactionAvailabilityAsync } from '../../events/await/psu-pty-discovery';
+import { hostSupports, injectIntoHost, selfCompactionAvailabilityAsync } from '../../events/await/psu-pty-discovery';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { buildOwnerRespawnLaunchSpec } from '../../carry-respawn';
@@ -709,6 +709,15 @@ export default defineTool({
         systemPromptAddendum: spec.systemPromptAddendum,
         ...(self?.sourceKind === 'codex' && self.filePath ? { sourceTranscriptPath: self.filePath } : {}),
         ownerId: identity.ownerId,
+        ...(hostSupports(host, 'pending-carry-fence-v1') ? {
+          carryNonce: pendingCarryRespawn.nonce,
+          workspaceId: identity.workspaceId ?? 'default',
+          expectedAdvSessionId: String(host.advSessionId),
+          expectedNativeSessionId: host.nativeSessionId ?? '',
+          expectedHostStartedAt: host.startedAt,
+          expectedChildGeneration: host.childGeneration,
+          expectedHostCodeVersion: host.hostCodeVersion ?? '',
+        } : {}),
       },
       // EI-18686525818431054: NOT the 2000ms default — see
       // CARRY_RESPAWN_SOCKET_TIMEOUT_MS's doc comment above.
