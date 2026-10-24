@@ -1,7 +1,8 @@
 /** Installed-client tool census at the real request boundary; no paid inference. */
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { once } from 'node:events';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +19,26 @@ declare module 'vitest' {
 
 const managedTool = 'managed_surface_canary';
 const nestedSurfaceMarker = 'CODEX_NESTED_TOOL_SURFACE';
+
+function spawnCensusProcess(command: string, args: string[], options: SpawnOptions) {
+  const child = spawn(command, args, {
+    ...options, detached: process.platform !== 'win32', stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  // The npm launcher can exit while a plugin-fetch child still owns stderr and
+  // writes to CODEX_HOME. Retain close from spawn time, including error paths.
+  const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+  return { child, closed };
+}
+
+async function stopCensusProcess({ child, closed }: ReturnType<typeof spawnCensusProcess>) {
+  if (process.platform !== 'win32' && child.pid) {
+    try { process.kill(-child.pid, 'SIGKILL'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+  } else {
+    child.kill('SIGKILL');
+  }
+  await closed;
+}
 
 async function captureSurface(features: Record<string, boolean>, captureNested = true, model = 'gpt-6.1-sol') {
   const codex = wellKnownBackendBin('codex') ?? resolveOnPath('codex');
@@ -97,10 +118,11 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
   delete env.CODEX_API_KEY;
   delete env.PAPERCUSP_SCOPED_INFERENCE_GATEWAY;
   let stderr = '';
-  const child = spawn(codex, ['exec', '--skip-git-repo-check', '--ephemeral', '--json', '-C', home,
-    'Offline census: reply OK. Do not use tools.'], { env, cwd: home, stdio: ['ignore', 'ignore', 'pipe'] });
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-3000); });
+  const census = spawnCensusProcess(codex, ['--no-daemon', 'exec', '--skip-git-repo-check', '--ephemeral', '--json', '-C', home,
+    'Offline census: reply OK. Do not use tools.'], { env, cwd: home });
+  const { child } = census;
+  child.stderr!.setEncoding('utf8');
+  child.stderr!.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-3000); });
   try {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`Tool census timed out: ${stderr}`)); }, 25_000);
@@ -155,7 +177,7 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
       hasNativeExecution: [...names, ...nestedTools.map(tool => tool.name)]
         .some(name => name === 'exec_command' || name === 'write_stdin') };
   } finally {
-    child.kill('SIGTERM');
+    await stopCensusProcess(census);
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
     rmSync(home, { recursive: true, force: true });
@@ -163,6 +185,34 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
 }
 
 describe('Codex managed replacement installed-client census', () => {
+  it.runIf(process.platform !== 'win32')('stops a home writer that outlives its client before cleanup', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'codex-census-lifecycle-'));
+    const marker = join(home, 'writer');
+    const writer = `const fs = require('node:fs');
+      const write = () => { fs.mkdirSync(${JSON.stringify(home)}, { recursive: true });
+        fs.writeFileSync(${JSON.stringify(marker)}, 'active'); };
+      write(); setInterval(write, 1); process.send('ready'); process.disconnect();`;
+    const parent = `const { spawn } = require('node:child_process');
+      const writer = spawn(process.execPath, ['-e', ${JSON.stringify(writer)}],
+        { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+      writer.once('message', () => process.exit(0));`;
+    const census = spawnCensusProcess(process.execPath, ['-e', parent], { cwd: home });
+    let closed = false;
+    void census.closed.then(() => { closed = true; });
+    try {
+      await once(census.child, 'exit');
+      expect(existsSync(marker)).toBe(true);
+      expect(closed, 'descendant still holds the client stderr after parent exit').toBe(false);
+      await stopCensusProcess(census);
+      expect(closed).toBe(true);
+      rmSync(home, { recursive: true, force: true });
+      expect(existsSync(home)).toBe(false);
+    } finally {
+      await stopCensusProcess(census);
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 5000);
+
   it('records the outer code-mode surface and the actual callable inner catalog', async ({ task }) => {
     const codeMode = await captureSurface({ code_mode: true, code_mode_host: true }, true, 'gpt-6.1-sol');
     const codeModeRestricted = await captureSurface({ code_mode: true, code_mode_host: true, shell_tool: false }, true, 'gpt-6.1-sol');
