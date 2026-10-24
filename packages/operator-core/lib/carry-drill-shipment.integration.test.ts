@@ -33,6 +33,14 @@ beforeAll(async () => {
       ${sql.json({ reportReadbacks:[{ id:'rpt-test',bodySha256:'native-body-hash',bodyBytes:13,visibility:'owner',publishedAt:at }] })}),
     (5,'workspace','su-test','reports:get','ok',${at},25,${sql.json({ id:'rpt-invisible' })},'port-3070','linux:boot:123',${sha.slice(0,10)},
       ${sql.json({ resultOutcome:'soft-failure',reportReadbacks:[] })})`;
+  await sql`UPDATE harness_shared.tool_invocations SET metadata_json = metadata_json ||
+    ${sql.json({ reportResultDelivery: { version: 1, deliveredAt: at, inline: [] } })}
+    WHERE id=4`;
+  await sql`INSERT INTO harness_shared.tool_invocations VALUES
+    (6,'workspace','su-test','capability:read','ok',${at},25,${sql.json({ uri:'papercusp://scratch/page' })},
+      'port-3070','linux:boot:123',${sha.slice(0,10)},${sql.json({ scratchResultDelivery: {
+        version:1,deliveredAt:at,uri:'papercusp://scratch/page',sha256:'b'.repeat(64),totalBytes:10,offset:0,bytes:10,
+      } })})`;
   await sql`INSERT INTO harness_shared.report_library VALUES
     ('workspace','rpt-test','plan',${CARRY_SHIPMENT_PLAN},'native report','owner',${at},NULL)`;
 },180_000);
@@ -45,12 +53,16 @@ it('reads exact workspace/install/owner receipts and short green promotion ident
   const result = await readCarryShipmentReceipts(input,sql);
   expect(result.deployment).toMatchObject({ id:'42',kind:'deploy',detail:{fullTargetSha:sha} });
   expect(result.promotions.map(row => row.id)).toEqual(['41']);
-  expect(result.invocations).toHaveLength(3);
+  expect(result.invocations).toHaveLength(4);
   expect(result.invocations[0]).toMatchObject({ id:'1',tool:'session:carry-drill',servingProcess:'linux:boot:123',durationMs:900 });
   expect(result.report).toMatchObject({ id:'rpt-test',subjectRef:CARRY_SHIPMENT_PLAN,visibility:'owner' });
   expect(result.invocations.find(row => row.id === '4')?.metadata).toMatchObject({
     reportReadbacks:[{ id:'rpt-test',bodySha256:'native-body-hash',visibility:'owner' }],
+    reportResultDelivery: { version:1,deliveredAt:at,inline:[] },
   });
+  expect(result.invocations.find(row => row.id === '6')).toMatchObject({ tool:'capability:read', metadata: {
+    scratchResultDelivery: { version:1,uri:'papercusp://scratch/page',totalBytes:10,offset:0,bytes:10 },
+  } });
   expect(result.invocations.find(row => row.id === '5')?.metadata).toMatchObject({ resultOutcome:'soft-failure',reportReadbacks:[] });
 });
 it('does not substitute another workspace or a retired report', async () => {

@@ -25,6 +25,8 @@ import { ReportBodyTooLargeError, ReportRequestConflictError, REPORT_BODY_MAX_BY
 import { goalOwnerReportFixture } from '../../../test/fixtures/goal-owner-report';
 import { serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
 import { FLAGS } from '@papercusp/flags';
+import { applyResultDoor } from '../../result-door';
+import { reportResultDeliveryMetadata } from '../../report-result-delivery';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 const {
@@ -455,6 +457,15 @@ describe('visibility matrix (R-7) — every read passes a viewer', () => {
     const metadata = vi.fn();
     await getTool.handler({ id: 'rpt_secret' } as never, { ...CTX, metadata } as never);
     expect(metadata).toHaveBeenCalledWith({ reportReadbacks: [] });
+  });
+  it('proves the real full report handler edition survives the final result door', async () => {
+    const handled = await getTool.handler({ id: 'rpt_1' } as never, CTX as never) as Out;
+    const result = { content: [{ type: 'text', text: JSON.stringify(body(handled)) }] };
+    const delivered = applyResultDoor(result, { toolName: 'reports:get', workspaceId: 'ws-1' });
+    const receipt = reportResultDeliveryMetadata('reports:get', result, delivered);
+    const full = body(result).results[0].report;
+    expect(receipt).toMatchObject({ reportResultDelivery: { version: 1, inline: [{ id: 'rpt_1',
+      bodySha256: full.body_sha256, bodyBytes: full.body_bytes, visibility: full.visibility, publishedAt: full.published_at }] } });
   });
 });
 

@@ -5,6 +5,7 @@ import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { posix } from 'node:path';
 import { reportBodySha256 } from './report-library';
+import { completeReportDeliveryAt } from './report-result-delivery';
 import { findLiveHostAsync } from './events/await/psu-pty-discovery';
 import { measureCarryDrillLifecycle, readOwnerHostEvents, type CarryDrillMeasurement,
   type ColdBootDrillHostEvent } from './cold-boot-drill-live';
@@ -24,6 +25,8 @@ export const CARRY_SHIPMENT_SOURCE_PATHS = [
   'packages/operator-core/lib/cold-boot-drill.ts',
   'packages/operator-core/lib/cold-boot-drill-live.ts',
   'packages/operator-core/lib/carry-drill-shipment.ts',
+  'packages/operator-core/lib/report-result-delivery.ts',
+  'packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts',
   'packages/operator-core/lib/scorecards.ts',
   'packages/operator-core/lib/rubric-instrument-registry.ts',
 ] as const;
@@ -83,7 +86,7 @@ export async function readCarryShipmentReceipts(input: CarryShipmentInput, sql: 
           metadata_json AS metadata
         FROM harness_shared.tool_invocations WHERE workspace_id=$1 AND coord_owner_id=$4
         AND invoked_at BETWEEN $5::timestamptz AND $6::timestamptz
-        AND tool_name IN ('session:carry-drill','session:end','reports:get') ORDER BY invoked_at LIMIT 501
+        AND tool_name IN ('session:carry-drill','session:end','reports:get','capability:read') ORDER BY invoked_at LIMIT 501
       ) i),'[]'::jsonb) AS invocations,
       (SELECT jsonb_build_object('id',report_id,'subjectKind',subject_kind,'subjectRef',subject_ref,'body',body_md,
         'visibility',visibility,'at',published_at) FROM harness_shared.report_library
@@ -93,7 +96,7 @@ export async function readCarryShipmentReceipts(input: CarryShipmentInput, sql: 
 }
 
 /** Reuse the code-truth audit and independent edit/commit attribution population. */
-async function readCarrySourceAuthority(input: CarryShipmentInput): Promise<CarrySourceAuthority | null> {
+export async function readCarrySourceAuthority(input: CarryShipmentInput): Promise<CarrySourceAuthority | null> {
   return withWorkspace(input.workspaceId, async () => {
     const [{ loadHarnessRegistry, resolveHarnessContentPath }, { getEffectiveItemAudits, getPlanItemStatuses },
       { readAttributedAuditFiles }] = await Promise.all([
@@ -217,6 +220,14 @@ export async function measureCarryDrillShipment(input: CarryShipmentInput, deps:
       }));
     if (!readbacks.length)
       return result('unknown', 'Successful complete native report edition readback is not proven.');
+    const edition = { id: report.id, bodySha256: reportBodySha256(report.body),
+      bodyBytes: Buffer.byteLength(report.body, 'utf8'), visibility: report.visibility, publishedAt: report.at };
+    const deliveries = readbacks.flatMap(row => {
+      const at = completeReportDeliveryAt(row.metadata, edition, invocations.filter(call => call.tool === 'capability:read'),
+        Math.max(Date.parse(report.at), Date.parse(row.at)), Date.parse(input.windowEnd));
+      return at == null ? [] : [at];
+    });
+    if (!deliveries.length) return result('unknown', 'Complete final report delivery or complete hash-bound spill consumption is not proven.');
     const cleanup = invocations.find(row => row.tool === 'session:end' && row.status === 'ok' && Date.parse(row.at) >= Date.parse(report.at));
     const host = await (deps.hostEvents ?? (owner => readOwnerHostEvents(owner, undefined, { requireComplete: true })))(input.ownerId);
     const shutdown = host.find(row => row.kind === 'shutdown-accepted' && row.ts && Date.parse(row.ts) >= Date.parse(report.at));
@@ -228,8 +239,7 @@ export async function measureCarryDrillShipment(input: CarryShipmentInput, deps:
       return result('fail', 'Cleanup receipts do not follow their native invocation within the observation window.');
     // Invocation timestamps record completion. Readback must finish before cleanup begins.
     const cleanupStartedAt = Date.parse(cleanup.at) - cleanup.durationMs;
-    if (!readbacks.some(row => Date.parse(row.at) <= cleanupStartedAt &&
-        Date.parse(row.at) <= Date.parse(shutdown.ts!)))
+    if (!deliveries.some(at => at <= cleanupStartedAt && at <= Date.parse(shutdown.ts!)))
       return result('fail', 'Native report readback did not complete before supported cleanup began.');
     if (!(await (deps.hostGone ?? (async owner => !(await findLiveHostAsync(owner))))(input.ownerId)))
       return result('fail', 'The disposable host is still live after its cleanup receipt.');

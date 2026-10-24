@@ -9,6 +9,21 @@ import type { ColdBootDrillHostEvent, measureCarryDrillLifecycle } from './cold-
 import { mockResolvedTyped } from './testing/typed-mock';
 
 const checkout = vi.hoisted(() => ({ root: '' }));
+const authority = vi.hoisted(() => ({ root: '',
+  items: [{ itemId: 'P-001', status: 'done' }, { itemId: 'P-002', status: 'wip' }, { itemId: 'P-003', status: 'dropped' }],
+  audits: [] as Array<{ auditSeq: number; entry: { itemId: string; citations: Array<{ path: string }> } }>,
+  changed: [] as Array<{ itemId: string; workItemId: string; path: string; source: string }>,
+  readFiles: vi.fn(),
+}));
+vi.mock('@papercusp/db-org', async importOriginal => ({
+  ...await importOriginal<typeof import('@papercusp/db-org')>(),
+  withWorkspace: async (_workspace: string, work: () => unknown) => work(),
+}));
+vi.mock('./harness-registry', () => ({ loadHarnessRegistry: async () => ({}), resolveHarnessContentPath: () => authority.root }));
+vi.mock('./plan-audits', () => ({
+  getPlanItemStatuses: async () => authority.items, getEffectiveItemAudits: async () => authority.audits,
+}));
+vi.mock('./agent-tools/plans/audit-derived-citations', () => ({ readAttributedAuditFiles: authority.readFiles }));
 vi.mock('./module-repo-root', async importOriginal => {
   const original = await importOriginal<typeof import('./module-repo-root')>();
   return { ...original, moduleRepoRoot: (url: string) =>
@@ -37,6 +52,8 @@ function nativeEvidence() {
     id: input.reportId, bodySha256: reportBodySha256(receipts.report!.body),
     bodyBytes: Buffer.byteLength(receipts.report!.body), visibility: 'owner', publishedAt: at(8),
   }] } });
+  const metadata = receipts.invocations[4].metadata!;
+  metadata.reportResultDelivery = { version: 1, deliveredAt: at(9), inline: metadata.reportReadbacks };
   const deps = {
     lifecycle: vi.fn<typeof measureCarryDrillLifecycle>(async () => ({ verdict: 'pass', reason: 'native', scope: 'selected-codex-interactive-drill',
       ownerId: input.ownerId, drillId: input.drillId, requestedAt: at(3) })),
@@ -98,6 +115,7 @@ describe('objective carry shipment joins native existing receipts', () => {
       const h = nativeEvidence();
       if (defect === 'after-cleanup') h.receipts.invocations[4].at = at(13);
       if (defect === 'during-cleanup') h.receipts.invocations[4].at = '2026-10-22T00:00:09.500Z';
+      (h.receipts.invocations[4].metadata!.reportResultDelivery as { deliveredAt: string }).deliveredAt = h.receipts.invocations[4].at;
       if (defect === 'cleanup-before-publication') h.receipts.invocations[5].durationMs = 3000;
       expect(await measureCarryDrillShipment(input, h.deps)).toMatchObject({ verdict: 'fail' });
     });
@@ -135,6 +153,31 @@ describe('objective carry shipment joins native existing receipts', () => {
       if (defect === 'wrong-edition') readback.publishedAt = at(7);
       expect((await measureCarryDrillShipment(input, h.deps)).verdict).not.toBe('pass');
     });
+  it.each(['missing-final-receipt', 'truncated', 'spill-unread', 'spill-gap', 'spill-after-cleanup'])(
+    'does not accept a full handler readback with incomplete final delivery: %s', async defect => {
+      const h = nativeEvidence(), metadata = h.receipts.invocations[4].metadata!;
+      const spill = { uri: 'papercusp://scratch/ws/reports:get/run/result.spill', sha256: 'b'.repeat(64),
+        bytes: 10, reports: metadata.reportReadbacks };
+      metadata.reportResultDelivery = { version: 1, deliveredAt: at(9), inline: [],
+        ...(defect.startsWith('spill-') ? { spill } : {}) };
+      if (defect === 'missing-final-receipt') delete metadata.reportResultDelivery;
+      if (defect === 'spill-gap' || defect === 'spill-after-cleanup') {
+        h.receipts.invocations.push({ ...h.receipts.invocations[4], tool: 'capability:read', id: 'page', at: at(9),
+          metadata: { scratchResultDelivery: { version: 1, deliveredAt: at(defect === 'spill-gap' ? 9 : 10),
+            uri: spill.uri, sha256: spill.sha256, totalBytes: 10, offset: 0, bytes: defect === 'spill-gap' ? 9 : 10 } } });
+      }
+      expect((await measureCarryDrillShipment(input, h.deps)).verdict).not.toBe('pass');
+    });
+  it('accepts a complete spill only after its matching pages finish before cleanup', async () => {
+    const h = nativeEvidence(), metadata = h.receipts.invocations[4].metadata!;
+    const spill = { uri: 'papercusp://scratch/ws/reports:get/run/result.spill', sha256: 'b'.repeat(64),
+      bytes: 10, reports: metadata.reportReadbacks };
+    metadata.reportResultDelivery = { version: 1, deliveredAt: at(9), inline: [], spill };
+    for (const offset of [5, 0]) h.receipts.invocations.push({ ...h.receipts.invocations[4], tool: 'capability:read',
+      id: `page-${offset}`, at: at(9), metadata: { scratchResultDelivery: { version: 1, deliveredAt: at(9),
+        uri: spill.uri, sha256: spill.sha256, totalBytes: 10, offset, bytes: 5 } } });
+    expect((await measureCarryDrillShipment(input, h.deps)).verdict).toBe('pass');
+  });
 });
 
 describe('carry shipment compares the independent canonical source population', () => {
@@ -169,6 +212,8 @@ describe('carry shipment compares the independent canonical source population', 
       id: input.reportId, bodySha256: reportBodySha256(h.receipts.report!.body),
       bodyBytes: Buffer.byteLength(h.receipts.report!.body), visibility: 'owner', publishedAt: at(8),
     }] } });
+    const metadata = h.receipts.invocations[4].metadata!;
+    metadata.reportResultDelivery = { version: 1, deliveredAt: at(9), inline: metadata.reportReadbacks };
     const source = { root: canonical, reviewedPaths: paths, changedPaths: paths };
     const deps = { ...h.deps, containsSource: undefined, sourceAuthority: async () => source };
     return { canonical, extra, git, h, source, deps };
@@ -189,5 +234,28 @@ describe('carry shipment compares the independent canonical source population', 
       if (defect === 'dirty-source') writeFileSync(join(f.canonical, f.extra), 'uncommitted carry change\n');
       if (defect === 'missing-source') f.source.reviewedPaths.push('packages/operator-core/lib/missing-carry.ts');
       expect((await measureCarryDrillShipment(input, f.deps)).verdict).not.toBe('pass');
+    });
+  it.each(['complete', 'missing-audit', 'omitted-attributed-path', 'at-ceiling', 'below-ceiling'])(
+    'uses production audit and attribution acquisition for %s', async defect => {
+      const f = repositories();
+      authority.root = f.canonical;
+      authority.audits = ['P-001', 'P-002'].map((itemId, index) => ({ auditSeq: index + 1,
+        entry: { itemId, citations: f.source.reviewedPaths.filter(path =>
+          defect !== 'omitted-attributed-path' || path !== f.extra).map(path => ({ path })) } }));
+      if (defect === 'missing-audit') authority.audits.pop();
+      const changed = f.source.changedPaths.map(path => ({ itemId: 'P-001', workItemId: 'WI-test', path, source: 'edit' }));
+      authority.changed = defect.endsWith('ceiling')
+        ? Array.from({ length: defect === 'at-ceiling' ? 5000 : 4999 }, () => changed[0]) : changed;
+      authority.readFiles.mockReset().mockImplementation(async () => authority.changed);
+      // Do not inject sourceAuthority: exercise readCarrySourceAuthority and its real population joins.
+      const result = await measureCarryDrillShipment(input, { ...f.deps, sourceAuthority: undefined });
+      expect(result.verdict).toBe(['complete', 'below-ceiling'].includes(defect) ? 'pass' : 'unknown');
+      if (defect !== 'missing-audit') expect(authority.readFiles).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, planSlug: input.planSlug, itemIds: ['P-001', 'P-002'],
+      }));
+      else expect(authority.readFiles).not.toHaveBeenCalled();
+      if (result.verdict === 'pass') expect(result.source?.auditedItems).toEqual([
+        { itemId: 'P-001', auditSeq: 1 }, { itemId: 'P-002', auditSeq: 2 },
+      ]);
     });
 });

@@ -176,6 +176,7 @@ const h = vi.hoisted(() => {
      * call returns before dispatch, so this is the ONLY place its row can come
      * from — an empty log for a replay is exactly the invisible-replay bug.
      */
+    deliveryBackfills: [] as Array<{ toolName: string; mcpRequestTraceId?: string | null; metadataJson: Record<string, unknown> }>,
     invocations: [] as Array<{
       toolName: string;
       status: string;
@@ -352,6 +353,9 @@ vi.mock('../../projected-tool-deps', async (importOriginal) => {
   const realDeps = actual.PROJECTED_DEPS as Record<string, unknown>;
   return {
     ...actual,
+    backfillToolInvocationMetadataByMcpRequestTraceId: async (input: (typeof h.deliveryBackfills)[number]) => {
+      h.deliveryBackfills.push(input);
+    },
     PROJECTED_DEPS: {
       ...realDeps,
       recordInvocation: async (input: (typeof h.invocations)[number]): Promise<void> => {
@@ -1338,6 +1342,36 @@ async function withSdkHost<T>(extra: unknown, run: (client: Client) => Promise<T
     await cleanupWire();
   }
 }
+
+describe('final report delivery through the MCP host', () => {
+  it.each(['direct', 'nested', 'projected', 'spill'])(
+    'backfills only the caller-visible edition after the final door: %s', async route => {
+      const tool = lookupByMcpName('reports:get');
+      if (!tool) throw new Error('Expected the production report tool registration');
+      const original = tool.fn, body = 'Complete native handler report é'.repeat(route === 'spill' ? 600 : 1);
+      const bodySha256 = createHash('sha256').update(body).digest('hex');
+      tool.fn = async () => ({ content: [{ type: 'text', text: JSON.stringify({ ok: true, results: [{
+        ok: true, id: 'rpt-delivery', report: { body_md: body, body_sha256: bodySha256,
+          body_bytes: Buffer.byteLength(body), visibility: 'owner', published_at: '2026-10-24T00:00:00Z' },
+      }] }) }], ...(route === 'spill' ? { _meta: { explicitFullRequest: true } } : {}) });
+      const trace = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
+      try {
+        const args = { id: 'rpt-delivery', ...(route === 'projected' ? { projection: { pick: ['results[].id'] } } : {}) };
+        const result = await callTool(route === 'nested' ? 'tools:invoke' : 'reports:get',
+          route === 'nested' ? { name: 'reports:get', args } : args,
+          superuserExtra('&workspace=ws-test&client=su-final-delivery', { [MCP_REQUEST_TRACE_HEADER]: trace }),
+          { format: 'json' });
+        expect(result.isError).not.toBe(true);
+        const receipt = h.deliveryBackfills.find(row => row.toolName === 'reports:get' && row.metadataJson.reportResultDelivery);
+        expect(receipt?.mcpRequestTraceId).toBe(trace);
+        expect(receipt?.metadataJson).toMatchObject({ reportResultDelivery: { version: 1,
+          inline: route === 'projected' || route === 'spill' ? [] : [{ id: 'rpt-delivery', bodySha256, bodyBytes: Buffer.byteLength(body) }],
+          ...(route === 'spill' ? { spill: { reports: [{ id: 'rpt-delivery', bodySha256 }] } } : {}),
+        } });
+        expect(textOf(result).includes(body)).toBe(route !== 'projected' && route !== 'spill');
+      } finally { tool.fn = original; }
+    });
+});
 
 describe('tools/list schema cache preserves actual-use detail', () => {
   it.each(['full-first', 'compact-first'])('isolates discovery schemas and compact schemas with %s', async order => {
@@ -2349,6 +2383,7 @@ beforeEach(() => {
   h.afterReplayStore = null;
   h.storedReplay = null;
   h.invocations.length = 0;
+  h.deliveryBackfills.length = 0;
   replayValidationSeen.length = 0;
   replayBusinessErrorSeen.length = 0;
   resetResultDoorAggregatesForTests();

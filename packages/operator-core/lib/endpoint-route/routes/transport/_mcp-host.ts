@@ -5234,6 +5234,7 @@ export function registerMcpHost(server: McpServer): void {
           toolOutcome: Promise<McpCallResult> | null;
           /** Handler result before caller projection/result-door shaping. */
           replaySourceResult: McpCallResult | null;
+          deliverySourceResult?: McpCallResult;
           /**
            * Set when the deadline branch wins the race — the caller has already been
            * answered, so the receipt must be persisted in the BACKGROUND rather than
@@ -5477,6 +5478,7 @@ export function registerMcpHost(server: McpServer): void {
             // door's fixed policy rather than racing it.
             const viewedResult = namedView ? applyNamedViewToResult(projectedResult, namedView) : projectedResult;
             const doorInput = stripImplicitProjectionFullRequest(viewedResult, projectionNeedsFullSource, ctx);
+            raced.deliverySourceResult = doorInput;
             const preservePaths = resultDoorPreservePathsForDispatch(doorInput, toolName, dispatchArgs, projectionSpec?.pick);
             // EI-19386201256023240: a tool whose documented/near-exclusive
             // caller is a programmatic client (a shell hook `json.loads`-ing
@@ -6178,7 +6180,19 @@ export function registerMcpHost(server: McpServer): void {
           // re-blocking the response we just raced to send.
           if (!raced.deadlineFired) await persist;
         }
-        return withMcpDiagnosticWarnings(dispatched, dispatchSpawnCtx);
+        const finalResult = withMcpDiagnosticWarnings(dispatched, dispatchSpawnCtx);
+        const deliveryTool = nestedTargetToolName ?? toolName;
+        if (!raced.deadlineFired && (deliveryTool === 'reports:get' || deliveryTool === 'capability:read')) {
+          const { reportResultDeliveryMetadata } = await import('../../../report-result-delivery');
+          // Exact request correlation only: dispatch success precedes the result door.
+          await backfillToolInvocationMetadataByMcpRequestTraceId({
+            workspaceId: dispatchSpawnCtx.workspaceId,
+            toolName: deliveryTool,
+            mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
+            metadataJson: reportResultDeliveryMetadata(deliveryTool, raced.deliverySourceResult ?? finalResult, finalResult),
+          });
+        }
+        return finalResult;
       }
 
       // Legacy bearer-only fallback (no spawn ctx supplied).
