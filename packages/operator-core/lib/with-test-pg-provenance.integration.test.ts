@@ -162,7 +162,7 @@ describe('isolated PostgreSQL mutation evidence', () => {
     }
   }, 200_000);
 
-  it('preserves reporter provenance while replacing ambient product endpoints and identity', async () => {
+  it('preserves reporter provenance while replacing ambient product endpoints, identity and automatic orchestration', async () => {
     const reporterScope = {
       PAPERCUSP_TEST_RUN_HARNESS: 'reporter-harness',
       PAPERCUSP_TEST_RUN_WORKSPACE: 'reporter-workspace',
@@ -189,6 +189,13 @@ describe('isolated PostgreSQL mutation evidence', () => {
         reporterWorkspaceDiffersFromProduct: process.env.PAPERCUSP_TEST_RUN_WORKSPACE !== process.env.PAPERCUSP_WORKSPACE_ID,
         ambientSocketRemoved: process.env.PAPERCUSP_SUBSTRATE_IPC_SOCKET === undefined,
         ambientEndpointReplaced: process.env.PAPERCUSP_OPERATOR_URL !== 'http://ambient.invalid:3070',
+        backgroundPolicy: {
+          orchestrator: process.env.PAPERCUSP_DBOS_ORCHESTRATOR,
+          harnesses: process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES,
+          routines: process.env.PAPERCUSP_DBOS_ROUTINES,
+          timers: process.env.PAPERCUSP_DBOS_TIMERS,
+          autoloop: process.env.PAPERCUSP_DBOS_AUTOLOOP,
+        },
       }));
     `;
     const { stdout } = await run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
@@ -199,6 +206,10 @@ describe('isolated PostgreSQL mutation evidence', () => {
         PAPERCUSP_SUBSTRATE_IPC_SOCKET: '/ambient/operator.sock',
         PAPERCUSP_OPERATOR_URL: 'http://ambient.invalid:3070',
         HARNESS_ADMIN_DATABASE_URL: 'postgresql://unused@localhost:5432/ambient',
+        PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: '*',
+        PAPERCUSP_DBOS_ROUTINES: '1',
+        PAPERCUSP_DBOS_TIMERS: '1',
+        PAPERCUSP_DBOS_AUTOLOOP: '1',
       },
       timeout: 180_000,
       maxBuffer: 8 * 1024 * 1024,
@@ -209,6 +220,7 @@ describe('isolated PostgreSQL mutation evidence', () => {
       provenance: probe, reporterScope, privateDatabase: true, isolatedWorkspace: true,
       reporterWorkspaceDiffersFromProduct: true,
       ambientSocketRemoved: true, ambientEndpointReplaced: true,
+      backgroundPolicy: { orchestrator: '1', harnesses: 'none', routines: '0', timers: '0', autoloop: '0' },
     });
     const dataDir = stdout.match(/booting throwaway PG[^\n]*\(datadir ([^\)]+)\)/)?.[1];
     expect(dataDir).toBeDefined();

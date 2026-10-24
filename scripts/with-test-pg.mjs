@@ -610,6 +610,9 @@ if (runtimeRoot && runtimeId) {
     PAPERCUSP_DBOS_ORCHESTRATOR: operatorApi ? '0' : '1',
     // The test starts explicit background work; global scheduled routines may
     // otherwise act on the shared checkout or external services during boot.
+    // The orchestrator's own tick has a separate opt-out: an unset harness
+    // override schedules every harness even when routines and timers are off.
+    PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none',
     PAPERCUSP_DBOS_ROUTINES: '0',
     PAPERCUSP_DBOS_TIMERS: '0',
     PAPERCUSP_DBOS_AUTOLOOP: '0',
