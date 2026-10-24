@@ -15,6 +15,8 @@ const NO_SHARED_PG_TESTS = new Set([
   '../lib/agent-tools/capability/vm-copy-authority-bridge.integration.test.ts',
   // Isolated repository fixtures and the provisioned syntax parser; no SQL or PG runtime.
   '../lib/agent-tools/plans/plan-native-declarations.integration.test.ts',
+  // Disposable tracked Git repositories and notification AST classification; no database.
+  '../lib/fire-and-forget-classification.integration.test.ts',
   '../lib/integration-substrate-selection.integration.test.ts',
   // Exercises the installed compiler socket and process identity; no database access.
   '../lib/tsc-service.integration.test.ts',

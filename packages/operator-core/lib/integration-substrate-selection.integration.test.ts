@@ -60,6 +60,16 @@ describe('integration selection without a PostgreSQL dependency', () => {
     expect(org).not.toHaveBeenCalled();
     expect(integrationNeedsPostgres([...fixtures, fixtures[0] + '.unknown'])).toBe(true);
   });
+  it('runs notification repository fixtures without shared PG and preserves mixed selection setup', async () => {
+    const fixture = fileURLToPath(new URL('./fire-and-forget-classification.integration.test.ts', import.meta.url));
+    const baseline = vi.fn(async () => { throw new Error('Shared PG must not initialize'); });
+    const org = vi.fn(async () => { throw new Error('Shared org must not initialize'); });
+    await setupIntegrationSubstrate({}, [fixture], { baseline, org });
+    expect(baseline).not.toHaveBeenCalled();
+    expect(org).not.toHaveBeenCalled();
+    expect(integrationNeedsPostgres([fixture, fixture + '.unknown'])).toBe(true);
+    expect(integrationNeedsPostgres([])).toBe(true);
+  });
   it('keeps integration evidence and matches the selected database substrate', () => {
     expect(inject('papercuspTestLayer')).toBe('integration');
     const substrate = inject('operatorIntegrationSubstrate');
