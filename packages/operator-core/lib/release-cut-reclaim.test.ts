@@ -905,17 +905,61 @@ describe('gather + execute against a real temporary repo', () => {
     expect(result.cap.retainedPaths[0]).toContain('.reclaim-trash-partial-cut-');
   });
 
-  it('retains named-only cuts over cap without inventing deletion authority', async () => {
+  it.each([false, true])('retains named-only cuts over cap without inventing deletion authority (managed: %s)', async managed => {
     const tree = path.join(tmp, 'named-only');
     g(repo, 'worktree', 'add', '-q', '--detach', tree);
     const plan = await gather();
     expect(plan.verdicts[0]!.disposition).toBe('named-only');
-    const result = await reclaimCutWorktrees(plan, { maxBytes: 1 });
-    expect(result.ok).toBe(true);
+    const slot = managed ? usageSlot() : undefined;
+    const result = await reclaimCutWorktrees(plan, { maxBytes: 1 }, { usageWalk: slot?.usageWalk });
+    expect(result.ok).toBe(false);
+    expect(result.errors.join('; ')).toContain('non-pin excess');
     expect(result.targets).toEqual([]);
     expect(result.cap.afterBytes).toBeGreaterThan(1);
     expect(result.cap.retainedPaths).toEqual([tree]);
     expect(fs.existsSync(tree)).toBe(true);
+    if (slot) await slot.finished();
+  });
+
+  it.each([false, true])('accepts allocated pin-only overage without removing protected cuts (managed: %s)', async managed => {
+    const tree = path.join(tmp, 'pin-only-cap');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    fs.writeFileSync(path.join(tree, 'pinned-data'), Buffer.alloc(32768, 1));
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'protected';
+    plan.verdicts[0]!.reasons = ['lease:agent-pin-fixture'];
+    const slot = managed ? usageSlot() : undefined;
+    const result = await reclaimCutWorktrees(plan, { maxBytes: 1 }, { usageWalk: slot?.usageWalk });
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.cap.afterBytes).toBeGreaterThan(32768);
+    expect(result.cap.pinnedBytes).toBe(result.cap.afterBytes);
+    expect(result.cap.pinnedOverageBytes).toBe(result.cap.overByBytes);
+    expect(result.targets).toEqual([]);
+    expect(fs.existsSync(tree)).toBe(true);
+    if (slot) await slot.finished();
+  });
+
+  it('remeasures pin allocation before accepting retained mixed-root excess', async () => {
+    const pinned = path.join(tmp, 'shrinking-pin'), named = path.join(tmp, 'named-cap');
+    for (const tree of [pinned, named]) g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const data = path.join(pinned, 'pinned-data');
+    fs.writeFileSync(data, Buffer.alloc(131072, 1));
+    fs.writeFileSync(path.join(named, 'retained-data'), Buffer.alloc(32768, 1));
+    const plan = await gather();
+    const v = plan.verdicts.find(v => v.path === pinned)!;
+    v.disposition = 'protected'; v.reasons = ['lease:agent-pin-fixture'];
+    const result = await reclaimCutWorktrees(plan, { maxBytes: 1 }, {
+      refreshPlan: async () => { fs.rmSync(data); return plan; },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors.join('; ')).toContain('non-pin excess');
+    expect(result.cap.beforeBytes).toBeGreaterThan(result.cap.afterBytes!);
+    expect(result.cap.pinnedBytes).toBeLessThan(131072);
+    expect(result.cap.overByBytes).toBeGreaterThan(result.cap.pinnedOverageBytes!);
+    expect(fs.existsSync(pinned)).toBe(true);
+    expect(fs.existsSync(named)).toBe(true);
+    expect(result.targets).toEqual([]);
   });
 
   it('collects an expired cut below cap and reports zero remaining allocated bytes', async () => {

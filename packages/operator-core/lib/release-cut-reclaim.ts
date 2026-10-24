@@ -1476,6 +1476,16 @@ export async function reclaimCutWorktrees(
       stderr: String(detail?.stderr ?? '').slice(-1024), usageProgress: detail?.usageProgress,
       usageAdmission: detail?.usageAdmission, message: errText(error) });
   };
+  const pinnedAllocation = (usage: Map<string, number>) => [...usage]
+    .filter(([p]) => plan.verdicts.some(v => pinnedPaths.includes(v.path) && pathsOverlap(p, v.realPath!)))
+    .reduce((sum, [, n]) => sum + n, 0);
+  const recordCapExcess = () => {
+    if (cap.overByBytes !== null && cap.pinnedOverageBytes !== null && cap.overByBytes > cap.pinnedOverageBytes) {
+      // A named/published/otherwise protected cut stays protected. Its retained
+      // non-pin allocation still prevents this owner from claiming cap compliance.
+      errors.push(`release-cut allocated-byte cap retains non-pin excess:${cap.root}: ${cap.afterBytes} > ${maxBytes}`);
+    }
+  };
   try {
     const before = await measure();
     if (deps.refreshPlan) {
@@ -1488,14 +1498,14 @@ export async function reclaimCutWorktrees(
       }
     }
     cap.beforeBytes = [...before.values()].reduce((sum, n) => sum + n, 0);
-    cap.pinnedBytes = [...before].filter(([p]) => plan.verdicts.some((v) => pinnedPaths.includes(v.path) && pathsOverlap(p, v.realPath!)))
-      .reduce((sum, [, n]) => sum + n, 0);
+    cap.pinnedBytes = pinnedAllocation(before);
     cap.pinnedOverageBytes = Math.max(0, cap.pinnedBytes - maxBytes);
     if (options.dryRun || (deps.usageWalk && targets.length === 0)) {
       cap.afterBytes = cap.beforeBytes;
       cap.overByBytes = Math.max(0, cap.afterBytes - maxBytes);
       cap.retainedPaths = [...before.keys()];
-      return { ok: true, dryRun: !!options.dryRun, targets, errors, cap };
+      if (!options.dryRun) recordCapExcess();
+      return { ok: errors.length === 0, dryRun: !!options.dryRun, targets, errors, cap };
     }
   } catch (e) {
     errors.push(`release-cut usage before reclaim: ${usageFailure(e)}`);
@@ -1507,8 +1517,11 @@ export async function reclaimCutWorktrees(
   try {
     const after = await measure();
     cap.afterBytes = [...after.values()].reduce((sum, n) => sum + n, 0);
+    cap.pinnedBytes = pinnedAllocation(after);
+    cap.pinnedOverageBytes = Math.max(0, cap.pinnedBytes - maxBytes);
     cap.overByBytes = Math.max(0, cap.afterBytes - maxBytes);
     cap.retainedPaths = [...after.keys()];
+    recordCapExcess();
   } catch (e) { errors.push(`release-cut usage after reclaim: ${usageFailure(e)}`); }
   return { ok: errors.length === 0 && execution.ok && execution.results.every((r) => r.removed), dryRun: false, targets, errors, cap, execution };
 }
