@@ -149,7 +149,12 @@ async function readAdvRosterUncached(opts: ReadAdvRosterOptions = {}) {
   // Keep the real cold-read failure attributable; a later fast probe cannot
   // explain which database or host-discovery leg was pending at its deadline.
   const freshTiming: PrimaryRosterTiming = { startedAtMs: performance.now(), phases: new Map() };
-  const primaryRead = dedupeInFlight(primaryRosterInFlight, JSON.stringify(workspaceId), () =>
+  // notify-classification: {"id":"packages/operator-core/lib/sync-resolver/adv-roster-read.ts#<module>/readAdvRosterUncached:b0b11673e093686c765e:1","classification":"durable","reason":"Single-flight roster work reaches owner and lifecycle notification paths; share their existing terminal obligation through this wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+  const primaryRead = dedupeInFlight(
+    primaryRosterInFlight,
+    JSON.stringify(workspaceId),
+    () =>
+    // notify-classification: {"id":"packages/operator-core/lib/sync-resolver/adv-roster-read.ts#<module>/readAdvRosterUncached/<callback>:076f290d7184642dda79:1","classification":"durable","reason":"Roster merging can reach owner and lifecycle notifications; preserve their existing durable requirement, with delivery still unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     mergeRosterWithAssignments({
       workspaceId,
       onTiming: ({ phase, state, elapsedMs }) => {
