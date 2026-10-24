@@ -11,7 +11,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import * as admissionBlobs from './admission-import-completeness';
 import { ADMISSION_RADIUS_CAP, admissionRadiusEdgeCache, executeAdmissionJob, ordinaryAdmissionRadius } from './admission-jobs';
 import { edgeCacheKey } from '../../../../scripts/lib/related-tests.mjs';
 import { evaluateFixPrecheck } from './admission-fix-precheck';
@@ -264,6 +265,44 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(radiusFor(['pkg-a/lib/core.ts']).guarded).toEqual(['pkg-a/lib/core.test.ts', 'pkg-b/src/uses-a.test.ts']);
     cache.clear();
     expect(radiusFor(['pkg-a/lib/core.ts'])).toEqual(first);
+  });
+
+  it('batches a reached external workspace instead of fetching each import-chain blob separately', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'admission-radius-external-'));
+    const chainLength = 24;
+    const batchRead = vi.spyOn(admissionBlobs, 'readAdmissionBlobBatch');
+    try {
+      init(fixture);
+      put(fixture, {
+        'package.json': JSON.stringify({ private: true, workspaces: ['p-*'] }),
+        'p-a/package.json': JSON.stringify({ name: '@t/provider' }),
+        'p-b/package.json': JSON.stringify({ name: '@t/consumer' }),
+        'p-b/vitest.config.ts': 'export default {};\n',
+        'p-b/src/core.ts': 'export const core = 1;\n',
+        'p-b/src/core.test.ts': "import { core } from './core';\nimport '../../p-a/src/dependency-0';\nexport const t = core;\n",
+        ...Object.fromEntries(Array.from({ length: chainLength }, (_, i) => [
+          `p-a/src/dependency-${i}.ts`,
+          `${i + 1 < chainLength ? `import './dependency-${i + 1}';\n` : ''}export const value = ${i};\n`,
+        ])),
+      });
+      git(fixture, 'add', '.');
+      git(fixture, 'commit', '-q', '-m', 'pinned external import chain');
+      const frozen = git(fixture, 'rev-parse', 'HEAD');
+      const top = git(fixture, 'ls-tree', '-r', '--full-tree', frozen).split('\n').map((row) => {
+        const match = /^(\d{6}) (\w+) ([0-9a-f]+)\t(.+)$/.exec(row)!;
+        return { mode: match[1]!, type: match[2]!, sha: match[3]!, file: match[4]! };
+      });
+      // Reached modules must still come from the pinned object store.
+      rmSync(join(fixture, 'p-a/src'), { recursive: true });
+      const radius = ordinaryAdmissionRadius({ root: fixture, commit: frozen, top,
+        signature: [], admittedPaths: ['p-b/src/core.ts'] });
+      expect(radius).toMatchObject({ status: 'measured', reason: 'ok', guarded: ['p-b/src/core.test.ts'], reportOnly: [] });
+      expect(batchRead.mock.calls.some(([, ids]) => ids.length >= chainLength)).toBe(true);
+      expect(batchRead.mock.calls.filter(([, ids]) => ids.length === 1)).toHaveLength(3);
+    } finally {
+      batchRead.mockRestore();
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   it('root-bootstrap routes use pinned policy and conservatively retain each affected workspace census', () => {

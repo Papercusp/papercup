@@ -242,10 +242,14 @@ export function ordinaryAdmissionRadius(input: {
       for (const step of walked) ownerMemo.set(step, owner);
       return owner;
     };
+    // Scoped to this immutable inventory: repeated workspace traversals share bytes,
+    // while another commit can never inherit a stale working-tree or blob read.
+    const blobContents = new Map<PinnedRepo, Map<string, string>>();
     const readBlobs = (repo: PinnedRepo, files: readonly string[]): Map<string, string> => {
       const entries = files.map((file) => repo.blobs.get(file)).filter((entry): entry is Entry => !!entry && entry.mode !== '120000');
-      const shas = [...new Set(entries.map((entry) => entry.sha))];
-      const contents = new Map<string, string>();
+      let contents = blobContents.get(repo);
+      if (!contents) { contents = new Map(); blobContents.set(repo, contents); }
+      const shas = [...new Set(entries.map((entry) => entry.sha))].filter(sha => !contents.has(sha));
       for (let start = 0; start < shas.length; start += RADIUS_BLOB_CHUNK) {
         const batch = readAdmissionBlobBatch(repo.cwd, shas.slice(start, start + RADIUS_BLOB_CHUNK));
         if (!batch.ok) throw new Error(`${repo.cwd}@${repo.commit}: ${batch.step}: ${batch.detail.slice(0, 200)}`);
@@ -370,11 +374,20 @@ export function ordinaryAdmissionRadius(input: {
     let playwrightExcluded = 0;
     let unroutable = 0;
     const fullReasons: string[] = [];
+    const sourcesByWorkspace = new Map<string, string[]>();
+    const workspaceSources = (repo: PinnedRepo, wsRoot: string): string[] => {
+      let files = sourcesByWorkspace.get(wsRoot);
+      if (!files) {
+        files = [...repo.blobs.keys()].filter((file) =>
+          RADIUS_SOURCE_RE.test(file) && repo.blobs.get(file)!.mode !== '120000' &&
+          !relative(wsRoot, file).split(sep).some((part) => RADIUS_EXCLUDED_DIRS.has(part)) &&
+          owningWorkspace(repo, file) === wsRoot);
+        sourcesByWorkspace.set(wsRoot, files);
+      }
+      return files;
+    };
     for (const { dir: wsRoot, repo, name: leg } of workspaces.filter(ws => affected.has(ws.name)).sort((a, b) => a.dir.localeCompare(b.dir))) {
-      const wsSources = [...repo.blobs.keys()].filter((file) =>
-        RADIUS_SOURCE_RE.test(file) && repo.blobs.get(file)!.mode !== '120000' &&
-        !relative(wsRoot, file).split(sep).some((part) => RADIUS_EXCLUDED_DIRS.has(part)) &&
-        owningWorkspace(repo, file) === wsRoot);
+      const wsSources = workspaceSources(repo, wsRoot);
       const configs = [...repo.blobs.keys()].filter((file) => dirname(file) === wsRoot && (WORKSPACE_CONFIG_NAMES.has(file.slice(wsRoot.length + 1)) || /^(?:vitest|vite)(?:\.[\w-]+)*\.config\.[cm]?[jt]s$/.test(file.slice(wsRoot.length + 1))));
       const edgeCache = radiusState.edges;
       if (edgeCache.size > RADIUS_EDGE_CACHE_MAX) edgeCache.clear();
@@ -387,8 +400,15 @@ export function ordinaryAdmissionRadius(input: {
       const readFile = (file: string): string => {
         let text = contents.get(file);
         if (text === undefined) {
-          text = readBlobs(locate(file), [file]).get(file);
-          if (text !== undefined) contents.set(file, text);
+          const reachedRepo = locate(file);
+          const reachedWorkspace = RADIUS_SOURCE_RE.test(file) ? owningWorkspace(reachedRepo, file) : null;
+          // buildIndex follows cross-root imports lazily. Fetch the reached
+          // workspace in bounded batches instead of spawning two Git processes
+          // for each module in an external import chain. Graph membership still
+          // comes solely from buildIndex's existing traversal.
+          const batch = readBlobs(reachedRepo, reachedWorkspace ? workspaceSources(reachedRepo, reachedWorkspace) : [file]);
+          for (const [path, value] of batch) contents.set(path, value);
+          text = contents.get(file);
         }
         if (text === undefined) throw new Error(`absent at the pinned commit: ${file}`);
         return text;
