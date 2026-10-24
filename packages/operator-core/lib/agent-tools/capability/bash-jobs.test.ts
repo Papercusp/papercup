@@ -972,7 +972,12 @@ describe('background jobs', () => {
     const final = getJob(job.id)!;
     expect(final.status).toBe('failed');
     expect(final.exitCode).toBe(127);
-    expect(readFileSync(final.logPath, 'utf8')).toContain('status=failed');
+    // The service writes its raw completed/0 marker before the host normalizes
+    // this missing command to failed/127. The host appends through an async
+    // WriteStream, so terminal in-memory status alone is not a flush barrier.
+    await vi.waitFor(() => {
+      expect(readFileSync(final.logPath, 'utf8')).toContain('status=failed');
+    }, { timeout: 10_000, interval: 25 });
   });
 
   it('persists the normalized missing-command exit code for processes:list', async () => {

@@ -61,7 +61,7 @@ const parse = (result: any) => {
   return JSON.parse(block.text);
 };
 
-async function main() {
+export async function runGitSyncTargetWorkerFixture() {
   if (workerMode) {
     assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '1');
     // This fixture composes the side-effect-free request handler, so it owns
@@ -233,6 +233,8 @@ async function main() {
 // The maintained embedding client re-executes its containing bundle. Honor
 // that production entry contract instead of re-entering fixture setup.
 if (process.env.PAPERCUSP_EMBED_SIDECAR_MODE === '1') runEmbedSidecarServer();
-else main().then(() => { if (!workerMode) process.exit(0); }).catch(error => {
-  console.error('FRICTION_WORKER_FAILURE', error); process.exit(1);
-});
+else if (process.argv[1] && resolve(process.argv[1]) === import.meta.filename) {
+  runGitSyncTargetWorkerFixture().then(() => { if (!workerMode) process.exit(0); }).catch(error => {
+    console.error('FRICTION_WORKER_FAILURE', error); process.exit(1);
+  });
+}

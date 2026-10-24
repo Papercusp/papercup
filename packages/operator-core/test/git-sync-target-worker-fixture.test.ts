@@ -53,12 +53,9 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 it.each([false, true])('retains the original worker scenario failure when cleanup fails: %s', async cleanupFails => {
   state.cleanupFails = cleanupFails;
-  let reported: unknown;
   vi.spyOn(console, 'log').mockImplementation(() => {});
-  vi.spyOn(console, 'error').mockImplementation((_tag, error) => { reported = error; });
-  const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
-  await import('./git-sync-target-worker-fixture');
-  await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
+  const { runGitSyncTargetWorkerFixture } = await import('./git-sync-target-worker-fixture');
+  const reported = await runGitSyncTargetWorkerFixture().catch(error => error);
   if (cleanupFails) {
     expect(reported).toBeInstanceOf(AggregateError);
     expect((reported as AggregateError).errors).toEqual([state.primary, state.cleanup]);

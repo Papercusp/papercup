@@ -65,7 +65,16 @@ test('ee.shared-controls: real-app checkbox and evidence-repair input states', a
       await route.fulfill({ json: { ok: true, result: { structuredContent: { ok: true } } } });
     } else await route.continue();
   });
+  // Navigation completes before the live sync feed hydrates. Wait for its
+  // actual response before asserting virtualizer geometry or rendered rows.
+  const planFeed = page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/zero-harness/rest-query' && url.searchParams.get('name') === 'plans.list';
+  }, { timeout: 90_000 });
   await page.goto(origin.origin + '/plans?pdash=' + encodeURIComponent(encodeScopedRef('papercusp', plan)));
+  const hydratedPlans = await planFeed;
+  expect(hydratedPlans.status()).toBe(200);
+  expect((await hydratedPlans.json()).rows.length).toBeGreaterThan(0);
   // Exercise the standalone route: portalEmbed must not be needed to bound the
   // canonical virtualizer. A content-sized list used to mount the whole roster
   // and delay the dashboard's first actionable render (EI-26802306660063941).
