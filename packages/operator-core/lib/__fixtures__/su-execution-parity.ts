@@ -4,7 +4,7 @@
  * P-017/P-018 must attach exact scenario receipts before a cell can pass.
  */
 export const SU_EXEC_INVENTORY = {
-  revision: 3,
+  revision: 4,
   plan: 'interchangeable-su-execution-backends-2026-10-23',
   ownerItem: 'P-001',
   host: { os: 'linux', arch: 'x64', runtime: 'current-build', otherHosts: 'unqualified' },
@@ -58,6 +58,7 @@ export const SU_EXEC_PTY_CONTROLS = [
     boundary: 'Reject the retired control explicitly; never deliver its JSON as an owner turn.' },
   { mode: 'shutdown', classification: 'required', behavior: 'supervision' },
   { mode: 'hooks-observe', classification: 'required', behavior: 'observability' },
+  { mode: 'identity-assume', classification: 'required', behavior: 'same-provider-handoff' },
   { mode: 'mcp-reconnect', classification: 'required', behavior: 'mcp-reconnect' },
 ] as const;
 
@@ -121,6 +122,9 @@ const CONTROL_DUTIES = {
   'hooks-observe': { requirement: 'R-14', item: 'P-015',
     action: 'Report generation-scoped hooks and lifecycle observations without creating an agent turn.',
     falsifier: 'A stale observation is accepted for another child or an unmeasured value is reported healthy.' },
+  'identity-assume': { requirement: 'R-11', item: 'P-012',
+    action: 'Validate the scoped identity assumption, fence the source and preserve one authoritative owner before releasing queued inputs.',
+    falsifier: 'A foreign or stale assumption changes owner identity, or both generations consume commands or wakes.' },
   'mcp-reconnect': { requirement: 'R-3', item: 'P-003',
     action: 'Reconnect the scoped MCP server and verify the native tool catalog without broadening authority.',
     falsifier: 'Reconnect is reported healthy from a saved descriptor or silently falls back to a PTY process.' },
@@ -144,7 +148,9 @@ export const SU_EXEC_CONTROL_SCENARIOS = SU_EXEC_COMBINATIONS.flatMap(combinatio
     sources: combination.execution === 'pty' ? [PTY]
       : [HOST, combination.provider === 'claude' ? CLAUDE : RPC],
     testTargets: combination.execution === 'pty'
-      ? ['apps/operator/lib/psu-pty-host.test.ts']
+      ? [control.mode === 'identity-assume'
+        ? 'apps/operator/lib/psu-pty-host-assume-fence.test.ts'
+        : 'apps/operator/lib/psu-pty-host.test.ts']
       : ['packages/operator-core/lib/su-session-host.test.ts',
         `packages/operator-core/lib/su-session-${combination.provider === 'claude' ? 'claude' : 'rpc'}-engine.test.ts`],
     liveTestTarget: 'packages/operator-core/lib/su-session-attached-live.integration.test.ts',
