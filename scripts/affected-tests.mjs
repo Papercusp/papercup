@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { expandWorkspaces as expandRootWorkspaces } from './assert-workspace-links.mjs';
+import { expandAffectedWorkspaceNames } from './lib/affected-path-routes.mjs';
 // Find workspaces affected by a git diff and run their vitest suites.
 //
 // Usage:
@@ -5332,19 +5333,7 @@ async function resolveAffected(changed) {
     ownedChangedPaths,
     alwaysPropagate: new Set([...routeSelected, ...(merged.added ?? [])]),
   });
-  const affected = new Set(directlyChanged);
-  const queue = [...seeds];
-  while (queue.length) {
-    const name = queue.shift();
-    const dependents = reverseDeps.get(name);
-    if (!dependents) continue;
-    for (const d of dependents) {
-      if (!affected.has(d)) {
-        affected.add(d);
-        queue.push(d);
-      }
-    }
-  }
+  const affected = expandAffectedWorkspaceNames(seeds, reverseDeps, directlyChanged);
 
   return [...affected].map((name) => wsByName.get(name)).filter(Boolean);
 }

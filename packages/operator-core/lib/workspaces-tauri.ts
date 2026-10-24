@@ -14,6 +14,7 @@
 
 import { commands, type Workspace as BindingsWorkspace, type Registry } from './tauri-bindings';
 import { navigateClient } from './client-navigation';
+import { getBrowserMachineId } from './browser-workspace';
 
 export type Workspace = BindingsWorkspace;
 
@@ -29,6 +30,12 @@ function isDesktopRuntime(): boolean {
 
 export function isDesktop(): boolean {
   return isDesktopRuntime();
+}
+
+/** Native registry commands always address this computer, regardless of URL. */
+function useNativeWorkspaceCommands(): boolean {
+  const machine = getBrowserMachineId();
+  return isDesktopRuntime() && (!machine || machine === 'local');
 }
 
 /**
@@ -53,9 +60,13 @@ function isAclDeniedError(e: unknown): boolean {
 }
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  headers.set('content-type', 'application/json');
+  const machine = getBrowserMachineId();
+  if (machine) headers.set('x-papercusp-machine', machine);
   const r = await fetch(path, {
     ...init,
-    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+    headers: Object.fromEntries(headers),
     cache: 'no-store',
   });
   const j = await r.json().catch(() => ({}));
@@ -64,7 +75,7 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function listWorkspaces(): Promise<WorkspaceRegistry> {
-  if (isDesktopRuntime()) {
+  if (useNativeWorkspaceCommands()) {
     try {
       return (await commands.workspacesList()) as Registry;
     } catch (e) {
@@ -76,7 +87,7 @@ export async function listWorkspaces(): Promise<WorkspaceRegistry> {
 }
 
 export async function createWorkspace(name: string): Promise<Workspace> {
-  if (isDesktopRuntime()) {
+  if (useNativeWorkspaceCommands()) {
     try {
       const r = await commands.workspacesCreate(name);
       if (r.status === 'error') throw new Error(r.error);
@@ -89,7 +100,7 @@ export async function createWorkspace(name: string): Promise<Workspace> {
 }
 
 export async function renameWorkspace(id: string, name: string): Promise<void> {
-  if (isDesktopRuntime()) {
+  if (useNativeWorkspaceCommands()) {
     try {
       const r = await commands.workspacesRename(id, name);
       if (r.status === 'error') throw new Error(r.error);
@@ -105,7 +116,7 @@ export async function renameWorkspace(id: string, name: string): Promise<void> {
 }
 
 export async function deleteWorkspace(id: string): Promise<void> {
-  if (isDesktopRuntime()) {
+  if (useNativeWorkspaceCommands()) {
     try {
       const r = await commands.workspacesDelete(id);
       if (r.status === 'error') throw new Error(r.error);
@@ -134,11 +145,16 @@ export async function deleteWorkspace(id: string): Promise<void> {
  */
 
 export function resolveWorkspaceSwitchTarget(id: string, opts?: { resetTo?: string }): string {
-  return opts?.resetTo ?? `/harness?ws=${encodeURIComponent(id)}`;
+  const target = opts?.resetTo ?? `/harness?ws=${encodeURIComponent(id)}`;
+  const machine = getBrowserMachineId();
+  if (!machine) return target;
+  const url = new URL(target, window.location.href);
+  url.searchParams.set('desktopHost', machine);
+  return url.pathname + url.search + url.hash;
 }
 export async function switchWorkspace(id: string, opts?: { resetTo?: string }): Promise<void> {
   let handledByDesktop = false;
-  if (isDesktopRuntime()) {
+  if (useNativeWorkspaceCommands()) {
     try {
       const r = await commands.workspacesSwitch(id);
       if (r.status === 'error') throw new Error(r.error);
@@ -171,12 +187,12 @@ export async function switchWorkspace(id: string, opts?: { resetTo?: string }): 
  * (handled shell-side).
  */
 export async function openWorkspaceWindow(id: string): Promise<void> {
-  if (isDesktopRuntime()) {
+  if (useNativeWorkspaceCommands()) {
     const r = await commands.workspacesOpenWindow(id);
     if (r.status === 'error') throw new Error(r.error);
     return;
   }
   if (typeof window !== 'undefined') {
-    window.open(`/harness?ws=${encodeURIComponent(id)}`, '_blank', 'noopener');
+    window.open(resolveWorkspaceSwitchTarget(id), '_blank', 'noopener');
   }
 }

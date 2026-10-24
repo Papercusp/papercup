@@ -1,5 +1,6 @@
 /** P-034/D-016: one code-intelligence leg at the existing PostToolBatch sink. */
 import { randomUUID } from 'node:crypto';
+import { snapshotCloneLeg } from './clone-advisory';
 import { AGENT_ANTIPATTERN_RULES } from './agent-antipatterns';
 import { isAbsolute, join, posix, relative } from 'node:path';
 import type { Sql, TransactionSql } from 'postgres';
@@ -30,6 +31,7 @@ export const PUSH_LEG_FLAGS = {
   grep: FLAGS.CODE_INTEL_PUSH_GREP, 'first-touch': FLAGS.CODE_INTEL_PUSH_FIRST_TOUCH,
   interface: FLAGS.CODE_INTEL_PUSH_INTERFACE, incident: FLAGS.CODE_INTEL_PUSH_INCIDENT,
   completion: FLAGS.CODE_INTEL_PUSH_COMPLETION,
+  clone: FLAGS.CODE_INTEL_PUSH_FIRST_TOUCH,
   // Active with the existing structural capability; no default-off feature gate.
   antipattern: FLAGS.CODE_INTEL_AST_GREP,
   // No registered hook leg: this flag gates the task brief coord:declare-intent returns for
@@ -39,7 +41,7 @@ export const PUSH_LEG_FLAGS = {
   resume: FLAGS.CODE_INTEL_PUSH_RESUME, notes: FLAGS.CODE_INTEL_PUSH_NOTES,
 } as const;
 export type PushLegId = keyof typeof PUSH_LEG_FLAGS;
-export interface PushCall { tool?: string; toolInput?: unknown; toolResponse?: unknown; incidentResult?: unknown; interfaceEdit?: unknown; interfaceEdits?: unknown[]; antipatternEdits?: unknown[] }
+export interface PushCall { tool?: string; toolInput?: unknown; toolResponse?: unknown; incidentResult?: unknown; interfaceEdit?: unknown; interfaceEdits?: unknown[]; antipatternEdits?: unknown[]; cloneEdits?: unknown[] }
 export interface PushInput {
   owner: string; workspace: string; harness?: string; client?: string;
   /** Populated only from the registered harness root, never request cwd. */
@@ -140,6 +142,7 @@ export async function readPushIncidentAttribution(input: PushInput, paths: strin
 export type PushLeg = (input: PushInput, snapshot: PushSnapshot) => readonly PushFact[];
 const state = pinModuleState('@papercusp/operator-core.code-intel-push-legs', () => ({ legs: new Map<PushLegId, PushLeg>() }));
 export function registerCodeIntelPushLeg(id: PushLegId, leg: PushLeg): void { state.legs.set(id, leg); }
+registerCodeIntelPushLeg('clone', snapshotCloneLeg);
 
 /** Only consumes prepared, hashed candidates. No parser, disk walk or subprocess here. */
 export function snapshotAntipatternLeg(input: PushInput): PushFact[] {
@@ -1061,7 +1064,7 @@ export async function recordIntentTaskBrief(input: { workspace: string; owner: s
 }
 
 export function formatPushFact(fact: PushFact, snapshot: PushSnapshot): string {
-  if (fact.leg === 'antipattern') return fact.text;
+  if (fact.leg === 'antipattern' || fact.leg === 'clone') return fact.text;
   return `## Code intelligence (${fact.leg})\nSnapshot ${snapshot.commit.slice(0, 12)} · ${snapshot.generatedAt}\n${fact.text}`;
 }
 

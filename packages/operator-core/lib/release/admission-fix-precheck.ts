@@ -59,16 +59,16 @@ export type SignatureLike = Pick<RepairSignatureEntry, 'kind' | 'id'> & Partial<
 
 /**
  * P-007 (green-main-cycle-time-2026-10-08#D-036): an ordinary admission's related-test radius,
- * selected at the BUILT commit. `measured` = the radius files are in the population; `skipped`
- * = the radius was too wide or could not be computed, so the next targeted round (P-005)
- * measures it instead — a loud marker, never a silent omission; `not-applicable` = the
+ * selected at the BUILT commit. `measured` = the complete radius files are in the population;
+ * wide populations require bounded execution groups. `skipped` = discovery could not establish
+ * a supported population, a loud refusal marker; `not-applicable` = the
  * admission named no source path a test could import.
  */
 export type AdmissionRadiusStatus = 'measured' | 'skipped' | 'not-applicable';
 
 export interface AdmissionRadius {
   status: AdmissionRadiusStatus;
-  /** `ok` when measured; otherwise why: `over-cap(n/cap)`, `selection-full:<reason>`, `radius-unavailable`, `no-source-paths`. */
+  /** `ok` when measured; otherwise why: `selection-full:<reason>`, `radius-unavailable`, `no-source-paths`. */
   reason: string;
   detail?: string;
   /** Previously green radius test files: one failing at the built commit refuses `admission-imports-red`. */

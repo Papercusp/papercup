@@ -682,6 +682,9 @@ async function fleetLogsGcTick(): Promise<void> {
           (!result.scanComplete ? `, deferred: incomplete holder census${result.scanError ? ` (${result.scanError})` : ''}` : '') +
           (totalErrors ? `, ${totalErrors} error(s)` : ''),
       );
+      for (const dir of result.dirs) {
+        for (const error of dir.errors) console.warn(`[fleet-logs-gc]   ! ${error.path}: ${error.error}`);
+      }
 
       // Second half of the same disk-headroom concern (WI-10002015): the sweep
       // above bounds fleet-logs, a flat directory of FILES with known writers.
@@ -741,6 +744,7 @@ async function fleetLogsGcTick(): Promise<void> {
               `${renders.removed}, freed ${Math.round(renders.bytesFreed / (1024 * 1024))}MB, ` +
               `held ${renders.liveHeld} in use by live session(s)`,
       );
+      for (const error of renders.errors) console.warn(`[launch-context-gc]   ! ${error.path}: ${error.error}`);
 
       // Reclaim interrupted Windows cross-build containers after 48 hours.
       // The helper checks recursive mtimes, live writers, and the linked

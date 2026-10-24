@@ -2598,6 +2598,77 @@ export function decodeQuotaRecovery(o: any): {
         cause: string;
     };
 };
+/** Input/custody state for one identity handoff in this managed host. This
+ * prerequisite deliberately advertises no capability: the launcher must wire
+ * native response observation and clean target bootstrap before enabling it.
+ *
+ * `freeze` fences NEW input/lifecycle effects, not the currently executing
+ * tool. Stopping that native process here would prevent it receiving its own
+ * tool result. `begin` is the only replacement boundary: it requires the exact
+ * persisted result and a later successful completion from that same child.
+ * Neither an application socket ACK nor observedAt (a reader clock) is proof.
+ * @param {{identity:()=>any, canFreeze:()=>boolean, now?:()=>number}} ports
+ */
+export function makeIdentityAssumeFence({ identity, canFreeze, now }: {
+    identity: () => any;
+    canFreeze: () => boolean;
+    now?: () => number;
+}): {
+    freeze(request: any): {
+        ok: boolean;
+        reason: any;
+    } | {
+        ok: boolean;
+        phase: any;
+    };
+    queue(request: any): {
+        ok: boolean;
+        reason: any;
+    } | {
+        ok: boolean;
+        phase: any;
+    };
+    begin(request: any, proof: any): {
+        ok: boolean;
+        reason: any;
+    } | {
+        ok: boolean;
+        phase: string;
+        request: any;
+    };
+    thaw(request: any): {
+        ok: boolean;
+        reason: any;
+    } | {
+        ok: boolean;
+        phase: string;
+    };
+    blocksInput(): boolean;
+    state(): {
+        phase: any;
+        expired: boolean;
+    } | null;
+};
+/** Find a matching receipt ONLY in a native tool-result row. The caller must
+ * supply rows from readIsolatedNativeTranscriptRows for the exact pinned
+ * native id, then independently reread the durable receipt/custody at launch.
+ * Caller/assistant prose, PTY paint and a socket ACK cannot satisfy this probe.
+ * @param {any[]} rows
+ * @param {{agent:string, request:any, sinceMs:number, nowMs?:number}} options
+ */
+export function identityAssumeResponseFromRows(rows: any[], { agent, request, sinceMs, nowMs }: {
+    agent: string;
+    request: any;
+    sinceMs: number;
+    nowMs?: number;
+}): {
+    caller: any;
+    transitionKey: any;
+    preparationHash: any;
+    state: string;
+    durable: boolean;
+    atMs: number;
+} | null;
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
  *  a legacy idle-gated turn; an unsupported explicit envelope is never input.
  *  Pure — exported for tests. */
@@ -2608,6 +2679,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     force: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2622,6 +2695,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     force: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2635,6 +2710,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2648,6 +2725,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2661,6 +2740,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2674,6 +2755,22 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
+} | {
+    mode: string;
+    data: string;
+    gated: boolean;
+    ownerId: any;
+    action: any;
+    request: any;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2693,6 +2790,8 @@ export function decodeControl(payload: any): {
     expectedChildGeneration: any;
     expectedHostCodeVersion: any;
     expiresAtMs: any;
+    action?: undefined;
+    request?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs?: undefined;
@@ -2704,6 +2803,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2728,6 +2829,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2746,6 +2849,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2770,6 +2875,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2788,6 +2895,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2812,6 +2921,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2830,6 +2941,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2854,6 +2967,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2872,6 +2987,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2896,6 +3013,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2914,6 +3033,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2938,6 +3059,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2956,6 +3079,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2980,6 +3105,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2998,6 +3125,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3022,6 +3151,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3040,6 +3171,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3064,6 +3197,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3082,6 +3217,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3106,6 +3243,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3124,6 +3263,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3148,6 +3289,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3166,6 +3309,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3190,6 +3335,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3211,6 +3358,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3232,6 +3381,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3253,6 +3404,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3274,6 +3427,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3295,6 +3450,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3316,6 +3473,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3337,6 +3496,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3358,6 +3519,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3379,6 +3542,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3400,6 +3565,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3421,6 +3588,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3442,6 +3611,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3455,6 +3626,8 @@ export function decodeControl(payload: any): {
     data: string;
     focus: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3468,6 +3641,8 @@ export function decodeControl(payload: any): {
     data: string;
     focus: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3481,6 +3656,8 @@ export function decodeControl(payload: any): {
     force?: boolean | undefined;
     mode: string;
     data: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3494,6 +3671,8 @@ export function decodeControl(payload: any): {
     force?: boolean | undefined;
     mode: string;
     data: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3517,6 +3696,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3538,6 +3719,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3559,6 +3742,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3580,6 +3765,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3601,6 +3788,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3622,6 +3811,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3643,6 +3834,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3664,6 +3857,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3685,6 +3880,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3706,6 +3903,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3727,6 +3926,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3748,6 +3949,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3769,6 +3972,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3790,6 +3995,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3811,6 +4018,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3832,6 +4041,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3853,6 +4064,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3874,6 +4087,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3895,6 +4110,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3916,6 +4133,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3937,6 +4156,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3958,6 +4179,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3979,6 +4202,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4000,6 +4225,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4021,6 +4248,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4042,6 +4271,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4063,6 +4294,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4084,6 +4317,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4105,6 +4340,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4126,6 +4363,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4147,6 +4386,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4168,6 +4409,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4189,6 +4432,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4210,6 +4455,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4231,6 +4478,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4252,6 +4501,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -5565,6 +5816,9 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  * @param {((pid:number)=>string|null)|null} [o.resolveRespawnNativeId] startup native identity of the exact PTY child
  * @param {typeof fireSessionCompactedEvent} [o.emitCompacted] verified carry completion bridge (tests)
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
+ * @param {{attachmentId?:string, verify:(request:any)=>Promise<boolean>, prepare:(request:any)=>Promise<any>}|null} [o.identityAssume]
+ *   Trusted launcher port: verify durable preparation/custody; prepare only
+ *   parent-bound clean target orders (never launch). Absent until fully wired.
  * @param {()=>any} [o.hostCodeStalenessFn] injectable loaded-vs-disk probe
  * @param {(env: EnvironmentMap)=>Promise<{from:string,to:string}|null>} [o.healOperatorPin]
  *   injectable dead-operator-pin heal, run before each in-place respawn
@@ -5635,6 +5889,11 @@ export function hostThroughPty(o: {
     resolveRespawnNativeId?: ((pid: number) => string | null) | null | undefined;
     emitCompacted?: typeof fireSessionCompactedEvent | undefined;
     onReexec?: ((...args: any[]) => any) | null | undefined;
+    identityAssume?: {
+        attachmentId?: string;
+        verify: (request: any) => Promise<boolean>;
+        prepare: (request: any) => Promise<any>;
+    } | null | undefined;
     hostCodeStalenessFn?: (() => any) | undefined;
     healOperatorPin?: ((env: EnvironmentMap) => Promise<{
         from: string;

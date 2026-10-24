@@ -411,11 +411,13 @@ describe('HostedWorkspaceHostSessionAdapter — operator-http channels (D-418)',
     await h.open();
     await h.relay({ type: 'http.request', requestId: 'autonomy-save', method: 'POST',
       path: '/api/admin/inbox/automation-policy',
-      headers: { 'content-type': 'application/json', [HOSTED_PRINCIPAL_USER_HEADER]: 'forged-user', authorization: 'Bearer forged' },
+      headers: { 'content-type': 'application/json', [HOSTED_PRINCIPAL_USER_HEADER]: 'forged-user',
+        'x-papercusp-workspace': 'forged-workspace', authorization: 'Bearer forged' },
       body: Buffer.from(JSON.stringify(policy)).toString('base64') });
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ method: 'POST', url: '/api/admin/inbox/automation-policy' });
     expect(seen[0].headers[HOSTED_PRINCIPAL_USER_HEADER]).toBe('user-1');
+    expect(seen[0].headers['x-papercusp-workspace']).toBe(binding.customerWorkspaceId);
     expect(seen[0].headers.authorization).toBeUndefined();
     expect(JSON.parse(decodeBody(h.payloads().filter(f => f.requestId === 'autonomy-save'))))
       .toEqual({ ok: true, policy });

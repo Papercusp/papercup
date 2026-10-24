@@ -36,7 +36,7 @@ type CoverageInput = {
     builtInIdentities: Array<{ id: string }>;
   };
   observations: Array<Pick<Observation, 'identity' | 'status' | 'ownerId' | 'observedAt' |
-    'toolInvocationId' | 'activationEventId' | 'refusal'>>;
+    'toolInvocationId' | 'activationEventId' | 'refusal'> & Partial<Pick<Observation, 'nativeSessionId'>>>;
 };
 
 /** A row-count floor cannot establish coverage of an independently enumerated population. */
@@ -53,10 +53,12 @@ export function inspectIdopP001Coverage(baseline: CoverageInput) {
   for (const row of baseline.observations) {
     const key = `${roles.has(row.identity) ? 'role' : 'identity'}:${row.identity}`;
     const invocation = Number.isSafeInteger(row.toolInvocationId) && Number(row.toolInvocationId) > 0;
+    const sourceSession = typeof row.nativeSessionId === 'string' && row.nativeSessionId.trim().length > 0;
     const receipt = invocation && (row.status === 'launch-refused'
       ? Boolean(row.refusal?.trim())
-      : /^su-/.test(row.ownerId) && (row.status === 'observed' ||
+      : sourceSession && /^su-/.test(row.ownerId) && (row.status === 'observed' ||
           (row.status === 'tool-refused' && Boolean(row.refusal?.trim()))));
+    // An invocation/owner cannot identify the source session; retain missing provenance as invalid.
     // Activation proves a worn layer, but does not by itself prove its effective tool set.
     if (!expected.has(key) || !receipt || !Number.isFinite(Date.parse(row.observedAt))) {
       invalid.push(key);

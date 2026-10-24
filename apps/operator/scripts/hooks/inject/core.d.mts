@@ -129,6 +129,7 @@ export function collectInterfaceEdits(body: any, collect?: (path: any) => Promis
 } | null>, env?: NodeJS.ProcessEnv): Promise<void>;
 /** Async preparation shared by native Edit/Write/MultiEdit and apply_patch.
  * The push registry receives only bounded findings; it never scans source. */
+export function collectCloneEdits(body: any, digest?: (path: any) => Promise<string | null>): Promise<void>;
 export function collectAntipatternEdits(body: any, prepare?: (path: any, root: any) => Promise<any>): Promise<void>;
 /** Keep native patch headers outside the lossy recall digest, including multi-file patches. */
 export function editedPathsFor(tool: any, input: any): string[];

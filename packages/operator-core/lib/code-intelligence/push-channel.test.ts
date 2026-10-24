@@ -218,8 +218,8 @@ describe('shared snapshot-backed push channel', () => {
   });
 
   it('keeps every registered leg ON by default', () => {
-    // 6 original legs + resume, notes and the R8 anti-pattern advisory.
-    expect(Object.values(PUSH_LEG_FLAGS).map(flag => FLAG_DEFAULTS[flag])).toEqual(Array(9).fill(true));
+    // 6 original legs + resume, notes, R8 anti-pattern and P006 clone advisories.
+    expect(Object.values(PUSH_LEG_FLAGS).map(flag => FLAG_DEFAULTS[flag])).toEqual(Array(10).fill(true));
   });
 
   it('uses the default nonblocking snapshot reader on the cold hook path', async () => {

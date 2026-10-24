@@ -74,6 +74,29 @@ describe('runFleetLogsGc', () => {
     expect(result.dirs[0]!.cap).toMatchObject({ root: dir, classId: 'fleet-logs', maxBytes: 0,
       beforeBytes: 200, afterBytes: 100, pinnedBytes: 100, pinnedPaths: [pinned],
       overByBytes: 100, pinnedOverageBytes: 100 });
+    expect(result.dirs[0]!.errors).toEqual([]);
+  });
+
+  it('reports retained non-pin excess without deleting an open log under cap pressure', async () => {
+    const dir = join(sandbox, 'logs'); mkdirSync(dir);
+    const pinned = writeAged(dir, 'pinned.log', 100, 3000);
+    const open = writeAged(dir, 'open.log', 100, 2000);
+    const idle = writeAged(dir, 'idle.log', 100, 1000);
+    createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'evidence', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    const options = { dirs: [dir], maxTotalBytes: 80,
+      scanOpenPaths: async () => ({ complete: true, byPath: new Map([[open, ['123']]]) }) };
+    const preview = await runFleetLogsGc({ ...options, dryRun: true });
+    expect(preview.dirs[0]!.errors).toEqual([]);
+    expect(existsSync(idle)).toBe(true);
+    const result = await runFleetLogsGc(options);
+    expect(result.dirs[0]!.cap).toMatchObject({ afterBytes: 200, pinnedBytes: 100,
+      overByBytes: 120, pinnedOverageBytes: 20 });
+    expect(result.dirs[0]!.cap).toEqual(preview.dirs[0]!.cap);
+    expect(result.dirs[0]!.errors).toContainEqual({ path: dir,
+      error: expect.stringContaining('cap retains non-pin excess') });
+    expect(existsSync(open)).toBe(true);
+    expect(existsSync(pinned)).toBe(true);
+    expect(existsSync(idle)).toBe(false);
   });
 
   it('reports pinned fresh and open logs even when no deletion is attempted', async () => {
@@ -900,6 +923,27 @@ describe('runLaunchContextGc', () => {
     expect(result.candidates.find((c) => c.path === live)?.skipped).toBe('live-session');
     expect(existsSync(idle)).toBe(false);
     expect(result.cap).toMatchObject({ beforeBytes: 28, afterBytes: 20, pinnedBytes: 12, pinnedPaths: [pinned], overByBytes: 12, pinnedOverageBytes: 4 });
+    expect(result.errors).toContainEqual({ path: dir,
+      error: expect.stringContaining('cap retains non-pin excess') });
+  });
+
+  it('permits pinned-only render overage while reporting unpinned live-render excess', async () => {
+    const dir = join(sandbox, 'renders'); mkdirSync(dir);
+    const render = writeAged(dir, 'live.md', 20, 2000);
+    const options = { dir, liveRenderPaths: new Set([render]), maxTotalBytes: 8 };
+    const preview = await runLaunchContextGc({ ...options, dryRun: true });
+    expect(preview.errors).toEqual([]);
+    const unpinned = await runLaunchContextGc(options);
+    expect(unpinned.cap).toMatchObject({ afterBytes: 20, pinnedBytes: 0,
+      overByBytes: 12, pinnedOverageBytes: 0 });
+    expect(unpinned.errors).toContainEqual({ path: dir,
+      error: expect.stringContaining('cap retains non-pin excess') });
+    createRetentionPin({ path: render, owner: 'reviewer', reason: 'live evidence', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    const pinned = await runLaunchContextGc(options);
+    expect(pinned.cap).toMatchObject({ afterBytes: 20, pinnedBytes: 20,
+      overByBytes: 12, pinnedOverageBytes: 12 });
+    expect(pinned.errors).toEqual([]);
+    expect(existsSync(render)).toBe(true);
   });
 
   it('dry-run cap selection is identical and expiry releases a pinned render', async () => {

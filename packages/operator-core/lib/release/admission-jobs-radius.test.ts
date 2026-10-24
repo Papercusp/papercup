@@ -8,13 +8,15 @@
  * radius never consults it.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ADMISSION_RADIUS_CAP, admissionRadiusEdgeCache, executeAdmissionJob, ordinaryAdmissionRadius } from './admission-jobs';
 import { edgeCacheKey } from '../../../../scripts/lib/related-tests.mjs';
 import { evaluateFixPrecheck } from './admission-fix-precheck';
+import { expandWorkspaces } from '../../../../scripts/assert-workspace-links.mjs';
+import { pinnedNonWorkspacePathRoutes } from '../../../../scripts/lib/affected-path-routes.mjs';
 
 let root: string;
 let commit: string;
@@ -49,17 +51,34 @@ beforeAll(() => {
   const component = join(root, 'component');
   mkdirSync(component);
   init(component);
+  const nested = join(component, 'addon');
+  mkdirSync(nested);
+  init(nested);
+  put(nested, {
+    'package.json': JSON.stringify({ name: '@t/nested' }),
+    'vitest.config.ts': 'export default {test:{include:["src/**/*.test.ts"]}};\n',
+    'src/api.ts': 'export const api = 1;\n',
+    'src/api.test.ts': "import { api } from './api';\nexport const t = api;\n",
+  });
+  git(nested, 'add', '.');
+  git(nested, 'commit', '-q', '-m', 'nested');
+  const nestedPin = git(nested, 'rev-parse', 'HEAD');
   put(component, {
     'package.json': JSON.stringify({ name: '@t/c' }),
+    'vitest.config.ts': 'export default {};\n',
     'src/api.ts': 'export const api = 1;\n',
     'src/api.test.ts': "import { api } from './api';\nexport const t = api;\n",
   });
   git(component, 'add', '.');
+  git(component, 'update-index', '--add', '--cacheinfo', `160000,${nestedPin},addon`);
   git(component, 'commit', '-q', '-m', 'component');
   const pin = git(component, 'rev-parse', 'HEAD');
   put(root, {
-    'package.json': JSON.stringify({ name: '@t/root', private: true }),
+    'package.json': JSON.stringify({ name: '@t/root', private: true, workspaces: ['pkg-*', 'packages/*', 'component', 'wide', '!pkg-excluded'] }),
+    'scripts/affected-tests.mjs': readFileSync(resolve(import.meta.dirname, '../../../../scripts/affected-tests.mjs'), 'utf8'),
+    'scripts/bootstrap.mjs': 'export const bootstrap = 1;\n',
     'pkg-a/package.json': JSON.stringify({ name: '@t/a' }),
+    'pkg-a/vitest.config.ts': 'export default {};\n',
     // Comments + a trailing comma: the pinned blob goes through the shared tsconfig parser.
     'pkg-a/tsconfig.json': '{\n  // aliases\n  "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["./*"], }, },\n}\n',
     'pkg-a/playwright.config.ts': "export default { testDir: './e2e', testMatch: /.*\\.spec\\.ts$/ };\n",
@@ -69,16 +88,31 @@ beforeAll(() => {
     'pkg-a/lib/other.ts': 'export const other = 2;\n',
     // Imports through the alias but NOT core: selected only if the alias seam failed.
     'pkg-a/lib/other.test.ts': "import { other } from '@/lib/other';\nexport const t = other;\n",
+    'pkg-a/fixtures/invalid/package.json': 'DELIBERATELY INVALID TEST DATA',
     'pkg-a/e2e/flow.spec.ts': "import { core } from '../lib/core';\nexport const t = core;\n",
     // Every Vitest config excludes _retired/** (baseExclude): no suite could measure it, so it
     // would refuse every admission as unmeasured. Measured live at HEAD 99f63686ca before the fix.
     'pkg-a/_retired/old.test.ts': "import { core } from '../lib/core';\nexport const t = core;\n",
-    'pkg-b/package.json': JSON.stringify({ name: '@t/b' }),
+    'pkg-b/package.json': JSON.stringify({ name: '@t/b', dependencies: { '@t/a': '*' } }),
+    'pkg-b/vitest.config.ts': 'export default {};\n',
     'pkg-b/src/util.ts': 'export const util = 3;\n',
     'pkg-b/src/util.test.ts': "import { util } from './util';\nexport const t = util;\n",
     'pkg-b/src/lonely.ts': 'export const lonely = 4;\n',
-    // Cross-workspace dependent: out of the admission radius by design (#D-037 point 2).
+    // The pinned dependency graph now includes this consumer's importing test.
     'pkg-b/src/uses-a.test.ts': "import { core } from '../../pkg-a/lib/core';\nexport const t = core;\n",
+    'packages/operator-core/package.json': JSON.stringify({ name: '@papercusp/operator-core' }),
+    'packages/operator-core/vitest.config.ts': 'export default {test:{include:["lib/**/*.test.ts"]}};\n',
+    'packages/operator-core/lib/bootstrap.test.ts': "import { bootstrap } from '../../../scripts/bootstrap.mjs';\nexport const t = bootstrap;\n",
+    'packages/operator-core/lib/other.test.ts': 'export const other = 1;\n',
+    'pkg-consumer/package.json': JSON.stringify({ name: '@t/consumer', dependencies: { '@papercusp/operator-core': '*' } }),
+    'pkg-consumer/vitest.config.ts': 'export default {test:{include:["lib/**/*.test.ts"]}};\n',
+    'pkg-consumer/lib/consumer.test.ts': 'export const consumer = 1;\n',
+    'pkg-excluded/package.json': JSON.stringify({ name: '@t/excluded' }),
+    'pkg-excluded/src/ignored.test.ts': "import { core } from '../../pkg-a/lib/core';\n",
+    'wide/package.json': JSON.stringify({ name: '@t/wide' }),
+    'wide/vitest.config.ts': 'export default {test:{include:["src/**/*.test.ts"]}};\n',
+    'wide/src/core.ts': 'export const core = 1;\n',
+    ...Object.fromEntries(Array.from({ length: 41 }, (_, i) => [`wide/src/fan-${String(i).padStart(2, '0')}.test.ts`, "import { core } from './core';\nexport const t = core;\n"])),
   });
   git(root, 'add', '.');
   git(root, 'update-index', '--add', '--cacheinfo', `160000,${pin},component`);
@@ -87,28 +121,32 @@ beforeAll(() => {
   // The shared working tree drifts after the commit; none of this may reach the radius.
   unlinkSync(join(root, 'pkg-a/tsconfig.json'));
   put(root, { 'pkg-a/lib/ambient.test.ts': "import { core } from './core';\n" });
+  put(root, {
+    'scripts/affected-tests.mjs': 'const NON_WORKSPACE_PATH_ROUTES = [];\n',
+    'component/src/api.test.ts': 'BROKEN UNCOMMITTED SOURCE',
+  });
 });
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 describe('ordinaryAdmissionRadius (P-007)', () => {
-  it('selects same-workspace importers, alias importers included, from the pinned tree only', () => {
+  it('selects pinned local and cross-workspace importers with each workspace alias', () => {
     const radius = radiusFor(['pkg-a/lib/core.ts']);
     expect(radius).toMatchObject({ status: 'measured', reason: 'ok' });
     // other.test.ts imports '@/lib/other': resolved through the pinned tsconfig, so NOT selected.
-    // flow.spec.ts is Playwright's; uses-a.test.ts is another workspace; ambient.test.ts is uncommitted.
-    expect(radius.guarded).toEqual(['pkg-a/lib/alias.test.ts', 'pkg-a/lib/core.test.ts']);
+    // flow.spec.ts is Playwright's; ambient.test.ts is uncommitted; pkg-excluded is not a workspace.
+    expect(radius.guarded).toEqual(['pkg-a/lib/alias.test.ts', 'pkg-a/lib/core.test.ts', 'pkg-b/src/uses-a.test.ts']);
     expect(radius.reportOnly).toEqual([]);
-    expect(radius.legs).toEqual({ 'pkg-a/lib/alias.test.ts': '@t/a', 'pkg-a/lib/core.test.ts': '@t/a' });
+    expect(radius.legs).toEqual({ 'pkg-a/lib/alias.test.ts': '@t/a', 'pkg-a/lib/core.test.ts': '@t/a', 'pkg-b/src/uses-a.test.ts': '@t/b' });
     expect(radius.detail).toContain('playwright-excluded=1');
   });
 
   it("a radius file in a workspace whose leg the signature already names red is report-only", () => {
     const radius = radiusFor(['pkg-a/lib/core.ts'], { signature: [{ kind: 'workspace-task', id: '@t/a :: test', workspace: '@t/a' }] });
-    expect(radius.guarded).toEqual([]);
+    expect(radius.guarded).toEqual(['pkg-b/src/uses-a.test.ts']);
     expect(radius.reportOnly).toEqual(['pkg-a/lib/alias.test.ts', 'pkg-a/lib/core.test.ts']);
     // The leg is also read from the task id when the entry carries no workspace.
-    expect(radiusFor(['pkg-a/lib/core.ts'], { signature: [{ kind: 'workspace-task', id: '@t/a :: test' }] }).guarded).toEqual([]);
+    expect(radiusFor(['pkg-a/lib/core.ts'], { signature: [{ kind: 'workspace-task', id: '@t/a :: test' }] }).guarded).toEqual(['pkg-b/src/uses-a.test.ts']);
     // A red leg elsewhere leaves this workspace's files guarded.
     expect(radiusFor(['pkg-a/lib/core.ts'], { signature: [{ kind: 'workspace-task', id: '@t/b :: test' }] }).guarded)
       .toEqual(['pkg-a/lib/alias.test.ts', 'pkg-a/lib/core.test.ts']);
@@ -116,8 +154,8 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
 
   it('never re-lists a signature or admitted test file as radius', () => {
     const radius = radiusFor(['pkg-a/lib/core.ts', 'pkg-a/lib/core.test.ts'], { signature: [{ kind: 'test-file', id: 'pkg-a/lib/alias.test.ts' }] });
-    expect(radius).toMatchObject({ status: 'measured', guarded: [], reportOnly: [] });
-    expect(radius.legs).toEqual({ 'pkg-a/lib/core.test.ts': '@t/a' });
+    expect(radius).toMatchObject({ status: 'measured', guarded: ['pkg-b/src/uses-a.test.ts'], reportOnly: [] });
+    expect(radius.legs).toEqual({ 'pkg-a/lib/core.test.ts': '@t/a', 'pkg-b/src/uses-a.test.ts': '@t/b' });
   });
 
   it('groups per owning workspace, including one inside a pinned submodule', () => {
@@ -127,9 +165,15 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(radius.legs).toEqual({ 'component/src/api.test.ts': '@t/c', 'pkg-b/src/util.test.ts': '@t/b' });
   });
 
-  it('a radius wider than the cap is skipped with the count, never run partially', () => {
+  it('a 41-file radius retains every file beyond the unchanged group cap', () => {
     expect(ADMISSION_RADIUS_CAP).toBe(40);
-    expect(radiusFor(['pkg-a/lib/core.ts'], { cap: 1 })).toMatchObject({ status: 'skipped', reason: 'over-cap(2/1)', guarded: [], reportOnly: [] });
+    const expected = Array.from({ length: 41 }, (_, i) => `wide/src/fan-${String(i).padStart(2, '0')}.test.ts`);
+    const radius = radiusFor(['wide/src/core.ts']);
+    expect(radius).toMatchObject({ status: 'measured', reason: 'ok', detail: expect.stringContaining('execution-groups=2') });
+    expect(radius.guarded).toEqual(expected);
+    expect(radius.reportOnly).toEqual([]);
+    expect(radius.legs).toEqual(Object.fromEntries(expected.map(file => [file, '@t/wide'])));
+    expect(radiusFor(['wide/src/core.ts'], { cap: 1 }).guarded).toEqual(expected);
   });
 
   it('a source no test reaches is skipped loudly, not silently measured as empty', () => {
@@ -142,12 +186,29 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     });
   });
 
-  it('an unreadable pinned submodule store is radius-unavailable, never a refusal', () => {
+  it('a source absent from the built commit is radius-unavailable', () => {
     const radius = ordinaryAdmissionRadius({
       root, commit, signature: [], admittedPaths: ['missing/x.ts'],
-      top: [{ mode: '160000', type: 'commit', sha: 'a'.repeat(40), file: 'missing' }],
+      top: topTree(),
     });
-    expect(radius).toMatchObject({ status: 'skipped', reason: 'radius-unavailable', detail: expect.stringContaining('object store unavailable') });
+    expect(radius).toMatchObject({ status: 'skipped', reason: 'radius-unavailable', detail: expect.stringContaining('source absent from built commit') });
+  });
+
+  it('follows a nested pinned submodule without consulting either working tree', () => {
+    put(root, { 'component/addon/src/api.test.ts': 'BROKEN UNCOMMITTED NESTED SOURCE' });
+    expect(radiusFor(['component/addon/src/api.ts'])).toMatchObject({
+      status: 'measured', reason: 'ok', guarded: ['component/addon/src/api.test.ts'],
+      legs: { 'component/addon/src/api.test.ts': '@t/nested' },
+    });
+  });
+
+  it('an unavailable pinned submodule store cannot produce a measured empty population', () => {
+    const marker = join(root, 'component/addon/.git');
+    renameSync(marker, marker + '.held');
+    try {
+      expect(radiusFor(['component/addon/src/api.ts']))
+        .toMatchObject({ status: 'skipped', reason: 'radius-unavailable', guarded: [], detail: expect.stringContaining('object store unavailable') });
+    } finally { renameSync(marker + '.held', marker); }
   });
 
   it('reuses parsed import edges by (path, blob sha) across admissions, and the reuse is real', () => {
@@ -159,9 +220,55 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(radiusFor(['pkg-a/lib/core.ts'])).toEqual(first);
     // Poison the cached parse: a radius that honours it proves the blob was neither re-read nor re-parsed.
     cache.set(key, { specifiers: [], runtimePaths: [] });
-    expect(radiusFor(['pkg-a/lib/core.ts']).guarded).toEqual(['pkg-a/lib/core.test.ts']);
+    expect(radiusFor(['pkg-a/lib/core.ts']).guarded).toEqual(['pkg-a/lib/core.test.ts', 'pkg-b/src/uses-a.test.ts']);
     cache.clear();
     expect(radiusFor(['pkg-a/lib/core.ts'])).toEqual(first);
+  });
+
+  it('root-bootstrap routes use pinned policy and conservatively retain each affected workspace census', () => {
+    const radius = radiusFor(['scripts/bootstrap.mjs']);
+    const expected = ['packages/operator-core/lib/bootstrap.test.ts', 'packages/operator-core/lib/other.test.ts', 'pkg-consumer/lib/consumer.test.ts'];
+    expect(radius).toMatchObject({ status: 'measured', reason: 'ok', reportOnly: [] });
+    expect(radius.guarded).toEqual(expected);
+    expect(radius.legs).toEqual({ [expected[0]!]: '@papercusp/operator-core', [expected[1]!]: '@papercusp/operator-core', [expected[2]!]: '@t/consumer' });
+    expect(radius.detail).toContain('full=@papercusp/operator-core:cross-root-unrelatable-change');
+    expect(radius.detail).toContain('full=@t/consumer:cross-root-unrelatable-change');
+  });
+
+  it('native Vitest discovery independently agrees with full root-bootstrap and 41-file populations', () => {
+    const census = (dir: string): string[] => {
+      const output = execFileSync(process.execPath, [resolve(import.meta.dirname, '../../../../node_modules/vitest/vitest.mjs'),
+        'list', '--root', join(root, dir), '--config', join(root, dir, 'vitest.config.ts'), '--filesOnly'],
+      { encoding: 'utf8', timeout: 30_000, env: { ...process.env, NODE_OPTIONS: '', PC_TEST_FILTER_LIST: '' } });
+      return output.split('\n').map(line => line.trim()).filter(line => line.endsWith('.test.ts'))
+        .map(file => `${dir}/${file.replace(join(root, dir) + '/', '')}`).sort();
+    };
+    expect(radiusFor(['scripts/bootstrap.mjs']).guarded).toEqual([...census('packages/operator-core'), ...census('pkg-consumer')]);
+    expect(radiusFor(['wide/src/core.ts']).guarded).toEqual(census('wide'));
+  }, 60_000);
+
+  it('rejects a supplied tree from a different source identity instead of measuring it', () => {
+    const top = topTree().map(entry => entry.file === 'pkg-a/lib/core.ts' ? { ...entry, sha: '0'.repeat(40) } : entry);
+    expect(ordinaryAdmissionRadius({ root, commit, top, signature: [], admittedPaths: ['pkg-a/lib/core.ts'] }))
+      .toMatchObject({ status: 'skipped', reason: 'radius-unavailable', detail: expect.stringContaining('source tree does not match') });
+  });
+
+  it('keeps the local orphan refusal even when other affected workspaces have tests', () => {
+    expect(radiusFor(['pkg-b/src/lonely.ts', 'wide/src/core.ts']))
+      .toMatchObject({ status: 'skipped', reason: 'selection-full:empty-selection', guarded: [], reportOnly: [] });
+    expect(radiusFor(['pkg-b/src/lonely.ts', 'pkg-b/src/util.ts']))
+      .toMatchObject({ status: 'skipped', reason: 'selection-full:empty-selection', guarded: [], reportOnly: [] });
+  });
+
+  it('pinned route parsing fails closed on missing, dynamic or malformed policy', () => {
+    for (const text of ['', 'const NON_WORKSPACE_PATH_ROUTES = getRoutes();', 'const NON_WORKSPACE_PATH_ROUTES = [\n{prefix: 1, workspace: "x"}\n];'])
+      expect(() => pinnedNonWorkspacePathRoutes(text)).toThrow();
+  });
+
+  it('the immutable workspace census uses the same positive and exclusion globs as native expansion', () => {
+    const patterns = ['pkg-*', 'packages/*', '!pkg-excluded'];
+    const directories = ['pkg-a', 'pkg-b', 'pkg-consumer', 'pkg-excluded', 'packages/operator-core'];
+    expect(expandWorkspaces(patterns, root, { directories }).sort()).toEqual(expandWorkspaces(patterns, root).sort());
   });
 });
 
@@ -173,7 +280,7 @@ describe('immutablePrecheckPopulation with an ordinary admission (P-007)', () =>
     if (!result.ok) throw new Error(result.detail);
     const { population } = result;
     expect(population.admittedTestFiles).toEqual([]);
-    expect(population.files).toEqual(['pkg-b/src/util.test.ts', 'pkg-a/lib/alias.test.ts', 'pkg-a/lib/core.test.ts']);
+    expect(population.files).toEqual(['pkg-b/src/util.test.ts', 'pkg-a/lib/alias.test.ts', 'pkg-a/lib/core.test.ts', 'pkg-b/src/uses-a.test.ts']);
     const verdict = evaluateFixPrecheck(population, { ran: true, commit, results: population.files.map((path) => ({
       path, status: path === 'pkg-a/lib/core.test.ts' ? 'fail' : 'pass',
     })) });

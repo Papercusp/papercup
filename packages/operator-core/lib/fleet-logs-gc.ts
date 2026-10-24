@@ -352,6 +352,13 @@ async function gcOneDir(
     removedByCeiling++;
   }
 
+  const overByBytes = Math.max(0, total - maxTotalBytes);
+  const pinnedOverageBytes = Math.max(0, pinnedBytes - maxTotalBytes);
+  if (!dryRun && overByBytes > pinnedOverageBytes) {
+    errors.push({ path: dir,
+      error: `fleet-log cap retains non-pin excess: ${overByBytes} byte(s) over cap, ${pinnedOverageBytes} accounted for by live pins` });
+  }
+
   return {
     dir,
     scanned: files.length,
@@ -365,8 +372,7 @@ async function gcOneDir(
     skippedRaced: raced.size,
     cap: { root: dir, classId: 'fleet-logs', maxBytes: maxTotalBytes, beforeBytes,
       afterBytes: total, pinnedBytes, pinnedPaths: pinned.map((file) => file.path),
-      overByBytes: Math.max(0, total - maxTotalBytes),
-      pinnedOverageBytes: Math.max(0, pinnedBytes - maxTotalBytes) },
+      overByBytes, pinnedOverageBytes },
     errors,
   };
 }
@@ -1262,6 +1268,8 @@ export interface LaunchContextGcResult {
   candidates: LaunchContextGcCandidate[];
   /** Dry runs report projected usage after the same oldest-first selection. */
   cap?: RetentionCapReceipt;
+  /** Includes retained non-pin cap excess; live renders remain protected. */
+  errors: Array<{ path: string; error: string }>;
 }
 
 /** The canonical launch-context directory, honouring the same env override as
@@ -1309,6 +1317,7 @@ function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: strin
       refused: 'no-live-render-evidence',
       liveHeld: 0,
       candidates: [],
+      errors: [],
     };
   }
 
@@ -1318,7 +1327,7 @@ function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: strin
     rootIdentity = statSync(dir);
     entries = readdirSync(dir, { withFileTypes: true });
   } catch {
-    return { dir, scanned: 0, removed: 0, bytesFreed: 0, dryRun, liveHeld: 0, candidates: [] };
+    return { dir, scanned: 0, removed: 0, bytesFreed: 0, dryRun, liveHeld: 0, candidates: [], errors: [] };
   }
 
   const candidates: LaunchContextGcCandidate[] = [];
@@ -1419,8 +1428,15 @@ function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: strin
     afterBytes -= bytes;
   }
 
-  return { dir, scanned: candidates.length, removed, bytesFreed, dryRun, liveHeld, candidates,
+  const overByBytes = Math.max(0, afterBytes - maxBytes);
+  const pinnedOverageBytes = Math.max(0, pinnedBytes - maxBytes);
+  const errors = candidates.filter((entry) => entry.error).map((entry) => ({ path: entry.path, error: entry.error! }));
+  if (!dryRun && overByBytes > pinnedOverageBytes) {
+    errors.push({ path: dir,
+      error: `launch-render cap retains non-pin excess: ${overByBytes} byte(s) over cap, ${pinnedOverageBytes} accounted for by live pins` });
+  }
+  return { dir, scanned: candidates.length, removed, bytesFreed, dryRun, liveHeld, candidates, errors,
     cap: { root: dir, classId: 'fleet-logs', maxBytes, beforeBytes, afterBytes,
       pinnedBytes, pinnedPaths: pinned.map((entry) => entry.path),
-      overByBytes: Math.max(0, afterBytes - maxBytes), pinnedOverageBytes: Math.max(0, pinnedBytes - maxBytes) } };
+      overByBytes, pinnedOverageBytes } };
 }

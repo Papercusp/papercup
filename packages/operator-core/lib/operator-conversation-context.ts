@@ -21,6 +21,9 @@ export interface OperatorConversationContextOptions {
    * Lock authority rows in this transaction so revocation serializes with CAS. */
   authorize(tx: Tx): Promise<boolean>;
   summarize: ContextHost['summarize'];
+  /** The legacy summary is a projection of committed coverage, in this SAME
+   * transaction. A failed projection rolls back the context CAS as well. */
+  project?(tx: Tx, next: ContextCheckpoint): Promise<void>;
 }
 
 const sameScope = (a: ContextScope, b: ContextScope) => a?.conversationId === b.conversationId
@@ -49,12 +52,15 @@ export class OperatorConversationContext implements ContextHost {
   private decode(raw: unknown): StoredContext {
     if (raw === null) return { schemaVersion: 1, scope: copy(this.scope), checkpoint: null, journal: [] };
     const value = raw as StoredContext;
-    if (!value || value.schemaVersion !== 1 || !sameScope(value.scope, this.scope)
-      || !Object.hasOwn(value, 'checkpoint') || !Array.isArray(value.journal)
-      || value.journal.some(receipt => !validReceipt(receipt))
-      || new Set(value.journal.map(receipt => receipt.operationId)).size !== value.journal.length
-      || (value.checkpoint !== null && !sameScope(value.checkpoint.scope, this.scope)))
-      throw new Error('invalid-context: stored scope or usage journal');
+    if (!value || value.schemaVersion !== 1) throw new Error(`invalid-context: stored version (${typeof raw})`);
+    if (!sameScope(value.scope, this.scope)) throw new Error('invalid-context: stored scope');
+    if (!Object.hasOwn(value, 'checkpoint')) throw new Error('invalid-context: missing checkpoint');
+    if (!Array.isArray(value.journal)) throw new Error('invalid-context: journal is not an array');
+    if (value.journal.some(receipt => !validReceipt(receipt))) throw new Error('invalid-context: journal receipt');
+    if (new Set(value.journal.map(receipt => receipt.operationId)).size !== value.journal.length)
+      throw new Error('invalid-context: duplicate journal operation');
+    if (value.checkpoint !== null && !sameScope(value.checkpoint.scope, this.scope))
+      throw new Error('invalid-context: checkpoint scope');
     return copy(value);
   }
 
@@ -79,7 +85,10 @@ export class OperatorConversationContext implements ContextHost {
   }
 
   private async write(tx: Tx, state: StoredContext): Promise<void> {
-    await tx.unsafe(`UPDATE harness_shared.operator_conversations SET context_state = $3::jsonb
+    // The host pool may use a raw JSON serializer while a fresh client uses
+    // postgres-js defaults. Bind serialized data as TEXT explicitly so neither
+    // client can encode it twice or send an unencoded object to the byte writer.
+    await tx.unsafe(`UPDATE harness_shared.operator_conversations SET context_state = $3::text::jsonb
       WHERE id = $1 AND workspace_id = $2`,
     [this.scope.conversationId, this.options.workspaceId, JSON.stringify(state)]);
   }
@@ -135,6 +144,9 @@ export class OperatorConversationContext implements ContextHost {
       if (next.sourceVersion !== state.checkpoint.sourceVersion
         || !isDeepStrictEqual(next.history, state.checkpoint.history)) throw new Error('conflict');
       if (!await this.options.authorize(tx) || options.signal?.aborted) return false;
+      await this.options.project?.(tx, copy(next));
+      // Projection may await SQL. Abort must still roll back both writes.
+      if (options.signal?.aborted) throw new Error('cancelled');
       state.checkpoint = next;
       // No await between the signal check and dispatching the durable write.
       await this.write(tx, state);

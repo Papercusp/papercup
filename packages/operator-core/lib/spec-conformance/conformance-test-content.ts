@@ -24,6 +24,13 @@ type ContentCache = {
 type Snapshot = {
   files: Map<string, Entry>; texts: Map<string, string>; unscanned: string[];
   cache: ContentCache;
+  inputs?: Promise<DependencyInputs>;
+  proofs: Map<string, Promise<ResolvedDependencyClosureProof>>;
+};
+type DependencyInputs = {
+  workspaces: Map<string, { dir: string; deps: string[] }>;
+  trackedScan: { files: string[]; unscannedPresent: string[] };
+  shared: ReturnType<typeof passingTaskVerdictSharedInputProvenance>;
 };
 export type TestContentEquivalence = (input: {
   file: string; recordedSha: string; currentSha: string;
@@ -77,7 +84,7 @@ async function submoduleRepository(root: string, parent: Repository, ref: string
 }
 
 async function snapshot(root: string, sha: string, cache: ContentCache): Promise<Snapshot> {
-  const result: Snapshot = { files: new Map(), texts: new Map(), unscanned: [], cache };
+  const result: Snapshot = { files: new Map(), texts: new Map(), unscanned: [], cache, proofs: new Map() };
   const walk = async (repo: Repository, ref: string, prefix: string) => {
     const key = JSON.stringify([repo.cwd, repo.gitDir, ref]);
     if (!cache.trees.has(key)) cache.trees.set(key, git(repo, ['ls-tree', '-rz', '--full-tree', ref]));
@@ -151,7 +158,7 @@ async function loadTexts(view: Snapshot, files: readonly string[]): Promise<void
   await load;
 }
 
-async function dependencyProof(view: Snapshot, file: string): Promise<ResolvedDependencyClosureProof> {
+async function dependencyInputs(view: Snapshot): Promise<DependencyInputs> {
   const root = '/conformance-git-inputs';
   if (view.unscanned.length) throw new Error('Git dependency enumeration incomplete: ' + view.unscanned[0]);
   await loadTexts(view, ['package.json']);
@@ -171,9 +178,6 @@ async function dependencyProof(view: Snapshot, file: string): Promise<ResolvedDe
       ...manifest.dependencies, ...manifest.devDependencies, ...manifest.peerDependencies,
     }) });
   }
-  const owner = [...workspaces].filter(([, ws]) => file.startsWith(ws.dir + '/'))
-    .sort((a, b) => b[1].dir.length - a[1].dir.length)[0];
-  if (!owner || !view.files.has(file)) throw new Error('test workspace unavailable: ' + file);
   const trackedScan = { files: [...view.files.keys()], unscannedPresent: view.unscanned };
   const requested = new Set<string>();
   const fs = {
@@ -195,36 +199,50 @@ async function dependencyProof(view: Snapshot, file: string): Promise<ResolvedDe
     if (requested.size === 0) break;
     await loadTexts(view, [...requested]);
   }
-  const hashFiles = ({ files, unavailable = [] }: { files: string[]; unavailable?: string[] }) => {
-    if (unavailable.length) return { ok: false as const, reason: 'unscanned dependency: ' + unavailable[0] };
-    const paths = [...new Set(files)].sort();
-    const hash = createHash('sha256');
-    for (const path of paths) {
-      const entry = view.files.get(path);
-      if (!entry || entry.type !== 'blob') return { ok: false as const, reason: 'unreadable dependency: ' + path };
-      hash.update(JSON.stringify([path, entry.mode, entry.oid]) + '\0');
-    }
-    return { ok: true as const, hash: hash.digest('hex'), listHash: createHash('sha256').update(JSON.stringify(paths)).digest('hex'),
-      fileCount: paths.length, files: paths };
-  };
-  const proof = passingTaskVerdictDependencyProvenance({
-    root, taskKey: owner[0] + ' :: test', script: 'test', workspaceName: owner[0], workspaces,
-    trackedScan, repoWideTaskKeys: new Set(), sharedInputProvenance: shared, hashFiles,
-  });
-  if (!proof.ok) throw new Error(proof.reason);
-  return proof.semantic;
+  return { workspaces, trackedScan, shared };
+}
+
+async function dependencyProof(view: Snapshot, file: string): Promise<ResolvedDependencyClosureProof> {
+  const { workspaces, trackedScan, shared } = await (view.inputs ??= dependencyInputs(view));
+  const owner = [...workspaces].filter(([, ws]) => file.startsWith(ws.dir + '/'))
+    .sort((a, b) => b[1].dir.length - a[1].dir.length)[0];
+  // File existence is checked even when another test warmed the workspace proof.
+  if (!owner || !view.files.has(file)) throw new Error('test workspace unavailable: ' + file);
+  const workspaceName = owner[0];
+  if (!view.proofs.has(workspaceName)) {
+    // The canonical task binds the whole workspace closure, not one test file.
+    // Share both pending work and refusals within this immutable snapshot only.
+    view.proofs.set(workspaceName, Promise.resolve().then(() => {
+      const hashFiles = ({ files, unavailable = [] }: { files: string[]; unavailable?: string[] }) => {
+        if (unavailable.length) return { ok: false as const, reason: 'unscanned dependency: ' + unavailable[0] };
+        const paths = [...new Set(files)].sort();
+        const hash = createHash('sha256');
+        for (const path of paths) {
+          const entry = view.files.get(path);
+          if (!entry || entry.type !== 'blob') return { ok: false as const, reason: 'unreadable dependency: ' + path };
+          hash.update(JSON.stringify([path, entry.mode, entry.oid]) + '\0');
+        }
+        return { ok: true as const, hash: hash.digest('hex'), listHash: createHash('sha256').update(JSON.stringify(paths)).digest('hex'),
+          fileCount: paths.length, files: paths };
+      };
+      const proof = passingTaskVerdictDependencyProvenance({
+        root: '/conformance-git-inputs', taskKey: workspaceName + ' :: test', script: 'test', workspaceName, workspaces,
+        trackedScan, repoWideTaskKeys: new Set(), sharedInputProvenance: shared, hashFiles,
+      });
+      if (!proof.ok) throw new Error(proof.reason);
+      return proof.semantic;
+    }));
+  }
+  return view.proofs.get(workspaceName)!;
 }
 
 /** Request-scoped caches: no mutable working-tree observation or synthetic receipt. */
 export function createTestContentEquivalence(root = moduleRepoRoot(import.meta.url)): TestContentEquivalence {
   const snapshots = new Map<string, Promise<Snapshot>>();
-  const proofs = new Map<string, Promise<ResolvedDependencyClosureProof>>();
   const cache: ContentCache = { trees: new Map(), submodules: new Map(), blobs: new Map(), blobLoads: Promise.resolve() };
   const proof = (sha: string, file: string) => {
-    const key = JSON.stringify([sha, file]);
     if (!snapshots.has(sha)) snapshots.set(sha, snapshot(root, sha, cache));
-    if (!proofs.has(key)) proofs.set(key, snapshots.get(sha)!.then(view => dependencyProof(view, file)));
-    return proofs.get(key)!;
+    return snapshots.get(sha)!.then(view => dependencyProof(view, file));
   };
   return async ({ file, recordedSha, currentSha }) => {
     if (!SHA.test(recordedSha) || !SHA.test(currentSha) || file.startsWith('/') || file.split('/').includes('..')) {

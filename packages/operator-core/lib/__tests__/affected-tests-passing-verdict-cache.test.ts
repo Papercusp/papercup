@@ -412,6 +412,44 @@ describe('passing affected-task verdict identity', () => {
 });
 
 describe('dependency-closure hashing and persistence', () => {
+  it('enumerates a broad workspace closure with bounded tracked-file visits and exact directory boundaries', () => {
+    const names = Array.from({ length: 256 }, (_, index) => `@fixture/dep-${index}`);
+    const workspaces = new Map(names.map((name, index) => [name, {
+      dir: `packages/dep-${index}`, deps: index === 0 ? names.slice(1) : [],
+    }]));
+    const owned = names.map((_, index) => `packages/dep-${index}/source.ts`);
+    owned.push('packages/dep-1/nested/source.ts');
+    const files = ['package.json', ...owned, 'packages/dep-1-neighbor/source.ts',
+      ...Array.from({ length: 2048 }, (_, index) => `docs/unrelated-${index}.md`)];
+    let visits = 0;
+    const trackedFiles = new Proxy(files, {
+      get(target, key, receiver) {
+        if (typeof key === 'string' && /^\d+$/.test(key)) visits++;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const input = {
+      root: '/unused', taskKey: names[0] + ' :: test', script: 'test', workspaceName: names[0], workspaces,
+      trackedScan: { files: trackedFiles, unscannedPresent: [] }, repoWideTaskKeys: new Set<string>(),
+      sharedInputProvenance: { ok: true as const, files: ['package.json'] },
+      hashFiles: ({ files }: { files: string[] }) => ({
+        ok: true as const, hash: 'fixture', listHash: 'fixture', fileCount: files.length, files: [...files],
+      }),
+    };
+    const proof = passingTaskVerdictDependencyProvenance(input);
+    expect(proof.ok).toBe(true);
+    if (!proof.ok) throw new Error(proof.reason);
+    expect(proof.semantic.files).toEqual(['package.json', ...owned]);
+    // A deterministic work bound, independent of wall-clock load: rescanning
+    // the tracked population once per closure directory exceeds this budget.
+    expect(visits).toBeLessThanOrEqual(files.length * 8);
+    workspaces.set('@fixture/missing', { dir: 'packages/missing', deps: [] });
+    workspaces.get(names[0])!.deps.push('@fixture/missing');
+    expect(passingTaskVerdictDependencyProvenance(input)).toEqual({
+      ok: false, reason: 'provenance-incomplete:workspace-not-enumerated:packages/missing',
+    });
+  });
+
   it('keeps integration tasks non-reusable in resumable runs', () => {
     expect(
       passingTaskVerdictDependencyProvenance({

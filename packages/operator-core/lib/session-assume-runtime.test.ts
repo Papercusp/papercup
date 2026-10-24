@@ -5,9 +5,10 @@ import { createAssumeAuthorizer } from './session-assume-runtime';
 const actor = { ownerId: 'su-fixture-caller', workspaceId: 'fixture-workspace' };
 const request = { requestId: 'request-1', targetOwnerId: 'su-fixture-target', contextMode: 'native-resume' as const };
 function fixture() {
-  const ctx = { uiClientId: actor.ownerId, workspaceId: actor.workspaceId, isSuperuser: true,
+  const ctx: UnifiedToolContext = { log: () => {}, signal: new AbortController().signal, progress: () => {}, emit: () => {},
+    uiClientId: actor.ownerId, workspaceId: actor.workspaceId, isSuperuser: true,
     gateBypass: { role: true, capability: true }, principal: { kind: 'system', slug: 'system:superuser',
-      authMethod: 'bearer-token', trust: 'trusted', workspaceId: actor.workspaceId, capabilities: new Set() } } as UnifiedToolContext;
+      authMethod: 'bearer-token', trust: 'trusted', workspaceId: actor.workspaceId, capabilities: new Set() } };
   const target = { ok: true as const, ownerId: request.targetOwnerId, workspaceId: actor.workspaceId,
     advSessionId: 42, role: 'su' as string | null, binding: { coordOwnerId: request.targetOwnerId, sessionId: 'native-target', startedAt: 'start' } };
   const ports = { confinement: vi.fn(async (_owner: string | null | undefined) => null), resolve: vi.fn(async () => target),

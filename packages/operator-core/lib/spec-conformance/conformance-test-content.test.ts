@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as taskProvenance from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
 import * as gitBatch from '../git-batch';
 import * as gitSidecar from '../fleet/git-via-sidecar';
 import { createTestContentEquivalence } from './conformance-test-content';
@@ -109,6 +110,49 @@ describe('conformance immutable dependency content', () => {
     } finally {
       rmSync(dependency, { recursive: true, force: true });
     }
+  });
+
+  it('coalesces complete proofs by immutable snapshot and owning workspace across test files', async () => {
+    write('package.json', JSON.stringify({ workspaces: ['packages/*', 'packages/unit/*', 'libs/*'] }));
+    const files = [file, 'packages/unit/second.test.ts',
+      'packages/other/first.test.ts', 'packages/other/second.test.ts',
+      'packages/unit/nested/guard.test.ts'];
+    write('packages/other/package.json', JSON.stringify({ name: '@fixture/other' }));
+    write('packages/unit/nested/package.json', JSON.stringify({ name: '@fixture/nested' }));
+    for (const path of files.slice(1)) write(path, 'export const passing = true;');
+    recordedSha = commit();
+    write('docs/note.md', 'unrelated');
+    const currentSha = commit();
+    const canonical = vi.spyOn(taskProvenance, 'passingTaskVerdictDependencyProvenance');
+    const shared = vi.spyOn(taskProvenance, 'passingTaskVerdictSharedInputProvenance');
+    const compare = createTestContentEquivalence(root);
+    expect(await Promise.all(files.slice(0, 2).map(file => compare({ file, recordedSha, currentSha }))))
+      .toEqual(Array(2).fill({ equivalent: true, reason: 'canonical semantic dependency closure matches' }));
+    const sharedCalls = shared.mock.calls.length;
+    for (const file of files.slice(2)) {
+      expect(await compare({ file, recordedSha, currentSha })).toMatchObject({ equivalent: true });
+    }
+    // A cached workspace proof cannot establish that an untracked file existed.
+    expect(await compare({ file: 'packages/unit/missing.test.ts', recordedSha, currentSha }))
+      .toEqual({ equivalent: false, reason: 'test workspace unavailable: packages/unit/missing.test.ts' });
+    const owners = canonical.mock.calls.map(([input]) => input.workspaceName).sort();
+    expect(owners).toEqual(['@fixture/nested', '@fixture/nested', '@fixture/other', '@fixture/other', '@fixture/unit', '@fixture/unit']);
+    expect(shared.mock.calls.length).toBe(sharedCalls);
+  });
+
+  it('keeps different workspace closures distinct after warming the same snapshot pair', async () => {
+    const otherFile = 'packages/other/guard.test.ts';
+    write('packages/other/package.json', JSON.stringify({ name: '@fixture/other' }));
+    write(otherFile, 'export const passing = true;');
+    write('packages/other/source.ts', 'export const answer = 1;');
+    recordedSha = commit();
+    write('packages/other/source.ts', 'export const answer = 2;');
+    const currentSha = commit();
+    const compare = createTestContentEquivalence(root);
+    expect(await compare({ file, recordedSha, currentSha })).toMatchObject({ equivalent: true });
+    expect(await compare({ file: otherFile, recordedSha, currentSha }))
+      .toEqual({ equivalent: false, reason: 'semantic dependency closure changed' });
+    expect(await compare({ file, recordedSha, currentSha })).toMatchObject({ equivalent: true });
   });
 
   it('routes immutable tree reads through the shared spawn offload seam', async () => {

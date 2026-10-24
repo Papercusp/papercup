@@ -958,8 +958,26 @@ export function passingTaskVerdictDependencyProvenance({
     }
   }
   const sortedClosureDirs = [...closureDirs].sort();
+  const enumeratedClosureDirs = new Set();
+  const workspaceFiles = new Set();
+  // Visit each tracked path's directory prefixes once. Comparing every path
+  // with every transitive workspace blocked the serving event loop on broad
+  // closures; a prefix lookup preserves exact path boundaries without that
+  // product of the tracked-file and workspace populations.
+  for (const file of trackedScan.files) {
+    let prefix = file;
+    for (;;) {
+      if (closureDirs.has(prefix)) {
+        enumeratedClosureDirs.add(prefix);
+        workspaceFiles.add(file);
+      }
+      const slash = prefix.lastIndexOf("/");
+      if (slash < 0) break;
+      prefix = prefix.slice(0, slash);
+    }
+  }
   for (const dir of sortedClosureDirs) {
-    if (!trackedScan.files.some((file) => pathInsideDir(file, dir))) {
+    if (!enumeratedClosureDirs.has(dir)) {
       return {
         ok: false,
         reason: `provenance-incomplete:workspace-not-enumerated:${dir}`,
@@ -1005,7 +1023,7 @@ export function passingTaskVerdictDependencyProvenance({
     ? trackedScan.files
     : trackedScan.files.filter((file) =>
         sharedSemanticFiles.has(file) ||
-        sortedClosureDirs.some((dir) => pathInsideDir(file, dir)),
+        workspaceFiles.has(file),
       );
   const semantic = hashFiles({
     root,

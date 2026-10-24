@@ -20,8 +20,9 @@
  */
 
 import { PORTS, killSwitchState, specFor } from './ports.mjs';
-import { resolve } from 'node:path';
+import { resolve, relative } from 'node:path';
 import { createHash } from 'node:crypto';
+import { readFile, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { codeIntelDelivery } from './delivery-ledger.mjs';
@@ -216,7 +217,7 @@ export async function postInjection(port, body, opts = {}) {
     // a second copy of the number on the server.
     // Collect locally, where the edited file and its owning repo exist. Never run
     // the parser/compiler on the shared operator's 250ms snapshot push path.
-    if (port === 'mid-turn') await Promise.all([collectInterfaceEdits(body, undefined, env), collectAntipatternEdits(body)]);
+    if (port === 'mid-turn') await Promise.all([collectInterfaceEdits(body, undefined, env), collectAntipatternEdits(body), collectCloneEdits(body)]);
     if (controller.signal.aborted || typeof fetchImpl !== 'function') return finish();
     const payloadBody = JSON.stringify({ ...body, wallMs: spec.timeoutMs });
     let res = null;
@@ -294,6 +295,29 @@ export async function collectInterfaceEdits(body, collect = async path => {
 
 /** Async preparation shared by native Edit/Write/MultiEdit and apply_patch.
  * The push registry receives only bounded findings; it never scans source. */
+export async function collectCloneEdits(body, digest = async path => {
+  if ((await stat(path)).size > 1_500_000) return null;
+  const source = await readFile(path);
+  return source.length <= 1_500_000 ? createHash('sha256').update(source).digest('hex') : null;
+}) {
+  const seen = new Set();
+  const pending = [];
+  for (const call of (body.toolCalls ?? []).slice(-20)) {
+    if (!/(?:^|_|:|\.)(?:Edit|Write|MultiEdit|edit|write|apply_patch)$/.test(call.tool ?? '')) continue;
+    for (const path of (call.editedPaths ?? []).slice(0, 20)) {
+      if (typeof path !== 'string' || !/\.tsx?$/.test(path)) continue;
+      const abs = resolve(body.cwd || process.cwd(), path);
+      const rel = relative(body.cwd || process.cwd(), abs).replaceAll('\\', '/');
+      if (rel.startsWith('../') || seen.has(rel) || seen.size >= 20) continue;
+      seen.add(rel);
+      pending.push(Promise.resolve().then(() => digest(abs)).then(sha256 => {
+        if (sha256) (call.cloneEdits ??= []).push({ path: rel, sha256 });
+      }, () => {}));
+    }
+  }
+  await Promise.all(pending);
+}
+
 export async function collectAntipatternEdits(body, prepare = async (path, root) => new Promise(resolveResult => {
   const worker = join(root, 'packages/operator-core/lib/code-intelligence/agent-antipatterns-worker.ts');
   execFile(process.execPath, [worker, path], { cwd: root, timeout: 600, maxBuffer: 100_000 }, (error, stdout) => {

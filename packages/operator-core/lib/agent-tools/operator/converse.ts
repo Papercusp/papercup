@@ -75,6 +75,7 @@ import {
 import { parseChatEnvelope, type ChatEvent, type ChatEventEnvelope, type ChatEventV1, type ChatTurnToolCall } from '@papercusp/chat-protocol';
 import { getOrgPg } from '@papercusp/db-org';
 import { admitConverseTurn, converseToolResultBlocks } from './converse-turn';
+import { operatorChatSessionAuthority } from '../../operator-chat-store';
 import {
   buildOperatorPrompt,
   type ConverseSessionUser,
@@ -912,13 +913,17 @@ export default defineTool({
     // Rolling-summary compaction pass (operator-context-compaction-2026-06-05):
     // fold turns that aged out of the verbatim window into the conversation's
     // PG summary so the NEXT turn still remembers them. Single-flighted +
-    // threshold-gated inside; no-op without a conversationId.
-    if (!input.lessonContext && input.conversationId) {
+    // threshold-gated inside; no-op without an authenticated conversation.
+    if (!input.lessonContext && input.conversationId && credential) {
       void (async () => {
         const { maybeCompactConversation } = await import(
           '../../operator-conversation-compaction'
         );
-        await maybeCompactConversation(input.conversationId!);
+        const ownerId = credential.kind === 'system' ? `system:${credential.name}` : `pi:${credential.sessionId}`;
+        await maybeCompactConversation(input.conversationId!, { signal: ctx.signal,
+          context: { workspaceId, ownerId,
+            authorize: operatorChatSessionAuthority({ workspaceId, principalId: ownerId, credential,
+              capability: 'chat:write', toolName: 'chat:ask_choice' }) } });
       })().catch((err) => {
         console.warn(
           '[operator-converse] compaction pass failed:',

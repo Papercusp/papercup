@@ -75,9 +75,12 @@ const {
   maxTurnSeq,
   listTurnsBetween,
 } = await import('./operator-conversations');
-const { compactConversation, KEEP_RECENT_TURNS } = await import(
+const { compactConversation: compactAuthenticated, KEEP_RECENT_TURNS } = await import(
   './operator-conversation-compaction'
 );
+const compactConversation = (id: string, opts: Parameters<typeof compactAuthenticated>[1] = {}) =>
+  compactAuthenticated(id, { ...opts, context: { workspaceId: WS, ownerId: 'context-owner', authorize: async () => true,
+    ...opts.context } });
 
 let rootSql: postgres.Sql;
 let testDatabaseUrl: string;
@@ -155,6 +158,69 @@ function stubSummarizer(text: string, costUsd = 0.0012) {
   return { fn, prompts };
 }
 
+describe('P010 production compactor adoption', () => {
+  async function seeded() {
+    const [row] = await rootSql.unsafe(`INSERT INTO harness_shared.operator_conversations
+      (workspace_id, started_at) VALUES ($1,$2) RETURNING id`, [WS, Date.now()]);
+    const id = String(row.id);
+    for (let i = 0; i < 26; i++) await appendTurn({ conversationId: id,
+      role: i % 2 ? 'assistant' : 'user', text: `production turn ${i}` });
+    return id;
+  }
+  async function stored(id: string) {
+    const [row] = await rootSql.unsafe(`SELECT context_state,summary_text,summary_through_seq
+      FROM harness_shared.operator_conversations WHERE id=$1`, [id]);
+    return row;
+  }
+
+  it('refuses an unauthenticated compaction before a provider or history mutation', async () => {
+    const id = await seeded(); const summarize = vi.fn();
+    await expect(compactAuthenticated(id, { summarize })).resolves.toEqual({ outcome: 'unauthorized' });
+    expect(summarize).not.toHaveBeenCalled();
+    expect((await stored(id)).context_state).toBeNull();
+  });
+
+  it('journals failed measured usage without advancing coverage or replaying the same source', async () => {
+    const id = await seeded();
+    const summarize = vi.fn(async () => ({ status: 'failed' as const, model: 'failed-model',
+      costUsd: 0.006, tokensIn: 42, tokensOut: 5 }));
+    expect((await compactConversation(id, { summarize })).outcome).toBe('llm_unavailable');
+    const row = await stored(id);
+    expect(row.summary_text).toBeNull(); expect(row.summary_through_seq).toBeNull();
+    expect(row.context_state.journal).toEqual([expect.objectContaining({ status: 'failed',
+      usage: { costUsd: 0.006, inputTokens: 42, outputTokens: 5 } })]);
+    expect(h.spendRecorded).toContain(0.006);
+    expect((await compactConversation(id, { summarize })).outcome).toBe('llm_unavailable');
+    expect(summarize).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists incurred usage after current authority is revoked without projecting a summary', async () => {
+    const id = await seeded(); let authorized = true;
+    const summarize = vi.fn(async () => { authorized = false;
+      return { text: 'must not commit', model: 'stub', costUsd: 0.007, tokensIn: 10, tokensOut: 2 }; });
+    const result = await compactConversation(id, { summarize,
+      context: { workspaceId: WS, ownerId: 'context-owner', authorize: async () => authorized } });
+    expect(result.outcome).toBe('unauthorized');
+    const row = await stored(id);
+    expect(row.summary_text).toBeNull(); expect(row.context_state.checkpoint.summary).toBeNull();
+    expect(row.context_state.journal).toEqual([expect.objectContaining({ usage: expect.objectContaining({ costUsd: 0.007 }) })]);
+    expect(h.spendRecorded).toContain(0.007);
+  });
+
+  it('cancellation after summary usage commits neither legacy nor shared coverage', async () => {
+    const id = await seeded(); const controller = new AbortController();
+    const result = await compactConversation(id, { signal: controller.signal, summarize: async (_prompt, signal) => {
+      expect(signal).toBe(controller.signal); controller.abort();
+      return { text: 'obsolete', model: 'stub', costUsd: 0.008, tokensIn: 11, tokensOut: 3 };
+    } });
+    expect(result.outcome).toBe('cancelled');
+    const row = await stored(id);
+    expect(row.summary_text).toBeNull(); expect(row.context_state.checkpoint.summary).toBeNull();
+    expect(row.context_state.checkpoint.operation.failure).toBe('cancelled');
+    expect(row.context_state.journal).toHaveLength(1);
+  });
+});
+
 describe('P010 uncertain compaction accounting', () => {
   const policy = { budgetTokens: 1300, maxMessageChars: 120 };
   async function fixture() {
@@ -199,6 +265,9 @@ describe('P010 uncertain compaction accounting', () => {
       expect(results.map(r => r.ok ? r.value.outcome : r.code)).toEqual(expect.arrayContaining(['compacted']));
       expect(results.filter(r => r.ok && r.value.outcome === 'compacted')).toHaveLength(1);
       expect(provider).toHaveBeenCalledTimes(1);
+      const [stored] = await clients[1].unsafe(`SELECT jsonb_typeof(context_state) AS context_type
+        FROM harness_shared.operator_conversations WHERE id = $1`, [f.scope.conversationId]);
+      expect(stored.context_type).toBe('object');
       const fresh = f.make(clients[1]);
       const recovered = await new ConversationContext(fresh).recover(f.scope, policy);
       expect(recovered.ok).toBe(true);
@@ -208,6 +277,25 @@ describe('P010 uncertain compaction accounting', () => {
         status: 'completed', usage: { inputTokens: 21, outputTokens: 8, costUsd: 0.002 },
       })]);
     } finally { await Promise.all(clients.map(sql => sql.end({ timeout: 5 }))); }
+  });
+
+  it('aborting inside a legacy projection rolls back both coverage writes while keeping liability', async () => {
+    const f = await fixture(); const controller = new AbortController();
+    const projecting = f.make(rootSql, { project: async (tx, next) => {
+      if (next.operation?.phase !== 'completed' || !next.summary) return;
+      await tx.unsafe(`UPDATE harness_shared.operator_conversations SET summary_text='partial'
+        WHERE id=$1`, [f.scope.conversationId]);
+      controller.abort();
+    } });
+    const result = await new ConversationContext(projecting).compact(f.scope, 'projection-cancel', policy, controller.signal);
+    expect(result).toMatchObject({ ok: false, code: 'needs-reconciliation' });
+    const [row] = await rootSql.unsafe(`SELECT context_state,summary_text
+      FROM harness_shared.operator_conversations WHERE id=$1`, [f.scope.conversationId]);
+    expect(row.summary_text).toBeNull();
+    expect(row.context_state.checkpoint.summary).toBeNull();
+    expect(row.context_state.journal).toHaveLength(1);
+    expect(await new ConversationContext(f.make()).recover(f.scope, policy))
+      .toMatchObject({ ok: false, code: 'needs-reconciliation' });
   });
 
   it('retains measured failed housekeeping and never calls its provider again for the same source', async () => {
@@ -336,7 +424,7 @@ describe('conversation compaction lifecycle (PG)', () => {
   let convId: string;
 
   it('seeds a long conversation and the first pass folds the aged-out backlog', async () => {
-    const conv = await getOrCreateActiveConversation();
+    const conv = await getOrCreateActiveConversation(WS);
     convId = conv.id;
     // 30 turns, seq 0..29. The EARLY DECISION lives at seq 1 — far outside
     // the KEEP_RECENT_TURNS tail.
