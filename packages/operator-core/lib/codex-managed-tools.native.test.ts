@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { codexGatewayConfigToml, codexManagedFeaturesToml } from '@papercusp/orchestrator/codex-gateway-config';
-import type { CapabilityPolicyRequest } from '@papercusp/orchestrator/managed-capability-policy';
+import type { CapabilityPolicyRequest, CapabilityPolicySurface } from '@papercusp/orchestrator/managed-capability-policy';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
 
@@ -20,6 +20,7 @@ declare module 'vitest' {
 
 const managedTool = 'managed_surface_canary';
 const nestedSurfaceMarker = 'CODEX_NESTED_TOOL_SURFACE';
+const managedCallMarker = 'MANAGED_SURFACE_CALL_CONFIRMED';
 
 function spawnCensusProcess(command: string, args: string[], options: SpawnOptions) {
   const child = spawn(command, args, {
@@ -42,7 +43,7 @@ async function stopCensusProcess({ child, closed }: ReturnType<typeof spawnCensu
 }
 
 async function captureSurface(features: Record<string, boolean>, captureNested = true, model = 'gpt-6.1-sol',
-  capabilityPolicy?: Omit<CapabilityPolicyRequest, 'client'>) {
+  capabilityPolicy?: Omit<CapabilityPolicyRequest, 'client'>, lifecycle = false) {
   const codex = wellKnownBackendBin('codex') ?? resolveOnPath('codex');
   if (!codex) throw new Error('Installed Codex is required for native-tool removal evidence');
   const catalogJson = execFileSync(codex, ['debug', 'models'], { encoding: 'utf8', timeout: 5000 });
@@ -53,7 +54,10 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
   const home = mkdtempSync(join(tmpdir(), 'codex-managed-surface-'));
   const catalogPath = join(home, 'installed-models.json');
   writeFileSync(catalogPath, catalogJson);
-  const captures: Record<string, unknown>[] = [];
+  const surfaces: CapabilityPolicySurface[] = lifecycle ? ['launch', 'resume', 'wake'] : ['launch'];
+  let surfaceIndex = 0;
+  let captures: Record<string, unknown>[] = [];
+  const managedCalls = new Map<CapabilityPolicySurface, number>();
   const server = createServer(async (req, res) => {
     if (req.method === 'GET') {
       res.writeHead(req.url?.includes('/models') ? 200 : 405, { 'content-type': 'application/json' });
@@ -67,11 +71,20 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       if (req.url === '/mcp') {
         if (body.id === undefined) { res.writeHead(202); res.end(); return; }
+        if (body.method === 'tools/call') {
+          expect(body.params.name).toBe(managedTool);
+          const surface = surfaces[surfaceIndex]!;
+          managedCalls.set(surface, (managedCalls.get(surface) ?? 0) + 1);
+        }
         const result = body.method === 'initialize'
           ? { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'managed-surface', version: '1' } }
           : body.method === 'tools/list'
-            ? { tools: [{ name: managedTool, description: 'Offline managed tool canary.', inputSchema: { type: 'object', properties: {} } }] }
-            : {};
+            ? { tools: [{ name: managedTool, description: 'Offline managed tool canary.',
+              inputSchema: { type: 'object', properties: {} },
+              annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } }] }
+            : body.method === 'tools/call'
+              ? { content: [{ type: 'text', text: managedCallMarker }] }
+              : {};
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }));
         return;
@@ -82,8 +95,11 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
           const first = captures.length === 1;
           const item = first
             ? { id: 'nested_surface_call', type: 'custom_tool_call', namespace: 'functions', name: 'exec',
-              call_id: 'call_nested_surface', status: 'completed', input:
-                `text({ marker: ${JSON.stringify(nestedSurfaceMarker)}, tools: ALL_TOOLS.map(tool => ({ name: tool.name, callable: typeof tools[tool.name] })) });` }
+              call_id: `call_nested_surface_${surfaces[surfaceIndex]}`, status: 'completed', input:
+                `const managed = ALL_TOOLS.find(tool => tool.name.includes(${JSON.stringify(managedTool)}));
+                const reply = await tools[managed.name]({});
+                text({ marker: ${JSON.stringify(nestedSurfaceMarker)}, managedReply: reply,
+                  tools: ALL_TOOLS.map(tool => ({ name: tool.name, callable: typeof tools[tool.name] })) });` }
             : { id: 'nested_surface_done', type: 'message', role: 'assistant', status: 'completed',
               content: [{ type: 'output_text', text: 'Census complete.', annotations: [] }] };
           const response = { id: `surface_response_${captures.length}`, object: 'response', created_at: 1,
@@ -109,10 +125,11 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const baseURL = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const gateway = codexGatewayConfigToml(null, { gateway: { baseURL, token: 'offline_surface_token_'.repeat(3) } });
-  writeFileSync(join(home, 'config.toml'), [
+  const writeConfig = (surface: CapabilityPolicySurface) => writeFileSync(join(home, 'config.toml'), [
     `model = ${JSON.stringify(measuredModel)}`, `model_catalog_json = ${JSON.stringify(catalogPath)}`,
     ...gateway.root, ...gateway.tables,
-    ...(capabilityPolicy ? codexManagedFeaturesToml({ capabilityPolicy, disableMemories: false }) : ['[features]']),
+    ...(capabilityPolicy ? codexManagedFeaturesToml({ capabilityPolicy: { ...capabilityPolicy, surface },
+      disableMemories: false, headless: true }) : ['[features]']),
     ...Object.entries(features).map(([key, value]) => `${key} = ${value}`),
     '[mcp_servers.managed_surface]', `url = "${baseURL}/mcp"`, 'required = true',
     'startup_timeout_sec = 10', 'tool_timeout_sec = 10',
@@ -120,67 +137,90 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
   const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: home, OPENAI_API_KEY: 'offline-fixture-only' };
   delete env.CODEX_API_KEY;
   delete env.PAPERCUSP_SCOPED_INFERENCE_GATEWAY;
-  let stderr = '';
-  const census = spawnCensusProcess(codex, ['--no-daemon', 'exec', '--skip-git-repo-check', '--ephemeral', '--json', '-C', home,
-    'Offline census: reply OK. Do not use tools.'], { env, cwd: home });
-  const { child } = census;
-  child.stderr!.setEncoding('utf8');
-  child.stderr!.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-3000); });
+  const observations = [];
   try {
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`Tool census timed out: ${stderr}`)); }, 25_000);
-      child.once('error', error => { clearTimeout(timer); reject(error); });
-      child.once('exit', () => { clearTimeout(timer); resolve(); });
-    });
-    expect(captures.length, stderr).toBeGreaterThan(0);
-    const request = captures[0]!;
-    const names: string[] = [];
-    const walk = (value: unknown): void => {
-      if (Array.isArray(value)) { value.forEach(walk); return; }
-      if (!value || typeof value !== 'object') return;
-      const row = value as Record<string, unknown>;
-      if (typeof row.name === 'string') names.push(row.name);
-      Object.values(row).forEach(walk);
-    };
-    walk(request.tools);
-    const nestedTools: { name: string; callable: string }[] = [];
-    const readNested = (value: unknown): void => {
-      if (typeof value === 'string' && /^[\[{]/.test(value.trim())) {
-        try { readNested(JSON.parse(value)); } catch { /* Other output strings are not the census. */ }
-        return;
-      }
-      if (Array.isArray(value)) { value.forEach(readNested); return; }
-      if (!value || typeof value !== 'object') return;
-      const row = value as Record<string, unknown>;
-      if (row.marker === nestedSurfaceMarker && Array.isArray(row.tools)) {
-        nestedTools.push(...row.tools as { name: string; callable: string }[]);
-        return;
-      }
-      Object.values(row).forEach(readNested);
-    };
-    // Read the tool's output returned by the real client, never the injected call
-    // or a copy of the expected names. The next provider request carries it.
-    for (const captured of captures.slice(1)) {
-      for (const item of Array.isArray(captured.input) ? captured.input : []) {
-        if (item.type === 'custom_tool_call_output' && item.call_id === 'call_nested_surface') readNested(item.output);
+    for (surfaceIndex = 0; surfaceIndex < surfaces.length; surfaceIndex++) {
+      const surface = surfaces[surfaceIndex]!;
+      captures = [];
+      writeConfig(surface);
+      let stderr = '';
+      const prompt = `Offline ${surface} tool census: reply OK.`;
+      const args = surface === 'launch'
+        ? ['--no-daemon', 'exec', '--skip-git-repo-check', ...(!lifecycle ? ['--ephemeral'] : []), '--json', '-C', home, prompt]
+        : ['--no-daemon', 'exec', 'resume', '--last', '--skip-git-repo-check', '--json', prompt];
+      const census = spawnCensusProcess(codex, args, { env, cwd: home });
+      const { child } = census;
+      child.stderr!.setEncoding('utf8');
+      child.stderr!.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-3000); });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`Tool census timed out: ${stderr}`)); }, 25_000);
+          child.once('error', error => { clearTimeout(timer); reject(error); });
+          child.once('exit', () => { clearTimeout(timer); resolve(); });
+        });
+        expect(captures.length, stderr).toBeGreaterThan(0);
+        const request = captures[0]!;
+        if (surfaceIndex > 0) {
+          // A fresh process must load this same session's preceding turn, rather
+          // than silently creating a new session with the same config.
+          expect(JSON.stringify(request.input)).toContain(`Offline ${surfaces[surfaceIndex - 1]} tool census`);
+        }
+        const names: string[] = [];
+        const walk = (value: unknown): void => {
+          if (Array.isArray(value)) { value.forEach(walk); return; }
+          if (!value || typeof value !== 'object') return;
+          const row = value as Record<string, unknown>;
+          if (typeof row.name === 'string') names.push(row.name);
+          Object.values(row).forEach(walk);
+        };
+        walk(request.tools);
+        const nestedTools: { name: string; callable: string }[] = [];
+        const readNested = (value: unknown): void => {
+          if (typeof value === 'string' && /^[\[{]/.test(value.trim())) {
+            try { readNested(JSON.parse(value)); } catch { /* Other output strings are not the census. */ }
+            return;
+          }
+          if (Array.isArray(value)) { value.forEach(readNested); return; }
+          if (!value || typeof value !== 'object') return;
+          const row = value as Record<string, unknown>;
+          if (row.marker === nestedSurfaceMarker && Array.isArray(row.tools)) {
+            nestedTools.push(...row.tools as { name: string; callable: string }[]);
+            return;
+          }
+          Object.values(row).forEach(readNested);
+        };
+        // Read the tool's output returned by the real client, never the injected call
+        // or a copy of the expected names. The next provider request carries it.
+        for (const captured of captures.slice(1)) {
+          for (const item of Array.isArray(captured.input) ? captured.input : []) {
+            if (item.type === 'custom_tool_call_output' && item.call_id === `call_nested_surface_${surface}`) {
+              readNested(item.output);
+              expect(JSON.stringify(item.output)).toContain(managedCallMarker);
+            }
+          }
+        }
+        if (captureNested) {
+          expect(nestedTools, `No code-mode census output; advertised tools: ${names.join(', ')}; ${stderr}`).not.toHaveLength(0);
+          expect(nestedTools.every(tool => tool.callable === 'function')).toBe(true);
+          expect(nestedTools.some(tool => tool.name.includes(managedTool))).toBe(true);
+          expect(managedCalls.get(surface)).toBe(1);
+        }
+        expect(JSON.stringify({ request, nestedTools }), `Advertised tools: ${names.join(', ')}; ${stderr}`).toContain(managedTool);
+        observations.push({ surface, managedCalls: managedCalls.get(surface) ?? 0,
+          version: execFileSync(codex, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim(), names,
+          requestKeys: Object.keys(request), executedOuterNames: captureNested ? ['exec'] : [],
+          catalog: { source: 'installed-codex-debug-models', sha256: createHash('sha256').update(catalogJson).digest('hex'),
+            model: selectedModel.slug, toolMode: selectedModel.tool_mode ?? 'direct',
+            applyPatchToolType: selectedModel.apply_patch_tool_type },
+          nestedNames: nestedTools.map(tool => tool.name),
+          hasNativeExecution: [...names, ...nestedTools.map(tool => tool.name)]
+            .some(name => name === 'exec_command' || name === 'write_stdin') });
+      } finally {
+        await stopCensusProcess(census);
       }
     }
-    if (captureNested) {
-      expect(nestedTools, `No code-mode census output; advertised tools: ${names.join(', ')}; ${stderr}`).not.toHaveLength(0);
-      expect(nestedTools.every(tool => tool.callable === 'function')).toBe(true);
-      expect(nestedTools.some(tool => tool.name.includes(managedTool))).toBe(true);
-    }
-    expect(JSON.stringify({ request, nestedTools }), `Advertised tools: ${names.join(', ')}; ${stderr}`).toContain(managedTool);
-    return { version: execFileSync(codex, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim(), names,
-      requestKeys: Object.keys(request), executedOuterNames: captureNested ? ['exec'] : [],
-      catalog: { source: 'installed-codex-debug-models', sha256: createHash('sha256').update(catalogJson).digest('hex'),
-        model: selectedModel.slug, toolMode: selectedModel.tool_mode ?? 'direct',
-        applyPatchToolType: selectedModel.apply_patch_tool_type },
-      nestedNames: nestedTools.map(tool => tool.name),
-      hasNativeExecution: [...names, ...nestedTools.map(tool => tool.name)]
-        .some(name => name === 'exec_command' || name === 'write_stdin') };
+    return { ...observations[0]!, lifecycle: observations };
   } finally {
-    await stopCensusProcess(census);
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
     rmSync(home, { recursive: true, force: true });
@@ -202,16 +242,22 @@ describe('Codex managed replacement installed-client census', () => {
     };
     const features = { code_mode: true, code_mode_host: true };
     const retained = await captureSurface(features, true, 'gpt-6.1-sol', { ...policy, cutoverStaging: {} });
-    const removed = await captureSurface(features, true, 'gpt-6.1-sol', policy);
+    const removed = await captureSurface(features, true, 'gpt-6.1-sol', policy, true);
     const drift = await captureSurface(features, true, 'gpt-6.1-sol', { ...policy,
       clientVersions: { codex: 'unvalidated-client-version' } });
     task.meta.nativeToolSurface = { retained, removed, drift };
     expect(retained.nestedNames).toContain('exec_command');
     expect(removed.nestedNames).not.toContain('exec_command');
     expect(removed.nestedNames).not.toContain('write_stdin');
+    expect(removed.lifecycle.map(row => row.surface)).toEqual(['launch', 'resume', 'wake']);
+    for (const row of removed.lifecycle) {
+      expect(row.nestedNames).not.toContain('exec_command');
+      expect(row.nestedNames).not.toContain('write_stdin');
+      expect(row.managedCalls).toBe(1);
+    }
     expect(drift.nestedNames).toContain('exec_command');
     // captureSurface also verifies that the actual inner MCP catalog is callable.
-  }, 90_000);
+  }, 180_000);
 
   it.runIf(process.platform !== 'win32')('stops a home writer that outlives its client before cleanup', async () => {
     const home = mkdtempSync(join(tmpdir(), 'codex-census-lifecycle-'));
