@@ -1,5 +1,5 @@
 /** Required native P010 BAR: real CLI → current operator → compiler report. */
-import { spawnSync } from 'node:child_process';
+import { fork, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { writeSync } from 'node:fs';
@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { nativeCliCall, nativeCliTestTimeout, nativeFixtureProcess, scopedNativeFixtureArgs } from './native-cli.fixture';
 import './scoped-contracts.e2e.test';
 import { privateReuseTestEnvironment } from './__fixtures__/reuse-api-journey';
+import { captureIsolatedWorker, isolatedWorkerFailureDetail, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 
 /** Resolve HEAD inside the owning repository, including test-config's submodule. */
 function requireCommittedNativeSource(root: string, path: string, expectedHash: string) {
@@ -103,7 +104,8 @@ function nativeFixtureFailureDiagnostic(
     `child output tail:\n${childOutput.slice(-4_000)}`;
 }
 
-async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-touch' | 'grep' | 'reuse' | 'reuse-claim') {
+async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-touch' | 'grep' | 'reuse' | 'reuse-claim',
+  recordRuntime?: (runId: string) => void) {
     const root = resolve(import.meta.dirname, '../../../..');
     const sourcePaths = ['packages/operator-core/lib/code-intelligence/__fixtures__/reuse-api-journey.ts',
       'packages/operator-core/lib/code-intelligence/clone-brief-provider.ts',
@@ -157,12 +159,35 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
     expect(build.code, nativeFixtureFailureDiagnostic('Host bundle', build)).toBe(0);
     const handlerHash = createHash('sha256').update(readFileSync(handlerPath)).digest('hex');
     let pendingStage = '';
-    let result;
-      result = await nativeFixtureProcess(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
-        '--isolated-runtime=operator-api', '--', process.execPath,
+    let result: Awaited<ReturnType<typeof nativeFixtureProcess>>;
+    const workerArgs = ['--isolated-runtime=operator-api', '--', process.execPath,
         ...scopedNativeFixtureArgs(new URL('./__fixtures__/incident-api-client.ts', import.meta.url).href,
           'runNativeIncidentApi', [join(homedir(), '.papercusp/vendor/repomix'),
-            join(homedir(), '.papercusp/vendor/lsp'), handlerPath, handlerHash, mode])], {
+            join(homedir(), '.papercusp/vendor/lsp'), handlerPath, handlerHash, mode])];
+    if (mode.startsWith('reuse')) {
+      expect(recordRuntime, 'Reuse acceptance requires a retained original runtime receipt').toBeTypeOf('function');
+      const runId = await recordIsolatedIntegrationProof({ root,
+        filePath: 'packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts',
+        sourcePaths: [...sourcePaths, 'scripts/with-test-pg.mjs',
+          'packages/operator-core/lib/code-intelligence/native-cli.fixture.ts',
+          'packages/operator-core/test/isolated-integration-proof.ts'],
+        execute: async (observe, evidenceDir) => {
+          const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: '/dev/shm', PC_ISOLATED_RUNTIME_PROOF: '1' };
+          delete env.PC_HEAVY_PREEMPT_READY_FILE;
+          delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+          const child = fork(join(root, 'scripts/with-test-pg.mjs'), workerArgs,
+            { cwd: root, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+          observe(child);
+          const captured = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 180_000 });
+          result = { code: captured.code, signal: captured.signal, output: captured.output,
+            failureOutput: isolatedWorkerFailureDetail(captured.output) };
+          expect(captured, result.failureOutput).toMatchObject({ code: 0, signal: null,
+            timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+        },
+      });
+      recordRuntime!(runId);
+    } else {
+      result = await nativeFixtureProcess(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), ...workerArgs], {
         cwd: root, env: { ...process.env, TMPDIR: '/dev/shm' }, timeoutMs: 180_000,
         onOutput: (text, timing) => {
           const lines = (pendingStage + text).split('\n');
@@ -174,14 +199,15 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
           }
         },
       });
-    expect(result.code, nativeFixtureFailureDiagnostic('Private fixture', result)).toBe(0);
+    }
+    expect(result!.code, nativeFixtureFailureDiagnostic('Private fixture', result!)).toBe(0);
     const prefix = mode === 'reuse-claim' ? 'NATIVE_REUSE_CLAIM_API_PROOF='
       : mode === 'reuse' ? 'NATIVE_REUSE_API_PROOF='
       : mode === 'incident' ? 'NATIVE_INCIDENT_API_PROOF='
       : mode === 'first-touch' ? 'NATIVE_FIRST_TOUCH_API_PROOF='
       : mode === 'grep' ? 'NATIVE_GREP_API_PROOF=' : 'NATIVE_TASK_BRIEF_API_PROOF=';
-    const line = result.output.split('\n').find(row => row.startsWith(prefix));
-    expect(line, result.output).toBeDefined();
+    const line = result!.output.split('\n').find(row => row.startsWith(prefix));
+    expect(line, result!.output).toBeDefined();
     const proof = JSON.parse(line!.slice(prefix.length));
     const afterHashes = sourceHashes();
     expect(afterHashes).toEqual(beforeHashes);
@@ -193,8 +219,10 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
 }
 
 describe('native P010 private operator completion reuse delivery', () => {
-  it('delivers sibling, new copy, co-change, SQL reader and changed-line coverage through actual CLI completion', async () => {
-    const proof = await privateNativeJourney('reuse');
+  it('delivers sibling, new copy, co-change, SQL reader and changed-line coverage through actual CLI completion', async (context) => {
+    const proof = await privateNativeJourney('reuse', runId => {
+      Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    });
     expect(proof).toMatchObject({ transport: 'real-cli-http', terminal: true,
       completionSignals: { sibling: true, newCopy: true, cochange: true, sql: true, coverage: true },
       scope: expect.stringContaining('private current-source') });
@@ -204,8 +232,10 @@ describe('native P010 private operator completion reuse delivery', () => {
 });
 
 describe('native P010 controlled CLI claim reuse delivery', () => {
-  it('preserves the anchored base and issues five capped providers with actual controlled edit provenance', async () => {
-    const proof = await privateNativeJourney('reuse-claim');
+  it('preserves the anchored base and issues five capped providers with actual controlled edit provenance', async (context) => {
+    const proof = await privateNativeJourney('reuse-claim', runId => {
+      Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    });
     expect(proof).toMatchObject({ transport: 'real-cli-http',
       expectedProviders: ['clones', 'cochange', 'provenance', 'sql', 'coverage'],
       scope: expect.stringContaining('controlled private current-source CLI fixture') });

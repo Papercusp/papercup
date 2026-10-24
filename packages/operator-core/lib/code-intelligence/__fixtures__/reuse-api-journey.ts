@@ -90,19 +90,26 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
   // D026: a real persisted planning timestamp and one explicitly controlled CLI
   // session qualify provenance. This does not represent a model-session census.
   const planSlug = `p010-controlled-claim-${new Date().toISOString().slice(0, 10)}`;
+  let planItem: string | undefined;
   if (claimOnly) {
     const planned = await call('plans:new', { harness: workspace, slug: planSlug,
       title: 'Controlled private P010 claim fixture',
       content: '## Product shaping\nControlled CLI composition proof; no model pickup or live user cohort.\n\n'
-        + '## Phase 1 — Fixture\n- **P-001** `todo` Inspect src/target.ts controlled reuse consequences importance: normal\n',
+        + '## Phase 1 — Fixture\n',
       projection: { pick: ['ok', 'results[].ok', 'results[].slug', 'slug'] } });
     assert.notEqual(planned.ok, false, JSON.stringify(planned));
+    const added = await call('plans:add-item', { harness: workspace, slug: planSlug, phase: 'Phase 1 — Fixture',
+      text: 'Inspect src/target.ts controlled reuse consequences', importance: 'normal',
+      projection: { pick: ['ok', 'results[].ok', 'results[].itemId'] } });
+    planItem = added.results?.[0]?.itemId;
+    assert.equal(added.results?.[0]?.ok, true, JSON.stringify(added));
+    assert(planItem, 'Maintained plan-item writer must persist the controlled anchor: ' + JSON.stringify(added));
   }
   const created = await call('work_items:create', { harness: workspace, kind: 'change',
     title: claimOnly ? 'Controlled CLI P010 claim composition' : 'Private native P010 completion consequences',
     assign_to: 'self', state: 'wip',
     changeKinds: ['logic'], changeKindReason: 'Private source fixture validated through an actual complete test population.',
-    ...(claimOnly ? { plan_item: { slug: planSlug, item: 'P-001' } } : {}),
+    ...(claimOnly ? { plan_item: { slug: planSlug, item: planItem! } } : {}),
     payload: { paths: ['src/target.ts'] }, projection: { pick: ['results[].id', 'results[].item.id'] } });
   const id = created.results?.[0]?.id ?? created.results?.[0]?.item?.id;
   assert(id, JSON.stringify(created));
