@@ -2426,6 +2426,27 @@ async function hostFixture() {
 }
 
 describe('host-backed benchmark observation with private physical IO', () => {
+  it.each(['codex', 'claude'] as const)('reads the exact %s enrollment from a PostgreSQL bigint without accepting unsafe keys', async agent => {
+    const ownerId = `su-private-${randomUUID()}`, nativeSessionId = randomUUID();
+    const task: CurrentBenchTask = { taskId: `binding-${randomUUID()}`, workspaceId, state: 'running', exitCode: null,
+      sessionId: nativeSessionId, detail: { coordOwnerId: ownerId } };
+    const [enrolled] = await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent)
+      VALUES (${workspaceId}, ${ownerId}, ${nativeSessionId}, ${agent}) RETURNING id, pg_typeof(id)::text AS id_type`;
+    expect(enrolled.id_type).toBe('bigint');
+    expect(typeof enrolled.id).toBe('string');
+    const home = join(repoRoot, `${agent}-binding-home`);
+    hostHome.byId.set(Number(enrolled.id), home); hostHome.byOwner.set(ownerId, home);
+    await sql`INSERT INTO harness_shared.task_ledger (task_id, workspace_id, session_id, detail)
+      VALUES (${task.taskId}, ${workspaceId}, ${nativeSessionId}, ${sql.json(task.detail)})`;
+    const io = liveCurrentBenchObservationReaderPorts({ ...scope(), runtimeWorkspaceId: workspaceId,
+      workerUnit: 'unused-worker', gatewayUnit: 'unused-gateway', gatewayBaseUrl: 'http://127.0.0.1:1' });
+    expect(await io.readBinding(task)).toEqual({ ownerId, nativeSessionId,
+      ...(agent === 'claude' ? { agent, claudeConfigDir: home } : { codexHome: home }) });
+    for (const invalid of ['0', '-1', '9007199254740992']) {
+      await sql`UPDATE harness_shared.adv_sessions SET id = ${invalid}::bigint`;
+      expect(await io.readBinding(task), `invalid ${agent} enrollment key ${invalid}`).toBeNull();
+    }
+  });
   it('joins actual private SQL, transcript bytes, process pins and gateway provider evidence', async () => {
     const f = await hostFixture(), observation = await f.read(f.task);
     expect(observation).not.toBeNull();

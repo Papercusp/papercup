@@ -1548,7 +1548,7 @@ export function liveCurrentBenchObservationReaderPorts(
       const { resolveDb } = await import('./reproducibility/db');
       const { codexHomeForSessionKey, sessionClaudeConfigDir } = await import('@papercusp/orchestrator/session-launch-dirs');
       const { sql } = resolveDb(scope);
-      const rows = await sql<{ id: number; agent: string; coord_owner_id: string; session_id: string }[]>`
+      const rows = await sql<{ id: number | string; agent: string; coord_owner_id: string; session_id: string }[]>`
         SELECT a.id, a.agent, a.coord_owner_id, a.session_id FROM harness_shared.adv_sessions a
         JOIN harness_shared.task_ledger t ON t.workspace_id = a.workspace_id
           AND t.session_id = a.session_id AND t.detail->>'coordOwnerId' = a.coord_owner_id
@@ -1559,11 +1559,14 @@ export function liveCurrentBenchObservationReaderPorts(
       `;
       if (rows.length !== 1) return null;
       const row = rows[0];
-      if (!Number.isSafeInteger(row.id) || row.id < 1 || !row.coord_owner_id ||
+      // adv_sessions.id is BIGSERIAL: postgres.js preserves int8 as decimal
+      // text. Validate before conversion so the native-home key stays exact.
+      const sessionKey = typeof row.id === 'string' && /^[1-9]\d*$/.test(row.id) ? Number(row.id) : row.id;
+      if (typeof sessionKey !== 'number' || !Number.isSafeInteger(sessionKey) || sessionKey < 1 || !row.coord_owner_id ||
           row.coord_owner_id !== task.detail.coordOwnerId || row.session_id !== task.sessionId) return null;
       const common = { ownerId: row.coord_owner_id, nativeSessionId: row.session_id };
       if (row.agent === 'claude') return { ...common, agent: 'claude', claudeConfigDir: sessionClaudeConfigDir(row.coord_owner_id) };
-      return row.agent === 'codex' ? { ...common, codexHome: codexHomeForSessionKey(row.id) } : null;
+      return row.agent === 'codex' ? { ...common, codexHome: codexHomeForSessionKey(sessionKey) } : null;
     },
     readRuntimes: async () => {
       const { listRuntimeVintage } = await import('../runtime-vintage');
@@ -1758,10 +1761,11 @@ export function requireCurrentBenchHostBinding(observations: Pick<CurrentSuBench
   if (!gateway || !host || !host.active() || !accounting ||
       canonicalJson(accounting) !== canonicalJson(host.binding) || accounting.workspaceId !== opts.workspaceId ||
       accounting.runId !== opts.runId || accounting.preregHash !== opts.preregistration.preregHash ||
-      accounting.assignmentId !== currentBenchAssignmentId(opts.runId, opts.armId, host.taskId, opts.seed) ||
-      canonicalJson(opts.preregistration.config) !== host.protocol) {
+      accounting.assignmentId !== currentBenchAssignmentId(opts.runId, opts.armId, host.taskId, opts.seed)) {
     throw new Error('Current benchmark launch requires its active host-owned gateway and exact accounting binding.');
   }
+  if (canonicalJson(opts.preregistration.config) !== host.protocol)
+    throw new Error('Current benchmark launch requires the exact frozen protocol bound to its host-owned gateway.');
   return host;
 }
 function sessionHandle(handle: BenchHarnessHandle): string {
