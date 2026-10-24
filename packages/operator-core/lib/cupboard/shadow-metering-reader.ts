@@ -351,7 +351,7 @@ export type IdentityOutcomeCost = {
 export async function readIdentityOutcomeCost(sql: Sql, input: { workspaceId: string; releaseRef: string }, deps: {
   readTurns?: (workspaceId: string, releaseRef: string) => Promise<FundedIdentityTurn[]>;
   readWorkItem?: (ref: IdentityWorkItemBinding) => Promise<OutcomeWorkItem | null>;
-  readBilled?: typeof readIdentityTurnBilledCost;
+  readBilled?: (sql: Sql, input: IdentityTurnUsageBinding) => Promise<IdentityTurnBilledCost>;
   grade?: (item: OutcomeWorkItem) => Promise<SpecAdequacyCompletionGateResult>;
 } = {}): Promise<IdentityOutcomeCost> {
   const scope = { basis: 'local-funded-release-usage' as const, releaseRef: input.releaseRef, currency: 'USD' as const };
