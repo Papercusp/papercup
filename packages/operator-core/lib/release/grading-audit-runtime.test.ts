@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { TaskRow } from '../task-manager/types';
 import { readGradingAuditSourcePin } from './grading-audit-source-pin';
+import { requestOnlyIdentityGuardMarker } from '../harness/env-operator-launcher';
+import { writeOperatorArtifactManifest } from './operator-artifact';
 import { ensureGradingAuditRuntime, gradingAuditRuntimeChildEnv, retireUnusedGradingAuditRuntimes, recoverGradingAuditRuntimeSource,
+  qualifyRematerializedGradingAuditSource,
   type GradingAuditRuntimeDeps, type GradingAuditRuntimeLocator } from './grading-audit-runtime';
 
 const spawnManaged = vi.hoisted(() => vi.fn());
@@ -16,14 +20,13 @@ vi.mock('../task-manager/control', () => ({ killTask: killManaged }));
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })));
 
-function fixture() {
+function fixture(evaluatorBuild = { sha: 'exact123456', version: '1.2.3' }) {
   const root = mkdtempSync(join(tmpdir(), 'audit-runtime-'));
   roots.push(root);
   const sourceRoot = join(root, '.candidate-exact.first', 'checkout');
   const bundlePath = join(sourceRoot, 'apps/operator/dist-host/hono-host.mjs');
   mkdirSync(dirname(bundlePath), { recursive: true });
   writeFileSync(bundlePath, 'exact compiled evaluator bytes');
-  const evaluatorBuild = { sha: 'exact123456', version: '1.2.3' };
   const ownerRef = 'grading-audit-runtime:' + createHash('sha256').update(JSON.stringify(['ws', evaluatorBuild.sha, evaluatorBuild.version])).digest('hex');
   const source = { schemaVersion: 1 as const, sourceRoot, bundlePath, evaluatorBuild, ownerRef,
     bundleSha256: createHash('sha256').update('exact compiled evaluator bytes').digest('hex') };
@@ -49,15 +52,93 @@ function fixture() {
         state: 'running', detail: { label: ownerRef, gradingAuditRuntime: structuredClone(locator) } });
       return taskId;
     }),
-    attach: vi.fn(async (id, _ws, ids) => {
+    attach: vi.fn(async (id, _ws, ids, acceptanceRefs = []) => {
       (rows.find(row => row.taskId === id)!.detail.gradingAuditRuntime as GradingAuditRuntimeLocator).issueIds = ids;
+      (rows.find(row => row.taskId === id)!.detail.gradingAuditRuntime as GradingAuditRuntimeLocator).acceptanceRefs = acceptanceRefs;
     }),
     probe: vi.fn(async () => evaluatorBuild), stop, sleep: async () => {},
   };
   return { root, rows, source, deps, stop, input: { workspaceId: 'ws', issueId: 'EI-a', evaluatorBuild } };
 }
 
+function rebuiltFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'audit-rebuilt-'));
+  roots.push(root);
+  const sourceRoot = join(root, '.candidate-rebuilt', 'checkout');
+  const bundlePath = join(sourceRoot, 'apps/operator/dist-host/hono-host.mjs');
+  mkdirSync(dirname(bundlePath), { recursive: true });
+  const git = (...args: string[]) => execFileSync('git', ['-C', sourceRoot, ...args], { encoding: 'utf8' }).trim();
+  git('init', '--quiet');
+  writeFileSync(join(sourceRoot, 'entry.ts'), 'export const evaluator = true;\n');
+  git('add', 'entry.ts');
+  git('-c', 'user.name=Runtime test', '-c', 'user.email=runtime@test.invalid', 'commit', '--quiet', '-m', 'exact source');
+  const sourceSha = git('rev-parse', 'HEAD');
+  writeFileSync(bundlePath, 'rebuilt evaluator ' + requestOnlyIdentityGuardMarker());
+  writeFileSync(bundlePath + '.meta.json', JSON.stringify({ inputs: { 'entry.ts': {} } }));
+  writeOperatorArtifactManifest({ root: sourceRoot, entry: bundlePath, sourceSha });
+  return { sourceRoot, bundlePath, sourceSha, git, evaluatorBuild: { sha: sourceSha.slice(0, 10), version: '1.2.3' } };
+}
+
 describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
+  it('retains a settled audit evaluator for claimed source acceptance and releases it when acceptance settles', async () => {
+    const f = fixture();
+    const runtime = await ensureGradingAuditRuntime({ ...f.input, acceptanceRef: 'WI-source' }, f.deps);
+    f.deps.pendingAcceptanceRefs = async (_ws, ids) => ids.filter(id => id === 'WI-source');
+    await retireUnusedGradingAuditRuntimes('ws', async () => [], f.deps);
+    expect(f.stop).not.toHaveBeenCalled();
+    expect((f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator)).toMatchObject({
+      issueIds: [], acceptanceRefs: ['WI-source'] });
+    f.deps.pendingAcceptanceRefs = async () => [];
+    await retireUnusedGradingAuditRuntimes('ws', async () => [], f.deps);
+    expect(f.stop).toHaveBeenCalledWith(runtime.taskId);
+    expect(readGradingAuditSourcePin(f.source.sourceRoot, f.source.ownerRef, 1000)).toBeNull();
+  });
+
+  it('recovers an expired, physically deleted source from an attested exact-ref rebuild with new artifact provenance', async () => {
+    const rebuilt = rebuiltFixture();
+    const f = fixture(rebuilt.evaluatorBuild);
+    const old = await ensureGradingAuditRuntime(f.input, f.deps);
+    f.deps.now = () => 22600000;
+    await retireUnusedGradingAuditRuntimes('ws', async ids => ids, f.deps);
+    rmSync(dirname(f.source.sourceRoot), { recursive: true, force: true });
+    f.deps.currentSource = () => { throw new Error('mutable host cannot seed the old build'); };
+    const recovered = await ensureGradingAuditRuntime({ ...f.input, issueId: 'P001-acceptance',
+      allowSeed: false, recoverySourceRoot: rebuilt.sourceRoot }, f.deps);
+    expect(recovered.taskId).not.toBe(old.taskId);
+    expect(recovered.bundleSha256).not.toBe(old.bundleSha256);
+    expect(recovered.sourceRecovery).toMatchObject({ sourceSha: rebuilt.sourceSha, previousTaskId: old.taskId,
+      previousSourceRoot: f.source.sourceRoot, previousBundleSha256: old.bundleSha256 });
+    expect(recovered.expiresAtSec).toBe(22600 + 21600);
+    expect((f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator).issueIds).toEqual(['EI-a', 'P001-acceptance']);
+    expect(readGradingAuditSourcePin(rebuilt.sourceRoot, f.source.ownerRef, 22600)?.bundleSha256).toBe(recovered.bundleSha256);
+    // Repeated acquisition returns the same receipt under the same build mutex.
+    expect((await ensureGradingAuditRuntime({ ...f.input, allowSeed: false }, f.deps)).sourceRecovery).toEqual(recovered.sourceRecovery);
+  });
+
+  it('refuses a rebuild without ledger provenance and never replaces a live task with a missing pin', async () => {
+    const rebuilt = rebuiltFixture();
+    const f = fixture(rebuilt.evaluatorBuild);
+    await expect(ensureGradingAuditRuntime({ ...f.input, recoverySourceRoot: rebuilt.sourceRoot }, f.deps))
+      .rejects.toThrow('registered prior');
+    await ensureGradingAuditRuntime(f.input, f.deps);
+    rmSync(dirname(f.source.sourceRoot), { recursive: true, force: true });
+    await expect(ensureGradingAuditRuntime({ ...f.input, recoverySourceRoot: rebuilt.sourceRoot }, f.deps))
+      .rejects.toThrow('no valid recovery locator');
+    expect(f.deps.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses wrong commits, dirty source, missing artifact proof and replaced bundle bytes', () => {
+    const rebuilt = rebuiltFixture();
+    expect(qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, rebuilt.evaluatorBuild).sourceSha).toBe(rebuilt.sourceSha);
+    expect(() => qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, { ...rebuilt.evaluatorBuild, sha: 'f'.repeat(10) }))
+      .toThrow('differs');
+    writeFileSync(join(rebuilt.sourceRoot, 'entry.ts'), 'dirty source');
+    expect(() => qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, rebuilt.evaluatorBuild)).toThrow('source-unqualified');
+    writeFileSync(join(rebuilt.sourceRoot, 'entry.ts'), 'export const evaluator = true;\n');
+    writeFileSync(rebuilt.bundlePath, 'replacement ' + requestOnlyIdentityGuardMarker());
+    expect(() => qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, rebuilt.evaluatorBuild)).toThrow('artifact proof');
+  });
+
   it('shares one ledger-owned endpoint across concurrent audits of the same build', async () => {
     const f = fixture();
     const [a, b] = await Promise.all([ensureGradingAuditRuntime(f.input, f.deps),

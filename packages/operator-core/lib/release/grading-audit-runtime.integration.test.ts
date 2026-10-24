@@ -8,7 +8,7 @@ import {
 } from '../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../..');
-const options = isolatedWorkerOptions(480_000);
+const options = isolatedWorkerOptions(900_000);
 
 it('retains one real exact-build endpoint across unknown readiness, recovers process loss, and retires its last audit reference', async context => {
   const runId = await recordIsolatedIntegrationProof({
@@ -18,6 +18,9 @@ it('retains one real exact-build endpoint across unknown readiness, recovers pro
       'packages/operator-core/test/grading-audit-runtime-fixture.ts',
       'packages/operator-core/lib/release/grading-audit-runtime.ts',
       'packages/operator-core/lib/release/grading-audit-source-pin.ts',
+      'packages/operator-core/lib/release/operator-artifact.ts',
+      'packages/operator-core/lib/scratch-git-clone.ts',
+      'papercusp-desktop/bin/lib/pinned-deps.sh',
       'packages/operator-core/lib/task-manager/managed-spawn.ts',
       'packages/operator-core/lib/task-manager/control.ts',
       'packages/operator-core/lib/task-manager/store.ts',
@@ -49,7 +52,8 @@ it('retains one real exact-build endpoint across unknown readiness, recovers pro
         expect(receipt).toMatchObject({
           workspace: expect.stringMatching(/^test-runtime-/), reused: true, recovered: true,
           confined: true, exactHealth: true, partialReferenceRetained: true, scopeEmpty: true, pinRemoved: true,
-          warmingRetained: true, transientProbeRetained: true,
+          warmingRetained: true, transientProbeRetained: true, expiredSourceRecovered: true,
+          settledAuditAcceptanceRetained: true, recoveredBundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
           bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         });
         console.info(line);

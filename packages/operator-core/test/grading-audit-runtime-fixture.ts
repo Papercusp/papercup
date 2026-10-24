@@ -1,10 +1,12 @@
 /** Real process/ledger acceptance, invoked only by the isolated integration suite. */
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getBuildInfo } from '../lib/build-info';
+import { createScratchClone } from '../lib/scratch-git-clone';
 import { readVerifierSourceReceiptSync } from '../lib/verifier-source';
 import { absCgroupDir, walkCgroupTree } from '../lib/task-manager/cgroup-read';
 import { linuxProcessIdentityFromStat, linuxProcStateFromStat } from '../lib/process-identity';
@@ -29,6 +31,9 @@ export interface GradingRuntimeReceipt {
   partialReferenceRetained: boolean;
   scopeEmpty: boolean;
   pinRemoved: boolean;
+  expiredSourceRecovered: boolean;
+  settledAuditAcceptanceRetained: boolean;
+  recoveredBundleSha256: string;
   bundleSha256: string;
   evaluatorBuild: ReturnType<typeof getBuildInfo>;
   taskIds: string[];
@@ -138,21 +143,31 @@ async function main() {
   const root = resolve(import.meta.dirname, '../../..');
   // Keep the maintained builder's complete output in the same physical layout
   // production retains; the disposable supervisor owns this whole generation.
-  const sourceRoot = join(evidenceDir, '.candidate-runtime-proof', 'checkout');
+  let sourceRoot = join(evidenceDir, '.candidate-runtime-proof', 'checkout');
+  const parentBuild = getBuildInfo();
+  assert.ok(parentBuild.sha && parentBuild.sha !== 'unknown');
+  mkdirSync(dirname(sourceRoot), { recursive: true });
+  const cloned = await createScratchClone({ source: root, ref: parentBuild.sha,
+    destination: sourceRoot, includeSubmodules: true, signal: AbortSignal.timeout(180_000) });
+  // The maintained locked snapshot rewrites workspace links into the exact
+  // source clone; borrowing the donor's node_modules would escape the pin.
+  execFileSync('bash', [join(sourceRoot, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
+    'snapshot-locked', root, sourceRoot, 'hardlink'], { cwd: root, timeout: 180_000,
+    maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   const output = join(sourceRoot, 'apps/operator/dist-host');
   mkdirSync(output, { recursive: true });
-  symlinkSync(join(root, 'node_modules'), join(sourceRoot, 'node_modules'), 'dir');
-  const prepared = await preparePrivateOperatorApiBundle(root, output, { builder: {
+  const prepared = await preparePrivateOperatorApiBundle(sourceRoot, output, { builder: {
     timeoutMs: 240_000, maxMs: 420_000,
   } });
-  const parentBuild = getBuildInfo();
   // The maintained archive builder stamps twelve source characters. The
   // unbundled worker's Git abbreviation is independently configurable.
   const selected = process.env.VERIFY_TAURI_SOURCE_RECEIPT
     ? readVerifierSourceReceiptSync(root) : null;
   if (selected) assert.ok(parentBuild.sha && selected.sourceCommit.startsWith(parentBuild.sha),
     'unbundled worker and prepared bundle must share the selected source');
-  const evaluatorBuild = { ...parentBuild, sha: selected?.sourceCommit.slice(0, 12) ?? parentBuild.sha };
+  assert.ok(cloned.sha.startsWith(parentBuild.sha));
+  const evaluatorBuild = { ...parentBuild, sha: execFileSync('git', ['-C', sourceRoot, 'rev-parse', '--short', 'HEAD'],
+    { encoding: 'utf8', timeout: 10_000 }).trim() };
   assert.ok(evaluatorBuild.sha && evaluatorBuild.sha !== 'unknown');
   const deps: GradingAuditRuntimeDeps = {
     // The private supervisor removes its state directory during teardown.
@@ -214,10 +229,62 @@ async function main() {
   assert.equal(readGradingAuditSourcePin(sourceRoot, locator.ownerRef), null);
   assert.equal(await fetch(recovered.baseUrl + '/api/health', { signal: AbortSignal.timeout(1000) })
     .then(() => true, () => false), false);
-  assert.equal(createHash('sha256').update(readFileSync(prepared.path)).digest('hex'), prepared.sha256);
+
+  // The audit is settled but source acceptance can arrive later. Remove the
+  // original physical locator by relocating this independently built, exact
+  // Git checkout, then run the maintained builder at its new physical root.
+  // Both artifacts retain their own compiler manifest and byte digest.
+  const oldSourceRoot = sourceRoot;
+  const movedHome = join(evidenceDir, '.candidate-runtime-rematerialized');
+  renameSync(dirname(sourceRoot), movedHome);
+  sourceRoot = join(movedHome, 'checkout');
+  const rebuilt = await preparePrivateOperatorApiBundle(sourceRoot,
+    join(sourceRoot, 'apps/operator/dist-host'), { builder: { timeoutMs: 240_000, maxMs: 420_000 } });
+  let acceptancePending = true;
+  const acceptanceRef = 'private-source-acceptance';
+  const acceptanceDeps: GradingAuditRuntimeDeps = { logDir: evidenceDir,
+    pendingAcceptanceRefs: async (_workspace, refs) => acceptancePending ? refs.filter(ref => ref === acceptanceRef) : [] };
+  const sourceAcceptance = await acquireReady({ ...input, issueId: 'private-source-acceptance',
+    acceptanceRef, allowSeed: false, recoverySourceRoot: sourceRoot }, acceptanceDeps);
+  taskIds.add(sourceAcceptance.taskId);
+  assert.equal(sourceAcceptance.sourceRecovery?.sourceSha, cloned.sha);
+  assert.equal(sourceAcceptance.sourceRecovery?.previousTaskId, recovered.taskId);
+  assert.equal(sourceAcceptance.sourceRecovery?.previousSourceRoot, oldSourceRoot);
+  assert.equal(sourceAcceptance.sourceRecovery?.previousBundleSha256, prepared.sha256);
+  assert.equal(sourceAcceptance.bundleSha256, rebuilt.sha256);
+  // Audit settlement must clear only audit refs. The independently pending
+  // source acceptance still owns the real confined process and physical pin.
+  await retireUnusedGradingAuditRuntimes(workspace, async () => [], acceptanceDeps, [acceptanceRef]);
+  assert.equal(await emptyScope(sourceAcceptance.taskId), false);
+  const acceptanceLocator = (await getTask(sourceAcceptance.taskId))?.detail.gradingAuditRuntime as GradingAuditRuntimeLocator;
+  assert.deepEqual(acceptanceLocator.issueIds, []);
+  assert.deepEqual(acceptanceLocator.acceptanceRefs, [acceptanceRef]);
+  assert.ok(readGradingAuditSourcePin(sourceRoot, acceptanceLocator.ownerRef));
+  // Advance the cleanup clock through the bounded window while acceptance is
+  // still pending. Recovery must not extend the old process's hard deadline.
+  await retireUnusedGradingAuditRuntimes(workspace, async ids => ids,
+    { ...acceptanceDeps, now: () => (sourceAcceptance.expiresAtSec + 1) * 1000 });
+  assert.equal(await emptyScope(sourceAcceptance.taskId), true);
+  assert.equal(readGradingAuditSourcePin(sourceRoot, locator.ownerRef), null);
+  const renewed = await acquireReady({ ...input, issueId: 'private-source-acceptance',
+    acceptanceRef, allowSeed: false, recoverySourceRoot: sourceRoot }, acceptanceDeps);
+  taskIds.add(renewed.taskId);
+  assert.notEqual(renewed.taskId, sourceAcceptance.taskId);
+  assert.equal(renewed.sourceRecovery?.previousTaskId, sourceAcceptance.taskId);
+  assert.ok(renewed.expiresAtSec <= Math.floor(Date.now() / 1000) + 21600);
+  const finalHealth = await fetch(renewed.baseUrl + '/api/health').then(response => response.json());
+  assert.equal(finalHealth.sha, evaluatorBuild.sha);
+  assert.equal(finalHealth.version, evaluatorBuild.version);
+  acceptancePending = false;
+  await retireUnusedGradingAuditRuntimes(workspace, async () => [], acceptanceDeps);
+  assert.equal(await emptyScope(renewed.taskId), true);
+  assert.equal(readGradingAuditSourcePin(sourceRoot, locator.ownerRef), null);
+  assert.equal(createHash('sha256').update(readFileSync(join(sourceRoot, 'apps/operator/dist-host/hono-host.mjs')))
+    .digest('hex'), rebuilt.sha256);
   const receipt: GradingRuntimeReceipt = { workspace, reused: true, recovered: true, confined: true, exactHealth: true,
     warmingRetained: true, transientProbeRetained: true,
-    partialReferenceRetained: true, scopeEmpty: true, pinRemoved: true, bundleSha256: prepared.sha256,
+    partialReferenceRetained: true, scopeEmpty: true, pinRemoved: true, expiredSourceRecovered: true,
+    settledAuditAcceptanceRetained: true, bundleSha256: prepared.sha256, recoveredBundleSha256: rebuilt.sha256,
     evaluatorBuild, taskIds: [...taskIds] };
   writeFileSync(join(evidenceDir, 'grading-runtime-receipt.json'), JSON.stringify(receipt));
   console.log('GRADING_RUNTIME_RECEIPT ' + JSON.stringify(receipt));
