@@ -941,15 +941,19 @@ if [[ "$GATE_PENDING" == "1" ]] && ! restricted_hold_gate; then
 fi
 
 # Stamp only after the bundle AND every runtime sibling/asset has published.
-# The helper refuses a dirty tree, a changed HEAD, a missing output, or an
-# incoherent dist-host tree. A stamp failure never makes an otherwise-good
-# build fail; it merely forces ExecStartPre to rebuild normally.
-if [[ "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}" == "1" ]]; then
+# The operator artifact is needed at boot even when freshness reuse is off
+# (the background-host default). Reuse itself remains opt-in above. The helper
+# checks the source captured before compilation and refuses dirty/moved inputs,
+# missing compiler provenance, or an incoherent output tree. Failure preserves
+# the availability build while leaving its artifact identity unqualified.
+if [[ "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}" == "1" ||
+      "$OUTFILE" == "$REPO_ROOT/apps/operator/dist-host/hono-host.mjs" ]]; then
   if fresh_head="$("${COMMITTED_NODE[@]}" "$FRESHNESS_HELPER" stamp \
       --repo-root "$REPO_ROOT" \
       --entry "$ENTRY" \
       --outfile "$OUTFILE" \
-      --manifest "$FRESH_MARKER")"; then
+      --manifest "$FRESH_MARKER" \
+      --source-sha "$SOURCE_SHA")"; then
     echo "✓ stamped proof-bound host bundle freshness at ${fresh_head:0:10}"
   else
     rm -f "$FRESH_MARKER"
