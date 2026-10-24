@@ -8,17 +8,21 @@ import {
 } from '../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../..');
-const options = isolatedWorkerOptions(900_000);
+// Two maintained builds plus clone/dependency preparation have independent
+// phase deadlines; the encompassing allowance must contain those phases.
+const options = isolatedWorkerOptions(1_500_000);
 
 it('retains one real exact-build endpoint across unknown readiness, recovers process loss, and retires its last audit reference', async context => {
   const runId = await recordIsolatedIntegrationProof({
     root, filePath: 'packages/operator-core/lib/release/grading-audit-runtime.integration.test.ts',
+    minimumFileRunTimeoutMs: options.testTimeoutMs,
     retainedArtifacts: ['phases/execute/grading-runtime-host.log', 'phases/execute/grading-runtime-diagnostics.json'],
     sourcePaths: [
       'packages/operator-core/test/grading-audit-runtime-fixture.ts',
       'packages/operator-core/lib/release/grading-audit-runtime.ts',
       'packages/operator-core/lib/release/grading-audit-source-pin.ts',
       'packages/operator-core/lib/release/operator-artifact.ts',
+      'libs/papercusp/libs/db/src/connection.ts',
       'packages/operator-core/lib/scratch-git-clone.ts',
       'papercusp-desktop/bin/lib/pinned-deps.sh',
       'packages/operator-core/lib/task-manager/managed-spawn.ts',

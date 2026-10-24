@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
+import { adminUrl, appUrl } from '@papercusp/db-org/connection';
 import { getBuildInfo } from '../lib/build-info';
 import { createScratchClone } from '../lib/scratch-git-clone';
 import { readVerifierSourceReceiptSync } from '../lib/verifier-source';
@@ -179,8 +180,24 @@ async function main() {
   const input = { workspaceId: workspace, issueId: 'private-audit-a', evaluatorBuild };
   // Deterministically exhaust readiness without waiting for a host-specific
   // startup speed. The real confined process, ledger and source pin must live.
-  await assert.rejects(ensureGradingAuditRuntime(input, { ...deps,
-    probe: async () => null, sleep: async () => {} }), /Audit runtime readiness is unknown/);
+  // Model a parent whose target was resolved without exported DSNs. The child
+  // has no operator env file and its fallback is deliberately unreachable;
+  // actual HTTP readiness below must therefore use the parent's resolved pins.
+  adminUrl(); appUrl();
+  const targetKeys = ['DATABASE_URL', 'HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL',
+    'PAPERCUSP_DATABASE_URL', 'PAPERCUSP_PG_PORT'] as const;
+  const targetEnv = targetKeys.map(key => [key, process.env[key]] as const);
+  try {
+    for (const key of targetKeys) delete process.env[key];
+    process.env.PAPERCUSP_PG_PORT = '1';
+    await assert.rejects(ensureGradingAuditRuntime(input, { ...deps,
+      probe: async () => null, sleep: async () => {} }), /Audit runtime readiness is unknown/);
+  } finally {
+    for (const [key, value] of targetEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
   const warming = await listTasks({ workspaceId: workspace, labelPrefix: 'grading-audit-runtime:', limit: 200 });
   assert.equal(warming.length, 1);
   taskIds.add(warming[0].taskId);

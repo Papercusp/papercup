@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import * as databaseTargets from '@papercusp/db-org/connection';
 import type { TaskRow } from '../task-manager/types';
 import { readGradingAuditSourcePin } from './grading-audit-source-pin';
 import { requestOnlyIdentityGuardMarker } from '../harness/env-operator-launcher';
@@ -19,6 +20,7 @@ vi.mock('../task-manager/control', () => ({ killTask: killManaged }));
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })));
+afterEach(() => vi.restoreAllMocks());
 
 function fixture(evaluatorBuild = { sha: 'exact123456', version: '1.2.3' }) {
   const root = mkdtempSync(join(tmpdir(), 'audit-runtime-'));
@@ -333,5 +335,18 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
       PAPERCUSP_PROVISION_ENV_OPERATORS: '0', PAPERCUSP_IDENTITY_MODE: 'load-only',
       PAPERCUSP_BIND_HOST: '127.0.0.1', PAPERCUSP_BUILD_SHA: f.input.evaluatorBuild.sha,
       PAPERCUSP_INTEGRATION_ROOT: f.source.sourceRoot, PAPERCUSP_HONO_PORT: '45187' });
+  });
+
+  it('pins resolved parent database targets when the immutable child has no operator env file', async () => {
+    const f = fixture();
+    await ensureGradingAuditRuntime(f.input, f.deps);
+    const admin = 'postgresql://parent_admin:private@127.0.0.1:15432/parent';
+    const app = 'postgresql://parent_app:private@127.0.0.1:15432/parent';
+    vi.spyOn(databaseTargets, 'adminUrl').mockReturnValue(admin);
+    vi.spyOn(databaseTargets, 'appUrl').mockReturnValue(app);
+    const env = gradingAuditRuntimeChildEnv(f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator);
+    expect(env).toMatchObject({ DATABASE_URL: admin, HARNESS_ADMIN_DATABASE_URL: admin,
+      HARNESS_DATABASE_URL: app, PAPERCUSP_DATABASE_URL: admin,
+      PAPERCUSP_INTEGRATION_ROOT: f.source.sourceRoot });
   });
 });

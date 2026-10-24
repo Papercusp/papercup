@@ -3,6 +3,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync
 import { createServer } from 'node:net';
 import { basename, dirname, join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
+import { adminUrl, appUrl } from '@papercusp/db-org/connection';
 import { papercuspPath } from '@papercusp/host-platform/home';
 import { getBuildInfo, type BuildInfo } from '../build-info';
 import { requestOnlyIdentityGuardMarker } from '../harness/env-operator-launcher';
@@ -135,8 +136,15 @@ function currentSource(build: BuildInfo): ReturnType<NonNullable<GradingAuditRun
 
 export function gradingAuditRuntimeChildEnv(locator: GradingAuditRuntimeLocator): NodeJS.ProcessEnv {
   const port = new URL(locator.baseUrl).port;
+  // The parent may resolve these from its operator env file, which is absent
+  // from the immutable source clone. Resolve before changing root/cwd so the
+  // child cannot silently discover a different local database.
+  const admin = adminUrl();
+  const app = appUrl();
   return {
     ...process.env,
+    DATABASE_URL: admin, HARNESS_ADMIN_DATABASE_URL: admin,
+    HARNESS_DATABASE_URL: app, PAPERCUSP_DATABASE_URL: admin,
     PAPERCUSP_INTEGRATION_ROOT: locator.sourceRoot,
     PAPERCUSP_HONO_PORT: port, PORT: port, PAPERCUSP_BIND_HOST: '127.0.0.1',
     PAPERCUSP_BACKGROUND_WORKERS: '0', PAPERCUSP_USE_EMBEDDED_PG: '0',
