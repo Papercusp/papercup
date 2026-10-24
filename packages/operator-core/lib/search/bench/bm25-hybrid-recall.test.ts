@@ -160,6 +160,29 @@ describe('frozen benchmark query inputs', () => {
         .toThrow('differs');
     }
   });
+  it('restores exact requests in a fresh private database without treating its address as a corpus pin', () => {
+    const server = { db: 'preparation_fixture', port: 31001, serverVersion: '18.4', libver: '1.5.1' };
+    const configuration = { ...context.configuration, server };
+    const frozen = { ...freeze(), configuration };
+    const bytes = JSON.stringify(frozen);
+    const expected = { ...context, sources: [...context.sources], configuration: {
+      ...configuration, server: { ...server, db: 'measurement_fixture', port: 31002 },
+    } };
+    const restored = restoreBm25QueryInputs(bytes, expected);
+    expect(restored.inputs).toEqual(frozen);
+    expect(restored.inputs.corpus).toBeNull();
+    expect(restored.paired[0]?.query).toBe(frozen.paired[0]?.query);
+    expect(restored.paired[0]?.arms).toEqual({});
+    expect(restoreBm25QueryInputs(bytes, expected, restored.sha256).sha256).toBe(restored.sha256);
+    expect(() => restoreBm25QueryInputs(`${bytes} `, expected, restored.sha256)).toThrow('bytes differ');
+    for (const patch of [{ serverVersion: '19.0' }, { libver: '1.6.0' }, { work_mem: '8192' }])
+      expect(() => restoreBm25QueryInputs(bytes, { ...expected, configuration: {
+        ...expected.configuration, server: { ...expected.configuration.server, ...patch },
+      } })).toThrow('configuration differs');
+    expect(() => restoreBm25QueryInputs(bytes, { ...expected, configuration: {
+      ...expected.configuration, profile: 'different@v1',
+    } })).toThrow('configuration differs');
+  });
   it('refuses observations, unknown sources, duplicate targets/queries and broadened samples', () => {
     const frozen = freeze();
     for (const patch of [{ paired: [pair('paired')] }, { sources: ['unknown'] }, { sources: ['work_item', 'work_item'] },

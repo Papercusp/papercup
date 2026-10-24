@@ -521,14 +521,27 @@ export function freezeBm25QueryInputs(options: Omit<Bm25QueryInputs, 'schemaVers
     paired: strip(options.paired), warmup: strip(options.warmup), steady: strip(options.steady) });
 }
 
+/** Database names and ports locate an execution; they do not identify its corpus.
+ * Keep them in the saved receipt, but compare the server's settings instead so
+ * requests survive disposal of the private runtime that prepared them. Corpus
+ * qualification remains separate: query inputs deliberately carry corpus:null. */
+function queryConfigurationIdentity(configuration: Record<string, unknown>) {
+  const server = configuration.server;
+  if (!server || typeof server !== 'object' || Array.isArray(server)) return configuration;
+  return { ...configuration, server: Object.fromEntries(Object.entries(server)
+    .filter(([key]) => key !== 'db' && key !== 'port')) };
+}
+
 /** Admit saved bytes only for the exact requested population/configuration; never import results. */
 export function restoreBm25QueryInputs(bytes: string, expected: Pick<Bm25QueryInputs,
   'seed' | 'workspaceId' | 'sources' | 'pairsPerSource' | 'configuration'>, expectedSha256?: string) {
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   if (expectedSha256 !== undefined && sha256 !== expectedSha256) throw new Error('query input bytes differ from manifest');
   const inputs = bm25QueryInputsSchema.parse(JSON.parse(bytes));
-  for (const key of ['seed', 'workspaceId', 'sources', 'pairsPerSource', 'configuration'] as const)
+  for (const key of ['seed', 'workspaceId', 'sources', 'pairsPerSource'] as const)
     if (!isDeepStrictEqual(inputs[key], expected[key])) throw new Error(`saved query input ${key} differs`);
+  if (!isDeepStrictEqual(queryConfigurationIdentity(inputs.configuration), queryConfigurationIdentity(expected.configuration)))
+    throw new Error('saved query input configuration differs');
   const pairs = (rows: Bm25QueryInputs['paired']): PairResult[] => rows.map(p => ({ ...p, arms: {} }));
   return { inputs, sha256, paired: pairs(inputs.paired), warmup: pairs(inputs.warmup), steady: pairs(inputs.steady) };
 }
