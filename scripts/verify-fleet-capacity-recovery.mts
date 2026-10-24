@@ -2,8 +2,8 @@
  * Explicit ESM keeps the maintained committed-source loader ahead of tsx transforms. */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, realpathSync } from 'node:fs';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { listSpecEvidence } from '../packages/operator-core/lib/agent-tools/plans/spec-evidence-store';
 import type { inspectCommittedOperationalEvidence } from '../packages/operator-core/lib/agent-tools/testing/record-run';
@@ -44,11 +44,30 @@ async function matchesMeasuredSource(root: string, row: Awaited<ReturnType<typeo
   } catch { return false; }
 }
 
+async function readCapture(root: string, row: Awaited<ReturnType<typeof listSpecEvidence>>[number], input: unknown) {
+  const { resolveCapacityCapture } = await import('../packages/operator-core/lib/fleet/capacity-recovery-evidence');
+  return resolveCapacityCapture(input, async (path, expectedSha256) => {
+    const commit = row.testRunProvenance?.commitSha;
+    if (!/^[a-f0-9]{40}$/.test(commit ?? '')) throw new Error('native-capture-commit-missing');
+    const { repoFilesEvidenceMeasurementSchema } = await import('../packages/operator-core/lib/agent-tools/plans/spec-evidence-store');
+    const recipe = repoFilesEvidenceMeasurementSchema.parse(row.details?.currentMeasurement);
+    if (recipe.fixtureRootHarnessSlug || !recipe.fixturePaths?.includes(path))
+      throw new Error('native-capture-fixture-not-measured:' + path);
+    const { readCommittedFiles, REPO_FILE_SET_READ_LIMITS } =
+      await import('../packages/operator-core/lib/agent-tools/plans/committed-tree-reader');
+    const files = await readCommittedFiles(root, commit!, [path], {}, REPO_FILE_SET_READ_LIMITS);
+    if (files.get(path)?.sha256 !== expectedSha256) throw new Error('native-capture-not-committed:' + path);
+    const absolute = realpathSync(join(root, path)), rel = relative(realpathSync(root), absolute);
+    if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) throw new Error('native-capture-path-escape');
+    return readFileSync(absolute);
+  });
+}
+
 async function readBriefProof(root: string, row: Awaited<ReturnType<typeof listSpecEvidence>>[number],
   artifact: Awaited<ReturnType<typeof inspectCommittedOperationalEvidence>>['artifact']) {
-  const { capacityBriefCaptureSchema, validateCapacityBriefReceipt } =
+  const { validateCapacityBriefReceipt } =
     await import('../packages/operator-core/lib/fleet/capacity-recovery-evidence');
-  const capture = capacityBriefCaptureSchema.parse(artifact.capacityBriefCapture);
+  const capture = await readCapture(root, row, artifact.capacityBriefCapture);
   const native = await nativeToolReceipt(capture.invocationId);
   return validateCapacityBriefReceipt(artifact.capacityRecoveryProof, capture, native,
     { now: new Date().toISOString(), startedAt: artifact.startedAt, finishedAt: artifact.finishedAt,
@@ -65,8 +84,9 @@ async function readAdmissionProof(root: string, row: Awaited<ReturnType<typeof l
     || captures.some(c => !proof.recoveries.some(r => r.memberId === c.memberId))) throw new Error('native-admission-population');
   const violations: string[] = [];
   for (const c of captures) {
-    const native = await nativeToolReceipt(c.capture.invocationId);
-    violations.push(...validateCapacityAdmissionReceipt(proof, c.memberId, c.capture, native,
+    const capture = await readCapture(root, row, c.capture);
+    const native = await nativeToolReceipt(capture.invocationId);
+    violations.push(...validateCapacityAdmissionReceipt(proof, c.memberId, capture, native,
       { now: new Date().toISOString(), startedAt: artifact.startedAt, finishedAt: artifact.finishedAt,
         sourceMatches: await matchesMeasuredSource(root, row, native.servingBuildSha) }).violations);
   }
@@ -75,7 +95,7 @@ async function readAdmissionProof(root: string, row: Awaited<ReturnType<typeof l
 
 async function readDiagnosticOutputs(root: string, row: Awaited<ReturnType<typeof listSpecEvidence>>[number],
   artifact: Awaited<ReturnType<typeof inspectCommittedOperationalEvidence>>['artifact']) {
-  const [{ capacityRuntimeCapturesSchema, capacityBriefCaptureSchema, validateCapacityDiagnosticOutputs },
+  const [{ capacityRuntimeCapturesSchema, validateCapacityDiagnosticOutputs },
     { repoFilesEvidenceMeasurementSchema, expandRepoFilesEvidenceSourcePathsAtRoot }] = await Promise.all([
     import('../packages/operator-core/lib/fleet/capacity-recovery-evidence'),
     import('../packages/operator-core/lib/agent-tools/plans/spec-evidence-store'),
@@ -85,12 +105,13 @@ async function readDiagnosticOutputs(root: string, row: Awaited<ReturnType<typeo
   const required = ['leader-brief.ts', 'leader-brief-shape.ts', 'leader-brief-aggregate.ts']
     .map(name => 'packages/operator-core/lib/agent-tools/fleet/' + name);
   if (required.some(path => !paths.includes(path))) throw new Error('native-runtime-source-not-measured');
-  const qualify = async (capture: ReturnType<typeof capacityBriefCaptureSchema.parse>) => {
+  const qualify = async (input: unknown) => {
+    const capture = await readCapture(root, row, input);
     const native = await nativeToolReceipt(capture.invocationId);
     return { capture, native, sourceMatches: await matchesMeasuredSource(root, row, native.servingBuildSha) };
   };
   const runtime = await Promise.all(capacityRuntimeCapturesSchema.parse(artifact.capacityRuntimeCaptures).map(qualify));
-  const caller = artifact.capacityCallerCapture == null ? null : await qualify(capacityBriefCaptureSchema.parse(artifact.capacityCallerCapture));
+  const caller = artifact.capacityCallerCapture == null ? null : await qualify(artifact.capacityCallerCapture);
   const { readCommittedFiles, REPO_FILE_SET_READ_LIMITS } =
     await import('../packages/operator-core/lib/agent-tools/plans/committed-tree-reader');
   const proof = (await import('../packages/operator-core/lib/fleet/capacity-recovery-evidence'))
@@ -104,7 +125,7 @@ async function readDiagnosticOutputs(root: string, row: Awaited<ReturnType<typeo
 
 async function readRecoveryOperations(root: string, row: Awaited<ReturnType<typeof listSpecEvidence>>[number],
   artifact: Awaited<ReturnType<typeof inspectCommittedOperationalEvidence>>['artifact']) {
-  const [{ getOrgPg }, { recoveryProofSchema, capacityBriefCaptureSchema, validateCapacityRecoveryOperations }] = await Promise.all([
+  const [{ getOrgPg }, { recoveryProofSchema, validateCapacityRecoveryOperations }] = await Promise.all([
     import('@papercusp/db-org'), import('../packages/operator-core/lib/fleet/capacity-recovery-evidence'),
   ]);
   const { sql } = getOrgPg();
@@ -153,7 +174,7 @@ async function readRecoveryOperations(root: string, row: Awaited<ReturnType<type
         takenAt: audit.attempt_ts.toISOString(), detail: audit.detail ? JSON.parse(audit.detail) : null },
       writers: writers.map(w => ({ id: Number(w.id), actorId: w.coord_owner_id })) });
   }
-  const capture = capacityBriefCaptureSchema.parse(artifact.capacityLeaderAfterCapture);
+  const capture = await readCapture(root, row, artifact.capacityLeaderAfterCapture);
   const native = await nativeToolReceipt(capture.invocationId);
   return validateCapacityRecoveryOperations(proof, operations,
     { capture, native, sourceMatches: await matchesMeasuredSource(root, row, native.servingBuildSha) },
@@ -311,8 +332,9 @@ try {
     const paths = await expandRepoFilesEvidenceSourcePathsAtRoot(root, recipe);
     const files = await readCommittedFiles(root, proof.release.commit, paths, {}, REPO_FILE_SET_READ_LIMITS);
     const runtime = await Promise.all(capacityRuntimeCapturesSchema.parse(artifact.capacityShipmentRuntimeCaptures).map(async capture => {
-      const native = await nativeToolReceipt(capture.invocationId);
-      return { capture, native, sourceMatches: await matchesMeasuredSource(root, row, native.servingBuildSha) };
+      const resolved = await readCapture(root, row, capture);
+      const native = await nativeToolReceipt(resolved.invocationId);
+      return { capture: resolved, native, sourceMatches: await matchesMeasuredSource(root, row, native.servingBuildSha) };
     }));
     const pipeline = (p: typeof pipelines[number]) => ({ ...p, createdAt: p.created_at.toISOString() });
     return validateCapacityShipmentRelease(input, { greenAction: ga, deployAction: da,

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { formatSpecRef } from '../scheduler/claim-spec';
-import { recordOperationalRun, type RecordOperationalRunDeps } from '../agent-tools/testing/record-run';
+import { parseOperationalEvidenceArtifact, recordOperationalRun, type RecordOperationalRunDeps } from '../agent-tools/testing/record-run';
 import { BRIEF_ADMIN, computeIdentityHash, JUDGE_PROMPT_SCAFFOLD_VERSION } from '@papercusp/testing-shell/llm';
 import { S42_CASES, S42_ITEM, S42_PROMPT } from '../llm-testing/scenarios/su/S42-drain-watch-recheck';
 import { LUNA_CAPACITY_PLAN, LUNA_CAPACITY_INSTRUMENTS, lunaCapacityInstruments, validateCapacityRecoveryProof, validateCapacityShipmentProof,
@@ -13,7 +13,7 @@ import { LUNA_CAPACITY_PLAN, LUNA_CAPACITY_INSTRUMENTS, lunaCapacityInstruments,
   validateCapacityShipmentEvidence, capacityBarEvidenceFingerprint, type NativeCapacityBarEvidence,
   validateCapacityShipmentAcceptance, type NativeCapacityAcceptanceReceipt,
   validateCapacityShipmentRelease,
-  validateCapacityBriefReceipt, validateCapacityOutputReceipt, validateCapacityAdmissionReceipt,
+  validateCapacityBriefReceipt, validateCapacityOutputReceipt, validateCapacityAdmissionReceipt, resolveCapacityCapture,
   validateCapacityDiagnosticOutputs, type NativeCapacityOutput,
   validateCapacityRecoveryOperations, capacityWriterAuditRef, type NativeCapacityRecoveryOperation,
   type NativeCapacityBriefReceipt, type NativeCapacityLlmRun, type NativeCapacityLlmContext,
@@ -107,7 +107,7 @@ describe('canonical R1–R5 shipment evidence', () => {
     expect(persisted[0].commit).toBe(publicationCommit);
     expect(publicationCommit).not.toBe(n.proof.candidate.commit);
     const row = n.rows.find(r => r.barKey === 'R-2')!;
-    row.commitSha = persisted[0].commit;
+    row.commitSha = persisted[0].commit ?? null;
     row.testRunId = 77;
     const evidence = n.proof.evidence.find(e => e.barKey === 'R-2')!;
     evidence.fingerprint = capacityBarEvidenceFingerprint([row]);
@@ -145,6 +145,57 @@ describe('canonical R1–R5 shipment evidence', () => {
       const n = native(); mutate(n);
       expect(validateCapacityShipmentEvidence(n.proof, n.rows, n.instruments).status).toBe('fail');
     }
+  });
+});
+
+describe('committed raw native capture sidecars', () => {
+  const path = 'docs/evidence/luna-native-brief.raw.json';
+  const raw = Buffer.from(JSON.stringify({ ok: true, payload: 'x'.repeat(337_270) }));
+  const sha256 = createHash('sha256').update(raw).digest('hex');
+  const stored = () => ({ invocationId: 17, resultFile: { path, sha256 } });
+  it('keeps a full native output beyond the manifest limit and still verifies its native digest', async () => {
+    const manifest = { schemaVersion: 1, kind: 'operational-test-evidence', name: 'Luna diagnostic', framework: 'operational',
+      command: ['fleet:leader-brief'], exitCode: 0, startedAt: stamp(0), finishedAt: stamp(2), summary: 'Native capture',
+      assertions: [{ id: 'native', passed: true, evidence: 'Full committed sidecar and native custody joined.' }],
+      capacityBriefCapture: stored() };
+    expect(parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify(manifest)))).toEqual(manifest);
+    expect(() => parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify({ ...manifest,
+      capacityBriefCapture: { invocationId: 17, result: JSON.parse(raw.toString()) } })))).toThrow('evidence_too_large');
+    const capture = await resolveCapacityCapture(stored(), async (requested, expected) => {
+      expect([requested, expected]).toEqual([path, sha256]); return raw;
+    });
+    const native: NativeCapacityBriefReceipt = { id: 17, toolName: 'work_items:claimable', status: 'ok',
+      workspaceId: 'papercusp-workspace', actorId: 'leader', invokedAt: stamp(1), durationMs: 1000,
+      metadata: { operationalOutput: { schemaVersion: 1, observedAt: stamp(1),
+        sha256: createHash('sha256').update(canonicalJson(capture.result)).digest('hex') } } };
+    const expected = { toolName: native.toolName, actorId: 'leader', now: stamp(3), startedAt: stamp(0),
+      finishedAt: stamp(2), sourceMatches: true };
+    expect(validateCapacityOutputReceipt(capture, native, expected).status).toBe('pass');
+    capture.result.payload = 'trimmed';
+    expect(validateCapacityOutputReceipt(capture, native, expected).violations).toContain('native-output-custody');
+  });
+  it('preserves inline captures without consulting a sidecar', async () => {
+    const capture = { invocationId: 17, result: { ok: true } };
+    expect(await resolveCapacityCapture(capture, async () => { throw new Error('unexpected-read'); })).toEqual(capture);
+  });
+  it.each(['../raw.json', '/tmp/raw.json', 'docs/evidence/../raw.json', 'docs/evidence//raw.json',
+    'docs/evidence/./raw.json', 'docs/evidence/raw.txt'])('refuses unsafe sidecar path %s before reading', async path => {
+    let read = false;
+    await expect(resolveCapacityCapture({ invocationId: 17, resultFile: { path, sha256 } }, async () => {
+      read = true; return raw;
+    })).rejects.toThrow();
+    expect(read).toBe(false);
+  });
+  it('rejects missing, tampered, invalid JSON, non-object and ambiguous captures', async () => {
+    await expect(resolveCapacityCapture(stored(), async () => { throw new Error('missing-sidecar'); })).rejects.toThrow('missing-sidecar');
+    await expect(resolveCapacityCapture(stored(), async () => Buffer.from('{}'))).rejects.toThrow('native-capture-sha256-mismatch');
+    for (const content of ['not-json', '[]']) {
+      const bytes = Buffer.from(content);
+      await expect(resolveCapacityCapture({ invocationId: 17, resultFile: { path,
+        sha256: createHash('sha256').update(bytes).digest('hex') } }, async () => bytes)).rejects.toThrow();
+    }
+    await expect(resolveCapacityCapture({ ...stored(), result: {} }, async () => raw)).rejects.toThrow();
+    await expect(resolveCapacityCapture(stored(), async () => Buffer.alloc(8 * 1024 * 1024 + 1))).rejects.toThrow('native-capture-too-large');
   });
 });
 

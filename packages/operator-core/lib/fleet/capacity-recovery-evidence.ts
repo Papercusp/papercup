@@ -156,9 +156,30 @@ export interface CapacityProofVerdict { status: 'pass' | 'fail'; violations: str
 export const capacityBriefCaptureSchema = z.object({ invocationId: z.number().int().positive(),
   result: z.record(z.string(), z.unknown()),
 }).strict();
+const storedCapacityCaptureSchema = z.union([capacityBriefCaptureSchema,
+  z.object({ invocationId: z.number().int().positive(), resultFile: z.object({
+    path: z.string().regex(/^docs\/evidence\/[a-zA-Z0-9_./-]+\.json$/)
+      .refine(path => path.split('/').every(part => part !== '' && part !== '.' && part !== '..')),
+    sha256: digest,
+  }).strict() }).strict(),
+]);
+/** Keep the manifest small without changing the full native output being authenticated.
+ * The reader must pin the sidecar to the operational receipt's immutable commit. */
+export async function resolveCapacityCapture(input: unknown,
+  readPinned: (path: string, sha256: string) => Promise<Uint8Array>,
+): Promise<z.infer<typeof capacityBriefCaptureSchema>> {
+  const capture = storedCapacityCaptureSchema.parse(input);
+  if ('result' in capture) return capture;
+  const { REPO_FILE_SET_READ_LIMITS } = await import('../agent-tools/plans/committed-tree-reader');
+  const bytes = Buffer.from(await readPinned(capture.resultFile.path, capture.resultFile.sha256));
+  if (bytes.length > REPO_FILE_SET_READ_LIMITS.maxFileBytes) throw new Error('native-capture-too-large');
+  if (createHash('sha256').update(bytes).digest('hex') !== capture.resultFile.sha256)
+    throw new Error('native-capture-sha256-mismatch');
+  return capacityBriefCaptureSchema.parse({ invocationId: capture.invocationId, result: JSON.parse(bytes.toString('utf8')) });
+}
 export const capacityAdmissionCapturesSchema = z.array(z.object({ memberId: text,
-  capture: capacityBriefCaptureSchema }).strict()).max(100);
-export const capacityRuntimeCapturesSchema = z.array(capacityBriefCaptureSchema).min(1).max(32);
+  capture: storedCapacityCaptureSchema }).strict()).max(100);
+export const capacityRuntimeCapturesSchema = z.array(storedCapacityCaptureSchema).min(1).max(32);
 /** Read from tool_invocations by the instrument, never from artifact-authored metadata. */
 export interface NativeCapacityBriefReceipt {
   id: number; toolName: string; status: string; workspaceId: string; actorId: string | null;
