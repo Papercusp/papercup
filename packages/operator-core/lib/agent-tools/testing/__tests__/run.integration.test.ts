@@ -1804,6 +1804,38 @@ describe('testing:run (integration)', () => {
     expect(runRouterFn).toHaveBeenCalledTimes(1);
   });
 
+  it.each([0, 1])('keeps the leading setup error and logs after exit %s with an empty JSON report', async (code) => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-empty-report-log-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const cause = 'Error: fixture setup failed before any test file was measured';
+    await writeFile(join(root, 'scripts/test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      `process.stderr.write(${JSON.stringify(`${cause}\n`)});`,
+      "process.stdout.write('startup progress\\n'.repeat(1000));",
+      "const report = process.argv.find((arg) => arg.startsWith('--outputFile='));",
+      "writeFileSync(report.slice('--outputFile='.length), JSON.stringify({ testResults: [] }));",
+      `process.exitCode = ${code};`,
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 30_000 });
+    if (out.error !== 'no_report') throw new Error(JSON.stringify(out));
+    const logs = out.diagnostics?.routerLogPaths ?? [];
+    try {
+      expect(out.ok).toBe(false);
+      expect(out.hint).toContain('no test verdict was measured');
+      expect(out).not.toHaveProperty('passed');
+      expect(out).not.toHaveProperty('failed');
+      expect(out).not.toHaveProperty('files');
+      expect(out.routerOutput).toContain(cause);
+      expect(out.diagnostics).toMatchObject({ routerExit: code, markerSeen: false, summarySeen: 'none' });
+      expect(logs).toHaveLength(2);
+      expect(await readFile(logs[0]!, 'utf8')).toContain('startup progress');
+      expect(await readFile(logs[1]!, 'utf8')).toBe(`${cause}\n`);
+    } finally {
+      await Promise.all(logs.map((path) => rm(path, { force: true })));
+    }
+  });
+
   it('retains the original router log and source/cleanup packet after a measured successful verdict', async () => {
     const root = await makeScratchTestCheckout('papercusp-testing-run-success-log-');
     await mkdir(join(root, 'scripts'), { recursive: true });
