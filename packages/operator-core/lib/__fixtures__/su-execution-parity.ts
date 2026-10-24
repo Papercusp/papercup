@@ -144,7 +144,7 @@ export const SU_EXEC_CONTROL_SCENARIOS = SU_EXEC_COMBINATIONS.flatMap(combinatio
     sources: combination.execution === 'pty' ? [PTY]
       : [HOST, combination.provider === 'claude' ? CLAUDE : RPC],
     testTargets: combination.execution === 'pty'
-      ? ['apps/operator/scripts/psu-pty-host.test.ts']
+      ? ['apps/operator/lib/psu-pty-host.test.ts']
       : ['packages/operator-core/lib/su-session-host.test.ts',
         `packages/operator-core/lib/su-session-${combination.provider === 'claude' ? 'claude' : 'rpc'}-engine.test.ts`],
     liveTestTarget: 'packages/operator-core/lib/su-session-attached-live.integration.test.ts',
