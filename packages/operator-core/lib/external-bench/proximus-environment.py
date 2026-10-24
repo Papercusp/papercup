@@ -10,9 +10,9 @@ import asyncio
 import base64
 import json
 import math
-import os
 import re
 import shlex
+import sys
 import time
 from pathlib import Path, PurePosixPath
 from typing import Awaitable, Callable
@@ -23,41 +23,30 @@ from harbor.models.task.config import EnvironmentConfig, NetworkMode, NetworkPol
 from harbor.models.trial.paths import TrialPaths
 
 Command = Callable[[list[str], float], Awaitable[ExecResult]]
-MAX_STREAM_BYTES = 8 * 1024 * 1024
 
 
-async def docker_command(args: list[str], timeout: float) -> ExecResult:
-    # No model/API credential or proxy setting is inherited by the Docker CLI.
-    env = {key: value for key, value in os.environ.items() if key in {
-        "PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG",
-        "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "XDG_RUNTIME_DIR",
-    }}
-    process = await asyncio.create_subprocess_exec(
-        "docker", *args, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE, env=env,
-    )
-    async def capture(stream) -> bytes:
-        parts, length = [], 0
-        while chunk := await stream.read(64 * 1024):
-            length += len(chunk)
-            if length > MAX_STREAM_BYTES:
-                raise ValueError("Docker command output exceeded the host capture limit")
-            parts.append(chunk)
-        return b"".join(parts)
+class HostTaskCommands:
+    """One private request at a time on the existing host process pipes.
 
-    tasks = [asyncio.create_task(capture(process.stdout)),
-             asyncio.create_task(capture(process.stderr)), asyncio.create_task(process.wait())]
-    try:
-        stdout, stderr, _ = await asyncio.wait_for(asyncio.gather(*tasks), timeout)
-    except BaseException:
-        for task in tasks:
-            task.cancel()
-        if process.returncode is None:
-            process.kill()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        await process.communicate()
-        raise
-    return ExecResult(return_code=process.returncode, stdout=stdout.decode(), stderr=stderr.decode())
+    The trusted parent validates the exact container, operation and deadline.
+    This worker never receives Docker credentials or a daemon socket.
+    """
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._ordinal = 0
+
+    async def __call__(self, args: list[str], timeout: float) -> ExecResult:
+        async with self._lock:
+            self._ordinal += 1
+            print(json.dumps({"kind": "task-command", "id": self._ordinal,
+                              "args": args, "timeout": timeout}), file=sys.__stdout__, flush=True)
+            line = await asyncio.to_thread(sys.stdin.buffer.readline, 24 * 1024 * 1024 + 1)
+            if len(line) > 24 * 1024 * 1024 or not line.endswith(b"\n"):
+                raise ValueError("Invalid host task response")
+            result = json.loads(line)
+            if result.get("kind") != "task-result" or result.get("id") != self._ordinal:
+                raise ValueError("Host task response correlation changed")
+            return ExecResult(return_code=result["return_code"], stdout=result["stdout"], stderr=result["stderr"])
 
 
 class FrontierSweEnvironment(BaseEnvironment):
@@ -65,7 +54,7 @@ class FrontierSweEnvironment(BaseEnvironment):
 
     def __init__(self, *, container_id: str, image: str, instance_id: str,
                  network: str, network_mode: str, trial_dir: Path, max_wall_clock_ms: int,
-                 command: Command = docker_command):
+                 command: Command | None = None):
         if not re.fullmatch(r"[a-f0-9]{64}", container_id):
             raise ValueError("A full Docker container ID is required")
         if not re.fullmatch(r"[^\s@]+@sha256:[a-f0-9]{64}", image):
@@ -76,7 +65,7 @@ class FrontierSweEnvironment(BaseEnvironment):
         if isinstance(max_wall_clock_ms, bool) or not isinstance(max_wall_clock_ms, int) or max_wall_clock_ms <= 0:
             raise ValueError("A finite positive task deadline is required")
         self.container_id, self.image, self.instance_id = container_id, image, instance_id
-        self.network, self._command = network, command
+        self.network, self._command = network, command or HostTaskCommands()
         self._deadline = time.monotonic() + max_wall_clock_ms / 1000
         self._attached = False
         super().__init__(
