@@ -287,6 +287,78 @@ describe('current launcher owns its assignment runtime', () => {
     currentGeneration: { clone: async (t: BenchTask) => ({ dir: `/private/${t.instanceId}`, repo: 'fixture', baseCommit: 'a'.repeat(40), cleanup: async () => {} }),
       extractDiff: async () => 'diff --git a/a b/a' },
   });
+  function proximus() {
+    config.grader.family = 'frontier-swe';
+    const arm = config.arms[1];
+    arm.agent = 'proximus'; arm.account = config.arms[0].account = 'pinned-account';
+    for (const value of config.arms) value.control = {
+      topology: value.id === 'baseline' ? 'stock-native-reference' : 'solo', solverGroup: value.id,
+      solverToolsHash: 'a'.repeat(64), capabilities: allCapabilities(value.id === 'baseline' ? 'off' : 'on'),
+    };
+    config.priceSchedule.rates[0].outputTokenCeiling = 64;
+    config.grader.images = Object.fromEntries(config.taskIds.map(id => [id, `registry.example/${id}@sha256:${'f'.repeat(64)}`]));
+    arm.runtime = { ...arm.runtime, sourceRevision: PROXIMUS_SOURCE_REVISION, clientVersion: PROXIMUS_CLIENT_VERSION,
+      runtimeRevision: 'b'.repeat(64),
+      proximus: { provider: 'openai', harborVersion: '0.23.0', maxInputTokens: 20_000, supportsVision: false } };
+    const prepared = { pythonBin: '/private/venv/bin/python', runtime: { schemaVersion: 1 as const,
+      sourceRevision: arm.runtime.sourceRevision, clientVersion: arm.runtime.clientVersion,
+      runtimeRevision: arm.runtime.runtimeRevision, harborVersion: '0.23.0', fileCount: 42 } };
+    const prepare = vi.fn(async () => {
+      expect(io.register).not.toHaveBeenCalled(); expect(io.upsert).not.toHaveBeenCalled(); expect(io.task).not.toHaveBeenCalled();
+      return prepared;
+    });
+    const loadBacklog = async () => [task('t1'), task('t2')].map(value => ({ ...value, benchmark: 'frontier-swe' }));
+    return { prepared, prepare, loadBacklog, request: { ...input, arm: 'baseline', suite: 'frontier-swe' } };
+  }
+  it.each(['sourceRevision', 'clientVersion', 'runtimeRevision', 'harborVersion'] as const)
+    ('refuses a Proximus %s mismatch before durable allocations', async field => {
+      const f = proximus(); f.prepared.runtime[field] = 'different';
+      await expect(launchBenchRun(f.request, { ...deps(), loadBacklog: f.loadBacklog,
+        currentProximus: { prepare: f.prepare } })).rejects.toThrow(/prepared runtime/);
+      expect(io.register).not.toHaveBeenCalled(); expect(io.upsert).not.toHaveBeenCalled(); expect(io.task).not.toHaveBeenCalled();
+    });
+  it('propagates Proximus preparation failure before creating a run', async () => {
+    const f = proximus(); f.prepare.mockRejectedValueOnce(new Error('installation failed'));
+    await expect(launchBenchRun(f.request, { ...deps(), loadBacklog: f.loadBacklog,
+      currentProximus: { prepare: f.prepare } })).rejects.toThrow('installation failed');
+    expect(io.register).not.toHaveBeenCalled(); expect(io.upsert).not.toHaveBeenCalled(); expect(io.task).not.toHaveBeenCalled();
+  });
+  it('limits the Proximus selector to the frozen FrontierSWE baseline', () => {
+    const f = proximus();
+    expect(currentBenchLaunchSelection(f.request, config).arm.agent).toBe('proximus');
+    expect(() => currentBenchLaunchSelection({ ...f.request, suite: 'swe-bench-pro' }, config)).toThrow(/execution/);
+    config.arms[0].agent = 'proximus'; config.arms[0].runtime = { ...config.arms[1].runtime };
+    expect(() => currentBenchLaunchSelection({ ...f.request, arm: 'papercusp' }, config)).toThrow();
+  });
+  it('binds the prepared host interpreter and records Proximus usage without native identity', async () => {
+    const f = proximus(), stop = vi.fn(async () => {});
+    const start = vi.fn(async () => ({ agent: 'proximus' as const, runId: config.runId, armId: 'baseline' as const,
+      workspaceId, taskId: 't1', containerId: 'task-container', image: 'frozen-image', execute: vi.fn(), stop }));
+    const currentFrontierArm: NonNullable<Parameters<typeof launchBenchRun>[1]>['currentFrontierArm'] = vi.fn(async req => {
+      expect(req.launch.execution).toBe('proximus-host');
+      expect(req.launch).not.toHaveProperty('mcpOrigin'); expect(req.launch).not.toHaveProperty('hookRecordDir');
+      const assignment = await req.launch.startAssignment({ task: req.backlog![0] } as never);
+      await assignment.stop();
+      await req.onResult!({ runId: req.runId, suite: 'frontier-swe', modality: 'in-container', taskId: 't1',
+        arm: 'baseline', seed: 3, resolved: false, score: 0.5, graderStatus: 'failed', graderFamily: 'frontier-swe',
+        graderVersion: config.grader.version, tokensIn: 10, tokensOut: 20, tokensTotal: 30, costUsd: 0.001,
+        priceTableVersion: config.priceSchedule.version, wallClockMs: 100, turns: 2, budgetTokens: null,
+        capped: false, generationStatus: 'completed', generationError: null,
+        armMeta: { hostReference: { attempts: { knownUsage: { tokensCacheRead: 5, tokensCacheWrite: 7 } } } },
+        modelId: config.arms[1].model, harnessVersion: config.arms[1].runtime.sourceRevision,
+        preregHash: input.current!.preregHash, rolloutId: req.runId });
+      return { arm: req.spec.arm, runId: req.runId, startedAtMs: 0, finishedAtMs: 1, rows: [], modelCallsSpent: 0,
+        tokensSpent: 0, costUsdSpent: 0, budgetExhausted: false, attemptedTaskIds: ['t1'], skippedTaskIds: ['t2'] };
+    });
+    await (await launchBenchRun(f.request, { ...deps(), loadBacklog: f.loadBacklog,
+      currentProximus: { prepare: f.prepare, start }, currentFrontierArm })).done;
+    expect(f.prepare).toHaveBeenCalledOnce(); expect(start).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      pythonBin: f.prepared.pythonBin, options: expect.objectContaining({ agent: 'proximus', account: 'pinned-account' }),
+    }));
+    expect(stop).toHaveBeenCalledOnce();
+    expect(io.emit.mock.calls[0][0].generation).toMatchObject({ trajectoryKind: 'proximus-host', tokensCacheRead: 5, tokensCacheWrite: 7 });
+    expect(io.legacyRun).not.toHaveBeenCalled(); expect(io.legacyBind).not.toHaveBeenCalled();
+  });
   it('routes FrontierSWE v2 through the current container arm and persists its graded native evidence', async () => {
     config.grader.family = 'frontier-swe';
     const currentTask = vi.fn();

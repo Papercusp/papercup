@@ -67,9 +67,9 @@ import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGate
   type CurrentBenchLockStateAllocation, type CurrentBenchNativeRunCost,
   type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions, type CurrentBenchAccountingBinding } from './current-su';
 import { getLearningSpendPositions, registerLearningLoop, type LearningReservationResourceBudget } from '../learning-governor/store';
-import type { FrontierSweNativeAssignment, FrontierSweProximusAssignment } from './frontier-swe-launch-adapter';
+import type { FrontierSweNativeAssignment, FrontierSweProximusAssignment, FrontierSweLaunchAdapterConfig } from './frontier-swe-launch-adapter';
 import { frontierSweAgentNetworkArgs, type FrontierSweEnvHandle } from './frontier-swe-seam';
-import { runProximusHost, readProximusAttemptPopulation, readProximusBilling, priceProximusAttempts } from './proximus-runtime';
+import { prepareProximusRuntime, runProximusHost, readProximusAttemptPopulation, readProximusBilling, priceProximusAttempts } from './proximus-runtime';
 import type { RunAgentInput } from './run-topology';
 import { createCurrentStockBenchHarness } from './native-harness-runner';
 import { CURRENT_STOCK_CODEX_BLUEPRINT } from './current-su';
@@ -160,6 +160,8 @@ export interface LaunchDeps {
   currentGeneration?: Pick<import('./types').GenerationPorts, 'clone' | 'extractDiff'>;
   /** Host-owned in-container run seam; never taken from the launch JSON. */
   currentFrontierArm?: typeof runFrontierSweCurrentArm;
+  /** Trusted host seams; launch JSON cannot select an interpreter or assignment factory. */
+  currentProximus?: { prepare?: typeof prepareProximusRuntime; start?: typeof startFrontierSweProximusAssignment };
 }
 
 export interface CurrentTaskInput {
@@ -634,7 +636,10 @@ export function currentBenchLaunchSelection(input: LaunchBenchRunInput, config: 
   }
   // The stock-native adapter is a separate execution route. It must never fall
   // through to a Queen or become a second su treatment under a baseline label.
-  if (!['papercusp', 'baseline'].includes(arm.id) || arm.agent !== 'codex') throw new Error('Unsupported current benchmark execution arm/client.');
+  const hostReference = arm.id === 'baseline' && arm.agent === 'proximus' &&
+    input.suite === 'frontier-swe' && protocol.grader.family === 'frontier-swe';
+  if (!['papercusp', 'baseline'].includes(arm.id) || arm.agent !== 'codex' && !hostReference)
+    throw new Error('Unsupported current benchmark execution arm/client.');
   if (input.taskSetId !== 'custom' || input.taskIds && canonicalJson(input.taskIds) !== canonicalJson(protocol.taskIds) ||
       input.model !== undefined && input.model !== arm.model || input.cap !== undefined && input.cap !== 1 ||
       input.maxUsdPerTask !== undefined && input.maxUsdPerTask !== arm.generationBudget.maxUsd ||
@@ -646,7 +651,7 @@ export function currentBenchLaunchSelection(input: LaunchBenchRunInput, config: 
     protocolRunId: protocol.runId, preregHash: current.preregHash, arm: arm.id, seed: current.seed })).digest('hex');
   // Preserve the narrowed client in the returned type; host references have
   // their own driver and must never widen CurrentSuBenchOptions by accident.
-  return { protocol, arm: { ...arm, agent: arm.agent }, runId: `current-${id}` };
+  return { protocol, arm: { ...arm, agent: arm.agent === 'codex' ? 'codex' as const : 'proximus' as const }, runId: `current-${id}` };
 }
 
 function currentBenchResources(protocol: CurrentBenchmarkProtocol): LearningReservationResourceBudget {
@@ -897,8 +902,7 @@ export async function startFrontierSweCurrentAssignment(
   } catch (error) { await checkout.cleanup(); throw error; }
 }
 
-/** Host-only factory. Production selection remains closed until host request
- * confinement is proved. This reuses capture/governor/billing authority and
+/** Host-only factory. This reuses capture/governor/billing authority and
  * intentionally issues neither a native session nor an accepted grade. */
 export async function startFrontierSweProximusAssignment(
   input: RunAgentInput<FrontierSweEnvHandle>,
@@ -1034,6 +1038,18 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
   if (canonicalJson(loaded.map(task => task.instanceId).sort()) !== canonicalJson([...protocol.taskIds].sort()) ||
       loaded.some(task => task.benchmark !== (input.suite ?? 'swe-bench-pro'))) throw new Error('Current benchmark task loader differs from the frozen roster/suite.');
   const backlog = protocol.taskIds.map(id => loaded.find(task => task.instanceId === id)!);
+  // Installation and confined byte measurement precede every durable allocation.
+  // A frozen interpreter path alone is not evidence of the installed runtime.
+  const prepared = arm.agent === 'proximus'
+    ? await (deps.currentProximus?.prepare ?? prepareProximusRuntime)({ signal: context.signal }) : undefined;
+  if (prepared && (!isAbsolute(prepared.pythonBin) || prepared.runtime.schemaVersion !== 1 ||
+      !Number.isSafeInteger(prepared.runtime.fileCount) || prepared.runtime.fileCount <= 0 ||
+      prepared.runtime.sourceRevision !== arm.runtime.sourceRevision ||
+      prepared.runtime.clientVersion !== arm.runtime.clientVersion ||
+      prepared.runtime.runtimeRevision !== arm.runtime.runtimeRevision ||
+      prepared.runtime.harborVersion !== arm.runtime.proximus?.harborVersion))
+    throw new Error('Proximus prepared runtime differs from its frozen protocol.');
+  if (arm.agent === 'proximus') context.signal?.throwIfAborted();
   const resources = currentBenchResources(protocol), loopId = `benchmark:${prereg.preregHash}`;
   const meta = { reservationBinding: prereg.preregHash, reservationResourceBudget: resources };
   const loop = await registerLearningLoop(sql, { workspaceId: ws, loopId, ifMissing: true, budgetKind: 'lifetime',
@@ -1062,33 +1078,47 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
     const taskResults: FleetTaskResult[] = [];
     if (frontier) {
       const execute = deps.currentFrontierArm ?? (await import('./frontier-swe-arm')).runFrontierSweCurrentArm;
-      const options: CurrentSuBenchOptions = { workspaceId: ws, runId: protocol.runId, armId: arm.id, seed: current.seed,
+      const options = { workspaceId: ws, runId: protocol.runId, armId: arm.id, seed: current.seed,
         agent: arm.agent, model: arm.model, effort: arm.effort as CurrentSuBenchOptions['effort'], account: arm.account,
         preregistration: registration, signal: abort.signal, driveTimeoutMs: arm.generationBudget.maxWallClockMs };
       const frozenBudget = arm.generationBudget;
+      const host = { protocol, context, scope, resources, loopId, hostRunId: runId };
+      const ownAssignment = <T extends { stop(): Promise<void> }>(assignment: T): T => {
+        active.stopCurrent = assignment.stop;
+        return { ...assignment, stop: async () => { try { await assignment.stop(); } finally { active.stopCurrent = undefined; } } };
+      };
+      const launch: FrontierSweLaunchAdapterConfig = arm.agent === 'proximus'
+        ? { execution: 'proximus-host', runId, protocolRunId: protocol.runId, context, signal: abort.signal,
+          startAssignment: async trial => {
+            await upsertBenchRunTask(runId, { instanceId: trial.task.instanceId, taskStatus: 'in_progress' }, scope);
+            return ownAssignment(await (deps.currentProximus?.start ?? startFrontierSweProximusAssignment)(trial,
+              { ...host, options: { ...options, agent: 'proximus' }, pythonBin: prepared!.pythonBin }));
+          } }
+        : { runId, protocolRunId: protocol.runId, context, signal: abort.signal,
+          mcpOrigin: resolveSpawnHostOperatorBaseUrl(), hookRecordDir: join(defaultBenchResultsDir(), 'frontier-hooks', runId),
+          startAssignment: async trial => {
+            await upsertBenchRunTask(runId, { instanceId: trial.task.instanceId, taskStatus: 'in_progress' }, scope);
+            return ownAssignment(await startFrontierSweCurrentAssignment(trial,
+              { ...host, options: { ...options, agent: 'codex' }, observation: current.observation }));
+          } };
       await execute({ spec: resolveCoordinationSpec({ id: arm.id, spine: { claimModel: 'self-claim-fifo' } }),
         runId, seed: current.seed, backlog, cap: 1,
         budget: { maxCostUsd: frozenBudget.maxUsd, maxTokens: frozenBudget.maxTokens, maxWallMs: frozenBudget.maxWallClockMs },
         rowMeta: { version: protocol.grader.version, modelId: arm.model,
           harnessVersion: arm.runtime.sourceRevision, preregHash: prereg.preregHash, rolloutId: runId,
           priceTableVersion: protocol.priceSchedule.version },
-        launch: { runId, protocolRunId: protocol.runId, context, signal: abort.signal,
-          mcpOrigin: resolveSpawnHostOperatorBaseUrl(), hookRecordDir: join(defaultBenchResultsDir(), 'frontier-hooks', runId),
-          startAssignment: async trial => {
-            await upsertBenchRunTask(runId, { instanceId: trial.task.instanceId, taskStatus: 'in_progress' }, scope);
-            const assignment = await startFrontierSweCurrentAssignment(trial,
-              { options, protocol, context, scope, resources, loopId, hostRunId: runId, observation: current.observation });
-            active.stopCurrent = assignment.stop;
-            return { ...assignment, stop: async () => { try { await assignment.stop(); } finally { active.stopCurrent = undefined; } } };
-          } },
+        launch,
         onResult: async row => {
           const native = row.armMeta?.nativeUsage as { stopReason?: GenerationStopReason; tokensCacheRead?: number; tokensCacheWrite?: number } | undefined;
+          const usage = arm.agent === 'proximus'
+            ? (row.armMeta?.hostReference as { attempts?: { knownUsage?: { tokensCacheRead?: number; tokensCacheWrite?: number } } } | undefined)?.attempts?.knownUsage
+            : native;
           const stopReason = row.generationStatus === 'error' ? 'error' : row.generationStatus === 'timeout' ? 'timeout' :
             native?.stopReason ?? (row.capped ? 'budget-exhausted' : 'done');
           const result: FleetTaskResult = { attempt: { arm: arm.id,
-            blueprintId: arm.id === 'baseline' ? CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT,
+            blueprintId: arm.agent === 'proximus' ? 'proximus-host' : arm.id === 'baseline' ? CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT,
             instanceId: row.taskId, seed: String(current.seed), diff: '', tokensIn: row.tokensIn, tokensOut: row.tokensOut,
-            tokensCacheRead: native?.tokensCacheRead, tokensCacheWrite: native?.tokensCacheWrite,
+            tokensCacheRead: usage?.tokensCacheRead, tokensCacheWrite: usage?.tokensCacheWrite,
             costUsd: row.costUsd, turns: row.turns, wallClockMs: row.wallClockMs, trajectoryRef: row.traceRefs?.[0] ?? '',
             stopReason, generationError: row.generationError ?? undefined,
             armMeta: { ...row.armMeta, score: row.score, graderStatus: row.graderStatus, graderDetail: row.graderDetail } },
@@ -1098,10 +1128,10 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
           await emitRollout({ runId: protocol.runId, preregHash: prereg.preregHash, suite: 'frontier-swe', taskId: row.taskId,
             arm: arm.id, seed: current.seed, modality: 'in-container', fleetRunId: runId,
             generation: { status: row.generationStatus, error: row.generationError, tokensIn: row.tokensIn, tokensOut: row.tokensOut,
-              tokensTotal: row.tokensTotal, tokensCacheRead: native?.tokensCacheRead ?? null, tokensCacheWrite: native?.tokensCacheWrite ?? null,
+              tokensTotal: row.tokensTotal, tokensCacheRead: usage?.tokensCacheRead ?? null, tokensCacheWrite: usage?.tokensCacheWrite ?? null,
               wallClockMs: row.wallClockMs, turns: row.turns, budgetTokens: row.budgetTokens, capped: row.capped,
               modelId: arm.model, harnessVersion: row.harnessVersion, trajectoryRef: result.attempt.trajectoryRef,
-              trajectoryKind: 'native-codex', armMeta: result.attempt.armMeta },
+              trajectoryKind: arm.agent === 'proximus' ? 'proximus-host' : 'native-codex', armMeta: result.attempt.armMeta },
             grading: { resolved: row.resolved, status: row.graderStatus, family: protocol.grader.family,
               version: protocol.grader.version, score: row.score, structuredOutput: row.graderDetail },
             provenance: { configSnapshot: protocol, harnessGitSha: arm.runtime.sourceRevision } }, scope);
@@ -1115,7 +1145,7 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
       if (abort.signal.aborted) break;
       await upsertBenchRunTask(runId, { instanceId: task.instanceId, taskStatus: 'in_progress' }, scope);
       const options: CurrentSuBenchOptions = { workspaceId: ws, runId: protocol.runId, armId: arm.id, seed: current.seed,
-        agent: arm.agent, model: arm.model, effort: arm.effort as CurrentSuBenchOptions['effort'], account: arm.account,
+        agent: 'codex', model: arm.model, effort: arm.effort as CurrentSuBenchOptions['effort'], account: arm.account,
         preregistration: registration, signal: abort.signal, driveTimeoutMs: arm.generationBudget.maxWallClockMs };
       const startedAtMs = Date.now();
       let owned: Awaited<ReturnType<NonNullable<LaunchDeps['currentTask']>>> | undefined;
