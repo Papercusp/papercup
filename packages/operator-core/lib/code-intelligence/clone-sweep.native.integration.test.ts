@@ -34,6 +34,7 @@ const journey = String.raw`
   assert.notEqual(new URL(process.env.HARNESS_ADMIN_DATABASE_URL).port, '5432');
   assert.match(process.env.HOME, /papercusp-test-runtime-.*\/home$/);
   assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0', 'private supervisor must scrub ambient scheduler enablement');
+  assert.equal(process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES, 'none', 'private fixture must disable unrelated orchestrator timers before imports');
   const sourceRoot = process.cwd();
   const corpus = await mkdtemp(join(process.env.TMPDIR, 'clone-sweep-corpus-'));
   await mkdir(join(corpus, 'packages/a'), { recursive: true });
@@ -230,6 +231,7 @@ it('arms a private nightly cadence and dispatches real DBOS managed sweeps with 
       'packages/operator-core/lib/harness/routines/system-actions.ts',
       'packages/operator-core/lib/harness/routines/register-system-actions.ts',
       'packages/operator-core/lib/dbos/routines-workflow.ts',
+      'packages/operator-core/lib/dbos/orchestrator-loop.ts',
       'packages/operator-core/test/isolated-integration-proof.ts',
       'packages/operator-core/lib/task-manager/managed-spawn.ts',
       'packages/operator-core/lib/task-manager/store.ts',
@@ -237,7 +239,10 @@ it('arms a private nightly cadence and dispatches real DBOS managed sweeps with 
       'packages/operator-core/lib/harness-registry.ts'],
     retainedArtifacts: ['phases/execute/native-sweep.json'],
     execute: async (observe, evidenceDir) => {
-      const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1' };
+      // Background bootstrap registers the default orchestrator before journey
+      // imports run. Keep its timer off while exercising the real sweep action.
+      const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
+        PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none' };
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime', '--',
