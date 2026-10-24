@@ -95,6 +95,39 @@ describe('native engineering evidence contract', () => {
     expect(graph.nodes.find(n => n.kind === 'proof')?.state).toBe('historical');
     expect(graph.nodes.find(n => n.kind === 'proof')?.ref.args.includeRetracted).toBe(true);
   });
+  it('ee.case-budget: large current case lists cannot crowd out a later requirement run', async () => {
+    const currentSpec = { ...spec, id: 'EE-CURRENT' };
+    const currentRun = 72104;
+    const observation = { runId: currentRun, invocationId: '17', caseKey: 'ee.case-0', occurrence: 1,
+      receipt: { boundary: 'graph:query:evidence' as const, callId: 'call-current', workspaceId: scope.workspaceId,
+        harness: scope.harness, traceId: 'a'.repeat(32), spanId: 'b'.repeat(16), parentSpanId: 'c'.repeat(16),
+        traceFlags: 1, startedAt: 1, endedAt: 2, outcome: 'ok' as const, sourceFingerprint: 'd'.repeat(64),
+        buildSha: 'e'.repeat(40), artifactFingerprint: null, environmentFingerprint: 'f'.repeat(64), workflowId: null } };
+    const deps = fixture({
+      specs: async () => [spec, currentSpec],
+      proofs: async (_, selected) => selected.id === spec.id
+        ? [72102, 72103].map(runId => ({ ...proof, id: runId, runId }))
+        : [{ ...proof, id: currentRun, spec: currentSpec.id, runId: currentRun }],
+      run: async (_, runId) => ({ id: runId, file: 'evidence-feature.integration.test.ts', status: 'pass', commit: 'c'.repeat(40) }),
+      cases: vi.fn(async (_, runId) => Array.from({ length: runId === currentRun ? 1 : 20 }, (_, i) => ({
+        runId, key: `ee.case-${i}`, occurrence: 1, status: 'passed',
+      }))),
+      execution: vi.fn(async (_, runId) => ({ status: runId === currentRun ? 'observed' : 'unobserved',
+        scope: 'instrumented-boundaries-only', observations: runId === currentRun ? [observation] : [], gaps: [] })),
+    });
+    const graph = await readEngineeringEvidence({ ...query, limit: 24 }, scope, deps);
+    expect(graph.nodes.find(n => n.kind === 'test-case' && n.data.runId === currentRun)).toBeDefined();
+    expect(graph.nodes.find(n => n.kind === 'test-run' && n.data.id === 72102)).toMatchObject({
+      state: 'current', ref: { tool: 'testing:runs', args: { testRunIds: [72102], cases: true } },
+    });
+    expect(graph.nodes.filter(n => n.kind === 'proof')).toHaveLength(3);
+    expect(graph.execution).toMatchObject({ status: 'observed', observations: [observation] });
+    expect(graph.nodes.length).toBeLessThanOrEqual(24);
+    expect(graph.truncated).toBe(true);
+    expect(graph.gaps.some(gap => gap.code === 'node-limit' && gap.at.tool === 'testing:runs')).toBe(true);
+    expect(graph.edges.every(edge => graph.nodes.some(node => node.id === edge.from)
+      && graph.nodes.some(node => node.id === edge.to))).toBe(true);
+  });
   it('ee.spec-retired: a retired current pointer cannot advertise current support', async () => {
     const graph = await readEngineeringEvidence(query, scope, fixture({ specs: async () => [{ ...spec, lifecycle: 'retired' }] }));
     expect(graph.nodes.find(n => n.kind === 'spec')?.state).toBe('historical');

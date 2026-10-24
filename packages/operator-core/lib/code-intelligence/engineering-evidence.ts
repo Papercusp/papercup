@@ -172,6 +172,8 @@ export async function readEngineeringEvidence(
     execution: { status: 'unobserved', scope: 'instrumented-boundaries-only', observations: [], gaps: [],
       reason: 'Only named child boundaries are observed; static anchors, test outcomes and parent spans do not observe their callees.' } };
   const nodes = new Map<string, EngineeringNode>();
+  const pendingRuns = new Map<number, { run: EngineeringRun; node: string; state: EngineeringState; ref: EngineeringRef;
+    cases: EngineeringCase[]; observations: EngineeringExecution['observations'] }>();
   const edgeKeys = new Set<string>();
   const gapKeys = new Set<string>();
   const gap = (code: string, at: EngineeringRef, repair?: EngineeringRef) => {
@@ -295,36 +297,58 @@ export async function readEngineeringEvidence(
           state: run ? state : 'unknown', ref: rref, data: run ? { ...run } : { id: proof.runId, present: false } });
         edge(proofNode, runNode, 'recorded-test-run', run ? state : 'unknown', pref);
         if (!run || run.id !== proof.runId) { gap('test-run-unavailable', rref); continue; }
-        const cases = bounded(await read(rref, () => deps.cases(scope, run.id, ENGINEERING_EVIDENCE_LIMITS.cases + 1), []),
-          ENGINEERING_EVIDENCE_LIMITS.cases, rref);
-        if (!cases.length) gap('test-cases-unavailable', rref);
-        for (const test of cases) {
-          if (test.runId !== run.id) { gap('scope-mismatch', rref); continue; }
-          const caseNode = add({ id: id('test-case', scope.workspaceId, run.id, test.key, test.occurrence), kind: 'test-case',
-            state, ref: rref, data: { ...test } });
-          edge(runNode, caseNode, 'recorded-case', state, rref);
-        }
         // Run membership is an observed ledger fact, not an invented spec→case assertion.
         gap('exact-spec-case-mapping-not-measured', pref);
-        if (deps.execution) {
-          const observed = await read(rref, () => deps.execution!(scope, run.id), null);
-          for (const reason of observed?.gaps ?? ['execution-unavailable']) {
-            gap(reason, rref);
-            if (!result.execution.gaps.includes(reason)) result.execution.gaps.push(reason);
-          }
-          for (const observation of bounded(observed?.observations ?? [], ENGINEERING_EVIDENCE_LIMITS.cases, rref)) {
-            const test = cases.find(c => c.key === observation.caseKey && c.occurrence === observation.occurrence);
-            if (!test || observation.runId !== run.id) { gap('execution-case-mismatch', rref); continue; }
-            const caseId = id('test-case', scope.workspaceId, run.id, test.key, test.occurrence);
-            const execution = add({ id: id('execution', scope.workspaceId, observation.invocationId, observation.receipt.spanId),
-              kind: 'execution', state, ref: rref, data: { ...observation } });
-            edge(nodes.has(caseId) ? caseId : null, execution, 'recorded-boundary', state, rref, 'observed');
-            if (execution && result.execution.observations.length < ENGINEERING_EVIDENCE_LIMITS.cases
-              && !result.execution.observations.some(row => row.invocationId === observation.invocationId
-                && row.receipt.spanId === observation.receipt.spanId)) {
-              result.execution.observations.push(observation);
-              result.execution.status = 'observed';
-            }
+        if (runNode && !pendingRuns.has(run.id)) pendingRuns.set(run.id, {
+          run, node: runNode, state, ref: rref, cases: [], observations: [],
+        });
+      }
+    }
+  }
+  // Retain each branch's exact references before spending the shared node budget
+  // on cases. A large early suite must not hide a later requirement's only run.
+  for (const entry of pendingRuns.values()) {
+    const { run, ref } = entry;
+    entry.cases = bounded(await read(ref, () => deps.cases(scope, run.id, ENGINEERING_EVIDENCE_LIMITS.cases + 1), []),
+      ENGINEERING_EVIDENCE_LIMITS.cases, ref).filter(test => {
+      if (test.runId === run.id) return true;
+      gap('scope-mismatch', ref); return false;
+    });
+    if (!entry.cases.length) gap('test-cases-unavailable', ref);
+    if (deps.execution) {
+      const observed = await read(ref, () => deps.execution!(scope, run.id), null);
+      for (const reason of observed?.gaps ?? ['execution-unavailable']) {
+        gap(reason, ref);
+        if (!result.execution.gaps.includes(reason)) result.execution.gaps.push(reason);
+      }
+      entry.observations = bounded(observed?.observations ?? [], ENGINEERING_EVIDENCE_LIMITS.cases, ref).filter(observation => {
+        if (observation.runId === run.id && entry.cases.some(test => test.key === observation.caseKey
+          && test.occurrence === observation.occurrence)) return true;
+        gap('execution-case-mismatch', ref); return false;
+      });
+      const observedCase = (test: EngineeringCase) => entry.observations.some(observation =>
+        observation.caseKey === test.key && observation.occurrence === test.occurrence);
+      entry.cases.sort((a, b) => Number(observedCase(b)) - Number(observedCase(a)));
+    }
+  }
+  for (let index = 0; index < ENGINEERING_EVIDENCE_LIMITS.cases; index++) {
+    for (const { run, node, state, ref, cases, observations } of pendingRuns.values()) {
+      const test = cases[index];
+      if (!test) continue;
+      const caseNode = add({ id: id('test-case', scope.workspaceId, run.id, test.key, test.occurrence), kind: 'test-case',
+        state, ref, data: { ...test } });
+      edge(node, caseNode, 'recorded-case', state, ref);
+      if (!caseNode) continue;
+      for (const observation of observations) {
+        if (observation.caseKey === test.key && observation.occurrence === test.occurrence) {
+          const execution = add({ id: id('execution', scope.workspaceId, observation.invocationId, observation.receipt.spanId),
+            kind: 'execution', state, ref, data: { ...observation } });
+          edge(caseNode, execution, 'recorded-boundary', state, ref, 'observed');
+          if (execution && result.execution.observations.length < ENGINEERING_EVIDENCE_LIMITS.cases
+            && !result.execution.observations.some(row => row.invocationId === observation.invocationId
+              && row.receipt.spanId === observation.receipt.spanId)) {
+            result.execution.observations.push(observation);
+            result.execution.status = 'observed';
           }
         }
       }
