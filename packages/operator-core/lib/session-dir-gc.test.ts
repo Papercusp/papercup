@@ -64,6 +64,90 @@ function seedDir(root: string, name: string, ageMs: number): string {
 }
 
 describe('session root caps', () => {
+  it.each(['file', 'directory', 'shared inode', 'overlapping pins'])('charges only a live child pin allocation (%s), retaining the whole home', async (kind) => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const home = seedDir(root, 'pinned', DEFAULT_RETENTION_MS * 3);
+    const evidence = join(home, 'evidence'); mkdirSync(evidence);
+    const data = join(evidence, 'data'); writeFileSync(data, Buffer.alloc(64 * 1024));
+    const bulk = join(home, 'bulk'); writeFileSync(bulk, Buffer.alloc(256 * 1024));
+    if (kind === 'shared inode') linkSync(data, join(home, 'alias'));
+    utimesSync(home, 1, 1);
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(parent, 'leases'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    try {
+      const target = kind === 'file' ? data : evidence;
+      createRetentionPin({ path: target, owner: 'fixture', reason: 'exact child scope',
+        expiresAt: new Date(Date.now() + 60_000).toISOString() });
+      if (kind === 'overlapping pins') createRetentionPin({ path: data, owner: 'fixture', reason: 'nested evidence',
+        expiresAt: new Date(Date.now() + 60_000).toISOString() });
+      const pinnedBytes = statSync(data).blocks * 512 + (kind === 'file' ? 0 : statSync(evidence).blocks * 512);
+      const bytes = (statSync(home).blocks + statSync(evidence).blocks + statSync(data).blocks + statSync(bulk).blocks) * 512;
+      const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
+        protectedIdentity: empty, archiveGuard: false });
+      expect(result.removed).toEqual([]);
+      expect(result.keptProtected).toBe(1);
+      expect(existsSync(data)).toBe(true); expect(existsSync(bulk)).toBe(true);
+      expect(result.caps![0]).toMatchObject({ afterBytes: bytes, pinnedBytes,
+        overByBytes: bytes - 1, pinnedOverageBytes: pinnedBytes - 1 });
+      expect(result.errors).toContainEqual({ path: root,
+        error: expect.stringContaining('session cap remains exceeded beyond live-pin overage') });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('ignores an expired child pin and fails closed on malformed pin metadata', async () => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const home = seedDir(root, 'expired', DEFAULT_RETENTION_MS * 3);
+    const data = join(home, 'data'); writeFileSync(data, Buffer.alloc(64 * 1024)); utimesSync(home, 1, 1);
+    const leases = join(parent, 'leases');
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', leases);
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    try {
+      const pin = createRetentionPin({ path: data, owner: 'fixture', reason: 'expired child',
+        expiresAt: new Date(Date.now() - 60_000).toISOString() }, { nowMs: Date.now() - 120_000 });
+      const lease = join(leases, `lease-agent-pin-${pin.id}.tsv`);
+      const valid = readFileSync(lease, 'utf8');
+      writeFileSync(lease, valid.replace(/^tag=.*$/m, 'tag=agent-pin-malformed'));
+      await expect(runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
+        protectedIdentity: empty, archiveGuard: false })).rejects.toThrow('retention pins unreadable');
+      expect(existsSync(data)).toBe(true);
+      writeFileSync(lease, valid);
+      const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
+        protectedIdentity: empty, archiveGuard: false });
+      expect(result.removed).toEqual([home]);
+      expect(result.caps![0]).toMatchObject({ afterBytes: 0, pinnedBytes: 0, overByBytes: 0, pinnedOverageBytes: 0 });
+      expect(result.errors).toEqual([]);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each(['incomplete', 'disappeared'])('reports unknown usage when the exact pinned subtree is %s during measurement', async (mode) => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const home = seedDir(root, 'pinned', DEFAULT_RETENTION_MS * 3);
+    const evidence = join(home, 'evidence'); mkdirSync(evidence);
+    writeFileSync(join(evidence, 'data'), Buffer.alloc(64 * 1024));
+    writeFileSync(join(home, 'bulk'), Buffer.alloc(256 * 1024)); utimesSync(home, 1, 1);
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(parent, 'leases'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    const census = await import('./storage/disk-consumer-census');
+    const original = census.inspectRetentionTrees;
+    const inspect = vi.spyOn(census, 'inspectRetentionTrees').mockImplementation(async (path, options) => {
+      if (path !== evidence) return original(path, options);
+      if (mode === 'disappeared') rmSync(evidence, { recursive: true });
+      return { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0,
+        ...(mode === 'incomplete' ? { error: 'fixture pin census incomplete' } : {}) };
+    });
+    try {
+      createRetentionPin({ path: evidence, owner: 'fixture', reason: 'pin census control',
+        expiresAt: new Date(Date.now() + 60_000).toISOString() });
+      const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
+        protectedIdentity: empty, archiveGuard: false });
+      expect(result.removed).toEqual([]);
+      expect(existsSync(join(home, 'bulk'))).toBe(true);
+      expect(result.caps![0]!.beforeBytes).toBeNull();
+      expect(result.caps![0]!.error).toBeTruthy();
+      expect(result.errors).toContainEqual({ path: root, error: expect.stringContaining('session cap measurement incomplete') });
+    } finally { inspect.mockRestore(); vi.unstubAllEnvs(); }
+  });
+
   it.each(['foreign ownership boundary', 'filesystem boundary'])('reports unknown cap usage for a %s', async (reason) => {
     const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
     const census = await import('./storage/disk-consumer-census');
