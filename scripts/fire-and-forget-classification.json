@@ -90243,22 +90243,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts#<module>/handleLaunchSu:a146a8e23ae4377541d7:1",
-      "path": "packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts#<module>/handleLaunchSu:cfde9411c667358581c7:1",
-      "path": "packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts#<module>/handleLaunchSu:d1665edf0dd76810ee24:1",
       "path": "packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts",
       "classification": "durable",
