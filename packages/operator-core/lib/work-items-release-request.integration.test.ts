@@ -19,6 +19,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import type { ReleaseRequestConsequenceJob } from './work-items-release-request';
 import {
   applyDisclosureLedgerForTest,
   applyEventSubstrateMigrationsForTest,
@@ -307,6 +308,43 @@ describe('setWorkItemReleaseRequest + resolveWorkItemReleaseRequest (CAS)', () =
     expect(await rr.findPendingReleaseRequestConsequences(db.sql)).toEqual([pending]);
     expect(await rr.settleReleaseRequestConsequence(db.sql, pending)).toBe(true);
     expect(await rr.findPendingReleaseRequestConsequences(db.sql)).toEqual([]);
+  });
+
+  it('settles exactly one durable consequence idempotently without changing its successor claim', async () => {
+    const id = 'WI-rr-settle-successor';
+    const job: ReleaseRequestConsequenceJob = {
+      id: 'release-request:100:200',
+      resolution: 'consequence-reclaim',
+      by: 'requester',
+      holder: 'original-holder',
+      reclaimHolder: 'original-holder',
+      reason: 'expired',
+      onSilence: 'reclaim',
+      requestedAt: 100,
+      deadlineAt: 200,
+      paths: [],
+    };
+    const sibling = { ...job, id: 'release-request:300:400', requestedAt: 300, deadlineAt: 400 };
+    await seedIssue(id, {
+      takenBy: 'successor-holder',
+      payload: {
+        unrelated: 'preserved',
+        release_request_consequence_outbox: { [job.id]: job, [sibling.id]: sibling },
+      },
+    });
+    const pending = { id, harness: H, workspaceId: WS, job };
+
+    expect(await rr.settleReleaseRequestConsequence(db.sql, { ...pending, workspaceId: 'other-workspace' })).toBe(false);
+    expect(await rr.settleReleaseRequestConsequence(db.sql, pending)).toBe(true);
+    expect(await rr.settleReleaseRequestConsequence(db.sql, pending)).toBe(false);
+    expect(await readPayload(id)).toEqual({
+      unrelated: 'preserved',
+      release_request_consequence_outbox: { [sibling.id]: sibling },
+    });
+    expect(await rr.findPendingReleaseRequestConsequences(db.sql)).toEqual([{ ...pending, job: sibling }]);
+    const [claim] = await db.sql<{ taken_by: string }[]>`
+      SELECT taken_by FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+    expect(claim.taken_by).toBe('successor-holder');
   });
 
   it('CAS: a stale progress snapshot cannot resolve a request after the holder made progress', async () => {

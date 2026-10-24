@@ -14,13 +14,12 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import tempfile
 from urllib.parse import urlsplit
 
 
-# pg_restore owns dependency ordering and SQL generation. Retain all archived
-# support objects in the selected schema instead of guessing which UDF a future
-# expression index might call. Sequences are cheap, empty schema objects too.
+# TOC parsing is used only to verify source membership/overlap. PostgreSQL owns
+# the COMPLETE primary pre-data restore, including table row types required by
+# function signatures. Selecting functions without their relations is unsafe.
 KINDS = sorted([
     'SCHEMA', 'EXTENSION', 'TYPE', 'SHELL TYPE', 'DOMAIN', 'FUNCTION',
     'PROCEDURE', 'AGGREGATE', 'OPERATOR CLASS', 'OPERATOR FAMILY', 'OPERATOR',
@@ -50,14 +49,7 @@ def stable_sql(text):
                      and not line.startswith('-- Dumped '))
 
 
-def export(archive, toc, directory, suffix):
-    use_list = directory / (suffix + '.toc')
-    use_list.write_text('\n'.join(toc) + '\n')
-    return native(['pg_restore', '--section=pre-data', '--no-owner', '--no-acl',
-                   '--use-list=' + str(use_list), '--file=-', archive])
-
-
-def prepare(manifest, database, directory, receipt, restore_data=False):
+def prepare(manifest, database, receipt, restore_data=False):
     schema = manifest['schema']
     archives = manifest['archives']
     indexes = manifest['indexes']
@@ -81,14 +73,30 @@ def prepare(manifest, database, directory, receipt, restore_data=False):
     if sql("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname='" + schema + "')") != 'f':
         raise ValueError('destination schema must not exist')
     receipt['phases'].append('archive-preflight')
-    seen = {}
     plans = []
-    declared = set()
     extensions = set(manifest['extensions'])
+    primary_path = str(Path(archives[0]['path']).resolve(strict=True))
+    primary_toc = native(['pg_restore', '--section=pre-data', '--list', primary_path])
+    primary_tables = {}
+    restored_extensions = set()
+    for line in primary_toc.splitlines():
+        match = ENTRY.match(line)
+        if match:
+            _, kind, namespace, name = match.groups()
+            name = name.strip()
+            if kind == 'TABLE' and namespace == schema and name in tables:
+                primary_tables[name] = line
+            if kind == 'EXTENSION':
+                restored_extensions.add(name)
+    if set(primary_tables) != tables:
+        raise ValueError('primary schema archive must contain every selected table definition')
+    if not extensions.issubset(restored_extensions):
+        raise ValueError('declared extensions are missing from the primary schema archive')
+    receipt['restoredExtensions'] = sorted(restored_extensions)
+    receipt['schemaPolicy'] = 'complete-primary-archive-pre-data'
     for position, archive in enumerate(archives):
         path = str(Path(archive['path']).resolve(strict=True))
-        toc = native(['pg_restore', '--section=pre-data', '--list', path])
-        chosen = []
+        toc = primary_toc if position == 0 else native(['pg_restore', '--section=pre-data', '--list', path])
         present = set()
         for line in toc.splitlines():
             match = ENTRY.match(line)
@@ -96,42 +104,30 @@ def prepare(manifest, database, directory, receipt, restore_data=False):
                 continue
             _, kind, namespace, name = match.groups()
             name = name.strip()
-            selected = namespace == schema and kind == 'TABLE' and name in tables
+            selected = namespace == schema and kind == 'TABLE' and name in archive['tables']
             if selected:
                 present.add(name)
-            support = (kind == 'SCHEMA' and name == schema) or (kind == 'EXTENSION' and name in extensions)
-            if namespace == schema and kind not in ('TABLE', 'DEFAULT', 'SEQUENCE OWNED BY'):
-                support = True
-            relation_part = namespace == schema and kind in ('DEFAULT', 'SEQUENCE OWNED BY') and name.split(' ')[0] in tables
-            if not (selected or support or relation_part):
-                continue
-            identity = (kind, namespace, name)
-            if identity in seen:
-                previous_path, previous_line = seen[identity]
-                before = export(previous_path, [previous_line], directory, 'overlap-before')
-                after = export(path, [line], directory, 'overlap-after')
+            if selected and position > 0:
+                # Compare the complete native table export, including defaults
+                # and column annotations, before choosing the primary copy.
+                def table_sql(source):
+                    return native(['pg_restore', '--section=pre-data', '--no-owner', '--no-acl',
+                                   '--schema=' + schema, '--table=' + name, '--file=-', source])
+                before = table_sql(primary_path)
+                after = table_sql(path)
                 if stable_sql(before) != stable_sql(after):
-                    raise ValueError('archive schema overlap differs: ' + repr(identity))
-                receipt['overlaps'].append(list(identity))
-                continue
-            seen[identity] = (path, line)
-            chosen.append(line)
-            if selected:
-                declared.add(name)
+                    raise ValueError('archive schema overlap differs: ' + repr((kind, namespace, name)))
+                receipt['overlaps'].append([kind, namespace, name])
         if not set(archive['tables']).issubset(present):
             raise ValueError('selected table missing from its data archive')
-        plans.append((path, chosen, archive['tables']))
+        plans.append((path, archive['tables']))
         receipt['archives'].append({'path': path, 'tocSha256': hashlib.sha256(toc.encode()).hexdigest(),
-                                    'selectedPreDataEntries': len(chosen)})
-    if declared != tables or not any(key[0] == 'SCHEMA' for key in seen):
-        raise ValueError('incomplete selected table/schema population')
-    if {key[2] for key in seen if key[0] == 'EXTENSION'} != extensions:
-        raise ValueError('declared extension population differs from archives')
+                                    'restoresCompletePreData': position == 0})
 
     receipt['phases'].append('schema-restore')
-    for position, (path, toc, _) in enumerate(plans):
-        statement = export(path, toc, directory, 'archive-' + str(position))
-        sql(statement)
+    statement = native(['pg_restore', '--section=pre-data', '--no-owner', '--no-acl', '--file=-', primary_path])
+    receipt['preDataSha256'] = hashlib.sha256(stable_sql(statement).encode()).hexdigest()
+    sql(statement)
     for table in sorted(tables):
         if sql('SELECT EXISTS (SELECT 1 FROM ' + schema + '.' + table + ' LIMIT 1)') != 'f':
             raise ValueError('preflight destination is not empty: ' + table)
@@ -156,7 +152,7 @@ def prepare(manifest, database, directory, receipt, restore_data=False):
     receipt['phases'].append('empty-schema-index-preflight-passed')
     if restore_data:
         receipt['phases'].append('data-restore')
-        for path, _, selected in plans:
+        for path, selected in plans:
             if selected:
                 native(['pg_restore', '--dbname=' + database, '--data-only', '--no-owner', '--no-acl',
                         '--exit-on-error', '--schema=' + schema,
@@ -183,9 +179,8 @@ def main():
     # Fail before touching a database if this edition already has evidence.
     with destination.open('x') as stream:
         try:
-            with tempfile.TemporaryDirectory(prefix='selected-schema-') as directory:
-                prepare(json.loads(Path(args.manifest).read_text()), database,
-                        Path(directory), receipt, args.restore_data)
+            prepare(json.loads(Path(args.manifest).read_text()), database,
+                    receipt, args.restore_data)
         except Exception as error:
             receipt['failure'] = {'type': type(error).__name__, 'message': str(error).replace(database, '<private-db>')}
         finally:

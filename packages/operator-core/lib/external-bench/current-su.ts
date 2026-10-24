@@ -42,6 +42,13 @@ export interface CurrentBenchAccountingBinding {
   readonly workspaceId: string; readonly loopId: string; readonly runId: string;
   readonly preregHash: string; readonly assignmentId: string;
 }
+export interface CurrentBenchTaskRequestCensus {
+  readonly binding: Readonly<CurrentBenchAccountingBinding>;
+  readonly populationSha256: string;
+  readonly requests: readonly Readonly<{
+    reservationId: string; nativeSessionId: string; nativeTurnId: string; bodySha256: string;
+  }>[];
+}
 interface NativeAccountingSource {
   participant: NativeCostParticipant; nativeSessionId: string;
   usage: Extract<ClosedCodexSessionUsage, { ok: true }>;
@@ -208,6 +215,53 @@ export function currentBenchNativeSessionCostDelta(before: CurrentBenchNativeRun
   const added = current.sources.filter(s => !old.has(s.nativeSessionId));
   if (added.length !== 1 || added[0].nativeSessionId !== nativeSessionId) throw invalid();
   return structuredClone(added[0]);
+}
+
+/** A fresh session may add only its own requests. Earlier reservations must
+ * remain present and retain their native identity, including incomplete sends.
+ * Ledger settlement may change between reads; request identity may not. */
+export function currentBenchSessionRequestDelta(before: CurrentBenchTaskRequestCensus,
+  after: CurrentBenchTaskRequestCensus, nativeSessionId: string): { modelCalls: number; reservationIds: string[] } {
+  const invalid = () => new Error('Fresh native session request census is foreign, reused or non-monotone.');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeSessionId) ||
+      canonicalJson(before.binding) !== canonicalJson(after.binding)) throw invalid();
+  const previous = new Map(before.requests.map(row => [row.reservationId, row]));
+  const current = new Map(after.requests.map(row => [row.reservationId, row]));
+  if (previous.size !== before.requests.length || current.size !== after.requests.length ||
+      before.requests.some(row => row.nativeSessionId === nativeSessionId ||
+        canonicalJson(current.get(row.reservationId) ?? null) !== canonicalJson(row))) throw invalid();
+  const added = after.requests.filter(row => !previous.has(row.reservationId));
+  if (added.some(row => row.nativeSessionId !== nativeSessionId)) throw invalid();
+  return { modelCalls: added.length, reservationIds: added.map(row => row.reservationId).sort() };
+}
+
+/** Pair one closed source receipt with exactly its new assignment requests.
+ * Returns uncached/cache tokens and normalized/billed dollars separately.
+ * An empty initial source snapshot is accepted only with an empty request census.
+ * This receipt measures usage; it does not issue a remaining session allowance.
+ */
+export function currentBenchSessionUsageDelta(input: {
+  before: CurrentBenchTaskRequestCensus; after: CurrentBenchTaskRequestCensus;
+  beforeCost: CurrentBenchNativeRunCost | null; afterCost: CurrentBenchNativeRunCost; nativeSessionId: string;
+}) {
+  const { before, after, beforeCost, afterCost, nativeSessionId } = input;
+  const invalid = () => new Error('Fresh native session usage differs from its complete assignment request census.');
+  const delta = currentBenchSessionRequestDelta(before, after, nativeSessionId);
+  const source = currentBenchNativeSessionCostDelta(beforeCost, afterCost, nativeSessionId);
+  const matches = (census: CurrentBenchTaskRequestCensus, cost: CurrentBenchNativeRunCost | null) => {
+    if (!cost) return census.requests.length === 0;
+    if (cost.armMeta.nativeCostAccounting.preregHash !== census.binding.preregHash) return false;
+    const sources = cost.armMeta.nativeCostAccounting.sources;
+    const ids = new Set(sources.map(s => s.nativeSessionId));
+    if (census.requests.some(row => !ids.has(row.nativeSessionId))) return false;
+    return sources.every(s => {
+      const rows = census.requests.filter(row => row.nativeSessionId === s.nativeSessionId);
+      const turns = [...new Set(rows.map(row => row.nativeTurnId))].sort();
+      return rows.length === s.usageEventKeys.length && canonicalJson(turns) === canonicalJson([...s.nativeTurnIds].sort());
+    });
+  };
+  if (!matches(before, beforeCost) || !matches(after, afterCost)) throw invalid();
+  return { ...source, ...delta };
 }
 
 /** Reuses native source proofs and frozen pricing. Actual provider cost stays

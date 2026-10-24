@@ -14,7 +14,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { hostThroughPty, metaPathFor, handoffPathFor, readHostHandoffForParentPid } from '../scripts/psu-pty-host.mjs';
-import { mintCarryRespawnArgs, codexThreadWriterHolder } from '../scripts/psu-launcher.mjs';
+import { mintCarryRespawnArgs, codexThreadWriterHolder, codexNativeIdForPty } from '../scripts/psu-launcher.mjs';
 import { launchIdentityAssumeHandoff, makeIdentityAssumeHostPort,
   prepareIdentityAssumeCheckpoint } from '../scripts/psu-identity-assume.mjs';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from
@@ -385,7 +385,10 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         const binding = await real.resolve(accepted!.preparation.target.advSessionId);
         expect(binding?.sessionId).toBe(runningTargetNative);
         const writer = codexThreadWriterHolder(homes.target, runningTargetNative);
-        expect(writer.pid).toBe(targetMeta.ptyPid);
+        // The npm Codex launcher can parent a different native lock holder.
+        // Use the maintained exact startup-process oracle, not a loose scan.
+        expect(codexNativeIdForPty(homes.target, targetMeta.ptyPid)).toBe(runningTargetNative);
+        expect(writer.pid).not.toBeNull();
         const message = routed[0].messages[0];
         const observation: AssumeExecutionObservation = {
           transitionKey: accepted!.transitionKey, observedAt: Date.now(),
@@ -393,7 +396,8 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           callerNativePid: original.nativePid, callerExited: alive(original.nativePid) === false,
           targetOwnerId: routed[0].ownerId, targetNativeSessionId: runningTargetNative,
           backend: 'codex', contextSha256: accepted!.preparation.target.context.sha256,
-          nativePid: targetMeta.ptyPid, nativeProcessStart: readProcessIdentity(targetMeta.ptyPid)!,
+          nativePid: writer.pid!, nativeProcessStart: readProcessIdentity(writer.pid!)!,
+          ptyPid: targetMeta.ptyPid, ptyProcessStart: readProcessIdentity(targetMeta.ptyPid)!,
           nativeWriterPids: writer.held && writer.pid ? [writer.pid] : [],
           ...(mode === 'checkpoint' ? { nativeBinding: {
             advSessionId: binding!.id, ownerId: binding!.coordOwnerId!, sourceNativeSessionId: targetNative,

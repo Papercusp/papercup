@@ -13,7 +13,7 @@ import { makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle, type Frontier
 import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
 import { generationStatusForStopReason, type GenerationBudget, type TaskCheckout } from './types';
 import type { AgentRunOutput, RunAgentInput } from './run-topology';
-import { currentBenchSessionUsageDelta, type CurrentBenchTaskRequestCensus } from './run-launcher';
+import { currentBenchSessionUsageDelta, type CurrentBenchTaskRequestCensus } from './current-su';
 import { runRepeatedSessions } from './repeated-session';
 import { assertBenchWorkspace } from './bench-workspace';
 import { requireProximusHostConfinement, readProximusTurns,

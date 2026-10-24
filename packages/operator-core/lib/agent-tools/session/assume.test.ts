@@ -362,6 +362,21 @@ describe('session:assume durable transition boundaries', () => {
     expect(qualifiesAssumeExecution(receipt, observed)).toBe(false);
   });
 
+  it('keeps the managed PTY root distinct from its sole native backend writer', async () => {
+    const { preparation: plan } = await prepared(fixture());
+    const f = transitionFixture();
+    const receipt = await commitAssume(plan, f.deps);
+    const observed = { ...witness(receipt), ptyPid: 201, ptyProcessStart: 'proc:201:6' };
+    expect((await verifyAssumeExecution(receipt, observed, f.deps.save)).state).toBe('target-verified');
+    expect(f.stored()?.observation).toMatchObject({ ptyPid: 201, nativePid: 202, nativeWriterPids: [202] });
+    for (const changed of [
+      { ...observed, ptyProcessStart: undefined },
+      { ...observed, ptyPid: plan.caller.nativePid },
+      { ...observed, ptyPid: 0 },
+      { ...observed, nativeWriterPids: [201] },
+    ]) expect(qualifiesAssumeExecution(receipt, changed)).toBe(false);
+  });
+
   it.each([
     ['extra pane', (w: AssumeExecutionObservation) => { w.attachmentId = 'other-pane'; }],
     ['other host', (w: AssumeExecutionObservation) => { w.hostId = 'other-host'; }],

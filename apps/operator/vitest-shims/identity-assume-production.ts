@@ -17,6 +17,7 @@ import { readAssumeCallerPause } from '../../../packages/operator-core/lib/sessi
 import { loopScope, setCarryNote } from '../../../packages/operator-core/lib/carry-note';
 import { runWithWorkspace } from '../../../packages/operator-core/lib/workspace-als';
 import { getWorkItem } from '../../../packages/operator-core/lib/work-items';
+import { setWorkItemCheckpoint } from '../../../packages/operator-core/lib/work-item-checkpoint';
 import { sendMessage, readInbox, appendAck, readAckedMsgIds } from
   '../../../packages/operator-core/lib/agent-tools/coordination/messages';
 import { resolveAgentIdentity } from '../../../packages/operator-core/lib/agent-tools/coordination/identity';
@@ -115,6 +116,8 @@ export async function productionAssumeFixture(workspaceId: string,
         (workspace_id, harness_slug, feature_id, title, status, item_kind, origin, admission, taken_by, taken_at, updated_ts)
         VALUES (${workspaceId}, 'papercusp', ${id}, 'native target assignment', 'open', 'feature', 'local',
           NULL, ${owner}, now(), ${Date.now()})`;
+      await setWorkItemCheckpoint({ workspaceId, harness: 'papercusp', workItemId: id },
+        'Native fixture work remains recoverable under ' + owner);
       return id;
     },
     async probe(owner: string, workId: string) {

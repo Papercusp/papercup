@@ -173,6 +173,19 @@ describe('blind reviewer tool ceiling — catalog truth', () => {
 });
 
 describe('blind reviewer confinement — gate decisions', () => {
+  it('permits guarded self-shutdown without opening coordination, plan, or proof reads', () => {
+    expect(evaluate('session:end').allowed).toBe(true);
+    for (const tool of ['coord:inbox', 'coord:send', 'session:request-compaction',
+      'plans:get', 'rubrics:get', 'scorecards:get', 'work_items:get']) {
+      expect(evaluate(tool).allowed, tool).toBe(false);
+    }
+
+    // Existing review bindings keep their frozen ceiling; a new mint must not
+    // retroactively widen an already-launched reviewer's access.
+    const legacy = { ...CONFINEMENT, denyOutside: CONFINEMENT.denyOutside!.filter(name => name !== 'session:end') };
+    expect(evaluateSessionConfinement({ toolName: 'session:end', confinement: legacy }).allowed).toBe(false);
+  });
+
   it('allows only nominated product docs and bounded raw test-file history, never plan or bound-proof selectors', () => {
     const confinement = blindReviewerConfinement(SLUG, { harness: 'papercusp', docsHarness: 'engineering',
       docsSlugs: ['agent-insights/proving-a-guard-is-falsifiable'], testFiles: ['lib/probe.test.ts'] });
@@ -405,6 +418,7 @@ describe('buildBlindReviewerKickoff', () => {
     expect(kickoff).toContain("outcome: 'conclusive'");
     expect(kickoff).toContain("outcome: 'inconclusive'");
     expect(kickoff).toContain('Empty gaps alone do not complete a review.');
+    expect(kickoff).toContain('After posting your review, call session:end');
   });
 
   it('falls back to a discovery hint when no run hint is given', () => {

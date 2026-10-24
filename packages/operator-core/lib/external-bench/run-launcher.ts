@@ -62,10 +62,10 @@ import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
 import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGatewayController,
   currentBenchProviderAuthenticator, currentBenchObservationReader, recoverCurrentBenchRun,
   currentBenchWorkloadProviderInputCapture, currentBenchWorkloadProviderInputReader, currentBenchWorkloadLockStateReader,
-  currentBenchCodexRoute, requireCurrentBenchHostBinding, currentBenchNativeSessionCostDelta, requireCurrentBenchNativeRunCost,
+  currentBenchCodexRoute, requireCurrentBenchHostBinding, requireCurrentBenchNativeRunCost,
   currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader,
   type CurrentBenchLockStateAllocation, type CurrentBenchNativeRunCost,
-  type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions, type CurrentBenchAccountingBinding } from './current-su';
+  type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions, type CurrentBenchTaskRequestCensus } from './current-su';
 import { getLearningSpendPositions, registerLearningLoop, type LearningReservationResourceBudget } from '../learning-governor/store';
 import type { FrontierSweNativeAssignment, FrontierSweProximusAssignment, FrontierSweLaunchAdapterConfig } from './frontier-swe-launch-adapter';
 import { frontierSweAgentNetworkArgs, type FrontierSweEnvHandle } from './frontier-swe-seam';
@@ -77,6 +77,9 @@ import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { resolveCoordinationSpec } from './coordination-topology';
 import { emitRollout } from './reproducibility/emit';
 import type { runFrontierSweCurrentArm } from './frontier-swe-arm';
+
+export { currentBenchSessionRequestDelta, currentBenchSessionUsageDelta,
+  type CurrentBenchTaskRequestCensus } from './current-su';
 
 /** A run actively executing in THIS host process (ephemeral; PG is durable truth). */
 interface ActiveRun {
@@ -716,14 +719,6 @@ export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput): 
 
 /** Complete reservation-ledger coverage, not proof that no inference bypassed
  * the gateway. These receipts measure usage; they grant no session/spend authority. */
-export interface CurrentBenchTaskRequestCensus {
-  readonly binding: Readonly<CurrentBenchAccountingBinding>;
-  readonly populationSha256: string;
-  readonly requests: readonly Readonly<{
-    reservationId: string; nativeSessionId: string; nativeTurnId: string; bodySha256: string;
-  }>[];
-}
-
 /** Retain the complete host-captured request population so repeated sessions
  * can measure a delta rather than summing successive cumulative call counts. */
 export async function readCurrentBenchTaskRequestCensus(input: CurrentTaskInput,
@@ -759,53 +754,6 @@ export async function readCurrentBenchTaskRequestCensus(input: CurrentTaskInput,
   }
   return Object.freeze({ binding, populationSha256: census.populationSha256,
     requests: Object.freeze(requests.sort((a, b) => a.reservationId.localeCompare(b.reservationId))) });
-}
-
-/** A fresh session may add only its own requests. Earlier reservations must
- * remain present and retain their native identity, including incomplete sends.
- * Ledger settlement may change between reads; request identity may not. */
-export function currentBenchSessionRequestDelta(before: CurrentBenchTaskRequestCensus,
-  after: CurrentBenchTaskRequestCensus, nativeSessionId: string): { modelCalls: number; reservationIds: string[] } {
-  const invalid = () => new Error('Fresh native session request census is foreign, reused or non-monotone.');
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeSessionId) ||
-      canonicalJson(before.binding) !== canonicalJson(after.binding)) throw invalid();
-  const previous = new Map(before.requests.map(row => [row.reservationId, row]));
-  const current = new Map(after.requests.map(row => [row.reservationId, row]));
-  if (previous.size !== before.requests.length || current.size !== after.requests.length ||
-      before.requests.some(row => row.nativeSessionId === nativeSessionId ||
-        canonicalJson(current.get(row.reservationId) ?? null) !== canonicalJson(row))) throw invalid();
-  const added = after.requests.filter(row => !previous.has(row.reservationId));
-  if (added.some(row => row.nativeSessionId !== nativeSessionId)) throw invalid();
-  return { modelCalls: added.length, reservationIds: added.map(row => row.reservationId).sort() };
-}
-
-/** Pair one closed source receipt with exactly its new assignment requests.
- * Returns uncached/cache tokens and normalized/billed dollars separately.
- * An empty initial source snapshot is accepted only with an empty request census.
- * This receipt measures usage; it does not issue a remaining session allowance.
- */
-export function currentBenchSessionUsageDelta(input: {
-  before: CurrentBenchTaskRequestCensus; after: CurrentBenchTaskRequestCensus;
-  beforeCost: CurrentBenchNativeRunCost | null; afterCost: CurrentBenchNativeRunCost; nativeSessionId: string;
-}) {
-  const { before, after, beforeCost, afterCost, nativeSessionId } = input;
-  const invalid = () => new Error('Fresh native session usage differs from its complete assignment request census.');
-  const delta = currentBenchSessionRequestDelta(before, after, nativeSessionId);
-  const source = currentBenchNativeSessionCostDelta(beforeCost, afterCost, nativeSessionId);
-  const matches = (census: CurrentBenchTaskRequestCensus, cost: CurrentBenchNativeRunCost | null) => {
-    if (!cost) return census.requests.length === 0;
-    if (cost.armMeta.nativeCostAccounting.preregHash !== census.binding.preregHash) return false;
-    const sources = cost.armMeta.nativeCostAccounting.sources;
-    const ids = new Set(sources.map(s => s.nativeSessionId));
-    if (census.requests.some(row => !ids.has(row.nativeSessionId))) return false;
-    return sources.every(s => {
-      const rows = census.requests.filter(row => row.nativeSessionId === s.nativeSessionId);
-      const turns = [...new Set(rows.map(row => row.nativeTurnId))].sort();
-      return rows.length === s.usageEventKeys.length && canonicalJson(turns) === canonicalJson([...s.nativeTurnIds].sort());
-    });
-  };
-  if (!matches(before, beforeCost) || !matches(after, afterCost)) throw invalid();
-  return { ...source, ...delta };
 }
 
 /** Count admitted native requests, including failed sends, from that same census. */

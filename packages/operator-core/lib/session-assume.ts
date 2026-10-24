@@ -391,6 +391,10 @@ export interface AssumeExecutionObservation {
   contextSha256: string;
   nativePid: number;
   nativeProcessStart: string;
+  /** Managed PTY root when a launcher shim parents the native writer. Runtime
+   * observers must prove the writer belongs to this exact PTY before settling. */
+  ptyPid?: number;
+  ptyProcessStart?: string;
   nativeWriterPids: number[];
   directedMessage: { id: string; recipient: string; consumedBy: string; consumptions: number };
   assignment: { id: string; assignee: string; observedBy: string };
@@ -400,6 +404,9 @@ export function qualifiesAssumeExecution(
   receipt: AssumeTransitionReceipt, observation: AssumeExecutionObservation,
 ): boolean {
   const { caller, target } = receipt.preparation;
+  const ptyPid = observation.ptyPid ?? observation.nativePid;
+  const ptyStart = observation.ptyProcessStart ??
+    (observation.ptyPid === undefined ? observation.nativeProcessStart : undefined);
   return ['handoff-requested', 'handoff-accepted', 'indeterminate'].includes(receipt.state) &&
     observation.transitionKey === receipt.transitionKey &&
     Number.isFinite(observation.observedAt) && observation.observedAt >= receipt.updatedAt &&
@@ -418,6 +425,7 @@ export function qualifiesAssumeExecution(
     observation.contextSha256 === target.context.sha256 &&
     Number.isSafeInteger(observation.nativePid) && observation.nativePid > 0 &&
     observation.nativePid !== caller.nativePid && !!observation.nativeProcessStart &&
+    Number.isSafeInteger(ptyPid) && ptyPid > 0 && ptyPid !== caller.nativePid && !!ptyStart &&
     observation.nativeWriterPids.length === 1 && observation.nativeWriterPids[0] === observation.nativePid &&
     !!observation.directedMessage.id && observation.directedMessage.recipient === target.ownerId &&
     observation.directedMessage.consumedBy === target.ownerId && observation.directedMessage.consumptions === 1 &&

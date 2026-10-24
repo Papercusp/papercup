@@ -38,6 +38,12 @@ async function archive(options: { functionPresent: boolean; changedTable?: boole
       // Use the real function definition responsible for the retained failure.
       const migration = await readFile(join(root, 'libs/papercusp/libs/db/sql/1543-work-items-dependency-ref-ids-idx.sql'), 'utf8');
       await source.sql.unsafe(migration.slice(0, migration.indexOf('CREATE INDEX IF NOT EXISTS')));
+      // A function may depend on an unselected relation's composite row type.
+      // Function-only TOC selection passed simple fixtures but failed the real
+      // archived corpus with a missing agent_facts relation.
+      await source.sql.unsafe(`CREATE TABLE harness_shared.agent_facts (fact text);
+        CREATE FUNCTION harness_shared.fact_value(row_value harness_shared.agent_facts)
+        RETURNS text LANGUAGE sql IMMUTABLE AS 'SELECT row_value.fact'`);
     }
     await source.sql.unsafe(`INSERT INTO harness_shared.work_items VALUES ('{"externalBlockers":[{"status":"active","capability":"live-dependency","ref":"WI-123"}]}'${options.changedTable ? ", 'new'" : ''})`);
     const path = join(scratch, `archive-${serial}.dump`);
@@ -89,6 +95,8 @@ describe('selected corpus native schema preparation', () => {
       expect(result.exitCode, JSON.stringify(result.receipt)).toBe(0);
       expect(result.receipt).toMatchObject({ preflightPassed: true, validatedIndexes: 1, dataRestored: true });
       expect(result.receipt.overlaps).toContainEqual(['TABLE', 'harness_shared', 'work_items']);
+      expect(result.receipt.schemaPolicy).toBe('complete-primary-archive-pre-data');
+      expect(await result.sql.unsafe("SELECT harness_shared.fact_value(ROW('kept')::harness_shared.agent_facts) AS value")).toEqual([{ value: 'kept' }]);
       expect(result.receipt.phases.indexOf('empty-schema-index-preflight-passed')).toBeLessThan(result.receipt.phases.indexOf('data-restore'));
       expect(await result.sql.unsafe(`SELECT ${functionName}(payload) AS ids FROM harness_shared.work_items`)).toEqual([{ ids: ['WI-123'] }]);
       expect(await result.sql.unsafe("SELECT indexname FROM pg_indexes WHERE schemaname='harness_shared'")).toEqual([]);

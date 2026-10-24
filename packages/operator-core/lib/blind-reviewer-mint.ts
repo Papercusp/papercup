@@ -55,6 +55,9 @@ export const BLIND_GAP_REVIEW_ACCOUNT = 'auto' as const;
 export const BLIND_REVIEWER_TOOL_CEILING: readonly string[] = Object.freeze([
   // Identity: the reviewer can confirm who it is.
   'coord:whoami',
+  // Lifecycle: close only this session through the existing host guards. This
+  // returns no plan material and cannot select or terminate another reviewer.
+  'session:end',
   // Deferred-tool access on a trimmed surface. tools:invoke re-checks the INNER name at
   // the dispatch seat, so it cannot reach a tool outside this ceiling.
   'tools:find',
@@ -140,7 +143,7 @@ export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: st
     `Call ${BLIND_REVIEW_TOOL} { op: 'post', slug: '${brief.planSlug}', activationAuditSeq: ${brief.activationAuditSeq}, outcome: 'conclusive', gaps: [...] }`,
     'Use conclusive only after completing the product interaction against the owner\'s words; gaps: [] means you found none.',
     'If product access or verification is incomplete, post outcome: \'inconclusive\' with a summary explaining what could not be verified. Empty gaps alone do not complete a review.',
-    'Then end your session.',
+    'After posting your review, call session:end with a short reason to finish your own session. It preserves the posted review and applies the existing agent-launched and human-attended guards.',
   ].join('\n');
 }
 

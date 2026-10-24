@@ -452,7 +452,7 @@ export async function settleReleaseRequestConsequence(
              '{release_request_consequence_outbox}',
              CASE
                WHEN jsonb_typeof(payload->'release_request_consequence_outbox') = 'object'
-                 THEN payload->'release_request_consequence_outbox' - ${row.job.id}
+                 THEN (payload->'release_request_consequence_outbox') - ${row.job.id}::text
                ELSE '{}'::jsonb
              END,
              true

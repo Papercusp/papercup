@@ -335,8 +335,9 @@ export async function readAssumeCallerReturnSource(plan: AssumePreparation) {
       original.caller.incarnation !== plan.target.binding.startedAt || plan.target.context.mode !== 'native-resume' ||
       original.target.ownerId !== plan.caller.ownerId || original.target.workspaceId !== plan.caller.workspaceId ||
       observation.targetNativeSessionId !== plan.caller.nativeSessionId || observation.backend !== plan.caller.backend ||
-      observation.nativePid !== plan.caller.nativePid || !plan.caller.nativeProcessStart ||
-      observation.nativeProcessStart !== plan.caller.nativeProcessStart ||
+      (observation.ptyPid ?? observation.nativePid) !== plan.caller.nativePid || !plan.caller.nativeProcessStart ||
+      (observation.ptyProcessStart ?? (observation.ptyPid === undefined ? observation.nativeProcessStart : null)) !==
+        plan.caller.nativeProcessStart ||
       original.caller.hostId !== plan.caller.hostId || original.caller.attachmentId !== plan.caller.attachmentId)
     throw new Error('assume-return-source-mismatch');
   await readAssumeCallerCheckpoint(original, recovery);
