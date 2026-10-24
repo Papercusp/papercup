@@ -15227,7 +15227,11 @@ export function hostThroughPty(o) {
           msg.mode === 'turn' ? turnCoalesceMetadata(msg) : undefined;
         const refreshedPendingTurn =
           pendingLoopKey != null
-            ? turnCoalescer.refresh(pendingLoopKey, msg.data, pendingLoopMetadata)
+            // The busy cap can hand the same delivery from the coalescer to
+            // native rearm. Refresh whichever queue still owns its payload;
+            // refreshPendingMessage refuses an older superseded delivery ID.
+            ? turnCoalescer.refresh(pendingLoopKey, msg.data, pendingLoopMetadata) ||
+              carryRearm.refreshPendingMessage(msg)
             : false;
         const refreshedPendingCarryRespawn =
           duplicateState === 'pending' && msg.mode === 'carry-respawn' && !msg.drillId
