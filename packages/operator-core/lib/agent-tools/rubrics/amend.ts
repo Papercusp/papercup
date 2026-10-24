@@ -236,6 +236,9 @@ const AMEND_REVIEW_PRESERVE_PATHS = [
   'receipt.registered',
   'receipt.rubricRef',
   'receipt.idempotencyKey',
+  'receipt.progress.phase',
+  'receipt.progress.phaseStartedAt',
+  'receipt.progress.observedAt',
   'review.state',
   'review.conversationId',
   'review.previewPostRef',
@@ -648,18 +651,28 @@ export default defineTool({
         ? await reviewReceiptKey(args, identity, previewSource)
         : 'preview-' + randomUUID();
       let registered = false;
-      const receipt = () => ({
+      let progress: { phase: string; phaseStartedAt: number } | undefined;
+      const receipt = (includeProgress = false) => ({
         idempotencyKey: receiptKey, rubricRef: args.rubricRef, registered,
         poll: { tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef, idempotencyKey: receiptKey } },
+        // A foreground snapshot only: another worker's status read cannot see
+        // these in-memory phases. Never refresh its timestamp on a key replay.
+        ...(includeProgress && progress ? { progress: { ...progress, observedAt: Date.now() } } : {}),
       });
-      const run = trackAmendRun(receiptKey, args.rubricRef, async (): Promise<Record<string, unknown>> => {
+      const run = trackAmendRun(receiptKey, args.rubricRef, async (onPhase): Promise<Record<string, unknown>> => {
+        const reportPhase = (phase: string) => {
+          onPhase(phase);
+          progress = { phase, phaseStartedAt: Date.now() };
+        };
         // A preview must enforce the same instrument admission as apply before
         // spending a reviewer turn on a patch the authoring guard will refuse.
+        reportPhase('preview-instrument-audit');
         const instrumentAudit = await auditAmendInstrumentBindings(input);
         const instrumentRefusal = instrumentAudit ? unregisteredInstrumentRefusal(instrumentAudit) : null;
         if (instrumentRefusal) return { ...instrumentRefusal, dryRun: true };
         let preview: Awaited<ReturnType<typeof previewAcceptanceBarAmendment>>;
         try {
+          reportPhase('preview-build');
           preview = await previewAcceptanceBarAmendment(input);
         } catch (error) {
           const refusal = rubricReadFailedRefusal(error, args.rubricRef) ??
@@ -691,6 +704,7 @@ export default defineTool({
         }
         let previewPostRef = args.reviewPreviewPost;
         if (!previewPostRef && args.requestReview) {
+          reportPhase('preview-post-approval');
           const posted = await postPreviewApproval(args.requestReview, preview.approval, identity);
           if (!('ref' in posted)) return { ...posted, dryRun: true, preview };
           previewPostRef = posted.ref;
@@ -698,6 +712,7 @@ export default defineTool({
         let review: Awaited<ReturnType<typeof openAcceptanceBarAmendmentReview>>;
         try {
           review = await openAcceptanceBarAmendmentReview({
+            onPhase: reportPhase,
             rubricRef: args.rubricRef,
             previewPostRef: previewPostRef!,
             preview,
@@ -734,7 +749,7 @@ export default defineTool({
             dryRun: true,
             pending: true,
             idempotencyKey: receiptKey,
-            receipt: receipt(),
+            receipt: receipt(true),
             note:
               'The preview reached its foreground response deadline and continues server-side. Poll rubrics:amend-status with this receipt; dryRun does not apply the amendment.',
           };

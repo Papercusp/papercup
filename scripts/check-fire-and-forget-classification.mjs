@@ -18,7 +18,9 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
 const digest = (s) => createHash('sha256').update(s).digest('hex');
-const notificationName = (s) => /notify|notification|send|escalat/i.test(s);
+const notificationName = (s) => /^(?:(?:notify|send|escalate)(?:$|[A-Z_])|(?:create|publish|push)Notification|(?:raise|create|emit)Escalation)/.test(s);
+// Immutable genesis population: the records may shrink; new sites declare at source.
+export const BASELINE_SEED_SHA256 = '3054ec6d5b42d3624d91f76a0553cc7005a69cda5d539bcdbe65c411cfdd3e00';
 const transparent = (n) => ts.isParenthesizedExpression(n) || ts.isAsExpression(n)
   || ts.isNonNullExpression(n) || ts.isTypeAssertionExpression(n) || ts.isSatisfiesExpression(n);
 
@@ -65,6 +67,14 @@ export function censusSources(sources) {
   const modules = new Map();
   const calls = [];
   const gaps = [];
+  const manifests = new Map();
+  const configs = new Map();
+  for (const [path, source] of Object.entries(sources)) if (/(?:^|\/)(?:package|tsconfig[^/]*)\.json$/.test(path)) {
+    const parsed = ts.parseConfigFileTextToJson(path, source);
+    if (parsed.error) { gaps.push({ path, kind: 'invalid-resolution-manifest' }); continue; }
+    if (path.endsWith('package.json') && parsed.config.name) manifests.set(parsed.config.name, { dir: posix.dirname(path), data: parsed.config });
+    if (path.endsWith('tsconfig.json')) configs.set(posix.dirname(path), parsed.config.compilerOptions ?? {});
+  }
   let serial = 0;
   function symbol(name, scope) {
     const s = { id: ++serial, name, scope, edges: [], aliases: [], roots: new Set(), params: [] };
@@ -74,15 +84,46 @@ export function censusSources(sources) {
   const named = (scope, name) => ({ scope, name });
   const root = (name) => ({ root: name });
   function modulePath(from, specifier) {
-    if (!specifier.startsWith('.')) return null;
-    const base = posix.normalize(posix.join(posix.dirname(from), specifier));
-    const stem = base.replace(/\.[cm]?jsx?$/, '');
-    return [base, ...['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'].flatMap(e => [stem + e, posix.join(base, 'index' + e)])].find(p => files.has(p)) ?? null;
+    function candidate(base) {
+      base = posix.normalize(base);
+      const stem = base.replace(/\.[cm]?jsx?$/, '');
+      return [base, ...['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'].flatMap(e => [stem + e, posix.join(base, 'index' + e)])].find(p => files.has(p)) ?? null;
+    }
+    if (specifier.startsWith('.')) return candidate(posix.join(posix.dirname(from), specifier));
+    // Reuse source-owned paths/exports rather than a parallel hand-maintained map.
+    const owner = [...configs].filter(([dir]) => dir === '.' || from.startsWith(dir + '/')).sort(([a], [b]) => b.length - a.length)[0];
+    if (owner) for (const [pattern, paths] of Object.entries(owner[1].paths ?? {})) {
+      const [prefix, suffix = ''] = pattern.split('*');
+      if (!(pattern.includes('*') ? specifier.startsWith(prefix) && specifier.endsWith(suffix) : specifier === pattern)) continue;
+      const part = specifier.slice(prefix.length, suffix.length ? -suffix.length : undefined);
+      for (const p of paths) { const hit = candidate(posix.join(owner[0], owner[1].baseUrl ?? '.', p.replace('*', part))); if (hit) return hit; }
+    }
+    const name = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0];
+    const pkg = manifests.get(name);
+    if (!pkg) return null;
+    const sub = specifier.slice(name.length).replace(/^\//, '');
+    const key = sub ? './' + sub : '.';
+    let entry = typeof pkg.data.exports === 'string' || !pkg.data.exports?.['.'] ? pkg.data.exports : pkg.data.exports[key];
+    if (sub && pkg.data.exports && typeof pkg.data.exports === 'object') {
+      entry = pkg.data.exports[key];
+      if (!entry) for (const [pattern, value] of Object.entries(pkg.data.exports)) if (pattern.includes('*') && key.startsWith(pattern.split('*')[0]) && key.endsWith(pattern.split('*')[1])) {
+        const middle = key.slice(pattern.split('*')[0].length, pattern.split('*')[1].length ? -pattern.split('*')[1].length : undefined);
+        entry = JSON.parse(JSON.stringify(value).replaceAll('*', middle));
+      }
+    }
+    const strings = v => typeof v === 'string' ? [v] : v && typeof v === 'object' ? Object.values(v).flatMap(strings) : [];
+    for (const p of [...strings(entry), ...(sub ? [sub, 'src/' + sub, 'lib/' + sub] : [pkg.data.source, pkg.data.module, pkg.data.main, 'src/index', 'lib/index', 'index'])].filter(Boolean)) {
+      for (const variant of [p, p.replace(/^\.\/dist\//, './src/').replace(/\.d\.[cm]?ts$/, '.ts')]) {
+        const hit = candidate(posix.join(pkg.dir, variant)); if (hit) return hit;
+      }
+    }
+    return null;
   }
   let parsed = 0;
   for (const [path, source] of files) {
     if (process.env.NOTIFY_CENSUS_PROGRESS && parsed++ % 1000 === 0) console.error(`NOTIFY_CENSUS_PROGRESS parsed=${parsed - 1}/${files.size}`);
     const sf = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, /[jt]sx$/.test(path) ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+    const lines = source.split('\n');
     for (const d of sf.parseDiagnostics) gaps.push({ path, kind: 'parse', offset: d.start, message: ts.flattenDiagnosticMessageText(d.messageText, ' ') });
     const top = { parent: null, names: new Map(), owner: null, label: '<module>' };
     const exports = new Map();
@@ -99,6 +140,7 @@ export function censusSources(sources) {
       if (!n) return null;
       if (transparent(n) || ts.isAwaitExpression(n)) return ref(n.expression, scope);
       if (ts.isIdentifier(n)) return named(scope, n.text);
+      if (ts.isStringLiteralLike(n)) return { literal: n.text };
       if (n.kind === ts.SyntaxKind.ThisKeyword) {
         let s = scope; while (s && !s.classSymbol) s = s.parent;
         return s?.classSymbol ? { id: s.classSymbol.id } : null;
@@ -107,6 +149,7 @@ export function censusSources(sources) {
       if (ts.isFunctionLike(n)) return functionIds.get(n)?.id ? { id: functionIds.get(n).id } : null;
       if (ts.isPropertyAccessExpression(n)) return { base: ref(n.expression, scope), member: n.name.text };
       if (ts.isElementAccessExpression(n) && n.argumentExpression && ts.isStringLiteralLike(n.argumentExpression)) return { base: ref(n.expression, scope), member: n.argumentExpression.text };
+      if (ts.isElementAccessExpression(n) && n.argumentExpression) return { base: ref(n.expression, scope), memberRef: ref(n.argumentExpression, scope) };
       if (ts.isNewExpression(n)) return ref(n.expression, scope);
       if (ts.isCallExpression(n)) {
         if ((n.expression.kind === ts.SyntaxKind.ImportKeyword || n.expression.getText(sf) === 'require') && ts.isStringLiteralLike(n.arguments[0])) return imported(n.arguments[0].text, '*');
@@ -191,7 +234,13 @@ export function censusSources(sources) {
         const callee = ref(n.expression, scope);
         const args = n.arguments.map(a => ref(a, scope));
         const line = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
-        calls.push({ path, line, owner: scope.owner, context: scope.label, callee, args, discarded: discarded(n), expression: tokens(n.getText(sf)) });
+        const annotation = lines.slice(Math.max(0, line - 4), line).join('\n').match(/notify-classification:\s*(\{[^\n]*\})/);
+        let declaration;
+        if (annotation) {
+          try { declaration = JSON.parse(annotation[1]); }
+          catch { gaps.push({ path, kind: 'invalid-classification-json', offset: n.getStart(sf) }); }
+        }
+        calls.push({ path, line, owner: scope.owner, context: scope.label, callee, args, declaration, discarded: discarded(n), expression: tokens(n.getText(sf)) });
         if (scope.owner) scope.owner.edges.push(callee);
       }
     }
@@ -200,6 +249,7 @@ export function censusSources(sources) {
   function targets(r, seen = new Set()) {
     if (!r || seen.has(r)) return [];
     seen.add(r);
+    if (r.literal !== undefined) return [{ literal: r.literal }];
     if (r.id) {
       const s = symbols.get(r.id);
       if (!s || seen.has(`id:${r.id}`)) return [];
@@ -215,9 +265,15 @@ export function censusSources(sources) {
       if (r.name === '*') return [{ module: m }];
       return [...targets(m?.exports.get(r.name), seen), ...(m?.stars ?? []).flatMap(s => targets({ ...s, name: r.name }, seen)), ...(notificationName(r.name) ? targets(root(r.name), seen) : [])];
     }
+    if (r.memberRef !== undefined) {
+      const keys = targets(r.memberRef, new Set(seen)).map(t => t.literal).filter(k => k !== undefined);
+      // Unknown computed dispatch is included conservatively, never silently clean.
+      return keys.length ? keys.flatMap(member => targets({ base: r.base, member }, new Set(seen))) : [{ roots: new Set(['<unresolved-computed-dispatch>']) }];
+    }
     if (r.member) {
       const bases = targets(r.base, seen);
-      return [...bases.flatMap(b => b.module ? targets(b.module.exports.get(r.member), seen) : b.members?.has(r.member) ? [b.members.get(r.member)] : []), ...(notificationName(r.member) ? targets(root(r.member), seen) : [])];
+      if (/^(call|apply|bind)$/.test(r.member)) return bases;
+      return [...bases.flatMap(b => b.module ? [...targets(b.module.exports.get(r.member), new Set(seen)), ...b.module.stars.flatMap(s => targets({ ...s, name: r.member }, new Set(seen)))] : b.members?.has(r.member) ? targets({ id: b.members.get(r.member).id }, new Set(seen)) : []), ...(notificationName(r.member) ? targets(root(r.member), seen) : [])];
     }
     let scope = r.scope;
     while (scope && !scope.names.has(r.name)) scope = scope.parent;
@@ -263,9 +319,10 @@ export function censusSources(sources) {
     if (!roots.length || (!c.discarded && !detached.has(c.owner?.id))) continue;
     const key = `${c.path}#${c.context}:${digest(c.expression).slice(0, 20)}`;
     const ordinal = (occurrences.get(key) ?? 0) + 1; occurrences.set(key, ordinal);
-    sites.push({ id: `${key}:${ordinal}`, path: c.path, line: c.line, context: c.context, expression: c.expression, roots, mode: c.discarded ? 'discarded' : 'detached-wrapper' });
+    sites.push({ id: `${key}:${ordinal}`, path: c.path, line: c.line, context: c.context, expression: c.expression, roots, mode: c.discarded ? 'discarded' : 'detached-wrapper', ...(c.declaration ? { declaration: c.declaration } : {}) });
   }
-  return { schemaVersion: 1, files: [...files].map(([path, source]) => ({ path, sha256: digest(source) })), sites: sites.sort((a, b) => a.id.localeCompare(b.id)), gaps };
+  const resolutionFiles = Object.entries(sources).filter(([p]) => /(?:^|\/)(?:package|tsconfig[^/]*)\.json$/.test(p));
+  return { schemaVersion: 1, files: [...files, ...resolutionFiles].map(([path, source]) => ({ path, sha256: digest(source) })).sort((a,b) => a.path.localeCompare(b.path)), sites: sites.sort((a, b) => a.id.localeCompare(b.id)), gaps };
 }
 
 export function validateClassifications(census, records, seedIds = []) {
@@ -278,6 +335,7 @@ export function validateClassifications(census, records, seedIds = []) {
     if (r.classification === 'durable' && !r.durablePath?.trim()) errors.push(`missing durable path: ${r.id}`);
   }
   const active = new Set(census.sites.map(s => s.id));
+  if (active.size !== census.sites.length) errors.push('duplicate census site ID');
   for (const s of census.sites) {
     const r = byId.get(s.id);
     if (!r) { errors.push(`unclassified: ${s.id}`); continue; }
@@ -289,12 +347,50 @@ export function validateClassifications(census, records, seedIds = []) {
   return errors;
 }
 
+export function validateSeed(registry, expectedHash = BASELINE_SEED_SHA256) {
+  const ids = registry.seedIds;
+  if (!Array.isArray(ids) || new Set(ids).size !== ids.length || digest(JSON.stringify([...ids].sort())) !== expectedHash) return ['baseline seed changed; preserve the --list genesis population'];
+  const seed = new Set(ids);
+  return registry.records.filter(r => !seed.has(r.id)).map(r => `baseline grew: ${r.id}; classify the new site at source instead`);
+}
+
+export function inlineClassifications(census) {
+  return census.sites.filter(s => s.declaration).map(s => ({ ...s.declaration, id: s.id, path: s.path }));
+}
+
+/**
+ * A conservative policy seed, NOT a claim that delivery already is durable.
+ * P-009 must verify the terminal consequence; wrapper records share that path,
+ * never require one additional workflow per wrapper invocation. Lossy exemptions
+ * need a specific reviewed reason and must still pass the mandatory-notice gate.
+ */
+export function seedClassifications(census) {
+  if (census.gaps.length || !census.files.length || census.sourceDigest !== digest(JSON.stringify(census.files))) throw new Error('Refusing to seed an incomplete or unpinned census');
+  const seedIds = census.sites.map(s => s.id).sort();
+  if (new Set(seedIds).size !== seedIds.length) throw new Error('Refusing duplicate census site IDs');
+  return {
+    schemaVersion: 1,
+    policy: 'Durable is a requirement. Delivery is UNVERIFIED until P-009 proves the terminal path; wrappers share that path, not separate workflows. No safe-to-lose exemption is inferred from a name.',
+    seedSourceDigest: census.sourceDigest,
+    seedCensusDigest: digest(JSON.stringify(census)),
+    seedFiles: census.files,
+    seedCoverage: census.coverage,
+    seedIds,
+    records: census.sites.map(s => ({
+      id: s.id, path: s.path, classification: 'durable',
+      reason: `No safe-to-lose proof recorded. This call reaches ${s.roots.slice(0, 6).join(', ')}; retain its terminal delivery obligation, including through aliases/wrappers.`,
+      durablePath: 'UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009',
+      deliveryState: 'unverified',
+    })),
+  };
+}
+
 export function scanRepository(cwd = ROOT) {
   const tracked = listTrackedFiles(cwd);
   const coverage = coverageOf(tracked.files, cwd);
   const sources = {};
   const unreadable = [];
-  for (const path of tracked.files.filter(inScope)) {
+  for (const path of tracked.files.filter(p => inScope(p) || /(?:^|\/)(?:package|tsconfig[^/]*)\.json$/.test(p) && !/(?:^|\/)(?:node_modules|env-sidecars|dist[^/]*|storybook-static|\.papercusp)(?:\/|$)/.test(p))) {
     try { sources[path] = readFileSync(resolve(cwd, path), 'utf8'); }
     catch (e) { unreadable.push({ path, kind: 'unreadable', message: e.message }); }
   }
@@ -305,6 +401,13 @@ export function scanRepository(cwd = ROOT) {
 }
 
 function main() {
+  const seedFrom = process.argv.indexOf('--seed-from');
+  if (seedFrom !== -1) {
+    const seed = seedClassifications(JSON.parse(readFileSync(process.argv[seedFrom + 1], 'utf8')));
+    console.log(JSON.stringify(seed, null, 2));
+    console.error(`NOTIFY_BASELINE_SEED_SHA256=${digest(JSON.stringify(seed.seedIds))}`);
+    return;
+  }
   const census = scanRepository();
   if (process.argv.includes('--list')) {
     console.log(process.argv.includes('--json') ? JSON.stringify(census, null, 2) : census.sites.map(s => `${s.id}\t${s.path}:${s.line}\t${s.roots.join(',')}`).join('\n'));
@@ -312,8 +415,8 @@ function main() {
     return;
   }
   const registry = JSON.parse(readFileSync(new URL('./fire-and-forget-classification.json', import.meta.url), 'utf8'));
-  const errors = validateClassifications(census, registry.records, registry.seedIds);
-  console.log(JSON.stringify({ sites: census.sites.length, files: census.files.length, sourceDigest: census.sourceDigest, coverage: census.coverage, errors }));
+  const errors = [...validateSeed(registry), ...validateClassifications(census, [...registry.records, ...inlineClassifications(census)], registry.seedIds)];
+  console.log(JSON.stringify({ scope: 'classification guard; not a durable-delivery verdict', sites: census.sites.length, files: census.files.length, sourceDigest: census.sourceDigest, coverage: census.coverage, unverifiedDurable: registry.records.filter(r => r.classification === 'durable' && r.deliveryState !== 'verified').length, errors }));
   process.exitCode = errors.length ? 1 : 0;
 }
 if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) main();

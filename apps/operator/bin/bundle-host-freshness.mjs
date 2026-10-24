@@ -227,8 +227,13 @@ function normalizedInputs(values) {
     throw new Error(`bundle does not exist: ${outfile}`);
   if (!lstatSync(outfile).isFile())
     throw new Error(`bundle is not a regular file: ${outfile}`);
+  const source = sourceIdentity(repoRoot);
+  const builtFrom = values['source-sha'];
+  if (builtFrom !== undefined &&
+      (!/^[a-f0-9]{7,64}$/.test(builtFrom) || !source.headSha.startsWith(builtFrom)))
+    throw new Error('build source HEAD mismatch');
   return {
-    source: sourceIdentity(repoRoot),
+    source,
     entry: realpathSync(entry),
     outfile: realpathSync(outfile),
     manifest,

@@ -33,6 +33,17 @@ function fixture() {
 }
 
 describe('clean parent-bound identity launcher', () => {
+  it('restores a pinned caller return through the same request only after the launcher finalizes', async () => {
+    const { handoff, result, ports, request } = fixture();
+    Object.assign(result.preparation.target, { returnFrom: { transitionKey: 'source-key' } });
+    await launchIdentityAssumeHandoff(handoff, ports);
+    const options = ports.resume.mock.calls[0][1] as { managedAssume: { restoreReturn(): Promise<void> } };
+    expect(ports.inspect).not.toHaveBeenCalledWith(request, true, 'complete-return');
+    await options.managedAssume.restoreReturn();
+    expect(ports.inspect).toHaveBeenLastCalledWith(request, true, 'complete-return');
+    ports.inspect.mockResolvedValueOnce({ ok: false } as typeof result);
+    await expect(options.managedAssume.restoreReturn()).rejects.toThrow('assume-return-unacknowledged');
+  });
   it('ends the departed caller before reexec while ordinary code adoption retains its registration', async () => {
     const effects: string[] = [];
     const reportEnd = vi.fn(async () => { effects.push('end-ack'); return { reported: true }; });

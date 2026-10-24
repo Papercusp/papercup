@@ -121,11 +121,12 @@ async function postTransition(
 }
 
 describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
-  it('inspects exact managed takeover custody without acquiring or reactivating a session', async () => {
+  it.each(['thaw', 'complete-return'])('routes managed %s without acquiring or reactivating a session', async action => {
     const request = { transitionKey: 'opaque-fixture-reference' };
-    const res = await postResumed({ assumeHost: { request, afterExit: false, action: 'thaw' } });
+    const afterExit = action === 'complete-return';
+    const res = await postResumed({ assumeHost: { request, afterExit, action } });
     expect(res.status).toBe(200);
-    expect(assumeInspectMock).toHaveBeenCalledWith(request, false, 'thaw');
+    expect(assumeInspectMock).toHaveBeenCalledWith(request, afterExit, action);
     expect(acquireResumeMock).not.toHaveBeenCalled();
     expect(claimResumeMock).not.toHaveBeenCalled();
   });

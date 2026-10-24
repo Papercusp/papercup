@@ -1,11 +1,15 @@
-/** Opt-in acceptance against the current source, real SU bootstrap and engine.
- * Creates one named test conversation in the selected project and archives it.
- * No UI/PTY is launched. Provider tokens are spent only with the explicit flag;
- * backend is Claude, model defaults to explicitly pinned `sonnet` (PUI D-012),
- * and account defaults to `auto` so the gateway can choose from its provider pool.
+/** Inventory integration uses an isolated real PTY with a controlled Node child.
+ * The separately opt-in live-engine group creates and archives a named test
+ * conversation. Provider tokens are spent only with that explicit flag;
+ * its backend is Claude, model defaults to pinned `sonnet` (PUI D-012), and
+ * account defaults to `auto` so the gateway can choose from its provider pool.
  */
+// Establish the maintained PTY discovery isolation before either side of that
+// production seam is imported. These fake children must never look like fleet sessions.
+import { hermeticEnv } from '../../../apps/operator/vitest-shims/psu-pty-temp-dir';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createAdaptorServer } from '@hono/node-server';
@@ -18,6 +22,8 @@ import { confirmedProviderRateLimit } from './su-session-attached-live-rate-limi
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
 import { modelArgsFor } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { eventLogPathForOwner, hostThroughPty, metaPathFor, socketPathFor } from '../../../apps/operator/scripts/psu-pty-host.mjs';
+import { findLiveHost, injectIntoHostWithConfirmation } from './events/await/psu-pty-discovery';
 import { redactSensitiveText } from './sensitive-text';
 import { buildClaudeMcpEntry } from './desktop-install/claude-integration';
 import { SuNativeCards } from './su-session-native-cards';
@@ -27,10 +33,80 @@ import { resolveCardResponse } from '@papercusp/agent-mcp';
 import { SU_EXEC_COMBINATIONS, SU_EXEC_SCENARIOS, SU_EXEC_REQUEST_SCENARIOS, SU_EXEC_PTY_CONTROLS, suExecScenariosFor, suExecQualificationPopulation,
   suExecQualificationDefects } from './__fixtures__/su-execution-parity';
 
+/**
+ * Exercise the actual host -> discovery -> socket -> PTY child boundary that
+ * the inventory classifies. A controlled Node child avoids provider calls;
+ * this is transport/inventory integration, not native-provider qualification.
+ */
+async function observeInventoryPtyBoundary() {
+  const ownerId = 'su-exec-inventory-' + randomUUID();
+  const probe = randomUUID();
+  const root = mkdtempSync(join(tmpdir(), 'su-exec-inventory-'));
+  const inputLog = join(root, 'child-input');
+  const signalSource = new EventEmitter();
+  let captured = '';
+  const stdin = Object.assign(new EventEmitter(), { isTTY: false, resume() {}, pause() {} });
+  const io = {
+    stdout: { columns: 80, rows: 24, write: (data: Buffer | string) => { captured += data.toString(); }, on() {}, off() {} },
+    stdin,
+  };
+  const done = hostThroughPty({
+    command: process.execPath,
+    args: ['-e', [
+      "const fs=require('node:fs');",
+      "process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');",
+      "process.stdout.write('SU_EXEC_PTY_READY\\n');",
+      "let received='';process.stdin.on('data',data=>{fs.appendFileSync(process.env.SU_EXEC_INPUT_LOG,data);received+=data;if(received.includes(process.env.SU_EXEC_PROBE)){",
+      "process.stdout.write('SU_EXEC_CHILD_RECEIPT:'+process.env.SU_EXEC_PROBE+'\\n');process.exit(0);}});",
+      "setTimeout(()=>process.exit(19),12000);",
+    ].join('')],
+    cwd: root, env: hermeticEnv({ PAPERCUSP_SID: ownerId, SU_EXEC_PROBE: probe, SU_EXEC_INPUT_LOG: inputLog }),
+    ownerId, io, bridgeTty: false, signalSource,
+    onExit: () => undefined, emitCompacted: () => null,
+  });
+  const socket = socketPathFor(ownerId);
+  const metadata = metaPathFor(ownerId);
+  try {
+    await vi.waitFor(() => expect(captured).toContain('SU_EXEC_PTY_READY'), { timeout: 5000 });
+    // The host is in this Vitest worker; use the maintained exact-worker PID
+    // verifier, rather than asking the native launcher classifier to recognize Vitest.
+    const discovered = findLiveHost(ownerId, undefined, { verifyIdentity: pid => pid === process.pid });
+    expect(discovered).toMatchObject({ ownerId, pid: process.pid, sock: socket });
+    expect(existsSync(metadata)).toBe(true);
+    const admission = await injectIntoHostWithConfirmation(socket, { mode: 'compact', data: '', ownerId });
+    expect(admission).toMatchObject({ ok: true, confirmation: 'acked', reason: 'accepted' });
+    // Admission acknowledges queue custody. Only the later production event
+    // proves semantic refusal; the child-input log below proves no JSON leaked.
+    const refusal = await vi.waitFor(() => {
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      const dropped = events.find(event => event.kind === 'retired-mode-dropped');
+      expect(dropped).toMatchObject({ kind: 'retired-mode-dropped', mode: 'compact' });
+      return dropped;
+    }, { timeout: 5000 });
+    const delivery = await injectIntoHostWithConfirmation(socket, { mode: 'raw', data: probe, ownerId });
+    expect(delivery.ok).toBe(true);
+    await vi.waitFor(() => expect(captured).toContain('SU_EXEC_CHILD_RECEIPT:' + probe), { timeout: 5000 });
+    expect(await done, captured).toBe(0);
+    expect(readFileSync(inputLog, 'utf8')).toBe(probe);
+    expect(existsSync(socket)).toBe(false);
+    expect(existsSync(metadata)).toBe(false);
+    return { refusal, rawDelivered: captured.includes('SU_EXEC_CHILD_RECEIPT:' + probe),
+      discoveryRemoved: !existsSync(socket) && !existsSync(metadata) };
+  } finally {
+    signalSource.emit('SIGTERM');
+    await done.catch(() => undefined);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 describe('SU execution live qualification inventory (P-001)', () => {
-  it('SU-EXEC R-1 acceptance contract', () => {
-    // This case freezes the live drill population. It deliberately cannot certify
-    // a native execution from this file's older Claude-only identity smoke.
+  it('SU-EXEC R-1 acceptance contract', async () => {
+    const observed = await observeInventoryPtyBoundary();
+    expect(observed.rawDelivered).toBe(true);
+    expect(SU_EXEC_PTY_CONTROLS.find(control => control.mode === 'raw')?.classification).toBe('native-presentation');
+    expect(SU_EXEC_PTY_CONTROLS.find(control => control.mode === 'compact')?.classification).toBe('retired');
+    // Keep the native-provider drill population unknown: a real PTY transport
+    // receipt from a controlled child cannot qualify either provider backend.
     const population = suExecQualificationPopulation();
     for (const combination of SU_EXEC_COMBINATIONS) {
       const rows = population.filter(row => row.provider === combination.provider && row.execution === combination.execution);
@@ -46,9 +122,11 @@ describe('SU execution live qualification inventory (P-001)', () => {
       expect(SU_EXEC_SCENARIOS.find(scenario => scenario.id === id)?.falsifier).toBeTruthy();
     }
     expect(suExecQualificationDefects(population).length).toBeGreaterThan(0);
-  });
+  }, 20_000);
 
-  it('SU-EXEC R-18 acceptance contract', () => {
+  it('SU-EXEC R-18 inventory preflight', async () => {
+    const observed = await observeInventoryPtyBoundary();
+    expect(observed.discoveryRemoved).toBe(true);
     for (const row of suExecQualificationPopulation()) {
       expect(row.ownerItem).toMatch(/^P-\d{3}$/);
       expect(row.host).toBe('linux/x64/current-build');
@@ -58,7 +136,7 @@ describe('SU execution live qualification inventory (P-001)', () => {
     // No missing mandatory live proof may become a healthy/parity verdict.
     const missing = suExecQualificationPopulation().filter(row => row.execution === 'pty');
     expect(suExecQualificationDefects(missing)).toContainEqual(expect.stringContaining('missing'));
-  });
+  }, 20_000);
 });
 
 type StartedTool = Extract<SuSessionEventInput, { type: 'tool'; phase: 'started' }>;

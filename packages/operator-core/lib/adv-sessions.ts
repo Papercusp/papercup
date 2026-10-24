@@ -1504,7 +1504,8 @@ async function transitionAdvSessionResume(
 
     const rows =
       transition === 'finalize'
-        ? await tx<{ id: number }[]>`
+        ? await tx<Array<{ id: number; coord_owner_id: string | null; session_id: string | null;
+            omp_thread_id: string | null; started_at: string }>>`
           UPDATE harness_shared.adv_sessions
              SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
                  retired_at = CASE WHEN ${allowRetired} THEN NULL ELSE retired_at END,
@@ -1514,7 +1515,7 @@ async function transitionAdvSessionResume(
                  resume_claim_key = NULL, resume_claimed_at = NULL
            WHERE id = ${id} AND resume_claim_key = ${key}
              AND (retired_at IS NULL OR ${allowRetired})
-          RETURNING id
+          RETURNING id, coord_owner_id, session_id, omp_thread_id, started_at::text
         `
         : await tx<{ id: number }[]>`
           UPDATE harness_shared.adv_sessions
@@ -1529,7 +1530,15 @@ async function transitionAdvSessionResume(
       await recordResumedLaunchPostureInTransaction(tx, id, launchArgv);
       await recordSuLaunchSpecInTransaction(tx, id, null);
     }
-    const summary = JSON.stringify({ kind: receiptKind, transitioned });
+    // Pin the incarnation produced by this exact finalize. A boolean receipt
+    // survives later resumes and cannot authenticate an identity return alone.
+    const finalized = transition === 'finalize' && transitioned ? rows[0] as {
+      coord_owner_id: string | null; session_id: string | null; omp_thread_id: string | null; started_at: string;
+    } : null;
+    const summary = JSON.stringify({ kind: receiptKind, transitioned, ...(finalized ? { binding: {
+      coordOwnerId: finalized.coord_owner_id, sessionId: finalized.session_id,
+      ompThreadId: finalized.omp_thread_id, startedAt: finalized.started_at,
+    } } : {}) });
     await tx`
       UPDATE harness_shared.agent_launch_idempotency
          SET summary = ${summary}::text::jsonb

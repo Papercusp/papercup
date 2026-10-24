@@ -10,7 +10,8 @@ import { resolveResumeTarget } from './agent-launch-core';
 import { inspectBlindReviewResumeTarget } from './blind-review-session-bindings';
 import { readSessionConfinement } from './capability-envelope/session-confinement-store';
 import { decodeOperatorSecretKey } from './operator-secret-key';
-import { createAssumeCallerAdapters, readAssumeCallerCheckpoint, type AssumeCallerHostFence } from './session-assume-caller';
+import { completeAssumeCallerReturn, createAssumeCallerAdapters, readAssumeCallerCheckpoint,
+  readAssumeCallerReturnSource, type AssumeCallerHostFence } from './session-assume-caller';
 import { createAssumeCustodyAdapters } from './session-assume-custody';
 import { createManagedAssumeHost } from './session-assume-host';
 import { readAssumeCaller, readAssumeTarget, readAssumeCheckpointBody } from './session-assume-preparation';
@@ -101,15 +102,20 @@ export async function createAssumePreparationDeps(
  * to another window, an unguarded CLI or an environment-only identity change. */
 export function createAssumeTransitionDeps(plan: AssumePreparation,
   host: AssumeCallerHostFence & Pick<AssumeTransitionDeps, 'handoff'> = createManagedAssumeHost(plan)): AssumeTransitionDeps {
+  const caller = createAssumeCallerAdapters(host);
   return { now: Date.now, ...createAssumeReceiptStore(plan), ...createAssumeCustodyAdapters(plan),
-    ...createAssumeCallerAdapters(host), handoff: (value, recovery) => host.handoff(value, recovery) };
+    ...caller, checkpointCaller: async value => {
+      if (value.target.returnFrom) await readAssumeCallerReturnSource(value);
+      return caller.checkpointCaller(value);
+    }, handoff: (value, recovery) => host.handoff(value, recovery) };
 }
 
 /** Internal launcher inspection over existing receipts, pause and keyed lease.
  * The HTTP boundary requires the local superuser principal. No public argument
  * can create a preparation, authorize a transition or manufacture a lease. */
 export async function inspectManagedAssumeRequest(value: unknown, afterExit = false, action = 'observe') {
-  if (!['freeze', 'queue', 'thaw', 'observe'].includes(action) || afterExit && action === 'thaw')
+  if (!['freeze', 'queue', 'thaw', 'observe', 'complete-return'].includes(action) ||
+      afterExit && action === 'thaw' || action === 'complete-return' && !afterExit)
     throw new Error('assume-host-invalid-action');
   const text = z.string().min(1).max(4096);
   const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -127,14 +133,16 @@ export async function inspectManagedAssumeRequest(value: unknown, afterExit = fa
   const store = createAssumeReceiptStore(plan);
   const receipt = await store.load();
   if (!receipt?.recovery || !receipt.durable ||
-      !['caller-checkpointed', 'caller-quiesced', 'target-custody-acquired', 'handoff-requested', 'handoff-accepted'].includes(receipt.state) ||
-      (afterExit && receipt.state !== 'handoff-accepted') ||
+      !['caller-checkpointed', 'caller-quiesced', 'target-custody-acquired', 'handoff-requested', 'handoff-accepted',
+        ...(action === 'complete-return' ? ['target-verified'] : [])].includes(receipt.state) ||
+      (afterExit && receipt.state !== 'handoff-accepted' && !(action === 'complete-return' && receipt.state === 'target-verified')) ||
       receipt.transitionKey !== request.transitionKey || assumePreparationFingerprint(plan) !== request.preparationHash ||
-      request.expiresAt !== plan.expiresAt || (action !== 'thaw' && Date.now() >= plan.expiresAt) ||
+      request.expiresAt !== plan.expiresAt || (!['thaw', 'complete-return'].includes(action) && Date.now() >= plan.expiresAt) ||
       !['ownerId', 'workspaceId', 'nativeSessionId', 'nativePid', 'hostId', 'attachmentId'].every(
         key => plan.caller[key as keyof typeof plan.caller] === request.caller[key as keyof typeof request.caller]) ||
       receipt.recovery.checkpointRef !== request.recoveryRef || receipt.recovery.checkpointSha256 !== request.recoveryHash)
     throw new Error('assume-host-receipt-mismatch');
+  if (action === 'complete-return') return { ok: await completeAssumeCallerReturn(plan) };
   const requireCallerRegistration = async () => {
     // A discovery record and a durable pause can outlive their adv registration.
     // Resolve again at the effect boundary, refusing successor-following and

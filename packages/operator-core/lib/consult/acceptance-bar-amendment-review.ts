@@ -89,6 +89,8 @@ export interface AmendmentReviewRouteInput {
   workspaceId: string;
   harness?: string;
   reviewerModel?: ConsultReviewerModel;
+  /** Existing amendment receipt diagnostics; no review arguments are emitted. */
+  onPhase?: (phase: string) => void;
 }
 
 /** A constrained review may only use a model admitted by the workspace's
@@ -115,15 +117,20 @@ export async function routeAcceptanceBarAmendmentReview(
   } = {},
 ): Promise<AmendmentReviewRouteResult> {
   const rubricId = input.rubricRef.trim().replace(/^plan:/i, '').trim();
-  if (input.reviewerModel) await (deps.assertAllowed ?? assertReviewerModelAllowed)(input.workspaceId, input.reviewerModel);
+  if (input.reviewerModel) {
+    input.onPhase?.('review-model-policy');
+    await (deps.assertAllowed ?? assertReviewerModelAllowed)(input.workspaceId, input.reviewerModel);
+  }
   const applierId = input.identity.ownerId;
   const resolveScreen =
     deps.resolveScreen ?? (async (args) => (await import('../rubrics')).resolveAcceptanceBarApproverScreen(args));
   // Resolve the population before routing: an unreadable rubric or implementer
   // history refuses the review rather than routing it unscreened.
+  input.onPhase?.('review-screen');
   const screen = await resolveScreen({ rubricId, applierId });
   const feedback = deps.feedback ?? (await import('./get-feedback-prod')).getFeedbackProd;
   const screenedOut: AmendmentReviewScreenedOut[] = [];
+  input.onPhase?.('review-route');
   const result = await feedback(
     {
       workspaceId: input.workspaceId,
@@ -142,7 +149,12 @@ export async function routeAcceptanceBarAmendmentReview(
       ...(input.harness ? { harnessSlug: input.harness } : {}),
     },
     input.identity,
-    { filterRoute: (route) => filterAmendmentReviewRoute(route, screen.check, (entry) => screenedOut.push(entry)) },
+    { filterRoute: async (route) => {
+      input.onPhase?.('review-screen-candidates');
+      const filtered = await filterAmendmentReviewRoute(route, screen.check, (entry) => screenedOut.push(entry));
+      input.onPhase?.('review-route');
+      return filtered;
+    } },
   );
   if ('error' in result) throw new Error(`acceptance_bar_amendment_review_refused: ${result.error}`);
   if (result.verdict === 'routed') {
@@ -835,6 +847,8 @@ export interface OpenAmendmentReviewInput extends AmendmentReviewBriefInput {
   reviewerModel?: ConsultReviewerModel;
   /** Explicit re-review request backed by a later immutable evidence post. */
   reviewEvidencePost?: string;
+  /** In-memory phase callback shared with the amendment's existing receipt. */
+  onPhase?: (phase: string) => void;
 }
 
 export type AmendmentReviewRequestResult =
@@ -869,6 +883,7 @@ export async function openAcceptanceBarAmendmentReview(
     throw new Error(`invalid_args: reviewPreviewPost must be thread-post:<id>, got '${input.previewPostRef}'`);
   }
   try {
+    input.onPhase?.('review-preview-verification');
     await (deps.verifyPreviewPost ?? verifyPreviewPostWithApplyResolver)({
       workspaceId: input.workspaceId,
       previewPostRef,
@@ -881,11 +896,13 @@ export async function openAcceptanceBarAmendmentReview(
         'Post the current preview.approval JSON once with work_items:comment and pass that post.',
     );
   }
+  if (input.reviewEvidencePost) input.onPhase?.('review-evidence');
   const reviewEvidence = input.reviewEvidencePost
     ? await (deps.resolveEvidence ?? resolveAmendmentReviewEvidence)({
       workspaceId: input.workspaceId, previewPostRef,
       evidencePostRef: input.reviewEvidencePost.trim(), applierId: input.identity.ownerId,
     }) : undefined;
+  input.onPhase?.('review-route');
   const routed = await (deps.route ?? routeAcceptanceBarAmendmentReview)({
     rubricRef: input.rubricRef,
     brief: buildAmendmentReviewBrief({ ...input, previewPostRef, reviewEvidence }),
@@ -893,6 +910,7 @@ export async function openAcceptanceBarAmendmentReview(
     workspaceId: input.workspaceId,
     ...(input.harness ? { harness: input.harness } : {}),
     ...(input.reviewerModel ? { reviewerModel: input.reviewerModel } : {}),
+    ...(input.onPhase ? { onPhase: input.onPhase } : {}),
   });
   if (routed.state === 'routed') {
     const next =
@@ -904,6 +922,7 @@ export async function openAcceptanceBarAmendmentReview(
   // fresh reviewer must not be recruited for the same unchanged preview: an
   // objection (or any other later reply worth preserving) requires explicit
   // new requester evidence via reviewEvidencePost before re-review.
+  input.onPhase?.('review-thread-history');
   if (!reviewEvidence && await (deps.hasLaterPost ?? previewThreadHasLaterPost)({
     workspaceId: input.workspaceId,
     previewPostRef,
@@ -920,6 +939,7 @@ export async function openAcceptanceBarAmendmentReview(
   // outside-lineage reviewer instead of telling the requester to wait for one.
   let freshReviewer: FreshAmendmentReviewerResult;
   try {
+    input.onPhase?.('review-launch');
     freshReviewer = await (deps.launchFresh ?? launchFreshAmendmentReviewer)({
       rubricRef: input.rubricRef,
       previewPostRef,

@@ -11,6 +11,8 @@ import { loopScope } from './carry-note';
 import { findSessionTranscript } from './claude-sessions';
 import { findLiveHostAsync } from './events/await/psu-pty-discovery';
 import { nativeSessionHandleForAdvSession } from './native-session-handles';
+import { readProcessIdentity } from './process-identity';
+import { readAssumeCallerPause } from './session-assume-pause';
 import { findCodexRolloutPathByUuid, findOmpSessionPath } from './session-transcript-resolvers';
 import { codexThreadWriterHolder, sessionProcessHolder } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import type { AssumeActor, AssumeCaller, AssumeContext, AssumePreparation, AssumeRequest, AssumeTarget } from './session-assume';
@@ -116,7 +118,9 @@ export async function readAssumeCaller(actor: AssumeActor): Promise<AssumeCaller
   if (!backend || !nativeId || !capability || capability.version !== 1 ||
       !capability.hostId || !capability.attachmentId ||
       (host.nativeSessionId && host.nativeSessionId !== nativeId)) return null;
+  const nativeProcessStart = readProcessIdentity(host.ptyPid);
   return { ...actor, nativeSessionId: nativeId, incarnation: target.binding.startedAt,
+    ...(nativeProcessStart ? { nativeProcessStart } : {}),
     backend, nativePid: host.ptyPid, hostId: capability.hostId, attachmentId: capability.attachmentId };
 }
 
@@ -166,6 +170,9 @@ export async function readAssumeTarget(request: AssumeRequest, workspaceId: stri
     context = root && file ? await readAssumeTranscriptPin(file, root, backend, nativeId) : null;
   }
   if (!context) return null;
+  const pause = await readAssumeCallerPause(target.ownerId);
+  if (pause && (pause.workspaceId !== target.workspaceId || pause.nativeSessionId !== nativeId ||
+      pause.incarnation !== target.binding.startedAt || request.contextMode !== 'native-resume')) return null;
   // A stable request-derived fresh id survives preview/commit re-resolution.
   // It is distinct from native-resume and cannot silently reopen old history.
   const digest = sha256(JSON.stringify([request.requestId, target.binding, context]));
@@ -175,5 +182,7 @@ export async function readAssumeTarget(request: AssumeRequest, workspaceId: stri
     executionNativeSessionId: request.contextMode === 'native-resume' ? nativeId : backend === 'codex' ? null : freshId,
     backend, binding: target.binding,
     writerGeneration: sha256(JSON.stringify([target.binding, writer, lock?.reason])),
-    writer, ended: true, liveHost: false, context };
+    writer, ended: true, liveHost: false, context,
+    ...(pause ? { returnFrom: { transitionKey: pause.transitionKey,
+      checkpointRef: pause.checkpointRef, checkpointSha256: pause.checkpointSha256 } } : {}) };
 }

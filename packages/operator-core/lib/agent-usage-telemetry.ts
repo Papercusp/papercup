@@ -156,7 +156,7 @@ export async function recordUsageSample(sample: UsageSample): Promise<void> {
         ${sample.sessionId ?? null},
         (SELECT harness_shared.goal_id_for_usage_session(${ws}, ${sample.sessionId ?? null})),
         ${sample.toolName ?? null}, ${sample.turnTrigger ?? null}, ${sample.accountId ?? null}, ${priceTableVersion},
-        ${usageProvenance ? JSON.stringify(usageProvenance) : null}::jsonb
+        ${usageProvenance ? sql.json(usageProvenance) : null}::jsonb
       )
     `;
   } catch {

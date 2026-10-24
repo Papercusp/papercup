@@ -202,6 +202,25 @@ describe('routeAcceptanceBarAmendmentReview', () => {
     expect(feedback).not.toHaveBeenCalled();
   });
 
+  it('identifies a blocked independence screen without bypassing it', async () => {
+    let rejectScreen!: (error: Error) => void;
+    const screen = new Promise<{ check: AmendmentReviewerScreen }>((_resolve, reject) => { rejectScreen = reject; });
+    const feedback = vi.fn();
+    const onPhase = vi.fn();
+    const pending = routeAcceptanceBarAmendmentReview(
+      { rubricRef: 'acceptance-x', brief: 'b', identity, workspaceId: 'ws-1', onPhase },
+      { resolveScreen: () => screen, feedback: feedback as never },
+    );
+    try {
+      expect(onPhase).toHaveBeenLastCalledWith('review-screen');
+      expect(feedback).not.toHaveBeenCalled();
+    } finally {
+      rejectScreen(new Error('screen-unavailable'));
+      await expect(pending).rejects.toThrow('screen-unavailable');
+    }
+    expect(feedback).not.toHaveBeenCalled();
+  });
+
   it('registers the amendment policy with one reviewer per attempt', () => {
     expect(selectionPolicy(ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY)).toEqual({ min: 1, max: 1 });
   });
@@ -261,6 +280,27 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     const routed = route.mock.calls[0]![0];
     expect(routed).toMatchObject({ rubricRef: 'acceptance-demo', workspaceId: 'ws', identity: baseInput.identity });
     expect(routed.brief).toBe(buildAmendmentReviewBrief({ ...baseInput }));
+  });
+
+  it('identifies a pending fresh launch after preserving the screened routing result', async () => {
+    let resolveLaunch!: (value: { state: 'not-launched'; reason: string }) => void;
+    const launch = new Promise<{ state: 'not-launched'; reason: string }>((resolve) => { resolveLaunch = resolve; });
+    const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: null,
+      reason: 'all screened out', screenedOut: [] });
+    const launchFresh = vi.fn(() => launch);
+    const onPhase = vi.fn();
+    const pending = openAcceptanceBarAmendmentReview({ ...baseInput, onPhase }, {
+      verifyPreviewPost: vi.fn(), route, launchFresh, hasLaterPost: noLaterPost,
+    });
+    try {
+      await vi.waitFor(() => expect(launchFresh).toHaveBeenCalledTimes(1));
+      expect(onPhase).toHaveBeenLastCalledWith('review-launch');
+      expect(route).toHaveBeenCalledTimes(1);
+    } finally {
+      resolveLaunch({ state: 'not-launched', reason: 'test launch settled' });
+      await expect(pending).resolves.toMatchObject({ previewPostRef: baseInput.previewPostRef,
+        freshReviewer: { state: 'not-launched', reason: 'test launch settled' } });
+    }
   });
 
   it('carries no routed reference when no eligible reviewer exists', async () => {

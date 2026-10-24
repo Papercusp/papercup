@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { beforeAll, expect, it, vi } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { measureProximusRuntime, proximusHostProcess, runProximusHost, requireProximusHostConfinement,
@@ -23,6 +23,7 @@ import { registerLearningLoop, getLearningSpendPositions } from '../learning-gov
 import { startGatewayService } from '../inference-gateway/launch';
 import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
 import { recordUsageSample } from '../agent-usage-telemetry';
+import { recordUsageSamplePg, type UsageSamplePgContext } from '../../../../libs/papercusp/packages/orchestrator/src/usage-sample-pg';
 import { makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle } from './frontier-swe-seam';
 import type { BenchTask } from './types';
 
@@ -34,7 +35,7 @@ const image = 'buildpack-deps@sha256:1314fd2a9c83b257b37132883b3c8e326d3909211bd
 const token = 'offline_assignment_' + 'x'.repeat(48);
 const workspaceId = 'proximus-controller-private';
 const phase = (name: string) => process.stderr.write(`PROXIMUS_FIXTURE_PHASE ${name}\n`);
-beforeAll(async () => {
+async function prepareFixtureImage() {
   phase('immutable fixture image preparation');
   try { await exec('docker', ['image', 'inspect', image], { timeout: 30_000 }); }
   catch (error) {
@@ -45,19 +46,92 @@ beforeAll(async () => {
     await exec('docker', ['pull', image], { timeout: 90_000, maxBuffer: 2 * 1024 * 1024 });
     await exec('docker', ['image', 'inspect', image], { timeout: 30_000 });
   }
-}, 150_000);
+}
 type AuthorizationEvidence = { model: unknown; effort: unknown; outputLimit: unknown;
   accountId: string; bodySha256: string; authorized: boolean;
   reservedOutputTokens: number | null; outputBudget: number };
-const privateDb = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined }));
+const privateDb = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined,
+  reads: 0, workspaceReads: 0, errors: [] as string[] }));
 // Only host DB/workspace selection is replaced. The controller, governor,
 // SQL mutations, HTTP transport and canonical usage writer remain real.
 vi.mock('@papercusp/db-org', async original => ({ ...await original<typeof import('@papercusp/db-org')>(),
-  getOrgPg: () => { if (!privateDb.sql) throw new Error('Private Proximus DB is not allocated'); return { sql: privateDb.sql }; } }));
+  getOrgPg: () => {
+    privateDb.reads++;
+    if (!privateDb.sql) throw new Error('Private Proximus DB is not allocated');
+    return { sql: new Proxy(privateDb.sql, { apply(target, thisArg, args) {
+      const query = Reflect.apply(target, thisArg, args);
+      return typeof args[0] === 'string' ? query : Promise.resolve(query).catch(error => {
+        privateDb.errors.push(String(error)); throw error;
+      });
+    } }) };
+  } }));
 vi.mock('../workspace-registry', async original => ({ ...await original<typeof import('../workspace-registry')>(),
-  activeWorkspaceId: () => 'proximus-controller-private' }));
+  activeWorkspaceId: () => { privateDb.workspaceReads++; return 'proximus-controller-private'; } }));
 vi.mock('../sync-sse', async original => ({ ...await original<typeof import('../sync-sse')>(),
   notifySyncInvalidate: vi.fn(async () => {}) }));
+
+async function usageDatabaseFixture() {
+  const admin = postgres(await getTestPg(), { max: 1, onnotice: () => {} });
+  const dbName = 'proximus_' + randomUUID().replaceAll('-', '');
+  let sql: postgres.Sql | undefined;
+  const stop = async () => {
+    privateDb.sql = undefined;
+    try { await sql?.end({ timeout: 5 }); }
+    finally { try { await admin.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`); }
+      finally { await admin.end({ timeout: 5 }); } }
+  };
+  try {
+    await admin.unsafe(`CREATE DATABASE "${dbName}"`); await markManagedTestDatabase(admin, dbName);
+    const uri = new URL(await getTestPg()); uri.pathname = '/' + dbName;
+    sql = postgres(uri.toString(), { max: 3, onnotice: () => {} }); privateDb.sql = sql;
+    await sql.unsafe(`CREATE SCHEMA harness_shared;
+      CREATE FUNCTION harness_shared.goal_id_for_usage_session(text,text) RETURNS text LANGUAGE sql AS 'SELECT NULL::text';
+      CREATE TABLE harness_shared.agent_usage_samples (id bigserial PRIMARY KEY, workspace_id text, ts bigint,
+        bucket_key text, provider text, model_class text, source text, input_tokens bigint, output_tokens bigint,
+        cache_read_tokens bigint, cache_creation_tokens bigint, cost_usd numeric, model text, cost_source text,
+        harness_slug text, run_id text, role text, turn_count bigint, rl_requests_limit bigint, rl_requests_remaining bigint,
+        rl_tokens_limit bigint, rl_tokens_remaining bigint, rl_reset_at bigint, session_id text, goal_id text,
+        tool_name text, turn_trigger text, account_id text, price_table_version text, usage_provenance jsonb)`);
+    return { sql, stop };
+  } catch (error) { await stop(); throw error; }
+}
+
+async function billingWriterPreflight(sql: postgres.Sql, writer: 'request' | 'subprocess' = 'request') {
+  const request = { gatewayRequestId: `${randomUUID()}:1`, gatewayAttemptId: randomUUID(),
+    providerResponseId: 'resp_preflight', manifestSha256: 'a'.repeat(64), assignmentId: 'bench-assignment:preflight' };
+  const reads = privateDb.reads, workspaceReads = privateDb.workspaceReads;
+  privateDb.errors.length = 0;
+  if (writer === 'request') await recordUsageSample({ bucketKey: 'offline-proximus-preflight', provider: 'openai', modelClass: 'fixture',
+    source: 'headers', model: 'gpt-5', runId: 'preflight-run', accountId: 'offline-proximus-account',
+    costUsd: 0.001, costSource: 'provider', providerRequest: request });
+  else await recordUsageSamplePg({ pg: sql as unknown as UsageSamplePgContext['pg'], workspaceId }, {
+    backend: 'codex', model: 'gpt-5', runId: 'preflight-run', accountId: 'offline-proximus-account',
+    usage: { inputTokens: 100, outputTokens: 10, costUsd: 0.001 },
+  });
+  const rows = await sql`SELECT workspace_id, cost_source, (cost_usd * 1000000)::text AS micros,
+    jsonb_typeof(usage_provenance) AS provenance_type,
+    usage_provenance->>'gatewayRequestId' AS gateway_request_id,
+    usage_provenance FROM harness_shared.agent_usage_samples`;
+  const observation = { writer, dbReads: privateDb.reads - reads, workspaceReads: privateDb.workspaceReads - workspaceReads,
+    errors: [...privateDb.errors], rows };
+  phase(`canonical bill preflight ${JSON.stringify(observation)}`);
+  expect(observation).toMatchObject({ dbReads: writer === 'request' ? 1 : 0,
+    workspaceReads: writer === 'request' ? 1 : 0, errors: [], rows: [{
+    workspace_id: workspaceId, cost_source: 'provider', micros: expect.stringMatching(/^1000(?:\.0+)?$/),
+    provenance_type: 'object', gateway_request_id: writer === 'request' ? request.gatewayRequestId : null,
+    usage_provenance: writer === 'request'
+      ? { ...request, grain: 'request', providerResponseIdSource: 'authenticated-gateway-provider-response' }
+      : { modelSource: 'request', requestedModel: 'gpt-5', actualModels: [], backend: 'codex', costBound: null },
+  }] });
+  expect(rows).toHaveLength(1);
+  await sql`DELETE FROM harness_shared.agent_usage_samples`;
+}
+
+it.each(['request', 'subprocess'] as const)
+('preflights canonical provider bill writes in the private database before official execution (%s)', async writer => {
+  const db = await usageDatabaseFixture();
+  try { await billingWriterPreflight(db.sql, writer); } finally { await db.stop(); }
+}, 30_000);
 
 async function controllerFixture(input: { measured: ProximusRuntimeReceipt;
   scratch: string; provider: typeof fetch; evidence: AuthorizationEvidence[] }) {
@@ -86,36 +160,23 @@ async function controllerFixture(input: { measured: ProximusRuntimeReceipt;
     outputTokens: outputTokenLimit * requestsPerArm, requestsPerArm, usdPerArm: 3,
     maxOpenUsd: protocol.maxInFlightUsd, wallClockMs: 180_000, wallClockMsPerArm: 180_000,
     armIds: protocol.arms.map(a => currentBenchAssignmentId(protocol.runId, a.id, 't1', 1)) };
-  const admin = postgres(await getTestPg(), { max: 1, onnotice: () => {} });
+  const db = await usageDatabaseFixture();
   const abort = new AbortController();
-  const dbName = 'proximus_' + randomUUID().replaceAll('-', '');
-  let sql: postgres.Sql | undefined, hosted: Awaited<ReturnType<ReturnType<typeof currentBenchGatewayController>['startHostGateway']>> | undefined;
+  const sql = db.sql;
+  let hosted: Awaited<ReturnType<ReturnType<typeof currentBenchGatewayController>['startHostGateway']>> | undefined;
   let auth: ReturnType<typeof currentBenchProviderAuthenticator> | undefined;
   const stop = async () => {
     try { await hosted?.stop(); } finally {
-      auth?.revoke(); privateDb.sql = undefined;
-      try { await sql?.end({ timeout: 5 }); }
-      finally { try { await admin.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`); }
-        finally { await admin.end({ timeout: 5 }); } }
+      auth?.revoke(); await db.stop();
     }
   };
   try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`); await markManagedTestDatabase(admin, dbName);
-    const uri = new URL(await getTestPg()); uri.pathname = '/' + dbName;
-    sql = postgres(uri.toString(), { max: 3, onnotice: () => {} }); privateDb.sql = sql;
-    await sql.unsafe('CREATE SCHEMA harness_shared');
+    await billingWriterPreflight(sql);
     for (const name of ['244-learning-governor.sql', '1116-learning-spend-reservations.sql', '1224-learning-reservation-resources.sql'])
       await sql.unsafe(readFileSync(new URL(`../../../../libs/papercusp/libs/db/sql/${name}`, import.meta.url), 'utf8')
         .split('\n').filter(line => !/\bGRANT\b|^\s*\\/.test(line)).join('\n'));
     await sql.unsafe(`ALTER TABLE harness_shared.learning_governor_loops ADD COLUMN pot_slug text;
-      ALTER TABLE harness_shared.learning_spend_events ADD COLUMN pot_slug text;
-      CREATE FUNCTION harness_shared.goal_id_for_usage_session(text,text) RETURNS text LANGUAGE sql AS 'SELECT NULL::text';
-      CREATE TABLE harness_shared.agent_usage_samples (id bigserial PRIMARY KEY, workspace_id text, ts bigint,
-        bucket_key text, provider text, model_class text, source text, input_tokens bigint, output_tokens bigint,
-        cache_read_tokens bigint, cache_creation_tokens bigint, cost_usd numeric, model text, cost_source text,
-        harness_slug text, run_id text, role text, rl_requests_limit bigint, rl_requests_remaining bigint,
-        rl_tokens_limit bigint, rl_tokens_remaining bigint, rl_reset_at bigint, session_id text, goal_id text,
-        tool_name text, turn_trigger text, account_id text, price_table_version text, usage_provenance jsonb)`);
+      ALTER TABLE harness_shared.learning_spend_events ADD COLUMN pot_slug text`);
     await registerLearningLoop(sql, { workspaceId, loopId, budgetKind: 'lifetime', budgetUsd: protocol.aggregateBudgetUsd,
       enabled: true, meta: { reservationBinding: preregHash, reservationResourceBudget: resources } });
     const key = join(input.scratch, 'fake-provider-key'); writeFileSync(key, 'OFFLINE_PROVIDER_TOKEN', { mode: 0o600 });
@@ -161,6 +222,7 @@ async function controllerFixture(input: { measured: ProximusRuntimeReceipt;
 
 it.each(['direct process', 'controller accounting'] as const)
 ('runs the official Proximus tool/submit loop against its bound task and grades the resulting workspace (%s)', async mode => {
+  await prepareFixtureImage();
   phase('image/runtime preparation');
   const project = fileURLToPath(new URL('../../vendor/proximus', import.meta.url));
   const lock = createHash('sha256').update(readFileSync(join(project, 'uv.lock'))).digest('hex').slice(0, 16);

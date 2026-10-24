@@ -76,6 +76,7 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
       '#!/usr/bin/env bash',
       'set -eu',
       'pwd > "$E2E_FIXTURE_VITE_CWD"',
+      'printf "%s" "${NODE_ENV:-}" > "$E2E_FIXTURE_VITE_CWD.node-env"',
       'if [ "${E2E_FIXTURE_VITE_FAIL:-0}" = "1" ]; then echo "fixture Vite bootstrap failure"; exit 74; fi',
       '[ "$1" = "run" ] && [ "$2" = "dev" ] || exit 73',
       'vite_port=',
@@ -108,6 +109,7 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
     [
       '#!/usr/bin/env bash',
       'set -e',
+      'printf "%s" "${NODE_ENV:-}" > "$E2E_FIXTURE_VITE_CWD.playwright-node-env"',
       'artifact_dir=test-results',
       'for arg in "$@"; do case "$arg" in --output=*) artifact_dir="${arg#--output=}" ;; esac; done',
       'if [ "${E2E_FIXTURE_WRITE_ARTIFACTS:-0}" = "1" ]; then',
@@ -589,6 +591,15 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(r.out).toContain(`vite-port=${r.recorded.env.port}`);
     expect(r.recorded.env.reuse).toBe('1');
     expect(r.recorded.viteStatus).toBe(200);
+  });
+
+  it('starts the Vite dev server in development mode when the caller is production', () => {
+    const f = fixture(0);
+    const r = run(f, [], { NODE_ENV: 'production' });
+    expect(r.status, r.out).toBe(0);
+    expect(r.recorded.viteStatus).toBe(200);
+    expect(readFileSync(`${f.viteCwd}.node-env`, 'utf8')).toBe('development');
+    expect(readFileSync(`${f.viteCwd}.playwright-node-env`, 'utf8')).toBe('production');
   });
 
   it.each(['arrow', 'color'] as const)('recognizes the %s Vite readiness line and reaches Playwright', (style) => {

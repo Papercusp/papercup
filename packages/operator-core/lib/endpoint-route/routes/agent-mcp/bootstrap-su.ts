@@ -3890,7 +3890,7 @@ const sessionResumed = defineTool({
         if (principal.slug !== 'system:superuser' || principal.authMethod !== 'bearer-token' ||
             typeof body.assumeHost?.afterExit !== 'boolean') return jsonRes({ ok: false }, 403);
         if (body.assumeHost.action !== undefined && (typeof body.assumeHost.action !== 'string' ||
-            !['freeze', 'queue', 'thaw', 'observe'].includes(body.assumeHost.action))) return jsonRes({ ok: false }, 400);
+            !['freeze', 'queue', 'thaw', 'observe', 'complete-return'].includes(body.assumeHost.action))) return jsonRes({ ok: false }, 400);
         try {
           const { inspectManagedAssumeRequest } = await import('../../../session-assume-runtime');
           return jsonRes(await inspectManagedAssumeRequest(body.assumeHost.request, body.assumeHost.afterExit,

@@ -102,7 +102,7 @@ describe('SU execution inventory (P-001; qualification is still unknown)', () =>
     expect(suExecQualificationDefects(population).length).toBeGreaterThan(0);
   });
 
-  it('SU-EXEC R-18 acceptance contract', () => {
+  it('SU-EXEC R-18 inventory preflight', () => {
     expect(SU_EXEC_INVENTORY.replicationDoc).toBe('agent-insights/su-execution-backend-acceptance');
     expect(SU_EXEC_INVENTORY.evidencePolicy.mandatoryGapMayBeDeferred).toBe(false);
     const document = readFileSync(new URL('../../../apps/operator-docs/src/content/docs/agent-insights/su-execution-backend-acceptance.mdx', import.meta.url), 'utf8');

@@ -66,6 +66,24 @@ test('ee.shared-controls: real-app checkbox and evidence-repair input states', a
     } else await route.continue();
   });
   await page.goto(origin.origin + '/plans?pdash=' + encodeURIComponent(encodeScopedRef('papercusp', plan)));
+  // Exercise the standalone route: portalEmbed must not be needed to bound the
+  // canonical virtualizer. A content-sized list used to mount the whole roster
+  // and delay the dashboard's first actionable render (EI-26802306660063941).
+  const list = page.locator('.plans-pane__list');
+  await expect(list.locator('[data-index]').first()).toBeVisible();
+  const geometry = await list.evaluate(element => ({
+    height: element.clientHeight, viewport: window.innerHeight,
+    content: element.scrollHeight, mounted: element.querySelectorAll('[data-index]').length,
+  }));
+  expect(geometry.height).toBeGreaterThan(0);
+  expect(geometry.height).toBeLessThanOrEqual(geometry.viewport);
+  expect(geometry.content).toBeGreaterThan(geometry.height);
+  expect(geometry.mounted).toBeLessThan(80);
+  const lastIndex = Number(await page.getByTestId('plans-pane-count-value').innerText()) - 1;
+  await list.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect.poll(() => list.locator('[data-index]').first().getAttribute('data-index')).not.toBe('0');
+  await expect(list.locator(`[data-index="${lastIndex}"]`)).toBeVisible();
+  await list.evaluate(element => { element.scrollTop = 0; });
   await expect(page.getByRole('button', { name: `Inspect engineering evidence for ${item}`, exact: true })).toBeVisible({ timeout: 90_000 });
   await page.getByRole('button', { name: `Inspect engineering evidence for ${item}`, exact: true }).click();
   const panel = page.getByRole('region', { name: `Engineering evidence for ${item}`, exact: true });

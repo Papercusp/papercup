@@ -28,6 +28,8 @@ const receiptSchema = z.object({
     pausedLoopRef: text.nullable(), pausedAwaitIds: z.array(positive),
     inbox: z.literal('retained'), directives: z.literal('retained'),
   }).strict().optional(),
+  callerReturn: z.object({ transitionKey: text, caller: assumePreparationSchema.shape.caller,
+    nativeProcessStart: text, restoredAt: z.number().int().nonnegative() }).strict().optional(),
   observation: z.object({
     transitionKey: text, observedAt: z.number().int().nonnegative(), hostId: text, attachmentId: text,
     callerNativePid: positive, callerExited: z.boolean(), targetOwnerId: text, targetNativeSessionId: text,

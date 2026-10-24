@@ -1355,6 +1355,40 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
     });
   });
 
+  it('reports a timestamped routing phase while the retained preview review is still pending', async () => {
+    const slow = deferred<Record<string, unknown>>();
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue({ approvalRequired: true, approval: {}, changes: [] });
+    reviewMocks.openAcceptanceBarAmendmentReview.mockImplementationOnce((input) => {
+      input.onPhase?.('review-route');
+      return slow.promise;
+    });
+    const args = { ...amendArgs, dryRun: true, reviewPreviewPost: 'thread-post:42' };
+    const startedAt = Date.now();
+    try {
+      const answered = await body(args);
+      expect(answered).toMatchObject({ pending: true, receipt: { progress: {
+        phase: 'review-route', phaseStartedAt: expect.any(Number), observedAt: expect.any(Number),
+      } } });
+      const snapshot = { ...answered.receipt.progress };
+      expect(snapshot.phaseStartedAt).toBeGreaterThanOrEqual(startedAt);
+      expect(snapshot.observedAt).toBeGreaterThanOrEqual(snapshot.phaseStartedAt);
+      const retry = await body(args);
+      expect(retry.receipt.idempotencyKey).toBe(answered.receipt.idempotencyKey);
+      expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledTimes(1);
+      expect(rubricsMocks.amendRubric).not.toHaveBeenCalled();
+      expect(await statusBody(answered.receipt.poll.args)).toMatchObject({ state: 'running' });
+      slow.resolve({ state: 'routed', conversationId: 'conv-late', next: 'retain this review' });
+      await vi.waitFor(async () => {
+        expect(await statusBody(answered.receipt.poll.args)).toMatchObject({ state: 'previewed',
+          result: { review: { conversationId: 'conv-late' } } });
+      });
+      // The earlier response is a snapshot, not a claim about later live state.
+      expect(answered.receipt.progress).toEqual(snapshot);
+    } finally {
+      slow.resolve({ state: 'routed', conversationId: 'conv-late', next: 'retain this review' });
+    }
+  });
+
   it('separate slow preview-only dry runs get fresh pollable receipts without applying the amendment', async () => {
     const slow = deferred<unknown>();
     const secondSlow = deferred<unknown>();

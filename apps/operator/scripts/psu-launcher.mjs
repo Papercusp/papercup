@@ -14602,6 +14602,9 @@ async function launchResume(
     });
     if (outcome.finalized) {
       resumeClaimed = false;
+      // The new native child/registration exists now. Exact return restores
+      // caller responsibilities only after that keyed finalize is durable.
+      if (managedAssume?.restoreReturn) await managedAssume.restoreReturn();
       return;
     }
     // The child is already demonstrably alive. Keep running and let genuine

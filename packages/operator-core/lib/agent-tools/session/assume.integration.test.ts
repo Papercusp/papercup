@@ -4,13 +4,15 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
-import { acquireAdvSessionResume, releaseAdvSessionResume, type AdvSessionResumePin } from '../../adv-sessions';
+import { acquireAdvSessionResume, finalizeAdvSessionResume, releaseAdvSessionResume, type AdvSessionResumePin } from '../../adv-sessions';
 import { claimAgentLaunch } from '../../agent-launch-core';
 import { createAssumeReceiptStore } from '../../session-assume-store';
 import { createAssumeCustodyAdapters } from '../../session-assume-custody';
 import { readAssumeCheckpoint } from '../../session-assume-preparation';
 import { loopScope, setCarryNote } from '../../carry-note';
-import { checkpointAssumeCaller, createAssumeCallerAdapters, readAssumeCallerCheckpoint } from '../../session-assume-caller';
+import { checkpointAssumeCaller, completeAssumeCallerReturn, createAssumeCallerAdapters,
+  readAssumeCallerCheckpoint, readAssumeCallerReturnSource } from '../../session-assume-caller';
+import { readProcessIdentity } from '../../process-identity';
 import { clearAssumeCallerPause, installAssumeCallerPause, readAssumeCallerPause } from '../../session-assume-pause';
 import { getSessionBriefLifecycle } from '../../session-brief';
 import { loopRoutineName } from '../../harness/routines/loop';
@@ -72,7 +74,106 @@ function receiptFixture(): { plan: AssumePreparation; receipt: AssumeTransitionR
     preparation: plan, state: 'prepared', updatedAt: now, durable: true } };
 }
 
+async function exactReturnFixture() {
+  const a = await target(), b = await target();
+  const { plan: original, receipt } = receiptFixture();
+  original.caller = { ...original.caller, ownerId: a.pin.binding.coordOwnerId!,
+    nativeSessionId: a.pin.binding.sessionId!, incarnation: a.pin.binding.startedAt };
+  original.target = { ...original.target, ownerId: b.pin.binding.coordOwnerId!, advSessionId: b.id,
+    nativeSessionId: b.pin.binding.sessionId!, executionNativeSessionId: b.pin.binding.sessionId!,
+    binding: b.pin.binding, context: { ...original.target.context, ref: b.pin.binding.sessionId! } };
+  const loopId = randomUUID();
+  await fixture.admin`INSERT INTO harness_shared.routines
+    (id, install_slug, name, workspace_id, target_owner_id, active, trigger_kind, trigger_config, target_role)
+    VALUES (${loopId}, 'fixture-harness', ${loopRoutineName(original.caller.ownerId)}, ${workspaceId},
+      ${original.caller.ownerId}, true, 'cron', '{}'::jsonb, 'su')`;
+  const claim = await acquireClaim({ workspaceId, harnessSlug: 'fixture-harness', planSlug: randomUUID(),
+    itemId: 'P-001', owner: original.caller.ownerId, ttlSec: 600 });
+  expect(claim.ok).toBe(true);
+  if (!claim.ok) throw new Error('fixture plan claim refused');
+  const rollback = createAssumeCallerAdapters({ freeze: async () => true, thaw: async () => true,
+    readCaller: async () => original.caller });
+  const recovery = await rollback.checkpointCaller(original);
+  await rollback.quiesceCaller(original, recovery);
+  const originStore = createAssumeReceiptStore(original);
+  const sourceReceipt = { ...receipt, preparation: original, transitionKey: assumeTransitionKey(original),
+    preparationFingerprint: assumePreparationFingerprint(original) };
+  await originStore.claim(sourceReceipt);
+  await originStore.save({ ...sourceReceipt, state: 'target-verified', recovery, observation: {
+    transitionKey: sourceReceipt.transitionKey, observedAt: Date.now(), hostId: original.caller.hostId,
+    attachmentId: original.caller.attachmentId, callerNativePid: original.caller.nativePid, callerExited: true,
+    targetOwnerId: original.target.ownerId, targetNativeSessionId: original.target.nativeSessionId,
+    backend: 'codex', contextSha256: original.target.context.sha256, nativePid: 102,
+    nativeProcessStart: 'fixture:B-process', nativeWriterPids: [102],
+    directedMessage: { id: 'fixture-message', recipient: original.target.ownerId, consumedBy: original.target.ownerId, consumptions: 1 },
+    assignment: { id: 'fixture-work', assignee: original.target.ownerId, observedBy: original.target.ownerId },
+  } });
+  const returning: AssumePreparation = { ...original, requestId: randomUUID(), caller: {
+    ...original.caller, ownerId: original.target.ownerId, nativeSessionId: original.target.nativeSessionId,
+    incarnation: original.target.binding.startedAt, nativePid: 102, nativeProcessStart: 'fixture:B-process',
+  }, target: { ...original.target, ownerId: original.caller.ownerId, advSessionId: a.id,
+    nativeSessionId: original.caller.nativeSessionId, executionNativeSessionId: original.caller.nativeSessionId,
+    binding: a.pin.binding, context: { ...original.target.context, ref: original.caller.nativeSessionId },
+    returnFrom: { transitionKey: sourceReceipt.transitionKey, checkpointRef: recovery.checkpointRef,
+      checkpointSha256: recovery.checkpointSha256 } } };
+  const key = assumeTransitionKey(returning);
+  const returnStore = createAssumeReceiptStore(returning);
+  const returnReceipt: AssumeTransitionReceipt = { ...receipt, preparation: returning, transitionKey: key,
+    preparationFingerprint: assumePreparationFingerprint(returning) };
+  await returnStore.claim(returnReceipt);
+  await returnStore.save({ ...returnReceipt, state: 'handoff-accepted' });
+  expect((await acquireAdvSessionResume(a.id, key, 120, 300, undefined, a.pin)).acquired).toBe(true);
+  expect(await finalizeAdvSessionResume(a.id, key)).toBe(true);
+  const [row] = await fixture.admin`SELECT started_at::text AS incarnation FROM harness_shared.adv_sessions WHERE id = ${a.id}`;
+  const caller = { ...original.caller, incarnation: row.incarnation as string,
+    nativePid: process.pid, nativeProcessStart: readProcessIdentity(process.pid)! };
+  return { original, returning, recovery, originStore, caller, loopId, claim, a, key };
+}
+
 describe('session:assume production receipt adapter (real PG)', () => {
+  it('restores the exact returning caller at its new finalized incarnation and refuses replay', async () => {
+    const f = await exactReturnFixture();
+    const deps = { readCaller: async () => f.caller };
+    expect(await completeAssumeCallerReturn(f.returning, deps)).toBe(true);
+    expect(await readAssumeCallerPause(f.caller.ownerId)).toBeNull();
+    expect((await f.originStore.load())?.callerReturn).toMatchObject({ transitionKey: f.key,
+      caller: f.caller, nativeProcessStart: f.caller.nativeProcessStart });
+    const [loop] = await fixture.admin`SELECT active, updated_at::text AS revision FROM harness_shared.routines WHERE id = ${f.loopId}`;
+    expect(loop.active).toBe(true);
+    expect((await getClaim(workspaceId, 'fixture-harness', f.claim.claim!.planSlug, 'P-001'))?.owner).toBe(f.caller.ownerId);
+    expect(await completeAssumeCallerReturn(f.returning, deps)).toBe(false);
+    const [again] = await fixture.admin`SELECT updated_at::text AS revision FROM harness_shared.routines WHERE id = ${f.loopId}`;
+    expect(again.revision).toBe(loop.revision);
+    expect(await completeAssumeCallerReturn(f.returning, { readCaller: async () => ({ ...f.caller, incarnation: 'later' }) })).toBe(false);
+  });
+
+  it.each(['source-process', 'return-pin', 'finalize-binding', 'registration', 'new-loop', 'process-start'] as const)
+    ('keeps caller fenced when exact return has a changed %s', async fault => {
+      const f = await exactReturnFixture();
+      if (fault === 'source-process') f.returning.caller.nativeProcessStart = 'reused-pid';
+      if (fault === 'return-pin') f.returning.target.returnFrom!.checkpointSha256 = 'f'.repeat(64);
+      if (fault === 'finalize-binding') await fixture.admin`UPDATE harness_shared.agent_launch_idempotency
+        SET summary = summary - 'binding' WHERE workspace_id = ${workspaceId}
+          AND idempotency_key = ${'psu-resume-finalize:' + f.a.id + ':' + f.key}`;
+      if (fault === 'registration') await fixture.admin`UPDATE harness_shared.adv_sessions SET started_at = now() WHERE id = ${f.a.id}`;
+      if (fault === 'new-loop') await fixture.admin`UPDATE harness_shared.routines SET trigger_config = '{"changed":true}'::jsonb,
+        updated_at = now() WHERE id = ${f.loopId}`;
+      if (fault === 'process-start') f.caller.nativeProcessStart = 'wrong-kernel-start';
+      expect(await completeAssumeCallerReturn(f.returning, { readCaller: async () => f.caller })).toBe(false);
+      expect(await readAssumeCallerPause(f.original.caller.ownerId)).not.toBeNull();
+      expect((await f.originStore.load())?.callerReturn).toBeUndefined();
+    });
+
+  it('retains strict original-process rollback equality when a returning registration is live', async () => {
+    const f = await exactReturnFixture();
+    const thaw = vi.fn(async () => true);
+    const rollback = createAssumeCallerAdapters({ freeze: async () => true, thaw, readCaller: async () => f.caller });
+    expect(await rollback.restoreCaller(f.original, f.recovery)).toBe(false);
+    expect(thaw).not.toHaveBeenCalled();
+    await expect(readAssumeCallerReturnSource({ ...f.returning,
+      caller: { ...f.returning.caller, nativeProcessStart: 'wrong-source' } })).rejects.toThrow('assume-return-source-mismatch');
+  });
+
   it('fences only the caller generation, preserves sibling controls and rejects conflicting or stale unpause', async () => {
     const { plan } = receiptFixture();
     const recovery = await checkpointAssumeCaller(plan, { readCaller: async () => plan.caller });

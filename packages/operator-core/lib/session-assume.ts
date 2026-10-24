@@ -24,6 +24,7 @@ const callerSchema = z.object({
   ownerId: nonempty, workspaceId: nonempty, nativeSessionId: nonempty,
   incarnation: nonempty, hostId: nonempty, attachmentId: nonempty,
   nativePid: z.number().int().positive(),
+  nativeProcessStart: nonempty.optional(),
   backend: z.enum(['claude', 'codex', 'omp']),
 }).strict();
 
@@ -39,6 +40,9 @@ const targetSchema = z.object({
     ompThreadId: nonempty.nullable().optional(),
   }).strict(),
   writerGeneration: nonempty,
+  /** An exact return to a paused caller, pinned before the second departure. */
+  returnFrom: z.object({ transitionKey: nonempty, checkpointRef: nonempty,
+    checkpointSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
   writer: z.enum(['free', 'held', 'unknown']),
   ended: z.boolean(), liveHost: z.boolean(),
   context: assumeContextSchema,
@@ -256,6 +260,7 @@ export interface AssumeTransitionReceipt {
   /** False is explicit: a transport result cannot assert that a failed write landed. */
   durable: boolean;
   observation?: AssumeExecutionObservation;
+  callerReturn?: { transitionKey: string; caller: AssumeCaller; nativeProcessStart: string; restoredAt: number };
 }
 
 /** Narrow adapters over existing launch receipts, carry checkpoints, keyed

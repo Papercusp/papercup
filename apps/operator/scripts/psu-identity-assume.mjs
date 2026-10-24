@@ -118,6 +118,10 @@ export async function launchIdentityAssumeHandoff(handoff, { inspect, resolveSes
       hostId: request.caller.hostId,
       reservation: { advSessionId: target.advSessionId, ownerId: target.ownerId,
         claimKey: request.transitionKey, expiresAtMs: request.expiresAt },
+      ...(target.returnFrom ? { restoreReturn: async () => {
+        const restored = await inspect(request, true, 'complete-return');
+        if (restored?.ok !== true) throw new Error('assume-return-unacknowledged');
+      } } : {}),
       ...(target.context.mode === 'checkpoint' ? { checkpoint: { context: target.context,
         body: result.checkpointBody, executionNativeSessionId: target.executionNativeSessionId } } : {}),
       verify: check } });

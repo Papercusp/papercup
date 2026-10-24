@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import {
-  censusSources, inScope, validateClassifications,
+  censusSources, inScope, validateClassifications, inlineClassifications, validateSeed, seedClassifications,
   type NotifyCensus, type NotifyClassification,
 } from '../../../scripts/check-fire-and-forget-classification.mjs';
 
@@ -42,6 +44,17 @@ describe('fire-and-forget notification census and classification', () => {
 
   it('handles namespace and CommonJS destructuring aliases', () => {
     expect(scan('import * as bus from "bus"; const { notifyOwner: n } = require("bus"); const alias = n; void alias(); bus["send"]();').sites).toHaveLength(2);
+  });
+
+  it('handles computed constant names and bound function aliases', () => {
+    const c = scan('const method="send"; bus[method](); const quiet=notifyOwner.bind(bus); quiet(); notifyOwner.call(bus);');
+    expect(c.sites.map(s => s.expression)).toEqual(expect.arrayContaining(['bus [ method ] ( )', 'quiet ( )', 'notifyOwner . call ( bus )']));
+  });
+
+  it('includes unresolved computed dispatch conservatively instead of declaring it clean', () => {
+    const c = scan('function dispatch(key){ bus[key](); } dispatch(runtimeKey);');
+    expect(c.sites.some(s => s.roots.includes('<unresolved-computed-dispatch>'))).toBe(true);
+    expect(validateClassifications(c, []).length).toBeGreaterThan(0);
   });
 
   it('handles dynamic-import destructuring and local object aliases', () => {
@@ -87,8 +100,25 @@ describe('fire-and-forget notification census and classification', () => {
     expect(c.sites.some(s => s.expression === 'quiet ( )')).toBe(true);
   });
 
+  it('derives workspace package exports and tsconfig import aliases', () => {
+    const c = censusSources({
+      'libs/bus/package.json': '{"name":"@internal/bus","exports":{".":"./src/index.ts"}}',
+      'libs/bus/src/index.ts': 'export function relay(){return notifyOwner();}',
+      'apps/app/tsconfig.json': '{"compilerOptions":{"paths":{"@/*":["./src/*"]}}}',
+      'apps/app/src/bridge.ts': 'export {relay as quiet} from "@internal/bus";',
+      'apps/app/main.ts': 'import {quiet} from "@/bridge"; quiet();',
+    });
+    expect(c.sites.some(s => s.path === 'apps/app/main.ts' && s.expression === 'quiet ( )')).toBe(true);
+    expect(c.files.some(f => f.path === 'libs/bus/package.json')).toBe(true);
+  });
+
   it('does not treat comments, strings or type declarations as calls', () => {
     expect(scan('// notifyOwner()\nconst text="void send()"; type T = {notify(): void};').sites).toEqual([]);
+  });
+
+  it('does not confuse escalation readers and send-side state helpers with delivery', () => {
+    expect(scan('loadEscalations(); foldEscalations(); ensureSendSideWired(); markSendSideUnwired();').sites).toEqual([]);
+    expect(scan('notify(); send(); escalateOwner(); createNotification(); raiseEscalation();').sites).toHaveLength(5);
   });
 
   it('keeps IDs stable across unrelated line movement and comments', () => {
@@ -139,10 +169,61 @@ describe('fire-and-forget notification census and classification', () => {
     expect(validateClassifications(c, classify(c)).some(e => e.startsWith('coverage gap'))).toBe(true);
   });
 
+  it('freezes the measured seed, permits removals, and rejects baseline growth', () => {
+    const c = scan('notifyOwner();'); const records = classify(c);
+    const seedIds = records.map(r => r.id).sort();
+    const hash = createHash('sha256').update(JSON.stringify(seedIds)).digest('hex');
+    expect(validateSeed({ seedIds, records }, hash)).toEqual([]);
+    expect(validateSeed({ seedIds, records: [] }, hash)).toEqual([]);
+    expect(validateSeed({ seedIds: [], records: [] }, hash)).toHaveLength(1);
+    expect(validateSeed({ seedIds, records: [{ ...records[0], id: 'new' }] }, hash)[0]).toContain('baseline grew');
+  });
+
+  it('accepts a new source-classified site without enlarging the baseline', () => {
+    const c = scan('// notify-classification: {"classification":"durable","reason":"Owner consequence","durablePath":"src/outbox.ts#commit"}\nnotifyOwner();');
+    expect(validateClassifications(c, inlineClassifications(c))).toEqual([]);
+    expect(inlineClassifications(c)[0].id).toBe(c.sites[0].id);
+  });
+
+  it('seeds requirements from a measured census without inventing verified delivery', () => {
+    const c = scan('notifyOwner();');
+    const sourceDigest = createHash('sha256').update(JSON.stringify(c.files)).digest('hex');
+    const seed = seedClassifications({ ...c, sourceDigest });
+    expect(seed.seedIds).toEqual(c.sites.map(s => s.id));
+    expect(seed.seedFiles).toEqual(c.files);
+    expect(seed.records[0].classification).toBe('durable');
+    expect(seed.records[0].durablePath).toContain('UNVERIFIED');
+    expect(seed.records[0].deliveryState).toBe('unverified');
+    expect(() => seedClassifications({ ...c, sourceDigest: '', gaps: [{ path: 'src/app.ts', kind: 'unreadable' }] })).toThrow('incomplete');
+    expect(() => seedClassifications({ ...c, sourceDigest: 'copied-but-not-matching' })).toThrow('unpinned');
+  });
+
   it('includes maintained submodule sources and excludes test/generated sources explicitly', () => {
     expect(inScope('libs/papercusp/src/notify.ts')).toBe(true);
     for (const path of ['src/a.test.ts', 'src/a.d.ts', 'src/__tests__/a.ts', 'apps/operator/dist-host/a.mjs', 'src/fixtures/a.ts', 'papercusp-desktop/src-tauri/env-sidecars/staging/serve.mjs', 'libs/ui/storybook-static/manager.js']) expect(inScope(path)).toBe(false);
     const c = censusSources({ 'libs/example/src/a.ts': 'notify();', 'src/a.test.ts': 'notify();' });
     expect(c.files.map(f => f.path)).toEqual(['libs/example/src/a.ts']);
+  });
+
+  it('retains a pinned genesis registry and permits its reviewed obligations to shrink', () => {
+    const registry = JSON.parse(readFileSync(new URL('../../../scripts/fire-and-forget-classification.json', import.meta.url), 'utf8'));
+    expect(validateSeed(registry)).toEqual([]);
+    expect(registry.seedIds.length).toBeGreaterThan(0);
+    expect(new Set(registry.records.map((r: NotifyClassification) => r.id)).size).toBe(registry.records.length);
+    expect(registry.records.every((r: NotifyClassification) => registry.seedIds.includes(r.id))).toBe(true);
+    expect(new Set(registry.seedFiles.map((f: { path: string }) => f.path)).size).toBe(registry.seedFiles.length);
+    expect(registry.seedFiles.every((f: { sha256: string }) => /^[a-f0-9]{64}$/.test(f.sha256))).toBe(true);
+    expect(createHash('sha256').update(JSON.stringify(registry.seedFiles)).digest('hex')).toBe(registry.seedSourceDigest);
+    expect(registry.seedCoverage.unscannedPresent).toEqual([]);
+    for (const record of registry.records) {
+      expect(record.path).toBeTruthy();
+      expect(record.reason.trim()).not.toBe('');
+      expect(['durable', 'safe-to-lose']).toContain(record.classification);
+      if (record.classification === 'durable') {
+        expect(record.durablePath.trim()).not.toBe('');
+        expect(['unverified', 'verified']).toContain(record.deliveryState);
+        if (record.deliveryState === 'unverified') expect(record.durablePath).toContain('UNVERIFIED requirement:');
+      }
+    }
   });
 });
