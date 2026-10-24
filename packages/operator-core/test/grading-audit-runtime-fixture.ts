@@ -142,7 +142,9 @@ async function main() {
   const output = join(sourceRoot, 'apps/operator/dist-host');
   mkdirSync(output, { recursive: true });
   symlinkSync(join(root, 'node_modules'), join(sourceRoot, 'node_modules'), 'dir');
-  const prepared = preparePrivateOperatorApiBundle(root, output);
+  const prepared = await preparePrivateOperatorApiBundle(root, output, { builder: {
+    timeoutMs: 240_000, maxMs: 420_000,
+  } });
   const parentBuild = getBuildInfo();
   // The maintained archive builder stamps twelve source characters. The
   // unbundled worker's Git abbreviation is independently configurable.
