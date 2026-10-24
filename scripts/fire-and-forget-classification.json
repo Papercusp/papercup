@@ -81347,14 +81347,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/agent-tools/work_items/complete.ts#<module>/completeOneTracked/<callback>:7f4b265a0793d48e8fec:1",
-      "path": "packages/operator-core/lib/agent-tools/work_items/complete.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/agent-tools/work_items/complete.ts#<module>/completeOneTracked/evaluate:8e5e799b8b80d4d23d94:1",
       "path": "packages/operator-core/lib/agent-tools/work_items/complete.ts",
       "classification": "durable",
@@ -115695,14 +115687,6 @@
       "path": "packages/operator-core/lib/storage/localstorage-wal-guard.ts",
       "classification": "durable",
       "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalate, escalateAlarm, escalateDeadLoop, escalateLifecycleDeath; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/storage/package-cache-retention.ts#<module>/runPackageCacheRetention/<callback>:974633d1e4cb05720410:1",
-      "path": "packages/operator-core/lib/storage/package-cache-retention.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
       "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
       "deliveryState": "unverified"
     },
