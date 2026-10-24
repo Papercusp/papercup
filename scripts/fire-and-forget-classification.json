@@ -63115,14 +63115,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "libs/generic/verification-harness/src/runner.ts#<module>/pruneEvidenceRoot:80b3f6f5d1e5aa4145bc:1",
-      "path": "libs/generic/verification-harness/src/runner.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "libs/generic/verification-harness/src/runner.ts#<module>/pruneForHarness:0e2e1b60ae06273429bb:1",
       "path": "libs/generic/verification-harness/src/runner.ts",
       "classification": "durable",
@@ -96831,14 +96823,6 @@
       "path": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
       "classification": "durable",
       "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/registerMcpHost/<callback>:1f14751a2eb06a03f0a3:1",
-      "path": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches send; retain its terminal delivery obligation, including through aliases/wrappers.",
       "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
       "deliveryState": "unverified"
     },
