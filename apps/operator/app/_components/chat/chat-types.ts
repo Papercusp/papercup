@@ -6,7 +6,7 @@
  * provider can keep its message shape without keeping that renderer alive.
  */
 
-import type { ChatTurnToolCall, ReportBlock } from '@papercusp/chat-protocol';
+import type { ChatResultBlock, ChatTurnToolCall, ReportBlock } from '@papercusp/chat-protocol';
 
 /** Persist the shared tool identity along with its input and answered state. */
 export type ChatToolCall = ChatTurnToolCall;
@@ -49,6 +49,8 @@ export interface ChatMessage {
   content: string;
   /** Optional tool calls to render above the content (chat:ask_choice uses this). */
   tools?: ChatToolCall[];
+  /** Validated v1 result references; the renderer rechecks current host access. */
+  results?: ChatResultBlock[];
   /**
    * Structured status CARD for this message (deterministic-status-cards-2026-07-17
    * P-003). Set ONLY for the curator-operator's `source:'system'` status turns —

@@ -161,6 +161,8 @@ describe('prospective clean tool-delivery execution admission', () => {
     expect(validateToolDeliveryBlockLedgerIdentity({ ...identity, requestManifestSha256: 'f'.repeat(64) }, 'new', 0, first)).toBeDefined();
   });
   it.each(['launcher.cjs', 'node_modules/tsx/dist/loader.mjs',
+    'packages/operator-core/lib/dependency-generation-proof.ts',
+    'apps/operator/bin/release/dependency-generation.sh',
     'packages/operator-core/lib/llm-testing/targets/codex-responses-tool-loop.ts',
     'apps/operator/scripts/tool-delivery.generated.mjs', 'scenario.ts'])('rejects omission of mandatory %s even from an otherwise consistent pin', path => {
     const registration = { sourcePins: { files: { 'apps/operator/scripts/tool-delivery.generated.mjs': 'a' },
@@ -173,6 +175,9 @@ describe('prospective clean tool-delivery execution admission', () => {
     expect(validateToolDeliveryCleanCensus(boundary, registration)).toMatch(/Mandatory source census/);
     boundary.sourceHashes[path] = 'a'.repeat(64);
     delete boundary.moduleHashes['packages/operator-core/lib/llm-testing/test-run-ledger.ts'];
+    expect(validateToolDeliveryCleanCensus(boundary, registration)).toMatch(/Mandatory loaded module/);
+    boundary.moduleHashes['packages/operator-core/lib/llm-testing/test-run-ledger.ts'] = 'a'.repeat(64);
+    delete boundary.moduleHashes['packages/operator-core/lib/dependency-generation-proof.ts'];
     expect(validateToolDeliveryCleanCensus(boundary, registration)).toMatch(/Mandatory loaded module/);
   });
   it('rejects pre-existing ignored config inputs and changed runtime/config generations', () => {

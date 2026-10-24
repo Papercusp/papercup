@@ -2537,6 +2537,80 @@ describe('work_items:complete (keyed-array)', () => {
   });
 
   describe("completion-boundary runtime guard — unbacked verifiedHow:'live-service' REJECTS the close (EI-20096763429995249)", () => {
+    it.each([
+      { name: 'unit tests only', testsRun: 'npm run test:file -- bundle-host.test.ts', testResult: '18/18 tests passed' },
+      { name: 'runtime observations without a service', testsRun: 'dev:restart target staging', testResult: 'ActiveState=active; MainPID=4242; HTTP 200' },
+      { name: 'named service without an observation', testsRun: 'systemctl --user restart papercup-staging-api.service', testResult: 'restart command completed' },
+    ])('refuses the same preview and close for $name without preview writes', async ({ testsRun, testResult }) => {
+      getWorkItem.mockResolvedValue(item);
+      const args = {
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 'fixed the service startup path', testsRun, testResult, verifiedHow: 'live-service' },
+      };
+
+      const preview = await one({ ...args, validateOnly: true });
+
+      expect(preview.ok).toBe(false);
+      expect(preview.validationOnly).toBe(true);
+      expect(preview.error).toMatch(/live-service/);
+      expect(preview.stateError).toBe(preview.error);
+      expect(preview.countsTowardBurnDown).toBe(false);
+      expect(preview.completionContract.requirements).toContainEqual(expect.objectContaining({
+        key: 'live-service-evidence', applicable: true, satisfied: false,
+      }));
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(commentWorkItem).not.toHaveBeenCalled();
+      expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
+
+      const close = await one(args);
+      expect(close.ok).toBe(false);
+      expect(close.stateError).toBe(preview.stateError);
+      expect(close.error).toContain(preview.error);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])('accepts backed preview and close with nested evidence=%s', async (nested) => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const evidence = {
+        testsRun: 'systemctl --user show papercup-staging-api.service',
+        testResult: 'ActiveState=active; MainPID=4242; GET http://localhost:3170/api/health -> 200',
+        verifiedHow: 'live-service',
+      };
+      const args = {
+        id: 'F-12', state: 'passed',
+        completion: { summary: 'fixed the service startup path', ...(nested ? { verification: evidence } : evidence) },
+      };
+
+      const preview = await one({ ...args, validateOnly: true });
+      expect(preview.ok).toBe(true);
+      expect(preview.completionContract.requirements).toContainEqual(expect.objectContaining({
+        key: 'live-service-evidence', applicable: true, satisfied: true,
+      }));
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(commentWorkItem).not.toHaveBeenCalled();
+      expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
+
+      const close = await one(args);
+      expect(close.ok).toBe(true);
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledOnce();
+    });
+
+    it('keeps record-only live-service previews outside the close requirement', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const preview = await one({
+        id: 'F-12', validateOnly: true,
+        completion: { summary: 'progress note', verifiedHow: 'live-service' },
+      });
+      expect(preview.ok).toBe(true);
+      expect(preview.completionContract.requirements).toContainEqual(expect.objectContaining({
+        key: 'live-service-evidence', applicable: false, satisfied: null,
+      }));
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(commentWorkItem).not.toHaveBeenCalled();
+    });
+
     it('rejects a unit-test-only close and never attempts the state write', async () => {
       getWorkItem.mockResolvedValue(item);
       const r = await one({

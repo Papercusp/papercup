@@ -128,7 +128,7 @@ export const WORK_ITEMS_COMPLETE_TIMEOUT_SEC = 120;
  * contract that can drift from runtime.
  */
 export const WORK_ITEMS_COMPLETION_CONTRACT = {
-  version: 'work-items-completion-v4',
+  version: 'work-items-completion-v5',
   requirements: [
     { key: 'assumptions', description: 'Terminal closes declare assumptions or explicitly declare none.' },
     { key: 'root-cause-verification', description: 'Successful defect closes carry complete causal evidence v2.' },
@@ -151,6 +151,10 @@ export const WORK_ITEMS_COMPLETION_CONTRACT = {
     {
       key: 'change-kind-proof',
       description: 'A successful close carries the proof each declared change kind requires.',
+    },
+    {
+      key: 'live-service-evidence',
+      description: 'Live-service closes name a concrete service and a falsifiable runtime observation in root verification evidence.',
     },
   ],
 } as const;
@@ -5335,6 +5339,19 @@ async function completeOne(
       return { ok: false, id: it.id, error: `Cannot revalidate contribution deferral: ${String(error)}. No completion was written.` };
     }
   }
+  // Share the root-evidence check before the read-only preview boundary. Per-kind
+  // service proof cannot substitute for the evidence supporting the root label.
+  const liveServiceProofError = closeIntentRequested && !isBackedLiveServiceClaim(completionEvidenceToPersist)
+    ? `REJECTED — this completion claims verifiedHow:'live-service' to close ${it.id}, but ` +
+      '`testsRun`/`testResult` do not jointly cite both a concrete service/unit/process and a ' +
+      'falsifiable runtime observation (`MainPID`, `NRestarts`, `ActiveState`, or an HTTP status). ' +
+      "Cite the live command and observation, or honestly set verifiedHow to 'unit'/'manual'/'integration' and re-send."
+    : undefined;
+  setContractRequirement(
+    'live-service-evidence',
+    closeIntentRequested && completionEvidenceToPersist?.verifiedHow === 'live-service',
+    liveServiceProofError,
+  );
   const heldOpenPreview =
     it.validateOnly && effectiveState && !changeKindProofError
       ? await assessWorkItemHeldOpenTerminalTransition({
@@ -5350,6 +5367,7 @@ async function completeOne(
     heldOpenPreview && !heldOpenPreview.allowed
       ? heldOpenPreview.refusal ?? 'held-open terminal transition refused'
       : undefined;
+  const previewError = changeKindProofError ?? liveServiceProofError ?? heldOpenPreviewError;
   if (it.validateOnly) {
     // EI-26592766858681844: the content floor already lowered the authority above. Surface
     // its measured paths here too, without borrowing the real close's settlement promises.
@@ -5374,14 +5392,11 @@ async function completeOne(
       // P-002 / D-002: a preview must expose the same change-kind refusal as the real
       // close. The contract row alone is insufficient because callers use `ok` to decide
       // whether the identical terminal close is admissible.
-      ok: !changeKindProofError && !heldOpenPreviewError,
+      ok: !previewError,
       id: it.id,
       validationOnly: true,
       ...(deferredContributions?.length ? { deferredContributions } : {}),
-      ...(changeKindProofError ? { error: changeKindProofError, stateError: changeKindProofError } : {}),
-      ...(!changeKindProofError && heldOpenPreviewError
-        ? { error: heldOpenPreviewError, stateError: heldOpenPreviewError }
-        : {}),
+      ...(previewError ? { error: previewError, stateError: previewError } : {}),
       ...(heldOpenPreview?.staleHoldOpen
         ? { heldOpenTransition: { staleHoldOpen: true, writeWillRecheck: true } }
         : {}),
@@ -5389,7 +5404,7 @@ async function completeOne(
         ? { changeKindProof: { kinds: changeKindGate.kinds, missing: changeKindGate.missing, problems: changeKindGate.problems } }
         : {}),
       completionAuthority,
-      countsTowardBurnDown: countsTowardBurnDown(completionAuthority, true, isAbandonedClose),
+      countsTowardBurnDown: !previewError && countsTowardBurnDown(completionAuthority, true, isAbandonedClose),
       // Match the real close's computed diagnostics before the persistence boundary.
       ...(changeKindWarning ? { changeKindWarning } : {}),
       ...(changeKindMismatchReason ? { changeKindMismatchReason } : {}),
@@ -5404,7 +5419,6 @@ async function completeOne(
   // artifact. Scan the persisted evidence shape for that citation, while the
   // authority judgement above remains scoped to structured verification fields.
   const unbackedLiveDroveUiClose = closeIntentRequested && !isBackedLiveDroveUiClaim(completionEvidenceToPersist);
-  const unbackedLiveServiceClose = closeIntentRequested && !isBackedLiveServiceClaim(completionEvidenceToPersist);
 
   // EI-18797014705631713: citing an artifact is not the same as HAVING one. The text
   // check above proves a path was written down; this reads the file. A screenshot of a
@@ -5487,12 +5501,8 @@ async function completeOne(
       `REJECTED — ${it.id} claims retained live-UI evidence under session scratch: ` +
       `${unretainedLiveUiPaths.join(', ')}. Copy the capture to a retained artifact path, ` +
       'verify that copy exists, and cite the retained path in the completion.';
-  } else if (unbackedLiveServiceClose) {
-    stateError =
-      `REJECTED — this completion claims verifiedHow:'live-service' to close ${it.id}, but ` +
-      '`testsRun`/`testResult` do not jointly cite both a concrete service/unit/process and a ' +
-      'falsifiable runtime observation (`MainPID`, `NRestarts`, `ActiveState`, or an HTTP status). ' +
-      "Cite the live command and observation, or honestly set verifiedHow to 'unit'/'manual'/'integration' and re-send.";
+  } else if (liveServiceProofError) {
+    stateError = liveServiceProofError;
   } else if (unbackedLiveDroveUiClose) {
     stateError =
       `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id} but cites no real ` +

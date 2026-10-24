@@ -105,6 +105,7 @@ function Probe() {
             data-role={message.role}
             data-seq={typeof message.seq === "number" ? message.seq : "none"}
             data-ts={message.ts ?? "none"}
+            data-results={JSON.stringify(message.results ?? [])}
           >
             {message.content}
           </div>
@@ -275,6 +276,40 @@ describe("OperatorConversationProvider streamed say projection", () => {
       .map(([, init]) => JSON.parse(String(init?.body)));
     expect(writes.filter(body => body.role === "assistant")).toEqual([]);
     expect(screen.getByTestId("error").textContent).toBe("");
+  });
+
+  it("P010 browser retains result-only canonical turns across replay without admitting legacy result frames or duplicating the saved turn", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    const identity = { conversationId: "conversation-1", turnId: "11111111-2222-4333-8444-555555555555" };
+    const block = { id: "report-one", kind: "report", title: "Authorized result", sources: [{ ref: "report:r-1" }] };
+    const frame = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    const result = { schemaVersion: 1, ...identity, sequence: 1, eventId: "result-one",
+      event: { type: "result", blocks: [block] } };
+    let requests = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) !== "/api/agent-mcp/operator-converse") return fallback(input, init);
+      requests++;
+      const request = JSON.parse(String(init?.body));
+      if (request.operation === "reconnect") return new Response(frame("chat-event", result)
+        + frame("chat-event", { schemaVersion: 1, ...identity, sequence: 2, eventId: "result-updated",
+          event: { type: "result", blocks: [{ ...block, title: "Current authorized result" }] } })
+        + frame("done", { persistedTurn: { ...identity, seq: 104 } }));
+      return new Response(frame("turn-meta", { schemaVersion: 1, ...identity })
+        + frame("chat-event", result)
+        + frame("result", { blocks: [{ ...block, id: "legacy-spoof", title: "Unvalidated result" }] }));
+    });
+    render(<OperatorConversationProvider><Probe /></OperatorConversationProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+    await waitFor(() => {
+      const rows = screen.getByTestId("messages").querySelectorAll('[data-role="assistant"]');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].getAttribute("data-seq")).toBe("104");
+      expect(JSON.parse(rows[0].getAttribute("data-results")!)).toEqual([{ ...block, title: "Current authorized result" }]);
+    });
+    expect(requests).toBe(2);
+    expect(screen.getByTestId("error").textContent).toBe("");
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")
+      .map(([, init]) => JSON.parse(String(init?.body))).filter(body => body.role === "assistant")).toEqual([]);
   });
 
   it.each(["eof", "socket-error", "crlf"])("P010 browser resumes canonical events after %s without repeating text, tools or provider admission", async failure => {

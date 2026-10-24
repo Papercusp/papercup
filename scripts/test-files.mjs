@@ -608,11 +608,15 @@ export function perGroupVitestArgs(vitestArgs, groupIndex, groupCount) {
  * Reuse the CLI report naming rule; RESULT remains one append-only stream.
  * Resolve relative OUT paths before changing workspace cwd, and never mutate
  * the parent env (later groups must suffix the original path, not each other).
+ * The operator may run in production mode, but Vitest children need test mode
+ * before module collection: production React omits act, and Vite's production
+ * browser placeholders cannot represent Node setup imports.
  */
 export function perGroupVitestEnv(env, groupIndex, groupCount) {
+  const testEnv = { ...env, NODE_ENV: 'test' };
   const outPath = env.PC_EXECUTED_SOURCE_MAP_OUT?.trim();
-  if (!outPath) return env;
-  return { ...env,
+  if (!outPath) return testEnv;
+  return { ...testEnv,
     PC_EXECUTED_SOURCE_MAP_OUT: perGroupOutputPath(resolve(outPath), groupIndex, groupCount),
   };
 }

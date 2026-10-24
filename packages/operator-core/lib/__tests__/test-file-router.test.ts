@@ -806,16 +806,25 @@ describe('test-files router', () => {
       expect(perGroupVitestEnv({ PC_EXECUTED_SOURCE_MAP_OUT: 'sources.json' }, 1, 3)
         .PC_EXECUTED_SOURCE_MAP_OUT).toBe(resolve('sources.1.json'));
       const unarmed = { PC_EXECUTED_SOURCE_MAP_OUT: ' ' };
-      expect(perGroupVitestEnv(unarmed, 1, 3)).toBe(unarmed);
-      expect(perGroupVitestEnv({}, 1, 3)).toEqual({});
+      expect(perGroupVitestEnv(unarmed, 1, 3)).toEqual({ ...unarmed, NODE_ENV: 'test' });
+      expect(perGroupVitestEnv({}, 1, 3)).toEqual({ NODE_ENV: 'test' });
+    });
+
+    it.each([undefined, 'production', 'development'])('establishes test mode for Vitest children inherited from %s', nodeEnv => {
+      const env = Object.freeze({ NODE_ENV: nodeEnv, PAPERCUSP_TEST_RUN_RECEIPT_FILE: '/tmp/receipt.jsonl' });
+      const child = perGroupVitestEnv(env, 0, 1);
+      expect(child.NODE_ENV).toBe('test');
+      expect(child.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBe('/tmp/receipt.jsonl');
+      expect(env.NODE_ENV).toBe(nodeEnv);
     });
 
     it('preserves each source-map group and detail rerun output through main()', async () => {
       const root = mkdtempSync(join(tmpdir(), 'source-map-groups-'));
       const originalOut = join(root, 'sources.json');
       const files = ['one/a.test.ts', 'one/b.test.ts', 'two/c.test.ts', 'three/d.test.ts'];
-      const saved = { PC_EXECUTED_SOURCE_MAP_OUT: process.env.PC_EXECUTED_SOURCE_MAP_OUT,
+      const saved = { NODE_ENV: process.env.NODE_ENV, PC_EXECUTED_SOURCE_MAP_OUT: process.env.PC_EXECUTED_SOURCE_MAP_OUT,
         PAPERCUSP_TEST_RUN_RECEIPT_FILE: process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE };
+      process.env.NODE_ENV = 'production';
       process.env.PC_EXECUTED_SOURCE_MAP_OUT = originalOut;
       delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -831,9 +840,13 @@ describe('test-files router', () => {
         const code = await main(files, {
           repoRoot: root,
           restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
-          runVitestListImpl: async (_command: string, args: string[]) => ({ status: 0, signal: null,
-            stdout: args.filter(arg => arg.endsWith('.test.ts')).join('\n'), stderr: '', timedOut: false }),
+          runVitestListImpl: async (_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+            expect(options.env.NODE_ENV).toBe('test');
+            return { status: 0, signal: null,
+              stdout: args.filter(arg => arg.endsWith('.test.ts')).join('\n'), stderr: '', timedOut: false };
+          },
           runCapturedTestProcessImpl: async (_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+            expect(options.env.NODE_ENV).toBe('test');
             const requested = args.filter(arg => arg.endsWith('.test.ts'));
             const path = options.env.PC_EXECUTED_SOURCE_MAP_OUT!;
             captures.push({ path, files: requested });
@@ -854,6 +867,7 @@ describe('test-files router', () => {
         }
         expect(JSON.parse(readFileSync(originalOut, 'utf8'))).toEqual(['a.test.ts', 'b.test.ts']);
         expect(process.env.PC_EXECUTED_SOURCE_MAP_OUT).toBe(originalOut);
+        expect(process.env.NODE_ENV).toBe('production');
       } finally {
         logSpy.mockRestore(); errorSpy.mockRestore(); stdoutSpy.mockRestore();
         for (const [key, value] of Object.entries(saved)) {

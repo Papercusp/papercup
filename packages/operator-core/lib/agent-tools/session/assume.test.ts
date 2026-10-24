@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ASSUME_TOKEN_TTL_MS, assumePreparationFingerprint, assumeTransitionKey, commitAssume,
   prepareAssume, reserveAssumeTarget, validateAssume,
+  qualifiesAssumeExecution, reconcileAssumeTransition, verifyAssumeExecution,
   type AssumeActor, type AssumeCaller, type AssumePreparationDeps, type AssumeTarget,
-  type AssumeRequest, type AssumeTransitionDeps, type AssumeTransitionReceipt,
+  type AssumeRequest, type AssumeTransitionDeps, type AssumeTransitionReceipt, type AssumeExecutionObservation,
 } from '../../session-assume';
 
 const actor: AssumeActor = { ownerId: 'su-caller', workspaceId: 'workspace-a' };
@@ -13,9 +14,9 @@ const hash = 'a'.repeat(64);
 function fixture() {
   let now = 1_000;
   const caller: AssumeCaller = { ...actor, nativeSessionId: 'caller-native', incarnation: 'caller-start',
-    hostId: 'host-a', attachmentId: 'pty-a', backend: 'codex' };
+    hostId: 'host-a', attachmentId: 'pty-a', backend: 'codex', nativePid: 101 };
   const target: AssumeTarget = { ownerId: 'su-target', workspaceId: actor.workspaceId, harnessSlug: 'harness-a',
-    advSessionId: 42, nativeSessionId: 'target-native', backend: 'codex', role: 'su',
+    advSessionId: 42, nativeSessionId: 'target-native', executionNativeSessionId: 'target-native', backend: 'codex', role: 'su',
     binding: { coordOwnerId: 'su-target', sessionId: 'target-native', startedAt: '2026-10-23 20:00:00.123456-04' },
     writerGeneration: 'writer-7', writer: 'free', ended: true, liveHost: false,
     context: { mode: 'native-resume', ref: 'target-native', sha256: hash, revision: 'transcript-7' } };
@@ -128,6 +129,7 @@ describe('session:assume preparation and exact custody', () => {
   it('R-3 checkpoint selection pins revision hash and fresh context', async () => {
     const f = fixture();
     f.target.context = { mode: 'checkpoint', ref: 'checkpoint:target:4', sha256: hash, revision: '4' };
+    f.target.executionNativeSessionId = 'fresh-checkpoint-native';
     const result = await prepared(f, { ...request, contextMode: 'checkpoint' });
     expect(result.preparation.target.context).toEqual(f.target.context);
     expect(await validateAssume(actor, result.token, f.deps)).toMatchObject({ ok: true });
@@ -170,14 +172,14 @@ function transitionFixture() {
       return { won: true, prior: null };
     }),
     save: vi.fn(async receipt => { effects.push(`save:${receipt.state}`); stored = structuredClone(receipt); }),
-    reserve: vi.fn(async () => ({ status: 'acquired', acquired: true, replayed: false, leaseExpiresAt: 'later' })),
+    reserve: vi.fn<AssumeTransitionDeps['reserve']>(async () => ({ status: 'acquired', acquired: true, replayed: false, leaseExpiresAt: 'later' })),
     checkpointCaller: vi.fn(async plan => {
       effects.push('checkpoint');
       return { checkpointRef: 'carry:caller:7', checkpointSha256: hash,
         returnRef: { ownerId: plan.caller.ownerId, workspaceId: plan.caller.workspaceId,
           nativeSessionId: plan.caller.nativeSessionId, incarnation: plan.caller.incarnation } };
     }),
-    quiesceCaller: vi.fn(async () => {
+    quiesceCaller: vi.fn<AssumeTransitionDeps['quiesceCaller']>(async () => {
       effects.push('quiesce');
       return { releasedWorkClaims: [{ id: 'WI-caller-work', checkpointRef: 'carry:work:3' }],
         releasedPlanClaims: [{ plan: 'caller-plan', item: 'P-001', checkpointRef: 'carry:plan:3' }],
@@ -186,7 +188,7 @@ function transitionFixture() {
     checkCustody: vi.fn(async () => true),
     restoreCaller: vi.fn(async () => { effects.push('restore'); return true; }),
     releaseTarget: vi.fn(async () => { effects.push('release'); return true; }),
-    handoff: vi.fn(async () => { effects.push('handoff'); return 'accepted'; }),
+    handoff: vi.fn<AssumeTransitionDeps['handoff']>(async () => { effects.push('handoff'); return 'accepted'; }),
   };
   return { deps, effects, stored: () => stored };
 }
@@ -296,6 +298,81 @@ describe('session:assume durable transition boundaries', () => {
     expect(f.stored()?.state).toBe('handoff-requested');
     expect(await commitAssume(plan, f.deps)).toMatchObject({ state: 'handoff-requested', replayed: true });
     expect(f.deps.handoff).toHaveBeenCalledOnce();
+    expect(f.deps.releaseTarget).not.toHaveBeenCalled();
+  });
+
+  const witness = (receipt: AssumeTransitionReceipt): AssumeExecutionObservation => ({
+    transitionKey: receipt.transitionKey, observedAt: 3_000, hostId: 'host-a', attachmentId: 'pty-a',
+    callerNativePid: 101, callerExited: true, targetOwnerId: 'su-target',
+    targetNativeSessionId: 'target-native', backend: 'codex', contextSha256: hash,
+    nativePid: 202, nativeProcessStart: 'proc:202:7', nativeWriterPids: [202],
+    directedMessage: { id: 'message-after-handoff', recipient: 'su-target', consumedBy: 'su-target', consumptions: 1 },
+    assignment: { id: 'WI-after-handoff', assignee: 'su-target', observedBy: 'su-target' },
+  });
+
+  it('accepts verification only after matching native process, attachment, inbox and assignment observations', async () => {
+    const { preparation: plan } = await prepared(fixture());
+    const f = transitionFixture();
+    const receipt = await commitAssume(plan, f.deps);
+    const result = await verifyAssumeExecution(receipt, witness(receipt), f.deps.save);
+    expect(result.state).toBe('target-verified');
+    expect(f.stored()?.observation?.directedMessage.id).toBe('message-after-handoff');
+  });
+
+  it.each([
+    ['extra pane', (w: AssumeExecutionObservation) => { w.attachmentId = 'other-pane'; }],
+    ['other host', (w: AssumeExecutionObservation) => { w.hostId = 'other-host'; }],
+    ['env-only substitution', (w: AssumeExecutionObservation) => { w.nativePid = 101; w.nativeWriterPids = [101]; }],
+    ['old caller usable', (w: AssumeExecutionObservation) => { w.callerExited = false; }],
+    ['duplicate writer', (w: AssumeExecutionObservation) => { w.nativeWriterPids = [202, 303]; }],
+    ['stale observation', (w: AssumeExecutionObservation) => { w.observedAt = 1; }],
+    ['wrong target', (w: AssumeExecutionObservation) => { w.targetOwnerId = 'su-other'; }],
+    ['wrong native context', (w: AssumeExecutionObservation) => { w.targetNativeSessionId = 'other-native'; }],
+    ['wrong context bytes', (w: AssumeExecutionObservation) => { w.contextSha256 = 'b'.repeat(64); }],
+    ['message missing', (w: AssumeExecutionObservation) => { w.directedMessage.id = ''; }],
+    ['message duplicated', (w: AssumeExecutionObservation) => { w.directedMessage.consumptions = 2; }],
+    ['message routed to caller', (w: AssumeExecutionObservation) => { w.directedMessage.consumedBy = 'su-caller'; }],
+    ['assignment missing', (w: AssumeExecutionObservation) => { w.assignment.id = ''; }],
+    ['assignment routed to caller', (w: AssumeExecutionObservation) => { w.assignment.assignee = 'su-caller'; }],
+  ] as const)('rejects a false verification witness: %s', async (_label, mutate) => {
+    const { preparation: plan } = await prepared(fixture());
+    const f = transitionFixture();
+    const receipt = await commitAssume(plan, f.deps);
+    const proof = witness(receipt);
+    mutate(proof);
+    expect(qualifiesAssumeExecution(receipt, proof)).toBe(false);
+    vi.mocked(f.deps.save).mockClear();
+    expect(await verifyAssumeExecution(receipt, proof, f.deps.save)).toBe(receipt);
+    expect(f.deps.save).not.toHaveBeenCalled();
+  });
+
+  it('R-8 crash after target custody before exec or verification converges on retry', async () => {
+    const { preparation: plan } = await prepared(fixture());
+    const f = transitionFixture();
+    vi.mocked(f.deps.handoff).mockRejectedValue(new Error('host crashed with unknown outcome'));
+    const interrupted = await commitAssume(plan, f.deps);
+    expect(interrupted.state).toBe('indeterminate');
+    expect(await reconcileAssumeTransition(interrupted, { kind: 'unknown' }, f.deps)).toBe(interrupted);
+    expect(f.deps.releaseTarget).not.toHaveBeenCalled();
+    expect(await reconcileAssumeTransition(interrupted, {
+      kind: 'cancelled', transitionKey: interrupted.transitionKey,
+      preparationFingerprint: interrupted.preparationFingerprint,
+      queuedHandoffCancelled: true, nativeWriter: 'free',
+    }, f.deps)).toMatchObject({ state: 'rolled-back', durable: true });
+    expect(f.deps.restoreCaller).toHaveBeenCalledOnce();
+    expect(f.deps.releaseTarget).toHaveBeenCalledOnce();
+    expect(await commitAssume(plan, f.deps)).toMatchObject({ state: 'rolled-back', replayed: true });
+    expect(f.deps.handoff).toHaveBeenCalledOnce();
+  });
+
+  it('cannot release another transition custody using a stale cancellation receipt', async () => {
+    const { preparation: plan } = await prepared(fixture());
+    const f = transitionFixture();
+    const receipt = await commitAssume(plan, f.deps);
+    expect(await reconcileAssumeTransition(receipt, { kind: 'cancelled',
+      transitionKey: 'another-transition', preparationFingerprint: receipt.preparationFingerprint,
+      queuedHandoffCancelled: true, nativeWriter: 'free' }, f.deps)).toBe(receipt);
+    expect(f.deps.restoreCaller).not.toHaveBeenCalled();
     expect(f.deps.releaseTarget).not.toHaveBeenCalled();
   });
 });

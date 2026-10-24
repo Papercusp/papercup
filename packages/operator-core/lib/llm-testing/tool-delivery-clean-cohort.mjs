@@ -148,6 +148,9 @@ export async function main(argv = process.argv.slice(2)) {
   const guard = await import(pathToFileURL(resolve(root, 'packages/operator-core/lib/tool-delivery-clean-runtime.ts')));
   const imports = guard.installToolDeliveryModuleGuard(root);
   imports.urls.add(import.meta.url); imports.urls.add(pathToFileURL(loader).href);
+  // The guard and its dependency verifier loaded before the resolve hook existed.
+  for (const path of ['packages/operator-core/lib/tool-delivery-clean-runtime.ts',
+    'packages/operator-core/lib/dependency-generation-proof.ts']) imports.urls.add(pathToFileURL(resolve(root, path)).href);
   try {
     const load = path => import(pathToFileURL(resolve(root, path)));
     const acceptance = await load('packages/operator-core/lib/tool-delivery-acceptance.ts');

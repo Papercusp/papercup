@@ -14,7 +14,9 @@ const {
   acquireTimeouts,
   acquireRetries,
 } = vi.hoisted(() => {
-  const sql = vi.fn(async () => [] as unknown[]);
+  const sql = vi.fn<(strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>>(
+    async () => [],
+  );
   const begin = vi.fn(async (fn: (tx: typeof sql) => unknown) => fn(sql));
   const appSql = vi.fn(async () => [] as unknown[]);
   const dedicatedSql = vi.fn(async () => [] as unknown[]);

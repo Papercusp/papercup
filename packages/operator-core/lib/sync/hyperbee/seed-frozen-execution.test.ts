@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { assertSeedExcludedModules, assertSeedLoadedSecurityFiles, bindSeedFrozenDependencies, readSeedInstalledPackages, readSeedLoadedModulePaths, verifySeedSecurityPackage } from './seed-frozen-execution';
+import { captureToolDeliveryCleanBoundary, toolDeliveryMandatorySources, validateToolDeliveryCleanCensus } from '../../tool-delivery-clean-runtime';
 
 const dirs: string[] = [];
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'seed-d177-')); dirs.push(dir); return dir; };
@@ -207,7 +208,7 @@ describe('D177 security package content integrity', () => {
   });
 });
 
-async function frozen(excludedAlias = false) {
+async function frozen(excludedAlias = false, toolDelivery = false) {
   const base = temp(); const root = join(base, 'source'); const generationRoot = join(base, 'published');
   const generationId = 'v1-' + 'a'.repeat(64); const generation = join(generationRoot, generationId);
   const names = ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal'];
@@ -216,6 +217,13 @@ async function frozen(excludedAlias = false) {
     pkg(join(generation, 'tree'), `node_modules/${name}`, name);
     const bytes = archive(root, name); const url = `https://registry.npmjs.org/${name}/-/fixture.tgz`;
     archives.set(url, bytes); packages[`node_modules/${name}`] = { version: '1.0.0', resolved: url, integrity: sha512(bytes) };
+  }
+  if (toolDelivery) {
+    const registration = { sourcePins: { files: {}, scenarioPaths: {} }, executionPolicy: { launcherPath: 'launcher.cjs' } };
+    for (const path of toolDeliveryMandatorySources(registration)) {
+      if (path === 'apps/operator/bin/release/dependency-generation.sh') continue;
+      write(join(path.startsWith('node_modules/') ? join(generation, 'tree') : root, path), 'export {};\n');
+    }
   }
   // Tooling directories stay in the generation fingerprint, outside the npm package namespace.
   pkg(join(generation, 'tree'), 'node_modules/@fixture/.x-1234abcd', '@fixture/x');
@@ -248,6 +256,39 @@ async function frozen(excludedAlias = false) {
 }
 
 describe('D177 maintained publication binding', () => {
+  const registration = { sourcePins: { files: {}, scenarioPaths: {} }, executionPolicy: { launcherPath: 'launcher.cjs' } };
+  const capture = (root: string) => captureToolDeliveryCleanBoundary({ sourceRoot: root, registration,
+    moduleUrls: toolDeliveryMandatorySources(registration)
+      .filter(path => path !== 'apps/operator/bin/release/dependency-generation.sh')
+      .map(path => pathToFileURL(join(root, path)).href) });
+  it('admits a real clean recorder boundary from maintained dependencies without npm hidden metadata', async () => {
+    const f = await frozen(false, true);
+    expect(existsSync(join(f.root, 'node_modules/.package-lock.json'))).toBe(false);
+    const before = await capture(f.root), after = await capture(f.root);
+    expect(before.commit).toBe(f.commit);
+    expect(before.porcelain).toBe('');
+    expect(after.porcelain).toBe('');
+    expect(after.untracked).toEqual([]);
+    expect(after.disallowedIgnoredFiles).toEqual([]);
+    expect(before.installSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(after.installSha256).toBe(before.installSha256);
+    expect(validateToolDeliveryCleanCensus(before, registration)).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+    const file = join(f.root, 'node_modules/tsx/dist/loader.mjs');
+    chmodSync(file, 0o644); write(file, 'export const changed = true;\n');
+    await expect(capture(f.root)).rejects.toThrow('materialized dependency tree drift');
+  });
+  it.each(['missing', 'malformed', 'selector', 'input'] as const)(
+    'refuses %s maintained dependency proof at the real recorder boundary', async mode => {
+      const f = await frozen(false, true);
+      const marker = join(f.root, 'node_modules/.papercusp-dependency-generation');
+      if (mode === 'missing') rmSync(marker);
+      if (mode === 'malformed') write(marker, 'identity=broken\n');
+      if (mode === 'selector') write(f.selector, readFileSync(f.selector, 'utf8').replace(f.generationId, 'v1-' + 'f'.repeat(64)));
+      if (mode === 'input') write(join(f.root, 'package-lock.json'), '{}');
+      await expect(capture(f.root)).rejects.toThrow(mode === 'missing' ? /ENOENT/ : mode === 'malformed'
+        ? /invalid frozen dependency generation/ : mode === 'selector' ? /input\/generation mismatch/ : /committed dependency input changed/);
+    });
   it('refuses loaded excluded modules and symlink targets even with matching generation bytes', async () => {
     const f = await frozen();
     await expect(bindSeedFrozenDependencies(f.root, f.commit,

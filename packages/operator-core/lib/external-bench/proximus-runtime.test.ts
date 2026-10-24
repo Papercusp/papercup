@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
+import { spawn as realSpawn } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
 import { currentProtocolFixture, allCapabilities } from './reproducibility/_protocol-test-fixture';
 import { currentBenchmarkProtocolSchema, currentBenchProviderAgent, PROXIMUS_CLIENT_VERSION,
   PROXIMUS_SOURCE_REVISION, type CurrentBenchmarkProtocol } from './reproducibility/schema';
-import { proximusRunSpec } from './proximus-runtime';
+import { measureProximusRuntime, proximusHostProcess, proximusRunSpec, runProximusHost } from './proximus-runtime';
 import { currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
   requireCurrentBenchHostReferenceGateway, type CurrentBenchNativeInputCeiling } from './current-su';
 import { processMonotonicClock } from '../process-monotonic-clock';
@@ -13,6 +14,10 @@ import type { LearningSpendReservation, ReserveLearningSpendInput } from '../lea
 import type { Sql } from 'postgres';
 
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+vi.mock('node:child_process', async importOriginal => {
+  const original = await importOriginal<typeof import('node:child_process')>();
+  return { ...original, spawn: vi.fn(original.spawn) };
+});
 function fixture(provider: 'openai' | 'anthropic' = 'openai') {
   const protocol = currentProtocolFixture('proximus-offline-fixture', 1_000);
   for (const arm of protocol.arms) arm.control = { topology: arm.id === 'baseline' ? 'stock-native-reference' : 'solo',
@@ -71,6 +76,101 @@ describe('official Proximus protocol identity', () => {
     const { protocol, execution } = fixture(); mutations[change](protocol);
     expect(currentBenchmarkProtocolSchema.safeParse(protocol).success).toBe(false);
     expect(() => proximusRunSpec(protocol, execution)).toThrow();
+  });
+});
+
+describe('Proximus measured host execution', () => {
+  const measured = () => ({ schemaVersion: 1 as const, runtimeRevision: digest('installed-python-harbor-litellm-lock'),
+    sourceRevision: PROXIMUS_SOURCE_REVISION, clientVersion: PROXIMUS_CLIENT_VERSION, harborVersion: '0.23.0', fileCount: 100 });
+  async function host() {
+    const f = providerFixture('openai');
+    const controller = currentBenchGatewayController({ ...f.input,
+      loopId: 'offline-loop', token: digest('offline-gateway-token'), authenticateProvider: f.auth.authenticateProvider,
+      resources: { inputTokens: 20_000, outputTokens: 100, requestsPerArm: 2,
+        armIds: f.protocol.arms.map(a => currentBenchAssignmentId(f.protocol.runId, a.id, 't1', 1)),
+        usdPerArm: 3, maxOpenUsd: 3, wallClockMs: 2_000, wallClockMsPerArm: 1_000 } });
+    const receipt = await controller.startHostGateway(() => {}, async () => ({ port: 32105, stop: async () => {} } as never));
+    const execution = { ...f.execution, handle: { ...f.execution.handle, containerId: 'a'.repeat(64) },
+      pythonBin: '/offline/venv/bin/python', trialDir: '/offline/trial', instruction: 'solve the exact task',
+      network: 'none', networkMode: 'no-network' as const, gateway: receipt };
+    return { ...f, controller, execution, receipt, cleanup: async () => { await receipt.stop(); f.auth.revoke(); } };
+  }
+  it('prepares without any gateway and refuses incomplete installed-byte evidence', async () => {
+    const execute = vi.fn(async () => measured());
+    expect(await measureProximusRuntime({ pythonBin: '/offline/python' }, execute)).toEqual(measured());
+    expect(execute).toHaveBeenCalledWith({ pythonBin: '/offline/python', operation: 'measure', maxWallClockMs: 120_000 });
+    await expect(measureProximusRuntime({ pythonBin: '/offline/python' }, async () => ({ runtimeRevision: 'claimed' })))
+      .rejects.toThrow(/incomplete/);
+  });
+  it('binds the official host to measured bytes and its issued gateway, retaining diagnostic cost as unreconciled', async () => {
+    const f = await host();
+    const execute = vi.fn<NonNullable<Parameters<typeof measureProximusRuntime>[1]>>(async input => input.operation === 'measure' ? measured()
+      : { schemaVersion: 1, status: 'completed', runtime: measured(), diagnosticContext: { cost_usd: 0.001 }, billingStatus: 'unreconciled' });
+    try {
+      const result = await runProximusHost(f.protocol, f.execution, execute);
+      expect(result.billingStatus).toBe('unreconciled');
+      expect(result.diagnosticContext).toEqual({ cost_usd: 0.001 });
+      const run = execute.mock.calls[1][0], body = JSON.parse(run.stdin!);
+      expect(run).toMatchObject({ operation: 'run', maxWallClockMs: 1_000, pythonBin: '/offline/venv/bin/python' });
+      expect(body.gateway).toEqual(f.receipt.gateway);
+      expect(body.spec).toMatchObject({ runtimeRevision: measured().runtimeRevision, modelName: `openai/${f.arm.model}` });
+      expect(body).not.toHaveProperty('account');
+    } finally { await f.cleanup(); }
+  });
+  it.each(['copied grant', 'runtime drift', 'revoked during measurement', 'result drift'] as const)
+  ('refuses %s before accepting any terminal result', async change => {
+    const f = await host();
+    const execute = vi.fn<NonNullable<Parameters<typeof measureProximusRuntime>[1]>>(async input => {
+      if (input.operation === 'measure') {
+        if (change === 'revoked during measurement') await f.receipt.stop();
+        return { ...measured(), ...(change === 'runtime drift' ? { runtimeRevision: digest('changed') } : {}) };
+      }
+      return { schemaVersion: 1, status: 'completed', runtime: { ...measured(), runtimeRevision: digest('changed') },
+        diagnosticContext: { cost_usd: 0 }, billingStatus: 'unreconciled' };
+    });
+    if (change === 'copied grant') f.execution.gateway = { ...f.receipt };
+    try {
+      await expect(runProximusHost(f.protocol, f.execution, execute)).rejects.toThrow();
+      expect(execute).toHaveBeenCalledTimes(change === 'copied grant' ? 0 : change === 'result drift' ? 2 : 1);
+    } finally { await f.cleanup(); }
+  });
+  it('refuses invalid process inputs or an already aborted run without starting a child', async () => {
+    await expect(proximusHostProcess({ pythonBin: 'python', operation: 'run', maxWallClockMs: 1 })).rejects.toThrow(/Invalid/);
+    await expect(proximusHostProcess({ pythonBin: '/python', operation: 'run', maxWallClockMs: 1,
+      signal: AbortSignal.abort() })).rejects.toThrow(/aborted/);
+  });
+  it.each(['deadline', 'output'] as const)('kills and reaps the actual host child on %s failure', async cause => {
+    const original = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    let child: ReturnType<typeof original.spawn> | undefined;
+    vi.mocked(realSpawn).mockImplementationOnce((_command, _args, options) => {
+      const program = cause === 'deadline' ? 'setInterval(() => {}, 1000)'
+        : 'process.stdout.write("x".repeat(3 * 1024 * 1024));setInterval(() => {}, 1000)';
+      child = original.spawn(process.execPath, ['-e', program], options);
+      return child;
+    });
+    await expect(proximusHostProcess({ pythonBin: '/offline/python', operation: 'run',
+      maxWallClockMs: cause === 'deadline' ? 100 : 5_000 })).rejects.toThrow(cause === 'deadline' ? /deadline/ : /output limit/);
+    expect(child!.signalCode).toBe('SIGKILL');
+    expect(() => process.kill(child!.pid!, 0)).toThrow();
+  });
+  it('strips inherited credentials/proxies and sends the payload on stdin without exposing diagnostics', async () => {
+    const original = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    vi.stubEnv('OPENAI_API_KEY', 'host-provider-secret');
+    vi.stubEnv('HTTPS_PROXY', 'http://unscoped-proxy');
+    let command: string | undefined, args: readonly string[] | undefined;
+    vi.mocked(realSpawn).mockImplementationOnce((bin, argv, options) => {
+      command = bin; args = argv;
+      const program = 'let data="";process.stdin.on("data",b=>data+=b);process.stdin.on("end",()=>{process.stderr.write("private-request-diagnostic");process.stdout.write(JSON.stringify({secret:process.env.OPENAI_API_KEY??null,proxy:process.env.HTTPS_PROXY??null,payload:JSON.parse(data)}))})';
+      return original.spawn(process.execPath, ['-e', program], options);
+    });
+    try {
+      const result = await proximusHostProcess({ pythonBin: '/offline/python', operation: 'run', maxWallClockMs: 5_000,
+        stdin: JSON.stringify({ token: 'gateway-only-token' }) });
+      expect(result).toEqual({ secret: null, proxy: null, payload: { token: 'gateway-only-token' } });
+      expect(command).toBe('/offline/python');
+      expect(args).toEqual(['-I', '-B', expect.stringMatching(/proximus-host.py$/), 'run']);
+      expect(args!.join(' ')).not.toContain('gateway-only-token');
+    } finally { vi.unstubAllEnvs(); }
   });
 });
 

@@ -74,7 +74,8 @@ import {
 import { useSyncQuery } from "@papercusp/sync";
 import { useWorkspaceId } from "@/lib/use-workspace-id";
 import type { ChatMessage, ChatToolCall } from "./chat/chat-types";
-import { parseChatEnvelope, parseChatEvent, parseChatState, chatEventChannel } from "@papercusp/chat-protocol";
+import { parseChatEnvelope, parseChatEvent, parseChatState, parseStructuredResults, chatEventChannel,
+  type ChatResultBlock } from "@papercusp/chat-protocol";
 import { parseSseStream, type ParsedSseEvent } from "@papercusp/sse";
 import { useStateSnapshots } from "@/lib/use-state-snapshots";
 import { selectFocusedCard } from "@/lib/chat-cards/select-focused-card";
@@ -647,6 +648,8 @@ export interface GenerationStream {
    *  Read by the caller after `chunks` exhausts; attached to the
    *  resulting assistant message so the sidebar can render chips. */
   tools?: ChatToolCall[];
+  /** Mutated only by validated canonical result events, with stable IDs replacing prior versions. */
+  results?: ChatResultBlock[];
 }
 
 /**
@@ -735,6 +738,7 @@ const defaultGenerationFn: GenerationFn = async (req) => {
   let body = res.body;
   let frames = parseSseStream(body);
   const tools: ChatToolCall[] = [];
+  const results: ChatResultBlock[] = [];
   const persistence: NonNullable<GenerationStream["persistence"]> = { turn: null };
   let identity: { conversationId: string; turnId: string } | null = null;
   let version: 0 | 1 = 0;
@@ -775,6 +779,7 @@ const defaultGenerationFn: GenerationFn = async (req) => {
 
   return {
     tools,
+    results,
     persistence,
     chunks: (async function* () {
       req.signal.addEventListener("abort", cancel, { once: true });
@@ -854,6 +859,16 @@ const defaultGenerationFn: GenerationFn = async (req) => {
           } else if (version === 1 && event !== "done" && event !== "error") {
             // Version 0 is selected only by a legacy host's response. Never
             // render dual legacy frames alongside canonical replay.
+            continue;
+          }
+          if (event === "result" && version === 1) {
+            const parsed = parseStructuredResults(JSON.parse(dataText).blocks);
+            if (!parsed.ok) throw new Error("Invalid saved reply results.");
+            for (const block of parsed.value) {
+              const index = results.findIndex(current => current.id === block.id);
+              if (index < 0) results.push(block);
+              else results[index] = block;
+            }
             continue;
           }
           if (
@@ -2027,12 +2042,15 @@ export function OperatorConversationProvider({
           stream.tools && stream.tools.length > 0
             ? stream.tools.slice()
             : undefined;
+        const resultBlocks = parseStructuredResults(stream.results ?? []);
+        if (!resultBlocks.ok) throw new Error("Invalid saved reply results.");
+        const collectedResults = resultBlocks.value.length ? resultBlocks.value : undefined;
         // The report is PERSISTED (it is the Inbox's durable store — the
         // operator-report attention source reads operator_turns.report) but
         // NOT threaded onto the chat message: chat renders conversation
         // only. report-cards-inbox-reconciliation-2026-06-05 D-002.
         const report = parsed.report ?? undefined;
-        const turnHasContent = !!parsed.say || !!collectedTools || !!report;
+        const turnHasContent = !!parsed.say || !!collectedTools || !!collectedResults || !!report;
 
         if (turnHasContent) {
           const sayContent = parsed.say ?? "";
@@ -2053,6 +2071,7 @@ export function OperatorConversationProvider({
             ts: new Date().toISOString(),
           };
           if (collectedTools) assistantMessage.tools = collectedTools;
+          if (collectedResults) assistantMessage.results = collectedResults;
           if (streamedAssistantId) {
             dispatch({
               type: "finalize_assistant_stream",

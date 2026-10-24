@@ -72,7 +72,8 @@ describe('session root caps', () => {
     try {
       const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture' }],
         protectedIdentity: empty, archiveGuard: false });
-      expect(result.caps![0]).toMatchObject({ beforeBytes: null, afterBytes: null, pinnedBytes: null, overByBytes: null });
+      expect(result.caps![0]).toMatchObject({ beforeBytes: null, afterBytes: null, pinnedBytes: null,
+        overByBytes: null, pinnedOverageBytes: null });
       expect(result.errors[0]!.error).toContain(reason);
       expect(inspect).toHaveBeenCalledWith(root, expect.objectContaining({ sudo: null }));
     } finally { inspect.mockRestore(); vi.unstubAllEnvs(); }
@@ -112,7 +113,9 @@ describe('session root caps', () => {
     try {
       const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
         protectedIdentity: { ownerIds: new Set(['live']), sessionKeys: new Set() }, archiveGuard: false, dryRun });
-      expect(result.errors).toEqual([]);
+      if (dryRun) expect(result.errors).toEqual([]);
+      else expect(result.errors).toContainEqual({ path: root,
+        error: expect.stringContaining('session cap remains exceeded beyond live-pin overage') });
       expect(result.removed).toEqual([old]);
       expect(existsSync(old)).toBe(dryRun);
       for (const path of [pinned, live, fresh, join(owner, 'data')]) expect(existsSync(path)).toBe(true);
@@ -122,8 +125,36 @@ describe('session root caps', () => {
       expect(cap.afterBytes).toBeLessThan(1024 * 1024);
       expect(cap.pinnedBytes).toBeGreaterThanOrEqual(64 * 1024);
       expect(cap.overByBytes).toBe(cap.afterBytes! - 1);
+      expect(cap.pinnedOverageBytes).toBe(cap.pinnedBytes! - 1);
+      expect(cap.overByBytes).toBeGreaterThan(cap.pinnedOverageBytes!);
       if (dryRun) expect(cap.afterBytes).toBe(cap.beforeBytes);
       else expect(cap.afterBytes).toBeLessThan(cap.beforeBytes!);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('accepts overage fully accounted for by a live pin after removing an eligible sibling', async () => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const pinned = seedDir(root, 'pinned', DEFAULT_RETENTION_MS * 3);
+    const old = seedDir(root, 'old', DEFAULT_RETENTION_MS * 3);
+    for (const path of [pinned, old]) {
+      writeFileSync(join(path, 'data'), Buffer.alloc(64 * 1024));
+      utimesSync(path, 1, 1);
+    }
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(parent, 'leases'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    createRetentionPin({ path: pinned, owner: 'fixture', reason: 'cap exemption',
+      expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    try {
+      const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
+        protectedIdentity: empty, archiveGuard: false });
+      expect(result.errors).toEqual([]);
+      expect(result.removed).toEqual([old]);
+      expect(existsSync(old)).toBe(false);
+      expect(existsSync(pinned)).toBe(true);
+      const cap = result.caps![0]!;
+      expect(cap.afterBytes).toBe(cap.pinnedBytes);
+      expect(cap.overByBytes).toBeGreaterThan(0);
+      expect(cap.pinnedOverageBytes).toBe(cap.overByBytes);
     } finally { vi.unstubAllEnvs(); }
   });
 });

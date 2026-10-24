@@ -9,6 +9,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import type { RecordedLlmBlockCustody } from '@papercusp/test-config/execution-details';
+import { bindFrozenDependencyGeneration } from './dependency-generation-proof';
 
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 const digest = (value: unknown) => hash(JSON.stringify(value));
@@ -48,19 +49,22 @@ const recorder = 'packages/operator-core/lib/llm-testing/test-run-ledger.ts';
 const providers = ['packages/operator-core/lib/llm-testing/targets/su.ts',
   'packages/operator-core/lib/llm-testing/targets/codex-responses-tool-loop.ts'];
 const loader = 'node_modules/tsx/dist/loader.mjs';
+const dependencyProof = 'packages/operator-core/lib/dependency-generation-proof.ts';
+const dependencyPublisher = 'apps/operator/bin/release/dependency-generation.sh';
 export function toolDeliveryMandatorySources(registration: ToolDeliveryCleanRegistration): string[] {
   const launcher = registration.executionPolicy?.launcherPath;
   if (!launcher || isAbsolute(launcher) || launcher.split('/').some(part => !part || part === '.' || part === '..'))
     throw new Error('A committed repository-relative launcher must be preregistered.');
   return [...new Set([...Object.keys(registration.sourcePins.files), ...Object.values(registration.sourcePins.scenarioPaths),
     ...Object.keys(registration.measurementAmendment?.sourceReplacements ?? {}),
-    ...Object.keys(registration.measurementAmendment?.addedFiles ?? {}), recorder, ...providers, launcher, loader])].sort();
+    ...Object.keys(registration.measurementAmendment?.addedFiles ?? {}), recorder, ...providers, launcher, loader,
+    dependencyProof, dependencyPublisher])].sort();
 }
 export function validateToolDeliveryCleanCensus(boundary: ToolDeliveryCleanBoundary,
   registration: ToolDeliveryCleanRegistration): string | undefined {
   const required = toolDeliveryMandatorySources(registration);
   if (digest(Object.keys(boundary.sourceHashes).sort()) !== digest(required)) return 'Mandatory source census is incomplete or extended.';
-  for (const path of [recorder, ...providers, loader, registration.executionPolicy!.launcherPath!])
+  for (const path of [recorder, ...providers, loader, dependencyProof, registration.executionPolicy!.launcherPath!])
     if (!(path in boundary.moduleHashes)) return 'Mandatory loaded module is absent.';
 }
 
@@ -134,8 +138,9 @@ export async function captureToolDeliveryCleanBoundary(input: {
   const status = readFileSync(`/proc/${process.pid}/stat`, 'utf8');
   // comm may contain spaces or parentheses; field 3 follows its LAST closing paren.
   const processStartTicks = status.slice(status.lastIndexOf(')') + 2).split(' ')[19]!;
-  const installSha256 = digest(['package-lock.json', 'node_modules/.package-lock.json']
-    .map(path => [path, hash(readFileSync(resolve(root, path)))]));
+  if (!snapshot.commit) throw new Error('tool-delivery committed dependency source is unavailable');
+  const dependencies = await bindFrozenDependencyGeneration(root, snapshot.commit);
+  const installSha256 = digest(dependencies.identity);
   const submoduleStatus = git(['submodule', 'status', '--recursive']);
   const ignored = toolDeliveryIgnoredCensus(submoduleStatus, directory => git([
     ...(directory ? ['-C', directory] : []), 'ls-files', '--others', '--ignored', '--exclude-standard', '-z'])

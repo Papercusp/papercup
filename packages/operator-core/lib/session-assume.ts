@@ -23,6 +23,7 @@ export const assumeContextSchema = z.object({
 const callerSchema = z.object({
   ownerId: nonempty, workspaceId: nonempty, nativeSessionId: nonempty,
   incarnation: nonempty, hostId: nonempty, attachmentId: nonempty,
+  nativePid: z.number().int().positive(),
   backend: z.enum(['claude', 'codex', 'omp']),
 }).strict();
 
@@ -30,6 +31,7 @@ const targetSchema = z.object({
   ownerId: nonempty, workspaceId: nonempty, harnessSlug: nonempty,
   advSessionId: z.number().int().positive(), role: nonempty,
   nativeSessionId: nonempty, backend: z.enum(['claude', 'codex', 'omp']),
+  executionNativeSessionId: nonempty,
   binding: z.object({
     coordOwnerId: nonempty, sessionId: nonempty, startedAt: nonempty,
     ompThreadId: nonempty.nullable().optional(),
@@ -111,7 +113,9 @@ function targetRefusal(actor: AssumeActor, request: AssumeRequest, target: Assum
   if (!target.ended || target.liveHost || target.writer === 'held') return refuse('target-live');
   if (target.writer !== 'free') return refuse('writer-unknown');
   if (target.context.mode !== request.contextMode ||
-      (request.contextMode === 'native-resume' && target.context.ref !== target.nativeSessionId)) {
+      (request.contextMode === 'native-resume' && (target.context.ref !== target.nativeSessionId ||
+        target.executionNativeSessionId !== target.nativeSessionId)) ||
+      (request.contextMode === 'checkpoint' && target.executionNativeSessionId === target.nativeSessionId)) {
     return refuse('context-unavailable');
   }
   return null;
@@ -242,6 +246,7 @@ export interface AssumeTransitionReceipt {
   reason?: string;
   /** False is explicit: a transport result cannot assert that a failed write landed. */
   durable: boolean;
+  observation?: AssumeExecutionObservation;
 }
 
 /** Narrow adapters over existing launch receipts, carry checkpoints, keyed
@@ -350,4 +355,93 @@ export async function commitAssume(
     catch { receipt.durable = false; }
     return receipt;
   }
+}
+
+/** Measurements supplied by the managed host/router adapter, never by public
+ * tool arguments. A process witness AND independently routed message/work
+ * witnesses are required; environment variables or an accepted flag do not
+ * satisfy this contract. */
+export interface AssumeExecutionObservation {
+  transitionKey: string;
+  observedAt: number;
+  hostId: string;
+  attachmentId: string;
+  callerNativePid: number;
+  callerExited: boolean;
+  targetOwnerId: string;
+  targetNativeSessionId: string;
+  backend: AssumeTarget['backend'];
+  contextSha256: string;
+  nativePid: number;
+  nativeProcessStart: string;
+  nativeWriterPids: number[];
+  directedMessage: { id: string; recipient: string; consumedBy: string; consumptions: number };
+  assignment: { id: string; assignee: string; observedBy: string };
+}
+
+export function qualifiesAssumeExecution(
+  receipt: AssumeTransitionReceipt, observation: AssumeExecutionObservation,
+): boolean {
+  const { caller, target } = receipt.preparation;
+  return ['handoff-requested', 'handoff-accepted', 'indeterminate'].includes(receipt.state) &&
+    observation.transitionKey === receipt.transitionKey &&
+    Number.isFinite(observation.observedAt) && observation.observedAt >= receipt.updatedAt &&
+    observation.hostId === caller.hostId && observation.attachmentId === caller.attachmentId &&
+    observation.callerNativePid === caller.nativePid && observation.callerExited === true &&
+    observation.targetOwnerId === target.ownerId &&
+    observation.targetNativeSessionId === target.executionNativeSessionId && observation.backend === target.backend &&
+    observation.contextSha256 === target.context.sha256 &&
+    Number.isSafeInteger(observation.nativePid) && observation.nativePid > 0 &&
+    observation.nativePid !== caller.nativePid && !!observation.nativeProcessStart &&
+    observation.nativeWriterPids.length === 1 && observation.nativeWriterPids[0] === observation.nativePid &&
+    !!observation.directedMessage.id && observation.directedMessage.recipient === target.ownerId &&
+    observation.directedMessage.consumedBy === target.ownerId && observation.directedMessage.consumptions === 1 &&
+    !!observation.assignment.id && observation.assignment.assignee === target.ownerId &&
+    observation.assignment.observedBy === target.ownerId;
+}
+
+/** Settling an accepted/uncertain receipt never launches a process. An invalid
+ * or incomplete witness leaves the prior receipt untouched and unverified. */
+export async function verifyAssumeExecution(
+  receipt: AssumeTransitionReceipt, observation: AssumeExecutionObservation,
+  save: AssumeTransitionDeps['save'],
+): Promise<AssumeTransitionReceipt> {
+  if (!qualifiesAssumeExecution(receipt, observation)) return receipt;
+  const verified: AssumeTransitionReceipt = { ...receipt, state: 'target-verified',
+    observation: structuredClone(observation), updatedAt: observation.observedAt, durable: true };
+  try { await save(verified); return verified; }
+  catch { return { ...receipt, state: 'indeterminate', durable: false, reason: 'verification-write-failed' }; }
+}
+
+export type AssumeReconciliationObservation =
+  | { kind: 'execution'; observation: AssumeExecutionObservation }
+  | { kind: 'unknown' }
+  | {
+    kind: 'cancelled'; transitionKey: string; preparationFingerprint: string;
+    /** The runtime adapter must fence the exact queued handoff generation, not
+     * infer cancellation from a timeout or a missing discovery record. */
+    queuedHandoffCancelled: true;
+    nativeWriter: 'free';
+  };
+
+/** Reconcile a crash without repeating execution. Only a measured execution
+ * can verify; only exact queue cancellation plus no writer can roll back. An
+ * expired lease or absent host on its own is insufficient in either direction. */
+export async function reconcileAssumeTransition(
+  receipt: AssumeTransitionReceipt, observation: AssumeReconciliationObservation,
+  deps: Pick<AssumeTransitionDeps, 'now' | 'save' | 'restoreCaller' | 'releaseTarget'>,
+): Promise<AssumeTransitionReceipt> {
+  if (['target-verified', 'rolled-back', 'refused'].includes(receipt.state)) return receipt;
+  if (observation.kind === 'execution') return verifyAssumeExecution(receipt, observation.observation, deps.save);
+  const cancelled = observation.kind === 'cancelled' && observation.queuedHandoffCancelled === true &&
+    observation.nativeWriter === 'free' && observation.transitionKey === receipt.transitionKey &&
+    observation.preparationFingerprint === receipt.preparationFingerprint;
+  if (!cancelled) return receipt;
+  const restored = !receipt.recovery || await deps.restoreCaller(receipt.preparation, receipt.recovery).catch(() => false);
+  const released = await deps.releaseTarget(receipt.preparation).catch(() => false);
+  const settled: AssumeTransitionReceipt = { ...receipt, updatedAt: deps.now(), durable: true,
+    state: restored && released ? 'rolled-back' : 'indeterminate',
+    reason: restored && released ? 'cancelled-with-no-native-writer' : 'recovery-incomplete' };
+  try { await deps.save(settled); return settled; }
+  catch { return { ...settled, state: 'indeterminate', durable: false }; }
 }
