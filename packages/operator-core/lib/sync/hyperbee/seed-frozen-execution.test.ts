@@ -334,7 +334,8 @@ describe('D177 security package content integrity', () => {
   });
 });
 
-async function frozen(excludedAlias = false, toolDelivery = false, miniflare = false, internalLeftoverLink = false) {
+async function frozen(excludedAlias = false, toolDelivery = false, miniflare = false,
+  internalLeftoverLink = false, crossLeftoverLink = false) {
   const base = temp(); const root = join(base, 'source'); const generationRoot = join(base, 'published');
   const generationId = 'v1-' + 'a'.repeat(64); const generation = join(generationRoot, generationId);
   const names = ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal'];
@@ -357,7 +358,9 @@ async function frozen(excludedAlias = false, toolDelivery = false, miniflare = f
     const leftover = join(generation, 'tree/node_modules/@fixture/.x-1234abcd/node_modules');
     pkg(leftover, 'tool', 'tool');
     mkdirSync(join(leftover, '.bin'), { recursive: true });
-    symlinkSync('../tool/index.js', join(leftover, '.bin/leftover'));
+    if (crossLeftoverLink) pkg(join(generation, 'tree'), 'node_modules/@fixture/.y-1234abcd', '@fixture/y');
+    symlinkSync(crossLeftoverLink ? '../../../.y-1234abcd/index.js' : '../tool/index.js',
+      join(leftover, '.bin/leftover'));
   }
   if (miniflare) write(join(generation, 'tree/node_modules/.mf/cf.json'),
     JSON.stringify({ token: 'synthetic-miniflare-binder-secret' }));
@@ -403,6 +406,8 @@ describe('D177 frozen execution binding', () => {
     }
     const g = await frozen(true, false, false, true);
     await expect(bindSeedFrozenDependencies(g.root, g.commit)).rejects.toThrow('excluded dependency');
+    const h = await frozen(false, false, false, true, true);
+    await expect(bindSeedFrozenDependencies(h.root, h.commit)).rejects.toThrow('excluded dependency');
   });
   it('propagates Miniflare exclusion and rejects loaded cache paths', async () => {
     const f = await frozen(false, false, true);

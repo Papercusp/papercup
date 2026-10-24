@@ -295,7 +295,14 @@ export async function bindSeedFrozenDependencies(root: string, sourceCommit: str
   const packages = await readSeedInstalledPackages(root, trees, locks, excludedEntries);
   const linkTargets = await Promise.all(links.map(async path =>
     relative(root, await realpath(join(root, path))).split('\\').join('/')));
-  assertSeedExcludedModules(excludedEntries, linkTargets);
+  const leftovers = excludedEntries.filter(entry => REIFY_LEFTOVER.test(posix.basename(entry.path))
+    && !ROOT_TOOLING.has(posix.basename(entry.path)));
+  // npm leftovers can retain their own bin links. Only inert links wholly inside
+  // the same leftover are allowed: tooling/external aliases and cross-leftover
+  // targets still fail, and the actual loaded-module census below is unchanged.
+  assertSeedExcludedModules(excludedEntries, linkTargets.filter((target, index) =>
+    !leftovers.some(entry => links[index].startsWith(entry.path + '/')
+      && target.startsWith(entry.path + '/'))));
   const security = packages.filter(row => SECURITY_NAMES.has(row.name));
   for (const name of ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal']) {
     if (!security.some(row => row.name === name)) throw new Error(`required security package missing: ${name}`);
