@@ -5,7 +5,8 @@ import { currentProtocolFixture, allCapabilities } from './reproducibility/_prot
 import { currentBenchmarkProtocolSchema, currentBenchProviderAgent, PROXIMUS_CLIENT_VERSION,
   PROXIMUS_SOURCE_REVISION, type CurrentBenchmarkProtocol } from './reproducibility/schema';
 import { measureProximusRuntime, proximusHostProcess, proximusRunSpec, runProximusHost,
-  readProximusAttemptPopulation, readProximusBilling, requireProximusHostConfinement } from './proximus-runtime';
+  readProximusAttemptPopulation, readProximusBilling, requireProximusHostConfinement,
+  priceProximusAttempts, readProximusTurns } from './proximus-runtime';
 import { currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
   requireCurrentBenchHostReferenceGateway, type CurrentBenchNativeInputCeiling } from './current-su';
 import { processMonotonicClock } from '../process-monotonic-clock';
@@ -93,6 +94,46 @@ describe('Proximus terminal provider-attempt population', () => {
     for (const row of rows) changeNote(row, n => { n.nativeGatewayAttemptResult.providerCompletion.usage.outputTokens = Number.MAX_SAFE_INTEGER; });
     expect(await readProximusAttemptPopulation(binding, async () => census(rows)))
       .toEqual({ status: 'unavailable', reason: 'invalid-ledger' });
+  });
+  it('prices every authenticated retry with frozen uncached/cache rates, independently of actual bills', async () => {
+    const protocol = currentProtocolFixture();
+    protocol.priceSchedule.rates = [{ model: 'offline-model', inputUsdPerMillion: 2,
+      outputUsdPerMillion: 10, cachedInputUsdPerMillion: 1, cacheWriteUsdPerMillion: 4 }];
+    const population = await readProximusAttemptPopulation(binding, async () => census([
+      reservation('refused', 'send-refused'), reservation('a', 'response-completed'), reservation('retry', 'response-completed')]));
+    expect(priceProximusAttempts(protocol, population)).toEqual({ status: 'complete',
+      populationSha256: expect.any(String), priceTableVersion: protocol.priceSchedule.version,
+      knownSubtotalUsd: 0.000074, normalizedCostUsd: 0.000074, missingAttemptIds: [], attempts: [
+        { attemptId: 'refused', model: null, knownSubtotalUsd: 0, complete: true },
+        { attemptId: 'a', model: 'offline-model', knownSubtotalUsd: 0.000037, complete: true },
+        { attemptId: 'retry', model: 'offline-model', knownSubtotalUsd: 0.000037, complete: true }] });
+  });
+  it.each(['failed', 'partial', 'unknown cache', 'unpriced model', 'unpriced cache write'] as const)
+  ('retains only known normalized cost when a provider attempt is %s', async change => {
+    const protocol = currentProtocolFixture();
+    protocol.priceSchedule.rates = [{ model: 'offline-model', inputUsdPerMillion: 2,
+      outputUsdPerMillion: 10, cachedInputUsdPerMillion: 1 }];
+    const bad = reservation('missing', change === 'failed' ? 'fetch-failed' :
+      change === 'partial' ? 'response-incomplete' : 'response-completed');
+    if (change === 'unknown cache') changeNote(bad, n => { n.nativeGatewayAttemptResult.providerCompletion.usage.cacheCreationTokens = null; });
+    if (change === 'unpriced model') changeNote(bad, n => { n.nativeGatewayAttemptResult.providerCompletion.model = 'not-frozen'; });
+    if (change === 'unpriced cache write') changeNote(bad, n => { n.nativeGatewayAttemptResult.providerCompletion.usage.cacheCreationTokens = 1; });
+    const population = await readProximusAttemptPopulation(binding, async () => census([reservation('known', 'response-completed'), bad]));
+    const priced = priceProximusAttempts(protocol, population);
+    expect(priced).toMatchObject({ status: 'incomplete', normalizedCostUsd: null, missingAttemptIds: ['missing'] });
+    if (priced.status !== 'unavailable') expect(priced.knownSubtotalUsd).toBeCloseTo(change === 'unknown cache' ? 0.000060 : 0.000037, 12);
+  });
+  it('keeps missing accounting unavailable rather than assigning a zero price', () => {
+    expect(priceProximusAttempts(currentProtocolFixture(), { status: 'unavailable', reason: 'ledger-changed' }))
+      .toEqual({ status: 'unavailable', reason: 'ledger-changed' });
+  });
+  it.each([undefined, null, {}, { n_turns: 4 }, { metadata: {} }, { metadata: { n_turns: '4' } },
+    { metadata: { n_turns: -1 } }, { metadata: { n_turns: 0.5 } }, { metadata: { n_turns: Infinity } }])
+  ('does not infer official turns from missing or invalid metadata: %j', context => {
+    expect(readProximusTurns(context)).toBeNull();
+  });
+  it.each([0, 3])('reads official metadata.n_turns=%s without borrowing context cost or request counts', turns => {
+    expect(readProximusTurns({ metadata: { n_turns: turns }, cost_usd: 999, tokens: 888, n_turns: 777 })).toBe(turns);
   });
   it('reconciles distinct provider attempts using exact canonical samples, with zero only for unsent refusals', async () => {
     const rows = [reservation('refused', 'send-refused'), reservation('a', 'response-completed'), reservation('b', 'response-completed')];

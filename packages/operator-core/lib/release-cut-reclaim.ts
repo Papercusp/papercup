@@ -1422,6 +1422,7 @@ export async function reclaimCutWorktrees(
 ) {
   if (deps.retentionMutexHeld) return reclaimCutWorktreesUnlocked(plan, options, deps);
   return withFsMutex('papercusp-disk-retention', () =>
+    // notify-classification: {"classification":"durable","reason":"Mutex callback retains the reclaim owner's terminal alarm and notification obligations; wrapping the call does not exempt delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     reclaimCutWorktreesUnlocked(plan, options, { ...deps, retentionMutexHeld: true }));
 }
 
@@ -1493,6 +1494,7 @@ async function reclaimCutWorktreesUnlocked(
     const pinned = (p: string) => pinnedPaths.some(scope => pathsOverlap(p, scope));
     roots.sort((a, b) => Number(pinned(b)) - Number(pinned(a)) || a.localeCompare(b));
     if (!roots.length) return new Map<string, number>();
+    // notify-classification: {"classification":"durable","reason":"Managed usage measurement can reach notification callbacks; preserve their terminal obligation until its owner proves the delivery path.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return deps.usageWalk ? measureDetachedCutUsage(roots, notAfterMs, deps.usageWalk) : measureCutUsage(roots, notAfterMs);
   };
   // Error.message starts with du's complete argument list. Retain the actual
@@ -1554,6 +1556,7 @@ async function reclaimCutWorktreesUnlocked(
     }
   };
   try {
+    // notify-classification: {"classification":"durable","reason":"Pre-reclaim measurement inherits the managed usage walk's notification obligation; no safe-to-lose proof exists.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const before = await measure();
     if (deps.refreshPlan) {
       const fresh = await deps.refreshPlan();
@@ -1580,9 +1583,11 @@ async function reclaimCutWorktreesUnlocked(
     return { ok: false, dryRun: !!options.dryRun, targets, errors, cap };
   }
   let execution: Awaited<ReturnType<typeof executeCutReclaim>> = { ok: true, results: [] };
+  // notify-classification: {"classification":"durable","reason":"Reclaim execution reaches lifecycle and alarm consequences; preserve their terminal delivery obligation through the owner wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   try { if (targets.length) execution = await executeCutReclaim(plan, targets, { ...deps, notAfterMs }); }
   catch (e) { errors.push(`release-cut execution: ${errText(e)}`); }
   try {
+    // notify-classification: {"classification":"durable","reason":"Post-reclaim measurement inherits the managed usage walk's notification obligation; no safe-to-lose proof exists.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const after = await measure();
     const pinnedBytes = await pinnedAllocation(after);
     cap.afterBytes = [...after.values()].reduce((sum, n) => sum + n, 0);

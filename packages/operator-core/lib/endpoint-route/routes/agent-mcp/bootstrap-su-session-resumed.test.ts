@@ -16,7 +16,7 @@ vi.setConfig({ testTimeout: 15_000 });
 
 let routes: { method: string; path: string; handler: (req: Request) => Promise<Response> }[];
 beforeAll(async () => {
-  const mod = await import('./bootstrap-su');
+  const mod = await import('./bootstrap-su-resume');
   routes = mod.default as unknown as typeof routes;
 }, 60_000);
 

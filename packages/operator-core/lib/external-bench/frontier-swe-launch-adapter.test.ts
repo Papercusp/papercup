@@ -9,6 +9,7 @@ import type { CurrentBenchTaskRequestCensus } from './run-launcher';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { CurrentSuBenchOptions, CurrentSuBenchObservations } from './current-su';
 import { requireCurrentBenchNativeRunCost } from './current-su';
+import { requireProximusHostConfinement } from './proximus-runtime';
 import type { BenchEgress } from './bench-egress';
 import type { CodexHookBridge } from './codex-hook-bridge';
 import type { RunAgentInput } from './run-topology';
@@ -22,6 +23,10 @@ import { frontierSweDockerTarget, startFrontierSweLaunchAdapter, type FrontierSw
   type FrontierSweProximusLaunchAdapterConfig, type FrontierSweProximusAssignment } from './frontier-swe-launch-adapter';
 
 vi.mock('./frontier-swe-seam', () => ({ makeFrontierSweCloneGradeSeam: vi.fn(config => ({ modality: 'in-container', config })) }));
+vi.mock('./proximus-runtime', async original => {
+  const runtime = await original<typeof import('./proximus-runtime')>();
+  return { ...runtime, requireProximusHostConfinement: vi.fn(runtime.requireProximusHostConfinement) };
+});
 
 function fixture() {
   const order: string[] = [];
@@ -377,6 +382,7 @@ describe('FrontierSWE typed Proximus host lifecycle', () => {
           task: { containerId: input.handle.containerId, image: input.handle.image, network: 'none', networkMode: 'no-network' } } },
       attempts: { status: 'unavailable', reason: 'no-attempts' },
       billing: { status: 'unavailable', reason: 'no-attempts' },
+      pricing: { status: 'unavailable', reason: 'no-attempts' },
     };
     const assignment: FrontierSweProximusAssignment = {
       agent: 'proximus', runId: 'host-protocol', armId: 'baseline', workspaceId: 'benchmarks',
@@ -444,9 +450,10 @@ describe('FrontierSWE typed Proximus host lifecycle', () => {
     const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
     try {
       expect(await adapter.runAgent(f.input)).toMatchObject({ status: 'error', modelCalls: 2, tokensIn: 7,
-        tokensOut: 4, tokensCacheRead: 6, costUsd: 0.25, turns: 0,
+        tokensOut: 4, tokensCacheRead: 6, costUsd: 0, turns: 0,
         armMeta: { modelCallsMeasurementMissing: false, tokenUsageMeasurementMissing: !complete,
-          costUsdMeasurementMissing: !complete, turnsMeasurementMissing: true, requestConfinementMeasurementMissing: true } });
+          costUsdMeasurementMissing: true, turnsMeasurementMissing: true, requestConfinementMeasurementMissing: true,
+          hostReference: { billedKnownSubtotalUsd: 0.25, billedInferenceUsd: complete ? 0.25 : null } } });
     } finally { await adapter.stop(); }
   });
 
@@ -465,6 +472,59 @@ describe('FrontierSWE typed Proximus host lifecycle', () => {
     } finally { await adapter.stop(); }
   });
 
+  function acceptedFixture() {
+    const f = hostFixture();
+    f.evidence.process.diagnosticContext = { metadata: { n_turns: 3 }, cost_usd: 999 };
+    f.evidence.attempts = { status: 'terminal', source: 'learning-spend-reservations', populationSha256: 'c'.repeat(64),
+      attempts: [], requests: [], usageComplete: true, billingStatus: 'unreconciled',
+      knownUsage: { modelCalls: 2, tokensIn: 7, tokensOut: 4, tokensCacheRead: 6, tokensCacheWrite: 0 } };
+    f.evidence.billing = { status: 'complete', knownSubtotalMicros: '250000', billedInferenceMicros: '250000',
+      missingAttemptIds: [], populationSha256: 'c'.repeat(64), samples: [] };
+    f.evidence.pricing = { status: 'complete', priceTableVersion: 'frozen-test-prices', populationSha256: 'c'.repeat(64),
+      knownSubtotalUsd: 0.125, normalizedCostUsd: 0.125, missingAttemptIds: [], attempts: [] };
+    return f;
+  }
+  // Only receipt issuance is substituted here. The runtime suite independently
+  // proves actual parent issuance and refusal of copied/changed process objects.
+  function allowReceipt(f: ReturnType<typeof hostFixture>) {
+    vi.mocked(requireProximusHostConfinement).mockImplementationOnce(value => {
+      expect(value).toBe(f.evidence.process);
+      return f.evidence.process.confinement;
+    });
+  }
+  it('checks original receipt identity before copying, then reports frozen cost, actual bill and official turns separately', async () => {
+    const f = acceptedFixture(); allowReceipt(f);
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    try {
+      expect(await adapter.runAgent(f.input)).toMatchObject({ status: 'completed', error: null, modelCalls: 2,
+        costUsd: 0.125, turns: 3, armMeta: { costUsdMeasurementMissing: false,
+          requestConfinementMeasurementMissing: false, turnsMeasurementMissing: false,
+          hostReference: { billedInferenceUsd: 0.25, pricing: { priceTableVersion: 'frozen-test-prices' } } } });
+    } finally { await adapter.stop(); }
+  });
+  it.each(['copied receipt', 'foreign container', 'foreign image', 'missing turns', 'unknown usage',
+    'unknown price', 'foreign pricing', 'price mismatch', 'invalid price', 'unknown bill', 'bill mismatch'] as const)
+  ('withholds completed status for %s while preserving measured subtotals', async change => {
+    const f = acceptedFixture();
+    if (change !== 'copied receipt') allowReceipt(f);
+    if (change === 'foreign container') f.evidence.process.confinement.task = { ...f.evidence.process.confinement.task, containerId: 'other' };
+    if (change === 'foreign image') f.evidence.process.confinement.task = { ...f.evidence.process.confinement.task, image: 'other' };
+    if (change === 'missing turns') f.evidence.process.diagnosticContext = { n_turns: 3 };
+    if (f.evidence.attempts.status === 'terminal' && change === 'unknown usage') f.evidence.attempts.usageComplete = false;
+    if (f.evidence.pricing.status !== 'unavailable') {
+      if (change === 'unknown price') { f.evidence.pricing.status = 'incomplete'; f.evidence.pricing.normalizedCostUsd = null; }
+      if (change === 'foreign pricing') f.evidence.pricing.populationSha256 = 'd'.repeat(64);
+      if (change === 'price mismatch') f.evidence.pricing.normalizedCostUsd = 999;
+      if (change === 'invalid price') f.evidence.pricing.knownSubtotalUsd = NaN;
+    }
+    if (f.evidence.billing.status !== 'unavailable') {
+      if (change === 'unknown bill') { f.evidence.billing.status = 'incomplete'; f.evidence.billing.billedInferenceMicros = null; }
+      if (change === 'bill mismatch') f.evidence.billing.billedInferenceMicros = '999999';
+    }
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    try { expect(await adapter.runAgent(f.input)).toMatchObject({ status: 'error' }); }
+    finally { await adapter.stop(); }
+  });
   it.each(['agent', 'runId', 'armId', 'workspaceId', 'taskId', 'containerId', 'image'])
   ('stops a foreign %s assignment before executing it', async field => {
     const f = hostFixture(); Object.assign(f.assignment, { [field]: 'foreign' });

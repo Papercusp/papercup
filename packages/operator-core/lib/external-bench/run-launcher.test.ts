@@ -189,10 +189,28 @@ describe('frozen Proximus host assignment factory', () => {
     expect(f.order).toEqual(['gateway-stop', 'population', 'billing']);
     expect(f.billing.mock.calls[0][2]).toBe(f.population.mock.calls[0][1]);
     expect(evidence.billing.status).toBe('unavailable');
+    expect(evidence.pricing).toEqual({ status: 'unavailable', reason: 'no-attempts' });
     await expect(assignment.execute()).rejects.toThrow(/consumed|stopped/);
     await Promise.all([assignment.stop(), assignment.stop()]);
     expect(f.gateway.stop).toHaveBeenCalledOnce();
     expect(existsSync(trialDirs[0])).toBe(true);
+  });
+  it('prices authenticated attempts from the detached protocol even if the caller changes its price schedule', async () => {
+    const f = fixture();
+    f.population.mockResolvedValue({ status: 'terminal', source: 'learning-spend-reservations', populationSha256: 'c'.repeat(64),
+      attempts: [{ attemptId: 'priced-attempt', gatewayRequestId: '11111111-1111-4111-8111-111111111111:1',
+        accountId: 'pinned-account', transport: 'bearer-http', bodySha256: 'a'.repeat(64),
+        outcome: 'response-completed', responseStatus: 200, providerCompletion: {
+          responseId: 'priced-response', model: config.arms[1].model, providerEffort: 'high',
+          usage: { inputTokenBasis: 'inclusive', inputTokens: 10, outputTokens: 2, cacheReadTokens: 3, cacheCreationTokens: 0 } } }],
+      requests: [], usageComplete: true, billingStatus: 'unreconciled',
+      knownUsage: { modelCalls: 1, tokensIn: 7, tokensOut: 2, tokensCacheRead: 3, tokensCacheWrite: 0 } });
+    const assignment = await startFrontierSweProximusAssignment(f.trial, f.host, f.ports);
+    config.priceSchedule.rates[0].outputUsdPerMillion = 999;
+    try {
+      expect((await assignment.execute()).pricing).toMatchObject({ status: 'complete',
+        priceTableVersion: 'frozen-prices-v1', normalizedCostUsd: 0.0000125, missingAttemptIds: [] });
+    } finally { await assignment.stop(); }
   });
   it.each(['image', 'native handle', 'model', 'account', 'workspace', 'cost', 'tokens', 'wall', 'seed', 'instruction'] as const)
   ('rejects %s drift before capture or provider authority', async change => {

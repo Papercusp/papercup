@@ -15,6 +15,17 @@ describe('integration selection without a PostgreSQL dependency', () => {
     expect(org).not.toHaveBeenCalled();
     expect(integrationNeedsPostgres([fixture, fixture + '.unknown'])).toBe(true);
   });
+  it('keeps the grading runtime fixture on its own database while preserving mixed selection setup', async () => {
+    const fixture = fileURLToPath(new URL('./release/grading-audit-runtime.integration.test.ts', import.meta.url));
+    const canary = fileURLToPath(new URL('./integration-substrate-selection.integration.test.ts', import.meta.url));
+    const baseline = vi.fn(async () => { throw new Error('Shared PG must not initialize'); });
+    const org = vi.fn(async () => { throw new Error('Shared org must not initialize'); });
+    await setupIntegrationSubstrate({}, [fixture, canary], { baseline, org });
+    expect(baseline).not.toHaveBeenCalled();
+    expect(org).not.toHaveBeenCalled();
+    expect(integrationNeedsPostgres([fixture, fixture + '.unknown'])).toBe(true);
+    expect(integrationNeedsPostgres([])).toBe(true);
+  });
   it('enrolls filesystem/parser native fixtures while retaining mixed and full database setup', () => {
     const native = fileURLToPath(new URL('./agent-tools/plans/plan-native-declarations.integration.test.ts', import.meta.url));
     const canary = fileURLToPath(new URL('./integration-substrate-selection.integration.test.ts', import.meta.url));

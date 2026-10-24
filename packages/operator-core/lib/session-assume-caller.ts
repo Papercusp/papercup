@@ -404,6 +404,7 @@ export async function completeAssumeCallerReturn(plan: AssumePreparation, deps: 
       kind: 'message', category: 'session-assume-audit', harness_slug: plan.target.harnessSlug,
       summary: 'session:assume caller-returned', sessionAssume: next,
     };
+    // notify-classification: {"classification":"durable","reason":"Caller-return acknowledgement accompanies the atomic receipt and pause transition; its terminal audit delivery must survive wrapper loss.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await log.appendLineIfAbsent('messages', current.ownerId, envelope, { prepare: async tx => {
       // Lock the exact new incarnation and prevent another finalize from
       // racing the acknowledgement. The lifecycle stays paused on any failure.

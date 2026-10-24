@@ -16,7 +16,7 @@ import type {
 
 // @ts-expect-error Runtime script is intentionally executable ESM and has no declaration artifact.
 import * as publisher from './publish-workspace-host-artifacts.mjs';
-import { gcsPublicationTarget, publishGcsObjects, verifyGcsPublicBytes, verifyGcsPrivateBytes } from './lib/workspace-host-gcs-publication.mjs';
+import { adoptGcsWorkspaceHostObjects, gcsPublicationTarget, publishGcsObjects, verifyGcsPublicBytes, verifyGcsPrivateBytes } from './lib/workspace-host-gcs-publication.mjs';
 
 const {
   publishWorkspaceHostArtifacts,
@@ -163,6 +163,78 @@ test('GCS preview performs no object or IAM mutations and needs no release journ
   assert.equal(result.planOnly, true);
   assert.equal(fixture.calls.length, 1);
   assert.ok(fixture.calls[0].includes('describe'));
+});
+
+function adoptionFixture(options: { lostReply?: boolean; corrupt?: boolean; drift?: 'generation' | 'metageneration'; forbidden?: boolean; conflict?: boolean } = {}) {
+  const fixture = gcsFixture();
+  const object = fixture.objects[0];
+  const calls: string[][] = [];
+  const verifiedUris: string[] = [];
+  const metadata = { size: object.sizeBytes, generation: '42', metageneration: '1', cacheControl: 'private,no-store',
+    metadata: { sha256: object.sha256, ...(options.conflict ? { namespace: 'another-tenant' } : {}) } as Record<string, string> };
+  return { ...fixture, calls, verifiedUris, metadata,
+    gcloud: async (args: string[]) => {
+      calls.push(args);
+      assert.deepEqual(args.slice(0, 2), ['storage', 'objects']);
+      if (args[2] === 'describe') {
+        if (options.forbidden) throw new Error('Forbidden');
+        return JSON.stringify(metadata);
+      }
+      assert.equal(args[2], 'update');
+      assert.ok(args.includes('--if-generation-match=42'));
+      assert.ok(args.includes('--if-metageneration-match=1'));
+      for (const pair of args.find(arg => arg.startsWith('--update-custom-metadata='))!.slice('--update-custom-metadata='.length).split(',')) {
+        const [key, value] = pair.split('='); metadata.metadata[key] = value;
+      }
+      metadata.metageneration = '2';
+      if (options.lostReply) throw new Error('lost committed metadata reply');
+      return '';
+    },
+    verifyPrivate: async (uri: string, expected: { sha256: string; sizeBytes: number }) => {
+      verifiedUris.push(uri);
+      if (options.corrupt) throw new Error('corrupted exact-generation bytes');
+      if (options.drift) metadata[options.drift] = '43';
+      return { sha256: expected.sha256, sizeBytes: expected.sizeBytes };
+    },
+  };
+}
+
+for (const lostReply of [false, true]) {
+  test(`GCS adoption verifies immutable bytes and journals metadata only after ${lostReply ? 'lost' : 'normal'} reply`, async () => {
+    const fixture = adoptionFixture({ lostReply });
+    const ledger = createLedger();
+    const ctx = { taskId: TASK_ID, operationId: OPERATION_ID, ledger, now: () => new Date() };
+    const input = { ...fixture, ctx, runMutation: runJournaledMutation, log: () => {} };
+    await adoptGcsWorkspaceHostObjects(input);
+    await adoptGcsWorkspaceHostObjects(input);
+    assert.equal(fixture.calls.filter(args => args[2] === 'update').length, 1);
+    assert.equal(fixture.verifiedUris.length, 2);
+    assert.ok(fixture.verifiedUris.every(uri => uri.endsWith('#42')));
+    assert.equal(fixture.metadata.metadata.namespace, 'workspace-host-v1');
+    assert.equal(fixture.metadata.metadata.fileSha256, fixture.objects[0].sha256);
+    assert.equal(fixture.metadata.metadata.sha256, fixture.objects[0].sha256);
+    assert.ok(ledger.task.detail.release.receipts.some(receipt => receipt.stage === 'publish.gcs.adopt.server.tgz' && receipt.state === 'committed'));
+  });
+}
+
+for (const failure of ['corrupt', 'generation', 'metageneration', 'forbidden', 'conflict'] as const) {
+  test(`GCS adoption refuses ${failure} without metadata mutation or upload`, async () => {
+    const fixture = adoptionFixture({ corrupt: failure === 'corrupt', forbidden: failure === 'forbidden',
+      conflict: failure === 'conflict', drift: failure === 'generation' || failure === 'metageneration' ? failure : undefined });
+    const ctx = { taskId: TASK_ID, operationId: OPERATION_ID, ledger: createLedger(), now: () => new Date() };
+    await assert.rejects(adoptGcsWorkspaceHostObjects({ ...fixture, ctx, runMutation: runJournaledMutation, log: () => {} }));
+    assert.equal(fixture.calls.filter(args => args[2] === 'update').length, 0);
+  });
+}
+
+test('GCS adoption preview needs no journal and refuses unsupported files and implicit CLI adoption', async () => {
+  const fixture = adoptionFixture();
+  assert.equal((await adoptGcsWorkspaceHostObjects({ ...fixture, planOnly: true })).planOnly, true);
+  assert.equal(fixture.calls.length, 0);
+  await assert.rejects(adoptGcsWorkspaceHostObjects({ ...fixture }), /original release journal/);
+  await assert.rejects(adoptGcsWorkspaceHostObjects({ ...fixture, objects: [{ ...fixture.objects[0], name: 'manifest.json' }], planOnly: true }), /invalid GCS adoption/);
+  assert.throws(() => parseArgs(['--dir', '/candidate', '--gcs-adopt-staged'], {}), /requires --gcs-private-stage/);
+  assert.equal(parseArgs(['--dir', '/candidate', '--gcs-bucket', 'safe-bucket', '--gcs-private-stage', '--gcs-adopt-staged'], {}).gcsAdoptStaged, true);
 });
 
 test('the CLI help path is side-effect-free and does not require --dir or credentials', async () => {

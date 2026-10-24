@@ -78539,14 +78539,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/agent-tools/rubrics/amend.ts#<module>/handler:ea909a6e57ea0a959182:1",
-      "path": "packages/operator-core/lib/agent-tools/rubrics/amend.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/agent-tools/rubrics/amend.ts#<module>/handler/<callback>:1d7fd17ca60a889ba131:1",
       "path": "packages/operator-core/lib/agent-tools/rubrics/amend.ts",
       "classification": "durable",
@@ -111852,14 +111844,6 @@
     },
     {
       "id": "packages/operator-core/lib/release-cut-reclaim.ts#<module>/measureDetachedCutUsage:1ac3611ab0211483565b:1",
-      "path": "packages/operator-core/lib/release-cut-reclaim.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/release-cut-reclaim.ts#<module>/reclaimCutWorktrees/measure:627f7186cf88a966f980:1",
       "path": "packages/operator-core/lib/release-cut-reclaim.ts",
       "classification": "durable",
       "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",

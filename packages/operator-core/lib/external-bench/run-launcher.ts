@@ -69,7 +69,7 @@ import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGate
 import { getLearningSpendPositions, registerLearningLoop, type LearningReservationResourceBudget } from '../learning-governor/store';
 import type { FrontierSweNativeAssignment, FrontierSweProximusAssignment } from './frontier-swe-launch-adapter';
 import { frontierSweAgentNetworkArgs, type FrontierSweEnvHandle } from './frontier-swe-seam';
-import { runProximusHost, readProximusAttemptPopulation, readProximusBilling } from './proximus-runtime';
+import { runProximusHost, readProximusAttemptPopulation, readProximusBilling, priceProximusAttempts } from './proximus-runtime';
 import type { RunAgentInput } from './run-topology';
 import { createCurrentStockBenchHarness } from './native-harness-runner';
 import { CURRENT_STOCK_CODEX_BLUEPRINT } from './current-su';
@@ -995,7 +995,7 @@ export async function startFrontierSweProximusAssignment(
           const attempts = await (ports.population ?? readProximusAttemptPopulation)(binding, readCensus);
           const billing = await (ports.billing ?? readProximusBilling)(sql, binding, readCensus);
           if (abort.signal.aborted) throw new Error('Proximus assignment was cancelled or exceeded its deadline.');
-          return { process, attempts, billing };
+          return { process, attempts, billing, pricing: priceProximusAttempts(protocol, attempts) };
         } finally { clearTimeout(timer); options.signal?.removeEventListener('abort', cancel); await closeGateway(); }
       })();
       return running;

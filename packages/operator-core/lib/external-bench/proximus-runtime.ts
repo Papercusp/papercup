@@ -1,7 +1,8 @@
 /** D-059/D-060: bind the official host loop to the existing task/grade contract.
  * This specification grants no process, credential, request or spend authority.
  */
-import { requireCurrentBenchmarkAssignment } from './reproducibility/schema';
+import { requireCurrentBenchmarkAssignment, currentProtocolPriceTable, type CurrentBenchmarkProtocol } from './reproducibility/schema';
+import { priceRun } from '@papercusp/bench-metrics';
 import type { FrontierSweEnvHandle } from './frontier-swe-seam';
 import { spawn } from 'node:child_process';
 import { isAbsolute } from 'node:path';
@@ -188,6 +189,53 @@ export type ProximusBilling = {
   samples: { attemptId: string; sampleId: string; billedInferenceMicros: string }[];
 } | { status: 'unavailable'; reason: 'ledger-unavailable' | 'ledger-changed' | 'invalid-ledger' | 'no-attempts' |
   'billing-unavailable' | 'invalid-billing' };
+
+export type ProximusPricing = {
+  status: 'complete' | 'incomplete'; populationSha256: string; priceTableVersion: string;
+  knownSubtotalUsd: number; normalizedCostUsd: number | null; missingAttemptIds: string[];
+  attempts: { attemptId: string; model: string | null; knownSubtotalUsd: number; complete: boolean }[];
+} | { status: 'unavailable'; reason: string };
+
+/** Price every provider attempt, including retries, using the assignment's
+ * frozen schedule. Actual bills and agent-reported cost never supply a rate.
+ * Missing usage retains only the categories the authenticated response measured. */
+export function priceProximusAttempts(protocol: CurrentBenchmarkProtocol,
+  population: ProximusAttemptPopulation): ProximusPricing {
+  if (population.status !== 'terminal') return { status: 'unavailable', reason: population.reason };
+  const attempts: Extract<ProximusPricing, { status: 'complete' | 'incomplete' }>['attempts'] = [];
+  const missingAttemptIds: string[] = [];
+  let knownSubtotalUsd = 0;
+  for (const attempt of population.attempts) {
+    const p = attempt.providerCompletion, u = p?.usage;
+    let subtotal = 0, complete = attempt.outcome === 'send-refused';
+    if (attempt.outcome === 'response-completed' && p && u) {
+      try {
+        const table = currentProtocolPriceTable(protocol, [{ modelId: p.model, tokensCacheWrite: u.cacheCreationTokens }]);
+        const splitKnown = u.cacheReadTokens !== null && u.cacheCreationTokens !== null;
+        subtotal = priceRun({ tokensIn: splitKnown ? u.inputTokens - u.cacheReadTokens! - u.cacheCreationTokens! : 0,
+          tokensOut: u.outputTokens, tokensCacheRead: u.cacheReadTokens ?? 0,
+          tokensCacheWrite: u.cacheCreationTokens ?? 0 }, p.model, table);
+        if (!Number.isFinite(subtotal) || subtotal < 0) throw new Error('Invalid normalized request cost.');
+        complete = splitKnown;
+      } catch { subtotal = 0; complete = false; }
+    }
+    if (!complete) missingAttemptIds.push(attempt.attemptId);
+    knownSubtotalUsd += subtotal;
+    attempts.push({ attemptId: attempt.attemptId, model: p?.model ?? null, knownSubtotalUsd: subtotal, complete });
+  }
+  if (!Number.isFinite(knownSubtotalUsd)) return { status: 'unavailable', reason: 'invalid-normalized-total' };
+  const complete = population.usageComplete && attempts.length > 0 && !missingAttemptIds.length;
+  return { status: complete ? 'complete' : 'incomplete', populationSha256: population.populationSha256,
+    priceTableVersion: protocol.priceSchedule.version, knownSubtotalUsd,
+    normalizedCostUsd: complete ? knownSubtotalUsd : null, missingAttemptIds, attempts };
+}
+
+/** Official Proximus writes completed agent steps to AgentContext.metadata.
+ * Request counts, diagnostic tokens and context.cost_usd are different measures. */
+export function readProximusTurns(context: unknown): number | null {
+  const turns = (context as { metadata?: { n_turns?: unknown } } | null)?.metadata?.n_turns;
+  return typeof turns === 'number' && Number.isSafeInteger(turns) && turns >= 0 ? turns : null;
+}
 
 /** Exact request billing uses the existing canonical usage table, independently
  * of reservation amounts and agent-reported context costs. This grants no send

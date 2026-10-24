@@ -50,6 +50,72 @@ export async function verifyGcsPrivateBytes(uri, expected, spawnImpl = spawn) {
   return (await Promise.all([bytes, completed]))[0];
 }
 
+/** Adopt already staged bytes into the Worker's descriptor contract. No upload,
+ * finalization or IAM mutation is allowed on this recovery path. */
+export async function adoptGcsWorkspaceHostObjects({ target, objects, ctx, runMutation,
+  planOnly = false, gcloud = runGcloud, verifyPrivate = verifyGcsPrivateBytes, log = console.log }) {
+  const canonical = gcsPublicationTarget(target.bucket, target.digest);
+  const files = new Set(['server.tgz', 'server.tgz.minisig', 'sbom.cdx.json']);
+  if (target.prefix !== canonical.prefix || !objects.length || objects.some(object =>
+    !files.has(object.name) || !/^[a-f0-9]{64}$/.test(object.sha256) ||
+    !Number.isSafeInteger(object.sizeBytes) || object.sizeBytes <= 0 ||
+    (object.name === 'server.tgz' && object.sha256 !== target.digest)) ||
+    new Set(objects.map(object => object.name)).size !== objects.length) throw new Error('invalid GCS adoption plan');
+  if (planOnly) return { planOnly: true, provider: 'gcs', adoptionOnly: true, target, objects };
+  if (!ctx || !runMutation) throw new Error('GCS adoption requires the original release journal');
+  const adopted = [];
+  for (const object of objects) {
+    const uri = `gs://${target.bucket}/${target.prefix}${object.name}`;
+    const desired = { namespace: 'workspace-host-v1', bundleSha256: target.digest,
+      file: object.name, fileSha256: object.sha256, sizeBytes: String(object.sizeBytes) };
+    const read = async () => {
+      const metadata = JSON.parse(await gcloud(['storage', 'objects', 'describe', uri, '--raw', '--format=json']));
+      if (!/^[1-9]\d*$/.test(String(metadata.generation)) || !/^[1-9]\d*$/.test(String(metadata.metageneration)) ||
+        Number(metadata.size) !== object.sizeBytes || metadata.metadata?.sha256 !== object.sha256 ||
+        Object.entries(desired).some(([key, value]) => metadata.metadata?.[key] !== undefined && metadata.metadata[key] !== value)) {
+        throw new Error(`GCS staged object conflicts with adoption: ${object.name}`);
+      }
+      return metadata;
+    };
+    const initial = await read();
+    const generation = String(initial.generation);
+    const metageneration = String(initial.metageneration);
+    // Immutable generation addressing keeps the byte proof valid through the
+    // metadata update, even if another writer changes the live object meanwhile.
+    const verified = await verifyPrivate(`${uri}#${generation}`, object);
+    if (verified.sha256 !== object.sha256 || verified.sizeBytes !== object.sizeBytes) throw new Error('GCS adoption byte verification failed');
+    const inspect = async () => {
+      const current = await read();
+      if (String(current.generation) !== generation) throw new Error('GCS adoption generation changed');
+      const complete = Object.entries(desired).every(([key, value]) => current.metadata?.[key] === value) &&
+        current.cacheControl === 'private,no-store';
+      if (complete) return { state: 'committed', value: { name: object.name, generation, metageneration: String(current.metageneration), ...verified },
+        evidenceRefs: [`gcs:${target.bucket}/${target.prefix}${object.name}#${generation}`, `authenticated:sha256:${object.sha256}:${object.sizeBytes}`] };
+      if (String(current.metageneration) !== metageneration) throw new Error('GCS adoption metageneration changed; outcome unknown');
+      return { state: 'absent' };
+    };
+    const result = await runMutation(ctx, {
+      stage: `publish.gcs.adopt.${object.name}`,
+      input: { uri, generation, ...desired },
+      reconcile: inspect,
+      mutate: async () => {
+        const prior = await inspect();
+        if (prior.state === 'committed') return prior;
+        await gcloud(['storage', 'objects', 'update', uri,
+          `--if-generation-match=${generation}`, `--if-metageneration-match=${metageneration}`,
+          `--update-custom-metadata=${Object.entries(desired).map(([key, value]) => `${key}=${value}`).join(',')}`,
+          '--cache-control=private,no-store', '--quiet']);
+        const committed = await inspect();
+        if (committed.state !== 'committed') throw new Error('GCS adoption metadata did not persist');
+        return committed;
+      },
+    });
+    adopted.push(result);
+    log(`GCS metadata adopted ${object.name} generation ${generation}`);
+  }
+  return { provider: 'gcs', adoptionOnly: true, adopted };
+}
+
 export async function publishGcsObjects({ target, objects, expiresAt, ctx, runMutation,
   planOnly = false, stageOnly = false, gcloud = runGcloud,
   verifyPrivate = verifyGcsPrivateBytes, log = console.log }) {

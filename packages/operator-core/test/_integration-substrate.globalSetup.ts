@@ -24,6 +24,8 @@ const NO_SHARED_PG_TESTS = new Set([
   '../lib/code-intelligence/reuse-brief-providers.integration.test.ts',
   // Owns a dedicated native cluster and migrates its private org database.
   '../lib/harness/routines/reconcile-loop-routines.integration.test.ts',
+  // Owns its native PG cluster, confined endpoint, and observed teardown.
+  '../lib/release/grading-audit-runtime.integration.test.ts',
 ].map(path => fileURLToPath(new URL(path, import.meta.url))));
 
 export function integrationNeedsPostgres(selectedPaths: readonly string[]): boolean {

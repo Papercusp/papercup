@@ -41,7 +41,7 @@ import { createGunzip } from 'node:zlib';
 import { tsImport } from 'tsx/esm/api';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { releaseStageInputHash, releaseStageRequestIdentity } from './lib/release-task-journal.mts';
-import { gcsPublicationTarget, publishGcsObjects } from './lib/workspace-host-gcs-publication.mjs';
+import { adoptGcsWorkspaceHostObjects, gcsPublicationTarget, publishGcsObjects } from './lib/workspace-host-gcs-publication.mjs';
 
 export { releaseStageInputHash, releaseStageRequestIdentity };
 
@@ -86,7 +86,7 @@ const DEFAULT_BASE = 'https://cupboard.papercusp.com';
 export const USAGE = `Usage:
   npm run release:publish-workspace-host-artifacts -- \\
     --dir <publication-dir> [--base <url>] [--token <bearer>] [--plan-only] [--evidence-only]
-  Private recovery staging only: --gcs-bucket <bucket> --gcs-private-stage
+  Private recovery staging only: --gcs-bucket <bucket> --gcs-private-stage [--gcs-adopt-staged]
 `;
 
 export function parseArgs(argv, env = process.env) {
@@ -100,6 +100,7 @@ export function parseArgs(argv, env = process.env) {
     else if (a === '--operation-id') out.operationId = argv[++i];
     else if (a === '--gcs-bucket') out.gcsBucket = argv[++i];
     else if (a === '--gcs-private-stage') out.gcsPrivateStage = true;
+    else if (a === '--gcs-adopt-staged') out.gcsAdoptStaged = true;
     else if (a === '--plan-only') out.planOnly = true;
     else if (a === '--evidence-only') out.evidenceOnly = true;
     else if (a === '--concurrency') out.concurrency = Number(argv[++i]);
@@ -116,6 +117,7 @@ export function parseArgs(argv, env = process.env) {
   out.base = out.base.replace(/\/+$/, '');
   if (out.gcsBucket) gcsPublicationTarget(out.gcsBucket, '0'.repeat(64));
   if (out.gcsBucket && out.evidenceOnly) throw new Error('--gcs-bucket publishes the complete verified publication');
+  if (out.gcsAdoptStaged && !out.gcsPrivateStage) throw new Error('--gcs-adopt-staged requires --gcs-private-stage');
   if (out.gcsPrivateStage && !out.gcsBucket) throw new Error('--gcs-private-stage requires --gcs-bucket');
   if (out.gcsBucket && !out.gcsPrivateStage) throw new Error('--gcs-bucket requires --gcs-private-stage; use --base with the authenticated Worker for delivery');
   return out;
@@ -785,6 +787,9 @@ export async function publishWorkspaceHostArtifacts(args, injected = {}) {
       const { journal } = await readReleaseJournal(ctx.ledger, ctx.taskId, ctx.operationId);
       assertPublicationJournalIdentity(journal, manifest, plan);
     }
+    if (args.gcsAdoptStaged) return adoptGcsWorkspaceHostObjects({ target,
+      objects: objects.filter(object => object.name !== 'manifest.json'), ctx, runMutation: runJournaledMutation,
+      planOnly: args.planOnly, gcloud: injected.gcloud, verifyPrivate: injected.verifyPrivate, log });
     return publishGcsObjects({ target, objects, expiresAt, ctx, runMutation: runJournaledMutation,
       planOnly: args.planOnly, stageOnly: args.gcsPrivateStage, fetchImpl: deps.fetch, gcloud: injected.gcloud, log });
   }

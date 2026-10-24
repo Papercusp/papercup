@@ -16,7 +16,8 @@ import type { AgentRunOutput, RunAgentInput } from './run-topology';
 import { currentBenchSessionUsageDelta, type CurrentBenchTaskRequestCensus } from './run-launcher';
 import { runRepeatedSessions } from './repeated-session';
 import { assertBenchWorkspace } from './bench-workspace';
-import type { ProximusAttemptPopulation, ProximusBilling, runProximusHost } from './proximus-runtime';
+import { requireProximusHostConfinement, readProximusTurns,
+  type ProximusAttemptPopulation, type ProximusBilling, type ProximusPricing, type runProximusHost } from './proximus-runtime';
 
 export interface FrontierSweNativeAssignment {
   options: CurrentSuBenchOptions;
@@ -71,6 +72,7 @@ export interface FrontierSweProximusAssignment {
     process: Awaited<ReturnType<typeof runProximusHost>>;
     attempts: ProximusAttemptPopulation;
     billing: ProximusBilling;
+    pricing: ProximusPricing;
   }>;
   stop(): Promise<void>;
 }
@@ -322,10 +324,9 @@ async function startFrontierSweNativeAdapter(config: FrontierSweNativeLaunchAdap
   };
 }
 
-/** Compose the SAME task/grade/cleanup seam for the official host reference.
- * Request confinement and normalized accounting still have no qualified live
- * producer. Retain the typed evidence, but emit an infrastructure error so the
- * topology cannot grade or accept it as a completed benchmark. */
+/** Compose the same task/grade/cleanup seam for the official host reference.
+ * Only original parent-issued process evidence plus complete frozen accounting
+ * can reach the grader. Incomplete trials retain their measured subtotals. */
 function startFrontierSweProximusAdapter(config: FrontierSweProximusLaunchAdapterConfig) {
   // Preserve the maintained grader/resource overrides, stripping native-only
   // options even when a JavaScript caller supplies extra keys.
@@ -355,25 +356,47 @@ function startFrontierSweProximusAdapter(config: FrontierSweProximusLaunchAdapte
             assignment![key as keyof typeof identity] !== value))
           throw new Error('FrontierSWE Proximus assignment differs from its run/arm/workspace/task container.');
         if (closed || config.signal?.aborted) throw new Error('FrontierSWE adapter is stopped or cancelled.');
-        const evidence = structuredClone(await assignment.execute());
+        const original = await assignment.execute();
+        let confinementError: string | undefined;
+        try {
+          const receipt = requireProximusHostConfinement(original.process);
+          if (receipt.task.containerId !== identity.containerId || receipt.task.image !== identity.image)
+            throw new Error('Proximus confinement receipt belongs to another task container.');
+        } catch (error) { confinementError = error instanceof Error ? error.message : String(error); }
+        // WeakMap issuance must be checked BEFORE copying evidence for storage.
+        const evidence = structuredClone(original);
         const population = evidence.attempts.status === 'terminal' ? evidence.attempts : undefined;
         const bill = evidence.billing.status !== 'unavailable' && population &&
           evidence.billing.populationSha256 === population.populationSha256 ? evidence.billing : undefined;
         const micros = bill && /^\d+$/.test(bill.knownSubtotalMicros) ? Number(bill.knownSubtotalMicros) : NaN;
         const knownBill = Number.isSafeInteger(micros) && micros >= 0;
+        const billComplete = knownBill && bill?.status === 'complete' && !bill.missingAttemptIds.length &&
+          bill.billedInferenceMicros === bill.knownSubtotalMicros;
+        const pricing = evidence.pricing.status !== 'unavailable' && population &&
+          evidence.pricing.populationSha256 === population.populationSha256 ? evidence.pricing : undefined;
+        const knownPrice = !!pricing && Number.isFinite(pricing.knownSubtotalUsd) && pricing.knownSubtotalUsd >= 0;
+        const priceComplete = knownPrice && pricing.status === 'complete' && !pricing.missingAttemptIds.length &&
+          pricing.normalizedCostUsd === pricing.knownSubtotalUsd;
+        const turns = !confinementError ? readProximusTurns(evidence.process.diagnosticContext) : null;
+        const accepted = !confinementError && population?.usageComplete && priceComplete && billComplete && turns !== null;
+        if (config.signal?.aborted) throw new Error('FrontierSWE adapter is cancelled.');
         return {
           submission: { containerId: identity.containerId, instanceId: identity.taskId },
-          status: 'error', error: 'Proximus host request confinement and normalized accounting remain unverified.',
+          status: accepted ? 'completed' : 'error',
+          error: accepted ? null : confinementError ?? 'Proximus host accounting or official turn count is incomplete.',
           // Retain measured subtotals even when acceptance is incomplete. Native
           // identities and agent-reported context cost never supply accounting.
           ...(population?.knownUsage ?? { modelCalls: 0, tokensIn: 0, tokensOut: 0 }),
-          costUsd: knownBill ? micros / 1_000_000 : 0, turns: 0,
+          costUsd: knownPrice ? pricing.knownSubtotalUsd : 0, turns: turns ?? 0,
           executionPath: 'stock-native-reference',
           armMeta: { hostReference: { agent: 'proximus', processStatus: evidence.process.status,
-            runtime: evidence.process.runtime, attempts: evidence.attempts, billing: evidence.billing },
-            requestConfinementMeasurementMissing: true, modelCallsMeasurementMissing: !population,
-            tokenUsageMeasurementMissing: !population?.usageComplete, turnsMeasurementMissing: true,
-            costUsdMeasurementMissing: !knownBill || bill?.status !== 'complete' },
+            runtime: evidence.process.runtime, confinement: evidence.process.confinement,
+            attempts: evidence.attempts, billing: evidence.billing, pricing: evidence.pricing,
+            billedKnownSubtotalUsd: knownBill ? micros / 1_000_000 : null,
+            billedInferenceUsd: billComplete ? micros / 1_000_000 : null },
+            requestConfinementMeasurementMissing: !!confinementError, modelCallsMeasurementMissing: !population,
+            tokenUsageMeasurementMissing: !population?.usageComplete, turnsMeasurementMissing: turns === null,
+            costUsdMeasurementMissing: !priceComplete || !billComplete },
         };
       } finally {
         try { await assignment?.stop(); }
