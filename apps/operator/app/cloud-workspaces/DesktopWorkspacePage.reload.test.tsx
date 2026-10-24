@@ -97,9 +97,12 @@ afterEach(() => {
 });
 
 describe("PARITY-P005-SCOPE mounted portal subject reload", () => {
-  it.each([[research, production], [production, research]])(
+  it.each([
+    [research.name, research, production],
+    [production.name, production, research],
+  ] as const)(
     "restores the deep-linked private subject %s from its URL after a fresh mount",
-    async (subject, other) => {
+    async (_name, subject, other) => {
       setBrowserMachineId(other.id);
       openDeepLink(subject);
       const initialUrl = window.location.href;
