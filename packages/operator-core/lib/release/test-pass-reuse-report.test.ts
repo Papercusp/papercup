@@ -466,6 +466,10 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
       execFileSync: (command: string, args: string[]) => command === 'node' ? 'v25 linux x64'
         : args[0] === 'rev-parse' ? invocation().judgedSha : '',
       reuseRunnerIdentity: () => invocation().runnerIdentity,
+      defaultRunnerIdentity: () => invocation().runnerIdentity,
+      nativeProcessTraceEnv: (env: NodeJS.ProcessEnv) => env,
+      executedMapRecordingEnabled: () => false,
+      qualificationPhysicalExecution: null,
       connectExecutedMapPg: async () => ({ end: async () => undefined }),
       gitChangedBetween: () => () => [], gitInertGlobalChange: () => () => false,
       gitSchemaDriftJudge: () => null, testConfigMainProcessFiles: () => new Set(),
