@@ -641,7 +641,8 @@ install_in_flight_preflight() {
   # dependencies. Refuse a source-only/shadow donor before allocating WORK or
   # exporting another source snapshot; the snapshot repeats its full census.
   if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && \
-    { [ ! -d "$REPO_DIR/node_modules" ] || [ -L "$REPO_DIR/node_modules" ]; }; then
+    { [ ! -d "$REPO_DIR/node_modules" ] || [ -L "$REPO_DIR/node_modules" ] || \
+      [ -f "$REPO_DIR/.git/lint-as-committed-owner.json" ]; }; then
     echo "VERIFY_TAURI_DEPENDENCY_DONOR_INVALID: pinned source requires a physical installed dependency donor: $REPO_DIR" >&2
     echo 'Set PAPERCUSP_REPO_DIR to the installed canonical tree, independently of the frozen wrapper/source directory.' >&2
     return 2
