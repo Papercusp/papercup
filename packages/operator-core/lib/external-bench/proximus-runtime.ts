@@ -4,9 +4,12 @@
 import { requireCurrentBenchmarkAssignment, currentProtocolPriceTable, type CurrentBenchmarkProtocol } from './reproducibility/schema';
 import { priceRun } from '@papercusp/bench-metrics';
 import type { FrontierSweEnvHandle } from './frontier-swe-seam';
-import { spawn } from 'node:child_process';
-import { isAbsolute } from 'node:path';
+import { execFile, spawn, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { promisify } from 'node:util';
 import type { CurrentBenchAccountingBinding, CurrentBenchHostReferenceGateway } from './current-su';
 import type { LearningSpendReservationCensus } from '../learning-governor/store';
 import type { GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
@@ -436,6 +439,39 @@ function runtimeReceipt(value: unknown): ProximusRuntimeReceipt {
 export async function measureProximusRuntime(input: { pythonBin: string; signal?: AbortSignal },
   execute = proximusHostProcess): Promise<ProximusRuntimeReceipt> {
   return runtimeReceipt(await execute({ ...input, operation: 'measure', maxWallClockMs: 120_000 }));
+}
+
+async function installProximusRuntime(command: string, args: string[], options: ExecFileOptionsWithStringEncoding) {
+  return (await promisify(execFile)(command, args, options)).stdout;
+}
+
+/** Reuse the vendored frozen uv project and measure the resulting interpreter.
+ * Preparation has no task, gateway, provider credential or spend authority.
+ * Every caller remeasures installed bytes; an existing venv is not a receipt. */
+export async function prepareProximusRuntime(input: { signal?: AbortSignal } = {}, ports: {
+  install?: typeof installProximusRuntime;
+  measure?: typeof measureProximusRuntime;
+} = {}) {
+  input.signal?.throwIfAborted();
+  const project = fileURLToPath(new URL('../../vendor/proximus', import.meta.url));
+  const lock = createHash('sha256').update(readFileSync(join(project, 'uv.lock'))).digest('hex');
+  const environment = join(tmpdir(), `papercusp-proximus-${lock.slice(0, 16)}`);
+  const env: NodeJS.ProcessEnv = { UV_PROJECT_ENVIRONMENT: environment, PYTHONDONTWRITEBYTECODE: '1' };
+  for (const key of ['PATH', 'HOME', 'TMPDIR', 'UV_CACHE_DIR', 'UV_PYTHON_INSTALL_DIR', 'XDG_CACHE_HOME']) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  const stdout = await (ports.install ?? installProximusRuntime)('uv', [
+    'run', '--frozen', '--no-dev', '--python', '3.12', '--project', project,
+    'python', '-I', '-c', 'import sys;print(sys.executable)',
+  ], { encoding: 'utf8', timeout: 120_000, killSignal: 'SIGKILL', maxBuffer: 64 * 1024, env, signal: input.signal });
+  input.signal?.throwIfAborted();
+  const pythonBin = stdout.trim();
+  if (!isAbsolute(pythonBin) || dirname(pythonBin) !== join(environment, 'bin') ||
+      !/^python(?:3(?:\.12)?)?$/.test(basename(pythonBin)))
+    throw new Error('Proximus preparation returned an interpreter outside its frozen runtime.');
+  const runtime = runtimeReceipt(await (ports.measure ?? measureProximusRuntime)({ pythonBin, signal: input.signal }));
+  input.signal?.throwIfAborted();
+  return Object.freeze({ pythonBin, runtime });
 }
 
 /** Existing task + frozen assignment + actual installed bytes + live opaque

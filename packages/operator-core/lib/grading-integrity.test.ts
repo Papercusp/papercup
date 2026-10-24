@@ -220,6 +220,21 @@ function deps() {
   };
 }
 
+describe('targeted grading runtime cleanup (EI-26838521482108819)', () => {
+  it('reaches dispatch without awaiting an unrelated runtime cleanup mutex', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-target')]);
+    d.retireRuntimes.mockImplementation(async (_workspace, _pending, _deps, targets) => {
+      if (!targets?.includes('EI-target')) throw new Error('unrelated runtime mutex is held');
+    });
+
+    const result = await reconcilePendingGradingAudits({ ctx, targetIds: ['EI-target'] }, d);
+
+    expect(result.receipts).toEqual([expect.objectContaining({ issueId: 'EI-target', state: 'launched' })]);
+    expect(d.launch).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('retained grading auditor lease delivery (EI-25289706163098558)', () => {
   type RenewalDeps = NonNullable<Parameters<typeof notifyRetainedGradingAuditor>[1]>;
   function fixture() {
@@ -309,7 +324,10 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
     const sent = f.d.send.mock.calls[0]![1];
     expect(sent.body).toContain(runtime.baseUrl);
     expect(sent.body).toContain(runtime.evaluatorBuild.sha);
+    expect(sent.body).toContain('node scripts/mcp-call.mjs --port 33015 <tool> --json -');
+    expect(sent.body).toContain('Never remove the pin or substitute a default operator or proxy.');
     expect(sent.body).not.toContain('http://127.0.0.1:42457');
+    expect(sent.body).not.toContain('--port 42457');
     const [, serialized] = f.tx.mock.calls[0] as unknown as [TemplateStringsArray, string];
     expect(JSON.parse(serialized)).toEqual({ gradingAudit: {
       issueId: f.input.card.issueId, evidenceFingerprint: f.input.card.evidenceFingerprint,
@@ -1346,6 +1364,10 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.ensureRuntime).toHaveBeenCalledWith(expect.objectContaining({ issueId, allowSeed: false }));
     const { INTERNAL_GRADING_AUDIT_RUNTIME } = await import('./agent-tools/capability/launch-agent');
     expect(d.launch.mock.calls[0]?.[1]).toMatchObject({ [INTERNAL_GRADING_AUDIT_RUNTIME]: runtime });
+    const brief = (d.launch.mock.calls[0]?.[0] as { brief: string }).brief;
+    expect(brief).toContain('node scripts/mcp-call.mjs --port 45188 <tool> --json -');
+    expect(brief).toContain('If that endpoint is unreachable, stop without grading or emitting');
+    expect(brief).toContain('pending-audit dispatcher can restore it through canonical runtime recovery');
   });
 
   it('never falls back to a mutable spawn host when exact endpoint admission fails', async () => {

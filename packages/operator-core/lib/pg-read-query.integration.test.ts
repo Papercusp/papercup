@@ -167,7 +167,7 @@ describe('pgReadQuery (real PG)', () => {
       item_kind: 'change', plan_bound: true, closed_items: 2, cited_items: 1, citation_pct: 50,
     }]);
     expect(result.rows).toHaveLength(1);
-    expect(new Date(result.rows[0]!.cutoff as string).toISOString()).toBe(cutoff);
+    expect(new Date(result.rows[0]!.cutoff as string).getTime()).toBe(Date.parse(cutoff));
     // A plausible wrong implementation produces three joined rows and 33.33%,
     // even though exactly two source items closed. Prove the regression catches it.
     const joinedDenominator = fixtureQuery.replaceAll('count(DISTINCT s.feature_id)', 'count(*)');

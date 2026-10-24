@@ -7260,7 +7260,10 @@ export function identityAssumeResponseFromRows(rows, { agent, request, sinceMs, 
         value.recovery?.checkpointRef === request.recoveryRef && value.recovery?.checkpointSha256 === request.recoveryHash) return value;
     // Traverse transport wrappers only. Context/prose/error fields are never
     // searched for a string that merely resembles a successful receipt.
-    if (value.isError === true || value.type && value.type !== 'text') return null;
+    // Codex code-mode persists custom tool output as Responses input_text
+    // blocks around the MCP result. These remain native tool-result rows;
+    // images, error blocks and ordinary messages are not receipt evidence.
+    if (value.isError === true || value.type && !['text', 'input_text'].includes(value.type)) return null;
     for (const key of ['result', 'receipt', 'summary', 'content', 'text']) {
       if (!Object.hasOwn(value, key)) continue;
       const found = findReceipt(value[key], depth + 1); if (found) return found;

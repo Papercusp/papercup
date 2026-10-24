@@ -142,6 +142,7 @@ export async function inspectManagedAssumeRequest(value: unknown, afterExit = fa
         key => plan.caller[key as keyof typeof plan.caller] === request.caller[key as keyof typeof request.caller]) ||
       receipt.recovery.checkpointRef !== request.recoveryRef || receipt.recovery.checkpointSha256 !== request.recoveryHash)
     throw new Error('assume-host-receipt-mismatch');
+  // notify-classification: {"classification":"durable","reason":"Completing caller return must preserve its restored responsibilities and mandatory audit acknowledgement across interruption.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   if (action === 'complete-return') return { ok: await completeAssumeCallerReturn(plan) };
   const requireCallerRegistration = async () => {
     // A discovery record and a durable pause can outlive their adv registration.
@@ -158,7 +159,9 @@ export async function inspectManagedAssumeRequest(value: unknown, afterExit = fa
   await requireCallerRegistration();
   const [pause, host, callerPolicy, targetPolicy] = await Promise.all([
     readAssumeCallerPause(plan.caller.ownerId), findLiveHostAsync(plan.caller.ownerId),
+    // notify-classification: {"classification":"durable","reason":"Caller confinement inspection is conservatively connected to notification wrappers; mandatory custody consequences must retain delivery custody.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     readSessionConfinement(plan.caller.ownerId, plan.caller.workspaceId),
+    // notify-classification: {"classification":"durable","reason":"Target confinement inspection is conservatively connected to notification wrappers; mandatory custody consequences must retain delivery custody.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     readSessionConfinement(plan.target.ownerId, plan.target.workspaceId),
   ]);
   const managed = host as (typeof host & { childGeneration?: number;

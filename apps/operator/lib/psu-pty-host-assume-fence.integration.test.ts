@@ -95,9 +95,17 @@ it('waits for installed Codex to persist the tool result and complete before rea
   const requests: Record<string, any>[] = [];
   const errors: string[] = [];
   let output = '', request: Record<string, any> | undefined;
+  let issuedTool: Record<string, any> | undefined;
   let toolCalls = 0, toolIssued = false, completionRequested = false;
   let releaseCompletion!: () => void;
   const completionGate = new Promise<void>(resolve => { releaseCompletion = resolve; });
+  const toolOutputs = (value: any): Array<Record<string, any>> => {
+    if (typeof value === 'string') { try { return toolOutputs(JSON.parse(value)); } catch { return []; } }
+    if (Array.isArray(value)) return value.flatMap(toolOutputs);
+    if (!value || typeof value !== 'object') return [];
+    if (String(value.type).endsWith('call_output')) return [value];
+    return Object.values(value).flatMap(toolOutputs);
+  };
   const transcript = () => {
     const files = readdirSync(join(codexHome, 'sessions'), { recursive: true })
       .map(String).filter(path => path.endsWith('.jsonl'));
@@ -140,7 +148,9 @@ it('waits for installed Codex to persist the tool result and complete before rea
       if (req.url !== '/v1/responses') { res.writeHead(200); res.end('{}'); return; }
       requests.push(body);
       res.writeHead(200, { 'content-type': 'text/event-stream' });
-      if (toolIssued) {
+      // Interactive Codex also makes auxiliary Responses requests. Only the
+      // continuation carrying THIS native tool result reaches our barrier.
+      if (toolIssued && toolOutputs(body.input).some(item => item.call_id === 'native-assume')) {
         completionRequested = true;
         await completionGate;
         res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol',
@@ -154,6 +164,11 @@ it('waits for installed Codex to persist the tool result and complete before rea
       const direct = tools.find(tool => tool.type === 'function' && tool.name?.endsWith('__assume_fixture'));
       const executor = tools.find(tool => tool.type === 'namespace' &&
         tool.tools?.some((entry: Record<string, any>) => entry.type === 'custom' && entry.name === 'exec'));
+      if (toolIssued || !namespace && !direct && !executor && !tools.some(tool => tool.type === 'tool_search')) {
+        res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol',
+          text: 'OFFLINE_AUXILIARY_RESPONSE', inputTokens: 0, outputTokens: 0 })));
+        return;
+      }
       const discovery = !namespace && !direct && !executor;
       if (discovery && requests.length > 3) throw new Error('Native fixture tool discovery did not converge');
       toolIssued = !discovery;
@@ -165,6 +180,7 @@ it('waits for installed Codex to persist the tool result and complete before rea
           { id: 'fc_assume', type: 'function_call', call_id: 'native-assume', status: 'completed',
             ...(namespace ? { namespace: namespace.name } : {}), name: direct?.name ?? 'assume_fixture', arguments: '{}' };
       const event = (type: string, payload: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
+      issuedTool = item;
       res.end(event('response.output_item.added', { output_index: 0,
         item: { ...item, status: 'in_progress', ...(executor ? { input: '' } : { arguments: discovery ? {} : '' }) } }) +
         event('response.output_item.done', { output_index: 0, item }) +
@@ -198,10 +214,11 @@ it('waits for installed Codex to persist the tool result and complete before rea
       io: { stdin, stdout: { isTTY: false, columns: 120, rows: 40,
         write(data: string) { output += data; return true; } } },
     });
-    const diagnostics = () => JSON.stringify({ errors, toolCalls, requests: requests.length, output: output.slice(-3000) });
+    const diagnostics = () => JSON.stringify({ errors, toolCalls, requests: requests.length, issuedTool,
+      toolOutputs: toolOutputs(requests.at(-1)?.input), output: output.slice(-2000) });
     await vi.waitFor(() => expect(completionRequested, diagnostics()).toBe(true), { timeout: 20_000 });
     expect(errors, diagnostics()).toEqual([]);
-    expect(toolCalls).toBe(1);
+    expect(toolCalls, diagnostics()).toBe(1);
     expect(transcript()).toContain('handoff-accepted');
     expect(prepare).not.toHaveBeenCalled();
     expect(onReexec).not.toHaveBeenCalled();

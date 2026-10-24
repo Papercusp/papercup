@@ -60,8 +60,11 @@ import { reportSessionPortDelivery } from '../scripts/psu-launcher.mjs';
 // Default it to a no-op for the file; a test that passes its own onExit still wins.
 // Fixture owners have no live session to notify. Keep the detached compaction
 // bridge inside the fixture; completion-order tests supply their own emit spy.
-const hostThroughPty: typeof hostThroughPtyProduction = (o) =>
-  hostThroughPtyProduction({ onExit: () => undefined, emitCompacted: () => null, ...o });
+let testHostEventNames: Set<string> | null = null;
+const hostThroughPty: typeof hostThroughPtyProduction = (o) => {
+  testHostEventNames?.add(basename(eventLogPathForOwner(o.ownerId)));
+  return hostThroughPtyProduction({ onExit: () => undefined, emitCompacted: () => null, ...o });
+};
 // The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
 // pty-force, reused by e8630's turn:interrupt tool). Importing the published
 // subpath keeps this an integration test of the actual chain, not a re-impl.
@@ -78,10 +81,15 @@ import { linuxProcStateFromStat } from '@papercusp/operator-core/lib/process-ide
  * output, so a non-reproducing failure carries its own evidence.
  */
 const FAILURE_EVENT_TAIL_LINES = 30;
-function hostEventTailsSince(dir: string, sinceMs: number, lines = FAILURE_EVENT_TAIL_LINES): string {
+function hostEventTailsSince(
+  dir: string,
+  sinceMs: number,
+  lines = FAILURE_EVENT_TAIL_LINES,
+  selectedNames?: ReadonlySet<string>,
+): string {
   let names: string[];
   try {
-    names = readdirSync(dir).filter((n) => n.endsWith('.events.jsonl'));
+    names = readdirSync(dir).filter((n) => n.endsWith('.events.jsonl') && (!selectedNames || selectedNames.has(n)));
   } catch {
     return `(host event dir ${dir} unreadable)`;
   }
@@ -101,8 +109,12 @@ function hostEventTailsSince(dir: string, sinceMs: number, lines = FAILURE_EVENT
 
 beforeEach((ctx) => {
   const startedAtMs = Date.now() - 1_000;
+  const eventNames = new Set<string>();
+  testHostEventNames = eventNames;
   ctx.onTestFailed(({ task }) => {
-    const evidence = hostEventTailsSince(PSU_PTY_DIR, startedAtMs);
+    // A previous fixture can finish after this test started. Its log must not
+    // displace this test's own host evidence in the reporter's bounded message.
+    const evidence = hostEventTailsSince(PSU_PTY_DIR, startedAtMs, FAILURE_EVENT_TAIL_LINES, eventNames);
     console.error(`[WI-10005017] host events for failed test "${task.name}":\n${evidence}`);
     const first = task.result?.errors?.[0];
     if (first && typeof first.message === 'string') first.message += `\n[host events]\n${evidence}`;
@@ -115,8 +127,10 @@ describe('failure evidence: host event tails (WI-10005017)', () => {
     try {
       const fresh = join(dir, 'su-fresh.events.jsonl');
       const stale = join(dir, 'su-stale.events.jsonl');
+      const peer = join(dir, 'su-previous-fixture.events.jsonl');
       writeFileSync(fresh, Array.from({ length: 40 }, (_, i) => `{"kind":"e${i}"}`).join('\n'));
       writeFileSync(stale, '{"kind":"old"}\n');
+      writeFileSync(peer, '{"kind":"late-previous-fixture"}\n');
       const old = new Date(Date.now() - 60_000);
       utimesSync(stale, old, old);
       writeFileSync(join(dir, 'su-fresh.json'), '{}');
@@ -127,6 +141,10 @@ describe('failure evidence: host event tails (WI-10005017)', () => {
       expect(out).not.toContain('{"kind":"e34"}');
       expect(out).not.toContain('su-stale');
       expect(out).not.toContain('--- su-fresh.json ');
+      const selected = hostEventTailsSince(dir, Date.now() - 10_000, 5, new Set([basename(fresh)]));
+      expect(selected).toContain('su-fresh.events.jsonl');
+      expect(selected).not.toContain('su-previous-fixture');
+      expect(selected).not.toContain('late-previous-fixture');
       expect(hostEventTailsSince(dir, Date.now() + 60_000)).toBe('(no host event log written during this test)');
       expect(hostEventTailsSince(join(dir, 'missing'), 0)).toMatch(/unreadable/);
     } finally {
@@ -1773,12 +1791,27 @@ describe('session-port managed seed + native persistence helpers', () => {
   }, 35_000);
 
   it('drops a held Codex kickoff at the hold ceiling, without typing into the Starting composer', async () => {
+    // Exercise the existing deadline after the child has actually painted its
+    // Starting frame. Process startup latency must not choose another drop path.
+    let clock = Date.now();
+    const kickoffStartedAt = clock;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
     const stderrWrite = vi.spyOn(process.stderr, 'write');
     const run = runCodexStartingKickoff('starting-ceiling', codexStartingChild(null, 9000), {
       PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1000',
       PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '3000',
     });
     try {
+      await vi.waitFor(() => {
+        expect(run.hostEvents().some((e) => e.kind === 'backend-session-frame-observed')).toBe(true);
+        expect(run.captured()).toContain('Starting');
+      }, { timeout: 8000 });
+      expect(run.hostEvents().some((e) => e.kind === 'startup-turn-dropped')).toBe(false);
+      clock = kickoffStartedAt + 1000;
+      await vi.waitFor(() => {
+        expect(run.hostEvents().filter((e) => e.kind === 'kickoff-held-for-codex-frame')).toHaveLength(1);
+      });
+      clock = kickoffStartedAt + 3000;
       const dropped = await vi.waitFor(() => {
         const row = run.hostEvents().find((e) => e.kind === 'startup-turn-dropped');
         expect(row).toBeDefined();
@@ -1796,8 +1829,10 @@ describe('session-port managed seed + native persistence helpers', () => {
       const printed = stderrWrite.mock.calls.map((call) => String(call[0]));
       expect(printed.some((line) => line.includes(`launch kickoff DROPPED for ${run.ownerId} `))).toBe(true);
     } finally {
+      now.mockRestore();
       stderrWrite.mockRestore();
-      if (existsSync(run.sock)) await rawInject(run.sock, 'QUIT\n');
+      // This fixture deliberately swallows input while Starting, including QUIT.
+      run.signalSource.emit('SIGTERM');
       await run.done;
     }
   }, 20_000);

@@ -30,6 +30,7 @@ const sessionResumed = defineTool({
   path: '/agent-mcp/console/bootstrap-su/session-resumed',
   auth: 'loopback',
   async handler(req) {
+    // notify-classification: {"classification":"durable","reason":"Resume admission reaches notification wrappers whose mandatory consequences must survive the request ending.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;
     let advSessionId: number | null = null;
@@ -47,6 +48,7 @@ const sessionResumed = defineTool({
       if (body.assumeHost !== undefined) {
         // Extend the existing managed resume control plane; never let a normal
         // authenticated app principal inspect administrative custody receipts.
+        // notify-classification: {"classification":"durable","reason":"Administrative custody admission must retain any notification consequences reached through its principal wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const principal = await requirePrincipal(req.headers, { kind: ['system'], trust: ['trusted'] });
         if (principal.slug !== 'system:superuser' || principal.authMethod !== 'bearer-token' ||
             typeof body.assumeHost?.afterExit !== 'boolean') return jsonRes({ ok: false }, 403);
@@ -54,6 +56,7 @@ const sessionResumed = defineTool({
             !['freeze', 'queue', 'thaw', 'observe', 'complete-return'].includes(body.assumeHost.action))) return jsonRes({ ok: false }, 400);
         try {
           const { inspectManagedAssumeRequest } = await import('../../../session-assume-runtime');
+          // notify-classification: {"classification":"durable","reason":"Managed assume transitions restore caller responsibilities and their mandatory audit consequences across request loss.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           return jsonRes(await inspectManagedAssumeRequest(body.assumeHost.request, body.assumeHost.afterExit,
             body.assumeHost.action as string | undefined));
         } catch { return jsonRes({ ok: false, reason: 'assume-custody-unverified' }, 409); }
@@ -176,6 +179,7 @@ const sessionResumeFinalized = defineTool({
   path: '/agent-mcp/console/bootstrap-su/session-resume-finalized',
   auth: 'loopback',
   async handler(req) {
+    // notify-classification: {"classification":"durable","reason":"Resume finalization admission must retain mandatory notification consequences reached through its gate wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;
     const parsed = await parseResumeTransitionBody(req);
@@ -226,6 +230,7 @@ const sessionResumeReleased = defineTool({
   path: '/agent-mcp/console/bootstrap-su/session-resume-released',
   auth: 'loopback',
   async handler(req) {
+    // notify-classification: {"classification":"durable","reason":"Resume release admission must retain mandatory notification consequences reached through its gate wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;
     const parsed = await parseResumeTransitionBody(req);

@@ -1090,7 +1090,7 @@ export async function notifyRetainedGradingAuditor(
       `Current retained evaluator: '${input.runtime.baseUrl}' (build '${input.runtime.evaluatorBuild.sha}', version '${input.runtime.evaluatorBuild.version}', runtime task '${input.runtime.taskId}'). Use this endpoint's /api/mcp for scorecards:get and the audit; the task's gradingAuditRuntimeBinding is updated with this notice. Require its exact build and the target/lease/currentness checks below. If this route cannot be used, stop and report the route failure; do not substitute a default operator.`,
     ] : []),
     `Continue only for exact target '${card.issueId}' and evidence fingerprint '${card.evidenceFingerprint}'. Re-read scorecards:get and require pending state plus this exact key/reservedAt, fingerprint, and reservation snapshot ${JSON.stringify(reservation.snapshot ?? null)} before auditing; otherwise stop without grading or emitting.`,
-    gradingAuditBrief(card, reservation.reservedAt),
+    gradingAuditBrief(card, reservation.reservedAt, input.runtime),
   ].join('\n\n');
   const summary = input.resumeParked
     ? `Resume retained grading audit for ${card.issueId}`
@@ -1891,9 +1891,18 @@ function oldestFirst(a: ScorecardRow, b: ScorecardRow): number {
   return a.createdAt.localeCompare(b.createdAt) || a.issueId.localeCompare(b.issueId);
 }
 
-function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): string {
+function gradingAuditBrief(
+  card: ScorecardRow,
+  reservationReservedAt: string,
+  runtime?: GradingAuditRuntimeBinding,
+): string {
   const scratchTemplate = `/tmp/grading-integrity-${card.issueId}.XXXXXX`;
   const recordedEvaluatorBuild = recordedEvaluatorBuildForRecipe(card.rerunRecipe);
+  // The helper's inherited port hint may fall back to a different operator.
+  // Only its explicit --port flag preserves the validated evaluator binding.
+  const recoveryCommand = runtime
+    ? `node scripts/mcp-call.mjs --port ${new URL(runtime.baseUrl).port || '80'} <tool> --json -`
+    : 'node scripts/mcp-call.mjs <tool> --json -';
   // WI-6554700010009935: the rubric's terminal-re-rate drill says only
   // `scorecards:list { rubricRef, sourceHive }`, so judges paged 200-500 terminal cards
   // (1.6-4MB per read) to find one subject's interim cards. Name the exact narrow read.
@@ -1920,7 +1929,7 @@ function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): s
     'MCP result-shape safety: concurrent scorecards:get pages can be replaced inline by a recoverable `papercusp.output-envelope/v1` wrapper when the shared result-door budget is exceeded. Inspect the outer response before reading scorecard.criteria. If it is an output envelope, follow its content reference with capability:read and restore the underlying scorecards:get result; never pass the wrapper to a scorecard field reader or treat absent inline fields as missing evidence.',
     'Evidence completeness: follow rerunRecipeRead.read and every rerunRecipeRead.next, concatenate the exact JSON chunks in offset order, and parse only when rerunRecipeRead.complete is true. Follow evidenceRead.next through the entire criterion index, then read every indexed criterion through its final evidence page; evidenceRead.complete on a selected criterion applies only to that criterion. An incomplete page with a valid continuation is recoverable evidence, not a missing or unre-runnable recipe. Do not rate re-runnable-evidence from the first page. If a continuation fails, preserve the exact cursor request and returned failure; distinguish that retrieval failure from absent stored evidence.',
     'Do not modify implementation files, run shell commands, recruit peers, emit an ordinary same-rubric scorecard, or broaden scope.',
-    `If the ordinary MCP tools are unavailable and you must use the documented scripts/mcp-call.mjs recovery path, stream each JSON payload through quoted stdin (--json -). If an intermediate file is unavoidable, first create a private directory with \`mktemp -d ${scratchTemplate}\` and keep every file inside it. Never read or write shared fixed names such as /tmp/eval-args.json or /tmp/eval.json: other grading auditors run concurrently and can overwrite them.`,
+    `If the ordinary MCP tools are unavailable and you must use the documented scripts/mcp-call.mjs recovery path, use \`${recoveryCommand}\` and stream each JSON payload through quoted stdin (--json -). ${runtime ? `The explicit --port pins the validated evaluator at '${runtime.baseUrl}'; retain it on every recovery call, even if PAPERCUSP_HONO_PORT is set. If that endpoint is unreachable, stop without grading or emitting and report the exact route failure so the pending-audit dispatcher can restore it through canonical runtime recovery. Never remove the pin or substitute a default operator or proxy. ` : ''}If an intermediate file is unavoidable, first create a private directory with \`mktemp -d ${scratchTemplate}\` and keep every file inside it. Never read or write shared fixed names such as /tmp/eval-args.json or /tmp/eval.json: other grading auditors run concurrently and can overwrite them.`,
     `Emit exactly one COMPLETE terminal scorecards:emit audit: { rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ref:'${card.issueId}' }, ratings:{...}, gradingAuditReservation:{ key:'<effective key>', reservedAt:'<effective reservedAt>' } }. Include concrete evidence for every criterion in the grading-integrity rubric. The gradingAuditReservation field is required for this active lease; copy both values exactly from the lease you confirmed. If you verified a renewal at start or pre-emit, use its renewed key and reservedAt.`,
     `Before emitting, re-read the target with scorecards:get { issueId: '${card.issueId}' } and check scorecard.gradingAudit.state plus scorecard.auditTarget (current, superseded/supersededBy, retracted, subjectRubricCurrentness — read-time relations, not observation stamps): this dispatch brief may be stale after the reservation lease expires. Emit only when the exact target is still current and its gradingAudit.state is exactly 'pending'. If the state is not 'pending' (including 'passed', 'failed', or 'cancelled'), the rubric subject is no longer current, or the target is superseded or retracted, do not emit any audit; report the current state and any auditIssueId, then stop.`,
     // WI-10006794: the start-of-audit lease check above is strict, but at EMIT time an absent
@@ -3077,7 +3086,7 @@ export async function dispatchPendingGradingAudits(
               card,
               reservationKey: idempotencyKey,
               reservationReservedAt,
-              brief: gradingAuditBrief(card, reservationReservedAt),
+              brief: gradingAuditBrief(card, reservationReservedAt, retainedRuntimes.get(issueId)),
               ctx: input.ctx,
               ...(harnessResolved ? { harness } : {}),
             },
@@ -3150,7 +3159,7 @@ export async function dispatchPendingGradingAudits(
         markPhase('auditor-launch');
         const result = (await launch(
           {
-            brief: gradingAuditBrief(card, reservationReservedAt),
+            brief: gradingAuditBrief(card, reservationReservedAt, retainedRuntime),
             ...(harnessResolved ? { harness } : {}),
             workItem: issueId,
             headless: true,
@@ -3477,6 +3486,8 @@ export async function reconcilePendingGradingAudits(
       if (current.length !== ids.length) return ids;
       return current.filter(card => currentPendingScorecard(card)).map(card => card.issueId);
     },
+    undefined,
+    input.targetIds,
   );
   const result = await dispatchPendingGradingAudits(input, deps);
   const recertifications =

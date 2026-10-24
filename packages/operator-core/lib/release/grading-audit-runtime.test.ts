@@ -219,6 +219,30 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect(readGradingAuditSourcePin(f.source.sourceRoot, f.source.ownerRef, 1000)).toBeNull();
   });
 
+  it('targeted cleanup bypasses an unrelated runtime mutex and preserves pending siblings', async () => {
+    const f = fixture();
+    await ensureGradingAuditRuntime(f.input, f.deps);
+    await ensureGradingAuditRuntime({ ...f.input, issueId: 'EI-b' }, f.deps);
+    const live = f.rows[0];
+    const locator = live.detail.gradingAuditRuntime as GradingAuditRuntimeLocator;
+    f.rows.push({ ...live, taskId: 'prior-runtime', state: 'ended_unobserved',
+      detail: { ...live.detail, gradingAuditRuntime: { ...locator, issueIds: ['EI-a'] } } });
+    const unrelatedLabel = 'grading-audit-runtime:unrelated';
+    f.rows.push({ ...live, taskId: 'unrelated-runtime',
+      detail: { label: unrelatedLabel,
+        gradingAuditRuntime: { ...locator, ownerRef: unrelatedLabel, issueIds: ['EI-other'] } } });
+    f.deps.mutex = async (_workspace, key, fn) => {
+      if (key === unrelatedLabel) throw new Error('unrelated runtime mutex is held');
+      return fn();
+    };
+
+    await retireUnusedGradingAuditRuntimes('ws', async ids => ids.filter(id => id === 'EI-b'), f.deps, ['EI-a']);
+
+    expect(f.stop).not.toHaveBeenCalled();
+    expect((live.detail.gradingAuditRuntime as GradingAuditRuntimeLocator).issueIds).toEqual(['EI-b']);
+    expect(readGradingAuditSourcePin(f.source.sourceRoot, f.source.ownerRef, 1000)).not.toBeNull();
+  });
+
   it('reuses the request-only identity and single-writer fences for the child', async () => {
     const f = fixture();
     await ensureGradingAuditRuntime(f.input, f.deps);

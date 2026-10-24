@@ -321,9 +321,17 @@ export async function retireUnusedGradingAuditRuntimes(
   workspaceId: string,
   pendingIssueIds: (ids: string[]) => Promise<string[]>,
   deps: GradingAuditRuntimeDeps = {},
+  targetIssueIds?: readonly string[],
 ): Promise<void> {
   const rows = await (deps.list ?? listRuntimeTasks)(workspaceId, LABEL);
-  const labels = [...new Set(rows.map(row => row.detail.label).filter((label): label is string =>
+  // A targeted repair must not wait for another build's cleanup mutex. Select
+  // labels by the requested refs, then keep the full sibling reread below so a
+  // shared endpoint or pin cannot be retired while another audit still needs it.
+  const targets = targetIssueIds?.length ? new Set(targetIssueIds) : undefined;
+  const scopedRows = targets
+    ? rows.filter(row => locatorFrom(row)?.issueIds.some(id => targets.has(id)))
+    : rows;
+  const labels = [...new Set(scopedRows.map(row => row.detail.label).filter((label): label is string =>
     typeof label === 'string' && label.startsWith(LABEL)))];
   for (const label of labels) await (deps.mutex ?? mutex)(workspaceId, label, async () => {
     // Re-read under the same mutex used by acquisition; never kill from a stale ref set.

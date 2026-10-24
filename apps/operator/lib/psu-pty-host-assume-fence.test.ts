@@ -133,6 +133,26 @@ describe('identity takeover host custody and response boundary', () => {
     expect(s.fence.begin(s.r, p).ok).toBe(false);
   });
 
+  it('reads the installed Codex code executor input_text envelope without admitting image, error or user content', () => {
+    const s = setup();
+    const receipt = { transitionKey: s.r.transitionKey, preparationFingerprint: s.r.preparationHash,
+      preparation: { caller: { ...caller, backend: 'codex' } }, state: 'handoff-accepted', durable: true,
+      recovery: { checkpointRef: s.r.recoveryRef, checkpointSha256: s.r.recoveryHash } };
+    const content = [{ type: 'text', text: JSON.stringify(receipt) }];
+    const output = [{ type: 'input_text', text: 'Script completed\nOutput:\n' },
+      { type: 'input_text', text: JSON.stringify({ content }) }];
+    const row = { timestamp: new Date(1_100).toISOString(), type: 'response_item',
+      payload: { type: 'custom_tool_call_output', call_id: 'native-assume', output } };
+    const observe = (rows: unknown[]) => identityAssumeResponseFromRows(rows,
+      { agent: 'codex', request: s.r, sinceMs: 1_000, nowMs: 1_300 });
+    expect(observe([row])).toMatchObject({ transitionKey: s.r.transitionKey, atMs: 1_100 });
+    expect(observe([{ ...row, payload: { ...row.payload,
+      output: [{ type: 'input_image', text: JSON.stringify({ content }) }] } }])).toBeNull();
+    expect(observe([{ ...row, payload: { ...row.payload,
+      output: [{ type: 'input_text', isError: true, text: JSON.stringify({ content }) }] } }])).toBeNull();
+    expect(observe([{ ...row, payload: { ...row.payload, type: 'message', role: 'user', content: output } }])).toBeNull();
+  });
+
   it.each(['codex', 'claude', 'omp'])('requires a matching persisted %s tool result and rejects prose or changed recovery', agent => {
     const s = setup();
     const receipt = { transitionKey: s.r.transitionKey, preparationFingerprint: s.r.preparationHash,

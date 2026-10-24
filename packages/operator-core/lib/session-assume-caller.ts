@@ -151,11 +151,13 @@ async function restoreAssumeResponsibilities(plan: AssumePreparation, recovery: 
   const pause = await readAssumeCallerPause(plan.caller.ownerId);
   if (!ownsAssumeCallerPause(pause, plan, recovery)) return false;
   for (const item of saved.work) {
+    // notify-classification: {"classification":"durable","reason":"Responsibility restoration inspects the saved work through a conservative notification wrapper; any mandatory consequence must retain custody.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const current = await runWithWorkspace(plan.caller.workspaceId, () => getWorkItem(item.id, item.harness ?? undefined));
     const checkpoint = await getWorkItemCheckpointWithMeta({ workspaceId: plan.caller.workspaceId,
       harness: item.harness, workItemId: item.id });
     if (!current || (current.assignee && current.assignee !== plan.caller.ownerId) ||
         checkpoint.checkpoint !== item.checkpoint || checkpoint.updatedAtMs !== item.updatedAtMs) return false;
+    // notify-classification: {"classification":"durable","reason":"Restoring the caller's work claim must retain assignment and coordination consequences across caller interruption.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     if (!current.assignee && !(await runWithWorkspace(plan.caller.workspaceId, () => claimWorkItem(item.id, plan.caller.ownerId,
       { harness: item.harness ?? undefined, assignedBy: plan.caller.ownerId })))) return false;
   }
@@ -390,6 +392,7 @@ export async function completeAssumeCallerReturn(plan: AssumePreparation, deps: 
       `;
       return rows.length === 1;
     };
+    // notify-classification: {"classification":"durable","reason":"Caller return restores paused responsibilities before its durable acknowledgement; notification consequences must survive return retries.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     if (!await validRegistration() || !await unchanged() ||
         !await restoreAssumeResponsibilities(original, recovery)) return false;
     const restoredPause = await readAssumeCallerPause(current.ownerId);

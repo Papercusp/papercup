@@ -16,6 +16,9 @@ documents:
   - "libs/generic/chat-protocol/src/su-session.ts"
 plans:
   - "interchangeable-su-execution-backends-2026-10-23"
+promotedFrom:
+  - kind: work-item
+    ref: WI-6554700010025494
 ---
 
 This is the draft replication method for interchangeable-su-execution-backends-2026-10-23. It defines required evidence; it does not certify current parity. Source decisions D-001 through D-008, the owner-obligation continuity decision, and independent critiques thread-post:1202019 and thread-post:1202036 govern the contract.
@@ -38,7 +41,7 @@ Cross-provider transfer uses a new valid target-native identity. The portable en
 
 2. Prepare an isolated workspace, deterministic image/file marker, permission boundary, two native conversation identities and a controllable peer/event/timer source. A representative prompt is: 'Report the marker in the attached image. Ask me to select a route before making the requested edit. Wait for a peer follow-up.' Scenario-specific prompts and image bytes are pinned by the inventory.
 
-3. Run the required maintained case selectors named by each R-N check. Each check uses the exact case title 'SU-EXEC R-N acceptance contract' in every listed file; a missing case or empty case selection remains UNKNOWN. Set PAPERCUSP_TEST_RUN_HARNESS=papercusp. Capture original-source evidence with the maintained runner's PC_EXECUTED_SOURCE_MAP_WORKSPACE and PC_EXECUTED_SOURCE_MAP_OUT options. Do not stamp a later HEAD onto a moving-source result.
+3. Run the maintained selectors from criterion.check.cases verbatim in each criterion.check.files entry; never derive a case title from an R-N number. Missing cases or an empty selection remain UNKNOWN. R-18 inventory preflight, final qualification and structural accounting have distinct selectors and proof boundaries listed below. Set PAPERCUSP_TEST_RUN_HARNESS=papercusp. Capture original-source evidence with the maintained runner's PC_EXECUTED_SOURCE_MAP_WORKSPACE and PC_EXECUTED_SOURCE_MAP_OUT options. Do not stamp a later HEAD onto a moving-source result.
 
 4. For each provider execute the composed journey: programmatic launch, image/file input, live question and permission request, reconnect, native fork, wake consumption, warm/cold carry, and programmatic-to-PTY-to-programmatic round trip. Place a pending question and permission request at both handoff directions and each wake receipt stage. Inject target-readiness failure and lost acknowledgements. Verify stable request scope/provenance, one answer, one command consumer, lineage and explicit terminal receipts. A declared covering array may replace the full cross-product only when every required interaction is mapped.
 
@@ -58,6 +61,42 @@ The versioned fixture is packages/operator-core/lib/__fixtures__/su-execution-pa
 
 Every provider/execution combination has the nineteen requirement scenarios plus a separate row for each applicable native request family. Permission, question, form/URL elicitation, dynamic-tool, credential refresh and attestation duties have distinct actions and falsifiers. Claude SDK controls have a separate census. Fixture revision 4 adds a distinct PTY-control scenario for each of the twelve decoder modes in each of the four provider/execution combinations, including the scoped identity-assume control and its source-fencing and exclusive-owner proof obligations. Each control row records classification, disposition, boundary, owner, implementation paths, maintained drill targets, action and falsifier. These targets are qualification duties, not passing support claims. Programmatic raw/colour controls require explicit refusal while semantic interruption and structured state retain their own mandatory scenarios; retired compact is refused on every route. Native-only raw keys/colour and retired compact controls retain explicit boundaries; they cannot exempt semantic owner control or required headless duties. All initial qualification rows remain unknown.
 
-Run the exact SU-EXEC R-1 acceptance contract and SU-EXEC R-18 acceptance contract selectors in su-session-capability-parity.test.ts and su-session-attached-live.integration.test.ts through npm run test:file. These P-001 cases verify inventory completeness and fail-closed accounting; the live engine smoke remains separately opt-in and does not certify this matrix. P-005/P-007 implement individual request families, P-017/P-018 attach the exact runtime scenario receipts, P-019 finalizes procedures, and P-020/P-021 own independent acceptance and exact-artifact shipment. Synthetic positive/negative receipts test only the accounting guard. Missing rows, missing positive/negative evidence, duplicate rows, changed CLI/SDK version and hidden PTY fallback each fail the guard.
+Run SU-EXEC R-1 acceptance contract and SU-EXEC R-18 inventory preflight in both files listed in the selector contract below through npm run test:file. These P-001 cases establish inventory inputs and exercise the isolated PTY transport with a controlled child; they may pass while native-provider qualification remains unknown. They do not discharge final R-18 qualification. The separate SU-EXEC R-18 final qualification selectors belong to P-018/P-020 and must ingest measured population/receipts, validate current inventory/native/source/document fingerprints, reject missing or failed mandatory proof and require accountable optional-gap dispositions. The selected structural accounting control is accounting-only and cannot substitute for either final detector. The live engine smoke remains separately opt-in and does not certify this matrix. P-005/P-007 implement individual request families, P-017/P-018 attach the exact runtime scenario receipts, P-019 finalizes procedures, and P-020/P-021 own independent acceptance and exact-artifact shipment. Synthetic positive/negative receipts test only the accounting guard. Missing rows, missing positive/negative evidence, duplicate rows, changed CLI/SDK version and hidden PTY fallback each fail the guard.
 
 Use the existing private Postgres route (PAPERCUSP_TEST_PG_ADMIN_URL, or scripts/with-test-pg.mjs with an explicit reporter-only PAPERCUSP_TEST_RUNS_DB_URL for durable receipts) when shared test storage admission refuses writes. Preserve storage admission and private-process teardown; never stop the shared database or delete peers' fixtures. Missing or skipped live proof remains unknown.
+
+
+{/* su-exec-selectors:begin */}
+```json
+{
+  "selectionSource": "criterion.check.cases",
+  "preflight": {
+    "files": [
+      "packages/operator-core/lib/su-session-capability-parity.test.ts",
+      "packages/operator-core/lib/su-session-attached-live.integration.test.ts"
+    ],
+    "cases": [
+      "SU-EXEC R-1 acceptance contract",
+      "SU-EXEC R-18 inventory preflight"
+    ]
+  },
+  "final": {
+    "files": [
+      "packages/operator-core/lib/su-session-capability-parity.test.ts",
+      "packages/operator-core/lib/su-session-attached-live.integration.test.ts"
+    ],
+    "cases": [
+      "SU-EXEC R-18 final qualification"
+    ],
+    "requires": "measured-population-and-receipt-validation"
+  },
+  "accounting": {
+    "file": "packages/operator-core/lib/su-session-capability-parity.test.ts",
+    "cases": [
+      "rejects missing rows, false passes, changed scope and hidden PTY fallback"
+    ],
+    "scope": "accounting-only"
+  }
+}
+```
+{/* su-exec-selectors:end */}

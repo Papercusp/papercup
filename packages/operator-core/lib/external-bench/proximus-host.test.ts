@@ -6,7 +6,17 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
-import { measureProximusRuntime } from './proximus-runtime';
+import { measureProximusRuntime, prepareProximusRuntime } from './proximus-runtime';
+
+it('prepares the frozen official runtime through the maintained uv installer and measures its actual bytes', async () => {
+  const prepared = await prepareProximusRuntime();
+  expect(prepared.pythonBin).toMatch(/\/papercusp-proximus-[a-f0-9]{16}\/bin\/python(?:3(?:\.12)?)?$/);
+  expect(prepared.runtime).toMatchObject({ schemaVersion: 1,
+    sourceRevision: 'a989f7b35c95c0fd30603290da3c923b7898cba8',
+    clientVersion: 'harbor-proximus@0.1.0a1', harborVersion: '0.23.0' });
+  expect(prepared.runtime.runtimeRevision).toMatch(/^[a-f0-9]{64}$/);
+  expect(prepared.runtime.fileCount).toBeGreaterThan(100);
+}, 130_000);
 
 it('verifies and runs the unchanged official Proximus host through the pinned Harbor contracts offline', async () => {
   const root = fileURLToPath(new URL('../../../../', import.meta.url));

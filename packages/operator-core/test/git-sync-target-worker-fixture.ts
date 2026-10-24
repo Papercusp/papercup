@@ -128,6 +128,7 @@ async function main() {
   phase('private-repository-ready');
   let child: ChildProcess | undefined;
   const clients: Client[] = [];
+  let scenarioFailure: unknown;
   try {
     const requestPort = await listen(createServer(getRequestListener(handler)));
     child = fork(import.meta.filename, ['--worker'], { cwd: root, execArgv: [],
@@ -208,14 +209,25 @@ async function main() {
       requestOnlyRefused: true, workerStopped: true, resultStatus: result.status,
       remoteConfirmed: true, nonTargetUnchanged: true, commits: 1,
       sourceHost: getServingHostIdentity() }));
+  } catch (error) {
+    scenarioFailure = error;
+    throw error;
   } finally {
-    for (const client of clients) await client.close();
-    if (child?.exitCode === null && child.signalCode === null) {
-      await stopWorker(child);
+    try {
+      for (const client of clients) await client.close();
+      if (child?.exitCode === null && child.signalCode === null) {
+        await stopWorker(child);
+      }
+      await closeServers();
+      await getOrgPg().sql.end({ timeout: 5 });
+      await _resetForTests();
+    } catch (cleanupFailure) {
+      if (scenarioFailure !== undefined) {
+        throw new AggregateError([scenarioFailure, cleanupFailure],
+          `Private git-sync scenario failed: ${String(scenarioFailure)}; cleanup failed: ${String(cleanupFailure)}`);
+      }
+      throw cleanupFailure;
     }
-    await closeServers();
-    await getOrgPg().sql.end({ timeout: 5 });
-    await _resetForTests();
   }
 }
 // The maintained embedding client re-executes its containing bundle. Honor

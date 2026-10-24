@@ -98,7 +98,7 @@ describe('run-in-isolated-netns.sh — modes and fallback', () => {
 });
 
 describe('run-in-isolated-netns.sh — supervisor cleanup', () => {
-  it.each([0, 7])('closes a blocked helper output pipe after supervisor exit %i', async (exitCode) => {
+  it.each([0, 7, 'fragmented-info'] as const)('closes a blocked helper output pipe for %s', async (exitCode) => {
     const dir = mkdtempSync(join(tmpdir(), 'netns-supervisor-'));
     dirs.push(dir);
     const childPidFile = join(dir, 'child.pid');
@@ -107,12 +107,24 @@ describe('run-in-isolated-netns.sh — supervisor cleanup', () => {
     // The helper inherits stdout, so leaving it alive prevents pipeline EOF.
     writeFileSync(bwrap, `#!/usr/bin/env node
 const { spawn } = require('node:child_process');
-const { writeFileSync, writeSync } = require('node:fs');
+const { readSync, writeFileSync, writeSync } = require('node:fs');
 const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 1, 2] });
 writeFileSync(process.env.NETNS_FIXTURE_PID, String(child.pid));
-writeSync(8, JSON.stringify({ 'child-pid': child.pid }) + '\\n');
-child.unref();
-process.exit(${exitCode});
+if (${JSON.stringify(exitCode)} === 'fragmented-info') {
+  writeSync(8, '{\\n  "child-pid": ' + child.pid + ',\\n');
+  setTimeout(() => {
+    // The reader must stay open for the complete record, even between writes.
+    writeSync(8, '  "fixture": true\\n}\\n');
+    require('node:fs').closeSync(8);
+    readSync(9, Buffer.alloc(2), 0, 2, null);
+    child.once('exit', () => process.exit(0));
+    child.kill('SIGTERM');
+  }, 100);
+} else {
+  writeSync(8, JSON.stringify({ 'child-pid': child.pid }) + '\\n');
+  child.unref();
+  process.exit(${typeof exitCode === 'number' ? exitCode : 0});
+}
 `);
     const pasta = join(dir, 'pasta');
     writeFileSync(pasta, '#!/usr/bin/env bash\nwhile [ "$#" -gt 0 ]; do if [ "$1" = -P ]; then : > "$2"; break; fi; shift; done\n');
@@ -140,8 +152,12 @@ process.exit(${exitCode});
         }),
       ]);
       expect(result.timedOut, stderr).toBe(false);
-      expect(result.code, stderr).toBe(exitCode === 0 ? 97 : exitCode);
-      expect(stderr).toContain('supervisor exited with its sandbox helper still alive');
+      expect(result.code, stderr).toBe(exitCode === 'fragmented-info' ? 0 : exitCode === 0 ? 97 : exitCode);
+      if (exitCode === 'fragmented-info') {
+        expect(stderr).not.toContain('supervisor exited with its sandbox helper still alive');
+      } else {
+        expect(stderr).toContain('supervisor exited with its sandbox helper still alive');
+      }
     } finally {
       if (timer) clearTimeout(timer);
       // Reap only this fixture's known child on the intentionally failing baseline.

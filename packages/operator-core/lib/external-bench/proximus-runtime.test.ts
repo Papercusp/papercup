@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { currentProtocolFixture, allCapabilities } from './reproducibility/_protocol-test-fixture';
 import { currentBenchmarkProtocolSchema, currentBenchProviderAgent, PROXIMUS_CLIENT_VERSION,
   PROXIMUS_SOURCE_REVISION, type CurrentBenchmarkProtocol } from './reproducibility/schema';
-import { measureProximusRuntime, proximusHostProcess, proximusRunSpec, runProximusHost,
+import { measureProximusRuntime, prepareProximusRuntime, proximusHostProcess, proximusRunSpec, runProximusHost,
   readProximusAttemptPopulation, readProximusBilling, requireProximusHostConfinement,
   priceProximusAttempts, readProximusTurns } from './proximus-runtime';
 import { currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
@@ -363,6 +363,61 @@ describe('official Proximus protocol identity', () => {
     const { protocol, execution } = fixture(); mutations[change](protocol);
     expect(currentBenchmarkProtocolSchema.safeParse(protocol).success).toBe(false);
     expect(() => proximusRunSpec(protocol, execution)).toThrow();
+  });
+});
+
+describe('Proximus frozen runtime preparation', () => {
+  const measured = () => ({ schemaVersion: 1 as const, runtimeRevision: digest('installed-runtime'),
+    sourceRevision: PROXIMUS_SOURCE_REVISION, clientVersion: PROXIMUS_CLIENT_VERSION, harborVersion: '0.23.0', fileCount: 100 });
+  type Installer = NonNullable<NonNullable<Parameters<typeof prepareProximusRuntime>[1]>['install']>;
+  const installer = () => vi.fn<Installer>(async (_command, _args, options) =>
+    `${options.env!.UV_PROJECT_ENVIRONMENT}/bin/python\n`);
+
+  it('uses the frozen vendored project without inheriting credentials, and remeasures existing runtimes', async () => {
+    const install = installer(), measure = vi.fn(async () => measured());
+    const first = await prepareProximusRuntime({}, { install, measure });
+    const second = await prepareProximusRuntime({}, { install, measure });
+    expect(first).toEqual(second);
+    expect(measure).toHaveBeenCalledTimes(2);
+    const [command, args, options] = install.mock.calls[0];
+    expect(command).toBe('uv');
+    expect(args).toEqual(['run', '--frozen', '--no-dev', '--python', '3.12', '--project',
+      expect.stringMatching(/\/vendor\/proximus$/), 'python', '-I', '-c', 'import sys;print(sys.executable)']);
+    expect(options).toMatchObject({ timeout: 120_000, killSignal: 'SIGKILL', maxBuffer: 65536 });
+    expect(options.env!.UV_PROJECT_ENVIRONMENT).toMatch(/\/papercusp-proximus-[a-f0-9]{16}$/);
+    expect(Object.keys(options.env!)).not.toEqual(expect.arrayContaining(['OPENAI_API_KEY']));
+    expect(Object.keys(options.env!)).toEqual(expect.arrayContaining(['UV_PROJECT_ENVIRONMENT', 'PYTHONDONTWRITEBYTECODE']));
+    expect(Object.keys(options.env!).every(key => ['UV_PROJECT_ENVIRONMENT', 'PYTHONDONTWRITEBYTECODE',
+      'PATH', 'HOME', 'TMPDIR', 'UV_CACHE_DIR', 'UV_PYTHON_INSTALL_DIR', 'XDG_CACHE_HOME'].includes(key))).toBe(true);
+    expect(measure).toHaveBeenCalledWith({ pythonBin: first.pythonBin, signal: undefined });
+    expect(Object.isFrozen(first)).toBe(true); expect(Object.isFrozen(first.runtime)).toBe(true);
+  });
+  it.each(['python', '/usr/bin/python', '/tmp/foreign/bin/python', '/tmp/a\n/tmp/b'])
+    ('refuses an unbound interpreter before measurement: %s', async stdout => {
+      const measure = vi.fn();
+      await expect(prepareProximusRuntime({}, { install: async () => stdout, measure })).rejects.toThrow(/interpreter/);
+      expect(measure).not.toHaveBeenCalled();
+    });
+  it('propagates install failure and refuses incomplete byte measurements', async () => {
+    const measure = vi.fn();
+    await expect(prepareProximusRuntime({}, { install: async () => { throw new Error('uv failed'); }, measure }))
+      .rejects.toThrow('uv failed');
+    expect(measure).not.toHaveBeenCalled();
+    await expect(prepareProximusRuntime({}, { install: installer(), measure: async () => ({ ...measured(), fileCount: 0 }) }))
+      .rejects.toThrow(/incomplete/);
+  });
+  it('does not install after cancellation or measure after cancellation during installation', async () => {
+    const abort = new AbortController(), install = installer(), measure = vi.fn();
+    abort.abort();
+    await expect(prepareProximusRuntime({ signal: abort.signal }, { install, measure })).rejects.toThrow();
+    expect(install).not.toHaveBeenCalled();
+    const during = new AbortController();
+    install.mockImplementationOnce(async (_command, _args, options) => {
+      during.abort(); return `${options.env!.UV_PROJECT_ENVIRONMENT}/bin/python\n`;
+    });
+    await expect(prepareProximusRuntime({ signal: during.signal }, { install, measure })).rejects.toThrow();
+    expect(install.mock.calls[0][2].signal).toBe(during.signal);
+    expect(measure).not.toHaveBeenCalled();
   });
 });
 
