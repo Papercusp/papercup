@@ -171,11 +171,15 @@ it('restores native PG18 transcript values and reduces paired snapshot archive b
     }
     const [uncompressed, compressed] = archives;
     const ratio = compressed.bytes / uncompressed.bytes;
-    await context.annotate(JSON.stringify({ seed, construction: 'SHA256(seed || uint32be(counter))',
+    const evidence = { seed, construction: 'SHA256(seed || uint32be(counter))',
       rowCount, binaryBytes: rowCount * bytesPerRow, sourceDigest,
       producerSha256: createHash('sha256').update(source).digest('hex'),
       serverVersionNum: server.version, dumpVersion: dumpVersion.stdout.trim(),
-      restoreVersion: restoreVersion.stdout.trim(), archives, ratio }), 'native-backup-fixture');
+      restoreVersion: restoreVersion.stdout.trim(), archives, ratio };
+    // Vitest's JSON reporter persists task metadata, but drops annotations.
+    // Keep the raw byte totals/digests in the ordinary machine-readable result.
+    context.task.meta.nativeBackupFixture = evidence;
+    await context.annotate(JSON.stringify(evidence), 'native-backup-fixture');
     expect(uncompressed.bytes).toBeGreaterThan(12 * 1024 * 1024);
     expect(ratio).toBeLessThanOrEqual(0.65);
   } finally {
