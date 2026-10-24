@@ -78,6 +78,18 @@ test('owner questions and choices survive reopening and accept an answer in the 
   const question = `Isolated headless question ${group}`;
   const answer = `Recorded owner answer ${group}`;
   try {
+    // Navigation is part of the fixture: never let an ambient workspace
+    // selection turn a missing row into a false delivery failure.
+    const inboxUrl = new URL('/adv', origin);
+    inboxUrl.searchParams.set('opcv', 'inbox');
+    inboxUrl.searchParams.set('ws', workspace);
+    inboxUrl.searchParams.set('verify-tauri-isolated', '1');
+    await native('navigate', inboxUrl.href, '--json');
+    await expect.poll(async () => {
+      const state = await measure(`({ workspace: window.__PAPERCUSP_WS__ || new URL(location.href).searchParams.get('ws'), origin: location.origin, url: location.href })`) as Record<string, unknown>;
+      evidence.browserScope = state;
+      return { workspace: state.workspace, origin: state.origin };
+    }, { timeout: 30_000 }).toEqual({ workspace, origin });
     const choice = await invoke('coord:escalate', {
       severity: 'question', summary: prompt,
       body: 'Choose one of these two isolated rehearsal options.',
@@ -89,7 +101,30 @@ test('owner questions and choices survive reopening and accept an answer in the 
     expect(ask.conversation_id).toBeTruthy();
     expect(ask.answered).toBe(false);
     evidence.opened = { choice, ask };
-    await native('navigate', `${origin}/adv?opcv=inbox`, '--json');
+    // Distinguish durable delivery from UI selection. Retain this source
+    // readback before any row wait, so failures name the layer that lost it.
+    await expect.poll(async () => {
+      const feed = await invoke('plans:attention', { harness: 'papercusp', output: 'refs', ownerAgentId: session });
+      const items: Array<Record<string, any>> = [];
+      function collect(value: unknown) {
+        if (!value || typeof value !== 'object') return;
+        if (Array.isArray(value)) { value.forEach(collect); return; }
+        const entry = value as Record<string, any>;
+        if (typeof entry.id === 'string' && typeof entry.kind === 'string' && entry.ref) {
+          items.push(entry);
+          return;
+        }
+        Object.values(entry).forEach(collect);
+      }
+      collect(feed);
+      const choiceRow = items.find((item: Record<string, any>) => item.ref?.msgId === choice.msg_id);
+      // ask-owner's linked escalation may represent its conversation in the
+      // deduplicated attention feed. Match that exact generated question too.
+      const questionRow = items.find((item: Record<string, any>) =>
+        item.ref?.conversationId === ask.conversation_id || item.title === question);
+      evidence.deliveryReadback = { choice: choiceRow ?? null, question: questionRow ?? null };
+      return { choice: Boolean(choiceRow), question: Boolean(questionRow) };
+    }, { timeout: 45_000 }).toEqual({ choice: true, question: true });
     await openRow(prompt);
     const choicesVisible = `(() => {
       const buttons = Array.from(document.querySelectorAll('[data-testid^="inbox-expanded-"] button')).map(el => el.textContent?.trim());
@@ -124,7 +159,13 @@ test('owner questions and choices survive reopening and accept an answer in the 
   } catch (error) {
     evidence.outcome = 'failed';
     evidence.failure = String(error);
-    try { evidence.dom = await measure('({url:location.href,body:document.body.innerText.slice(0,4000)})'); }
+    try {
+      evidence.dom = await measure('({url:location.href,workspace:window.__PAPERCUSP_WS__ ?? null,body:document.body.innerText.slice(0,4000)})');
+      evidence.registry = await measure(`(async () => ({
+        http: await fetch('/api/workspaces').then(r => r.json()),
+        native: window.__TAURI_INTERNALS__ ? await window.__TAURI_INTERNALS__.invoke('workspaces_list') : null
+      }))()`);
+    }
     catch (diagnosticError) { evidence.diagnosticError = String(diagnosticError); }
     throw error;
   } finally {
