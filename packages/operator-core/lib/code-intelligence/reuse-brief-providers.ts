@@ -88,6 +88,7 @@ const sqlProvider = postgresLineageProvider(async (context, signal) => {
 });
 export const registeredReuseBriefProviders = (): readonly ReuseBriefProvider[] =>
   [...registry.values(), ...(registry.has('sql') ? [] : [sqlProvider]),
+    ...(registry.has('clones') ? [] : [cloneProvider]),
     ...(registry.has('coverage') ? [] : [coverageProvider]),
     ...(registry.has('semantic') ? [] : [semanticProvider])];
 /** Optional producer packages can publish later than the shared registry. Their
@@ -95,6 +96,10 @@ export const registeredReuseBriefProviders = (): readonly ReuseBriefProvider[] =
 const coverageProvider: ReuseBriefProvider = { id: 'coverage', async read(context, signal) {
   const { nativeCoverageBriefProvider } = await import('./test-coverage-map');
   return nativeCoverageBriefProvider.read(context, signal);
+} };
+const cloneProvider: ReuseBriefProvider = { id: 'clones', async read(context, signal) {
+  const { cloneBriefProvider } = await import('./clone-brief-provider');
+  return cloneBriefProvider().read(context, signal);
 } };
 const semanticProvider: ReuseBriefProvider = { id: 'semantic', async read(context, signal) {
   const { semanticCodeProvider } = await import('./semantic-code-runtime');
@@ -156,7 +161,10 @@ export async function composeReuseBrief<T>(input: {
           paths: Object.freeze([...input.context.paths]), planItems: Object.freeze([...(input.context.planItems ?? [])]),
           repository: input.context.repository ? Object.freeze({ ...input.context.repository }) : undefined,
           sourceFiles: input.context.sourceFiles ? Object.freeze(input.context.sourceFiles.map(row => Object.freeze({ ...row }))) : undefined,
-          checkedPaths: input.context.checkedPaths ? Object.freeze([...input.context.checkedPaths]) : undefined }), controller.signal)),
+          checkedPaths: input.context.checkedPaths ? Object.freeze([...input.context.checkedPaths]) : undefined,
+          changedLines: input.context.changedLines ? Object.freeze(Object.fromEntries(Object.entries(input.context.changedLines)
+            .map(([path, lines]) => [path, Object.freeze([...lines])]))) : undefined,
+          staticTests: input.context.staticTests ? Object.freeze([...input.context.staticTests]) : undefined }), controller.signal)),
         new Promise<null>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(null); },
           Math.min(REUSE_PROVIDER_DEADLINE_MS, remaining)); }),
       ]);

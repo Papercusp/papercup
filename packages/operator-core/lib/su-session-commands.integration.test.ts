@@ -89,6 +89,9 @@ describe('SU command acceptance through real PostgreSQL', () => {
     const restoredLegacy = await readDurableSuSession({ advSessionId, workspaceId });
     expect(restoredLegacy?.descriptor).toEqual(legacy);
     expect(restoredLegacy?.descriptor?.executionKind).toBeUndefined();
+    expect(restoredLegacy?.terminalBin).toBeNull();
+    await sql`UPDATE harness_shared.adv_sessions SET terminal_bin = 'pui-structured-claude' WHERE id = ${advSessionId}`;
+    expect((await readDurableSuSession({ advSessionId, workspaceId }))?.terminalBin).toBe('pui-structured-claude');
     const legacyExecute = vi.fn(async () => ({ status: 'completed' as const }));
     const legacyHost = new SuSessionHost({ descriptor: restoredLegacy!.descriptor!, executeCommand: legacyExecute });
     const unsupported = await legacyHost.acceptCommand({ ...ownerTurn('legacy-queue'), type: 'queue' });

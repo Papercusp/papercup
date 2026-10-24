@@ -46,6 +46,9 @@ describe('P016 execution coverage freshness, retention and reuse advisory', () =
   it('persists a latest snapshot, isolates workspace/root and physically applies age and count retention', async () => {
     await writeTestCoverage(sql, 'workspace', 'harness', [snapshot()], 'bound-run');
     expect(await readTestCoverage(sql, 'workspace', 'harness', '/repo', ['pkg/a.ts'])).toEqual([snapshot()]);
+    expect(await readTestCoverage(sql, 'workspace', 'harness', '/repo', ['pkg/a.ts'], 'bound-run')).toEqual([snapshot()]);
+    expect(await readTestCoverage(sql, 'workspace', 'harness', '/repo', ['pkg/a.ts'], 'other-run')).toEqual([]);
+    expect(await readTestCoverage(sql, 'workspace', 'harness', '/repo', ['pkg/a.ts'], '')).toEqual([]);
     expect(await readTestCoverage(sql, 'other', 'harness', '/repo', ['pkg/a.ts'])).toEqual([]);
     expect(await readTestCoverage(sql, 'workspace', 'harness', '/sibling', ['pkg/a.ts'])).toEqual([]);
     await sql`INSERT INTO harness_shared.test_coverage_maps

@@ -6315,8 +6315,13 @@ async function completeOneTracked(
     && await getFlag(FLAGS.CODE_INTEL_PUSH_COMPLETION, ident.ownerId).catch(() => false)
     ? (await withBoundedTimeout(async signal => {
       const { getCompletionTimeBrief } = await import('../../code-intelligence/task-brief');
+      const { createReuseBriefIdentity } = await import('../../code-intelligence/reuse-brief-providers');
+      let coverageBinding: { runGroupId: string; testFiles: readonly string[] } | undefined;
       if (signal.aborted) return null;
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/work_items/complete.ts#<module>/completeOneTracked/<callback>:12344fc20ebef8d38331:1","classification":"durable","reason":"Completion brief providers include computed dispatch; their notification consequences retain the existing delivery obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return getCompletionTimeBrief({ workspaceId: ctx.workspaceId ?? activeWorkspaceId(),
+        workItem: it.id, reuse: createReuseBriefIdentity(ident.ownerId, ctx.dispatchCallId,
+          outcomes => ctx.metadata?.({ reuseBriefProviders: outcomes })),
         harness: it.harness ?? existing.harness ?? '', paths: completionEvidenceForGate.filesChanged ?? [],
         subject: { id: it.id, harness: it.harness ?? existing.harness,
           payload: existing.payload, sourcePlanSlug: existing.sourcePlanSlug,
@@ -6332,9 +6337,15 @@ async function completeOneTracked(
             new Date(run.invokedAt.getTime() + Math.max(0, run.durationMs ?? 0) + TEST_BINDING_WINDOW_SLACK_MS));
           if (!rows) return null;
           const groups = new Set(rows.map(row => row.runGroupId));
-          if (groups.size > 1 || groups.has(null)) return null;
+          if (groups.size !== 1 || groups.has(null)) return null;
+          coverageBinding = { runGroupId: rows[0]!.runGroupId!, testFiles: run.files };
           return rows.filter(row => paths.includes(row.filePath) && row.runGroupId)
             .map(row => ({ path: row.filePath, status: row.status, runGroupId: row.runGroupId! }));
+        },
+        coverage: async (context, signal) => {
+          if (!coverageBinding) return null;
+          const { readNativeCoverageScope } = await import('../../code-intelligence/test-coverage-map');
+          return readNativeCoverageScope(context, signal, coverageBinding);
         },
       });
     }, { timeoutMs: 6_000, fallback: null, label: 'work_items:complete:change-brief', signal: ctx.signal })).value

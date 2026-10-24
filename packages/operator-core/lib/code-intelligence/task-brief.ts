@@ -19,6 +19,8 @@ import { recordReuseBriefIssued, type ReuseIssuedRecord } from './reuse-brief-le
 import { boundChangeHistoryProviders, changeHistoryProviders, readCoChange } from './change-history';
 import { readTaskEngineeringEvidence, type TaskEngineeringEvidence } from './task-brief-engineering';
 import type { EngineeringQuery, readEngineeringEvidence } from './engineering-evidence';
+import { withBoundedTimeout } from '../bounded-timeout';
+import type { CoverageScopeData } from './test-coverage-map';
 
 export const TASK_BRIEF_BUDGET_MS = 6_000;
 export const TASK_BRIEF_MAX_CHARS = 3_000;
@@ -494,7 +496,14 @@ export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: 
     plan: ref.workItem?.sourcePlanSlug ?? undefined, planItems: ref.workItem?.sourcePlanItemIds ?? [],
     paths: base.scope.paths, sourceVersion: base.sourceFingerprint, commit: base.commit,
     repository: base.repository, sourceFiles: base.files.map(file => ({ path: file.path, sha256: file.sha256 })) };
-  const adapters = deps.reuse?.adapters ?? Object.fromEntries(reuseAdapters);
+  // D011: append to the existing representation; preserve mandatory fields and
+  // never manufacture parallel top-level anchor sections.
+  const append: TaskBriefReuseAdapter = (brief, value) => ({ ...brief,
+    graph: { ...brief.graph, relationships: [...brief.graph.relationships, JSON.stringify(value)] } });
+  const adapters = deps.reuse?.adapters ?? {
+    impact: append, tests: append, coChange: append, whatChangedSincePlanning: append,
+    ...Object.fromEntries(reuseAdapters),
+  };
   const harness = ref.workItem?.harness ?? ref.harness;
   const history = harness ? boundChangeHistoryProviders({ harness,
     root: () => deps.root(context.workspaceId, harness),
@@ -559,8 +568,31 @@ export interface CompletionBriefDeps {
   /** The default report's non-graph effects (git, artifact writes). */
   effects?: Omit<ChangeReportEffects, 'graph'>;
   cochange?: typeof readCoChange;
+  /** One source-qualified, close-bound test run batch, shared by SQL/coverage. */
+  coverage?: (context: Readonly<ReuseProviderContext>, signal: AbortSignal) => Promise<CoverageScopeData | null>;
   reuse?: TaskBriefDeps['reuse'];
   engineering?: TaskBriefDeps['engineering'];
+}
+
+/** Added lines from a complete native diff only. Context/deletions and truncated
+ * excerpts cannot establish a changed executable line. */
+function completionChangedLines(patch: string): number[] | null {
+  const added: number[] = [];
+  let line = 0, oldLeft = 0, newLeft = 0, seen = false;
+  for (const text of patch.split('\n')) {
+    const hunk = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(text);
+    if (hunk) {
+      if (oldLeft || newLeft) return null;
+      oldLeft = Number(hunk[1] ?? 1); line = Number(hunk[2]); newLeft = Number(hunk[3] ?? 1); seen = true;
+    } else if (seen && (oldLeft || newLeft)) {
+      if (text.startsWith(' ')) { oldLeft--; newLeft--; line++; }
+      else if (text.startsWith('-')) oldLeft--;
+      else if (text.startsWith('+')) { newLeft--; added.push(line++); }
+      else if (text !== '\\ No newline at end of file') return null;
+      if (oldLeft < 0 || newLeft < 0 || added.length > 10_000) return null;
+    }
+  }
+  return seen && !oldLeft && !newLeft ? added : null;
 }
 
 /** P-039: reuse the pre-review report at the completion receipt, without
@@ -630,6 +662,7 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
       .catch(() => null) : Promise.resolve(null)).finally(() => clearTimeout(historyTimer));
     const captured = new Map<string, string>();
     const tests = new Set<string>();
+    const changedLines: Record<string, readonly number[]> = {};
     const unmeasured: string[] = [];
     for (const file of brief.scope.paths) {
       if (Date.now() >= deadline || brief.changes.length >= 2) break;
@@ -656,6 +689,12 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
           const why = answer.error ?? report.limitations[report.limitations.length - 1] ?? 'no compiler input identity';
           if (unmeasured.length < 2) unmeasured.push(`${file}#${symbol}: ${why}`.slice(0, 240));
           continue;
+        }
+        for (const change of report.changed) {
+          if (!brief.scope.paths.includes(change.path)
+            || report.limitations.includes(`Diff excerpt truncated for ${change.path}.`)) continue;
+          const lines = completionChangedLines(change.patch);
+          if (lines) changedLines[change.path] = lines;
         }
         for (const input of answer.evidence?.sourceScope.supportingFiles ?? []) {
           if (input.representation !== 'full-source' || !safePath(input.path)) continue;
@@ -694,11 +733,24 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
       const context: ReuseProviderContext = { surface: 'completion', workspaceId: ref.workspaceId,
         owner: ref.reuse.owner, invocation: ref.reuse.invocation, workItem: ref.workItem, paths: brief.scope.paths,
         sourceVersion: hash(JSON.stringify([...captured])), commit: cochange?.commit ?? null,
-        repository: { workspaceId: ref.workspaceId, rootPath: root }, sourceFiles };
+        repository: { workspaceId: ref.workspaceId, rootPath: root }, sourceFiles,
+        changedLines: Object.keys(changedLines).length ? changedLines : undefined, staticTests: paths };
+      const { coverageBriefProvider, sourceBoundCoverageSnapshots } = await import('./test-coverage-map');
+      const receipt = deps.coverage ? (await withBoundedTimeout(signal => deps.coverage!(context, signal), {
+        timeoutMs: Math.max(1, Math.min(750, deadline - Date.now() - 150)), fallback: null,
+        label: 'completion:bound-coverage',
+      })).value : null;
+      const qualified = receipt ? sourceBoundCoverageSnapshots(root, receipt.snapshots, receipt.currentHashes) : [];
+      const validReceipt = receipt && qualified.length > 0 && qualified.length === receipt.snapshots.length
+        && new Set(qualified.map(s => `${s.scopeRoot}\0${s.observedAt}`)).size === 1
+        && sourceFiles.every(file => receipt.currentHashes.get(file.path) === file.sha256);
+      if (validReceipt) context.checkedPaths = [...new Set(qualified.flatMap(s => s.sources
+        .filter(source => source.covered.length > 0).map(source => source.path)))];
       const registered = registeredReuseBriefProviders();
       const historyProviders = cochange ? changeHistoryProviders({ cochange: async () => cochange,
         provenance: async () => [] }).filter(provider => provider.id === 'cochange') : [];
-      const providers = deps.reuse?.providers ?? [...registered,
+      const providers = deps.reuse?.providers ?? [...registered.map(provider => deps.coverage && provider.id === 'coverage'
+        ? coverageBriefProvider(async () => validReceipt ? receipt : null) : provider),
         ...historyProviders.filter(provider => !registered.some(row => row.id === provider.id))];
       const result = await composeReuseBrief({ base: finish(brief), context, deadline: deadline - 150, providers,
         append: (base, contribution) => ({ ...base, limitations: [...base.limitations, contribution.text] }) });

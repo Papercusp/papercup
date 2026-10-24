@@ -1,4 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { cloneBriefProvider } from './clone-brief-provider';
+import { authoringReuse } from './reuse-authoring';
+import type { ReuseIssuedRecord } from './reuse-brief-ledger';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { cloneAdvisoryFixture } from './__fixtures__/clone-advisory-fixture';
 import { briefCodePoints, composeReuseBrief, registerReuseBriefProvider,
   type ReuseBriefProvider, type ReuseContribution, type ReuseProviderContext, type ReuseProviderId } from './reuse-brief-providers';
 
@@ -11,6 +22,124 @@ const provider = (id: ReuseProviderId, lines = [`${id}: target.ts:2; source scop
   read: async () => ({ status: 'measured', lines, sourceVersion: 'blob-v1', indexVersion: 'index-v2', citedPaths: ['target.ts'] }) });
 const compose = (base: Brief, providers: ReuseBriefProvider[], now = Date.now, deadline = now() + 6_000) =>
   composeReuseBrief({ base, providers, context, append, now, deadline });
+
+// The shared producer fixture lowers minMass for its own focused cases. Delivery
+// re-parses at the production floor; use substantial bodies rather than weaken it.
+const deliveryFixture = () => {
+  const fixture = cloneAdvisoryFixture();
+  for (const path of ['a.ts', 'b.ts'] as const) fixture.sources[path] = fixture.sources[path]
+    .replace('return total;', `${'total += values.length; '.repeat(20)}return total;`);
+  return fixture;
+};
+
+describe('P010 source-checked clone delivery', () => {
+  it('issues unchanged sibling locations on each surface, preserving base, cap and independent identities', async () => {
+    const fixture = deliveryFixture(), root = await mkdtemp(join(tmpdir(), 'clone-provider-'));
+    try {
+      for (const [path, source] of Object.entries(fixture.sources)) await writeFile(join(root, path), source);
+      const sha256 = createHash('sha256').update(fixture.sources['b.ts']).digest('hex');
+      const sourceFiles = [{ path: 'b.ts', sha256 }];
+      const sourceVersion = createHash('sha256').update(JSON.stringify(sourceFiles.map(f => [f.path, f.sha256]))).digest('hex');
+      for (const surface of ['claim', 'authoring', 'completion'] as const) {
+        const result = await composeReuseBrief({ base: { mandatory: 'unchanged' }, append,
+          context: { ...context, surface, paths: ['b.ts'], sourceFiles, sourceVersion,
+            repository: { workspaceId: context.workspaceId, rootPath: root } },
+          deadline: Date.now() + 6000, providers: [cloneBriefProvider({ snapshot: () => fixture.snapshot })] });
+        expect(result.brief.mandatory).toBe('unchanged');
+        expect(result.brief.impact?.[0]?.text).toContain(surface === 'completion' ? 'Untouched sibling a.ts:1 original' : 'Copy family a.ts:1 original');
+        expect(result.observations[0]).toMatchObject({ provider: 'clones', status: 'issued', sourceVersion });
+        expect(result.observations[0]!.chars).toBeLessThanOrEqual(600);
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('detects a new copy against actual historical bytes, and a nonmatch emits no warning', async () => {
+    const fixture = deliveryFixture(), root = await mkdtemp(join(tmpdir(), 'clone-provider-history-'));
+    const git = async (...args: string[]) => (await promisify(execFile)('git', ['-C', root, ...args])).stdout.trim();
+    try {
+      for (const [path, source] of Object.entries(fixture.sources)) await writeFile(join(root, path), source);
+      await git('init', '-q'); await git('config', 'user.name', 'fixture'); await git('config', 'user.email', 'fixture@example.invalid');
+      await git('add', '.'); await git('commit', '-qm', 'baseline');
+      const baseline = await git('rev-parse', 'HEAD');
+      const planted = `${fixture.sources['b.ts']}\n${fixture.sources['b.ts'].replace('copy', 'planted')}`;
+      await writeFile(join(root, 'b.ts'), planted);
+      const sourceFiles = [{ path: 'b.ts', sha256: createHash('sha256').update(planted).digest('hex') }];
+      const sourceVersion = createHash('sha256').update(JSON.stringify(sourceFiles.map(f => [f.path, f.sha256]))).digest('hex');
+      const ctx = { ...context, surface: 'completion' as const, paths: ['b.ts'], sourceFiles, sourceVersion,
+        repository: { workspaceId: context.workspaceId, rootPath: root } };
+      const provider = cloneBriefProvider({ snapshot: () => ({ ...fixture.snapshot, commit: baseline }) });
+      const result = await provider.read(ctx, new AbortController().signal);
+      expect(result.lines).toContainEqual(expect.stringContaining('New copy b.ts:2 planted since'));
+      expect(result.lines).toContainEqual(expect.stringContaining('Untouched sibling a.ts:1 original'));
+      const noneFiles = [{ path: 'none.ts', sha256: createHash('sha256').update(fixture.sources['none.ts']).digest('hex') }];
+      const none = await provider.read({ ...ctx, paths: ['none.ts'], sourceFiles: noneFiles,
+        sourceVersion: createHash('sha256').update(JSON.stringify(noneFiles.map(f => [f.path, f.sha256]))).digest('hex') }, new AbortController().signal);
+      expect(none.lines).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('does not issue source-mismatched or escaping citations', async () => {
+    const fixture = cloneAdvisoryFixture(), root = await mkdtemp(join(tmpdir(), 'clone-provider-stale-'));
+    try {
+      for (const [path, source] of Object.entries(fixture.sources)) await writeFile(join(root, path), source);
+      const sourceFiles = [{ path: 'b.ts', sha256: '0'.repeat(64) }];
+      const sourceVersion = createHash('sha256').update(JSON.stringify(sourceFiles.map(f => [f.path, f.sha256]))).digest('hex');
+      const result = await cloneBriefProvider({ snapshot: () => fixture.snapshot }).read({ ...context,
+        paths: ['b.ts'], sourceFiles, sourceVersion, repository: { workspaceId: context.workspaceId, rootPath: root } }, new AbortController().signal);
+      expect(result).toMatchObject({ status: 'unknown', lines: [] });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('P010 optional plan-authoring delivery', () => {
+  const ctx = (invocation: string) => ({ workspaceId: context.workspaceId, isSuperuser: true,
+    uiClientId: 'su-fixture', dispatchCallId: invocation, metadata: vi.fn() }) as unknown as UnifiedToolContext;
+  const input = { workspaceId: context.workspaceId, harness: 'fixture-harness', plan: 'fixture-plan', text: 'aggregate positive values' };
+
+  it('queries anchorless intent through the existing provider seam and records real authoring identity', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'authoring-intent-'));
+    const record = vi.fn(async (_input: ReuseIssuedRecord) => true), read = vi.fn(async (c: ReuseProviderContext) => ({
+      status: 'measured' as const, sourceVersion: c.sourceVersion, indexVersion: 'semantic-index',
+      lines: ['Suggested anchor, semantic candidate: target.ts:1 target; verify before reuse'], citedPaths: ['target.ts'] }));
+    try {
+      const result = await authoringReuse(ctx('plans-new-dispatch'), input, { root: async () => root,
+        snapshot: () => null, providers: [{ id: 'semantic', read }], recordIssued: record });
+      expect(read).toHaveBeenCalledOnce();
+      expect(read.mock.calls[0]![0]).toMatchObject({ surface: 'authoring', paths: [], itemText: input.text });
+      expect(result?.hints[0]?.text).toContain('Suggested anchor');
+      if (!result || !('observations' in result)) throw new Error('Expected composed authoring advice');
+      expect(result.ledger).toBe('recorded');
+      expect(record.mock.calls[0]?.[0]).toMatchObject({ context: { invocation: 'plans-new-dispatch', plan: 'fixture-plan' } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('issues anchored copy hints for add-item, preserves nonmatches, and isolates provider failures', async () => {
+    const fixture = deliveryFixture(), root = await mkdtemp(join(tmpdir(), 'authoring-copy-'));
+    try {
+      for (const [path, source] of Object.entries(fixture.sources)) await writeFile(join(root, path), source);
+      const deps = { root: async () => root, snapshot: () => fixture.snapshot, recordIssued: async () => true,
+        providers: [cloneBriefProvider({ snapshot: () => fixture.snapshot }),
+          { id: 'semantic' as const, read: async () => { throw new Error('semantic unavailable'); } }] };
+      const result = await authoringReuse(ctx('plans-add-item-dispatch'), { ...input, item: 'P-010', text: 'change b.ts', paths: ['b.ts'] }, deps);
+      expect(result?.hints[0]?.text).toContain('Copy family a.ts:1 original');
+      if (!result || !('observations' in result)) throw new Error('Expected composed copy advice');
+      expect(result.observations).toContainEqual(expect.objectContaining({ provider: 'semantic', status: 'unknown' }));
+      const none = await authoringReuse(ctx('plans-add-none'), { ...input, text: 'change none.ts', paths: ['none.ts'] }, deps);
+      expect(none?.hints).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps missing attribution or failed source lookup optional after a successful canonical write', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const missing = { dispatchCallId: 'unattributed' } as UnifiedToolContext;
+      await expect(authoringReuse(missing, input)).resolves.toBeUndefined();
+      await expect(authoringReuse(ctx('missing-registry'), input, { root: async () => { throw new Error('registry unavailable'); } })).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn.mock.calls[1]?.join(' ')).toContain('registry unavailable');
+    } finally { warn.mockRestore(); }
+  });
+});
 
 describe('P009 shared claim provider composition', () => {
   it('preserves mandatory data and orders independently completed providers by declared priority in their destinations', async () => {
@@ -126,5 +255,18 @@ describe('P009 shared claim provider composition', () => {
       append, deadline: Date.now() + 6000, providers: [provider('clones')] });
     expect(result.brief).toEqual({ mandatory: 'base' });
     expect(result.observations[0]).toMatchObject({ status: 'unknown', reason: 'source-mismatch', chars: 0 });
+  });
+  it('keeps another provider from changing the coverage question or static reach', async () => {
+    const scope = { ...context, changedLines: { 'target.ts': [2, 3] }, staticTests: ['target.test.ts'] };
+    const result = await composeReuseBrief({ base: { mandatory: 'base' }, context: scope, append, deadline: Date.now() + 6000,
+      providers: [{ id: 'clones', read: async c => {
+        Reflect.set(c.changedLines!['target.ts']!, 0, 99);
+        Reflect.set(c.staticTests!, 0, 'forged.test.ts');
+        return provider('clones').read(c, new AbortController().signal);
+      } }, { id: 'coverage', read: async c => ({ status: 'measured', sourceVersion: c.sourceVersion, indexVersion: 'scope-v1',
+        lines: [`lines ${c.changedLines!['target.ts']!.join(',')}; static ${c.staticTests!.join(',')}`] }) }] });
+    expect(result.brief.tests?.[0]?.text).toBe('lines 2,3; static target.test.ts');
+    expect(scope.changedLines).toEqual({ 'target.ts': [2, 3] });
+    expect(scope.staticTests).toEqual(['target.test.ts']);
   });
 });

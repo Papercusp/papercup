@@ -19,6 +19,7 @@ import { join } from 'node:path';
 
 import { defineTool } from '@papercusp/agent-mcp';
 import { sseResponse } from '@papercusp/sse';
+import { selectSuSessionExecution } from '@papercusp/chat-protocol';
 import { isSuAgent, type SuAgent, type SuContextSize } from '../../../su-agents';
 import { normalizeSuContextSize } from '../../../su-context-size.mjs';
 import { buildKickoffPromptFile } from '../../../agent-kickoff/prompt-file';
@@ -72,6 +73,7 @@ function json(body: unknown, status = 200): Response {
 async function handleLaunchSu(req: Request): Promise<Response> {
   let body: {
     agent?: string;
+    execution_kind?: unknown;
     harness_slug?: string | null;
     plan_slug?: string | null;
     stack?: string[] | null;
@@ -218,6 +220,19 @@ async function handleLaunchSu(req: Request): Promise<Response> {
     return json({ status: 'error', error: 'agent must be one of claude|omp|codex' }, 400);
   }
   const harness = body.harness_slug?.trim() || null;
+  // Explicit choices are validated before any identity/fleet allocation. The
+  // terminal branch cannot yet run a programmatic engine; refuse rather than
+  // silently starting PTY. Omitted headless selection is wired with that runner.
+  const executionRequest = Object.prototype.hasOwnProperty.call(body, 'execution_kind')
+    ? { execution_kind: body.execution_kind } : {};
+  if (Object.prototype.hasOwnProperty.call(body, 'execution_kind')) {
+    const selected = selectSuSessionExecution({ provider: agent, operation: 'create', headless: false,
+      defaultKind: body.attached_engine ? 'programmatic' : 'pty',
+      supportedKinds: body.attached_engine ? ['programmatic'] : attachAdvSessionId != null ? ['pty', 'programmatic'] : ['pty'],
+      requestedKinds: [body.execution_kind] });
+    if (!selected.ok) return json({ status: 'error', ...selected.refusal, error: selected.refusal.message },
+      selected.refusal.code === 'invalid_execution_kind' ? 400 : 409);
+  }
   const plan = body.plan_slug?.trim() || null;
   if (harness && !SLUG_RE.test(harness)) return json({ status: 'error', error: 'invalid harness slug' }, 400);
   if (plan && !SLUG_RE.test(plan)) return json({ status: 'error', error: 'invalid plan slug' }, 400);
@@ -345,12 +360,17 @@ async function handleLaunchSu(req: Request): Promise<Response> {
       const { launchAttachedSuSession } = await import('../../../su-session-attached-launch');
       return launchAttachedSuSession(req, {
         agent,
+        ...executionRequest,
         agent_chat_id: durable.agentChatId,
         harness_slug: durable.harnessSlug,
         account: durable.descriptor.accountRoute ?? 'default',
         carry: durable.descriptor.carry,
         model: durable.descriptor.model,
       });
+    }
+    if (executionRequest.execution_kind === 'programmatic') {
+      return json({ status: 'error', code: 'execution_handoff_required', retryable: false,
+        error: 'This native session requires an explicit execution handoff before programmatic attachment.' }, 409);
     }
     return json({
       status: 'ok',
@@ -454,6 +474,7 @@ async function handleLaunchSu(req: Request): Promise<Response> {
       kickoffKind === 'new-plan' ? await buildKickoffPromptFile({ kind: 'new-plan', harnessSlug: harness }) : null;
     return launchAttachedSuSession(req, {
       agent,
+      ...executionRequest,
       agent_chat_id: agentChatId,
       harness_slug: harness,
       plan_slug: plan,

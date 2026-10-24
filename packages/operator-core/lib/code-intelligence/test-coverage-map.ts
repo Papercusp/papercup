@@ -15,20 +15,32 @@ export interface CoverageAnswer {
   unknownChangedLines: number[];
   reason: string;
 }
+export interface CoverageScopeData {
+  snapshots: TestCoverageSnapshot[];
+  currentHashes: Map<string, string>;
+  population: string[] | null;
+}
+
+/** The same qualification feeds negative coverage claims and SQL checked scope. */
+export function sourceBoundCoverageSnapshots(root: string, snapshots: readonly unknown[],
+  hashes: ReadonlyMap<string, string>, now = Date.now()): TestCoverageSnapshot[] {
+  return snapshots.flatMap(value => {
+    const s = parseTestCoverage(value);
+    if (!s || s.root !== root || now - Date.parse(s.observedAt) > COVERAGE_RETENTION_MS
+      || Date.parse(s.observedAt) > now || hashes.get(s.testFile) !== s.testSha256
+      || s.sources.some(source => hashes.get(source.path) !== source.sha256)
+      || s.population.some(test => hashes.get(test.path) !== test.sha256)) return [];
+    return [s];
+  });
+}
 export function queryTestCoverage(input: { root: string; question: CoverageQuestion; snapshots: readonly unknown[];
   currentHashes: ReadonlyMap<string, string>; currentPopulation: readonly string[] | null;
   staticTests?: readonly string[]; now?: number }): CoverageAnswer {
   const now = input.now ?? Date.now(), q = input.question;
   const fallback = (reason: string): CoverageAnswer => ({ basis: 'static', tests: [...(input.staticTests ?? [])],
     noTestExecutes: null, uncoveredChangedLines: [], unknownChangedLines: [...(q.changedLines ?? [])], reason });
-  const rows = input.snapshots.flatMap(value => {
-    const s = parseTestCoverage(value);
-    if (!s || s.root !== input.root || now - Date.parse(s.observedAt) > COVERAGE_RETENTION_MS
-      || Date.parse(s.observedAt) > now || input.currentHashes.get(s.testFile) !== s.testSha256
-      || s.sources.some(source => input.currentHashes.get(source.path) !== source.sha256)
-      || s.population.some(test => input.currentHashes.get(test.path) !== test.sha256)) return [];
-    return s.sources.some(source => source.path === q.path) ? [s] : [];
-  });
+  const rows = sourceBoundCoverageSnapshots(input.root, input.snapshots, input.currentHashes, now)
+    .filter(s => s.sources.some(source => source.path === q.path));
   if (!rows.length) return fallback('Missing, stale or source-mismatched coverage; static reach only.');
   // One capture/population only: never manufacture a complete run by merging historical partial runs.
   rows.sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt));
@@ -77,7 +89,8 @@ export function coverageBriefProvider(load: (context: Readonly<ReuseProviderCont
 }
 
 /** Scope/registry + test-run DB are the same authorities as mandatory task briefs. */
-export const nativeCoverageBriefProvider = coverageBriefProvider(async (context, signal) => {
+export async function readNativeCoverageScope(context: Readonly<ReuseProviderContext>, signal: AbortSignal,
+  binding?: { runGroupId: string; testFiles: readonly string[] }): Promise<CoverageScopeData | null> {
   if (!context.repository || !context.sourceFiles?.length) return null;
   const root = await realpath(context.repository.rootPath);
   if (root !== context.repository.rootPath) return null;
@@ -87,7 +100,9 @@ export const nativeCoverageBriefProvider = coverageBriefProvider(async (context,
   const harness = (await loadHarnessRegistry(context.workspaceId)).projects.find(p => p.path === root)?.slug;
   if (!harness) return null;
   signal.throwIfAborted();
-  const snapshots = await readTestCoverage(getOrgPg().sql, context.workspaceId, harness, root, context.paths);
+  const snapshots = await readTestCoverage(getOrgPg().sql, context.workspaceId, harness, root, context.paths, binding?.runGroupId);
+  if (binding && (snapshots.some(s => !binding.testFiles.includes(s.testFile))
+    || new Set(snapshots.map(s => `${s.scopeRoot}\0${s.observedAt}`)).size !== 1)) return null;
   const paths = [...new Set([...context.sourceFiles.map(s => s.path),
     ...snapshots.flatMap(s => [...s.sources.map(f => f.path), ...s.population.map(f => f.path)])])];
   if (paths.length > COVERAGE_MAX_FILES * 2) return null;
@@ -113,5 +128,8 @@ export const nativeCoverageBriefProvider = coverageBriefProvider(async (context,
     }
     if (found.length <= COVERAGE_MAX_FILES) population = found;
   }
-  return { snapshots, currentHashes, population };
-});
+  const qualified = sourceBoundCoverageSnapshots(root, snapshots, currentHashes);
+  if (binding && (qualified.length !== snapshots.length || !qualified.length)) return null;
+  return { snapshots: qualified, currentHashes, population };
+}
+export const nativeCoverageBriefProvider = coverageBriefProvider(readNativeCoverageScope);

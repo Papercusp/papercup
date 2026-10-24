@@ -4,6 +4,7 @@ import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { selectSuSessionExecution, type SuSessionBackend } from '@papercusp/chat-protocol';
 import { getChat } from './agent-chats-data';
 import { getAdvSession, markAdvSessionEnded, setAdvSessionPid } from './adv-sessions';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
@@ -157,6 +158,8 @@ async function previousEngineExited(key: string, ms: number): Promise<boolean> {
 
 export interface AttachedSuLaunchInput {
   agent: string;
+  /** Presence is significant: invalid explicit choices never become defaults. */
+  execution_kind?: unknown;
   agent_chat_id: string;
   harness_slug: string;
   plan_slug?: string | null;
@@ -310,6 +313,15 @@ export async function launchAttachedSuSession(
   if (!['claude', 'codex', 'omp'].includes(input.agent)) {
     return Response.json({ status: 'error', code: 'attached_engine_unavailable', error: `The ${input.agent} engine does not support PUI's structured connection.` }, { status: 409 });
   }
+  const requested = Object.prototype.hasOwnProperty.call(input, 'execution_kind')
+    ? { requestedKinds: [input.execution_kind] } : {};
+  // Validate before forwarding/coalescing: a conflicting request must not join
+  // another request's already-starting programmatic engine.
+  const selection = selectSuSessionExecution({ provider: input.agent as SuSessionBackend,
+    operation: 'create', headless: false, defaultKind: 'programmatic',
+    supportedKinds: ['programmatic'], ...requested });
+  if (!selection.ok) return Response.json({ status: 'error', ...selection.refusal,
+    error: selection.refusal.message }, { status: selection.refusal.code === 'invalid_execution_kind' ? 400 : 409 });
   const workspaceId = activeWorkspaceId();
   const key = `${workspaceId}:${input.harness_slug}:${input.agent_chat_id}`;
   if (!options.forwarded && !state.engines.has(key) && !state.starting.has(key)) {
@@ -329,6 +341,8 @@ export async function launchAttachedSuSession(
   }
   try { return Response.json(await start); }
   catch (error) {
+    const refusal = (error as { executionRefusal?: { code: string; message: string; retryable: boolean } } | null)?.executionRefusal;
+    if (refusal) return Response.json({ status: 'error', ...refusal, error: refusal.message }, { status: 409 });
     return Response.json({ status: 'error', code: 'attached_engine_start_failed', error: error instanceof Error ? error.message : String(error) }, { status: 503 });
   }
 
@@ -342,6 +356,16 @@ export async function launchAttachedSuSession(
     if (previous) {
       if (previous.backend !== input.agent || previous.harnessSlug !== input.harness_slug) throw new Error('The conversation is already bound to a different engine or project');
       const host = getRegisteredSuSessionHost({ workspaceId, harnessSlug: input.harness_slug, agentChatId: input.agent_chat_id });
+      const existingSelection = selectSuSessionExecution({ provider: input.agent as SuSessionBackend,
+        operation: 'existing', supportedKinds: ['programmatic'], ...requested,
+        ...(previous.descriptor && Object.prototype.hasOwnProperty.call(previous.descriptor, 'executionKind')
+          ? { savedKind: previous.descriptor.executionKind } : {}),
+        // This map contains only structured engine instances. Otherwise require
+        // the launcher marker written when the actual native engine became ready.
+        legacyKind: state.engines.has(key) || previous.terminalBin === `pui-structured-${previous.backend}`
+          ? 'programmatic' : undefined });
+      if (!existingSelection.ok) throw Object.assign(new Error(existingSelection.refusal.message),
+        { executionRefusal: existingSelection.refusal });
       const snapshot = host?.snapshot();
       // A resumed engine restores its transcript in 'resuming' before it is
       // ready; a second attach meanwhile (the startup adoption and a /resume

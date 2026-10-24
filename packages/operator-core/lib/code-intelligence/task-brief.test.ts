@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +9,7 @@ import { firstPartyCallers } from './first-party-callers';
 import type { CodeIntelAnswer } from './contracts';
 import { coChangeFromCommits } from './change-history';
 import { readEngineeringEvidence, type EngineeringEvidenceDeps } from './engineering-evidence';
+import { coverageHash, type TestCoverageSnapshot } from '@papercusp/test-config/test-coverage-map';
 
 const dirs: string[] = [];
 describe('P039 completion pre-review briefs', () => {
@@ -74,6 +75,25 @@ describe('P039 completion pre-review briefs', () => {
     } });
     expect(result).toMatchObject({ status: 'unknown', changes: [], tests: [], testsWithoutRunEvidence: null });
   });
+  it.each(['complete', 'truncated', 'incomplete'] as const)('binds completion coverage questions to %s measured diff and compiler test reach', async mode => {
+    const { report, rootResolver } = setup();
+    const observe = vi.fn();
+    const measured: typeof nativeChangeReport = async (...args) => {
+      const result = await report(...args);
+      return { ...result, report: { ...result.report, changed: [{ path: 'target.ts', line1: 1,
+        patch: `diff --git a/target.ts b/target.ts\n--- a/target.ts\n+++ b/target.ts\n@@ -1,2 +1,3 @@\n unchanged\n-old\n+new\n${mode === 'incomplete' ? '' : '+added\n'}` }],
+      limitations: mode === 'truncated' ? [...result.report.limitations, 'Diff excerpt truncated for target.ts.'] : result.report.limitations } };
+    };
+    await getCompletionTimeBrief({ ...ref(), reuse: { owner: 'su-fixture', invocation: 'completion-coverage', observe } },
+      { root: rootResolver, report: measured, cochange: async () => coChangeFromCommits({ end: new Date().toISOString(),
+        paths: ['target.ts'], commit: null, complete: false, commits: [] }),
+      reuse: { providers: [], recordIssued: async () => true } });
+    const context = observe.mock.calls[0]![0].context;
+    expect(context.changedLines).toEqual(mode === 'complete' ? { 'target.ts': [2, 3] } : undefined);
+    expect(context.staticTests).toContain('target.test.ts');
+    // Neither a static path nor a diff becomes checked or executed source.
+    expect(context.checkedPaths).toBeUndefined();
+  });
   it('keeps an independent SQL provider when the co-change source is unavailable', async () => {
     const { report, rootResolver } = setup();
     const observed = vi.fn();
@@ -85,6 +105,31 @@ describe('P039 completion pre-review briefs', () => {
     expect(result.limitations).toContain('Unchecked reader db/read.ts');
     expect(observed.mock.calls[0]?.[0]).toMatchObject({ ledger: 'recorded', observations: [{ provider: 'sql', status: 'issued' }] });
   });
+  it.each(['covered', 'uncovered', 'partial', 'stale', 'ambiguous', 'missing'] as const)(
+    'derives checked source from one %s close-bound coverage receipt and shares it with coverage advice', async mode => {
+      const { root, report, rootResolver } = setup(), observed = vi.fn();
+      const coverage = vi.fn(async (context: import('./reuse-brief-providers').ReuseProviderContext) => {
+        if (mode === 'missing') return null;
+        const testHash = coverageHash(readFileSync(join(root, 'target.test.ts')));
+        const hashes = new Map(context.sourceFiles!.map(file => [file.path, file.sha256]));
+        hashes.set('target.test.ts', testHash);
+        const snapshot: TestCoverageSnapshot = { schemaVersion: 1, root, scopeRoot: root,
+          testFile: 'target.test.ts', testSha256: testHash, observedAt: new Date().toISOString(),
+          populationComplete: mode !== 'partial', population: [{ path: 'target.test.ts', sha256: testHash }],
+          sources: [{ path: 'target.ts', sha256: mode === 'stale' ? '0'.repeat(64) : hashes.get('target.ts')!,
+            executable: [1], covered: mode === 'uncovered' ? [] : [1] }] };
+        return { snapshots: mode === 'ambiguous' ? [snapshot, { ...snapshot, scopeRoot: join(root, 'other') }] : [snapshot],
+          currentHashes: hashes, population: ['target.test.ts'] };
+      });
+      const result = await getCompletionTimeBrief({ ...ref(), reuse: { owner: 'su-fixture', invocation: 'bound-coverage', observe: observed } },
+        { root: rootResolver, report, coverage, cochange: async () => coChangeFromCommits({ end: new Date().toISOString(),
+          paths: ['target.ts'], commit: null, complete: false, commits: [] }), reuse: { recordIssued: async () => true } });
+      expect(coverage).toHaveBeenCalledOnce();
+      expect(observed.mock.calls[0]![0].context.checkedPaths).toEqual(
+        mode === 'covered' || mode === 'partial' ? ['target.ts'] : mode === 'uncovered' ? [] : undefined);
+      expect(result.limitations.join(' ')).toContain(mode === 'stale' || mode === 'ambiguous' || mode === 'missing'
+        ? 'execution unknown' : mode === 'uncovered' ? 'no test executes' : 'executed by target.test.ts');
+    });
   it('gives the default compiler report the remaining brief deadline, not a fixed 2000 ms sub-budget', async () => {
     const { rootResolver } = setup();
     // Honour the budget the way the off-thread worker does: a fresh worker under host load
