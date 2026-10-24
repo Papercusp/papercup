@@ -901,6 +901,7 @@ export async function pruneWorkspaceHostCutIntermediates(
   removeSource: (repoRoot: string, source: string) => void = removeReleaseSourceWorktree,
 ): Promise<string[]> {
   const paths = workspaceHostCutPaths(input.workDir);
+  // notify-classification: {"id":"apps/operator/lib/release/workspace-host-release-cut-cli.ts#<module>/pruneWorkspaceHostCutIntermediates:c42aff5e3cffc8bbfc20:1","classification":"durable","reason":"Retention protection can reach lifecycle notification paths; retain their terminal delivery obligation through this wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return withRetentionPinProtection(async isPinned => {
     const removed: string[] = [];
     for (const [target, marker] of [[paths.source, paths.sourceReady], [paths.sidecar, paths.sidecarReady]]) {
@@ -1194,6 +1195,7 @@ export async function runWorkspaceHostReleaseCut(
   // Keep an explicit publisher preview intact, and verify the retained build before cleanup.
   if (!options.keepIntermediates && (!options.publish || !options.publisherArgs.includes('--plan-only'))) {
     await deps.verifyBuild(result, options.workDir);
+    // notify-classification: {"id":"apps/operator/lib/release/workspace-host-release-cut-cli.ts#<module>/runWorkspaceHostReleaseCut:acd4f1d13f552f053591:1","classification":"durable","reason":"The release-cut cleanup callback reaches lifecycle notification paths; retain their terminal delivery obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     pruned = await deps.pruneIntermediates({ repoRoot: options.repoRoot, workDir: options.workDir });
     deps.log(pruned.length > 0 ? `pruned intermediates: ${pruned.join(', ')}` : 'no eligible intermediates pruned');
   }
@@ -1319,6 +1321,7 @@ export async function runWorkspaceHostReleaseCutCli(
 ): Promise<'planned' | 'executed'> {
   const args = parseWorkspaceHostReleaseCutArgs(argv, runner.env);
   if (!args.planOnly) {
+    // notify-classification: {"id":"apps/operator/lib/release/workspace-host-release-cut-cli.ts#<module>/runWorkspaceHostReleaseCutCli:3ace9a491aafe3912a91:1","classification":"durable","reason":"The release execution callback reaches lifecycle notification paths; share their terminal delivery obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await runner.run(args);
     return 'executed';
   }
@@ -1374,6 +1377,7 @@ async function main(): Promise<void> {
   const repoRoot = moduleRepoRoot(import.meta.url);
   const signingKeyPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH ?? papercuspPath('signing/papercusp.key');
   const log = (line: string) => process.stdout.write(`[workspace-host-cut] ${line}\n`);
+  // notify-classification: {"id":"apps/operator/lib/release/workspace-host-release-cut-cli.ts#<module>/main:3b234bc7615db3bbe51d:1","classification":"durable","reason":"The release CLI entry path reaches lifecycle notifications through managed cleanup; preserve their terminal delivery obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await runWorkspaceHostReleaseCutCli(process.argv.slice(2), {
     env: process.env,
     signingKeyPath,
@@ -1386,6 +1390,7 @@ async function main(): Promise<void> {
       await mkdir(args.workDir, { recursive: true });
       const release = await acquireWorkDirLock(paths.lock);
       try {
+        // notify-classification: {"id":"apps/operator/lib/release/workspace-host-release-cut-cli.ts#<module>/main/run:7875873873bd1d8c62f4:1","classification":"durable","reason":"The managed release runner reaches lifecycle notifications through cleanup; preserve their terminal delivery obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const result = await runWorkspaceHostReleaseCut(
           { repoRoot, ...cutArgs },
           {
@@ -1443,6 +1448,7 @@ async function main(): Promise<void> {
                 ],
                 { cwd: root },
               ),
+            // notify-classification: {"id":"apps/operator/lib/release/workspace-host-release-cut-cli.ts#<module>/main/run/pruneIntermediates:8ef317da913cce5c10f3:1","classification":"durable","reason":"This cleanup adapter shares the lifecycle notification obligation of its retention-protected terminal path.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             pruneIntermediates: (input) => pruneWorkspaceHostCutIntermediates(input),
             log,
           },
@@ -1457,6 +1463,7 @@ async function main(): Promise<void> {
 }
 
 if (isCliEntry(import.meta.url)) {
+  // notify-classification: {"id":"apps/operator/lib/release/workspace-host-release-cut-cli.ts#<module>:3ced154398f7d2309daa:1","classification":"durable","reason":"The CLI invocation reaches lifecycle notifications through the managed release path; preserve their terminal delivery obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;

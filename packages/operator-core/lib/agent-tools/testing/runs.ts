@@ -106,6 +106,7 @@ export function createTestingRunsDiagnosticRunner(ctx: {
   ): Promise<T> {
     return withNamedQueryDiagnosticContext('testing:runs', async (currentRequestId) => {
       requestId ??= currentRequestId;
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/testing/runs.ts#<module>/createTestingRunsDiagnosticRunner/runDiagnosticQuery/<callback>:785dfbce6d3b754f00c4:1","classification":"durable","reason":"The query callback wrapper can reach notification paths; retain their terminal delivery requirement without inferring a delivery guarantee.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const pending = traceNamedQueryStage(stage, run);
       const timing = namedQueryStageTimings()?.stages.at(-1);
       let stageIndex: number | null = null;

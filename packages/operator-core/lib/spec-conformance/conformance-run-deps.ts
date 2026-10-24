@@ -461,6 +461,7 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
       // Reuse the scorecard reader's operational proof, without calling closure or
       // changing item status. A code audit can therefore be measured before close.
       const proof = itemAudits.some(({ entry }) => isNonCodeAuditVerdict(entry.verdict))
+        // notify-classification: {"id":"packages/operator-core/lib/spec-conformance/conformance-run-deps.ts#<module>/productionConformanceDeps/<callback>/<callback>:85518d4eabe604a888a1:1","classification":"durable","reason":"Lifecycle evaluation can reach grading and owner notification paths; retain their terminal delivery requirement through this wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         ? await (await import('../acceptance-bar-lifecycle-evaluator')).readAndEvaluateAcceptanceBarLifecycle(
             input.planSlug, 'pre-grading', { harnessSlug: input.harnessSlug },
           )

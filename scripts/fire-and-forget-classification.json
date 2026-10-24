@@ -90275,26 +90275,10 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts#<module>/handler:13d6cb7f424b0fab084c:1",
-      "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts#<module>/handler:1d7f7634b30349f458a3:1",
       "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
       "classification": "durable",
       "reason": "No safe-to-lose proof recorded. This call reaches notifyInvalidate, notifySyncInvalidate; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts#<module>/handler:1efda961925f037023bf:1",
-      "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
       "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
       "deliveryState": "unverified"
     },
@@ -90316,14 +90300,6 @@
     },
     {
       "id": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts#<module>/handler:b8eb4c1868b595fa5bcc:1",
-      "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts#<module>/handler:e9a39b6eb1c58d59b580:1",
       "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
       "classification": "durable",
       "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
