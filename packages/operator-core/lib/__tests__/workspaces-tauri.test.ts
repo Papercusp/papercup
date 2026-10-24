@@ -38,6 +38,21 @@ afterEach(() => {
 });
 
 describe('workspaces-tauri', () => {
+  it('discovers a machine registry without sending the previous workspace through the installed fetch adapter', async () => {
+    window.history.replaceState(null, '', '/?desktopHost=local&ws=previous-machine-workspace');
+    const registry = { current: 'new-workspace', workspaces: [{ id: 'new-workspace', name: 'New' }] };
+    vi.stubGlobal('fetch', fetchMock.mockResolvedValue({ ok: true, json: async () => registry }));
+    const { installWorkspaceHeaderFetch } = await import('../transport-adapters/workspace-header-fetch');
+    installWorkspaceHeaderFetch();
+    const { listWorkspaces } = await import('../workspaces-tauri');
+
+    expect(await listWorkspaces()).toEqual(registry);
+    const headers = new Headers(fetchMock.mock.calls[0][1].headers);
+    expect(headers.get('x-papercusp-machine')).toBe('local');
+    expect(headers.get('x-papercusp-workspace')).toBe('');
+    expect(commands.workspacesSwitch).not.toHaveBeenCalled();
+  });
+
   it('uses the selected remote operator for workspace commands even inside a Tauri window', async () => {
     window.history.replaceState(null, '', '/desktops?desktopHost=machine-b&ws=own');
     vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {},

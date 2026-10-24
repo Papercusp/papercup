@@ -1051,6 +1051,8 @@ export async function notifyRetainedGradingAuditor(
     reservation: GradingAuditReservationLease;
     workspaceId: string;
     harness?: string;
+    /** Exact endpoint already validated by the canonical runtime recovery. */
+    runtime?: GradingAuditRuntimeBinding;
     /** Resume a positively parked retained task without replacing its lease. */
     resumeParked?: boolean;
   },
@@ -1075,11 +1077,18 @@ export async function notifyRetainedGradingAuditor(
       (task.workItemId != null && task.workItemId !== card.issueId)) {
     return { state: 'skipped', reason: 'retained auditor target/owner/fingerprint provenance is missing or mismatched' };
   }
+  const notificationIdentity: unknown[] = [workspaceId, card.issueId, card.evidenceFingerprint, ownerId, reservation];
+  // A restored endpoint needs a new handoff even when the audit lease did not
+  // change. Legacy notices keep their original replay identity.
+  if (input.runtime) notificationIdentity.push(input.runtime);
   const msgId = `${input.resumeParked ? 'grading-audit-resume' : 'grading-audit-renewal'}:${createHash('sha256')
-    .update(JSON.stringify([workspaceId, card.issueId, card.evidenceFingerprint, ownerId, reservation]))
+    .update(JSON.stringify(notificationIdentity))
     .digest('hex')}`;
   const body = [
     `${input.resumeParked ? 'Resume retained audit under existing lease' : 'Renewed lease'}: key '${key}', reservedAt '${reservation.reservedAt}'. Your existing independent audit task '${task.taskId}' is retained.`,
+    ...(input.runtime ? [
+      `Current retained evaluator: '${input.runtime.baseUrl}' (build '${input.runtime.evaluatorBuild.sha}', version '${input.runtime.evaluatorBuild.version}', runtime task '${input.runtime.taskId}'). Use this endpoint's /api/mcp for scorecards:get and the audit; the task's gradingAuditRuntimeBinding is updated with this notice. Require its exact build and the target/lease/currentness checks below. If this route cannot be used, stop and report the route failure; do not substitute a default operator.`,
+    ] : []),
     `Continue only for exact target '${card.issueId}' and evidence fingerprint '${card.evidenceFingerprint}'. Re-read scorecards:get and require pending state plus this exact key/reservedAt, fingerprint, and reservation snapshot ${JSON.stringify(reservation.snapshot ?? null)} before auditing; otherwise stop without grading or emitting.`,
     gradingAuditBrief(card, reservation.reservedAt),
   ].join('\n\n');
@@ -1115,6 +1124,7 @@ export async function notifyRetainedGradingAuditor(
               const tx = rawTx as OrgSql;
               if (!(await (deps.confirmReservation ?? confirmPendingGradingAuditReservation)(card.issueId, key, {
                 workspaceId, reservedAt: reservation.reservedAt, expectedCard: card, tx,
+                ...(reservation.snapshot ? { snapshot: reservation.snapshot } : {}),
               }))) throw new Error('renewal target/fingerprint/lease changed before delivery');
               const taskDetail = JSON.stringify({
                 gradingAudit: {
@@ -1122,6 +1132,7 @@ export async function notifyRetainedGradingAuditor(
                   evidenceFingerprint: card.evidenceFingerprint,
                   reservation,
                 },
+                ...(input.runtime ? { gradingAuditRuntimeBinding: input.runtime } : {}),
               });
               const tasks = await tx<{ task_id: string }[]>`
                 UPDATE harness_shared.task_ledger
@@ -1153,7 +1164,8 @@ export async function notifyRetainedGradingAuditor(
     if (!created) return { state: 'already-delivered', ownerId, msgId, pickupConfirmed: false };
     const outcome = await wake([ownerId], { workspaceId, requiredWake: true,
       source: GRADING_AUDIT_DISPATCH_ACTOR, summary,
-      payload: { msg_id: msgId, issueId: card.issueId, evidenceFingerprint: card.evidenceFingerprint, reservation } });
+      payload: { msg_id: msgId, issueId: card.issueId, evidenceFingerprint: card.evidenceFingerprint, reservation,
+        ...(input.runtime ? { gradingAuditRuntimeBinding: input.runtime } : {}) } });
     return { state: 'delivered', ownerId, msgId, queued: outcome.queued ?? outcome.woken, pickupConfirmed: false };
   } catch (error) {
     // An appended inbox directive remains delivered even if its best-effort
@@ -3001,18 +3013,21 @@ export async function dispatchPendingGradingAudits(
           }
         }
         markPhase('retained-auditor-notification');
+        const retainedRuntime = retainedRuntimes.get(issueId);
         const renewalNotification = !priorReservation
           ? viableLiveTasks.length !== 1
               ? { state: 'skipped' as const, reason: 'retained auditor task identity is ambiguous' }
               : await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
                   card, task: viableLiveTasks[0]!, reservation: retainedReservation,
                   workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
+                  ...(retainedRuntime ? { runtime: retainedRuntime } : {}),
                 })
           : !retainedTask || !retainedOwnerId
             ? undefined
             : await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
                 card, task: retainedTask, reservation: retainedReservation,
                 workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
+                ...(retainedRuntime ? { runtime: retainedRuntime } : {}),
                 ...(resumeParked ? { resumeParked: true } : {}),
               });
         if (renewalNotification?.state === 'failed') {

@@ -61,7 +61,7 @@ interface Preregistration {
   sourcePins: { head: string; files: Record<string, string>; scenarioPaths: Record<string, string>; submodules?: Record<string, string> };
   capture: { privateCapture: { originalSha256: string } };
   custodyPaths?: { privateCaptureFile: string; receiptDirectory: string; catalogSource: 'current-build' };
-  executionPolicy?: { requireCleanRuntime?: boolean; launcherPath?: string };
+  executionPolicy?: { requireCleanRuntime?: boolean; launcherPath?: string; measurementController?: 'separate-root' };
   measurementAmendment?: {
     decisionRef: string; registeredAt: string;
     sourceReplacements: Record<string, { originalSha256: string; sha256: string }>;
@@ -514,6 +514,11 @@ export async function measureToolDeliveryAcceptance(window: { workspaceId: strin
           variantId: arm === 'compact' ? experiment.arms.compactArm : experiment.arms.fullArm,
         })));
         cleanError = validateToolDeliveryCleanBlocks({ ...clean, expectedBlocks, runIds: result.runIds,
+          ...(registration.executionPolicy.measurementController === 'separate-root' ? {
+            controllerRequired: true, sourceCommit: registration.sourcePins.head,
+            controllerLauncher: registration.executionPolicy.launcherPath,
+            controllerMarker: JSON.parse(readFileSync(resolve(directory, 'started.json'), 'utf8')),
+          } : {}),
           judgedCells: result.oracle?.scenarioCoverage ?? [] });
         const receipt = JSON.parse(readFileSync(resolve(directory, 'receipt.json'), 'utf8')) as Array<{
           testRunId: number; scenario: string;

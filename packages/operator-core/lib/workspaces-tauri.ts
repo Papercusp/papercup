@@ -83,7 +83,11 @@ export async function listWorkspaces(): Promise<WorkspaceRegistry> {
       // ACL-denied on a non-dev origin — fall through to the HTTP path below.
     }
   }
-  return http<WorkspaceRegistry>('/api/workspaces');
+  // Registry discovery crosses workspace boundaries. In particular, the pin
+  // from the previous machine may not exist on the newly selected one. An
+  // explicit empty header prevents the window adapter from stamping that pin;
+  // the selected-machine header and its authorization still apply.
+  return http<WorkspaceRegistry>('/api/workspaces', { headers: { 'x-papercusp-workspace': '' } });
 }
 
 export async function createWorkspace(name: string): Promise<Workspace> {

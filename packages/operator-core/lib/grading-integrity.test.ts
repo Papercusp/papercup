@@ -2345,7 +2345,9 @@ describe('dispatchPendingGradingAudits', () => {
     })]);
     d.listTasks.mockResolvedValue([{ taskId: 'retained', state: 'running',
       detail: { label: key, coordOwnerId: 'su-independent' } } as unknown as TaskRow]);
-    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-runtime-renew'], ctx }, d);
+    const resolveOwnerLiveness = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['resolveOwnerLiveness']>>()
+      .mockResolvedValue({ sessionState: 'live' });
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-runtime-renew'], ctx }, { ...d, resolveOwnerLiveness });
     expect(result.receipts[0]).toMatchObject({ state: 'deduped', renewalNotification: { state: 'delivered' } });
     expect(d.notifyRetainedAuditor).toHaveBeenCalledWith(expect.objectContaining({
       runtime: await d.ensureRuntime.mock.results[0]!.value,

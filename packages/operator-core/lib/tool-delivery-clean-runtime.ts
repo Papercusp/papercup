@@ -13,7 +13,7 @@ import { bindFrozenDependencyGeneration } from './dependency-generation-proof';
 
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 const digest = (value: unknown) => hash(JSON.stringify(value));
-export interface ToolDeliveryCleanBoundary {
+export interface ToolDeliverySourcePin {
   sourceRoot: string;
   commit: string | null;
   porcelain: string | null;
@@ -31,10 +31,16 @@ export interface ToolDeliveryCleanBoundary {
   nodeVersion: string;
   loadedBuildSha: string;
   configGenerationSha256: string;
+  cwd: string;
+}
+export interface ToolDeliveryControllerPin extends ToolDeliverySourcePin {
+  entrypoint: string;
+}
+export interface ToolDeliveryCleanBoundary extends ToolDeliverySourcePin {
+  controller?: ToolDeliveryControllerPin;
   pid: number;
   processStartTicks: string;
   sut: { transport: 'in-process'; pid: number; processStartTicks: string };
-  cwd: string;
   monotonicNs: string;
 }
 export type ToolDeliveryCleanPin = Omit<ToolDeliveryCleanBoundary,
@@ -43,7 +49,7 @@ export type ToolDeliveryCleanPin = Omit<ToolDeliveryCleanBoundary,
 export interface ToolDeliveryCleanRegistration {
   sourcePins: { files: Record<string, string>; scenarioPaths: Record<string, string> };
   measurementAmendment?: { sourceReplacements: Record<string, unknown>; addedFiles: Record<string, string> };
-  executionPolicy?: { launcherPath?: string };
+  executionPolicy?: { launcherPath?: string; measurementController?: 'separate-root' };
 }
 const recorder = 'packages/operator-core/lib/llm-testing/test-run-ledger.ts';
 const providers = ['packages/operator-core/lib/llm-testing/targets/su.ts',
@@ -98,16 +104,33 @@ export function toolDeliveryModuleFile(sourceRoot: string, url: string): string 
  * The launcher must also pin its own entrypoint and locally installed TS loader.
  * Refreshing the returned census rehashes dependency bytes at every boundary.
  */
-export function installToolDeliveryModuleGuard(sourceRoot: string): { urls: Set<string>; deregister(): void } {
+export function installToolDeliveryModuleGuard(sourceRoot: string, controllerRoot?: string): {
+  urls: Set<string>; controllerUrls: Set<string>; deregister(): void;
+} {
   const urls = new Set<string>();
+  const controllerUrls = new Set<string>();
+  const source = realpathSync(sourceRoot);
+  const controller = controllerRoot === undefined ? undefined : realpathSync(controllerRoot);
+  if (controller && (isWithin(source, controller) || isWithin(controller, source)))
+    throw new Error('Captured source and measurement controller roots must be disjoint.');
   const hooks = registerHooks({
     resolve(specifier, context, nextResolve) {
       const result = nextResolve(specifier, context);
-      if (toolDeliveryModuleFile(sourceRoot, result.url)) urls.add(result.url);
+      try {
+        if (toolDeliveryModuleFile(source, result.url)) urls.add(result.url);
+      } catch (error) {
+        if (!controller) throw error;
+        if (toolDeliveryModuleFile(controller, result.url)) controllerUrls.add(result.url);
+      }
       return result;
     },
   });
-  return { urls, deregister: () => hooks.deregister() };
+  return { urls, controllerUrls, deregister: () => hooks.deregister() };
+}
+
+function isWithin(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
 }
 
 /** `moduleUrls` comes from the runner's Node resolve hook, including dependency imports.
@@ -178,6 +201,21 @@ export function validateToolDeliveryCleanBoundary(actual: ToolDeliveryCleanBound
       || actual.sut.processStartTicks !== actual.processStartTicks) return 'Recorder/SUT process identity differs.';
   if (!Object.keys(actual.sourceHashes).length || !Object.keys(actual.moduleHashes).length)
     return 'Source or resolved-module census is empty.';
+  const controller = actual.controller;
+  if (controller && (!controller.commit || controller.loadedBuildSha !== controller.commit
+      || controller.porcelain !== '' || controller.stagedDiff !== '' || controller.unstagedDiff !== ''
+      || controller.untracked.length || controller.disallowedIgnoredFiles.length
+      || controller.submoduleStatus.split('\n').filter(Boolean).some(line => !line.startsWith(' '))
+      || controller.configGenerationSha256 !== controller.environmentSha256
+      || controller.environmentSha256 !== actual.environmentSha256 || controller.cwd !== actual.cwd
+      || controller.nodeVersion !== actual.nodeVersion || controller.executableSha256 !== actual.executableSha256
+      || !isAbsolute(controller.sourceRoot)
+      || isWithin(actual.sourceRoot, controller.sourceRoot) || isWithin(controller.sourceRoot, actual.sourceRoot)
+      || !controller.installSha256 || !controller.entrypoint || isAbsolute(controller.entrypoint)
+      || controller.entrypoint.split('/').some(part => !part || part === '.' || part === '..')
+      || !controller.moduleHashes[controller.entrypoint]
+      || controller.moduleHashes[controller.entrypoint] !== controller.sourceHashes[controller.entrypoint]))
+    return 'Measurement controller is not separately committed, clean and bound to its actual entrypoint.';
   const { pid: _pid, processStartTicks: _start, sut: _sut, monotonicNs: _time, ...pin } = actual;
   if (digest(pin) !== digest(expected)) return 'Source, module, install, runtime or environment identity changed.';
 }
@@ -210,11 +248,22 @@ export function validateToolDeliveryBlockLedgerIdentity(actual: unknown, experim
  */
 export function validateToolDeliveryCleanBlocks(input: {
   pin: ToolDeliveryCleanPin;
+  controllerRequired?: boolean;
+  sourceCommit?: string;
+  controllerLauncher?: string;
+  controllerMarker?: { buildSha?: unknown; sourceBuildSha?: unknown; pinSha256?: unknown };
   expectedBlocks: readonly { scenario: string; arm: string; variantId: string }[];
   runIds: readonly string[];
   blocks: readonly ToolDeliveryCleanBlock[];
   judgedCells: readonly { scenario: string; arm: string; judged: number; unmeasured: number }[];
 }): string | undefined {
+  if (input.sourceCommit && input.pin.commit !== input.sourceCommit) return 'Captured source commit differs.';
+  if (input.controllerRequired && (!input.sourceCommit || !input.pin.controller
+      || input.pin.controller.entrypoint !== input.controllerLauncher
+      || input.controllerMarker?.buildSha !== input.pin.controller.commit
+      || input.controllerMarker?.sourceBuildSha !== input.pin.commit
+      || input.controllerMarker?.pinSha256 !== digest(input.pin)))
+    return 'Required measurement controller receipt or marker is absent or differs.';
   if (input.expectedBlocks.length !== 10 || input.blocks.length !== 10 || input.runIds.length !== 30
       || new Set(input.runIds).size !== 30) return 'Incomplete or extra cohort population.';
   const ids: string[] = [];

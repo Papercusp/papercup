@@ -139,43 +139,56 @@ function canonicalAuthority(expected) {
 export async function main(argv = process.argv.slice(2)) {
   const { experimentId, fixture, readinessPath } = parseCleanCohortArgs(argv);
   const root = realpathSync(argv[0]), privateRoot = realpathSync(argv[1]);
+  const controllerRoot = realpathSync(fileURLToPath(new URL('../../../../', import.meta.url)));
   assert.equal(realpathSync(process.cwd()), root);
   const within = path => { const rel = relative(root, realpathSync(path));
     return rel && !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`); };
-  assert.ok(within(fileURLToPath(import.meta.url)), 'Launcher must execute from retained source.');
   assert.equal(process.env.NODE_PATH ?? '', ''); assert.equal(process.env.NODE_OPTIONS ?? '', '');
   for (const key of ['PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT', 'VERIFY_TAURI_SOURCE_RECEIPT']) assert.equal(process.env[key] ?? '', '');
   const loader = resolve(root, 'node_modules/tsx/dist/loader.mjs');
   assert.deepEqual(process.execArgv, ['--import', loader], 'Use only the exact local TS loader.');
   assert.ok(within(loader));
-  const git = (args, directory) => execFileSync('git', args, { cwd: directory ? resolve(root, directory) : root,
+  const gitAt = (base, args, directory) => execFileSync('git', args, { cwd: directory ? resolve(base, directory) : base,
     timeout: 10_000, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', 'pipe', 'ignore'] });
+  const git = (args, directory) => gitAt(controllerRoot, args, directory);
   const head = git(['rev-parse', 'HEAD']).toString().trim();
-  const bytes = readFileSync(resolve(root, fixture)), registration = JSON.parse(bytes);
+  const sourceHead = gitAt(root, ['rev-parse', 'HEAD']).toString().trim();
+  const bytes = readFileSync(resolve(controllerRoot, fixture)), registration = JSON.parse(bytes);
+  const separateController = registration.executionPolicy.measurementController === 'separate-root';
+  assert.ok(separateController ? controllerRoot !== root : controllerRoot === root,
+    'Separate source/controller execution must be explicitly preregistered.');
   assert.equal(sha(git(['show', `${head}:${fixture}`])), sha(bytes), 'Uncommitted registration.');
   assert.equal(registration.experiment.id, experimentId);
   assert.equal(registration.executionPolicy.requireCleanRuntime, true);
-  assert.equal(registration.executionPolicy.launcherPath, relative(root, fileURLToPath(import.meta.url)).split(sep).join('/'));
+  assert.equal(registration.executionPolicy.launcherPath, relative(controllerRoot, fileURLToPath(import.meta.url)).split(sep).join('/'));
   const directory = resolve(privateRoot, registration.custodyPaths.receiptDirectory);
   const privateRelative = relative(root, privateRoot);
   assert.ok(isAbsolute(privateRelative) || privateRelative === '..' || privateRelative.startsWith(`..${sep}`),
     'Receipts must be outside the retained source.');
+  const controllerPrivateRelative = relative(controllerRoot, privateRoot);
+  assert.ok(isAbsolute(controllerPrivateRelative) || controllerPrivateRelative === '..' || controllerPrivateRelative.startsWith(`..${sep}`),
+    'Receipts must be outside the measurement controller.');
   assert.equal(relative(privateRoot, directory), registration.custodyPaths.receiptDirectory);
   assert.ok(!existsSync(resolve(directory, 'started.json')), 'Started cohort: reconcile, never replay.');
   const raw = readFileSync(resolve(privateRoot, registration.custodyPaths.privateCaptureFile));
   assert.equal(sha(raw), registration.capture.privateCapture.originalSha256);
   const frozen = JSON.parse(raw);
-  const guard = await import(pathToFileURL(resolve(root, 'packages/operator-core/lib/tool-delivery-clean-runtime.ts')));
-  const imports = guard.installToolDeliveryModuleGuard(root);
-  imports.urls.add(import.meta.url); imports.urls.add(pathToFileURL(loader).href);
+  if (separateController) {
+    assert.equal(sourceHead, frozen.sourcePins.head, 'Captured source checkout commit changed.');
+    assert.equal(sourceHead, frozen.capture.cleanBoundary.commit, 'Captured boundary commit changed.');
+  }
+  const guard = await import(pathToFileURL(resolve(controllerRoot, 'packages/operator-core/lib/tool-delivery-clean-runtime.ts')));
+  const imports = guard.installToolDeliveryModuleGuard(root, separateController ? controllerRoot : undefined);
+  const controllerUrls = separateController ? imports.controllerUrls : imports.urls;
+  controllerUrls.add(import.meta.url); imports.urls.add(pathToFileURL(loader).href);
   // The guard and its dependency verifier loaded before the resolve hook existed.
   for (const path of ['packages/operator-core/lib/tool-delivery-clean-runtime.ts',
-    'packages/operator-core/lib/dependency-generation-proof.ts']) imports.urls.add(pathToFileURL(resolve(root, path)).href);
+    'packages/operator-core/lib/dependency-generation-proof.ts']) controllerUrls.add(pathToFileURL(resolve(controllerRoot, path)).href);
   try {
     const load = path => import(pathToFileURL(resolve(root, path)));
-    const acceptance = await load('packages/operator-core/lib/tool-delivery-acceptance.ts');
+    const acceptance = await import(pathToFileURL(resolve(controllerRoot, 'packages/operator-core/lib/tool-delivery-acceptance.ts')));
     const pins = acceptance.toolDeliveryCommittedSubmodules(registration);
-    const readSource = (path, ref) => ref ? acceptance.readToolDeliveryCommittedSource(path, ref, pins, git) : readFileSync(resolve(root, path));
+    const readSource = (path, ref) => ref ? acceptance.readToolDeliveryCommittedSource(path, ref, pins, git) : readFileSync(resolve(controllerRoot, path));
     const custody = acceptance.verifyToolDeliverySourceCustody({ registration, privateCapture: raw, buildSha: head, readSource });
     assert.equal(custody.verified, true, custody.reason);
     const { runScenario } = await load('libs/testing-shell/src/llm/runner.ts');
@@ -186,6 +199,9 @@ export async function main(argv = process.argv.slice(2)) {
     const { getLongLivedAdminPool } = await load('packages/operator-core/lib/long-lived-admin-pool.ts');
     const { buildShippingSeedCatalog } = await load('packages/operator-core/lib/llm-testing/targets/su-compact-catalog.ts');
     const { catalogToResponsesTools } = await load('packages/operator-core/lib/llm-testing/targets/codex-responses-tool-loop.ts');
+    // The original capture warmed this committed source component. The actual
+    // controller entrypoint is independently recorded in controller.moduleHashes.
+    if (separateController) await load(registration.executionPolicy.launcherPath);
     const sql = getLongLivedAdminPool('llm-testing-storage', { max: 2, prepare: false });
     for (const arm of ['compact', 'full']) {
       const built = await buildShippingSeedCatalog(arm);
@@ -198,18 +214,32 @@ export async function main(argv = process.argv.slice(2)) {
     assert.equal(expectedBlocks.length, 10); assert.equal(frozen.configuration.replicationsPerArm, 3);
     assert.equal(frozen.configuration.neverRetryMeasuredReplication, true);
     for (const b of expectedBlocks) assert.equal(getScenario(b.scenario).transport, 'in-process');
-    const capture = () => guard.captureToolDeliveryCleanBoundary({ sourceRoot: root, registration, moduleUrls: [...imports.urls] });
+    const capture = async () => {
+      const source = await guard.captureToolDeliveryCleanBoundary({ sourceRoot: root, registration, moduleUrls: [...imports.urls] });
+      if (!separateController) return source;
+      const controller = await guard.captureToolDeliveryCleanBoundary({ sourceRoot: controllerRoot, registration,
+        moduleUrls: [...controllerUrls] });
+      const { pid, processStartTicks, sut, monotonicNs, controller: nested, ...pin } = controller;
+      return { ...source, controller: { ...pin, entrypoint: registration.executionPolicy.launcherPath } };
+    };
     const initial = await capture();
     assertCleanCohortCapturedInputs({ captured: frozen.capture?.cleanBoundary, actual: initial,
-      amendment: registration.measurementAmendment, fixture, portableSha256: sha(bytes),
+      amendment: separateController ? { addedFiles: {}, sourceReplacements: {} } : registration.measurementAmendment,
+      fixture, portableSha256: sha(bytes),
       readHash: path => sha(readFileSync(guard.toolDeliveryModuleFile(root, pathToFileURL(resolve(root, path)).href))) });
     const { pid, processStartTicks, sut, monotonicNs, ...pin } = initial;
-    const check = boundary => { assert.equal(guard.validateToolDeliveryCleanBoundary(boundary, pin), undefined);
+    const check = boundary => {
+      if (separateController) {
+        assert.equal(boundary.commit, frozen.sourcePins.head);
+        assert.equal(boundary.controller?.entrypoint, registration.executionPolicy.launcherPath);
+      }
+      assert.equal(guard.validateToolDeliveryCleanBoundary(boundary, pin), undefined);
       assert.equal(guard.validateToolDeliveryCleanCensus(boundary, registration), undefined); };
     check(initial);
     const prior = await sql`SELECT id FROM harness_shared.llm_test_runs WHERE telemetry_json->>'variantId' = ANY(${Object.values(registration.experiment.arms)}) LIMIT 1`;
     assert.equal(prior.length, 0, 'Candidate rows already exist: never replay.');
-    if (!readinessPath) return { status: 'PREPARATION_ONLY_NO_EXECUTION_AUTHORITY', realModelCalls: 0, head, portableSha256: sha(bytes) };
+    if (!readinessPath) return { status: 'PREPARATION_ONLY_NO_EXECUTION_AUTHORITY', realModelCalls: 0,
+      head, sourceHead, portableSha256: sha(bytes), pinSha256: digest(pin) };
     const expected = JSON.parse(readFileSync(realpathSync(readinessPath), 'utf8'));
     const live = canonicalAuthority(expected);
     const readerCustody = acceptance.verifyToolDeliverySourceCustody({ registration, privateCapture: raw,
@@ -223,7 +253,8 @@ export async function main(argv = process.argv.slice(2)) {
     assert.equal(digest((await capture()).moduleHashes), digest(initial.moduleHashes), 'Runtime preparation added unpinned modules.');
     check(await capture());
     claimCleanCohort(directory, { at: new Date().toISOString(), experimentId: registration.experiment.id,
-      privateSha256: sha(raw), portableSha256: sha(bytes), buildSha: head, pinSha256: digest(pin), readiness: expected });
+      privateSha256: sha(raw), portableSha256: sha(bytes), buildSha: head, sourceBuildSha: sourceHead,
+      pinSha256: digest(pin), readiness: expected });
     const blocks = [], receipt = [], deps = operatorRunnerDeps({ persist: true });
     for (const [blockIndex, slot] of expectedBlocks.entries()) {
       const path = resolve(root, registration.sourcePins.scenarioPaths[slot.scenario]);

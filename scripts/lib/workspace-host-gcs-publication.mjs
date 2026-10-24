@@ -51,47 +51,23 @@ export async function verifyGcsPrivateBytes(uri, expected, spawnImpl = spawn) {
 }
 
 export async function publishGcsObjects({ target, objects, expiresAt, ctx, runMutation,
-  planOnly = false, stageOnly = false, fetchImpl = fetch, gcloud = runGcloud,
+  planOnly = false, stageOnly = false, gcloud = runGcloud,
   verifyPrivate = verifyGcsPrivateBytes, log = console.log }) {
+  if (!stageOnly) throw new Error('Direct GCS publication is private staging only; use the authenticated Worker upload/finalization route for delivery');
   if (!objects.length || objects.some(o => !/^[a-z0-9.-]+$/.test(o.name) || !/^[a-f0-9]{64}$/.test(o.sha256) ||
       !Number.isSafeInteger(o.sizeBytes) || o.sizeBytes <= 0)) throw new Error('invalid GCS object plan');
   const bucketUri = `gs://${target.bucket}`;
-  // GCS rejects IAM conditions on allUsers. A managed folder makes the digest
-  // prefix the IAM resource, keeping unrelated bucket objects private. Its
-  // public grant lasts until explicitly revoked; expiresAt bounds qualification
-  // freshness, not anonymous IAM access.
-  const folderUri = `${bucketUri}/${target.prefix}`;
-  const accessScope = { kind: 'managed-folder', uri: folderUri };
+  // The existing Worker owns authentication and public finalization. This
+  // recovery helper can stage exact private bytes, and never changes IAM.
+  const accessScope = { kind: 'private', uri: `${bucketUri}/${target.prefix}` };
   const isAbsent = error => /\bHTTPError 404\b|not found: 404\./.test(String(error.stderr ?? error.message));
   // This read also proves which account can access the existing bucket. Preview
   // never modifies IAM or objects and requires no GitHub/R2 credential.
   await gcloud(['storage', 'buckets', 'describe', bucketUri, '--format=json']);
-  if (stageOnly) objects = objects.filter(object => object.name !== 'manifest.json');
+  objects = objects.filter(object => object.name !== 'manifest.json');
   if (objects.length === 0) throw new Error('GCS staging requires at least one artifact payload');
   if (planOnly) return { planOnly: true, stageOnly, provider: 'gcs', target, objects, accessScope, qualificationExpiresAt: expiresAt };
   if (!ctx || !runMutation) throw new Error('GCS writes require the original release journal');
-  const inspectFolder = async () => {
-    let folder;
-    try {
-      folder = JSON.parse(await gcloud(['storage', 'managed-folders', 'describe', folderUri, '--raw', '--format=json']));
-    } catch (error) {
-      if (isAbsent(error)) return { state: 'absent' };
-      throw error;
-    }
-    if (folder.name !== target.prefix) throw new Error('GCS managed folder differs from the admitted artifact prefix');
-    return { state: 'committed', value: accessScope, evidenceRefs: [`gcs:managed-folder:${folderUri}`] };
-  };
-  if (!stageOnly) await runMutation(ctx, {
-    stage: 'publish.gcs.managed-folder', input: accessScope, reconcile: inspectFolder,
-    mutate: async () => {
-      const prior = await inspectFolder();
-      if (prior.state === 'committed') return prior;
-      await gcloud(['storage', 'managed-folders', 'create', folderUri, '--format=json', '--quiet']);
-      const result = await inspectFolder();
-      if (result.state !== 'committed') throw new Error('GCS publication managed folder did not persist');
-      return result;
-    },
-  });
   const inspectObject = async (object) => {
     let metadata;
     try {
@@ -109,23 +85,6 @@ export async function publishGcsObjects({ target, objects, expiresAt, ctx, runMu
     return { state: 'committed', value: { generation: String(metadata.generation), sha256: object.sha256 },
       evidenceRefs: [`gcs:${target.bucket}/${target.prefix}${object.name}#${metadata.generation}`] };
   };
-  const inspectGrant = async () => {
-    const policy = JSON.parse(await gcloud(['storage', 'managed-folders', 'get-iam-policy', folderUri, '--format=json']));
-    const present = policy.bindings?.some(b => b.role === 'roles/storage.objectViewer' &&
-      b.members?.includes('allUsers') && !b.condition);
-    return present ? { state: 'committed', value: accessScope, evidenceRefs: [`gcs:iam:${folderUri}`] } : { state: 'absent' };
-  };
-  if (!stageOnly) await runMutation(ctx, {
-    stage: 'publish.gcs.access.managed-folder', input: accessScope, reconcile: inspectGrant,
-    mutate: async () => {
-      await gcloud(['storage', 'managed-folders', 'add-iam-policy-binding', folderUri,
-        '--member=allUsers', '--role=roles/storage.objectViewer',
-        '--format=json', '--quiet']);
-      const result = await inspectGrant();
-      if (result.state !== 'committed') throw new Error('GCS scoped publication grant did not persist');
-      return result;
-    },
-  });
   for (const object of objects) {
     log(`GCS publish ${object.name} (${object.sizeBytes} bytes)`);
     const uri = `${bucketUri}/${target.prefix}${object.name}`;
@@ -138,42 +97,23 @@ export async function publishGcsObjects({ target, objects, expiresAt, ctx, runMu
         if (prior.state === 'committed') return prior;
         await gcloud(['storage', 'cp', object.path, uri, '--if-generation-match=0',
           `--custom-metadata=sha256=${object.sha256}`, `--content-type=${object.contentType}`,
-          '--cache-control=public,max-age=31536000,immutable', '--quiet']);
+          '--cache-control=private,no-store', '--quiet']);
         const result = await inspectObject(object);
         if (result.state !== 'committed') throw new Error(`GCS upload did not persist: ${object.name}`);
         return result;
       },
     });
   }
-  if (stageOnly) {
-    const verified = [];
-    for (const object of objects) {
-      const uri = `${bucketUri}/${target.prefix}${object.name}`;
-      verified.push({ name: object.name, uri, ...await verifyPrivate(uri, object) });
-    }
-    await runMutation(ctx, { stage: 'publish.gcs.private.verify',
-      input: { bucket: target.bucket, objects: verified },
-      mutate: async () => ({ value: verified, evidenceRefs: verified.map(o => `authenticated:sha256:${o.sha256}:${o.sizeBytes}`) }),
-      reconcile: async () => ({ state: 'committed', value: verified }),
-    });
-    log('GCS_PRIVATE_STAGE=PASS — public delivery and manifest publication remain pending');
-    return { provider: 'gcs', stageOnly: true, verified, qualificationExpiresAt: expiresAt };
-  }
-  // A committed upload receipt never substitutes for reading the anonymously
-  // served bytes. Run this on every resume; it catches IAM, truncation and
-  // metadata/content disagreement before a VM receives a download URL.
   const verified = [];
   for (const object of objects) {
-    const url = `${target.origin}/${target.prefix}${object.name}`;
-    verified.push({ name: object.name, url, ...await verifyGcsPublicBytes(url, object, fetchImpl) });
+    const uri = `${bucketUri}/${target.prefix}${object.name}`;
+    verified.push({ name: object.name, uri, ...await verifyPrivate(uri, object) });
   }
-  await runMutation(ctx, { stage: 'publish.gcs.verify',
+  await runMutation(ctx, { stage: 'publish.gcs.private.verify',
     input: { bucket: target.bucket, objects: verified },
-    mutate: async () => ({ value: verified, evidenceRefs: verified.map(o => `public:sha256:${o.sha256}:${o.sizeBytes}`) }),
+    mutate: async () => ({ value: verified, evidenceRefs: verified.map(o => `authenticated:sha256:${o.sha256}:${o.sizeBytes}`) }),
     reconcile: async () => ({ state: 'committed', value: verified }),
   });
-  const publicUrl = `${target.origin}/${target.prefix}server.tgz`;
-  log(`PUBLIC_URL=${publicUrl}`);
-  return { provider: 'gcs', publicUrl, manifestUrl: `${target.origin}/${target.prefix}manifest.json`,
-    verified, accessScope, qualificationExpiresAt: expiresAt };
+  log('GCS_PRIVATE_STAGE=PASS — public delivery and manifest publication remain pending');
+  return { provider: 'gcs', stageOnly: true, verified, accessScope, qualificationExpiresAt: expiresAt };
 }

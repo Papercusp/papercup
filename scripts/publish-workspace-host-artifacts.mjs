@@ -85,7 +85,8 @@ const DEFAULT_BASE = 'https://cupboard.papercusp.com';
 
 export const USAGE = `Usage:
   npm run release:publish-workspace-host-artifacts -- \\
-    --dir <publication-dir> [--base <url>] [--token <bearer>] [--gcs-bucket <bucket>] [--gcs-private-stage] [--plan-only] [--evidence-only]
+    --dir <publication-dir> [--base <url>] [--token <bearer>] [--plan-only] [--evidence-only]
+  Private recovery staging only: --gcs-bucket <bucket> --gcs-private-stage
 `;
 
 export function parseArgs(argv, env = process.env) {
@@ -116,6 +117,7 @@ export function parseArgs(argv, env = process.env) {
   if (out.gcsBucket) gcsPublicationTarget(out.gcsBucket, '0'.repeat(64));
   if (out.gcsBucket && out.evidenceOnly) throw new Error('--gcs-bucket publishes the complete verified publication');
   if (out.gcsPrivateStage && !out.gcsBucket) throw new Error('--gcs-private-stage requires --gcs-bucket');
+  if (out.gcsBucket && !out.gcsPrivateStage) throw new Error('--gcs-bucket requires --gcs-private-stage; use --base with the authenticated Worker for delivery');
   return out;
 }
 

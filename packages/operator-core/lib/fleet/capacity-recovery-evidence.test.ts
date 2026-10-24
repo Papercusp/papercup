@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { formatSpecRef } from '../scheduler/claim-spec';
+import { recordOperationalRun, type RecordOperationalRunDeps } from '../agent-tools/testing/record-run';
 import { BRIEF_ADMIN, computeIdentityHash, JUDGE_PROMPT_SCAFFOLD_VERSION } from '@papercusp/testing-shell/llm';
 import { S42_CASES, S42_ITEM, S42_PROMPT } from '../llm-testing/scenarios/su/S42-drain-watch-recheck';
 import { LUNA_CAPACITY_PLAN, LUNA_CAPACITY_INSTRUMENTS, lunaCapacityInstruments, validateCapacityRecoveryProof, validateCapacityShipmentProof,
@@ -87,15 +88,49 @@ describe('canonical R1–R5 shipment evidence', () => {
     const n = native();
     expect(validateCapacityShipmentEvidence(n.proof, n.rows.reverse(), n.instruments)).toEqual({ status: 'pass', violations: [] });
   });
+  it('accepts the operational writer publication commit only with measured candidate source equivalence', async () => {
+    const n = native();
+    const publicationCommit = 'f'.repeat(40);
+    const persisted: Parameters<RecordOperationalRunDeps['persist']>[0][] = [];
+    const result = await recordOperationalRun({ evidenceFile: 'docs/evidence/luna-r2.json',
+      expectedSha256: hash('a'), harness: 'papercusp' },
+    { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: process.cwd() }, {
+      inspectEvidence: async () => ({ filePath: 'docs/evidence/luna-r2.json', sha256: hash('a'), commit: publicationCommit,
+        artifact: { schemaVersion: 1, kind: 'operational-test-evidence', name: 'Luna diagnostic', framework: 'operational',
+          command: ['fleet:leader-brief'], exitCode: 0, startedAt: stamp(0), finishedAt: stamp(1),
+          summary: 'Native candidate diagnostic captured before its evidence publication.',
+          assertions: [{ id: 'native-diagnostic', passed: true, evidence: 'Canonical runtime/source receipts joined.' }] } }),
+      findIds: async () => [],
+      persist: async params => { persisted.push(params); return { written: 1, ids: [77] }; },
+    });
+    expect(result.ok).toBe(true);
+    expect(persisted[0].commit).toBe(publicationCommit);
+    expect(publicationCommit).not.toBe(n.proof.candidate.commit);
+    const row = n.rows.find(r => r.barKey === 'R-2')!;
+    row.commitSha = persisted[0].commit;
+    row.testRunId = 77;
+    const evidence = n.proof.evidence.find(e => e.barKey === 'R-2')!;
+    evidence.fingerprint = capacityBarEvidenceFingerprint([row]);
+    expect(validateCapacityShipmentEvidence(n.proof, n.rows, n.instruments)).toEqual({ status: 'pass', violations: [] });
+    row.sourceMatchesCandidate = false;
+    evidence.fingerprint = capacityBarEvidenceFingerprint([row]);
+    expect(validateCapacityShipmentEvidence(n.proof, n.rows, n.instruments).violations).toContain('native-shipment-evidence:R-2');
+  });
   it.each(['currentness', 'commitSha', 'sourceFingerprint', 'sourceMatchesCandidate', 'worktreeDirty', 'status', 'failed',
     'collectionFailed', 'specRevision', 'testRunId', 'observedAt'] as const)('rejects native %s drift even with a refreshed artifact digest', field => {
     const n = native(), r = n.rows[0];
-    const corrupt = { currentness: 'stale', commitSha: 'f'.repeat(40), sourceFingerprint: hash('f'),
+    const corrupt = { currentness: 'stale', commitSha: null, sourceFingerprint: hash('f'),
       sourceMatchesCandidate: false, worktreeDirty: true, status: 'fail', failed: 1, collectionFailed: true, specRevision: 1,
       testRunId: null, observedAt: stamp(3) };
     Object.assign(r, { [field]: corrupt[field] });
     n.proof.evidence[0].fingerprint = capacityBarEvidenceFingerprint([r]);
     n.proof.evidence[0].observedAt = r.observedAt;
+    expect(validateCapacityShipmentEvidence(n.proof, n.rows, n.instruments).violations).toContain('native-shipment-evidence:R-1');
+  });
+  it('rejects malformed native commit provenance even when source bytes match', () => {
+    const n = native();
+    n.rows[0].commitSha = 'not-a-commit';
+    n.proof.evidence[0].fingerprint = capacityBarEvidenceFingerprint([n.rows[0]]);
     expect(validateCapacityShipmentEvidence(n.proof, n.rows, n.instruments).violations).toContain('native-shipment-evidence:R-1');
   });
   it('refuses missing/duplicate populations, forged receipts and unknown or failed instruments', () => {

@@ -34,6 +34,7 @@
  * guard below). See GitSyncStepRunner for the replay-safety contract.
  */
 import { spawn } from 'node:child_process';
+import pLimit from 'p-limit';
 import { collectChildOutput } from '../../child-output.js';
 import { processGroupLifetime } from '../../fleet/process-group-lifetime';
 import { withGitFetchHeadroom } from './git-fetch-headroom';
@@ -4128,6 +4129,11 @@ type RepoSyncResult = {
  */
 // Exported for the exact-boundary table test (test-coverage-gap G22): the size
 // comparison is strict `>` — a file AT maxBytes must be INCLUDED, not excluded.
+// Each lstat yields to the host loop. Serial scans multiplied that scheduling
+// delay by the entire dirty census; bound the outstanding reads without changing
+// census freshness, result order, or either size guard's exclusion rules.
+const DIRTY_SIZE_STAT_CONCURRENCY = 16;
+
 export async function findOversizedDirtyFiles(
   runGit: RunGit,
   repoPath: string,
@@ -4136,7 +4142,7 @@ export async function findOversizedDirtyFiles(
   const r = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
   if (r.code !== 0) return [];
   const entries = r.stdout.split('\0').filter(Boolean);
-  const out: OversizedFile[] = [];
+  const paths: string[] = [];
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
     if (e.length < 4) continue;
@@ -4144,14 +4150,19 @@ export async function findOversizedDirtyFiles(
     const path = e.slice(3);
     if (xy.includes('R') || xy.includes('C')) i++; // -z renames: "XY new\0old" — skip the origin path
     if (xy.includes('D')) continue; // deletions have no blob to size
+    paths.push(path);
+  }
+  const limit = pLimit(DIRTY_SIZE_STAT_CONCURRENCY);
+  const sized = await Promise.all(paths.map(path => limit(async () => {
     try {
       const st = await lstat(join(repoPath, path));
-      if (st.isFile() && st.size > maxBytes) out.push({ path, sizeBytes: st.size });
+      return st.isFile() && st.size > maxBytes ? { path, sizeBytes: st.size } : null;
     } catch {
       /* a racing build artifact vanished mid-pass — nothing to commit, skip */
+      return null;
     }
-  }
-  return out;
+  })));
+  return sized.filter((file): file is OversizedFile => file !== null);
 }
 
 /**
@@ -4210,19 +4221,18 @@ export async function findBulkDirtyExcess(
   alreadyExcluded: ReadonlySet<string> = new Set(),
 ): Promise<OversizedFile[]> {
   const paths = await dirtyFiles(runGit, repoPath);
-  const sized: OversizedFile[] = [];
-  let total = 0;
-  for (const path of paths) {
-    if (alreadyExcluded.has(path)) continue; // its bytes are not being committed
+  const limit = pLimit(DIRTY_SIZE_STAT_CONCURRENCY);
+  const measurements = await Promise.all(paths.filter(path => !alreadyExcluded.has(path)).map(path => limit(async () => {
     try {
       const st = await lstat(join(repoPath, path));
-      if (!st.isFile()) continue;
-      sized.push({ path, sizeBytes: st.size });
-      total += st.size;
+      return st.isFile() ? { path, sizeBytes: st.size } : null;
     } catch {
       /* a racing build artifact vanished mid-pass — nothing to commit, skip */
+      return null;
     }
-  }
+  })));
+  const sized = measurements.filter((file): file is OversizedFile => file !== null);
+  let total = sized.reduce((sum, file) => sum + file.sizeBytes, 0);
   if (total <= maxTotalBytes) return [];
   // Peel in three tiers, each largest-first, stopping as soon as the remainder fits
   // (EI-21906459740652039 + WI-10004416; see the header):

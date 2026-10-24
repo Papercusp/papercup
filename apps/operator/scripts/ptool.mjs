@@ -570,11 +570,17 @@ export async function withPtoolConnectionPhaseTrace(trace, phase, route, operati
   try {
     const result = await operation();
     if (pending) {
-      emitPtoolConnectionTrace(trace, 'phase-complete', {
+      // Catalog recovery returns { client, tools, error } so the caller can
+      // retain the active transport for its scripted fallback. Resolving that
+      // wrapper does not mean discovery succeeded; keep its returned error
+      // visible without changing the recovery result or throwing it here.
+      const catalogError = phase === 'tools-list' ? result?.error : null;
+      emitPtoolConnectionTrace(trace, catalogError ? 'phase-attempt-failed' : 'phase-complete', {
         stage: phase,
         route,
         phaseStartedAt,
         elapsedMs: Date.now() - startedAtMs,
+        ...(catalogError ? { failureKind: classifyConnectFailure(catalogError) } : {}),
       });
     }
     return result;

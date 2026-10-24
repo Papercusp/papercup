@@ -88,8 +88,12 @@ export function validateCapacityShipmentEvidence(input: unknown, rows: NativeCap
     || rows.some(r => !bars.includes(r.barKey))) errors.push('native-shipment-evidence-population');
   for (const e of p.evidence) {
     const group = rows.filter(r => r.barKey === e.barKey);
+    // Operational receipts carry the later evidence-publication commit. The
+    // registered reader compares every measured source byte with the accepted
+    // candidate independently; keep both immutable identities instead of
+    // requiring a publication to exist in the candidate it documents.
     if (!group.length || group.some(r => r.currentness !== 'current' || r.specRevision !== r.currentRevision
-      || r.commitSha !== p.candidate.commit || r.worktreeDirty !== false
+      || !/^[a-f0-9]{40}$/.test(r.commitSha ?? '') || r.worktreeDirty !== false
       || !r.sourceMatchesCandidate || !/^sha256-file-set-v1:[a-f0-9]{64}$/.test(r.sourceFingerprint)
       || !r.testRunId || !['pass', 'passed'].includes(r.status ?? '') || r.failed !== 0
       || r.passed < 1 || r.collectionFailed || !Number.isFinite(Date.parse(r.observedAt))

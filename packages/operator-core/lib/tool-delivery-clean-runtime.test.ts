@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -7,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { validateToolDeliveryCleanBlocks, validateToolDeliveryCleanBoundary, toolDeliveryModuleFile, installToolDeliveryModuleGuard,
   toolDeliveryMandatorySources, validateToolDeliveryCleanCensus, toolDeliveryBlockLedgerIdentity, validateToolDeliveryBlockLedgerIdentity,
   toolDeliveryIgnoredCensus,
-  type ToolDeliveryCleanBoundary, type ToolDeliveryCleanPin } from './tool-delivery-clean-runtime';
+  type ToolDeliveryCleanBoundary, type ToolDeliveryCleanPin, type ToolDeliveryControllerPin } from './tool-delivery-clean-runtime';
 import cleanRegistration from './llm-testing/fixtures/tool-delivery-clean-runtime-candidate-20261023.json';
 import fidelityRegistration from './llm-testing/fixtures/tool-delivery-fidelity-candidate-20261023.json';
 import sourceV2Registration from './llm-testing/fixtures/tool-delivery-clean-source-v2-20261023.json';
@@ -38,6 +39,46 @@ function fixture() {
 }
 
 describe('prospective clean tool-delivery execution admission', () => {
+  function controllerFixture() {
+    const f = fixture();
+    const entrypoint = 'measurement/launcher.mjs';
+    const controller: ToolDeliveryControllerPin = { ...structuredClone(f.pin), sourceRoot: '/synthetic-controller',
+      commit: '9'.repeat(40), loadedBuildSha: '9'.repeat(40),
+      entrypoint, sourceHashes: { [entrypoint]: '4'.repeat(64) }, moduleHashes: { [entrypoint]: '4'.repeat(64) } };
+    f.pin.controller = structuredClone(controller);
+    for (const block of f.blocks) for (const boundary of [block.before, block.after]) boundary.controller = structuredClone(controller);
+    return { ...f, controllerRequired: true, sourceCommit: f.pin.commit!, controllerLauncher: entrypoint,
+      controllerMarker: { buildSha: controller.commit, sourceBuildSha: f.pin.commit,
+        pinSha256: createHash('sha256').update(JSON.stringify(f.pin)).digest('hex') } };
+  }
+  it('binds an unchanged captured SUT to a separate committed controller across the complete cohort', () => {
+    const f = controllerFixture();
+    expect(validateToolDeliveryCleanBlocks(f)).toBeUndefined();
+    const missing = structuredClone(f); delete missing.pin.controller;
+    expect(validateToolDeliveryCleanBlocks(missing)).toMatch(/controller receipt/);
+    expect(validateToolDeliveryCleanBlocks({ ...f, sourceCommit: 'other' })).toBe('Captured source commit differs.');
+    expect(validateToolDeliveryCleanBlocks({ ...f, controllerLauncher: 'other.mjs' })).toMatch(/controller receipt/);
+    expect(validateToolDeliveryCleanBlocks({ ...f, controllerMarker: { ...f.controllerMarker, sourceBuildSha: 'other' } }))
+      .toMatch(/controller receipt/);
+    expect(validateToolDeliveryCleanBlocks({ ...f, controllerMarker: { ...f.controllerMarker, buildSha: 'other' } }))
+      .toMatch(/controller receipt/);
+    expect(validateToolDeliveryCleanBlocks({ ...f, controllerMarker: undefined })).toMatch(/controller receipt/);
+  });
+  it.each(['dirty', 'ignored', 'gitlink', 'commit', 'entrypoint', 'source', 'environment', 'overlap', 'changed', 'missing'])(
+    'rejects %s measurement-controller proof without replacing a block', mode => {
+      const f = controllerFixture(), boundary = f.blocks[4]!.after, controller = boundary.controller!;
+      if (mode === 'dirty') controller.porcelain = ' M source.ts';
+      if (mode === 'ignored') controller.disallowedIgnoredFiles.push('.env');
+      if (mode === 'gitlink') controller.submoduleStatus = '+wrong libs/a';
+      if (mode === 'commit') controller.loadedBuildSha = 'other';
+      if (mode === 'entrypoint') controller.entrypoint = '../escape.mjs';
+      if (mode === 'source') controller.sourceHashes[controller.entrypoint] = 'other';
+      if (mode === 'environment') controller.environmentSha256 = 'other';
+      if (mode === 'overlap') controller.sourceRoot = `${boundary.sourceRoot}/controller`;
+      if (mode === 'changed') controller.moduleHashes['newly-loaded.mjs'] = '5'.repeat(64);
+      if (mode === 'missing') delete boundary.controller;
+      expect(validateToolDeliveryCleanBlocks(f)).toBeDefined();
+    });
   it('freezes captured dependencies and source, admitting only registered measurement and portable bytes', () => {
     const captured = { installSha256: 'install', executableSha256: 'node', nodeVersion: 'v25',
       moduleHashes: { 'sut.ts': 'sut', 'reader.ts': 'old-reader', 'node_modules/a.js': 'dependency' } };
@@ -324,5 +365,24 @@ describe('prospective clean tool-delivery execution admission', () => {
       expect(() => require(escaped)).toThrow(/escaped the retained/);
     } finally { guard.deregister(); }
     expect(require(escaped)).toBe(42);
+  });
+  it('tracks actual imports in two explicit roots and rejects a third root or overlapping roots', () => {
+    const base = mkdtempSync(join(tmpdir(), 'tool-delivery-controller-')); cleanup.push(base);
+    const source = join(base, 'source'), controller = join(base, 'controller'), outside = join(base, 'outside');
+    for (const root of [source, controller, outside]) {
+      mkdirSync(root); writeFileSync(join(root, 'module.cjs'), 'module.exports = 7;');
+    }
+    symlinkSync(outside, join(controller, 'escape'), 'dir');
+    const require = createRequire(import.meta.url), guard = installToolDeliveryModuleGuard(source, controller);
+    try {
+      expect(require(join(source, 'module.cjs'))).toBe(7);
+      expect(require(join(controller, 'module.cjs'))).toBe(7);
+      expect(guard.urls).toEqual(new Set([pathToFileURL(join(source, 'module.cjs')).href]));
+      expect(guard.controllerUrls).toEqual(new Set([pathToFileURL(join(controller, 'module.cjs')).href]));
+      expect(() => require(join(controller, 'escape/module.cjs'))).toThrow(/escaped/);
+    } finally { guard.deregister(); }
+    expect(() => installToolDeliveryModuleGuard(source, source)).toThrow(/disjoint/);
+    const nested = join(source, 'nested'); mkdirSync(nested);
+    expect(() => installToolDeliveryModuleGuard(source, nested)).toThrow(/disjoint/);
   });
 });

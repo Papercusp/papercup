@@ -32,6 +32,9 @@ const exec = promisify(execFile);
 const image = 'buildpack-deps@sha256:1314fd2a9c83b257b37132883b3c8e326d3909211bdcb419c9757399ebc34bf3';
 const token = 'offline_assignment_' + 'x'.repeat(48);
 const workspaceId = 'proximus-controller-private';
+const phase = (name: string) => process.stderr.write(`PROXIMUS_FIXTURE_PHASE ${name}\n`);
+type AuthorizationEvidence = { model: unknown; effort: unknown; outputLimit: unknown;
+  accountId: string; bodySha256: string; authorized: boolean };
 const privateDb = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined }));
 // Only host DB/workspace selection is replaced. The controller, governor,
 // SQL mutations, HTTP transport and canonical usage writer remain real.
@@ -43,13 +46,13 @@ vi.mock('../sync-sse', async original => ({ ...await original<typeof import('../
   notifySyncInvalidate: vi.fn(async () => {}) }));
 
 async function controllerFixture(input: { measured: ProximusRuntimeReceipt;
-  scratch: string; provider: typeof fetch }) {
+  scratch: string; provider: typeof fetch; evidence: AuthorizationEvidence[] }) {
   // Validate frozen inputs before allocating SQL or a gateway. Measurement
   // receipts intentionally contain fields outside the strict protocol schema.
   if (input.measured.harborVersion !== '0.23.0') throw new Error('Unsupported fixture Harbor runtime');
   const protocol = currentProtocolFixture('offline-proximus-controller', 180_000);
   for (const arm of protocol.arms) {
-    arm.model = 'gpt-4.1'; arm.account = 'offline-proximus-account';
+    arm.model = 'gpt-5'; arm.account = 'offline-proximus-account';
     arm.control = { topology: arm.id === 'baseline' ? 'stock-native-reference' : 'solo', solverGroup: arm.id,
       solverToolsHash: 'a'.repeat(64), capabilities: allCapabilities(arm.id === 'baseline' ? 'off' : 'on') };
   }
@@ -66,6 +69,7 @@ async function controllerFixture(input: { measured: ProximusRuntimeReceipt;
     maxOpenUsd: protocol.maxInFlightUsd, wallClockMs: 180_000, wallClockMsPerArm: 180_000,
     armIds: protocol.arms.map(a => currentBenchAssignmentId(protocol.runId, a.id, 't1', 1)) };
   const admin = postgres(await getTestPg(), { max: 1, onnotice: () => {} });
+  const abort = new AbortController();
   const dbName = 'proximus_' + randomUUID().replaceAll('-', '');
   let sql: postgres.Sql | undefined, hosted: Awaited<ReturnType<ReturnType<typeof currentBenchGatewayController>['startHostGateway']>> | undefined;
   let auth: ReturnType<typeof currentBenchProviderAuthenticator> | undefined;
@@ -107,6 +111,22 @@ async function controllerFixture(input: { measured: ProximusRuntimeReceipt;
       armId: 'baseline', taskId: 't1', seed: 1, outputTokenLimit: 1000, authenticateProvider: auth.authenticateProvider },
       { enabled: async () => true, getSql: async () => sql!, log: () => {} });
     hosted = await controller.startHostGateway(() => {}, options => startGatewayService({ ...options,
+      carryTrial: { ...options.carryTrial!, async authorizeAttempt(attempt) {
+        const body = JSON.parse(attempt.body);
+        const evidence: AuthorizationEvidence = { model: body.model, effort: body.reasoning?.effort ?? null,
+          outputLimit: body.max_output_tokens ?? null, accountId: attempt.accountId,
+          bodySha256: attempt.bodySha256, authorized: false };
+        input.evidence.push(evidence);
+        const save = () => writeFileSync(join(input.scratch, 'authorization-evidence.json'), JSON.stringify(input.evidence));
+        save();
+        const receipt = await options.carryTrial!.authorizeAttempt(attempt);
+        evidence.authorized = !!receipt; save();
+        phase(`authorization ${JSON.stringify(evidence)}`);
+        // A fixture mismatch needs one witnessed refusal, not several minutes
+        // of upstream retries. Preserve the controller's refusal unchanged.
+        if (!receipt) abort.abort();
+        return receipt;
+      } },
       checkGoalInferenceAdmission: async () => ({ allowed: true, goalId: null, reason: 'no-goal' }),
       readAcceptedOperationModelPolicy: async () => ({ status: 'none' }),
       recordAcceptedOperationModelAttestation: async () => {},
@@ -114,12 +134,13 @@ async function controllerFixture(input: { measured: ProximusRuntimeReceipt;
       resolveLocalBackends: async () => [], observePool: () => () => {}, fetchImpl: input.provider,
       refreshIntervalMs: 0, poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0 }));
     const readCensus = async () => (await getLearningSpendPositions(sql!, { workspaceId, loopId, includeReservations: true })).census;
-    return { protocol, arm, hosted, sql, readCensus, stop };
+    return { protocol, arm, hosted, sql, readCensus, stop, signal: abort.signal };
   } catch (error) { await stop(); throw error; }
 }
 
 it.each(['direct process', 'controller accounting'] as const)
 ('runs the official Proximus tool/submit loop against its bound task and grades the resulting workspace (%s)', async mode => {
+  phase('image/runtime preparation');
   await exec('docker', ['image', 'inspect', image], { timeout: 30_000 });
   const project = fileURLToPath(new URL('../../vendor/proximus', import.meta.url));
   const lock = createHash('sha256').update(readFileSync(join(project, 'uv.lock'))).digest('hex').slice(0, 16);
@@ -128,6 +149,7 @@ it.each(['direct process', 'controller accounting'] as const)
     env: { ...process.env, UV_PROJECT_ENVIRONMENT: join(tmpdir(), `papercusp-proximus-${lock}`) } });
   const pythonBin = runtime.stdout.trim();
   const measured = await measureProximusRuntime({ pythonBin });
+  phase('installed runtime measured');
   const scratch = mkdtempSync(join(tmpdir(), 'px-official-loop-'));
   const trialDir = join(scratch, 'trial'); mkdirSync(trialDir);
   const tests = join(scratch, 'tasks/t1/tests'); mkdirSync(tests, { recursive: true });
@@ -140,6 +162,8 @@ it.each(['direct process', 'controller accounting'] as const)
   let handle: FrontierSweEnvHandle | undefined;
   const requests: { path: string; authorization: string | undefined; body: any }[] = [];
   const failures: string[] = [];
+  const authorizationEvidence: AuthorizationEvidence[] = [];
+  const model = mode === 'controller accounting' ? 'gpt-5' : 'gpt-4.1';
   const response = (path: string, authorization: string | undefined, body: any) => {
       requests.push({ path, authorization, body });
       if (requests.length > 3) throw new Error('Unexpected extra official-loop request');
@@ -149,7 +173,7 @@ it.each(['direct process', 'controller accounting'] as const)
           command: "printf 'solved\\n' > /app/answer.txt; test -z \"$OPENAI_API_KEY\"; printf 'task-tool-result'", timeout_sec: 10,
         } : {}), status: 'completed' }];
       return { id: `resp_${requests.length}`, object: 'response', created_at: 1,
-        status: 'completed', model: 'gpt-4.1', output,
+        status: 'completed', model, output,
         usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110,
           input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } };
   };
@@ -161,27 +185,31 @@ it.each(['direct process', 'controller accounting'] as const)
     } catch (error) { failures.push(String(error)); res.writeHead(500); res.end('{}'); }
   });
   let controlled: Awaited<ReturnType<typeof controllerFixture>> | undefined;
+  let primaryFailure: unknown;
   try {
     await new Promise<void>(resolve => gateway.listen(0, '127.0.0.1', resolve));
     const baseURL = `http://127.0.0.1:${(gateway.address() as { port: number }).port}`;
     const maxWallClockMs = 180_000;
-    if (mode === 'controller accounting') controlled = await controllerFixture({ measured, scratch,
+    if (mode === 'controller accounting') controlled = await controllerFixture({ measured, scratch, evidence: authorizationEvidence,
       provider: async (target, init) => {
         if (String(target) !== 'https://api.openai.com/v1/responses') throw new Error('Unexpected fixture provider route');
         const body = JSON.parse(typeof init?.body === 'string' ? init.body : new TextDecoder().decode(init?.body as Uint8Array));
         return Response.json(response('/v1/responses', new Headers(init?.headers).get('authorization') ?? undefined, body));
       } });
+    phase('controller prepared');
     handle = await seam.clone(task);
+    phase('task cloned');
     await exec('docker', ['exec', handle.containerId, 'mkdir', '-p', '/app'], { timeout: 30_000 });
     // Fail preflight with a concrete missing-tool error rather than waiting
     // through upstream retries on an unsuitable image.
     await exec('docker', ['exec', handle.containerId, 'bash', '-lc', 'command -v git && command -v timeout'], { timeout: 30_000 });
+    phase('official host run');
     const result = controlled ? await runProximusHost(controlled.protocol, {
       runId: controlled.protocol.runId, armId: 'baseline', taskId: 't1', seed: 1, agent: 'proximus',
       model: controlled.arm.model, effort: controlled.arm.effort, account: controlled.arm.account,
       budget: controlled.arm.generationBudget, topology: 'stock-native-reference', handle, pythonBin, trialDir,
       instruction: task.problemStatement, network: 'none', networkMode: 'no-network',
-      maxWallClockMs, outputTokenLimit: 1000, gateway: controlled.hosted,
+      maxWallClockMs, outputTokenLimit: 1000, gateway: controlled.hosted, signal: controlled.signal,
     }) : await proximusHostProcess({ pythonBin, operation: 'run', maxWallClockMs,
       confinement: { trialDir, gatewayBaseURL: baseURL, task: { ...handle, network: 'none', networkMode: 'no-network' } },
       stdin: JSON.stringify({ trialDir, instruction: task.problemStatement, network: 'none', networkMode: 'no-network',
@@ -191,12 +219,14 @@ it.each(['direct process', 'controller accounting'] as const)
             reasoning_effort: 'high', model_info: { max_input_tokens: 20_000, supports_vision: false, mode: 'responses' },
             llm_call_kwargs: { max_tokens: 1000 } } } }) });
     expect(result).toMatchObject({ status: 'completed', runtime: measured, billingStatus: 'unreconciled' });
+    phase('official host completed');
     expect(failures).toEqual([]);
     expect(requests).toHaveLength(3);
     for (const request of requests) {
       expect(request.path).toBe('/v1/responses');
       expect(request.authorization).toBe(`Bearer ${controlled ? 'OFFLINE_PROVIDER_TOKEN' : token}`);
-      expect(request.body.model).toBe('gpt-4.1');
+      expect(request.body.model).toBe(model);
+      if (controlled) expect(request.body.reasoning?.effort).toBe('high');
     }
     expect(JSON.stringify(requests[1].body)).toContain('task-tool-result');
     if (controlled) {
@@ -219,6 +249,9 @@ it.each(['direct process', 'controller accounting'] as const)
           providerResponseId: attempt.providerCompletion!.responseId, manifestSha256: controlled.hosted.accountingBinding.preregHash,
           assignmentId: controlled.hosted.accountingBinding.assignmentId } });
       expect(await readBill()).toMatchObject({ status: 'complete', billedInferenceMicros: '3000', missingAttemptIds: [] });
+      expect(authorizationEvidence).toHaveLength(3);
+      expect(authorizationEvidence.every(attempt => attempt.authorized)).toBe(true);
+      phase('canonical accounting reconciled');
     }
     const answer = await exec('docker', ['exec', handle.containerId, 'cat', '/app/answer.txt'], { timeout: 30_000 });
     expect(answer.stdout).toBe('solved\n');
@@ -231,20 +264,24 @@ it.each(['direct process', 'controller accounting'] as const)
     expect(grade).toMatchObject({ resolved: true, score: 1,
       graderStatus: 'passed' satisfies typeof grade.graderStatus });
     succeeded = true;
+  } catch (error) { primaryFailure = error; throw error;
   } finally {
-    try { if (handle) await seam.teardown(handle); }
-    finally {
-      try { await controlled?.stop(); }
-      finally { await new Promise<void>(resolve => gateway.close(() => resolve())); }
+      const cleanupFailures: unknown[] = [];
+      try { if (handle) await seam.teardown(handle); } catch (error) { cleanupFailures.push(error); }
+      try { await controlled?.stop(); } catch (error) { cleanupFailures.push(error); }
+      try { await new Promise<void>(resolve => gateway.close(() => resolve())); } catch (error) { cleanupFailures.push(error); }
+      if (cleanupFailures.length) { succeeded = false; failures.push(...cleanupFailures.map(String)); }
+      phase('owned cleanup completed');
       if (succeeded) rmSync(scratch, { recursive: true, force: true });
       else {
         // Keep exact inputs and official diagnostics on failure; a successor
         // can diagnose this attempt without replaying it or losing its task ID.
-        writeFileSync(join(scratch, 'failure.json'), JSON.stringify({ handle, failures,
+        writeFileSync(join(scratch, 'failure.json'), JSON.stringify({ handle, failures, authorizationEvidence,
           requests: requests.map(({ path, body }) => ({ path, body })) }));
         process.stderr.write(`Proximus offline failure evidence: ${scratch}\n`);
       }
-    }
+      if (cleanupFailures.length) throw new AggregateError([...(primaryFailure ? [primaryFailure] : []), ...cleanupFailures],
+        'Proximus fixture cleanup failed; evidence retained');
   }
   await expect(exec('docker', ['inspect', handle!.containerId], { timeout: 30_000 })).rejects.toThrow();
 }, 330_000);

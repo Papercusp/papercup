@@ -189,6 +189,46 @@ describe('ptool post-connect phase diagnostics', () => {
       vi.useRealTimers();
     }
   });
+
+  it.each([false, true])('reports the catalog wrapper outcome when discovery fails=%s', async (failed) => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const client = { privateClient: 'private-client' };
+    const tools = [{ name: 'private-tool' }];
+    const failure = Object.assign(new Error('private-catalog-error'), { code: -32001 });
+    let resolve!: (value: typeof tools) => void;
+    let reject!: (error: Error) => void;
+    const listing = new Promise<typeof tools>((ok, fail) => { resolve = ok; reject = fail; });
+    const list = vi.fn(() => listing);
+    const reconnect = vi.fn();
+    try {
+      const pending = withPtoolConnectionPhaseTrace(trace, 'tools-list', route, () =>
+        listToolsWithNativeSessionFallback(client, {
+          discoverTools: (target: unknown) => listToolsWithTokenFallback(
+            target, ['private-token-path'], 'private-token-path', reconnect, list,
+          ),
+        }));
+      await vi.advanceTimersByTimeAsync(PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS);
+      if (failed) reject(failure); else resolve(tools);
+      const result = await pending;
+      expect(result.client).toBe(client);
+      expect(result.tools).toBe(failed ? null : tools);
+      expect(result.error).toBe(failed ? failure : null);
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(reconnect).not.toHaveBeenCalled();
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line).replace('ptool: connection trace ', '')));
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({ event: failed ? 'phase-attempt-failed' : 'phase-complete',
+        stage: 'tools-list', elapsedMs: PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS });
+      if (failed) expect(events[1].failureKind).toBe('transport');
+      else expect(events[1]).not.toHaveProperty('failureKind');
+      expect(JSON.stringify(events)).not.toMatch(/private-/);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      log.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('ptool HTTP request correlation', () => {
