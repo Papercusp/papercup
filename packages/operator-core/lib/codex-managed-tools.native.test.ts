@@ -1,5 +1,6 @@
 /** Installed-client tool census at the real request boundary; no paid inference. */
 import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -16,16 +17,24 @@ declare module 'vitest' {
 }
 
 const managedTool = 'managed_surface_canary';
+const nestedSurfaceMarker = 'CODEX_NESTED_TOOL_SURFACE';
 
-async function captureSurface(features: Record<string, boolean>) {
+async function captureSurface(features: Record<string, boolean>, captureNested = true, model = 'gpt-6.1-sol') {
   const codex = wellKnownBackendBin('codex') ?? resolveOnPath('codex');
   if (!codex) throw new Error('Installed Codex is required for native-tool removal evidence');
+  const catalogJson = execFileSync(codex, ['debug', 'models'], { encoding: 'utf8', timeout: 5000 });
+  const catalog = JSON.parse(catalogJson);
+  const selectedModel = catalog.models.find((entry: { slug: string }) => entry.slug === model);
+  expect(selectedModel, `Installed catalog must contain ${model}`).toBeDefined();
+  const measuredModel = selectedModel.slug;
   const home = mkdtempSync(join(tmpdir(), 'codex-managed-surface-'));
+  const catalogPath = join(home, 'installed-models.json');
+  writeFileSync(catalogPath, catalogJson);
   const captures: Record<string, unknown>[] = [];
   const server = createServer(async (req, res) => {
     if (req.method === 'GET') {
       res.writeHead(req.url?.includes('/models') ? 200 : 405, { 'content-type': 'application/json' });
-      res.end('{"models":[]}');
+      res.end(catalogJson);
       return;
     }
     if (req.method === 'DELETE') { res.writeHead(200); res.end(); return; }
@@ -44,7 +53,30 @@ async function captureSurface(features: Record<string, boolean>) {
         res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }));
         return;
       }
-      if (req.url?.includes('/responses')) captures.push(body);
+      if (req.url?.includes('/responses')) {
+        captures.push(body);
+        if (captureNested) {
+          const first = captures.length === 1;
+          const item = first
+            ? { id: 'nested_surface_call', type: 'custom_tool_call', namespace: 'functions', name: 'exec',
+              call_id: 'call_nested_surface', status: 'completed', input:
+                `text({ marker: ${JSON.stringify(nestedSurfaceMarker)}, tools: ALL_TOOLS.map(tool => ({ name: tool.name, callable: typeof tools[tool.name] })) });` }
+            : { id: 'nested_surface_done', type: 'message', role: 'assistant', status: 'completed',
+              content: [{ type: 'output_text', text: 'Census complete.', annotations: [] }] };
+          const response = { id: `surface_response_${captures.length}`, object: 'response', created_at: 1,
+            status: 'completed', model: measuredModel, output: [item],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          for (const event of [
+            { type: 'response.created', response: { ...response, status: 'in_progress', output: [] } },
+            { type: 'response.output_item.added', output_index: 0, item: { ...item, status: 'in_progress' } },
+            { type: 'response.output_item.done', output_index: 0, item },
+            { type: 'response.completed', response },
+          ]) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+          res.end();
+          return;
+        }
+      }
       res.writeHead(400, { 'content-type': 'application/json' });
       res.end('{"error":{"type":"invalid_request_error","message":"Offline tool census complete; no forwarding."}}');
     } catch (error) {
@@ -55,7 +87,8 @@ async function captureSurface(features: Record<string, boolean>) {
   const baseURL = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const gateway = codexGatewayConfigToml(null, { gateway: { baseURL, token: 'offline_surface_token_'.repeat(3) } });
   writeFileSync(join(home, 'config.toml'), [
-    'model = "gpt-6.1-sol"', ...gateway.root, ...gateway.tables,
+    `model = ${JSON.stringify(measuredModel)}`, `model_catalog_json = ${JSON.stringify(catalogPath)}`,
+    ...gateway.root, ...gateway.tables,
     '[features]', ...Object.entries(features).map(([key, value]) => `${key} = ${value}`),
     '[mcp_servers.managed_surface]', `url = "${baseURL}/mcp"`, 'required = true',
     'startup_timeout_sec = 10', 'tool_timeout_sec = 10',
@@ -85,10 +118,42 @@ async function captureSurface(features: Record<string, boolean>) {
       Object.values(row).forEach(walk);
     };
     walk(request.tools);
-    expect(JSON.stringify(request), stderr).toContain(managedTool);
+    const nestedTools: { name: string; callable: string }[] = [];
+    const readNested = (value: unknown): void => {
+      if (typeof value === 'string' && /^[\[{]/.test(value.trim())) {
+        try { readNested(JSON.parse(value)); } catch { /* Other output strings are not the census. */ }
+        return;
+      }
+      if (Array.isArray(value)) { value.forEach(readNested); return; }
+      if (!value || typeof value !== 'object') return;
+      const row = value as Record<string, unknown>;
+      if (row.marker === nestedSurfaceMarker && Array.isArray(row.tools)) {
+        nestedTools.push(...row.tools as { name: string; callable: string }[]);
+        return;
+      }
+      Object.values(row).forEach(readNested);
+    };
+    // Read the tool's output returned by the real client, never the injected call
+    // or a copy of the expected names. The next provider request carries it.
+    for (const captured of captures.slice(1)) {
+      for (const item of Array.isArray(captured.input) ? captured.input : []) {
+        if (item.type === 'custom_tool_call_output' && item.call_id === 'call_nested_surface') readNested(item.output);
+      }
+    }
+    if (captureNested) {
+      expect(nestedTools, `No code-mode census output; advertised tools: ${names.join(', ')}; ${stderr}`).not.toHaveLength(0);
+      expect(nestedTools.every(tool => tool.callable === 'function')).toBe(true);
+      expect(nestedTools.some(tool => tool.name.includes(managedTool))).toBe(true);
+    }
+    expect(JSON.stringify({ request, nestedTools }), `Advertised tools: ${names.join(', ')}; ${stderr}`).toContain(managedTool);
     return { version: execFileSync(codex, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim(), names,
-      hasNativeExecution: JSON.stringify(request.tools).includes('exec_command') ||
-        JSON.stringify(request.tools).includes('write_stdin') };
+      requestKeys: Object.keys(request), executedOuterNames: captureNested ? ['exec'] : [],
+      catalog: { source: 'installed-codex-debug-models', sha256: createHash('sha256').update(catalogJson).digest('hex'),
+        model: selectedModel.slug, toolMode: selectedModel.tool_mode ?? 'direct',
+        applyPatchToolType: selectedModel.apply_patch_tool_type },
+      nestedNames: nestedTools.map(tool => tool.name),
+      hasNativeExecution: [...names, ...nestedTools.map(tool => tool.name)]
+        .some(name => name === 'exec_command' || name === 'write_stdin') };
   } finally {
     child.kill('SIGTERM');
     server.closeAllConnections();
@@ -98,41 +163,56 @@ async function captureSurface(features: Record<string, boolean>) {
 }
 
 describe('Codex managed replacement installed-client census', () => {
-  it('records the code-mode host tool surface separately from direct native execution', async ({ task }) => {
-    const codeMode = await captureSurface({ code_mode_host: true });
-    const managedOnly = await captureSurface({ code_mode_host: false, shell_tool: false,
+  it('records the outer code-mode surface and the actual callable inner catalog', async ({ task }) => {
+    const codeMode = await captureSurface({ code_mode: true, code_mode_host: true }, true, 'gpt-6.1-sol');
+    const codeModeRestricted = await captureSurface({ code_mode: true, code_mode_host: true, shell_tool: false }, true, 'gpt-6.1-sol');
+    task.meta.nativeToolSurface = { codeMode, codeModeRestricted };
+    const managedOnly = await captureSurface({ code_mode: true, code_mode_host: true, shell_tool: false,
       view_image: false, sleep_tool: false, computer_use: false, browser_use: false,
       multi_agent: false, goals: false, image_generation: false });
     const inventory = nativeToolInventory({ client: 'codex', clientVersion: codeMode.version,
-      nativeNames: codeMode.names.filter(name => name !== 'multi_agent_v1'),
+      nativeNames: [...codeMode.names, ...codeMode.executedOuterNames, ...codeMode.nestedNames]
+        .filter(name => name !== 'multi_agent_v1'),
       managedNames: [managedTool] });
-    task.meta.nativeToolSurface = { codeMode, managedOnly, inventory };
-    expect(inventory.rows.every(row => row.gap === null || row.gap === 'client-version-drift')).toBe(true);
-    expect(codeMode.names).not.toEqual(managedOnly.names);
+    task.meta.nativeToolSurface = { codeMode, codeModeRestricted, managedOnly, inventory };
+    expect(codeMode.nestedNames).toContain('exec_command');
+    expect(codeMode.nestedNames).toContain('apply_patch');
+    expect(codeModeRestricted.nestedNames).not.toContain('exec_command');
+    expect(codeModeRestricted.nestedNames).not.toContain('write_stdin');
+    expect(codeMode.hasNativeExecution).toBe(true);
+    expect(codeModeRestricted.hasNativeExecution).toBe(false);
+    expect(inventory.rows.every(row => row.gap === null || row.gap === 'client-version-drift' ||
+      row.gap === 'native-parity-unverified')).toBe(true);
+    expect(inventory.rows.find(row => row.nativeName === 'clock__curr_time')).toMatchObject({
+      family: null, disposition: 'unsupported-gap', gap: 'native-parity-unverified', cutoverReady: false,
+    });
+    expect(codeMode.nestedNames).not.toEqual(managedOnly.nestedNames);
     expect(managedOnly.names).not.toContain('exec_command');
     expect(managedOnly.names).not.toContain('write_stdin');
+    expect(managedOnly.nestedNames).not.toContain('exec_command');
+    expect(managedOnly.nestedNames).not.toContain('write_stdin');
   }, 60_000);
   it('measures native shell removal while retaining the managed MCP surface', async ({ task }) => {
-    const baseline = await captureSurface({ code_mode_host: false });
-    const restricted = await captureSurface({ code_mode_host: false, shell_tool: false });
+    const baseline = await captureSurface({ code_mode: true, code_mode_host: true });
+    const restricted = await captureSurface({ code_mode: true, code_mode_host: true, shell_tool: false });
     console.info('CODEX_MANAGED_TOOL_SURFACE', JSON.stringify({ baseline, restricted }));
     task.meta.nativeToolSurface = { baseline, restricted };
-    expect(baseline.names).toContain('exec_command');
-    expect(restricted.names).not.toContain('exec_command');
-    expect(restricted.names).not.toContain('write_stdin');
+    expect(baseline.nestedNames).toContain('exec_command');
+    expect(restricted.nestedNames).not.toContain('exec_command');
+    expect(restricted.nestedNames).not.toContain('write_stdin');
   }, 60_000);
 
   it('records remaining native tools after the measured feature switches are disabled', async ({ task }) => {
-    const features = { code_mode_host: false, shell_tool: false, view_image: false,
+    const features = { code_mode: true, code_mode_host: true, shell_tool: false, view_image: false,
       sleep_tool: false, computer_use: false, browser_use: false, multi_agent: false,
       goals: false, image_generation: false };
     const restricted = await captureSurface(features);
     task.meta.nativeToolSurface = { features, restricted };
     // Keep the observed residue in the ledger: disabling flags is not proof
     // that an unrelated native tool disappeared.
-    expect(restricted.names).not.toContain('exec_command');
-    expect(restricted.names).not.toContain('write_stdin');
-    expect(restricted.names).not.toContain('view_image');
-    expect(restricted.names).not.toContain('sleep');
+    expect(restricted.nestedNames).not.toContain('exec_command');
+    expect(restricted.nestedNames).not.toContain('write_stdin');
+    expect(restricted.nestedNames).not.toContain('view_image');
+    expect(restricted.nestedNames).not.toContain('sleep');
   }, 30_000);
 });
