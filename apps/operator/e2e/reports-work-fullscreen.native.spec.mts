@@ -51,6 +51,17 @@ test('P010 native converse parity', async ({}, info) => {
       (id,conversation_id,workspace_id,seq,role,text,source,created_at,chat_state)
       VALUES ($1,$2,$3,0,'assistant','Native result reply','text_typed',$4,$5::jsonb)`,
     [turnId, conversationId, workspace, Date.now(), sql.json({ schemaVersion: 1, results: blocks })]);
+    const fixture = await sql.unsafe(`SELECT id,workspace_id,status,subject_kind,subject_ref,
+      current_database() AS database,inet_server_port() AS port FROM harness_shared.operator_conversations
+      WHERE id=$1`, [conversationId]);
+    const query = `/api/zero-harness/rest-query?name=operatorConversations.current&args=${encodeURIComponent(JSON.stringify({ workspaceId: workspace }))}`;
+    const current = await evaluate(`fetch(${JSON.stringify(query)}, {
+      headers: {'x-papercusp-workspace': ${JSON.stringify(workspace)}}
+    }).then(async response => ({status: response.status, body: await response.json(),
+      url: location.href, browserWorkspace: window.__PAPERCUSP_WS__ || null}))`);
+    await info.attach('p010-native-fixture-readback', { body: JSON.stringify({ fixture, current }), contentType: 'application/json' });
+    expect(fixture).toMatchObject([{ id: conversationId, workspace_id: workspace, status: 'active', subject_ref: null }]);
+    expect(current).toMatchObject({ status: 200, body: { rows: [{ id: conversationId, workspaceId: workspace }] } });
     await native('navigate', '/?chat=true');
     const selector = '[data-result-id="p010-native-report"]';
     await wait(`document.querySelector(${JSON.stringify(selector)})?.textContent.includes('P010 authorized native report') === true`);

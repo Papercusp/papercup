@@ -129,6 +129,20 @@ test('P010 current-build conformance journey', async ({ page }, info) => {
       result('p010-browser-report', report.reportId), result('p010-browser-foreign', foreign.reportId),
     ] })]);
 
+    const fixture = await sql.unsafe(`SELECT id,workspace_id,status,subject_kind,subject_ref,
+      current_database() AS database,inet_server_port() AS port FROM harness_shared.operator_conversations
+      WHERE id=$1`, [conversationId]);
+    const current = await page.request.get(`${baseURL}/api/zero-harness/rest-query`, {
+      params: { name: 'operatorConversations.current', args: JSON.stringify({ workspaceId: workspace }) },
+      headers: { 'x-papercusp-workspace': workspace },
+    });
+    const currentBody = await current.json();
+    await info.attach('p010-browser-fixture-readback', { body: JSON.stringify({ fixture,
+      status: current.status(), current: currentBody }), contentType: 'application/json' });
+    expect(fixture).toMatchObject([{ id: conversationId, workspace_id: workspace, status: 'active', subject_ref: null }]);
+    expect(current.status()).toBe(200);
+    expect(currentBody.rows).toMatchObject([{ id: conversationId, workspaceId: workspace }]);
+
     // Exercise persisted history and the real scoped resolver, without route stubs.
     await page.goto(`${baseURL}/?chat=true`);
     const sidebar = page.getByRole('complementary', { name: 'Papercup chat' });
