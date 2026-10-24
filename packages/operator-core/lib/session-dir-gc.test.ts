@@ -64,6 +64,50 @@ function seedDir(root: string, name: string, ageMs: number): string {
 }
 
 describe('session root caps', () => {
+  it('uses one live pin snapshot across real expiry during census, then expires it on the next run', async () => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const home = seedDir(root, 'pinned', DEFAULT_RETENTION_MS * 3);
+    writeFileSync(join(home, 'data'), Buffer.alloc(64 * 1024)); utimesSync(home, 1, 1);
+    const leases = join(parent, 'leases');
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', leases);
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    const pin = createRetentionPin({ path: home, owner: 'fixture', reason: 'expiry snapshot boundary',
+      expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const pins = await import('./storage/retention-pins');
+    const originalRead = pins.readRetentionPinsAsync;
+    let expiry = 0, crossed = false;
+    const read = vi.spyOn(pins, 'readRetentionPinsAsync').mockImplementation(async options => {
+      expiry = (options?.nowMs ?? Date.now()) + 50;
+      const lease = join(leases, `lease-agent-pin-${pin.id}.tsv`);
+      writeFileSync(lease, readFileSync(lease, 'utf8').replace(/^expires_ns=.*$/m,
+        `expires_ns=${BigInt(expiry) * 1_000_000n}`));
+      return originalRead(options);
+    });
+    const census = await import('./storage/disk-consumer-census');
+    const originalInspect = census.inspectRetentionTrees;
+    const inspect = vi.spyOn(census, 'inspectRetentionTrees').mockImplementation(async (path, options) => {
+      if (!crossed && path === root) {
+        crossed = true;
+        await new Promise(done => setTimeout(done, Math.max(1, expiry - Date.now() + 1)));
+      }
+      return originalInspect(path, options);
+    });
+    try {
+      const options = { roots: [{ root, keyKind: 'owner' as const, label: 'fixture', maxBytes: 1 }],
+        protectedIdentity: empty, archiveGuard: false };
+      const kept = await runSessionDirGc(options);
+      expect(crossed).toBe(true); expect(Date.now()).toBeGreaterThan(expiry);
+      expect(kept.removed).toEqual([]); expect(existsSync(home)).toBe(true);
+      expect(kept.caps![0]!.pinnedBytes).toBe(kept.caps![0]!.afterBytes);
+      expect(kept.errors).toEqual([]);
+      read.mockRestore(); inspect.mockRestore();
+      const expired = await runSessionDirGc(options);
+      expect(expired.removed).toEqual([home]); expect(existsSync(home)).toBe(false);
+      expect(expired.caps![0]).toMatchObject({ afterBytes: 0, pinnedBytes: 0 });
+      expect(expired.errors).toEqual([]);
+    } finally { read.mockRestore(); inspect.mockRestore(); vi.unstubAllEnvs(); }
+  });
+
   it.each(['file', 'directory', 'shared inode', 'overlapping pins'])('charges only a live child pin allocation (%s), retaining the whole home', async (kind) => {
     const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
     const home = seedDir(root, 'pinned', DEFAULT_RETENTION_MS * 3);

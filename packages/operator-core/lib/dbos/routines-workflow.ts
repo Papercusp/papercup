@@ -1369,24 +1369,45 @@ async function routinesTickImpl(): Promise<void> {
  * Git-sync on the protected critical lane ran minutes late (the 21:00:00Z slot of one hive
  * started 21:02:33Z; an 18-minute gap after a bg-host restart).
  *
- * This tick keeps the semantics the tail had: the EI-11171 critical-pool floor (loop-rebase
- * only, then return), loop-rebase first, then the sweeps in their original order. Its overlap
- * guard is keyed on its OWN workflow name, so a slow sweep pass sheds only the next sweep pass.
- *
- * WI-6554700010019234: the DB overlap guard fails open when the event loop stalls past its
- * probe deadline, so this tick ALSO holds an in-process registry (see tryEnterInProcessPass).
- * A pass that finds another fresh pass running in this process returns before any step, even
- * under the EI-11171 critical-pool floor: the running pass already started with loop-rebase.
+ * Critical rebase and noncritical sweeps each hold an in-process registry. A retained
+ * noncritical pass must not prevent a later tick from rebasing newly completed loop turns.
+ * A fresh critical pass excludes the entire later tick; after critical settlement the tick
+ * may enter the noncritical lane, whose pool and DB overlap sheds retain their semantics.
+ * Both lanes retain the maintained stale backstop and release their entries in finally.
  */
 const sweepPassRegistry = pinModuleState(
   '@papercusp/operator-core.routines-sweep-pass-registry',
   createInProcessPassRegistry,
 );
+const criticalSweepPassRegistry = pinModuleState(
+  '@papercusp/operator-core.routines-critical-sweep-pass-registry',
+  createInProcessPassRegistry,
+);
 
 async function routinesSweepTickImpl(): Promise<void> {
+  if (shouldShedSchedulerTickUnderLoopPressure()) {
+    console.warn(`[routines-sweep-tick] SKIPPED — event loop pressure, shedding sweep tick`);
+    return;
+  }
   const now = Date.now();
   const passId = DBOS.workflowID ?? `routinesSweepTick-${now}`;
-  const admitted = tryEnterInProcessPass(sweepPassRegistry, passId, now, undefined, (evictedId, ageMs) => {
+  const criticalAdmitted = tryEnterInProcessPass(criticalSweepPassRegistry, passId, now, undefined, (evictedId, ageMs) => {
+    console.warn(
+      `[routines-sweep-tick] EVICTED critical in-process pass ${evictedId} after ${Math.round(ageMs / 1000)}s without settling — admitting ${passId}`,
+    );
+  });
+  if (!criticalAdmitted) {
+    console.warn(`[routines-sweep-tick] SKIPPED — another critical rebase pass is running in this process`);
+    return;
+  }
+  try {
+    await runLoopRebaseSweep(getOrgPg().sql, timedSweepDbos);
+  } finally {
+    exitInProcessPass(criticalSweepPassRegistry, passId);
+  }
+
+  // Preserve the existing pinned registry for noncritical work across module reloads.
+  const admitted = tryEnterInProcessPass(sweepPassRegistry, passId, Date.now(), undefined, (evictedId, ageMs) => {
     console.warn(
       `[routines-sweep-tick] EVICTED in-process pass ${evictedId} after ${Math.round(ageMs / 1000)}s without settling — admitting ${passId} (WI-6554700010019234)`,
     );
@@ -1405,10 +1426,6 @@ async function routinesSweepTickImpl(): Promise<void> {
 }
 
 async function routinesSweepPassImpl(DBOS: typeof timedSweepDbos = timedSweepDbos): Promise<void> {
-  if (shouldShedSchedulerTickUnderLoopPressure()) {
-    console.warn(`[routines-sweep-tick] SKIPPED — event loop pressure, shedding sweep tick`);
-    return;
-  }
   const { sql } = getOrgPg();
   // Probe only: the dispatch tick owns pool-shed accounting (recordPoolShed and the durable shed
   // event), so this second probe must not double-count sheds.
@@ -1423,24 +1440,9 @@ async function routinesSweepPassImpl(DBOS: typeof timedSweepDbos = timedSweepDbo
     return;
   }
 
-  // EI-11171 critical-routine floor (cont.): heavy sweeps stay shed, but loop completion-rebase
-  // is liveness-critical and MUST still run. Otherwise pure loops remain parked at infinity
-  // until a non-shed tick, producing the 20–70 minute cadence gaps in EI-21859486764076047.
-  if (poolCritical) {
-    await runLoopRebaseSweep(sql, DBOS);
-    return;
-  }
-
-  // Loop completion-rebase (B-LOOP-2) — its OWN step, FIRST after the fire loop
-  // (Task-#8 / su-cold-auto 2026-07-03): a loop fire parks at next_fire_at='infinity'
-  // and stays parked until this rebase re-arms it, so the rebase is as
-  // liveness-critical as the fires themselves. It used to ride at the TAIL of
-  // reconcileAndGovern (position #10 of 11 serial sweeps below) — under pool
-  // starvation the earlier sweeps starved it and armed loops sat parked ~17 min
-  // between 60s wakes while fires for other routines kept flowing. Placing it
-  // here bounds its delay to the fire loop only. Fail-soft: a rebase failure
-  // must never block the watchdog sweeps below.
-  await runLoopRebaseSweep(sql, DBOS);
+  // The independently guarded critical rebase already ran before entering this lane.
+  // Pool pressure sheds only the noncritical tail.
+  if (poolCritical) return;
 
   // An accepted program receipt is durable launch intent. The normal submit
   // path returns after admission; this bounded scan starts roots whose DBOS
