@@ -43,6 +43,7 @@ vi.mock('./mcp-base-url', () => ({
 }));
 vi.mock('./su-session-stdio-peer', () => ({ startSuStdioPeer: vi.fn() }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => ({
+  ...(await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()),
   resolveOmpSessionModel: (await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()).resolveOmpSessionModel,
   assertLaunchPersona: mocks.persona, sanitizeInheritedEnv: () => ({}), applyGithubTokenEnv: vi.fn(),
   modelArgsFor: (backend: string, model: string) => backend === 'codex' ? ['-m', model] : ['--model', model],
@@ -70,6 +71,7 @@ afterEach(async () => {
 
 function fixture(backend: 'codex' | 'omp', overrides: {
   nativeId?: string; tools?: boolean; model?: string; contextWindow?: number;
+  bootstrapModel?: string; compactionLimit?: number;
   servedAccountReader?: (ownerId: string) => Promise<string | null>;
   request?: (frame: RpcFrame) => Promise<RpcFrame | undefined>;
   resume?: boolean;
@@ -94,6 +96,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'plan', nativeSession: null } as PuiSuSessionBinding & { backend: 'codex' | 'omp' };
   const boot: BootstrapSuResult = { status: 'ok', specificationRevision: 'spec', stateRevision: 'state', compositionSource: 'blueprint',
     codexHome: '/configured/codex', coordExtPath: null,
+    model: overrides.bootstrapModel, compactionLimit: overrides.compactionLimit,
     agent: backend, sessionId: 71, nativeSessionId: null, cwd: '/project', promptFile: '/sealed/su.md',
     workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'plan', envelopeEnv: {
       PAPERCUSP_SID: binding.ownerId!, CODEX_HOME: '/configured/codex', PAPERCUSP_PROFILE: 'engineer',
@@ -152,6 +155,21 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
     commandId: id, issuedAt: new Date().toISOString(), target: engine.adapter.host.descriptor().identity };
   return type === 'owner_turn' ? { ...base, type, turnId: `owner-${id}`, content: 'Hello from PUI' } : { ...base, type };
 }
+
+describe('effective launch configuration consumed by the Codex engine', () => {
+  it('passes the resolved bootstrap model, effort and managed budget to app-server', async () => {
+    const f = fixture('codex', { bootstrapModel: 'gpt-5.6-sol:high', model: 'gpt-5.6-sol', compactionLimit: 360000 });
+    await f.engine.ready;
+    expect(f.transport().args).toEqual(expect.arrayContaining([
+      'app-server', 'model="gpt-5.6-sol"', 'model_reasoning_effort="high"',
+      'model_auto_compact_token_limit=288000',
+    ]));
+    expect(f.transport().args).not.toContain('model="codex-model"');
+    expect(f.transport().cwd).toBe('/project');
+    expect(f.transport().env).toMatchObject({ PAPERCUSP_SID: 'su-rpc-fixture', CODEX_HOME: '/configured/codex' });
+    expect(f.transport().env).not.toHaveProperty('PAPERCUSP_TTY');
+  });
+});
 
 describe('P-017 awaited Codex host lifecycle', () => {
   it.each([false, true])('default attached installed admission refuses paid tools before inference (resume=%s)', async resume => {

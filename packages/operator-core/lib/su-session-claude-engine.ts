@@ -8,7 +8,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { query, type Options, type Query, type SDKMessage, type SDKUserMessage, type Settings } from '@anthropic-ai/claude-agent-sdk';
-import { applyDefaultClaudeOAuthToken, applyGithubTokenEnv, applyPsuClaudeSettingsArgs, assertLaunchPersona, enforceDefaultClaudeAccount, healContextTrimmingEnv, persistDefaultClaudeAuthSettings, persistPsuClaudeSessionSettings, recordSessionOwner, sanitizeInheritedEnv, startSupervisorBeat, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { applyDefaultClaudeOAuthToken, applyGithubTokenEnv, applyPsuClaudeSettingsArgs, assertLaunchPersona, enforceDefaultClaudeAccount, healContextTrimmingEnv, persistDefaultClaudeAuthSettings, persistPsuClaudeSessionSettings, prepareSuLaunch, recordSessionOwner, startSupervisorBeat } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { SuApprovalsMode } from '@papercusp/chat-protocol';
 import { splitModelSpec } from './agent-config-constants';
@@ -214,6 +214,10 @@ export function startClaudeSuEngine(
     throw new Error('Structured Claude bootstrap does not match the durable SU identity');
   }
   assertLaunchPersona(boot.promptFile);
+  const preparation = prepareSuLaunch(boot, {
+    model: options.model, executionKind: 'programmatic', accountRoute: options.accountRoute,
+    nativeSessionId: nativeId,
+  });
   const input = new PassThrough({ objectMode: true });
   const abortController = new AbortController();
   // Readiness uses the SDK's actual control responses. A transcript-only
@@ -389,12 +393,15 @@ export function startClaudeSuEngine(
     // session, which is the auto-edit approvals mode (D-026).
     approvalsChanged: (mode) => { currentApprovals = mode; adapter.host.updateApprovals(mode); },
   });
-  const model = splitModelSpec(options.model);
-  const launch = suLaunchArgs('claude', { promptFile: boot.promptFile, nativeSessionId: nativeId });
+  const flagValue = (flag: string) => {
+    const at = preparation.modelArgs.indexOf(flag);
+    return at < 0 ? undefined : preparation.modelArgs[at + 1];
+  };
+  const model = { model: flagValue('--model'), effort: flagValue('--effort') };
+  const launch = preparation;
   const su = (options.identity ?? 'su') === 'su';
   const systemPrompt = su ? readFileSync(boot.promptFile, 'utf8') : null;
-  const env = { ...sanitizeInheritedEnv(process.env), ...boot.envelopeEnv };
-  delete env.PAPERCUSP_TTY;
+  const env = preparation.env;
   // The per-session SessionStart hook otherwise mistakes the SDK initialize
   // channel for a dropped argv prompt and injects the full parked playbook as
   // additionalContext on every start/resume.

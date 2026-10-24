@@ -607,6 +607,26 @@ export function managedSetInterval(
   return { stop: () => stopManaged(key) };
 }
 
+/** Reuse the registry's replacement and async overlap guard for recurring sweeps.
+ * Callers retain their public start signature, cadence, classification and log.
+ */
+export function createManagedSweepStarter(definition: {
+  name: string;
+  intervalMs: number;
+  options: ManagedTimerOptions;
+  onError: (error: unknown) => void;
+}): (run: () => Promise<unknown>, intervalMs?: number) => void {
+  return (run, intervalMs = definition.intervalMs) => {
+    managedSetInterval(definition.name, intervalMs, async () => {
+      try {
+        await run();
+      } catch (error) {
+        definition.onError(error);
+      }
+    }, definition.options);
+  };
+}
+
 /** Stop + deregister one timer by name. Returns whether it existed. Idempotent. */
 export function stopManaged(name: string): boolean {
   const rec = registry.get(name);

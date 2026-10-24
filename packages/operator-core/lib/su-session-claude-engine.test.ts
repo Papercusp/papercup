@@ -133,6 +133,19 @@ function stalledReports(engine: ClaudeSuEngine) {
 }
 
 describe('structured Claude SU engine', () => {
+  it('consumes the resolved bootstrap model and effort instead of a stale caller selection', async () => {
+    const p = peer();
+    const engine = startClaudeSuEngine({ ...boot, model: 'claude-sonnet-4-6:high' }, binding, runtime, {
+      agentChatId: 'chat', model: 'claude-opus-4-1:low', accountRoute: 'default',
+      query: p.factory, register: false, startupTimeoutMs: 300,
+    });
+    engines.push(engine);
+    await engine.ready;
+    expect(p.options()).toMatchObject({ model: 'claude-sonnet-4-6', effort: 'high', cwd: dir,
+      env: { PAPERCUSP_SID: 'su-test', CLAUDE_CONFIG_DIR: dir } });
+    expect(p.options()?.env).not.toHaveProperty('PAPERCUSP_TTY');
+  });
+
   it('awaits the exact native funding guard before writing querying input', async () => {
     let release!: () => void;
     const barrier = new Promise<void>((resolve) => { release = resolve; });

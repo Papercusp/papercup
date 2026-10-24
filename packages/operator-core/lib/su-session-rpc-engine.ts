@@ -7,8 +7,8 @@ import { join, resolve } from 'node:path';
 import type { SuApprovalsMode, SuSessionJsonValue, SuSessionRefusal } from '@papercusp/chat-protocol';
 import {
   applyGithubTokenEnv, assertLaunchPersona, modelArgsFor, ompCoreToolNames,
-  ompResponsesCompatibilityEnv, recordSessionOwner, resolveOmpInjectHookPath,
-  resolveOmpSessionModel, sanitizeInheritedEnv, suLaunchArgs, writeOmpSessionConfigDir,
+  ompResponsesCompatibilityEnv, recordSessionOwner,
+  prepareSuLaunch, resolveOmpSessionModel, suLaunchArgs, writeOmpSessionConfigDir,
 } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { splitModelSpec } from './agent-config-constants';
 import { setAdvSessionOmpThreadId } from './adv-sessions';
@@ -137,11 +137,13 @@ export function startSuRpcEngine(
   if (options.nativeSession && options.nativeSession.backend !== backend) throw new Error('Resume handle has a different backend');
   const su = (options.identity ?? 'su') === 'su';
   if (su) assertLaunchPersona(boot.promptFile);
-  const env = { ...sanitizeInheritedEnv(process.env), ...boot.envelopeEnv };
-  delete env.PAPERCUSP_TTY;
+  const preparation = prepareSuLaunch(boot, {
+    model: options.model, executionKind: 'programmatic', accountRoute: options.accountRoute,
+  });
+  const env = preparation.env;
   // WI-6554700010008332: same routing as the Claude engine (see resolveChildSessionOperatorBaseUrl).
   env.PAPERCUSP_OPERATOR_URL = resolveChildSessionOperatorBaseUrl();
-  let selectedModel = options.model;
+  let selectedModel = preparation.model;
   // D-026: the prompted Codex launch below (on-request + workspace-write) is
   // `auto-edit`. An unprompted launch (never + full access) has no neutral mode.
   let selectedApprovals: SuApprovalsMode | undefined =
@@ -155,8 +157,8 @@ export function startSuRpcEngine(
     native =options.nativeSession ?? { backend, source: 'adv_sessions', ownerId: binding.ownerId,
       codexHome: env.CODEX_HOME, rolloutId: '', exactResumeSupported: false, missingReason: 'Codex is initializing' };
     // App-server accepts config overrides rather than the TUI's -m flag.
-    const modelArgs = modelArgsFor('codex', selectedModel) as string[];
-    args = [...suLaunchArgs('codex').args, 'app-server'];
+    const modelArgs = preparation.modelArgs;
+    args = [...preparation.args, 'app-server'];
     for (let index = 0; index < modelArgs.length; index++) {
       if (modelArgs[index] === '-m') args.push('-c', `model=${JSON.stringify(modelArgs[++index])}`);
       else args.push(modelArgs[index]);
@@ -182,8 +184,7 @@ export function startSuRpcEngine(
     Object.assign(env, ompResponsesCompatibilityEnv('omp', selectedModel, env));
     native = options.nativeSession ?? { backend, source: 'adv_sessions', ownerId: binding.ownerId,
       agentHome, ompThreadId: '', exactResumeSupported: false, missingReason: 'OMP is initializing' };
-    args = [...su ? suLaunchArgs('omp', { promptFile: boot.promptFile, coordExtPath: boot.coordExtPath,
-      injectHookPath: resolveOmpInjectHookPath('omp'), allowNativeLsp: env.PAPERCUSP_OMP_NATIVE_LSP === '1' }).args
+    args = [...su ? preparation.args
       : ompCodingAssistantArgs(boot.promptFile),
       // rpc-ui keeps structured stdio and installs OMP's native question
       // callbacks. Plain rpc deliberately omits that interactive capability.

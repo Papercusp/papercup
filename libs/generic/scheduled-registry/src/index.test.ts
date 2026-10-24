@@ -8,6 +8,7 @@ import {
   ALIGNED_PHASE_WARMUP_MS,
   alignedSlotDelayMs,
   configureScheduledRegistry,
+  createManagedSweepStarter,
   getManaged,
   listManaged,
   managedCount,
@@ -69,6 +70,63 @@ function harness() {
 }
 
 afterEach(() => resetScheduledRegistry());
+
+describe('managed sweep starters', () => {
+  it('preserves metadata and cadence, and replaces the previous named timer', async () => {
+    const h = harness();
+    const first = vi.fn(async () => undefined);
+    const second = vi.fn(async () => undefined);
+    const start = createManagedSweepStarter({ name: 'sweep', intervalMs: 100,
+      options: { category: 'watchdog', classification: 'timeout-reaper' }, onError: vi.fn() });
+    expect(h.intervals).toHaveLength(0);
+    start(first);
+    expect(h.intervals[0].ms).toBe(100);
+    start(second, 53);
+    expect(h.intervals[0].cleared).toBe(true);
+    expect(getManaged('sweep')).toMatchObject({ intervalMs: 53, category: 'watchdog', classification: 'timeout-reaper' });
+    await h.fire(0);
+    expect(first).not.toHaveBeenCalled();
+    await h.fire(1);
+    expect(second).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the registry overlap guard held until the actual async sweep settles', async () => {
+    const h = harness();
+    let finish!: () => void;
+    const run = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    createManagedSweepStarter({ name: 'slow', intervalMs: 100,
+      options: { category: 'watchdog' }, onError: vi.fn() })(run);
+    await h.fire();
+    await h.fire();
+    await h.fire();
+    expect(run).toHaveBeenCalledOnce();
+    expect(getManaged('slow')).toMatchObject({ running: true, skippedWhileRunning: 2 });
+    finish();
+    await flush();
+    expect(getManaged('slow')).toMatchObject({ running: false, fires: 1 });
+    await h.fire();
+    expect(run).toHaveBeenCalledTimes(2);
+    finish();
+    await flush();
+  });
+
+  it('delivers rejected and synchronous failures and releases the guard for the next tick', async () => {
+    const h = harness();
+    const rejected = new Error('rejected sweep');
+    const thrown = new Error('synchronous sweep');
+    const onError = vi.fn();
+    const run = vi.fn<() => Promise<unknown>>().mockRejectedValueOnce(rejected)
+      .mockImplementationOnce(() => { throw thrown; }).mockResolvedValue(undefined);
+    createManagedSweepStarter({ name: 'errors', intervalMs: 100,
+      options: { category: 'watchdog' }, onError })(run);
+    await h.fire();
+    await h.fire();
+    await h.fire();
+    expect(onError.mock.calls).toEqual([[rejected], [thrown]]);
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(getManaged('errors')).toMatchObject({ running: false, fires: 3 });
+  });
+});
 
 describe('managed tick hang episodes', () => {
   it.each([
