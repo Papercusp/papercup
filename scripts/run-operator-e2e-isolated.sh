@@ -53,7 +53,13 @@ source "$ROOT/libs/generic/verification-harness/bin/vh.sh"
 # and writes a full JSON receipt separately from the reporter's JSONL ledger
 # receipts. Refuse a misconfigured or stale receipt before harness initialization
 # or the desktop boot.
-for arg in "$@"; do
+native_preflight_args=("$@")
+# The default suite includes this native acceptance too. An empty filter must
+# not bypass prerequisites that an explicitly selected spec enforces.
+if [ "$#" -eq 0 ]; then
+  native_preflight_args=(e2e/inbox-ack-persistence.native.spec.mts)
+fi
+for arg in "${native_preflight_args[@]}"; do
   case "$arg" in
     *inbox-ack-persistence.native.spec.mts*)
       if [ "${VERIFY_TAURI_ISOLATED_SEED:-}" != "ready" ]; then

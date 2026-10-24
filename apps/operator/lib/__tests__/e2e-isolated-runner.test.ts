@@ -196,6 +196,11 @@ function run(
       OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
       VH_TSX: f.harnessTsx,
       PATH: `${f.dir}:${base.PATH ?? ''}`,
+      ...(args.length === 0 ? {
+        VERIFY_TAURI_ISOLATED_SEED: 'ready',
+        PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: join(f.dir, 'full-suite-acceptance.json'),
+        PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(f.dir, 'full-suite-reporter.jsonl'),
+      } : {}),
       ...env,
     },
     encoding: 'utf8',
@@ -385,6 +390,21 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(result.out).toContain('invalid tested input: ../outside-source');
     expect(existsSync(marker)).toBe(false);
     expect(result.recorded).toBeNull();
+  });
+
+  it('preflights default full-suite native prerequisites before starting the desktop', () => {
+    for (const env of [
+      { VERIFY_TAURI_ISOLATED_SEED: 'fresh' },
+      { PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: '' },
+      { PAPERCUSP_TEST_RUN_RECEIPT_FILE: '' },
+    ]) {
+      const f = fixture(0);
+      const marker = join(f.dir, 'rig-started');
+      writeFileSync(f.rig, `#!/usr/bin/env bash\ntouch "${marker}"\nexit 0\n`);
+      const result = run(f, [], env);
+      expect(result.status, result.out).toBe(2);
+      expect(existsSync(marker)).toBe(false);
+    }
   });
 
   it('preflights native Inbox seed and receipt inputs before starting the desktop', () => {
