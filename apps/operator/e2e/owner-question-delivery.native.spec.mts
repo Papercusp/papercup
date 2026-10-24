@@ -4,6 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
+import { ownerQuestionDelivery } from '../lib/owner-question-native-contract';
 
 // Run with scripts/run-operator-e2e-isolated.sh and
 // VERIFY_TAURI_ISOLATED_SEED=ready. Exercise the real owner UI and disposable
@@ -104,26 +105,10 @@ test('owner questions and choices survive reopening and accept an answer in the 
     // Distinguish durable delivery from UI selection. Retain this source
     // readback before any row wait, so failures name the layer that lost it.
     await expect.poll(async () => {
-      const feed = await invoke('plans:attention', { harness: 'papercusp', output: 'refs', ownerAgentId: session });
-      const items: Array<Record<string, any>> = [];
-      function collect(value: unknown) {
-        if (!value || typeof value !== 'object') return;
-        if (Array.isArray(value)) { value.forEach(collect); return; }
-        const entry = value as Record<string, any>;
-        if (typeof entry.id === 'string' && typeof entry.kind === 'string' && entry.ref) {
-          items.push(entry);
-          return;
-        }
-        Object.values(entry).forEach(collect);
-      }
-      collect(feed);
-      const choiceRow = items.find((item: Record<string, any>) => item.ref?.msgId === choice.msg_id);
-      // ask-owner's linked escalation may represent its conversation in the
-      // deduplicated attention feed. Match that exact generated question too.
-      const questionRow = items.find((item: Record<string, any>) =>
-        item.ref?.conversationId === ask.conversation_id || item.title === question);
-      evidence.deliveryReadback = { choice: choiceRow ?? null, question: questionRow ?? null };
-      return { choice: Boolean(choiceRow), question: Boolean(questionRow) };
+      const feed = await invoke('plans:attention', { harness: 'papercusp', output: 'feed', ownerAgentId: session });
+      evidence.deliveryReadback = ownerQuestionDelivery(feed, choice.msg_id, ask.conversation_id);
+      const delivery = evidence.deliveryReadback as ReturnType<typeof ownerQuestionDelivery>;
+      return { choice: Boolean(delivery.choice), question: Boolean(delivery.question) };
     }, { timeout: 45_000 }).toEqual({ choice: true, question: true });
     await openRow(prompt);
     const choicesVisible = `(() => {

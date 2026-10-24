@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Codex managed carry queued, then home renderer fails"
-description: "Distinguish a queued PreCompact handoff from a completed successor; diagnose prompt-renderer version skew and recover only verified instruction artifacts."
+description: "Diagnose renderer skew after queued carry admission; recover stuck agents through audited same-owner successors and distinguish source repair from serving rollout."
 type: Insight
 discovered: 2026-10-24
 tags: ["codex", "compaction", "recovery"]
@@ -14,12 +14,30 @@ documents:
   - "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts"
   - "packages/operator-core/lib/su-persona-render.ts"
   - "apps/operator/scripts/psu-pty-host.mjs"
+  - "packages/operator-core/lib/agent-tools/capability/launch-agent.ts"
+  - "packages/operator-core/lib/agent-tools/fleet_registry/kill.ts"
 ---
 
 A Codex PreCompact hook saying `Managed carry-respawn is QUEUED` proves admission only. Read the owner's `psu-pty/<owner>.events.jsonl` for the subsequent `respawn-failed` outcome before attributing repeated interruptions to the Codex model or account.
 
-On 2026-10-24, WI-6554700010027627 reproduced the same actual owner/ADV home-repair request returning HTTP 500 through 9071 and HTTP 200 through 3170. The failing body named three su.md observation headings absent from the serving renderer's SU_TILES. These were prompt/source build skew, not a missing model route. `ensureCodexHomeViaOperator` preserved the HTTP failure classification; `recycleChild` refused replacement before stopping the original child. The hook's prior queued message then remained the visible outcome.
+On 2026-10-24, WI-6554700010027627 reproduced the same actual owner/ADV home-repair request returning HTTP 500 through 9071 and HTTP 200 through 3170. The failing body named three su.md observation headings absent from the serving renderer's SU_TILES. These were prompt/source build skew. `ensureCodexHomeViaOperator` preserved the HTTP failure classification; `recycleChild` refused replacement before stopping the original child. The hook's queued acknowledgement then remained the visible outcome.
 
-The durable source repair in `adv/sessions.ts` recognizes only the typed `su-tiling-unsound` error and uses the verified prior launch artifact. `pinnedSuRecoveryPrompt` checks replay integrity and receipt revision; ordinary SU sessions can opt into this recovery without a selected identity. Existing selected-source recovery keeps its original defaults. Missing artifacts, tampered receipts, unrelated errors, and identity-admission failures remain refusals. Recovery returns `pinned-renderer-skew` and does not claim a new identity activation. The PTY also reports a failed home preparation to the terminal after admission, including its HTTP status.
+The durable source repair in `adv/sessions.ts` recognizes only the typed `su-tiling-unsound` error and uses the verified prior launch artifact. `pinnedSuRecoveryPrompt` checks replay integrity and receipt revision; ordinary SU sessions can opt into this recovery without a selected identity. Existing selected-source recovery keeps its original defaults. Missing artifacts, tampered receipts, unrelated errors, and identity-admission failures remain refusals. Recovery returns `pinned-renderer-skew` and does not claim a new identity activation. The PTY also reports failed home preparation after admission, including its HTTP status. Historical source publication: core repair f76335e2c3; terminal diagnostic a9e3ac8e30.
 
-Verification: the endpoint regression failed before the change (two failures); the endpoint and artifact suites passed 72 tests afterward. The root-cause record is EI-26878579942685306, with the owner-directed repair tracked in WI-6554700010027627. Source verification is not evidence of rollout: the normal 9071 route still failed at the measured 16:45Z request. Final recovery requires the qualified serving writer plus a real successor turn. Keep shipment separate from staging/local proof.
+Verification: the endpoint regression failed before the change (two failures); the endpoint and artifact suites passed 72 tests afterward. The focused real-PTY post-acknowledgement failure test passed under the supported disposable Postgres wrapper. The four core files passed their scoped TypeScript check. Runtime MJS verification used Node syntax, declaration generation and the PTY regression; it is not a whole-repository TypeScript claim. The root-cause record is EI-26878579942685306, with owner-directed repair and retained evidence in WI-6554700010027627.
+
+## Supported recovery while an old writer is incompatible
+
+This is a temporary operational recovery. Permanent completion still requires publishing a compatible serving writer and verifying affected older sessions there. Use the canonical lifecycle tools; never raw signals, PTY control-file edits, a fork, or a second live writer.
+
+1. Read the target's latest work-item checkpoints and actual launch metadata. Save its exact logical owner, native/ADV identity, model and effort, account routing, visible/headless placement, modes, mission and claims. Ask an active target to checkpoint and reply READY. If it cannot answer because it is stuck, establish a safe boundary from saved state, edit-lock ownership and concrete running-job evidence; retain unfinished or failed verification faithfully.
+2. Call audited `fleet:kill { owner, reason }` and require a successful retirement receipt. A live or non-wakeable presence reading alone is not permission to launch a competing writer. The successor route refuses a still-live predecessor; honor that refusal.
+3. Use `capability:launch-agent { successor:{agentId:<same-owner>}, mcpTarget:'spawn-host', ...savedProfile, idempotencyKey }` against the verified compatible runtime. In this incident that runtime was local 3170; this port is historical evidence, not a universal routing constant. Pin the CLI route with `--url` when needed. Preserve the original model/effort, account and placement explicitly, especially for solo agents: omitted successor settings need not inherit the resume profile. Restore AUTO only where it was already authorized.
+4. Verify a real native model/tool turn and a concrete read of the target's saved checkpoint. Process-open evidence alone is insufficient. Read host metadata and the per-session config for settings that presence does not expose. Keep `firstTurn:null` unknown until actual pickup evidence arrives.
+5. Retirement can release claims and deactivate a loop. The same owner reclaims only its released, unheld original work and resumes its original authorized mission; it must honor any new live holder. Restore only previously authorized ongoing work. Do not acquire LIVE_GATE_OPS merely because an older session once held it.
+
+Two headless pilots and a visible pilot produced real pickup receipts before applying this recovery to owner2185's explicit targets. su-f9dd6 resumed as native01a16f09-ad75-74e0-814f-2e801f04551a (ADV51591); su-a7fa0 resumed as native01a16f0f-7a3c-7a82-ba11-8640c9d47cfa (ADV51595). Both retained their logical owner, AUTO/self mission, gpt-6.1-sol with xhigh effort, auto account routing and visible placement. Exact receipts and checkpoint references are on WI-6554700010027627.
+
+## Rollout evidence must use an affected older session
+
+At 17:55:53Z on 2026-10-24, the original affected owner9597/ADV51499 still returned HTTP 500 through normal 9071 with the same three SU_TILES headings. A contemporaneous home repair for this investigator's newer self session ADV51523 succeeded through the same route. That newer-session success does not establish older-session repair. Final verification must exercise the affected older record and observe a real managed successor. Source tests and targeted recoveries do not establish fleet-wide rollout. The live gate/deploy lane remains with its registered owner.
