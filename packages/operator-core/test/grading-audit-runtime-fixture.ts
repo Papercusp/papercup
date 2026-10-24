@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
@@ -21,6 +21,8 @@ import { ensureGradingAuditRuntime, retireUnusedGradingAuditRuntimes, type Gradi
 import { readGradingAuditSourcePin } from '../lib/release/grading-audit-source-pin';
 import { assertPrivateManagedTaskRoute, preparePrivateHttpWorkspaces, preparePrivateOperatorApiBundle,
   privateBundleRuntimeEnv } from './private-http-workspace-preflight';
+// @ts-ignore -- share the maintained dependency process-group and progress contract.
+import { runVerifierDependencyCommand } from '../../../scripts/source-preview.mjs';
 
 export interface GradingRuntimeReceipt {
   workspace: string;
@@ -148,6 +150,9 @@ async function main() {
   // The isolated supervisor gives this child its own temp root. Evidence lives
   // outside that root, so it cannot also serve as an admitted scratch checkout.
   const fixtureScratch = mkdtempSync(join(tmpdir(), 'grading-runtime-'));
+  accessSync(fixtureScratch, constants.W_OK | constants.X_OK);
+  assert.equal(statSync(root).dev, statSync(fixtureScratch).dev,
+    'The private source and runtime scratch must share a filesystem for the locked hardlink snapshot');
   let sourceRoot = join(fixtureScratch, '.candidate-runtime-proof', 'checkout');
   const parentBuild = getBuildInfo();
   assert.ok(parentBuild.sha && parentBuild.sha !== 'unknown');
@@ -156,9 +161,23 @@ async function main() {
     destination: sourceRoot, includeSubmodules: true, signal: AbortSignal.timeout(180_000) });
   // The maintained locked snapshot rewrites workspace links into the exact
   // source clone; borrowing the donor's node_modules would escape the pin.
-  execFileSync('bash', [join(sourceRoot, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
-    'snapshot-locked', root, sourceRoot, 'hardlink'], { cwd: root, timeout: 180_000,
-    maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+  // The selected donor is already a frozen verifier tree. Its preparation
+  // commands need no test preloads; stream their original diagnostics and reap
+  // the complete process group on failure instead of losing buffered output.
+  console.info('GRADING_RUNTIME_PREPARATION ' + JSON.stringify({ phase: 'dependencies',
+    sourceRoot, donor: root, startedAt: new Date().toISOString(), timeoutMs: 180_000 }));
+  await runVerifierDependencyCommand('bash', [join(sourceRoot, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
+    'snapshot-locked', root, sourceRoot, 'hardlink'], { cwd: root,
+    env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, timeoutMs: 180_000, maxMs: 180_000 });
+  console.info('GRADING_RUNTIME_PREPARATION ' + JSON.stringify({ phase: 'dependencies',
+    completedAt: new Date().toISOString() }));
+  // Diagnostic phase replays never produce the lifecycle receipt required by
+  // the integration test. They isolate preparation without rebuilding hosts.
+  if (process.argv.includes('--prepare-only')) {
+    console.info('GRADING_RUNTIME_PREPARATION_RECEIPT ' + JSON.stringify({
+      sourceRoot, sourceSha: cloned.sha, dependenciesPrepared: true }));
+    return;
+  }
   const output = join(sourceRoot, 'apps/operator/dist-host');
   mkdirSync(output, { recursive: true });
   const prepared = await preparePrivateOperatorApiBundle(sourceRoot, output, { builder: {

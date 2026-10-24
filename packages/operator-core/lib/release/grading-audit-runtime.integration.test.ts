@@ -31,6 +31,7 @@ it('retains one real exact-build endpoint across unknown readiness, recovers pro
       'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/test/isolated-integration-proof.ts',
       'scripts/with-test-pg.mjs',
+      'scripts/source-preview.mjs',
       'apps/operator/bin/bundle-host.sh',
       'apps/operator/bin/bundle-host-common.sh',
     ],
