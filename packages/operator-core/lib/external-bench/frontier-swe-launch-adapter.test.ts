@@ -428,6 +428,38 @@ describe('FrontierSWE typed Proximus host lifecycle', () => {
     } finally { await adapter.stop(); }
   });
 
+  it.each([true, false])('retains exact census and billing subtotals without accepting the host run (complete=%s)', async complete => {
+    const f = hostFixture();
+    f.evidence.attempts = { status: 'terminal', source: 'learning-spend-reservations', populationSha256: 'c'.repeat(64),
+      attempts: [], requests: [], usageComplete: complete, billingStatus: 'unreconciled',
+      knownUsage: { modelCalls: 2, tokensIn: 7, tokensOut: 4, tokensCacheRead: 6, tokensCacheWrite: 0 } };
+    f.evidence.billing = { status: complete ? 'complete' : 'incomplete', knownSubtotalMicros: '250000',
+      billedInferenceMicros: complete ? '250000' : null, missingAttemptIds: complete ? [] : ['missing'],
+      populationSha256: 'c'.repeat(64), samples: [] };
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    try {
+      expect(await adapter.runAgent(f.input)).toMatchObject({ status: 'error', modelCalls: 2, tokensIn: 7,
+        tokensOut: 4, tokensCacheRead: 6, costUsd: 0.25, turns: 0,
+        armMeta: { modelCallsMeasurementMissing: false, tokenUsageMeasurementMissing: !complete,
+          costUsdMeasurementMissing: !complete, turnsMeasurementMissing: true, requestConfinementMeasurementMissing: true } });
+    } finally { await adapter.stop(); }
+  });
+
+  it.each(['different population', 'fractional micros', 'overflow'])('does not borrow an unusable bill: %s', async change => {
+    const f = hostFixture();
+    f.evidence.attempts = { status: 'terminal', source: 'learning-spend-reservations', populationSha256: 'c'.repeat(64),
+      attempts: [], requests: [], usageComplete: true, billingStatus: 'unreconciled',
+      knownUsage: { modelCalls: 1, tokensIn: 7, tokensOut: 2, tokensCacheRead: 3, tokensCacheWrite: 0 } };
+    f.evidence.billing = { status: 'complete', knownSubtotalMicros: change === 'fractional micros' ? '0.5' :
+      change === 'overflow' ? '9007199254740992' : '250000', billedInferenceMicros: '250000', missingAttemptIds: [],
+      populationSha256: (change === 'different population' ? 'd' : 'c').repeat(64), samples: [] };
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    try {
+      expect(await adapter.runAgent(f.input)).toMatchObject({ status: 'error', modelCalls: 1,
+        costUsd: 0, armMeta: { costUsdMeasurementMissing: true } });
+    } finally { await adapter.stop(); }
+  });
+
   it.each(['agent', 'runId', 'armId', 'workspaceId', 'taskId', 'containerId', 'image'])
   ('stops a foreign %s assignment before executing it', async field => {
     const f = hostFixture(); Object.assign(f.assignment, { [field]: 'foreign' });

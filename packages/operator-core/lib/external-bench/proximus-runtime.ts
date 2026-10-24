@@ -74,6 +74,11 @@ export type ProximusAttemptPopulation = {
   status: 'terminal'; source: 'learning-spend-reservations'; populationSha256: string;
   attempts: ProximusTerminalAttempt[];
   requests: { gatewayRequestId: string; attemptIds: string[] }[];
+  /** Exact model-call census plus known token subtotals across provider attempts.
+   * tokensIn excludes cache reads/writes, as required by AgentRunUsage. Unknown
+   * sends/cache splits keep usageComplete false; they are never measured zeros. */
+  knownUsage: { modelCalls: number; tokensIn: number; tokensOut: number;
+    tokensCacheRead: number; tokensCacheWrite: number };
   usageComplete: boolean; billingStatus: 'unreconciled';
 } | { status: 'unavailable'; reason: 'ledger-unavailable' | 'ledger-changed' | 'invalid-ledger' | 'no-attempts' };
 
@@ -106,6 +111,7 @@ export async function readProximusAttemptPopulation(binding: CurrentBenchAccount
           workspaceId: binding.workspaceId, loopId: binding.loopId, sinceMs: null, reservations: before.reservations })).digest('hex')) return invalid();
     const ids = new Set<string>(), responseIds = new Set<string>(), foreignRequests = new Set<string>();
     const requests = new Map<string, string[]>(), attempts: ProximusTerminalAttempt[] = [];
+    const knownUsage = { modelCalls: 0, tokensIn: 0, tokensOut: 0, tokensCacheRead: 0, tokensCacheWrite: 0 };
     let usageComplete = true;
     for (const row of before.reservations) {
       if (!text(row.id) || ids.has(row.id) || row.workspaceId !== binding.workspaceId || row.loopId !== binding.loopId ||
@@ -154,6 +160,11 @@ export async function readProximusAttemptPopulation(binding: CurrentBenchAccount
             entry.providerCompletion = { responseId: p.responseId, model: p.model, providerEffort: p.providerEffort,
               usage: { inputTokenBasis: u.inputTokenBasis, inputTokens: u.inputTokens, outputTokens: u.outputTokens,
                 cacheReadTokens: u.cacheReadTokens, cacheCreationTokens: u.cacheCreationTokens } };
+            knownUsage.tokensOut += u.outputTokens;
+            knownUsage.tokensCacheRead += u.cacheReadTokens ?? 0;
+            knownUsage.tokensCacheWrite += u.cacheCreationTokens ?? 0;
+            if (u.cacheReadTokens !== null && u.cacheCreationTokens !== null)
+              knownUsage.tokensIn += u.inputTokens - u.cacheReadTokens - u.cacheCreationTokens;
             if (u.cacheReadTokens === null || u.cacheCreationTokens === null) usageComplete = false;
           } else usageComplete = false;
         } else return invalid();
@@ -162,9 +173,11 @@ export async function readProximusAttemptPopulation(binding: CurrentBenchAccount
       attempts.push(entry);
     }
     if ([...requests.keys()].some(id => foreignRequests.has(id))) return invalid();
+    knownUsage.modelCalls = requests.size;
+    if (!Object.values(knownUsage).every(count)) return invalid();
     return attempts.length ? { status: 'terminal', source: before.source, populationSha256: before.populationSha256,
       attempts, requests: [...requests].map(([gatewayRequestId, attemptIds]) => ({ gatewayRequestId, attemptIds })),
-      usageComplete, billingStatus: 'unreconciled' } : { status: 'unavailable', reason: 'no-attempts' };
+      knownUsage, usageComplete, billingStatus: 'unreconciled' } : { status: 'unavailable', reason: 'no-attempts' };
   } catch { return invalid(); }
 }
 export type ProximusBilling = {

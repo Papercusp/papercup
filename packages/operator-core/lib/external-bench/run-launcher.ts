@@ -48,10 +48,10 @@ import {
 import { loadBenchTaskSet } from './task-sets';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { defaultBenchResultsDir } from './preserved-runs';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
-import { currentBenchmarkProtocolSchema, type CurrentBenchmarkProtocol } from './reproducibility/schema';
+import { currentBenchmarkProtocolSchema, requireCurrentBenchmarkAssignment, type CurrentBenchmarkProtocol } from './reproducibility/schema';
 import { canonicalJson } from './reproducibility/canonical-json';
 import { getPrereg, listRunResults } from './reproducibility/store';
 import { requireCommittedPreregistration } from './reproducibility/prereg';
@@ -67,8 +67,9 @@ import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGate
   type CurrentBenchLockStateAllocation, type CurrentBenchNativeRunCost,
   type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions, type CurrentBenchAccountingBinding } from './current-su';
 import { getLearningSpendPositions, registerLearningLoop, type LearningReservationResourceBudget } from '../learning-governor/store';
-import type { FrontierSweNativeAssignment } from './frontier-swe-launch-adapter';
-import type { FrontierSweEnvHandle } from './frontier-swe-seam';
+import type { FrontierSweNativeAssignment, FrontierSweProximusAssignment } from './frontier-swe-launch-adapter';
+import { frontierSweAgentNetworkArgs, type FrontierSweEnvHandle } from './frontier-swe-seam';
+import { runProximusHost, readProximusAttemptPopulation, readProximusBilling } from './proximus-runtime';
 import type { RunAgentInput } from './run-topology';
 import { createCurrentStockBenchHarness } from './native-harness-runner';
 import { CURRENT_STOCK_CODEX_BLUEPRINT } from './current-su';
@@ -176,13 +177,18 @@ export interface CurrentTaskInput {
   observation: NonNullable<LaunchBenchRunInput['current']>['observation'];
 }
 
+/** Provider accounting is shared; host references never gain native options or observations. */
+type CurrentBenchProviderTaskInput = Omit<CurrentTaskInput, 'options' | 'observation'> & {
+  options: Omit<CurrentSuBenchOptions, 'agent'> & { agent: CurrentSuBenchOptions['agent'] | 'proximus' };
+};
+
 /** Retain private capture authority in the existing operational run checkpoint.
  * No candidate-selected paths or account aliases can allocate this host. Each
  * request's pins must commit before the gateway may reserve or forward it. */
-export async function currentBenchTaskProviderCapture(input: CurrentTaskInput, { readOnly = false }: { readOnly?: boolean } = {}) {
+export async function currentBenchTaskProviderCapture(input: CurrentBenchProviderTaskInput, { readOnly = false }: { readOnly?: boolean } = {}) {
   const { options, protocol, task, resources, loopId, hostRunId } = input;
   const arm = protocol.arms.find(value => value.id === options.armId);
-  if (!arm || !arm.account.trim() || ['auto', 'default'].includes(arm.account) ||
+  if (!arm || arm.agent !== options.agent || !arm.account.trim() || ['auto', 'default'].includes(arm.account) ||
       arm.account !== options.account || arm.model !== options.model || arm.effort !== options.effort ||
       protocol.runId !== options.runId || !protocol.taskIds.includes(task.instanceId) || !protocol.seeds.includes(options.seed) ||
       canonicalJson(protocol) !== canonicalJson(options.preregistration.config) ||
@@ -889,6 +895,119 @@ export async function startFrontierSweCurrentAssignment(
     return { ...assignment, checkout, generationBudget: { ...arm.generationBudget },
       ...(repeatedSession ? { repeatedSession } : {}) };
   } catch (error) { await checkout.cleanup(); throw error; }
+}
+
+/** Host-only factory. Production selection remains closed until host request
+ * confinement is proved. This reuses capture/governor/billing authority and
+ * intentionally issues neither a native session nor an accepted grade. */
+export async function startFrontierSweProximusAssignment(
+  input: RunAgentInput<FrontierSweEnvHandle>,
+  host: Omit<CurrentBenchProviderTaskInput, 'task' | 'checkout' | 'observation'> & { pythonBin: string },
+  ports: Partial<{
+    capture: (input: CurrentBenchProviderTaskInput) => Promise<Pick<Awaited<ReturnType<typeof currentBenchTaskProviderCapture>>, 'captureProviderInput'>>;
+    authenticate: typeof currentBenchProviderAuthenticator;
+    controller: typeof currentBenchGatewayController;
+    run: typeof runProximusHost;
+    population: typeof readProximusAttemptPopulation;
+    billing: typeof readProximusBilling;
+  }> = {},
+): Promise<FrontierSweProximusAssignment> {
+  const trial = structuredClone(input), protocol = currentBenchmarkProtocolSchema.parse(host.protocol);
+  const options = { ...host.options, preregistration: { ...host.options.preregistration,
+    config: structuredClone(host.options.preregistration.config) } };
+  const { task, handle, attemptBudget } = trial;
+  const arm = protocol.arms.find(value => value.id === options.armId)!;
+  const { sql, ws } = resolveDb(host.scope);
+  if (!arm || arm.agent !== 'proximus' || options.agent !== 'proximus' || options.armId !== 'baseline' || trial.arm !== 'baseline' ||
+      task.benchmark !== 'frontier-swe' || task.instanceId !== handle.instanceId ||
+      !handle.containerId.trim() || handle.image !== protocol.grader.images?.[task.instanceId] ||
+      handle.inContainerCodex || handle.taskNetwork || trial.candidates?.length || !['solver', 'worker'].includes(trial.role) ||
+      ws !== options.workspaceId || host.context.workspaceId !== ws || !host.context.principal?.slug ||
+      options.model !== arm.model || options.effort !== arm.effort || options.account !== arm.account ||
+      !arm.account.trim() || ['auto', 'default'].includes(arm.account) ||
+      canonicalJson(options.preregistration.config) !== canonicalJson(protocol) || !isAbsolute(host.pythonBin) ||
+      attemptBudget.maxCostUsd !== arm.generationBudget.maxUsd || attemptBudget.maxTokens !== arm.generationBudget.maxTokens)
+    throw new Error('FrontierSWE Proximus host assignment differs from its frozen task/account/caps.');
+  const execution = { runId: options.runId, armId: options.armId, taskId: task.instanceId, seed: options.seed,
+    agent: options.agent, model: options.model, effort: options.effort, account: options.account,
+    budget: structuredClone(arm.generationBudget), topology: 'stock-native-reference' as const };
+  requireCurrentBenchmarkAssignment(protocol, execution);
+  const maxWallClockMs = Math.min(options.driveTimeoutMs ?? arm.generationBudget.maxWallClockMs,
+    attemptBudget.maxWallMs ?? arm.generationBudget.maxWallClockMs);
+  if (!Number.isSafeInteger(maxWallClockMs) || maxWallClockMs <= 0 ||
+      !Number.isSafeInteger(attemptBudget.maxWallMs) || attemptBudget.maxWallMs! > arm.generationBudget.maxWallClockMs ||
+      !task.problemStatement.trim() || options.signal?.aborted)
+    throw new Error('FrontierSWE Proximus host deadline/instruction is invalid or cancelled.');
+  const networkArgs = frontierSweAgentNetworkArgs(task);
+  const network = networkArgs[0] === '--network' ? networkArgs[1] : 'bridge';
+  const networkMode = network === 'none' ? (task.graderMeta?.networkMode === 'allowlist' ? 'allowlist' : 'no-network') : 'public';
+  const pythonBin = host.pythonBin, context = host.context;
+  const resources = structuredClone(host.resources), scope = { ...host.scope }, loopId = host.loopId, hostRunId = host.hostRunId;
+  await requireCommittedPreregistration(protocol.runId, options.preregistration, { ...scope, repoRoot: options.preregistration.repoRoot });
+  if (options.signal?.aborted) throw new Error('FrontierSWE Proximus host assignment cancelled during preparation.');
+  const parent = defaultBenchResultsDir();
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  // Keep official trajectory artifacts after stop. The operational run owns
+  // retention; stop closes authority, rather than deleting acceptance evidence.
+  const trialDir = mkdtempSync(join(parent, 'frontier-proximus-'));
+  const capture = await (ports.capture ?? currentBenchTaskProviderCapture)({ options, protocol, task, context, scope,
+    resources, loopId, hostRunId, checkout: { dir: trialDir, repo: `frontier-swe:${task.instanceId}`,
+      baseCommit: protocol.grader.version, cleanup: async () => {} } });
+  if (options.signal?.aborted) throw new Error('FrontierSWE Proximus host assignment cancelled during capture.');
+  const auth = (ports.authenticate ?? currentBenchProviderAuthenticator)({ workspaceId: ws,
+    preregHash: options.preregistration.preregHash, protocol, armId: arm.id, taskId: task.instanceId, seed: options.seed });
+  const outputTokenLimit = Math.min(4096, arm.generationBudget.maxTokens ?? 4096,
+    protocol.priceSchedule.rates.find(rate => rate.model === arm.model)!.outputTokenCeiling!);
+  let controller: ReturnType<typeof currentBenchGatewayController> | undefined;
+  let gateway: Awaited<ReturnType<NonNullable<typeof controller>['startHostGateway']>> | undefined;
+  let closing: Promise<void> | undefined, stopping: Promise<void> | undefined;
+  let running: ReturnType<FrontierSweProximusAssignment['execute']> | undefined;
+  const abort = new AbortController();
+  const closeGateway = () => {
+    auth.revoke(); controller?.revoke();
+    return closing ??= Promise.resolve().then(() => gateway?.stop());
+  };
+  const cancel = () => { abort.abort(); void closeGateway().catch(() => {}); };
+  try {
+    controller = (ports.controller ?? currentBenchGatewayController)({ workspaceId: ws, loopId, token: randomBytes(32).toString('hex'),
+      preregHash: options.preregistration.preregHash, protocol, armId: arm.id, taskId: task.instanceId, seed: options.seed,
+      resources, outputTokenLimit, authenticateProvider: auth.authenticateProvider, captureProviderInput: capture.captureProviderInput },
+      { enabled: async () => true, getSql: async () => sql });
+    gateway = await controller.startHostGateway(context.log);
+    if (options.signal?.aborted) throw new Error('FrontierSWE Proximus host assignment cancelled during gateway startup.');
+    options.signal?.addEventListener('abort', cancel, { once: true });
+    // Abort can occur between checking and subscribing.
+    if (options.signal?.aborted) cancel();
+    const binding = structuredClone(gateway.accountingBinding);
+    const execute: FrontierSweProximusAssignment['execute'] = () => {
+      if (running || closing || abort.signal.aborted) return Promise.reject(new Error('Proximus assignment is consumed, stopped or cancelled.'));
+      running = (async () => {
+        const timer = setTimeout(cancel, maxWallClockMs);
+        try {
+          const process = await (ports.run ?? runProximusHost)(protocol, { ...execution,
+            handle, pythonBin, trialDir, instruction: task.problemStatement,
+            maxWallClockMs, outputTokenLimit, network, networkMode, gateway: gateway!, signal: abort.signal });
+          // Revoke future sends before the stable census/bill read. A result
+          // cannot authorize another execution or restore a spent gateway.
+          await closeGateway();
+          const readCensus = async () =>
+            (await getLearningSpendPositions(sql, { workspaceId: ws, loopId, includeReservations: true })).census;
+          const attempts = await (ports.population ?? readProximusAttemptPopulation)(binding, readCensus);
+          const billing = await (ports.billing ?? readProximusBilling)(sql, binding, readCensus);
+          if (abort.signal.aborted) throw new Error('Proximus assignment was cancelled or exceeded its deadline.');
+          return { process, attempts, billing };
+        } finally { clearTimeout(timer); options.signal?.removeEventListener('abort', cancel); await closeGateway(); }
+      })();
+      return running;
+    };
+    return Object.freeze({ agent: 'proximus', runId: protocol.runId, armId: 'baseline', workspaceId: ws,
+      taskId: task.instanceId, containerId: handle.containerId, image: handle.image, execute,
+      stop() {
+        abort.abort(); options.signal?.removeEventListener('abort', cancel);
+        const closed = closeGateway();
+        return stopping ??= (async () => { try { await closed; } finally { await running?.catch(() => {}); } })();
+      } });
+  } catch (error) { options.signal?.removeEventListener('abort', cancel); await closeGateway(); throw error; }
 }
 
 /** Restart/cancel recovery uses durable native task labels, independently of a vanished gateway. */

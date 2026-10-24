@@ -2,10 +2,12 @@
  * the production selector, assignment loop, cancellation and persistence ordering run. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { existsSync, rmSync } from 'node:fs';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { BenchHarnessDriver } from './run-loop';
 import type { BenchTask } from './types';
-import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
+import { currentProtocolFixture, allCapabilities } from './reproducibility/_protocol-test-fixture';
+import { PROXIMUS_CLIENT_VERSION, PROXIMUS_SOURCE_REVISION } from './reproducibility/schema';
 
 const io = vi.hoisted(() => ({ prereg: vi.fn(), committed: vi.fn(), register: vi.fn(),
   upsert: vi.fn(), task: vi.fn(), status: vi.fn(), completion: vi.fn(), events: vi.fn(), snapshot: vi.fn(),
@@ -25,6 +27,7 @@ vi.mock('../task-manager/control', () => ({ killTask: io.kill }));
 
 import { currentBenchLaunchSelection, launchBenchRun, cancelBenchRun, _resetActiveRunsForTests,
   currentBenchSessionRequestDelta,
+  startFrontierSweProximusAssignment,
   type LaunchBenchRunInput, type CurrentTaskInput } from './run-launcher';
 
 const workspaceId = 'bench-host-launch-private';
@@ -105,6 +108,153 @@ describe('repeated native session census', () => {
     const after = { ...before, requests: scenario === 'reused session' ? [one, two] : [] };
     expect(() => currentBenchSessionRequestDelta(before, after,
       scenario === 'reused session' ? one.nativeSessionId : two.nativeSessionId)).toThrow(/reused|non-monotone/);
+  });
+});
+
+describe('frozen Proximus host assignment factory', () => {
+  type FactoryPorts = Required<NonNullable<Parameters<typeof startFrontierSweProximusAssignment>[2]>>;
+  const trialDirs: string[] = [];
+  afterEach(() => { for (const dir of trialDirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+  function fixture() {
+    config = currentProtocolFixture('host-proximus-factory', 1_000);
+    for (const arm of config.arms) {
+      arm.account = 'pinned-account';
+      arm.control = { topology: arm.id === 'baseline' ? 'stock-native-reference' : 'solo',
+        solverGroup: arm.id, solverToolsHash: 'a'.repeat(64), capabilities: allCapabilities(arm.id === 'baseline' ? 'off' : 'on') };
+    }
+    const arm = config.arms[1];
+    arm.agent = 'proximus';
+    arm.runtime = { sourceRevision: PROXIMUS_SOURCE_REVISION, clientVersion: PROXIMUS_CLIENT_VERSION,
+      runtimeRevision: 'b'.repeat(64), promptHash: 'c'.repeat(64), toolsHash: 'd'.repeat(64),
+      proximus: { provider: 'openai', harborVersion: '0.23.0', maxInputTokens: 20_000, supportsVision: false } };
+    Object.assign(config.priceSchedule.rates[0], { inputTokenCeiling: 1_000,
+      inputTokenCeilingSourceSha256: 'e'.repeat(64), outputTokenCeiling: 64 });
+    config.grader.images = { t1: `registry.example/task@sha256:${'f'.repeat(64)}` };
+    const preregHash = createHash('sha256').update(JSON.stringify(config)).digest('hex');
+    const host: Parameters<typeof startFrontierSweProximusAssignment>[1] = {
+      options: { workspaceId, runId: config.runId, armId: 'baseline', agent: 'proximus', seed: 1,
+        model: arm.model, effort: 'high', account: arm.account, driveTimeoutMs: 1_000,
+        preregistration: { preregHash, config } },
+      protocol: config, context, scope: scope(), loopId: 'factory-loop', hostRunId: 'factory-host-run',
+      resources: { inputTokens: 64_000, outputTokens: 4096, requestsPerArm: 64,
+        armIds: [], usdPerArm: arm.generationBudget.maxUsd }, pythonBin: '/offline/python',
+    };
+    const trial: Parameters<typeof startFrontierSweProximusAssignment>[0] = {
+      arm: 'baseline', task: { ...task('t1'), benchmark: 'frontier-swe', graderMeta: { networkMode: 'allowlist' } },
+      handle: { containerId: 'exact-task', instanceId: 't1', image: config.grader.images.t1 }, role: 'solver',
+      teamKey: 'baseline', topic: 'repair', directive: 'Repair t1', forbidTools: [],
+      attemptBudget: { maxCostUsd: arm.generationBudget.maxUsd, maxTokens: arm.generationBudget.maxTokens, maxWallMs: 1_000 },
+    };
+    const binding = { workspaceId, loopId: host.loopId, runId: config.runId, preregHash,
+      assignmentId: `bench-assignment:${config.runId}:baseline:t1:1` };
+    const order: string[] = [];
+    const gateway = { agent: 'proximus' as const, accountingBinding: binding,
+      gateway: { baseURL: 'http://127.0.0.1:12345', token: 'test-gateway-token' },
+      stop: vi.fn(async () => { order.push('gateway-stop'); }) };
+    const capture = vi.fn<FactoryPorts['capture']>(async input => {
+      trialDirs.push(input.checkout.dir);
+      return { captureProviderInput: vi.fn(async () => {}) };
+    });
+    const auth = { authenticateProvider: vi.fn(async () => null), revoke: vi.fn() };
+    const controller = { startHostGateway: vi.fn(async () => gateway), startNativeGateway: vi.fn(), revoke: vi.fn() };
+    const run = vi.fn<FactoryPorts['run']>(async () => ({
+      status: 'completed', runtime: { schemaVersion: 1, runtimeRevision: 'b'.repeat(64), sourceRevision: PROXIMUS_SOURCE_REVISION,
+        clientVersion: PROXIMUS_CLIENT_VERSION, harborVersion: '0.23.0', fileCount: 10 },
+      diagnosticContext: { cost_usd: 100 }, billingStatus: 'unreconciled' }));
+    const population = vi.fn<FactoryPorts['population']>(async () => {
+      order.push('population'); return { status: 'unavailable', reason: 'no-attempts' };
+    });
+    const billing = vi.fn<FactoryPorts['billing']>(async () => {
+      order.push('billing'); return { status: 'unavailable', reason: 'no-attempts' };
+    });
+    const ports = { capture, run, population, billing, authenticate: vi.fn(() => auth),
+      controller: vi.fn<FactoryPorts['controller']>(() => controller as unknown as ReturnType<FactoryPorts['controller']>) };
+    return { host, trial, ports, auth, controller, gateway, order, run, capture, population, billing };
+  }
+  it('issues one host execution, seals sends before accounting and retains official trajectory artifacts', async () => {
+    const f = fixture(), assignment = await startFrontierSweProximusAssignment(f.trial, f.host, f.ports);
+    expect(assignment).toMatchObject({ agent: 'proximus', runId: config.runId, workspaceId, armId: 'baseline', containerId: 'exact-task' });
+    expect(f.controller.startNativeGateway).not.toHaveBeenCalled();
+    expect(f.capture.mock.calls[0][0]).not.toHaveProperty('observation');
+    expect(f.ports.controller.mock.calls[0][0]).toMatchObject({ outputTokenLimit: 64,
+      armId: 'baseline', authenticateProvider: f.auth.authenticateProvider });
+    const evidence = await assignment.execute();
+    expect(f.run.mock.calls[0][1]).toMatchObject({ instruction: 'Repair t1', network: 'none', networkMode: 'allowlist',
+      agent: 'proximus', topology: 'stock-native-reference', maxWallClockMs: 1_000, gateway: f.gateway });
+    expect(f.order).toEqual(['gateway-stop', 'population', 'billing']);
+    expect(f.billing.mock.calls[0][2]).toBe(f.population.mock.calls[0][1]);
+    expect(evidence.billing.status).toBe('unavailable');
+    await expect(assignment.execute()).rejects.toThrow(/consumed|stopped/);
+    await Promise.all([assignment.stop(), assignment.stop()]);
+    expect(f.gateway.stop).toHaveBeenCalledOnce();
+    expect(existsSync(trialDirs[0])).toBe(true);
+  });
+  it.each(['image', 'native handle', 'model', 'account', 'workspace', 'cost', 'tokens', 'wall', 'seed', 'instruction'] as const)
+  ('rejects %s drift before capture or provider authority', async change => {
+    const f = fixture();
+    if (change === 'image') f.trial.handle.image = 'foreign-image';
+    if (change === 'native handle') f.trial.handle.taskNetwork = 'native-only';
+    if (change === 'model') f.host.options.model = 'other-model';
+    if (change === 'account') f.host.options.account = 'auto';
+    if (change === 'workspace') f.host.scope.workspaceId = 'bench-other';
+    if (change === 'cost') f.trial.attemptBudget.maxCostUsd = 99;
+    if (change === 'tokens') f.trial.attemptBudget.maxTokens = 99;
+    if (change === 'wall') f.trial.attemptBudget.maxWallMs = 1_001;
+    if (change === 'seed') f.host.options.seed = 99;
+    if (change === 'instruction') f.trial.task.problemStatement = ' ';
+    await expect(startFrontierSweProximusAssignment(f.trial, f.host, f.ports)).rejects.toThrow();
+    expect(f.capture).not.toHaveBeenCalled(); expect(f.ports.authenticate).not.toHaveBeenCalled();
+  });
+  it('detaches task, protocol, interpreter and resources before awaiting capture', async () => {
+    const f = fixture();
+    let release!: () => void, captured!: () => void;
+    const entered = new Promise<void>(resolve => { captured = resolve; });
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    f.capture.mockImplementationOnce(async input => { trialDirs.push(input.checkout.dir); captured(); await blocked;
+      return { captureProviderInput: vi.fn(async () => {}) }; });
+    const pending = startFrontierSweProximusAssignment(f.trial, f.host, f.ports);
+    await entered;
+    f.trial.task.problemStatement = 'foreign instruction'; f.trial.handle.containerId = 'foreign-container';
+    f.host.protocol.arms[1].model = 'foreign-model'; f.host.options.account = 'foreign-account';
+    f.host.pythonBin = '/foreign/python'; f.host.resources.inputTokens = 999;
+    release();
+    const assignment = await pending;
+    await assignment.execute(); await assignment.stop();
+    expect(f.run.mock.calls[0][1]).toMatchObject({ instruction: 'Repair t1', handle: { containerId: 'exact-task' },
+      pythonBin: '/offline/python', account: 'pinned-account', model: 'configured-alias' });
+    expect(f.ports.controller.mock.calls[0][0].resources.inputTokens).toBe(64_000);
+  });
+  it('revokes authentication on gateway startup failure and closes after process failure', async () => {
+    const f = fixture();
+    f.controller.startHostGateway.mockRejectedValueOnce(new Error('listener failed'));
+    await expect(startFrontierSweProximusAssignment(f.trial, f.host, f.ports)).rejects.toThrow(/listener failed/);
+    expect(f.auth.revoke).toHaveBeenCalled(); expect(f.controller.revoke).toHaveBeenCalled();
+    const second = fixture(), assignment = await startFrontierSweProximusAssignment(second.trial, second.host, second.ports);
+    second.run.mockRejectedValueOnce(new Error('process failed'));
+    await expect(assignment.execute()).rejects.toThrow(/process failed/);
+    await assignment.stop(); expect(second.gateway.stop).toHaveBeenCalledOnce();
+  });
+  it('cancels the executing process and waits for it before stop completes', async () => {
+    const f = fixture(), parent = new AbortController(); f.host.options.signal = parent.signal;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    f.run.mockImplementationOnce(async (_protocol, execution) => {
+      entered(); await new Promise<void>(resolve => execution.signal!.addEventListener('abort', () => resolve(), { once: true }));
+      f.order.push('process-reaped'); throw new Error('aborted');
+    });
+    const assignment = await startFrontierSweProximusAssignment(f.trial, f.host, f.ports);
+    const result = assignment.execute(); const rejection = expect(result).rejects.toThrow(/aborted/);
+    await started; parent.abort(); await assignment.stop(); await rejection;
+    expect(f.order).toContain('process-reaped'); expect(f.gateway.stop).toHaveBeenCalledOnce();
+    await expect(assignment.execute()).rejects.toThrow(/consumed|stopped|cancelled/);
+  });
+  it('refuses a completed process after cancellation even when that process ignores its abort signal', async () => {
+    const f = fixture(), parent = new AbortController(); f.host.options.signal = parent.signal;
+    const result = await f.run(config, {} as never);
+    f.run.mockImplementationOnce(async () => { parent.abort(); return result; });
+    const assignment = await startFrontierSweProximusAssignment(f.trial, f.host, f.ports);
+    await expect(assignment.execute()).rejects.toThrow(/cancelled|deadline/);
+    await assignment.stop(); expect(f.gateway.stop).toHaveBeenCalledOnce();
   });
 });
 

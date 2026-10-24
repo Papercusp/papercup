@@ -50,6 +50,38 @@ describe('Proximus terminal provider-attempt population', () => {
     price_table_version: null, cost_micros: '250000.000000',
     response_id_source: 'authenticated-gateway-provider-response', grain: 'request' });
   const billSql = (rows: unknown[]) => vi.fn(async () => rows) as unknown as Sql;
+  it('counts gateway requests once and sums all provider attempts without double-counting cached input', async () => {
+    const rows = [reservation('refused', 'send-refused'), reservation('a', 'response-completed'),
+      reservation('retry', 'response-completed'), reservation('next', 'response-completed', requestId.replace(':1', ':2'))];
+    expect(await readProximusAttemptPopulation(binding, async () => census(rows)))
+      .toMatchObject({ usageComplete: true, knownUsage: { modelCalls: 2, tokensIn: 21,
+        tokensOut: 6, tokensCacheRead: 9, tokensCacheWrite: 0 } });
+  });
+  it('preserves measured token subtotals while failed/partial sends and unknown cache splits remain incomplete', async () => {
+    const rows = [reservation('known', 'response-completed'), reservation('unknown-cache', 'response-completed'),
+      reservation('failed', 'fetch-failed'), reservation('partial', 'response-incomplete')];
+    changeNote(rows[1], n => { n.nativeGatewayAttemptResult.providerCompletion.usage.cacheCreationTokens = null; });
+    expect(await readProximusAttemptPopulation(binding, async () => census(rows)))
+      .toMatchObject({ usageComplete: false, knownUsage: { modelCalls: 1, tokensIn: 7,
+        tokensOut: 4, tokensCacheRead: 6, tokensCacheWrite: 0 } });
+    expect(await readProximusAttemptPopulation(binding, async () => census([reservation('refused', 'send-refused')])))
+      .toMatchObject({ usageComplete: true, knownUsage: { modelCalls: 1, tokensIn: 0,
+        tokensOut: 0, tokensCacheRead: 0, tokensCacheWrite: 0 } });
+  });
+  it('normalizes Anthropic cache creation and refuses aggregate token overflow', async () => {
+    const rows = [reservation('a', 'response-completed'), reservation('b', 'response-completed')];
+    changeNote(rows[0], n => {
+      for (const value of [n.nativeGatewayAttempt, n.nativeGatewayAttemptResult])
+        Object.assign(value, { transport: 'anthropic-http', credentialHeader: 'x-api-key', target: 'https://api.anthropic.com/v1/messages' });
+      n.nativeGatewayAttemptResult.providerCompletion.usage.cacheCreationTokens = 4;
+    });
+    expect(await readProximusAttemptPopulation(binding, async () => census(rows)))
+      .toMatchObject({ usageComplete: true, knownUsage: { modelCalls: 1, tokensIn: 10,
+        tokensOut: 4, tokensCacheRead: 6, tokensCacheWrite: 4 } });
+    for (const row of rows) changeNote(row, n => { n.nativeGatewayAttemptResult.providerCompletion.usage.outputTokens = Number.MAX_SAFE_INTEGER; });
+    expect(await readProximusAttemptPopulation(binding, async () => census(rows)))
+      .toEqual({ status: 'unavailable', reason: 'invalid-ledger' });
+  });
   it('reconciles distinct provider attempts using exact canonical samples, with zero only for unsent refusals', async () => {
     const rows = [reservation('refused', 'send-refused'), reservation('a', 'response-completed'), reservation('b', 'response-completed')];
     const sql = billSql([billRow('a'), { ...billRow('b'), cost_micros: '0.000000' }]);

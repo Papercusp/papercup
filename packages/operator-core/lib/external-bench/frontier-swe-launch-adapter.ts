@@ -356,17 +356,24 @@ function startFrontierSweProximusAdapter(config: FrontierSweProximusLaunchAdapte
           throw new Error('FrontierSWE Proximus assignment differs from its run/arm/workspace/task container.');
         if (closed || config.signal?.aborted) throw new Error('FrontierSWE adapter is stopped or cancelled.');
         const evidence = structuredClone(await assignment.execute());
+        const population = evidence.attempts.status === 'terminal' ? evidence.attempts : undefined;
+        const bill = evidence.billing.status !== 'unavailable' && population &&
+          evidence.billing.populationSha256 === population.populationSha256 ? evidence.billing : undefined;
+        const micros = bill && /^\d+$/.test(bill.knownSubtotalMicros) ? Number(bill.knownSubtotalMicros) : NaN;
+        const knownBill = Number.isSafeInteger(micros) && micros >= 0;
         return {
           submission: { containerId: identity.containerId, instanceId: identity.taskId },
           status: 'error', error: 'Proximus host request confinement and normalized accounting remain unverified.',
-          // No native identities, agent-reported context cost, or invented zero
-          // usage may stand in for the missing acceptance/accounting producer.
-          modelCalls: 0, tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0,
+          // Retain measured subtotals even when acceptance is incomplete. Native
+          // identities and agent-reported context cost never supply accounting.
+          ...(population?.knownUsage ?? { modelCalls: 0, tokensIn: 0, tokensOut: 0 }),
+          costUsd: knownBill ? micros / 1_000_000 : 0, turns: 0,
           executionPath: 'stock-native-reference',
           armMeta: { hostReference: { agent: 'proximus', processStatus: evidence.process.status,
             runtime: evidence.process.runtime, attempts: evidence.attempts, billing: evidence.billing },
-            requestConfinementMeasurementMissing: true, modelCallsMeasurementMissing: true,
-            tokenUsageMeasurementMissing: true, costUsdMeasurementMissing: true },
+            requestConfinementMeasurementMissing: true, modelCallsMeasurementMissing: !population,
+            tokenUsageMeasurementMissing: !population?.usageComplete, turnsMeasurementMissing: true,
+            costUsdMeasurementMissing: !knownBill || bill?.status !== 'complete' },
         };
       } finally {
         try { await assignment?.stop(); }
