@@ -1,16 +1,24 @@
 /** Installed-client tool census at the real request boundary; no paid inference. */
-import { execFileSync, spawn, type SpawnOptions } from 'node:child_process';
+import { execFileSync, fork, spawn, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { describe, expect, inject, it } from 'vitest';
 import { codexGatewayConfigToml, codexManagedFeaturesToml } from '@papercusp/orchestrator/codex-gateway-config';
 import type { CapabilityPolicyRequest, CapabilityPolicySurface } from '@papercusp/orchestrator/managed-capability-policy';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail,
+  recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
+
+const root = resolve(import.meta.dirname, '../../..');
+const filePath = 'packages/operator-core/lib/codex-managed-tools.native.integration.test.ts';
+const workerGroupSuffix = ':codex-managed-surface-worker';
+const isWorker = process.env.PAPERCUSP_TEST_RUN_GROUP?.endsWith(workerGroupSuffix);
 
 declare module 'vitest' {
   interface TaskMeta {
@@ -227,6 +235,7 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
   }
 }
 
+if (isWorker) {
 describe('Codex managed replacement installed-client census', () => {
   it('uses admitted production config to remove native shell while preserving callable MCP', async ({ task }) => {
     expect(inject('papercuspTestLayer')).toBe('integration');
@@ -257,6 +266,7 @@ describe('Codex managed replacement installed-client census', () => {
       expect(row.managedCalls).toBe(1);
     }
     expect(drift.nestedNames).toContain('exec_command');
+    console.info('CODEX_ADMITTED_LIFECYCLE ' + JSON.stringify({ retained, removed, drift }));
     // captureSurface also verifies that the actual inner MCP catalog is callable.
   }, 180_000);
 
@@ -341,3 +351,53 @@ describe('Codex managed replacement installed-client census', () => {
     expect(restricted.nestedNames).not.toContain('sleep');
   }, 30_000);
 });
+} else {
+  const workerOptions = isolatedTestFileWorkerOptions(process.env, 1);
+  it('retains the installed Codex removal, resume, wake and drift controls with their original runtime', async context => {
+    const runId = await recordIsolatedIntegrationProof({ root, filePath,
+      sourcePaths: ['packages/operator-core/lib/backend-bin-resolve.mjs',
+        'libs/papercusp/packages/orchestrator/src/codex-gateway-config.ts',
+        'libs/papercusp/packages/orchestrator/src/managed-capability-policy.ts',
+        'libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory.ts',
+        'packages/operator-core/test/isolated-integration-proof.ts',
+        'packages/operator-core/lib/process-identity.ts', 'scripts/with-test-pg.mjs', 'scripts/test-files.mjs'],
+      retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/native-tool-surface.json'],
+      execute: async (observe, evidenceDir) => {
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+          PAPERCUSP_TEST_RUN_GROUP: (process.env.PAPERCUSP_TEST_RUN_GROUP ?? '') + workerGroupSuffix };
+        // The outer reporter owns the canonical sink. The inner router runs
+        // against its disposable database and retains its own native output.
+        for (const key of ['PC_EXECUTED_SOURCE_MAP_OUT', 'PC_EXECUTED_SOURCE_MAP_RESULT',
+          'PC_EXECUTED_SOURCE_MAP_WORKSPACE', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
+          'PAPERCUSP_TEST_RUNS_DB_URL', 'PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE']) delete env[key];
+        const child = fork(join(root, 'scripts/with-test-pg.mjs'), [
+          '--isolated-runtime', '--', process.execPath,
+          '--import', './scripts/lib/committed-source-loader.mjs', 'scripts/test-files.mjs', filePath,
+        ], { cwd: root, detached: true, execArgv: [], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        const result = await captureIsolatedWorker(child, evidenceDir, workerOptions);
+        const line = result.output.split('\n').find(row => row.startsWith('CODEX_ADMITTED_LIFECYCLE '));
+        if (line) await writeFile(join(evidenceDir, 'native-tool-surface.json'),
+          line.slice('CODEX_ADMITTED_LIFECYCLE '.length) + '\n', { flag: 'wx' });
+        expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({
+          code: 0, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false,
+        });
+        expect(result.output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+        expect(result.output).toContain('skippedTests=0');
+        expect(result.output).toMatch(/Tests\s+6 passed \(6\)/);
+        expect(line, 'original installed-client lifecycle observations are required').toBeDefined();
+        const measured = JSON.parse(line!.slice('CODEX_ADMITTED_LIFECYCLE '.length));
+        expect(measured.removed.lifecycle.map((row: { surface: string }) => row.surface))
+          .toEqual(['launch', 'resume', 'wake']);
+        for (const row of measured.removed.lifecycle) {
+          expect(row.managedCalls).toBe(1);
+          expect(row.hasNativeExecution).toBe(false);
+        }
+        expect(measured.retained.hasNativeExecution).toBe(true);
+        expect(measured.drift.hasNativeExecution).toBe(true);
+      },
+    });
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    console.info('ISOLATED_CODEX_MANAGED_SURFACE_PROOF_RUN ' + runId);
+  }, workerOptions.testTimeoutMs);
+}
