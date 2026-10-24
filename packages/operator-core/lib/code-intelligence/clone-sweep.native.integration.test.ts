@@ -20,7 +20,10 @@ const journey = String.raw`
   import { join } from 'node:path';
   import { setTimeout as delay } from 'node:timers/promises';
   import { DBOS } from '@dbos-inc/dbos-sdk';
-  import { getOrgPg, listDueCronRoutines } from '@papercusp/db-org';
+  import { getOrgPg, listDueCronRoutines, _resetForTests } from '@papercusp/db-org';
+  import { _stopInvalidationListenerForTests } from '@papercusp/agent-mcp/auth';
+  import { _stopHubForTests } from './packages/operator-core/lib/pg-listen-hub.ts';
+  import { flushFallbackObservations } from './packages/operator-core/lib/degradation/fallback-observations.ts';
   import { saveHarnessRegistry } from './packages/operator-core/lib/harness-registry.ts';
   import { armPlanSchedule, disarmPlanSchedule } from './packages/operator-core/lib/harness/routines/arm-plan-schedule.ts';
   import { materializePlanSchedule } from './packages/operator-core/lib/harness/routines/materialize-plan-schedule.ts';
@@ -208,9 +211,26 @@ const journey = String.raw`
       }
     } finally {
       try { await DBOS.shutdown(); }
-      finally { await sql.end({ timeout: 5 }); }
+      finally {
+        // This worker owns the disposable process, including imported LISTEN
+        // clients. Ending only the org query pool leaves those sockets alive.
+        try { await _stopInvalidationListenerForTests(); }
+        finally {
+          try { await _stopHubForTests(); }
+          finally {
+            try { await flushFallbackObservations({ sql }); }
+            finally { await _resetForTests(); }
+          }
+        }
+      }
     }
   }
+  await new Promise(done => setImmediate(done));
+  const pgPort = Number(new URL(process.env.HARNESS_ADMIN_DATABASE_URL).port);
+  const privatePgSockets = (process.report.getReport().libuv ?? []).filter(handle =>
+    handle.type === 'tcp' && handle.is_referenced && Number(handle.remoteEndpoint?.port) === pgPort);
+  assert.deepEqual(privatePgSockets, [], 'private fixture must retire every referenced database socket');
+  console.log('P008_NATIVE_TEARDOWN ' + JSON.stringify({ pgPort, privatePgSockets: privatePgSockets.length }));
 `;
 
 it('arms a private nightly cadence and dispatches real DBOS managed sweeps with fail-closed controls and teardown', async (context) => {
@@ -236,8 +256,12 @@ it('arms a private nightly cadence and dispatches real DBOS managed sweeps with 
       'packages/operator-core/lib/task-manager/managed-spawn.ts',
       'packages/operator-core/lib/task-manager/store.ts',
       'packages/operator-core/lib/task-manager/control.ts',
+      'packages/agent-mcp/src/auth.ts',
+      'packages/operator-core/lib/pg-listen-hub.ts',
+      'packages/operator-core/lib/degradation/fallback-observations.ts',
+      'libs/papercusp/libs/db/src/connection.ts',
       'packages/operator-core/lib/harness-registry.ts'],
-    retainedArtifacts: ['phases/execute/native-sweep.json'],
+    retainedArtifacts: ['phases/execute/native-sweep.json', 'phases/execute/native-teardown.json'],
     execute: async (observe, evidenceDir) => {
       // Background bootstrap registers the default orchestrator before journey
       // imports run. Keep its timer off while exercising the real sweep action.
@@ -256,6 +280,11 @@ it('arms a private nightly cadence and dispatches real DBOS managed sweeps with 
       expect(output).toBeDefined();
       // The callback receives the execute directory; retainedArtifacts is relative to the run root.
       await writeFile(join(evidenceDir, 'native-sweep.json'), output!.slice('P008_NATIVE '.length));
+      const teardown = result.output.split('\n').find(line => line.startsWith('P008_NATIVE_TEARDOWN '));
+      expect(teardown, 'private worker must retain its database socket teardown assertion').toBeDefined();
+      const teardownReceipt = JSON.parse(teardown!.slice('P008_NATIVE_TEARDOWN '.length));
+      expect(teardownReceipt).toMatchObject({ privatePgSockets: 0 });
+      await writeFile(join(evidenceDir, 'native-teardown.json'), JSON.stringify(teardownReceipt));
       const stages = result.output.split('\n').filter(line => line.startsWith('[with-test-pg] cleanup '))
         .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)));
       const complete = stages.find(stage => stage.stage === 'complete');
