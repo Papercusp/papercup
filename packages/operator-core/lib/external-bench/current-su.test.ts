@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
@@ -1231,7 +1231,57 @@ function observedFixture() {
   return { task, observation };
 }
 
+function observedClaudeFixture() {
+  const { task, observation } = observedFixture();
+  Object.assign(observation.worker, { agent: 'claude', claudeConfigDir: '/host/owned-claude' });
+  const telemetry = new GatewayRequestTelemetry({ now: () => Date.parse('2026-10-09T20:00:00Z') });
+  const span = telemetry.begin({ ownerId: observation.worker.ownerId, provider: 'claude', protocol: 'anthropic-messages' });
+  span.setModel('native-requested-model');
+  span.setCacheShape(Buffer.from(JSON.stringify({ system: 'PRIVATE_SYSTEM_PROMPT', tools: [{ name: 'tool-exact' }],
+    output_config: { effort: 'high' }, messages: [{ role: 'user', content: 'Public problem.' }] })));
+  span.setNativeCorrelation({}); span.setServingAccount('actual-account');
+  span.recordProviderIdentity('msg-exact', 'actual-provider-model', null, 'actual-account');
+  span.recordCacheUsage(10, 0, 0, 'msg-exact');
+  observation.gateway.timeline = span.finish('ok', 200)!;
+  observation.nativeTranscript = JSON.stringify({ type: 'assistant', sessionId: observation.worker.nativeSessionId,
+    version: '2.1.293', perTurnEffort: 'high', isSidechain: false,
+    message: { id: 'msg-exact', model: 'actual-provider-model', stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 5 } } }) + '\n';
+  return { task, observation };
+}
+
 describe('exact native benchmark identity observation', () => {
+  it('joins Claude native version/session/message with the measured Anthropic response without inventing Codex turn metadata', () => {
+    const { task, observation } = observedClaudeFixture();
+    // The current telemetry writer marks this Codex-only format invalid on
+    // Anthropic; Claude is joined through its exact native provider message.
+    expect(observation.gateway.timeline.nativeCorrelation.status).toBe('invalid');
+    const identity = currentBenchIdentityFromObservation(task, observation);
+    expect(identity).toMatchObject({ clientVersion: 'claude/2.1.293', model: 'actual-provider-model', effort: 'high',
+      nativeSessionId: observation.worker.nativeSessionId, providerResponseId: 'msg-exact', accountId: 'actual-account' });
+    expect(identity?.evidenceRefs).toContain(`claude:${observation.worker.nativeSessionId}#message:msg-exact`);
+    expect(JSON.stringify(identity)).not.toContain('PRIVATE_SYSTEM_PROMPT');
+  });
+
+  it.each(['session', 'message', 'model', 'effort', 'version', 'sidechain', 'api-error', 'missing-home', 'foreign-codex-correlation', 'partial-prompt', 'malformed'])
+    ('refuses Claude %s drift or incomplete source evidence', changed => {
+      const { task, observation } = observedClaudeFixture();
+      const record = JSON.parse(observation.nativeTranscript);
+      if (changed === 'session') record.sessionId = 'other-native';
+      if (changed === 'message') record.message.id = 'other-message';
+      if (changed === 'model') record.message.model = 'configured-alias';
+      if (changed === 'effort') record.perTurnEffort = 'low';
+      if (changed === 'version') record.version = '';
+      if (changed === 'sidechain') record.isSidechain = true;
+      if (changed === 'api-error') record.isApiErrorMessage = true;
+      if (changed === 'missing-home') Object.assign(observation.worker, { claudeConfigDir: undefined });
+      if (changed === 'foreign-codex-correlation') observation.gateway.timeline.nativeCorrelation = {
+        status: 'observed', sessionId: null, threadId: 'other-native', turnId: 'other-turn', windowId: null,
+      };
+      if (changed === 'partial-prompt') observation.gateway.timeline.cache.instructions!.hashedBytes--;
+      observation.nativeTranscript = JSON.stringify(record) + '\n' + (changed === 'malformed' ? '{' : '');
+      expect(currentBenchIdentityFromObservation(task, observation)).toBeNull();
+    });
+
   it('joins native version and turn with a provider response and complete exposure hashes', () => {
     const { task, observation } = observedFixture();
     const result = currentBenchIdentityFromObservation(task, observation);
@@ -1302,6 +1352,83 @@ function hostObservationFixture() {
   return { task, rows, report, ports, opts };
 }
 describe('host-backed benchmark observation reader', () => {
+  function claudeHostFixture() {
+    const f = hostObservationFixture(), { observation } = observedClaudeFixture();
+    f.ports.readBinding = vi.fn(async () => ({ agent: 'claude' as const,
+      ownerId: observation.worker.ownerId, nativeSessionId: observation.worker.nativeSessionId,
+      claudeConfigDir: observation.worker.claudeConfigDir! }));
+    f.ports.readTranscript = vi.fn(async () => observation.nativeTranscript);
+    f.report.stageTelemetry.recent = [observation.gateway.timeline];
+    return f;
+  }
+  it('observes the exact Claude message when newer gateway traffic belongs to another native session', async () => {
+    const f = claudeHostFixture();
+    const unrelated = structuredClone(f.report.stageTelemetry.recent[0]);
+    unrelated.requestId++; unrelated.finalizedAt++;
+    unrelated.providerIdentity!.responseId = 'msg-other';
+    unrelated.cache.providerRequestId = 'msg-other';
+    f.report.stageTelemetry.recent.push(unrelated);
+    const observation = await currentBenchObservationReader(f.opts, f.ports)(f.task);
+    expect(currentBenchIdentityFromObservation(f.task, observation!)).toMatchObject({
+      clientVersion: 'claude/2.1.293', providerResponseId: 'msg-exact', nativeSessionId: f.task.sessionId });
+    expect(observation?.worker).toMatchObject({ agent: 'claude', claudeConfigDir: '/host/owned-claude' });
+    expect(observation?.worker.codexHome).toBeUndefined();
+    expect(f.ports.readTranscript).toHaveBeenCalledWith(f.task.sessionId, '/host/owned-claude', 'claude');
+  });
+  it.each(['missing-home', 'mixed-home', 'foreign-message', 'old-request', 'home-changed', 'agent-changed'])(
+    'refuses Claude live observation with %s', async changed => {
+      const f = claudeHostFixture();
+      const binding = (await f.ports.readBinding(f.task))!;
+      if (changed === 'missing-home') delete binding.claudeConfigDir;
+      if (changed === 'mixed-home') binding.codexHome = '/foreign/codex';
+      if (changed === 'foreign-message') f.report.stageTelemetry.recent[0].providerIdentity!.responseId = 'msg-other';
+      if (changed === 'old-request') f.task.startedAt = new Date(f.report.stageTelemetry.recent[0].finalizedAt + 1).toISOString();
+      f.ports.readBinding = vi.fn(async () => binding);
+      if (changed === 'home-changed' || changed === 'agent-changed') f.ports.readTranscript = vi.fn(async () => {
+        if (changed === 'home-changed') binding.claudeConfigDir = '/foreign/claude';
+        else binding.agent = 'codex';
+        return observedClaudeFixture().observation.nativeTranscript;
+      });
+      expect(await currentBenchObservationReader(f.opts, f.ports)(f.task)).toBeNull();
+    });
+  it('reads only the enrolled Claude home and refuses source links beneath the issued root', async () => {
+    const f = claudeHostFixture(), root = mkdtempSync(join(tmpdir(), 'bench-claude-observation-'));
+    const sid = f.task.sessionId!, home = join(root, 'home'), project = join(home, 'projects', '-task');
+    const transcript = observedClaudeFixture().observation.nativeTranscript;
+    const file = join(project, `${sid}.jsonl`), io = liveCurrentBenchObservationReaderPorts(f.opts);
+    try {
+      mkdirSync(project, { recursive: true }); writeFileSync(file, transcript);
+      expect(await io.readTranscript(sid, home, 'claude')).toBe(transcript);
+      const relocated = join(root, 'relocated'); symlinkSync(home, relocated);
+      expect(await io.readTranscript(sid, relocated, 'claude')).toBe(transcript);
+      const foreign = join(root, 'foreign'); mkdirSync(join(foreign, 'projects'), { recursive: true });
+      // The shared finder may retain an id hit. Containment must still reject it.
+      expect(await io.readTranscript(sid, foreign, 'claude')).toBeNull();
+      rmSync(file); writeFileSync(join(root, 'external.jsonl'), transcript);
+      symlinkSync(join(root, 'external.jsonl'), file);
+      expect(await io.readTranscript(sid, home, 'claude')).toBeNull();
+      expect(await io.readTranscript('../escape', home, 'claude')).toBeNull();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('derives the Claude config directory from the uniquely enrolled owner instead of task-supplied paths', async () => {
+    const f = claudeHostFixture();
+    const sql = vi.fn(async () => [{ id: 42, agent: 'claude', coord_owner_id: 'su-exact', session_id: f.task.sessionId }]);
+    const io = liveCurrentBenchObservationReaderPorts({ ...f.opts, sql: sql as never });
+    f.task.detail.claudeConfigDir = '/candidate/chosen';
+    const { sessionClaudeConfigDir } = await import('@papercusp/orchestrator/session-launch-dirs');
+    expect(await io.readBinding(f.task)).toEqual({ agent: 'claude', ownerId: 'su-exact', nativeSessionId: f.task.sessionId,
+      claudeConfigDir: sessionClaudeConfigDir('su-exact') });
+    sql.mockResolvedValue([{ id: 42, agent: 'omp', coord_owner_id: 'su-exact', session_id: f.task.sessionId }]);
+    expect(await io.readBinding(f.task)).toBeNull();
+  });
+  it('preserves the existing Codex enrollment binding shape', async () => {
+    const f = hostObservationFixture();
+    const sql = vi.fn(async () => [{ id: 42, agent: 'codex', coord_owner_id: 'su-exact', session_id: f.task.sessionId }]);
+    const io = liveCurrentBenchObservationReaderPorts({ ...f.opts, sql: sql as never });
+    const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
+    expect(await io.readBinding(f.task)).toEqual({ ownerId: 'su-exact', nativeSessionId: f.task.sessionId,
+      codexHome: codexHomeForSessionKey(42) });
+  });
   async function privateHostFixture() {
     const f = hostObservationFixture(), protocol = currentProtocolFixture();
     const controller = currentBenchGatewayController({ workspaceId: f.task.workspaceId, loopId: 'private-observation-loop',

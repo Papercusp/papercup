@@ -1364,7 +1364,9 @@ export interface CurrentBenchIdentity {
 export interface CurrentBenchIdentityObservation {
   worker: {
     taskId: string; workspaceId: string; ownerId: string; nativeSessionId: string;
+    agent?: 'codex' | 'claude';
     codexHome?: string;
+    claudeConfigDir?: string;
     runtimeRevision: string; sourceRevision: string; evidenceRef: string;
   };
   nativeTranscript: string;
@@ -1375,10 +1377,11 @@ export interface CurrentBenchIdentityObservation {
  * authority. A bounded gateway ring establishes a particular request identity,
  * never complete all-attempt usage or a historical runtime census. */
 export interface CurrentBenchObservationReaderPorts {
-  readBinding(task: CurrentBenchTask): Promise<{ ownerId: string; nativeSessionId: string; codexHome: string } | null>;
+  readBinding(task: CurrentBenchTask): Promise<{ ownerId: string; nativeSessionId: string;
+    agent?: 'codex' | 'claude'; codexHome?: string; claudeConfigDir?: string } | null>;
   readRuntimes(): Promise<RuntimeVintageRow[]>;
   measureRuntimes(rows: RuntimeVintageRow[], units: string[]): string | null;
-  readTranscript(nativeSessionId: string, codexHome: string): Promise<string | null>;
+  readTranscript(nativeSessionId: string, home: string, agent?: 'codex' | 'claude'): Promise<string | null>;
   readGateway(ownerId: string): Promise<{ owner: string; process: { pid: number; identity: string | null; startedAt: number };
     stageTelemetry: { ownerId: string; recent: GatewayRequestTimeline[] } } | null>;
 }
@@ -1420,8 +1423,15 @@ export function currentBenchObservationReader(
   return async task => {
     try {
       if (host && !issuedHere() || task.workspaceId !== opts.workspaceId || !task.sessionId || typeof task.detail.coordOwnerId !== 'string') return null;
-      const binding = await io.readBinding(task);
+      const enrolled = await io.readBinding(task);
+      // Copy the enrollment before IO: neither an in-place mutation nor a
+      // later carry/rebinding may redirect the proof to another native home.
+      const binding = enrolled && { ...enrolled };
       if (!binding || binding.nativeSessionId !== task.sessionId || binding.ownerId !== task.detail.coordOwnerId) return null;
+      const agent = binding.agent ?? 'codex';
+      const home = agent === 'claude' ? binding.claudeConfigDir : binding.codexHome;
+      if (!['codex', 'claude'].includes(agent) || !home?.trim() ||
+          (agent === 'claude' ? !!binding.codexHome : !!binding.claudeConfigDir)) return null;
       const rows = await io.readRuntimes();
       const units = host ? [opts.workerUnit] : [opts.workerUnit, opts.gatewayUnit];
       const environment = io.measureRuntimes(rows, units), runtimeRevision = io.measureRuntimes(rows, [opts.workerUnit]);
@@ -1434,7 +1444,8 @@ export function currentBenchObservationReader(
           (host ? worker.pid !== process.pid : gateway.extra.port !== gatewayPort) ||
           typeof gateway.extra.kernelProcessIdentity !== 'string') return null;
       const [nativeTranscript, report] = await Promise.all([
-        io.readTranscript(binding.nativeSessionId, binding.codexHome), io.readGateway(binding.ownerId),
+        agent === 'claude' ? io.readTranscript(binding.nativeSessionId, home, agent) : io.readTranscript(binding.nativeSessionId, home),
+        io.readGateway(binding.ownerId),
       ]);
       if (!nativeTranscript || !report || report.owner !== binding.ownerId || report.stageTelemetry.ownerId !== binding.ownerId ||
           report.process.pid !== gateway.pid || report.process.identity !== gateway.extra.kernelProcessIdentity ||
@@ -1442,17 +1453,28 @@ export function currentBenchObservationReader(
       const bootAt = Date.parse(worker.reportedAt);
       const taskAt = Date.parse(task.startedAt ?? '');
       if (!Number.isFinite(bootAt) || !Number.isFinite(taskAt)) return null;
-      const candidates = report.stageTelemetry.recent.filter(row => row.nativeCorrelation.status === 'observed' &&
-        row.nativeCorrelation.threadId === binding.nativeSessionId && row.startedAt >= Math.max(bootAt, taskAt, report.process.startedAt));
-      const timeline = candidates.sort((a, b) => b.finalizedAt - a.finalizedAt)[0];
-      if (!timeline || io.measureRuntimes(await io.readRuntimes(), units) !== environment || host && !issuedHere()) return null;
-      const observation: CurrentBenchIdentityObservation = {
-        worker: { taskId: task.taskId, workspaceId: task.workspaceId, ownerId: binding.ownerId,
-          nativeSessionId: binding.nativeSessionId, codexHome: binding.codexHome, runtimeRevision, sourceRevision: worker.treeSha,
-          evidenceRef: `runtime-vintage:${worker.unit}:${worker.host}:${worker.extra.kernelProcessIdentity}:${environment}` },
-        nativeTranscript, gateway: { processRef: `gateway:${report.process.identity}`, timeline },
-      };
-      return currentBenchIdentityFromObservation(task, observation) ? observation : null;
+      const candidates = report.stageTelemetry.recent.filter(row =>
+        row.startedAt >= Math.max(bootAt, taskAt, report.process.startedAt) &&
+        (agent === 'claude' || row.nativeCorrelation.status === 'observed' && row.nativeCorrelation.threadId === binding.nativeSessionId))
+        .sort((a, b) => b.finalizedAt - a.finalizedAt);
+      // Claude supplies its exact provider message id in native bytes, rather
+      // than Codex's request headers. Unrelated newer traffic cannot select a
+      // foreign session or hide this session's independently measured request.
+      let observation: CurrentBenchIdentityObservation | null = null;
+      for (const timeline of candidates) {
+        const candidate: CurrentBenchIdentityObservation = {
+          worker: { taskId: task.taskId, workspaceId: task.workspaceId, ownerId: binding.ownerId,
+            nativeSessionId: binding.nativeSessionId, agent,
+            ...(agent === 'claude' ? { claudeConfigDir: home } : { codexHome: home }),
+            runtimeRevision, sourceRevision: worker.treeSha,
+            evidenceRef: `runtime-vintage:${worker.unit}:${worker.host}:${worker.extra.kernelProcessIdentity}:${environment}` },
+          nativeTranscript, gateway: { processRef: `gateway:${report.process.identity}`, timeline },
+        };
+        if (currentBenchIdentityFromObservation(task, candidate)) { observation = candidate; break; }
+      }
+      if (!observation || io.measureRuntimes(await io.readRuntimes(), units) !== environment ||
+          canonicalJson(await io.readBinding(task)) !== canonicalJson(binding) || host && !issuedHere()) return null;
+      return observation;
     } catch { return null; }
   };
 }
@@ -1471,19 +1493,24 @@ export function liveCurrentBenchObservationReaderPorts(
   return {
     readBinding: async task => {
       const { resolveDb } = await import('./reproducibility/db');
-      const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
+      const { codexHomeForSessionKey, sessionClaudeConfigDir } = await import('@papercusp/orchestrator/session-launch-dirs');
       const { sql } = resolveDb(scope);
-      const rows = await sql<{ id: number; coord_owner_id: string; session_id: string }[]>`
-        SELECT a.id, a.coord_owner_id, a.session_id FROM harness_shared.adv_sessions a
+      const rows = await sql<{ id: number; agent: string; coord_owner_id: string; session_id: string }[]>`
+        SELECT a.id, a.agent, a.coord_owner_id, a.session_id FROM harness_shared.adv_sessions a
         JOIN harness_shared.task_ledger t ON t.workspace_id = a.workspace_id
           AND t.session_id = a.session_id AND t.detail->>'coordOwnerId' = a.coord_owner_id
         WHERE t.task_id = ${task.taskId} AND t.workspace_id = ${scope.workspaceId}
-          AND a.agent = 'codex' AND a.coord_owner_id = ${String(task.detail.coordOwnerId)}
+          AND a.agent IN ('codex', 'claude') AND a.coord_owner_id = ${String(task.detail.coordOwnerId)}
           AND a.session_id = ${task.sessionId ?? null}
         ORDER BY a.started_at DESC LIMIT 2
       `;
       if (rows.length !== 1) return null;
-      return { ownerId: rows[0].coord_owner_id, nativeSessionId: rows[0].session_id, codexHome: codexHomeForSessionKey(rows[0].id) };
+      const row = rows[0];
+      if (!Number.isSafeInteger(row.id) || row.id < 1 || !row.coord_owner_id ||
+          row.coord_owner_id !== task.detail.coordOwnerId || row.session_id !== task.sessionId) return null;
+      const common = { ownerId: row.coord_owner_id, nativeSessionId: row.session_id };
+      if (row.agent === 'claude') return { ...common, agent: 'claude', claudeConfigDir: sessionClaudeConfigDir(row.coord_owner_id) };
+      return row.agent === 'codex' ? { ...common, codexHome: codexHomeForSessionKey(row.id) } : null;
     },
     readRuntimes: async () => {
       const { listRuntimeVintage } = await import('../runtime-vintage');
@@ -1491,28 +1518,40 @@ export function liveCurrentBenchObservationReaderPorts(
     },
     // Keep the existing kernel-pin measurement synchronous for before/after proof.
     measureRuntimes: (rows, units) => measureRuntimeVintageEnvironment(rows, units),
-    readTranscript: async (nativeSessionId, codexHome) => {
-      const [{ promises: fs, constants }, path, { findCodexRolloutPathByUuid }] = await Promise.all([
-        import('node:fs'), import('node:path'), import('../session-transcript-resolvers'),
-      ]);
-      const file = await findCodexRolloutPathByUuid(nativeSessionId, { homeOverride: codexHome });
-      if (!file) return null;
-      const root = await fs.realpath(path.join(codexHome, 'sessions')), realFile = await fs.realpath(file);
-      const relative = path.relative(root, realFile);
-      if (file !== realFile || !relative || relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative)) return null;
-      const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    readTranscript: async (nativeSessionId, home, agent = 'codex') => {
       try {
-        const before = await handle.stat();
-        if (!before.isFile() || before.size <= 0 || before.size > 8_388_608) return null;
-        const bytes = Buffer.alloc(before.size); let offset = 0;
-        while (offset < bytes.length) {
-          const read = await handle.read(bytes, offset, bytes.length - offset, offset);
-          if (!read.bytesRead) return null; offset += read.bytesRead;
-        }
-        const after = await handle.stat(), text = bytes.toString('utf8');
-        return before.size === after.size && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs &&
-          Buffer.from(text, 'utf8').equals(bytes) ? text : null;
-      } finally { await handle.close(); }
+        if (!home.trim() || !['codex', 'claude'].includes(agent) ||
+            !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(nativeSessionId)) return null;
+        const [{ promises: fs, constants }, path, { findCodexRolloutPathByUuid }, { findSessionTranscript }] = await Promise.all([
+          import('node:fs'), import('node:path'), import('../session-transcript-resolvers'), import('../claude-sessions'),
+        ]);
+        const directory = agent === 'claude' ? 'projects' : 'sessions';
+        const realHome = await fs.realpath(home), root = path.join(realHome, directory);
+        const file = agent === 'claude'
+          ? await findSessionTranscript(nativeSessionId, { roots: [root] })
+          : await findCodexRolloutPathByUuid(nativeSessionId, { homeOverride: realHome });
+        if (!file) return null;
+        // Resolve the allocated home itself (the container relocates it), but
+        // never follow a project, directory or file link beneath that root.
+        const relative = path.relative(root, file), realFile = await fs.realpath(file);
+        if (!relative || relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative) ||
+            realFile !== path.join(root, relative)) return null;
+        const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+          const before = await handle.stat();
+          if (!before.isFile() || before.size <= 0 || before.size > 8_388_608) return null;
+          const bytes = Buffer.alloc(before.size); let offset = 0;
+          while (offset < bytes.length) {
+            const read = await handle.read(bytes, offset, bytes.length - offset, offset);
+            if (!read.bytesRead) return null; offset += read.bytesRead;
+          }
+          const after = await fs.lstat(file), text = bytes.toString('utf8');
+          return after.isFile() && before.dev === after.dev && before.ino === after.ino && before.size === after.size &&
+            before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs &&
+            await fs.realpath(home) === realHome && await fs.realpath(file) === realFile &&
+            Buffer.from(text, 'utf8').equals(bytes) ? text : null;
+        } finally { await handle.close(); }
+      } catch { return null; }
     },
     readGateway: async ownerId => {
       if (issuedGateway && !issuedHere()) return null;
@@ -1537,19 +1576,25 @@ export function currentBenchIdentityFromObservation(
   const row = gateway.timeline;
   const provider = row.providerIdentity;
   const correlation = row.nativeCorrelation;
+  const agent = worker.agent ?? 'codex';
   const revision = (value: string) => /^[a-f0-9]{40}$|^[a-f0-9]{64}$/.test(value);
   if (task.taskId !== worker.taskId || task.workspaceId !== worker.workspaceId || !worker.ownerId ||
       !worker.nativeSessionId || !worker.evidenceRef || !gateway.processRef ||
       !revision(worker.runtimeRevision) || !revision(worker.sourceRevision) ||
-      row.ownerId !== worker.ownerId || row.provider !== 'codex' || row.protocol !== 'openai-responses' ||
+      !['codex', 'claude'].includes(agent) || row.ownerId !== worker.ownerId || row.provider !== agent ||
+      row.protocol !== (agent === 'claude' ? 'anthropic-messages' : 'openai-responses') ||
       row.outcome !== 'ok' || row.finalStatus !== 200 || !provider ||
-      correlation.status !== 'observed' || correlation.threadId !== worker.nativeSessionId ||
-      correlation.sessionId !== null && correlation.sessionId !== worker.nativeSessionId ||
-      !correlation.turnId || !Number.isSafeInteger(row.requestId) || row.requestId < 1) return null;
+      !Number.isSafeInteger(row.requestId) || row.requestId < 1) return null;
+  if (agent === 'codex' && (correlation.status !== 'observed' || correlation.threadId !== worker.nativeSessionId ||
+      correlation.sessionId !== null && correlation.sessionId !== worker.nativeSessionId || !correlation.turnId)) return null;
+  if (agent === 'claude' && (!worker.claudeConfigDir?.trim() || worker.codexHome ||
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(worker.nativeSessionId) ||
+      !['unobserved', 'missing', 'invalid'].includes(correlation.status))) return null;
   const fullHash = (value: typeof row.cache.tools) => value && value.bytes > 0 &&
     value.bytes === value.hashedBytes && /^[a-f0-9]{64}$/.test(value.sha256) ? value.sha256 : null;
   const promptHash = fullHash(row.cache.instructions), toolsHash = fullHash(row.cache.tools);
   const template = row.cache.nativeInstructionTemplate;
+  if (agent === 'claude' && template) return null;
   const promptTemplateHash = template?.version === 'codex-native-template-v1' ? fullHash(template.fingerprint) : null;
   if (template?.skillsRootHash != null && (!worker.codexHome ||
       template.skillsRootHash !== hash(`${worker.codexHome}/skills/.system`))) return null;
@@ -1560,26 +1605,44 @@ export function currentBenchIdentityFromObservation(
   // No lossy transcript adapter: its session header/version and exact turn are
   // observations which portable conversation renderers intentionally discard.
   if (Buffer.byteLength(observation.nativeTranscript) > 8_388_608) return null;
-  let records: Array<{ type?: string; payload?: Record<string, unknown> }>;
+  let records: Array<{ type?: string; payload?: Record<string, unknown>; sessionId?: string; session_id?: string;
+    version?: string; perTurnEffort?: string; isApiErrorMessage?: boolean; isSidechain?: boolean;
+    message?: { id?: string; model?: string } }>;
   try {
     records = observation.nativeTranscript.split('\n').filter(line => line.trim()).map(line => JSON.parse(line));
     if (records.some(record => !record || typeof record !== 'object' || Array.isArray(record))) return null;
   } catch { return null; }
-  const headers = records.filter(record => record.type === 'session_meta');
-  const version = headers[0]?.payload?.cli_version;
-  if (!headers.length || typeof version !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*$/.test(version) ||
-      headers.some(record => record.payload?.id !== worker.nativeSessionId || record.payload?.cli_version !== version)) return null;
-  const turns = records.filter(record => record.type === 'turn_context' && record.payload?.turn_id === correlation.turnId);
-  if (!turns.length || turns.some(record => record.payload?.model !== row.model ||
-      record.payload?.effort !== row.forwardedEffort)) return null;
+  let version: unknown, nativeRef: string;
+  if (agent === 'claude') {
+    // Claude has no Codex turn-context header. The host-owned native source
+    // records the actual provider message alongside its session, CLI version
+    // and effort. Reconcile that exact message; aliases/request order cannot
+    // substitute for the gateway's independently observed provider response.
+    const messages = records.filter(record => record.type === 'assistant' && record.message?.id === provider.responseId);
+    version = messages[0]?.version;
+    if (!messages.length || records.some(record =>
+        record.sessionId !== undefined && record.sessionId !== worker.nativeSessionId ||
+        record.session_id !== undefined && record.session_id !== worker.nativeSessionId) ||
+        messages.some(record => record.sessionId !== worker.nativeSessionId || record.isApiErrorMessage || record.isSidechain ||
+          record.version !== version || record.perTurnEffort !== row.forwardedEffort || record.message?.model !== provider.model)) return null;
+    nativeRef = `claude:${worker.nativeSessionId}#message:${provider.responseId}`;
+  } else {
+    const headers = records.filter(record => record.type === 'session_meta');
+    version = headers[0]?.payload?.cli_version;
+    if (!headers.length || headers.some(record => record.payload?.id !== worker.nativeSessionId || record.payload?.cli_version !== version)) return null;
+    const turns = records.filter(record => record.type === 'turn_context' && record.payload?.turn_id === correlation.turnId);
+    if (!turns.length || turns.some(record => record.payload?.model !== row.model || record.payload?.effort !== row.forwardedEffort)) return null;
+    nativeRef = `codex:${worker.nativeSessionId}#turn:${correlation.turnId}`;
+  }
+  if (typeof version !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*$/.test(version)) return null;
   return {
     measuredBy: 'runtime-observation', runtimeRevision: worker.runtimeRevision, sourceRevision: worker.sourceRevision,
     model: provider.model, effort: provider.effort ?? row.forwardedEffort,
     effortSource: provider.effort ? 'provider-response' : 'forwarded-request',
-    clientVersion: `codex/${version}`, promptHash, toolsHash, ...(promptTemplateHash ? { promptTemplateHash } : {}), accountId: provider.accountId,
+    clientVersion: `${agent}/${version}`, promptHash, toolsHash, ...(promptTemplateHash ? { promptTemplateHash } : {}), accountId: provider.accountId,
     nativeSessionId: worker.nativeSessionId, providerResponseId: provider.responseId,
     observedAt: new Date(row.finalizedAt).toISOString(),
-    evidenceRefs: [worker.evidenceRef, `${gateway.processRef}#request:${row.requestId}`, `codex:${worker.nativeSessionId}#turn:${correlation.turnId}`, `provider:${provider.responseId}`],
+    evidenceRefs: [worker.evidenceRef, `${gateway.processRef}#request:${row.requestId}`, nativeRef, `provider:${provider.responseId}`],
   };
 }
 export interface CurrentSuBenchOptions extends LiveBenchHarnessOpts {
