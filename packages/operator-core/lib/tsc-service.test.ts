@@ -56,10 +56,11 @@ describe('bundled typecheck service identity', () => {
   const roots: string[] = [];
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-  async function bundled(withSources: boolean, withCompiler = true) {
+  async function bundled(withSources: boolean, withCompiler = true,
+    outputRelative = 'apps/operator/dist-host/host.mjs') {
     const root = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'tsc-bundled-identity-'));
     roots.push(root);
-    const output = join(root, 'apps/operator/dist-host/host.mjs');
+    const output = join(root, outputRelative);
     mkdirSync(dirname(output), { recursive: true });
     if (withCompiler) symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
     else {
@@ -114,8 +115,12 @@ describe('bundled typecheck service identity', () => {
     expect(JSON.parse(child.stdout)).toEqual({ socket: '/private/papercusp-tsc-service.sock', failure: 'service-identity-unavailable' });
   });
 
-  it('boots an isolated bundle without service assets or native compiler resolution', async () => {
-    const { output } = await bundled(false, false);
+  it.each([
+    { sources: false, outputRelative: 'apps/operator/dist-host/host.mjs' },
+    { sources: true, outputRelative: 'papercusp-desktop/src-tauri/sidecar.tmp.fixture/serve.mjs' },
+    { sources: true, outputRelative: 'papercusp-desktop/src-tauri/sidecar.tmp.fixture/tsc-service.mjs' },
+  ])('boots metadata without native compiler resolution for $outputRelative (parent sources: $sources)', async ({ sources, outputRelative }) => {
+    const { output } = await bundled(sources, false, outputRelative);
     const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
       import { registerHooks } from 'node:module';
       registerHooks({ resolve(specifier, context, nextResolve) {

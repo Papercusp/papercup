@@ -26,10 +26,16 @@ import ts from 'typescript';
 // Resolve assets from this installation, including the maintained host bundle.
 // Metadata imports stay usable when assets are absent; certification fails closed.
 const serviceSourceSha256 = (() => {
-  for (const [client, server] of [
-    ['./tsc-service.mjs', '../tsc-service/server.mjs'],
-    ['../../../scripts/lib/tsc-service.mjs', '../../../scripts/tsc-service/server.mjs'],
-  ]) {
+  // A sidecar assembled inside a checkout can have real builder sources three
+  // directories above it. Only the source module and maintained dist-host
+  // installation may certify those assets; other bundles remain metadata-only.
+  const location = new URL(import.meta.url).pathname;
+  const assets = location.endsWith('/scripts/lib/tsc-service.mjs')
+    ? [['./tsc-service.mjs', '../tsc-service/server.mjs']]
+    : /\/apps\/operator\/dist-host\/[^/]+\.mjs$/.test(location)
+      ? [['../../../scripts/lib/tsc-service.mjs', '../../../scripts/tsc-service/server.mjs']]
+      : [];
+  for (const [client, server] of assets) {
     try { return createHash('sha256').update(readFileSync(new URL(client, import.meta.url)))
       .update(readFileSync(new URL(server, import.meta.url))).digest('hex'); }
     catch { /* Try only another installation-relative layout, never cwd. */ }
