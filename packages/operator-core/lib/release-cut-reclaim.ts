@@ -1488,6 +1488,20 @@ async function reclaimCutWorktreesUnlocked(
       catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
     }
     const roots = existing.filter((p) => !existing.some((other) => other !== p && p.startsWith(`${other}/`)));
+    // Interrupted trash is discovered from the existing validated archive
+    // receipts, rather than ordinary worktree verdicts. Attribute its pins from
+    // the same fixed-time live snapshot without making it a deletion target.
+    for (const raw of pinRead.pins.flatMap(pin => pin.paths)) {
+      const logical = path.resolve(raw);
+      let physical = logical;
+      try { physical = await fs.promises.realpath(logical); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      for (const scope of new Set([logical, physical])) for (const root of roots) {
+        const covered = contains(scope, root) ? root : contains(root, scope) ? scope : null;
+        if (covered && !pinnedPaths.includes(covered)) pinnedPaths.push(covered);
+      }
+    }
+    pinnedPaths.sort((a, b) => a.length - b.length || a.localeCompare(b));
     // du deduplicates hardlinks across arguments. Charge pinned roots first so
     // their still-allocated blocks cannot disappear into an evictable sibling's
     // count. The total still counts each shared allocation only once.

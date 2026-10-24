@@ -916,6 +916,53 @@ describe('gather + execute against a real temporary repo', () => {
     expect(result.cap.retainedPaths[0]).toContain('.reclaim-trash-partial-cut-');
   });
 
+  it.each([
+    { scope: 'root', aliased: false },
+    { scope: 'child', aliased: false },
+    { scope: 'child', aliased: true },
+  ])('attributes a validated $scope pin on interrupted trash without granting removal authority (logical alias: $aliased)', async ({ scope, aliased }) => {
+    const tree = path.join(tmp, 'interrupted-pinned-cut');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    fs.mkdirSync(path.join(tree, 'evidence'));
+    fs.writeFileSync(path.join(tree, 'evidence', 'proof'), Buffer.alloc(8192, 1));
+    fs.writeFileSync(path.join(tree, 'bulk'), Buffer.alloc(128 * 1024, 1));
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'reclaimable';
+    const failedRemoval = await executeCutReclaim(plan, [tree], {
+      scanHolders: () => verified, archiveDir: path.join(ret, 'reclaim-archive'),
+      rmrf: async () => { throw new Error('injected interrupted deletion'); },
+    });
+    expect(failedRemoval).toMatchObject({ ok: true, results: [{ removed: false, reason: expect.stringContaining('partial removal') }] });
+    const next = await gather();
+    expect(next.verdicts).toEqual([]);
+    const trash = next.interrupted![0]!.trash;
+    const pinnedPath = scope === 'root' ? trash : path.join(trash, 'evidence');
+    if (aliased) {
+      const alias = path.join(tmp, 'interrupted-trash-parent-alias');
+      fs.symlinkSync(path.dirname(trash), alias);
+      const logicalPin = path.join(alias, path.basename(trash), 'evidence');
+      expect(logicalPin).not.toBe(pinnedPath);
+      expect(fs.realpathSync(logicalPin)).toBe(pinnedPath);
+      pin(logicalPin);
+    } else {
+      pin(pinnedPath);
+    }
+    const rmrf = vi.fn(async () => { throw new Error('trash must remain protected'); });
+    const result = await reclaimCutWorktrees(next, { maxBytes: 1 }, {
+      scanHolders: () => verified, archiveDir: path.join(ret, 'reclaim-archive'), rmrf,
+    });
+    const expected = scope === 'root' ? result.cap.beforeBytes :
+      (fs.lstatSync(pinnedPath).blocks + fs.lstatSync(path.join(pinnedPath, 'proof')).blocks) * 512;
+    expect(result.cap.pinnedPaths).toEqual([pinnedPath]);
+    expect(result.cap.pinnedBytes).toBe(expected);
+    expect(result.cap.pinnedOverageBytes).toBe(expected! - 1);
+    expect(result.ok).toBe(scope === 'root');
+    if (scope === 'child') expect(result.errors.join(';')).toContain('non-pin excess');
+    expect(rmrf).not.toHaveBeenCalled();
+    expect(fs.existsSync(trash)).toBe(true);
+    expect(await executeCutReclaim(next, [trash])).toMatchObject({ ok: false, refused: true });
+  });
+
   it.each([false, true])('retains named-only cuts over cap without inventing deletion authority (managed: %s)', async managed => {
     const tree = path.join(tmp, 'named-only');
     g(repo, 'worktree', 'add', '-q', '--detach', tree);
