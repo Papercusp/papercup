@@ -3010,6 +3010,92 @@ describe('ptool result formatting', () => {
 });
 
 describe('ptool --json output-envelope unwrap (EI-22212780570913684)', () => {
+  it.each(['scratch-memory', 'scratch-spool'])(
+    'recovers a release response from %s byte pages after the primary spill failed', async (scheme) => {
+      const uri = `papercusp://${scheme}/release-result`;
+      const release = { ok: true, results: [{ ok: true, released: ['tests/café.ts'] }], counts: { ok: 1, failed: 0 } };
+      const prefix = '# scratch recovery body\n';
+      const payload = Buffer.from(prefix + JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(release) }] }));
+      const split = payload.indexOf(Buffer.from('é')) + 1;
+      const readReference = vi.fn(async (args: { uri: string; byte_offset: number }) => {
+        const start = args.byte_offset;
+        const end = start === 0 ? split : payload.length;
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ok: true, encoding: 'base64', data: payload.subarray(start, end).toString('base64'),
+          byte_offset: start, byte_length: end - start, total_bytes: payload.length,
+          eof: end === payload.length, reference: { bodyOffsetInPayload: Buffer.byteLength(prefix) },
+          next_cursor: end === payload.length ? null : {
+            tool: 'capability:read', args: { uri, byte_offset: end, byte_limit: 3072 },
+          },
+        }) }] };
+      });
+      const envelope = {
+        schemaVersion: 'papercusp.output-envelope/v1', state: 'incomplete',
+        content: [{ kind: 'evidence-reference', uri, preview: '{"ok":false,"reason":"never trust preview"}' }],
+        _projection: { cursor: { args: { uri, byte_offset: 0, byte_limit: 3072 } } },
+      };
+      const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        expect(await printResult({ content: [{ type: 'text', text: JSON.stringify(envelope) }] }, {
+          raw: true, readReference,
+        })).toBe(0);
+        expect(JSON.parse(String(printed.mock.calls.at(-1)?.[0]))).toEqual(release);
+        expect(readReference.mock.calls.map(([args]) => args)).toEqual([
+          { uri, byte_offset: 0, byte_limit: 3072 },
+          { uri, byte_offset: split, byte_limit: 3072 },
+        ]);
+      } finally {
+        printed.mockRestore();
+      }
+    },
+  );
+
+  it('keeps a recovered release refusal as a refusal', async () => {
+    const uri = 'papercusp://scratch-spool/refused-release';
+    const payload = Buffer.from(JSON.stringify({ content: [{ type: 'text', text: '{"ok":false,"reason":"not_owner"}' }] }));
+    const readReference = vi.fn(async () => ({
+      ok: true, encoding: 'base64', data: payload.toString('base64'), byte_offset: 0,
+      byte_length: payload.length, total_bytes: payload.length, eof: true, next_cursor: null,
+    }));
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = { content: [{ type: 'text', text: JSON.stringify({
+        schemaVersion: 'papercusp.output-envelope/v1', content: [{ kind: 'reference', uri }],
+      }) }] };
+      expect(await printResult(result, { raw: true, readReference })).toBe(PTOOL_TOOL_NOT_OK_EXIT);
+      expect(JSON.parse(String(printed.mock.calls.at(-1)?.[0]))).toEqual({ ok: false, reason: 'not_owner' });
+      expect(readReference).toHaveBeenCalledTimes(1);
+    } finally {
+      printed.mockRestore();
+      errors.mockRestore();
+    }
+  });
+
+  it('reports an unavailable or inconsistent recovery as unknown outcome, never successful JSON', async () => {
+    const uri = 'papercusp://scratch-memory/unavailable-release';
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const page of [
+        { ok: false, reason: 'expired' },
+        { ok: true, encoding: 'base64', data: 'e30=', byte_offset: 9, byte_length: 2, total_bytes: 2, eof: true },
+      ]) {
+        const readReference = vi.fn(async () => page);
+        const result = { content: [{ type: 'text', text: JSON.stringify({
+          schemaVersion: 'papercusp.output-envelope/v1', state: 'incomplete',
+          content: [{ kind: 'reference', uri, preview: '{"ok":true}' }],
+        }) }] };
+        expect(await printResult(result, { raw: true, readReference })).not.toBe(0);
+        expect(errors.mock.calls.flat().join(' ')).toContain('may have executed');
+        expect(readReference).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      printed.mockRestore();
+      errors.mockRestore();
+    }
+  });
+
   it('is a no-op on a plain result (same reference)', async () => {
     const result = { ok: true, value: 7 };
     expect(await unwrapOutputEnvelope(result)).toBe(result);
