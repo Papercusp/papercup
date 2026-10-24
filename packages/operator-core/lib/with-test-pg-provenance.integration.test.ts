@@ -236,7 +236,8 @@ describe('isolated PostgreSQL signal cleanup', () => {
       // Keep owned PG process/I/O observations in assertion failures; elapsed
       // stage receipts alone cannot distinguish a checkpoint from a deadlock.
       cwd: root, env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1' },
-      detached: target === 'process-group', stdio: ['ignore', 'pipe', 'pipe'],
+      // Proof mode reports the owned lifecycle to its actual parent channel.
+      detached: target === 'process-group', stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
     let output = '';
     let errors = '';
