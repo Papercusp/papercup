@@ -177,6 +177,7 @@ describe('prospective clean tool-delivery execution admission', () => {
     expect(descriptions.size).toBe(0);
     expect(restored).toEqual(sourceV2Registration.experiment.manifestContract.fullDefinitions);
     expect(sourceV3Registration.sourceGraphQualification.status).toBe('PENDING_EXACT_REVIEW');
+    expect(sourceV3Registration.executionPolicy.measurementController).toBe('separate-root');
     expect(findBoxIdentityPaths(JSON.stringify(sourceV3Registration))).toEqual([]);
     expect(findOwnerNameLeaks(JSON.stringify(sourceV3Registration))).toEqual([]);
     for (const arm of Object.values(sourceV3Registration.variants)) expect(arm.configDelta).not.toHaveProperty('systemPromptText');
