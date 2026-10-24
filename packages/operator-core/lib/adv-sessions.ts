@@ -3298,7 +3298,8 @@ export const LATEST_ADV_SESSION_BY_COORD_OWNER_MAX_DURATION_MS =
  * advSessionsByCoordOwner above.
  */
 export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promise<AdvSessionRow | null> {
-  const queryLatest = async (tx: TransactionSql) => {
+  type LookupSql = Parameters<Parameters<typeof boundedOrgTxn>[0]>[0];
+  const queryLatest = async (tx: LookupSql) => {
     return await tx<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason

@@ -582,4 +582,48 @@ describe('ensure-codex-home pinned-source recovery', () => {
     expect(mocks.pinnedPrompt).not.toHaveBeenCalled();
     expect(mocks.ensureHome).not.toHaveBeenCalled();
   });
+
+  it('keeps the verified identity usable when the serving renderer cannot tile newer prompt source', async () => {
+    mocks.rebuild.mockRejectedValue(Object.assign(new Error('su.md tiling is unsound: unclassified heading'), {
+      code: 'su-tiling-unsound',
+    }));
+    const response = await call();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true, reason: 'pinned-renderer-skew', preservedSpecificationRevision: REVISION,
+    });
+    expect(mocks.ensureHome).toHaveBeenCalledWith(expect.objectContaining({
+      sid: OWNER, promptText: 'PINNED V1 INSTRUCTIONS',
+    }));
+    expect(mocks.funding).toHaveBeenCalledWith(expect.objectContaining({ stack: savedRecord.stack }));
+    expect(mocks.recordLaunchSpec).not.toHaveBeenCalled();
+    expect(mocks.requestActivation).not.toHaveBeenCalled();
+  });
+
+  it('does not recover renderer skew without a verified pinned artifact', async () => {
+    const error = Object.assign(new Error('su.md tiling is unsound'), { code: 'su-tiling-unsound' });
+    mocks.rebuild.mockRejectedValue(error);
+    mocks.pinnedPrompt.mockReturnValue(null);
+    await expect(call()).rejects.toBe(error);
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+  });
+
+  it('keeps identity admission enforced during renderer-skew recovery', async () => {
+    mocks.rebuild.mockRejectedValue(Object.assign(new Error('su.md tiling is unsound'), {
+      code: 'su-tiling-unsound',
+    }));
+    mocks.funding.mockResolvedValue({ ok: false, code: 'identity-activation-refused',
+      detail: 'identity not funded', refused: [] });
+    const response = await call();
+    expect(response.status).toBe(402);
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+    expect(mocks.buildLaunchSpec).not.toHaveBeenCalled();
+  });
+
+  it('does not classify an untyped renderer error by its message', async () => {
+    mocks.rebuild.mockRejectedValue(new Error('su.md tiling is unsound'));
+    await expect(call()).rejects.toThrow('su.md tiling is unsound');
+    expect(mocks.pinnedPrompt).not.toHaveBeenCalled();
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+  });
 });
