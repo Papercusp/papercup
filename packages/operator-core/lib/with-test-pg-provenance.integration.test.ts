@@ -96,7 +96,7 @@ describe('private PostgreSQL pool admission', () => {
 });
 
 describe('isolated PostgreSQL mutation evidence', () => {
-  it.each([true, false])('keeps committed-source receipts optional across the private runtime (configured=%s)', async configured => {
+  it.each([true, false])('keeps committed-source receipts and router deadlines optional across the private runtime (configured=%s)', async configured => {
     const directory = mkdtempSync(join(tmpdir(), 'private-pg-source-audit-'));
     const auditPath = join(directory, 'load-receipts.jsonl');
     const noticePath = join(directory, 'source-notices.jsonl');
@@ -104,9 +104,11 @@ describe('isolated PostgreSQL mutation evidence', () => {
     if (configured) {
       env.PAPERCUSP_COMMITTED_SOURCE_AUDIT = auditPath;
       env.PAPERCUSP_COMMITTED_SOURCE_NOTICES = noticePath;
+      env.PAPERCUSP_TEST_FILE_TIMEOUT_MS = '5400000';
     } else {
       delete env.PAPERCUSP_COMMITTED_SOURCE_AUDIT;
       delete env.PAPERCUSP_COMMITTED_SOURCE_NOTICES;
+      delete env.PAPERCUSP_TEST_FILE_TIMEOUT_MS;
     }
     env.PAPERCUSP_SUBSTRATE_IPC_SOCKET = '/ambient/operator.sock';
     const child = `
@@ -114,6 +116,9 @@ describe('isolated PostgreSQL mutation evidence', () => {
       assert.equal(process.env.PAPERCUSP_SUBSTRATE_IPC_SOCKET, undefined);
       assert.equal(process.env.PAPERCUSP_COMMITTED_SOURCE_AUDIT, ${JSON.stringify(configured ? auditPath : undefined)});
       assert.equal(process.env.PAPERCUSP_COMMITTED_SOURCE_NOTICES, ${JSON.stringify(configured ? noticePath : undefined)});
+      assert.equal(process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS, ${JSON.stringify(configured ? '5400000' : undefined)});
+      const { testFileRunTimeoutMs, defaultTestFileRunTimeoutMs } = await import('./scripts/test-files.mjs');
+      assert.equal(testFileRunTimeoutMs(), ${configured ? '5400000' : 'defaultTestFileRunTimeoutMs(1)'});
       await import('./scripts/lib/pg-url.mjs');
       // Exercise the real substitution/notice writer without editing shared
       // source: the next loader offers dirty bytes for a tracked module. The
