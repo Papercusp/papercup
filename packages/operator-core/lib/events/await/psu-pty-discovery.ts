@@ -1444,9 +1444,13 @@ export async function injectIntoHostWithConfirmation(
       | 'carry-respawn'
       | 'mcp-reconnect'
       | 'hooks-observe'
+      | 'identity-assume'
       | 'delivery-cancel'
       | 'shutdown';
     data: string;
+    /** Trusted session-assume adapter only; host validates durable custody. */
+    action?: 'freeze' | 'queue' | 'thaw';
+    request?: Record<string, unknown>;
     /** WI-6638, mode:'shutdown' only: waive the mid-turn (agent-busy) refusal. It
      *  can NEVER waive the two human guards — those are evaluated by the host from
      *  its own process state and are not caller-influenced. */
@@ -1560,6 +1564,8 @@ export async function injectIntoHostWithConfirmation(
     v: 1;
     mode: string;
     data: string;
+    action?: 'freeze' | 'queue' | 'thaw';
+    request?: Record<string, unknown>;
     force?: boolean;
     expectedStartedAt?: number;
     requireNativeTurnStart?: boolean;
@@ -1593,6 +1599,10 @@ export async function injectIntoHostWithConfirmation(
     mode: msg.mode,
     data: msg.data,
   };
+  if (msg.mode === 'identity-assume') {
+    envelope.action = msg.action;
+    envelope.request = msg.request;
+  }
   if (msg.force !== undefined) envelope.force = msg.force;
   if (msg.expectedStartedAt !== undefined) envelope.expectedStartedAt = msg.expectedStartedAt;
   if (msg.requireNativeTurnStart !== undefined) envelope.requireNativeTurnStart = msg.requireNativeTurnStart;

@@ -16,6 +16,7 @@ const defaultExperiment = 'session-tool-delivery-clean-runtime-candidate-2026102
 const fixtures = {
   [defaultExperiment]: 'packages/operator-core/lib/llm-testing/fixtures/tool-delivery-clean-runtime-candidate-20261023.json',
   'session-tool-delivery-clean-source-v2-20261023': 'packages/operator-core/lib/llm-testing/fixtures/tool-delivery-clean-source-v2-20261023.json',
+  'session-tool-delivery-clean-source-v3-20261024': 'packages/operator-core/lib/llm-testing/fixtures/tool-delivery-clean-source-v3-20261024.json',
 };
 const planSlug = 'deterministic-tool-definition-delivery-2026-09-21';
 
@@ -25,6 +26,25 @@ export function assertCleanCohortCatalogDefinitions(actual, expected) {
   // absent from both the provider request and the persisted registration JSON.
   assert.deepEqual(JSON.parse(JSON.stringify(actual)), expected,
     'Model-facing catalog request differs from preregistration.');
+}
+
+/** Freeze the captured graph, while admitting only explicit measurement changes. */
+export function assertCleanCohortCapturedInputs({ captured, actual, amendment, fixture, portableSha256, readHash }) {
+  // Earlier immutable captures predate the graph witness and remain historical.
+  if (!captured) return;
+  for (const key of ['installSha256', 'executableSha256', 'nodeVersion'])
+    assert.equal(actual[key], captured[key], `Captured runtime input changed: ${key}`);
+  assert.ok(Object.keys(captured.moduleHashes).length, 'Captured module census is empty.');
+  const measurement = { ...amendment.addedFiles, ...Object.fromEntries(
+    Object.entries(amendment.sourceReplacements).map(([path, pin]) => [path, pin.sha256])) };
+  for (const [path, frozenHash] of Object.entries(captured.moduleHashes))
+    assert.equal(readHash(path), measurement[path] ?? frozenHash, `Captured module changed: ${path}`);
+  for (const [path, actualHash] of Object.entries(actual.moduleHashes)) {
+    // The complete installed generation, including unloaded packages, is bound above.
+    if (path.split('/').includes('node_modules')) continue;
+    const expected = path === fixture ? portableSha256 : measurement[path] ?? captured.moduleHashes[path];
+    assert.equal(actualHash, expected, `Unregistered loaded source: ${path}`);
+  }
 }
 
 /** Only registered prospective identities are selectable; no arbitrary fixture path. */
@@ -180,6 +200,9 @@ export async function main(argv = process.argv.slice(2)) {
     for (const b of expectedBlocks) assert.equal(getScenario(b.scenario).transport, 'in-process');
     const capture = () => guard.captureToolDeliveryCleanBoundary({ sourceRoot: root, registration, moduleUrls: [...imports.urls] });
     const initial = await capture();
+    assertCleanCohortCapturedInputs({ captured: frozen.capture?.cleanBoundary, actual: initial,
+      amendment: registration.measurementAmendment, fixture, portableSha256: sha(bytes),
+      readHash: path => sha(readFileSync(guard.toolDeliveryModuleFile(root, pathToFileURL(resolve(root, path)).href))) });
     const { pid, processStartTicks, sut, monotonicNs, ...pin } = initial;
     const check = boundary => { assert.equal(guard.validateToolDeliveryCleanBoundary(boundary, pin), undefined);
       assert.equal(guard.validateToolDeliveryCleanCensus(boundary, registration), undefined); };

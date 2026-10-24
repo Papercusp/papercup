@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({ listPresence: vi.fn() }));
+const state = vi.hoisted(() => ({ listPresence: vi.fn(), resolveSessionStates: vi.fn() }));
 vi.mock('./agent-tools/coordination/presence', async (original) => ({
   ...await original<typeof import('./agent-tools/coordination/presence')>(),
   listPresence: state.listPresence,
@@ -30,6 +30,10 @@ vi.mock('./deployment/account-owner-pins', async (original) => ({
   ...await original<typeof import('./deployment/account-owner-pins')>(),
   getOwnerPinsMap: vi.fn(async () => new Map()),
 }));
+vi.mock('./agent-tools/coordination/liveness-oracle', async (original) => ({
+  ...await original<typeof import('./agent-tools/coordination/liveness-oracle')>(),
+  resolveSessionStates: state.resolveSessionStates,
+}));
 
 import { getOrgPg } from '@papercusp/db-org';
 import { mergeRosterWithAssignments } from './adv-roster';
@@ -40,6 +44,7 @@ type Timing = Parameters<NonNullable<NonNullable<Parameters<typeof mergeRosterWi
 beforeEach(() => {
   vi.clearAllMocks();
   state.listPresence.mockResolvedValue([]);
+  state.resolveSessionStates.mockResolvedValue(new Map());
   mockOrgPgSql(vi.mocked(getOrgPg), vi.fn(async () => []));
 });
 
@@ -74,4 +79,17 @@ it('preserves a primary-source error and reports which phase failed', async () =
 it('keeps an observer exception from changing roster availability', async () => {
   expect(await mergeRosterWithAssignments({ onTiming: () => { throw new Error('diagnostic sink failed'); } }))
     .toEqual({ active: [], orphanedClaims: [] });
+});
+
+it('forwards the oracle\'s existing read-leg timings without changing their meaning', async () => {
+  state.resolveSessionStates.mockImplementationOnce(async (_subjects, options) => {
+    options.onTiming('fetchWakeability', 42, 'ok');
+    options.onTiming('recordedLiveOwnerIds', 7, 'error');
+    return new Map();
+  });
+  const events: Timing[] = [];
+  expect(await mergeRosterWithAssignments({ onTiming: event => events.push(event) }))
+    .toEqual({ active: [], orphanedClaims: [] });
+  expect(events).toContainEqual({ phase: 'owners.liveness.fetchWakeability', state: 'completed', elapsedMs: 42 });
+  expect(events).toContainEqual({ phase: 'owners.liveness.recordedLiveOwnerIds', state: 'failed', elapsedMs: 7 });
 });

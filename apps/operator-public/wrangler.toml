@@ -104,7 +104,7 @@ database_id = "cebe92a9-52c2-4f2e-81c4-d9d3a668d720"
 binding = "COUNTERS"
 id = "4c9faf66981b4f3ca29f2bcc632d2504"
 
-# D-105/D-107 — reuse the existing marketplace bucket. Workspace-host
+# D-105/D-107 — use the configured private GCS bucket. Workspace-host
 # artifacts are isolated under artifacts/workspace-host/; incomplete uploads
 # stay private because public reads require a finalized marker.
 

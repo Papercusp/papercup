@@ -3931,6 +3931,51 @@ describe('ptool SDK import install-race tolerance (EI-21860372620642128)', () =>
     expect(withFsMutexRead.mock.calls[0]?.[2]?.timeoutMs).toBeGreaterThan(330_000);
   });
 
+  it('returns to scripted recovery before an active installer releases its lease', async () => {
+    let releaseInstaller!: () => void;
+    const installer = new Promise<void>((resolve) => { releaseInstaller = resolve; });
+    const doImport = vi.fn().mockResolvedValue({ Client: 'ok' });
+    const withFsMutexRead = vi.fn(async (
+      _name: string,
+      run: () => Promise<unknown>,
+      options: { onWaiting: (info: { owner: string; elapsedMs: number }) => void },
+    ) => {
+      options.onWaiting({ owner: 'active install:safe', elapsedMs: 0 });
+      await installer;
+      return run();
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let outcome: { status: string; error?: Error } = { status: 'pending' };
+    try {
+      await withoutOuterInstallReader(async () => {
+        const importing = importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', {
+          doImport,
+          recoverOnInstallWait: true,
+          loadInstallMutex: async () => [
+            { withFsMutexRead },
+            { repoLockName: () => 'npm-install-scripted-recovery' },
+          ],
+        }).then(
+          () => { outcome = { status: 'imported' }; },
+          (error: Error) => { outcome = { status: 'declined', error }; },
+        );
+        try {
+          // Drain promise reactions without releasing the installer or advancing a timeout.
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(outcome.status).toBe('declined');
+          expect(isSdkBootstrapInstallWait(outcome.error)).toBe(true);
+          expect(doImport).not.toHaveBeenCalled();
+        } finally {
+          releaseInstaller();
+          await importing;
+        }
+      });
+    } finally {
+      releaseInstaller();
+      consoleError.mockRestore();
+    }
+  });
+
   it('preserves a non-module import error from inside the reader lease', async () => {
     const otherError = new TypeError('boom');
     const doImport = vi.fn().mockRejectedValue(otherError);

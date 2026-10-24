@@ -9,6 +9,7 @@ import { checkpointPidIdentity } from '../../release/checkpoint-qualification-tr
 import { AdmissionOffthreadTimeoutError } from '../../release/admission-offthread';
 import { ADMISSION_PRECHECK_MAX_FILES, precheckPopulation } from '../../release/admission-fix-precheck';
 import {
+  admissionPrecheckMeasurementIdentity,
   runAdmissionPrecheckWorker,
   type AdmissionPrecheckWorkerInput,
 } from '../../release/admission-fix-precheck-managed';
@@ -389,12 +390,14 @@ beforeEach(() => {
   mocks.alive.mockResolvedValue(false);
   mocks.retire.mockResolvedValue({ retired: true, current: null });
   mocks.audit.mockResolvedValue([]);
-  mocks.write.mockResolvedValue(undefined);
+  let persisted = queue as FrozenCandidateRepairQueue;
+  mocks.write.mockImplementation(async (_target, next) => { persisted = next; });
   mocks.transition.mockImplementation(async (_target, transition) => {
-    const fresh = (mocks.write.mock.calls.at(-1)?.[1] ?? queue) as typeof queue;
+    const fresh = persisted;
+    persisted = await transition(fresh);
     return {
       status: 'written',
-      queue: await transition(fresh),
+      queue: persisted,
       fresh,
       retries: 0,
     };
@@ -1388,8 +1391,9 @@ describe('release:repair-queue', () => {
           root: '/repo', commit: NEW_HEAD, signature: queue.signature, admittedPaths: ['component'],
         });
         if (size > ADMISSION_PRECHECK_MAX_FILES) {
-          expect((result as { note: string }).note).toContain('REFUSED (population-over-bound)');
-          expect((result as { note: string }).note).toContain('skipPrecheck:true + precheckReason');
+          expect((result as { note: string }).note).toContain('resumable groups');
+          expect(result.executionGroupSize).toBe(40);
+          expect(result.executionGroups).toBe(6);
         } else {
           expect((result as { note: string }).note).not.toContain('population-over-bound');
         }
@@ -1400,7 +1404,7 @@ describe('release:repair-queue', () => {
       },
     );
 
-    it('WI-6554700010019443 refuses a population above the bound before launching any pre-check', async () => {
+    it('measures the complete population above the execution bound in bounded groups before publication', async () => {
       mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
       mocks.hunkExact.mockReturnValue(hunkExactOf(['component']));
       mocks.admit.mockReturnValue(admissionOf(false, ['component']));
@@ -1408,20 +1412,112 @@ describe('release:repair-queue', () => {
       mocks.population.mockImplementation((input) => ({ ok: true,
         population: precheckPopulation({ ...input, affectedTestFiles: oversized }) }));
       const result = body(await tool.handler({ op: 'admit', paths: ['component'], confirm: true } as never, { role: 'su' } as never));
-      expect(result).toMatchObject({
-        refused: true,
-        admitted: false,
-        reason: 'admission-precheck-unavailable',
-        cause: 'population-over-bound',
-        populationSize: ADMISSION_PRECHECK_MAX_FILES + 1,
-        populationBound: ADMISSION_PRECHECK_MAX_FILES,
-        builtCommit: NEW_HEAD,
-      });
-      expect((result as { detail: string }).detail).toContain('skipPrecheck:true + precheckReason');
-      expect(mocks.precheckFactory).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ admitted: false, pending: true, verdict: 'precheck-running' });
+      expect(result.precheckOperation.files).toEqual(oversized);
+      const settled = await settledPrecheckQueue();
+      expect(settled.admissionPrecheck).toMatchObject({ status: 'passed',
+        completedCount: oversized.length, verdict: { ok: true, ran: true } });
+      expect(settled.admissionPrecheck.measurement!.results.map(result => result.path)).toEqual(oversized);
+      expect(mocks.startPrecheckWorker).toHaveBeenCalledTimes(1);
+      expect(dryRuns()).toEqual([true]);
+    });
+
+    const wideFixture = () => {
+      const files = ['lib/red.test.ts', ...Array.from({ length: 80 }, (_, i) => `lib/guard-${i}.test.ts`)];
+      const radius = { status: 'measured' as const, reason: 'ok', guarded: files.slice(1), reportOnly: [],
+        legs: Object.fromEntries(files.map(file => [file, '@t/core'])) };
+      const operation = { ...queue.admissionPrecheck, sourceCommit: 'e'.repeat(40), builtTree: 'f'.repeat(40), files, radius };
+      const measurement = { schemaVersion: 1 as const, identity: admissionPrecheckMeasurementIdentity(operation, queue.signature),
+        results: files.map(path => ({ path, status: 'pass' as const })) };
+      return { files, radius, operation, measurement };
+    };
+    const wideDoor = (fixture: ReturnType<typeof wideFixture>) => {
+      mocks.admit.mockImplementation((input: { dryRun: boolean }) => admissionOf(!input.dryRun));
+      mocks.population.mockImplementation(input => ({ ok: true, population: precheckPopulation({ ...input, radius: fixture.radius }) }));
+    };
+
+    it.each(['partial', 'new-red', 'unmeasured'] as const)('refuses a stored passing marker with %s aggregate evidence', async (kind) => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      const results = fixture.measurement.results.map(result => ({ ...result, status: result.status as 'pass' | 'fail' | 'unmeasured' }));
+      if (kind === 'partial') results.pop();
+      else results[1]!.status = kind === 'new-red' ? 'fail' : 'unmeasured';
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue,
+        admissionPrecheck: { ...fixture.operation, measurement: { ...fixture.measurement, results } } } });
+      const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ admitted: false, refused: true });
+      expect(dryRuns()).toEqual([true]);
       expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
-      expect(mocks.transition).not.toHaveBeenCalled();
-      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('publishes a complete passing aggregate only with the fresh queue identity', async () => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue,
+        admissionPrecheck: { ...fixture.operation, measurement: fixture.measurement } } });
+      const args = { op: 'admit', paths: ['lib/red.test.ts'], confirm: true,
+        expectedCandidate: queue.candidate, expectedRepairHead: queue.repairHead, expectedUpdatedAtMs: queue.updatedAtMs - 1 };
+      expect(body(await tool.handler(args as never, { role: 'su' } as never))).toMatchObject({
+        admitted: false, refused: true, reason: 'exact_queue_identity_mismatch' });
+      expect(mocks.admit).not.toHaveBeenCalled();
+      const result = body(await tool.handler({ ...args, expectedUpdatedAtMs: queue.updatedAtMs } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ admitted: true, precheck: { ran: true } });
+      expect(dryRuns()).toEqual([true, false]);
+    });
+
+    it('resumes a dead managed task on the same immutable operation and retains a completed red', async () => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      const completed = fixture.measurement.results.slice(0, 40).map(result => ({ ...result,
+        status: (result.path === fixture.files[1] ? 'fail' : 'pass') as 'pass' | 'fail' }));
+      let persisted: FrozenCandidateRepairQueue = { ...queue, admissionPrecheck: { ...fixture.operation,
+        status: 'running', verdict: undefined, runnerTaskId: 'dead-task', expiresAtMs: Date.now() + 60_000,
+        completedCount: completed.length, measurement: { ...fixture.measurement, results: completed } } };
+      mocks.readState.mockImplementation(async () => ({ status: 'value', queue: persisted }));
+      mocks.write.mockImplementation(async (_target, next) => { persisted = next; });
+      mocks.transition.mockImplementation(async (_target, update) => {
+        persisted = update(persisted); return { status: 'written', queue: persisted, fresh: persisted, retries: 0 };
+      });
+      mocks.getTask.mockImplementation(async taskId => ({ state: taskId === 'dead-task' ? 'failed' : 'running', confined: true }));
+      const runner = vi.fn(async ({ commit, files }: { commit: string; files: string[] }) => ({ ran: true as const,
+        commit, results: files.map(path => ({ path, status: 'pass' as const })) }));
+      mocks.precheckFactory.mockReturnValue(runner);
+      const started = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true, retryPrecheck: true } as never, { role: 'su' } as never));
+      expect(started.precheckOperation).toMatchObject({ operationId: fixture.operation.operationId,
+        builtCommit: fixture.operation.builtCommit, measurement: { results: completed } });
+      expect(started.precheckOperation.runnerTaskId).not.toBe('dead-task');
+      await drainDetached();
+      expect(runner.mock.calls.flatMap(([run]) => run.files)).toEqual(fixture.files.slice(40));
+      expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', completedCount: fixture.files.length,
+        verdict: { ok: false, code: 'admission-imports-red' } });
+      expect(persisted.admissionPrecheck!.measurement!.results[1]!.status).toBe('fail');
+      expect(dryRuns()).toEqual([true]);
+    });
+
+    it.each(['source', 'partition', 'signature'] as const)('never resumes durable rows after %s identity changes', async (kind) => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      const previous = { ...fixture.operation, status: 'failed' as const,
+        verdict: { ok: false as const, ran: false as const, code: 'admission-precheck-unavailable' as const,
+          reason: 'runner-failed' as const, detail: 'interrupted', population: precheckPopulation({ signature: [], admittedPaths: fixture.files }) },
+        measurement: { ...fixture.measurement, results: fixture.measurement.results.slice(0, 40) } };
+      const current = { ...queue, admissionPrecheck: previous };
+      if (kind === 'source') {
+        // The old measurement remains self-consistent; the newly proved source changed.
+        mocks.admit.mockImplementation((input: { dryRun: boolean }) => ({ ...admissionOf(!input.dryRun),
+          entry: { ...admissionOf(false).entry, source: { ref: 'staging', sha: '9'.repeat(40) } } }));
+      } else if (kind === 'partition') {
+        mocks.population.mockImplementation(input => ({ ok: true, population: precheckPopulation({ ...input,
+          radius: { ...fixture.radius, guarded: fixture.files.slice(2), reportOnly: [fixture.files[1]!] } }) }));
+      } else current.signature = [{ kind: 'workspace-task', id: 'another::test', recipe: 'test' }] as never;
+      mocks.readState.mockResolvedValue({ status: 'value', queue: current });
+      mocks.startPrecheckWorker.mockResolvedValue({ confined: true });
+      const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true,
+        retryPrecheck: true } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ admitted: false, pending: true });
+      expect(result.precheckOperation.operationId).not.toBe(previous.operationId);
+      expect(result.precheckOperation.measurement).toBeUndefined();
+      expect(result.precheckOperation.completedCount).toBe(0);
       expect(dryRuns()).toEqual([true]);
     });
 
@@ -1446,7 +1542,7 @@ describe('release:repair-queue', () => {
         | Promise<{ queue: typeof queue }>
         | undefined;
       if (!transitionResult) throw new Error('expected detached pre-check settlement');
-      return (await transitionResult).queue;
+      return (await transitionResult).queue as typeof queue & FrozenCandidateRepairQueue;
     };
 
     it('settles a dead host-generation runner as failed on get instead of advertising a live pre-check', async () => {

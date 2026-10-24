@@ -16,6 +16,6 @@ it('attaches the official Proximus ToolExecutor through the actual pinned Harbor
     timeout: 120_000, maxBuffer: 2 * 1024 * 1024,
     env: { ...process.env, UV_PROJECT_ENVIRONMENT: join(tmpdir(), `papercusp-proximus-${lock}`) },
   });
-  expect(stdout + stderr).toContain('Ran 9 tests');
+  expect(stdout + stderr).toContain('Ran 10 tests');
   expect(stderr).toMatch(/\bOK\b/);
 }, 130_000);

@@ -1310,16 +1310,32 @@ export default defineTool({
               id: it.id,
               deliverable: (it as { deliverable?: string | null }).deliverable,
             }));
-            let itemTypes: PlanVerificationSummary['itemTypes'] = null;
+            const verificationPlan = {
+              verificationProfile: row.verificationProfile,
+              verificationProfileSource: row.verificationProfileSource,
+              planType: typeof parsed.frontmatter.type === 'string' ? parsed.frontmatter.type : null,
+            };
+            const typeScope = {
+              workspaceId: row.workspaceId ?? DEFAULT_WORKSPACE_ID,
+              harnessSlug: row.harnessSlug,
+              planSlug: row.planSlug,
+            };
+            // The built-in resolver remains fail-safe if the workspace registry cannot be read.
+            let verification: PlanVerificationSummary = {
+              ...summarizePlanVerification(verificationPlan, verificationItems), itemTypes: null,
+            };
             try {
-              const { readItemTypeChecklist } = await import('../../plan-types/item-type-contract');
-              itemTypes = await readItemTypeChecklist(
-                { workspaceId: row.workspaceId ?? DEFAULT_WORKSPACE_ID, harnessSlug: row.harnessSlug, planSlug: row.planSlug },
-                { verificationProfile: row.verificationProfile, content: parsed.raw },
-                verificationItems,
-              );
+              const [{ readItemTypeChecklist }, { withPinnedPlanTypes }] = await Promise.all([
+                import('../../plan-types/item-type-contract'), import('../../plan-types/pins'),
+              ]);
+              verification = await withPinnedPlanTypes(typeScope, async () => ({
+                ...summarizePlanVerification(verificationPlan, verificationItems),
+                itemTypes: await readItemTypeChecklist(
+                  typeScope, { verificationProfile: row.verificationProfile, content: parsed.raw }, verificationItems,
+                ),
+              }));
             } catch {
-              itemTypes = null;
+              // Keep the conservative module summary and mark completion requirements unread.
             }
             // `meta`: frontmatter + ## Now + counts + section index. Never the body.
             const base = {
@@ -1387,7 +1403,7 @@ export default defineTool({
               // ever been shipped through an explicit code-truth waiver.
               forcedPast: row.forcedPast,
               // plan-verification-profiles P-002 (R-4): the checklist this plan is held to.
-              verification: { ...summarizePlanVerification(row, verificationItems), itemTypes },
+              verification,
               sectionIndex: sections.map((s) => ({
                 heading: s.heading,
                 level: s.level,

@@ -160,7 +160,12 @@ describe('frozen Proximus host assignment factory', () => {
     const run = vi.fn<FactoryPorts['run']>(async () => ({
       status: 'completed', runtime: { schemaVersion: 1, runtimeRevision: 'b'.repeat(64), sourceRevision: PROXIMUS_SOURCE_REVISION,
         clientVersion: PROXIMUS_CLIENT_VERSION, harborVersion: '0.23.0', fileCount: 10 },
-      diagnosticContext: { cost_usd: 100 }, billingStatus: 'unreconciled' }));
+      diagnosticContext: { cost_usd: 100 }, billingStatus: 'unreconciled',
+      // Structural fixture only; it has no receipt issuance identity.
+      confinement: { schemaVersion: 1, source: 'confined-host-process', executionId: 'unissued-factory-fixture',
+        pythonBin: host.pythonBin, maxWallClockMs: 1_000, payloadSha256: '0'.repeat(64), workerResultSha256: '0'.repeat(64),
+        trialDir: '/offline/trial', gatewayBaseURL: gateway.gateway.baseURL,
+        task: { containerId: trial.handle.containerId, image: trial.handle.image, network: 'none', networkMode: 'allowlist' } } }));
     const population = vi.fn<FactoryPorts['population']>(async () => {
       order.push('population'); return { status: 'unavailable', reason: 'no-attempts' };
     });

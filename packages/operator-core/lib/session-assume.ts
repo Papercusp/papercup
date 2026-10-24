@@ -31,7 +31,9 @@ const targetSchema = z.object({
   ownerId: nonempty, workspaceId: nonempty, harnessSlug: nonempty,
   advSessionId: z.number().int().positive(), role: nonempty,
   nativeSessionId: nonempty, backend: z.enum(['claude', 'codex', 'omp']),
-  executionNativeSessionId: nonempty,
+  // Codex chooses a fresh checkpoint thread id at startup. Null is deliberate
+  // late binding, never a guessed UUID or permission to resume old history.
+  executionNativeSessionId: nonempty.nullable(),
   binding: z.object({
     coordOwnerId: nonempty, sessionId: nonempty.nullable(), startedAt: nonempty,
     ompThreadId: nonempty.nullable().optional(),
@@ -117,7 +119,9 @@ function targetRefusal(actor: AssumeActor, request: AssumeRequest, target: Assum
   if (target.context.mode !== request.contextMode ||
       (request.contextMode === 'native-resume' && (target.context.ref !== target.nativeSessionId ||
         target.executionNativeSessionId !== target.nativeSessionId)) ||
-      (request.contextMode === 'checkpoint' && target.executionNativeSessionId === target.nativeSessionId)) {
+      (request.contextMode === 'checkpoint' && (target.backend === 'omp' ||
+        (target.backend === 'codex' ? target.executionNativeSessionId !== null
+          : !target.executionNativeSessionId || target.executionNativeSessionId === target.nativeSessionId)))) {
     return refuse('context-unavailable');
   }
   return null;
@@ -375,6 +379,9 @@ export interface AssumeExecutionObservation {
   callerExited: boolean;
   targetOwnerId: string;
   targetNativeSessionId: string;
+  /** Observed authoritative reanchor for a backend-minted checkpoint id. */
+  nativeBinding?: { advSessionId: number; ownerId: string; sourceNativeSessionId: string;
+    nativeSessionId: string; transitionKey: string };
   backend: AssumeTarget['backend'];
   contextSha256: string;
   nativePid: number;
@@ -394,7 +401,15 @@ export function qualifiesAssumeExecution(
     observation.hostId === caller.hostId && observation.attachmentId === caller.attachmentId &&
     observation.callerNativePid === caller.nativePid && observation.callerExited === true &&
     observation.targetOwnerId === target.ownerId &&
-    observation.targetNativeSessionId === target.executionNativeSessionId && observation.backend === target.backend &&
+    (target.executionNativeSessionId !== null
+      ? observation.targetNativeSessionId === target.executionNativeSessionId
+      : target.context.mode === 'checkpoint' && target.backend === 'codex' &&
+        !!observation.targetNativeSessionId && observation.targetNativeSessionId !== target.nativeSessionId &&
+        observation.nativeBinding?.advSessionId === target.advSessionId &&
+        observation.nativeBinding.ownerId === target.ownerId &&
+        observation.nativeBinding.sourceNativeSessionId === target.nativeSessionId &&
+        observation.nativeBinding.nativeSessionId === observation.targetNativeSessionId &&
+        observation.nativeBinding.transitionKey === receipt.transitionKey) && observation.backend === target.backend &&
     observation.contextSha256 === target.context.sha256 &&
     Number.isSafeInteger(observation.nativePid) && observation.nativePid > 0 &&
     observation.nativePid !== caller.nativePid && !!observation.nativeProcessStart &&

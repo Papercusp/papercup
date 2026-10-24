@@ -5,7 +5,7 @@ import { currentProtocolFixture, allCapabilities } from './reproducibility/_prot
 import { currentBenchmarkProtocolSchema, currentBenchProviderAgent, PROXIMUS_CLIENT_VERSION,
   PROXIMUS_SOURCE_REVISION, type CurrentBenchmarkProtocol } from './reproducibility/schema';
 import { measureProximusRuntime, proximusHostProcess, proximusRunSpec, runProximusHost,
-  readProximusAttemptPopulation, readProximusBilling } from './proximus-runtime';
+  readProximusAttemptPopulation, readProximusBilling, requireProximusHostConfinement } from './proximus-runtime';
 import { currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
   requireCurrentBenchHostReferenceGateway, type CurrentBenchNativeInputCeiling } from './current-su';
 import { processMonotonicClock } from '../process-monotonic-clock';
@@ -13,6 +13,18 @@ import type { GatewayCarryTrialAttempt } from '../inference-gateway/gateway';
 import { currentBenchLaunchSelection } from './run-launcher';
 import type { LearningSpendReservation, LearningSpendReservationCensus, ReserveLearningSpendInput } from '../learning-governor/store';
 import type { Sql } from 'postgres';
+import { createProximusTaskBroker } from './proximus-confinement';
+
+// This file qualifies the process protocol, accounting and frozen assignments.
+// proximus-confinement.test.ts separately exercises the real OS boundary.
+vi.mock('./proximus-confinement', async importOriginal => {
+  const original = await importOriginal<typeof import('./proximus-confinement')>();
+  return { ...original, createProximusTaskBroker: vi.fn(original.createProximusTaskBroker),
+    prepareProximusSandbox: (input: { pythonBin: string }) => ({
+    env: { PATH: process.env.PATH, PYTHONDONTWRITEBYTECODE: '1' }, cwd: process.cwd(), cleanup() {},
+    wrap(argv: string[]) { return { command: input.pythonBin, argv }; },
+  }) };
+});
 
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 
@@ -314,6 +326,19 @@ describe('official Proximus protocol identity', () => {
 describe('Proximus measured host execution', () => {
   const measured = () => ({ schemaVersion: 1 as const, runtimeRevision: digest('installed-python-harbor-litellm-lock'),
     sourceRevision: PROXIMUS_SOURCE_REVISION, clientVersion: PROXIMUS_CLIENT_VERSION, harborVersion: '0.23.0', fileCount: 100 });
+  const workerResult = () => ({ schemaVersion: 1, status: 'completed', runtime: measured(),
+    diagnosticContext: { cost_usd: 0.001 }, billingStatus: 'unreconciled' });
+  // Exercise the actual parent lifecycle/receipt issuer with a deterministic
+  // child. OS policy and the unchanged official loop have separate acceptance
+  // tests; this fixture grants neither provider access nor a real task.
+  async function completedWorker(input: Parameters<typeof proximusHostProcess>[0]) {
+    const original = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    vi.mocked(createProximusTaskBroker).mockResolvedValueOnce({ command: vi.fn(), stop: vi.fn(async () => {}) });
+    vi.mocked(realSpawn).mockImplementationOnce((_command, _args, options) => original.spawn(process.execPath,
+      ['-e', `require('node:readline').createInterface({input:process.stdin}).once('line',()=>{
+        process.stdout.write(JSON.stringify(${JSON.stringify(workerResult())}));process.exit(0)});`], options));
+    return proximusHostProcess(input);
+  }
   async function host() {
     const f = providerFixture('openai');
     const controller = currentBenchGatewayController({ ...f.input,
@@ -337,16 +362,58 @@ describe('Proximus measured host execution', () => {
   it('binds the official host to measured bytes and its issued gateway, retaining diagnostic cost as unreconciled', async () => {
     const f = await host();
     const execute = vi.fn<NonNullable<Parameters<typeof measureProximusRuntime>[1]>>(async input => input.operation === 'measure' ? measured()
-      : { schemaVersion: 1, status: 'completed', runtime: measured(), diagnosticContext: { cost_usd: 0.001 }, billingStatus: 'unreconciled' });
+      : completedWorker(input));
     try {
       const result = await runProximusHost(f.protocol, f.execution, execute);
       expect(result.billingStatus).toBe('unreconciled');
       expect(result.diagnosticContext).toEqual({ cost_usd: 0.001 });
+      expect(requireProximusHostConfinement(result)).toMatchObject({ source: 'confined-host-process',
+        pythonBin: f.execution.pythonBin, trialDir: f.execution.trialDir, maxWallClockMs: 1_000,
+        task: { containerId: f.execution.handle.containerId, image: f.execution.handle.image } });
+      expect(JSON.stringify(result.confinement)).not.toContain(f.receipt.gateway.token);
+      expect(() => requireProximusHostConfinement(structuredClone(result))).toThrow(/host-issued/);
       const run = execute.mock.calls[1][0], body = JSON.parse(run.stdin!);
       expect(run).toMatchObject({ operation: 'run', maxWallClockMs: 1_000, pythonBin: '/offline/venv/bin/python' });
       expect(body.gateway).toEqual(f.receipt.gateway);
       expect(body.spec).toMatchObject({ runtimeRevision: measured().runtimeRevision, modelName: `openai/${f.arm.model}` });
       expect(body).not.toHaveProperty('account');
+    } finally { await f.cleanup(); }
+  });
+  it.each(['worker JSON', 'copied receipt', 'changed worker result', 'container', 'image', 'network',
+    'trial', 'gateway', 'interpreter', 'deadline', 'payload', 'caller input mutation'] as const)
+  ('refuses terminal evidence without its exact parent issuance: %s', async change => {
+    const f = await host();
+    const execute = async (input: Parameters<typeof proximusHostProcess>[0]) => {
+      if (input.operation === 'measure') return measured();
+      if (change === 'worker JSON') return workerResult();
+      if (change === 'caller input mutation') input.confinement!.task.containerId = 'b'.repeat(64);
+      const changed = { ...input, confinement: structuredClone(input.confinement!) };
+      if (change === 'container') changed.confinement.task.containerId = 'b'.repeat(64);
+      if (change === 'image') changed.confinement.task.image += '-other';
+      if (change === 'network') changed.confinement.task.network = 'bridge';
+      if (change === 'trial') changed.confinement.trialDir += '-other';
+      if (change === 'gateway') changed.confinement.gatewayBaseURL = 'http://127.0.0.1:32106';
+      if (change === 'interpreter') changed.pythonBin += '-other';
+      if (change === 'deadline') changed.maxWallClockMs++;
+      if (change === 'payload') changed.stdin += ' ';
+      const result = await completedWorker(changed);
+      if (change === 'copied receipt') return structuredClone(result);
+      if (change === 'changed worker result') (result as ReturnType<typeof workerResult>).diagnosticContext.cost_usd++;
+      return result;
+    };
+    try { await expect(runProximusHost(f.protocol, f.execution, execute)).rejects.toThrow(/host-issued/); }
+    finally { await f.cleanup(); }
+  });
+  it('consumes a worker receipt once and detects later mutation of accepted diagnostic evidence', async () => {
+    const f = await host();
+    let worker: unknown;
+    const execute = async (input: Parameters<typeof proximusHostProcess>[0]) => input.operation === 'measure' ? measured()
+      : worker ??= await completedWorker(input);
+    try {
+      const result = await runProximusHost(f.protocol, f.execution, execute);
+      await expect(runProximusHost(f.protocol, f.execution, execute)).rejects.toThrow(/single-use/);
+      (result.diagnosticContext as ReturnType<typeof workerResult>['diagnosticContext']).cost_usd++;
+      expect(() => requireProximusHostConfinement(result)).toThrow(/unchanged/);
     } finally { await f.cleanup(); }
   });
   it.each(['copied grant', 'runtime drift', 'revoked during measurement', 'result drift'] as const)
@@ -380,7 +447,7 @@ describe('Proximus measured host execution', () => {
       child = original.spawn(process.execPath, ['-e', program], options);
       return child;
     });
-    await expect(proximusHostProcess({ pythonBin: '/offline/python', operation: 'run',
+    await expect(proximusHostProcess({ pythonBin: '/offline/python', operation: 'measure',
       maxWallClockMs: cause === 'deadline' ? 100 : 5_000 })).rejects.toThrow(cause === 'deadline' ? /deadline/ : /output limit/);
     expect(child!.signalCode).toBe('SIGKILL');
     expect(() => process.kill(child!.pid!, 0)).toThrow();
@@ -392,17 +459,52 @@ describe('Proximus measured host execution', () => {
     let command: string | undefined, args: readonly string[] | undefined;
     vi.mocked(realSpawn).mockImplementationOnce((bin, argv, options) => {
       command = bin; args = argv;
-      const program = 'let data="";process.stdin.on("data",b=>data+=b);process.stdin.on("end",()=>{process.stderr.write("private-request-diagnostic");process.stdout.write(JSON.stringify({secret:process.env.OPENAI_API_KEY??null,proxy:process.env.HTTPS_PROXY??null,payload:JSON.parse(data)}))})';
+      const program = 'let data="";process.stdin.on("data",b=>{data+=b;if(data.includes("\\n")){process.stderr.write("private-request-diagnostic");process.stdout.write(JSON.stringify({secret:process.env.OPENAI_API_KEY??null,proxy:process.env.HTTPS_PROXY??null,payload:JSON.parse(data)}));process.exit(0)}})';
       return original.spawn(process.execPath, ['-e', program], options);
     });
     try {
-      const result = await proximusHostProcess({ pythonBin: '/offline/python', operation: 'run', maxWallClockMs: 5_000,
+      const result = await proximusHostProcess({ pythonBin: '/offline/python', operation: 'measure', maxWallClockMs: 5_000,
         stdin: JSON.stringify({ token: 'gateway-only-token' }) });
       expect(result).toEqual({ secret: null, proxy: null, payload: { token: 'gateway-only-token' } });
       expect(command).toBe('/offline/python');
-      expect(args).toEqual(['-I', '-B', expect.stringMatching(/proximus-host.py$/), 'run']);
+      expect(args).toEqual(['-I', '-B', expect.stringMatching(/proximus-host.py$/), 'measure']);
       expect(args!.join(' ')).not.toContain('gateway-only-token');
     } finally { vi.unstubAllEnvs(); }
+  });
+  it('refuses an unconfined run before spawning any worker', async () => {
+    await expect(proximusHostProcess({ pythonBin: '/offline/python', operation: 'run', maxWallClockMs: 1_000 }))
+      .rejects.toThrow(/confined task binding/);
+  });
+  it.each(['valid', 'refused', 'wrong id'] as const)('correlates real process pipes and reaps the worker: %s', async mode => {
+    const original = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    const broker = { command: vi.fn(async (_args: unknown, _timeout: unknown) => {
+      if (mode === 'refused') throw new Error('no lifecycle authority');
+      return { return_code: 0, stdout: '猫', stderr: '' };
+    }), stop: vi.fn(async () => {}) };
+    vi.mocked(createProximusTaskBroker).mockResolvedValueOnce(broker);
+    let child: ReturnType<typeof original.spawn> | undefined;
+    vi.mocked(realSpawn).mockImplementationOnce((_bin, _argv, options) => {
+      const program = `let n=0;require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+        if(n++===0)process.stdout.write(JSON.stringify({kind:'task-command',id:${mode === 'wrong id' ? 2 : 1},args:['inspect','bound-task'],timeout:1})+'\\n');
+        else{const value=JSON.parse(line);const out=Buffer.from(JSON.stringify({label:value.stdout}));
+          const split=out.indexOf(Buffer.from('猫'))+1;process.stdout.write(out.subarray(0,split));
+          setTimeout(()=>{process.stdout.write(out.subarray(split));process.exit(0)},5)}
+      });`;
+      return child = original.spawn(process.execPath, ['-e', program], options);
+    });
+    const result = proximusHostProcess({ pythonBin: '/offline/python', operation: 'run', maxWallClockMs: 5_000,
+      stdin: JSON.stringify({ token: 'private-gateway-token' }), confinement: { trialDir: '/offline/trial',
+        gatewayBaseURL: 'http://127.0.0.1:32105', task: { containerId: 'a'.repeat(64),
+          image: 'task@sha256:' + 'b'.repeat(64), network: 'none', networkMode: 'no-network' } } });
+    if (mode === 'valid') {
+      await expect(result).resolves.toEqual({ label: '猫' });
+      expect(broker.command).toHaveBeenCalledWith(['inspect', 'bound-task'], 1);
+    } else {
+      await expect(result).rejects.toThrow(mode === 'refused' ? /task command refused/ : /sequence/);
+      expect(child!.signalCode).toBe('SIGKILL');
+    }
+    expect(broker.stop).toHaveBeenCalled();
+    expect(() => process.kill(child!.pid!, 0)).toThrow();
   });
 });
 

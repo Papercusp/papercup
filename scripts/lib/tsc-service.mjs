@@ -23,9 +23,6 @@ import ts from 'typescript';
 
 // Captured when this module loads: reading disk later cannot certify an old daemon
 // as running newly edited code. The server and caller must load the same protocol.
-const nativePackagePath = createRequire(import.meta.url).resolve('@typescript/native/package.json');
-const nativePackage = JSON.parse(readFileSync(nativePackagePath, 'utf8'));
-const nativeVersion = nativePackage.version;
 // Resolve assets from this installation, including the maintained host bundle.
 // Metadata imports stay usable when assets are absent; certification fails closed.
 const serviceSourceSha256 = (() => {
@@ -39,9 +36,17 @@ const serviceSourceSha256 = (() => {
   }
   return null;
 })();
+// A packaged sidecar without service sources cannot certify this service. Do
+// not resolve an optional development compiler through the builder's parent
+// node_modules just to import metadata; the bundle closure guard forbids that.
+const nativePackagePath = serviceSourceSha256
+  ? createRequire(import.meta.url).resolve('@typescript/native/package.json') : null;
+const nativePackage = nativePackagePath ? JSON.parse(readFileSync(nativePackagePath, 'utf8')) : null;
+const nativeVersion = nativePackage?.version ?? null;
 // Capture runtime JS and executable bytes before the daemon imports the API.
 // Version/path cannot distinguish an in-place compiler replacement.
 function measureCompilerArtifacts() {
+  if (!nativePackagePath || !nativePackage) return null;
   try {
     const hash = createHash('sha256');
     const visit = (directory) => {
@@ -132,7 +137,7 @@ export function takeTscServiceProjectBatch(queue) {
  * @param {Record<string, any>} request
  */
 export function tscServiceIdentity(request) {
-  if (!serviceSourceSha256 || !compilerArtifactsSha256)
+  if (!serviceSourceSha256 || !compilerArtifactsSha256 || !nativePackagePath)
     throw Object.assign(new Error('service/compiler identity assets unavailable'), { code: 'service-identity-unavailable' });
   const digest = (file) => {
     try { return createHash('sha256').update(readFileSync(file)).digest('hex'); }

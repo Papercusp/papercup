@@ -96,7 +96,9 @@ export function createLocalMachineOperatorTransport(options: LocalMachineOperato
       region: '', size: '', image: '', diskGiB: 0, network: '',
       desiredState: 'running', observedState: workspace.reachable ? 'running' : 'degraded',
       recoverability: { kind: 'none', label: 'Managed by workspace' }, capabilities: {},
-      ...(workspace.connector ? { hostedConnector: {
+      ...(workspace.connector ? { tunnel: { hostedConnector: {
+        routeLabel: workspace.connector.routeLabel, transport: workspace.connector.transport,
+      } }, hostedConnector: {
         ...workspace.connector, customerWorkspaceId: workspace.id,
         liveUntil: workspace.reachable && workspace.connector.lastSeenAt
           ? Date.parse(workspace.connector.lastSeenAt) + HOSTED_CONNECTOR_LIVENESS_FRESH_MS : null,

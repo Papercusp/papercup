@@ -880,8 +880,9 @@ export function importPtoolSdkModule(specifier: any): any;
  * The finite 10-minute wait covers the observed rewrite duration while still
  * surfacing a stuck installer as an error.
  */
-export function importSdkModuleWithInstallAwareness(specifier: any, { doImport, loadInstallMutex, }?: {
+export function importSdkModuleWithInstallAwareness(specifier: any, { doImport, recoverOnInstallWait, loadInstallMutex, }?: {
     doImport?: typeof importPtoolSdkModule | undefined;
+    recoverOnInstallWait?: boolean | undefined;
     loadInstallMutex?: (() => Promise<(typeof import("../../../scripts/lib/fs-mutex.mjs") | {
         repoLockName: () => string;
         installMutexIsHeld: typeof import("../../../scripts/lib/install-lock-name.mjs").installMutexIsHeld;
@@ -893,13 +894,16 @@ export function importSdkModuleWithInstallAwareness(specifier: any, { doImport, 
  * up to ten minutes; that wait is bootstrap time, not operator network time.
  *
  * @param {{transport?: string}} [scope]
- * @param {{importSdkModule?: (specifier: string) => Promise<object>, statfsImpl?: typeof statfs}} [options]
+ * @param {{importSdkModule?: (specifier: string, options?: {recoverOnInstallWait?: boolean}) => Promise<object>, statfsImpl?: typeof statfs, recoverOnInstallWait?: boolean}} [options]
  */
 export function preparePtoolConnectionModules({ transport: requestedTransport }?: {
     transport?: string;
-}, { importSdkModule, statfsImpl }?: {
-    importSdkModule?: (specifier: string) => Promise<object>;
+}, { importSdkModule, statfsImpl, recoverOnInstallWait }?: {
+    importSdkModule?: (specifier: string, options?: {
+        recoverOnInstallWait?: boolean;
+    }) => Promise<object>;
     statfsImpl?: typeof statfs;
+    recoverOnInstallWait?: boolean;
 }): Promise<{
     mode: string;
     Client?: undefined;

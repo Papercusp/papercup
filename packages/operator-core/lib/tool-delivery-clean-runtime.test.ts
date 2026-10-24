@@ -11,9 +11,10 @@ import { validateToolDeliveryCleanBlocks, validateToolDeliveryCleanBoundary, too
 import cleanRegistration from './llm-testing/fixtures/tool-delivery-clean-runtime-candidate-20261023.json';
 import fidelityRegistration from './llm-testing/fixtures/tool-delivery-fidelity-candidate-20261023.json';
 import sourceV2Registration from './llm-testing/fixtures/tool-delivery-clean-source-v2-20261023.json';
+import sourceV3Registration from './llm-testing/fixtures/tool-delivery-clean-source-v3-20261024.json';
 import { toolDeliveryPreregistration } from './tool-delivery-acceptance';
 import { findBoxIdentityPaths, findOwnerNameLeaks } from '../../../scripts/lib/identity-leak-patterns.mjs';
-import { assertCleanCohortAuthority, assertCleanCohortCatalogDefinitions,
+import { assertCleanCohortAuthority, assertCleanCohortCatalogDefinitions, assertCleanCohortCapturedInputs,
   claimCleanCohort, parseCleanCohortArgs } from './llm-testing/tool-delivery-clean-cohort.mjs';
 
 const cleanup: string[] = [];
@@ -37,6 +38,27 @@ function fixture() {
 }
 
 describe('prospective clean tool-delivery execution admission', () => {
+  it('freezes captured dependencies and source, admitting only registered measurement and portable bytes', () => {
+    const captured = { installSha256: 'install', executableSha256: 'node', nodeVersion: 'v25',
+      moduleHashes: { 'sut.ts': 'sut', 'reader.ts': 'old-reader', 'node_modules/a.js': 'dependency' } };
+    const actual = { ...captured, moduleHashes: { ...captured.moduleHashes, 'reader.ts': 'new-reader', 'registration.json': 'portable' } };
+    const hashes: Record<string, string> = { ...actual.moduleHashes };
+    const input = { captured, actual, fixture: 'registration.json', portableSha256: 'portable',
+      amendment: { addedFiles: {}, sourceReplacements: { 'reader.ts': { sha256: 'new-reader' } } },
+      readHash: (path: string) => hashes[path]! };
+    expect(() => assertCleanCohortCapturedInputs(input)).not.toThrow();
+    for (const key of ['installSha256', 'executableSha256', 'nodeVersion'] as const)
+      expect(() => assertCleanCohortCapturedInputs({ ...input, actual: { ...actual, [key]: 'drift' } })).toThrow('Captured runtime input changed');
+    for (const path of ['sut.ts', 'node_modules/a.js']) {
+      hashes[path] = 'drift';
+      expect(() => assertCleanCohortCapturedInputs(input)).toThrow('Captured module changed');
+      hashes[path] = captured.moduleHashes[path as keyof typeof captured.moduleHashes];
+    }
+    expect(() => assertCleanCohortCapturedInputs({ ...input, actual: { ...actual,
+      moduleHashes: { ...actual.moduleHashes, 'unregistered.ts': 'new-source' } } })).toThrow('Unregistered loaded source');
+    expect(() => assertCleanCohortCapturedInputs({ ...input, portableSha256: 'other' })).toThrow('Unregistered loaded source');
+    expect(() => assertCleanCohortCapturedInputs({ ...input, amendment: { addedFiles: {}, sourceReplacements: {} } })).toThrow('Captured module changed');
+  });
   it('compares actual request JSON while rejecting model-visible guidance and schema drift', () => {
     const expected = [{ type: 'function', name: 'sample', parameters: {
       type: 'object', properties: { value: { type: 'string' } },
@@ -62,6 +84,9 @@ describe('prospective clean tool-delivery execution admission', () => {
     const v2 = parseCleanCohortArgs([...args, '--registration', sourceV2Registration.experiment.id]);
     expect(v2.fixture).toMatch(/tool-delivery-clean-source-v2-20261023.json$/);
     expect(v2.readinessPath).toBeUndefined();
+    const v3 = parseCleanCohortArgs([...args, '--registration', sourceV3Registration.experiment.id]);
+    expect(v3.fixture).toMatch(/tool-delivery-clean-source-v3-20261024.json$/);
+    expect(v3.readinessPath).toBeUndefined();
     expect(parseCleanCohortArgs([...args, '--execute', 'approval.json', '--registration', sourceV2Registration.experiment.id])
       .readinessPath).toBe('approval.json');
     for (const options of [['--registration', '../../private.json'], ['--registration', 'toString'],
@@ -89,6 +114,31 @@ describe('prospective clean tool-delivery execution admission', () => {
     expect(findBoxIdentityPaths(JSON.stringify(sourceV2Registration))).toEqual([]);
     expect(findOwnerNameLeaks(JSON.stringify(sourceV2Registration))).toEqual([]);
     for (const arm of Object.values(sourceV2Registration.variants)) expect(arm.configDelta).not.toHaveProperty('systemPromptText');
+  });
+  it('keeps the source-v3 wire delta complete, unselected and digest-only', () => {
+    expect(toolDeliveryPreregistration(sourceV3Registration.experiment.id)).toEqual(sourceV3Registration);
+    expect(sourceV3Registration.configuration).toEqual(sourceV2Registration.configuration);
+    expect(sourceV3Registration.experiment.manifestContract.compactDefinitions)
+      .toEqual(sourceV2Registration.experiment.manifestContract.compactDefinitions);
+    const restored = structuredClone(sourceV3Registration.experiment.manifestContract.fullDefinitions);
+    const descriptions = new Set(['kernel', 'inputs', 'work_item_id']);
+    expect(sourceV3Registration.treatmentDelta.catalogDeltas).toHaveLength(3);
+    for (const delta of sourceV3Registration.treatmentDelta.catalogDeltas) {
+      const [, index, parameters, properties, field, description] = delta.path.split('/');
+      expect(delta.arm).toBe('full');
+      expect([parameters, properties, description]).toEqual(['parameters', 'properties', 'description']);
+      expect(descriptions.delete(field!)).toBe(true);
+      expect(restored[Number(index)]!.name).toBe('code__run');
+      const property = (restored[Number(index)]!.parameters.properties as Record<string, { description: string }>)[field!]!;
+      expect(property.description).toBe(delta.after);
+      property.description = delta.before;
+    }
+    expect(descriptions.size).toBe(0);
+    expect(restored).toEqual(sourceV2Registration.experiment.manifestContract.fullDefinitions);
+    expect(sourceV3Registration.sourceGraphQualification.status).toBe('PENDING_EXACT_REVIEW');
+    expect(findBoxIdentityPaths(JSON.stringify(sourceV3Registration))).toEqual([]);
+    expect(findOwnerNameLeaks(JSON.stringify(sourceV3Registration))).toEqual([]);
+    for (const arm of Object.values(sourceV3Registration.variants)) expect(arm.configDelta).not.toHaveProperty('systemPromptText');
   });
   function authorityFixture() {
     const registration = structuredClone(cleanRegistration);

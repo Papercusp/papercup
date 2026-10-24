@@ -56,12 +56,17 @@ describe('bundled typecheck service identity', () => {
   const roots: string[] = [];
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-  async function bundled(withSources: boolean) {
+  async function bundled(withSources: boolean, withCompiler = true) {
     const root = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'tsc-bundled-identity-'));
     roots.push(root);
     const output = join(root, 'apps/operator/dist-host/host.mjs');
     mkdirSync(dirname(output), { recursive: true });
-    symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+    if (withCompiler) symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+    else {
+      mkdirSync(join(root, 'node_modules'), { recursive: true });
+      symlinkSync(dirname(createRequire(import.meta.url).resolve('typescript/package.json')),
+        join(root, 'node_modules/typescript'), 'dir');
+    }
     if (withSources) {
       for (const [relativePath, source] of [
         ['scripts/lib/tsc-service.mjs', clientSource],
@@ -100,6 +105,23 @@ describe('bundled typecheck service identity', () => {
   it('keeps metadata imports usable without source assets and refuses identity certification', async () => {
     const { output } = await bundled(false);
     const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      const service = await import(${JSON.stringify(pathToFileURL(output).href)});
+      let failure;
+      try { service.tscServiceIdentity({}); } catch (error) { failure = error.code; }
+      console.log(JSON.stringify({ socket: service.tscServiceSocketPath({ XDG_RUNTIME_DIR: '/private' }), failure }));
+    `], { cwd: tmpdir(), encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' }, timeout: 20_000 });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({ socket: '/private/papercusp-tsc-service.sock', failure: 'service-identity-unavailable' });
+  });
+
+  it('boots an isolated bundle without service assets or native compiler resolution', async () => {
+    const { output } = await bundled(false, false);
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { registerHooks } from 'node:module';
+      registerHooks({ resolve(specifier, context, nextResolve) {
+        if (specifier.startsWith('@typescript/native')) throw new Error('ESCAPED_BUNDLE: ' + specifier);
+        return nextResolve(specifier, context);
+      } });
       const service = await import(${JSON.stringify(pathToFileURL(output).href)});
       let failure;
       try { service.tscServiceIdentity({}); } catch (error) { failure = error.code; }

@@ -129,7 +129,7 @@ describe('session:assume preparation and exact custody', () => {
   it('R-3 checkpoint selection pins revision hash and fresh context', async () => {
     const f = fixture();
     f.target.context = { mode: 'checkpoint', ref: 'checkpoint:target:4', sha256: hash, revision: '4' };
-    f.target.executionNativeSessionId = 'fresh-checkpoint-native';
+    f.target.executionNativeSessionId = null;
     const result = await prepared(f, { ...request, contextMode: 'checkpoint' });
     expect(result.preparation.target.context).toEqual(f.target.context);
     expect(await validateAssume(actor, result.token, f.deps)).toMatchObject({ ok: true });
@@ -336,6 +336,30 @@ describe('session:assume durable transition boundaries', () => {
     const result = await verifyAssumeExecution(receipt, witness(receipt), f.deps.save);
     expect(result.state).toBe('target-verified');
     expect(f.stored()?.observation?.directedMessage.id).toBe('message-after-handoff');
+  });
+
+  it('requires the observed target reanchor for a backend-minted checkpoint id', async () => {
+    const value = fixture();
+    value.target.context = { mode: 'checkpoint', ref: 'carry-note:target', sha256: hash, revision: '7' };
+    value.target.executionNativeSessionId = null;
+    const { preparation: plan } = await prepared(value, { ...request, contextMode: 'checkpoint' });
+    const f = transitionFixture();
+    const receipt = await commitAssume(plan, f.deps);
+    const observed = witness(receipt);
+    observed.targetNativeSessionId = 'fresh-native';
+    expect(qualifiesAssumeExecution(receipt, observed)).toBe(false);
+    observed.nativeBinding = { advSessionId: plan.target.advSessionId, ownerId: plan.target.ownerId,
+      sourceNativeSessionId: plan.target.nativeSessionId, nativeSessionId: observed.targetNativeSessionId,
+      transitionKey: receipt.transitionKey };
+    expect(qualifiesAssumeExecution(receipt, observed)).toBe(true);
+    for (const field of ['ownerId', 'sourceNativeSessionId', 'nativeSessionId', 'transitionKey'] as const) {
+      const changed = structuredClone(observed);
+      changed.nativeBinding![field] = 'foreign';
+      expect(qualifiesAssumeExecution(receipt, changed)).toBe(false);
+    }
+    observed.targetNativeSessionId = plan.target.nativeSessionId;
+    observed.nativeBinding.nativeSessionId = plan.target.nativeSessionId;
+    expect(qualifiesAssumeExecution(receipt, observed)).toBe(false);
   });
 
   it.each([

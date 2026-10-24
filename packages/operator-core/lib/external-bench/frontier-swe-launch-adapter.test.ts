@@ -369,7 +369,12 @@ describe('FrontierSWE typed Proximus host lifecycle', () => {
     const evidence: Awaited<ReturnType<FrontierSweProximusAssignment['execute']>> = {
       process: { status: 'completed', runtime: { schemaVersion: 1, runtimeRevision: 'a'.repeat(64),
         sourceRevision: 'b'.repeat(40), clientVersion: 'harbor-proximus@0.1.0a1', harborVersion: '0.23.0', fileCount: 100 },
-        diagnosticContext: { cost_usd: 999, tokens: 999 }, billingStatus: 'unreconciled' },
+        diagnosticContext: { cost_usd: 999, tokens: 999 }, billingStatus: 'unreconciled',
+        // Copied metadata is deliberately unissued and cannot open acceptance.
+        confinement: { schemaVersion: 1, source: 'confined-host-process', executionId: 'unissued-adapter-fixture',
+          pythonBin: '/offline/python', maxWallClockMs: 1_000, payloadSha256: '0'.repeat(64), workerResultSha256: '0'.repeat(64),
+          trialDir: '/offline/trial', gatewayBaseURL: 'http://127.0.0.1:12345',
+          task: { containerId: input.handle.containerId, image: input.handle.image, network: 'none', networkMode: 'no-network' } } },
       attempts: { status: 'unavailable', reason: 'no-attempts' },
       billing: { status: 'unavailable', reason: 'no-attempts' },
     };

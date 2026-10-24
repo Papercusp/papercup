@@ -886,8 +886,10 @@ describe('ptool timeoutForTool — release:cut reclaim budget (EI-26107428212758
     expect(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS).toBeGreaterThan(125_000);
   });
 
-  it('does not widen confirmed reclaim writes', () => {
-    expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: true })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  it('keeps confirmed reclaim beyond the same declared handler deadline', () => {
+    expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: true })).toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'release:cut', args: { op: 'reclaim', confirm: true } }))
+      .toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
   });
 });
 

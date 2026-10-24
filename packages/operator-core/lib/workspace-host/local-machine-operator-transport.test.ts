@@ -8,6 +8,7 @@ import { createHostedCliRoutes } from '../endpoint-route/routes/hosted-cli';
 import { createWorkspaceContextMiddleware } from '../workspace-context-middleware';
 import { OperatorHttpChannel, HOSTED_PRINCIPAL_USER_HEADER } from './hosted-operator-http';
 import { createLocalMachineOperatorTransport } from './local-machine-operator-transport';
+import { readHostedWorkspaceConnector } from '../../../../apps/operator/app/cloud-workspaces/hosted-workspace-session-protocol';
 
 it('uses current CLI authorization and single-use tickets to deliver two windows to two actual operator destinations', async () => {
   const seen: Array<{ machine: string; path: string; workspace: string; user: string; body: string }> = [];
@@ -113,6 +114,10 @@ it('uses current CLI authorization and single-use tickets to deliver two windows
       expect.objectContaining({ kind: 'workspace', id: 'host-b', name: 'Machine b', observedState: 'running' }),
     ]);
     expect(JSON.stringify(localInventory)).not.toContain(token);
+    // Exercise the desktop's production reader: a selector entry alone does
+    // not establish the connector route needed to open its viewer.
+    expect(localInventory.map(row => readHostedWorkspaceConnector((row as { tunnel?: unknown }).tunnel)))
+      .toEqual([{ routeLabel: 'route-a', transport: 'websocket' }, { routeLabel: 'route-b', transport: 'websocket' }]);
     expect(await transport.mergeControlRows(new Request('http://localhost/api', {
       headers: { origin: 'http://localhost:3055' },
     }), [])).toMatchObject([{ id: 'host-a', observedState: 'running' }, { id: 'host-b', observedState: 'running' }]);

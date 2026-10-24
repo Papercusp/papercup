@@ -66,7 +66,7 @@ import {
   AdmissionOffthreadTimeoutUnavailableError,
   runAdmissionJob,
 } from '../../release/admission-offthread';
-import type { AdmissionJobKind, AdmissionJobOf } from '../../release/admission-jobs';
+import { ADMISSION_RADIUS_CAP, type AdmissionJobKind, type AdmissionJobOf } from '../../release/admission-jobs';
 import { createAdmissionStepClock } from '../../release/admission-step-clock';
 import {
   ADMISSION_PRECHECK_MAX_FILES,
@@ -80,8 +80,10 @@ import {
 } from '../../release/admission-fix-precheck';
 import { ratchetAllowsPublication } from '../../release/admission-ratchet';
 import {
+  admissionPrecheckMeasurementIdentity,
   settleAdmissionPrecheck,
   startAdmissionPrecheckWorker,
+  validateAdmissionPrecheckResults,
   type AdmissionPrecheckWorkerInput,
 } from '../../release/admission-fix-precheck-managed';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
@@ -826,8 +828,8 @@ async function inspectQueue(queueTarget: GateVerdictTarget, root: string) {
         : `R6 pre-check launcher host process ${pending.runnerPid} ended or was replaced before ` +
           `managed task ${pending.runnerTaskId ?? '(legacy runner)'} was registered; no verdict exists for ${pending.builtCommit.slice(0, 12)}.`;
       const verdict = evaluateFixPrecheck(
-        precheckPopulation({ signature: queue.signature, admittedPaths: pending.files }),
-        { ran: false, reason: 'runner-failed', detail: `${detail} The admission remains fail-closed; retryPrecheck:true starts a fresh measurement.` },
+        precheckPopulation({ signature: queue.signature, admittedPaths: pending.files, ...(pending.radius ? { radius: pending.radius } : {}) }),
+        { ran: false, reason: 'runner-failed', detail: `${detail} The admission remains fail-closed; retryPrecheck:true resumes matching durable evidence or starts a fresh measurement.` },
       );
       try {
         await settleAdmissionPrecheck(queueTarget, pending.operationId, verdict);
@@ -914,9 +916,19 @@ function sameAdmissionPrecheck(
     builtTree: string;
     files: readonly string[];
     actor: string;
+    sourceCommit: string;
+    radius: FixPrecheckPopulation['radius'];
+    signature: FrozenCandidateRepairQueue['signature'];
   },
 ): state is FrozenRepairAdmissionPrecheck {
   if (!state) return false;
+  // Resume retains the original measured commit. A rebuilt synthetic commit may
+  // have a new message/time but must prove the same tree and source provenance.
+  if (state.measurement && (
+    state.sourceCommit !== input.sourceCommit ||
+    JSON.stringify(state.radius) !== JSON.stringify(input.radius) ||
+    state.measurement.identity !== admissionPrecheckMeasurementIdentity(state, input.signature)
+  )) return false;
   const measuredTree = (() => {
     if (state.builtTree !== undefined) return state.builtTree;
     if (state.builtCommit === input.builtCommit) return input.builtTree;
@@ -1840,32 +1852,8 @@ export default defineTool({
         });
       }
       let precheck: FixPrecheckVerdict | null = null;
-      // WI-6554700010019443: never launch a pre-check the one-file-at-a-time runner cannot
-      // finish. An admitted gitlink expands to its submodule's whole test population (6614
-      // files measured), which used to start anyway and measured nothing before it was abandoned.
-      if (precheckApplies && outcome.ok && population.files.length > ADMISSION_PRECHECK_MAX_FILES) {
-        return json({
-          ...base,
-          ok: false,
-          admitted: false,
-          refused: true,
-          dryRun: false,
-          verdict: 'refused',
-          reason: 'admission-precheck-unavailable',
-          cause: 'population-over-bound',
-          populationSize: population.files.length,
-          populationBound: ADMISSION_PRECHECK_MAX_FILES,
-          detail:
-            `REFUSED before launch: the R6 pre-check population is ${population.files.length} test file(s), above the ` +
-            `${ADMISSION_PRECHECK_MAX_FILES}-file bound the one-file-at-a-time runner can finish. Nothing was published and no pre-check started. ` +
-            'Split the admission into narrower ones (an admitted gitlink pulls in every test under its submodule), ' +
-            'or opt out deliberately with skipPrecheck:true + precheckReason; the queue verify still judges the new repairHead over the full suite.',
-          builtCommit: outcome.commit,
-          judgedSha: queue.repairHead,
-          containment: await containmentAt(queue.repairHead),
-          mode,
-        });
-      }
+      // The complete inventory is immutable; only each native execution group is
+      // bounded. The managed worker persists per-file evidence between groups.
       if (precheckApplies && outcome.ok) {
         const builtCommit = outcome.commit;
         // The serving host's root may be a LINKED worktree (`:3170` runs from papercusp-staging);
@@ -1879,6 +1867,9 @@ export default defineTool({
           builtTree: outcome.tree,
           files: population.files,
           actor: identity.ownerId,
+          sourceCommit: outcome.entry.source.sha,
+          radius: population.radius,
+          signature: queue.signature,
         })
           ? queue.admissionPrecheck
           : undefined;
@@ -1910,7 +1901,18 @@ export default defineTool({
         if (
           matchingPrecheck?.status === 'passed' && matchingPrecheck.verdict?.ok === true && matchingPrecheck.verdict.ran
         ) {
-          precheck = matchingPrecheck.verdict;
+          if (matchingPrecheck.files.length > ADMISSION_RADIUS_CAP || matchingPrecheck.measurement) {
+            try {
+              const measured = matchingPrecheck.measurement;
+              if (!measured || measured.identity !== admissionPrecheckMeasurementIdentity(matchingPrecheck, queue.signature))
+                throw new Error('missing or stale immutable aggregate identity');
+              validateAdmissionPrecheckResults(population.files, measured.results, true);
+              precheck = evaluateFixPrecheck(population, { ran: true, commit: matchingPrecheck.builtCommit,
+                results: measured.results }, { actor: identity.ownerId });
+            } catch (error) {
+              precheck = evaluateFixPrecheck(population, { ran: false, reason: 'runner-failed', detail: String(error) });
+            }
+          } else precheck = matchingPrecheck.verdict;
         } else if (
           matchingPrecheck?.status === 'failed' &&
           matchingPrecheck.verdict?.ok === false &&
@@ -1921,10 +1923,16 @@ export default defineTool({
           const startedAtMs = Date.now();
           const runnerTaskId = newTaskId(startedAtMs);
           const runnerPidIdentity = checkpointPidIdentity(process.pid);
+          const resume = matchingPrecheck?.measurement && args.retryPrecheck === true &&
+            (matchingPrecheck.status === 'running' ||
+              (matchingPrecheck.status === 'failed' && matchingPrecheck.verdict?.ran === false &&
+                matchingPrecheck.verdict.reason === 'runner-failed'))
+            ? matchingPrecheck : undefined;
           const operationId =
+            resume?.operationId ??
             `repair-precheck-${queue.candidate.slice(0, 12)}-${builtCommit.slice(0, 12)}-` +
             `${startedAtMs.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-          const operation: FrozenRepairAdmissionPrecheck = {
+          const freshOperation: FrozenRepairAdmissionPrecheck = {
             schemaVersion: 1,
             operationId,
             status: 'running',
@@ -1952,6 +1960,13 @@ export default defineTool({
             // partition keeps report-only radius files from becoming refusable admitted ones.
             ...(population.radius ? { radius: population.radius } : {}),
           };
+          const operation: FrozenRepairAdmissionPrecheck = resume ? {
+            ...resume, status: 'running', verdict: undefined, runnerPid: process.pid,
+            runnerPidIdentity: runnerPidIdentity ?? undefined, runnerTaskId, updatedAtMs: startedAtMs,
+            expiresAtMs: admissionPrecheckDeadline(startedAtMs,
+              resume.files.filter(file => !resume.measurement!.results.some(result => result.path === file))),
+            heartbeatAtMs: startedAtMs,
+          } : freshOperation;
           const pendingQueue: FrozenCandidateRepairQueue = {
             ...queue,
             admissionPrecheck: operation,
@@ -2271,6 +2286,8 @@ export default defineTool({
             populationSize: population.files.length,
             populationBound: ADMISSION_PRECHECK_MAX_FILES,
             populationOverBound: population.files.length > ADMISSION_PRECHECK_MAX_FILES,
+            executionGroupSize: Math.min(ADMISSION_RADIUS_CAP, ADMISSION_PRECHECK_MAX_FILES),
+            executionGroups: Math.ceil(population.files.length / Math.min(ADMISSION_RADIUS_CAP, ADMISSION_PRECHECK_MAX_FILES)),
           } : {}),
           ...(dependencyGeneration ? { dependencyGeneration } : {}),
           containment: await containmentAt(queue.repairHead),
@@ -2279,9 +2296,8 @@ export default defineTool({
             'and advance repairHead to it (phase ready-to-verify). The immutable candidate is never touched; ' +
             'the commit carries exactly proof.diff and nothing else from the tip.' +
             (!skipPrecheck && population.files.length > ADMISSION_PRECHECK_MAX_FILES
-              ? ` A confirmed admit will be REFUSED (population-over-bound): the R6 pre-check population is ` +
-                `${population.files.length} test file(s), above the ${ADMISSION_PRECHECK_MAX_FILES}-file bound. ` +
-                'Split the admission, or opt out deliberately with skipPrecheck:true + precheckReason.'
+              ? ` The complete ${population.files.length}-file population will run in resumable groups of at most ` +
+                `${Math.min(ADMISSION_RADIUS_CAP, ADMISSION_PRECHECK_MAX_FILES)} files under the unchanged ${ADMISSION_PRECHECK_MAX_FILES}-file execution bound.`
               : '') +
             (dependencyGeneration?.verdict === 'refused'
               ? ` ⚠ A confirmed admit will be REFUSED (dependency-generation-unbuildable):${dependencyNote ?? ''}`

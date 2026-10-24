@@ -6452,9 +6452,9 @@ export async function checkReleaseFixerCandidateStale(
  * not create a parallel table, routine, or ownership record. */
 export async function readFrozenCandidateRepairQueueState(
   target: GateVerdictTarget,
+  injectedSql?: postgres.Sql,
 ): Promise<FrozenCandidateRepairQueueRead> {
-  const { getOrgPg } = await import('@papercusp/db-org');
-  const { sql } = getOrgPg();
+  const sql = injectedSql ?? (await import('@papercusp/db-org')).getOrgPg().sql;
   const rows = (await sql.unsafe(
     `SELECT metadata->'repair_queue' AS repair_queue
        FROM harness_shared.routines
@@ -6502,8 +6502,9 @@ export async function probeAssignedFrozenRepairFixer(
  */
 export async function readFrozenCandidateRepairQueue(
   target: GateVerdictTarget,
+  injectedSql?: postgres.Sql,
 ): Promise<FrozenCandidateRepairQueue | null> {
-  const read = await readFrozenCandidateRepairQueueState(target);
+  const read = await readFrozenCandidateRepairQueueState(target, injectedSql);
   if (read.status === 'value') return read.queue;
   if (read.status === 'absent') return null;
   throw new Error(
@@ -6945,6 +6946,7 @@ export async function writeFreezeAndConvergeDisposition(
 export async function retireFrozenCandidateRepairQueue(
   target: GateVerdictTarget,
   expectedQueue: FrozenCandidateRepairQueue,
+  injectedSql?: postgres.Sql,
 ): Promise<{
   retired: boolean;
   current: FrozenCandidateRepairQueue | null;
@@ -6958,8 +6960,7 @@ export async function retireFrozenCandidateRepairQueue(
     | 'active-dispatch-reservation'
     | 'unsafe-phase';
 }> {
-  const { getOrgPg } = await import('@papercusp/db-org');
-  const { sql } = getOrgPg();
+  const sql = injectedSql ?? (await import('@papercusp/db-org')).getOrgPg().sql;
   // EI-22026318885195355: lock the existing routine metadata row before taking the liveness
   // sample. The old path sampled liveness, released the queue read, then issued a separate CAS;
   // a concurrent queue writer could advance updatedAtMs in between, and the post-CAS diagnostic
@@ -7129,7 +7130,7 @@ export async function retireFrozenCandidateRepairQueue(
   // identity miss is the one exception: the transaction saw a different queue, so refresh the
   // queue object for the caller's CAS diagnostic without re-running liveness against it.
   if (result.refusal !== 'identity-mismatch') return result;
-  return { ...result, current: await readFrozenCandidateRepairQueue(target) };
+  return { ...result, current: await readFrozenCandidateRepairQueue(target, sql) };
 }
 
 export interface FrozenRepairFixerDispatchResult {

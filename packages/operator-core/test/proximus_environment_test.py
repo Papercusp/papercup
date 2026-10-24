@@ -3,12 +3,14 @@ import asyncio
 import base64
 import importlib.util
 import json
+import io
 import os
 from pathlib import Path
 import socket
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
@@ -144,22 +146,31 @@ class AttachmentTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TimeoutError):
             await env.exec("pwd")
 
-    async def test_docker_timeout_kills_and_reaps_the_actual_child(self):
-        child = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time;time.sleep(60)",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        with patch.object(module.asyncio, "create_subprocess_exec", return_value=child):
-            with self.assertRaises(TimeoutError):
-                await module.docker_command(["exec", CID, "sleep", "60"], 0.03)
-        self.assertIsNotNone(child.returncode)
+    async def test_host_commands_are_serialized_and_correlated_without_a_docker_subprocess(self):
+        output = io.StringIO()
+        replies = b"".join((json.dumps({"kind": "task-result", "id": i, "return_code": 0,
+            "stdout": "sandbox 猫", "stderr": ""}) + "\n").encode() for i in (1, 2))
+        commands = module.HostTaskCommands()
+        with patch.object(module.sys, "__stdout__", output), \
+                patch.object(module.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(replies))), \
+                patch.object(module.asyncio, "create_subprocess_exec", side_effect=AssertionError("no Docker authority")):
+            results = await asyncio.gather(commands(["inspect", CID], 5), commands(["exec", CID], 3))
+        self.assertEqual([r.stdout for r in results], ["sandbox 猫", "sandbox 猫"])
+        self.assertEqual([json.loads(line)["id"] for line in output.getvalue().splitlines()], [1, 2])
+        self.assertEqual(json.loads(output.getvalue().splitlines()[0])["args"], ["inspect", CID])
 
-    async def test_excess_output_kills_and_reaps_the_actual_child(self):
-        child = await asyncio.create_subprocess_exec(sys.executable, "-c",
-            "import sys,time;sys.stdout.write('x' * (9 * 1024 * 1024));sys.stdout.flush();time.sleep(60)",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        with patch.object(module.asyncio, "create_subprocess_exec", return_value=child):
-            with self.assertRaisesRegex(ValueError, "capture limit"):
-                await module.docker_command(["exec", CID, "generate"], 5)
-        self.assertIsNotNone(child.returncode)
+    async def test_host_command_rejects_mismatched_response_or_unterminated_stream(self):
+        for reply in (b'{"kind":"task-result","id":2}\n', b'{"kind":"other","id":1}\n', b''):
+            with patch.object(module.sys, "__stdout__", io.StringIO()), \
+                    patch.object(module.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(reply))):
+                with self.assertRaises(ValueError):
+                    await module.HostTaskCommands()(["inspect", CID], 5)
+
+    def test_default_environment_has_only_the_host_command_transport(self):
+        env = module.FrontierSweEnvironment(container_id=CID, image=IMAGE, instance_id="task1",
+            network="none", network_mode="no-network", trial_dir=Path(self.scratch.name), max_wall_clock_ms=10_000)
+        self.assertIsInstance(env._command, module.HostTaskCommands)
+        self.assertFalse(hasattr(module, "docker_command"))
 
 
 if __name__ == "__main__":

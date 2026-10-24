@@ -132,9 +132,37 @@ async function readAdvRosterUncached(opts: ReadAdvRosterOptions = {}) {
   };
 
   const withinBudget = createReadDeadline(budgetMs);
+  // Keep the real cold-read failure attributable; a later fast probe cannot
+  // explain which database or host-discovery leg was pending at its deadline.
+  const activeStartedAt = performance.now();
+  const activePhases = new Map<string, {
+    state: 'started' | 'completed' | 'failed';
+    elapsedMs: number;
+    observedAtMs: number;
+  }>();
+  const activeRead = withinBudget(mergeRosterWithAssignments({
+      workspaceId,
+      onTiming: ({ phase, state, elapsedMs }) => {
+        activePhases.set(phase, { state, elapsedMs, observedAtMs: performance.now() });
+      },
+    }), 'roster active').catch((error) => {
+    try {
+      console.warn('[advRoster.list] active read failed:', {
+        reason: classifyReadFailure(error).reason,
+        elapsedMs: Math.round(performance.now() - activeStartedAt),
+        phases: [...activePhases].map(([phase, timing]) => ({
+          phase,
+          state: timing.state,
+          elapsedMs: Math.round(timing.state === 'started'
+            ? performance.now() - timing.observedAtMs : timing.elapsedMs),
+        })),
+      });
+    } catch { /* diagnostics must preserve the primary read's failure */ }
+    throw error;
+  });
   const [{ active, orphanedClaims }, endedAll, pendingRows, startingRows] = await Promise.all([
     // PRIMARY: a lapse propagates, as a throw from this reader does today.
-    withinBudget(mergeRosterWithAssignments({ workspaceId }), 'roster active'),
+    activeRead,
     withinBudget(listEndedAdvSessions({ workspaceId, limit: endedLimit }), 'roster ended').catch(
       (err) => noteDegraded('ended', err),
     ),

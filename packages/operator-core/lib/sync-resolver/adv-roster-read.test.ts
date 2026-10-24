@@ -158,16 +158,40 @@ describe('readAdvRoster — the read deadline (WI-39825)', () => {
   // throw from that reader already does. The gain is a fast, LABELLED failure at
   // the budget instead of a hang the resolver timeout converts into nothing.
   it('a hung PRIMARY leg (active) is REJECTED at the budget instead of hanging the read', async () => {
-    mergeRosterWithAssignments.mockReturnValue(hang());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mergeRosterWithAssignments.mockImplementation(({ onTiming }) => {
+      onTiming({ phase: 'owners.liveness', state: 'started', elapsedMs: 0 });
+      onTiming({ phase: 'owners.liveness.fetchWakeability', state: 'completed', elapsedMs: 7 });
+      return hang();
+    });
+    try {
+      const outcome = await settleWithin(read(25), 500);
+      expect(outcome.kind).toBe('rejected');
+      expect(outcome.kind === 'rejected' && outcome.message).toContain(
+        'roster active exceeded the read budget',
+      );
+      expect(warn).toHaveBeenCalledWith('[advRoster.list] active read failed:', {
+        reason: 'roster active exceeded the read budget',
+        elapsedMs: expect.any(Number),
+        phases: [
+          { phase: 'owners.liveness', state: 'started', elapsedMs: expect.any(Number) },
+          { phase: 'owners.liveness.fetchWakeability', state: 'completed', elapsedMs: 7 },
+        ],
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
 
-    const outcome = await settleWithin(read(25), 500);
-
-    expect(outcome.kind).toBe('rejected');
-    // The label is the point: a bare timeout hides WHICH leg wedged, which is
-    // the first thing anyone triaging a spinning roster needs.
-    expect(outcome.kind === 'rejected' && outcome.message).toContain(
-      'roster active exceeded the read budget',
-    );
+  it('preserves the original primary error even when its diagnostic sink throws', async () => {
+    const failure = new Error('primary source unavailable');
+    mergeRosterWithAssignments.mockRejectedValue(failure);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => { throw new Error('sink failed'); });
+    try {
+      await expect(read(25)).rejects.toBe(failure);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('CONTROL: the same hung leg NEVER settles when the bound is widened — so it is the deadline doing the work', async () => {

@@ -131,10 +131,19 @@ export function gcsObjectStore(config: {
     },
     async createMultipartUpload(key, options = {}) {
       const uploadId = crypto.randomUUID();
-      const session = await store.put(`${UPLOADS}${uploadId}/session`, JSON.stringify({ key, options }), {
-        onlyIf: { etagDoesNotMatch: '*' }, httpMetadata: { contentType: 'application/json' },
-      });
-      if (!session) throw new Error('multipart session collision');
+      const sessionKey = `${UPLOADS}${uploadId}/session`;
+      const value = JSON.stringify({ key, options });
+      try {
+        const created = await store.put(sessionKey, value, {
+          onlyIf: { etagDoesNotMatch: '*' }, httpMetadata: { contentType: 'application/json' },
+        });
+        if (!created) throw new Error('multipart session collision');
+      } catch (error) {
+        // Initiation can commit before its response is lost. Reconcile this exact
+        // UUID and immutable session bytes instead of creating another operation.
+        const existing = await store.get(sessionKey);
+        if (!existing || existing.size > 64 * 1024 || await existing.text() !== value) throw error;
+      }
       return store.resumeMultipartUpload(key, uploadId);
     },
     resumeMultipartUpload(key, uploadId) {

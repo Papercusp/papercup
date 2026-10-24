@@ -9,9 +9,11 @@ import { fileURLToPath } from 'node:url';
 import type { CurrentBenchAccountingBinding, CurrentBenchHostReferenceGateway } from './current-su';
 import type { LearningSpendReservationCensus } from '../learning-governor/store';
 import type { GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isModelRequestId } from '../observability/tracing';
 import type { Sql } from 'postgres';
+import { StringDecoder } from 'node:string_decoder';
+import { prepareProximusSandbox, createProximusTaskBroker, type ProximusTaskBinding } from './proximus-confinement';
 
 export function proximusRunSpec(config: unknown, execution: Parameters<typeof requireCurrentBenchmarkAssignment>[1] & {
   handle: Pick<FrontierSweEnvHandle, 'containerId' | 'image' | 'instanceId'>;
@@ -259,24 +261,55 @@ export async function readProximusBilling(sql: Sql, input: CurrentBenchAccountin
 interface ProximusHostProcessInput {
   pythonBin: string; operation: 'measure' | 'run'; maxWallClockMs: number;
   stdin?: string; signal?: AbortSignal;
+  confinement?: { trialDir: string; gatewayBaseURL: string; task: ProximusTaskBinding };
+}
+
+/** Evidence issued by the parent after successful worker/broker reaping and
+ * sandbox cleanup. Serialized fields describe the observation; possession of
+ * copied JSON is never authority to accept it. No gateway token is retained. */
+export interface ProximusHostConfinementReceipt {
+  schemaVersion: 1; source: 'confined-host-process'; executionId: string;
+  pythonBin: string; maxWallClockMs: number; payloadSha256: string; workerResultSha256: string;
+  trialDir: string; gatewayBaseURL: string; task: Readonly<ProximusTaskBinding>;
+}
+const processReceipts = new WeakMap<object, ProximusHostConfinementReceipt>();
+const hostRunReceipts = new WeakMap<object, { receipt: ProximusHostConfinementReceipt; resultSha256: string }>();
+const evidenceHash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+function processBinding(input: ProximusHostProcessInput) {
+  return { pythonBin: input.pythonBin, maxWallClockMs: input.maxWallClockMs,
+    payloadSha256: createHash('sha256').update(input.stdin ?? '{}').digest('hex'), ...input.confinement! };
+}
+
+/** Verify the exact completed run object before serializing it for storage.
+ * A durable JSON copy remains evidence, not a new acceptance capability. */
+export function requireProximusHostConfinement(result: unknown): ProximusHostConfinementReceipt {
+  const issued = result && typeof result === 'object' ? hostRunReceipts.get(result) : undefined;
+  if (!issued || issued.resultSha256 !== evidenceHash(result))
+    throw new Error('Proximus requires its unchanged host-issued confinement receipt.');
+  return issued.receipt;
 }
 
 /** Host process, with no inherited API credentials/proxies or shell. The
  * process-group kill bounds even an upstream finalizer ignoring cancellation. */
-export function proximusHostProcess(input: ProximusHostProcessInput): Promise<unknown> {
+export async function proximusHostProcess(input: ProximusHostProcessInput): Promise<unknown> {
+  // Freeze the authority used across asynchronous broker preparation. In
+  // particular a caller cannot redirect the recorded task after it starts.
+  input = { ...input, ...(input.confinement ? { confinement: structuredClone(input.confinement) } : {}) };
   if (!isAbsolute(input.pythonBin) || !Number.isSafeInteger(input.maxWallClockMs) || input.maxWallClockMs <= 0 ||
       input.stdin !== undefined && Buffer.byteLength(input.stdin) > 1024 * 1024)
     return Promise.reject(new Error('Invalid Proximus host process/deadline/payload.'));
   if (input.signal?.aborted) return Promise.reject(new Error('Proximus host process was aborted.'));
-  const env: NodeJS.ProcessEnv = {};
-  for (const key of ['PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG',
-    'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'XDG_RUNTIME_DIR']) {
-    if (process.env[key] !== undefined) env[key] = process.env[key];
-  }
-  Object.assign(env, { PYTHONDONTWRITEBYTECODE: '1', PYTHONNOUSERSITE: '1', LITELLM_LOCAL_MODEL_COST_MAP: 'True' });
-  return new Promise((resolve, reject) => {
-    const child = spawn(input.pythonBin, ['-I', '-B', fileURLToPath(new URL('./proximus-host.py', import.meta.url)), input.operation],
-      { env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+  if (input.operation === 'run' && !input.confinement) throw new Error('Proximus run requires a confined task binding.');
+  const sandbox = prepareProximusSandbox({ pythonBin: input.pythonBin, ...input.confinement });
+  let broker: Awaited<ReturnType<typeof createProximusTaskBroker>> | undefined;
+  let completed: unknown;
+  try {
+    if (input.confinement) broker = await createProximusTaskBroker(input.confinement.task, input.maxWallClockMs);
+    if (input.signal?.aborted) throw new Error('Proximus host process was aborted during preparation.');
+    const wrapped = sandbox.wrap(['-I', '-B', fileURLToPath(new URL('./proximus-host.py', import.meta.url)), input.operation]);
+    completed = await new Promise((resolve, reject) => {
+    const child = spawn(wrapped.command, wrapped.argv,
+      { env: sandbox.env, cwd: sandbox.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
     const output: Buffer[] = [];
     let bytes = 0, failed: string | undefined;
     const kill = (reason: string) => {
@@ -288,10 +321,27 @@ export function proximusHostProcess(input: ProximusHostProcessInput): Promise<un
     const abort = () => kill('aborted');
     const timer = setTimeout(() => kill('deadline exceeded'), input.maxWallClockMs);
     input.signal?.addEventListener('abort', abort, { once: true });
+    let line = '', pending: Promise<void> | undefined, ordinal = 0;
+    const decoder = new StringDecoder('utf8');
     child.stdout.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
-      if (bytes > 2 * 1024 * 1024) kill('output limit exceeded');
-      else if (!failed) output.push(chunk);
+      if (bytes > 32 * 1024 * 1024) return kill('output limit exceeded');
+      line += decoder.write(chunk);
+      if (Buffer.byteLength(line) > 2 * 1024 * 1024) return kill('output limit exceeded');
+      let index: number;
+      while ((index = line.indexOf('\n')) !== -1 && !failed) {
+        const message = line.slice(0, index); line = line.slice(index + 1);
+        let row: any;
+        try { row = JSON.parse(message); } catch { kill('invalid worker protocol'); break; }
+        if (!row || typeof row !== 'object') { kill('invalid worker protocol'); break; }
+        if (row.kind === 'task-command') {
+          if (!broker || pending || row.id !== ++ordinal) { kill('invalid task command sequence'); break; }
+          pending = broker.command(row.args, row.timeout).then(result => {
+            if (!failed) child.stdin.write(JSON.stringify({ kind: 'task-result', id: row.id, ...result }) + '\n');
+          }).catch(() => kill('task command refused')).finally(() => { pending = undefined; });
+        } else if (output.length) kill('multiple terminal worker receipts');
+        else output.push(Buffer.from(message));
+      }
     });
     child.stderr.on('data', (chunk: Buffer) => {
       // Upstream diagnostics may contain request data. Bound and discard it;
@@ -302,16 +352,26 @@ export function proximusHostProcess(input: ProximusHostProcessInput): Promise<un
     child.stdin.on('error', () => { kill('stdin unavailable'); });
     let spawnFailed = false;
     child.on('error', () => { spawnFailed = true; });
-    child.on('close', code => {
+    child.on('close', async code => {
       clearTimeout(timer); input.signal?.removeEventListener('abort', abort);
+      await broker?.stop(); await pending;
       if (failed || spawnFailed || code !== 0) return reject(new Error(`Proximus host process failed: ${failed ?? 'execution failed'}.`));
-      try { resolve(JSON.parse(Buffer.concat(output).toString('utf8'))); }
+      try { resolve(JSON.parse(Buffer.concat(output).toString('utf8') + line + decoder.end())); }
       catch { reject(new Error('Proximus host process returned invalid evidence.')); }
     });
-    child.stdin.end(input.stdin ?? '');
+    // stdin remains open for broker responses. The initial payload is a
+    // separate bounded line, and never becomes argv or a task file.
+    child.stdin.write((input.stdin ?? '{}') + '\n');
     // Abort may race subscription; do not let that lose the hard stop.
     if (input.signal?.aborted) abort();
-  });
+    });
+  } finally { await broker?.stop(); sandbox.cleanup(); }
+  if (input.operation === 'run' && completed && typeof completed === 'object' && !Array.isArray(completed)) {
+    const binding = processBinding(input);
+    processReceipts.set(completed, Object.freeze({ schemaVersion: 1, source: 'confined-host-process',
+      executionId: randomUUID(), ...binding, task: Object.freeze(binding.task), workerResultSha256: evidenceHash(completed) }));
+  }
+  return completed;
 }
 
 function runtimeReceipt(value: unknown): ProximusRuntimeReceipt {
@@ -339,6 +399,7 @@ export async function runProximusHost(config: unknown,
     networkMode: 'no-network' | 'public' | 'allowlist';
     gateway: CurrentBenchHostReferenceGateway; signal?: AbortSignal;
   }, execute = proximusHostProcess) {
+  execution = { ...execution, handle: structuredClone(execution.handle), budget: structuredClone(execution.budget) };
   const protocol = requireCurrentBenchmarkAssignment(config, execution);
   const { requireCurrentBenchHostReferenceGateway } = await import('./current-su');
   requireCurrentBenchHostReferenceGateway(execution.gateway, protocol, execution);
@@ -352,13 +413,25 @@ export async function runProximusHost(config: unknown,
   const grant = requireCurrentBenchHostReferenceGateway(execution.gateway, protocol, execution);
   const payload = { spec, gateway: grant.gateway, trialDir: execution.trialDir, instruction: execution.instruction,
     network: execution.network, networkMode: execution.networkMode };
-  const result = await execute({ pythonBin: execution.pythonBin, operation: 'run', maxWallClockMs: spec.maxWallClockMs,
-    signal: execution.signal, stdin: JSON.stringify(payload) }) as {
+  const processInput: ProximusHostProcessInput = { pythonBin: execution.pythonBin, operation: 'run', maxWallClockMs: spec.maxWallClockMs,
+    signal: execution.signal, stdin: JSON.stringify(payload), confinement: {
+      trialDir: execution.trialDir, gatewayBaseURL: grant.gateway.baseURL,
+      task: { containerId: spec.containerId, image: spec.image, network: execution.network, networkMode: execution.networkMode },
+    } };
+  const binding = structuredClone(processBinding(processInput));
+  const result = await execute(processInput) as {
       schemaVersion: number; status: string; runtime: unknown; diagnosticContext: unknown; billingStatus: string;
     } | null;
   if (!result || result.schemaVersion !== 1 || result.status !== 'completed' || result.billingStatus !== 'unreconciled' ||
       JSON.stringify(runtimeReceipt(result.runtime)) !== JSON.stringify(measured))
     throw new Error('Proximus host result differs from its measured runtime or lacks terminal process evidence.');
-  return Object.freeze({ status: 'completed' as const, runtime: measured,
-    diagnosticContext: result.diagnosticContext, billingStatus: 'unreconciled' as const });
+  const receipt = processReceipts.get(result);
+  processReceipts.delete(result);
+  if (!receipt || receipt.workerResultSha256 !== evidenceHash(result) ||
+      Object.entries(binding).some(([key, value]) => evidenceHash(receipt[key as keyof typeof receipt]) !== evidenceHash(value)))
+    throw new Error('Proximus requires an exact single-use host-issued confinement receipt.');
+  const completed = Object.freeze({ status: 'completed' as const, runtime: measured,
+    diagnosticContext: structuredClone(result.diagnosticContext), billingStatus: 'unreconciled' as const, confinement: receipt });
+  hostRunReceipts.set(completed, { receipt, resultSha256: evidenceHash(completed) });
+  return completed;
 }

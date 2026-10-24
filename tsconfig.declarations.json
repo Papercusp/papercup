@@ -321,6 +321,7 @@
     // untracked byproducts that `--check` does not police and that reappear every run.
     // Registering all three is what keeps the emitted set and the tracked set equal.
     "apps/operator/scripts/psu-launcher.mjs",
+    "apps/operator/scripts/psu-identity-assume.mjs",
     "packages/operator-core/lib/framework-install-spec.mjs",
     // P-004 bounded native recovery — imported directly by its TypeScript
     // contract test and by psu-launcher.mjs; generate the typed sibling so both

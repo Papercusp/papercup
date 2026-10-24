@@ -13,6 +13,7 @@ import diagnosticPreregistration from './llm-testing/fixtures/tool-delivery-diag
 import fidelityPreregistration from './llm-testing/fixtures/tool-delivery-fidelity-candidate-20261023.json';
 import cleanRuntimePreregistration from './llm-testing/fixtures/tool-delivery-clean-runtime-candidate-20261023.json';
 import cleanSourceV2Preregistration from './llm-testing/fixtures/tool-delivery-clean-source-v2-20261023.json';
+import cleanSourceV3Preregistration from './llm-testing/fixtures/tool-delivery-clean-source-v3-20261024.json';
 import { buildOracleSchemaIndex, r6PrimaryVerdict, type OracleToolCall } from './llm-testing/r6-malformed-call-oracle';
 import { validateToolDeliveryCleanBlocks, validateToolDeliveryCleanCensus, validateToolDeliveryBlockLedgerIdentity,
   type ToolDeliveryCleanBlock, type ToolDeliveryCleanPin } from './tool-delivery-clean-runtime';
@@ -75,6 +76,7 @@ const preregistrations: Readonly<Record<string, Preregistration>> = {
   [fidelityPreregistration.experiment.id]: fidelityPreregistration as unknown as Preregistration,
   [cleanRuntimePreregistration.experiment.id]: cleanRuntimePreregistration as unknown as Preregistration,
   [cleanSourceV2Preregistration.experiment.id]: cleanSourceV2Preregistration as unknown as Preregistration,
+  [cleanSourceV3Preregistration.experiment.id]: cleanSourceV3Preregistration as unknown as Preregistration,
 };
 export function toolDeliveryPreregistration(id: string): Preregistration {
   const registration = preregistrations[id];

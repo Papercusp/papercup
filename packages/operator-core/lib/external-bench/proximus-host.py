@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import sys
+from contextlib import redirect_stdout
 from urllib.parse import urlsplit
 
 sys.dont_write_bytecode = True
@@ -151,10 +152,13 @@ def main() -> int:
         if sys.argv[1:] == ["measure"]:
             result = measure_runtime()
         elif sys.argv[1:] == ["run"]:
-            data = sys.stdin.buffer.read(1024 * 1024 + 1)
+            data = sys.stdin.buffer.readline(1024 * 1024 + 1)
             if len(data) > 1024 * 1024:
                 raise ValueError("The host assignment payload is too large")
-            result = asyncio.run(run_assignment(json.loads(data)))
+            # Official dependency diagnostics must not share the private task
+            # protocol stream. HostTaskCommands writes explicitly to __stdout__.
+            with redirect_stdout(sys.stderr):
+                result = asyncio.run(run_assignment(json.loads(data)))
         else:
             raise ValueError("Expected measure or run")
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))

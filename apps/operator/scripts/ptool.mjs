@@ -3939,6 +3939,7 @@ export async function importSdkModuleWithInstallAwareness(
   specifier,
   {
     doImport = importPtoolSdkModule,
+    recoverOnInstallWait = false,
     loadInstallMutex = async () => {
       const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
       // Installed bundles have no mutable source dependency tree. Importing the
@@ -3982,6 +3983,15 @@ export async function importSdkModuleWithInstallAwareness(
           's so far); holder: ' +
           owner.trim(),
       );
+      // Scripted calls with the existing Node-only transport do not need to
+      // wait for mutable SDK files. The mutex has removed any ungranted reader
+      // marker before onWaiting; leave the installer and its lease untouched.
+      if (recoverOnInstallWait) {
+        throw Object.assign(new Error(
+          'waiting for install:safe to finish before importing ' + specifier +
+          '; return to the available Node-only scripted transport',
+        ), { code: 'PTOOL_SDK_INSTALL_WAIT' });
+      }
     },
   });
 }
@@ -4019,11 +4029,12 @@ async function ptoolEnospcFilesystemDiagnostic(error, statfsImpl) {
  * up to ten minutes; that wait is bootstrap time, not operator network time.
  *
  * @param {{transport?: string}} [scope]
- * @param {{importSdkModule?: (specifier: string) => Promise<object>, statfsImpl?: typeof statfs}} [options]
+ * @param {{importSdkModule?: (specifier: string, options?: {recoverOnInstallWait?: boolean}) => Promise<object>, statfsImpl?: typeof statfs, recoverOnInstallWait?: boolean}} [options]
  */
 export async function preparePtoolConnectionModules(
   { transport: requestedTransport } = {},
-  { importSdkModule = importSdkModuleWithInstallAwareness, statfsImpl = statfs } = {},
+  { importSdkModule = importSdkModuleWithInstallAwareness, statfsImpl = statfs,
+    recoverOnInstallWait = false } = {},
 ) {
   const mode = requestedTransport || process.env.PAPERCUSP_MCP_TRANSPORT || 'http';
   if (!['http', 'uds', 'auto'].includes(mode)) {
@@ -4033,8 +4044,8 @@ export async function preparePtoolConnectionModules(
 
   try {
     const [clientModule, transportModule] = await Promise.all([
-      importSdkModule('@modelcontextprotocol/sdk/client/index.js'),
-      importSdkModule('@modelcontextprotocol/sdk/client/streamableHttp.js'),
+      importSdkModule('@modelcontextprotocol/sdk/client/index.js', { recoverOnInstallWait }),
+      importSdkModule('@modelcontextprotocol/sdk/client/streamableHttp.js', { recoverOnInstallWait }),
     ]);
     return {
       mode,
@@ -4597,6 +4608,20 @@ async function main() {
   const tracedPrintResult = (result, options) => withInvocationPhase(
     'result-output', () => printResult(result, options),
   );
+  const sdkRecoveryKey = args.idempotencyKey || randomUUID();
+  const buildSdkRecoveryInvocation = () => buildMcpCallRecoveryInvocation({
+    helperPath: resolveMcpCallRecoveryPath(),
+    toolName: args.tool,
+    callArgs: inputArgs ?? {},
+    inputKind,
+    operatorUrl,
+    workspace,
+    harness,
+    clientId: process.env.PAPERCUSP_SID,
+    idempotencyKey: sdkRecoveryKey,
+    raw: args.raw,
+    projection: args.projection,
+  });
   const connectOperator = async ({
     preferredIndex = 0, onlyCandidate = false, tokenFile = activeTokenFile, nativeSessionOverride,
   } = {}) => {
@@ -4647,7 +4672,9 @@ async function main() {
         trace,
         'sdk-bootstrap',
         null,
-        () => preparePtoolConnectionModules(prepareScope),
+        () => preparePtoolConnectionModules(prepareScope, {
+          recoverOnInstallWait: buildSdkRecoveryInvocation() !== null,
+        }),
       );
     };
     const tracedConnect = (url, connectScope, options, preparedConnection) => {
@@ -4726,21 +4753,8 @@ async function main() {
     // can still make progress through the immutable Node-only recovery helper
     // while install:safe drains. This branch is pre-dispatch: no MCP request
     // has been sent and the same idempotency key is safe to carry forward.
-    const recoveryKey = args.idempotencyKey || randomUUID();
     const recoveryInvocation = isSdkBootstrapInstallWait(error)
-      ? buildMcpCallRecoveryInvocation({
-          helperPath: resolveMcpCallRecoveryPath(),
-          toolName: args.tool,
-          callArgs: inputArgs ?? {},
-          inputKind,
-          operatorUrl,
-          workspace,
-          harness,
-          clientId: process.env.PAPERCUSP_SID,
-          idempotencyKey: recoveryKey,
-          raw: args.raw,
-          projection: args.projection,
-        })
+      ? buildSdkRecoveryInvocation()
       : null;
     if (recoveryInvocation) {
       console.error(

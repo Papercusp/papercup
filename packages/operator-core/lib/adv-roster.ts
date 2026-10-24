@@ -1794,6 +1794,17 @@ export async function mergeRosterWithAssignments(
         source: p.source,
         agentRole: p.agentRole ?? null,
       })),
+      opts.onTiming ? {
+        onTiming: (leg, elapsedMs, outcome) => {
+          try {
+            opts.onTiming?.({
+              phase: `owners.liveness.${leg}`,
+              state: outcome === 'ok' ? 'completed' : 'failed',
+              elapsedMs,
+            });
+          } catch { /* preserve the oracle's observer-isolation contract */ }
+        },
+      } : undefined,
     ).catch(() => new Map())),
     // P-003 (hud-chat-owner-controls): the workspace's dynamic account pins, so
     // the chat footer's ACCOUNT pill can read its current value synchronously
