@@ -56,7 +56,13 @@ source "$ROOT/libs/generic/verification-harness/bin/vh.sh"
 native_preflight_args=("$@")
 # The default suite includes this native acceptance too. An empty filter must
 # not bypass prerequisites that an explicitly selected spec enforces.
-if [ "$#" -eq 0 ]; then
+has_explicit_spec=0
+for arg in "$@"; do
+  case "$arg" in
+    *.spec.*|*.test.*) has_explicit_spec=1 ;;
+  esac
+done
+if [ "$has_explicit_spec" -eq 0 ]; then
   native_preflight_args=(e2e/inbox-ack-persistence.native.spec.mts)
 fi
 for arg in "${native_preflight_args[@]}"; do
@@ -174,7 +180,7 @@ if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ -z "${VERIFY_TAURI_SOURCE_INPUTS:-
   VERIFY_TAURI_SOURCE_INPUTS_FILE="$VH_RUN_DIR/operator-e2e-source-inputs.json"
   export VERIFY_TAURI_SOURCE_INPUTS_FILE
   node --input-type=module - "$ROOT" "$@" > "$VERIFY_TAURI_SOURCE_INPUTS_FILE" <<'NODE'
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 const repoRoot = resolve(process.argv[2]);
@@ -209,6 +215,13 @@ function addFile(raw, label) {
 }
 
 const args = process.argv.slice(3);
+// An unfiltered run executes native journeys too. Their original source
+// receipts must name the specs and fixtures, rather than just the configs.
+if (!args.some(arg => !arg.startsWith('-') && specPath.test(arg.replace(/(?::\d+)+$/, '')))) {
+  for (const name of readdirSync(resolve(operatorRoot, 'e2e'), { recursive: true })) {
+    if (/\.[cm]?[jt]sx?$/i.test(name)) addFile('e2e/' + name, 'default-suite input');
+  }
+}
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === '--config' || arg === '-c') {
@@ -225,6 +238,15 @@ for (let i = 0; i < args.length; i++) {
   }
   if (arg.startsWith('-') || !specPath.test(arg.replace(/(?::\d+)+$/, ''))) continue;
   addFile(arg, 'Playwright spec');
+}
+
+if (inputs.has('apps/operator/e2e/inbox-ack-persistence.native.spec.mts')) {
+  addFile('app/_components/inbox/use-inbox-pending.ts', 'native Inbox input');
+  addFile('app/admin/plans/plans-api.ts', 'native Inbox input');
+}
+if (inputs.has('apps/operator/e2e/ticket-integrations.native.spec.mts')) {
+  addFile('apps/operator/e2e/_ongoing-work-native-fixture.ts', 'native custody helper');
+  addFile(resolve(repoRoot, 'scripts/tauri-surface-verify-ticket-integrations.sh'), 'native ticket assertion');
 }
 
 process.stdout.write(JSON.stringify([...inputs].sort()) + '\n');

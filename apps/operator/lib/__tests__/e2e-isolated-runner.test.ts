@@ -196,7 +196,7 @@ function run(
       OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
       VH_TSX: f.harnessTsx,
       PATH: `${f.dir}:${base.PATH ?? ''}`,
-      ...(args.length === 0 ? {
+      ...(!args.some(arg => /\.(?:spec|test)\./.test(arg)) ? {
         VERIFY_TAURI_ISOLATED_SEED: 'ready',
         PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: join(f.dir, 'full-suite-acceptance.json'),
         PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(f.dir, 'full-suite-reporter.jsonl'),
@@ -285,7 +285,7 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(blockEnd).toBeGreaterThan(blockStart);
     const sourceSelection = runner.slice(blockStart, blockEnd);
 
-    const exercise = (dir: string, sourceRef?: string) => {
+    const exercise = (dir: string, sourceRef?: string, args = ['e2e/ongoing-work-ui.spec.ts']) => {
       mkdirSync(dir, { recursive: true });
       const refFile = join(dir, 'source-ref.txt');
       const inputsPathFile = join(dir, 'inputs-path.txt');
@@ -302,7 +302,7 @@ describe('run-operator-e2e-isolated.sh', () => {
       delete env.VERIFY_TAURI_SOURCE_INPUTS;
       delete env.VERIFY_TAURI_SOURCE_INPUTS_FILE;
       if (sourceRef !== undefined) env.VERIFY_TAURI_SOURCE_REF = sourceRef;
-      const result = spawnSync('bash', ['-c', script, 'source-selection', 'e2e/ongoing-work-ui.spec.ts'], {
+      const result = spawnSync('bash', ['-c', script, 'source-selection', ...args], {
         cwd: REPO_ROOT, encoding: 'utf8', env, timeout: 15_000,
       });
       return { result, refFile, inputsPathFile };
@@ -320,6 +320,20 @@ describe('run-operator-e2e-isolated.sh', () => {
       'apps/operator/playwright.config.mts',
       'apps/operator/playwright.config.ts',
     ]);
+
+    for (const [index, args] of [[], ['--workers=1'], ['--workers', '1']].entries()) {
+    const fullSuite = exercise(join(f.dir, 'full-suite-' + index), undefined, args);
+    expect(fullSuite.result.status, fullSuite.result.stderr).toBe(0);
+    const fullSuiteInputs = JSON.parse(readFileSync(readFileSync(fullSuite.inputsPathFile, 'utf8'), 'utf8'));
+    expect(fullSuiteInputs).toEqual(expect.arrayContaining([
+      'apps/operator/e2e/ongoing-work-native-collection.spec.mts',
+      'apps/operator/e2e/_ongoing-work-native-fixture.ts',
+      'apps/operator/e2e/ticket-integrations.native.spec.mts',
+      'scripts/tauri-surface-verify-ticket-integrations.sh',
+      'apps/operator/app/_components/inbox/use-inbox-pending.ts',
+      'apps/operator/app/admin/plans/plans-api.ts',
+    ]));
+    }
 
     const workingTree = exercise(join(f.dir, 'working-tree'), '');
     expect(workingTree.result.status, workingTree.result.stderr).toBe(0);
@@ -393,6 +407,7 @@ describe('run-operator-e2e-isolated.sh', () => {
   });
 
   it('preflights default full-suite native prerequisites before starting the desktop', () => {
+    for (const args of [[], ['--workers=1'], ['--workers', '1']]) {
     for (const env of [
       { VERIFY_TAURI_ISOLATED_SEED: 'fresh' },
       { PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: '' },
@@ -401,9 +416,10 @@ describe('run-operator-e2e-isolated.sh', () => {
       const f = fixture(0);
       const marker = join(f.dir, 'rig-started');
       writeFileSync(f.rig, `#!/usr/bin/env bash\ntouch "${marker}"\nexit 0\n`);
-      const result = run(f, [], env);
+      const result = run(f, args, env);
       expect(result.status, result.out).toBe(2);
       expect(existsSync(marker)).toBe(false);
+    }
     }
   });
 
@@ -459,6 +475,9 @@ describe('run-operator-e2e-isolated.sh', () => {
       ].join('\n'));
       const child = spawn('bash', [RUNNER], { detached: wholeGroup, env: {
         ...process.env,
+        VERIFY_TAURI_ISOLATED_SEED: 'ready',
+        PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: join(f.dir, 'acceptance.json'),
+        PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(f.dir, 'reporter.jsonl'),
         VERIFY_TAURI_SOURCE_REF: '',
         VERIFY_TAURI_SOURCE_INPUTS: '',
         VERIFY_TAURI_SOURCE_INPUTS_FILE: '',
@@ -509,6 +528,9 @@ describe('run-operator-e2e-isolated.sh', () => {
     writeFileSync(f.rig, '#!/usr/bin/env bash\nkill -USR1 "$PPID"\nsleep 0.1\n');
     const res = spawnSync('bash', [RUNNER], { env: {
       ...process.env,
+      VERIFY_TAURI_ISOLATED_SEED: 'ready',
+      PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: join(f.dir, 'acceptance.json'),
+      PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(f.dir, 'reporter.jsonl'),
       VERIFY_TAURI_SOURCE_REF: '',
       VERIFY_TAURI_SOURCE_INPUTS: '',
       VERIFY_TAURI_SOURCE_INPUTS_FILE: '',
