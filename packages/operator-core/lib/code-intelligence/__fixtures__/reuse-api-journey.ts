@@ -32,7 +32,10 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
     'src/target.ts': target,
     'src/sibling.ts': aggregate('aggregateSibling'),
     'src/partner.ts': "export function sql(parts: TemplateStringsArray) { return parts.join(''); }\nexport const revision = 0;\n",
-    'src/reader.ts': "import { sql } from './partner';\nexport function readValue() { return sql`SELECT value FROM public.p010_replay WHERE id = 1`; }\n",
+    // A real static consumer brings the SQL reader into compiler-captured
+    // supporting scope. The test never imports or executes this consumer.
+    'src/reader.ts': "import { sql } from './partner';\nimport { aggregatePositive } from './target';\n"
+      + "export function readValue() { aggregatePositive([1]); return sql`SELECT value FROM public.p010_replay WHERE id = 1`; }\n",
     'src/target.test.ts': `import { test, expect } from ${JSON.stringify(join(repo, 'node_modules/vitest/dist/index.js'))};\n`
       + "import { aggregatePositive, updateValue } from './target';\n"
       + "test('native reuse positive branch and writer', () => { expect(aggregatePositive([2])).toBe(22); expect(updateValue()).toContain('UPDATE'); });\n",
@@ -87,9 +90,36 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
   const before = await readFile(join(root, 'src/target.ts'), 'utf8');
   await call('capability:edit', { file_path: join(root, 'src/target.ts'), old_string: before,
     new_string: '// touched clone sibling in this private task\n' + before + aggregate('plantedCopy') });
-  const run = await call('testing:run', { harness: workspace, files: ['src/target.test.ts'],
+  const run = await call('testing:run', { harness: workspace, work_item_id: id, files: ['src/target.test.ts'],
     timeoutMs: 30_000 });
+  console.log('NATIVE_REUSE_TEST_RUN=' + JSON.stringify(run));
   assert.equal(run.ok, true, JSON.stringify(run));
+  assert.equal(run.passed, 1, JSON.stringify(run));
+  assert.equal(run.failed, 0, JSON.stringify(run));
+  assert.equal(run.skipped, 0, JSON.stringify(run));
+  assert.equal(run.testRunIds?.length, 1, JSON.stringify(run));
+  assert.equal(typeof run.runId, 'string', JSON.stringify(run));
+  // Refuse a completion replay whose telemetry cannot support a negative
+  // execution claim. This reads the real run's coverage, without seeding it.
+  const { readNativeCoverageScope, queryTestCoverage } = await import('../test-coverage-map.ts');
+  const sourceFiles = await Promise.all(['src/target.ts', 'src/reader.ts', 'src/partner.ts', 'src/target.test.ts']
+    .map(async path => ({ path, sha256: hash(await readFile(join(root, path), 'utf8')) })));
+  const coverage = await readNativeCoverageScope({ surface: 'completion', workspaceId: workspace,
+    owner, invocation: 'native-fixture-precondition', workItem: id, paths: ['src/target.ts'],
+    sourceVersion: hash(JSON.stringify(sourceFiles.map(source => [source.path, source.sha256]))), commit: baseline,
+    repository: { workspaceId: workspace, rootPath: root, harness: workspace }, sourceFiles },
+  new AbortController().signal, { runGroupId: run.runId, testFiles: ['src/target.test.ts'] });
+  assert(coverage, 'Actual attributed run must have source-bound per-file coverage');
+  const current = await readFile(join(root, 'src/target.ts'), 'utf8');
+  const copyStart = current.slice(0, current.indexOf('export function plantedCopy')).split('\n').length;
+  const uncovered = queryTestCoverage({ root, question: { path: 'src/target.ts',
+    changedLines: Array.from({ length: current.split('\n').length - copyStart }, (_, i) => copyStart + i) },
+    snapshots: coverage.snapshots, currentHashes: coverage.currentHashes, currentPopulation: coverage.population });
+  assert(uncovered.uncoveredChangedLines.length > 0, JSON.stringify({ uncovered, snapshots: coverage.snapshots }));
+  const { readPostgresLineage } = await import('../postgres-lineage-query.ts');
+  const lineage = await readPostgresLineage(root, sourceFiles.map(source => source.path));
+  assert(lineage.sites.some(site => site.path === 'src/reader.ts' && site.access === 'read'
+    && site.table === 'public.p010_replay'), JSON.stringify(lineage));
   const closed = await call('work_items:complete', { id, harness: workspace, state: 'done', assumptions: 'none',
     completion: { summary: 'Changed the private aggregate and planted a copy; verified the positive branch and writer.',
       testsRun: 'testing:run src/target.test.ts with complete per-file V8 coverage', testResult: '1 passed, 0 failed',
