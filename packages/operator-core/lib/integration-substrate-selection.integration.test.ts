@@ -50,8 +50,8 @@ describe('integration selection without a PostgreSQL dependency', () => {
     expect(integrationNeedsPostgres([native, native + '.unknown'])).toBe(true);
     expect(integrationNeedsPostgres([])).toBe(true);
   });
-  it('keeps grouped coverage and in-memory provider fixtures independent of shared PG', async () => {
-    const fixtures = ['test-coverage-map', 'reuse-brief-providers'].map(name =>
+  it('keeps grouped coverage, in-memory providers and clone remediation independent of shared PG', async () => {
+    const fixtures = ['test-coverage-map', 'reuse-brief-providers', 'clone-remediation'].map(name =>
       fileURLToPath(new URL(`./code-intelligence/${name}.integration.test.ts`, import.meta.url)));
     const baseline = vi.fn(async () => { throw new Error('Shared PG must not initialize'); });
     const org = vi.fn(async () => { throw new Error('Shared org must not initialize'); });

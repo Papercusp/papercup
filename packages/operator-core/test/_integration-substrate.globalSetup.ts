@@ -22,6 +22,8 @@ const NO_SHARED_PG_TESTS = new Set([
   '../lib/tsc-service.integration.test.ts',
   // Real graph facade over isolated filesystem/AST fixtures; no database reads.
   '../lib/code-intelligence/reuse-graph.integration.test.ts',
+  // Frozen clone corpus and current migrated source bodies; compiler/filesystem only.
+  '../lib/code-intelligence/clone-remediation.integration.test.ts',
   // Owns a dedicated native PG cluster and applies only its isolated migration.
   '../lib/code-intelligence/test-coverage-map.integration.test.ts',
   // Supplies explicit in-memory providers; never initializes the native SQL adapters.
