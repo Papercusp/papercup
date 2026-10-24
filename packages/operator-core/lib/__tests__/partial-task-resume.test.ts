@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -908,7 +908,7 @@ describe('native durable continuation outcomes', () => {
         evidenceScopes: [{ unitId: 'guard', scope: 'reusable' }] });
     // Reusable proof can fail independently while authenticated current
     // authority remains valid. The public contract must expose that boundary.
-    checkpoint.continuation.receipts.find(receipt => receipt.unitId === 'guard')!.proof = null;
+    Object.assign(checkpoint.continuation.receipts.find(receipt => receipt.unitId === 'guard')!, { proof: null });
     expect(evaluate(observed.currentEvidence)).toMatchObject({ verdict: 'incomplete', current: ['a'], reused: [],
       evidenceScopes: [{ unitId: 'a', scope: 'current-execution' }] });
   });
@@ -1052,6 +1052,34 @@ describe('native durable continuation outcomes', () => {
     }
     const duplicate = snapshot(); duplicate.nativeRun.files.push(duplicate.nativeRun.files[0]!);
     expect(read(duplicate)).toMatchObject({ status: 'refused', reason: 'native-receipt-population-invalid' });
+  });
+
+  it('authenticates a completion snapshot without parsing or rehashing a document-sized string', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-bounded-completion-'));
+    const file = join(dir, 'out.json');
+    const value = { ...snapshot(), padding: Array.from({ length: 1000 }, () => 'observed-source-🙂'.repeat(8)) };
+    writeFileSync(file, JSON.stringify({ ...value, completionIntegrity: { schemaVersion: 1, sha256: hash(value) } }));
+    const stringify = JSON.stringify, parse = JSON.parse;
+    const writeGuard = vi.spyOn(JSON, 'stringify').mockImplementation(((input: unknown) => {
+      if (input && typeof input === 'object' && 'nativeRun' in input)
+        throw new RangeError('aggregate serialization forbidden');
+      return stringify(input);
+    }) as typeof JSON.stringify);
+    const readGuard = vi.spyOn(JSON, 'parse').mockImplementation(((input: string) => {
+      if (input.length > 4096) throw new RangeError('aggregate parsing forbidden');
+      return parse(input);
+    }) as typeof JSON.parse);
+    let observed;
+    try {
+      observed = readPartialNativeCompletion(file, expected, {
+        classifyReadPaths: () => ({ readPaths: ['fixtures/input.json'], opaqueReasons: [] }),
+      });
+    } finally {
+      readGuard.mockRestore();
+      writeGuard.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(observed).toMatchObject({ status: 'ready', receipts: [{ state: 'pass' }] });
   });
 
   it('refuses a torn or altered snapshot even if its pass file names look valid', () => {

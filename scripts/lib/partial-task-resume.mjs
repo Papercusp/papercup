@@ -11,6 +11,7 @@ import { selectReusablePasses } from "./test-pass-reuse.mjs";
 import { expandSelectionCommands } from "./related-tests.mjs";
 import { scriptUsesPassWithNoTests, scriptSupportsPassReuse } from "./empty-suite-guard.mjs";
 import { readNativeArtifactBytes, readNativeProcessTraceArtifacts } from "./budgeted-task-scheduler.mjs";
+import { jsonSha256, readCompletionJsonSync } from "./completion-snapshot.mjs";
 
 export const PARTIAL_TASK_CHECKPOINT_SCHEMA = 1;
 export const PARTIAL_TASK_SKIP_LIST_SCHEMA = 1;
@@ -515,12 +516,12 @@ export function readPartialNativeChannelCustody(producer, native, { allowInterru
 export function readPartialNativeCompletion(file, expected, options = {}) {
   const refused = reason => ({ status: "refused", reason, receipts: [], currentEvidence: [] });
   let snapshot;
-  try { snapshot = JSON.parse(readFileSync(file, "utf8")); }
+  try { snapshot = readCompletionJsonSync(file); }
   catch { return refused("snapshot-unreadable"); }
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return refused("snapshot-invalid");
   const { completionIntegrity, ...body } = snapshot;
   if (completionIntegrity?.schemaVersion !== 1 ||
-      completionIntegrity.sha256 !== createHash("sha256").update(JSON.stringify(body)).digest("hex"))
+      completionIntegrity.sha256 !== jsonSha256(body))
     return refused("snapshot-integrity-invalid");
   const context = snapshot.completionCheckpoint, native = snapshot.nativeRun;
   if (!validIdentity(expected?.attemptId) || context?.schemaVersion !== 1 ||
