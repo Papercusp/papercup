@@ -298,6 +298,55 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
     expect(f.stored.size).toBe(1);
   });
 
+  it('rebinds a retained auditor to its recovered evaluator without changing its target or lease', async () => {
+    const f = fixture();
+    f.input.task.detail.gradingAuditRuntimeBinding = { baseUrl: 'http://127.0.0.1:42457' };
+    const runtime = { taskId: 'runtime-recovered', baseUrl: 'http://127.0.0.1:33015',
+      evaluatorBuild: { sha: 'recovered-build', version: '1.2.3' }, bundleSha256: 'b'.repeat(64),
+      expiresAtSec: Math.floor(Date.now() / 1000) + 3600 };
+    const result = await notifyRetainedGradingAuditor({ ...f.input, runtime }, f.d);
+    expect(result).toMatchObject({ state: 'delivered', ownerId: 'su-independent' });
+    const sent = f.d.send.mock.calls[0]![1];
+    expect(sent.body).toContain(runtime.baseUrl);
+    expect(sent.body).toContain(runtime.evaluatorBuild.sha);
+    expect(sent.body).not.toContain('http://127.0.0.1:42457');
+    const [, serialized] = f.tx.mock.calls[0] as unknown as [TemplateStringsArray, string];
+    expect(JSON.parse(serialized)).toEqual({ gradingAudit: {
+      issueId: f.input.card.issueId, evidenceFingerprint: f.input.card.evidenceFingerprint,
+      reservation: f.input.reservation,
+    }, gradingAuditRuntimeBinding: runtime });
+    expect(f.d.wake).toHaveBeenCalledTimes(1);
+  });
+
+  it('delivers a changed evaluator once even when the same lease was already delivered', async () => {
+    const f = fixture();
+    const runtime = { taskId: 'runtime-old', baseUrl: 'http://127.0.0.1:42457',
+      evaluatorBuild: { sha: 'exact-build', version: '1.2.3' }, bundleSha256: 'b'.repeat(64),
+      expiresAtSec: Math.floor(Date.now() / 1000) + 3600 };
+    const old = await notifyRetainedGradingAuditor({ ...f.input, runtime }, f.d);
+    const replacement = { ...runtime, taskId: 'runtime-new', baseUrl: 'http://127.0.0.1:33015' };
+    const results = await Promise.all(Array.from({ length: 4 }, () =>
+      notifyRetainedGradingAuditor({ ...f.input, runtime: replacement }, f.d)));
+    expect(results.map(r => r.state).sort()).toEqual(['already-delivered', 'already-delivered', 'already-delivered', 'delivered']);
+    expect(results[0]!.msgId).not.toBe(old.msgId);
+    expect(new Set(results.map(r => r.msgId)).size).toBe(1);
+    expect(f.stored.size).toBe(2);
+    expect(f.d.wake).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not publish a recovered evaluator when the target fingerprint or lease changed', async () => {
+    const f = fixture();
+    f.d.confirmReservation.mockResolvedValue(false);
+    const runtime = { taskId: 'runtime-new', baseUrl: 'http://127.0.0.1:33015',
+      evaluatorBuild: { sha: 'exact-build', version: '1.2.3' }, bundleSha256: 'b'.repeat(64),
+      expiresAtSec: Math.floor(Date.now() / 1000) + 3600 };
+    expect(await notifyRetainedGradingAuditor({ ...f.input, runtime }, f.d))
+      .toMatchObject({ state: 'failed', reason: expect.stringContaining('target/fingerprint/lease changed') });
+    expect(f.tx).not.toHaveBeenCalled();
+    expect(f.stored.size).toBe(0);
+    expect(f.d.wake).not.toHaveBeenCalled();
+  });
+
   it('deduplicates concurrent renewal notifications and their wake for the same lease', async () => {
     const f = fixture();
     const results = await Promise.all(Array.from({ length: 4 }, () => notifyRetainedGradingAuditor(f.input, f.d)));
@@ -2282,6 +2331,28 @@ describe('dispatchPendingGradingAudits', () => {
       reservedAt: '2026-09-08T00:00:00.000Z',
       restore: auditorLease,
     });
+  });
+
+  it.each([false, true])('passes the recovered evaluator to the existing auditor with prior lease=%s', async (hasPrior) => {
+    const d = deps();
+    const key = 'grading-audit:EI-runtime-renew';
+    const lease = { key, reservedAt: '2026-09-08T00:00:00.000Z' };
+    d.reserve.mockResolvedValue({ status: 'claimed', reservation: lease,
+      ...(hasPrior ? { prior: { key, reservedAt: '2026-09-07T23:40:00.000Z' } } : {}) });
+    d.listScorecards.mockResolvedValue([card('EI-runtime-renew', {
+      gradedGeneration: { deployedSha: '2222222', hostStartedAt: null, bootHeadSha: null,
+        scoutCodeHash: null, staleHost: false },
+    })]);
+    d.listTasks.mockResolvedValue([{ taskId: 'retained', state: 'running',
+      detail: { label: key, coordOwnerId: 'su-independent' } } as unknown as TaskRow]);
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-runtime-renew'], ctx }, d);
+    expect(result.receipts[0]).toMatchObject({ state: 'deduped', renewalNotification: { state: 'delivered' } });
+    expect(d.notifyRetainedAuditor).toHaveBeenCalledWith(expect.objectContaining({
+      runtime: await d.ensureRuntime.mock.results[0]!.value,
+      task: expect.objectContaining({ taskId: 'retained' }),
+    }));
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
   });
 
   it('does not hand off a renewed lease after losing the restore CAS', async () => {
