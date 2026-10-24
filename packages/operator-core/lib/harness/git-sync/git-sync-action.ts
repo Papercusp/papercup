@@ -32,6 +32,7 @@
  *     completion for a terminal git-sync fire (EI-21049559233457671).
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { contentReportPreviewText, CONTENT_REPORT_PREVIEW_LIMIT, gitSyncContentEscalationBody, gitSyncContentPreview, gitSyncContentSignature, persistGitSyncContentReport } from './git-sync-content-report';
 import { readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
@@ -1703,29 +1704,8 @@ async function writeGitSyncContentEscalation(
   needsHuman: boolean,
 ): Promise<void> {
   const { sql } = getOrgPg();
-  const files = contentErrors.map((c) => ({
-    scope: c.scope,
-    file: c.file,
-    detector: c.detectorKey,
-    error: c.error,
-    // The detector scans dirty working-tree bytes, which may differ from HEAD.
-    // Preserve the exact snapshot and verdict identity so the human escalation
-    // remains reproducible after another edit or commit changes the file.
-    ...(c.contentHash ? { contentHash: c.contentHash } : {}),
-    ...(c.detectorResultHash ? { detectorResultHash: c.detectorResultHash } : {}),
-  }));
-  const list = contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]`).join(', ');
-  const body = JSON.stringify({
-    kind: CONTENT_ERROR_KIND,
-    harness_slug: slug,
-    files,
-    consecutive_content_error_ticks: consecutiveTicks,
-    needs_human: needsHuman,
-    emitted_at: Date.now(),
-    detail: needsHuman
-      ? `git-sync content guard: ${files.length} file(s) STILL failing their content check after ${consecutiveTicks} ticks — the content-fixer could not repair them; a human must fix: ${list}. (They are quarantined — excluded from every auto-commit — so staging stays clean while they wait.)`
-      : `git-sync quarantined ${files.length} broken file(s) (excluded from the auto-commit so staging stays clean); content-fixer dispatched: ${list}.`,
-  });
+  const evidenceArtifact = await persistGitSyncContentReport(slug, workspaceId, contentErrors);
+  const body = gitSyncContentEscalationBody(slug, contentErrors, consecutiveTicks, needsHuman, evidenceArtifact);
   await sql.unsafe(
     `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
      VALUES ($1, $2, $3, $4, $5)
@@ -2165,9 +2145,7 @@ function contentFixerEligibleErrors(contentErrors: readonly ScopedContentError[]
  *  routine metadata JSONB, which rejects \u0000, and a NUL here failed every outcome write
  *  (EI-24099226502437988 — origin froze because the bridge leg runs after that write). */
 function contentFixerSignature(contentErrors: readonly ScopedContentError[]): string {
-  return [...new Set(contentErrors.map((c) => `${c.scope}\u001f${c.file}\u001f${c.detectorKey}`))]
-    .sort()
-    .join('\u001e');
+  return gitSyncContentSignature(contentErrors);
 }
 
 /** One `last_content_errors` entry: `<scope>/<file> [<detector>]`. WI-6554700010008496: a
@@ -2188,26 +2166,18 @@ async function upsertGitSyncContentHumanWorkItem(
   consecutiveTicks: number,
 ): Promise<void> {
   const signature = contentFixerSignature(contentErrors);
-  const signatureHash = createHash('sha256').update(signature).digest('hex').slice(0, 24);
-  const files = contentErrors.map((c) => ({
-    scope: c.scope,
-    file: c.file,
-    detector: c.detectorKey,
-    error: c.error,
-    // The detector scans dirty working-tree bytes, which may differ from HEAD.
-    // Preserve the exact snapshot and verdict identity so the human escalation
-    // remains reproducible after another edit or commit changes the file.
-    ...(c.contentHash ? { contentHash: c.contentHash } : {}),
-    ...(c.detectorResultHash ? { detectorResultHash: c.detectorResultHash } : {}),
-  }));
+  // Preserve the existing condition key while replacing the stored raw signature.
+  const signatureHash = signature.slice('sha256:'.length, 'sha256:'.length + 24);
+  const evidenceArtifact = await persistGitSyncContentReport(slug, workspaceId, contentErrors);
+  const files = gitSyncContentPreview(contentErrors);
   const fileList = files.map((f) => `${f.scope}/${f.file} [${f.detector}]: ${f.error}`).join('; ');
   const { upsertConditionWorkItem } = await import('../../coord/condition-upsert');
   await upsertConditionWorkItem(`git-sync-content:${slug}:${signatureHash}`, {
     kind: 'bug',
-    title: `git-sync content quarantine needs a human (${files.length} file(s), ${signatureHash})`,
+    title: `git-sync content quarantine needs a human (${contentErrors.length} file(s), ${signatureHash})`,
     summary:
       `The git-sync content fixer exhausted its ${MAX_CONTENT_FIXER_ATTEMPTS}-tick budget for this offender signature ` +
-      `after ${consecutiveTicks} consecutive ticks. These files remain quarantined from auto-commit until repaired: ${fileList}`,
+      `after ${consecutiveTicks} consecutive ticks. ${contentErrors.length} files remain quarantined from auto-commit until repaired. Preview: ${contentReportPreviewText(fileList)}. Full evidence: ${evidenceArtifact}`,
     severity: 'major',
     harness: slug,
     workspaceId,
@@ -2217,6 +2187,9 @@ async function upsertGitSyncContentHumanWorkItem(
       signature: signatureHash,
       consecutiveContentErrorTicks: consecutiveTicks,
       files,
+      fileCount: contentErrors.length,
+      filesOmitted: contentErrors.length - files.length,
+      evidenceArtifact,
     },
   });
 }
@@ -2735,6 +2708,7 @@ async function recordOutcome(
       ? 'quarantined'
       : outcome.status;
   const localSyncRecordedAt = Date.now();
+  const contentEvidence = await persistGitSyncContentReport(slug, workspaceId, outcome.contentErrors);
   await patchRoutineMetadata(
     slug,
     workspaceId,
@@ -2800,7 +2774,10 @@ async function recordOutcome(
       last_publish_blocked_at: publishBlockedAtCommit,
       // EI-438 content-guard counters: consecutive ticks with a quarantined file + the set.
       consecutive_content_error_ticks: consecutiveContentErrorTicks,
-      last_content_errors: outcome.contentErrors.map(gitSyncContentErrorKey),
+      last_content_errors: outcome.contentErrors.slice(0, CONTENT_REPORT_PREVIEW_LIMIT).map(c => contentReportPreviewText(gitSyncContentErrorKey(c))),
+      last_content_error_count: outcome.contentErrors.length,
+      last_content_errors_omitted: Math.max(0, outcome.contentErrors.length - CONTENT_REPORT_PREVIEW_LIMIT),
+      last_content_errors_artifact: contentEvidence,
       last_content_error_signature:
         fixerContentErrors.length > 0 ? contentFixerSignature(fixerContentErrors) : null,
       // A measured-clean pass invalidates the prior dispatch identity. This is
@@ -4568,7 +4545,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // not the routine-wide streak. A new file/detector set starts its own five-tick budget.
   const contentSignature =
     revalidatedContentErrors.length > 0 ? contentFixerSignature(revalidatedContentErrors) : null;
-  const sameContentSignature = contentSignature !== null && contentSignature === prev.contentSignature;
+  const previousSignature = prev.contentSignature && !prev.contentSignature.startsWith('sha256:')
+    ? 'sha256:' + createHash('sha256').update(prev.contentSignature).digest('hex')
+    : prev.contentSignature;
+  const sameContentSignature = contentSignature !== null && contentSignature === previousSignature;
   const prevSignatureContentTicks = sameContentSignature ? prev.contentTicks : 0;
   const contentTicks = contentSignature === null ? 0 : prevSignatureContentTicks + 1;
   // EI-21906459740652039: the cumulative-limit peel's own consecutive-tick counter.
@@ -8381,7 +8361,7 @@ async function recordAndEscalateTick(a: {
           (notice === 'realarm' ? `⚠ STILL QUARANTINED (re-alarm) — ` : '') +
           `git-sync: [${slug}] ${contentErrors.length} broken file(s) STILL failing their content check after ${contentTicks} ticks — ` +
           `the content-fixer couldn't repair them; a human is needed. Quarantined (staging stays clean): ` +
-          contentErrors.map((c) => `${c.scope}/${c.file}`).join(', ');
+          contentErrors.slice(0, CONTENT_REPORT_PREVIEW_LIMIT).map((c) => contentReportPreviewText(`${c.scope}/${c.file}`)).join(', ');
         console.warn(`[git-sync] ${slug}: ${summary}`);
         try {
           await upsertGitSyncContentHumanWorkItem(slug, workspaceId, contentErrors, contentTicks);
@@ -8415,6 +8395,9 @@ async function recordAndEscalateTick(a: {
         await patchRoutineMetadata(slug, workspaceId, {
           consecutive_content_error_ticks: 0,
           last_content_errors: [],
+          last_content_error_count: 0,
+          last_content_errors_omitted: 0,
+          last_content_errors_artifact: null,
           last_content_fixer: null,
         });
         await clearGitSyncEscalation(slug, [CONTENT_ERROR_KIND], CONTENT_ESCALATION_PHASE);
@@ -8424,7 +8407,7 @@ async function recordAndEscalateTick(a: {
     if (outcome.contentErrors.length > 0) {
       await patchRoutineMetadata(slug, workspaceId, {
         consecutive_content_error_ticks: 0,
-        last_content_errors: outcome.contentErrors.map(gitSyncContentErrorKey),
+        last_content_errors: outcome.contentErrors.slice(0, CONTENT_REPORT_PREVIEW_LIMIT).map(c => contentReportPreviewText(gitSyncContentErrorKey(c))),
         last_content_error_signature: null,
         last_content_fixer: null,
       });

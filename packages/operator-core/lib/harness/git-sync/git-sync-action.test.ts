@@ -5745,7 +5745,58 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
   });
 
   const contentSignature = (errors: GitSyncOutcome['contentErrors']): string =>
-    [...new Set(errors.map((e) => `${e.scope}\u001f${e.file}\u001f${e.detectorKey}`))].sort().join('\u001e');
+    'sha256:' + createHash('sha256').update(
+      [...new Set(errors.map((e) => `${e.scope}\u001f${e.file}\u001f${e.detectorKey}`))].sort().join('\u001e'),
+    ).digest('hex');
+
+  it('bounds health/escalation previews while retaining every exact quarantine blocker in PG artifacts', async () => {
+    const errors = Array.from({ length: 8169 }, (_, i) => ({
+      ...contentErrorOutcome.contentErrors[0]!,
+      file: `src/long-${i}-${'path'.repeat(40)}.mdx`,
+      error: `error-${i}-${'detail'.repeat(100)}`,
+      excludedRoot: `src/root-${i}.ts`,
+      excludedRootReason: `held by su-peer for WI-${i} — turn-scoped hold`,
+      contentHash: createHash('sha256').update(String(i)).digest('hex'),
+    }));
+    runGitSyncMock.mockResolvedValue({ ...contentErrorOutcome, contentErrors: errors });
+    counterRows = [{ et: 0, lo: [], ct: 4, cs: contentSignature(errors) }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    const patch = routinePatches().find(p => p.last_content_error_count === errors.length)!;
+    expect(patch).toMatchObject({ last_status: 'quarantined', local_sync_status: 'synced', last_content_errors_omitted: 8149 });
+    expect(patch.last_content_errors).toHaveLength(20);
+    expect(String(patch.last_content_error_signature)).toHaveLength(71);
+    expect(Buffer.byteLength(JSON.stringify(patch))).toBeLessThan(32_000);
+    const escalation = contentUpserts()[0]!.body;
+    expect(escalation).toMatchObject({ needs_human: true, file_count: 8169, files_omitted: 8149 });
+    expect(escalation.files).toHaveLength(20);
+    expect(Buffer.byteLength(JSON.stringify(escalation))).toBeLessThan(64_000);
+    const writes = unsafeCalls.filter(c => c.text.includes('INSERT INTO harness_shared.harness_text_artifacts'));
+    expect(writes.length).toBeGreaterThan(0);
+    const artifact = writes.find(c => c.params[1] === patch.last_content_errors_artifact)!;
+    expect(artifact.params[4]).toBe('ws-42');
+    expect(JSON.parse(String(artifact.params[2])).files).toEqual(errors);
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    const human = upsertConditionWorkItemMock.mock.calls[0]![1] as { summary: string; payload: Record<string, unknown> };
+    expect(Buffer.byteLength(human.summary)).toBeLessThan(1500);
+    expect(human.payload).toMatchObject({ fileCount: 8169, filesOmitted: 8149, evidenceArtifact: patch.last_content_errors_artifact });
+    warn.mockRestore();
+  });
+
+  it('keeps the existing fixer budget and condition key when a legacy raw signature is first hashed', async () => {
+    const errors = contentErrorOutcome.contentErrors;
+    const legacy = [...new Set(errors.map(e => `${e.scope}\u001f${e.file}\u001f${e.detectorKey}`))].sort().join('\u001e');
+    counterRows = [{ et: 0, lo: [], ct: 4, cs: legacy }];
+    runGitSyncMock.mockResolvedValue(contentErrorOutcome);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await action(ctx);
+    expect(contentUpserts()[0]!.body).toMatchObject({ needs_human: true, consecutive_content_error_ticks: 5 });
+    expect(upsertConditionWorkItemMock.mock.calls[0]![0]).toBe(`git-sync-content:papercup:${createHash('sha256').update(legacy).digest('hex').slice(0, 24)}`);
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
 
   // EI-24099226502437988: JSONB rejects \u0000, so a NUL anywhere in the outcome patch
   // failed the whole write — and the bridge leg that pushes origin runs after it.
@@ -5920,9 +5971,10 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
       await action(ctx);
 
       const input = upsertConditionWorkItemMock.mock.calls[0]![1] as {
-        payload: { files: Array<Record<string, unknown>> };
+        payload: { files: Array<Record<string, unknown>>; evidenceArtifact: string };
       };
-      const recorded = input.payload.files[0]!;
+      const artifact = unsafeCalls.find(c => c.text.includes('INSERT INTO harness_shared.harness_text_artifacts') && c.params[1] === input.payload.evidenceArtifact)!;
+      const recorded = JSON.parse(String(artifact.params[2])).files[0]!;
       const expectedContentHash = createHash('sha256').update(text, 'utf8').digest('hex');
       const expectedVerdictHash = createHash('sha256')
         .update(JSON.stringify({ detectorKey: 'identity-leak', error: recorded.error }), 'utf8')
@@ -5931,13 +5983,14 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
       expect(recorded).toMatchObject({
         scope: 'superproject',
         file,
-        detector: 'identity-leak',
+        detectorKey: 'identity-leak',
         contentHash: expectedContentHash,
         detectorResultHash: expectedVerdictHash,
       });
       expect(recorded.contentHash).not.toBe(staleError.contentHash);
       expect(recorded.detectorResultHash).not.toBe(staleError.detectorResultHash);
       expect(recorded.error).toContain('hardcoded home path');
+      expect(input.payload.files[0]).toMatchObject({ contentHash: expectedContentHash, detectorResultHash: expectedVerdictHash });
     } finally {
       warn.mockRestore();
       rmSync(join(repoDir, 'docs'), { recursive: true, force: true });
