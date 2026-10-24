@@ -3023,7 +3023,7 @@ dependency_generation_prune_ephemeral() {
 # independently proved the source tree is immutable and never patched.
 dependency_generation_materialize_tree() {
   local src="$1" dest="$2" tmp old
-  local source_device dest_device mode='copy'
+  local source_device dest_device mode='copy' clone_rc=0
   tmp="${dest}.generation-tmp.$$"
   old="${dest}.generation-old.$$"
   rm -rf -- "$tmp" "$old"
@@ -3038,6 +3038,20 @@ dependency_generation_materialize_tree() {
       mode='hardlink'
     else
       rm -rf -- "$tmp"
+    fi
+  fi
+  if [ ! -d "$tmp" ]; then
+    # An immutable same-filesystem CoW clone consumes no physical-copy slot.
+    # Strict cloning must fail rather than silently copy behind a live peer's
+    # capacity hold. Keep headroom and owned-child cancellation checks, then
+    # use the existing locked copier only when strict cloning is unsupported.
+    if [ "$source_device" = "$dest_device" ]; then
+      dependency_generation_check_headroom "$src" "$tmp" || return $?
+      dependency_generation_copy_with_progress "$src" "$tmp" --reflink=always || clone_rc=$?
+      if [ "$clone_rc" -ne 0 ]; then
+        rm -rf -- "$tmp"
+        case "$clone_rc" in 73|130|143) return "$clone_rc" ;; esac
+      fi
     fi
   fi
   if [ ! -d "$tmp" ]; then
