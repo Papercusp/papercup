@@ -1723,6 +1723,7 @@ const ensureCodexHome = defineTool({
     }
     if (sessionRow?.role && sessionRow.role !== 'su') {
       const { repairRoleCodexHome } = await import('../../../role-codex-home-repair');
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts#<module>/handler:6483ea8b879cf9f5f870:1","classification":"durable","reason":"Restricted-role repair reaches lifecycle notification paths; preserve their terminal delivery obligation through this shared wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const result = await repairRoleCodexHome({
         advSessionId, owner, sessionRow, rawRecord,
         operatorBaseUrl: new URL(req.url).origin, body, measure,

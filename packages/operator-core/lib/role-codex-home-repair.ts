@@ -61,9 +61,11 @@ export async function repairRoleCodexHome(input: {
       await import('./blueprint/operation-worker-binding');
     const { resolveProjectDir } = await import('./spawn-config');
     const { getOrgPg } = await import('@papercusp/db-org');
+    // notify-classification: {"id":"packages/operator-core/lib/role-codex-home-repair.ts#<module>/repairRoleCodexHome:e9a39b6eb1c58d59b580:1","classification":"durable","reason":"Accepted-operation binding reaches lifecycle notification paths; retain their terminal delivery obligation during role repair.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const accepted = sessionRow.feature ? await resolveAcceptedOperationWorkerBinding({
       sql: getOrgPg().sql, workspaceId: sessionRow.workspaceId, harnessSlug,
       workItemId: sessionRow.feature, role: sessionRow.role,
+      // notify-classification: {"id":"packages/operator-core/lib/role-codex-home-repair.ts#<module>/repairRoleCodexHome:13d6cb7f424b0fab084c:1","classification":"durable","reason":"Project resolution can reach lifecycle notifications; retain their terminal delivery requirement through role repair.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       repoDir: await resolveProjectDir(harnessSlug, sessionRow.workspaceId) ?? '',
     }) : null;
     if (sessionRow.feature && !accepted) {
@@ -72,6 +74,7 @@ export async function repairRoleCodexHome(input: {
     const selection = accepted ? selectAcceptedOperationWorkerModel(accepted,
       typeof body.model === 'string' ? body.model : null, 'codex') : null;
     const { buildRoleLaunchSpec } = await import('./role-launch-spec');
+    // notify-classification: {"id":"packages/operator-core/lib/role-codex-home-repair.ts#<module>/repairRoleCodexHome:f723fa87d6b9447673bb:1","classification":"durable","reason":"Role launch-spec construction reaches lifecycle notification paths; preserve their terminal delivery obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const spec = await buildRoleLaunchSpec({
       role: sessionRow.role, workspaceId: sessionRow.workspaceId, harnessSlug,
       featureId: sessionRow.feature, operatorBaseUrl: operatorBaseUrl,
