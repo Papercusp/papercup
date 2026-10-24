@@ -330,6 +330,9 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
     // detector keys plus their stable signature. Without this reader, `quarantined`
     // and its counter expose the failure class but not the file an agent must resolve.
     'last_content_errors',
+    'last_content_error_count',
+    'last_content_errors_omitted',
+    'last_content_errors_artifact',
     'last_content_error_signature',
     'fire_count',
     'armed_at',

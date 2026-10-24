@@ -1213,7 +1213,7 @@ describe('routines:list', () => {
     expect(b.routines[0].health.git_sync_exclusions.warning).toContain('last completed sweep');
   });
 
-  it('surfaces the writer-backed content-error paths and signature in routine health', async () => {
+  it.each([0, 8168])('surfaces content-error totals and full-evidence reference beside a preview (%i omitted)', async (omitted) => {
     const now = Date.now();
     cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
     sqlMock.mockResolvedValue([
@@ -1232,6 +1232,9 @@ describe('routines:list', () => {
           last_synced_at: now - 30_000,
           consecutive_content_error_ticks: 1,
           last_content_errors: ['root/docs/evidence/bad.json [identity-leak]'],
+          last_content_error_count: omitted + 1,
+          last_content_errors_omitted: omitted,
+          last_content_errors_artifact: 'git-sync/content-errors/sha256.json',
           last_content_error_signature: 'stable-file-detector-signature',
         },
       },
@@ -1243,6 +1246,11 @@ describe('routines:list', () => {
     expect(b.routines[0].health.consecutive_content_error_ticks).toBe(1);
     expect(b.routines[0].health.last_content_errors).toEqual(['root/docs/evidence/bad.json [identity-leak]']);
     expect(b.routines[0].health.last_content_error_signature).toBe('stable-file-detector-signature');
+    expect(b.routines[0].health).toMatchObject({
+      last_content_error_count: omitted + 1,
+      last_content_errors_omitted: omitted,
+      last_content_errors_artifact: 'git-sync/content-errors/sha256.json',
+    });
   });
 
   it('surfaces the git-sync head_sha through the callable health reader', async () => {
