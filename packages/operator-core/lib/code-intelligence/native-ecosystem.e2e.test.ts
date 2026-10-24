@@ -8,6 +8,25 @@ import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { nativeCliCall, nativeCliTestTimeout, nativeFixtureProcess, scopedNativeFixtureArgs } from './native-cli.fixture';
 import './scoped-contracts.e2e.test';
+import { privateReuseTestEnvironment } from './__fixtures__/reuse-api-journey';
+
+describe('private native reuse evidence routing', () => {
+  it('binds the inner reporter to its private reader while preserving the parent evidence environment', () => {
+    const parent = { HARNESS_ADMIN_DATABASE_URL: 'postgresql://fixture:private@127.0.0.1:42577/papercusp',
+      PAPERCUSP_PG_PORT: '42577', PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://parent@localhost:5432/ledger',
+      PAPERCUSP_TEST_RUN_WORKSPACE: 'parent-workspace', PAPERCUSP_TEST_RUN_HARNESS: 'papercusp' };
+    const selected = privateReuseTestEnvironment(parent, 'test-runtime-routing', '/private/root');
+    expect(selected.PAPERCUSP_TEST_RUNS_DB_URL).toBe(parent.HARNESS_ADMIN_DATABASE_URL);
+    expect(selected.PAPERCUSP_TEST_RUN_WORKSPACE).toBe('test-runtime-routing');
+    expect(selected.PAPERCUSP_TEST_RUN_HARNESS).toBe('test-runtime-routing');
+    expect(selected.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBe('/private/root/reports/inner-test-receipt.jsonl');
+    expect(parent.PAPERCUSP_TEST_RUN_WORKSPACE).toBe('parent-workspace');
+    expect(parent.PAPERCUSP_TEST_RUNS_DB_URL).toBe('postgresql://parent@localhost:5432/ledger');
+    expect(() => privateReuseTestEnvironment({ ...parent, PAPERCUSP_PG_PORT: '42578' },
+      'test-runtime-routing', '/private/root')).toThrow('private product database');
+    expect(() => privateReuseTestEnvironment(parent, 'papercusp', '/private/root')).toThrow('Private reuse workspace');
+  });
+});
 
 const baseUrl = process.env.OPERATOR_BASE_URL;
 const taskBriefItem = process.env.NATIVE_TASK_BRIEF_ITEM;

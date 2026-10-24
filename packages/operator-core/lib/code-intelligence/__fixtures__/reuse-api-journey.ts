@@ -6,6 +6,19 @@ import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+/** Inner assertions read the private operator ledger; the outer test retains its own sink. */
+export function privateReuseTestEnvironment(env: NodeJS.ProcessEnv, workspace: string, root: string) {
+  assert(workspace.startsWith('test-runtime-'), 'Private reuse workspace required');
+  const url = new URL(env.HARNESS_ADMIN_DATABASE_URL ?? '');
+  assert(['postgres:', 'postgresql:'].includes(url.protocol)
+    && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+    && Number(url.port) > 0 && url.port === env.PAPERCUSP_PG_PORT,
+  'Inner reporter must use the private product database');
+  return { PAPERCUSP_TEST_RUNS_DB_URL: url.toString(), PAPERCUSP_TEST_RUN_WORKSPACE: workspace,
+    PAPERCUSP_TEST_RUN_HARNESS: workspace, PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(root, 'reports/inner-test-receipt.jsonl'),
+    PAPERCUSP_TEST_RUN_SOURCE: 'local' };
+}
+
 export async function runNativeReuseJourney({ call, workspace, root, owner, repo, handlerHash }: {
   call: (name: string, args: Record<string, unknown>) => Promise<Record<string, any>>;
   workspace: string; root: string; owner: string; repo: string; handlerHash: string;
@@ -90,6 +103,15 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
   const before = await readFile(join(root, 'src/target.ts'), 'utf8');
   await call('capability:edit', { file_path: join(root, 'src/target.ts'), old_string: before,
     new_string: '// touched clone sibling in this private task\n' + before + aggregate('plantedCopy') });
+  // with-test-pg preserves the parent's durable evidence destination on purpose.
+  // This nested run instead feeds the private operator's completion reader.
+  Object.assign(process.env, privateReuseTestEnvironment(process.env, workspace, root));
+  delete process.env.PAPERCUSP_TEST_RUN_COMMIT;
+  delete process.env.PAPERCUSP_TEST_RUN_CASE_TITLE_PATTERN;
+  delete process.env.PC_TEST_FILE_COVERAGE_SCOPE;
+  const { resolveTestRunsPgUrl, resolveTestRunWorkspaceId } = await import('@papercusp/test-config/admin-test-runs-reporter');
+  assert.equal(resolveTestRunsPgUrl(), process.env.HARNESS_ADMIN_DATABASE_URL);
+  assert.equal(resolveTestRunWorkspaceId(), workspace);
   const run = await call('testing:run', { harness: workspace, work_item_id: id, files: ['src/target.test.ts'],
     timeoutMs: 30_000 });
   console.log('NATIVE_REUSE_TEST_RUN=' + JSON.stringify(run));
