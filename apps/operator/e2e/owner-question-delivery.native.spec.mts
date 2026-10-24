@@ -57,7 +57,7 @@ test('owner questions and choices survive reopening and accept an answer in the 
     });
     return decodeNativeBridgeJson(result.stdout, name);
   }
-  const measure = (expression: string) => native('eval', `JSON.stringify(${expression})`);
+  const measure = (expression: string) => native('eval', expression, '--json');
   const findRow = (text: string) => `Array.from(document.querySelectorAll('[data-testid^="inbox-row-"]')).find(row => row.textContent?.includes(${JSON.stringify(text)}))`;
   async function openRow(text: string) {
     await expect.poll(() => measure(`!!(${findRow(text)})`), { timeout: 45_000 }).toBe(true);
@@ -99,7 +99,7 @@ test('owner questions and choices survive reopening and accept an answer in the 
     // Navigate away from the choice and reload: the reopened card must reconstruct
     // the same stored options, rather than depend on a transient question dialog.
     await openRow(question);
-    await native('eval', 'window.__questionRehearsalOldDocument = true; location.reload(); true');
+    await native('eval', 'window.__questionRehearsalOldDocument = true; location.reload(); true', '--json');
     await expect.poll(() => measure(`window.__questionRehearsalOldDocument === true`), { timeout: 30_000 }).toBe(false);
     await openRow(prompt);
     await expect.poll(() => measure(choicesVisible), { timeout: 30_000 }).toBe(true);
