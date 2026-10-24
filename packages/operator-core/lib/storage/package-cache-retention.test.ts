@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createRetentionPin } from './retention-pins';
 import {
   PACKAGE_CACHE_MUTEX_NAME,
+  DEFAULT_PACKAGE_CACHE_MAX_BYTES,
   PRESSURE_PACKAGE_CACHE_MAX_BYTES,
   measurePackageCache,
   resolvePackageCacheTargets,
@@ -12,6 +13,7 @@ import {
   type PackageCacheMeasurement,
   type PackageCacheTarget,
 } from './package-cache-retention';
+import { RETENTION_POLICY, validatePolicy } from './retention-policy';
 import { type DiskSnapshot } from './disk-space-alarm';
 import * as diskSpaceAlarm from './disk-space-alarm';
 
@@ -29,6 +31,15 @@ const targets: PackageCacheTarget[] = [
 ];
 
 describe('resolvePackageCacheTargets', () => {
+  it('declares the finite native cache cap in the canonical retention policy', () => {
+    const cls = RETENTION_POLICY.find(cls => cls.id === 'package-caches')!;
+    expect(cls.keep.kind).toBe('native');
+    expect(cls.maxBytes).toBe(DEFAULT_PACKAGE_CACHE_MAX_BYTES);
+    expect(Number.isSafeInteger(cls.maxBytes)).toBe(true);
+    expect(cls.maxBytes).toBeGreaterThan(0);
+    expect(validatePolicy(RETENTION_POLICY)).toEqual([]);
+  });
+
   it('uses manager-owned cache roots and pins native cleanup to those exact paths', () => {
     const resolved = resolvePackageCacheTargets({
       homeDir: '/home/agent',
@@ -117,6 +128,17 @@ describe('runPackageCacheRetention', () => {
     vi.spyOn(diskSpaceAlarm, 'sampleDiskSnapshots').mockResolvedValue([diskSnapshot(3 * GIB)]);
   });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); rmSync(sandbox, { recursive: true, force: true }); });
+
+  it('enforces the canonical default cap through native cleanup and final measurement', async () => {
+    const cap = RETENTION_POLICY.find(cls => cls.id === 'package-caches')!.maxBytes!;
+    const sizes = [measurement(cap + 1), measurement(cap + 1), measurement(cap)];
+    const runCommand = vi.fn(async () => ({ ok: true, exitCode: 0, timedOut: false, output: '' }));
+    const out = await runPackageCacheRetention({ targets: [targets[0]!],
+      measure: async () => sizes.shift()!, runCommand, withMutex: async (_name, run) => run() });
+    expect(runCommand).toHaveBeenCalledExactlyOnceWith(targets[0], process.cwd());
+    expect(out[0]).toMatchObject({ status: 'pruned', maxBytes: cap,
+      beforeBytes: cap + 1, afterBytes: cap, reclaimedBytes: 1 });
+  });
 
   it.each([false, true])('protects pinned descendants and releases expired pins (expired=%s)', async (expired) => {
     const cache = join(sandbox, 'cache'); const descendant = join(cache, 'needed');

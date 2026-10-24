@@ -5,6 +5,7 @@
 import { expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,7 +13,7 @@ import net from 'node:net';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
-import { hostThroughPty, metaPathFor, handoffPathFor } from '../scripts/psu-pty-host.mjs';
+import { hostThroughPty, metaPathFor, handoffPathFor, readHostHandoffForParentPid } from '../scripts/psu-pty-host.mjs';
 import { mintCarryRespawnArgs, codexThreadWriterHolder } from '../scripts/psu-launcher.mjs';
 import { launchIdentityAssumeHandoff, makeIdentityAssumeHostPort,
   prepareIdentityAssumeCheckpoint } from '../scripts/psu-identity-assume.mjs';
@@ -20,6 +21,16 @@ import { codexCliResponsesBody, codexCliResponsesCompletionSse } from
   '../../../packages/operator-core/lib/inference-gateway/codex-cli-bridge';
 
 type Row = Record<string, any>;
+const productionState = vi.hoisted(() => ({ sql: undefined as any, homes: new Map<string, string>() }));
+vi.mock('@papercusp/db-org', async original => {
+  const actual = await original<typeof import('@papercusp/db-org')>();
+  return { ...actual, getOrgPg: () => productionState.sql ? { sql: productionState.sql } : actual.getOrgPg() };
+});
+vi.mock('@papercusp/orchestrator/session-launch-dirs', async original => {
+  const actual = await original<typeof import('@papercusp/orchestrator/session-launch-dirs')>();
+  return { ...actual, codexHomeForSessionKey: (key: string | number) =>
+    productionState.homes.get(String(key)) ?? actual.codexHomeForSessionKey(key) };
+});
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 const alive = (pid: number) => {
   try { process.kill(pid, 0); return true; }
@@ -41,8 +52,7 @@ function callOutputs(value: any): Row[] {
   return String(value.type).endsWith('call_output') ? [value] : Object.values(value).flatMap(callOutputs);
 }
 
-it.each(['native-resume', 'checkpoint'] as const)(
-  'resumes installed native target context and returns the caller on the same managed attachment (%s)', async mode => {
+async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = false) {
     const root = mkdtempSync('/tmp/assume-native-journey-');
     const marker = { target: `TARGET_HISTORY_${randomUUID()}`, caller: `CALLER_HISTORY_${randomUUID()}`,
       checkpoint: `TARGET_CHECKPOINT_${randomUUID()}` };
@@ -55,7 +65,7 @@ it.each(['native-resume', 'checkpoint'] as const)(
       write(data: string) { output += data; return true; } } };
     let phase: 'seed' | 'caller' | 'target' | 'return' = 'seed';
     let port = 0, issued = false, targetReady = false;
-    const requests: Array<{ phase: string; body: Row }> = [], errors: string[] = [];
+    const requests: Array<{ phase: string; body: Row }> = [], errors: string[] = [], nativeResults: string[] = [];
     const hosts: McpServer[] = [];
     const orders: Row[] = [], inspections = new Map<string, Row>();
     let releaseTarget!: () => void;
@@ -76,7 +86,11 @@ it.each(['native-resume', 'checkpoint'] as const)(
       return files.map(path => JSON.parse(readFileSync(join(homes[key], 'sessions', path), 'utf8').split('\n')[0]))
         .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp))).at(-1)!.payload.id as string;
     };
-    const inspect = async (request: Row) => {
+    let real: Awaited<ReturnType<typeof import('../vitest-shims/identity-assume-production').productionAssumeFixture>> | undefined;
+    let accepted: Row | undefined, targetWork = '';
+    const routed: Row[] = [];
+    const inspect = async (request: Row, afterExit = false, action = 'observe') => {
+      if (real) return real.inspect(request, afterExit, action);
       const result = inspections.get(request.transitionKey);
       if (!result || JSON.stringify(result.preparation.caller) !== JSON.stringify(request.caller))
         throw new Error('Fixture inspection refused an unknown caller');
@@ -86,10 +100,32 @@ it.each(['native-resume', 'checkpoint'] as const)(
       try {
         const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
         const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
+        if (req.url === '/inspect') {
+          const result = await inspect(body.request, body.afterExit, body.action);
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(result)); return;
+        }
         if (req.url === '/mcp') {
           const host = new McpServer({ name: 'native-handoff-fixture', version: '1' }); hosts.push(host);
           host.registerTool('handoff_fixture', { inputSchema: {} }, async () => {
             if (phase !== 'caller' && phase !== 'target') throw new Error('Handoff outside an execution phase');
+            if (real && phase === 'target') {
+              const result = await real.probe(owners.target, targetWork);
+              routed.push(result);
+              return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+            }
+            if (real) {
+              const id = nativeId('caller');
+              await vi.waitFor(() => expect(JSON.parse(readFileSync(metaPathFor(owners.caller), 'utf8'))
+                .nativeSessionId).toBe(id), { timeout: 5000 });
+              const registration = await real.register(owners.caller, id, root, false);
+              productionState.homes.set(String(registration), homes.caller);
+              const plan = await real.prepare(owners.caller, owners.target, mode);
+              accepted = await real.commit(plan);
+              if (accepted.state !== 'handoff-accepted') throw new Error('Production commit: ' + JSON.stringify({
+                state: accepted.state, reason: accepted.reason, trace: real.trace }));
+              await real.send(owners.target, 'DURING_HANDOFF');
+              return { content: [{ type: 'text', text: JSON.stringify(accepted) }] };
+            }
             const key = phase, other = key === 'caller' ? 'target' : 'caller';
             const meta = JSON.parse(readFileSync(metaPathFor(owners[key]), 'utf8'));
             const caller = { ownerId: owners[key], workspaceId: 'native-context-fixture',
@@ -127,7 +163,9 @@ it.each(['native-resume', 'checkpoint'] as const)(
           model: 'gpt-6-sol', text, inputTokens: 0, outputTokens: 0 })));
         if (phase === 'seed') { finish(marker.target); return; }
         if (phase === 'return') { finish('CALLER_RETURNED'); return; }
-        if (callOutputs(body.input).some(row => row.call_id === `handoff-${phase}`)) {
+        const results = callOutputs(body.input).filter(row => row.call_id === `handoff-${phase}`);
+        if (results.length) {
+          nativeResults.push(JSON.stringify(results).slice(0, 1800));
           if (phase === 'target') { targetReady = true; await targetGate; }
           finish('HANDOFF_NATIVE_COMPLETE'); return;
         }
@@ -171,6 +209,45 @@ it.each(['native-resume', 'checkpoint'] as const)(
         .flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])];
     const start = (key: keyof typeof homes, args: string[], inherited?: Row) => {
       const signals = new EventEmitter();
+      if (production) {
+        const file = join(root, 'psu-pty-host-' + key + '.mjs');
+        const hostModule = new URL('../scripts/psu-pty-host.mjs', import.meta.url).href;
+        const assumeModule = new URL('../scripts/psu-identity-assume.mjs', import.meta.url).href;
+        // This subprocess really owns the production host and native child.
+        // Discovery checks its command line; no discovery verifier is replaced.
+        writeFileSync(file, [
+          'import {hostThroughPty,writeHostHandoff} from ' + JSON.stringify(hostModule) + ';',
+          'import {makeIdentityAssumeHostPort} from ' + JSON.stringify(assumeModule) + ';',
+          'import {readdirSync,readFileSync} from "node:fs"; import {join} from "node:path";',
+          'const inspect=async(request,afterExit=false,action="observe")=>{const r=await fetch(' +
+            JSON.stringify('http://127.0.0.1:' + port + '/inspect') +
+            ',{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({request,afterExit,action})});' +
+            'if(!r.ok)throw new Error("Inspection refused");return r.json()};',
+          'const latest=()=>{try{const root=join(process.env.CODEX_HOME,"sessions");return readdirSync(root,{recursive:true})' +
+            '.map(String).filter(p=>p.endsWith(".jsonl")).map(p=>JSON.parse(readFileSync(join(root,p),"utf8").split("\\n")[0]))' +
+            '.sort((a,b)=>String(a.timestamp).localeCompare(String(b.timestamp))).at(-1)?.payload.id??null}catch{return null}};',
+          'const identityAssume=makeIdentityAssumeHostPort({ownerId:process.env.PAPERCUSP_SID,inspect,reexecCode:75,' +
+            'hostId:' + JSON.stringify(inherited?.hostId ?? null) + ',attachmentId:' + JSON.stringify(inherited?.attachmentId ?? null) +
+            ',writeHandoff:(owner,record)=>{const path=writeHostHandoff(owner,record);' +
+            'if(path)process.send?.({handoff:JSON.parse(readFileSync(path,"utf8"))});return path}});',
+          'const code=await hostThroughPty({command:"codex",args:' + JSON.stringify(args) +
+            ',cwd:' + JSON.stringify(root) + ',ownerId:process.env.PAPERCUSP_SID,env:process.env,' +
+            'resolveRespawnNativeId:latest,identityAssume,onReexec:()=>{},emitCompacted:()=>null,onExit:()=>{},activityPersistMs:100,bridgeTty:false});',
+          'process.exit(code);',
+        ].join('\n'));
+        const child = spawn(process.execPath, [file], { cwd: root,
+          env: hermeticEnv({ CODEX_HOME: homes[key], TERM: 'xterm-256color', PAPERCUSP_AGENT: 'codex',
+            PAPERCUSP_SID: owners[key], PAPERCUSP_WORKSPACE: 'native-context-fixture',
+            PAPERCUSP_PSU_REEXEC: '75', PAPERCUSP_PSU_REEXEC_PPID: String(process.pid) }),
+          stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+        child.stdout!.on('data', data => { output += data; }); child.stderr!.on('data', data => { output += data; });
+        child.on('message', (message: any) => { if (message.handoff) orders.push(message.handoff); });
+        signals.on('SIGTERM', () => child.kill('SIGTERM'));
+        const done = new Promise<number>((resolve, reject) => {
+          child.once('error', reject); child.once('close', code => resolve(code ?? -1));
+        });
+        const run = { owner: owners[key], signals, done }; runs.push(run); return run;
+      }
       const hostPort = makeIdentityAssumeHostPort({ ownerId: owners[key], inspect,
         reexecCode: 75, attachmentId: inherited?.attachmentId, hostId: inherited?.hostId,
         writeHandoff: (_owner: string, record: Row) => {
@@ -188,9 +265,13 @@ it.each(['native-resume', 'checkpoint'] as const)(
         emitCompacted: () => null, onExit: () => {}, bridgeTty: false, io });
       const run = { owner: owners[key], signals, done }; runs.push(run); return run;
     };
-    const diagnostics = () => JSON.stringify({ phase, errors, requests: requests.length, orders: orders.length,
+    const diagnostics = () => JSON.stringify({ phase, errors, nativeResults, requests: requests.length, orders: orders.length,
       output: output.slice(-1200) });
     try {
+      if (production) {
+        const { productionAssumeFixture } = await import('../vitest-shims/identity-assume-production');
+        real = await productionAssumeFixture('native-context-fixture', sql => { productionState.sql = sql; });
+      }
       port = await new Promise<number>(resolve => server.listen(0, '127.0.0.1',
         () => resolve((server.address() as net.AddressInfo).port)));
       for (const home of Object.values(homes)) {
@@ -202,12 +283,25 @@ it.each(['native-resume', 'checkpoint'] as const)(
       await vi.waitFor(() => expect(output, diagnostics()).toContain(marker.target), { timeout: 20_000 });
       seed.signals.emit('SIGTERM'); await seed.done;
       const targetNative = nativeId('target');
+      if (real) {
+        const registration = await real.register(owners.target, targetNative, root, true);
+        productionState.homes.set(String(registration), homes.target);
+        await real.checkpoint(owners.target, marker.checkpoint);
+        await real.send(owners.target, 'BEFORE_HANDOFF');
+        targetWork = await real.assign(owners.target);
+      }
       phase = 'caller'; issued = false;
       const caller = start('caller', [...baseArgs(), marker.caller]);
       await vi.waitFor(() => expect(orders, diagnostics()).toHaveLength(1), { timeout: 25_000 });
       const original = orders[0].assume.request.caller;
       await vi.waitFor(() => expect(alive(original.nativePid), diagnostics()).toBe(false), { timeout: 10_000 });
       expect(await caller.done).toBe(75);
+      if (real) {
+        const consumed = readHostHandoffForParentPid(process.pid, { ownerId: owners.caller });
+        expect(consumed).not.toBeNull(); orders[0] = consumed;
+        expect(alive(orders[0].fromPid)).toBe(false);
+        await real.depart(owners.caller);
+      }
       const callerNative = nativeId('caller');
       const resume = async (session: Row, options: Row) => {
         await options.managedAssume.verify();
@@ -226,7 +320,7 @@ it.each(['native-resume', 'checkpoint'] as const)(
         return start(key, args, options.managedAssume);
       };
       const launch = (handoff: Row) => launchIdentityAssumeHandoff(handoff, { inspect,
-        resolveSession: async (id: number) => ({ id, coordOwnerId: id === 2 ? owners.target : owners.caller,
+        resolveSession: async (id: number) => real ? real.resolve(id) : ({ id, coordOwnerId: id === 2 ? owners.target : owners.caller,
           workspaceId: original.workspaceId, agent: 'codex', role: 'su', sessionId: id === 2 ? targetNative : callerNative }),
         accountFor: async () => ({ mode: 'default' }), resume, isAlive: alive, baseEnv: {} });
       phase = 'target'; issued = false;
@@ -243,6 +337,24 @@ it.each(['native-resume', 'checkpoint'] as const)(
       expect(targetInput.includes(marker.target)).toBe(mode === 'native-resume');
       expect(targetInput.includes(marker.checkpoint)).toBe(mode === 'checkpoint');
       expect(orders).toHaveLength(1);
+      if (real) {
+        expect(routed).toHaveLength(1);
+        expect(routed[0]).toMatchObject({ ownerId: owners.target,
+          assignment: { id: targetWork, assignee: owners.target, observedBy: owners.target } });
+        expect(routed[0].messages).toHaveLength(2);
+        expect(new Set(routed[0].messages.map((row: Row) => row.id)).size).toBe(2);
+        expect((await real.probe(owners.caller, targetWork)).messages).toEqual([]);
+        expect((await real.probe(owners.target, targetWork)).messages).toEqual([]);
+        const after = await real.send(owners.target, 'AFTER_HANDOFF');
+        expect((await real.probe(owners.target, targetWork)).messages.map(row => row.id)).toEqual([after.msg_id]);
+        expect((await real.load(accepted!.preparation))?.state).toBe('handoff-accepted');
+        expect((await real.pause(owners.caller))?.transitionKey).toBe(accepted!.transitionKey);
+        expect((await real.commit(accepted!.preparation)).replayed).toBe(true);
+        expect(orders).toHaveLength(1);
+        targetRun.signals.emit('SIGTERM'); releaseTarget(); await targetRun.done;
+        expect(errors, diagnostics()).toEqual([]);
+        return;
+      }
       releaseTarget();
       await vi.waitFor(() => expect(alive(targetMeta.ptyPid), diagnostics()).toBe(false), { timeout: 10_000 });
       expect(await targetRun.done).toBe(75);
@@ -263,6 +375,14 @@ it.each(['native-resume', 'checkpoint'] as const)(
       await Promise.allSettled(hosts.map(host => host.close()));
       server.closeAllConnections();
       if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+      await real?.dispose(); productionState.sql = undefined; productionState.homes.clear();
       rmSync(root, { recursive: true, force: true });
     }
-  }, 120_000);
+}
+
+it.each(['native-resume', 'checkpoint'] as const)(
+  'resumes installed native target context and returns the caller on the same managed attachment (%s)',
+  mode => nativeJourney(mode), 120_000);
+it.each(['native-resume', 'checkpoint'] as const)(
+  'uses production custody and routed responsibilities through the installed native handoff (%s)',
+  mode => nativeJourney(mode, true), 180_000);

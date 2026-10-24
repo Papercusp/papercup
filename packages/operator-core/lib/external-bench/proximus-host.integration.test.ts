@@ -25,6 +25,9 @@ import { makeBearerCredentialResolver } from '../inference-gateway/credential-st
 import { recordUsageSample } from '../agent-usage-telemetry';
 import { recordUsageSamplePg, type UsageSamplePgContext } from '../../../../libs/papercusp/packages/orchestrator/src/usage-sample-pg';
 import { makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle } from './frontier-swe-seam';
+import { startFrontierSweProximusAssignment } from './run-launcher';
+import * as preregistration from './reproducibility/prereg';
+import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { BenchTask } from './types';
 
 const exec = promisify(execFile);
@@ -216,11 +219,24 @@ async function controllerFixture(input: { measured: ProximusRuntimeReceipt;
       resolveLocalBackends: async () => [], observePool: () => () => {}, fetchImpl: input.provider,
       refreshIntervalMs: 0, poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0 }));
     const readCensus = async () => (await getLearningSpendPositions(sql!, { workspaceId, loopId, includeReservations: true })).census;
-    return { protocol, arm, hosted, sql, readCensus, stop, signal: abort.signal };
+    return { protocol, arm, hosted, sql, readCensus, stop, signal: abort.signal,
+      controller, auth, resources, preregHash, loopId };
   } catch (error) { await stop(); throw error; }
 }
 
-it.each(['direct process', 'controller accounting'] as const)
+async function writeFixtureBills(control: Awaited<ReturnType<typeof controllerFixture>>,
+  population: Awaited<ReturnType<typeof readProximusAttemptPopulation>>) {
+  if (population.status !== 'terminal') throw new Error('No complete controller request population');
+  for (const attempt of population.attempts) await recordUsageSample({ bucketKey: 'offline-proximus',
+    provider: 'openai', modelClass: 'fixture', source: 'headers', model: control.arm.model,
+    runId: control.protocol.runId, accountId: control.arm.account, costUsd: 0.001, costSource: 'provider',
+    inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheCreationTokens: 0,
+    providerRequest: { gatewayRequestId: attempt.gatewayRequestId, gatewayAttemptId: attempt.attemptId,
+      providerResponseId: attempt.providerCompletion!.responseId, manifestSha256: control.hosted.accountingBinding.preregHash,
+      assignmentId: control.hosted.accountingBinding.assignmentId } });
+}
+
+it.each(['direct process', 'controller accounting', 'assignment handoff'] as const)
 ('runs the official Proximus tool/submit loop against its bound task and grades the resulting workspace (%s)', async mode => {
   await prepareFixtureImage();
   phase('image/runtime preparation');
@@ -233,7 +249,7 @@ it.each(['direct process', 'controller accounting'] as const)
   const measured = await measureProximusRuntime({ pythonBin });
   phase('installed runtime measured');
   const scratch = mkdtempSync(join(tmpdir(), 'px-official-loop-'));
-  const trialDir = join(scratch, 'trial'); mkdirSync(trialDir);
+  let trialDir = join(scratch, 'trial'); mkdirSync(trialDir);
   const tests = join(scratch, 'tasks/t1/tests'); mkdirSync(tests, { recursive: true });
   writeFileSync(join(tests, 'test.sh'), 'mkdir -p /logs/verifier\nif [ "$(cat /app/answer.txt)" = solved ]; then echo 1; else echo 0; fi > /logs/verifier/reward.txt\n');
   const task: BenchTask = { benchmark: 'frontier-swe', instanceId: 't1', problemStatement: 'Write solved to /app/answer.txt, then submit.',
@@ -245,7 +261,7 @@ it.each(['direct process', 'controller accounting'] as const)
   const requests: { path: string; authorization: string | undefined; body: any }[] = [];
   const failures: string[] = [];
   const authorizationEvidence: AuthorizationEvidence[] = [];
-  const model = mode === 'controller accounting' ? 'gpt-5' : 'gpt-4.1';
+  const model = mode === 'direct process' ? 'gpt-4.1' : 'gpt-5';
   const response = (path: string, authorization: string | undefined, body: any) => {
       requests.push({ path, authorization, body });
       if (requests.length > 3) throw new Error('Unexpected extra official-loop request');
@@ -267,12 +283,13 @@ it.each(['direct process', 'controller accounting'] as const)
     } catch (error) { failures.push(String(error)); res.writeHead(500); res.end('{}'); }
   });
   let controlled: Awaited<ReturnType<typeof controllerFixture>> | undefined;
+  let assignment: Awaited<ReturnType<typeof startFrontierSweProximusAssignment>> | undefined;
   let primaryFailure: unknown;
   try {
     await new Promise<void>(resolve => gateway.listen(0, '127.0.0.1', resolve));
     const baseURL = `http://127.0.0.1:${(gateway.address() as { port: number }).port}`;
     const maxWallClockMs = 180_000;
-    if (mode === 'controller accounting') controlled = await controllerFixture({ measured, scratch, evidence: authorizationEvidence,
+    if (mode !== 'direct process') controlled = await controllerFixture({ measured, scratch, evidence: authorizationEvidence,
       provider: async (target, init) => {
         if (String(target) !== 'https://api.openai.com/v1/responses') throw new Error('Unexpected fixture provider route');
         const body = JSON.parse(typeof init?.body === 'string' ? init.body : new TextDecoder().decode(init?.body as Uint8Array));
@@ -286,7 +303,47 @@ it.each(['direct process', 'controller accounting'] as const)
     // through upstream retries on an unsuitable image.
     await exec('docker', ['exec', handle.containerId, 'bash', '-lc', 'command -v git && command -v timeout'], { timeout: 30_000 });
     phase('official host run');
-    const result = controlled ? await runProximusHost(controlled.protocol, {
+    if (mode === 'assignment handoff') {
+      const control = controlled!;
+      // This offline fixture substitutes preregistration/capture/account lookup
+      // only. The factory, issued gateway, OS worker, task tools, request census,
+      // canonical bill join and frozen price projection execute their real code.
+      const guard = vi.spyOn(preregistration, 'requireCommittedPreregistration').mockResolvedValue({
+        preregHash: control.preregHash, gitCommitSha: 'a'.repeat(40), receiptRef: 'offline-fixture-preregistration' });
+      try {
+        assignment = await startFrontierSweProximusAssignment({ arm: 'baseline', task, handle,
+          role: 'solver', teamKey: 'baseline', topic: 'repair', directive: task.problemStatement, forbidTools: [],
+          attemptBudget: { maxCostUsd: control.arm.generationBudget.maxUsd,
+            maxTokens: control.arm.generationBudget.maxTokens, maxWallMs: maxWallClockMs } }, {
+          options: { workspaceId, runId: control.protocol.runId, armId: 'baseline', agent: 'proximus', seed: 1,
+            model: control.arm.model, effort: 'high', account: control.arm.account, driveTimeoutMs: maxWallClockMs,
+            preregistration: { preregHash: control.preregHash, config: control.protocol } },
+          protocol: control.protocol, context: { workspaceId, principal: { slug: 'offline-proximus' },
+            log: () => {} } as PapercuspUnifiedToolContext,
+          scope: { sql: control.sql, workspaceId }, resources: control.resources,
+          loopId: control.loopId, hostRunId: 'offline-factory-host', pythonBin,
+        }, {
+          capture: async input => { trialDir = input.checkout.dir; return { captureProviderInput: async () => {} }; },
+          authenticate: () => control.auth,
+          controller: () => ({ ...control.controller, startHostGateway: async () => control.hosted }),
+          billing: async (sql, binding, readCensus) => {
+            await writeFixtureBills(control, await readProximusAttemptPopulation(binding, readCensus));
+            return readProximusBilling(sql, binding, readCensus);
+          },
+        });
+        expect(guard).toHaveBeenCalledOnce();
+      } finally { guard.mockRestore(); }
+    }
+    const handoff = assignment ? await assignment.execute() : undefined;
+    if (handoff) {
+      expect(handoff.attempts).toMatchObject({ status: 'terminal', usageComplete: true,
+        knownUsage: { modelCalls: 3, tokensIn: 300, tokensOut: 30 } });
+      expect(handoff.billing).toMatchObject({ status: 'complete', billedInferenceMicros: '3000', missingAttemptIds: [] });
+      expect(handoff.pricing).toMatchObject({ status: 'complete', missingAttemptIds: [] });
+      await expect(assignment!.execute()).rejects.toThrow(/consumed|stopped/);
+      phase('production assignment handoff verified');
+    }
+    const result = handoff ? handoff.process : controlled ? await runProximusHost(controlled.protocol, {
       runId: controlled.protocol.runId, armId: 'baseline', taskId: 't1', seed: 1, agent: 'proximus',
       model: controlled.arm.model, effort: controlled.arm.effort, account: controlled.arm.account,
       budget: controlled.arm.generationBudget, topology: 'stock-native-reference', handle, pythonBin, trialDir,
@@ -320,16 +377,10 @@ it.each(['direct process', 'controller accounting'] as const)
       if (population.status !== 'terminal') throw new Error('No complete controller request population');
       expect(new Set(population.attempts.map(attempt => attempt.gatewayRequestId)).size).toBe(3);
       const readBill = () => readProximusBilling(controlled!.sql, controlled!.hosted.accountingBinding, controlled!.readCensus);
-      expect(await readBill()).toMatchObject({ status: 'incomplete', knownSubtotalMicros: '0', billedInferenceMicros: null });
+      if (!assignment) expect(await readBill()).toMatchObject({ status: 'incomplete', knownSubtotalMicros: '0', billedInferenceMicros: null });
       // Explicit synthetic provider bills exercise the canonical writer and
       // exact SQL join. They prove fixture reconciliation, never a real charge.
-      for (const attempt of population.attempts) await recordUsageSample({ bucketKey: 'offline-proximus',
-        provider: 'openai', modelClass: 'fixture', source: 'headers', model: controlled.arm.model,
-        runId: controlled.protocol.runId, accountId: controlled.arm.account, costUsd: 0.001, costSource: 'provider',
-        inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheCreationTokens: 0,
-        providerRequest: { gatewayRequestId: attempt.gatewayRequestId, gatewayAttemptId: attempt.attemptId,
-          providerResponseId: attempt.providerCompletion!.responseId, manifestSha256: controlled.hosted.accountingBinding.preregHash,
-          assignmentId: controlled.hosted.accountingBinding.assignmentId } });
+      if (!assignment) await writeFixtureBills(controlled, population);
       expect(await readBill()).toMatchObject({ status: 'complete', billedInferenceMicros: '3000', missingAttemptIds: [] });
       expect(authorizationEvidence).toHaveLength(3);
       expect(authorizationEvidence.every(attempt => attempt.authorized)).toBe(true);
@@ -351,16 +402,20 @@ it.each(['direct process', 'controller accounting'] as const)
   } catch (error) { primaryFailure = error; throw error;
   } finally {
       const cleanupFailures: unknown[] = [];
+      try { await assignment?.stop(); } catch (error) { cleanupFailures.push(error); }
       try { if (handle) await seam.teardown(handle); } catch (error) { cleanupFailures.push(error); }
       try { await controlled?.stop(); } catch (error) { cleanupFailures.push(error); }
       try { await new Promise<void>(resolve => gateway.close(() => resolve())); } catch (error) { cleanupFailures.push(error); }
       if (cleanupFailures.length) { succeeded = false; failures.push(...cleanupFailures.map(String)); }
       phase('owned cleanup completed');
-      if (succeeded) rmSync(scratch, { recursive: true, force: true });
+      if (succeeded) {
+        if (assignment) rmSync(trialDir, { recursive: true, force: true });
+        rmSync(scratch, { recursive: true, force: true });
+      }
       else {
         // Keep exact inputs and official diagnostics on failure; a successor
         // can diagnose this attempt without replaying it or losing its task ID.
-        writeFileSync(join(scratch, 'failure.json'), JSON.stringify({ handle, failures, authorizationEvidence,
+        writeFileSync(join(scratch, 'failure.json'), JSON.stringify({ handle, trialDir, failures, authorizationEvidence,
           requests: requests.map(({ path, body }) => ({ path, body })) }));
         process.stderr.write(`Proximus offline failure evidence: ${scratch}\n`);
       }

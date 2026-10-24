@@ -3,7 +3,8 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { listSpecEvidence } from '../packages/operator-core/lib/agent-tools/plans/spec-evidence-store';
 import type { inspectCommittedOperationalEvidence } from '../packages/operator-core/lib/agent-tools/testing/record-run';
@@ -11,6 +12,34 @@ import type { NativeCapacityLlmRun, NativeCapacityBriefReceipt } from '../packag
 
 const S42_PATH = 'packages/operator-core/lib/llm-testing/scenarios/su/S42-drain-watch-recheck.ts';
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+
+/** Recreate only generated reference pointers; instruction bytes remain authenticated.
+ * The native ledger owns the original root, which may already have been pruned.
+ * Its clean commit and measured source must be verified before using that context. */
+export function reconstructCapacityNativePlaybook(playbook: string, currentRoot: string, custody: {
+  root: string; commitSha: string; worktreeDirty: boolean; sourceMatches: boolean;
+}): string {
+  const canonicalRoot = (value: string) => isAbsolute(value) && value.length > 1
+    && resolve(value) === value && !/[\u0000-\u001f\u007f`\\]/.test(value);
+  if (!canonicalRoot(currentRoot) || !canonicalRoot(custody.root)
+    || !/^[a-f0-9]{40}$/.test(custody.commitSha) || custody.worktreeDirty !== false
+    || custody.sourceMatches !== true) throw new Error('native-prompt-source-custody-mismatch');
+  const heading = '## Operational reference index\n';
+  const start = playbook.indexOf(heading);
+  if (start < 0 || playbook.indexOf(heading, start + heading.length) >= 0)
+    throw new Error('native-prompt-reference-index-missing-or-ambiguous');
+  const next = playbook.indexOf('\n## ', start + heading.length);
+  const end = next < 0 ? playbook.length : next;
+  let references = 0;
+  const index = playbook.slice(start, end).replace(/^(- [^\n]+: `)([^`\n]+)(`)$/gm, (_, prefix, path: string, suffix) => {
+    if (!path.startsWith(currentRoot + sep) || resolve(path) !== path
+      || /[\u0000-\u001f\u007f\\]/.test(path)) throw new Error('native-prompt-reference-outside-source');
+    references++;
+    return prefix + custody.root + path.slice(currentRoot.length) + suffix;
+  });
+  if (!references) throw new Error('native-prompt-references-missing');
+  return playbook.slice(0, start) + index + playbook.slice(end);
+}
 
 async function nativeToolReceipt(id: number): Promise<NativeCapacityBriefReceipt & { servingBuildSha: string | null }> {
   const { getOrgPg } = await import('@papercusp/db-org');
@@ -181,14 +210,15 @@ async function readRecoveryOperations(root: string, row: Awaited<ReturnType<type
     { now: new Date().toISOString(), startedAt: artifact.startedAt, finishedAt: artifact.finishedAt });
 }
 
-async function readNativeLlmRuns(root: string, testRunId: number, scenarioId: string, passed: number) {
+async function readNativeLlmRuns(root: string, binding: Awaited<ReturnType<typeof listSpecEvidence>>[number], scenarioId: string, passed: number) {
+  const testRunId = binding.testRunId!;
   const [{ getOrgPg }, { parseTestRunExecutionDetails }, { validateCapacityNativeLlmRun }] = await Promise.all([
     import('@papercusp/db-org'), import('@papercusp/test-config/execution-details'),
     import('../packages/operator-core/lib/fleet/capacity-recovery-evidence'),
   ]);
   const { sql } = getOrgPg();
-  const [ledger] = await sql<Array<{ execution_details: unknown; started_at: Date; finished_at: Date }>>`
-    SELECT execution_details, started_at, finished_at FROM harness_shared.test_runs
+  const [ledger] = await sql<Array<{ execution_details: unknown; started_at: Date; finished_at: Date; commit_sha: string }>>`
+    SELECT execution_details, started_at, finished_at, commit_sha FROM harness_shared.test_runs
      WHERE id = ${testRunId} AND framework = 'llm-test' AND status = 'pass'
        AND worktree_dirty = false AND workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp'`;
   const execution = parseTestRunExecutionDetails(ledger?.execution_details);
@@ -196,6 +226,9 @@ async function readNativeLlmRuns(root: string, testRunId: number, scenarioId: st
   if (!ledger || !execution || execution.filePath !== S42_PATH || execution.scenarioId !== scenarioId
     || execution.passed !== passed || execution.failed !== 0 || !runIds?.length || runIds.length !== passed)
     throw new Error('native-llm-custody-missing:' + testRunId);
+  if (ledger.commit_sha !== binding.testRunProvenance?.commitSha
+    || realpathSync(root) !== realpathSync(fileURLToPath(new URL('../', import.meta.url))))
+    throw new Error('native-prompt-source-custody-mismatch');
   const runs = await sql<Array<Record<string, unknown>>>`
     SELECT id, scenario_id, scenario_version, scenario_hash, identity_hash, persona_id, persona_traits_json,
            rubric_version, sut_model, judge_model, status, started_at, finished_at, transcript_norm_json, transcript_raw_zstd
@@ -209,7 +242,13 @@ async function readNativeLlmRuns(root: string, testRunId: number, scenarioId: st
   ]);
   const scenario = SU_S42_DRAIN_WATCH_RECHECK.find(s => s.id === scenarioId);
   if (!scenario) throw new Error('unrelated-native-scenario');
-  const playbook = su.SU_PLAYBOOK_FRAMING + await su.loadPlaybookBody(['auto']);
+  if (realpathSync(su.resolvePlaybookPath()) !== realpathSync(join(root,
+    'libs/papercusp/packages/harness/blueprints/base/prompts/su.md')))
+    throw new Error('native-prompt-source-custody-mismatch');
+  const playbook = reconstructCapacityNativePlaybook(su.SU_PLAYBOOK_FRAMING + await su.loadPlaybookBody(['auto']), realpathSync(root), {
+    root: execution.root, commitSha: ledger.commit_sha, worktreeDirty: false,
+    sourceMatches: await matchesMeasuredSource(root, binding, ledger.commit_sha),
+  });
   const starts: number[] = [], finishes: number[] = [];
   for (const row of runs) {
     const run = { id: row.id, scenarioId: row.scenario_id, scenarioVersion: row.scenario_version,
@@ -369,7 +408,7 @@ try {
         if (!paths.includes(path)) throw new Error('native-prompt-source-not-measured:' + path);
       }
       const nativeRunIds = execution.testLayer === 'llm'
-        ? await readNativeLlmRuns(root, row.testRunId, execution.scenarioId ?? '', execution.passed) : undefined;
+        ? await readNativeLlmRuns(root, row, execution.scenarioId ?? '', execution.passed) : undefined;
       nativeContinuations.push({ bindingId: row.id, testRunId: row.testRunId, currentness: row.currentness.overall,
         status: execution.status, failed: execution.failed, passed: execution.passed,
         collectionFailed: execution.collectionFailed, testLayer: execution.testLayer, filePath: execution.filePath,
@@ -408,4 +447,5 @@ try {
 // process, including any idle database pool opened by the canonical reader.
 process.stdout.write(JSON.stringify(result) + '\n', () => process.exit(0));
 }
-void main().catch(error => { process.stderr.write(String(error) + '\n'); process.exitCode = 1; });
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+  void main().catch(error => { process.stderr.write(String(error) + '\n'); process.exitCode = 1; });

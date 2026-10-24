@@ -15,12 +15,13 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { inspectRetentionTrees, RetentionAllocationCounter } from './disk-consumer-census';
 import { criticalWriteHeadroomBytes, diskPolicyFromEnv, sampleDiskSnapshots } from './disk-space-alarm';
 import { withRetentionPinProtection } from './retention-pins';
+import { PACKAGE_CACHE_ROOT_MAX_BYTES } from './retention-policy';
 
 import { PACKAGE_CACHE_MUTEX_NAME, withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 
 export { PACKAGE_CACHE_MUTEX_NAME };
 
-export const DEFAULT_PACKAGE_CACHE_MAX_BYTES = 8 * 1024 ** 3;
+export const DEFAULT_PACKAGE_CACHE_MAX_BYTES = PACKAGE_CACHE_ROOT_MAX_BYTES;
 /** Keep small working caches; pressure recovery is not a purge on every fetch. */
 export const PRESSURE_PACKAGE_CACHE_MAX_BYTES = 1024 ** 3;
 const DEFAULT_MEASURE_BUDGET_MS = 30_000;

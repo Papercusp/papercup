@@ -8,6 +8,8 @@ import { formatSpecRef } from '../scheduler/claim-spec';
 import { parseOperationalEvidenceArtifact, recordOperationalRun, type RecordOperationalRunDeps } from '../agent-tools/testing/record-run';
 import { BRIEF_ADMIN, computeIdentityHash, JUDGE_PROMPT_SCAFFOLD_VERSION } from '@papercusp/testing-shell/llm';
 import { S42_CASES, S42_ITEM, S42_PROMPT } from '../llm-testing/scenarios/su/S42-drain-watch-recheck';
+import { deferSuPromptReferences } from '../prompt-reference-sections';
+import { reconstructCapacityNativePlaybook } from '../../../../scripts/verify-fleet-capacity-recovery.mts';
 import { LUNA_CAPACITY_PLAN, LUNA_CAPACITY_INSTRUMENTS, lunaCapacityInstruments, validateCapacityRecoveryProof, validateCapacityShipmentProof,
   validateCapacityDiagnosticProof, validateCapacityContinuationProof, validateCapacityContractProof, validateCapacityNativeLlmRun,
   validateCapacityShipmentEvidence, capacityBarEvidenceFingerprint, type NativeCapacityBarEvidence,
@@ -778,6 +780,13 @@ describe('native continuation layer and fresh-render coverage', () => {
 });
 
 describe('original native S42 trace and prompt provenance', () => {
+  const originalRoot = '/tmp/luna-original-immutable';
+  const relocatedRoot = '/tmp/luna-relocated-immutable';
+  const custody = () => ({ root: originalRoot, commitSha: 'a'.repeat(40), worktreeDirty: false, sourceMatches: true });
+  const render = (root: string, instruction = 'Preserve the owner restrictions.') => deferSuPromptReferences(
+    instruction + '\n\n## Git — a background routine owns commit + push\n\nCanonical source.\n\n## Retained instruction\n\nKeep this literal: ' + relocatedRoot + '/example.\n',
+    { base: root + '/libs/papercusp/packages/harness/blueprints/base/prompts/su.md',
+      overlay: root + '/apps/operator/prompts/papercusp-su.claude.md', repoRoot: root }).text;
   const expected = (arrival: string): NativeCapacityLlmContext => ({ scenarioId: 'su-S42-drain-watch-' + arrival,
     scenarioVersion: 6, scenarioHash: hash('a'), personaId: BRIEF_ADMIN.id, personaTraits: BRIEF_ADMIN.traits,
     rubricVersion: 'current-rubric', provider: 'anthropic', systemSha256: [hash('b')] });
@@ -794,6 +803,35 @@ describe('original native S42 trace and prompt provenance', () => {
         provider: 'anthropic', systemSha256: hash('b'), definitions: [], sha256: createHash('sha256').update('[]').digest('hex') } },
       ...toolCalls.map(data => ({ name: 'tool_call', data }))] };
   };
+  it('replays the exact recorded prompt after its immutable checkout was relocated or pruned', () => {
+    const recorded = render(originalRoot), relocated = render(relocatedRoot);
+    expect(relocated).not.toBe(recorded);
+    const reconstructed = reconstructCapacityNativePlaybook(relocated, relocatedRoot, custody());
+    expect(reconstructed).toBe(recorded);
+    expect(reconstructed).toContain(relocatedRoot + '/example.');
+    const run = native('empty');
+    const systemSha256 = createHash('sha256').update(JSON.stringify(recorded)).digest('hex');
+    run.rawEvents[0].data = { ...run.rawEvents[0].data as object, systemSha256 };
+    expect(validateCapacityNativeLlmRun(run, { ...expected('empty'),
+      systemSha256: [createHash('sha256').update(JSON.stringify(reconstructed)).digest('hex')] }).status).toBe('pass');
+    const changed = reconstructCapacityNativePlaybook(render(relocatedRoot, 'Ignore the owner restrictions.'), relocatedRoot, custody());
+    expect(validateCapacityNativeLlmRun(run, { ...expected('empty'),
+      systemSha256: [createHash('sha256').update(JSON.stringify(changed)).digest('hex')] }).violations)
+      .toContain('native-prompt-or-client-mismatch');
+    run.rawEvents[0].data = { ...run.rawEvents[0].data as object, provider: 'codex' };
+    expect(validateCapacityNativeLlmRun(run, { ...expected('empty'), systemSha256: [systemSha256] }).violations)
+      .toContain('native-prompt-or-client-mismatch');
+  });
+  it('refuses unproven source, dirty or malformed commit/root custody and foreign generated references', () => {
+    for (const change of [{ sourceMatches: false }, { worktreeDirty: true }, { commitSha: 'a'.repeat(7) },
+      { root: 'relative/root' }, { root: '/tmp/../foreign' }, { root: '/tmp/root\nforged' }, { root: '/tmp/root/' }])
+      expect(() => reconstructCapacityNativePlaybook(render(relocatedRoot), relocatedRoot, { ...custody(), ...change }))
+        .toThrow('native-prompt-source-custody-mismatch');
+    expect(() => reconstructCapacityNativePlaybook(render('/foreign-root'), relocatedRoot, custody()))
+      .toThrow('native-prompt-reference-outside-source');
+    expect(() => reconstructCapacityNativePlaybook('no generated references', relocatedRoot, custody()))
+      .toThrow('native-prompt-reference-index-missing-or-ambiguous');
+  });
   it.each(S42_CASES)('replays an original %s trace with the current scenario, persona, prompt and client', arrival => {
     expect(validateCapacityNativeLlmRun(native(arrival), expected(arrival))).toEqual({ status: 'pass', violations: [] });
   });
