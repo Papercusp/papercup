@@ -369,32 +369,45 @@ export async function listRuntimeVintage(
   return store.list(workspaceId, client, units);
 }
 
+const BOOT_REPORT_RETRY_DELAYS_MS = [1_000, 5_000, 15_000, 60_000] as const;
+
+/** A database that is still starting must not leave the previous boot pinned forever. */
+async function reportBootVintage(label: string, report: () => Promise<void>): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await report();
+      return;
+    } catch (error) {
+      const delay = BOOT_REPORT_RETRY_DELAYS_MS[attempt];
+      console.warn(`[runtime-vintage] ${label} failed (non-fatal, attempt ${attempt + 1}):`,
+        (error as Error)?.message ?? error,
+        delay === undefined ? 'retry budget exhausted' : `retrying in ${delay}ms`);
+      if (delay === undefined) return;
+      await new Promise<void>((resolve) => { setTimeout(resolve, delay).unref(); });
+    }
+  }
+}
+
 /**
  * Fire-and-forget boot-time self-report, built from build-info.ts's
  * getBuildInfo() (the same sha/version resolver /api/health already exposes).
  * Never throws, never blocks boot — a failed report just means this runtime's
  * row stays stale until its next successful boot, not a crashed process.
  */
-export function reportRuntimeVintageOnBoot(unit: string, extra?: Record<string, unknown>): void {
-  void (async () => {
-    try {
+export function reportRuntimeVintageOnBoot(unit: string, extra?: Record<string, unknown>): Promise<void> {
+  const buildTime = new Date().toISOString();
+  return reportBootVintage(`self-report for unit=${unit}`, async () => {
       const { getBuildInfo } = await import('./build-info');
       const info = getBuildInfo();
       await reportRuntimeVintage({
         unit,
         treeSha: info.sha,
         bundleVersion: info.version,
-        buildTime: new Date().toISOString(),
+        buildTime,
         pid: process.pid,
         extra,
       });
-    } catch (e) {
-      console.warn(
-        `[runtime-vintage] self-report failed for unit=${unit} (non-fatal):`,
-        (e as Error)?.message ?? e,
-      );
-    }
-  })();
+  });
 }
 
 /**
@@ -487,9 +500,8 @@ export function resolvePostgresInstanceReport(
 }
 
 /** Boot-time report of the connected Postgres instance. Never throws, never blocks boot. */
-export function reportPostgresRuntimeVintageOnBoot(): void {
-  void (async () => {
-    try {
+export function reportPostgresRuntimeVintageOnBoot(): Promise<void> {
+  return reportBootVintage('postgres instance report', async () => {
       const { sql } = getOrgPg();
       const [row] = await sql<Array<{ backend_pid: number; port: string; version: string; started: string | Date }>>`
         SELECT pg_backend_pid() AS backend_pid, current_setting('port') AS port,
@@ -507,8 +519,5 @@ export function reportPostgresRuntimeVintageOnBoot(): void {
         return;
       }
       await reportRuntimeVintage(report);
-    } catch (e) {
-      console.warn('[runtime-vintage] postgres instance report failed (non-fatal):', (e as Error)?.message ?? e);
-    }
-  })();
+  });
 }
