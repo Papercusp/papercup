@@ -3269,6 +3269,27 @@ export async function firstAdvSessionStartByCoordOwner(coordOwnerId: string): Pr
   }
 }
 
+const LATEST_ADV_SESSION_PRIMARY_ACQUIRE_TIMEOUT_MS = 1_500;
+const LATEST_ADV_SESSION_FALLBACK_ACQUIRE_TIMEOUT_MS = 7_500;
+const LATEST_ADV_SESSION_STATEMENT_TIMEOUT_MS = 1_500;
+const LATEST_ADV_SESSION_FALLBACK_CLOSE_TIMEOUT_SEC = 5;
+const LATEST_ADV_SESSION_TIMEOUT_SLACK_MS = 1_000;
+
+/**
+ * Maximum caller budget for latestAdvSessionByCoordOwner, including its
+ * dedicated fallback and bounded client shutdown. Callers must not apply only
+ * the primary acquisition deadline to the whole lookup or they can abandon the
+ * fallback before it returns.
+ */
+export const LATEST_ADV_SESSION_BY_COORD_OWNER_MAX_DURATION_MS =
+  Math.max(
+    LATEST_ADV_SESSION_PRIMARY_ACQUIRE_TIMEOUT_MS + LATEST_ADV_SESSION_STATEMENT_TIMEOUT_MS,
+    LATEST_ADV_SESSION_PRIMARY_ACQUIRE_TIMEOUT_MS +
+      LATEST_ADV_SESSION_FALLBACK_ACQUIRE_TIMEOUT_MS +
+      LATEST_ADV_SESSION_STATEMENT_TIMEOUT_MS +
+      LATEST_ADV_SESSION_FALLBACK_CLOSE_TIMEOUT_SEC * 1_000,
+  ) + LATEST_ADV_SESSION_TIMEOUT_SLACK_MS;
+
 /**
  * The most recent adv_sessions row for ONE coord owner — the await-event
  * wake-handle capture (await-event-primitive-2026-06-05 D-003): events:await
@@ -3277,21 +3298,23 @@ export async function firstAdvSessionStartByCoordOwner(coordOwnerId: string): Pr
  * advSessionsByCoordOwner above.
  */
 export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promise<AdvSessionRow | null> {
-  const queryLatest = (tx: TransactionSql) => tx<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
-    SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-           window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
-      FROM harness_shared.adv_sessions
-     WHERE coord_owner_id = ${coordOwnerId}
-     ORDER BY id DESC
-     LIMIT 1
-  `;
+  const queryLatest = async (tx: TransactionSql) => {
+    return await tx<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${coordOwnerId}
+       ORDER BY id DESC
+       LIMIT 1
+    `;
+  };
 
   try {
     const rows = await boundedOrgTxn(queryLatest, {
-      acquireTimeoutMs: 1_500,
+      acquireTimeoutMs: LATEST_ADV_SESSION_PRIMARY_ACQUIRE_TIMEOUT_MS,
       acquireRetries: 0,
       connectionSetupRetries: 0,
-      statementTimeoutMs: 1_500,
+      statementTimeoutMs: LATEST_ADV_SESSION_STATEMENT_TIMEOUT_MS,
       lockTimeoutMs: 1_000,
       readOnly: true,
       phase: 'adv-sessions:latest-by-coord-owner',
@@ -3321,16 +3344,16 @@ export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promis
         try {
           const rows = await boundedOrgTxn(queryLatest, {
             client: sql,
-            acquireTimeoutMs: 7_500,
+            acquireTimeoutMs: LATEST_ADV_SESSION_FALLBACK_ACQUIRE_TIMEOUT_MS,
             acquireRetries: 0,
-            statementTimeoutMs: 1_500,
+            statementTimeoutMs: LATEST_ADV_SESSION_STATEMENT_TIMEOUT_MS,
             lockTimeoutMs: 1_000,
             readOnly: true,
           });
           const r = rows[0];
           return r ? mapAdvSessionRow(r) : null;
         } finally {
-          await sql.end({ timeout: 5 });
+          await sql.end({ timeout: LATEST_ADV_SESSION_FALLBACK_CLOSE_TIMEOUT_SEC });
         }
       } catch (fallbackError) {
         warnUnlessMissingTable(fallbackError, 'latestAdvSessionByCoordOwner dedicated fallback');

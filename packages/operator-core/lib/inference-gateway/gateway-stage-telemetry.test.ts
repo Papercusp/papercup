@@ -1060,6 +1060,47 @@ it('Anthropic binding authenticates the final API-key account without retaining 
     body: wire!.body, bodySha256: sha256(wire!.body) });
 });
 
+it.each((['api-key', 'oauth'] as const).flatMap(authMode => [true, false].map(withBeta => ({ authMode, withBeta }))))(
+  'Anthropic binding snapshots final provider headers for $authMode/$withBeta admission', async ({ authMode, withBeta }) => {
+  const attempts: GatewayCarryTrialAttempt[] = [];
+  const results: GatewayCarryTrialAttemptResult[] = [];
+  let wire: { version: string | null; beta: string | null } | undefined;
+  upstream = http.createServer((req, res) => {
+    req.resume();
+    wire = { version: req.headers['anthropic-version'] as string ?? null,
+      beta: req.headers['anthropic-beta'] as string ?? null };
+    res.setHeader('content-type', 'application/json'); res.end('{}');
+  });
+  const upstreamPort = await listen(upstream);
+  gateway = createInferenceGateway({ upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    pool: createFailoverPool([{ accountId: 'native-account', authMode, token: async () => 'PRIVATE_PROVIDER_TOKEN' }]),
+    requestAbsorbMs: 0, selfHeal: { enabled: false },
+    carryTrial: anthropicTrialBinding(async attempt => {
+      attempts.push(attempt);
+      return { ...fixtureReservation(attempt), observeAttemptResult: async result => { results.push(result); } };
+    }),
+  });
+  const port = await gateway.listen(0);
+  const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, { method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}`,
+      ...(withBeta ? { 'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'context-1m-2025-08-07,interleaved-thinking-2025-05-14' } : {}) },
+    body: anthropicTrialBody() });
+  expect(response.status).toBe(200); await response.text();
+  expect(attempts).toHaveLength(1);
+  const headers = { version: attempts[0].anthropicVersion, beta: attempts[0].anthropicBeta };
+  expect(headers).toEqual(wire);
+  expect(headers.version).toBe('2023-06-01');
+  expect(headers.beta?.includes('context-1m-2025-08-07') ?? false).toBe(withBeta);
+  expect(headers.beta?.includes('oauth-2025-04-20') ?? false).toBe(authMode === 'oauth');
+  expect(Object.isFrozen(attempts[0])).toBe(true);
+  expect(Reflect.set(attempts[0], 'anthropicBeta', 'changed-after-admission')).toBe(false);
+  expect(attempts[0].anthropicBeta).toBe(wire!.beta);
+  expect(results.length).toBeGreaterThan(0);
+  for (const result of results) expect(result).toMatchObject({ anthropicVersion: wire!.version, anthropicBeta: wire!.beta });
+  expect(JSON.stringify(headers)).not.toContain('PRIVATE_');
+});
+
 it.each(['missing-token', 'wrong-token', 'refused', 'threw', 'expired', 'wrong-clock', 'replayed-receipt', 'empty-ref'] as const)(
   'Anthropic binding prevents the actual pooled HTTP write for %s', async mode => {
     let writes = 0, authorizations = 0;

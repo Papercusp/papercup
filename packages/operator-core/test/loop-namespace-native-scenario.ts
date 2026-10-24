@@ -53,17 +53,24 @@ export async function measureLoopNamespaceNativeScenario(o: {
   assert.equal(tagged.ledgerWritten, true);
 
   const answer = 'Private native namespace completed.';
-  const requests: Array<{ at: string; inputHash: string }> = [];
+  const requests: Array<{ at: string; method?: string; path?: string; inputHash?: string }> = [];
   let protocolError: unknown;
   const server = createServer((req, res) => {
     void (async () => {
+      const request: (typeof requests)[number] = { at: new Date().toISOString(), method: req.method, path: req.url };
+      requests.push(request);
       assert.match(req.url ?? '', /\/responses$/);
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       const input = JSON.stringify(body.input);
-      assert.ok(input.includes(tagged.taggedText), 'native request lost the enrolled prompt');
-      requests.push({ at: new Date().toISOString(), inputHash: createHash('sha256').update(input).digest('hex') });
+      // JSON serialization escapes the envelope's newline. Compare the decoded
+      // input text so the real enrolled prompt is checked byte for byte.
+      assert.ok(Array.isArray(body.input) && body.input.some((item: { role?: string; content?: Array<{ text?: string }> }) =>
+        item.role === 'user' && Array.isArray(item.content) && item.content.some(content =>
+          typeof content.text === 'string' && content.text.includes(tagged.taggedText))),
+      'native request lost the enrolled prompt');
+      request.inputHash = createHash('sha256').update(input).digest('hex');
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({
         model: String(body.model), text: answer, inputTokens: 100, outputTokens: 8,
@@ -89,7 +96,8 @@ export async function measureLoopNamespaceNativeScenario(o: {
           '-c', 'model_providers.private_namespace.name="Private namespace"',
           '-c', `model_providers.private_namespace.base_url="${origin}"`,
           '-c', 'model_providers.private_namespace.wire_api="responses"',
-          '-c', 'model_providers.private_namespace.requires_openai_auth=false'], {
+          '-c', 'model_providers.private_namespace.requires_openai_auth=false',
+          '-c', 'model_providers.private_namespace.supports_websockets=false'], {
           ...options, cwd: boot.cwd, env: { ...options?.env, ...boot.envelopeEnv, CODEX_HOME: boot.codexHome! },
         });
         native.attach(child.stdout);
@@ -99,9 +107,16 @@ export async function measureLoopNamespaceNativeScenario(o: {
     assert.equal(protocolError, undefined);
     assert.equal(result.text.trim(), answer);
     assert.ok(requests.length > 0);
+  } catch (error) {
+    if (protocolError) throw new Error(`Private native protocol failed: ${String(protocolError)}`, { cause: error });
+    throw error;
   } finally {
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
+    await writeFile(join(o.evidenceDir, 'loop-namespace-native-transport.json'), JSON.stringify({
+      origin, requests, protocolError: protocolError ? String(protocolError) : null,
+    }), { flag: 'wx' });
+    await writeFile(join(o.evidenceDir, 'loop-namespace-native-output.jsonl'), native.text(), { flag: 'wx' });
   }
   const events = native.text().trim().split('\n').map(line => JSON.parse(line));
   const nativeId = events.find(event => event.type === 'thread.started')?.thread_id;
@@ -112,6 +127,7 @@ export async function measureLoopNamespaceNativeScenario(o: {
   assert.equal(files.length, 1);
   const transcript = join(boot.codexHome!, 'sessions', files[0]);
   const transcriptBytes = await readFile(transcript);
+  await writeFile(join(o.evidenceDir, 'loop-namespace-native-transcript.jsonl'), transcriptBytes, { flag: 'wx' });
 
   // The real ingester runs in another home namespace. A global fallback would
   // miss this freshly enrolled native turn, even though bootstrap saved its pin.

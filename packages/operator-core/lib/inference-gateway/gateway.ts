@@ -1223,6 +1223,11 @@ export interface GatewayCarryTrialAttempt {
   readonly target: string;
   readonly body: string;
   readonly bodySha256: string;
+  /** Effective Anthropic version/beta after account-specific routing. These
+   * non-secret scalar fields bind input admission to the actual provider
+   * features, including context-window betas. Absent on other transports. */
+  readonly anthropicVersion?: string | null;
+  readonly anthropicBeta?: string | null;
   /** Caller-observed native IDs; only host/source reconciliation may attest them. */
   readonly nativeSessionId?: string;
   readonly nativeTurnId?: string;
@@ -2486,6 +2491,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       manifestSha256: binding.manifestSha256, armId: binding.armId,
       transport, accountId, target, body,
       bodySha256: createHash('sha256').update(init.body).digest('hex'),
+      ...(transport === 'anthropic-http' ? { anthropicVersion: headers.get('anthropic-version'),
+        anthropicBeta: headers.get('anthropic-beta') } : {}),
       ...(native?.status === 'observed' ? { nativeSessionId: native.threadId!, nativeTurnId: native.turnId! } : {}),
       credentialHeader, credentialSha256: createHash('sha256').update(credential).digest('hex'),
       clockId: processMonotonicClock.id, signal: init.signal,

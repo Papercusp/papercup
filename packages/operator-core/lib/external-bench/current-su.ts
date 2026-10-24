@@ -1773,7 +1773,7 @@ export function requireCurrentBenchHostBinding(observations: Pick<CurrentSuBench
 function sessionHandle(handle: BenchHarnessHandle): string {
   return canonicalJson([handle.slug, handle.featureId, handle.worktreePath]);
 }
-function requireSessionBudget(observations: CurrentSuBenchObservations,
+function requireSessionBudget(observations: Pick<CurrentSuBenchObservations, 'nativeGateway' | 'nativeAccountingBinding' | 'sessionBudget'>,
   opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration' | 'armId' | 'seed'>) {
   const host = requireCurrentBenchHostBinding(observations, opts), session = host.session;
   if (!session || session.receipt !== observations.sessionBudget || session.phase === 'retired' ||
@@ -1783,7 +1783,7 @@ function requireSessionBudget(observations: CurrentSuBenchObservations,
 }
 /** Consume once before enrollment/process creation. Rechecking the host route
  * alone cannot authorize another native session with the same allowance. */
-export function beginCurrentBenchNativeSession(observations: CurrentSuBenchObservations,
+export function beginCurrentBenchNativeSession(observations: Pick<CurrentSuBenchObservations, 'nativeGateway' | 'nativeAccountingBinding' | 'sessionBudget'>,
   opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration' | 'armId' | 'seed'>,
   handle: BenchHarnessHandle): () => void {
   const host = requireCurrentBenchHostBinding(observations, opts);
