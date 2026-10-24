@@ -334,7 +334,7 @@ describe('D177 security package content integrity', () => {
   });
 });
 
-async function frozen(excludedAlias = false, toolDelivery = false, miniflare = false) {
+async function frozen(excludedAlias = false, toolDelivery = false, miniflare = false, internalLeftoverLink = false) {
   const base = temp(); const root = join(base, 'source'); const generationRoot = join(base, 'published');
   const generationId = 'v1-' + 'a'.repeat(64); const generation = join(generationRoot, generationId);
   const names = ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal'];
@@ -353,11 +353,18 @@ async function frozen(excludedAlias = false, toolDelivery = false, miniflare = f
   }
   // Tooling directories stay in the generation fingerprint, outside the npm package namespace.
   pkg(join(generation, 'tree'), 'node_modules/@fixture/.x-1234abcd', '@fixture/x');
+  if (internalLeftoverLink) {
+    const leftover = join(generation, 'tree/node_modules/@fixture/.x-1234abcd/node_modules');
+    pkg(leftover, 'tool', 'tool');
+    mkdirSync(join(leftover, '.bin'), { recursive: true });
+    symlinkSync('../tool/index.js', join(leftover, '.bin/leftover'));
+  }
   if (miniflare) write(join(generation, 'tree/node_modules/.mf/cf.json'),
     JSON.stringify({ token: 'synthetic-miniflare-binder-secret' }));
   if (excludedAlias) {
     mkdirSync(join(generation, 'tree/node_modules/.bin'), { recursive: true });
-    symlinkSync('../@fixture/.x-1234abcd/index.js', join(generation, 'tree/node_modules/.bin/leftover'));
+    symlinkSync(internalLeftoverLink ? '../@fixture/.x-1234abcd/node_modules/.bin/leftover'
+      : '../@fixture/.x-1234abcd/index.js', join(generation, 'tree/node_modules/.bin/leftover'));
   }
   write(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages }));
   write(join(root, '.gitignore'), 'node_modules/\n');
@@ -384,6 +391,19 @@ async function frozen(excludedAlias = false, toolDelivery = false, miniflare = f
 }
 
 describe('D177 frozen execution binding', () => {
+  it('admits internal leftover symlinks while rejecting their actual loads and external aliases', async () => {
+    const f = await frozen(false, false, false, true);
+    const result = await bindSeedFrozenDependencies(f.root, f.commit);
+    expect(result.excludedEntries).toContainEqual({ path: 'node_modules/@fixture/.x-1234abcd', name: '@fixture/x', version: '1.0.0' });
+    expect(result.installedPackages.some(row => row.path.includes('.x-1234abcd'))).toBe(false);
+    for (const path of ['node_modules/@fixture/.x-1234abcd/node_modules/.bin/leftover',
+      'node_modules/@fixture/.x-1234abcd/node_modules/tool/index.js']) {
+      await expect(bindSeedFrozenDependencies(f.root, f.commit,
+        { readLoadedModulePaths: () => [path] })).rejects.toThrow('excluded dependency');
+    }
+    const g = await frozen(true, false, false, true);
+    await expect(bindSeedFrozenDependencies(g.root, g.commit)).rejects.toThrow('excluded dependency');
+  });
   it('propagates Miniflare exclusion and rejects loaded cache paths', async () => {
     const f = await frozen(false, false, true);
     const result = await bindSeedFrozenDependencies(f.root, f.commit);
