@@ -99,14 +99,16 @@ describe('Proximus terminal provider-attempt population', () => {
     const protocol = currentProtocolFixture();
     protocol.priceSchedule.rates = [{ model: 'offline-model', inputUsdPerMillion: 2,
       outputUsdPerMillion: 10, cachedInputUsdPerMillion: 1, cacheWriteUsdPerMillion: 4 }];
+    const retry = reservation('retry', 'response-completed');
+    changeNote(retry, n => { n.nativeGatewayAttemptResult.providerCompletion.usage.cacheCreationTokens = 2; });
     const population = await readProximusAttemptPopulation(binding, async () => census([
-      reservation('refused', 'send-refused'), reservation('a', 'response-completed'), reservation('retry', 'response-completed')]));
+      reservation('refused', 'send-refused'), reservation('a', 'response-completed'), retry]));
     expect(priceProximusAttempts(protocol, population)).toEqual({ status: 'complete',
       populationSha256: expect.any(String), priceTableVersion: protocol.priceSchedule.version,
-      knownSubtotalUsd: 0.000074, normalizedCostUsd: 0.000074, missingAttemptIds: [], attempts: [
+      knownSubtotalUsd: 0.000078, normalizedCostUsd: 0.000078, missingAttemptIds: [], attempts: [
         { attemptId: 'refused', model: null, knownSubtotalUsd: 0, complete: true },
         { attemptId: 'a', model: 'offline-model', knownSubtotalUsd: 0.000037, complete: true },
-        { attemptId: 'retry', model: 'offline-model', knownSubtotalUsd: 0.000037, complete: true }] });
+        { attemptId: 'retry', model: 'offline-model', knownSubtotalUsd: 0.000041, complete: true }] });
   });
   it.each(['failed', 'partial', 'unknown cache', 'unpriced model', 'unpriced cache write'] as const)
   ('retains only known normalized cost when a provider attempt is %s', async change => {

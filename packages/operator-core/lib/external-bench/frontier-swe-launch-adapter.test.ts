@@ -474,7 +474,7 @@ describe('FrontierSWE typed Proximus host lifecycle', () => {
 
   function acceptedFixture() {
     const f = hostFixture();
-    f.evidence.process.diagnosticContext = { metadata: { n_turns: 3 }, cost_usd: 999 };
+    f.evidence.process = { ...f.evidence.process, diagnosticContext: { metadata: { n_turns: 3 }, cost_usd: 999 } };
     f.evidence.attempts = { status: 'terminal', source: 'learning-spend-reservations', populationSha256: 'c'.repeat(64),
       attempts: [], requests: [], usageComplete: true, billingStatus: 'unreconciled',
       knownUsage: { modelCalls: 2, tokensIn: 7, tokensOut: 4, tokensCacheRead: 6, tokensCacheWrite: 0 } };
@@ -502,6 +502,31 @@ describe('FrontierSWE typed Proximus host lifecycle', () => {
           hostReference: { billedInferenceUsd: 0.25, pricing: { priceTableVersion: 'frozen-test-prices' } } } });
     } finally { await adapter.stop(); }
   });
+  it('grades a fully measured host submission through the shared topology and tears down its task', async () => {
+    const f = acceptedFixture(); allowReceipt(f);
+    const grade = vi.fn(async () => ({ resolved: true, score: 1, graderStatus: 'passed' as const }));
+    const teardown = vi.fn(async () => {});
+    vi.mocked(makeFrontierSweCloneGradeSeam).mockReturnValueOnce({ modality: 'in-container',
+      clone: async () => f.input.handle, grade, teardown });
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    try {
+      const result = await runTopology({ spec: resolveCoordinationSpec({ id: 'baseline', spine: {} }),
+        backlog: [f.input.task], seam: adapter.seam, budget: f.input.attemptBudget,
+        runId: f.config.runId, seed: 0, now: () => 1000, runAgent: adapter.runAgent,
+        rowMeta: { suite: 'frontier-swe', modelId: 'fixture-model', harnessVersion: 'fixture-version',
+          preregHash: 'a'.repeat(64), rolloutId: 'host-rollout', graderFamily: 'frontier-swe',
+          graderVersion: 'frozen-grader', priceTableVersion: 'frozen-test-prices' } });
+      expect(result.modelCallsSpent).toBe(2);
+      expect(result.costUsdSpent).toBe(0.125);
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toMatchObject({ generationStatus: 'completed', graderStatus: 'passed',
+        score: 1, turns: 3, tokensTotal: 17, costUsd: 0.125,
+        armMeta: { hostReference: { billedInferenceUsd: 0.25 }, executionPath: 'stock-native-reference' } });
+      expect(grade).toHaveBeenCalledWith(f.input.task, f.input.handle);
+      expect(teardown).toHaveBeenCalledWith(f.input.handle);
+      expect(f.assignment.stop).toHaveBeenCalledOnce();
+    } finally { await adapter.stop(); }
+  });
   it.each(['copied receipt', 'foreign container', 'foreign image', 'missing turns', 'unknown usage',
     'unknown price', 'foreign pricing', 'price mismatch', 'invalid price', 'unknown bill', 'bill mismatch'] as const)
   ('withholds completed status for %s while preserving measured subtotals', async change => {
@@ -509,7 +534,7 @@ describe('FrontierSWE typed Proximus host lifecycle', () => {
     if (change !== 'copied receipt') allowReceipt(f);
     if (change === 'foreign container') f.evidence.process.confinement.task = { ...f.evidence.process.confinement.task, containerId: 'other' };
     if (change === 'foreign image') f.evidence.process.confinement.task = { ...f.evidence.process.confinement.task, image: 'other' };
-    if (change === 'missing turns') f.evidence.process.diagnosticContext = { n_turns: 3 };
+    if (change === 'missing turns') f.evidence.process = { ...f.evidence.process, diagnosticContext: { n_turns: 3 } };
     if (f.evidence.attempts.status === 'terminal' && change === 'unknown usage') f.evidence.attempts.usageComplete = false;
     if (f.evidence.pricing.status !== 'unavailable') {
       if (change === 'unknown price') { f.evidence.pricing.status = 'incomplete'; f.evidence.pricing.normalizedCostUsd = null; }
