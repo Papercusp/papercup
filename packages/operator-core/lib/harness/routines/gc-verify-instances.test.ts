@@ -11,9 +11,10 @@
  * teardown, so no test ever execs a stop.sh or touches a real display.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, writeFile, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readdir, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { utimesSync, existsSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
 import {
   defaultVerifyScanRoots,
@@ -54,7 +55,109 @@ async function makeInstance(
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'gc-verify-test-'));
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await rm(root, { recursive: true, force: true });
+});
+
+/** Run only the real script emitters, never the verifier or generated teardown. */
+async function makeNativeInstance(display = '144', ageHours = 200, targets: Record<string, string> = {}): Promise<string> {
+  const dir = join(root, 'verify-tauri-headless.native');
+  await mkdir(dir);
+  const source = readFileSync(resolve(__dirname, '../../../../../scripts/verify-tauri-headless.sh'), 'utf8');
+  const start = source.indexOf('write_xvfb_stop_script() {');
+  const end = source.indexOf('\n# ── EI-11559:', source.indexOf('write_stop_script() {', start));
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  execFileSync('bash', ['-c', `${source.slice(start, end)}\nwrite_stop_script`], {
+    env: {
+      ...process.env,
+      WORK: dir,
+      DISPLAY_NUM: display,
+      DEV_PORT: '33144',
+      TAURI_LAUNCH_PROVENANCE: 'agent:gc-test:run:123-456',
+      TAURI_PID: '',
+      OPENBOX_PID: '',
+      ISOLATED_PG_PID: '',
+      ...targets,
+    },
+  });
+  utimesSync(dir, hoursAgo(ageHours), hoursAgo(ageHours));
+  return dir;
+}
+
+describe('gc-verify-instances — native producer protocol', () => {
+  it('reaps an abandoned directory using the current generated helper-based stop script', async () => {
+    const dir = await makeNativeInstance();
+    const stop = vi.fn(async (_path: string) => {});
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
+    expect(result.instances[0]).toMatchObject({ dir, display: ':144' });
+    expect(result.reaped).toBe(1);
+    expect(stop).toHaveBeenCalledWith(join(dir, 'stop.sh'));
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it.each([...PROTECTED_DISPLAYS])('refuses the native helper for protected display %s', async (display) => {
+    const dir = await makeNativeInstance(display.slice(1));
+    const stop = vi.fn(async () => {});
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
+    expect(result.instances[0].skipped).toMatch(/protected display/);
+    expect(result.reaped).toBe(0);
+    expect(stop).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it.each(['missing', 'symlink', 'wrong-display', 'wrong-provenance', 'unguarded', 'foreign-helper', 'footer-only'])
+    ('refuses a native stop script with %s helper evidence', async (variant) => {
+      const dir = await makeNativeInstance();
+      const path = join(dir, 'stop-xvfb.sh');
+      const helper = readFileSync(path, 'utf8');
+      const stopPath = join(dir, 'stop.sh');
+      if (variant === 'missing' || variant === 'symlink') {
+        await rm(path);
+        if (variant === 'symlink') {
+          await writeFile(join(root, 'foreign-helper.sh'), helper);
+          symlinkSync(join(root, 'foreign-helper.sh'), path);
+        }
+      } else if (variant === 'wrong-display') {
+        await writeFile(path, helper.replace('EXPECTED_DISPLAY=:144', 'EXPECTED_DISPLAY=:1'));
+      } else if (variant === 'wrong-provenance') {
+        await writeFile(path, helper.replace('agent:gc-test:run:123-456', 'agent:another-run'));
+      } else if (variant === 'unguarded') {
+        await writeFile(path, helper.replace('PAPERCUSP_VERIFY_XVFB_DISPLAY=$EXPECTED_DISPLAY', 'IGNORED=$EXPECTED_DISPLAY'));
+      } else if (variant === 'foreign-helper') {
+        await writeFile(stopPath, readFileSync(stopPath, 'utf8').replace(`${dir}/stop-xvfb.sh`, `${root}/stop-xvfb.sh`));
+      } else {
+        await writeFile(stopPath, '#!/usr/bin/env bash\necho "stopped (display :144, port 33144)"\n');
+      }
+      const stop = vi.fn(async () => {});
+      const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
+      expect(result.reaped).toBe(0);
+      expect(stop).not.toHaveBeenCalled();
+      expect(existsSync(dir)).toBe(true);
+    });
+
+  it('retains a young native run and honors dry-run without executing teardown', async () => {
+    const dir = await makeNativeInstance('144', 1);
+    const stop = vi.fn(async () => {});
+    expect((await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop })).reaped).toBe(0);
+    utimesSync(dir, hoursAgo(200), hoursAgo(200));
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, dryRun: true, runStopScript: stop });
+    expect(result.reaped).toBe(1);
+    expect(stop).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it.each(['TAURI_PID', 'OPENBOX_PID', 'ISOLATED_PG_PID'])
+    ('refuses unverified saved %s signals even when the Xvfb helper has valid provenance', async (target) => {
+      const dir = await makeNativeInstance('144', 200, { [target]: String(process.pid) });
+      const stop = vi.fn(async () => {});
+      const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
+      expect(result.reaped).toBe(0);
+      expect(stop).not.toHaveBeenCalled();
+      expect(existsSync(dir)).toBe(true);
+    });
+});
 
 describe('parseStopScriptDisplay', () => {
   it('reads the display out of a real generated stop.sh line', () => {

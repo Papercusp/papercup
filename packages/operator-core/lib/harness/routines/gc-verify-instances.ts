@@ -89,7 +89,7 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  */
 import { execFile } from 'node:child_process';
 import type { Dirent } from 'node:fs';
-import { readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
+import { lstat, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -303,6 +303,46 @@ export function parseStopScriptDisplay(stopScript: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * Current verifiers delegate Xvfb teardown to a same-directory helper. Read its
+ * signal target, not just stop.sh's human-facing footer: the display and run
+ * provenance must agree with the caller and the helper's ownership checks.
+ * Never source either script to discover metadata, or follow a helper symlink.
+ */
+async function stopScriptDisplay(dir: string, stopScript: string): Promise<string | null> {
+  if (!stopScript.includes('stop-xvfb.sh')) return parseStopScriptDisplay(stopScript);
+
+  const helperPath = join(dir, 'stop-xvfb.sh');
+  if (!stopScript.split('\n').includes(`"${helperPath}" || true`)) return null;
+  // Earlier native emitters protect Xvfb but still embed unverified saved PIDs
+  // for Tauri's process group, openbox and PostgreSQL. Those numbers can belong
+  // to a successor by the time GC runs. Helper metadata cannot authorize them.
+  // Preserve these directories until teardown has process identity evidence.
+  if (/\bkill\s+-(?:TERM|9)\s+(?:--\s+)?-?"?\d+"?(?=\s|;)/.test(stopScript)) return null;
+  let helper: string;
+  try {
+    if (!(await lstat(join(dir, 'stop.sh'))).isFile() || !(await lstat(helperPath)).isFile()) return null;
+    helper = await readFile(helperPath, 'utf8');
+  } catch {
+    return null;
+  }
+  const displays = [...helper.matchAll(/^EXPECTED_DISPLAY=(:\d+)$/gm)];
+  const provenances = [...helper.matchAll(/^EXPECTED_PROVENANCE=([a-zA-Z0-9:._-]+)$/gm)];
+  const footers = [...stopScript.matchAll(/^echo "stopped \(display (:\d+), port \d+\)"$/gm)];
+  if (displays.length !== 1 || provenances.length !== 1 || footers.length !== 1) return null;
+  const display = displays[0][1];
+  const provenance = provenances[0][1];
+  if (display !== footers[0][1]) return null;
+  if (!stopScript.includes(`grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=${provenance}" <<<"$_env_p" || continue`)) return null;
+  if (!helper.includes('grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$EXPECTED_PROVENANCE" <<<"$env_p" &&') ||
+      !helper.includes('grep -qxF "PAPERCUSP_VERIFY_XVFB_DISPLAY=$EXPECTED_DISPLAY" <<<"$env_p"') ||
+      !helper.includes('xvfb_is_owned "$xvfb_pid" || exit 0\nkill -TERM "$xvfb_pid"') ||
+      !helper.includes('if xvfb_is_owned "$xvfb_pid"; then\n  kill -KILL "$xvfb_pid"')) return null;
+  // Canonicalize numeric seats so :01 cannot bypass the protected :1 guard.
+  const seat = Number(display.slice(1));
+  return Number.isSafeInteger(seat) ? `:${seat}` : null;
+}
+
 /** Recursive size of a directory, tolerant of races (a file vanishing mid-walk). */
 async function dirBytes(path: string): Promise<number> {
   let total = 0;
@@ -452,7 +492,7 @@ export async function gcVerifyInstances(
       continue;
     }
 
-    const display = parseStopScriptDisplay(stopScript);
+    const display = await stopScriptDisplay(dir, stopScript);
 
     // ── REFUSAL 2: unreadable teardown. We do not run a stop.sh we cannot parse.
     if (!display) {
