@@ -3174,6 +3174,19 @@ async fn run<B: Backend>(
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
+                Action::OpenCardLink { correlation_id } => {
+                    let result = async {
+                        let client = OperatorClient::from_discovery().await?;
+                        let url = client.card_link_url(&correlation_id)?;
+                        std::process::Command::new("xdg-open").arg(url)
+                            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null()).spawn()?;
+                        Ok::<(), anyhow::Error>(())
+                    }.await;
+                    if result.is_err() {
+                        let _ = tx.send(Event::Error("Could not open the private authentication link".into()));
+                    }
+                }
                 Action::CardRespond {
                     conversation_id,
                     correlation_id,

@@ -594,6 +594,7 @@ export function startSuRpcEngine(
     if (closed || nativeBindingFailed || owner !== ownerTurnId || turnCompletionSettled) return;
     if (backend === 'codex' && (!eventNativeTurnId || eventNativeTurnId !== nativeTurnId)) return;
     turnCompletionSettled = true;
+    cards.cancel();
     // A tool announcement may have preceded turn/start's acknowledgement.
     // Its host observation must settle before closing the monetary population.
     await nativeToolObservationTail;
@@ -646,7 +647,7 @@ export function startSuRpcEngine(
   }
   function onMessage(frame: RpcFrame): void {
     if (closed) return;
-    const frameThreadId = object(frame.params).threadId;
+    const frameThreadId = object(frame.params).threadId ?? object(frame.params).conversationId;
     if (backend === 'codex' && frameThreadId && !nativeId()) {
       // App-server can announce MCP startup before thread/start responds.
       // Defer these frames until that correlated response pins the identity;
@@ -660,6 +661,14 @@ export function startSuRpcEngine(
     }
     if (backend === 'codex' && frameThreadId && frameThreadId !== nativeId()) throw new Error('Codex event belongs to a different thread');
     const frameTurnId = string(object(frame.params).turnId);
+    if (backend === 'codex' && frame.id != null && typeof frame.method === 'string'
+        && ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval',
+          'item/tool/requestUserInput', 'mcpServer/elicitation/request', 'execCommandApproval', 'applyPatchApproval'].includes(frame.method)
+        && (frameThreadId !== nativeId() || (frame.method !== 'mcpServer/elicitation/request'
+          && (!ownerTurnId || turnCompletionSettled || completedNativeToolTurns.has(nativeTurnId))))) {
+      peer?.send({ id: frame.id, error: { code: -32602, message: 'Native request has no matching live session or turn' } });
+      return;
+    }
     if (backend === 'codex' && frame.id != null && frame.method && frameTurnId
         && (!nativeTurnId || frameTurnId !== nativeTurnId || turnCompletionSettled)) {
       peer?.send({ id: frame.id, error: { code: -32602, message: 'Native request does not belong to the active turn' } });

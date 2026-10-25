@@ -948,6 +948,28 @@ describe('structured Claude SU engine', () => {
     expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
   });
 
+  it('connects native MCP form callbacks to validated private cards and cancels them on runtime close', async () => {
+    const p = peer({ holdResult: true }), engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    const signal = new AbortController().signal;
+    const invoke = (requestId: string) => p.options()!.onElicitation!({ mode: 'form', serverName: 'example',
+      message: 'Credentials', requestedSchema: { type: 'object', properties: {
+        password: { type: 'string', minLength: 8, writeOnly: true },
+      }, required: ['password'] } }, { signal, requestId });
+    const first = invoke('first');
+    await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
+    const card = openCards(engine)[0];
+    expect(card.presentation).toMatchObject({ kind: 'text', sensitive: true });
+    expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { value: 'bad' }, expectedWorkspaceId: 'workspace' }).ok).toBe(false);
+    expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { value: 'private-answer' }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
+    await expect(first).resolves.toEqual({ action: 'accept', content: { password: 'private-answer' } });
+    expect(JSON.stringify(engine.adapter.host.recent)).not.toContain('private-answer');
+    const cancelled = invoke('second');
+    await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
+    await engine.close();
+    await expect(cancelled).resolves.toEqual({ action: 'cancel' });
+  });
+
   it('turns a deferred tools_invoke AskUserQuestion into a PUI choice card', async () => {
     const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
     await engine.adapter.host.startCommand(command(engine)).terminal;

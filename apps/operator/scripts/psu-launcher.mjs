@@ -2674,15 +2674,26 @@ export function prepareSuLaunch(boot, {
         });
         const config = nativeMcpRequire("@iarna/toml").parse(text);
         const provider = config.model_providers?.["papercusp-codex-gateway"];
-        const headers = provider?.http_headers;
+        const headers = provider?.http_headers && typeof provider.http_headers === "object"
+          ? Object.fromEntries(Object.entries(provider.http_headers).map(([key, value]) => [key.toLowerCase(), value]))
+          : {};
+        let gatewayUrl = null;
+        try {
+          gatewayUrl = new URL(provider?.base_url);
+        } catch {
+          // Invalid or missing URL cannot prove a resolved local gateway route.
+        }
+        const localGateway = gatewayUrl?.protocol === "http:"
+          && ["127.0.0.1", "localhost", "[::1]"].includes(gatewayUrl.hostname)
+          && gatewayUrl.pathname.replace(/\/$/, "") === "/v1";
         if (completeManagedBlocks
           && config.model_provider === "papercusp-codex-gateway"
           && provider?.wire_api === "responses"
-          && typeof provider?.base_url === "string"
+          && localGateway
           && typeof provider?.experimental_bearer_token === "string"
           && provider.experimental_bearer_token.length > 0
           && headers?.["x-papercusp-owner"] === env.PAPERCUSP_SID
-          && !headers?.["x-papercusp-account"]
+          && !Object.prototype.hasOwnProperty.call(headers, "x-papercusp-account")
           && !env.PAPERCUSP_ACCOUNT_ID) {
           env.PAPERCUSP_ACCOUNT_ROUTING_MODE = "auto";
         }

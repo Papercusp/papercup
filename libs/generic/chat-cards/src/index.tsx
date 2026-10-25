@@ -232,7 +232,7 @@ export function AskChoiceCard({
 }
 
 export type InputCardPresentation =
-  | { kind: 'text'; placeholder?: string; multiline?: boolean }
+  | { kind: 'text'; placeholder?: string; multiline?: boolean; sensitive?: boolean }
   | { kind: 'date'; min?: string; max?: string }
   | { kind: 'slider'; min: number; max: number; step?: number };
 
@@ -262,18 +262,23 @@ export function InputCard({
   const sliderStep = presentation.kind === 'slider' ? (presentation.step ?? 1) : 1;
   const [slider, setSlider] = useState(() => Math.round((sliderMin + sliderMax) / 2 / sliderStep) * sliderStep);
   const submitText = (): void => {
-    if (text.length > 0) onResponse({ action: 'submit', value: text });
+    if (text.length > 0) {
+      onResponse({ action: 'submit', value: text });
+      if (presentation.kind === 'text' && presentation.sensitive) setText('');
+    }
   };
 
   return (
     <div role="group" aria-labelledby={questionId} className="input-card" data-kind={presentation.kind}>
       <p id={questionId} className="input-card-question">{prompt}</p>
       {presentation.kind === 'text' ? (
-        presentation.multiline ? (
+        presentation.multiline && !presentation.sensitive ? (
           <textarea className="input-card-textarea" value={text} onChange={(event) => setText(event.target.value)} placeholder={presentation.placeholder ?? fallbackText ?? ''} rows={3} aria-label="response" />
         ) : (
           <input
-            type="text"
+            type={presentation.sensitive ? 'password' : 'text'}
+            autoComplete={presentation.sensitive ? 'off' : undefined}
+            spellCheck={presentation.sensitive ? false : undefined}
             className="input-card-input"
             value={text}
             onChange={(event) => setText(event.target.value)}
@@ -471,9 +476,11 @@ export interface CardRendererProps {
 
 export function CardRenderer({ card, busy = false, expired = false, onResponse, renderReport }: CardRendererProps): ReactNode {
   const presentation = card.presentation;
+  const link = presentation?.link === `/api/ui/cards/${encodeURIComponent(card.correlationId)}/link`
+    && !busy && !expired ? <a href={presentation.link} target="_blank" rel="noopener noreferrer">Open secure link</a> : null;
   if (presentation && (presentation.kind === 'radio' || presentation.kind === 'checkbox' || presentation.kind === 'select')) {
     return (
-      <AskChoiceCard
+      <>{link}<AskChoiceCard
         args={{
           question: card.prompt,
           options: (presentation.options ?? []).map((option) => ({ id: option.id, label: option.label, hint: option.hint, style: option.style })),
@@ -489,7 +496,7 @@ export function CardRenderer({ card, busy = false, expired = false, onResponse, 
           else if (response.action === 'decline') onResponse({ action: 'decline', correlationId: card.correlationId });
           else if (response.action === 'cancel') onResponse({ action: 'cancel', correlationId: card.correlationId });
         }}
-      />
+      /></>
     );
   }
   if (presentation && (presentation.kind === 'text' || presentation.kind === 'date' || presentation.kind === 'slider')) {
@@ -506,7 +513,7 @@ export function CardRenderer({ card, busy = false, expired = false, onResponse, 
             min: typeof presentation.min === 'string' ? presentation.min : undefined,
             max: typeof presentation.max === 'string' ? presentation.max : undefined,
           }
-        : { kind: 'text', placeholder: presentation.placeholder, multiline: presentation.multiline };
+        : { kind: 'text', placeholder: presentation.placeholder, multiline: presentation.multiline, sensitive: presentation.sensitive };
     return (
       <InputCard
         prompt={card.prompt}

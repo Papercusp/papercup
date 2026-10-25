@@ -810,6 +810,19 @@ fn filter_lock_resolve_fixtures(
 }
 
 impl OperatorClient {
+    /// Opens only the selected operator's live-card redirect; never receives
+    /// the private provider URL or embeds bearer credentials in a browser argv.
+    pub fn card_link_url(&self, correlation_id: &str) -> Result<String> {
+        if correlation_id.is_empty() || !correlation_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            anyhow::bail!("invalid card identity");
+        }
+        let base = reqwest::Url::parse(&self.endpoint)?;
+        if !matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "[::1]" | "::1")) {
+            anyhow::bail!("private card links require the selected local operator");
+        }
+        Ok(base.join(&format!("/api/ui/cards/{correlation_id}/link"))?.to_string())
+    }
+
     /// Resolve a backend. EXPLICIT selection wins (P-001 refit): `PUI_OPERATOR`
     /// = `staging` (:3170) | `release` (:3070) | a full http(s) URL pins the
     /// operator over HTTP. A launcher may use the standard

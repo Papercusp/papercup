@@ -223,6 +223,7 @@ export {
 } from '@papercusp/tooldef';
 export {
   registerCard,
+  readPrivateCardLink,
   resolveCardResponse,
   resolveCardResponseAsync,
   deliverCommittedCardResponse,

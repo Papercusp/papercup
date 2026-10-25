@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
+import { resolveCardResponse } from '@papercusp/agent-mcp';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import type { PuiSuSessionBinding } from './launch-agent';
 import type { SuStdioPeer, RpcFrame } from './su-session-stdio-peer';
@@ -121,6 +122,43 @@ async function engineFixture(mode = 'normal') {
 }
 
 describe('Codex steering through real stdio', () => {
+  it('round-trips typed MCP forms through real native pipes with workspace and cancellation fences', async () => {
+    const f = await engineFixture();
+    await f.host.startCommand(f.command('owner_turn', 'first')).terminal;
+    const request = (id: string) => f.request('fixture/server-request', { frame: {
+      id, method: 'mcpServer/elicitation/request', params: { threadId: 'native-thread', turnId: 'native-1',
+        mode: 'form', serverName: 'example', message: 'Details', requestedSchema: { type: 'object',
+          properties: { count: { type: 'integer', minimum: 2 }, credential: { type: 'string', writeOnly: true } },
+          required: ['count', 'credential'] },
+      },
+    } });
+    const latest = () => {
+      const opened = [...f.host.recentSince(0)].reverse().find(({ event }) => event.type === 'card' && event.phase === 'opened')?.event;
+      if (opened?.type !== 'card' || opened.phase !== 'opened') throw new Error('Missing card');
+      return opened.card;
+    };
+    const answer = (payload: unknown, workspace = 'workspace') => resolveCardResponse({
+      correlationId: latest().correlationId, action: 'submit', payload, expectedWorkspaceId: workspace,
+    });
+    await request('native-form');
+    expect(answer({ value: '1' }).ok).toBe(false);
+    expect(answer({ value: '2' }, 'foreign').ok).toBe(false);
+    answer({ value: '2' });
+    await vi.waitFor(() => expect(latest().presentation).toMatchObject({ kind: 'text', sensitive: true }));
+    answer({ value: 'private-native-value' });
+    await vi.waitFor(async () => expect((await f.history()).find(frame => frame.id === 'native-form')).toMatchObject({
+      result: { action: 'accept', content: { count: 2, credential: 'private-native-value' }, _meta: null },
+    }));
+    expect(JSON.stringify(f.host.recentSince(0))).not.toContain('private-native-value');
+    await request('cancelled-form');
+    const oldId = latest().correlationId;
+    await f.host.startCommand(f.command('interrupt', 'stop')).terminal;
+    await vi.waitFor(async () => expect((await f.history()).find(frame => frame.id === 'cancelled-form')).toMatchObject({
+      result: { action: 'cancel', content: null, _meta: null },
+    }));
+    expect(resolveCardResponse({ correlationId: oldId, action: 'submit', payload: { value: '99' }, expectedWorkspaceId: 'workspace' }).ok).toBe(false);
+  });
+
   it('refuses stale and completed-turn native permission requests before opening a card', async () => {
     const f = await engineFixture();
     await f.host.startCommand(f.command('owner_turn', 'first')).terminal;

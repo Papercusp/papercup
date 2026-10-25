@@ -166,6 +166,7 @@ import harnessBranchActionRun from './harness/branch-action-run';
 import harnessBranchActionStream from './harness/branch-action-stream';
 import harnessBranchActionByNameRun from './harness/branch-action-by-name-run';
 import uiPresence from './ui/presence';
+import uiCardLink from './ui/card-link';
 import uiIntentsStream from './ui/intents-stream';
 import uiIntentResult from './ui/intent-result';
 import zeroHarnessSse from './zero-harness/sse';
@@ -785,6 +786,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessBranchActionStream as AnyRoute),
   ...flatten(harnessBranchActionByNameRun as AnyRoute),
   ...flatten(uiPresence as AnyRoute),
+  ...flatten(uiCardLink as AnyRoute),
   ...flatten(uiIntentsStream as AnyRoute),
   ...flatten(uiIntentResult as AnyRoute),
   ...flatten(zeroHarnessSse as AnyRoute),

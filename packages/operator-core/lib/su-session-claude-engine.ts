@@ -520,6 +520,14 @@ export function startClaudeSuEngine(
       });
     },
     disallowedTools,
+    onElicitation(request, elicitation) {
+      if (closed || !activeOwnerTurnId) return Promise.resolve({ action: 'cancel' });
+      awaitingOwnerAnswers += 1;
+      return cards.handleClaudeElicitation(request, activeOwnerTurnId, elicitation).finally(() => {
+        awaitingOwnerAnswers -= 1;
+        lastFrameAt = Date.now();
+      });
+    },
     ...(model.model ? { model: model.model } : {}),
     ...(model.effort ? { effort: model.effort as Options['effort'] } : {}),
     abortController,
