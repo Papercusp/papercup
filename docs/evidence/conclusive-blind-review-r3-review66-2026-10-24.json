@@ -1,4 +1,15 @@
 {
+  "sourceSummary": {
+    "kind": "portable-derived-view",
+    "originalArtifact": {
+      "pathBase": "$HOME/.papercusp/evidence/EI-26918633941260915/originals",
+      "ref": "23c1041723d694ee077eafea4727a4619ace7381056fcf0fb904cb1a595c4d16.supporting-original",
+      "sha256": "23c1041723d694ee077eafea4727a4619ace7381056fcf0fb904cb1a595c4d16",
+      "byteLength": 8612
+    },
+    "originalBytesChanged": false,
+    "note": "Home paths and build-host identity strings in this source view are templates. The pinned original retains the exact executed evidence."
+  },
   "schemaVersion": 1,
   "kind": "independent-product-review-evidence",
   "planSlug": "conclusive-blind-review-recovery-2026-10-23",
@@ -170,7 +181,7 @@
   "receiptReadRuntime": [
     {
       "unit": "hono-host:3170",
-      "host": "main-server-Precision-7865-Tower",
+      "host": "<build-host-build-hostname>",
       "tree_sha": "92746d8842",
       "pid": 4141567,
       "reported_at": "2026-10-24 06:41:28.407141+00"
