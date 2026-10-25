@@ -15182,8 +15182,8 @@ async function launchResume(
  * plan and lands in the ORIGINAL's cwd (harness_slug:null so the server doesn't
  * relocate cwd — the seeded transcript is keyed by the original's cwd, and claude
  * resolves --resume by CLAUDE_CONFIG_DIR + the encoded cwd it runs in, so the fork
- * MUST run in that same cwd). agent is claude here because tracked forks need a
- * forced native id, and Codex exposes native fork but not caller-chosen fork ids.
+ * MUST run in that same cwd). Codex bootstrap prepares and registers its native
+ * fork before returning; Claude retains its caller-chosen native id.
  */
 export function forkBootstrapBody(
   session,
@@ -15197,7 +15197,7 @@ export function forkBootstrapBody(
   // headless discriminator survive bootstrap and session:end can recognize an
   // agent-launched child. Calls without launch args retain the legacy body.
   const launchArgv = launchArgs ? psuLaunchArgvRecord({
-    agent: "claude", workspace: session.workspaceId || null,
+    agent: session.agent, workspace: session.workspaceId || null,
     harness: null, plan: session.planSlug || null,
   }, {
     ...launchArgs, sessionPortSourceAdvSessionId: null,
@@ -15206,11 +15206,14 @@ export function forkBootstrapBody(
   }) : null;
   if (launchArgv) launchArgv.splice(2, 0, `--resume=${session.sessionId}`, "--fork");
   return {
-    agent: "claude",
+    agent: session.agent,
     workspace: session.workspaceId || null,
     harness_slug: null,
     plan_slug: session.planSlug || null,
     cwd: session.cwd,
+    ...(session.agent === "codex" ? { native_fork_source: {
+      advSessionId: Number(session.id), nativeSessionId: session.sessionId,
+    } } : {}),
     // PRE-PINNED fork identity (consult-expert-routing-2026-09-22 P-003). A fork
     // normally has bootstrap-su mint its fresh coord id, which leaves that id
     // unknowable to the caller until the child registers presence. A consult
@@ -15686,7 +15689,7 @@ export function forkBootstrapFallbackMessage(ownerId, reason) {
  */
 export function supportsTrackedFork(session) {
   return Boolean(
-    session.agent === "claude" &&
+    (session.agent === "claude" || session.agent === "codex") &&
     session.sessionId &&
     session.coordOwnerId &&
     session.id != null,
@@ -15754,7 +15757,26 @@ export async function launchTrackedFork(
       retryBootstrapFailures: true,
     });
   } catch (e) {
+    if (session.agent === "codex") throw new Error(`Tracked Codex fork bootstrap failed: ${e?.message ?? e}`);
     await fallbackToUntrackedFork(`fork bootstrap failed (${e?.message ?? e})`);
+    return;
+  }
+  if (session.agent === "codex") {
+    const childId = res?.nativeSessionId;
+    const childOwner = res?.envelopeEnv?.PAPERCUSP_SID;
+    if (!childId || childId === session.sessionId || !childOwner || childOwner === session.coordOwnerId
+      || !res?.codexHome || res?.nativeFork?.advSessionId !== Number(session.id)
+      || res.nativeFork.nativeSessionId !== session.sessionId || res.nativeFork.ownerId !== session.coordOwnerId) {
+      throw new Error("Tracked Codex fork bootstrap returned no registered child identity / lineage");
+    }
+    // The native fork already exists. A second `codex fork` would silently
+    // create another identity; resume only the registered child.
+    await resumeFallback({ id: res.sessionId, agent: "codex", sessionId: childId,
+      coordOwnerId: childOwner, codexHome: res.codexHome, psuTracked: true,
+      workspaceId: res.workspaceId, cwd: res.cwd, planSlug: res.planSlug,
+      harnessSlug: res.harnessSlug }, {
+      ...forkOpts, fork: false, ownerId: childOwner,
+    });
     return;
   }
   const forkId = res?.nativeSessionId || null;

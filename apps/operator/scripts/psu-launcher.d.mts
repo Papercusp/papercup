@@ -3959,8 +3959,8 @@ export function codexActiveWriterMessage(session: any, holder: any): string;
  * plan and lands in the ORIGINAL's cwd (harness_slug:null so the server doesn't
  * relocate cwd — the seeded transcript is keyed by the original's cwd, and claude
  * resolves --resume by CLAUDE_CONFIG_DIR + the encoded cwd it runs in, so the fork
- * MUST run in that same cwd). agent is claude here because tracked forks need a
- * forced native id, and Codex exposes native fork but not caller-chosen fork ids.
+ * MUST run in that same cwd). Codex bootstrap prepares and registers its native
+ * fork before returning; Claude retains its caller-chosen native id.
  */
 export function forkBootstrapBody(session: any, account?: null, launchMode?: null, ownerId?: null, launchArgs?: null): {
     mode_owner_directed?: boolean | undefined;
@@ -3973,7 +3973,11 @@ export function forkBootstrapBody(session: any, account?: null, launchMode?: nul
     launch_argv?: string[] | undefined;
     bootstrap_idempotency_key?: any;
     owner_id?: undefined;
-    agent: string;
+    native_fork_source?: {
+        advSessionId: number;
+        nativeSessionId: any;
+    } | undefined;
+    agent: any;
     workspace: any;
     harness_slug: null;
     plan_slug: any;

@@ -285,6 +285,8 @@ export interface SuLaunchSpecRecord {
   headless?: boolean;
   /** Native SQLite binding, persisted on the exact ADV launch row. */
   codexSqliteHome?: string;
+  /** Native conversation ancestry, independent of the child's launch authority. */
+  nativeFork?: { advSessionId: number; nativeSessionId: string; ownerId: string };
   /** Exact ledger directory selected by this session's launch envelope. */
   turnProvenanceDir?: string;
   fleet: { slug: string | null; role: string | null } | null;
@@ -522,6 +524,11 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
     loopArmed: r.loopArmed === true,
     ...(typeof r.headless === 'boolean' ? { headless: r.headless } : {}),
     ...(typeof r.codexSqliteHome === 'string' ? { codexSqliteHome: r.codexSqliteHome } : {}),
+    ...(r.nativeFork && typeof r.nativeFork === 'object'
+      && Number.isSafeInteger((r.nativeFork as Record<string, unknown>).advSessionId)
+      && typeof (r.nativeFork as Record<string, unknown>).nativeSessionId === 'string'
+      && typeof (r.nativeFork as Record<string, unknown>).ownerId === 'string'
+      ? { nativeFork: r.nativeFork as SuLaunchSpecRecord['nativeFork'] } : {}),
     ...(typeof r.turnProvenanceDir === 'string' ? { turnProvenanceDir: r.turnProvenanceDir } : {}),
     fleet:
       r.fleet && typeof r.fleet === 'object'

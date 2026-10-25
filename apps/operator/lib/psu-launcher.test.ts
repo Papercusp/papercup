@@ -4758,7 +4758,7 @@ describe("psu-launcher arg parsing", () => {
         expect.objectContaining({ fork: true, headless: true }),
       );
 
-      const codexSource = { ...claudeSource, agent: "codex" };
+      const codexSource = { ...claudeSource, agent: "codex", id: null };
       await expect(
         launchTrackedFork(codexSource, { ownerId: "su-consult-fork" }, account, null, {
           api: postBootstrap,
