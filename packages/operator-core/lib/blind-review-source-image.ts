@@ -2,10 +2,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rm, stat, symlink, writeFile,
+import { chmod, copyFile, link, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rm, stat, symlink, writeFile,
   type FileHandle } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { gzipSync } from 'node:zlib';
 import { verifierSourceFiles, type VerifierSourceFile } from '@papercusp/test-config/verifier-source';
 import { captureVerifierDependencies, prepareVerifierDependencies, prepareVerifierSource, runVerifierDependencyCommand,
   verifyVerifierSource } from '../../../scripts/source-preview.mjs';
@@ -15,11 +16,27 @@ import { sealRuntimeSourceHandle } from './blind-review-source-seal';
 
 type SourceReceipt = Awaited<ReturnType<typeof prepareVerifierSource>>;
 type DependencyReceipt = ReturnType<typeof captureVerifierDependencies>;
-export const BROKER_CLOSURE_MANIFEST = '.broker-closure.json';
+export const BROKER_CLOSURE_MANIFEST = '.broker-closure.json.gz';
 const DEPENDENCIES = '.broker-dependencies.json';
 const SOURCE_RECEIPT = '.verifier-source.json';
 const BUILD_RECEIPT = '.broker-build.json';
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024 * 1024;
+// Must agree with verify_manifest in blind-review-sealed-source.py. Refuse
+// before copying inputs rather than discover an inadmissible closure at boot.
+const MAX_MANIFEST_BYTES = 32 * 1024 * 1024;
+const MAX_DECODED_MANIFEST_BYTES = 128 * 1024 * 1024;
+export function encodeRuntimeClosureManifest(manifest: {
+  version: 1; sourceCommit: string; sourceReceiptSha256: string;
+  dependenciesReceiptSha256: string; files: VerifierSourceFile[];
+}): Buffer {
+  requireValue(manifest.files.length > 0 && manifest.files.length <= 500_000,
+    'broker_manifest_population_invalid');
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  requireValue(bytes.length <= MAX_DECODED_MANIFEST_BYTES, 'broker_manifest_size_invalid');
+  const encoded = gzipSync(bytes, { level: 1 });
+  requireValue(encoded.length <= MAX_MANIFEST_BYTES, 'broker_manifest_size_invalid');
+  return encoded;
+}
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 const preparedOrigins = new WeakMap<RuntimeSourceImage, {
   repositoryRoot: string; sourceReceiptSha256: string; generatedSha256: string;
@@ -53,7 +70,7 @@ function population(source: SourceReceipt, dependencies: DependencyReceipt,
   for (const row of rows) {
     requireValue(row.path && !row.path.includes('\\') && !row.path.includes('\0') &&
       !row.path.split('/').some(part => !part || part === '.' || part === '..') &&
-      ![SOURCE_RECEIPT, DEPENDENCIES, BUILD_RECEIPT, BROKER_CLOSURE_MANIFEST].includes(row.path) &&
+      ![SOURCE_RECEIPT, DEPENDENCIES, BUILD_RECEIPT, BROKER_CLOSURE_MANIFEST, '.broker-closure.json'].includes(row.path) &&
       !seen.has(row.path) && ['file', 'symlink'].includes(row.kind) &&
       typeof row.executable === 'boolean' && /^[a-f0-9]{64}$/.test(row.sha256), 'invalid_closure_population');
     seen.set(row.path, row);
@@ -89,7 +106,8 @@ export async function packRuntimeSourceClosure(root: string, image: string, sign
     // The executable is host-selected; a shell, ambient startup options and
     // donor executables are not part of image creation.
     const child = spawn('/usr/bin/mksquashfs', [root, image, '-noappend', '-no-progress',
-      '-processors', '1', '-all-root', '-all-time', '0', '-mkfs-time', '0', '-no-xattrs'],
+      '-processors', '4', '-all-root', '-all-time', '0', '-mkfs-time', '0', '-no-xattrs',
+      '-comp', 'zstd', '-Xcompression-level', '9', '-b', '1M'],
     { env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' }, stdio: ['ignore', 'ignore', 'pipe'], signal });
     // An explicit deadline distinguishes the host's cutoff from a compressor
     // failure. Kill the single compressor process rather than waiting forever
@@ -139,6 +157,15 @@ export async function packRuntimeSourceImage(options: {
   // The runtime needs measured input bytes, never the host's private path names.
   const dependencyBytes = Buffer.from(JSON.stringify({ ...dependencies, root: '/source' }) + '\n');
   const dependenciesReceiptSha256 = digest(dependencyBytes);
+  const buildBytes = generated ? Buffer.from(JSON.stringify(generated) + '\n') : undefined;
+  const files = [...rows,
+    { path: SOURCE_RECEIPT, kind: 'file' as const, executable: false, sha256: digest(sourceBytes) },
+    { path: DEPENDENCIES, kind: 'file' as const, executable: false, sha256: dependenciesReceiptSha256 },
+    ...(buildBytes ? [{ path: BUILD_RECEIPT, kind: 'file' as const, executable: false, sha256: digest(buildBytes) }] : []),
+  ].sort((a, b) => a.path.localeCompare(b.path));
+  const manifestBytes = encodeRuntimeClosureManifest({ version: 1, sourceCommit: source.sourceCommit,
+    sourceReceiptSha256, dependenciesReceiptSha256, files });
+  const manifestSha256 = digest(manifestBytes);
   const owned = await mkdtemp(join(await realpath(options.custodyRoot), 'broker-source-'));
   await chmod(owned, 0o700);
   let handle: FileHandle | undefined;
@@ -146,6 +173,7 @@ export async function packRuntimeSourceImage(options: {
     const closure = join(owned, 'closure');
     await mkdir(closure, { mode: 0o700 });
     let inputBytes = 0;
+    const privateCopies = new Map<string, string>();
     for (const row of rows) {
       signal?.throwIfAborted();
       const from = join(root, row.path), to = join(closure, row.path);
@@ -156,20 +184,22 @@ export async function packRuntimeSourceImage(options: {
         Boolean(info.mode & 0o111) === row.executable, 'broker_input_type_changed');
       if (row.kind === 'symlink') await symlink(await readlink(from), to);
       else {
-        // Copies are independent; a generation hardlink is not immutable custody.
-        await copyFile(from, to, constants.COPYFILE_EXCL);
-        await chmod(to, row.executable ? 0o755 : 0o644);
+        // Only identical bytes AND mode may share a private inode. Never link
+        // to a donor/generation; the full private census below still measures
+        // every recorded path before the sealed image can be admitted.
+        const key = row.sha256 + ':' + row.executable;
+        const copied = privateCopies.get(key);
+        if (copied) await link(copied, to);
+        else {
+          await copyFile(from, to, constants.COPYFILE_EXCL);
+          await chmod(to, row.executable ? 0o755 : 0o644);
+          privateCopies.set(key, to);
+        }
       }
     }
     await writeFile(join(closure, SOURCE_RECEIPT), sourceBytes, { flag: 'wx', mode: 0o644 });
     await writeFile(join(closure, DEPENDENCIES), dependencyBytes, { flag: 'wx', mode: 0o644 });
-    const buildBytes = generated ? Buffer.from(JSON.stringify(generated) + '\n') : undefined;
     if (buildBytes) await writeFile(join(closure, BUILD_RECEIPT), buildBytes, { flag: 'wx', mode: 0o644 });
-    const files = [...rows,
-      { path: SOURCE_RECEIPT, kind: 'file' as const, executable: false, sha256: digest(sourceBytes) },
-      { path: DEPENDENCIES, kind: 'file' as const, executable: false, sha256: dependenciesReceiptSha256 },
-      ...(buildBytes ? [{ path: BUILD_RECEIPT, kind: 'file' as const, executable: false, sha256: digest(buildBytes) }] : []),
-    ].sort((a, b) => a.path.localeCompare(b.path));
     // Explicit inclusion records generated manifests too; the shared default
     // source census deliberately excludes .verifier-source.json.
     const includedPaths = new Set<string>();
@@ -182,9 +212,6 @@ export async function packRuntimeSourceImage(options: {
     requireValue(isDeepStrictEqual(verifierSourceFiles(closure, { includedPaths, symlinkRoot: closure })
       .sort((a, b) => a.path.localeCompare(b.path)), files),
       'broker_copy_census_changed');
-    const manifestBytes = JSON.stringify({ version: 1, sourceCommit: source.sourceCommit,
-      sourceReceiptSha256, dependenciesReceiptSha256, files });
-    const manifestSha256 = digest(manifestBytes);
     await writeFile(join(closure, BROKER_CLOSURE_MANIFEST), manifestBytes, { flag: 'wx', mode: 0o644 });
     const image = join(owned, 'source.squashfs');
     const attempt = { version: 1, sourceCommit: source.sourceCommit, manifestSha256,

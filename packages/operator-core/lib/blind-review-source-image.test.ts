@@ -4,11 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import { captureVerifierDependencies, prepareVerifierSource } from '../../../scripts/source-preview.mjs';
 import * as preview from '../../../scripts/source-preview.mjs';
 import { git, write } from './source-preview.fixture';
 import { packRuntimeSourceClosure, packRuntimeSourceImage, prepareRuntimeSourceImage,
-  RuntimeSourcePackFailure, type RuntimeSourceImage } from './blind-review-source-image';
+  encodeRuntimeClosureManifest, RuntimeSourcePackFailure, type RuntimeSourceImage } from './blind-review-source-image';
 import { runtimeInputsMustBeRetained } from './blind-review-generated-inputs';
 
 const packControl = vi.hoisted(() => ({ fail: false }));
@@ -33,6 +35,9 @@ async function fixture() {
   mkdirSync(repo);
   write(repo, 'package.json', '{"name":"broker-fixture","private":true}');
   write(repo, 'src/input.ts', 'export const marker = "committed source";\n');
+  write(repo, 'src/duplicate.ts', 'export const marker = "committed source";\n');
+  write(repo, 'bin/duplicate-source', 'export const marker = "committed source";\n');
+  chmodSync(join(repo, 'bin/duplicate-source'), 0o755);
   write(repo, 'papercusp-desktop/bin/lib/pinned-deps.sh', '#!/bin/bash\n[ "$1" = trees ] || exit 2\nprintf "node_modules\\n"\n');
   write(repo, 'apps/operator/bin/release/dependency-generation.sh', readFileSync(policy, 'utf8'));
   write(repo, 'bin/run', '#!/bin/sh\nprintf "recorded executable"\n'); chmodSync(join(repo, 'bin/run'), 0o755);
@@ -58,6 +63,56 @@ function mount(image: RuntimeSourceImage, code: string, manifestSha256 = image.m
 }
 
 describe('canonical broker source image producer', () => {
+  it('admits a bounded compressed UTF-8 manifest while the legacy representation exceeds the wire budget', () => {
+    const root = mkdtempSync(join(tmpdir(), 'broker-manifest-budget-')); roots.push(root);
+    const manifest = { version: 1 as const, sourceCommit: 'a'.repeat(40),
+      sourceReceiptSha256: 'b'.repeat(64), dependenciesReceiptSha256: 'c'.repeat(64),
+      files: Array.from({ length: 80_000 }, (_, index) => ({ path: index + '/' + '界'.repeat(128),
+        kind: 'file' as const, executable: false, sha256: 'd'.repeat(64) })) };
+    const encoded = JSON.stringify(manifest);
+    expect(encoded.length).toBeLessThan(32 * 1024 * 1024);
+    expect(Buffer.byteLength(encoded)).toBeGreaterThan(32 * 1024 * 1024);
+    const compressed = encodeRuntimeClosureManifest(manifest);
+    expect(compressed.length).toBeLessThan(32 * 1024 * 1024);
+    writeFileSync(join(root, '.broker-closure.json'), encoded);
+    const rejected = spawnSync('/usr/bin/python3', ['-I', '-S', '-c', `
+import importlib.util
+spec=importlib.util.spec_from_file_location('source_helper',${JSON.stringify(helper)})
+module=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.verify_manifest(${JSON.stringify(root)},'e'*64)
+`], { encoding: 'utf8', timeout: 10_000 });
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('closure_manifest_invalid');
+    rmSync(join(root, '.broker-closure.json'));
+    writeFileSync(join(root, '.broker-closure.json.gz'), compressed);
+    const accepted = spawnSync('/usr/bin/python3', ['-I', '-S', '-c', `
+import importlib.util
+spec=importlib.util.spec_from_file_location('source_helper',${JSON.stringify(helper)})
+module=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+manifest=module.read_manifest(${JSON.stringify(root)},${JSON.stringify(createHash('sha256').update(compressed).digest('hex'))})
+assert len(manifest['files']) == 80000
+`], { encoding: 'utf8', timeout: 10_000 });
+    expect(accepted.status, accepted.stderr).toBe(0);
+  });
+
+  it('bounds compressed manifest expansion before parsing and rejects two manifest identities', () => {
+    const root = mkdtempSync(join(tmpdir(), 'broker-manifest-expansion-')); roots.push(root);
+    const bomb = gzipSync(Buffer.alloc(128 * 1024 * 1024 + 1, 32), { level: 1 });
+    writeFileSync(join(root, '.broker-closure.json.gz'), bomb);
+    const run = () => spawnSync('/usr/bin/python3', ['-I', '-S', '-c', `
+import importlib.util
+spec=importlib.util.spec_from_file_location('source_helper',${JSON.stringify(helper)})
+module=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.read_manifest(${JSON.stringify(root)},${JSON.stringify(createHash('sha256').update(bomb).digest('hex'))})
+`], { encoding: 'utf8', timeout: 10_000 });
+    expect(run().stderr).toContain('closure_manifest_expansion_invalid');
+    writeFileSync(join(root, '.broker-closure.json'), '{}');
+    expect(run().stderr).toContain('closure_manifest_invalid');
+  });
+
   it.each([0, 74])('prewarms the exact cross-device input before source materialization (exit %s)', async exitCode => {
     const f = await fixture();
     const custodyRoot = mkdtempSync('/dev/shm/broker-source-prewarm-'); roots.push(custodyRoot);
@@ -107,6 +162,12 @@ exit ${exitCode}
     expect(receipt.diagnostics.exitCode).not.toBe(0);
     expect(receipt.inputFiles).toBeGreaterThan(0); expect(receipt.inputBytes).toBeGreaterThan(0);
     expect(readFileSync(join(retained, 'closure/src/input.ts'), 'utf8')).toContain('committed source');
+    const copied = statSync(join(retained, 'closure/src/input.ts'));
+    expect(copied.ino).toBe(statSync(join(retained, 'closure/src/duplicate.ts')).ino);
+    expect(copied.ino).not.toBe(statSync(join(retained, 'closure/bin/duplicate-source')).ino);
+    expect(copied.ino).not.toBe(statSync(join(f.root, 'src/input.ts')).ino);
+    writeFileSync(join(f.root, 'src/input.ts'), 'donor changed after independent copy');
+    expect(readFileSync(join(retained, 'closure/src/duplicate.ts'), 'utf8')).toContain('committed source');
     // Re-run only the preserved pack stage. This is a diagnosis control, never
     // a reconstructed producer origin or an admission receipt.
     packControl.fail = false;
@@ -140,14 +201,14 @@ exit ${exitCode}
       expect(readdirSync(f.custodyRoot).some(name => name.startsWith('broker-source-'))).toBe(false);
       rmSync(f.root, { recursive: true });
       const result = mount(image, `
-import os,json,errno,hashlib
+import os,json,errno,hashlib,gzip
 assert 'committed source' in open('/source/src/input.ts').read()
 assert 'committed source' in open('/source/node_modules/workspace-source/input.ts').read()
 assert 'measured dependency' in open('/source/node_modules/dep/index.js').read()
 assert os.readlink('/source/source-link') == 'src/input.ts'
 assert os.stat('/source/bin/run').st_mode & 0o111
 assert not os.path.exists('/source/node_modules/.cache')
-manifest=json.load(open('/source/.broker-closure.json'))
+manifest=json.load(gzip.open('/source/.broker-closure.json.gz'))
 deps=json.load(open('/source/.broker-dependencies.json'))
 assert deps['root'] == '/source'
 paths={row['path'] for row in manifest['files']}

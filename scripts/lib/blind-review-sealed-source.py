@@ -10,7 +10,9 @@ broker still owes the canonical manifest/census and durable receipt transaction.
 """
 import argparse
 import fcntl
+import gzip
 import hashlib
+import io
 import json
 import os
 import re
@@ -23,6 +25,9 @@ SOURCE_FD = 3
 SEALS = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
 MAX_IMAGE_BYTES = 2 * 1024 * 1024 * 1024
 MANIFEST_NAME = '.broker-closure.json'
+COMPRESSED_MANIFEST_NAME = '.broker-closure.json.gz'
+MAX_MANIFEST_BYTES = 32 * 1024 * 1024
+MAX_DECODED_MANIFEST_BYTES = 128 * 1024 * 1024
 
 
 def refuse(code):
@@ -135,14 +140,25 @@ def mount_source(command, expected, size, manifest_hash):
     clean_exec(argv, expected, size, extra_fds=1)
 
 
-def verify_manifest(root, expected):
-    path = os.path.join(root, MANIFEST_NAME)
-    if not stat.S_ISREG(os.lstat(path).st_mode) or os.lstat(path).st_size > 32 * 1024 * 1024:
+def read_manifest(root, expected):
+    names = [name for name in [MANIFEST_NAME, COMPRESSED_MANIFEST_NAME]
+             if os.path.lexists(os.path.join(root, name))]
+    if len(names) != 1:
+        refuse('closure_manifest_invalid')
+    path = os.path.join(root, names[0])
+    if not stat.S_ISREG(os.lstat(path).st_mode) or os.lstat(path).st_size > MAX_MANIFEST_BYTES:
         refuse('closure_manifest_invalid')
     with open(path, 'rb') as source:
         encoded = source.read()
     if hashlib.sha256(encoded).hexdigest() != expected:
         refuse('closure_manifest_digest_mismatch')
+    if names[0] == COMPRESSED_MANIFEST_NAME:
+        # Bounded expansion, including concatenated gzip members. A small
+        # compressed stream must never grant an unbounded allocation.
+        with gzip.GzipFile(fileobj=io.BytesIO(encoded), mode='rb') as compressed:
+            encoded = compressed.read(MAX_DECODED_MANIFEST_BYTES + 1)
+        if len(encoded) > MAX_DECODED_MANIFEST_BYTES:
+            refuse('closure_manifest_expansion_invalid')
 
     def unique_object(pairs):
         result = {}
@@ -167,12 +183,19 @@ def verify_manifest(root, expected):
             refuse('closure_manifest_invalid_record')
         path = record['path']
         if (not isinstance(path, str) or not path or '\\' in path or '\x00' in path or
-                any(part in ['', '.', '..'] for part in path.split('/')) or path == MANIFEST_NAME or
+                any(part in ['', '.', '..'] for part in path.split('/')) or
+                path in [MANIFEST_NAME, COMPRESSED_MANIFEST_NAME] or
                 path in records or record['kind'] not in ['file', 'symlink'] or
                 type(record['executable']) is not bool or not isinstance(record['sha256'], str) or
                 not re.fullmatch('[a-f0-9]{64}', record['sha256'])):
             refuse('closure_manifest_invalid_record')
         records[path] = record
+    return manifest
+
+
+def verify_manifest(root, expected):
+    manifest = read_manifest(root, expected)
+    records = {record['path']: record for record in manifest['files']}
     actual = set()
     for directory, dirs, files in os.walk(root, followlinks=False):
         for name in dirs + files:
@@ -181,7 +204,7 @@ def verify_manifest(root, expected):
             if stat.S_ISDIR(info.st_mode):
                 continue
             relative = os.path.relpath(path, root)
-            if relative == MANIFEST_NAME:
+            if relative in [MANIFEST_NAME, COMPRESSED_MANIFEST_NAME]:
                 continue
             record = records.get(relative)
             if not record:
