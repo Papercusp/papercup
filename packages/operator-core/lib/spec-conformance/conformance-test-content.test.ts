@@ -88,9 +88,12 @@ describe('conformance immutable dependency content', () => {
       execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: dependency });
       git('rm', '-qr', 'libs/dependency');
       git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', dependency, 'libs/dependency');
+      write('libs/versioned-input/package.json', JSON.stringify({ name: '@fixture/versioned-input' }));
+      write('packages/unit/package.json', JSON.stringify({ name: '@fixture/unit',
+        dependencies: { '@fixture/dependency': '*', '@fixture/versioned-input': '*' } }));
       const history: string[] = [];
       for (let index = 0; index < 33; index++) {
-        write('packages/unit/source.ts', `export const answer = ${index};`);
+        write('libs/versioned-input/source.ts', `export const answer = ${index};`);
         history.push(commit());
       }
       const currentSha = history.pop()!;
@@ -191,6 +194,72 @@ describe('conformance immutable dependency content', () => {
         .toEqual({ equivalent: false, reason: 'unreadable input: package.json' });
     },
   );
+
+  it('rejects changed owning-workspace inputs without traversing dependencies, sharing the diff across tests', async () => {
+    const secondFile = 'packages/unit/second.test.ts';
+    write(secondFile, 'export const second = true;');
+    recordedSha = commit();
+    write('packages/unit/source.ts', 'export const answer = 2;');
+    const currentSha = commit();
+    const routed = vi.spyOn(gitSidecar, 'execFileViaSidecar');
+    const batch = vi.spyOn(gitBatch, 'runGitBatch');
+    const canonical = vi.spyOn(taskProvenance, 'passingTaskVerdictDependencyProvenance');
+    const compare = createTestContentEquivalence(root);
+    for (const path of [file, secondFile]) {
+      expect(await compare({ file: path, recordedSha, currentSha }))
+        .toEqual({ equivalent: false, reason: 'semantic dependency closure changed' });
+    }
+    expect(routed.mock.calls.filter(([, args]) => args.includes('diff-tree'))).toHaveLength(1);
+    expect(routed.mock.calls.some(([, args]) => args.includes('-rz'))).toBe(false);
+    expect(batch).not.toHaveBeenCalled();
+    expect(canonical).not.toHaveBeenCalled();
+  });
+
+  it('uses the deepest registered workspace and honors excluded nested workspace patterns', async () => {
+    const nestedFile = 'packages/unit/nested/guard.test.ts';
+    write('package.json', JSON.stringify({ workspaces: ['packages/*', 'packages/unit/*', 'libs/*'] }));
+    write('packages/unit/nested/package.json', JSON.stringify({ name: '@fixture/nested' }));
+    write(nestedFile, 'export const nested = true;');
+    recordedSha = commit();
+    write('packages/unit/source.ts', 'export const answer = 2;');
+    const currentSha = commit();
+    expect(await createTestContentEquivalence(root)({ file: nestedFile, recordedSha, currentSha }))
+      .toMatchObject({ equivalent: true });
+    write('package.json', JSON.stringify({ workspaces: ['packages/*', 'packages/unit/*', '!packages/unit/nested', 'libs/*'] }));
+    const excludedSha = commit();
+    write('packages/unit/source.ts', 'export const answer = 3;');
+    const changedSha = commit();
+    const batch = vi.spyOn(gitBatch, 'runGitBatch');
+    expect(await createTestContentEquivalence(root)({ file: nestedFile, recordedSha: excludedSha, currentSha: changedSha }))
+      .toMatchObject({ equivalent: false });
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  it('requires the full proof for a changed workspace gitlink whose expanded content still matches', async () => {
+    const dependency = mkdtempSync(join(tmpdir(), 'conformance-same-content-pin-'));
+    try {
+      const childGit = (...args: string[]) => execFileSync('git', args, { cwd: dependency, encoding: 'utf8' }).trim();
+      childGit('init', '-q');
+      childGit('config', 'user.name', 'Test');
+      childGit('config', 'user.email', 'test@example.invalid');
+      writeFileSync(join(dependency, 'input.ts'), 'export const input = 1;');
+      childGit('add', '.');
+      childGit('commit', '-qm', 'first pin');
+      git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', dependency, 'packages/unit/input');
+      recordedSha = commit();
+      childGit('commit', '--allow-empty', '-qm', 'same content at another pin');
+      const checkout = join(root, 'packages/unit/input');
+      execFileSync('git', ['-c', 'protocol.file.allow=always', 'fetch', '-q'], { cwd: checkout });
+      execFileSync('git', ['checkout', '-q', childGit('rev-parse', 'HEAD')], { cwd: checkout });
+      const currentSha = commit();
+      const canonical = vi.spyOn(taskProvenance, 'passingTaskVerdictDependencyProvenance');
+      expect(await createTestContentEquivalence(root)({ file, recordedSha, currentSha }))
+        .toEqual({ equivalent: true, reason: 'canonical semantic dependency closure matches' });
+      expect(canonical).toHaveBeenCalledTimes(2);
+    } finally {
+      rmSync(dependency, { recursive: true, force: true });
+    }
+  });
 
   it.each([
     'packages/unit/source.ts', file, 'libs/dependency/source.ts',

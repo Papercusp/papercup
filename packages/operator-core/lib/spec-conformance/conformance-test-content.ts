@@ -1,7 +1,7 @@
 /** Immutable Git inputs, judged by the SAME closure policy as passing-task reuse. */
 import { createHash } from 'node:crypto';
 import { lstat } from 'node:fs/promises';
-import { isAbsolute, matchesGlob, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, matchesGlob, relative, resolve } from 'node:path';
 import {
   passingTaskVerdictDependencyProvenance,
   passingTaskVerdictSharedInputProvenance,
@@ -256,6 +256,48 @@ export function createTestContentEquivalence(root = moduleRepoRoot(import.meta.u
     })());
     return testEntries.get(key)!;
   };
+  const patterns = new Map<string, Promise<string[]>>();
+  const workspace = async (sha: string, file: string) => {
+    if (!patterns.has(sha)) patterns.set(sha, (async () => {
+      const manifest = JSON.parse((await git({ cwd: root }, ['show', sha + ':package.json'])).toString('utf8'));
+      if (!Array.isArray(manifest.workspaces) || manifest.workspaces.some((value: unknown) => typeof value !== 'string')) {
+        throw new Error('workspace enumeration unavailable');
+      }
+      return manifest.workspaces as string[];
+    })());
+    const globs = await patterns.get(sha)!;
+    for (let dir = dirname(file); dir !== '.'; dir = dirname(dir)) {
+      if ((STANDALONE_PACKAGE_DIRS.includes(dir)
+        || (globs.some(pattern => !pattern.startsWith('!') && matchesGlob(dir, pattern))
+          && !globs.some(pattern => pattern.startsWith('!') && matchesGlob(dir, pattern.slice(1)))))
+        && await testEntry(sha, dir + '/package.json')) return dir;
+    }
+    return null;
+  };
+  const workspaceChanges = new Map<string, Promise<boolean>>();
+  const workspaceChanged = async (recordedSha: string, currentSha: string, file: string) => {
+    try {
+      const [recordedDir, currentDir] = await Promise.all([workspace(recordedSha, file), workspace(currentSha, file)]);
+      if (!recordedDir || recordedDir !== currentDir) return false;
+      const key = JSON.stringify([recordedSha, currentSha, recordedDir]);
+      if (!workspaceChanges.has(key)) workspaceChanges.set(key, (async () => {
+        const records = (await git({ cwd: root }, ['--literal-pathspecs', 'diff-tree', '--no-commit-id',
+          '--raw', '--no-abbrev', '-r', '--no-renames', '-z', recordedSha, currentSha, '--', recordedDir]))
+          .toString('utf8').split('\0');
+        if (records.pop() !== '' || records.length % 2 !== 0) return false;
+        let changed = false;
+        for (let index = 0; index < records.length; index += 2) {
+          const entry = /^:(\d{6}) (\d{6}) [a-f0-9]{40} [a-f0-9]{40} [ADMT]$/.exec(records[index]!);
+          if (!entry || !records[index + 1]!.startsWith(recordedDir + '/')) return false;
+          // A gitlink can advance without changing its expanded file content.
+          // Only direct blob/mode changes prove this mandatory closure differs.
+          if ([entry[1], entry[2]].every(mode => /^(000000|100644|100755|120000)$/.test(mode!))) changed = true;
+        }
+        return changed;
+      })());
+      return await workspaceChanges.get(key)!;
+    } catch { return false; /* Unknown ownership/diffs still need the canonical proof. */ }
+  };
   const proof = (sha: string, file: string) => {
     if (!snapshots.has(sha)) snapshots.set(sha, snapshot(root, sha, cache));
     return snapshots.get(sha)!.then(view => dependencyProof(view, file));
@@ -271,6 +313,11 @@ export function createTestContentEquivalence(root = moduleRepoRoot(import.meta.u
         // blob/mode is sufficient to reject reuse before enumerating dependencies;
         // matching entries never establish equivalence on their own.
         if (recordedTest && currentTest && recordedTest !== currentTest) {
+          return { equivalent: false, reason: 'semantic dependency closure changed' };
+        }
+        // The owning workspace is a mandatory part of the canonical closure.
+        // This only rejects reuse; equal local inputs still need every dependency.
+        if (recordedTest && currentTest && await workspaceChanged(recordedSha, currentSha, file)) {
           return { equivalent: false, reason: 'semantic dependency closure changed' };
         }
       }
