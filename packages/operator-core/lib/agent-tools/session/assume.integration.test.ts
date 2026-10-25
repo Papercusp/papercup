@@ -1,14 +1,16 @@
 /** Real PostgreSQL custody coverage. Managed PTY/routing journeys are separate
  * acceptance coverage; a database lease alone does not prove a takeover. */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { acquireAdvSessionResume, finalizeAdvSessionResume, releaseAdvSessionResume, type AdvSessionResumePin } from '../../adv-sessions';
 import { claimAgentLaunch } from '../../agent-launch-core';
 import { createAssumeReceiptStore } from '../../session-assume-store';
 import { createAssumeCustodyAdapters } from '../../session-assume-custody';
-import { readAssumeCheckpoint, readAssumeCheckpointBody } from '../../session-assume-preparation';
+import { readAssumeCheckpoint, readAssumeCheckpointBody, readAssumeTarget } from '../../session-assume-preparation';
 import { loopScope, setCarryNote } from '../../carry-note';
 import { checkpointAssumeCaller, completeAssumeCallerReturn, createAssumeCallerAdapters,
   readAssumeCallerCheckpoint, readAssumeCallerReturnSource } from '../../session-assume-caller';
@@ -28,9 +30,18 @@ import { createTopic, subscribeTopic, listMyTopicSubscriptions } from '../coordi
 import { runWithWorkspace } from '../../workspace-als';
 import { persistControlAnchor, type ControlAnchorState } from '../coordination/control-anchor';
 import {
-  assumePreparationFingerprint, assumePreparationSchema, assumeTransitionKey, qualifiesAssumeExecution, verifyAssumeExecution,
-  type AssumePreparation, type AssumeTransitionReceipt, type AssumeExecutionObservation,
+  assumePreparationFingerprint, assumePreparationSchema, assumeTransitionKey, prepareAssume, validateAssume,
+  commitAssume, reconcileAssumeTransition,
+  qualifiesAssumeExecution, verifyAssumeExecution,
+  type AssumePreparation, type AssumeTransitionReceipt, type AssumeExecutionObservation, type AssumeTransitionDeps,
 } from '../../session-assume';
+
+const contextHomes = vi.hoisted(() => new Map<string, string>());
+vi.mock('@papercusp/orchestrator/session-launch-dirs', async original => {
+  const actual = await original<typeof import('@papercusp/orchestrator/session-launch-dirs')>();
+  return { ...actual, codexHomeForSessionKey: (key: string | number) =>
+    contextHomes.get(String(key)) ?? actual.codexHomeForSessionKey(key) };
+});
 
 let database: OrgTestDb;
 let fixture: BaselineCoordFixture;
@@ -89,6 +100,55 @@ function observationFixture(receipt: AssumeTransitionReceipt): AssumeExecutionOb
     directedMessage: { id: 'fixture-directed-probe', recipient: target.ownerId,
       consumedBy: target.ownerId, consumptions: 1 },
     assignment: { id: 'fixture-routed-work', assignee: target.ownerId, observedBy: target.ownerId } };
+}
+
+async function nativeContextFixture() {
+  const registered = await target();
+  const ownerId = registered.pin.binding.coordOwnerId!, nativeId = registered.pin.binding.sessionId!;
+  const home = mkdtempSync('/tmp/assume-pg-context-');
+  const sessions = join(home, 'sessions', '2026', '10', '25');
+  mkdirSync(sessions, { recursive: true });
+  const file = join(sessions, `rollout-fixture-${nativeId}.jsonl`);
+  const transcript = JSON.stringify({ type: 'session_meta', payload: { id: nativeId } }) + '\n' +
+    JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'Exact target history' } }) + '\n';
+  writeFileSync(file, transcript);
+  contextHomes.set(String(registered.id), home);
+  await fixture.admin`UPDATE harness_shared.adv_sessions
+    SET role = 'su', cwd = ${home}, launch_argv = '["--harness=fixture-harness"]'::jsonb
+    WHERE id = ${registered.id}`;
+  const { plan } = receiptFixture();
+  const actor = { ownerId: plan.caller.ownerId, workspaceId };
+  const request = { requestId: randomUUID(), targetOwnerId: ownerId, contextMode: 'native-resume' as const };
+  const deps = { now: Date.now, secret: Buffer.alloc(32, 7),
+    authorize: async () => 'fixture:administrative-launch-grant', caller: async () => plan.caller,
+    target: (value: Parameters<typeof readAssumeTarget>[0]) =>
+      runWithWorkspace(workspaceId, () => readAssumeTarget(value, workspaceId)) };
+  const snapshot = async () => ({
+    registration: await fixture.admin`SELECT * FROM harness_shared.adv_sessions WHERE id = ${registered.id}`,
+    paused: await readAssumeCallerPause(actor.ownerId),
+    transcript: readFileSync(file, 'utf8'),
+  });
+  return { ...registered, ownerId, nativeId, home, file, transcript, actor, request, deps, snapshot,
+    dispose() { contextHomes.delete(String(registered.id)); rmSync(home, { recursive: true, force: true }); } };
+}
+
+/** Real durable adapters; the host port is injected here. Native process and
+ * channel claims belong to psu-identity-assume-native.integration.test.ts. */
+async function durableTransitionFixture() {
+  const f = await nativeContextFixture();
+  const prepared = await prepareAssume(f.actor, f.request, f.deps);
+  if (!prepared.ok) { f.dispose(); throw new Error('Transition preparation refused: ' + prepared.code); }
+  const plan = prepared.preparation;
+  const store = createAssumeReceiptStore(plan);
+  const caller = createAssumeCallerAdapters({
+    readCaller: f.deps.caller, freeze: async () => true, thaw: async () => true,
+  });
+  const custody = createAssumeCustodyAdapters(plan, { readTarget: f.deps.target });
+  const handoff = vi.fn<AssumeTransitionDeps['handoff']>(async () => 'accepted');
+  const deps: AssumeTransitionDeps = { now: Date.now, ...store, ...caller, ...custody,
+    save: vi.fn(store.save), restoreCaller: vi.fn(caller.restoreCaller),
+    releaseTarget: vi.fn(custody.releaseTarget), handoff };
+  return { ...f, plan, store, handoff, transition: deps };
 }
 
 async function exactReturnFixture() {
@@ -518,6 +578,342 @@ describe('session:assume production receipt adapter (real PG)', () => {
     await fixture.admin`UPDATE harness_shared.carry_notes SET note = 'tampered'
       WHERE workspace_id = ${workspaceId} AND scope = ${scope}`;
     await expect(readAssumeCallerCheckpoint(plan, recovery)).rejects.toThrow('assume-caller-recovery-changed');
+  });
+
+  it('R-5 nonempty caller work and return reference survive handoff failure', async () => {
+    const f = await durableTransitionFixture();
+    try {
+      const { plan } = f;
+      const id = 'WI-assume-failed-handoff-' + randomUUID();
+      await fixture.admin`INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, origin, admission, taken_by, taken_at, updated_ts)
+        VALUES (${workspaceId}, 'fixture-harness', ${id}, 'caller failed handoff', 'open', 'feature', 'local', NULL,
+          ${plan.caller.ownerId}, now(), ${Date.now()})`;
+      await setWorkItemCheckpoint({ workspaceId, harness: 'fixture-harness', workItemId: id }, 'Original caller work.');
+      const awaited = await registerAwait({ subscriberId: plan.caller.ownerId, eventKey: `work-item:done:${id}`,
+        once: false, boundTo: { kind: 'work-item', ref: id } });
+      f.handoff.mockResolvedValue('refused');
+      const result = await commitAssume(plan, f.transition);
+      expect(result).toMatchObject({ state: 'rolled-back', durable: true, recovery: { returnRef: {
+        ownerId: plan.caller.ownerId, nativeSessionId: plan.caller.nativeSessionId,
+      } }, disposition: { releasedWorkClaims: [{ id }], inbox: 'retained', directives: 'retained' } });
+      const saved = await readAssumeCallerCheckpoint(plan, result.recovery!);
+      expect(saved.work).toEqual([expect.objectContaining({ id, checkpoint: 'Original caller work.' })]);
+      expect((await runWithWorkspace(workspaceId, () => getWorkItem(id, 'fixture-harness')))?.assignee)
+        .toBe(plan.caller.ownerId);
+      expect((await listActiveAwaits(plan.caller.ownerId)).map(row => row.id)).toContain(awaited.id);
+      expect(await readAssumeCallerPause(plan.caller.ownerId)).toBeNull();
+      expect((await f.snapshot()).registration[0].resume_claim_key).toBeNull();
+      expect(await commitAssume(plan, f.transition)).toMatchObject({ state: 'rolled-back', replayed: true });
+      expect(f.handoff).toHaveBeenCalledOnce();
+      expect(await f.store.load()).toEqual(result);
+    } finally { f.dispose(); }
+  });
+
+  it('R-6 accepted requires later process and routed probe verification', async () => {
+    const f = await durableTransitionFixture();
+    try {
+      const accepted = await commitAssume(f.plan, f.transition);
+      expect(accepted.state).toBe('handoff-accepted');
+      expect(await f.store.load()).toEqual(accepted);
+      const witness = observationFixture(accepted);
+      for (const invalid of [
+        { ...witness, callerExited: false },
+        { ...witness, nativeWriterPids: [102, 103] },
+        { ...witness, directedMessage: { ...witness.directedMessage, consumedBy: f.plan.caller.ownerId } },
+        { ...witness, assignment: { ...witness.assignment, observedBy: f.plan.caller.ownerId } },
+      ]) {
+        expect(await verifyAssumeExecution(accepted, invalid, f.transition.save)).toBe(accepted);
+        expect(await f.store.load()).toEqual(accepted);
+      }
+      // This proves durable observation validation; the witness is deliberately
+      // synthetic, with actual native probes supplied by the separate suite.
+      expect(await verifyAssumeExecution(accepted, witness, f.transition.save))
+        .toMatchObject({ state: 'target-verified', durable: true, observation: witness });
+      expect((await f.store.load())?.state).toBe('target-verified');
+      expect(f.handoff).toHaveBeenCalledOnce();
+    } finally { f.dispose(); }
+  });
+
+  it.each(['timeout', 'host death'] as const)(
+    'R-6 timeout and host death remain recoverable indeterminate: %s', async failure => {
+      const f = await durableTransitionFixture();
+      try {
+        f.handoff.mockRejectedValue(new Error(failure + ': private adapter details'));
+        const uncertain = await commitAssume(f.plan, f.transition);
+        expect(uncertain).toMatchObject({ state: 'indeterminate', durable: true, reason: 'transition-failed' });
+        expect(JSON.stringify(uncertain)).not.toContain('private adapter details');
+        expect(await f.store.load()).toEqual(uncertain);
+        expect(await readAssumeCallerPause(f.plan.caller.ownerId)).not.toBeNull();
+        expect((await f.snapshot()).registration[0].resume_claim_key).toBe(uncertain.transitionKey);
+        expect(await readAssumeCallerCheckpoint(f.plan, uncertain.recovery!)).toMatchObject({ caller: f.plan.caller });
+        expect(await commitAssume(f.plan, f.transition)).toMatchObject({ state: 'indeterminate', replayed: true });
+        expect(f.transition.restoreCaller).not.toHaveBeenCalled();
+        expect(f.transition.releaseTarget).not.toHaveBeenCalled();
+        expect(f.handoff).toHaveBeenCalledOnce();
+      } finally { f.dispose(); }
+    });
+
+  it.each(['caller-checkpointed', 'caller-quiesced', 'target-custody-acquired', 'handoff-requested'] as const)(
+    'R-8 fault injection at every transition boundary preserves custody and recovery: %s', async state => {
+      const f = await durableTransitionFixture();
+      try {
+        vi.mocked(f.transition.save).mockImplementation(async receipt => {
+          if (receipt.state === state) throw new Error('Injected persistence failure');
+          await f.store.save(receipt);
+        });
+        const result = await commitAssume(f.plan, f.transition);
+        expect(result).toMatchObject({ state: 'rolled-back', durable: true });
+        expect(await f.store.load()).toEqual(result);
+        expect(await readAssumeCallerCheckpoint(f.plan, result.recovery!)).toMatchObject({ caller: f.plan.caller });
+        expect(await readAssumeCallerPause(f.plan.caller.ownerId)).toBeNull();
+        expect((await f.snapshot()).registration[0].resume_claim_key).toBeNull();
+        expect(f.handoff).not.toHaveBeenCalled();
+        expect(await commitAssume(f.plan, f.transition)).toMatchObject({ state: 'rolled-back', replayed: true });
+        expect(f.transition.releaseTarget).toHaveBeenCalledOnce();
+      } finally { f.dispose(); }
+    });
+
+  it('R-8 crash after target custody before exec or verification converges on retry', async () => {
+    const f = await durableTransitionFixture();
+    try {
+      f.handoff.mockRejectedValue(new Error('Unknown host outcome'));
+      const uncertain = await commitAssume(f.plan, f.transition);
+      expect(uncertain.state).toBe('indeterminate');
+      expect(await reconcileAssumeTransition(uncertain, { kind: 'unknown' }, f.transition)).toBe(uncertain);
+      const cancellation = { kind: 'cancelled' as const, transitionKey: uncertain.transitionKey,
+        preparationFingerprint: uncertain.preparationFingerprint,
+        queuedHandoffCancelled: true as const, nativeWriter: 'free' as const };
+      expect(await reconcileAssumeTransition(uncertain, { ...cancellation, transitionKey: 'foreign' }, f.transition))
+        .toBe(uncertain);
+      expect(f.transition.releaseTarget).not.toHaveBeenCalled();
+      const settled = await reconcileAssumeTransition(uncertain, cancellation, f.transition);
+      expect(settled).toMatchObject({ state: 'rolled-back', durable: true });
+      expect(await f.store.load()).toEqual(settled);
+      expect(await readAssumeCallerPause(f.plan.caller.ownerId)).toBeNull();
+      expect((await f.snapshot()).registration[0].resume_claim_key).toBeNull();
+      expect(await commitAssume(f.plan, f.transition)).toMatchObject({ state: 'rolled-back', replayed: true });
+      expect(f.handoff).toHaveBeenCalledOnce();
+      expect(f.transition.restoreCaller).toHaveBeenCalledOnce();
+      expect(f.transition.releaseTarget).toHaveBeenCalledOnce();
+    } finally { f.dispose(); }
+  });
+
+  it('R-9 unauthorized takeover refuses without disclosure or mutation', async () => {
+    const f = await nativeContextFixture();
+    try {
+      expect(await f.deps.target(f.request)).not.toBeNull();
+      const before = await f.snapshot();
+      const caller = vi.fn(f.deps.caller), target = vi.fn(f.deps.target);
+      const deps = { ...f.deps, caller, target, authorize: async () => null };
+      expect(await prepareAssume(f.actor, f.request, deps)).toEqual({ ok: false, code: 'unauthorized' });
+      expect(await validateAssume(f.actor, 'untrusted-token', deps)).toEqual({ ok: false, code: 'unauthorized' });
+      expect(caller).not.toHaveBeenCalled();
+      expect(target).not.toHaveBeenCalled();
+      expect(await f.snapshot()).toEqual(before);
+    } finally { f.dispose(); }
+  });
+
+  it('R-9 exact caller target incarnation context and expiry bind admission', async () => {
+    const f = await nativeContextFixture();
+    try {
+      const prepared = await prepareAssume(f.actor, f.request, f.deps);
+      if (!prepared.ok) throw new Error('Admission preparation refused: ' + prepared.code);
+      const before = await f.snapshot();
+      expect(await validateAssume({ ...f.actor, ownerId: 'su-other-caller' }, prepared.token, f.deps))
+        .toEqual({ ok: false, code: 'caller-changed' });
+      expect(await validateAssume({ ...f.actor, workspaceId: 'foreign-workspace' }, prepared.token, f.deps))
+        .toEqual({ ok: false, code: 'caller-changed' });
+      expect(await validateAssume(f.actor, prepared.token, { ...f.deps,
+        caller: async () => ({ ...prepared.preparation.caller, incarnation: 'replacement-caller' }) }))
+        .toEqual({ ok: false, code: 'caller-changed' });
+      const corrupt = Buffer.from(prepared.token, 'base64url');
+      corrupt[corrupt.length - 1] ^= 1;
+      expect(await validateAssume(f.actor, corrupt.toString('base64url'), f.deps))
+        .toEqual({ ok: false, code: 'invalid-token' });
+      expect(await validateAssume(f.actor, prepared.token, { ...f.deps, secret: Buffer.alloc(32, 9) }))
+        .toEqual({ ok: false, code: 'invalid-token' });
+      expect(await validateAssume(f.actor, prepared.token, { ...f.deps, now: () => prepared.preparation.expiresAt }))
+        .toEqual({ ok: false, code: 'expired-token' });
+      expect(await f.snapshot()).toEqual(before);
+      expect(await createAssumeReceiptStore(prepared.preparation).load()).toBeNull();
+      // R3 and R4 exercise real context, registration and writer changes after
+      // this same admission; no synthetic target replaces their SQL readers.
+    } finally { f.dispose(); }
+  });
+
+  it('R-9 commit rechecks administrative authority and reviewer restrictions', async () => {
+    const f = await nativeContextFixture();
+    try {
+      const prepared = await prepareAssume(f.actor, f.request, f.deps);
+      if (!prepared.ok) throw new Error('Administrative preparation refused: ' + prepared.code);
+      const before = await f.snapshot();
+      const target = vi.fn(f.deps.target), caller = vi.fn(f.deps.caller);
+      for (const authorize of [
+        async () => null,
+        async () => 'different-administrative-grant',
+        async (_actor: typeof f.actor, role?: string) => role ? null : f.deps.authorize(),
+      ]) {
+        expect(await validateAssume(f.actor, prepared.token, { ...f.deps, authorize, caller, target }))
+          .toEqual({ ok: false, code: 'unauthorized' });
+        expect(caller).not.toHaveBeenCalled();
+        expect(target).not.toHaveBeenCalled();
+        expect(await f.snapshot()).toEqual(before);
+        expect(await createAssumeReceiptStore(prepared.preparation).load()).toBeNull();
+      }
+    } finally { f.dispose(); }
+  });
+
+  it('R-12 preview preserves caller and target runtime and durable snapshots', async () => {
+    const f = await durableTransitionFixture();
+    try {
+      const scope = loopScope('fixture-harness', f.actor.ownerId);
+      await setCarryNote({ scope, workspaceId }, 'Caller context retained by preview.');
+      for (const owner of [f.actor.ownerId, f.ownerId]) {
+        await fixture.admin`INSERT INTO harness_shared.routines
+          (id, install_slug, name, workspace_id, target_owner_id, active, trigger_kind, trigger_config, target_role)
+          VALUES (${randomUUID()}, 'fixture-harness', ${loopRoutineName(owner)}, ${workspaceId},
+            ${owner}, true, 'cron', '{}'::jsonb, 'su')`;
+      }
+      const snapshot = async () => ({ ...await f.snapshot(), receipt: await f.store.load(),
+        loops: await fixture.admin`SELECT * FROM harness_shared.routines WHERE workspace_id = ${workspaceId}
+          AND target_owner_id IN (${f.actor.ownerId}, ${f.ownerId}) ORDER BY id`,
+        callerContext: await fixture.admin`SELECT * FROM harness_shared.carry_notes
+          WHERE workspace_id = ${workspaceId} AND scope = ${scope}`,
+      });
+      const before = await snapshot();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        expect(await prepareAssume(f.actor, f.request, f.deps)).toMatchObject({ ok: true, state: 'prepared' });
+        expect(await snapshot()).toEqual(before);
+      }
+      expect(f.handoff).not.toHaveBeenCalled();
+      expect(f.transition.save).not.toHaveBeenCalled();
+      expect(f.transition.restoreCaller).not.toHaveBeenCalled();
+      expect(f.transition.releaseTarget).not.toHaveBeenCalled();
+    } finally { f.dispose(); }
+  });
+
+  it('R-3 native resume preserves exact conversation and backend', async () => {
+    const f = await nativeContextFixture();
+    try {
+      const before = await f.snapshot();
+      const prepared = await prepareAssume(f.actor, f.request, f.deps);
+      if (!prepared.ok) throw new Error('Native context preparation refused: ' + prepared.code);
+      expect(prepared).toMatchObject({ ok: true, preparation: { target: {
+        ownerId: f.ownerId, advSessionId: f.id, backend: 'codex', nativeSessionId: f.nativeId,
+        executionNativeSessionId: f.nativeId, binding: f.pin.binding,
+        context: { mode: 'native-resume', ref: f.nativeId,
+          sha256: createHash('sha256').update(f.transcript).digest('hex') },
+      } } });
+      expect(await validateAssume(f.actor, prepared.token, f.deps)).toMatchObject({ ok: true });
+      expect(await f.snapshot()).toEqual(before);
+      // Same identity, different native bytes: a saved admission cannot reopen
+      // a changed conversation even when its registration remains untouched.
+      writeFileSync(f.file, f.transcript + JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message',
+        message: 'New target history after preparation' } }) + '\n');
+      expect(await validateAssume(f.actor, prepared.token, f.deps))
+        .toEqual({ ok: false, code: 'target-changed' });
+      expect((await f.snapshot()).registration).toEqual(before.registration);
+      expect(await readAssumeCallerPause(f.actor.ownerId)).toBeNull();
+    } finally { f.dispose(); }
+  });
+
+  it('R-3 unavailable corrupt stale and incompatible context refuses without fallback', async () => {
+    const f = await nativeContextFixture();
+    try {
+      const scope = loopScope('fixture-harness', f.ownerId);
+      await setCarryNote({ scope, workspaceId }, 'A valid checkpoint must not silently replace native mode.');
+      for (const invalid of ['', '{broken-json\n',
+        JSON.stringify({ type: 'session_meta', payload: { id: randomUUID() } }) + '\n']) {
+        writeFileSync(f.file, invalid);
+        const before = await f.snapshot();
+        expect(await prepareAssume(f.actor, f.request, f.deps))
+          .toEqual({ ok: false, code: 'context-unavailable' });
+        expect(await f.snapshot()).toEqual(before);
+        expect(await readAssumeCheckpoint({ ownerId: f.ownerId, workspaceId,
+          harnessSlug: 'fixture-harness', binding: f.pin.binding })).not.toBeNull();
+      }
+      writeFileSync(f.file, f.transcript);
+      // Conversely, an intact native transcript cannot rescue a stale explicit
+      // checkpoint. Both choices must refuse before a custody reservation.
+      await fixture.admin`UPDATE harness_shared.carry_notes
+        SET body_ts = ${Date.now() - 120_000} WHERE workspace_id = ${workspaceId} AND scope = ${scope}`;
+      const before = await f.snapshot();
+      expect(await prepareAssume(f.actor, { ...f.request, contextMode: 'checkpoint' }, f.deps))
+        .toEqual({ ok: false, code: 'context-unavailable' });
+      expect(await f.snapshot()).toEqual(before);
+      await fixture.admin`UPDATE harness_shared.adv_sessions SET agent = 'unsupported-fixture' WHERE id = ${f.id}`;
+      const unsupported = await f.snapshot();
+      expect(await prepareAssume(f.actor, f.request, f.deps))
+        .toEqual({ ok: false, code: 'context-unavailable' });
+      expect(await f.snapshot()).toEqual(unsupported);
+    } finally { f.dispose(); }
+  });
+
+  it('R-4 stale target incarnation and writer generation refuses unchanged', async () => {
+    for (const change of ['incarnation', 'writer generation'] as const) {
+      const f = await nativeContextFixture();
+      try {
+        const callerScope = loopScope('fixture-harness', f.actor.ownerId);
+        await setCarryNote({ scope: callerScope, workspaceId }, 'Caller work must survive a stale target.');
+        const callerBefore = await fixture.admin`SELECT * FROM harness_shared.carry_notes
+          WHERE workspace_id = ${workspaceId} AND scope = ${callerScope}`;
+        const prepared = await prepareAssume(f.actor, f.request, f.deps);
+        if (!prepared.ok) throw new Error('R4 preparation refused: ' + prepared.code);
+        const store = createAssumeReceiptStore(prepared.preparation);
+        expect(await store.load()).toBeNull();
+        if (change === 'incarnation') {
+          // A one-microsecond change must survive the SQL-to-JS boundary.
+          await fixture.admin`UPDATE harness_shared.adv_sessions
+            SET started_at = started_at + interval '1 microsecond' WHERE id = ${f.id}`;
+        } else {
+          // Both states are free; this changes the production writer-generation
+          // witness without changing the registration or transcript.
+          const locks = join(f.home, 'thread-writer-locks');
+          mkdirSync(locks, { recursive: true });
+          writeFileSync(join(locks, `${f.nativeId}.lock`), '');
+        }
+        const changed = await f.deps.target(f.request);
+        expect(changed).toMatchObject({ writer: 'free', context: prepared.preparation.target.context });
+        expect(changed?.writerGeneration).not.toBe(prepared.preparation.target.writerGeneration);
+        if (change === 'incarnation') {
+          expect(changed?.binding.startedAt).not.toBe(prepared.preparation.target.binding.startedAt);
+        } else {
+          expect(changed?.binding).toEqual(prepared.preparation.target.binding);
+        }
+        const before = await f.snapshot();
+        expect(await validateAssume(f.actor, prepared.token, f.deps))
+          .toEqual({ ok: false, code: 'target-changed' });
+        expect(await f.snapshot()).toEqual(before);
+        expect(await store.load()).toBeNull();
+        expect(await fixture.admin`SELECT * FROM harness_shared.carry_notes
+          WHERE workspace_id = ${workspaceId} AND scope = ${callerScope}`).toEqual(callerBefore);
+      } finally { f.dispose(); }
+    }
+  });
+
+  it('R-4 same textual target in foreign workspace refuses', async () => {
+    const f = await nativeContextFixture();
+    try {
+      const prepared = await prepareAssume(f.actor, f.request, f.deps);
+      if (!prepared.ok) throw new Error('R4 preparation refused: ' + prepared.code);
+      const foreignWorkspace = 'assume-foreign-' + randomUUID();
+      await fixture.admin`UPDATE harness_shared.adv_sessions SET workspace_id = ${foreignWorkspace}
+        WHERE id = ${f.id}`;
+      // Positive control: the same complete native identity really exists in
+      // the other workspace, rather than being an absent/unreadable target.
+      expect(await runWithWorkspace(foreignWorkspace, () => readAssumeTarget(f.request, foreignWorkspace)))
+        .toMatchObject({ ownerId: f.ownerId, workspaceId: foreignWorkspace, nativeSessionId: f.nativeId,
+          context: prepared.preparation.target.context });
+      const before = await f.snapshot();
+      expect(await f.deps.target(f.request)).toBeNull();
+      expect(await prepareAssume(f.actor, f.request, f.deps))
+        .toEqual({ ok: false, code: 'context-unavailable' });
+      expect(await validateAssume(f.actor, prepared.token, f.deps))
+        .toEqual({ ok: false, code: 'target-changed' });
+      expect(await f.snapshot()).toEqual(before);
+      expect(await createAssumeReceiptStore(prepared.preparation).load()).toBeNull();
+    } finally { f.dispose(); }
   });
 
   it('R-3 checkpoint selection pins revision hash and fresh context', async () => {
