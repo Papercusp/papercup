@@ -852,16 +852,16 @@ describe('consultReplyCore — requester follow-up wake (budget REMOVED, consult
     expect(meta[0].kind).toBe('question');
   });
 
-  it('reroutes a requester follow-up only when the answering session is confirmed ended', async () => {
+  it.each([0, 1])('reroutes a confirmed-ended answering session with queued wake count %i', async (woke) => {
     const id = await seedConsult({ state: 'active', routing: menuSnapshot([RESPONDER, 'resp-2']) });
     const { deps, dispatchCalls } = makeDeps();
-    deps.reach = async () => ({ woke: 0, confirmedDead: true });
+    deps.reach = async () => ({ woke, confirmedDead: true });
     const r = await consultReplyCore(
       { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'question', body: 'additional evidence' },
       deps,
     );
     if ('error' in r) throw new Error(r.error);
-    expect(r.wake).toMatchObject({ attempted: true, woke: 0, reroute: { status: 'advanced', to: 'resp-2' } });
+    expect(r.wake).toMatchObject({ attempted: true, woke, reroute: { status: 'advanced', to: 'resp-2' } });
     expect(r.cascade).toMatchObject({ advanced_to: 'resp-2', exhausted: false, woke: 1 });
     expect(r.hint).toContain('advanced to reviewer resp-2');
     expect(dispatchCalls.map((call) => call.responder)).toEqual(['resp-2']);
