@@ -33,9 +33,10 @@
  * Plan ref: phase-4-endpoint-system-2026-05-12.md § T2.3.
  */
 
-import { mkdirSync, rmSync, writeFileSync, type Dirent } from 'node:fs';
+import { constants as fsConstants, mkdirSync, rmSync, writeFileSync, type Dirent } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  access as accessAsync,
   mkdir as mkdirAsync,
   readdir as readdirAsync,
   stat as statAsync,
@@ -55,9 +56,20 @@ import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 import { withUnpinnedPath } from './storage/retention-pins';
 
 /** Serialize the final protection read and delete with storage:pin mutations. */
-async function removeUnpinnedScratchPath(path: string, dryRun = false): Promise<boolean> {
+async function removeUnpinnedScratchPath(
+  path: string,
+  dryRun = false,
+  onRmAsync?: (elapsedMs: number) => void,
+): Promise<boolean> {
   return withUnpinnedPath(path, async () => {
-    if (!dryRun) await rmAsync(path, { recursive: true, force: true });
+    if (!dryRun) {
+      const startedAt = performance.now();
+      try {
+        await rmAsync(path, { recursive: true, force: true });
+      } finally {
+        onRmAsync?.(Math.max(0, performance.now() - startedAt));
+      }
+    }
     return true;
   });
 }
@@ -1311,8 +1323,53 @@ async function evictWorkspaceQuotaLocked(
       if (used <= targetBytes()) break;
       if (diagnostics) diagnostics.deleteAttempts += 1;
       const deletionStartedAt = performance.now();
+      let pinProtectionStartedAt: number | null = null;
+      let rmAsyncMs = 0;
       try {
-        if (!(await removeUnpinnedScratchPath(run.dir))) continue;
+        // Avoid waiting on the global retention-pin mutex for a candidate whose own
+        // permissions (or disappearance) already make removal impossible.
+        const preflightStartedAt = performance.now();
+        try {
+          const accessMode = fsConstants.W_OK | fsConstants.X_OK;
+          await accessAsync(dirname(run.dir), accessMode);
+          // A symlinked run directory is removed as a link; only its parent needs
+          // write/execute access. Preserve the quota walk's existing symlink fallback.
+          const candidate = await lstatAsync(run.dir);
+          if (!candidate.isSymbolicLink()) await accessAsync(run.dir, accessMode);
+        } catch (error) {
+          const code = scratchFsErrorCode(error);
+          if (code === 'ENOENT') {
+            if (diagnostics) {
+              diagnostics.deletePreflightSkips += 1;
+              diagnostics.lastDeletePreflightErrorCode = code;
+            }
+            // The size index is stale for a path that vanished after candidate selection.
+            used -= bytesInRun;
+            if (useCachedRunSizes) entry.runBytesByPath.delete(run.dir);
+            else runBytesByPath.delete(run.dir);
+            entry.runMtimeByPath.delete(run.dir);
+            cacheChanged = true;
+            continue;
+          }
+          if (code !== 'EACCES' && code !== 'EPERM' && code !== 'EROFS') throw error;
+          if (diagnostics) {
+            diagnostics.deletePreflightSkips += 1;
+            diagnostics.lastDeletePreflightErrorCode = code;
+            diagnostics.deleteErrors += 1;
+            diagnostics.lastDeleteErrorCode = code;
+          }
+          continue;
+        } finally {
+          if (diagnostics) {
+            diagnostics.deletePreflightMs += Math.max(0, performance.now() - preflightStartedAt);
+          }
+        }
+
+        pinProtectionStartedAt = performance.now();
+        if (!(await removeUnpinnedScratchPath(run.dir, false, (elapsedMs) => {
+          rmAsyncMs = elapsedMs;
+          if (diagnostics) diagnostics.rmAsyncMs += elapsedMs;
+        }))) continue;
       } catch (error) {
         const code = scratchFsErrorCode(error);
         if (code !== 'EACCES' && code !== 'EPERM' && code !== 'EROFS') throw error;
@@ -1327,7 +1384,15 @@ async function evictWorkspaceQuotaLocked(
         }
         continue;
       } finally {
-        if (diagnostics) diagnostics.deletionMs += Math.max(0, performance.now() - deletionStartedAt);
+        if (diagnostics) {
+          if (pinProtectionStartedAt !== null) {
+            diagnostics.pinProtectionMs += Math.max(
+              0,
+              performance.now() - pinProtectionStartedAt - rmAsyncMs,
+            );
+          }
+          diagnostics.deletionMs += Math.max(0, performance.now() - deletionStartedAt);
+        }
       }
       used -= bytesInRun;
       evictedRuns.push(run.dir);
@@ -1835,7 +1900,16 @@ export interface ScratchQuotaRecoveryDiagnostics {
   runsConsidered: number;
   fallbackRunSizes: number;
   deletionMs: number;
+  /** Candidate and parent W_OK|X_OK checks before retention-pin admission. */
+  deletePreflightMs: number;
+  /** Time waiting for/checking retention pins, excluding recursive removal. */
+  pinProtectionMs: number;
+  /** Recursive rmAsync time after retention-pin protection succeeds. */
+  rmAsyncMs: number;
   deleteAttempts: number;
+  /** Candidate skips caused by permission or missing-path preflight errors. */
+  deletePreflightSkips: number;
+  lastDeletePreflightErrorCode: string | null;
   /** Candidate-local permission failures; their bytes remain charged to quota. */
   deleteErrors: number;
   lastDeleteErrorCode: string | null;
@@ -1864,7 +1938,12 @@ function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagnostics {
     runsConsidered: 0,
     fallbackRunSizes: 0,
     deletionMs: 0,
+    deletePreflightMs: 0,
+    pinProtectionMs: 0,
+    rmAsyncMs: 0,
     deleteAttempts: 0,
+    deletePreflightSkips: 0,
+    lastDeletePreflightErrorCode: null,
     deleteErrors: 0,
     lastDeleteErrorCode: null,
     runsDeleted: 0,

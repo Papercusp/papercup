@@ -27,9 +27,10 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, readdir: vi.fn(actual.readdir), rm: vi.fn(actual.rm), stat: vi.fn(actual.stat), writeFile: vi.fn(actual.writeFile) };
+  return { ...actual, access: vi.fn(actual.access), readdir: vi.fn(actual.readdir), rm: vi.fn(actual.rm), stat: vi.fn(actual.stat), writeFile: vi.fn(actual.writeFile) };
 });
 import {
+  constants as fsConstants,
   mkdtempSync,
   mkdirSync,
   writeFileSync,
@@ -45,7 +46,7 @@ import {
   realpathSync,
   truncateSync,
 } from 'node:fs';
-import { mkdir, readdir as readdirAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
+import { access as accessAsync, mkdir, readdir as readdirAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
@@ -2340,6 +2341,158 @@ describe('deferred scratch quota recovery', () => {
       await refreshScratchUsage('ws-Q');
     } finally {
       remove.mockImplementation(originalRemove);
+    }
+  });
+
+  it.each(['EACCES', 'EPERM', 'EROFS'])('preflights a read-only FIFO candidate before retention-lock admission and reclaims a later run (%s)', async (code) => {
+    const blocked = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 20_000);
+    const reclaimable = makeSparseRun('ws-Q', UUID(2), 2 * 1024 ** 3, 10_000);
+    const target = makeSparseRun('ws-Q', UUID(3), 2 * 1024 ** 3);
+    _setScratchUsageForTests('ws-Q', 6 * 1024 ** 3 + markerBytes('ws-Q'));
+
+    const access = vi.mocked(accessAsync);
+    const originalAccess = access.getMockImplementation()!;
+    access.mockClear();
+    const failure = Object.assign(new Error('legacy scratch is read-only'), { code });
+    let releaseRetentionLock: () => void = () => {};
+    let signalRetentionLockAcquired: () => void = () => {};
+    const retentionLockAcquired = new Promise<void>((resolve) => { signalRetentionLockAcquired = resolve; });
+    const retentionLockHold = new Promise<void>((resolve) => { releaseRetentionLock = resolve; });
+    const heldRetentionLock = withFsMutex('papercusp-disk-retention', async () => {
+      signalRetentionLockAcquired();
+      await retentionLockHold;
+    });
+    await retentionLockAcquired;
+
+    let signalLaterCandidatePreflight: () => void = () => {};
+    const laterCandidatePreflight = new Promise<void>((resolve) => { signalLaterCandidatePreflight = resolve; });
+    access.mockImplementation(async (...args) => {
+      const path = String(args[0]);
+      if (path === blocked) throw failure;
+      if (path === reclaimable) signalLaterCandidatePreflight();
+      return originalAccess(...args);
+    });
+
+    const remove = vi.mocked(rmAsync);
+    remove.mockClear();
+    const timings: ScratchWriteTimings[] = [];
+    const filePath = join(target, 'fresh-result');
+    let writer: Promise<void> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      writer = writeWithScratchQuota({
+        workspaceId: 'ws-Q',
+        filePath,
+        bytes: 64,
+        onTiming: (row) => timings.push(row),
+      }, () => writeFile(filePath, Buffer.alloc(64)));
+      await Promise.race([
+        laterCandidatePreflight,
+        new Promise<void>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('read-only candidate waited for retention-lock admission')), 5000);
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      expect(access).toHaveBeenCalledWith(dirname(blocked), fsConstants.W_OK | fsConstants.X_OK);
+      expect(access).toHaveBeenCalledWith(blocked, fsConstants.W_OK | fsConstants.X_OK);
+
+      releaseRetentionLock();
+      await heldRetentionLock;
+      await writer;
+
+      expect(existsSync(blocked)).toBe(true);
+      expect(existsSync(reclaimable)).toBe(false);
+      expect(readFileSync(filePath)).toHaveLength(64);
+      const recovery = timings.at(-1)?.quotaRecoveryDiagnostics;
+      expect(recovery).toMatchObject({
+        deleteAttempts: 2,
+        deletePreflightSkips: 1,
+        lastDeletePreflightErrorCode: code,
+        deleteErrors: 1,
+        lastDeleteErrorCode: code,
+        runsDeleted: 1,
+        deletedBytes: 2 * 1024 ** 3,
+        deletePreflightMs: expect.any(Number),
+        pinProtectionMs: expect.any(Number),
+        rmAsyncMs: expect.any(Number),
+      });
+      expect(remove.mock.calls.some(([path]) => String(path) === blocked)).toBe(false);
+      expect(remove.mock.calls.some(([path]) => String(path) === reclaimable)).toBe(true);
+      await refreshScratchUsage('ws-Q');
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      releaseRetentionLock();
+      await Promise.allSettled([heldRetentionLock, ...(writer ? [writer] : [])]);
+      access.mockImplementation(originalAccess);
+    }
+  });
+
+  it('accounts for a quota candidate that disappears before retention-lock admission', async () => {
+    const missing = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 20_000);
+    const reclaimable = makeSparseRun('ws-Q', UUID(2), 2 * 1024 ** 3, 10_000);
+    const target = makeSparseRun('ws-Q', UUID(3), 2 * 1024 ** 3);
+    _setScratchUsageForTests('ws-Q', 6 * 1024 ** 3 + markerBytes('ws-Q'));
+
+    const access = vi.mocked(accessAsync);
+    const originalAccess = access.getMockImplementation()!;
+    const remove = vi.mocked(rmAsync);
+    const originalRemove = remove.getMockImplementation()!;
+    const missingPath = Object.assign(new Error('quota candidate disappeared'), { code: 'ENOENT' });
+    const timings: ScratchWriteTimings[] = [];
+    const filePath = join(target, 'fresh-result');
+    access.mockImplementation(async (...args) => {
+      if (String(args[0]) === missing) {
+        await originalRemove(missing, { recursive: true, force: true });
+        throw missingPath;
+      }
+      return originalAccess(...args);
+    });
+    try {
+      await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 64,
+        onTiming: (row) => timings.push(row) }, () => writeFile(filePath, Buffer.alloc(64)));
+      expect(existsSync(missing)).toBe(false);
+      expect(existsSync(reclaimable)).toBe(false);
+      expect(readFileSync(filePath)).toHaveLength(64);
+      expect(scratchUsageBytes('ws-Q')).toBe(2 * 1024 ** 3 + markerBytes('ws-Q') + 64);
+      expect(timings.at(-1)?.quotaRecoveryDiagnostics).toMatchObject({
+        deletePreflightSkips: 1,
+        lastDeletePreflightErrorCode: 'ENOENT',
+        deleteErrors: 0,
+        runsDeleted: 1,
+        deletedBytes: 2 * 1024 ** 3,
+        deletePreflightMs: expect.any(Number),
+        pinProtectionMs: expect.any(Number),
+        rmAsyncMs: expect.any(Number),
+      });
+      await refreshScratchUsage('ws-Q');
+    } finally {
+      access.mockImplementation(originalAccess);
+    }
+  });
+
+  it('propagates unexpected quota-candidate preflight errors before invoking the writer', async () => {
+    const candidate = makeSparseRun('ws-Q', UUID(1), WORKSPACE_QUOTA_BYTES, 10_000);
+    const target = makeRunDir('ws-Q', 'quota', UUID(2), 0);
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + markerBytes('ws-Q'));
+
+    const access = vi.mocked(accessAsync);
+    const originalAccess = access.getMockImplementation()!;
+    const failure = Object.assign(new Error('scratch access check failed'), { code: 'EIO' });
+    access.mockImplementation(async (...args) => {
+      if (String(args[0]) === candidate) throw failure;
+      return originalAccess(...args);
+    });
+    const write = vi.fn(async () => {});
+    try {
+      await expect(writeWithScratchQuota({
+        workspaceId: 'ws-Q',
+        filePath: join(target, 'fresh-result'),
+        bytes: 64,
+      }, write)).rejects.toBe(failure);
+      expect(write).not.toHaveBeenCalled();
+      expect(existsSync(candidate)).toBe(true);
+    } finally {
+      access.mockImplementation(originalAccess);
     }
   });
 
