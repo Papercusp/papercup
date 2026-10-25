@@ -35,13 +35,11 @@ import { acquireResourceExclusiveWithWait } from '../resource-acquire-wait';
 import { _resetListenersForTests } from '../workspace-listener';
 
 async function dbLive(): Promise<boolean> {
-  try {
-    const sql = getTxPool();
-    await sql`SELECT 1`;
-    return true;
-  } catch {
-    return false;
-  }
+  // Fresh with-test-pg servers do not have the side database until bootstrap.
+  // Setup failures must abort collection, never turn this suite into 24 skips.
+  await ensureBootstrap();
+  await getTxPool()`SELECT 1`;
+  return true;
 }
 
 let wsSeq = 0;
