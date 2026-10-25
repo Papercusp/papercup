@@ -12,6 +12,8 @@ vi.mock('@papercusp/db-org', async original => ({
 }));
 vi.mock('../../agent-tools/operator/converse-card', () => ({ findConverseCard: vi.fn(async () => null) }));
 vi.mock('../../operator-conversations', () => ({ getConversationById: vi.fn() }));
+const nativeCards = vi.hoisted(() => ({ route: vi.fn() }));
+vi.mock('../../su-session-owner-routing', () => ({ routeSuNativeCard: nativeCards.route }));
 vi.mock('../telemetry', () => ({
   recordRouteInvocation: vi.fn(async () => {}),
 }));
@@ -44,6 +46,7 @@ function post(body: unknown) {
 
 describe('POST /api/operator/conversations/:id/card-response', () => {
   beforeEach(() => {
+    nativeCards.route.mockReset();
     _resetCardCorrelatorForTests();
     _resetStateChannelForTests();
     _resetCardResponseRateLimitForTests();
@@ -73,6 +76,27 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
       spec: { prompt: 'choose', dataSchema: choiceSchema },
     });
   }
+
+  it('forwards a native private answer under authenticated agent-chat scope without conversation persistence', async () => {
+    nativeCards.route.mockResolvedValue({ kind: 'response', ok: true });
+    const correlationId = 'su-card.79.1.aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const res = await post({ correlationId, workspaceId: ws, action: 'submit', payload: { value: 'PRIVATE_NATIVE' } });
+    expect(res.status).toBe(200);
+    expect(nativeCards.route).toHaveBeenCalledWith({ workspaceId: ws, agentChatId: 'c1',
+      request: { kind: 'response', correlationId, action: 'submit', payload: { value: 'PRIVATE_NATIVE' } } });
+    expect(getConversationById).not.toHaveBeenCalled(); expect(findConverseCard).not.toHaveBeenCalled();
+    expect(await res.text()).not.toContain('PRIVATE_NATIVE');
+  });
+
+  it('rejects foreign native workspace and redacts unknown relay failures without legacy fallback', async () => {
+    const correlationId = 'su-card.79.1.aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    expect((await post({ correlationId, workspaceId: 'foreign', action: 'submit', payload: { value: 'PRIVATE' } })).status).toBe(404);
+    expect(nativeCards.route).not.toHaveBeenCalled();
+    nativeCards.route.mockRejectedValue(new Error('PRIVATE transport error'));
+    const res = await post({ correlationId, workspaceId: ws, action: 'submit', payload: { value: 'PRIVATE' } });
+    expect(res.status).toBe(503); expect(await res.text()).not.toContain('PRIVATE');
+    expect(getConversationById).not.toHaveBeenCalled(); expect(findConverseCard).not.toHaveBeenCalled();
+  });
 
   it('401 when session cookie is missing (H3)', async () => {
     vi.mocked(getSessionUser).mockResolvedValue(null);

@@ -11,11 +11,12 @@ export function admitDesktopPortalNativeParent(env?: NodeJS.ProcessEnv, nowMs?: 
 };
 /**
  * @param {NodeJS.ProcessEnv} env
- * @param {{ timeoutMs?: number, nowMs?: number }} [launch]
+ * @param {{ timeoutMs?: number, nowMs?: number, repoRoot?: string }} [launch]
  */
 export function nativeVerifierEnv(env: NodeJS.ProcessEnv, launch?: {
     timeoutMs?: number;
     nowMs?: number;
+    repoRoot?: string;
 }): {
     [key: string]: string | undefined;
 };

@@ -45,7 +45,7 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
   const nativeEnvHelper = join(repo, 'scripts/lib/verify-tauri-native-env.mjs');
   const { nativeVerifierEnv } = await import(nativeEnvHelper);
   const nativeEnv = () => nativeVerifierEnv({ ...process.env, ...nativeBudget,
-    PAPERCUSP_PTOOL_LAUNCHER: launcher }, { timeoutMs: nativeTimeoutMs });
+    PAPERCUSP_PTOOL_LAUNCHER: launcher }, { timeoutMs: nativeTimeoutMs, repoRoot: repo });
   if (native) {
     await run(process.execPath, [join(repo, 'scripts/lib/verify-tauri-deadline.mjs'), 'prepare', '0', '1'], {
       cwd: repo, timeout: 15_000, env: nativeEnv(),

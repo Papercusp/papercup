@@ -126,6 +126,15 @@ describe('effective SU launch preparation', () => {
       });
       expect(launch.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
 
+      const port80 = readFileSync(join(home, 'config.toml'), 'utf8')
+        .replace('http://127.0.0.1:8788/v1', 'http://127.0.0.1:80/v1');
+      writeFileSync(join(home, 'config.toml'), port80);
+      legacy.envelopeEnv.PAPERCUSP_GATEWAY_PORT = '80';
+      expect(prepareSuLaunch({ ...legacy, codexHome: home }, {
+        accountRoute: 'auto', inheritedEnv: {},
+      }).env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+      delete legacy.envelopeEnv.PAPERCUSP_GATEWAY_PORT;
+
       const rejected = [
         'model_provider = "papercusp-codex-gateway"\n',
         [
@@ -166,7 +175,16 @@ describe('effective SU launch preparation', () => {
           'http_headers = { "x-papercusp-owner" = "chosen-owner", "x-papercusp-account" = "" }',
           '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
         ].join('\n'),
-        ...['', 'https://example.invalid/v1'].map(baseUrl => [
+        ...[
+          '',
+          'https://example.invalid/v1',
+          'http://127.0.0.1:9999/v1',
+          'http://localhost:8788/v1',
+          'http://user@127.0.0.1:8788/v1',
+          'http://127.0.0.1:8788/v1/',
+          'http://127.0.0.1:8788/v1?route=auto',
+          'http://127.0.0.1:8788/v1#route',
+        ].map(baseUrl => [
           '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT',
           'model_provider = "papercusp-codex-gateway"',
           '# END PAPERCUSP_CODEX_GATEWAY_ROOT',

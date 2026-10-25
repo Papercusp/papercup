@@ -672,6 +672,38 @@ rm_tmp() {
   }
 }
 
+# Publish a validated local transcript candidate without removing the live path.
+# Linux directory exchange leaves the old archive at .tmp for cleanup only AFTER
+# success. Unsupported/failed exchanges refuse publication; there is no rm fallback.
+install_transcript_archive() {
+  python3 - "$1.tmp" "$1" <<'PY'
+import ctypes
+import os
+import stat
+import sys
+
+candidate, retained = sys.argv[1:]
+try:
+    if not stat.S_ISDIR(os.lstat(candidate).st_mode):
+        raise OSError("validated candidate is not a directory")
+    if not os.path.lexists(retained):
+        os.rename(candidate, retained)
+    else:
+        if not stat.S_ISDIR(os.lstat(retained).st_mode):
+            raise OSError("retained archive is not a directory")
+        exchange = ctypes.CDLL(None, use_errno=True).renameat2
+        exchange.argtypes = [ctypes.c_int, ctypes.c_char_p,
+                             ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        exchange.restype = ctypes.c_int
+        if exchange(-100, os.fsencode(candidate), -100, os.fsencode(retained), 2):
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+except (OSError, AttributeError) as error:
+    print("atomic transcript publication failed: " + str(error), file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
 # dump_one <db> <label> [extra pg_dump args...]
 #
 # WHY A FUNCTION (WI-2146225). This body carries every safety property the
@@ -765,7 +797,20 @@ dump_one() {
     # erroring its snapshot of db-dumps every cycle (found 2026-07-12: errors:4).
     # On FAILURE we still leave the existing "$out" untouched (see the branch
     # above), so last-known-good survives a bad run without any .prev.
-    if [ "$db" = "$BACKUP_MIGRATION_ADVISORY_DATABASE" ]; then
+    if [ "$label" = "$db-transcript" ]; then
+      if [ "$db" = "$BACKUP_MIGRATION_ADVISORY_DATABASE" ]; then
+        if ! kopia_with_hold_lease "$db" kopia_install_dump_if_held "$out" install_transcript_archive; then
+          log "$label FAIL — atomic transcript publication or legal-hold lease failed; previous dump preserved"
+          rm -f "$dumperr"
+          return 1
+        fi
+      elif ! install_transcript_archive "$out"; then
+        log "$label FAIL — atomic transcript publication failed; previous dump preserved"
+        rm -f "$dumperr"
+        return 1
+      fi
+      rm_tmp "$out.tmp" || log "$label WARN — successor retained; superseded temporary archive cleanup failed"
+    elif [ "$db" = "$BACKUP_MIGRATION_ADVISORY_DATABASE" ]; then
       if ! kopia_with_hold_lease "$db" kopia_install_dump_if_held "$out"; then
         log "$label FAIL — legal-hold rotation lease unavailable; previous dump preserved"
         rm -f "$dumperr"

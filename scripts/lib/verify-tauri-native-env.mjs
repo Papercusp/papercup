@@ -1,6 +1,8 @@
-import { spawnSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, lstatSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { committedWorkRootDependencyDonor, OWNER_MARKER } from '../lint-as-committed.mjs';
 import { censusSpawnArgs, interpretRestrictedHoldPreflight } from './restricted-hold-preflight.mjs';
 import { admitTaskDeadline, readTaskDeadlineEpochMs } from './task-deadline.mjs';
 
@@ -34,10 +36,34 @@ export function admitDesktopPortalNativeParent(env = process.env, nowMs = Date.n
 // rail in the parent, and do not let Vitest enable an injected census here.
 /**
  * @param {NodeJS.ProcessEnv} env
- * @param {{ timeoutMs?: number, nowMs?: number }} [launch]
+ * @param {{ timeoutMs?: number, nowMs?: number, repoRoot?: string }} [launch]
  */
 export function nativeVerifierEnv(env, launch) {
   const child = { ...env };
+  if (launch?.repoRoot !== undefined) {
+    const source = resolve(launch.repoRoot);
+    const donor = committedWorkRootDependencyDonor(source);
+    const modules = join(donor, 'node_modules');
+    if (!existsSync(modules) || !lstatSync(modules).isDirectory()
+      || existsSync(join(donor, OWNER_MARKER))) {
+      throw new Error('Native verifier requires a physical installed dependency donor');
+    }
+    // The invoked wrapper remains in the tested checkout. Pin its Git source
+    // separately: changing REPO_DIR alone would copy the mutable donor's code.
+    const sourceRef = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
+    if (child.VERIFY_TAURI_SOURCE_REF && child.VERIFY_TAURI_SOURCE_REF !== sourceRef) {
+      throw new Error('Native verifier source ref must match the invoked checkout');
+    }
+    child.PAPERCUSP_REPO_DIR = donor;
+    child.VERIFY_TAURI_SOURCE_REF = sourceRef;
+    if (!child.VERIFY_TAURI_SOURCE_INPUTS && !child.VERIFY_TAURI_SOURCE_INPUTS_FILE) {
+      child.VERIFY_TAURI_SOURCE_INPUTS = [
+        'apps/operator/bin/desktop-portal-native.test.ts',
+        'apps/operator/bin/desktop-portal-persistence.test.ts',
+        'scripts/lib/verify-tauri-native-env.mjs',
+      ].join(',');
+    }
+  }
   if (launch?.timeoutMs !== undefined) {
     if (!Number.isSafeInteger(launch.timeoutMs) || launch.timeoutMs <= 0) {
       throw new Error('Native verifier launch timeout must be a positive integer');
@@ -65,7 +91,7 @@ export function nativeVerifierEnv(env, launch) {
 // readiness check only: the real build still checks its exact inputs later.
 export function preflightNativeVerifier(repoRoot, env, spawn = spawnSync) {
   const root = resolve(repoRoot);
-  const child = nativeVerifierEnv(env);
+  const child = nativeVerifierEnv(env, { repoRoot: root });
   if (!child.PAPERCUSP_WORKSPACE_ID?.trim()) {
     throw new Error('Native verifier requires a source workspace before preparation');
   }

@@ -2683,9 +2683,16 @@ export function prepareSuLaunch(boot, {
         } catch {
           // Invalid or missing URL cannot prove a resolved local gateway route.
         }
-        const localGateway = gatewayUrl?.protocol === "http:"
-          && ["127.0.0.1", "localhost", "[::1]"].includes(gatewayUrl.hostname)
-          && gatewayUrl.pathname.replace(/\/$/, "") === "/v1";
+        const configuredGatewayPort = Number(env.PAPERCUSP_GATEWAY_PORT);
+        const expectedGatewayPort = Number.isFinite(configuredGatewayPort) && configuredGatewayPort > 0
+          ? configuredGatewayPort
+          : 8788;
+        const expectedGatewayUrl = new URL(`http://127.0.0.1:${expectedGatewayPort}/v1`);
+        // Exact URL equality is the proof: aliases, credentials, path variants,
+        // query strings and fragments are different routes even when they reach
+        // the same socket. URL normalizes a configured default port (80), so the
+        // comparison stays correct without weakening endpoint identity.
+        const localGateway = gatewayUrl?.href === expectedGatewayUrl.href;
         if (completeManagedBlocks
           && config.model_provider === "papercusp-codex-gateway"
           && provider?.wire_api === "responses"
