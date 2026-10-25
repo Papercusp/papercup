@@ -62,6 +62,11 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
       env: { ...process.env, PAPERCUSP_PTOOL_LAUNCHER: launcher },
     });
     expect(JSON.parse(stdout).ownerId).toBeTruthy();
+    // Check the generated Rust wire types before paying for a native snapshot.
+    await run(process.execPath, [join(repo, 'scripts/lint-tsc.mjs'),
+      '--files=apps/operator/bin/desktop-portal-native.test.ts'], {
+      cwd: repo, timeout: 120_000, env: nativeEnv(),
+    });
     await run(process.execPath, [nativeEnvHelper, '--preflight', repo], {
       cwd: repo, timeout: 125_000, env: nativeEnv(),
     });
