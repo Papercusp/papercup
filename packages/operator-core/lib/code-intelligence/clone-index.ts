@@ -79,7 +79,7 @@ function hasCloneBody(node: ts.Node): node is ts.FunctionDeclaration | ts.Method
     && !!node.body && ts.isBlock(node.body);
 }
 
-export function extractCloneFile(input: CloneSource, minMass = CLONE_MIN_MASS): CloneFile {
+export function extractCloneFile(input: CloneSource, minMass = CLONE_MIN_MASS, includeNear = true): CloneFile {
   const path = checkedPath(input.path), blobSha = cloneBlobSha(input.source);
   if (input.blobSha !== undefined && input.blobSha !== blobSha) throw new Error(`Clone blob identity mismatch: ${path}`);
   const base = { path, blobSha, sha256: sha256(input.source), diagnostics: [], functions: [] };
@@ -104,7 +104,7 @@ export function extractCloneFile(input: CloneSource, minMass = CLONE_MIN_MASS): 
           line: position.line + 1, column: position.character + 1, name: name || '<anon>',
           signature: input.source.slice(start, body.getStart(source)).replace(/\s+/g, ' ').trim().slice(0, 300),
           mass: fp.mass, exact: fp.exact, renamed: fp.normalized, blobSha, classification };
-        Object.defineProperty(fn, nearFingerprint, { value: fingerprintCloneNear(body) });
+        if (includeNear) Object.defineProperty(fn, nearFingerprint, { value: fingerprintCloneNear(body) });
         functions.push(fn);
       }
     }
@@ -119,13 +119,16 @@ export function extractCloneFile(input: CloneSource, minMass = CLONE_MIN_MASS): 
  */
 export class CloneIndex {
   readonly minMass: number;
+  /** Exact/renamed census consumers can omit the independent near-copy index. */
+  readonly includeNear: boolean;
   private readonly files = new Map<string, CloneFile>();
   private readonly buckets = { exact: new Map<string, Map<string, CloneFunction>>(), renamed: new Map<string, Map<string, CloneFunction>>() };
   private readonly nearBands = new Map<string, Map<string, CloneFunction>>();
   private generation = 0;
 
-  constructor(options: { minMass?: number } = {}) {
+  constructor(options: { minMass?: number; includeNear?: boolean } = {}) {
     this.minMass = options.minMass ?? CLONE_MIN_MASS;
+    this.includeNear = options.includeNear ?? true;
     if (!Number.isSafeInteger(this.minMass) || this.minMass < 1) throw new Error('Clone minMass must be a positive integer');
   }
   get version(): string { return `${CLONE_NORMALIZATION_VERSION}:floor-${this.minMass}:revision-${this.generation}`; }
@@ -138,7 +141,7 @@ export class CloneIndex {
     if (input.blobSha !== undefined && input.blobSha !== blob) throw new Error(`Clone blob identity mismatch: ${path}`);
     const old = this.files.get(path);
     if (old?.blobSha === blob) return { changed: false, file: old };
-    const file = extractCloneFile(input, this.minMass);
+    const file = extractCloneFile(input, this.minMass, this.includeNear);
     this.replace(file);
     return { changed: true, file };
   }
@@ -151,7 +154,7 @@ export class CloneIndex {
         bucket?.delete(fn.id);
         if (!bucket?.size) this.buckets[kind].delete(fn[kind]);
       }
-      for (const band of (fn as NearFunction)[nearFingerprint]!.bands) {
+      for (const band of (fn as NearFunction)[nearFingerprint]?.bands ?? []) {
         const bucket = this.nearBands.get(band);
         bucket?.delete(fn.id);
         if (!bucket?.size) this.nearBands.delete(band);
@@ -172,7 +175,7 @@ export class CloneIndex {
         const bucket = this.buckets[kind].get(fn[kind]) ?? new Map<string, CloneFunction>();
         bucket.set(fn.id, fn); this.buckets[kind].set(fn[kind], bucket);
       }
-      for (const band of (fn as NearFunction)[nearFingerprint]!.bands) {
+      for (const band of (fn as NearFunction)[nearFingerprint]?.bands ?? []) {
         const bucket = this.nearBands.get(band) ?? new Map<string, CloneFunction>();
         bucket.set(fn.id, fn); this.nearBands.set(band, bucket);
       }

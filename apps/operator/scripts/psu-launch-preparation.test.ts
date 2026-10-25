@@ -111,6 +111,10 @@ describe('effective SU launch preparation', () => {
         '# END PAPERCUSP_CODEX_GATEWAY_ROOT',
         '# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER',
         '[model_providers.papercusp-codex-gateway]',
+        'base_url = "http://127.0.0.1:8788/v1"',
+        'wire_api = "responses"',
+        'experimental_bearer_token = "test-token"',
+        'http_headers = { "x-papercusp-owner" = "chosen-owner" }',
         '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
       ].join('\n'));
       const legacy = bootstrap('codex');
@@ -122,11 +126,64 @@ describe('effective SU launch preparation', () => {
       });
       expect(launch.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
 
-      writeFileSync(join(home, 'config.toml'), 'model_provider = "papercusp-codex-gateway"\n');
-      expect(() => prepareSuLaunch({ ...legacy, codexHome: home }, {
-        accountRoute: 'auto', inheritedEnv: {},
-      })).toThrow(expect.objectContaining({ code: 'account_route_mismatch' }));
+      const rejected = [
+        'model_provider = "papercusp-codex-gateway"\n',
+        [
+          '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT',
+          'model_provider = "papercusp-codex-gateway"',
+          '# END PAPERCUSP_CODEX_GATEWAY_ROOT',
+          '# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+          '[model_providers.papercusp-codex-gateway]',
+          'base_url = "http://127.0.0.1:8788/v1"',
+          'wire_api = "responses"',
+          'experimental_bearer_token = "test-token"',
+          'http_headers = { "x-papercusp-owner" = "chosen-owner", "x-papercusp-account" = "pinned" }',
+          '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+        ].join('\n'),
+        '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT\nmodel_provider = "papercusp-codex-gateway"\n# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER\n',
+        'model_provider = "openai"\n# model_provider = "papercusp-codex-gateway"\n# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT\n# END PAPERCUSP_CODEX_GATEWAY_ROOT\n# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER\n# END PAPERCUSP_CODEX_GATEWAY_PROVIDER\n',
+      ];
+      for (const config of rejected) {
+        writeFileSync(join(home, 'config.toml'), config);
+        expect(() => prepareSuLaunch({ ...legacy, codexHome: home }, {
+          accountRoute: 'auto', inheritedEnv: {},
+        })).toThrow(expect.objectContaining({ code: 'account_route_mismatch' }));
+      }
     } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('passes a repaired legacy Codex auto route into the spawned child environment', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'su-codex-auto-child-'));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      writeFileSync(join(home, 'config.toml'), [
+        '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT',
+        'model_provider = "papercusp-codex-gateway"',
+        '# END PAPERCUSP_CODEX_GATEWAY_ROOT',
+        '# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+        '[model_providers.papercusp-codex-gateway]',
+        'base_url = "http://127.0.0.1:8788/v1"',
+        'wire_api = "responses"',
+        'experimental_bearer_token = "test-token"',
+        'http_headers = { "x-papercusp-owner" = "chosen-owner" }',
+        '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+      ].join('\n'));
+      const legacy = bootstrap('codex');
+      delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE;
+      delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ID;
+      legacy.envelopeEnv.CODEX_HOME = home;
+      const launch = vi.fn();
+      await launchFreshSu({ agent: 'codex', workspace: 'chosen-workspace' }, {
+        model: legacy.model, account: 'auto', picker: false, noKickoff: true,
+      }, { apiImpl: async () => ({ ...legacy, codexHome: home }),
+        preflightCodexAutoPoolImpl: async () => true,
+        runLaunchPreflightImpl: () => {}, runWrapperImpl: launch });
+      expect(launch).toHaveBeenCalledOnce();
+      expect(launch.mock.calls[0][0].envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+    } finally {
+      log.mockRestore();
       rmSync(home, { recursive: true, force: true });
     }
   });

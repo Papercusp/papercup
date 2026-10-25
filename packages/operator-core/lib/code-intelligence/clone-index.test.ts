@@ -39,6 +39,20 @@ describe('incremental TS/TSX clone index', () => {
     expect(() => new CloneIndex({ minMass: 0 })).toThrow('positive integer');
   });
 
+  it('preserves complete exact and renamed families when a census omits the optional near index', () => {
+    const full = new CloneIndex(lowFloor), census = new CloneIndex({ ...lowFloor, includeNear: false });
+    const inputs = [{ path: 'a.ts', source }, { path: 'b.ts', source }, { path: 'c.ts', source: renamed }];
+    for (const input of inputs) { full.update(input); census.update(input); }
+    expect(census.getFiles()).toEqual(full.getFiles());
+    expect(census.version).toBe(full.version);
+    for (const kind of ['exact', 'renamed'] as const) expect(census.families(kind)).toEqual(full.families(kind));
+    for (const index of [full, census]) {
+      index.remove('b.ts'); index.update({ path: 'c.ts', source }); index.unavailable('a.ts');
+    }
+    expect(census.getFiles()).toEqual(full.getFiles());
+    for (const kind of ['exact', 'renamed'] as const) expect(census.families(kind)).toEqual(full.families(kind));
+  });
+
   it('finds inserted, removed and reordered near copies through the selected engine at the default floor', () => {
     const statements = ['let total = input;', 'if (input < 0) { total = -input; }',
       ...Array.from({ length: 20 }, (_, i) => `total += input * ${i + 1};`), 'return total;'];

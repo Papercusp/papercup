@@ -15,6 +15,14 @@ const time = (value: string): number => {
   if (!Number.isFinite(n)) throw new Error('Valid recorded timestamp required');
   return n;
 };
+const lowerBound = (values: readonly number[], value: number): number => {
+  let low = 0, high = values.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (values[middle]! < value) low = middle + 1; else high = middle;
+  }
+  return low;
+};
 
 export type ReuseSourcePhase = 'source-tree' | 'source-capture' | 'source-diff' | 'source-clones' | 'source-calls';
 
@@ -38,18 +46,19 @@ export function buildReuseSourcePopulation(input: {
   const readSource = 'sources' in input ? (path: string) => sources!.get(path)! : input.readSource;
   const added = new Map(Object.entries(input.addedLines).filter(([path]) => eligibleHistoryPath(path)).map(([path, lines]) => {
     if (lines.some(n => !Number.isSafeInteger(n) || n < 1)) throw new Error('Positive added line identities required');
-    return [path, new Set(lines)] as const;
+    return [path, [...new Set(lines)].sort((a, b) => a - b)] as const;
   }));
-  const index = new CloneIndex();
+  const index = new CloneIndex({ includeNear: false });
   const addedByFunction = new Map<string, number[]>();
   input.onProgress?.('source-clones');
   for (const path of paths.filter(path => /\.tsx?$/.test(path))) {
     const source = readSource(path);
     const { file } = index.update({ path, source });
+    const lineStarts = [0], lines = added.get(path) ?? [];
+    for (let i = 0; i < source.length; i++) if (source.charCodeAt(i) === 10) lineStarts.push(i + 1);
     for (const fn of file.functions) {
-      const start = source.slice(0, fn.start).split('\n').length;
-      const end = source.slice(0, Math.max(fn.start, fn.end - 1)).split('\n').length;
-      addedByFunction.set(fn.id, [...(added.get(path) ?? [])].filter(n => n >= start && n <= end));
+      const end = lowerBound(lineStarts, Math.max(fn.start, fn.end - 1) + 1);
+      addedByFunction.set(fn.id, lines.slice(lowerBound(lines, fn.line), lowerBound(lines, end + 1)));
     }
   }
   const duplicated = new Set<string>();
@@ -65,7 +74,7 @@ export function buildReuseSourcePopulation(input: {
   input.onProgress?.('source-calls');
   const snapshot = buildSymbolSnapshot({ files, readSource,
     resolveModule: (path, specifier) => relativeSymbolModule(path, specifier, fileSet), includeCallCensus: true });
-  return { addedNonGeneratedLines: [...added.values()].reduce((n, lines) => n + lines.size, 0),
+  return { addedNonGeneratedLines: [...added.values()].reduce((n, lines) => n + lines.length, 0),
     duplicateAddedLines: duplicated.size,
     lineCensusComplete: input.complete && index.getFiles().every(file => file.status === 'indexed' || file.status === 'excluded')
       && [...added.keys()].every(path => /\.tsx?$/.test(path)
@@ -136,13 +145,22 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
       }
     }
     onProgress?.('source-diff');
-    const paths = (await git(['diff', '--name-only', '-z', '--no-renames', base, commit])).split('\0').filter(eligibleHistoryPath);
+    const rawChanges = (await git(['diff', '--raw', '-z', '--no-renames', base, commit])).split('\0');
+    const changes = new Map<string, string>();
+    for (let i = 0; i < rawChanges.length - 1; i += 2) {
+      const status = /^:\d{6} \d{6} [0-9a-f]+ [0-9a-f]+ ([A-Z])$/.exec(rawChanges[i]!);
+      const path = rawChanges[i + 1]!;
+      if (!status || !path) throw new Error('Incomplete Git diff identity population');
+      if (eligibleHistoryPath(path)) changes.set(path, status[1]!);
+    }
+    const paths = [...changes.keys()];
     const addedLines: Record<string, number[]> = {};
     const binaryChangedPaths: string[] = [];
     // NUL-delimited raw identities and their patches are emitted in the same
     // order. Never decode a path from a quoted patch heading. Bound each batch
     // and split only on output overflow, preserving the existing per-path cap.
-    const readDiffs = async (batch: string[]): Promise<void> => {
+    const readDiffs = async (batch: string[], expected: Map<string, number>): Promise<void> => {
+      if (!batch.length) return;
       let output: string;
       try {
         output = await git(['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--unified=0',
@@ -150,7 +168,7 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || batch.length < 2) throw error;
         const middle = Math.floor(batch.length / 2);
-        await readDiffs(batch.slice(0, middle)); await readDiffs(batch.slice(middle)); return;
+        await readDiffs(batch.slice(0, middle), expected); await readDiffs(batch.slice(middle), expected); return;
       }
       const boundary = output.indexOf('\0\0');
       if (boundary < 0) throw new Error('Incomplete Git diff identity population');
@@ -162,21 +180,43 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
         throw new Error('Incomplete Git diff identity population');
       for (let i = 0; i < identities.length; i++) {
         const path = identities[i]!, patch = patches[i]!;
-        // Binary changes cannot supply a line denominator; other populations
-        // remain independent and retain their complete immutable identities.
-        if (patch.includes('Binary files ')) { binaryChangedPaths.push(path); continue; }
         const lines: number[] = [];
         for (const match of patch.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
           const first = Number(match[1]), count = match[2] === undefined ? 1 : Number(match[2]);
           for (let n = first; n < first + count; n++) lines.push(n);
         }
+        if (lines.length !== expected.get(path)) throw new Error('Incomplete Git added-line population');
         if (lines.length) addedLines[path] = lines;
       }
+    };
+    const readChanges = async (batch: string[]): Promise<void> => {
+      // New files have one exact contiguous added-line population. Numstat
+      // supplies its size (and binary unknowns) without transferring gigabytes
+      // of report bodies merely to discard everything except hunk headers.
+      const stats = (await git(['diff', '--no-ext-diff', '--no-textconv', '--no-renames',
+        '--unified=0', '--no-patch', '--numstat', '-z', base, commit, '--', ...batch])).split('\0').filter(Boolean);
+      const seen = new Set<string>(), modified = new Map<string, number>();
+      for (const stat of stats) {
+        const first = stat.indexOf('\t'), second = stat.indexOf('\t', first + 1);
+        const path = stat.slice(second + 1), added = stat.slice(0, first), removed = stat.slice(first + 1, second);
+        if (first < 0 || second < 0 || !batch.includes(path) || seen.has(path))
+          throw new Error('Incomplete Git diff identity population');
+        seen.add(path);
+        if (added === '-' && removed === '-') { binaryChangedPaths.push(path); continue; }
+        const count = Number(added);
+        if (!/^\d+$/.test(added) || !/^\d+$/.test(removed) || !Number.isSafeInteger(count))
+          throw new Error('Incomplete Git added-line population');
+        if (!count) continue;
+        if (changes.get(path) === 'A') addedLines[path] = Array.from({ length: count }, (_, i) => i + 1);
+        else modified.set(path, count);
+      }
+      if (seen.size !== batch.length) throw new Error('Incomplete Git diff identity population');
+      await readDiffs([...modified.keys()], modified);
     };
     const chunks = Array.from({ length: Math.ceil(paths.length / 128) }, (_, i) => paths.slice(i * 128, (i + 1) * 128));
     let nextChunk = 0;
     const diffs = await Promise.allSettled(Array.from({ length: Math.min(4, chunks.length) }, async () => {
-      while (nextChunk < chunks.length) await readDiffs(chunks[nextChunk++]!);
+      while (nextChunk < chunks.length) await readChanges(chunks[nextChunk++]!);
     }));
     const failed = diffs.find(result => result.status === 'rejected');
     if (failed?.status === 'rejected') throw failed.reason;

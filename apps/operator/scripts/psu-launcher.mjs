@@ -2658,14 +2658,31 @@ export function prepareSuLaunch(boot, {
     // blocks prove that bootstrap authored the auto gateway configuration. A
     // missing/malformed home, a default config, or a pin still fails closed.
     if (boot.agent === "codex" && mode === "auto" && !env.PAPERCUSP_ACCOUNT_ROUTING_MODE) {
-      const codexHome = typeof boot.codexHome === "string" && boot.codexHome.trim()
-        ? boot.codexHome.trim()
-        : typeof env.CODEX_HOME === "string" ? env.CODEX_HOME.trim() : "";
+      const bootstrapHome = typeof boot.codexHome === "string" ? boot.codexHome.trim() : "";
+      const childHome = typeof env.CODEX_HOME === "string" ? env.CODEX_HOME.trim() : "";
       try {
-        const config = readFileSync(join(codexHome, "config.toml"), "utf8");
-        if (config.includes("# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT")
-          && config.includes('model_provider = "papercusp-codex-gateway"')
-          && config.includes("# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER")
+        if (!bootstrapHome || !childHome || resolvePath(bootstrapHome) !== resolvePath(childHome))
+          throw new Error("bootstrap and child Codex homes differ");
+        const text = readFileSync(join(childHome, "config.toml"), "utf8");
+        const completeManagedBlocks = [
+          ["# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT", "# END PAPERCUSP_CODEX_GATEWAY_ROOT"],
+          ["# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER", "# END PAPERCUSP_CODEX_GATEWAY_PROVIDER"],
+        ].every(([begin, end]) => {
+          const start = text.indexOf(begin);
+          const finish = text.indexOf(end);
+          return start >= 0 && finish > start && text.indexOf(begin, start + begin.length) === -1;
+        });
+        const config = nativeMcpRequire("@iarna/toml").parse(text);
+        const provider = config.model_providers?.["papercusp-codex-gateway"];
+        const headers = provider?.http_headers;
+        if (completeManagedBlocks
+          && config.model_provider === "papercusp-codex-gateway"
+          && provider?.wire_api === "responses"
+          && typeof provider?.base_url === "string"
+          && typeof provider?.experimental_bearer_token === "string"
+          && provider.experimental_bearer_token.length > 0
+          && headers?.["x-papercusp-owner"] === env.PAPERCUSP_SID
+          && !headers?.["x-papercusp-account"]
           && !env.PAPERCUSP_ACCOUNT_ID) {
           env.PAPERCUSP_ACCOUNT_ROUTING_MODE = "auto";
         }
@@ -19336,7 +19353,7 @@ export async function launchFreshSu(selections, args, {
   // without replacing that selected policy, just as structured consumers do.
   const preparedEnvelopeEnv = {
     ...contextTrimmingEnv(res.agent),
-    ...res.envelopeEnv,
+    ...preparation.env,
   };
   healContextTrimmingEnv(preparedEnvelopeEnv, res.agent);
   runWrapperImpl({
