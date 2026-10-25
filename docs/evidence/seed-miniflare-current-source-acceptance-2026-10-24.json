@@ -89,7 +89,7 @@
         "e273c1b6fc77c60ff22f72684154220b18ba43493b7cedff5e65824692c186d2"
       ],
       "matchesDesignBaseline": true,
-      "limit": "Bounded external tuple observation. Final acceptance has not occurred; the custody evidence file still requires a canonical commit and server-measured binding."
+      "limit": "Bounded external tuple observation retained unchanged. The later server readback records committed custody binding69537 as CURRENT; this is evidence currentness, not an acceptance verdict. Final acceptance has not occurred and requires another tuple comparison."
     },
     "clone": {
       "path": "/mnt/data/offload/wi-10006692-retained-bench-2026-10-08/843e2-signed-source-proof-b9958b78",
@@ -168,15 +168,72 @@
         "nativeRecords": 2,
         "limit": "Later 00:23:30 wake and 00:24 member-recovery work are separately identified, not removed by goal_ref filtering."
       },
+      "supplementalAuthorCompletionTail": {
+        "reason": "The first ADV49752 cutoff predates physical repair-close completion, carry checkpoints and final handback. Preserve the complete supplemental tail and its interleaved actions under D-005.",
+        "priorCutoffInclusive": "2026-10-24T09:03:05.080Z",
+        "expandedCandidateEndInclusive": "2026-10-24T09:05:45.808Z",
+        "nativePath": "~/.papercusp/scratch/843e2-miniflare-r5-peer-completion-native-v1.json",
+        "nativeSha256": "aa53f1a3ab4edd41948db9479c8d30464043cfd307853c027578ec89d80ff647",
+        "nativeRecords": 14,
+        "nativeParseGaps": [],
+        "reconciliationPath": "~/.papercusp/scratch/843e2-miniflare-r5-peer-completion-reconciliation-v1.json",
+        "reconciliationSha256": "a1f1619d1d7f2fd8e491c13864e69f79b0f63e6f21bc7723716fb3bec4a693e7",
+        "mcpRecords": 19,
+        "mcpFirstId": "44023444",
+        "mcpLastId": "44024464",
+        "mcpRecordsetSha256": "661079a71e708000fb8b624a6e23e576143cb5fb640cb02ac66b38d4009dc151",
+        "successfulSsh": {
+          "leafInvocation": "44023451",
+          "parentInvocation": "44023459",
+          "task": "0mvm68gotuf1cw1a3bz",
+          "nativeExit": 0,
+          "childFailures": [],
+          "returnedSnapshotMetadata": true,
+          "commandExactNativeMcpMatch": true,
+          "commandSha256": "0c1375b4fa0812ef79e5259a9e22019b7823d8d28fc8b736a98c1a4b175a30a9",
+          "nativeCompletedAt": "2026-10-24T09:03:28.682Z",
+          "artifact": "runtime-migration/p006-mac-snapshot-sources-20261024-501c.json@papercusp"
+        },
+        "status": "UNKNOWN",
+        "limit": "Successful remote execution is now observed. Historical external-network boundary and actual plan-associated intervals remain unresolved; purpose attribution grants no exemption. All fourteen native action bodies have explicit supplemental dispositions. The nineteen-record MCP fingerprint does not establish complete exact-argument coverage. Prior v6 bytes and recordset hashes remain historical evidence for their original bounds."
+      },
       "contributorConsultRecords": {
         "path": "~/.papercusp/scratch/843e2-miniflare-r5-contributor-consults-v1.json",
         "sha256": "72ac36afe52599abf20d168171b62dba67be67631b01e101e13b1f688a9f8efe",
         "records": 13,
         "scope": "Canonical routing and dispatch records retain source experts, actual answering owners and failed attempts separately. Additional prepared ADV51444 expired without running, per the cleanup writer and failed port record; it supplies no review verdict."
       },
+      "nativeReadCommandDispositions": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-native-read-command-dispositions-v1.json",
+        "sha256": "9a524fc8d52f6a1e4dc3cbd67005a2d6169c8affdfd99a5ac0ccfcfcceaaac89",
+        "population": 615,
+        "completeBodiesReviewed": 191,
+        "remaining": 424,
+        "remainingCategories": {
+          "python-evidence-script": 85,
+          "internal-MCP-client": 324,
+          "maintained-test-or-lint-wrapper": 14,
+          "internal-DB-select": 1
+        },
+        "scope": "Manual complete-body dispositions bound to native record and command SHA256 for local reads, Git inspection, bounded waits and configuration-only SSH expansion. Embedded multiline Python bodies were inspected. Remaining commands and nested callees are separate; no whole-census prohibited-action absence verdict."
+      },
+      "nativePythonCommandDispositions": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-python-command-dispositions-v1.json",
+        "sha256": "4de51d8a80559b6bdb38eacdab1bc0311784303c9db4ce45ac645b814ce7bf10",
+        "completePythonBodiesReviewed": 85,
+        "totalCompleteBodiesReviewed": 276,
+        "remainingCommandBodies": 339,
+        "remainingCategories": {
+          "internal-MCP-client": 324,
+          "maintained-test-or-lint-wrapper": 14,
+          "internal-DB-select": 1
+        },
+        "nestedEffectFollowups": [0, 254, 259, 264, 408, 455],
+        "scope": "Complete Python command bodies were read, including appended shell statements and nested tool payloads. The six named indices retain collector identity, internal artifact, mutation-wrapper or report-publication effect follow-ups. Body review is not all-callee proof, an acceptance verdict or a new test run. The earlier 191-command file remains an immutable partial edition."
+      },
       "remaining": [
-        "Resolve historical network boundary and downstream effects of MCP44022053 and MCP44023057; failed remote exit1 and current loopback configuration do not establish no contact.",
-        "Keep conservative candidate intervals and both SSH calls. No per-goal deletion or interval exclusion has been established.",
+        "Resolve historical network boundary and downstream effects of MCP44022053, MCP44023057 and successful supplemental MCP44023451. Failed remote exit1 and current loopback configuration do not establish no contact; the third call returned snapshot metadata with native exit0.",
+        "Keep conservative candidate intervals and all three SSH calls. The first ADV49752 candidate window now extends through physical handback09:05:45.808Z; no per-goal deletion or interval exclusion has been established.",
         "Complete semantic dispositions for retained multiline native commands and all seven prohibited surfaces; static parses, command categories and record matches are insufficient.",
         "Close the complete contributor population against grading/audit/dispatch records and extend the acceptance tail beyond this cutoff before any healthy R-5 verdict."
       ]
@@ -196,7 +253,7 @@
           { "start": "2026-10-24T14:18:46.859Z", "end": "2026-10-24T14:48:33.403Z", "record": "EI-26870731917620808" }
         ],
         "review": "Actual answering owners are ADV51710/su-0daaeca1-71a7-41be-853b-908caf7249cd and ADV51715/su-3f5e59b9-614e-4550-9b1b-3884ffab1576, confirmed by immutable posts 1204283 and 1204321. Consult source experts are not substituted for them.",
-        "limit": "The shared contributor's unrelated P006 activity is outside these repair intervals. These bounds do not themselves classify every action within the intervals."
+        "limit": "These are historical inventory bounds, not a complete current interval claim. The first window requires the supplementalAuthorCompletionTail through09:05:45.808Z above. Interleaved P006 activity remains included pending contemporaneous interval adjudication; purpose alone supplies no exclusion."
       },
       "nativeRecordsets": [
         { "adv": 49410, "records": 430, "sha256": "bc12dd65d3ddf314d156a2ffcee41dff1db891a640491297ce61b46b9568ed6c" },
