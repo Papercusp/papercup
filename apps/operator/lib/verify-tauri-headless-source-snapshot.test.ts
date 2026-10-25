@@ -263,7 +263,7 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
 
   it('guards boot-only cleanup with the persisted reaper and keeps assertion cleanup in teardown', () => {
     const stop = src.slice(src.indexOf('write_stop_script() {'), src.indexOf('# let the one EXIT trap own cleanup.'));
-    expect(stop).toContain('if [ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ]; then');
+    expect(stop).toContain('if [ "\\$SOURCE_CLEANUP_FAILED" -eq 0 ] && [ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ]; then');
     expect(stop).toContain('source "$WORK/frozen-source-reaper.sh"');
     expect(stop).toContain('reap_frozen_source_survivors "$OPERATOR_SOURCE_ROOT" "$TAURI_LAUNCH_PROVENANCE"');
     expect(stop).toContain('rm -rf -- "$OPERATOR_SOURCE_WORK"');
