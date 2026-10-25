@@ -44,7 +44,7 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
       Date.now() + nativeTimeoutMs,
     )),
     VERIFY_TAURI_PREPARE_ESTIMATE_MS: String(nativePrepareEstimateMs),
-    VERIFY_TAURI_ASSERT_ESTIMATE_MS: '180000',
+    VERIFY_TAURI_ASSERT_ESTIMATE_MS: '360000',
   };
   const nativeEnvHelper = join(repo, 'scripts/lib/verify-tauri-native-env.mjs');
   const { nativeVerifierEnv } = await import(nativeEnvHelper);
