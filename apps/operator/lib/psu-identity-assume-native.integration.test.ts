@@ -16,7 +16,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { hostThroughPty, metaPathFor, handoffPathFor, readHostHandoffForParentPid, eventLogPathForOwner,
-  resolveLinuxCodexStartupPid, readLinuxStartupCounters, controlWritesForAgent } from '../scripts/psu-pty-host.mjs';
+  resolveLinuxCodexStartupPid, readLinuxStartupCounters, readCodexTuiLogTail,
+  controlWritesForAgent } from '../scripts/psu-pty-host.mjs';
 import { mintCarryRespawnArgs, codexThreadWriterHolder, codexThreadWriterLockPath,
   codexNativeIdForPty } from '../scripts/psu-launcher.mjs';
 import { launchIdentityAssumeHandoff, makeIdentityAssumeHostPort,
@@ -115,7 +116,8 @@ it('read-only context preview isolates an overlapping coordination writer', asyn
 
 async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = false,
   contended = false, preflight = false, channelControls = false, crashRecovery = false, returnControls = false,
-  checks: { responseOrdering?: boolean; crashAfterStartup?: boolean } = {}) {
+  checks: { responseOrdering?: boolean; crashAfterStartup?: boolean;
+    diagnosticProbe?: { error: Error; artifact: string } } = {}) {
     const root = mkdtempSync('/tmp/assume-native-journey-');
     const marker = { target: `TARGET_HISTORY_${randomUUID()}`, caller: `CALLER_HISTORY_${randomUUID()}`,
       checkpoint: `TARGET_CHECKPOINT_${randomUUID()}`, rival: `RIVAL_HISTORY_${randomUUID()}`,
@@ -136,7 +138,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       write(data: string) { output += data; return true; } } };
     let phase: 'seed' | 'caller' | 'target' | 'return' = 'seed';
     let port = 0, issued = false, targetReady = false, returnIssued = false, targetProbed = false;
-    const requests: Array<{ phase: string; actor: string; body: Row }> = [], errors: string[] = [], nativeResults: string[] = [];
+    const requests: Array<{ atMs: number; phase: string; actor: string; body: Row }> = [], errors: string[] = [], nativeResults: string[] = [];
     const toolCatalogs: Row[] = [];
     const mcpRequests: Row[] = [], toolOutputs: Row[] = [];
     const activeExecutions = new Map<string, string>();
@@ -202,7 +204,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         if (req.url?.split('?')[0] === '/mcp') {
           const query = new URL(req.url, 'http://localhost').searchParams;
           const actor = query.get('actor'), execution = query.get('execution');
-          mcpRequests.push({ phase, actor, method: body?.method });
+          mcpRequests.push({ atMs: Date.now(), phase, actor, method: body?.method });
           const host = new McpServer({ name: 'native-handoff-fixture', version: '1' }); hosts.push(host);
           host.registerTool('handoff_fixture', { inputSchema: {} }, async () => {
             if (phase !== 'caller' && phase !== 'target') throw new Error('Handoff outside an execution phase');
@@ -418,7 +420,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         }
         if (!req.url?.endsWith('/responses')) { res.writeHead(200); res.end('{}'); return; }
         const [, , actor, execution] = req.url.split('?')[0].split('/');
-        requests.push({ phase, actor, body }); res.writeHead(200, { 'content-type': 'text/event-stream' });
+        requests.push({ atMs: Date.now(), phase, actor, body }); res.writeHead(200, { 'content-type': 'text/event-stream' });
         const finish = (text: string) => res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({
           model: 'gpt-6-sol', text, inputTokens: 0, outputTokens: 0 })));
         // A parked loser's late provider request still belongs to that caller.
@@ -451,7 +453,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           finish(marker.loserResponse); return;
         }
         const outputs = callOutputs(body.input);
-        toolOutputs.push(...outputs.map(row => ({ phase, actor, type: row.type,
+        toolOutputs.push(...outputs.map(row => ({ atMs: Date.now(), phase, actor, type: row.type,
           callId: row.call_id, output: JSON.stringify(row.output ?? null).slice(0, 1800) })));
         if (real && phase === 'target' && outputs.some(row => row.call_id === 'handoff-target-return')) {
           finish('RETURN_NATIVE_COMPLETE'); return;
@@ -609,6 +611,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       }
       const seed = start('target', [...baseArgs(), 'Record the target history.']);
       await vi.waitFor(() => expect(output, diagnostics()).toContain(marker.target), { timeout: 20_000 });
+      if (checks.diagnosticProbe) throw checks.diagnosticProbe.error;
       const seedExecution = activeExecutions.get('target')!;
       retireSeed = async () => {
         seed.signals.emit('SIGTERM'); await seed.done;
@@ -1039,9 +1042,9 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       expect(errors, diagnostics()).toEqual([]);
       returned.signals.emit('SIGTERM'); await returned.done;
     } catch (error) {
-      const artifact = process.env.PC_EXECUTED_SOURCE_MAP_OUT
+      const artifact = checks.diagnosticProbe?.artifact ?? (process.env.PC_EXECUTED_SOURCE_MAP_OUT
         ? process.env.PC_EXECUTED_SOURCE_MAP_OUT + '.journey-failures.jsonl'
-        : join('/tmp', 'assume-native-failure-' + randomUUID() + '.jsonl');
+        : join('/tmp', 'assume-native-failure-' + randomUUID() + '.jsonl'));
       // The isolated discovery directory is removed by afterAll. Retain its
       // lifecycle evidence while the failed process is still observable, so a
       // startup or return stall can be diagnosed without repeating the journey.
@@ -1060,8 +1063,24 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
             startupCounters: nativePid ? readLinuxStartupCounters(nativePid) : null, events };
         } catch (evidenceError) { return { owner, evidenceError: String(evidenceError) }; }
       });
+      // A PTY counter cannot tell which native startup dependency is pending,
+      // or whether a returned tool call was persisted. Keep the isolated native
+      // log and transcripts before the finally block deletes their homes.
+      const nativeEvidence = Object.entries(homes).map(([actor, home]) => {
+        try {
+          const sessions = join(home, 'sessions');
+          const transcripts = existsSync(sessions) ? readdirSync(sessions, { recursive: true })
+            .map(String).filter(path => path.endsWith('.jsonl')).map(path => {
+              const text = readFileSync(join(sessions, path), 'utf8');
+              return { path, sha256: hash(text), text };
+            }) : [];
+          return { actor, log: readCodexTuiLogTail(home), transcripts };
+        } catch (evidenceError) { return { actor, evidenceError: String(evidenceError) }; }
+      });
       appendFileSync(artifact, JSON.stringify({ mode, production, contended, preflight, crashRecovery, returnControls, checks, crashBoundaries,
-        diagnostics: JSON.parse(diagnostics()), hostEvidence, error: String(error),
+        diagnostics: JSON.parse(diagnostics()), hostEvidence, nativeEvidence,
+        providerRequests: requests, productionTrace: real?.trace,
+        returnReceipt: returning, error: String(error),
         errorStack: error instanceof Error ? error.stack : undefined }) + '\n');
       // console.error is itself an assertion under fail-on-console and would
       // replace the original failure/stack before the rethrow below can run.
@@ -1080,6 +1099,31 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       rmSync(root, { recursive: true, force: true });
     }
 }
+
+it('preserves the original native failure and startup evidence after fixture cleanup', async () => {
+  const directory = mkdtempSync('/tmp/assume-native-diagnostic-guard-');
+  const artifact = join(directory, 'failure.jsonl');
+  const error = new Error('Controlled native diagnostic failure');
+  try {
+    await expect(nativeJourney('native-resume', false, false, false, false, false, false,
+      { diagnosticProbe: { error, artifact } })).rejects.toBe(error);
+    const evidence = JSON.parse(readFileSync(artifact, 'utf8'));
+    expect(evidence.errorStack).toBe(error.stack);
+    expect(evidence.diagnostics.phase).toBe('seed');
+    const target = evidence.nativeEvidence.find((entry: Row) => entry.actor === 'target');
+    // The installed client may never create a TUI log. Its explicit absence
+    // is evidence too; native transcript preservation remains mandatory.
+    expect(target.log.path).toBeTypeOf('string');
+    expect(target.log.present).toBeTypeOf('boolean');
+    expect(existsSync(target.log.path)).toBe(false);
+    expect(target.transcripts).toHaveLength(1);
+    const metadata = JSON.parse(target.transcripts[0].text.split('\n')[0]);
+    expect(metadata.type).toBe('session_meta');
+    expect(existsSync(metadata.payload.cwd)).toBe(false);
+    expect(evidence.providerRequests.some((request: Row) => request.phase === 'seed')).toBe(true);
+    expect(evidence.hostEvidence.some((host: Row) => host.ptyAlive === true)).toBe(true);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 60_000);
 
 it.each(['native-resume', 'checkpoint'] as const)(
   'resumes installed native target context and returns the caller on the same managed attachment (%s)',
