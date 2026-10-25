@@ -16,6 +16,7 @@ import { collectRecordedReuseWindows, evaluateReuseProvider, measureReuseMetrics
   reuseHoldout, summarizeReuseWindows, type ReuseMeasuredWindow, type ReuseMeasurementActivity,
   type ReuseMeasurementExposure } from './reuse-measurement';
 import { composeReuseBrief } from './reuse-brief-providers';
+import { createReuseCallColumns, serializeReuseCallColumns } from './reuse-source-population';
 import { recordReuseBriefIssued } from './reuse-brief-ledger';
 
 const at = '2026-10-01T00:00:00.000Z', now = '2026-10-01T00:31:00.000Z';
@@ -251,6 +252,35 @@ describe('R16 repeatable existing-ledger reads', () => {
   let fx: PlanPgFixture;
   beforeAll(async () => { fx = await setupPlanPgFixture({ isolated: true }); }, 180_000);
   afterAll(async () => { await fx?.dispose(); });
+  it('recomputes persisted call columns and rejects damaged raw sites without using a saved score', async () => {
+    const scope = { workspaceId: fx.workspaceId, harnessSlug: 'packed-producer', windowStart: at, windowEnd: now };
+    const columns = createReuseCallColumns();
+    columns.sink({ path: 'a.ts', line: 1, column: 1 }, 'a.ts', 0);
+    columns.sink({ path: 'a.ts', line: 2, column: 1 }, 'b.ts', 1);
+    columns.sink({ path: 'b.ts', line: 1, column: 1 }, null, 2);
+    const record = { schema: 'reuse-metrics-v1', harness: scope.harnessSlug, windowStart: at, windowEnd: now,
+      sourceRefs: ['git:packed-base', 'git:packed-end'], callColumns: serializeReuseCallColumns(columns.finish()),
+      population: { calls: [], workItems: [], addedNonGeneratedLines: null, duplicateAddedLines: null,
+        lineCensusComplete: false, callCensusComplete: true } };
+    const write = async () => {
+      const raw = JSON.stringify(record);
+      const subject = JSON.stringify({ schema: 'reuse-metrics-ref-v1', harness: scope.harnessSlug,
+        windowStart: at, windowEnd: now, sha256: createHash('sha256').update(raw).digest('hex') });
+      await fx.admin`INSERT INTO harness_shared.code_intel_pushes (workspace_id, owner_id, turn_id, leg, subject, suggested_call, chars)
+        VALUES (${fx.workspaceId}, 'packed-source', ${now}, 'reuse-metrics', ${subject}, ${raw}, 0)`;
+    };
+    await write();
+    const result = await measureRecordedReuseMetric(fx.admin, scope, 'crossFileCalls');
+    expect(result).toMatchObject({ verdict: 'pass', value: 50 });
+    expect(JSON.parse(result.detail).measurement).toMatchObject({ numerator: 1, denominator: 2, unknown: 1 });
+    expect((await measureRecordedReuseMetric(fx.admin, scope, 'redundancy')).verdict).toBe('unknown');
+    record.population.callCensusComplete = false;
+    await write();
+    expect((await measureRecordedReuseMetric(fx.admin, scope, 'crossFileCalls')).verdict).toBe('unknown');
+    record.callColumns.blocks[0] = 'broken';
+    await write();
+    expect((await measureRecordedReuseMetric(fx.admin, scope, 'crossFileCalls')).verdict).toBe('unknown');
+  });
   it('records hash-pinned raw metric populations, then the registered reader recomputes and rejects corrupted evidence', async () => {
     const scope = { workspaceId: fx.workspaceId, harnessSlug: 'raw-producer', windowStart: at, windowEnd: now };
     const load = async () => ({ ...buildReuseSourcePopulation({ sources: [{ path: 'a.ts', source: 'export function a() {} a();' }],

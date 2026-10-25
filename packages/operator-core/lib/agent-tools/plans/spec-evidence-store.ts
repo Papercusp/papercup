@@ -1318,6 +1318,8 @@ export interface DuplicateLiveTestRunBindingAdvisory {
 
 export interface BindSpecEvidenceInput extends EvidenceFingerprints {
   harnessSlug?: string;
+  /** Explicit workspace for internal callers such as plan promotion; public tool calls use the active workspace. */
+  workspaceId?: string;
   /**
    * The plan whose spec clause this evidence binds to. OPTIONAL as of P-022: omit it for
    * an ad-hoc work-item that belongs to no plan, and the binding is scoped to
@@ -1547,7 +1549,7 @@ interface PriorTestRunBindingRow {
 
 /** Resolve the selector and append one idempotent exact evidence binding. */
 export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<BindSpecEvidenceResult> {
-  const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug });
+  const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug, workspaceId: input.workspaceId });
   const writeBinding = (): Promise<BindSpecEvidenceResult> => withWorkspace(scope.workspaceId, async (tx) => {
     // P-022 / D-018: a caller with no plan gets the harness's shared ad-hoc spec scope
     // rather than being forced to invent a plan slug. Everything downstream then runs
@@ -3033,6 +3035,174 @@ export async function ensureWorkItemSpecRevisionEdges(
   return withWorkspace(input.workspaceId, async (tx) => {
     return writeWorkItemSpecRevisionEdges(input, tx as unknown as SpecClauseSql);
   });
+}
+
+export interface CarryForwardCurrentSpecEvidenceInput {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  planItemId: string;
+  workItemId: string;
+  actorId: string;
+}
+
+export interface CarryForwardCurrentSpecEvidenceResult {
+  sourceWorkItemId: string | null;
+  copiedBindingIds: number[];
+}
+
+interface CarryForwardSpecEvidenceRow {
+  source_work_item_id: string;
+  id: number | string;
+  spec_id: string;
+  spec_revision: number | string;
+  evidence_kind: SpecEvidenceKind;
+  evidence_ref: string;
+  source_fingerprint: string;
+  test_fingerprint: string | null;
+  fixture_fingerprint: string | null;
+  rubric_fingerprint: string | null;
+  environment_fingerprint: string | null;
+  coverage_evidence_ref: number | string | null;
+  test_run_id: number | string | null;
+  details: Record<string, unknown> | null;
+  observed_at: Date | string;
+  created_by: string | null;
+  verifies_binding_id: number | string | null;
+}
+
+/**
+ * Preserve current-clause evidence when promotion replaces a completed plan-item
+ * work-item. This copies only unretracted bindings for the clause's current
+ * revision from the newest completed or replaced (dropped) work-item with the
+ * exact plan-item stamp. Reopening a plan item can drop its former canonical
+ * work-item even though its exact, current proof remains reusable.
+ * Each copied row goes through the normal binder, which revalidates the new
+ * work-item's plan-item provenance and referenced runs. The old rows remain
+ * untouched, and the adequacy gate still evaluates evidence for the exact
+ * current work-item id and current fingerprints.
+ */
+export async function carryForwardCurrentSpecEvidence(
+  input: CarryForwardCurrentSpecEvidenceInput,
+): Promise<CarryForwardCurrentSpecEvidenceResult> {
+  const planItemId = input.planItemId.trim();
+  if (!planItemId) throw new Error('spec_evidence_continuity_plan_item_required');
+
+  const candidates = await withWorkspace(input.workspaceId, async (tx) => {
+    const [target] = await tx<{
+      feature_id: string;
+      source_plan_slug: string | null;
+      source_plan_item_ids: string[] | null;
+      stamped_plan_slug: string | null;
+      stamped_item_id: string | null;
+    }[]>`
+      SELECT feature_id, source_plan_slug, source_plan_item_ids,
+             payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
+             payload -> 'plan_item' ->> 'item_id' AS stamped_item_id
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${input.workspaceId}
+         AND harness_slug = ${input.harnessSlug}
+         AND feature_id = ${input.workItemId}`;
+    if (!target) throw new Error('spec_evidence_continuity_target_missing:' + input.workItemId);
+    const targetProvenance = planItemProvenanceFromRow(target);
+    if (targetProvenance.planSlug !== input.planSlug || !targetProvenance.itemIds.includes(planItemId)) {
+      throw new Error('spec_evidence_continuity_target_plan_item_mismatch:' + input.workItemId + ':' +
+        input.planSlug + '#' + planItemId);
+    }
+
+    return tx<CarryForwardSpecEvidenceRow[]>`
+      WITH current_clauses AS (
+        SELECT c.spec_id, c.current_revision, r.content_hash
+          FROM harness_shared.plan_spec_clauses c
+          JOIN harness_shared.plan_spec_clause_revisions r
+            ON r.workspace_id = c.workspace_id
+           AND r.harness_slug = c.harness_slug
+           AND r.plan_slug = c.plan_slug
+           AND r.spec_id = c.spec_id
+           AND r.revision = c.current_revision
+         WHERE c.workspace_id = ${input.workspaceId}
+           AND c.harness_slug = ${input.harnessSlug}
+           AND c.plan_slug = ${input.planSlug}
+           AND r.plan_item_id = ${planItemId}
+      )
+      SELECT wi.feature_id AS source_work_item_id,
+             b.id, b.spec_id, b.spec_revision, b.evidence_kind, b.evidence_ref,
+             b.source_fingerprint, b.test_fingerprint, b.fixture_fingerprint,
+             b.rubric_fingerprint, b.environment_fingerprint, b.coverage_evidence_ref,
+             b.test_run_id, b.details, b.observed_at, b.created_by, b.verifies_binding_id
+        FROM harness_shared.work_items wi
+        JOIN harness_shared.spec_evidence_bindings b
+          ON b.workspace_id = wi.workspace_id
+         AND b.harness_slug = wi.harness_slug
+         AND b.work_item_id = wi.feature_id
+        JOIN current_clauses c
+          ON c.spec_id = b.spec_id
+         AND c.current_revision = b.spec_revision
+         AND c.content_hash = b.spec_fingerprint
+       WHERE wi.workspace_id = ${input.workspaceId}
+         AND wi.harness_slug = ${input.harnessSlug}
+         AND wi.feature_id <> ${input.workItemId}
+         AND wi.status = ANY(${['done', 'resolved', 'passed', 'closed', 'dropped']}::text[])
+         AND b.plan_slug = ${input.planSlug}
+         AND b.retracted_at IS NULL
+         AND (
+           (wi.source_plan_slug = ${input.planSlug}
+             AND ${planItemId} = ANY(COALESCE(wi.source_plan_item_ids, ARRAY[]::text[])))
+           OR (
+             wi.payload -> 'plan_item' ->> 'plan_slug' = ${input.planSlug}
+             AND wi.payload -> 'plan_item' ->> 'item_id' = ${planItemId}
+           )
+         )
+       ORDER BY wi.updated_ts DESC NULLS LAST, wi.feature_id DESC, b.created_at, b.id`;
+  });
+
+  if (candidates.length === 0) return { sourceWorkItemId: null, copiedBindingIds: [] };
+  const sourceWorkItemId = candidates[0].source_work_item_id;
+  const sourceRows = candidates.filter((row) => row.source_work_item_id === sourceWorkItemId);
+  const copiedBindingIds: number[] = [];
+  const copiedIds = new Map<number, number>();
+
+  const copy = async (row: CarryForwardSpecEvidenceRow, verifiesBindingId?: number): Promise<void> => {
+    const result = await bindSpecEvidence({
+      workspaceId: input.workspaceId,
+      harnessSlug: input.harnessSlug,
+      planSlug: input.planSlug,
+      workItemId: input.workItemId,
+      specId: row.spec_id,
+      specRevision: Number(row.spec_revision),
+      evidenceKind: row.evidence_kind,
+      evidenceRef: row.evidence_ref,
+      sourceFingerprint: row.source_fingerprint,
+      testFingerprint: row.test_fingerprint,
+      fixtureFingerprint: row.fixture_fingerprint,
+      rubricFingerprint: row.rubric_fingerprint,
+      environmentFingerprint: row.environment_fingerprint,
+      coverageEvidenceRef: row.coverage_evidence_ref == null ? null : Number(row.coverage_evidence_ref),
+      testRunId: row.test_run_id == null ? null : Number(row.test_run_id),
+      ...(verifiesBindingId === undefined ? {} : { verifiesBindingId }),
+      details: row.details ?? {},
+      observedAt: new Date(row.observed_at).toISOString(),
+      actorId: row.created_by ?? input.actorId,
+    });
+    if (result.status !== 'created' && result.status !== 'unchanged') {
+      throw new Error('spec_evidence_continuity_bind_refused:' + sourceWorkItemId + ':' +
+        row.id + ':' + result.status);
+    }
+    copiedIds.set(Number(row.id), result.id);
+    copiedBindingIds.push(result.id);
+  };
+
+  for (const row of sourceRows) {
+    if (row.evidence_kind === 'independent-verification') continue;
+    await copy(row);
+  }
+  for (const row of sourceRows) {
+    if (row.evidence_kind !== 'independent-verification' || row.verifies_binding_id == null) continue;
+    const targetBindingId = copiedIds.get(Number(row.verifies_binding_id));
+    if (targetBindingId === undefined) continue;
+    await copy(row, targetBindingId);
+  }
+  return { sourceWorkItemId, copiedBindingIds };
 }
 
 /**

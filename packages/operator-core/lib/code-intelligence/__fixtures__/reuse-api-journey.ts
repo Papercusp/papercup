@@ -21,6 +21,26 @@ export interface ManagedReuseJourney {
   snapshotPath: string;
 }
 
+/** Preserve the pre-admitted canonical identity before any follow-up mutation. */
+export async function createControlledReusePlan(
+  call: (name: string, args: Record<string, unknown>) => Promise<Record<string, any>>,
+  harness: string, planSlug: string, targetPath: string,
+) {
+  const planned = await call('plans:new', { harness, slug: planSlug,
+    title: 'Controlled CLI R20 fixture',
+    content: 'Controlled CLI fixture; no model or live cohort.\n\n## Phase 1 — Fixture\n',
+    projection: { pick: ['ok', 'results[].ok', 'results[].slug', 'slug'] } });
+  assert.notEqual(planned.ok, false, JSON.stringify(planned));
+  assert.equal(planned.slug, planSlug, 'Controlled plan identity changed: ' + JSON.stringify(planned));
+  const added = await call('plans:add-item', { harness, slug: planSlug, phase: 'Phase 1 — Fixture',
+    text: `Inspect ${targetPath}`, importance: 'normal',
+    projection: { pick: ['ok', 'results[].ok', 'results[].itemId'] } });
+  assert.equal(added.results?.[0]?.ok, true, JSON.stringify(added));
+  const planItem = added.results?.[0]?.itemId;
+  assert(planItem, 'Maintained plan-item writer must persist the controlled anchor: ' + JSON.stringify(added));
+  return { planItem, added };
+}
+
 /** Keep the sparse harness inside the private session's existing pot. */
 export function privateReuseHarnessRegistration(workspace: string, harness: string, path: string, expectedCommit: string) {
   assert(workspace.startsWith('test-runtime-'), 'Private reuse workspace required');
@@ -162,18 +182,9 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   const planSlug = managed?.planSlug ?? `${claimOnly ? 'r' : 'p010'}-${new Date().toISOString().slice(0, 10)}`;
   let planItem: string | undefined;
   if (claimOnly) {
-    const planned = await call('plans:new', { harness, slug: planSlug,
-      title: 'Controlled CLI R20 fixture',
-      content: 'Controlled CLI fixture; no model or live cohort.\n\n'
-        + '## Phase 1 — Fixture\n',
-      projection: { pick: ['ok', 'results[].ok', 'results[].slug', 'slug'] } });
-    assert.notEqual(planned.ok, false, JSON.stringify(planned));
-    const added = await call('plans:add-item', { harness, slug: planSlug, phase: 'Phase 1 — Fixture',
-      text: `Inspect ${targetPath}`, importance: 'normal',
-      projection: { pick: ['ok', 'results[].ok', 'results[].itemId'] } });
-    planItem = added.results?.[0]?.itemId;
-    assert.equal(added.results?.[0]?.ok, true, JSON.stringify(added));
-    assert(planItem, 'Maintained plan-item writer must persist the controlled anchor: ' + JSON.stringify(added));
+    const createdPlan = await createControlledReusePlan(call, harness, planSlug, targetPath);
+    planItem = createdPlan.planItem;
+    const added = createdPlan.added;
     // Read the same indexed boundary that work_items:create validates, before
     // spending the rest of the native journey on an unusable anchor.
     const { getPlanItemRow } = await import('../../agent-tools/plans/source.ts');

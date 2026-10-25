@@ -99,6 +99,15 @@ const h = vi.hoisted(() => ({
    * the common, correct "not goal work" outcome.
    */
   goalByOwner: new Map<string, string>(),
+  carryForwardCalls: [] as Array<{
+    workspaceId: string;
+    harnessSlug: string;
+    planSlug: string;
+    planItemId: string;
+    workItemId: string;
+    actorId: string;
+  }>,
+  carryForwardFailureOnce: false,
 }));
 
 vi.mock('./modes/goal-context', async (importOriginal) => {
@@ -243,7 +252,18 @@ vi.mock('./agent-tools/plans/source', async (importOriginal) => {
 // focused on its own dependency-edge contract.
 vi.mock('./agent-tools/plans/spec-evidence-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./agent-tools/plans/spec-evidence-store')>();
-  return { ...actual, ensureWorkItemSpecRevisionEdges: async () => [] };
+  return {
+    ...actual,
+    ensureWorkItemSpecRevisionEdges: async () => [],
+    carryForwardCurrentSpecEvidence: async (input: (typeof h.carryForwardCalls)[number]) => {
+      h.carryForwardCalls.push(input);
+      if (h.carryForwardFailureOnce) {
+        h.carryForwardFailureOnce = false;
+        throw new Error('injected: spec evidence carry-forward failed');
+      }
+      return { sourceWorkItemId: null, copiedBindingIds: [] };
+    },
+  };
 });
 // This legacy promotion fixture intentionally omits the first-class acceptance-BAR
 // tables. Keep the lifecycle seam satisfied so these tests exercise promotion's
@@ -393,6 +413,8 @@ beforeEach(async () => {
   h.laneSyncFailures.clear();
   h.laneSyncRejections.clear();
   h.mintBarrier = null;
+  h.carryForwardCalls = [];
+  h.carryForwardFailureOnce = false;
   h.plans.clear();
 });
 
@@ -433,6 +455,32 @@ const depEdges = async () => {
 const base = { workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, createdBy: 'su-test' };
 
 describe('promotePlanItems (P-006): plan → placeable work-items, against real PG', () => {
+  it('retries current-spec evidence transfer after the canonical item was already minted', async () => {
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Reopen the plan item' }] });
+    await db.sql`INSERT INTO harness_shared.plan_items
+      (workspace_id,harness_slug,plan_slug,item_id,seq,item_text,status)
+      VALUES (${WS},${HARNESS},${PLAN},'P-001',1,'Reopen the plan item','todo')`;
+    h.carryForwardFailureOnce = true;
+
+    await expect(run.promotePlanItems(base)).rejects.toThrow('injected: spec evidence carry-forward failed');
+    expect(h.carryForwardCalls).toHaveLength(1);
+    const canonicalId = h.carryForwardCalls[0].workItemId;
+    expect((await wi.getWorkItem(canonicalId, HARNESS))?.state).toBe('open');
+
+    const retry = await run.promotePlanItems(base);
+    expect(retry.promoted).toBe(0);
+    expect(retry.workItems).toMatchObject([{ planItemId: 'P-001', workItemId: canonicalId }]);
+    expect(h.carryForwardCalls.map((call) => call.workItemId)).toEqual([canonicalId, canonicalId]);
+    expect(h.carryForwardCalls[0]).toMatchObject({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      planSlug: PLAN,
+      planItemId: 'P-001',
+      workItemId: canonicalId,
+      actorId: base.createdBy,
+    });
+  });
+
   it('copies stored anchors, prefers their files, and derives existing files only for unlinked items', async () => {
     h.repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
     const linkedPath = 'packages/operator-core/lib/plan-items/anchors.ts';

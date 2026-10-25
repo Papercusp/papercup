@@ -3,7 +3,7 @@
  */
 import { execFile, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { endianness, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { getHeapStatistics } from 'node:v8';
@@ -120,6 +120,61 @@ interface ReuseCallColumns {
   count: number;
 }
 
+/** The ledger stores these same lossless rows as little-endian base64 blocks.
+ * Repeating full paths in millions of JSON call objects exceeds V8's string
+ * limit even when the finite source worker itself completed successfully.
+ */
+export function serializeReuseCallColumns(value: unknown) {
+  const data = readReuseCallColumns(value);
+  summarizeReuseCallColumns(data);
+  return { encoding: data.encoding, paths: data.paths, count: data.count,
+    blocks: data.blocks.map(block => {
+      const bytes = Buffer.from(block.buffer, block.byteOffset, block.byteLength);
+      return (endianness() === 'LE' ? bytes : Buffer.from(bytes).swap32()).toString('base64');
+    }) };
+}
+
+function readReuseCallColumns(value: unknown): ReuseCallColumns {
+  const data = value as ReuseCallColumns | null;
+  const invalid = () => new Error('Invalid call census columns');
+  if (!data || data.encoding !== REUSE_CALL_COLUMNS || !Array.isArray(data.paths)
+    || data.paths.some(path => typeof path !== 'string' || !path)
+    || new Set(data.paths).size !== data.paths.length || !Array.isArray(data.blocks)
+    || !Number.isSafeInteger(data.count) || data.count < 0) throw invalid();
+  let count = 0;
+  const blocks = data.blocks.map((value: unknown) => {
+    let block: Uint32Array;
+    if (typeof value === 'string') {
+      if (!value.length || value.length > 349_528) throw invalid();
+      const bytes = Buffer.from(value, 'base64');
+      if (bytes.toString('base64') !== value || bytes.byteLength % 16) throw invalid();
+      if (endianness() !== 'LE') bytes.swap32();
+      block = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+    } else if (value instanceof Uint32Array) block = value;
+    else throw invalid();
+    if (block.length === 0 || block.length % 4 || block.length > 16_384 * 4) throw invalid();
+    count += block.length / 4;
+    return block;
+  });
+  if (count !== data.count) throw invalid();
+  return { encoding: data.encoding, paths: data.paths, count, blocks };
+}
+
+/** Recompute counts from the retained sites, without expanding repeated paths
+ * or trusting a saved score. Row order still supplies the exact call identity.
+ */
+export function summarizeReuseCallColumns(value: unknown) {
+  const data = readReuseCallColumns(value);
+  let resolved = 0, crossFile = 0;
+  for (const block of data.blocks) for (let i = 0; i < block.length; i += 4) {
+    const from = block[i]!, target = block[i + 1]!;
+    if (from >= data.paths.length || target > data.paths.length || !block[i + 2] || !block[i + 3])
+      throw new Error('Invalid call census columns');
+    if (target) { resolved++; crossFile += Number(from !== target - 1); }
+  }
+  return { count: data.count, resolved, crossFile };
+}
+
 /** Lossless transport on the existing finite-worker IPC channel. Intern paths,
  * not call identities: each four-column row retains its exact site and target.
  */
@@ -148,18 +203,8 @@ export function createReuseCallColumns() {
  * off-thread. A malformed or incomplete transport stays an error, never zero.
  */
 export async function decodeReuseCallColumns(value: unknown): Promise<ReuseMetricPopulation['calls']> {
-  const data = value as ReuseCallColumns | null;
+  const data = readReuseCallColumns(value);
   const invalid = () => new Error('Invalid call census columns');
-  if (!data || data.encoding !== REUSE_CALL_COLUMNS || !Array.isArray(data.paths)
-    || data.paths.some(path => typeof path !== 'string' || !path)
-    || new Set(data.paths).size !== data.paths.length || !Array.isArray(data.blocks)
-    || !Number.isSafeInteger(data.count) || data.count < 0) throw invalid();
-  let count = 0;
-  for (const block of data.blocks) {
-    if (!(block instanceof Uint32Array) || block.length === 0 || block.length % 4 || block.length > 16_384 * 4) throw invalid();
-    count += block.length / 4;
-  }
-  if (count !== data.count) throw invalid();
   const calls: Array<ReuseMetricPopulation['calls'][number]> = [];
   for (const block of data.blocks) {
     for (let i = 0; i < block.length; i += 4) {
@@ -277,6 +322,7 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
   const capture = mkdtempSync(join(captureRoot, 'reuse-source-capture-'));
   const sourceFiles = new Map<string, string>();
   let capturePending: Promise<Error | null> | undefined;
+  let parsePending: Promise<{ parsed?: ParsedSymbols; error?: Error }> | undefined;
   try {
     // Blob capture and immutable diff collection are independent. Settle the
     // capture before cleanup on either path; no writer may outlive its spill.
@@ -307,6 +353,15 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
       }
     }
     })().then(() => null, error => error instanceof Error ? error : new Error(String(error)));
+    // Syntax extraction depends on complete immutable capture, not the diff.
+    // Reuse the same bounded pool while Git computes the independent window;
+    // global resolution still waits for both complete populations below.
+    parsePending = capturePending.then(async captureFailure => {
+      if (captureFailure || !parserWorkerPath || sourceFiles.size <= 512) return {};
+      onProgress?.('source-calls');
+      return { parsed: await parseReuseSourceSymbols(sourceFiles, parserWorkerPath,
+        limits => onProgress?.('source-calls', limits)) };
+    }).catch(error => ({ error: error instanceof Error ? error : new Error(String(error)) }));
     onProgress?.('source-diff');
     const rawChanges = (await git(['diff', '--raw', '-z', '--no-abbrev', '--no-renames', base, commit])).split('\0');
     const changes = new Map<string, string>();
@@ -482,12 +537,9 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
     const orderedAddedLines = Object.fromEntries(paths.filter(path => addedLines[path]).map(path => [path, addedLines[path]!]));
     const captureFailure = await capturePending;
     if (captureFailure) throw captureFailure;
-    let parsedSymbols: ParsedSymbols | undefined;
-    if (parserWorkerPath && sourceFiles.size > 512) {
-      onProgress?.('source-calls');
-      parsedSymbols = await parseReuseSourceSymbols(sourceFiles, parserWorkerPath,
-        limits => onProgress?.('source-calls', limits));
-    }
+    const parsedResult = await parsePending;
+    if (parsedResult.error) throw parsedResult.error;
+    const parsedSymbols = parsedResult.parsed;
     const population = buildReuseSourcePopulation({ sourcePaths: [...sourceFiles.keys()],
       readSource: path => readFileSync(sourceFiles.get(path)!, 'utf8'),
       addedLines: orderedAddedLines, complete: !tree.some(s => s.kind === 'commit'), binaryChangedPaths, onProgress, callCensusSink, parsedSymbols });
@@ -498,5 +550,9 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
       method: { ...population.method,
         ...(binaryChangedPaths.length ? { binaryChangedPaths: binaryChangedPaths.sort() } : {}) },
       sourceRefs: [`git:${base}`, `git:${commit}`], base, commit };
-  } finally { await capturePending; rmSync(capture, { recursive: true, force: true }); }
+  } finally {
+    await capturePending;
+    await parsePending;
+    rmSync(capture, { recursive: true, force: true });
+  }
 }

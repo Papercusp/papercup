@@ -230,13 +230,13 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .max(500)
         .optional()
         .describe(
-          'One-file case filter: full describe/it title path or complete suffix at a " > " boundary. Resolved against recorded cases at grading; zero matches refuse emit.',
+          'One-file case filter: full describe/it title path or complete suffix at a " > " boundary. Static declarations are checked before proposal/activation; computed names remain subject to recorded-case resolution at grading. Zero matches refuse emit.',
         ),
       cases: z.array(z.object({
         file: z.string().trim().min(1),
         testName: z.string().trim().min(1).max(500),
       }).strict()).min(1).max(200).optional().describe(
-        'Required executed cases: select every listed file and no others. Exclusive with testName.',
+        'Required executed cases: select every listed file and no others. Names use full titles or complete hierarchy suffixes, checked against static declarations before activation and recorded cases at grading. Exclusive with testName.',
       ),
     })
     .strict()

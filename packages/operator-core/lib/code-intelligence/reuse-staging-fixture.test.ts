@@ -7,7 +7,8 @@ import { runStagingReuseFixture, assertReuseStagingRuntime, type ReuseStagingOpt
   type ReuseStagingPorts } from './reuse-staging-fixture';
 import { nativeCliCall } from './native-cli.fixture';
 import * as registry from '../harness-registry';
-import { runNativeReuseJourney, privateReuseHarnessRegistration } from './__fixtures__/reuse-api-journey';
+import { runNativeReuseJourney, privateReuseHarnessRegistration, createControlledReusePlan } from './__fixtures__/reuse-api-journey';
+import { ensureDatedSlug } from '../agent-tools/plans/new';
 import { cleanupReuseFixture, type ReuseFixtureIdentity, type ReuseFixtureLifecyclePorts } from './reuse-fixture-lifecycle';
 
 const runtime = { kind: 'staging-operator' as const, operatorUrl: 'http://127.0.0.1:3170/api/mcp',
@@ -89,7 +90,7 @@ it('refuses private workspaces, missing fingerprints, moved artifacts and transp
 it('prepares only local identity, rejects tampering and runtime mismatch before shared writes', async () => {
   const fx = harness();
   const fixture = options.prepared;
-  expect(stagingFixturePlanSlug(fixture)).toBe(`r-${fixture.token.slice(0, 8)}`);
+  expect(stagingFixturePlanSlug(fixture)).toMatch(new RegExp(`^r-${fixture.token.slice(0, 8)}-\\d{4}-\\d{2}-\\d{2}$`));
   const journal = JSON.parse(await readFile(join(fixture.evidenceRoot, 'lifecycle.json'), 'utf8'));
   expect(journal).toMatchObject({ claims: [], sessions: [], cleaned: false });
   expect(journal.harness).toBeUndefined(); expect(journal.executionStarted).toBeUndefined();
@@ -100,6 +101,38 @@ it('prepares only local identity, rejects tampering and runtime mismatch before 
     .rejects.toThrow('ownership mismatch');
   expect(fx.call.mock.calls.map(([name]) => name)).toEqual(['coord:whoami']);
   expect((await lstat(fixture.root)).isDirectory()).toBe(true);
+});
+
+it('binds the prepared dated plan across midnight using the canonical plan writer', async () => {
+  const fixture = await prepareStagingReuseFixture(runtime.workspace, runtime.owner,
+    new Date('2026-10-25T23:59:59.999Z'));
+  roots.push(fixture);
+  const slug = stagingFixturePlanSlug(fixture);
+  expect(slug).toBe(`r-${fixture.token.slice(0, 8)}-2026-10-25`);
+  const marker = JSON.parse(await readFile(join(fixture.root, '.reuse-fixture-owner.json'), 'utf8'));
+  const journal = JSON.parse(await readFile(join(fixture.evidenceRoot, 'lifecycle.json'), 'utf8'));
+  expect(marker.planSlug).toBe(slug); expect(journal.planSlug).toBe(slug);
+  const call = vi.fn(async (name: string, args: Record<string, any>) => name === 'plans:new'
+    ? { ok: true, slug: ensureDatedSlug(args.slug, '2026-10-26') }
+    : { results: [{ ok: true, itemId: 'P-001' }] });
+  const harnessSlug = `r-${fixture.token.slice(0, 8)}`;
+  await expect(createControlledReusePlan(call, harnessSlug, slug, 'a.ts')).resolves.toMatchObject({ planItem: 'P-001' });
+  expect(call.mock.calls.map(([name, args]) => ({ name, slug: args.slug, harness: args.harness }))).toEqual([
+    { name: 'plans:new', slug, harness: harnessSlug }, { name: 'plans:add-item', slug, harness: harnessSlug },
+  ]);
+  const fx = { ...harness(), journey: vi.fn(async () => {}) };
+  await expect(runStagingReuseFixture({ ...options, prepared: { ...options.prepared, planSlug: slug } }, fx))
+    .rejects.toThrow('ownership mismatch');
+  expect(fx.journey).not.toHaveBeenCalled();
+});
+
+it('refuses a canonicalized or missing plan response before adding anchors', async () => {
+  for (const response of [{ ok: true, slug: 'unexpected-2026-10-26' }, { ok: true }]) {
+    const call = vi.fn(async () => response);
+    await expect(createControlledReusePlan(call, 'r-fixture', 'r-fixture-2026-10-25', 'a.ts'))
+      .rejects.toThrow('plan identity changed');
+    expect(call).toHaveBeenCalledTimes(1);
+  }
 });
 
 it('consumes the frozen identity once and refuses repeat execution before shared writes', async () => {

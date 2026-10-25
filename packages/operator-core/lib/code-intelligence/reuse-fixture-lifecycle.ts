@@ -15,6 +15,8 @@ export interface ReuseFixtureIdentity {
   token: string;
   root: string;
   evidenceRoot: string;
+  /** Frozen before admission; plans:new preserves an existing UTC date suffix. */
+  planSlug: string;
 }
 export interface ReuseFixtureSession {
   id: number;
@@ -105,7 +107,7 @@ export const reuseFixtureLifecyclePorts: ReuseFixtureLifecyclePorts = {
 const marker = '.reuse-fixture-owner.json';
 const journalPath = (fixture: ReuseFixtureIdentity) => join(fixture.evidenceRoot, 'lifecycle.json');
 const sameIdentity = (a: ReuseFixtureIdentity, b: ReuseFixtureIdentity) =>
-  ['workspaceId', 'owner', 'token', 'root', 'evidenceRoot'].every(key =>
+  ['workspaceId', 'owner', 'token', 'root', 'evidenceRoot', 'planSlug'].every(key =>
     a[key as keyof ReuseFixtureIdentity] === b[key as keyof ReuseFixtureIdentity]);
 function assertIdentity(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -133,13 +135,17 @@ async function exclusive<T>(fixture: ReuseFixtureIdentity, run: (journal: Journa
   finally { await lock.close(); await rm(lockPath); }
 }
 
-export async function createReuseFixture(workspaceId: string, owner: string): Promise<ReuseFixtureIdentity> {
+export async function createReuseFixture(workspaceId: string, owner: string,
+  preparedAt = new Date()): Promise<ReuseFixtureIdentity> {
   assertIdentity(workspaceId.trim() && owner.trim(), 'Explicit fixture workspace and owner required');
+  const date = preparedAt.toISOString().slice(0, 10);
   const root = await mkdtemp(join(tmpdir(), 'r-'));
   let evidenceRoot: string | undefined;
   try {
     evidenceRoot = await mkdtemp(join(tmpdir(), 'reuse-proof-'));
-    const fixture = { workspaceId, owner, token: randomUUID(), root, evidenceRoot };
+    const token = randomUUID();
+    const fixture = { workspaceId, owner, token, root, evidenceRoot,
+      planSlug: `r-${token.slice(0, 8)}-${date}` };
     await writeFile(join(root, marker), JSON.stringify(fixture), { mode: 0o600, flag: 'wx' });
     await save({ ...fixture, schema: 'reuse-fixture-lifecycle-v1', claims: [], sessions: [],
       cleaned: false, retention: REUSE_FIXTURE_RETENTION });
@@ -159,6 +165,9 @@ export async function activatePreparedReuseFixture(fixture: ReuseFixtureIdentity
     assertIdentity(!journal.cleaned && !journal.retiring && !journal.executionStarted
       && !journal.harness && journal.claims.length === 0 && journal.sessions.length === 0,
     'Prepared fixture already used');
+    assertIdentity(typeof fixture.planSlug === 'string'
+      && fixture.planSlug.startsWith(`r-${fixture.token.slice(0, 8)}-`)
+      && /-\d{4}-\d{2}-\d{2}$/.test(fixture.planSlug), 'Prepared dated plan identity required');
     const root = await lstat(fixture.root);
     assertIdentity(root.isDirectory() && !root.isSymbolicLink(), 'Prepared fixture root changed');
     assertIdentity(sameIdentity(fixture, JSON.parse(await readFile(join(fixture.root, marker), 'utf8'))),

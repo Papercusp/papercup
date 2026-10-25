@@ -335,6 +335,92 @@ beforeEach(async () => {
            (${WORKSPACE}, ${HARNESS}, 'WI-102', 'reconnect-plan', ARRAY['P-003', 'P-004']::text[])`;
 });
 
+describe('promotion carry-forward of current spec evidence', () => {
+  it('copies exact proof from a dropped predecessor to the canonical item and remaps its verification citation', async () => {
+    const observedAt = '2026-10-20T01:02:03.000Z';
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const runId = '20261025T000000Z-257';
+    const receipts = [{ runId, resultSha256: 'a'.repeat(64), sourceSha256: 'b'.repeat(64),
+      lifecycleSha256: 'c'.repeat(64) }];
+    const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+      runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+      testLayer: 'integration', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+      mutationPhase: null, commitSha: null, worktreeDirty: true, isolatedRuntimeReceipts: receipts };
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
+      WHERE id = ${testRunId}`;
+    const currentMeasurement = { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'],
+      runtimeUnits: [`isolated-integration:${runId}`] };
+    const testRun = { id: testRunId, filePath: 'test/reconnect.test.ts' };
+    const sourceBinding = await evidenceStore.bindSpecEvidence({
+      workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      actorId: 'su-original-implementer', evidenceKind: 'test', evidenceRef: 'test/reconnect.test.ts',
+      testRunId, sourceFingerprint: 'source-v1', observedAt,
+      details: { evidencePlane: 'live', testRun, currentMeasurement },
+    });
+    expect(sourceBinding).toMatchObject({ status: 'created' });
+    const sourceBindingId = (sourceBinding as { id: number }).id;
+    const sourceVerification = await evidenceStore.bindSpecEvidence({
+      workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      actorId: 'su-original-reviewer', evidenceKind: 'independent-verification',
+      verifiesBindingId: sourceBindingId, evidenceRef: 'test/reconnect.test.ts', sourceFingerprint: 'source-v1',
+      environmentFingerprint: 'reviewer-supplied-runtime', observedAt: '2026-10-20T01:03:04.000Z',
+      details: { note: 'independent re-observation', currentMeasurement },
+    });
+    expect(sourceVerification).toMatchObject({ status: 'created' });
+
+    // Plan reopen retires the old canonical row before promoting its replacement.
+    await db.sql`UPDATE harness_shared.work_items SET status = 'dropped', updated_ts = 1000
+      WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND feature_id = 'WI-101'`;
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, status, payload, source_plan_slug, source_plan_item_ids)
+      VALUES (${WORKSPACE}, ${HARNESS}, 'WI-103', 'open',
+        ${JSON.stringify({ plan_item: { plan_slug: 'reconnect-plan', item_id: 'P-003' } })}::text::jsonb,
+        'reconnect-plan', ARRAY['P-003']::text[])`;
+    await evidenceStore.ensureWorkItemSpecRevisionEdges({
+      workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      planItemIds: ['P-003'], workItemId: 'WI-103', actorId: 'su-promoter',
+    });
+
+    const transferInput = {
+      workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      planItemId: 'P-003', workItemId: 'WI-103', actorId: 'su-promoter',
+    };
+    const transferred = await evidenceStore.carryForwardCurrentSpecEvidence(transferInput);
+    expect(transferred.sourceWorkItemId).toBe('WI-101');
+    expect(transferred.copiedBindingIds).toHaveLength(2);
+
+    const rows = await db.sql<{
+      id: number | string;
+      work_item_id: string;
+      evidence_kind: string;
+      created_by: string;
+      observed_at: Date | string;
+      test_run_id: number | string | null;
+      verifies_binding_id: number | string | null;
+    }[]>`SELECT id, work_item_id, evidence_kind, created_by, observed_at, test_run_id, verifies_binding_id
+          FROM harness_shared.spec_evidence_bindings
+         WHERE work_item_id IN ('WI-101', 'WI-103') ORDER BY id`;
+    const originalRows = rows.filter((row) => row.work_item_id === 'WI-101');
+    const copiedRows = rows.filter((row) => row.work_item_id === 'WI-103');
+    expect(originalRows).toHaveLength(2);
+    expect(copiedRows).toHaveLength(2);
+    const originalTest = originalRows.find((row) => row.evidence_kind === 'test')!;
+    const copiedTest = copiedRows.find((row) => row.evidence_kind === 'test')!;
+    const copiedVerification = copiedRows.find((row) => row.evidence_kind === 'independent-verification')!;
+    expect(copiedTest.created_by).toBe('su-original-implementer');
+    expect(new Date(copiedTest.observed_at).toISOString()).toBe(observedAt);
+    expect(Number(copiedTest.test_run_id)).toBe(testRunId);
+    expect(Number(copiedVerification.verifies_binding_id)).toBe(Number(copiedTest.id));
+    expect(Number(copiedVerification.verifies_binding_id)).not.toBe(Number(originalTest.id));
+
+    expect(await evidenceStore.carryForwardCurrentSpecEvidence(transferInput)).toEqual(transferred);
+    const [targetCount] = await db.sql<{ count: number }[]>`
+      SELECT count(*)::int AS count FROM harness_shared.spec_evidence_bindings WHERE work_item_id = 'WI-103'`;
+    expect(targetCount.count).toBe(2);
+  });
+});
+
 describe('test execution carries mappings into the real evidence ledger', () => {
   it('recovers detached measured outcomes from the exact scoped PG row after a timeout', async () => {
     const { prepareTestEvidence, finishTestEvidence, recoverTestEvidence } = await import('../testing/evidence');

@@ -10,7 +10,8 @@ import { join } from 'node:path';
 import type { Sql } from 'postgres';
 import { wilsonInterval } from '@papercusp/bench-metrics';
 import { canonicalPushActivityTool, pushActivityRepoPath, shellSearchPatterns } from './native-adoption';
-import { collectReuseSourcePopulation, decodeReuseCallColumns, REUSE_CALL_COLUMNS, REUSE_PARENT_OLD_SPACE_MB } from './reuse-source-population';
+import { collectReuseSourcePopulation, decodeReuseCallColumns, serializeReuseCallColumns,
+  summarizeReuseCallColumns, REUSE_CALL_COLUMNS, REUSE_PARENT_OLD_SPACE_MB } from './reuse-source-population';
 export { buildReuseSourcePopulation, collectReuseSourcePopulation } from './reuse-source-population';
 
 export const REUSE_OBSERVATION_MS = 30 * 60_000;
@@ -179,7 +180,7 @@ export function measureReuseMetrics(input: {
   calls: readonly { id: string; resolved: boolean; from: string; to: string | null }[];
   lineCensusComplete: boolean;
   callCensusComplete: boolean;
-}) {
+}, callColumns?: unknown) {
   const integer = (n: number | null) => n !== null && Number.isSafeInteger(n) && n >= 0;
   if (input.addedNonGeneratedLines !== null && !integer(input.addedNonGeneratedLines)
     || input.duplicateAddedLines !== null && !integer(input.duplicateAddedLines)) throw new Error('Nonnegative line counts required');
@@ -190,8 +191,11 @@ export function measureReuseMetrics(input: {
   const eligible = input.workItems.filter(x => x.eligible);
   const observed = eligible.filter(x => x.complete && x.firstWriteAt !== null);
   const searched = observed.filter(x => x.successfulSearchAt !== null && time(x.successfulSearchAt) < time(x.firstWriteAt!));
-  const resolved = input.calls.filter(x => x.resolved && x.to !== null);
-  const crossFile = resolved.filter(x => x.from !== x.to);
+  if (callColumns !== undefined && input.calls.length) throw new Error('Ambiguous call census encodings');
+  const resolved = callColumns === undefined ? input.calls.filter(x => x.resolved && x.to !== null) : [];
+  const census = callColumns === undefined
+    ? { count: input.calls.length, resolved: resolved.length, crossFile: resolved.filter(x => x.from !== x.to).length }
+    : summarizeReuseCallColumns(callColumns);
   return {
     redundancy: { unit: 'duplicate-added-lines-per-1000-added-non-generated-lines',
       numerator: input.duplicateAddedLines, denominator: input.addedNonGeneratedLines,
@@ -199,9 +203,9 @@ export function measureReuseMetrics(input: {
         ? 1_000 * input.duplicateAddedLines / input.addedNonGeneratedLines : null },
     searchBeforeWrite: { unit: 'eligible-work-item-fraction', numerator: searched.length, denominator: observed.length,
       unknown: eligible.length - observed.length, value: observed.length ? searched.length / observed.length : null },
-    crossFileCalls: { unit: 'resolved-call-fraction', numerator: crossFile.length, denominator: resolved.length,
-      unknown: input.calls.length - resolved.length,
-      value: input.callCensusComplete && resolved.length ? crossFile.length / resolved.length : null },
+    crossFileCalls: { unit: 'resolved-call-fraction', numerator: census.crossFile, denominator: census.resolved,
+      unknown: census.count - census.resolved,
+      value: input.callCensusComplete && census.resolved ? census.crossFile / census.resolved : null },
   };
 }
 
@@ -212,6 +216,13 @@ export type ReuseMetricPopulation = Parameters<typeof measureReuseMetrics>[0];
  * maintained finite worker; a timeout/failure is unknown, never an inline retry.
  */
 export async function collectReuseSourcePopulationOffthread(root: string, start: string, end: string,
+  options: import('./first-party-callers-offthread').FirstPartyCallersRunOptions = {}) {
+  const result = await collectReuseSourcePopulationReply(root, start, end, options);
+  result.population.calls = await decodeReuseCallColumns(result.packedCalls);
+  return result.population;
+}
+
+async function collectReuseSourcePopulationReply(root: string, start: string, end: string,
   options: import('./first-party-callers-offthread').FirstPartyCallersRunOptions = {}) {
   const { codeIntelWorkerRequest } = await import('./first-party-callers-offthread');
   type Reply = { kind: 'reuse-source-population'; ok: boolean;
@@ -227,8 +238,7 @@ export async function collectReuseSourcePopulationOffthread(root: string, start:
       fail: error => ({ kind: 'reuse-source-population', ok: false, error }),
     }, { sourceLoader: true, ...options, heapMb: Math.min(options.heapMb ?? REUSE_PARENT_OLD_SPACE_MB, REUSE_PARENT_OLD_SPACE_MB) });
     if (!result.ok || !result.population) throw new Error(result.error ?? 'Worker source population unavailable');
-    result.population.calls = await decodeReuseCallColumns(result.packedCalls);
-    return result.population;
+    return { population: result.population, packedCalls: result.packedCalls };
   } finally { rmSync(captureRoot, { recursive: true, force: true }); }
 }
 
@@ -242,7 +252,9 @@ completeActivityCensuses: readonly { ref: string; owner: string; start: string; 
   const { loadHarnessRegistry } = await import('../harness-registry');
   const root = loadSource ? null : (await loadHarnessRegistry(scope.workspaceId)).projects.find(p => p.slug === scope.harnessSlug)?.path;
   if (!loadSource && !root) throw new Error('Registered repository required');
-  const source = await (loadSource ? loadSource() : collectReuseSourcePopulationOffthread(root!, scope.windowStart, scope.windowEnd));
+  const reply = loadSource ? null : await collectReuseSourcePopulationReply(root!, scope.windowStart, scope.windowEnd);
+  const source = loadSource ? await loadSource() : reply!.population;
+  const callColumns = reply ? serializeReuseCallColumns(reply.packedCalls) : undefined;
   const rows = await sql<{ id: string; taken_by: string; taken_at: string | Date; ambiguous: boolean; activities: ReuseMeasurementActivity[] }[]>`
     SELECT w.feature_id AS id, w.taken_by, w.taken_at,
       EXISTS(SELECT 1 FROM harness_shared.work_items other WHERE other.workspace_id=w.workspace_id
@@ -276,13 +288,14 @@ completeActivityCensuses: readonly { ref: string; owner: string; start: string; 
     ...rows.flatMap(r => r.activities.map(a => `agent-activity:${a.id}`))];
   const payload = JSON.stringify({ schema: 'reuse-metrics-v1', harness: scope.harnessSlug,
     windowStart: new Date(time(scope.windowStart)).toISOString(), windowEnd: new Date(time(scope.windowEnd)).toISOString(),
-    sourceRefs, population, method: source.method });
+    sourceRefs, population, method: source.method, ...(callColumns ? { callColumns } : {}) });
   const subject = JSON.stringify({ schema: 'reuse-metrics-ref-v1', harness: scope.harnessSlug,
     windowStart: new Date(time(scope.windowStart)).toISOString(), windowEnd: new Date(time(scope.windowEnd)).toISOString(),
     sha256: createHash('sha256').update(payload).digest('hex') });
   await sql`INSERT INTO harness_shared.code_intel_pushes (workspace_id, owner_id, turn_id, leg, subject, suggested_call, chars)
     VALUES (${scope.workspaceId}, 'system:reuse-measurement', ${scope.windowEnd}, 'reuse-metrics', ${subject}, ${payload}, 0)
     ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING`;
+  if (reply) population.calls = await decodeReuseCallColumns(reply.packedCalls);
   return { population, sourceRefs };
 }
 
@@ -529,7 +542,7 @@ export async function measureRecordedReuseMetric(sql: Sql, scope: {
       || typeof record.population.lineCensusComplete !== 'boolean' || typeof record.population.callCensusComplete !== 'boolean') {
       return { verdict: 'unknown', detail: 'Raw source references and completeness declarations required.' };
     }
-    const result = measureReuseMetrics(record.population)[metric];
+    const result = measureReuseMetrics(record.population, record.callColumns)[metric];
     if (result.value === null || metric === 'searchBeforeWrite' && 'unknown' in result && result.unknown > 0) {
       return { verdict: 'unknown', detail: JSON.stringify({ metric, measurement: result, sourceRefs: record.sourceRefs }) };
     }

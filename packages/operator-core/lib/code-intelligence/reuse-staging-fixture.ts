@@ -57,7 +57,7 @@ export interface ReuseStagingOptions {
 
 /** Local preparation only: no harness, plan, session, claim or native action. */
 export const prepareStagingReuseFixture = createReuseFixture;
-export const stagingFixturePlanSlug = (fixture: ReuseFixtureIdentity) => `r-${fixture.token.slice(0, 8)}`;
+export const stagingFixturePlanSlug = (fixture: ReuseFixtureIdentity) => fixture.planSlug;
 export interface ReuseStagingPorts {
   call?: Call;
   journey?: typeof runNativeReuseJourney;
@@ -86,7 +86,7 @@ export async function runStagingReuseFixture(options: ReuseStagingOptions, ports
   // All filesystem and database namespaces derive from the same unique token.
   // Short authored namespaces preserve the mandatory brief budget. Collisions
   // refuse before registration; the journal still retains the full UUID.
-  const harness = stagingFixturePlanSlug(fixture), planSlug = stagingFixturePlanSlug(fixture);
+  const harness = `r-${fixture.token.slice(0, 8)}`, planSlug = stagingFixturePlanSlug(fixture);
   const lifecycle = ports.lifecycle ?? {
     ...reuseFixtureLifecyclePorts,
     async readHarness(workspaceId: string, slug: string) {

@@ -4,7 +4,8 @@ import { execFileSync, fork } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
-import { collectReuseSourcePopulation, createReuseCallColumns, decodeReuseCallColumns } from './reuse-source-population';
+import { collectReuseSourcePopulation, createReuseCallColumns, decodeReuseCallColumns,
+  serializeReuseCallColumns, summarizeReuseCallColumns } from './reuse-source-population';
 import { collectReuseSourcePopulationOffthread } from './reuse-measurement';
 
 const repo = resolve(__dirname, '../../../..');
@@ -23,6 +24,22 @@ describe('lossless finite-worker call columns', () => {
     setImmediate(() => { yielded = true; });
     expect(await decodeReuseCallColumns(wire)).toEqual(expected);
     expect(yielded).toBe(true);
+    expect(await decodeReuseCallColumns(JSON.parse(JSON.stringify(serializeReuseCallColumns(wire))))).toEqual(expected);
+  });
+  it('remeasures a lossless persisted census whose expanded paths exceed the V8 string limit', () => {
+    const columns = createReuseCallColumns();
+    const path = 'long-module/'.repeat(800) + 'a.ts';
+    const count = 80_000;
+    for (let i = 0; i < count; i++) columns.sink({ path, line: i + 1, column: 1 }, i % 2 ? path : 'b.ts', i);
+    // Even the from/to strings alone exceed the string limit; never allocate
+    // that expanded JSON to reproduce an avoidable host OOM in the guard.
+    expect(path.length * count).toBeGreaterThan(536_870_888);
+    const stored = JSON.stringify(serializeReuseCallColumns(columns.finish()));
+    expect(stored.length).toBeLessThan(2_000_000);
+    expect(summarizeReuseCallColumns(JSON.parse(stored))).toEqual({ count, resolved: count, crossFile: count / 2 });
+    const corrupt = JSON.parse(stored);
+    corrupt.blocks[0] = corrupt.blocks[0].slice(1);
+    expect(() => summarizeReuseCallColumns(corrupt)).toThrow('Invalid call census columns');
   });
   it('rejects missing, unknown, truncated and invalid call transports', async () => {
     const empty = createReuseCallColumns().finish();
@@ -139,7 +156,7 @@ describe('finite code-intelligence worker source collection', () => {
     expect(result.calls).toEqual([expect.objectContaining({ from: 'a.ts', to: 'a.ts', resolved: true })]);
   });
 
-  it('preserves serial global resolution and call ordering when bounded parse partitions finish out of order', async () => {
+  it('overlaps immutable parsing with diff collection while preserving serial resolution and ordered call identities', async () => {
     const root = join(dir, 'partitioned');
     execFileSync('git', ['init', '-q', root]);
     const git = (date: string, ...args: string[]) => execFileSync('git', ['-C', root, ...args], {
@@ -176,7 +193,7 @@ describe('finite code-intelligence worker source collection', () => {
           if (!source.includes(site)) throw new Error('Parser observation site moved');
           source = source.replace(site, `      if (index === 0) setTimeout(() => parentPort!.postMessage({ index, parsed }), 800);
             else parentPort!.postMessage({ index, parsed });`);
-          source = source.replace('    try {\n      const parsed', `    if (index === 0 && process.env.P019_TEST_CASE) {
+          source = source.replace('    try {\n      const parsed', `    if (index === 0) {
               markWrite(${JSON.stringify(marker)}, JSON.stringify({pid: process.pid, source: [...sourceFiles.values()][0]}));
               if (process.env.P019_TEST_CASE === 'error') process.exit(27);
               if (process.env.P019_TEST_CASE === 'missing') { parentPort!.postMessage({index: index + 1, parsed: {}}); return; }
@@ -184,6 +201,19 @@ describe('finite code-intelligence worker source collection', () => {
             }
             try {\n      const parsed`);
           return { contents: `import {writeFileSync as markWrite} from 'node:fs';\n` + source, loader: 'ts' };
+        });
+        builder.onLoad({ filter: /reuse-source-population\.ts$/ }, args => {
+          const source = readFileSync(args.path, 'utf8');
+          const site = "    onProgress?.('source-diff');";
+          if (!source.includes(site)) throw new Error('Diff overlap observation site moved');
+          // Hold the independent diff until parsing starts. Serial scheduling
+          // fails here; the complete ordered result must still match its oracle.
+          return { contents: `import {existsSync as overlapExists} from 'node:fs';\n` + source.replace(site, `${site}
+            const overlapDeadline = Date.now() + 3000;
+            while (!overlapExists(${JSON.stringify(marker)})) {
+              if (Date.now() > overlapDeadline) throw new Error('Source parser did not overlap diff collection');
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }`), loader: 'ts' };
         });
       } }] });
     const child = fork(instrumented, [], { execArgv: ['--max-old-space-size=1024'], serialization: 'advanced',
