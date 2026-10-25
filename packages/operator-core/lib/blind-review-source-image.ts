@@ -10,7 +10,7 @@ import { verifierSourceFiles, type VerifierSourceFile } from '@papercusp/test-co
 import { captureVerifierDependencies, prepareVerifierDependencies, prepareVerifierSource,
   verifyVerifierSource } from '../../../scripts/source-preview.mjs';
 import { buildRuntimeGeneratedInputs, verifyRuntimeGeneratedInputs,
-  type RuntimeGeneratedInputs } from './blind-review-generated-inputs';
+  runtimeInputsMustBeRetained, type RuntimeGeneratedInputs } from './blind-review-generated-inputs';
 import { sealRuntimeSourceHandle } from './blind-review-source-seal';
 
 type SourceReceipt = Awaited<ReturnType<typeof prepareVerifierSource>>;
@@ -68,15 +68,44 @@ function population(source: SourceReceipt, dependencies: DependencyReceipt,
   return rows.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-async function pack(root: string, image: string, signal?: AbortSignal): Promise<void> {
+export class RuntimeSourcePackFailure extends Error {
+  retainVerifierTree = false;
+  retainedInputRoot: string | null = null;
+  constructor(readonly diagnostics: {
+    exitCode: number | null; signal: NodeJS.Signals | null; timedOut: boolean;
+    aborted: boolean; elapsedMs: number; stderrTail: string; spawnErrorCode: string | null;
+  }) {
+    super('source_image_pack_failed:' + JSON.stringify({ ...diagnostics, stderrTail: undefined }));
+    this.name = 'RuntimeSourcePackFailure';
+  }
+}
+
+/** Host-only stage entry for focused verification; never a reviewer command surface. */
+export async function packRuntimeSourceClosure(root: string, image: string, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   await new Promise<void>((resolvePack, reject) => {
+    const started = performance.now();
+    let stderr = Buffer.alloc(0), timedOut = false, spawnErrorCode: string | null = null;
     // The executable is host-selected; a shell, ambient startup options and
     // donor executables are not part of image creation.
     const child = spawn('/usr/bin/mksquashfs', [root, image, '-noappend', '-no-progress',
       '-processors', '1', '-all-root', '-all-time', '0', '-mkfs-time', '0', '-no-xattrs'],
-    { env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' }, stdio: 'ignore', signal, timeout: 120_000 });
-    child.once('error', reject);
-    child.once('close', code => code === 0 ? resolvePack() : reject(new Error('source_image_pack_failed')));
+    { env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' }, stdio: ['ignore', 'ignore', 'pipe'], signal });
+    // An explicit deadline distinguishes the host's cutoff from a compressor
+    // failure. Kill the single compressor process rather than waiting forever
+    // for a child which ignores SIGTERM; no input cleanup runs before close.
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 120_000);
+    child.stderr!.on('data', (bytes: Buffer) => {
+      stderr = Buffer.concat([stderr, bytes]).subarray(-8192);
+    });
+    child.once('error', (error: NodeJS.ErrnoException) => { spawnErrorCode = error.code ?? error.name; });
+    child.once('close', (exitCode, terminationSignal) => {
+      clearTimeout(timer);
+      if (exitCode === 0 && !timedOut && !spawnErrorCode && !signal?.aborted) resolvePack();
+      else reject(new RuntimeSourcePackFailure({ exitCode, signal: terminationSignal,
+        timedOut, aborted: signal?.aborted === true, elapsedMs: Math.round(performance.now() - started),
+        stderrTail: stderr.toString('utf8'), spawnErrorCode }));
+    });
   });
 }
 
@@ -116,11 +145,13 @@ export async function packRuntimeSourceImage(options: {
   try {
     const closure = join(owned, 'closure');
     await mkdir(closure, { mode: 0o700 });
+    let inputBytes = 0;
     for (const row of rows) {
       signal?.throwIfAborted();
       const from = join(root, row.path), to = join(closure, row.path);
       await mkdir(dirname(to), { recursive: true });
       const info = await lstat(from);
+      inputBytes += info.size;
       requireValue((row.kind === 'symlink' ? info.isSymbolicLink() : info.isFile()) &&
         Boolean(info.mode & 0o111) === row.executable, 'broker_input_type_changed');
       if (row.kind === 'symlink') await symlink(await readlink(from), to);
@@ -156,7 +187,24 @@ export async function packRuntimeSourceImage(options: {
     const manifestSha256 = digest(manifestBytes);
     await writeFile(join(closure, BROKER_CLOSURE_MANIFEST), manifestBytes, { flag: 'wx', mode: 0o644 });
     const image = join(owned, 'source.squashfs');
-    await pack(closure, image, signal);
+    const attempt = { version: 1, sourceCommit: source.sourceCommit, manifestSha256,
+      inputFiles: files.length + 1, inputBytes, startedAt: new Date().toISOString() };
+    const attemptPath = join(owned, 'pack-attempt.json');
+    await writeFile(attemptPath, JSON.stringify(attempt), { flag: 'wx', mode: 0o600 });
+    try { await packRuntimeSourceClosure(closure, image, signal); }
+    catch (error) {
+      if (error instanceof RuntimeSourcePackFailure) {
+        // The child has closed. Retain its exact measured closure for a focused
+        // diagnostic retry; it grants no image, admission or runtime authority.
+        error.retainVerifierTree = true;
+        error.retainedInputRoot = owned;
+        try {
+          await writeFile(attemptPath, JSON.stringify({ ...attempt, status: 'failed',
+            finishedAt: new Date().toISOString(), diagnostics: error.diagnostics }), { mode: 0o600 });
+        } catch (receiptError) { throw new AggregateError([error, receiptError], 'source_image_pack_receipt_failed'); }
+      }
+      throw error;
+    }
     handle = await open(image, constants.O_RDONLY | constants.O_NOFOLLOW);
     const info = await handle.stat();
     requireValue(info.isFile() && info.size > 0 && info.size <= MAX_IMAGE_BYTES, 'broker_image_size_invalid');
@@ -183,7 +231,7 @@ export async function packRuntimeSourceImage(options: {
     return result;
   } catch (error) {
     await handle?.close();
-    await rm(owned, { recursive: true, force: true });
+    if (!runtimeInputsMustBeRetained(error)) await rm(owned, { recursive: true, force: true });
     throw error;
   }
 }
@@ -196,6 +244,7 @@ export async function prepareRuntimeSourceImage(options: {
   const custodyRoot = await realpath(options.custodyRoot);
   const owned = await mkdtemp(join(custodyRoot, 'broker-prepare-'));
   await chmod(owned, 0o700);
+  let retain = false;
   try {
     const root = join(owned, 'source');
     const source = await prepareVerifierSource({ repo: resolve(options.repositoryRoot), ref: options.sourceCommit,
@@ -206,5 +255,8 @@ export async function prepareRuntimeSourceImage(options: {
       custodyRoot, source, dependencies, signal: options.signal });
     return await packRuntimeSourceImage({ root, custodyRoot, source, dependencies, generated,
       repositoryRoot: options.repositoryRoot, signal: options.signal });
-  } finally { await rm(owned, { recursive: true, force: true }); }
+  } catch (error) {
+    retain = runtimeInputsMustBeRetained(error);
+    throw error;
+  } finally { if (!retain) await rm(owned, { recursive: true, force: true }); }
 }

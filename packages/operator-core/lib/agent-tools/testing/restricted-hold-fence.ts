@@ -29,11 +29,12 @@
  * established, refuses the run. Zero cost when no disclosure is active (two indexed reads).
  */
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { readVerifierSourceReceiptSync, type VerifierSourceReceipt } from '@papercusp/test-config/verifier-source';
-import { readCommittedFiles } from '../plans/committed-tree-reader';
+import { defaultBlobBatchReader, locateCommittedBlobs, readCommittedFiles } from '../plans/committed-tree-reader';
 import type { BundleHoldProgress } from '../../../../../scripts/lib/restricted-hold-preflight.mjs';
 import {
   listDirtyFilesRecursive,
@@ -246,10 +247,34 @@ export async function restrictedFrozenSourceRefusal(root: string,
     if (!/^[a-f0-9]{40,64}$/.test(source.sourceCommit) || !source.files.length)
       throw new Error('invalid frozen source population');
     const repositories = new Set((source.submodules ?? []).map(row => row.path));
-    const committed = await readCommittedFiles(realRoot, source.sourceCommit, source.files.map(file => file.path),
-      { exists: async repo => repositories.has(repo) });
-    for (const file of source.files)
-      if (committed.get(file.path)?.sha256 !== file.sha256) throw new Error('frozen input differs from committed origin');
+    const deps = { exists: async (repo: string) => repositories.has(repo) };
+    const locations = await locateCommittedBlobs(realRoot, source.sourceCommit, source.files.map(file => file.path), deps);
+    const committed = await readCommittedFiles(realRoot, source.sourceCommit,
+      source.files.filter(file => file.kind === 'file').map(file => file.path), deps);
+    const links = new Map<string, typeof source.files>();
+    for (const file of source.files) {
+      const location = locations.get(file.path);
+      const mode = file.kind === 'symlink' ? '120000' : file.executable ? '100755' : '100644';
+      if (!location || location.type !== 'blob' || location.mode !== mode ||
+          (file.kind === 'symlink' ? !file.executable : committed.get(file.path)?.sha256 !== file.sha256))
+        throw new Error('frozen input differs from committed origin');
+      if (file.kind === 'symlink') links.set(location.repo, [...(links.get(location.repo) ?? []), file]);
+    }
+    // The ordinary proof reader intentionally refuses symlinks. Read their
+    // committed target bytes with its maintained batch transport and verify
+    // both Git content addressing and the full census digest, without following
+    // the canonical working tree's mutable links.
+    for (const [repo, files] of links) for (let start = 0; start < files.length; start += 256) {
+      const batch = files.slice(start, start + 256);
+      const blobs = await defaultBlobBatchReader(join(realRoot, repo), batch.map(file => locations.get(file.path)!.object));
+      for (const file of batch) {
+        const object = locations.get(file.path)!.object, bytes = blobs.get(object);
+        if (!bytes || createHash(object.length === 64 ? 'sha256' : 'sha1')
+          .update(`blob ${bytes.length}\0`).update(bytes).digest('hex') !== object ||
+          createHash('sha256').update(bytes).digest('hex') !== file.sha256)
+          throw new Error('frozen symlink differs from committed origin');
+      }
+    }
     return null;
   } catch {
     return { error: 'restricted_hold_state_unknown',

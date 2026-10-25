@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,12 +6,25 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { captureVerifierDependencies, prepareVerifierSource } from '../../../scripts/source-preview.mjs';
 import { git, write } from './source-preview.fixture';
-import { packRuntimeSourceImage, prepareRuntimeSourceImage, type RuntimeSourceImage } from './blind-review-source-image';
+import { packRuntimeSourceClosure, packRuntimeSourceImage, prepareRuntimeSourceImage,
+  RuntimeSourcePackFailure, type RuntimeSourceImage } from './blind-review-source-image';
+import { runtimeInputsMustBeRetained } from './blind-review-generated-inputs';
+
+const packControl = vi.hoisted(() => ({ fail: false }));
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: (...args: Parameters<typeof actual.spawn>) => {
+    if (packControl.fail && args[0] === '/usr/bin/mksquashfs') {
+      const argv = [...args[1]!]; argv[0] += '/missing-pack-control'; args[1] = argv;
+    }
+    return actual.spawn(...args);
+  } };
+});
 
 const helper = fileURLToPath(new URL('../../../scripts/lib/blind-review-sealed-source.py', import.meta.url));
 const policy = fileURLToPath(new URL('../../../apps/operator/bin/release/dependency-generation.sh', import.meta.url));
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { packControl.fail = false; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 async function fixture() {
   const custodyRoot = mkdtempSync(join(tmpdir(), 'broker-producer-')); roots.push(custodyRoot);
@@ -44,6 +57,46 @@ function mount(image: RuntimeSourceImage, code: string, manifestSha256 = image.m
 }
 
 describe('canonical broker source image producer', () => {
+  it('preserves the measured closure and terminal phase receipt after a real compressor failure', async () => {
+    const f = await fixture();
+    packControl.fail = true;
+    let failure: unknown;
+    try { await packRuntimeSourceImage(f); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(RuntimeSourcePackFailure);
+    expect(runtimeInputsMustBeRetained(failure)).toBe(true);
+    const retained = (failure as RuntimeSourcePackFailure).retainedInputRoot!;
+    expect(retained).toMatch(/broker-source-/);
+    const receipt = JSON.parse(readFileSync(join(retained, 'pack-attempt.json'), 'utf8'));
+    expect(receipt).toMatchObject({ version: 1, status: 'failed', sourceCommit: f.source.sourceCommit,
+      diagnostics: { timedOut: false, aborted: false, signal: null } });
+    expect(receipt.diagnostics.exitCode).not.toBe(0);
+    expect(receipt.inputFiles).toBeGreaterThan(0); expect(receipt.inputBytes).toBeGreaterThan(0);
+    expect(readFileSync(join(retained, 'closure/src/input.ts'), 'utf8')).toContain('committed source');
+    // Re-run only the preserved pack stage. This is a diagnosis control, never
+    // a reconstructed producer origin or an admission receipt.
+    packControl.fail = false;
+    await packRuntimeSourceClosure(join(retained, 'closure'), join(retained, 'stage-retry.squashfs'));
+  });
+
+  it('retains compressor failure diagnostics and verifies the pack stage without rebuilding the product', async () => {
+    const f = await fixture();
+    const output = join(f.custodyRoot, 'focused.squashfs');
+    let failure: unknown;
+    try { await packRuntimeSourceClosure(join(f.root, 'missing-source'), output); }
+    catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(RuntimeSourcePackFailure);
+    const diagnostics = (failure as RuntimeSourcePackFailure).diagnostics;
+    expect(diagnostics).toMatchObject({ signal: null, timedOut: false, aborted: false, spawnErrorCode: null });
+    expect(diagnostics.exitCode).not.toBe(0);
+    expect(diagnostics.stderrTail).toMatch(/Cannot stat|No such file/i);
+    expect(Buffer.byteLength(diagnostics.stderrTail)).toBeLessThanOrEqual(8192);
+    expect(diagnostics.elapsedMs).toBeGreaterThanOrEqual(0);
+    await packRuntimeSourceClosure(f.root, output);
+    const listing = spawnSync('/usr/bin/unsquashfs', ['-ll', output], { encoding: 'utf8', timeout: 10_000 });
+    expect(listing.status, listing.stderr).toBe(0);
+    expect(listing.stdout).toContain('src/input.ts');
+  });
+
   it('boots the real sealed closure with measured dependencies, manifests and executable modes after donor removal', async () => {
     const f = await fixture();
     const image = await packRuntimeSourceImage(f);

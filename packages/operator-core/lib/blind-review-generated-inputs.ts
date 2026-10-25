@@ -1,7 +1,7 @@
 /** Host-only build stage; a generated-input receipt is never runtime admission. */
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { chmod, lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { verifierSourceFiles, type VerifierSourceFile } from '@papercusp/test-config/verifier-source';
 import { captureVerifierDependencies, runVerifierDependencyCommand, verifyVerifierSource,
@@ -15,6 +15,14 @@ export type RuntimeGeneratedInputs = Readonly<{
 }>;
 const produced = new WeakSet<object>();
 const sha = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+/** A failed process-group fence reserves its inputs for reconciliation. */
+export function runtimeInputsMustBeRetained(error: unknown, seen = new Set<object>()): boolean {
+  if (!error || typeof error !== 'object' || seen.has(error)) return false;
+  seen.add(error);
+  const failure = error as { retainVerifierTree?: unknown; cause?: unknown; errors?: unknown };
+  return failure.retainVerifierTree === true || runtimeInputsMustBeRetained(failure.cause, seen) ||
+    (Array.isArray(failure.errors) && failure.errors.some(item => runtimeInputsMustBeRetained(item, seen)));
+}
 const DIRECTORIES = ['apps/operator/dist-verify',
   'apps/operator/public/wake-runtime', 'apps/operator/public/vad-runtime',
   'apps/operator/public/vditor', 'apps/operator/public/vditor-local',
@@ -48,9 +56,10 @@ async function census(root: string, source: Source): Promise<VerifierSourceFile[
   const rows = verifierSourceFiles(root, { includedPaths, symlinkRoot: root }).filter(file => !recorded.has(file.path));
   const paths = new Set(rows.map(file => file.path));
   for (const path of ['apps/operator/dist-verify/hono-host.mjs', 'apps/operator/dist-verify/spa/index.html'])
-    if (!paths.has(path) || !(await lstat(join(root, path))).size) throw new Error('broker_generated_build_incomplete');
+    if (!paths.has(path) || !(await lstat(join(root, path))).size)
+      throw new Error('broker_generated_build_incomplete:' + path);
   if (!rows.some(file => file.path.startsWith('apps/operator/dist-verify/spa/assets/')))
-    throw new Error('broker_generated_build_incomplete');
+    throw new Error('broker_generated_build_incomplete:apps/operator/dist-verify/spa/assets/');
   return rows;
 }
 
@@ -89,6 +98,7 @@ export async function buildRuntimeGeneratedInputs(options: {
   }
   const work = await mkdtemp(join(await realpath(options.custodyRoot), 'broker-build-'));
   await chmod(work, 0o700);
+  let retain = false;
   try {
     const home = join(work, 'home'); await mkdir(home);
     const temporary = join(work, 'tmp'); await mkdir(temporary);
@@ -97,10 +107,8 @@ export async function buildRuntimeGeneratedInputs(options: {
     const env: NodeJS.ProcessEnv = { PATH: dirname(process.execPath) + ':/usr/bin:/bin',
       HOME: home, TMPDIR: temporary, LANG: 'C.UTF-8', NODE_OPTIONS: '', NODE_PATH: '',
       VERIFY_TAURI_SOURCE_REF: source.sourceCommit, VERIFY_TAURI_SOURCE_RECEIPT: receiptPath,
-      VITE_BUILD_OUT_ROOT: join(root, 'apps/operator/dist-verify/spa-build'),
-      VITE_BUILD_LOG: join(work, 'spa-build.log'), PAPERCUSP_RETAIN_DIST_CHUNKS: '0',
-      PAPERCUSP_VITE_OUT_DIR: join(root, 'apps/operator/dist-verify/spa'),
-      PAPERCUSP_VITE_FINAL_OUT_DIR: join(root, 'apps/operator/dist-verify/spa') };
+      VITE_BUILD_OUT_ROOT: join(work, 'spa-build'),
+      VITE_BUILD_LOG: join(work, 'spa-build.log'), PAPERCUSP_RETAIN_DIST_CHUNKS: '0' };
     const run = (args: string[]) => runVerifierDependencyCommand('/bin/bash', args,
       { cwd: root, env, signal });
     await run(['apps/operator/scripts/setup-porcupine-runtime.sh', '--source',
@@ -108,6 +116,11 @@ export async function buildRuntimeGeneratedInputs(options: {
     await run(['scripts/pc-heavy.sh', '--', 'npm', '--workspace', '@papercusp/operator-vite', 'run', 'prebuild']);
     await verifyInputs(root, source, dependencies);
     await run(['scripts/pc-heavy.sh', '--', 'npm', '--ignore-scripts', '--workspace', '@papercusp/operator-vite', 'run', 'build']);
+    // The maintained singleflight wrapper owns its staged output variables and
+    // publishes <VITE_BUILD_OUT_ROOT>/dist. Copy only that completed tree into
+    // the measured closure; private markers and build logs stay outside it.
+    await cp(join(work, 'spa-build/dist'), join(root, 'apps/operator/dist-verify/spa'),
+      { recursive: true, force: false, errorOnExist: true });
     await run(['apps/operator/bin/bundle-host.sh', 'bin/hono-host.ts',
       join(root, 'apps/operator/dist-verify/hono-host.mjs')]);
     await verifyInputs(root, source, dependencies);
@@ -116,5 +129,8 @@ export async function buildRuntimeGeneratedInputs(options: {
       dependenciesSha256: sha(dependencies), files: Object.freeze(files) });
     produced.add(receipt);
     return receipt;
-  } finally { await rm(work, { recursive: true, force: true }); }
+  } catch (error) {
+    retain = runtimeInputsMustBeRetained(error);
+    throw error;
+  } finally { if (!retain) await rm(work, { recursive: true, force: true }); }
 }

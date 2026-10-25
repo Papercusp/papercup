@@ -1,11 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { seedPlan, setupPlanPgFixture, type PlanPgFixture } from './agent-tools/plans/__tests__/_pg-tool-fixture';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
 import { createCanonicalRuntimeCustodyStore } from './blind-review-runtime-authority';
 import { blindReviewerConfinement } from './blind-reviewer-mint';
 import { assertMigrationPassesPreApplyLints } from './migration-preapply-lint';
+import { brokerSourceFixture } from './blind-review-source.fixture';
+import { buildRuntimeGeneratedInputs } from './blind-review-generated-inputs';
+import { packRuntimeSourceImage } from './blind-review-source-image';
+import { consumeRuntimeSourceImage } from './blind-review-source-custody';
 import { createRuntimeCustodyStore, RUNTIME_RESOURCE_KINDS, runtimeCustodyFingerprint,
   type RuntimeReviewerIdentity, type RuntimeSourceAdmission } from './blind-review-runtime-custody';
 
@@ -83,6 +87,42 @@ async function canonicalFixture() {
 }
 
 describe('blind reviewer runtime custody on private PostgreSQL', () => {
+  it('consumes the measured retained image into canonical custody and refuses copies and post-cutoff retries', async () => {
+    const roots: string[] = [];
+    const source = await brokerSourceFixture(roots, { gitCheckout: true });
+    const generated = await buildRuntimeGeneratedInputs(source);
+    const image = await packRuntimeSourceImage({ ...source, generated });
+    try {
+      const f = await canonicalFixture();
+      const lease = await f.store.reserve(f.identity, 'sealed-source-admission', 'e'.repeat(64));
+      const options = { store: f.store, identity: f.identity, leaseId: lease.id,
+        image, repositoryId: 'custody-fixture' };
+      await expect(consumeRuntimeSourceImage({ ...options, image: { ...image } }))
+        .rejects.toThrow('broker_source_origin_unavailable');
+      expect(await fx.admin`SELECT id FROM harness_shared.blind_review_runtime_admissions WHERE lease_id = ${lease.id}`)
+        .toHaveLength(0);
+      const admitted = await consumeRuntimeSourceImage(options);
+      expect(admitted.image).toBe(image);
+      expect(admitted.lease.state).toBe('allocating');
+      expect(admitted.lease.admission).toMatchObject({ sourceImageNonce: image.sourceImageNonce,
+        sourceInputsHash: image.sourceInputsHash, censusStatus: 'admit' });
+      const retry = await consumeRuntimeSourceImage(options);
+      expect(retry.receiptId).toBe(admitted.receiptId);
+      expect(retry.lease.id).toBe(lease.id);
+      expect(await fx.admin`SELECT id FROM harness_shared.blind_review_runtime_admissions WHERE lease_id = ${lease.id}`)
+        .toHaveLength(1);
+      expect(await fx.admin`SELECT id FROM harness_shared.blind_review_runtime_resources WHERE lease_id = ${lease.id}`)
+        .toHaveLength(0);
+      await f.store.revoke(f.identity, lease.id, 'cutoff-control');
+      await expect(f.store.consumeAdmission(f.identity, lease.id, admitted.receiptId))
+        .rejects.toMatchObject({ code: 'allocation_not_active' });
+      await expect(consumeRuntimeSourceImage(options)).rejects.toMatchObject({ code: 'allocation_not_active' });
+    } finally {
+      await image.handle.close();
+      for (const root of roots) rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it('uses canonical binding, native launch and fresh confinement for production admission', async () => {
     const f = await canonicalFixture();
     const lease = await f.store.reserve(f.identity, 'canonical-admit', 'e'.repeat(64));
@@ -219,6 +259,38 @@ describe('blind reviewer runtime custody on private PostgreSQL', () => {
     await expect(f.store.consumeAdmission(f.identity, lease.id, receipt)).rejects.toMatchObject({ code: 'admission_tuple_mismatch' });
     const control = await fixture();
     expect((await control.allocate()).lease.state).toBe('allocating');
+  });
+
+  it('authorizes only the exact ready runtime and rechecks canonical native liveness after dispatch', async () => {
+    const f = await canonicalFixture(), { lease } = await f.allocate();
+    const runtime = { leaseEpoch: String(lease.lease_epoch), runtimeNonce: lease.runtime_nonce };
+    await expect(f.store.authorize(f.identity, lease.id, runtime))
+      .rejects.toMatchObject({ code: 'runtime_not_ready' });
+    for (const kind of RUNTIME_RESOURCE_KINDS.filter(kind => kind !== 'capture')) {
+      const intent = await f.store.intendResource(f.identity, lease.id, kind, 'main');
+      await f.store.recordResource(f.identity, lease.id, intent.id, { tag: intent.ownership_tag });
+    }
+    await f.store.markReady(f.identity, lease.id);
+    await expect(f.store.authorize(f.identity, lease.id, { ...runtime, runtimeNonce: randomUUID() }))
+      .rejects.toMatchObject({ code: 'runtime_identity_mismatch' });
+    await expect(f.store.authorize(f.identity, lease.id, { ...runtime, leaseEpoch: String(BigInt(runtime.leaseEpoch) + 1n) }))
+      .rejects.toMatchObject({ code: 'runtime_identity_mismatch' });
+    expect((await f.store.authorize(f.identity, lease.id, runtime)).state).toBe('ready');
+    await fx.admin`UPDATE harness_shared.adv_sessions SET ended_at = clock_timestamp()
+      WHERE coord_owner_id = ${f.identity.reviewerOwnerId}`;
+    await expect(f.store.authorize(f.identity, lease.id, runtime))
+      .rejects.toMatchObject({ code: 'reviewer_authority_invalid' });
+    expect((await f.store.revoke(f.identity, lease.id, 'native-ended')).state).toBe('releasing');
+  });
+
+  it('refuses a consumed receipt retry after its lease expires', async () => {
+    const f = await fixture(), { lease, receipt } = await f.allocate();
+    await fx.admin`UPDATE harness_shared.blind_review_runtime_leases
+      SET expires_at = clock_timestamp() - interval '1 minute' WHERE id = ${lease.id}`;
+    await expect(f.store.consumeAdmission(f.identity, lease.id, receipt))
+      .rejects.toMatchObject({ code: 'lease_expired_or_revoked' });
+    await expect(f.store.recordAdmission(f.identity, lease.id, f.source))
+      .rejects.toMatchObject({ code: 'lease_expired_or_revoked' });
   });
 
   it('rolls back receipt consumption when custody commit fails, then recovers the same request', async () => {

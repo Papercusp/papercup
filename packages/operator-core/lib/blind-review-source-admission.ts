@@ -9,6 +9,7 @@ import type { RuntimeSourceAdmission } from './blind-review-runtime-custody';
 
 const helper = fileURLToPath(new URL('../../../scripts/lib/blind-review-sealed-source.py', import.meta.url));
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const generations = new WeakMap<RuntimeSourceImage, Map<string, string>>();
 
 async function census(image: RuntimeSourceImage, signal?: AbortSignal): Promise<{
   version: number; source: VerifierSourceReceipt; generatedSha256: string;
@@ -53,7 +54,13 @@ export async function admitRuntimeSourceImage(image: RuntimeSourceImage, options
   const refusal = await restrictedFrozenSourceRefusal(origin.repositoryRoot, measured.source);
   if (refusal) throw new Error(refusal.error);
   options.signal?.throwIfAborted();
+  // A same-image retry is still fully measured, but must name the same census
+  // generation so the durable admission tuple cannot change on a retry.
+  let repositories = generations.get(image);
+  if (!repositories) { repositories = new Map(); generations.set(image, repositories); }
+  let censusGeneration = repositories.get(options.repositoryId);
+  if (!censusGeneration) { censusGeneration = randomUUID(); repositories.set(options.repositoryId, censusGeneration); }
   return Object.freeze({ repositoryId: options.repositoryId, sourceCommit: image.sourceCommit,
     sourceTreeHash: image.sourceTreeHash, sourceInputsHash: image.sourceInputsHash,
-    sourceImageNonce: image.sourceImageNonce, censusStatus: 'admit' as const, censusGeneration: randomUUID() });
+    sourceImageNonce: image.sourceImageNonce, censusStatus: 'admit' as const, censusGeneration });
 }

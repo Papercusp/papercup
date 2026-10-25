@@ -28,7 +28,7 @@ export const RUNTIME_RESOURCE_KINDS = ['managed-scope', 'process', 'listener', '
   'workspace', 'profile', 'channel', 'credential', 'capture'] as const;
 export type RuntimeResourceKind = typeof RUNTIME_RESOURCE_KINDS[number];
 export type RuntimeLease = {
-  id: string; lease_epoch: number | string; workspace_id: string; binding_id: number | string;
+  id: string; lease_epoch: number | string; runtime_nonce: string; workspace_id: string; binding_id: number | string;
   activation_audit_seq: number; replacement_epoch: number; request_id: string; request_hash: string;
   state: 'requested' | 'allocating' | 'ready' | 'releasing' | 'released'; receipt_id: string | null;
   admission: Record<string, unknown> | null; expires_at: Date | string | null;
@@ -120,7 +120,8 @@ export function createRuntimeCustodyStore(deps: { sql?: Sql; checkAuthority: Run
       source = sourceSchema.parse(source);
       return transaction(identity, async tx => {
         const lease = await locked(tx, identity, leaseId);
-        if (lease.state !== 'requested') refuse('allocation_already_consumed');
+        if (!['requested', 'allocating', 'ready'].includes(lease.state)) refuse('allocation_not_active');
+        if (lease.state !== 'requested') await assertLive(tx, leaseId);
         const tuple = { ...identitySchema.parse(identity), ...source, leaseEpoch: String(lease.lease_epoch),
           allocationRequestId: lease.request_id, requestHash: lease.request_hash };
         const fingerprint = runtimeCustodyFingerprint(tuple);
@@ -131,6 +132,7 @@ export function createRuntimeCustodyStore(deps: { sql?: Sql; checkAuthority: Run
           if (old.tuple_hash !== fingerprint) refuse('admission_tuple_changed');
           return old.id;
         }
+        if (lease.state !== 'requested') refuse('allocation_already_consumed');
         const id = randomUUID();
         await tx`INSERT INTO harness_shared.blind_review_runtime_admissions (id, workspace_id, lease_id, tuple, tuple_hash)
           VALUES (${id}, ${identity.workspaceId}, ${leaseId}, ${JSON.stringify(tuple)}::jsonb, ${fingerprint})`;
@@ -143,6 +145,8 @@ export function createRuntimeCustodyStore(deps: { sql?: Sql; checkAuthority: Run
         const lease = await locked(tx, identity, leaseId);
         if (lease.state !== 'requested') {
           if (lease.receipt_id !== receiptId) refuse('receipt_replay');
+          if (!['allocating', 'ready'].includes(lease.state)) refuse('allocation_not_active');
+          await assertLive(tx, leaseId);
           return allocated(tx, identity, leaseId);
         }
         const [receipt] = await tx<Array<{ tuple: Record<string, unknown>; tuple_hash: string }>>`
@@ -216,6 +220,21 @@ export function createRuntimeCustodyStore(deps: { sql?: Sql; checkAuthority: Run
         const [row] = await tx<RuntimeLease[]>`UPDATE harness_shared.blind_review_runtime_leases
           SET state = 'ready', updated_at = clock_timestamp() WHERE id = ${leaseId} RETURNING *`;
         return row!;
+      });
+    },
+    /** Dispatch and successful response each need a fresh, short transaction. */
+    authorize(identity: RuntimeReviewerIdentity, leaseId: string, runtime: {
+      leaseEpoch: string; runtimeNonce: string;
+    }): Promise<RuntimeLease> {
+      z.object({ leaseEpoch: z.string().regex(/^[1-9][0-9]{0,18}$/),
+        runtimeNonce: z.string().uuid() }).strict().parse(runtime);
+      return transaction(identity, async tx => {
+        const lease = await allocated(tx, identity, leaseId);
+        if (String(lease.lease_epoch) !== runtime.leaseEpoch || lease.runtime_nonce !== runtime.runtimeNonce)
+          refuse('runtime_identity_mismatch');
+        if (lease.state !== 'ready') refuse('runtime_not_ready');
+        await assertLive(tx, leaseId);
+        return lease;
       });
     },
     revoke(identity: RuntimeReviewerIdentity, leaseId: string, reason: string): Promise<RuntimeLease> {
