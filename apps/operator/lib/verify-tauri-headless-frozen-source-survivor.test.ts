@@ -102,6 +102,33 @@ function generateStopScript(root: string, sourceRoot: string, sourceWork: string
 }
 
 describe("verify-tauri-headless frozen-source survivor reaper", () => {
+  it("accepts an already exited process without signalling its unreaped zombie", () => {
+    const fixture = makeFixture("verify-process-zombie");
+    const ready = resolve(fixture.root, "zombie-pid");
+    const script = [
+      'set -u',
+      reaperFunctions,
+      'python3 -c \'import os,time; child=os.fork(); (os._exit(0) if child == 0 else None); open(os.environ["TEST_READY"],"w").write(str(child)); time.sleep(60)\' &',
+      'parent=$!',
+      'trap \'builtin kill -KILL "$parent" 2>/dev/null || true; wait "$parent" 2>/dev/null || true\' EXIT',
+      'for attempt in {1..300}; do [ -s "$TEST_READY" ] && break; sleep 0.01; done',
+      'child="$(cat "$TEST_READY")"',
+      'for attempt in {1..300}; do [ "$(ps -o stat= -p "$child" | cut -c1)" = Z ] && break; sleep 0.01; done',
+      '[ "$(ps -o stat= -p "$child" | cut -c1)" = Z ] || exit 92',
+      'ticks="$(frozen_source_process_start_ticks "$child")"',
+      'kill() { echo UNEXPECTED_SIGNAL >&2; return 1; }',
+      'stop_verify_process "$child" "$ticks" this-run',
+    ].join('\n');
+    try {
+      const result = spawnSync('bash', ['-c', script], {
+        encoding: 'utf8', timeout: 12_000,
+        env: { ...process.env, TEST_READY: ready, PAPERCUSP_TAURI_LAUNCH_PROVENANCE: 'this-run' },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).not.toContain('UNEXPECTED_SIGNAL');
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
   it.each([
     ['pid', 'owned', false, false],
     ['pid', 'foreign', false, true],

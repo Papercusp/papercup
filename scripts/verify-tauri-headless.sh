@@ -1490,6 +1490,14 @@ stop_verify_process() {
   local pid="$1" ticks="$2" provenance="$3" attempt
   [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] || return 0
   [ -d "/proc/$pid" ] || return 0
+  # An exited child may remain in its group until its parent waits. Its
+  # environment is then empty, so check same-incarnation exit before ownership.
+  # A stale start time still cannot authorize a live process or a signal.
+  if [ -n "$ticks" ] &&
+     [ "$(frozen_source_process_start_ticks "$pid" 2>/dev/null)" = "$ticks" ] &&
+     frozen_source_process_gone "$pid" "$ticks"; then
+    return 0
+  fi
   if ! frozen_source_process_identity_matches "$pid" "$ticks" "$provenance"; then
     echo "VERIFY_PROCESS_UNVERIFIED pid=$pid; preserving teardown evidence" >&2
     return 1
@@ -3464,21 +3472,16 @@ teardown() {
     vh_step assertion-artifact-retention
   fi
   vh_capture_phase_stop
-  vh_exit "$ec"   # record the open phase (failed unless ec=0) + HARNESS_RESULT; never changes ec
-  # finalize returns 1 for a faithfully retained failing verdict; only 2+
-  # signals a finalization error. A test failure must not masquerade as lost proof.
-  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ "${VH_FINISH_RC:-2}" -gt 1 ]; then
-    artifacts_retained=0
-    [ "$ec" -ne 0 ] || ec=1
-    log "FATAL: pinned verifier completion evidence was not retained; preserving source at $OPERATOR_SOURCE_ROOT"
-  fi
   log "tearing down (exit=$ec)"
   capture_isolated_pg_diagnostics
   write_stop_script
-  "$WORK/stop.sh" >/dev/null 2>&1 || stop_rc=$?
+  "$WORK/stop.sh" >"$WORK/stop.log" 2>&1 || stop_rc=$?
   if [ "$stop_rc" -ne 0 ]; then
     [ "$ec" -ne 0 ] || ec=1
+    artifacts_retained=0
+    vh_step generated-stop-script
     log "FATAL: generated stop script failed (exit=$stop_rc)"
+    tail -n 40 "$WORK/stop.log" >&2
   fi
   # EI-211769: the dev bridge writes a per-PID authentication token in the
   # runtime temp directory (the same os.tmpdir()/std::env::temp_dir contract
@@ -3516,12 +3519,21 @@ teardown() {
   if [ "$artifacts_retained" -eq 1 ]; then
     cleanup_operator_source_snapshot || {
       [ "$ec" -ne 0 ] || ec=1
+      vh_step frozen-source-cleanup
       log "FATAL: could not safely clean frozen operator source; preserving it"
     }
   else
     release_verifier_disk_reservations
   fi
   cleanup_assertion_script_snapshot
+  # A terminal PASS includes teardown. Finalizing before stop.sh or source
+  # cleanup produces a false green result when either later returns nonzero.
+  vh_exit "$ec"
+  # A retained failing verdict returns 1; 2+ means evidence finalization failed.
+  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ "${VH_FINISH_RC:-2}" -gt 1 ]; then
+    [ "$ec" -ne 0 ] || ec=1
+    log "FATAL: pinned verifier completion evidence was not retained; work logs remain at $WORK"
+  fi
   cleanup_verifier_source_snapshot
   exit "$ec"
 }
