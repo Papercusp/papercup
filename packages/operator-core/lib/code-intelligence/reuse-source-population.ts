@@ -5,8 +5,10 @@ import { execFile, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
+import { getHeapStatistics } from 'node:v8';
 import { CloneIndex } from './clone-index';
-import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
+import { buildSymbolSnapshot, isSymbolSnapshotSourcePath, parseSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import { eligibleHistoryPath } from './history-path';
 import type { ReuseMetricPopulation } from './reuse-measurement';
 
@@ -26,6 +28,151 @@ const lowerBound = (values: readonly number[], value: number): number => {
 
 export type ReuseSourcePhase = 'source-tree' | 'source-capture' | 'source-diff' | 'source-clones' | 'source-calls';
 
+type ParsedSymbols = ReturnType<typeof parseSymbolSnapshot>;
+export const REUSE_PARSER_OLD_SPACE_MB = 1024;
+export const REUSE_PARENT_OLD_SPACE_MB = 1024;
+
+/** Fixed, finite parser pool inside the already supervised worker process.
+ * A partition extracts syntax only; global resolution happens after ordered merge.
+ */
+export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, workerPath: string,
+  observeLimits?: (limits: Record<string, unknown>) => void): Promise<ParsedSymbols> {
+  // V8 carries the parent's effective CLI heap flag into new isolates even
+  // when execArgv is cleared. Equal 1024 MiB limits keep all three old spaces
+  // within the existing 3072 MiB envelope. Young space is separate from it.
+  if (!process.execArgv.includes(`--max-old-space-size=${REUSE_PARENT_OLD_SPACE_MB}`)
+    || getHeapStatistics().heap_size_limit > (REUSE_PARENT_OLD_SPACE_MB + 192) * 1024 * 1024)
+    throw new Error('Source parser parent exceeds its effective heap envelope');
+  const files = [...sourceFiles.keys()];
+  const parts: ParsedSymbols[] = [];
+  const workers: Worker[] = [];
+  const batchSize = 512, count = Math.ceil(files.length / batchSize);
+  let next = 0;
+  try {
+    await Promise.all(Array.from({ length: Math.min(2, count) }, async () => {
+      const worker = new Worker(workerPath, {
+        workerData: { kind: 'reuse-symbol-parse', sourceFiles: [...sourceFiles] },
+        // The effective inherited CLI cap equals this isolate's explicit cap.
+        // Do not add a larger flag through execArgv or NODE_OPTIONS.
+        execArgv: workerPath.endsWith('.ts') ? ['--import', 'tsx'] : [],
+        env: { ...process.env, NODE_OPTIONS: '' },
+        resourceLimits: { maxOldGenerationSizeMb: REUSE_PARSER_OLD_SPACE_MB, maxYoungGenerationSizeMb: 16 },
+      });
+      workers.push(worker);
+      let pending: { resolve: (value: any) => void; reject: (error: Error) => void } | undefined;
+      let failed: Error | undefined;
+      const received = () => new Promise<any>((resolve, reject) => {
+        if (failed) reject(failed); else pending = { resolve, reject };
+      });
+      worker.on('message', value => { const waiter = pending; pending = undefined; waiter?.resolve(value); });
+      const fail = (error: Error) => { failed = error; pending?.reject(error); pending = undefined; };
+      worker.on('error', fail);
+      worker.on('exit', code => fail(new Error(`Source parser exited before completion (${code})`)));
+      const ready = await received();
+      if (ready?.kind !== 'ready' || ready.oldSpaceMb !== REUSE_PARSER_OLD_SPACE_MB
+        || ready.heapLimitMb > REUSE_PARSER_OLD_SPACE_MB + 32 || ready.execArgv.some((x: string) => /max[-_]old[-_]space/i.test(x)))
+        throw new Error('Source parser effective heap limit unavailable');
+      observeLimits?.(ready);
+      while (next < count) {
+        const index = next++, batch = files.slice(index * batchSize, (index + 1) * batchSize);
+        const response = received();
+        worker.postMessage({ index, files: batch });
+        const result = await response;
+        if (result?.index !== index || !result.parsed || result.error) throw new Error(result?.error ?? 'Incomplete source parser partition');
+        const parsed = result.parsed as ParsedSymbols;
+        // Keep the complete source batch and resolver population. The serial
+        // parser deliberately ignores maintained exclusions within that batch.
+        const eligible = new Set(batch.filter(isSymbolSnapshotSourcePath));
+        if (!(parsed.units instanceof Map) || !(parsed.symbols instanceof Map)
+          || parsed.stats.files + parsed.stats.skippedFiles !== eligible.size
+          || [...parsed.units.keys()].some(path => !eligible.has(path))) throw new Error('Invalid source parser partition');
+        parts[index] = parsed;
+        observeLimits?.({ kind: 'partition', index });
+      }
+    }));
+    const merged: ParsedSymbols = { units: new Map(), symbols: new Map(), immediateCalls: [],
+      stats: { files: 0, skippedFiles: 0, unresolvedCalls: 0, resolvedCalls: 0, truncated: false } };
+    for (let index = 0; index < count; index++) {
+      const part = parts[index];
+      if (!part) throw new Error('Missing source parser partition');
+      for (const [path, unit] of part.units) {
+        if (merged.units.has(path)) throw new Error('Duplicate source parser identity');
+        merged.units.set(path, unit);
+      }
+      for (const [id, symbol] of part.symbols) {
+        if (merged.symbols.has(id)) throw new Error('Duplicate source parser symbol');
+        merged.symbols.set(id, symbol);
+      }
+      for (const call of part.immediateCalls) merged.immediateCalls.push(call);
+      merged.stats.files += part.stats.files; merged.stats.skippedFiles += part.stats.skippedFiles;
+      merged.stats.unresolvedCalls += part.stats.unresolvedCalls;
+    }
+    return merged;
+  } finally { await Promise.all(workers.map(worker => worker.terminate())); }
+}
+
+type CallCensusSink = (call: { path: string; line: number; column: number }, targetPath: string | null, index: number) => void;
+export const REUSE_CALL_COLUMNS = 'reuse-call-columns-v1';
+interface ReuseCallColumns {
+  encoding: typeof REUSE_CALL_COLUMNS;
+  paths: string[];
+  blocks: Uint32Array[];
+  count: number;
+}
+
+/** Lossless transport on the existing finite-worker IPC channel. Intern paths,
+ * not call identities: each four-column row retains its exact site and target.
+ */
+export function createReuseCallColumns() {
+  const paths: string[] = [], pathIds = new Map<string, number>(), blocks: Uint32Array[] = [];
+  let count = 0, block = new Uint32Array(16_384 * 4), used = 0;
+  const pathId = (path: string) => {
+    if (!path) throw new Error('Invalid call census path');
+    let id = pathIds.get(path);
+    if (id === undefined) { id = paths.length; paths.push(path); pathIds.set(path, id); }
+    return id;
+  };
+  const sink: CallCensusSink = (call, targetPath, index) => {
+    if (index !== count || ![call.line, call.column].every(n => Number.isSafeInteger(n) && n > 0 && n <= 0xffffffff))
+      throw new Error('Invalid call census site');
+    if (used === block.length) { blocks.push(block); block = new Uint32Array(16_384 * 4); used = 0; }
+    block[used++] = pathId(call.path);
+    block[used++] = targetPath === null ? 0 : pathId(targetPath) + 1;
+    block[used++] = call.line; block[used++] = call.column; count++;
+  };
+  return { sink, finish: (): ReuseCallColumns => ({ encoding: REUSE_CALL_COLUMNS, paths,
+    blocks: used ? [...blocks, block.slice(0, used)] : blocks, count }) };
+}
+
+/** Decode in small yielding batches; syntax collection still runs exclusively
+ * off-thread. A malformed or incomplete transport stays an error, never zero.
+ */
+export async function decodeReuseCallColumns(value: unknown): Promise<ReuseMetricPopulation['calls']> {
+  const data = value as ReuseCallColumns | null;
+  const invalid = () => new Error('Invalid call census columns');
+  if (!data || data.encoding !== REUSE_CALL_COLUMNS || !Array.isArray(data.paths)
+    || data.paths.some(path => typeof path !== 'string' || !path)
+    || new Set(data.paths).size !== data.paths.length || !Array.isArray(data.blocks)
+    || !Number.isSafeInteger(data.count) || data.count < 0) throw invalid();
+  let count = 0;
+  for (const block of data.blocks) {
+    if (!(block instanceof Uint32Array) || block.length === 0 || block.length % 4 || block.length > 16_384 * 4) throw invalid();
+    count += block.length / 4;
+  }
+  if (count !== data.count) throw invalid();
+  const calls: Array<ReuseMetricPopulation['calls'][number]> = [];
+  for (const block of data.blocks) {
+    for (let i = 0; i < block.length; i += 4) {
+      const from = data.paths[block[i]!], target = block[i + 1]!, line = block[i + 2]!, column = block[i + 3]!;
+      if (from === undefined || target > data.paths.length || !line || !column) throw invalid();
+      calls.push({ id: `${from}:${line}:${column}:${calls.length}`, from,
+        to: target ? data.paths[target - 1]! : null, resolved: target !== 0 });
+    }
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  return calls;
+}
+
 /** Exact source population plus net added line identities, never a saved ratio.
  * Reuse the maintained clone floor/normalization and syntax-bound call resolver.
  * Non-JS/TS additions or unavailable clone sources keep redundancy unknown.
@@ -35,6 +182,8 @@ export function buildReuseSourcePopulation(input: {
   complete: boolean;
   binaryChangedPaths?: readonly string[];
   onProgress?: (phase: ReuseSourcePhase) => void;
+  callCensusSink?: CallCensusSink;
+  parsedSymbols?: ParsedSymbols;
 } & ({ sources: readonly { path: string; source: string }[] } | {
   sourcePaths: readonly string[];
   readSource: (path: string) => string;
@@ -78,7 +227,8 @@ export function buildReuseSourcePopulation(input: {
   const files = paths.filter(path => /\.[cm]?[jt]sx?$/.test(path)), fileSet = new Set(files);
   input.onProgress?.('source-calls');
   const snapshot = buildSymbolSnapshot({ files, readSource,
-    resolveModule: (path, specifier) => relativeSymbolModule(path, specifier, fileSet), censusOnly: true });
+    resolveModule: (path, specifier) => relativeSymbolModule(path, specifier, fileSet), censusOnly: true,
+    callCensusSink: input.callCensusSink, parsed: input.parsedSymbols });
   return { addedNonGeneratedLines: binary ? null : [...added.values()].reduce((n, lines) => n + lines.length, 0),
     duplicateAddedLines: binary ? null : duplicated.size,
     lineCensusComplete: !binary && input.complete && index.getFiles().every(file => file.status === 'indexed' || file.status === 'excluded')
@@ -98,7 +248,8 @@ export function buildReuseSourcePopulation(input: {
  * explicit unknowns here; no submodule's mutable checkout is substituted.
  */
 export async function collectReuseSourcePopulation(root: string, start: string, end: string, captureRoot = tmpdir(),
-  onProgress?: (phase: ReuseSourcePhase) => void) {
+  onProgress?: (phase: ReuseSourcePhase, parserLimits?: Record<string, unknown>) => void, callCensusSink?: CallCensusSink,
+  parserWorkerPath?: string) {
   if (time(start) >= time(end)) throw new Error('Valid half-open source window required');
   onProgress?.('source-tree');
   const gitBytes = (args: string[], input?: string) => new Promise<Buffer>((resolve, reject) => {
@@ -125,7 +276,11 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
   // time by both maintained indexes; no checkout or durable store is created.
   const capture = mkdtempSync(join(captureRoot, 'reuse-source-capture-'));
   const sourceFiles = new Map<string, string>();
+  let capturePending: Promise<Error | null> | undefined;
   try {
+    // Blob capture and immutable diff collection are independent. Settle the
+    // capture before cleanup on either path; no writer may outlive its spill.
+    capturePending = (async () => {
     onProgress?.('source-capture');
     // Bound each chunk by bytes as well as identities. Sixteen small files per
     // process spent most of the finite worker budget repeatedly starting Git.
@@ -151,16 +306,35 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
         offset = endHeader + 2 + size;
       }
     }
+    })().then(() => null, error => error instanceof Error ? error : new Error(String(error)));
     onProgress?.('source-diff');
-    const rawChanges = (await git(['diff', '--raw', '-z', '--no-renames', base, commit])).split('\0');
+    const rawChanges = (await git(['diff', '--raw', '-z', '--no-abbrev', '--no-renames', base, commit])).split('\0');
     const changes = new Map<string, string>();
+    const oldBlobs = new Map<string, string>();
     for (let i = 0; i < rawChanges.length - 1; i += 2) {
-      const status = /^:\d{6} \d{6} [0-9a-f]+ [0-9a-f]+ ([A-Z])$/.exec(rawChanges[i]!);
+      const status = /^:(\d{6}) \d{6} ([0-9a-f]{40}) [0-9a-f]{40} ([A-Z])$/.exec(rawChanges[i]!);
       const path = rawChanges[i + 1]!;
       if (!status || !path) throw new Error('Incomplete Git diff identity population');
-      if (eligibleHistoryPath(path)) changes.set(path, status[1]!);
+      if (eligibleHistoryPath(path)) {
+        changes.set(path, status[3]!);
+        if (/^100(?:644|755)$/.test(status[1]!)) oldBlobs.set(path, status[2]!);
+      }
     }
     const paths = [...changes.keys()];
+    const blobSizes = new Map<string, number>();
+    const oldIds = [...new Set(oldBlobs.values())];
+    if (oldIds.length) {
+      const sizes = (await git(['cat-file', '--batch-check'], oldIds.join('\n') + '\n')).trim().split('\n');
+      for (const line of sizes) {
+        const [blob, kind, rawSize] = line.split(' '), size = Number(rawSize);
+        if (kind !== 'blob' || !Number.isSafeInteger(size) || size < 0)
+          throw new Error('Incomplete Git diff blob sizes');
+        blobSizes.set(blob!, size);
+      }
+      if (blobSizes.size !== oldIds.length || oldIds.some(blob => !blobSizes.has(blob)))
+        throw new Error('Incomplete Git diff blob sizes');
+    }
+    const newSizes = new Map(tree.filter(entry => entry.kind === 'blob').map(entry => [entry.path, entry.size]));
     const addedLines: Record<string, number[]> = {};
     const binaryChangedPaths: string[] = [];
     // NUL-delimited raw identities and their patches are emitted in the same
@@ -174,7 +348,7 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
           const child = spawn('git', ['--literal-pathspecs', '-C', root, 'diff', '--no-ext-diff', '--no-textconv',
             '--no-renames', '--unified=0', '--raw', '-z', '--patch', base, commit, '--', ...batch],
           { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', 'pipe', 'ignore'] });
-          const empty = Buffer.alloc(0);
+          const empty: Buffer = Buffer.alloc(0);
           let failure: Error | null = null, bytes = 0, prefix: Buffer | null = empty, line = empty, patch = -1, skipped = false;
           let identities: string[] = [];
           const hunks: number[][] = [];
@@ -270,9 +444,20 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
         else modified.set(path, count);
       }
       if (seen.size !== batch.length) throw new Error('Incomplete Git diff identity population');
-      // Numstat is compact; only modified textual patches need small batches.
-      const modifiedPaths = [...modified.keys()];
-      const chunks = Array.from({ length: Math.ceil(modifiedPaths.length / 128) }, (_, i) => modifiedPaths.slice(i * 128, (i + 1) * 128));
+      // Large modified report bodies repeatedly overflowed path-count-only
+      // batches, paying for the same diff again at each recursive split. Size
+      // batches with immutable old/new blobs; the actual output bound and its
+      // split fallback still protect against patch-heading/line-prefix growth.
+      const chunks: string[][] = [];
+      let chunk: string[] = [], bytes = 0;
+      for (const path of modified.keys()) {
+        const estimate = (blobSizes.get(oldBlobs.get(path)!) ?? 0) + (newSizes.get(path) ?? 0) + 4096;
+        if (chunk.length && (chunk.length >= 128 || bytes + estimate > 32 * 1024 * 1024)) {
+          chunks.push(chunk); chunk = []; bytes = 0;
+        }
+        chunk.push(path); bytes += estimate;
+      }
+      if (chunk.length) chunks.push(chunk);
       for (const chunk of chunks) await readDiffs(chunk, modified);
     };
     // Preserve the exact eligible path set while avoiding both repeated tree
@@ -295,9 +480,17 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
     if (failed?.status === 'rejected') throw failed.reason;
     // Concurrent completion order must not change the population identity.
     const orderedAddedLines = Object.fromEntries(paths.filter(path => addedLines[path]).map(path => [path, addedLines[path]!]));
+    const captureFailure = await capturePending;
+    if (captureFailure) throw captureFailure;
+    let parsedSymbols: ParsedSymbols | undefined;
+    if (parserWorkerPath && sourceFiles.size > 512) {
+      onProgress?.('source-calls');
+      parsedSymbols = await parseReuseSourceSymbols(sourceFiles, parserWorkerPath,
+        limits => onProgress?.('source-calls', limits));
+    }
     const population = buildReuseSourcePopulation({ sourcePaths: [...sourceFiles.keys()],
       readSource: path => readFileSync(sourceFiles.get(path)!, 'utf8'),
-      addedLines: orderedAddedLines, complete: !tree.some(s => s.kind === 'commit'), binaryChangedPaths, onProgress });
+      addedLines: orderedAddedLines, complete: !tree.some(s => s.kind === 'commit'), binaryChangedPaths, onProgress, callCensusSink, parsedSymbols });
     return { ...population,
       addedNonGeneratedLines: binaryChangedPaths.length ? null : population.addedNonGeneratedLines,
       duplicateAddedLines: binaryChangedPaths.length ? null : population.duplicateAddedLines,
@@ -305,5 +498,5 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
       method: { ...population.method,
         ...(binaryChangedPaths.length ? { binaryChangedPaths: binaryChangedPaths.sort() } : {}) },
       sourceRefs: [`git:${base}`, `git:${commit}`], base, commit };
-  } finally { rmSync(capture, { recursive: true, force: true }); }
+  } finally { await capturePending; rmSync(capture, { recursive: true, force: true }); }
 }

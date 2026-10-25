@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
+import { buildSymbolSnapshot, parseSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
+import { createReuseCallColumns, decodeReuseCallColumns } from './reuse-source-population';
 
 function build(sources: Record<string, string>) {
   const files = Object.keys(sources);
@@ -7,7 +8,28 @@ function build(sources: Record<string, string>) {
     resolveModule: (file: string, spec: string) => relativeSymbolModule(file, spec, new Set(files)) });
 }
 describe('precomputed symbol snapshot', () => {
-  it('keeps compact measurement calls and completeness identical to the full brief snapshot', () => {
+  it('resolves a merged parse only after cross-partition exports and cycles are complete', () => {
+    const sources: Record<string, string> = {
+      'a.ts': 'import { alias } from "./barrel"; alias(); new (factory())();',
+      'barrel.ts': 'export { target as alias } from "./target"; export * from "./cycle";',
+      'cycle.ts': 'export * from "./barrel";',
+      'target.ts': 'export function target() {} target();',
+      'z.ts': 'new (unknown())();',
+      'invalid.ts': 'function broken(',
+    };
+    const files = Object.keys(sources), fileSet = new Set(files);
+    const input = { files, readSource: (path: string) => sources[path] ?? null,
+      resolveModule: (path: string, spec: string) => relativeSymbolModule(path, spec, fileSet), censusOnly: true };
+    const serial = buildSymbolSnapshot(input);
+    const parts = [files.slice(0, 2), files.slice(2)].map(batch => parseSymbolSnapshot({ ...input, files: batch }));
+    const parsed = { units: new Map(parts.flatMap(p => [...p.units])), symbols: new Map(parts.flatMap(p => [...p.symbols])),
+      immediateCalls: parts.flatMap(p => p.immediateCalls), stats: { ...parts[0]!.stats } };
+    for (const part of parts.slice(1)) for (const key of ['files', 'skippedFiles', 'unresolvedCalls'] as const) parsed.stats[key] += part.stats[key];
+    expect(buildSymbolSnapshot({ ...input, parsed })).toEqual(serial);
+    expect(serial.callCensus).toContainEqual(expect.objectContaining({ from: 'a.ts', to: 'target.ts', resolved: true }));
+    expect(serial.stats.skippedFiles).toBe(1);
+  });
+  it('keeps compact measurement calls and completeness identical to the full brief snapshot', async () => {
     const sources: Record<string, string> = {
       'target.ts': 'export function target() {}\nfunction privateTarget() {} privateTarget();',
       'barrel.ts': 'export { target as renamed } from "./target";',
@@ -15,6 +37,7 @@ describe('precomputed symbol snapshot', () => {
       'namespace.ts': 'import * as ns from "./target"; ns.target();',
       'shadow.ts': 'import { target } from "./target"; function run(target: any) { target(); } target();',
       'invalid.ts': 'export function broken(',
+      'positions.ts': 'import { target } from "./target";\n/* leading trivia */ target();\nnew (factory())();',
     };
     const files = Object.keys(sources), fileSet = new Set(files);
     const input = { files, readSource: (path: string) => sources[path] ?? null,
@@ -27,6 +50,14 @@ describe('precomputed symbol snapshot', () => {
     expect(compact.stats.skippedFiles).toBe(1);
     expect(compact.knowledge).toEqual(full.knowledge);
     expect(compact.limitations).toEqual(full.limitations);
+    const columns = createReuseCallColumns();
+    const packed = buildSymbolSnapshot({ ...input, censusOnly: true, callCensusSink: columns.sink });
+    expect(packed.callCensus).toEqual([]);
+    expect(packed.stats).toEqual(full.stats);
+    expect(await decodeReuseCallColumns(columns.finish())).toEqual(full.callCensus);
+    expect(compact.callCensus).toContainEqual(expect.objectContaining({
+      id: expect.stringMatching(/^positions\.ts:2:22:/), from: 'positions.ts', to: 'target.ts', resolved: true,
+    }));
   });
   it('preserves the existing caller cap as incomplete in compact measurement mode', () => {
     const text = 'export function target() {}\n' + 'target();\n'.repeat(501);

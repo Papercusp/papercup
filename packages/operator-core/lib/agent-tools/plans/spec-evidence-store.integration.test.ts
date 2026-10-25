@@ -3301,6 +3301,22 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['selected case'] },
     });
     expect(accepted).toMatchObject({ ok: true, status: 'created' });
+    const acceptedEvidence = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      evidenceRefs: [DERIVE_TEST],
+    });
+    const acceptedBinding = acceptedEvidence.find((row) => row.testRunId === runId);
+    expect(acceptedBinding).toBeDefined();
+    const storedTestCases = (acceptedBinding!.details as { adequacy: { testCases: string[] } }).adequacy.testCases;
+    expect(storedTestCases).toEqual(['outer > suite > selected case']);
+    const { mutationMeasuredFailedCase } = await import('./spec-test-adequacy');
+    const measuredMutation = {
+      testRunProvenance: { mutationFailedCaseTitles: ['outer > suite > selected case'] },
+    } as never;
+    expect(mutationMeasuredFailedCase(measuredMutation, storedTestCases[0])).toBe(true);
+    expect(mutationMeasuredFailedCase(measuredMutation, 'selected case')).toBe(false);
 
     const rejected = await bindFromRun(runId, 'WI-102', {
       adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['case from another file'] },
@@ -3345,6 +3361,8 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       passedCaseTitlesIncomplete: true,
     });
     expect(incompleteEvidence[0]?.testRunExecution?.passedCaseTitles).toHaveLength(64);
+    expect((incompleteEvidence[0]?.details as { adequacy: { testCases: string[] } }).adequacy.testCases)
+      .toEqual(['case omitted from title cap']);
   });
 
   it('resolves declared cases against the per-case ledger, closing the title-cap bypass (P-002 / R-2)', async () => {
@@ -3375,6 +3393,14 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['case beyond the title cap'] },
     });
     expect(beyondCap).toMatchObject({ ok: true, status: 'created' });
+    const beyondCapEvidence = (await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      evidenceRefs: [DERIVE_TEST],
+    })).find((row) => row.testRunId === runId);
+    expect((beyondCapEvidence?.details as { adequacy: { testCases: string[] } }).adequacy.testCases)
+      .toEqual(['outer > case beyond the title cap']);
 
     // A declared case the run never executed is refused, even though the capped title list
     // could not have proved it absent — and even beside a declared case that DID match.
@@ -3402,6 +3428,106 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
         evidenceRefs: [DERIVE_TEST],
       }),
     ).toEqual([]);
+  });
+
+  it('refuses ambiguous suffixes from authoritative title sources while preferring exact identities', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const exactTitle = 'outer > suite alpha > selected case';
+    const nestedTitle = `legacy > ${exactTitle}`;
+    const titles = [exactTitle, nestedTitle];
+    const runId = await recordRun();
+    await setRunExecutionDetails(runId, {
+      schemaVersion: 1,
+      root: h.repoRoot,
+      filePath: DERIVE_TEST,
+      runGroupId: null,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      testNamePattern: null,
+      passed: titles.length,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'c0ffee1234567890',
+      worktreeDirty: false,
+      testLayer: 'integration',
+      passedCaseTitles: titles,
+    });
+
+    const exact = await bindFromRun(runId, 'WI-101', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: [exactTitle] },
+    });
+    expect(exact).toMatchObject({ ok: true, status: 'created' });
+    const exactEvidence = (await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      evidenceRefs: [DERIVE_TEST],
+    })).find((row) => row.testRunId === runId);
+    expect((exactEvidence?.details as { adequacy: { testCases: string[] } }).adequacy.testCases).toEqual([exactTitle]);
+
+    const ambiguousTitleList = await bindFromRun(runId, 'WI-102', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['selected case'] },
+    });
+    expect(ambiguousTitleList).toMatchObject({
+      ok: false,
+      error: 'test_cases_ambiguous_in_run',
+      status: 'test_cases_ambiguous_in_run',
+      testRunId: runId,
+      declaredCaseCount: 1,
+      source: 'passed-case-titles',
+      ambiguousTestCases: [{ testCase: 'selected case', matchingCaseTitles: titles }],
+    });
+    expect(await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-102'],
+      evidenceRefs: [DERIVE_TEST],
+    })).toEqual([]);
+
+    const ledgerRunId = await recordRun();
+    await setRunExecutionDetails(ledgerRunId, {
+      schemaVersion: 1,
+      root: h.repoRoot,
+      filePath: DERIVE_TEST,
+      runGroupId: null,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      testNamePattern: null,
+      passed: titles.length,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'c0ffee1234567890',
+      worktreeDirty: false,
+      testLayer: 'integration',
+      passedCaseTitles: titles,
+    });
+    for (const [index, caseKey] of titles.entries()) {
+      await db.sql`INSERT INTO harness_shared.test_case_runs (test_run_id, case_index, case_key, status, duration_ms)
+        VALUES (${ledgerRunId}, ${index}, ${caseKey}, 'pass', 3)`;
+    }
+    const ambiguousLedger = await bindFromRun(ledgerRunId, 'WI-101', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['selected case'] },
+    });
+    expect(ambiguousLedger).toMatchObject({
+      ok: false,
+      error: 'test_cases_ambiguous_in_run',
+      status: 'test_cases_ambiguous_in_run',
+      testRunId: ledgerRunId,
+      declaredCaseCount: 1,
+      source: 'case-ledger',
+      ambiguousTestCases: [{ testCase: 'selected case', matchingCaseTitles: titles }],
+    });
+    const ledgerEvidence = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      evidenceRefs: [DERIVE_TEST],
+    });
+    expect(ledgerEvidence.filter((row) => row.testRunId === ledgerRunId)).toEqual([]);
   });
 
   it('refuses mutation adequacy cases that contradict the measured failed mutant case', async () => {

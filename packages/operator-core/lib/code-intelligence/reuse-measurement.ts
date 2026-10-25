@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import type { Sql } from 'postgres';
 import { wilsonInterval } from '@papercusp/bench-metrics';
 import { canonicalPushActivityTool, pushActivityRepoPath, shellSearchPatterns } from './native-adoption';
-import { collectReuseSourcePopulation } from './reuse-source-population';
+import { collectReuseSourcePopulation, decodeReuseCallColumns, REUSE_CALL_COLUMNS, REUSE_PARENT_OLD_SPACE_MB } from './reuse-source-population';
 export { buildReuseSourcePopulation, collectReuseSourcePopulation } from './reuse-source-population';
 
 export const REUSE_OBSERVATION_MS = 30 * 60_000;
@@ -215,17 +215,19 @@ export async function collectReuseSourcePopulationOffthread(root: string, start:
   options: import('./first-party-callers-offthread').FirstPartyCallersRunOptions = {}) {
   const { codeIntelWorkerRequest } = await import('./first-party-callers-offthread');
   type Reply = { kind: 'reuse-source-population'; ok: boolean;
-    population?: Awaited<ReturnType<typeof collectReuseSourcePopulation>>; error?: string };
+    population?: Awaited<ReturnType<typeof collectReuseSourcePopulation>>; packedCalls?: unknown; error?: string };
   // The supervising process owns the spill root: even a killed or timed-out
   // worker cannot strand its immutable captures outside the worker lifetime.
   const captureRoot = mkdtempSync(join(tmpdir(), 'reuse-source-worker-'));
   try {
-    const result = await codeIntelWorkerRequest<Reply>({ kind: 'reuse-source-population', root, start, end, captureRoot }, {
+    const result = await codeIntelWorkerRequest<Reply>({ kind: 'reuse-source-population', root, start, end, captureRoot,
+      callCensusEncoding: REUSE_CALL_COLUMNS }, {
       accept: (value: unknown): value is Reply => typeof value === 'object' && value !== null
         && (value as Reply).kind === 'reuse-source-population' && typeof (value as Reply).ok === 'boolean',
       fail: error => ({ kind: 'reuse-source-population', ok: false, error }),
-    }, { sourceLoader: true, ...options });
+    }, { sourceLoader: true, ...options, heapMb: Math.min(options.heapMb ?? REUSE_PARENT_OLD_SPACE_MB, REUSE_PARENT_OLD_SPACE_MB) });
     if (!result.ok || !result.population) throw new Error(result.error ?? 'Worker source population unavailable');
+    result.population.calls = await decodeReuseCallColumns(result.packedCalls);
     return result.population;
   } finally { rmSync(captureRoot, { recursive: true, force: true }); }
 }

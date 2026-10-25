@@ -24,8 +24,12 @@ const resourceAcquire = vi.hoisted(() => vi.fn());
 const resourceRelease = vi.hoisted(() => vi.fn());
 vi.mock('../locks/su-lock-store', async (original) => ({
   ...(await original<typeof import('../locks/su-lock-store')>()),
-  tryAcquireResource: (...args: unknown[]) => resourceAcquire(...args),
-  tryReleaseResource: (...args: unknown[]) => resourceRelease(...args),
+  acquireSharedResourceAtomic: (...args: unknown[]) => resourceAcquire(...args),
+  releaseSharedResourceAtomic: (...args: unknown[]) => resourceRelease(...args),
+  readResourceQueue: async () => ({
+    holders: [{ owner: 'restart-owner', owner_label: 'restart', mode: 'exclusive', status: 'held' }],
+    draining: false,
+  }),
 }));
 vi.mock('../locks/in-workspace-txn', () => ({
   inWorkspaceTxn: async (_domain: string, _owner: string, run: (tx: unknown) => Promise<unknown>) => run({}),
@@ -336,11 +340,11 @@ beforeEach(async () => {
   h.leaseHeld = false;
   resourceAcquire.mockReset().mockImplementation(async () => {
     h.leaseHeld = true;
-    return { ok: true, lock_id: 'certification-lease', fence_seq: 0, reused: false };
+    return { ok: true, lock_id: 'certification-lease', expires_ts: new Date(Date.now() + 60_000), reused: false };
   });
   resourceRelease.mockReset().mockImplementation(async () => {
     h.leaseHeld = false;
-    return { ok: true, waiters: {} };
+    return { released: 1, expired: false };
   });
   completionGate.mockResolvedValue({ ok: true, applicable: true, checked: ['SPEC-PASS@1'] });
   h.planSlug = PLAN;
@@ -546,15 +550,14 @@ describe('plans:certify-spec-clauses', () => {
 
       expect(result.counts, JSON.stringify(result)).toMatchObject({ filed: 2, refused: 0 });
       expect(resourceAcquire).toHaveBeenCalledOnce();
-      expect(resourceAcquire).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      expect(resourceAcquire).toHaveBeenCalledWith(expect.objectContaining({
         coordinationDomain: 'papercusp-host-global',
         resource: 'staging-server',
         owner: 'su-certifier',
-        mode: 'shared',
         ttlSec: (certifyTool.timeoutSec ?? 0) + 60,
       }));
       expect(resourceRelease).toHaveBeenCalledOnce();
-      expect(resourceRelease).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      expect(resourceRelease).toHaveBeenCalledWith(expect.objectContaining({
         owner: 'su-certifier', lockId: 'certification-lease',
       }));
       expect(h.leaseHeld).toBe(false);

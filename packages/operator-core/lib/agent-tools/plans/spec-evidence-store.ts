@@ -132,6 +132,50 @@ async function readRecordedTestCases(
   };
 }
 
+type UniqueMeasuredCaseTitle =
+  | { status: 'unmatched' }
+  | { status: 'unique'; title: string }
+  | { status: 'ambiguous'; matchingCaseTitles: string[] };
+
+/**
+ * Resolve the exact measured title to persist when a binding used a title suffix.
+ * An exact identity wins over longer titles of which it is also a suffix; otherwise
+ * a suffix is canonical only when it identifies one distinct measured title.
+ */
+function uniqueMeasuredCaseTitle(
+  testName: string,
+  matchedCaseTitles: readonly string[],
+): UniqueMeasuredCaseTitle {
+  if (matchedCaseTitles.length === 0) return { status: 'unmatched' };
+
+  const exactMatches = matchedCaseTitles.filter((title) => hasSameCaseTitleIdentity(testName, title));
+  const candidates = exactMatches.length > 0 ? exactMatches : matchedCaseTitles;
+  const distinctTitles: string[] = [];
+  for (const title of candidates) {
+    if (!distinctTitles.some((existing) => hasSameCaseTitleIdentity(existing, title))) {
+      distinctTitles.push(title);
+    }
+  }
+
+  return distinctTitles.length === 1
+    ? { status: 'unique', title: distinctTitles[0]! }
+    : { status: 'ambiguous', matchingCaseTitles: distinctTitles };
+}
+
+function ambiguousCaseTitlesMessage(
+  testRunId: number,
+  source: string,
+  ambiguousTestCases: Array<{ testCase: string; matchingCaseTitles: string[] }>,
+): string {
+  const rendered = ambiguousTestCases
+    .map(({ testCase, matchingCaseTitles }) =>
+      `${JSON.stringify(testCase)} -> ${matchingCaseTitles.map((title) => JSON.stringify(title)).join(', ')}`)
+    .join('; ');
+  return `${ambiguousTestCases.length} declared details.adequacy.testCases entries resolve to multiple ` +
+    `distinct measured full case titles in ${source} for test-run ${testRunId} (${rendered}). ` +
+    `Bind the full title or a suffix unique in the recorded source.`;
+}
+
 async function hasLedgerProvenPassingSelection(
   row: EvidenceRow,
   execution: NonNullable<ReturnType<typeof parseTestRunExecutionDetails>>,
@@ -1638,6 +1682,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     let executionRuntimeFingerprint: string | null = null;
     const runtimeRecipe = measurementFromDetails(input.details ?? {});
     const runtimeUnits = runtimeRecipe?.runtimeUnits;
+    let canonicalizedTestCases: string[] | undefined;
     if (input.testRunId != null) {
       const rows = await tx<{ id: number; status: string | null; source: string | null; execution_details?: unknown }[]>`
         SELECT id, status, source, execution_details FROM harness_shared.test_runs
@@ -1724,16 +1769,25 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       }
       // P-002 / R-2: when the per-case ledger (migration 1478) recorded this run's cases,
       // EVERY declared case must resolve to an executed recorded case through the shared
-      // resolver. The capped passedCaseTitles list below could only check "at least one
-      // matched" and skipped the check entirely when the list was incomplete.
+      // resolver. Accepted suffixes are rewritten to their unique measured full title so
+      // later falsifiability checks compare the same case identity. The capped passedCaseTitles
+      // fallback below remains non-authoritative whenever the list is incomplete.
       let judgedByCaseLedger = false;
       if (input.evidenceKind === 'test' && declaredTestCases.length > 0) {
         const recordedCases = await readRecordedTestCases(tx, input.testRunId);
         if (recordedCases !== null) {
           judgedByCaseLedger = true;
-          const unmatched = declaredTestCases.filter(
-            (testName) => !resolveTestCaseFilter({ file: recordedCases.file, testName }, recordedCases.cases).ok,
-          );
+          const resolved = declaredTestCases.map((testName) => {
+            const filter = resolveTestCaseFilter({ file: recordedCases.file, testName }, recordedCases.cases);
+            return {
+              testName,
+              filter,
+              canonical: filter.ok
+                ? uniqueMeasuredCaseTitle(testName, filter.matched.map((testCase) => testCase.caseKey))
+                : { status: 'unmatched' as const },
+            };
+          });
+          const unmatched = resolved.filter(({ filter }) => !filter.ok).map(({ testName }) => testName);
           if (unmatched.length > 0) {
             return {
               status: 'test_cases_not_in_run',
@@ -1751,6 +1805,24 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
                 "suffix at a ' > ' boundary) or bind a run that executed it.",
             };
           }
+          const ambiguousTestCases = resolved.flatMap(({ testName, canonical }) =>
+            canonical.status === 'ambiguous'
+              ? [{ testCase: testName, matchingCaseTitles: canonical.matchingCaseTitles.slice(0, 5) }]
+              : [],
+          );
+          if (ambiguousTestCases.length > 0) {
+            return {
+              status: 'test_cases_ambiguous_in_run',
+              testRunId: input.testRunId,
+              declaredCaseCount: declaredTestCases.length,
+              source: 'case-ledger',
+              ambiguousTestCases,
+              message: ambiguousCaseTitlesMessage(input.testRunId, 'the case ledger', ambiguousTestCases),
+            };
+          }
+          canonicalizedTestCases = resolved.map(({ testName, canonical }) =>
+            canonical.status === 'unique' ? canonical.title : testName,
+          );
         }
       }
       if (
@@ -1766,22 +1838,55 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         parsedRunExecution.passed > 0 &&
         passedCaseTitles !== undefined &&
         passedCaseTitles.length === parsedRunExecution.passed &&
-        !passedCaseTitlesIncomplete(parsedRunExecution) &&
-        !declaredTestCases.some((title) => hasMatchingDeclaredCaseTitle(title, passedCaseTitles))
+        !passedCaseTitlesIncomplete(parsedRunExecution)
       ) {
-        return {
-          status: 'test_cases_not_in_run',
-          testRunId: input.testRunId,
-          declaredCaseCount: declaredTestCases.length,
-          passedCaseTitleCount: passedCaseTitles.length,
-          source: 'passed-case-titles',
-          message:
-            'none of the ' + declaredTestCases.length +
-            ' declared details.adequacy.testCases entries matched any of the ' +
-            passedCaseTitles.length + ' recorded passedCaseTitles in test-run ' + input.testRunId +
-            '. Bind a run that executed at least one claimed case or correct the case labels; ' +
-            "titles match exactly or by bare-case suffix after ' > '.",
-        };
+        const resolved = declaredTestCases.map((testName) => {
+          const matchingCaseTitles = passedCaseTitles.filter((title) =>
+            hasMatchingDeclaredCaseTitle(testName, [title]),
+          );
+          return {
+            testName,
+            matchingCaseTitles,
+            canonical: uniqueMeasuredCaseTitle(testName, matchingCaseTitles),
+          };
+        });
+        const unmatched = resolved
+          .filter(({ canonical }) => canonical.status === 'unmatched')
+          .map(({ testName }) => testName);
+        if (unmatched.length > 0) {
+          return {
+            status: 'test_cases_not_in_run',
+            testRunId: input.testRunId,
+            declaredCaseCount: declaredTestCases.length,
+            passedCaseTitleCount: passedCaseTitles.length,
+            source: 'passed-case-titles',
+            unmatchedTestCases: unmatched,
+            message:
+              unmatched.length + ' of ' + declaredTestCases.length +
+              ' declared details.adequacy.testCases entries matched no recorded passed case among the ' +
+              passedCaseTitles.length + ' complete passedCaseTitles in test-run ' + input.testRunId +
+              ' (' + unmatched.map((title) => JSON.stringify(title)).join(', ') +
+              '). Bind a run that executed each claimed case or correct the case labels.',
+          };
+        }
+        const ambiguousTestCases = resolved.flatMap(({ testName, canonical }) =>
+          canonical.status === 'ambiguous'
+            ? [{ testCase: testName, matchingCaseTitles: canonical.matchingCaseTitles.slice(0, 5) }]
+            : [],
+        );
+        if (ambiguousTestCases.length > 0) {
+          return {
+            status: 'test_cases_ambiguous_in_run',
+            testRunId: input.testRunId,
+            declaredCaseCount: declaredTestCases.length,
+            source: 'passed-case-titles',
+            ambiguousTestCases,
+            message: ambiguousCaseTitlesMessage(input.testRunId, 'the complete passed-case title list', ambiguousTestCases),
+          };
+        }
+        canonicalizedTestCases = resolved.map(({ testName, canonical }) =>
+          canonical.status === 'unique' ? canonical.title : testName,
+        );
       }
       if (runtimeUnits) {
         const execution = parsedRunExecution;
@@ -1877,6 +1982,15 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         : undefined;
 
     let details = (input.details ?? priorDetails ?? priorTestRunBinding?.details ?? {}) as Record<string, unknown>;
+    if (canonicalizedTestCases !== undefined) {
+      const rawAdequacy = details.adequacy;
+      if (rawAdequacy !== null && typeof rawAdequacy === 'object' && !Array.isArray(rawAdequacy)) {
+        details = {
+          ...details,
+          adequacy: { ...(rawAdequacy as Record<string, unknown>), testCases: canonicalizedTestCases },
+        };
+      }
+    }
     if (priorTestRunBinding) {
       const previousMeasurement = measurementFromDetails(priorTestRunBinding.details);
       const currentMeasurement = measurementFromDetails(details);
