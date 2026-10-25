@@ -692,6 +692,13 @@ NODE
 
 install_in_flight_preflight || exit $?
 
+# Refuse an unbound external candidate before allocating WORK or copying source.
+# The same helper rechecks and freezes these exact bytes during preparation.
+if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ -n "${PAPERCUSP_SHARED_SPA_DIST:-}" ]; then
+  node "$VERIFY_TAURI_SOURCE_REPO_DIR/scripts/lib/verify-tauri-native-env.mjs" \
+    --candidate-spa "$VERIFY_TAURI_SOURCE_REPO_DIR" || exit $?
+fi
+
 # The parent script can pass bash -n while its generated launcher passes a
 # literal backslash to env. Reject malformed heredoc continuations before
 # allocating a display, compiling the host, or preparing the isolated database.
@@ -2223,11 +2230,15 @@ smoke_verifier_operator_host() {
 prepare_verifier_spa() {
   VERIFIER_SPA_DIST=""
   [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] || return 0
-  # A committed archive has no ignored dist/. Never borrow the donor's bundle
-  # for a pinned source verdict: it can contain different UI bytes entirely.
+  # A qualified private portal candidate names its selected desktop commit and
+  # every output hash. Freeze only verified manifest bytes; generic donor dist
+  # overrides still fail closed before preparation.
   if [ -n "${PAPERCUSP_SHARED_SPA_DIST:-}" ]; then
-    echo 'VERIFY_TAURI_SPA_UNBOUND: a pinned run must build its frozen source, not select an external SPA' >&2
-    return 3
+    VERIFIER_SPA_DIST="$WORK/verifier-spa/dist"
+    node "$VERIFY_TAURI_SOURCE_REPO_DIR/scripts/lib/verify-tauri-native-env.mjs" \
+      --candidate-spa "$VERIFY_TAURI_SOURCE_REPO_DIR" "$VERIFIER_SPA_DIST" || return $?
+    log "qualified private candidate SPA frozen at $VERIFIER_SPA_DIST"
+    return 0
   fi
   local app="$OPERATOR_SOURCE_ROOT/apps/operator-vite"
   # Hardlinked source stays on the donor device; generated output belongs on
