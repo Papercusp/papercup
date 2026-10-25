@@ -403,6 +403,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'always',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: env.PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL,
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: env.PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: 1,
       PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
     });
     const replay = runProbeIO(record.argv, { ...env, PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'never',
@@ -416,6 +417,9 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
   it('records effective automatic export when the caller leaves it unset', () => {
     const result = runProbeIO(['--file', subject, '--mutate', 's/beta/BETA/', '--test', "grep -q '^beta$' {}"],
       { ...process.env, PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: undefined,
+        // This control measures automatic export with an unavailable reader;
+        // an explicit URL otherwise requires a bindable descriptor by default.
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0',
         PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:1/api/health' });
     expect(result.code, result.out).toBe(0);
     const record = JSON.parse(result.out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)![1]!);
@@ -441,7 +445,7 @@ process.stdout.write(${JSON.stringify(status + '\t0.125')});
 process.stderr.write('bounded reader diagnostic fixture');
 process.exit(${exit});
 `, { mode: 0o755 });
-    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}`,
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:3170/api/health',
       PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto' };
     if (readerRequired === null) delete env.PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED;
@@ -3360,6 +3364,47 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
       expect(out).toMatch(/scripts\/test-files\.mjs/);
       expect(out).toMatch(/reader lease outside bwrap/);
       expect(existsSync(join(hostState, 'slot.pid'))).toBe(false);
+    },
+  );
+
+  it.skipIf(!bwrapWorks).each(['mutant', 'historical'] as const)(
+    'EI-26951876523801680: refuses sandbox census failure in the %s leg even with assertion evidence',
+    mode => {
+      const sb = join(dir, 'sb');
+      const hostState = join(dir, 'host-state');
+      mkdirSync(sb);
+      mkdirSync(hostState);
+      // Both controls pass. Only the scored leg attempts the same real,
+      // out-of-sandbox mktemp that contaminated the original compiler probe.
+      // A reporter can still record an assertion about the wrong exception.
+      const guard = [
+        `if [ "$PAPERCUSP_MUTATION_PHASE" = '${mode}' ]; then`,
+        `census=$(mktemp '${hostState}/census.XXXXXX' 2>&1); census_rc=$?;`,
+        'printf "Received census failure: %s\\n" "$census";',
+        'echo "TEST_FILE_ASSERTION_FAILURE file=census.test.ts test=original-exception";',
+        '[ "$census_rc" -eq 0 ] && exit 71; exit 1; fi;',
+        'grep -q stable-control {}',
+      ].join(' ');
+      let args: string[];
+      if (mode === 'historical') {
+        const history = makeHistoricalRepo();
+        args = ['--file', history.file, '--against-commit', history.oldSha,
+          '--must-be-absent', 'NEW_GUARD', '--positive-control', 'stable-control',
+          '--calibration', 'grep -q stable-control {}'];
+      } else {
+        writeFileSync(subject, 'stable-control\nbeta\n');
+        args = ['--file', subject, '--mutate', 's/beta/BETA/'];
+      }
+      const { code, out } = runProbeIO([
+        ...args, '--i-know-this-deletes', '--sandbox-root', sb, '--test', guard,
+      ]);
+      expect(code, out).toBe(2);
+      expect(out).toContain('TEST_FILE_ASSERTION_FAILURE');
+      expect(out).toContain(['Read-only', 'file system'].join(' '));
+      expect(out).toContain('SANDBOX READ-ONLY WRITE');
+      expect(out).toMatch(new RegExp(`verdict=harness-error .*sandbox_readonly=yes phase=${mode}`));
+      expect(out).not.toMatch(/verdict=caught/);
+      expect(readdirSync(hostState)).toEqual([]);
     },
   );
 
