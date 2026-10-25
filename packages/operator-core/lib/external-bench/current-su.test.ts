@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
+import { claudeAttemptHeaders, makeBearerCredentialResolver } from '../inference-gateway/credential-store';
 import {
   currentBenchLaunchRequest, currentBenchRunLabel, currentBenchAttemptLabel, currentSuBenchHarnessDriver, currentStockBenchHarnessDriver,
   liveCurrentSuBenchPorts, recoverCurrentBenchRun, beginCurrentBenchNativeSession,
@@ -1186,6 +1186,28 @@ describe('Anthropic provider-enforced model input limits', () => {
     expect(contract).not.toBe(currentBenchAnthropicInputContract('claude-pinned-model', 10_000, 129));
     expect(() => currentBenchAnthropicInputContract('../models', 10_000, 128)).toThrow(/Anthropic input contract/);
   });
+  it.each(['', 'context-1m-2025-08-07', 'unknown-feature-2099-01-01'])(
+    'admits normalized GA effort only when no other beta remains (%s)', async otherBeta => {
+      const f = fixture();
+      const headers = claudeAttemptHeaders({ 'anthropic-version': '2023-06-01',
+        'anthropic-beta': ['claude-code-20250219', 'oauth-2025-04-20', 'effort-2025-11-24', otherBeta].filter(Boolean).join(',') },
+        'api-key', f.credential.secret);
+      const attempt = { ...f.attempt, anthropicVersion: headers['anthropic-version'],
+        anthropicBeta: headers['anthropic-beta'] ?? null };
+      try {
+        const proof = await f.reader.read(attempt, f.credential);
+        expect(JSON.parse(attempt.body).output_config.effort).toBe('high');
+        expect(attempt.anthropicBeta).toBe(otherBeta || null);
+        if (otherBeta) {
+          expect(proof).toBeNull(); expect(f.fetch).not.toHaveBeenCalled();
+        } else {
+          expect(proof).toMatchObject({ inputTokens: f.input.inputTokens, model: f.input.model,
+            evidence: { bodySha256: f.attempt.bodySha256, anthropicVersion: '2023-06-01' } });
+          expect(f.fetch).toHaveBeenCalledOnce();
+          proof!.validateAuthorization();
+        }
+      } finally { f.reader.revoke(); f.revoke(); }
+    });
   it('uses only the authenticated Models API, preserves full-window evidence and revokes synchronously', async () => {
     const f = fixture();
     try {
