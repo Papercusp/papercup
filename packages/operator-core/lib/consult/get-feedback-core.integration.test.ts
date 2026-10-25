@@ -1281,6 +1281,57 @@ describe('recoverable interactive feedback requests', () => {
       .toMatchObject({ answeringOwnerId: 'durable-initial-answerer' });
   });
 
+  it('persists a native target capacity stop through deferred recovery and expiry without trying another source', async () => {
+    const fixture = makeDeps(routeOf([cand('capacity-first'), cand('capacity-next')]));
+    const request = { ...baseReq, requestKey: 'native-capacity-recovery', maxResponders: 2 };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: () => NOW,
+      execute: (payload, acceptedRequest) => getFeedbackCore(payload, {
+        ...fixture.deps, acceptedRequest, resumeInitialDispatch: () => {},
+      }),
+    });
+    const detail = 'native target claude capacity unavailable: all accounts walled';
+    const dispatch = vi.fn(async () => ({ woke: 0, answeringOwnerId: null, targetCapacityUnavailable: detail }));
+    expect(await continueCascadeDispatchCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: () => NOW, dispatch: () => dispatch,
+    })).toBe(true);
+    expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ targetCapacityUnavailable: detail });
+    const next = vi.fn(async () => ({ woke: 1, answeringOwnerId: 'unwanted-answerer' }));
+    await sweepExpiredConsults({ getSql: () => rootSql, now: () => NOW,
+      dispatch: next, emitReplyEvent: async () => {}, notifyRequester: async () => {} });
+    expect(next).not.toHaveBeenCalled();
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    const row = await stateRow(accepted.conversation_id);
+    expect(row.state).toBe('expired');
+    expect(row.cascade_cursor).toBe(0);
+    expect(row.cascade_digest).toEqual([expect.objectContaining({ kind: 'dispatch_failed', excerpt: detail })]);
+  });
+
+  it('does not persist a target-capacity stop after its deferred dispatch lease is replaced', async () => {
+    const fixture = makeDeps(routeOf([cand('capacity-stale')]));
+    const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: 'capacity-stale-lease' }, fixture.deps);
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: () => NOW,
+      execute: (payload, acceptedRequest) => getFeedbackCore(payload, {
+        ...fixture.deps, acceptedRequest, resumeInitialDispatch: () => {},
+      }),
+    });
+    await continueCascadeDispatchCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: () => NOW,
+      dispatch: () => async () => {
+        await rootSql`UPDATE harness_shared.consult_state
+          SET routing = jsonb_set(routing, '{cascadeDispatch,leaseToken}', '"replacement"'::jsonb)
+          WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+        return { woke: 0, targetCapacityUnavailable: 'stale capacity refusal' };
+      },
+    });
+    const row = await stateRow(accepted.conversation_id);
+    expect(row.routing).not.toHaveProperty('targetCapacityUnavailable');
+    expect(row.routing).toMatchObject({ cascadeDispatch: { leaseToken: 'replacement' } });
+    expect(row.expires_at instanceof Date && row.expires_at.getTime() > NOW.getTime()).toBe(true);
+  });
+
   it.each(['routed', 'retrieval', 'empty'] as const)('reports accepted initial %s delivery without inventing a launch', async kind => {
     const fixture = makeDeps(routeOf(kind === 'empty' ? [] : [cand(`durable-${kind}`)]));
     const request = { ...baseReq, requestKey: `durable-${kind}`, allowDispatch: kind !== 'retrieval', minResponders: 0 };
@@ -3091,6 +3142,39 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
       { ownerId: 'dead-x', kind: 'dispatch_failed' },
       { ownerId: 'expert-b', kind: 'dispatch_failed' },
     ]);
+  });
+
+  it('stops initial source failover and refill when the native target has no capacity', async () => {
+    const second = cand('capacity-second', { score: 0.65 });
+    const { deps, reached } = makeDispatchDeps(routeOf([deadExpert, second], { all: [deadExpert, second, liveLow] }));
+    deps.reach = async opts => {
+      reached.push(opts);
+      return { queued: 0, woke: 0, answeringOwnerId: null,
+        targetCapacityUnavailable: 'native target claude capacity unavailable: all accounts walled' };
+    };
+    const result = asOk(await getFeedbackCore({ ...baseReq, minResponders: 2, maxResponders: 2 }, deps));
+    expect(reached.map(entry => entry.responder)).toEqual(['dead-x']);
+    expect(result.verdict).toBe('no_launchable_responder');
+    expect(await stateRow(result.conversation_id)).toMatchObject({
+      state: 'no_launchable_responder', responder_id: null, cascade_cursor: 0, expires_at: null,
+    });
+  });
+
+  it('stops a later source failure walk before its next candidate or refill when target capacity is unavailable', async () => {
+    const second = cand('capacity-second', { score: 0.65 });
+    const third = cand('capacity-third', { score: 0.6 });
+    const { deps, reached } = makeDispatchDeps(routeOf([deadExpert, second, third], { all: [deadExpert, second, third, liveLow] }));
+    deps.reach = async opts => {
+      reached.push(opts);
+      return { queued: 0, woke: 0, answeringOwnerId: null,
+        ...(opts.responder === 'capacity-second' ? { targetCapacityUnavailable: 'native target codex capacity unavailable' } : {}) };
+    };
+    const result = asOk(await getFeedbackCore({ ...baseReq, minResponders: 3, maxResponders: 3 }, deps));
+    expect(reached.map(entry => entry.responder)).toEqual(['dead-x', 'capacity-second']);
+    expect(result.verdict).toBe('no_launchable_responder');
+    const row = await stateRow(result.conversation_id);
+    expect(row.cascade_cursor).toBe(1);
+    expect(row.routing).toMatchObject({ targetCapacityUnavailable: 'native target codex capacity unavailable' });
   });
 
   it('an expert whose whole allowlist is exhausted fails over to the next selectee, digesting dispatch_failed', async () => {

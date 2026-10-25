@@ -1284,6 +1284,7 @@ describe('dispatchConsultResponder — the walk', () => {
     expect(r.answeringOwnerId).toBeNull();
     expect(r.attempts.map((a) => a.reason)).toEqual(['account-walled', 'account-walled']);
     expect(r.detail).toContain('every allowed expert model was exhausted');
+    expect(r.targetCapacityUnavailable).toBeUndefined();
     // Nothing was launched, and — the D-002 invariant — nothing was messaged:
     // this module has no notify seam to message anyone WITH.
     expect(calls.spawn).toHaveLength(0);
@@ -1816,8 +1817,27 @@ describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meanin
       evidence: OPTS.evidence,
     });
     expect(result.dispatch.dispatched).toBe(false);
+    expect(result.targetCapacityUnavailable).toContain('native target codex capacity unavailable');
+    expect(result.dispatch.targetCapacityUnavailable).toBe(result.targetCapacityUnavailable);
     expect(result.dispatch.attempts).toEqual([expect.objectContaining({ agent: 'codex', reason: 'account-walled' })]);
     expect(calls.spawn).toHaveLength(0);
+  });
+
+  it('records every native target rank but probes a source-independent capacity wall only once', async () => {
+    const probe = vi.fn(async () => ({ available: false, detail: 'all target accounts walled' }));
+    const { deps, calls } = makeFakes({
+      loadRanks: async () => [RANKS[0]!, RANKS[1]!, { rank: 3, agent: 'codex', model: 'sol-lite' }],
+      probeBackendAvailable: probe,
+    });
+    const result = await dispatchConsultResponder({ ...OPTS,
+      nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' },
+    }, CTX, deps);
+    expect(probe).toHaveBeenCalledExactlyOnceWith('codex', CTX.workspaceId);
+    expect(result).toMatchObject({ dispatched: false, targetCapacityUnavailable: expect.stringContaining('all target accounts walled') });
+    expect(result.attempts.map(a => [a.rank, a.reason])).toEqual([[2, 'account-walled'], [3, 'account-walled']]);
+    expect(calls.spawn).toHaveLength(0);
+    expect(dispatchRecordEntry(calls.recorded[0]!, new Date(NOW_MS).toISOString()))
+      .toHaveProperty('targetCapacityUnavailable', result.targetCapacityUnavailable);
   });
 
   it('rechecks native source state before a later cascade instead of using a changed live source', async () => {

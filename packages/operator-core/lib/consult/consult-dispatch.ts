@@ -357,6 +357,8 @@ export interface ConsultDispatchAttempt {
 
 export interface ConsultDispatchResult {
   dispatched: boolean;
+  /** Native target capacity is independent of the selected source transcript. */
+  targetCapacityUnavailable?: string;
   /**
    * The coord identity that will ANSWER — what the consult row must record as
    * its responder, so the answering session's first `consult:reply` has a
@@ -634,6 +636,7 @@ export function dispatchRecordEntry(input: ConsultDispatchRecordInput, nowIso: s
     model: r.model,
     verified: r.verified,
     detail: clip(r.detail),
+    ...(r.targetCapacityUnavailable ? { targetCapacityUnavailable: clip(r.targetCapacityUnavailable) } : {}),
     attempts: r.attempts.map((a) => ({
       rank: a.rank,
       agent: a.agent,
@@ -1483,6 +1486,24 @@ async function walkConsultDispatch(
         : 'the expert-model allowlist resolved empty — no model is allowed to answer consults');
     }
 
+    // Every native rank uses this one target backend. A provider-capacity
+    // refusal cannot be repaired by selecting another source transcript.
+    let nativeCapacity: BackendAvailability | null = null;
+    if (opts.nativeConsult) {
+      nativeCapacity = await d.probeBackendAvailable(opts.nativeConsult.targetBackend, ctx.workspaceId);
+      if (!nativeCapacity.available) {
+        for (const rank of ranks) attempts.push({
+          rank: rank.rank, agent: rank.agent, model: rank.model, operation: null,
+          outcome: 'skipped', reason: nativeCapacity.failureReason ?? 'account-walled',
+          ...(nativeCapacity.accountRoute ? { accountRoute: nativeCapacity.accountRoute } : {}),
+          ...(nativeCapacity.routeReason ? { accountRouteReason: nativeCapacity.routeReason } : {}),
+          detail: nativeCapacity.detail,
+        });
+        const detail = `native target ${opts.nativeConsult.targetBackend} capacity unavailable: ${nativeCapacity.detail}`;
+        return { ...give(detail), targetCapacityUnavailable: detail };
+      }
+    }
+
     // Every conversion rank ports the same exact source. Check once, before any
     // launch, and retain the refusal on each affected rank for the next-expert
     // cascade. Provider walls and native fork eligibility remain independent.
@@ -1576,7 +1597,8 @@ async function walkConsultDispatch(
         continue;
       }
 
-      const capacity = await d.probeBackendAvailable(rank.agent, ctx.workspaceId);
+      const capacity = nativeCapacity ?? await d.probeBackendAvailable(rank.agent, ctx.workspaceId);
+      nativeCapacity = null; // Later ranks recheck capacity after a launch may change it.
       if (!capacity.available) {
         attempts.push({
           rank: rank.rank,
@@ -2274,6 +2296,7 @@ export function makeConsultReachDispatcher(
   pickupConfirmed: boolean;
   answeringOwnerId: string | null;
   dispatch: ConsultDispatchResult;
+  targetCapacityUnavailable?: string;
 }> {
   return async (opts) => {
     // The routed consult's saved snapshot is the authority on later reply,
@@ -2323,6 +2346,7 @@ export function makeConsultReachDispatcher(
       woke: pickupConfirmed ? 1 : 0,
       pickupConfirmed,
       answeringOwnerId: dispatch.answeringOwnerId,
+      ...(dispatch.targetCapacityUnavailable ? { targetCapacityUnavailable: dispatch.targetCapacityUnavailable } : {}),
       dispatch,
     };
   };

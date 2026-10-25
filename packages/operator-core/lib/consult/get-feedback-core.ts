@@ -240,6 +240,8 @@ export interface GetFeedbackDeps {
     pickupConfirmed?: boolean;
     /** Who will post — the fork's new identity, or the source on a conversion. */
     answeringOwnerId?: string | null;
+    /** No source candidate can repair this native target's provider capacity. */
+    targetCapacityUnavailable?: string;
     /** HOW it was reached, for the requester-facing provenance note. Optional so
      *  a PG-free or legacy binding keeps the plain delivery-count contract. */
     dispatch?: {
@@ -1677,7 +1679,7 @@ export async function getFeedbackCore(
     const seatedOwners = new Set(finalSelected.map((s) => s.candidate.ownerId));
     const hasUntriedPool = minResponders > 0 &&
       route.snapshot.candidates.some((c) => !seatedOwners.has(c.ownerId));
-    if (queued === 0 && (finalSelected.length > 1 || hasUntriedPool)) {
+    if (queued === 0 && !r.targetCapacityUnavailable && (finalSelected.length > 1 || hasUntriedPool)) {
       const failedOwner = finalSelected[0]!.candidate.ownerId;
       let failoverReach: Awaited<ReturnType<GetFeedbackDeps['reach']>> | undefined;
       const advanced = await advanceCascade(
@@ -1709,6 +1711,7 @@ export async function getFeedbackCore(
           return {
             woke: failoverReach.queued ?? failoverReach.woke ?? 0,
             answeringOwnerId: failoverReach.answeringOwnerId ?? null,
+            ...(failoverReach.targetCapacityUnavailable ? { targetCapacityUnavailable: failoverReach.targetCapacityUnavailable } : {}),
           };
         },
       );
