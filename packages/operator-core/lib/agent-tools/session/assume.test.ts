@@ -402,6 +402,75 @@ describe('session:assume durable transition boundaries', () => {
     assignment: { id: 'WI-after-handoff', assignee: 'su-target', observedBy: 'su-target' },
   });
 
+  it('R-1 same managed attachment replaces caller execution', async () => {
+    const { preparation: plan } = await prepared(fixture());
+    const f = transitionFixture(), receipt = await commitAssume(plan, f.deps);
+    const observed = witness(receipt);
+    expect(qualifiesAssumeExecution(receipt, observed)).toBe(true);
+    expect(observed.nativePid).not.toBe(plan.caller.nativePid);
+    expect(observed.callerExited).toBe(true);
+    expect(observed.hostId).toBe(plan.caller.hostId);
+    expect(observed.attachmentId).toBe(plan.caller.attachmentId);
+    expect((await verifyAssumeExecution(receipt, observed, f.deps.save)).state).toBe('target-verified');
+  });
+
+  it('R-1 reject unrelated-window and env-only fake takeover', async () => {
+    const { preparation: plan } = await prepared(fixture());
+    const f = transitionFixture(), receipt = await commitAssume(plan, f.deps);
+    for (const wrong of [
+      { hostId: 'other-window-host' }, { attachmentId: 'other-pane' },
+      { callerExited: false }, { nativePid: plan.caller.nativePid },
+      { nativeWriterPids: [] }, { nativeWriterPids: [101, 202] },
+    ]) {
+      const observation = { ...witness(receipt), ...wrong };
+      expect(qualifiesAssumeExecution(receipt, observation)).toBe(false);
+      expect((await verifyAssumeExecution(receipt, observation, f.deps.save)).state).toBe('handoff-accepted');
+      expect(f.stored()?.state).toBe('handoff-accepted');
+    }
+  });
+
+  it('R-2 target inbox and task routing spans before during and after cutover', async () => {
+    const { preparation: plan } = await prepared(fixture());
+    const f = transitionFixture(), accepted = await commitAssume(plan, f.deps);
+    expect(accepted.state).toBe('handoff-accepted');
+    for (const badProbe of [
+      { directedMessage: { ...witness(accepted).directedMessage, recipient: plan.caller.ownerId } },
+      { directedMessage: { ...witness(accepted).directedMessage, consumedBy: plan.caller.ownerId } },
+      { directedMessage: { ...witness(accepted).directedMessage, consumptions: 2 } },
+      { assignment: { ...witness(accepted).assignment, assignee: plan.caller.ownerId } },
+      { assignment: { ...witness(accepted).assignment, observedBy: plan.caller.ownerId } },
+    ]) {
+      expect((await verifyAssumeExecution(accepted, { ...witness(accepted), ...badProbe }, f.deps.save)).state)
+        .toBe('handoff-accepted');
+    }
+    const verified = await verifyAssumeExecution(accepted, witness(accepted), f.deps.save);
+    expect(verified.state).toBe('target-verified');
+    expect(verified.observation?.directedMessage).toMatchObject({ recipient: plan.target.ownerId,
+      consumedBy: plan.target.ownerId, consumptions: 1 });
+    expect(verified.disposition).toEqual(accepted.disposition);
+    expect(verified.recovery).toEqual(accepted.recovery);
+    expect(verified.recovery?.returnRef.ownerId).toBe(plan.caller.ownerId);
+  });
+
+  it('R-2 preserve target fleet subscriptions and historical authorship', async () => {
+    const { preparation: plan } = await prepared(fixture());
+    const source = structuredClone(plan), f = transitionFixture();
+    const accepted = await commitAssume(plan, f.deps);
+    const historical = structuredClone(f.writes);
+    await verifyAssumeExecution(accepted, witness(accepted), f.deps.save);
+    expect(plan).toEqual(source);
+    expect(f.writes.slice(0, historical.length)).toEqual(historical);
+    for (const row of f.writes) {
+      expect(row.preparation.caller.ownerId).toBe(source.caller.ownerId);
+      expect(row.preparation.target.ownerId).toBe(source.target.ownerId);
+      expect(row.preparation.target.binding.coordOwnerId).toBe(source.target.ownerId);
+    }
+    // The protocol keeps owner-keyed fleet/subscription state in place. The
+    // production PG cases probe those stores; this unit leg guards attribution.
+    expect(f.deps.reserve).toHaveBeenCalledWith(plan);
+    expect(f.deps.handoff).toHaveBeenCalledWith(plan, expect.anything());
+  });
+
   it('accepts verification only after matching native process, attachment, inbox and assignment observations', async () => {
     const { preparation: plan } = await prepared(fixture());
     const f = transitionFixture();

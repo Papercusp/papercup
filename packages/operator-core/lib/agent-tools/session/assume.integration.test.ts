@@ -20,10 +20,15 @@ import { registerAwait, listActiveAwaits } from '../../events/await/store';
 import { acquireClaim, getClaim } from '../../plan-items/claims';
 import { getWorkItem, releaseWorkItem } from '../../work-items';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { sendMessage, readInbox, readAckedMsgIds, appendAck } from '../coordination/messages';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { recordOwnerDirective, listOwnerDirectives, dispositionOwnerDirective } from '../../owner-directives';
+import { createFleetIfAbsent, getFleet } from '../../agent-fleets-store';
+import { createTopic, subscribeTopic, listMyTopicSubscriptions } from '../coordination/topics';
 import { runWithWorkspace } from '../../workspace-als';
 import { persistControlAnchor, type ControlAnchorState } from '../coordination/control-anchor';
 import {
-  assumePreparationFingerprint, assumePreparationSchema, assumeTransitionKey,
+  assumePreparationFingerprint, assumePreparationSchema, assumeTransitionKey, qualifiesAssumeExecution, verifyAssumeExecution,
   type AssumePreparation, type AssumeTransitionReceipt, type AssumeExecutionObservation,
 } from '../../session-assume';
 
@@ -143,6 +148,134 @@ async function exactReturnFixture() {
 }
 
 describe('session:assume production receipt adapter (real PG)', () => {
+  it('R-1 same managed attachment replaces caller execution', async () => {
+    const { plan, receipt } = receiptFixture(), store = createAssumeReceiptStore(plan);
+    await store.claim(receipt);
+    const accepted = { ...receipt, state: 'handoff-accepted' as const };
+    await store.save(accepted);
+    const observed = observationFixture(accepted);
+    expect((await verifyAssumeExecution(accepted, observed, value => store.save(value))).state).toBe('target-verified');
+    const persisted = await createAssumeReceiptStore(plan).load();
+    expect(persisted?.observation).toEqual(observed);
+    expect(persisted?.observation?.attachmentId).toBe(plan.caller.attachmentId);
+    expect(persisted?.observation?.callerExited).toBe(true);
+    expect(persisted?.observation?.nativePid).not.toBe(plan.caller.nativePid);
+  });
+
+  it('R-1 reject unrelated-window and env-only fake takeover', async () => {
+    const { plan, receipt } = receiptFixture(), store = createAssumeReceiptStore(plan);
+    await store.claim(receipt);
+    const accepted = { ...receipt, state: 'handoff-accepted' as const };
+    await store.save(accepted);
+    for (const changed of [{ hostId: 'other-host' }, { attachmentId: 'other-pane' },
+      { callerExited: false }, { nativePid: plan.caller.nativePid }, { nativeWriterPids: [] }]) {
+      const result = await verifyAssumeExecution(accepted, { ...observationFixture(accepted), ...changed }, value => store.save(value));
+      expect(result.state).toBe('handoff-accepted');
+      expect((await createAssumeReceiptStore(plan).load())?.state).toBe('handoff-accepted');
+      expect((await createAssumeReceiptStore(plan).load())?.observation).toBeUndefined();
+    }
+  });
+
+  it('R-2 target inbox and task routing spans before during and after cutover', async () => {
+    await runWithWorkspace(workspaceId, async () => {
+      const { plan, receipt } = receiptFixture();
+      const who = (ownerId: string) => resolveAgentIdentity({ uiClientId: ownerId, workspaceId, isSuperuser: true });
+      const source = who('test-assume-routing-source'), target = who(plan.target.ownerId), caller = who(plan.caller.ownerId);
+      const workId = 'WI-assume-routing-' + randomUUID(), planSlug = 'assume-routing-' + randomUUID();
+      await fixture.admin`INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, origin, taken_by, taken_at, updated_ts)
+        VALUES (${workspaceId}, 'fixture-harness', ${workId}, 'target routing work', 'open', 'feature', 'local',
+          ${target.ownerId}, now(), ${Date.now()})`;
+      expect((await acquireClaim({ workspaceId, harnessSlug: 'fixture-harness', planSlug,
+        itemId: 'P-001', owner: target.ownerId, ttlSec: 1200 })).ok).toBe(true);
+      const loops = [randomUUID(), randomUUID()];
+      for (const [index, id] of loops.entries()) await fixture.admin`INSERT INTO harness_shared.routines
+        (id, install_slug, name, workspace_id, target_owner_id, active, trigger_kind, trigger_config, target_role)
+        VALUES (${id}, 'fixture-harness', ${'target-route-' + id}, ${workspaceId}, ${target.ownerId},
+          ${index === 0}, 'cron', '{}'::jsonb, 'su')`;
+      const awaited = await registerAwait({ subscriberId: target.ownerId, eventKey: 'target-route:' + randomUUID(), once: false });
+      const directive = await recordOwnerDirective({ workspaceId, recordedBy: target.ownerId,
+        sourceTurnRef: randomUUID(), verbatimText: 'Complete target routing work.' }, fixture.admin);
+      const callerDirective = await recordOwnerDirective({ workspaceId, recordedBy: caller.ownerId,
+        sourceTurnRef: randomUUID(), verbatimText: 'Retain caller work for return.' }, fixture.admin);
+      const before = await sendMessage(source, { to: [target.ownerId], summary: 'before preparation' });
+      const callerMessage = await sendMessage(source, { to: [caller.ownerId], summary: 'caller recovery message' });
+      const store = createAssumeReceiptStore(plan);
+      await store.claim(receipt);
+      const adapters = createAssumeCallerAdapters({ freeze: async () => true, thaw: async () => true, readCaller: async () => plan.caller });
+      const recovery = await adapters.checkpointCaller(plan);
+      await adapters.quiesceCaller(plan, recovery);
+      const during = await sendMessage(source, { to: [target.ownerId], summary: 'during handoff' });
+      const accepted = { ...receipt, state: 'handoff-accepted' as const, recovery };
+      await store.save(accepted);
+      const consume = async () => {
+        const acked = await readAckedMsgIds(target.ownerId);
+        const unread = (await readInbox(target.ownerId)).filter(row => !acked.has(row.msg_id));
+        for (const message of unread) await appendAck(target, message.msg_id, message.from);
+        return unread;
+      };
+      const first = await consume();
+      expect(first.map(row => row.msg_id).sort()).toEqual([before.msg_id, during.msg_id].sort());
+      const observation = observationFixture(accepted);
+      observation.directedMessage = { id: before.msg_id, recipient: before.to[0], consumedBy: target.ownerId, consumptions: 1 };
+      observation.assignment = { id: workId, assignee: (await getWorkItem(workId, 'fixture-harness'))!.assignee!, observedBy: target.ownerId };
+      expect(qualifiesAssumeExecution(accepted, observation)).toBe(true);
+      await store.save({ ...accepted, state: 'target-verified', observation });
+      const after = await sendMessage(source, { to: [target.ownerId], summary: 'after verification' });
+      expect((await consume()).map(row => row.msg_id)).toEqual([after.msg_id]);
+      expect(await consume()).toEqual([]);
+      expect((await readInbox(caller.ownerId)).map(row => row.msg_id)).toEqual([callerMessage.msg_id]);
+      expect((await getClaim(workspaceId, 'fixture-harness', planSlug, 'P-001'))?.owner).toBe(target.ownerId);
+      expect((await getWorkItem(workId, 'fixture-harness'))?.assignee).toBe(target.ownerId);
+      expect((await listActiveAwaits(target.ownerId)).map(row => row.id)).toContain(awaited.id);
+      const routines = await fixture.admin`SELECT id, active FROM harness_shared.routines WHERE id IN (${loops[0]}, ${loops[1]})`;
+      expect(loops.map(id => routines.find(row => row.id === id)?.active)).toEqual([true, false]);
+      expect((await listOwnerDirectives({ workspaceId, recordedBy: target.ownerId, open: true }, fixture.admin)).map(row => row.id)).toEqual([directive.id]);
+      const close = { id: directive.id, status: 'done' as const, note: 'Target consumed its retained directive.', dispositionedBy: target.ownerId };
+      expect((await dispositionOwnerDirective(close, fixture.admin)).ok).toBe(true);
+      expect((await dispositionOwnerDirective(close, fixture.admin)).ok).toBe(false);
+      expect((await listOwnerDirectives({ workspaceId, recordedBy: caller.ownerId, open: true }, fixture.admin)).map(row => row.id)).toEqual([callerDirective.id]);
+      expect(await adapters.restoreCaller(plan, recovery)).toBe(true);
+    });
+  });
+
+  it('R-2 preserve target fleet subscriptions and historical authorship', async () => {
+    await runWithWorkspace(workspaceId, async () => {
+      const { plan, receipt } = receiptFixture();
+      const who = (ownerId: string) => resolveAgentIdentity({ uiClientId: ownerId, workspaceId, isSuperuser: true });
+      const target = who(plan.target.ownerId), caller = who(plan.caller.ownerId);
+      const fleetSlug = 'assume-fleet-' + randomUUID(), topic = 'assume-topic-' + randomUUID();
+      await createFleetIfAbsent({ workspaceId, fleetSlug, leaderOwnerId: target.ownerId, owner: target.ownerId }, fixture.admin);
+      await createTopic(target, { slug: topic, description: 'Target continuity fixture' });
+      await subscribeTopic(target, topic);
+      const historical = await sendMessage(target, { to: [caller.ownerId], summary: 'authored before handoff' });
+      const originalFleet = await getFleet(workspaceId, fleetSlug, fixture.admin);
+      const originalSubscriptions = await listMyTopicSubscriptions(target);
+      const adapter = createAssumeCallerAdapters({ freeze: async () => true, thaw: async () => true, readCaller: async () => plan.caller });
+      const recovery = await adapter.checkpointCaller(plan);
+      await adapter.quiesceCaller(plan, recovery);
+      const store = createAssumeReceiptStore(plan);
+      await store.claim(receipt);
+      await store.save({ ...receipt, state: 'handoff-accepted', recovery });
+      for (const stage of ['during handoff', 'after verification']) {
+        if (stage === 'after verification') await store.save({ ...receipt, state: 'target-verified', recovery,
+          observation: observationFixture(receipt) });
+        expect(await getFleet(workspaceId, fleetSlug, fixture.admin)).toEqual(originalFleet);
+        expect((await getFleet(workspaceId, fleetSlug, fixture.admin))?.leaderOwnerId).toBe(target.ownerId);
+        expect(await listMyTopicSubscriptions(target)).toEqual(originalSubscriptions);
+        expect(await listMyTopicSubscriptions(caller)).toEqual([]);
+        const message = await sendMessage(caller, { to: [target.ownerId], summary: stage });
+        const read = (await readInbox(target.ownerId)).find(row => row.msg_id === message.msg_id)!;
+        expect(read.from).toBe(caller.ownerId); expect(read.to).toContain(target.ownerId);
+        await appendAck(target, read.msg_id, read.from);
+      }
+      const retained = (await readInbox(caller.ownerId)).find(row => row.msg_id === historical.msg_id)!;
+      expect(retained.from).toBe(target.ownerId); expect(retained.to).toEqual([caller.ownerId]);
+      expect(retained.summary).toBe('authored before handoff');
+      expect(await adapter.restoreCaller(plan, recovery)).toBe(true);
+    });
+  });
+
   it('R-5 caller return reference resumes exactly once and rejects stale replay', async () => {
     const f = await exactReturnFixture();
     const deps = { readCaller: async () => f.caller };
