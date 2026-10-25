@@ -209,8 +209,8 @@ export function isolatedWorkerOptions(executeMs: number, env: NodeJS.ProcessEnv 
 
 export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount: number) {
   const listMs = testFileListTimeoutMs(env);
-  return isolatedWorkerOptions(listMs + testFileRunTimeoutMs(env, fileCount) + TEST_FILE_KILL_GRACE_MS,
-    env, listMs + MAX_TEST_FILE_RUN_TIMEOUT_MS + TEST_FILE_KILL_GRACE_MS);
+  return { ...isolatedWorkerOptions(listMs + testFileRunTimeoutMs(env, fileCount) + TEST_FILE_KILL_GRACE_MS,
+    env, listMs + MAX_TEST_FILE_RUN_TIMEOUT_MS + TEST_FILE_KILL_GRACE_MS), testFileExecutionFromStdout: true };
 }
 
 /** Retain original output before termination can interrupt the fixture. A
@@ -222,6 +222,8 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
   /** Throttle observed progress relayed to the encompassing file watchdog. */
   progressIntervalMs?: number;
   cleanupFromStdout?: boolean;
+  /** Direct scripts/test-files.mjs children have router progress, not runtime IPC. */
+  testFileExecutionFromStdout?: boolean;
 }) {
   assert.ok((options.timeoutMs === undefined) !== (options.phaseTimeouts === undefined), 'one deadline contract is required');
   assert.ok(options.progressIntervalMs === undefined ||
@@ -280,6 +282,12 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       process.stderr.write('ISOLATED_WORKER_PROGRESS ' + JSON.stringify({ pid: child.pid, phase, stage }) + '\n');
     };
     const relayTestProgress = (line: string) => {
+      // Collection uses TEST_FILE_LIST_PROGRESS; only the direct router's
+      // execution start can leave bootstrap. Never restart an active phase or
+      // revive execution after timeout/cleanup. This is a deadline signal, not
+      // private-runtime lifecycle or successful-test evidence.
+      if (options.testFileExecutionFromStdout && deadlines && !timedOut && phase === 'bootstrap' &&
+          /^TEST_FILE_PROGRESS state=started(?: |$)/.test(line)) armPhase('execute');
       if (line.startsWith('TEST_FILE_PROGRESS ')) {
         const offset = line.indexOf(' lastOutputLine=');
         if (offset < 0) return;
