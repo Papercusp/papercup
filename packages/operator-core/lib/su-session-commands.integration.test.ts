@@ -292,7 +292,7 @@ describe('SU command acceptance through real PostgreSQL', () => {
     expect(await loadSuOwnerTurnReceipts(foreign.target, { sql })).toEqual([{ turnId: 'turn-foreign', content: 'hi' }]);
   });
 
-  it('survives a restart between reservation and dispatch without silently re-executing', async () => {
+  it.each(['owner_turn', 'queue'] as const)('survives a restart between %s reservation and dispatch without silently re-executing', async type => {
     // Crash injection at the only safe handoff point: committed, not dispatched.
     const store = pgSuSessionCommandStore({ sql });
     const execute = vi.fn(async () => ({ status: 'completed' as const }));
@@ -303,15 +303,21 @@ describe('SU command acceptance through real PostgreSQL', () => {
         throw new Error('injected host exit before acknowledgement');
       },
     };
-    const host = new SuSessionHost({ descriptor: descriptor(), executeCommand: execute });
-    await expect(host.acceptCommand(ownerTurn(), interruptedStore)).rejects.toThrow('injected host exit');
+    const originalDescriptor = descriptor();
+    const savedDescriptor = { ...originalDescriptor, capabilities: { ...originalDescriptor.capabilities,
+      commands: { ...originalDescriptor.capabilities.commands, queue: { state: 'supported', implementation: 'host' } as const },
+    } };
+    const savedCommand = { ...ownerTurn(), type };
+    const host = new SuSessionHost({ descriptor: savedDescriptor, executeCommand: execute });
+    await expect(host.acceptCommand(savedCommand, interruptedStore)).rejects.toThrow('injected host exit');
     host.dispose();
-    const replacement = new SuSessionHost({ descriptor: descriptor(), executeCommand: execute });
-    const replay = await replacement.acceptCommand(ownerTurn(), store);
+    const replacement = new SuSessionHost({ descriptor: savedDescriptor, executeCommand: execute });
+    const replay = await replacement.acceptCommand(savedCommand, store);
     expect(replay.replayed).toBe(true);
     expect(await replay.terminal).toMatchObject({ refusal: { code: 'command_delivery_unknown' } });
     expect(execute).not.toHaveBeenCalled();
     expect(await storedTurns()).toHaveLength(1);
+    expect((await storedTurns())[0].su_command.command).toEqual(savedCommand);
   });
 
   it('rejects cross-workspace, wrong-owner and archived targets without persisting text', async () => {
