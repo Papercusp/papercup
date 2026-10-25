@@ -37,7 +37,7 @@ import { createAdaptorServer } from '@hono/node-server';
 import { listenWithEaddrinuseRetry } from '@papercusp/operator-core/lib/listen-with-eaddrinuse-retry';
 import { BOOT_INTEGRITY_EXIT_CODE } from '@papercusp/operator-core/lib/boot-integrity-preflight';
 import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';
-import { externalIngressHandler, handler } from './host-handler';
+import { externalIngressHandler, handler, stopDesktopPortalHost } from './host-handler';
 import { externalIngressPort } from '@papercusp/operator-core/lib/auth/forwarded-request-trust';
 import { configureIngressListener } from '@papercusp/operator-core/lib/own-tunnel/runtime';
 import { markOwnTunnelListenerSeamConfigured } from '@papercusp/operator-core/lib/own-tunnel/service';
@@ -137,6 +137,10 @@ import { runAdmissionPrecheckWorkerMain } from '@papercusp/operator-core/lib/rel
 import { assertMobileJwtSecretDurableForCluster } from '@papercusp/operator-core/lib/device-jwt';
 import { installStdioPeerGuard } from '@papercusp/operator-core/lib/process-supervision/stdio-peer-guard';
 import { notifySystemdReady } from '@papercusp/operator-core/lib/systemd-readiness';
+
+async function closeHostResources() {
+  await Promise.all([stopInvalidationListener(), stopDesktopPortalHost()]);
+}
 
 // The headless verifier imports the frozen bundle with this argument before
 // Tauri starts. Static ESM dependencies have evaluated by this point, so a
@@ -472,7 +476,7 @@ function startRequestServers(): void {
       console.log(`[hono-host] SIGUSR2 — draining then hard-exiting desktop-dev listener (pid=${process.pid})`);
       gracefulHostRecycle({
         server: server as { close?: (cb?: () => void) => void },
-        closeAdditionalResources: stopInvalidationListener,
+        closeAdditionalResources: closeHostResources,
         recycleExitCode: 75,
         // The request-only desktop child owns no background substrate lifecycle;
         // avoid turning a control-plane restart into native teardown work.
@@ -681,7 +685,7 @@ function startRequestServers(): void {
         // strictly better than the SIGABRT crash + coredump + webview recovery flash.
         gracefulHostRecycle({
           server: server as { close?: (cb?: () => void) => void },
-          closeAdditionalResources: stopInvalidationListener,
+          closeAdditionalResources: closeHostResources,
           skipSubstrateTeardown: true,
           hardExitOnRecycle: true,
           // EI-16447: attribute the shared hard-exit log line to the ACTUAL
@@ -742,7 +746,7 @@ function startRequestServers(): void {
   if (process.env.PAPERCUSP_SIGTERM_DRAIN !== '0') {
     installGracefulShutdown({
       server: server as { close?: (cb?: () => void) => void },
-      closeAdditionalResources: stopInvalidationListener,
+      closeAdditionalResources: closeHostResources,
       hardExitOnRecycle: true,
     });
   }
@@ -794,7 +798,7 @@ function startRequestServers(): void {
       markShuttingDown();
       gracefulHostRecycle({
         server: server as { close?: (cb?: () => void) => void },
-        closeAdditionalResources: stopInvalidationListener,
+        closeAdditionalResources: closeHostResources,
         recycleExitCode: code,
         // WI-3849: lag-recycle is another full process exit. Avoid the same
         // Node native env teardown that aborts on SIGTERM/memory recycle.

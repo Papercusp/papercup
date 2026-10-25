@@ -14,6 +14,7 @@
  * `unreviewed` and measures the promoter's successful-run watermark.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import type { ComponentScreeningSelection } from './work-item-admission-recovery';
 import { hostname } from 'node:os';
 import { getOrgPg } from '@papercusp/db-org';
 import { isLlmCallError } from '@papercusp/testing-shell/llm';
@@ -2702,12 +2703,14 @@ export async function captureAdmissionProducingRuntime(
 
 async function beginRun(
   sql: OrgSql,
-  input: { runId: string; workspaceId: string; harnessSlug: string; mode: AdmissionTickMode },
+  input: { runId: string; workspaceId: string; harnessSlug: string; mode: AdmissionTickMode;
+    componentScreening?: ComponentScreeningSelection },
 ): Promise<void> {
   const producingRuntime = await captureAdmissionProducingRuntime(sql, input.workspaceId);
   const detail = JSON.stringify({
     status: 'running',
     mode: input.mode,
+    ...(input.componentScreening ? { componentScreening: input.componentScreening } : {}),
     // Persist the process-matched boot witness now; never resolve a historical
     // producer from a later runtime row or the checkout's current HEAD.
     producingRuntime,
@@ -2845,6 +2848,9 @@ async function failRun(
            tokens_out = ${usage?.tokensOut ?? 0},
            latency_ms = ${latencyMs},
            detail = (${detail}::text::jsonb - 'producingRuntime') ||
+             CASE WHEN detail ? 'componentScreening'
+               THEN jsonb_build_object('componentScreening', detail->'componentScreening')
+               ELSE '{}'::jsonb END ||
              CASE WHEN detail ? 'producingRuntime'
                THEN jsonb_build_object('producingRuntime', detail->'producingRuntime')
                ELSE '{}'::jsonb END
@@ -5651,6 +5657,8 @@ export async function runWorkItemAdmissionPromoter(opts: {
   targetItemIds?: readonly string[];
   /** Internal ordinary-selection hint; never a mutation scope or authority grant. */
   componentScreeningItemIds?: readonly string[];
+  /** Bounded ordinary selection receipts, retained by the existing run ledger. */
+  componentScreening?: ComponentScreeningSelection;
   recentTerminalDays?: number;
   model?: string;
   now?: () => number;
@@ -5716,7 +5724,8 @@ export async function runWorkItemAdmissionPromoter(opts: {
       writerCoverageGap: [],
     };
   }
-  await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode });
+  await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode,
+    ...(targetItemIds === undefined ? { componentScreening: opts.componentScreening } : {}) });
   let runModelId: string | null = null;
   let tokensIn = 0;
   let tokensOut = 0;
@@ -5850,6 +5859,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
         // No-model pass only: paired rows left for the model promoter, not written as holds.
         ...(noModel ? { deferredToModel } : {}),
         ...(targetItemIds === undefined ? {} : { targetItemIds }),
+        ...(targetItemIds === undefined && opts.componentScreening ? { componentScreening: opts.componentScreening } : {}),
         // D-003: the distribution rides beside the census counts on every tick.
         promotedToFirstClaim,
         // Null is explicit unpriced coverage, never a fabricated zero-dollar call.

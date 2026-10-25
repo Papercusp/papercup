@@ -136,18 +136,23 @@ const originalContext = {
 // session id rather than assigning the principal's ordinary bearer identity.
 const reviewerOwnerId = 'reviewer-session';
 const { runAdmissionPromoterWithRecovery } = await import('./harness/routines/work-item-admission-promoter-action');
+const { readWorkItemAdmissionSnapshot } = await import('./work-items-admission-promoter');
 
 let db: FreshPgDb;
 let run = 0;
 const scope = { workspaceId: 'default', harnessSlug: 'papercusp' };
 beforeAll(async () => {
-  db = await createFreshPgDb('admission-recovery-chain');
+  db = await createFreshPgDb('admission_recovery_chain');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(COORD_REF_HOLDERS_DDL);
   await applyMigrationForTest(db.sql, resolve(import.meta.dirname,
     '../../../libs/papercusp/libs/db/sql/944-work-queue-admission-dedup.sql'));
+  // The supported snapshot reader also projects occurrence/readiness stock.
+  for (const migration of ['831-issue-occurrence-ledger.sql', '1294-work-item-readiness-payload-projections.sql']) {
+    await applyMigrationForTest(db.sql, resolve(import.meta.dirname, '../../../libs/papercusp/libs/db/sql', migration));
+  }
   await db.sql.unsafe(`
     CREATE EXTENSION IF NOT EXISTS vector;
     ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS embedding vector(3),
@@ -163,7 +168,7 @@ beforeAll(async () => {
     );
     CREATE TABLE harness_shared.routines (
       id text PRIMARY KEY, workspace_id text, install_slug text, name text, target_role text,
-      active boolean DEFAULT true, trigger_config jsonb, next_fire_at timestamptz
+      active boolean DEFAULT true, trigger_config jsonb, next_fire_at timestamptz, metadata jsonb
     );
     -- Claim admission now reads the active operation-worker receipt even for
     -- ordinary targets; an empty session table proves this fixture has no bound worker.
@@ -255,11 +260,15 @@ describe('original authority context fidelity', () => {
     expect(exact.guardRefusals).toEqual(expect.arrayContaining([
       expect.objectContaining({ itemId: original.id, reason: 'outside-mutation-scope' }),
     ]));
+    const [exactLedger] = await db.sql`SELECT detail FROM harness_shared.admission_runs
+      WHERE id = ${`${exact.runId}:recovery:${original.id}`}`;
+    expect(exactLedger).toBeDefined();
+    expect(exactLedger!.detail).not.toHaveProperty('componentScreening');
     const held = (await row(original.id)).payload._admissionRecovery;
     expect(held).toMatchObject({ requestId: first.request.requestId, state: 'held', stage: 'screen' });
     expect(await row(twin.id)).toMatchObject({ admission: 'pending', taken_by: null });
     // This is a separate ordinary tick, with no targetItemIds or request replay.
-    await tick();
+    const ordinary = await tick();
     expect(h.model).toHaveBeenCalledTimes(2);
     expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: null });
     // The outside-window twin participates in the component's adjudication but
@@ -269,6 +278,43 @@ describe('original authority context fidelity', () => {
       WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
         AND a = ${a} AND b = ${b}`).toHaveLength(1);
     expect((await row(original.id)).payload._admissionRecovery).toEqual(held);
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+    const snapshot = await readWorkItemAdmissionSnapshot({ ...scope, sql: db.sql });
+    expect(snapshot.runs.find((entry) => entry.id === ordinary.runId)?.detail).toMatchObject({
+      componentScreening: { itemIds: [original.id], receipts: [
+        { itemId: original.id, stage: 'recheck', reason: 'selected' },
+      ] },
+    });
+  });
+
+  it('persists a refused component request on the ordinary ledger without granting priority or mutating it', async () => {
+    const original = await create('Refused component target');
+    const twin = await create(original.title);
+    const [a, b] = [original.id, twin.id].sort();
+    h.model.mockResolvedValue({ text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+      json: { judgements: [{ pairKey: `${a}::${b}`, verdict: 'distinct', reason: 'Independent fixes' }] } });
+    await request(original.id);
+    await tick();
+    await db.sql`UPDATE harness_shared.work_items SET payload =
+      jsonb_set(payload, '{_admissionRecovery,signature}', ${db.sql.json('0'.repeat(64))})
+      WHERE feature_id = ${original.id}`;
+    const before = await row(original.id);
+    // Keep this rejected request and its twin beyond the ordinary FIFO batch.
+    for (let i = 0; i < 31; i++) {
+      const earlier = await create(`Unrelated refusal backlog ${i}`);
+      await db.sql`UPDATE harness_shared.work_items SET created_ts = ${i + 1} WHERE feature_id = ${earlier.id}`;
+    }
+    const ordinary = await tick();
+    const snapshot = await readWorkItemAdmissionSnapshot({ ...scope, sql: db.sql });
+    const detail = snapshot.runs.find((entry) => entry.id === ordinary.runId)?.detail;
+    expect(detail).toMatchObject({ status: 'complete', componentScreening: { itemIds: [], receipts: [
+      { itemId: original.id, stage: 'provenance', reason: 'recovery-refused' },
+    ] } });
+    expect(JSON.stringify(detail?.componentScreening)).not.toContain('signature');
+    expect(await row(original.id)).toEqual(before);
+    expect(await row(twin.id)).toMatchObject({ admission: 'pending', taken_by: null });
+    expect(h.model).toHaveBeenCalledTimes(1);
     expect(h.claim).not.toHaveBeenCalled();
     expect(h.wake).not.toHaveBeenCalled();
   });
@@ -289,6 +335,28 @@ describe('original authority context fidelity', () => {
     expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: null });
     expect(await row(twin.id)).toMatchObject({ admission: 'pending', taken_by: 'live-peer' });
     expect((await row(original.id)).payload._admissionRecovery).toEqual(held);
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it('retains selection receipts when the ordinary model call fails after selection', async () => {
+    const original = await create('Failed component screening');
+    const twin = await create(original.title);
+    const [a, b] = [original.id, twin.id].sort();
+    h.model.mockResolvedValueOnce({ text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+      json: { judgements: [{ pairKey: `${a}::${b}`, verdict: 'distinct', reason: 'Independent fixes' }] } });
+    await request(original.id);
+    await tick();
+    const before = await row(original.id);
+    h.model.mockRejectedValue(new Error('expected external fixture failure'));
+    await expect(tick()).rejects.toThrow('expected external fixture failure');
+    const snapshot = await readWorkItemAdmissionSnapshot({ ...scope, sql: db.sql, state: 'failed' });
+    expect(snapshot.runs).toHaveLength(1);
+    expect(snapshot.runs[0]!.detail).toMatchObject({ status: 'failed', componentScreening: {
+      itemIds: [original.id], receipts: [{ itemId: original.id, stage: 'recheck', reason: 'selected' }],
+    } });
+    expect(await row(original.id)).toEqual(before);
+    expect(await row(twin.id)).toMatchObject({ admission: 'pending', taken_by: null });
     expect(h.claim).not.toHaveBeenCalled();
     expect(h.wake).not.toHaveBeenCalled();
   });
