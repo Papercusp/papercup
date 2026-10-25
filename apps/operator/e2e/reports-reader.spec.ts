@@ -21,10 +21,8 @@ const previous = { ...report, report_id: 'edition-1', supersedes_report_id: null
 const summary = { ...reportSummaryFixture, title: report.title, summary: report.summary };
 
 const finishReadiness = new WeakMap<Page, () => Promise<void>>();
-const finishAuthentication = new WeakMap<Page, () => Promise<void>>();
 test.beforeEach(async ({ page }, testInfo) => { finishReadiness.set(page, await observeReportReadiness(page, testInfo)); });
 test.afterEach(async ({ page }) => {
-  await finishAuthentication.get(page)?.();
   await finishReadiness.get(page)?.();
 });
 
@@ -124,10 +122,14 @@ test('published report session scopes credentials and initializes local machine 
   await new Promise<void>(resolve => operator.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${(operator.address() as { port: number }).port}`;
   try {
-    finishAuthentication.set(page, await configurePublishedReportSession(page, {
+    await configurePublishedReportSession(page, {
       origin, token: 'proof-token', workspaceId: 'proof-workspace', clientId: 'proof-client',
-    }));
-    for (const path of ['/reports', '/api-other', '/api/zero-harness/rest-query?name=reports.get']) await page.goto(origin + path);
+    });
+    await page.goto(origin + '/reports');
+    await page.evaluate(async () => {
+      await (await fetch('/api-other')).text();
+      await (await fetch('/api/zero-harness/rest-query?name=reports.get')).text();
+    });
     expect(observed).toEqual([
       { path: '/reports', auth: undefined, workspace: undefined, client: undefined },
       { path: '/api-other', auth: undefined, workspace: undefined, client: undefined },
@@ -149,6 +151,7 @@ test('published report session keeps credentials off a redirected foreign origin
   await new Promise<void>(resolve => receiver.listen(0, '127.0.0.1', resolve));
   const receiverPort = (receiver.address() as { port: number }).port;
   const operator = createServer((request, response) => {
+    if (!request.url?.startsWith('/api/')) { response.end('<!doctype html><title>Redirect control</title>'); return; }
     observed.push(request.headers.authorization);
     response.writeHead(302, { location: `http://127.0.0.1:${receiverPort}/api/report` });
     response.end();
@@ -156,9 +159,12 @@ test('published report session keeps credentials off a redirected foreign origin
   await new Promise<void>(resolve => operator.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${(operator.address() as { port: number }).port}`;
   try {
-    finishAuthentication.set(page, await configurePublishedReportSession(page, { origin, token: 'redirect-proof-token', workspaceId: 'proof-workspace', clientId: 'proof-client' }));
-    await page.goto(`${origin}/api/report`);
-    expect(observed).toEqual(['Bearer redirect-proof-token', undefined]);
+    await configurePublishedReportSession(page, { origin, token: 'redirect-proof-token', workspaceId: 'proof-workspace', clientId: 'proof-client' });
+    await page.goto(`${origin}/reports`);
+    expect(await page.evaluate(async () => {
+      try { await fetch('/api/report'); return 'followed'; } catch { return 'refused'; }
+    })).toBe('refused');
+    expect(observed).toEqual(['Bearer redirect-proof-token']);
   } finally {
     operator.closeAllConnections(); receiver.closeAllConnections();
     await Promise.all([new Promise<void>(resolve => operator.close(() => resolve())),
@@ -227,7 +233,7 @@ test('published report text and standalone HTML stay identical', async ({ page }
     const clientId = process.env.PAPERCUSP_SID;
     if (!origin || !clientId) throw new Error('Live report proof requires OPERATOR_E2E_BASE_URL and PAPERCUSP_SID');
     const token = (await readFile(join(process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'superuser-token'), 'utf8')).trim();
-    finishAuthentication.set(page, await configurePublishedReportSession(page, { origin, token, workspaceId: expected.workspace_id, clientId }));
+    await configurePublishedReportSession(page, { origin, token, workspaceId: expected.workspace_id, clientId });
   }
   if (!input) {
     await stubReportFlags(page);

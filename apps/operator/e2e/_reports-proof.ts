@@ -21,9 +21,9 @@ export interface PublishedReportSession {
 
 /** Authenticate only this local operator's API, including the selected report query. */
 export async function configurePublishedReportSession(
-  page: Pick<Page, 'route' | 'unrouteAll' | 'addInitScript'>,
+  page: Pick<Page, 'addInitScript'>,
   session: PublishedReportSession,
-): Promise<() => Promise<void>> {
+): Promise<void> {
   const origin = new URL(session.origin).origin;
   const target = new URL(origin);
   if (!['http:', 'https:'].includes(target.protocol) ||
@@ -31,37 +31,23 @@ export async function configurePublishedReportSession(
       !session.token.trim() || !session.workspaceId || !session.clientId) {
     throw new Error('Published report proof requires an explicit local operator origin, token, workspace and client');
   }
-  const handler: Parameters<Page['route']>[1] = async route => {
-    const request = route.request();
-    const url = new URL(request.url());
-    if (url.origin !== origin || !url.pathname.startsWith('/api/') || request.resourceType() === 'eventsource') {
-      await route.fallback();
-      return;
-    }
-    // route.continue header overrides survive redirects, including to foreign origins.
-    // Return this one real response; a redirect gets a separate scope decision.
-    const operation = (async () => {
-      try {
-        const response = await route.fetch({ maxRedirects: 0, headers: { ...request.headers(),
-          authorization: `Bearer ${session.token}`,
-          'x-papercusp-workspace': session.workspaceId,
-          'x-papercusp-client': session.clientId,
-        } });
-        await route.fulfill({ response });
-      } catch (error) {
-        throw new Error(String(error).replaceAll(session.token, '[redacted]'));
-      }
-    })();
-    await operation;
-  };
-  await page.route('**/*', handler);
-  // Match browser-workspace.ts's existing per-window routing hint before SPA startup.
-  await page.addInitScript(`if (location.origin === ${JSON.stringify(origin)}) {
+  // Keep HTTP and cancellation in Chromium. Playwright route overrides propagate
+  // headers across redirects and race background requests during page teardown.
+  await page.addInitScript(`(() => {
+    const session = ${JSON.stringify({ ...session, origin })};
+    if (location.origin !== session.origin) return;
     window.sessionStorage.setItem('pc:selected-machine', 'local');
-  }`);
-  return async () => {
-    await page.unrouteAll({ behavior: 'wait' });
-  };
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (url.origin !== session.origin || !url.pathname.startsWith('/api/')) return nativeFetch(input, init);
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      headers.set('authorization', 'Bearer ' + session.token);
+      headers.set('x-papercusp-workspace', session.workspaceId);
+      headers.set('x-papercusp-client', session.clientId);
+      return nativeFetch(input, { ...init, headers, redirect: 'error' });
+    };
+  })()`);
 }
 
 /** Consume the complete reports:get receipt, rather than a hand-copied summary. */
