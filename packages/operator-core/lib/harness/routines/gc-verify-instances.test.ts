@@ -16,6 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { utimesSync, existsSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
+import { createRetentionPin } from '../../storage/retention-pins';
 import {
   defaultVerifyScanRoots,
   gcVerifyInstances as collectVerifyInstances,
@@ -30,7 +31,7 @@ import {
 // Every process census is injected here; tests never inspect or signal peers.
 const emptyHolders = async () => ({ complete: true, byPath: new Map<string, string[]>() });
 const gcVerifyInstances = (opts: Parameters<typeof collectVerifyInstances>[0] = {}) =>
-  collectVerifyInstances({ scanHolders: emptyHolders, ...opts });
+  collectVerifyInstances({ scanHolders: emptyHolders, retentionDir: join(root, 'retention'), ...opts });
 
 let root: string;
 const NOW = Date.parse('2026-08-01T12:00:00.000Z');
@@ -56,9 +57,11 @@ async function makeInstance(
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'gc-verify-test-'));
+  vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(root, 'locks'));
 });
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
 });
 
@@ -107,6 +110,87 @@ echo "stopped (display :${display}, port 33144)"
     utimesSync(dir, hoursAgo(200), hoursAgo(200));
     return dir;
   }
+
+  describe.each([false, true])('retention protection (dryRun=%s)', (dryRun) => {
+    it.each(['native', 'legacy', 'source'])('preserves a pinned %s directory before teardown or census', async (kind) => {
+      const dir = kind === 'legacy' ? await makeLegacyInstance() : kind === 'native' ? await makeNativeInstance() :
+        await makeInstance('source', { ageHours: 200, withStop: false });
+      createRetentionPin({ path: dir, owner: 'test-owner', reason: 'retained verifier evidence',
+        expiresAt: new Date(NOW + 3_600_000).toISOString() }, { dir: join(root, 'retention'), nowMs: NOW });
+      const stop = vi.fn(async () => {});
+      const scan = vi.fn(emptyHolders);
+      const result = await gcVerifyInstances({ roots: [root], now: NOW, dryRun, runStopScript: stop, scanHolders: scan });
+      expect(result.reaped).toBe(0);
+      expect(result.bytesFreed).toBe(0);
+      expect(result.instances[0].skipped).toMatch(/live retention pin/);
+      expect(stop).not.toHaveBeenCalled();
+      expect(scan).not.toHaveBeenCalled();
+      expect(existsSync(dir)).toBe(true);
+    });
+  });
+
+  it('protects a pinned descendant of the separate snapshot removed by generated stop.sh', async () => {
+    const snapshot = join(root, 'snapshot');
+    await mkdir(snapshot);
+    const evidence = join(snapshot, 'evidence.json');
+    await writeFile(evidence, 'retained');
+    const dir = await makeNativeInstance('144', 200, { OPERATOR_SOURCE_WORK: snapshot });
+    createRetentionPin({ path: evidence, owner: 'test-owner', reason: 'retained source evidence',
+      expiresAt: new Date(NOW + 3_600_000).toISOString() }, { dir: join(root, 'retention'), nowMs: NOW });
+    const stop = vi.fn(async () => { await rm(snapshot, { recursive: true }); });
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
+    expect(result.reaped).toBe(0);
+    expect(result.instances[0].skipped).toMatch(/live retention pin/);
+    expect(stop).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+    expect(readFileSync(evidence, 'utf8')).toBe('retained');
+  });
+
+  it('preserves candidates when the retention store is malformed', async () => {
+    const dir = await makeNativeInstance();
+    await mkdir(join(root, 'retention'));
+    await writeFile(join(root, 'retention', 'lease-broken.tsv'), 'broken');
+    const stop = vi.fn(async () => {});
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
+    expect(result.reaped).toBe(0);
+    expect(result.instances[0].skipped).toMatch(/retention pins unreadable/);
+    expect(stop).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('does not let an expired pin prevent safe collection', async () => {
+    const dir = await makeNativeInstance();
+    createRetentionPin({ path: dir, owner: 'test-owner', reason: 'expired evidence',
+      expiresAt: new Date(NOW - 1).toISOString() }, { dir: join(root, 'retention'), nowMs: NOW - 1000 });
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: async () => {} });
+    expect(result.reaped).toBe(1);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('preserves a source snapshot when its streaming size census exhausts the entry budget', async () => {
+    const dir = await makeInstance('large', { ageHours: 200, withStop: false, bytes: 20 });
+    await writeFile(join(dir, 'more'), 'more');
+    utimesSync(dir, hoursAgo(200), hoursAgo(200));
+    const scan = vi.fn(emptyHolders);
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, maxCensusEntries: 2, scanHolders: scan });
+    expect(result.reaped).toBe(0);
+    expect(result.bytesFreed).toBe(0);
+    expect(result.instances[0].skipped).toMatch(/census budget exhausted/);
+    expect(scan).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('preserves a source snapshot if the time budget expires during its holder scan', async () => {
+    const dir = await makeInstance('deadline', { ageHours: 200, withStop: false, bytes: 20 });
+    let wallNow = 100;
+    const scan = vi.fn(async () => { wallNow = 201; return emptyHolders(); });
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, clock: () => wallNow, budgetMs: 100, scanHolders: scan });
+    expect(result.reaped).toBe(0);
+    expect(result.bytesFreed).toBe(0);
+    expect(result.instances[0].skipped).toMatch(/census budget exhausted/);
+    expect(scan).toHaveBeenCalledOnce();
+    expect(existsSync(dir)).toBe(true);
+  });
 
   it.each([false, true])('collects only quiescent validated legacy metadata without executing old signals (dryRun=%s)', async (dryRun) => {
     const dir = await makeLegacyInstance();
@@ -464,7 +548,7 @@ describe('gc-verify-instances — reaping', () => {
     expect(res.reaped).toBe(2);
     expect(res.skipped).toBe(2);
     expect(stop).toHaveBeenCalledTimes(2);
-    const left = (await readdir(root)).sort();
+    const left = (await readdir(root)).filter((name) => name.startsWith('verify-tauri-headless.')).sort();
     expect(left).toEqual(['verify-tauri-headless.b-fresh', 'verify-tauri-headless.c-desktop']);
   });
 });

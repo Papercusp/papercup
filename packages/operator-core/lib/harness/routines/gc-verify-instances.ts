@@ -88,12 +88,12 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  * {@link defaultVerifyScanRoots} and the live-owner refusal below.
  */
 import { execFile } from 'node:child_process';
-import type { Dirent } from 'node:fs';
-import { lstat, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
+import { lstat, opendir, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { scanRetentionHolders } from '../../storage/disk-reclaim';
+import { withRetentionPinProtection } from '../../../../../scripts/lib/retention-pins.mjs';
 
 // Lazily promisified (NOT `const execFileAsync = promisify(execFile)` at module
 // scope): this module is reachable via a transitive import chain from test files
@@ -270,6 +270,13 @@ export interface GcVerifyInstancesOptions {
   isTaskTerminal?: (taskId: string) => Promise<boolean>;
   /** Host-wide positive-controlled evidence; a partial scan never permits deletion. */
   scanHolders?: typeof scanRetentionHolders;
+  /** Use the shared lease store and mutex, including during dry runs. */
+  retentionDir?: string;
+  /** Shared discovery/size census budget; exhaustion never authorizes removal. */
+  maxCensusEntries?: number;
+  budgetMs?: number;
+  /** Wall clock for the work budget, independent of the eligibility clock. */
+  clock?: () => number;
 }
 
 export interface ReapedInstance {
@@ -295,6 +302,7 @@ export interface GcVerifyInstancesResult {
   ttlHours: number;
   /** The roots actually scanned, so a run can be audited for what it could NOT see. */
   roots: string[];
+  budgetExhausted: boolean;
 }
 
 /**
@@ -366,28 +374,46 @@ async function stopScriptDisplay(dir: string, stopScript: string, metadataOnly =
   return Number.isSafeInteger(seat) ? `:${seat}` : null;
 }
 
-/** Recursive size of a directory, tolerant of races (a file vanishing mid-walk). */
-async function dirBytes(path: string): Promise<number> {
-  let total = 0;
-  // Dirent[] explicitly: `Awaited<ReturnType<typeof readdir>>` resolves to the
-  // BUFFER overload (Dirent<NonSharedBuffer>[]), so `e.name` typed as a Buffer and
-  // `.startsWith` did not exist on it.
-  let entries: Dirent[];
-  try {
-    entries = await readdir(path, { withFileTypes: true });
-  } catch {
-    return 0;
+interface CensusBudget {
+  entriesLeft: number;
+  deadline: number;
+  clock: () => number;
+  exhausted: boolean;
+}
+
+function checkBudget(budget: CensusBudget, consumeEntry = false): void {
+  if (budget.exhausted || budget.clock() >= budget.deadline || (consumeEntry && budget.entriesLeft-- <= 0)) {
+    budget.exhausted = true;
+    throw new Error('census budget exhausted — preserving directory');
   }
-  for (const e of entries) {
+}
+
+/** Stream entries so a large directory cannot allocate an unbounded Dirent array. */
+async function dirBytes(path: string, budget: CensusBudget): Promise<number> {
+  let total = 0;
+  checkBudget(budget);
+  const entries = await opendir(path);
+  for await (const e of entries) {
+    checkBudget(budget, true);
     const child = `${path}/${e.name}`;
     try {
-      if (e.isDirectory()) total += await dirBytes(child);
+      if (e.isDirectory()) total += await dirBytes(child, budget);
       else if (e.isFile()) total += (await stat(child)).size;
-    } catch {
-      /* vanished mid-walk — a concurrent run tearing itself down; not our problem */
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
   }
   return total;
+}
+
+/** Generated teardown can remove a separate source snapshot as well as WORK.
+ * Never execute a target that cannot be included in the same pin decision. */
+function stopScriptRemovalPaths(script: string): string[] | null {
+  const commands = [...script.matchAll(/\brm -rf\b/g)];
+  const targets = [...script.matchAll(/\brm -rf(?: --)? "([^"\n]*)"/g)];
+  if (commands.length !== targets.length) return null;
+  const paths = targets.map((m) => m[1]).filter(Boolean);
+  return paths.every((path) => isAbsolute(path) && !/[\x00\r\n$`\\]/.test(path)) ? paths : null;
 }
 
 async function defaultRunStopScript(stopScriptPath: string): Promise<void> {
@@ -410,6 +436,13 @@ export async function gcVerifyInstances(
       : VERIFY_INSTANCE_MAX_PER_RUN_DEFAULT;
   const dryRun = opts.dryRun === true;
   const now = opts.now ?? Date.now();
+  const clock = opts.clock ?? Date.now;
+  const budget: CensusBudget = {
+    clock,
+    exhausted: false,
+    deadline: clock() + (Number.isFinite(opts.budgetMs) && opts.budgetMs! > 0 ? opts.budgetMs! : 60_000),
+    entriesLeft: Number.isSafeInteger(opts.maxCensusEntries) && opts.maxCensusEntries! > 0 ? opts.maxCensusEntries! : 1_000_000,
+  };
   const runStopScript = opts.runStopScript ?? defaultRunStopScript;
   const quiescent = async (dir: string, provenance?: string): Promise<string | null> => {
     if (await runMarkerIsLive(dir)) return 'owner run still alive (.papercusp-run)';
@@ -443,20 +476,20 @@ export async function gcVerifyInstances(
   // offenders rather than nibbling whichever dirs readdir happened to return first.
   const candidates: Array<{ dir: string; mtimeMs: number }> = [];
   for (const root of roots) {
-    // Dirent[] explicitly: `Awaited<ReturnType<typeof readdir>>` resolves to the
-    // BUFFER overload (Dirent<NonSharedBuffer>[]), so `e.name` typed as a Buffer and
-    // `.startsWith` did not exist on it.
-    let entries: Dirent[];
+    if (budget.exhausted) break;
+    let entries: Awaited<ReturnType<typeof opendir>>;
     try {
-      entries = await readdir(root, { withFileTypes: true });
+      entries = await opendir(root);
     } catch {
       continue; // a missing root must never throw into the routine tick
     }
-    for (const e of entries) {
+    for await (const e of entries) {
+      try { checkBudget(budget, true); } catch { break; }
       if (!e.isDirectory() || !e.name.startsWith(VERIFY_WORK_DIR_PREFIX)) continue;
       const dir = join(root, e.name);
       try {
-        candidates.push({ dir, mtimeMs: (await stat(dir)).mtimeMs });
+        const entry = await lstat(dir);
+        if (entry.isDirectory()) candidates.push({ dir, mtimeMs: entry.mtimeMs });
       } catch {
         /* vanished between readdir and stat */
       }
@@ -476,6 +509,11 @@ export async function gcVerifyInstances(
       display: null,
       ...extra,
     });
+    try { checkBudget(budget); } catch {
+      skipped += 1;
+      instances.push(record({ skipped: 'census budget exhausted — preserving directory' }));
+      break;
+    }
 
     // A deadline reap kills the verifier before its EXIT trap can remove the
     // large snapshot. Its managed task id is recorded in both scratch roots.
@@ -504,7 +542,12 @@ export async function gcVerifyInstances(
     let stopScript: string;
     try {
       stopScript = await readFile(stopScriptPath, 'utf8');
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        skipped += 1;
+        instances.push(record({ skipped: 'stop.sh unreadable — preserving directory' }));
+        continue;
+      }
       // No stop.sh: a partially-created dir (the harness died mid-boot), or an operator
       // source snapshot whose teardown lives in a WORK dir elsewhere. There is nothing
       // to tear down, so the dir alone is safe to remove — UNLESS its owner still runs.
@@ -520,25 +563,17 @@ export async function gcVerifyInstances(
         instances.push(record({ skipped: 'owner run still alive (.papercusp-run)' }));
         continue;
       }
-      const bytes = await dirBytes(dir);
-      const refusal = await quiescent(dir);
-      if (refusal) {
-        skipped += 1;
-        instances.push(record({ skipped: refusal }));
-        continue;
-      }
-      if (!dryRun) {
-        try {
-          await rm(dir, { recursive: true, force: true });
-        } catch {
-          skipped += 1;
-          instances.push(record({ skipped: 'rm failed' }));
-          continue;
-        }
-      }
-      reaped += 1;
-      bytesFreed += bytes;
-      instances.push(record({ bytes }));
+      const row = await protectedCollect(dir, [], async () => {
+        const bytes = await dirBytes(dir, budget);
+        const refusal = await quiescent(dir);
+        if (refusal) return record({ skipped: refusal });
+        checkBudget(budget);
+        if (!dryRun) await rm(dir, { recursive: true, force: true });
+        return record({ bytes });
+      }, record);
+      instances.push(row);
+      if (row.skipped) skipped += 1;
+      else { reaped += 1; bytesFreed += row.bytes; }
       continue;
     }
 
@@ -567,57 +602,73 @@ export async function gcVerifyInstances(
       continue;
     }
 
-    const bytes = await dirBytes(dir);
-    if (legacy) {
-      const helperPath = join(dir, 'stop-xvfb.sh');
-      const helper = await readFile(helperPath, 'utf8').catch(() => '');
-      const provenance = /^EXPECTED_PROVENANCE=([a-zA-Z0-9:._-]+)$/m.exec(helper)?.[1];
-      const refusal = provenance ? await quiescent(dir, provenance) : 'missing legacy provenance';
-      // Repeat metadata validation after the scan. Replaced or newly live runs
-      // do not inherit the earlier directory's deletion authority.
-      if (refusal || await readFile(stopScriptPath, 'utf8').catch(() => '') !== stopScript ||
-          await readFile(helperPath, 'utf8').catch(() => '') !== helper ||
-          await stopScriptDisplay(dir, stopScript, true) !== display) {
-        skipped += 1;
-        instances.push(record({ display, skipped: refusal ?? 'legacy metadata changed — preserving directory' }));
-        continue;
-      }
-      if (!dryRun) {
-        try { await rm(dir, { recursive: true, force: true }); }
-        catch {
-          skipped += 1;
-          instances.push(record({ display, skipped: 'rm failed for quiescent legacy directory' }));
-          continue;
-        }
-      }
-      reaped += 1;
-      bytesFreed += bytes;
-      instances.push(record({ display, bytes, cleanup: 'quiescent-legacy' }));
+    const removalPaths = legacy ? [] : stopScriptRemovalPaths(stopScript);
+    if (!removalPaths) {
+      skipped += 1;
+      instances.push(record({ display, skipped: 'unverifiable teardown removal target — preserving directory' }));
       continue;
     }
-    if (!dryRun) {
-      // Teardown's nonzero status may be the identity guard preserving a live
-      // source holder, or a timeout before cleanup finished. Keep its helper and
-      // evidence for a later safe retry; a failed stop is never deletion authority.
-      try {
-        await runStopScript(stopScriptPath);
-      } catch {
-        skipped += 1;
-        instances.push(record({ display, skipped: 'teardown failed — preserving directory' }));
-        continue;
+    const row = await protectedCollect(dir, removalPaths, async () => {
+      const bytes = await dirBytes(dir, budget);
+      if (legacy) {
+        const helperPath = join(dir, 'stop-xvfb.sh');
+        const helper = await readFile(helperPath, 'utf8').catch(() => '');
+        const provenance = /^EXPECTED_PROVENANCE=([a-zA-Z0-9:._-]+)$/m.exec(helper)?.[1];
+        const refusal = provenance ? await quiescent(dir, provenance) : 'missing legacy provenance';
+        // Repeat metadata validation after the scan. Replaced or newly live runs
+        // do not inherit the earlier directory's deletion authority.
+        if (refusal || await readFile(stopScriptPath, 'utf8').catch(() => '') !== stopScript ||
+            await readFile(helperPath, 'utf8').catch(() => '') !== helper ||
+            await stopScriptDisplay(dir, stopScript, true) !== display) {
+          return record({ display, skipped: refusal ?? 'legacy metadata changed — preserving directory' });
+        }
+        checkBudget(budget);
+        if (!dryRun) {
+          try { await rm(dir, { recursive: true, force: true }); }
+          catch {
+            return record({ display, skipped: 'rm failed for quiescent legacy directory' });
+          }
+        }
+        return record({ display, bytes, cleanup: 'quiescent-legacy' });
       }
-      try {
-        await rm(dir, { recursive: true, force: true });
-      } catch {
-        skipped += 1;
-        instances.push(record({ display, skipped: 'rm failed after teardown' }));
-        continue;
+      if (await readFile(stopScriptPath, 'utf8').catch(() => '') !== stopScript ||
+          await stopScriptDisplay(dir, stopScript) !== display) {
+        return record({ display, skipped: 'teardown metadata changed — preserving directory' });
       }
-    }
-    reaped += 1;
-    bytesFreed += bytes;
-    instances.push(record({ display, bytes }));
+      checkBudget(budget);
+      if (!dryRun) {
+        // Failed teardown is never deletion authority.
+        try {
+          await runStopScript(stopScriptPath);
+        } catch {
+          return record({ display, skipped: 'teardown failed — preserving directory' });
+        }
+        checkBudget(budget);
+        try {
+          await rm(dir, { recursive: true, force: true });
+        } catch {
+          return record({ display, skipped: 'rm failed after teardown' });
+        }
+      }
+      return record({ display, bytes });
+    }, record);
+    instances.push(row);
+    if (row.skipped) skipped += 1;
+    else { reaped += 1; bytesFreed += row.bytes; }
   }
 
-  return { scanned, reaped, bytesFreed, instances, skipped, dryRun, ttlHours, roots };
+  return { scanned, reaped, bytesFreed, instances, skipped, dryRun, ttlHours, roots, budgetExhausted: budget.exhausted };
+
+  async function protectedCollect(dir: string, otherPaths: string[], collect: () => Promise<ReapedInstance>,
+    record: (extra: Partial<ReapedInstance>) => ReapedInstance): Promise<ReapedInstance> {
+    try {
+      return await withRetentionPinProtection(async (isPinned) => {
+        checkBudget(budget);
+        if ([dir, ...otherPaths].some(isPinned)) return record({ skipped: 'live retention pin — preserving directory' });
+        return collect();
+      }, { dir: opts.retentionDir, nowMs: now });
+    } catch (err) {
+      return record({ skipped: `collection refused — preserving directory: ${(err as Error).message}` });
+    }
+  }
 }
