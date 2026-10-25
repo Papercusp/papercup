@@ -441,6 +441,7 @@ describe('Remote access screen', () => {
     const phone = screen.getAllByTestId('remote-access-entry')[0]!;
     fireEvent.click(phone.querySelector('[data-action="pause"]')!);
     await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]!.url).toBe('/api/remote-access/pause');
     expect(posts[0]!.body).toEqual({ workspaceId: 'ws1', id: 'dev-phone', kind: 'mobile', paused: true });
   });
 });
