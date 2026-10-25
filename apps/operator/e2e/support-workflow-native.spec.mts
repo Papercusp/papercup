@@ -112,7 +112,7 @@ async function submitNativeSupport(selection: NativeFixture) {
           try {
             const body = await response.clone().json();
             const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}');
-            const data = payload.data;
+            const data = payload;
             const leg = data?.legs?.organization;
             window.__supportSearchDiagnostic = {
               httpStatus: response.status, ok: body.ok, isError: body.result?.isError,
