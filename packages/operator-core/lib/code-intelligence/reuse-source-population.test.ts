@@ -4,6 +4,8 @@ import { execFileSync, fork } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
+import { collectReuseSourcePopulation } from './reuse-source-population';
+import { collectReuseSourcePopulationOffthread } from './reuse-measurement';
 
 const repo = resolve(__dirname, '../../../..');
 
@@ -34,7 +36,7 @@ describe('finite code-intelligence worker source collection', () => {
     expect(readFileSync(worker, 'utf8')).not.toContain('sourceGraphQualification');
   });
 
-  it('collects the committed Git window over plain Node IPC without an operator or database', async () => {
+  it('collects the same committed Git window inline, over plain Node IPC and through the public wrapper', async () => {
     const root = join(dir, 'source');
     execFileSync('git', ['init', '-q', root]);
     const git = (date: string, ...args: string[]) => execFileSync('git', ['-C', root, ...args], {
@@ -68,6 +70,13 @@ describe('finite code-intelligence worker source collection', () => {
       expect(result.population).toMatchObject({ addedNonGeneratedLines: 2, duplicateAddedLines: 0,
         lineCensusComplete: true, callCensusComplete: true, method: { sourcePopulation: ['a.ts'] } });
       expect(result.population.calls).toEqual([expect.objectContaining({ from: 'a.ts', to: 'a.ts', resolved: true })]);
+      const start = '2026-10-01T00:30:00Z', end = '2026-10-01T01:30:00Z';
+      const inline = await collectReuseSourcePopulation(root, start, end, dir);
+      expect(result.population).toEqual(inline);
+      // Exercise the public supervisor against these emitted working-tree bytes.
+      // A source-loader fallback could otherwise test a different committed worker.
+      const offthread = await collectReuseSourcePopulationOffthread(root, start, end, { workerPath: worker });
+      expect(offthread).toEqual(inline);
     } finally { child.kill(); }
   });
 });
