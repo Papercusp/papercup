@@ -2155,15 +2155,18 @@ prepare_verifier_spa() {
     export VITE_BUILD_OUT_ROOT="$build_root" VITE_BUILD_LOG="${VH_PHASE_DIR:-$WORK}/spa-build.log" \
       PAPERCUSP_RETAIN_DIST_CHUNKS=0 \
       PAPERCUSP_VITE_OUT_DIR="$build_root/dist" PAPERCUSP_VITE_FINAL_OUT_DIR="$build_root/dist"
-    bash scripts/pc-heavy.sh -- npm --workspace @papercusp/operator-vite run prebuild || exit $?
-    # Prebuild materializes runtime mirrors inside the archive. Validate the
-    # source boundary NOW, before spending a full Vite build on a tree that the
-    # subsequent host bundler would reject. Do not regenerate the source receipt.
-    node scripts/source-preview.mjs verifier-verify \
-      --out "$OPERATOR_SOURCE_ROOT" --receipt "$VERIFY_TAURI_SOURCE_RECEIPT" \
-      --runtime-artifacts || exit $?
-    # npm still runs the explicit build script, without repeating prebuild.
-    bash scripts/pc-heavy.sh -- npm --ignore-scripts --workspace @papercusp/operator-vite run build
+    # Admit this sequential pipeline once. Releasing the slot after asset
+    # prebuild used to send the same private preparation through a second
+    # queue, consuming the native task deadline before assertions could run.
+    bash scripts/pc-heavy.sh -- bash -c '
+      npm --workspace @papercusp/operator-vite run prebuild || exit $?
+      # Prebuild materializes runtime mirrors inside the archive. Validate the
+      # source boundary before the Vite build, keeping the original receipt.
+      node scripts/source-preview.mjs verifier-verify \
+        --out "$1" --receipt "$2" --runtime-artifacts || exit $?
+      # Run the explicit build without repeating npm lifecycle prebuild.
+      npm --ignore-scripts --workspace @papercusp/operator-vite run build
+    ' verifier-spa "$OPERATOR_SOURCE_ROOT" "$VERIFY_TAURI_SOURCE_RECEIPT"
   ) || return $?
   if [ ! -s "$build_root/dist/index.html" ] || [ ! -d "$build_root/dist/assets" ] \
     || [ -z "$(find "$build_root/dist/assets" -type f -size +0c -print -quit)" ]; then
