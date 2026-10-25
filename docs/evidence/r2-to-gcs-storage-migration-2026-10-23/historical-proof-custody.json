@@ -428,14 +428,15 @@
   },
   "state": {
     "trackedOriginalsRemoved": false,
-    "trackedGeneratedFilesRemoved": 400,
-    "trackedGeneratedFilesRemaining": 1949,
+    "trackedGeneratedFilesRemoved": 2349,
+    "trackedGeneratedFilesRemaining": 0,
     "supportingEvidenceDocumentsRetained": 13,
     "readerRelocationQualified": true,
     "notes": [
       "Original raw bytes and compiler-emitted paths remain unchanged in external custody.",
       "The original codeRef equality check remains enforced. Retained hash-addressed artifacts do not invent missing historical references.",
-      "Generated sidecar removal is partial; the first 400 manifest-ordered eligible files were removed after hash recheck and exact-byte reader access verification.",
+      "All 2349 manifest-ordered generated sidecars, including four pending native-process files, were removed after per-batch source/archive hash rechecks. The 13 supporting evidence documents remain in source.",
+      "Post-removal readback through readNativeArtifactBytes verified 2362 archived originals, 15428 retained pins, 2922 exact evaluator references and 10140 native artifacts. Historical missing codeRef observations remain partial.",
       "Supporting evidence documents remain in source. Original P003 qualification remains pending."
     ]
   }
