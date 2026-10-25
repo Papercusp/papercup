@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -11,6 +12,47 @@ const { nativeVerifierEnv, preflightNativeVerifier, desktopPortalNativeTiming,
 const { admitTaskDeadline } = await import(pathToFileURL(resolve(root, 'scripts/lib/task-deadline.mjs')).href);
 
 describe('real native verifier process boundary', () => {
+  it('uses the physical donor while keeping a retained shadow and its acceptance source pinned', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'native-donor-'));
+    const donor = join(directory, 'installed');
+    const source = join(directory, 'retained');
+    const git = (args: string[], cwd = donor) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+    try {
+      mkdirSync(donor);
+      git(['init', '--quiet']);
+      writeFileSync(join(donor, 'acceptance.txt'), 'committed source');
+      git(['add', 'acceptance.txt']);
+      git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'native source']);
+      const sha = git(['rev-parse', 'HEAD']);
+      git(['clone', '--quiet', '--local', donor, source]);
+      writeFileSync(join(source, '.git/lint-as-committed-owner.json'), JSON.stringify({ sha, sourceRepoRoot: donor }));
+      const metadata = 'apps/operator-public/node_modules/.mf';
+      mkdirSync(join(donor, metadata), { recursive: true });
+      mkdirSync(join(source, 'apps/operator-public/node_modules'), { recursive: true });
+      symlinkSync(join(donor, metadata), join(source, metadata));
+      mkdirSync(join(donor, 'node_modules'));
+      writeFileSync(join(donor, 'acceptance.txt'), 'mutable donor source');
+      const parent = { PAPERCUSP_REPO_DIR: source };
+      const child = nativeVerifierEnv(parent, { repoRoot: source });
+      const observed = JSON.parse(execFileSync(process.execPath, ['-e',
+        'const cp=require("node:child_process");console.log(JSON.stringify({donor:process.env.PAPERCUSP_REPO_DIR,source:cp.execFileSync("git",["show",process.env.VERIFY_TAURI_SOURCE_REF+":acceptance.txt"],{encoding:"utf8"})}))'],
+      { cwd: source, env: child, encoding: 'utf8' }));
+      expect(observed).toEqual({ donor: realpathSync(donor), source: 'committed source' });
+      expect(child.VERIFY_TAURI_SOURCE_REF).toBe(sha);
+      expect(child.VERIFY_TAURI_SOURCE_INPUTS).toContain('apps/operator/bin/desktop-portal-native.test.ts');
+      expect(parent.PAPERCUSP_REPO_DIR).toBe(source);
+      expect(lstatSync(join(source, metadata)).isSymbolicLink()).toBe(true);
+      expect(lstatSync(join(donor, metadata)).isDirectory()).toBe(true);
+      expect(() => nativeVerifierEnv({ VERIFY_TAURI_SOURCE_REF: 'wrong' }, { repoRoot: source }))
+        .toThrow('source ref must match');
+      const noInstall = join(directory, 'not-installed');
+      mkdirSync(noInstall);
+      expect(() => nativeVerifierEnv({}, { repoRoot: noInstall })).toThrow('physical installed dependency donor');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('preserves the rig allocation after parent setup without extending the inherited deadline', () => {
     const start = 1_000_000;
     const setupEnd = start + 115_000; // native14's measured readiness/PG setup
