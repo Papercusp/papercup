@@ -3072,6 +3072,45 @@ describe('ptool --json output-envelope unwrap (EI-22212780570913684)', () => {
     }
   });
 
+  it.each([true, false])('refuses an unavailable reference in raw=%s output without treating its preview as proof', async (raw) => {
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = { content: [{ type: 'text', text: JSON.stringify({
+        schemaVersion: 'papercusp.output-envelope/v1',
+        content: [{ kind: 'reference', uri: 'papercusp://scratch-spool/expired', preview: '{"ok":true}' }],
+      }) }] };
+      const readReference = vi.fn(async () => ({ ok: false, reason: 'expired' }));
+      expect(await printResult(result, { raw, readReference })).toBe(1);
+      expect(errors.mock.calls.flat().join(' ')).toContain('may have executed');
+      expect(readReference).toHaveBeenCalledTimes(1);
+    } finally {
+      printed.mockRestore();
+      errors.mockRestore();
+    }
+  });
+
+  it('rejects recovered bytes that differ from the reference digest', async () => {
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const payload = Buffer.from('{"ok":true}');
+      const result = { content: [{ type: 'text', text: JSON.stringify({
+        schemaVersion: 'papercusp.output-envelope/v1',
+        content: [{ kind: 'reference', uri: 'papercusp://scratch-memory/corrupt', sha256: '0'.repeat(64) }],
+      }) }] };
+      const readReference = vi.fn(async () => ({
+        ok: true, encoding: 'base64', data: payload.toString('base64'), byte_offset: 0,
+        byte_length: payload.length, total_bytes: payload.length, eof: true, next_cursor: null,
+      }));
+      expect(await printResult(result, { raw: true, readReference })).toBe(1);
+      expect(errors.mock.calls.flat().join(' ')).toContain('outcome unknown');
+    } finally {
+      printed.mockRestore();
+      errors.mockRestore();
+    }
+  });
+
   it('reports an unavailable or inconsistent recovery as unknown outcome, never successful JSON', async () => {
     const uri = 'papercusp://scratch-memory/unavailable-release';
     const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -4077,10 +4116,10 @@ describe('ptool SDK import install-race tolerance (EI-21860372620642128)', () =>
         const importing = importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', {
           doImport,
           recoverOnInstallWait: true,
-          loadInstallMutex: async () => [
+          loadInstallMutex: vi.fn().mockResolvedValue([
             { withFsMutexRead },
             { repoLockName: () => 'npm-install-scripted-recovery' },
-          ],
+          ]),
         }).then(
           () => { outcome = { status: 'imported' }; },
           (error: Error) => { outcome = { status: 'declined', error }; },

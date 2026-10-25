@@ -1490,6 +1490,51 @@ async function readSpilledPayload(path) {
   return JSON.parse(lines[lines.length - 1]);
 }
 
+/** Recover exact bytes through the authenticated read door when a reference
+ * has no local file. Previews never supply a tool verdict. */
+async function readReferencePayload(part, envelope, readReference) {
+  const uri = part.uri;
+  if (typeof uri !== 'string' || !/^papercusp:\/\/scratch(?:-memory|-spool)?\//.test(uri)) return null;
+  const first = envelope?._projection?.cursor?.args;
+  let cursor = first?.uri === uri ? first : { uri, byte_offset: 0, byte_limit: 3072 };
+  if (cursor.byte_offset !== 0) return null;
+  const chunks = [];
+  let offset = 0, total, bodyOffset = 0;
+  for (let pageNumber = 0; pageNumber < 8192; pageNumber++) {
+    const response = await readReference(cursor);
+    if (response?.isError) return null;
+    const page = response?.structuredContent ?? tryParseJsonObject(resultToText(response, { raw: true })) ?? response;
+    if (page?.ok !== true || page.encoding !== 'base64' || typeof page.data !== 'string'
+      || page.byte_offset !== offset || !Number.isSafeInteger(page.total_bytes)
+      || page.total_bytes < 0 || page.total_bytes > 24 * 1024 * 1024
+      || (total !== undefined && total !== page.total_bytes)) return null;
+    total = page.total_bytes;
+    const bytes = Buffer.from(page.data, 'base64');
+    if (bytes.toString('base64') !== page.data || bytes.length !== page.byte_length
+      || bytes.length === 0 || offset + bytes.length > total) return null;
+    if (pageNumber === 0 && page.reference?.bodyOffsetInPayload !== undefined) {
+      bodyOffset = page.reference.bodyOffsetInPayload;
+      if (!Number.isSafeInteger(bodyOffset) || bodyOffset < 0 || bodyOffset >= total) return null;
+    }
+    chunks.push(bytes);
+    offset += bytes.length;
+    if (page.eof === true) {
+      if (offset !== total || page.next_cursor != null) return null;
+      const payload = Buffer.concat(chunks);
+      if (part.sha256 && createHash('sha256').update(payload).digest('hex') !== part.sha256) return null;
+      const text = payload.subarray(bodyOffset).toString('utf8');
+      const parsed = tryParseJsonObject(text);
+      if (parsed) return parsed;
+      const lastLine = text.trim().split('\n').at(-1);
+      return tryParseJsonObject(lastLine);
+    }
+    const next = page.next_cursor;
+    if (next?.tool !== 'capability:read' || next.args?.uri !== uri || next.args.byte_offset !== offset) return null;
+    cursor = next.args;
+  }
+  return null;
+}
+
 /**
  * Unwrap a parsed `ptool --json` reply down to the tool's own result, when it
  * is actually an OUTPUT ENVELOPE (`schemaVersion: papercusp.output-envelope/v1`)
@@ -1515,8 +1560,10 @@ async function readSpilledPayload(path) {
  * "nothing changed" via `!==`). Returns the envelope UNCHANGED when nothing
  * inside it parses: an unreadable reply must stay unreadable, never become a
  * fabricated success. `readSpill`/`fileExists` are injectable for tests.
+ * @param {any} parsed
+ * @param {{ readSpill?: typeof readSpilledPayload, fileExists?: typeof existsSync, env?: NodeJS.ProcessEnv, readReference?: (args: Record<string, unknown>) => Promise<any> }} [options]
  */
-export async function unwrapOutputEnvelope(parsed, { readSpill = readSpilledPayload, fileExists = existsSync, env = process.env } = {}) {
+export async function unwrapOutputEnvelope(parsed, { readSpill = readSpilledPayload, fileExists = existsSync, env = process.env, readReference } = {}) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return parsed;
   if (parsed.schemaVersion !== OUTPUT_ENVELOPE_SCHEMA_VERSION) return parsed;
   if (!Array.isArray(parsed.content)) return parsed;
@@ -1541,16 +1588,19 @@ export async function unwrapOutputEnvelope(parsed, { readSpill = readSpilledPayl
         paths.push(scratchUriToPath(part.uri, { ...env, PAPERCUSP_HOME: papercuspHome({}) }));
       }
       const path = [...new Set(paths)].find(candidate => candidate && fileExists(candidate));
-      if (!path) continue;
       // The spilled payload is itself an envelope: one of its content parts
       // is the tool's JSON and the rest is advisory prose ("See also: ..."),
       // which is why this scans for a parseable object instead of trusting
       // position (the payload is not always content[0]).
       let spilled;
       try {
-        spilled = await readSpill(path);
+        try { spilled = path ? await readSpill(path) : null; } catch { spilled = null; }
+        if (!spilled && readReference) spilled = await readReferencePayload(part, parsed, readReference);
       } catch {
         continue;
+      }
+      if (spilled && Object.prototype.hasOwnProperty.call(spilled, 'ok')) {
+        return mergeUnwrappedMetadata(spilled, parsed._meta);
       }
       for (const spilledPart of spilled?.content ?? []) {
         const candidate = tryParseJsonObject(spilledPart?.text);
@@ -4375,16 +4425,16 @@ export function toolNotOkReason(text) {
  * envelope is unwrapped (possibly reading a spill file off disk) before it is
  * ever handed to a `.ok`-checking caller — see {@link unwrapOutputEnvelope}.
  * @param {unknown} result
- * @param {{ raw?: boolean, deliveryProbe?: () => (Error | null), env?: NodeJS.ProcessEnv }} [options]
+ * @param {{ raw?: boolean, deliveryProbe?: () => (Error | null), env?: NodeJS.ProcessEnv, readReference?: (args: Record<string, unknown>) => Promise<any> }} [options]
  * @returns {Promise<number>}
  */
-export async function printResult(result, { raw, deliveryProbe = stdoutDeliveryError, env = process.env } = {}) {
+export async function printResult(result, { raw, deliveryProbe = stdoutDeliveryError, env = process.env, readReference } = {}) {
   let text = resultToText(result, { raw });
   const rawProjectionWarning = raw ? leadingProjectionWarning(result) : '';
-  if (raw) {
+  {
     const parsed = tryParseJsonObject(text);
     if (parsed) {
-      const unwrapped = await unwrapOutputEnvelope(parsed, { env });
+      const unwrapped = await unwrapOutputEnvelope(parsed, { env, readReference });
       if (unwrapped !== parsed) text = JSON.stringify(unwrapped);
     }
   }
@@ -4417,6 +4467,11 @@ export async function printResult(result, { raw, deliveryProbe = stdoutDeliveryE
       `ptool: the tool answered ok:false (${notOk}). The result above is complete; exiting ${PTOOL_TOOL_NOT_OK_EXIT} so a \`|| fail\` guard sees the refusal. (EI-24654733539966460)`,
     );
     return PTOOL_TOOL_NOT_OK_EXIT;
+  }
+  const parsed = tryParseJsonObject(safeText);
+  if (parsed?.schemaVersion === OUTPUT_ENVELOPE_SCHEMA_VERSION && !Object.prototype.hasOwnProperty.call(parsed, 'ok')) {
+    console.error('ptool: result reference could not be recovered; outcome unknown. The tool may have executed. Read authoritative state before retrying a write.');
+    return 1;
   }
   return 0;
 }
@@ -4612,7 +4667,11 @@ async function main() {
     'tools-call', () => callToolWithReplayRecovery(callClient, params, options),
   );
   const tracedPrintResult = (result, options) => withInvocationPhase(
-    'result-output', () => printResult(result, options),
+    'result-output', () => printResult(result, {
+      ...options,
+      readReference: (args) => client.callTool({ name: 'capability:read', arguments: args }, undefined,
+        { timeout: PTOOL_CALL_TOOL_TIMEOUT_MS }),
+    }),
   );
   const sdkRecoveryKey = args.idempotencyKey || randomUUID();
   const buildSdkRecoveryInvocation = () => buildMcpCallRecoveryInvocation({

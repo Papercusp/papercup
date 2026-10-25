@@ -2034,6 +2034,8 @@ async function readFailureDetails(path: string, root: string): Promise<ReturnTyp
  */
 export async function recoverCompletedRunAfterBudget(opts: {
   output: string;
+  /** Node group protocol, kept separately from the bounded diagnostic tail. */
+  nodeTestOutput?: string;
   dir: string;
   root: string;
   runId: string;
@@ -2052,7 +2054,7 @@ export async function recoverCompletedRunAfterBudget(opts: {
     run = mergeDistilledRuns(
       withNodeTestGroupRuns(
         reportTexts.map((text) => distillVitestRun(text, opts.root, { maxFailures: opts.maxFailures, failureDetails })),
-        opts.output,
+        opts.nodeTestOutput ?? opts.output,
         opts.files,
         opts.maxFailures === undefined ? {} : { maxFailures: opts.maxFailures },
       ),
@@ -2090,6 +2092,8 @@ export interface RouterOutcome extends TestProcessOutcome {
   aborted: boolean;
   spawnError?: string;
   output: string;
+  /** Node group protocol, kept separately from the bounded diagnostic tail. */
+  nodeTestOutput?: string;
   /** Complete file-backed stdout/stderr, retained for every verdict. */
   outputLogPaths?: string[];
   actualDemand?: ResourceDemand;
@@ -2131,6 +2135,7 @@ const ROUTER_PRIORITY_DIAGNOSTIC_RE =
 export interface BoundedRouterOutputCapture {
   append(channel: 'stdout' | 'stderr', value: Buffer | string): void;
   finish(): string;
+  nodeTestOutput(): string;
 }
 
 /**
@@ -2154,11 +2159,23 @@ export function createBoundedRouterOutputCapture(
   const remainders: Record<'stdout' | 'stderr', string> = { stdout: '', stderr: '' };
   const diagnosticLines: string[] = [];
   const seenDiagnostics = new Set<string>();
+  const nodeProtocol: string[] = [];
+  let inNodeGroup = false;
   let tail = '';
   let finished: string | null = null;
 
-  const retainLine = (line: string) => {
+  const retainLine = (line: string, channel: 'stdout' | 'stderr') => {
     const normalized = line.replace(ANSI_SGR, '').trimEnd();
+    // A group's stdout is execution evidence. Stderr diagnostics can evict it
+    // from the display tail, but must never erase its per-file result.
+    if (channel === 'stdout') {
+      if (/^ROUTE cwd=/.test(normalized)) {
+        inNodeGroup = /^ROUTE cwd=\S+ runner=node:test\s*$/.test(normalized);
+        nodeProtocol.push(normalized);
+      } else if (inNodeGroup && /^(?:\s+requested\s|\s*(?:ℹ|#)\s*(?:tests|pass|fail|skipped|todo|duration_ms)\s+\d|\s*not ok\b|TEST_FILE_(?:GROUP_RESULT|RESULT)\b)/u.test(normalized)) {
+        nodeProtocol.push(normalized);
+      }
+    }
     if (!ROUTER_PRIORITY_DIAGNOSTIC_RE.test(normalized) || seenDiagnostics.has(normalized)) return;
     seenDiagnostics.add(normalized);
     diagnosticLines.push(normalized.slice(0, 1_200));
@@ -2171,12 +2188,15 @@ export function createBoundedRouterOutputCapture(
       tail = (tail + text).slice(-tailChars);
       const parts = (remainders[channel] + text).split(/\r?\n/);
       remainders[channel] = parts.pop() ?? '';
-      for (const line of parts) retainLine(line);
+      for (const line of parts) retainLine(line, channel);
+    },
+    nodeTestOutput() {
+      return nodeProtocol.join('\n');
     },
     finish() {
       if (finished !== null) return finished;
       for (const channel of ['stdout', 'stderr'] as const) {
-        if (remainders[channel] !== '') retainLine(remainders[channel]);
+        if (remainders[channel] !== '') retainLine(remainders[channel], channel);
         remainders[channel] = '';
       }
       const normalizedTail = tail.replace(ANSI_SGR, '');
@@ -2685,8 +2705,8 @@ export function runTestProcess(
               }
               if (onAbort) childSignal.removeEventListener('abort', onAbort);
               void sampler.stop({ diskBytes: outputBytes }).then(
-                (actualDemand) => resolve({ ...outcome, outputLogPaths: [routerOutputPath, routerStderrPath], actualDemand }),
-                () => resolve({ ...outcome, outputLogPaths: [routerOutputPath, routerStderrPath], actualDemand: plannedDemand }),
+                (actualDemand) => resolve({ ...outcome, nodeTestOutput: outputCapture.nodeTestOutput(), outputLogPaths: [routerOutputPath, routerStderrPath], actualDemand }),
+                () => resolve({ ...outcome, nodeTestOutput: outputCapture.nodeTestOutput(), outputLogPaths: [routerOutputPath, routerStderrPath], actualDemand: plannedDemand }),
               );
             };
             const launchTimeoutMs = Math.max(1, Math.min(childTimeoutMs, remainingTimeoutMs()));
@@ -3905,6 +3925,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     if (outcome.timedOut) {
       const completed = await recoverCompletedRunAfterBudget({
         output: outcome.output,
+        nodeTestOutput: outcome.nodeTestOutput,
         dir,
         root,
         runId,
@@ -4064,7 +4085,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
 
     const distilledRuns = withNodeTestGroupRuns(
       reportTexts.map((text) => distillVitestRun(text, root, { maxFailures: opts.maxFailures, failureDetails })),
-      outcome.output,
+      outcome.nodeTestOutput ?? outcome.output,
       pathResolution.files,
       opts.maxFailures !== undefined ? { maxFailures: opts.maxFailures } : {},
     );

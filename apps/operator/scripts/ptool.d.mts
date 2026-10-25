@@ -407,11 +407,14 @@ export function scratchUriToPath(uri: any, env?: NodeJS.ProcessEnv): string;
  * "nothing changed" via `!==`). Returns the envelope UNCHANGED when nothing
  * inside it parses: an unreadable reply must stay unreadable, never become a
  * fabricated success. `readSpill`/`fileExists` are injectable for tests.
+ * @param {any} parsed
+ * @param {{ readSpill?: typeof readSpilledPayload, fileExists?: typeof existsSync, env?: NodeJS.ProcessEnv, readReference?: (args: Record<string, unknown>) => Promise<any> }} [options]
  */
-export function unwrapOutputEnvelope(parsed: any, { readSpill, fileExists, env }?: {
-    readSpill?: typeof readSpilledPayload | undefined;
-    fileExists?: typeof existsSync | undefined;
-    env?: NodeJS.ProcessEnv | undefined;
+export function unwrapOutputEnvelope(parsed: any, { readSpill, fileExists, env, readReference }?: {
+    readSpill?: typeof readSpilledPayload;
+    fileExists?: typeof existsSync;
+    env?: NodeJS.ProcessEnv;
+    readReference?: (args: Record<string, unknown>) => Promise<any>;
 }): Promise<any>;
 /** Resolve the bearer-token files in precedence order. Pure and injectable for
  * tests: an explicit CLI path wins over the environment. When an isolated
@@ -984,10 +987,10 @@ export function toolNotOkReason(text: string): string | null;
  * envelope is unwrapped (possibly reading a spill file off disk) before it is
  * ever handed to a `.ok`-checking caller — see {@link unwrapOutputEnvelope}.
  * @param {unknown} result
- * @param {{ raw?: boolean, deliveryProbe?: () => (Error | null), env?: NodeJS.ProcessEnv }} [options]
+ * @param {{ raw?: boolean, deliveryProbe?: () => (Error | null), env?: NodeJS.ProcessEnv, readReference?: (args: Record<string, unknown>) => Promise<any> }} [options]
  * @returns {Promise<number>}
  */
-export function printResult(result: unknown, { raw, deliveryProbe, env }?: unknown): Promise<number>;
+export function printResult(result: unknown, { raw, deliveryProbe, env, readReference }?: unknown): Promise<number>;
 /** @typedef {Record<string, string | undefined>} EnvironmentMap */
 export const OPERATOR_URL_PROVENANCE_ENV: "PAPERCUSP_OPERATOR_URL_PROVENANCE";
 export const LAUNCHER_OPERATOR_URL_PROVENANCE: "psu-launcher";

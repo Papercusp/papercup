@@ -222,7 +222,9 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
           for (const item of Array.isArray(captured.input) ? captured.input : []) {
             if (item.type === 'custom_tool_call_output' && item.call_id === `call_nested_surface_${surface}`) {
               readNested(item.output);
-              expect(JSON.stringify(item.output)).toContain(managedCallMarker);
+              const toolOutput = JSON.stringify(item.output);
+              expect(toolOutput, `Managed execution reply for ${surface}: ${toolOutput.slice(0, 6000)}`)
+                .toContain(managedCallMarker);
             }
           }
         }

@@ -213,6 +213,7 @@ let selectorRequested = '';
 let org: OrgTestDb | undefined;
 const databaseEnvKeys = [
   'HARNESS_DATABASE_URL', 'HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL',
+  'PAPERCUSP_TEST_RUNS_DB_URL',
   'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY',
 ] as const;
 const savedDatabaseEnv = new Map(databaseEnvKeys.map((key) => [key, process.env[key]]));
@@ -276,6 +277,10 @@ beforeAll(async () => {
   process.env.HARNESS_DATABASE_URL = org.appDsn;
   process.env.HARNESS_ADMIN_DATABASE_URL = org.adminDsn;
   process.env.DATABASE_URL = org.adminDsn;
+  // Nested runs are queried through this suite's org connection. Keep their
+  // reporter in the same disposable database instead of inheriting the outer
+  // runner's durable sink (which records this integration file itself).
+  process.env.PAPERCUSP_TEST_RUNS_DB_URL = org.adminDsn;
   process.env.PAPERCUSP_PGBOUNCER = '0';
   process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
   _resetHarnessAdminUrlCacheForTests();
@@ -488,6 +493,19 @@ describe('scratch checkout custody census (WI-10007684)', () => {
 });
 
 describe('bounded router-output diagnostics (EI-23084691057182393)', () => {
+  it('preserves exact Node group results when stderr evicts their stdout from the display tail', () => {
+    const capture = createBoundedRouterOutputCapture();
+    capture.append('stdout', 'ROUTE cwd=papercusp-desktop runner=node:test\n  requested test/a.test.js\nℹ tests 4\nℹ pass 3\nℹ fail 1\n');
+    capture.append('stdout', 'TEST_FILE_GROUP_RESULT cwd=papercusp-desktop runner=node:test executed=1 status=failed\n');
+    capture.append('stdout', 'ROUTE cwd=packages/operator-core config=vitest.config.ts\n');
+    capture.append('stdout', 'ℹ tests 99\nℹ pass 99\nℹ fail 0\n');
+    capture.append('stderr', 'COMMITTED_SOURCE unrelated child diagnostic\n'.repeat(1000));
+    expect(capture.finish()).not.toContain('ℹ tests 4');
+    expect(parseNodeTestGroupRuns(capture.nodeTestOutput(), ['papercusp-desktop/test/a.test.js']))
+      .toMatchObject([{ files: 1, passed: 3, failed: 1,
+        byFile: { 'papercusp-desktop/test/a.test.js': { passed: 3, failed: 1 } } }]);
+  });
+
   it('keeps a failing first-group marker after later progress displaces it from the raw tail', () => {
     const capture = createBoundedRouterOutputCapture();
     const refusal = 'TEST_FILE_ROUTE_ERROR (group cwd=apps/operator) requested=4 matched=0; use testing:run';
@@ -2351,6 +2369,7 @@ describe('testing:run (integration)', () => {
     ]);
     expect(request.detachedReportArtifacts?.[0]?.reportPath).toContain('papercusp-testing-run-detached-');
     expect(request.env).toEqual({
+      NODE_ENV: 'test',
       PAPERCUSP_TEST_FILE_TIMEOUT_MS: '900000',
       PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
       PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
