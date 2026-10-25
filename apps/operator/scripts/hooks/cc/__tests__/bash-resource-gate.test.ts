@@ -2765,6 +2765,36 @@ bar" work_items/`)));
     expectAllow(runGate(at("grep -rn 'foo' work_items/")));
   });
 
+  it('resolves an existing relative path from exec_command workdir, not the session cwd', () => {
+    const sessionCwd = join(haystack, 'session-cwd');
+    mkdirSync(sessionCwd, { recursive: true });
+    expectAllow(runGate({
+      tool_name: 'exec_command',
+      tool_input: {
+        command: "rg -n 'tag' work_items/",
+        workdir: haystack,
+      },
+      session_id: 's-test',
+      cwd: sessionCwd,
+    }));
+  });
+
+  it('still refuses a missing relative path under exec_command workdir', () => {
+    const sessionCwd = join(haystack, 'session-cwd');
+    mkdirSync(sessionCwd, { recursive: true });
+    const reason = parseDecision(runGate({
+      tool_name: 'exec_command',
+      tool_input: {
+        command: "rg -n 'tag' no-such-dir/",
+        workdir: haystack,
+      },
+      session_id: 's-test',
+      cwd: sessionCwd,
+    })).hookSpecificOutput.permissionDecisionReason as string;
+    expect(reason).toContain('false-absence search-path guard');
+    expect(reason).toContain(join(haystack, 'no-such-dir'));
+  });
+
   it('silent when a `cd` is what makes the relative path valid', () => {
     expectAllow(runGate(at('cd work_items && grep -rn foo tag.ts')));
   });

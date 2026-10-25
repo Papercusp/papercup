@@ -3823,7 +3823,24 @@ try:
         # relative path under it resolves to a fictional location, so every
         # operand would read as missing. Drop to absolute-only rather than
         # deny a command whose base directory we could not confirm.
-        _fa_cwd = payload.get('cwd')
+        # Codex exec_command and the managed shell surfaces can override the
+        # session cwd for one call (`workdir` / `cwd` in tool_input). Relative
+        # operands are interpreted by that child shell, so measuring them from
+        # the hook event's session-level cwd produces a false deny whenever the
+        # two directories differ. Resolve a relative override from the session
+        # cwd exactly as the command host does; an unusable value fails open
+        # below instead of falling back to a directory the command will not use.
+        _fa_session_cwd = payload.get('cwd')
+        _fa_command_cwd = (
+            tool_input.get('workdir') or tool_input.get('cwd')
+            if isinstance(tool_input, dict) else None
+        )
+        if _fa_command_cwd and not os.path.isabs(_fa_command_cwd):
+            _fa_command_cwd = (
+                os.path.join(_fa_session_cwd, _fa_command_cwd)
+                if _fa_session_cwd else None
+            )
+        _fa_cwd = _fa_command_cwd or _fa_session_cwd
         _fa_cwd = os.path.realpath(_fa_cwd) if _fa_cwd else None
         if _fa_cwd is not None and not os.path.isdir(_fa_cwd):
             _fa_cwd = None
