@@ -325,6 +325,10 @@ describe('run-operator-e2e-isolated.sh', () => {
       'apps/operator/playwright.config.ts',
     ]);
 
+    const explicitHead = exercise(join(f.dir, 'explicit-head'), 'HEAD');
+    expect(explicitHead.result.status, explicitHead.result.stderr).toBe(0);
+    expect(readFileSync(explicitHead.refFile, 'utf8')).toBe(head.stdout.trim());
+
     for (const [index, args] of [[], ['--workers=1'], ['--workers', '1']].entries()) {
     const fullSuite = exercise(join(f.dir, 'full-suite-' + index), undefined, args);
     expect(fullSuite.result.status, fullSuite.result.stderr).toBe(0);
@@ -377,6 +381,8 @@ describe('run-operator-e2e-isolated.sh', () => {
       'args=("$@")',
       'for ((i=0; i<${#args[@]}; i++)); do',
       '  if [ "${args[i]}" = "--repo" ]; then args[i+1]="$E2E_FIXTURE_GUARD_REPO"; fi',
+      // Keep the selected ref paired with the synthetic repo after redirecting --repo.
+      '  if [ "${args[i]}" = "--ref" ]; then args[i+1]="HEAD"; fi',
       'done',
       'exec "$E2E_FIXTURE_NODE" "${args[@]}"',
     ].join('\n'));
