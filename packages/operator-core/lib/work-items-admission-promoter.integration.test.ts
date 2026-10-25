@@ -1991,19 +1991,39 @@ describe('work-item admission promoter (real Postgres)', () => {
         expect(await readComparison()).toEqual(before);
       }, 60_000);
 
-      it.each(['hold', 'payload', 'audit', 'claim', 'original-claim'])('refuses %s drift before persistence', async kind => {
+      it.each(['hold', 'payload', 'audit', 'claim', 'original-claim', 'dependency'])('refuses %s drift before persistence', async kind => {
         await seedPark();
         await seedItem({ id: 'WI-original', createdAtMs: NOW - 20_000 });
         const result = await run(distinctCall(), async () => {
           if (kind === 'audit') await db.sql`UPDATE harness_shared.audit_log SET details = details || '{"reason":"changed"}'::jsonb`;
           else if (kind === 'hold') await db.sql`UPDATE harness_shared.work_items SET payload = payload - '_claimHold' WHERE feature_id = 'WI-parked'`;
           else if (kind === 'payload') await db.sql`UPDATE harness_shared.work_items SET payload = payload || '{"newProof":true}'::jsonb WHERE feature_id = 'WI-parked'`;
+          else if (kind === 'dependency') await db.sql`INSERT INTO harness_shared.work_item_deps
+            (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by)
+            VALUES (${WS}, 'issue', 'WI-parked', 'issue', 'WI-new-blocker', 'blocks', ${actor})`;
           else await db.sql`UPDATE harness_shared.work_items SET taken_by = ${actor}
             WHERE feature_id = ${kind === 'original-claim' ? 'WI-original' : 'WI-parked'}`;
         });
         expect(result.promoted).toBe(0); expect(result.merged).toBe(0);
         expect(result.guardRefusals).toContainEqual(expect.objectContaining({ reason: 'snapshot-drift' }));
         expect(await admissionOf('WI-original')).toBe('pending');
+      }, 60_000);
+
+      it.each([
+        { name: 'ordinary-unauthenticated', noModel: false, targeted: false, authenticated: false },
+        { name: 'targeted', noModel: false, targeted: true, authenticated: true },
+        { name: 'no-model', noModel: true, targeted: false, authenticated: true },
+      ])('does not extend park comparison authority to $name', async ({ noModel, targeted, authenticated }) => {
+        const before = await seedPark();
+        await seedItem({ id: 'WI-original', createdAtMs: NOW - 20_000 });
+        const result = await runWorkItemAdmissionPromoter({ workspaceId: WS, harnessSlug: HARNESS,
+          sql: db.sql, runId: 'park-without-authority', now: () => NOW, llmCall: distinctCall(), noModel,
+          ...(authenticated ? { componentScreeningItemIds: ['WI-original'] } : {}),
+          ...(targeted ? { targetItemIds: ['WI-original'] } : {}),
+        });
+        expect(result.promoted).toBe(0); expect(result.merged).toBe(0);
+        expect(await admissionOf('WI-original')).toBe('pending');
+        expect(await readComparison()).toEqual(before);
       }, 60_000);
 
       it.each(['claimed', 'blocked', 'needs-human', 'review', 'owner', 'external', 'lease', 'policy'])('preserves the additional %s protection before model work', async kind => {
