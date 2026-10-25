@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import type { Sql } from 'postgres';
 import * as ts from 'typescript';
 import { getOrgPg } from '@papercusp/db-org';
+import { eligibleHistoryPath, safeHistoryPath as safe } from './history-path';
 import { hunksFromToolCall } from '../release/frozen-repair-edit-ledger';
 import { measureCodeHealth } from './code-health';
 import type { ReuseBriefProvider, ReuseProviderContext } from './reuse-brief-providers';
@@ -21,10 +22,7 @@ const DAY = 86_400_000;
 const COMMIT_CAP = 1000;
 const EDIT_CAP = 500;
 export const CHANGE_HISTORY_VERSION = 'history/first-parent-90d-v1';
-const safe = (path: string) => Boolean(path) && !isAbsolute(path) && !/[\0\r\n\\]/.test(path)
-  && !path.split('/').some(part => part === '..' || part === '.' || !part);
-export const eligibleHistoryPath = (path: string) => safe(path)
-  && !/(?:^|\/)(?:node_modules|vendor|vendored|dist|build|coverage|generated|__generated__|retired|\.git)(?:\/|$)|(?:\.generated|\.gen)\./i.test(path);
+export { eligibleHistoryPath } from './history-path';
 export interface HistoryCommit {
   sha: string; parents: string[]; at: string;
   files: { status: string; path: string; from?: string }[];

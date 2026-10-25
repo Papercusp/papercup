@@ -74,6 +74,9 @@ export type CodexNativeCommandVerdict = { ok: true } | ({ ok: false } & SuSessio
 export interface CodexSuSessionControls {
   /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
   ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
+  /** Only attached programmatic runtimes advertise these explicit controls. */
+  queue?(input: { ownerId: string; turnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
+  steer?(input: { ownerId: string; turnId: string; activeTurnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<CodexNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -408,7 +411,7 @@ function commandRefusal(verdict: Exclude<CodexNativeCommandVerdict, { ok: true }
 function descriptorFor(
   binding: PuiSuSessionBinding,
   runtime: CodexSuRuntimeBinding,
-  options: CodexSuSessionDescriptorOptions,
+  options: CreateCodexSuSessionAdapterOptions,
 ): SuSessionDescriptor<'codex'> {
   if (!binding.ownerId || !binding.workspaceId) {
     throw new Error('Codex SU-session binding requires ownerId and workspaceId');
@@ -433,7 +436,14 @@ function descriptorFor(
     accountRoute: options.accountRoute ?? null,
     carry: options.carry ?? 'warm',
     modes: [...(options.modes ?? [])],
-    capabilities: codexCapabilities(),
+    capabilities: (() => {
+      const capabilities = codexCapabilities();
+      const attached = options.executionKind === 'programmatic' ? options.controls : undefined;
+      return { ...capabilities, commands: { ...capabilities.commands,
+        ...(attached?.queue ? { queue: { state: 'supported' as const, implementation: 'host' as const } } : {}),
+        ...(attached?.steer ? { steer: { state: 'supported' as const, implementation: 'native' as const } } : {}),
+      } };
+    })(),
     backendExtension: {
       backend: 'codex',
       codexHome: runtime.nativeSession.codexHome,
@@ -780,17 +790,30 @@ export class CodexSuSessionAdapter {
     let verdict: CodexNativeCommandVerdict;
     switch (command.type) {
       case 'owner_turn':
+      case 'queue':
         // Shown live under this id already; a later replay must not take it.
         this.receiptMatcher.markUsed(command.turnId);
-        context.transition('running', 'owner turn accepted');
-        verdict = await this.controls.ownerTurn({
+        if (command.type === 'owner_turn') context.transition('running', 'owner turn accepted');
+        verdict = await (command.type === 'queue' ? this.controls.queue! : this.controls.ownerTurn)({
           ownerId,
           turnId: command.turnId,
           content: command.content,
-          ...(command.model ? { model: command.model } : {}),
-          ...(command.approvals ? { approvals: command.approvals } : {}),
+          ...(command.model !== undefined ? { model: command.model } : {}),
+          ...(command.approvals !== undefined ? { approvals: command.approvals } : {}),
         });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);
+        break;
+      case 'steer':
+        if (['cwd', 'effort', 'sandbox', 'sandboxPolicy', 'approvalPolicy', 'outputSchema', 'config']
+          .some(key => Object.prototype.hasOwnProperty.call(command, key))) {
+          return commandRefusal(refused('steer_overrides_unsupported', 'Native steering accepts input only; queue a new turn to change configuration', false));
+        }
+        this.receiptMatcher.markUsed(command.turnId);
+        verdict = await this.controls.steer!({ ownerId, turnId: command.turnId,
+          activeTurnId: command.activeTurnId, content: command.content,
+          ...(command.model !== undefined ? { model: command.model } : {}),
+          ...(command.approvals !== undefined ? { approvals: command.approvals } : {}),
+        });
         break;
       case 'interrupt':
         verdict = await this.controls.interrupt({ ownerId, reason: command.reason });
@@ -822,8 +845,6 @@ export class CodexSuSessionAdapter {
             false,
           ),
         );
-      case 'queue':
-      case 'steer':
       case 'handoff':
         return commandRefusal(refused('unsupported', `${command.type} is not attached to this runtime`, false));
       default:

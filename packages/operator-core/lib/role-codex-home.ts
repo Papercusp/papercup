@@ -660,7 +660,10 @@ function inheritedCodexTrustToml(trustDir?: string | null, inheritAmbientContext
   }
   const inherited = out.length > 0 ? ['# Inherited trust state from ~/.codex/config.toml.', ...out, ''] : [];
   if (trustDir) {
-    const header = `[projects."${tomlEscape(trustDir)}"]`;
+    // Codex looks up the normalized cwd exactly. A harness projectDir may end
+    // in '/', which otherwise creates an unused trust entry and blocks workers
+    // at the interactive folder-trust prompt.
+    const header = `[projects."${tomlEscape(resolve(trustDir))}"]`;
     const alreadyInherited = inherited.some((l) => l.trim() === header);
     if (!alreadyInherited) {
       inherited.push(

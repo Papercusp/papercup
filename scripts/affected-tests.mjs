@@ -252,6 +252,7 @@ import {
 // elapsed wall time. See scripts/lib/serial-phase.mjs.
 import { formatSerialPhaseSummary } from "./lib/serial-phase.mjs";
 import { nativeProcessTraceEnv } from "./lib/vitest-startup-trace.mjs";
+import { readTaskCgroupMemoryScope } from "./lib/task-cgroup-limits.mjs";
 import {
   classifyAffectedBlastRadius,
   createCgroupMemoryObserver,
@@ -888,8 +889,24 @@ function refuseOnTaskBudget(error) {
 }
 const SCHEDULER_CONFIG = (() => {
   try {
+    // Only a measured finite cgroup gets a private envelope. Unidentified
+    // callers keep legacy conservative shared accounting.
+    const memoryBudgetScope = TASK_CGROUP_MEMORY_MAX_MB == null
+      ? null : readTaskCgroupMemoryScope();
     return resolveTaskBudget({
       workerBudget: SCHEDULER_WORKER_BUDGET,
+      ...(memoryBudgetScope ? {
+        memoryBudgetScope,
+        sharedMemoryBudgetMb: resolveMemoryBudgetMb({
+          affectedGlobalMemoryMb: process.env.AFFECTED_GLOBAL_MEMORY_MB,
+          workerBudget: SCHEDULER_WORKER_BUDGET,
+          workerMemoryMb: resolveWorkerMemoryMb({
+            affectedWorkerMemoryMb: process.env.AFFECTED_WORKER_MEMORY_MB,
+            nodeOptions: process.env.NODE_OPTIONS,
+            fallback: 1024,
+          }),
+        }),
+      } : {}),
       memoryBudgetMb: resolveMemoryBudgetMb({
         affectedGlobalMemoryMb: process.env.AFFECTED_GLOBAL_MEMORY_MB,
         memAvailableMb: MEM_AVAILABLE_MB,

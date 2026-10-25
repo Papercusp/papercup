@@ -8,6 +8,7 @@ import { Script } from 'node:vm';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { nativeProcessTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
+import { readTaskCgroupMemoryScope } from '../../../../scripts/lib/task-cgroup-limits.mjs';
 import * as terminalCounters from '../../../../scripts/lib/terminal-counter-fields.mjs';
 
 import { parseTaskBudgetRefusal } from '../../../../scripts/lib/task-exit-class.mjs';
@@ -2296,6 +2297,84 @@ describe('runBudgetedTasks', () => {
 });
 
 describe('task-sized shared admission (EI-26797533961242022)', () => {
+  it('wires the real affected runner private ceiling separately from its shared envelope', async () => {
+    const start = AFFECTED_TESTS_SRC.indexOf('const SCHEDULER_CONFIG = (() => {');
+    const end = AFFECTED_TESTS_SRC.indexOf('\n})();', start) + '\n})();'.length;
+    const makeBudget = (scope: string | null, max: number | null = 8192) =>
+      new Script(AFFECTED_TESTS_SRC.slice(start, end) + '\nSCHEDULER_CONFIG;').runInNewContext({
+        process: { env: { NODE_OPTIONS: '--max-old-space-size=131072', AFFECTED_MAX_CONCURRENT_TASKS: '4' } },
+        TASK_CGROUP_MEMORY_MAX_MB: max, SCHEDULER_WORKER_BUDGET: 8,
+        SCHEDULER_WORKER_MEMORY_MB: 1024, TASK_CGROUP_PIDS_MAX: null, MEM_AVAILABLE_MB: 1,
+        readTaskCgroupMemoryScope: () => scope, resolveMemoryBudgetMb, resolveWorkerMemoryMb,
+        resolveTaskBudget, refuseOnTaskBudget: (error: Error) => { throw error; },
+      });
+    const budget = makeBudget('cgroup:/fixture-private');
+    expect(budget).toMatchObject({ memoryBudgetMb: 6144,
+      memoryBudgetScope: 'cgroup:/fixture-private', sharedMemoryBudgetMb: 1_048_576 });
+    expect(makeBudget(null)).not.toHaveProperty('memoryBudgetScope');
+    expect(makeBudget('cgroup:/fixture-private', null)).not.toHaveProperty('memoryBudgetScope');
+    const release = deferred<void>(), started = deferred<void>();
+    const holder = withFsMutexBudget(admissionMutexName(), async () => {
+      started.resolve(); await release.promise;
+    }, { workers: 3, workerBudget: 8, maxConcurrentTasks: 4, resource: 'runner-host',
+      workerMemoryMb: 131_072, memoryBudgetMb: 1_048_576, timeoutMs: 8000 });
+    try {
+      await started.promise;
+      const result = await runBudgetedTasks(['runner-private'], { ...config, ...budget,
+        admissionTimeoutMs: 1000, onAdmissionNotice: () => {}, taskAdmissionKey: task => task,
+        runTask: async (_task, allocation) => allocation.workers,
+      });
+      // Shared worker accounting remains conservative: six effective private
+      // worker tokens minus the host reader's three leaves three available.
+      expect(result.results.map(row => row.value)).toEqual([3]);
+    } finally { release.resolve(); await holder; }
+  }, 20_000);
+
+  it('rejects incomplete scoped budgets instead of silently granting unknown capacity', async () => {
+    for (const fields of [
+      { memoryBudgetScope: 'cgroup:/fixture' },
+      { memoryBudgetScope: '', sharedMemoryBudgetMb: 10000 },
+      { memoryBudgetScope: ' ', sharedMemoryBudgetMb: 10000 },
+      { sharedMemoryBudgetMb: 10000 },
+      { memoryBudgetScope: 'cgroup:/fixture', sharedMemoryBudgetMb: NaN },
+    ]) {
+      expect(() => resolveTaskBudget({ ...config, ...fields })).toThrow('Scoped admission');
+      await expect(withFsMutexBudget(admissionMutexName(), async () => 'must-not-run', {
+        workers: 1, workerBudget: 4, workerMemoryMb: 1024, memoryBudgetMb: 4096,
+        maxConcurrentTasks: 2, resource: 'invalid', ...fields,
+      })).rejects.toThrow('Scoped admission');
+    }
+  });
+
+  it('reads a shared cgroup identity and preserves unknown identity on missing/malformed proc data', () => {
+    expect(readTaskCgroupMemoryScope({ readFile: () => '0::/user.slice/task.scope\n' }))
+      .toBe('cgroup:/user.slice/task.scope');
+    for (const text of ['2:cpu:/legacy', '0::relative', '0::/../escape', ''])
+      expect(readTaskCgroupMemoryScope({ readFile: () => text })).toBeNull();
+    expect(readTaskCgroupMemoryScope({ readFile: () => { throw new Error('unreadable'); } })).toBeNull();
+  });
+
+  it('fails closed for a live reader with an incomplete scoped lease, then progresses after release', async () => {
+    const readers = join(mutexLockRoot, `${admissionMutexName()}.readers`);
+    const lease = join(readers, 'scoped-malformed.lock');
+    mkdirSync(lease, { recursive: true });
+    writeFileSync(join(lease, 'owner.json'), JSON.stringify({ pid: process.pid,
+      host: 'fixture', startedAt: new Date().toISOString(),
+      admission: { workers: 1, workerBudget: 8, memoryBudgetMb: 7168, workerMemoryMb: 1024,
+        maxConcurrentTasks: 4, resource: 'malformed-holder', memoryBudgetScope: 'cgroup:/fixture' } }));
+    const options = { workers: 1, workerBudget: 8, memoryBudgetMb: 7168, workerMemoryMb: 1024,
+      maxConcurrentTasks: 4, resource: 'malformed-peer', memoryBudgetScope: 'cgroup:/peer',
+      sharedMemoryBudgetMb: 65_536, timeoutMs: 100, retryMs: 5 };
+    let ran = false;
+    try {
+      await expect(withFsMutexBudget(admissionMutexName(), async () => { ran = true; }, options))
+        .rejects.toThrow('Timed out');
+      expect(ran).toBe(false);
+    } finally { rmSync(lease, { recursive: true, force: true }); }
+    await expect(withFsMutexBudget(admissionMutexName(), async () => 'after-release', options))
+      .resolves.toBe('after-release');
+  });
+
   it('does not charge an unrelated reader against a private cgroup memory budget', async () => {
     const release = deferred<void>();
     let started = false;

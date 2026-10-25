@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -109,7 +110,36 @@ describe('R16 frozen measurement units and efficacy', () => {
     expect(buildReuseSourcePopulation({ sources, addedLines, complete: true })).toEqual(first);
     expect(buildReuseSourcePopulation({ sources, addedLines: { ...addedLines, 'README.md': [1] }, complete: true }).lineCensusComplete).toBe(false);
     expect(buildReuseSourcePopulation({ sources, addedLines, complete: false }).callCensusComplete).toBe(false);
+    // A lazy immutable reader must preserve the same independently enumerated
+    // line and call population as the in-memory fixture, including repeats.
+    const sourceMap = new Map(sources.map(s => [s.path, s.source]));
+    expect(buildReuseSourcePopulation({ sourcePaths: [...sourceMap.keys()],
+      readSource: path => sourceMap.get(path)!, addedLines, complete: true })).toEqual(first);
   });
+  it('captures a complete immutable population larger than 128 MiB without truncating files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'reuse-large-source-population-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+    const commit = (date: string) => execFileSync('git', ['-C', root, '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'controlled population'],
+      { env: { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
+        GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid', GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+    try {
+      git('init', '-q');
+      await writeFile(join(root, 'base.ts'), 'export const base = 1;\n');
+      git('add', 'base.ts'); commit('2026-09-29T00:00:00Z');
+      const source = `/*${'x'.repeat(1024 * 1024)}*/\nexport function target() {} target();\n`;
+      const paths = Array.from({ length: 129 }, (_, n) => `source-${n}.ts`);
+      for (const path of paths) await writeFile(join(root, path), source);
+      git('add', '.'); commit('2026-10-01T00:00:00Z');
+      const result = await collectReuseSourcePopulation(root, '2026-09-30T00:00:00Z', '2026-10-02T00:00:00Z');
+      expect(Buffer.byteLength(source) * paths.length).toBeGreaterThan(128 * 1024 * 1024);
+      expect(result).toMatchObject({ addedNonGeneratedLines: 258, duplicateAddedLines: 0,
+        lineCensusComplete: true, callCensusComplete: true });
+      expect(result.method.sourcePopulation).toEqual(['base.ts', ...paths].sort());
+      expect(result.calls).toHaveLength(129);
+      expect(new Set(result.calls.map(call => call.from))).toEqual(new Set(paths));
+      expect(result.calls.every(call => call.resolved && call.to === call.from)).toBe(true);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, 120_000);
   it('captures a historical committed source window despite later working-tree changes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'reuse-source-population-'));
     const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8',
@@ -137,6 +167,23 @@ describe('R16 frozen measurement units and efficacy', () => {
       expect(await collectReuseSourcePopulation(root, '2026-09-30T00:00:00Z', '2026-10-02T00:00:00Z')).toEqual(pinned);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+  it('removes source captures after a worker times out before answering', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'reuse-worker-cleanup-fixture-'));
+    const marker = join(root, 'capture-path'), workerPath = join(root, 'worker.mjs');
+    try {
+      await writeFile(workerPath, `import {writeFileSync} from 'node:fs';
+        process.once('message', job => {
+          writeFileSync(${JSON.stringify(marker)}, job.captureRoot);
+          writeFileSync(job.captureRoot + '/immutable-blob', 'captured source');
+          setInterval(() => {}, 1000);
+        });`);
+      await expect(collectReuseSourcePopulationOffthread(root, at, now, { workerPath, budgetMs: 5000 }))
+        .rejects.toThrow('deadline');
+      const capture = await readFile(marker, 'utf8');
+      expect(capture).toContain('reuse-source-worker-');
+      expect(existsSync(capture)).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, 15_000);
   it('measures exact units and keeps unresolved populations separate', () => {
     expect(measureReuseMetrics({ addedNonGeneratedLines: 200, duplicateAddedLines: 10, lineCensusComplete: true,
       callCensusComplete: true, workItems: [

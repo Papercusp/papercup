@@ -340,14 +340,14 @@ describe('writeRoleCodexHome', () => {
     expect(toml).toContain('status_line = ["run-state", "model-with-reasoning", "context-remaining", "git-branch"]');
   });
 
-  it('seeds launch-dir trust ([projects."<trustDir>"] trust_level) so a fresh role CODEX_HOME never blocks at the boot trust prompt', async () => {
+  it.each(['', '/'])('seeds normalized launch-dir trust for a fresh role CODEX_HOME (suffix %s)', async (suffix) => {
     const writeRoleCodexHome = await load();
     const dir = '/home/dev/papercupai-workspace/papercusp';
     const out = writeRoleCodexHome({
       sessionKey: 'role-trust',
       mcpUrl: 'http://x/api/mcp?role=worker&sig=z',
       promptText: 'P',
-      trustDir: dir,
+      trustDir: dir + suffix,
     });
     const toml = readFileSync(out.configPath, 'utf8');
     expect(toml).toContain(`[projects."${dir}"]`);
@@ -1857,7 +1857,7 @@ describe('writeSuCodexHome', () => {
     expect(toml).not.toContain('[model_providers.default]');
   });
 
-  it('seeds launch-dir trust ([projects."<trustDir>"] trust_level) so a fresh CODEX_HOME never blocks at the boot trust prompt', async () => {
+  it.each(['', '/'])('seeds normalized launch-dir trust for a fresh SU CODEX_HOME (suffix %s)', async (suffix) => {
     const { writeSuCodexHome } = await loadMod();
     const dir = '/home/dev/papercupai-workspace/papercusp';
     const out = writeSuCodexHome({
@@ -1865,7 +1865,7 @@ describe('writeSuCodexHome', () => {
       mcpUrl: 'http://x/api/mcp?superuser=1',
       promptText: 'P',
       sid: 's',
-      trustDir: dir,
+      trustDir: dir + suffix,
     });
     const toml = readFileSync(out.configPath, 'utf8');
     expect(toml).toContain(`[projects."${dir}"]`);

@@ -7,7 +7,7 @@ import { resolveCardResponse } from '@papercusp/agent-mcp';
 import { registerProjectedTool, unregisterProjectedToolsForPlugin, type ProjectedTool } from '@papercusp/tooldef';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import type { PuiSuSessionBinding } from './launch-agent';
-import type { RpcFrame, SuStdioPeerOptions } from './su-session-stdio-peer';
+import { SuStdioRequestRefusal, type RpcFrame, type SuStdioPeerOptions } from './su-session-stdio-peer';
 import { prepareSuLaunch } from '../../../apps/operator/scripts/psu-launcher.mjs';
 
 const mocks = vi.hoisted(() => ({
@@ -42,7 +42,9 @@ vi.mock('./mcp-base-url', () => ({
   resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3170',
   resolveChildSessionOperatorBaseUrl: () => 'http://127.0.0.1:3170',
 }));
-vi.mock('./su-session-stdio-peer', () => ({ startSuStdioPeer: vi.fn() }));
+vi.mock('./su-session-stdio-peer', async original => ({
+  ...(await original<typeof import('./su-session-stdio-peer')>()), startSuStdioPeer: vi.fn(),
+}));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => ({
   ...(await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()),
   resolveOmpSessionModel: (await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()).resolveOmpSessionModel,
@@ -156,6 +158,204 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
     commandId: id, issuedAt: new Date().toISOString(), target: engine.adapter.host.descriptor().identity };
   return type === 'owner_turn' ? { ...base, type, turnId: `owner-${id}`, content: 'Hello from PUI' } : { ...base, type };
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(yes => { resolve = yes; });
+  return { promise, resolve };
+}
+
+function steerCommand(engine: SuRpcEngine, id = 'correction', activeTurnId = 'owner-owner_turn') {
+  return { ...command(engine, 'owner_turn', id), type: 'steer', activeTurnId };
+}
+
+function completeCodex(f: ReturnType<typeof fixture>, id = 'native-turn') {
+  f.emit({ method: 'turn/completed', params: { threadId: 'native-codex', turn: { id, status: 'completed' } } });
+}
+
+describe('Codex exact active-turn steering', () => {
+  it('steers without waiting for completion and correlates one idempotent receipt', async () => {
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/steer' ? { turnId: 'native-turn' } : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    const correction = steerCommand(f.engine);
+    const first = host.startCommand(correction), replay = host.startCommand(correction);
+    expect(replay.replayed).toBe(true);
+    await expect(first.terminal).resolves.toMatchObject({ commandId: 'correction', commandType: 'steer', status: 'completed' });
+    expect(await replay.terminal).toEqual(await first.terminal);
+    expect(f.sent.filter(frame => frame.method === 'turn/steer')).toEqual([{ method: 'turn/steer', params: {
+      threadId: 'native-codex', expectedTurnId: 'native-turn', input: [{ type: 'text', text: 'Hello from PUI' }],
+    } }]);
+    expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(1);
+    expect(host.descriptor().lifecycle).toBe('running');
+    expect(host.recent.map(row => row.event)).toContainEqual(expect.objectContaining({
+      type: 'transcript', turnId: 'owner-correction', content: 'Hello from PUI', role: 'owner',
+    }));
+  });
+
+  it('queues a distinct turn behind completion while steering the running turn immediately', async () => {
+    let starts = 0;
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/start'
+      ? { turn: { id: `native-${++starts}` } } : frame.method === 'turn/steer' ? { turnId: 'native-1' } : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    const queued = host.startCommand({ ...command(f.engine, 'owner_turn', 'queued'), type: 'queue', model: 'later-model:high' });
+    await expect(host.startCommand(steerCommand(f.engine)).terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(starts).toBe(1);
+    expect(host.descriptor().model).toBe('codex-model');
+    completeCodex(f, 'native-1');
+    await expect(queued.terminal).resolves.toMatchObject({ status: 'completed', commandId: 'queued', commandType: 'queue' });
+    expect(f.sent.filter(frame => frame.method === 'turn/start')[1]).toMatchObject({ params: { model: 'later-model', effort: 'high' } });
+    expect(host.descriptor().model).toBe('later-model:high');
+    await expect(host.startCommand(steerCommand(f.engine, 'stale')).terminal).resolves.toMatchObject({
+      status: 'refused', refusal: { code: 'active_turn_mismatch' },
+    });
+    expect(f.sent.filter(frame => frame.method === 'turn/steer')).toHaveLength(1);
+  });
+
+  it('refuses idle and mismatched owner turns without dispatch', async () => {
+    const f = fixture('codex'); await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await expect(host.startCommand(steerCommand(f.engine, 'idle')).terminal).resolves.toMatchObject({ refusal: { code: 'no_active_turn' } });
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    await expect(host.startCommand(steerCommand(f.engine, 'wrong', 'other-owner')).terminal).resolves.toMatchObject({ refusal: { code: 'active_turn_mismatch' } });
+    expect(f.sent.some(frame => frame.method === 'turn/steer')).toBe(false);
+  });
+
+  it('applies queued model and approvals reversions at delivery, not at acceptance', async () => {
+    let starts = 0;
+    const f = fixture('codex', { toolApproval: 'prompt', request: async frame => frame.method === 'turn/start'
+      ? { turn: { id: `native-${++starts}` } } : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    const away = host.startCommand({ ...command(f.engine, 'owner_turn', 'away'), type: 'queue', model: 'another-model', approvals: 'read-only' });
+    const back = host.startCommand({ ...command(f.engine, 'owner_turn', 'back'), type: 'queue', model: 'codex-model', approvals: 'auto-edit' });
+    completeCodex(f, 'native-1'); await away.terminal;
+    completeCodex(f, 'native-2'); await back.terminal;
+    expect(f.sent.filter(frame => frame.method === 'turn/start').map(frame => frame.params)).toMatchObject([
+      {}, { model: 'another-model', sandboxPolicy: { type: 'readOnly' } },
+      { model: 'codex-model', sandboxPolicy: { type: 'workspaceWrite' } },
+    ]);
+    expect(host.descriptor()).toMatchObject({ model: 'codex-model', approvals: 'auto-edit' });
+  });
+
+  it.each([{ model: 'other-model' }, { model: '' }, { approvals: 'read-only' }, { approvals: 'auto-edit' },
+    { cwd: '/elsewhere' }, { effort: 'low' }, { sandboxPolicy: { type: 'readOnly' } }, { outputSchema: {} }])(
+    'refuses mid-turn overrides before dispatch: %j', async override => {
+      const f = fixture('codex'); await f.engine.ready;
+      const host = f.engine.adapter.host;
+      await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+      await expect(host.startCommand({ ...steerCommand(f.engine), ...override }).terminal)
+        .resolves.toMatchObject({ status: 'refused', refusal: { code: 'steer_overrides_unsupported' } });
+      expect(f.sent.some(frame => frame.method === 'turn/steer')).toBe(false);
+      expect(host.descriptor().model).toBe('codex-model');
+    });
+
+  it('waits for native binding but refuses a finish observed before turn/start responds', async () => {
+    const start = deferred<RpcFrame>();
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/start' ? start.promise : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    const owner = host.startCommand(command(f.engine, 'owner_turn'));
+    await vi.waitFor(() => expect(f.sent.some(frame => frame.method === 'turn/start')).toBe(true));
+    const correction = host.startCommand(steerCommand(f.engine));
+    completeCodex(f);
+    start.resolve({ turn: { id: 'native-turn' } });
+    await owner.terminal;
+    await expect(correction.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'active_turn_finished' } });
+    expect(f.sent.some(frame => frame.method === 'turn/steer')).toBe(false);
+  });
+
+  it('refuses steering as soon as completion is observed even while account refresh is pending', async () => {
+    const refresh = deferred<string | null>();
+    const f = fixture('codex', { servedAccountReader: () => refresh.promise }); await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    completeCodex(f);
+    await expect(host.startCommand(steerCommand(f.engine)).terminal).resolves.toMatchObject({ status: 'refused' });
+    expect(f.sent.some(frame => frame.method === 'turn/steer')).toBe(false);
+    refresh.resolve(null);
+  });
+
+  it.each(['completed', 'interrupted'])('never reports success when %s wins before the steer acknowledgement', async status => {
+    const response = deferred<RpcFrame>();
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/steer' ? response.promise : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    const correction = host.startCommand(steerCommand(f.engine));
+    await vi.waitFor(() => expect(f.sent.some(frame => frame.method === 'turn/steer')).toBe(true));
+    if (status === 'interrupted') await host.startCommand(command(f.engine, 'interrupt')).terminal;
+    else completeCodex(f);
+    response.resolve({ turnId: 'native-turn' });
+    await expect(correction.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'steer_outcome_unknown', retryable: false } });
+    expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(1);
+  });
+
+  it('blocks steering and queued delivery until the exact interrupt receipt settles', async () => {
+    const interrupt = deferred<RpcFrame>();
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/interrupt' ? interrupt.promise : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    const stop = host.startCommand(command(f.engine, 'interrupt'));
+    await vi.waitFor(() => expect(f.sent.some(frame => frame.method === 'turn/interrupt')).toBe(true));
+    await expect(host.startCommand(steerCommand(f.engine)).terminal).resolves.toMatchObject({ refusal: { code: 'turn_interrupting' } });
+    const next = host.startCommand({ ...command(f.engine, 'owner_turn', 'later'), type: 'queue' });
+    completeCodex(f);
+    await vi.waitFor(() => expect(host.descriptor().lifecycle).toBe('waiting-for-owner'));
+    expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(1);
+    interrupt.resolve({});
+    await stop.terminal;
+    await expect(next.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(2);
+    expect(f.sent.some(frame => frame.method === 'turn/steer')).toBe(false);
+  });
+
+  it('cancels a turn interrupted during admission without opening native inference', async () => {
+    const admission = deferred<Awaited<ReturnType<SuCodexTurnLifecycle['admit']>>>();
+    const reconcile = vi.fn(async () => {}), admit = vi.fn(() => admission.promise);
+    const f = fixture('codex', { turnLifecycle: { admit } }); await f.engine.ready;
+    const host = f.engine.adapter.host;
+    const owner = host.startCommand(command(f.engine, 'owner_turn'));
+    await vi.waitFor(() => expect(admit).toHaveBeenCalledOnce());
+    const stop = host.startCommand(command(f.engine, 'interrupt'));
+    await expect(host.startCommand(steerCommand(f.engine)).terminal).resolves.toMatchObject({ refusal: { code: 'turn_interrupting' } });
+    admission.resolve({ ok: true, bindNativeTurn: async () => {}, complete: async () => {}, reconcile });
+    await expect(owner.terminal).resolves.toMatchObject({ refusal: { code: 'turn_interrupting' } });
+    await expect(stop.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(reconcile).toHaveBeenCalledWith({ phase: 'delivery', message: 'Owner interrupted before native delivery' });
+    expect(f.sent.some(frame => ['turn/start', 'turn/steer', 'turn/interrupt'].includes(String(frame.method)))).toBe(false);
+  });
+
+  it.each([{}, { turnId: 'different-turn' }])('fences an uncorrelated steer receipt: %j', async response => {
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/steer' ? response : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    await expect(host.startCommand(steerCommand(f.engine)).terminal).resolves.toMatchObject({
+      status: 'refused', refusal: { code: 'engine_delivery_unknown', retryable: false },
+    });
+    expect(f.close).toHaveBeenCalledOnce();
+    expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(1);
+  });
+
+  it('keeps the connection usable after a correlated native refusal', async () => {
+    const f = fixture('codex', { request: async frame => {
+      if (frame.method === 'turn/steer') throw new SuStdioRequestRefusal('No steerable active turn');
+      return undefined;
+    } });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    await expect(host.startCommand(steerCommand(f.engine)).terminal).resolves.toMatchObject({ refusal: { code: 'native_steer_refused' } });
+    expect(f.close).not.toHaveBeenCalled();
+    expect(host.snapshot().streamReady).toBe(true);
+  });
+});
 
 describe('effective launch configuration consumed by the Codex engine', () => {
   it.each([undefined, 'prompt'] as const)('consumes complete canonical preparation at app-server boundary (approval=%s)', async toolApproval => {

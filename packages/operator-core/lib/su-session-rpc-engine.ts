@@ -27,7 +27,7 @@ import { codexAppServerTokenUsage, codexPlan, ompMessageUsage, type SuCodexTurnA
 export type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from './su-session-usage';
 import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { SuSessionStartupTimeoutError, type SuSessionEventInput, type SuSessionHost, type SuSessionServedAccountReader } from './su-session-host';
-import { startSuStdioPeer, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
+import { startSuStdioPeer, SuStdioRequestRefusal, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
 import { SuNativeCards } from './su-session-native-cards';
 import { readSuperuserToken } from './superuser-token';
 import { admitNativeIdentityInference } from './cupboard/identity-activation-gate-io';
@@ -220,6 +220,8 @@ export function startSuRpcEngine(
   const observedNativeToolCalls = new Set<string>();
   const completedNativeToolTurns = new Set<string>();
   let inputTail = Promise.resolve();
+  let turnEpoch = 0;
+  let interruptInFlight: Promise<{ ok: true } | ({ ok: false } & SuSessionRefusal)> | undefined;
   const streams = new Map<string, string>();
   const tools = new Map<string, string>();
   const initializingFrames: RpcFrame[] = [];
@@ -261,8 +263,7 @@ export function startSuRpcEngine(
       // D-026: Codex takes an approvals switch on this turn's turn/start. OMP has
       // no approval-mode RPC, so a switch refuses the turn instead of running it
       // in a mode the owner did not pick.
-      const approvalsTo = nextApprovals && nextApprovals !== selectedApprovals ? nextApprovals : null;
-      if (approvalsTo && backend !== 'codex') {
+      if (nextApprovals && nextApprovals !== selectedApprovals && backend !== 'codex') {
         return { ok: false as const, code: 'approvals_switch_refused', retryable: false,
           liftsWhen: 'Send a new turn without an approvals override, or use a Claude or Codex session to select an approvals mode; OMP has no approvals-switch RPC.',
           message: `/approvals is not available for ${backend === 'omp' ? 'OMP' : backend}` };
@@ -270,14 +271,21 @@ export function startSuRpcEngine(
       // P-026: Codex takes the switch on this turn's turn/start; OMP takes it as
       // set_model (+ set_thinking_level) before the prompt. A refused OMP switch
       // refuses the turn rather than running it on the old model.
-      const switchTo = nextModel && nextModel !== selectedModel ? splitModelSpec(nextModel) : null;
-      if (switchTo && !switchTo.model) return { ok: false as const, code: 'model_switch_refused', retryable: false,
+      const requestedModel = nextModel !== undefined ? splitModelSpec(nextModel) : null;
+      if (requestedModel && !requestedModel.model) return { ok: false as const, code: 'model_switch_refused', retryable: false,
         liftsWhen: 'Send a new turn with a non-empty model name, or omit the model override.',
         message: `"${nextModel}" names no model` };
       let acknowledged!: (verdict: { ok: true } | ({ ok: false } & SuSessionRefusal)) => void;
       const receipt = new Promise<{ ok: true } | ({ ok: false } & SuSessionRefusal)>((resolve) => { acknowledged = resolve; });
       inputTail = inputTail.then(async () => {
+        // An interrupt's completion can release the current turn before its
+        // control receipt settles. Keep the next queued turn behind both.
+        await interruptInFlight;
         if (!ready || closed) { acknowledged(unavailable('The engine closed before this saved turn was sent')); return; }
+        // Evaluate switches at delivery: an earlier queued turn can change the
+        // selection after this command was accepted, including away and back.
+        const switchTo = nextModel !== undefined && nextModel !== selectedModel ? requestedModel : null;
+        const approvalsTo = nextApprovals && nextApprovals !== selectedApprovals ? nextApprovals : null;
         if (switchTo && backend === 'omp') {
           // Switch before the turn is opened: a refusal then leaves no owner
           // turn waiting on a completion that will never come. The stdio peer
@@ -299,6 +307,7 @@ export function startSuRpcEngine(
           }
         }
         ownerTurnId = turnId;
+        turnEpoch++;
         turnCompletionSettled = false;
         nativeBindingFailed = false;
         nativeToolObservationTail = Promise.resolve();
@@ -327,9 +336,16 @@ export function startSuRpcEngine(
             turnAdmission = admission;
           }
           if (!ready || closed) throw new Error('The engine closed during turn admission');
+          if (interruptInFlight) {
+            await turnAdmission?.reconcile({ phase: 'delivery', message: 'Owner interrupted before native delivery' });
+            acknowledged({ ok: false, code: 'turn_interrupting', retryable: false,
+              message: 'The owner interrupted this turn before native delivery' });
+            return;
+          }
           // The command is durably accepted before native delivery. Persist its
           // visible prompt before RPC can stream a reply; restored sessions use
           // these owner events to place each reply under its original prompt.
+          host.transition('running', 'Saved owner input is being delivered');
           emit({ type: 'transcript', phase: 'completed', turnId, role: 'owner',
             channel: 'text', content });
           if (backend === 'codex') {
@@ -367,6 +383,7 @@ export function startSuRpcEngine(
           adapter.reconcileRuntimeExit({ expected: false, reason: `Native delivery is unknown: ${String(error)}` });
           await close();
         } finally {
+          turnFinished?.();
           releaseNativeBinding?.();
           turnAdmission = undefined; nativeBinding = undefined; releaseNativeBinding = undefined;
           observedNativeToolCalls.clear();
@@ -376,14 +393,74 @@ export function startSuRpcEngine(
       });
       return receipt;
     },
-    async interrupt() {
+    async queue(input: { content: string; turnId: string; model?: string; approvals?: SuApprovalsMode }): Promise<{ ok: true } | ({ ok: false } & SuSessionRefusal)> {
+      return controls.ownerTurn(input);
+    },
+    async steer({ content, turnId, activeTurnId, model, approvals }: {
+      content: string; turnId: string; activeTurnId: string; model?: string; approvals?: SuApprovalsMode;
+    }) {
+      if (!ready || closed || !peer) return unavailable('The engine is disconnected');
+      const refuse = (code: string, message: string) => ({ ok: false as const, code, message, retryable: false });
+      if (backend !== 'codex') return refuse('unsupported', 'This runtime has no native active-turn steer');
+      if (model !== undefined || approvals !== undefined) {
+        return refuse('steer_overrides_unsupported', 'Queue a new turn to change model or approvals; native steering accepts input only');
+      }
+      const owner = ownerTurnId, epoch = turnEpoch, bindingReady = nativeBinding;
+      if (!owner) return refuse('no_active_turn', 'There is no active turn to steer');
+      if (activeTurnId !== owner) return refuse('active_turn_mismatch', 'The steer targets a different owner turn');
+      const current = () => ready && !closed && epoch === turnEpoch && owner === ownerTurnId
+        && !interruptInFlight && !turnCompletionSettled && !nativeBindingFailed
+        && Boolean(nativeTurnId) && !completedNativeToolTurns.has(nativeTurnId);
+      if (interruptInFlight) return refuse('turn_interrupting', 'The expected turn is being interrupted');
+      // Admission and the correlated turn/start response must bind first. This
+      // never waits on inputTail (which lasts until the turn FINISHES).
+      await bindingReady;
+      if (!current()) return refuse('active_turn_finished', 'The expected turn finished or became unavailable before steering');
+      const expectedTurnId = nativeTurnId;
+      try {
+        const response = await peer.request({ method: 'turn/steer', params: {
+          threadId: nativeId(), expectedTurnId, input: [{ type: 'text', text: content }],
+        } }, options.deliveryTimeoutMs ?? 30_000);
+        if (response.turnId !== expectedTurnId) throw new Error('Codex steer acknowledgement did not identify the expected native turn');
+        if (!current() || nativeTurnId !== expectedTurnId) {
+          return refuse('steer_outcome_unknown', 'The expected turn finished or was interrupted before its steer receipt settled; do not replay this input');
+        }
+        emit({ type: 'transcript', phase: 'completed', turnId, role: 'owner', channel: 'text', content });
+        return { ok: true as const };
+      } catch (error) {
+        if (error instanceof SuStdioRequestRefusal) return refuse('native_steer_refused', error.message);
+        // A lost or uncorrelated acknowledgement cannot authorize retry or
+        // delivery to the next turn. Fence this executor like turn/start.
+        ready = false;
+        adapter.reconcileRuntimeExit({ expected: false, reason: `Native steer delivery is unknown: ${String(error)}` });
+        await close();
+        return unavailable(String(error));
+      }
+    },
+    interrupt(): Promise<{ ok: true } | ({ ok: false } & SuSessionRefusal)> {
+      if (interruptInFlight) return interruptInFlight;
+      interruptInFlight = interruptNativeTurn().finally(() => { interruptInFlight = undefined; });
+      return interruptInFlight;
+    },
+    async resume() { return ready && !closed ? { ok: true as const } : unavailable('Reconnect the saved structured session before resuming'); },
+    async focus() { return { ok: true as const }; },
+    async end() { await close(); return { ok: true as const }; },
+  };
+  async function interruptNativeTurn() {
       if (!peer || closed) return unavailable('The engine is disconnected');
       cards.cancel();
       const completing = turnCompletion;
+      const owner = ownerTurnId, starting = nativeStart;
+      const bindingReady = nativeBinding;
+      let interruptedTurn = nativeTurnId;
       try {
         if (backend === 'codex') {
-          if (!nativeTurnId && nativeStart) nativeTurnId = string(object((await nativeStart).turn).id);
-          if (nativeTurnId) await peer.request({ method: 'turn/interrupt', params: { threadId: nativeId(), turnId: nativeTurnId } });
+          if (!interruptedTurn && starting) interruptedTurn = string(object((await starting).turn).id);
+          await bindingReady;
+          if (owner && owner === ownerTurnId && interruptedTurn && !turnCompletionSettled
+            && !completedNativeToolTurns.has(interruptedTurn)) {
+            await peer.request({ method: 'turn/interrupt', params: { threadId: nativeId(), turnId: interruptedTurn } });
+          }
         } else {
           await peer.request({ type: 'abort' }, options.deliveryTimeoutMs ?? 30_000);
           // OMP responds only after session.abort has cancelled setup and
@@ -406,11 +483,7 @@ export function startSuRpcEngine(
       }
       host.transition('interrupted', 'Owner interrupted the native turn');
       return { ok: true as const };
-    },
-    async resume() { return ready && !closed ? { ok: true as const } : unavailable('Reconnect the saved structured session before resuming'); },
-    async focus() { return { ok: true as const }; },
-    async end() { await close(); return { ok: true as const }; },
-  };
+  }
   const shared = {
     ...options, executionKind: 'programmatic' as const, controls, ready: false, runtimeReady: () => ready && !closed,
     // D-026: a prompted Codex launch is on-request + workspace-write, which is

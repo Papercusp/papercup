@@ -34,7 +34,7 @@ export interface FirstPartyCallersProgress {
 
 if (!process.send) throw new Error('first-party-callers.worker must be forked with an IPC channel');
 
-interface ReuseSourceJob { kind: 'reuse-source-population'; root: string; start: string; end: string }
+interface ReuseSourceJob { kind: 'reuse-source-population'; root: string; start: string; end: string; captureRoot?: string }
 const job = await new Promise<FirstPartyCallersJob | ReuseSourceJob>((resolve) => process.once('message', resolve));
 const started = Date.now();
 const progress = (phase: FirstPartyCallersProgress['phase']) => process.send!({
@@ -45,8 +45,8 @@ let result: unknown;
 if ('kind' in job && job.kind === 'reuse-source-population') {
   const sourceJob = job as ReuseSourceJob;
   try {
-    const { collectReuseSourcePopulation } = await import('./reuse-measurement.ts');
-    result = { kind: job.kind, ok: true, population: await collectReuseSourcePopulation(sourceJob.root, sourceJob.start, sourceJob.end) };
+    const { collectReuseSourcePopulation } = await import('./reuse-source-population.ts');
+    result = { kind: job.kind, ok: true, population: await collectReuseSourcePopulation(sourceJob.root, sourceJob.start, sourceJob.end, sourceJob.captureRoot) };
   } catch (error) {
     result = { kind: job.kind, ok: false, error: error instanceof Error ? error.message : String(error) };
   }

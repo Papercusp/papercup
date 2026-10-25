@@ -2069,6 +2069,8 @@ export function resolveMemoryBudgetMb({
 export function resolveTaskBudget({
   workerBudget,
   memoryBudgetMb,
+  memoryBudgetScope,
+  sharedMemoryBudgetMb,
   workerMemoryMb,
   maxConcurrentTasks = 2,
   reserveWorkers = 1,
@@ -2081,6 +2083,11 @@ export function resolveTaskBudget({
     memoryBudgetMb,
     "memoryBudgetMb",
   );
+  if (memoryBudgetScope !== undefined || sharedMemoryBudgetMb !== undefined) {
+    if (typeof memoryBudgetScope !== 'string' || !memoryBudgetScope.trim() || memoryBudgetScope.length > 500 ||
+        !Number.isSafeInteger(sharedMemoryBudgetMb) || sharedMemoryBudgetMb < 1)
+      throw new Error('Scoped admission requires a shared memory budget and non-empty scope');
+  }
   const configuredWorkerMemoryMb = positiveInteger(
     workerMemoryMb,
     "workerMemoryMb",
@@ -2188,6 +2195,7 @@ export function resolveTaskBudget({
   return {
     workerBudget: configuredWorkerBudget,
     memoryBudgetMb: configuredMemoryBudgetMb,
+    ...(memoryBudgetScope ? { memoryBudgetScope, sharedMemoryBudgetMb } : {}),
     workerMemoryMb: configuredWorkerMemoryMb,
     memoryWorkerBudget,
     // EI-20801764054303492: WHICH term bound the budget. Without this, a gate log records the
@@ -2731,7 +2739,7 @@ export function formatAdmissionHolder(ownerText, now = Date.now()) {
   if (parsed.ownerId) bits.push(`owner=${parsed.ownerId}`);
   if (parsed.taskId) bits.push(`task=${parsed.taskId}`);
   if (parsed.admission) {
-    for (const key of ['resource', 'workers', 'workerMemoryMb', 'workerBudget', 'memoryBudgetMb', 'maxConcurrentTasks'])
+    for (const key of ['resource', 'workers', 'workerMemoryMb', 'workerBudget', 'memoryBudgetMb', 'memoryBudgetScope', 'sharedMemoryBudgetMb', 'maxConcurrentTasks'])
       if (parsed.admission[key] != null) bits.push(`${key}=${parsed.admission[key]}`);
   }
   const acquiredAtMs = parsed.acquiredAt ? Date.parse(parsed.acquiredAt) : NaN;
@@ -2921,6 +2929,7 @@ export async function runBudgetedTasks(tasks, options) {
             finally { resident--; updateClock(); }
           }, { workers, workerMemoryMb: budget.workerMemoryMb,
             workerBudget: budget.effectiveWorkerBudget, memoryBudgetMb: budget.memoryBudgetMb,
+            memoryBudgetScope: budget.memoryBudgetScope, sharedMemoryBudgetMb: budget.sharedMemoryBudgetMb,
             maxConcurrentTasks: budget.maxConcurrentTasks,
             resource: options.taskAdmissionKey(task) || '*',
             intent: { ...options.admissionIntent, taskIndex: index },

@@ -4,7 +4,7 @@
  * P-017/P-018 must attach exact scenario receipts before a cell can pass.
  */
 export const SU_EXEC_INVENTORY = {
-  revision: 4,
+  revision: 5,
   plan: 'interchangeable-su-execution-backends-2026-10-23',
   ownerItem: 'P-001',
   host: { os: 'linux', arch: 'x64', runtime: 'current-build', otherHosts: 'unqualified' },
@@ -54,6 +54,7 @@ export const SU_EXEC_PTY_CONTROLS = [
   { mode: 'reset', classification: 'required', behavior: 'cold-carry' },
   { mode: 'recycle', classification: 'required', behavior: 'cold-carry' },
   { mode: 'carry-respawn', classification: 'required', behavior: 'cold-carry' },
+  { mode: 'carry-fence', classification: 'required', behavior: 'cold-carry' },
   { mode: 'compact', classification: 'retired', behavior: 'retired-compact',
     boundary: 'Reject the retired control explicitly; never deliver its JSON as an owner turn.' },
   { mode: 'shutdown', classification: 'required', behavior: 'supervision' },
@@ -113,6 +114,9 @@ const CONTROL_DUTIES = {
   'carry-respawn': { requirement: 'R-10', item: 'P-011',
     action: 'Persist deterministic carry, fence the old child and verify successor bootstrap before accepting commands.',
     falsifier: 'An unready successor consumes a wake or native process handles are treated as durable state.' },
+  'carry-fence': { requirement: 'R-10', item: 'P-011',
+    action: 'Fence the exact pending carry for the addressed owner and generation without injecting an agent turn.',
+    falsifier: 'A foreign or stale fence cancels a successor, or a fenced carry still starts a second consumer.' },
   compact: { requirement: 'R-15', item: 'P-016',
     action: 'Return the retired-control refusal without injecting any part of the control envelope.',
     falsifier: 'The retired compact envelope is silently accepted or typed as an owner turn.' },
