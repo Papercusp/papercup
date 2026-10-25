@@ -5129,6 +5129,33 @@ describe('template_data persistence boundary — the set-template-data door', ()
     });
   });
 
+  it('METHOD review screens related sources and freshly reserved answerers with the same canonical lineage rule', async () => {
+    const seeded = await seedBarContract('method-review-native-independence');
+    const target = { rubricId: seeded.rubricSlug, applierId: 'amendment-actor' };
+    // The applier is part of the canonical population even without an audit row.
+    const sources = ['amendment-actor', 'method-independent-source'].map(ownerId => ({ ownerId, score: 0.9 }));
+    const { filterAmendmentReviewRoute } = await import('./consult/acceptance-bar-amendment-review');
+    const screen = await rubrics.resolveAcceptanceBarApproverScreen(target);
+    const route = await filterAmendmentReviewRoute({ qualified: sources, snapshot: { candidates: sources } } as never, screen.check);
+    expect(route.qualified.map(c => c.ownerId)).toEqual(['method-independent-source']);
+    expect(route.snapshot.candidates.map(c => c.ownerId)).toEqual(['method-independent-source']);
+    for (const [source, answerer] of [
+      ['amendment-actor', 'method-related-answerer'],
+      ['method-independent-source', 'method-independent-answerer'],
+    ]) {
+      // The dispatch stamp exists BEFORE the actual-answerer check/spawn. Its
+      // canonical edge follows the source, independent of a requester launcher.
+      await db.adminSql`INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question, latency_contract, routing)
+        VALUES (${seeded.workspaceId}, ${`conv-${answerer}`}, 'amendment-actor', ${source!},
+          'awaiting_responder', 'current method', 'hard-blocked',
+          ${db.adminSql.json({ policy: 'method-review', methodReviewRubricRef: seeded.rubricSlug,
+            selection: { selected: [{ ownerId: source, answeringOwnerId: answerer, via: 'minimum' }] } } as never)})`;
+      const actual = await rubrics.checkAcceptanceBarApproverEligibility({ ...target, ownerId: answerer! });
+      expect(actual.eligible).toBe(source === 'method-independent-source');
+    }
+  });
+
   it('P-005: the apply accepts an approval from a routed fork the applier requested, and still refuses an ordinary child', async () => {
     // review-routing-through-relevance-router-2026-09-26 P-005. The applier REQUESTS a routed
     // amendment review, and the consult dispatcher records the requester as the answering

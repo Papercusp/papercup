@@ -293,6 +293,7 @@ export interface RoutingSnapshot {
    * (review-system-rework-reduction-2026-09-23 P-014). Absent on rows opened before
    * this field existed and on consults opened without a policy. */
   policy?: string;
+  methodReviewRubricRef?: string;
   /** A per-review launch constraint copied into every cascade step. */
   reviewerModel?: import('./get-feedback-core').ConsultReviewerModel;
   nativeConsult?: import('./native-consult').NativeConsultConstraints;

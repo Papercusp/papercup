@@ -105,8 +105,11 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        "Named selection policy: 'rubric-vetting' for meta-rubric vetting; 'method-review' for a prospective assessment of supplied current method inputs and controls (one reviewer, fresh evidence; no execution approval). Prefer a policy over typing max_agents at a governed call site. Unknown key refuses.",
+        "Named selection policy: 'rubric-vetting' for meta-rubric vetting; 'method-review' requires method_review_rubric_ref for canonical independence screening of a prospective current-method assessment (fresh evidence; no execution approval). Unknown key refuses.",
       ),
+    method_review_rubric_ref: z.string().trim().min(1).optional().describe(
+      "For policy:'method-review', the started acceptance rubric whose canonical approver screen applies to sources and answering sessions. Required; question prose and subject_refs do not establish independence scope.",
+    ),
     reviewerModel: z.object({
       agent: z.enum(['claude', 'codex', 'omp']),
       model: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/),
@@ -185,6 +188,7 @@ export default defineTool({
       ...(args.min_agents !== undefined ? { minResponders: args.min_agents } : {}),
       ...(args.max_agents !== undefined ? { maxResponders: args.max_agents } : {}),
       ...(args.policy !== undefined ? { policy: args.policy } : {}),
+      ...(args.method_review_rubric_ref !== undefined ? { methodReviewRubricRef: args.method_review_rubric_ref } : {}),
       ...(args.reviewerModel !== undefined ? { reviewerModel: args.reviewerModel } : {}),
       ...(args.archive_floor !== undefined ? { archiveFloor: args.archive_floor } : {}),
       topics: args.topics,

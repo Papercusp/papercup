@@ -26,7 +26,8 @@ import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/p
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import type { RouteResult, RoutingCandidate, RoutingSnapshot } from './relevance-router';
 import { routingHealthFromRows, type RoutingHealthConsultRow } from './consult-routing-health';
-import { appendDispatchRecord } from './consult-dispatch';
+import { appendDispatchRecord, makeConsultReachDispatcher } from './consult-dispatch';
+import { mockOrgPgSql } from '../testing/mock-org-pg';
 import {
   resolveProseProfileSelection,
   type ProseProfileSelection,
@@ -948,6 +949,45 @@ async function stateRow(conversationId: string, ws: string = WS) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('recoverable interactive feedback requests', () => {
+  it('requires explicit METHOD context, fingerprints it, and retains it through durable recovery', async () => {
+    const fixture = makeDeps(routeOf([cand('method-context-expert')]));
+    const request = { ...baseReq, requestKey: 'method-context', policy: 'method-review',
+      methodReviewRubricRef: 'acceptance-method-context' };
+    await expect(acceptFeedbackRequestCore({ ...request, methodReviewRubricRef: undefined }, fixture.deps))
+      .rejects.toThrow('method_review_requires_acceptance_rubric');
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(accepted.error);
+    expect(await acceptFeedbackRequestCore({ ...request, methodReviewRubricRef: 'acceptance-other' }, fixture.deps))
+      .toMatchObject({ error: 'request_key_conflict', conversation_id: accepted.conversation_id });
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, { getSql: () => rootSql, now: () => NOW,
+      execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }) });
+    expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ policy: 'method-review',
+      methodReviewRubricRef: request.methodReviewRubricRef,
+      request: { payload: { methodReviewRubricRef: request.methodReviewRubricRef } },
+    });
+    // Read the REAL persisted JSON through the production deferred dispatcher.
+    // A system sweep launcher must not replace the saved applier/target. The
+    // denied source must return before resolving a session or spending capacity.
+    const dbOrg = await import('@papercusp/db-org');
+    const spy = vi.spyOn(dbOrg, 'getOrgPg');
+    mockOrgPgSql(spy, rootSql);
+    const checkApprover = vi.fn(async (input: { rubricId: string; ownerId: string; applierId?: string }) => ({
+      ...input, subjectPlan: 'method-context-subject', eligible: false as const,
+      reason: 'related_to_plan_implementer' as const, eligibleWithUnrelatedApplier: false,
+    }));
+    const resolveResumeTarget = vi.fn();
+    try {
+      const result = await makeConsultReachDispatcher({ workspaceId: WS, harnessSlug: 'papercusp',
+        launchedBy: 'system:consult-expiry-sweep' }, {
+        checkApprover, resolveResumeTarget, recordDispatchAttempts: async () => {},
+      })({ conversationId: accepted.conversation_id, responder: 'method-context-expert', summary: 'method', body: 'current method' });
+      expect(result.queued).toBe(0);
+      expect(checkApprover).toHaveBeenCalledWith({ rubricId: request.methodReviewRubricRef,
+        applierId: baseReq.requesterId, ownerId: 'method-context-expert' });
+      expect(resolveResumeTarget).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
   it('round-trips native constraints through durable request recovery and rejects retry/tamper changes', async () => {
     const nativeConsult = { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' } as const;
     const fixture = makeDeps(routeOf([cand('native-persisted-expert')]));
@@ -1238,7 +1278,8 @@ describe('recoverable interactive feedback requests', () => {
 
   it.each([undefined, 'method-review'])('recovers initial delivery for %s after process loss without re-routing or duplicate launch', async (policy) => {
     const fixture = makeDeps(routeOf([cand('durable-initial-expert')]));
-    const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: `durable-initial-${policy ?? 'default'}`, policy }, fixture.deps);
+    const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: `durable-initial-${policy ?? 'default'}`, policy,
+      ...(policy === 'method-review' ? { methodReviewRubricRef: 'acceptance-durable-method' } : {}) }, fixture.deps);
     const execute = vi.fn((payload: GetFeedbackRequest, context: NonNullable<GetFeedbackDeps['acceptedRequest']>) =>
       getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context,
         resumeInitialDispatch: () => { throw new Error('process stopped before initial continuation'); } }));
@@ -1399,7 +1440,8 @@ describe('getFeedbackCore — routed', () => {
         all: [candidate],
         ...(selection === 'lexical' ? { degraded: 'embed-unavailable', fallback: 'lexical' } : {}),
       }));
-      const result = asOk(await getFeedbackCore({ ...baseReq, question, policy, archiveFloor: 2 }, fixture.deps));
+      const result = asOk(await getFeedbackCore({ ...baseReq, question, policy, archiveFloor: 2,
+        ...(policy === 'method-review' ? { methodReviewRubricRef: 'acceptance-current-method' } : {}) }, fixture.deps));
       expect(fixture.reached).toHaveLength(1);
       expect(fixture.reached[0].body).toContain(question);
       expect(fixture.reached[0].body).toContain(policy === 'rubric-vetting'
@@ -2312,7 +2354,7 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
     await seedClosedConsult({ ws, conv: 'old-method-answer', vec: vecAt(0), responder: 'old-reviewer' });
     const fixture = makeDeps(routeOf([cand('current-method-reviewer')], { queryVec: qv }));
     const result = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws,
-      policy: 'method-review', archiveFloor: 0 }, fixture.deps));
+      policy: 'method-review', methodReviewRubricRef: 'acceptance-current-method', archiveFloor: 0 }, fixture.deps));
     expect(result.verdict).toBe('routed');
     expect(fixture.reached).toHaveLength(1);
     expect(fixture.reached[0].body).toContain('CURRENT METHOD');

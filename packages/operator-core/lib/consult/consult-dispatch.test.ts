@@ -1733,6 +1733,59 @@ describe('dispatchRecordEntry (the persisted shape is bounded)', () => {
 });
 
 describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meaning changes)', () => {
+  it.each(['deferred-initial', 'decline-cascade', 'expiry-recovery'])(
+    'restores the persisted METHOD scope and rejects a related source on %s', async leg => {
+      const db = await import('@papercusp/db-org');
+      const spy = vi.spyOn(db, 'getOrgPg');
+      mockOrgPgSql(spy, vi.fn(async () => [{ policy: 'method-review', method_rubric: 'acceptance-native',
+        requester_id: 'saved-applier', reviewer_model: null, native_consult: null }]));
+      const check = vi.fn(async () => ({ eligible: false, reason: 'related_to_plan_implementer' }));
+      const { deps, calls } = makeFakes({ readReviewerModel: undefined, checkApprover: check as never });
+      try {
+        const result = await makeConsultReachDispatcher({ ...CTX, launchedBy: `system:${leg}` }, deps)({
+          responder: 'su-expert', conversationId: `conv-${leg}`, summary: 'method', body: 'current method',
+        });
+        expect(result.queued).toBe(0);
+        expect(check).toHaveBeenCalledWith({ rubricId: 'acceptance-native', applierId: 'saved-applier', ownerId: 'su-expert' });
+        expect(calls.spawn).toHaveLength(0);
+        expect(calls.capacity).toHaveLength(0);
+      } finally { spy.mockRestore(); }
+    },
+  );
+
+  it.each(['missing-target', 'screen-error', 'answerer-screen-error', 'related-answerer', 'unrelated-answerer'])(
+    'fails closed before spawn while checking actual METHOD answerer: %s', async state => {
+      const db = await import('@papercusp/db-org');
+      const spy = vi.spyOn(db, 'getOrgPg');
+      mockOrgPgSql(spy, vi.fn(async () => [{ policy: 'method-review',
+        method_rubric: state === 'missing-target' ? null : 'acceptance-native', requester_id: 'saved-applier',
+        reviewer_model: null, native_consult: null }]));
+      const reserved: string[] = [];
+      const check = vi.fn(async ({ ownerId }: { ownerId: string }) => {
+        if (state === 'screen-error') throw new Error('lineage unavailable');
+        if (ownerId !== 'su-expert') expect(reserved).toContain(ownerId);
+        if (ownerId !== 'su-expert' && state === 'answerer-screen-error') throw new Error('answerer lineage unavailable');
+        return { eligible: ownerId === 'su-expert' || state === 'unrelated-answerer', reason: 'related_to_plan_implementer' };
+      });
+      const { deps, calls } = makeFakes({ readReviewerModel: undefined, checkApprover: check as never });
+      try {
+        const run = () => makeConsultReachDispatcher(CTX, deps)({ responder: 'su-expert',
+          conversationId: 'conv-method-answerer', summary: 'method', body: 'current method', evidence: OPTS.evidence,
+          onAnsweringOwner: async ownerId => { reserved.push(ownerId); },
+        });
+        if (state === 'missing-target') await expect(run()).rejects.toThrow('method_review_requires_acceptance_rubric');
+        else {
+          const result = await run();
+          expect(result.queued).toBe(state === 'unrelated-answerer' ? 1 : 0);
+          expect(calls.spawn).toHaveLength(state === 'unrelated-answerer' ? 1 : 0);
+        }
+        if (state !== 'missing-target' && state !== 'screen-error') {
+          expect(check.mock.calls.some(([input]) => input.ownerId.startsWith('su-answer-'))).toBe(true);
+        }
+      } finally { spy.mockRestore(); }
+    },
+  );
+
   const leasedBoundary = (): Extract<NativeConsultBoundary, { status: 'measured' }> => ({
     status: 'measured', capturedAt: '2026-09-26T12:00:00.000Z', completedAt: '2026-09-26T12:00:01.000Z',
     readScope: 'fixture source and plan-lease endpoint', sourceAdvSessionId: 7,

@@ -331,6 +331,7 @@ export type DispatchSkipReason =
   | 'first-turn-rejected'
   | 'first-turn-provider-error'
   | 'answering-owner-stamp-failed'
+  | 'approval-ineligible'
   | 'consult-closed';
 
 export interface ConsultDispatchAttempt {
@@ -471,7 +472,9 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   readReviewerModel?: (workspaceId: string, conversationId: string) => Promise<ConsultReviewerModel | null>;
   readDispatchChoice?: (workspaceId: string, conversationId: string) => Promise<{
     reviewerModel: ConsultReviewerModel | null; nativeConsult: NativeConsultConstraints | null;
+    methodReview?: { rubricId: string; applierId: string };
   }>;
+  checkApprover?: typeof import('../rubrics').checkAcceptanceBarApproverEligibility;
   /** Re-read the consult before launching a reviewer; cascades can race closure. */
   isConsultOpen: (workspaceId: string, conversationId: string) => Promise<boolean>;
   resolveResumeTarget: typeof resolveResumeTarget;
@@ -1227,6 +1230,8 @@ export async function dispatchConsultResponder(
     conversationId: string;
     reviewerModel?: ConsultReviewerModel;
     nativeConsult?: NativeConsultConstraints;
+    /** Canonical screen rebuilt from the persisted target on every dispatch. */
+    checkApprover?: import('./acceptance-bar-amendment-review').AmendmentReviewerScreen;
     /** Router-matched transcript turns; exact native session wins over the
      * owner's newest session so the routed evidence and carried source agree. */
     evidence?: ConsultDispatchEvidenceRef[];
@@ -1317,6 +1322,10 @@ async function walkConsultDispatch(
   });
 
   try {
+    if (opts.checkApprover) {
+      const verdict = await opts.checkApprover(opts.sourceOwnerId);
+      if (verdict.eligible !== true) return give(`method_review_source_ineligible: ${verdict.reason}`);
+    }
     // WI-10003198: a source whose launches keep failing is not launched again
     // until its cool-down ends. Checked first: it is the cheapest refusal, and
     // everything after it (resolve, preflight, pressure, walls) is wasted on a
@@ -1787,6 +1796,7 @@ async function launchAnsweringSession(
     citedTurns?: CitedTranscriptTurn[];
     brief: string | ((operation: DispatchOperation) => string);
     onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
+    checkApprover?: import('./acceptance-bar-amendment-review').AmendmentReviewerScreen;
   },
   ctx: ConsultDispatchContext,
   d: ConsultDispatchDeps,
@@ -1907,6 +1917,17 @@ async function launchAnsweringSession(
         'answering-owner-stamp-failed',
         'could not persist the answering identity before spawn; no session was launched',
       );
+    }
+  }
+  if (opts.checkApprover) {
+    try {
+      // The reservation above writes source→answerer before this fresh canonical
+      // read. Do not reuse a preselection closure: its lineage cache predates it.
+      if (!opts.onAnsweringOwner) return failed('approval-ineligible', 'method review requires a durable answering-owner reservation');
+      const verdict = await opts.checkApprover(answeringOwnerId);
+      if (verdict.eligible !== true) return failed('approval-ineligible', `method_review_answerer_ineligible: ${verdict.reason}`);
+    } catch (error) {
+      return failed('approval-ineligible', `method_review_answerer_screen_failed: ${String(error)}`);
     }
   }
   // The answer-owner stamp is async too. Close can win while it is writing, so
@@ -2306,6 +2327,11 @@ export function makeConsultReachDispatcher(
       : deps.readReviewerModel ? { reviewerModel: await deps.readReviewerModel(ctx.workspaceId, opts.conversationId), nativeConsult: null }
       : await readPersistedDispatchChoice(ctx.workspaceId, opts.conversationId);
     const { reviewerModel, nativeConsult } = choice;
+    const methodReview = 'methodReview' in choice ? choice.methodReview : undefined;
+    const checkApprover = methodReview ? async (ownerId: string) => {
+      const check = deps.checkApprover ?? (await import('../rubrics')).checkAcceptanceBarApproverEligibility;
+      return check({ ...methodReview, ownerId });
+    } : undefined;
     // Initial getFeedbackProd binds workspace ranks itself. Later decline and
     // expiry writers construct a new dispatcher, so load that same workspace
     // setting here instead of comparing the saved choice against the seed.
@@ -2324,6 +2350,7 @@ export function makeConsultReachDispatcher(
         conversationId: opts.conversationId,
         ...(reviewerModel ? { reviewerModel } : {}),
         ...(nativeConsult ? { nativeConsult } : {}),
+        ...(checkApprover ? { checkApprover } : {}),
         ...(opts.evidence ? { evidence: opts.evidence } : {}),
         ...(opts.onAnsweringOwner ? { onAnsweringOwner: opts.onAnsweringOwner } : {}),
         // Per-rank, because a walled rank-1 can turn a fork into a conversion and
@@ -2397,15 +2424,23 @@ export async function continueCascadeDispatchProd(
 
 async function readPersistedDispatchChoice(workspaceId: string, conversationId: string): Promise<{
   reviewerModel: ConsultReviewerModel | null; nativeConsult: NativeConsultConstraints | null;
+  methodReview?: { rubricId: string; applierId: string };
 }> {
   const { getOrgPg } = await import('@papercusp/db-org');
-  const [row] = await getOrgPg().sql<Array<{ policy: string | null; reviewer_model: unknown; native_consult: unknown }>>`
-    SELECT routing->>'policy' AS policy, routing->'reviewerModel' AS reviewer_model, routing->'nativeConsult' AS native_consult
+  const [row] = await getOrgPg().sql<Array<{ policy: string | null; reviewer_model: unknown; native_consult: unknown;
+    method_rubric: string | null; requester_id: string }>>`
+    SELECT routing->>'policy' AS policy, routing->'reviewerModel' AS reviewer_model, routing->'nativeConsult' AS native_consult,
+           routing->>'methodReviewRubricRef' AS method_rubric, requester_id
       FROM harness_shared.consult_state
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
   `;
   const nativeConsult = row?.native_consult == null ? null : nativeConsultConstraintsSchema.parse(row.native_consult);
-  if (row?.reviewer_model == null) return { reviewerModel: null, nativeConsult };
+  const { methodReviewTarget } = await import('./selection-policies');
+  const rubricId = methodReviewTarget({ policy: row?.policy ?? undefined,
+    methodReviewRubricRef: row?.method_rubric ?? undefined });
+  if (rubricId && !row?.requester_id?.trim()) throw new Error('method_review_requester_missing');
+  const methodReview = rubricId ? { rubricId, applierId: row!.requester_id } : undefined;
+  if (row?.reviewer_model == null) return { reviewerModel: null, nativeConsult, ...(methodReview ? { methodReview } : {}) };
   if (row.policy !== ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY && row.policy !== RUBRIC_VETTING_POLICY) {
     throw new Error('reviewer model exists outside an authorized review policy');
   }
