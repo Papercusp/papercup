@@ -479,11 +479,13 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('routes a registered affected suite through the pinned exact-file script', async () => {
+  it('runs a frozen exact-file script in test mode without changing its production caller', async () => {
     const root = mkdtempSync(join(tmpdir(), 'precheck-affected-file-'));
     const checkpointRoot = join(root, 'checkpoint');
     const precheckRoot = `${checkpointRoot}-admission-precheck`;
     const commands: string[][] = [];
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
     const prepareTestEnvironment = vi.fn(async () => ({ PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private@localhost:12345/postgres' }));
     const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
       commands.push([...argv]);
@@ -493,12 +495,13 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
           private: true,
           scripts: {
             'test:affected': 'node -e "throw new Error(\'unexpected positional filename\')"',
-            'test:file': 'node -e "require(\'node:assert/strict\').deepEqual(process.argv.slice(1), [\'tests/host.test.ts\']); console.log(\'Tests 1 passed (1)\')"',
+            'test:file': 'node -e "const a=require(\'node:assert/strict\'); a.deepEqual(process.argv.slice(1), [\'tests/host.test.ts\']); a.equal(process.env.NODE_ENV, \'test\'); console.log(\'Tests 1 passed (1)\')"',
           },
         }));
         return { exitCode: 0, signal: null, timedOut: false, output: 'fixture prepared', durationMs: 1 };
       }
       expect(opts.env?.PAPERCUSP_TEST_PG_ADMIN_URL).toBe('postgres://private@localhost:12345/postgres');
+      expect(opts.env?.NODE_ENV).toBe('test');
       return defaultExec(argv, opts);
     };
     try {
@@ -513,7 +516,12 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
       });
       expect(commands.at(-1)).toEqual(['npm', 'run', 'test:file', '--', 'tests/host.test.ts']);
       expect(prepareTestEnvironment).toHaveBeenCalledWith(precheckRoot, expect.any(Function));
-    } finally { rmSync(root, { recursive: true, force: true }); }
+      expect(process.env.NODE_ENV).toBe('production');
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('refuses an affected suite with no registered exact-file script', async () => {

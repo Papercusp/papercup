@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { processGroupLifetime } from '../fleet/process-group-lifetime';
 
-export const ADMISSION_TEST_ENVIRONMENT = 'pinned-private-pg-v1';
+export const ADMISSION_TEST_ENVIRONMENT = 'pinned-private-pg-test-mode-v2';
 const CLEARED_DATABASE_PINS = ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'];
 
 export interface AdmissionTestEnvironment {

@@ -1103,6 +1103,9 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
           ...(opts.testRunHarness ? { PAPERCUSP_TEST_RUN_HARNESS: opts.testRunHarness } : {}),
           ...clearedEnv,
           ...testEnvironment,
+          // Frozen candidates can predate the exact-file router's test-mode
+          // boundary. Never inherit the operator's production Vite/React mode.
+          NODE_ENV: 'test',
         },
         logFile,
       }, { currentFile: file, completedCount: index, totalCount: files.length });
