@@ -339,6 +339,7 @@ export type GatewayRequestKernelErrorCode =
   | 'request-ceiling'
   | 'ttfb-timeout'
   | 'retry-budget-exhausted'
+  | 'admission-timeout'
   | 'upstream-body-idle'
   | 'downstream-idle'
   | 'cancelled'
@@ -1102,6 +1103,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
               : ttfbTimeoutMs;
           let attemptPermitRelease: (() => void) | null = null;
           if (opts.admission.acquireAttempt) {
+            span.beginStage('queueWait');
             try {
               attemptPermitRelease = await abortable(
                 Promise.resolve(opts.admission.acquireAttempt(attemptContext)),
@@ -1115,6 +1117,8 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
                 error: admissionFailure,
               });
               throw admissionFailure;
+            } finally {
+              span.endStage('queueWait');
             }
           }
           span.beginStage('upstreamTtfb');

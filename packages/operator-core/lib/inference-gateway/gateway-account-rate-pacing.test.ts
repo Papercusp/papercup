@@ -4,7 +4,7 @@ import { executeGatewayRequestKernel } from './request-kernel';
 import { makeGatewayLaneRegistry } from './provider-adapters';
 import { GatewayRequestTelemetry } from './request-stage-telemetry';
 import type { AccountPool } from './provider-contracts';
-import { createInferenceGateway, ACCOUNT_HEADER, ACCOUNT_PIN_HEADER } from './gateway';
+import { createInferenceGateway, ACCOUNT_HEADER, ACCOUNT_PIN_HEADER, PRIORITY_HEADER } from './gateway';
 import { createFailoverPool } from './account-failover';
 import { parseCodexRateReset } from './codex-oauth-proxy';
 import { promises as fs } from 'node:fs';
@@ -96,12 +96,14 @@ describe('shared Codex account pacing', () => {
 describe('production gateway account-governor wiring', () => {
   const model = 'gpt-6.1-sol';
   let gateway: ReturnType<typeof createInferenceGateway> | undefined;
+  let gatewayPort: number | undefined;
   const homes: string[] = [];
 
   beforeEach(() => configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore()));
   afterEach(async () => {
     await gateway?.close();
     gateway = undefined;
+    gatewayPort = undefined;
     await Promise.all(homes.splice(0).map(home => fs.rm(home, { recursive: true, force: true })));
     vi.restoreAllMocks();
     resetGatewayRequestOutcomeStore();
@@ -117,12 +119,12 @@ describe('production gateway account-governor wiring', () => {
     return Response.json({ id: 'resp_pacing', object: 'response', status: 'completed', output: [] });
   }
 
-  async function send(path = '/v1/responses', bodyModel = model, headers: Record<string, string> = {}) {
-    const port = await gateway!.listen(0);
+  async function send(path = '/v1/responses', bodyModel = model, headers: Record<string, string> = {}, input = 'Reply briefly.') {
+    const port = gatewayPort ??= await gateway!.listen(0);
     const result = await fetch(`http://127.0.0.1:${port}${path}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', [ACCOUNT_HEADER]: 'account-a', ...headers },
-      body: JSON.stringify({ model: bodyModel, input: 'Reply briefly.', max_tokens: 8, stream: false }),
+      body: JSON.stringify({ model: bodyModel, input, max_tokens: 8, stream: false }),
     });
     const responseBody = await result.text();
     return { status: result.status, body: responseBody };
@@ -147,6 +149,65 @@ describe('production gateway account-governor wiring', () => {
     // factory and applies the gateway smoothing policy to both providers.
     gateway.stats();
     expect(claude.state.smoothRpm).toBe(codex.state.smoothRpm);
+  });
+
+  it('orders account starts by priority without letting later arrivals race a paced request', async () => {
+    const governor = governorForBackend('codex', model, undefined, 'account-a');
+    const originalAcquire = governor.acquire.bind(governor);
+    let unblock!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>(resolve => { unblock = resolve; });
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    let first = true;
+    vi.spyOn(governor, 'acquire').mockImplementation(async (...args) => {
+      if (first) { first = false; entered(); await blocked; }
+      return originalAcquire(...args);
+    });
+    const order: string[] = [];
+    gateway = createInferenceGateway({ accountId: 'account-a', token: async () => 'claude-token',
+      codexPool: accounts(), smoothRpm: false, selfHeal: { enabled: false },
+      fetchImpl: (async (_url, init) => {
+        order.push(JSON.parse(typeof init?.body === 'string' ? init.body :
+          Buffer.from(init?.body as Uint8Array).toString()).input);
+        return response();
+      }) as typeof fetch,
+    });
+    const pinned = { [ACCOUNT_PIN_HEADER]: 'hard' };
+    const one = send('/v1/responses', model, pinned, 'first');
+    await waiting;
+    const background = send('/v1/responses', model, pinned, 'background');
+    await vi.waitFor(() => expect(gateway!.stats().codexAdmission.running).toBeGreaterThanOrEqual(2));
+    const interactive = send('/v1/responses', model, { ...pinned, [PRIORITY_HEADER]: 'mug' }, 'interactive');
+    try {
+      await vi.waitFor(() => expect(gateway!.stats().codexAdmission.running).toBeGreaterThanOrEqual(3));
+      expect(order).toEqual([]);
+    } finally { unblock(); }
+    const results = await Promise.all([one, background, interactive]);
+    expect(results.map(x => x.status), JSON.stringify(results)).toEqual([200, 200, 200]);
+    expect(order).toEqual(['first', 'interactive', 'background']);
+  });
+
+  it.each(['bearer', 'oauth'] as const)('reports local %s account pacing exhaustion as throttling without blaming the upstream', async transport => {
+    const governor = governorForBackend('codex', model, undefined, 'account-a');
+    vi.spyOn(governor, 'acquire').mockResolvedValue(null);
+    const fetchImpl = vi.fn(async () => response()) as typeof fetch;
+    const home = await fs.mkdtemp(join(tmpdir(), 'account-pacing-'));
+    homes.push(home);
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const token = `${encode({ alg: 'none' })}.${encode({ exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`;
+    await fs.writeFile(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+      access_token: token, refresh_token: 'fixture-refresh', account_id: 'account-a',
+    } }));
+    gateway = createInferenceGateway({ accountId: 'account-a', token: async () => 'claude-token',
+      ...(transport === 'oauth' ? { codexCliAccounts: () => [{ accountId: 'account-a', home }], codexOAuthProxy: true }
+        : { codexPool: accounts() }), fetchImpl, selfHeal: { enabled: false } });
+    const result = await send();
+    expect(result.status, result.body).toBe(429);
+    expect(result.body).toContain('pacing wait exceeded');
+    expect(result.body).not.toContain('upstream failed');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(governor.state.rpmFactor ?? 1).toBe(1);
+    expect(gateway.stats().codex.errors).toBe(0);
   });
 
   it('routes a real transient 429 into only the emitting account governor', async () => {

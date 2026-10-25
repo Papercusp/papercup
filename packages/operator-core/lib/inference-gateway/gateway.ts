@@ -3083,6 +3083,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     return g;
   };
 
+  // Order only the start permit, never the upstream response/stream. Letting
+  // every request race the governor's retry sleep discarded priority and let
+  // new arrivals repeatedly overtake requests already waiting on an account.
+  const codexAttemptQueues = new Map<RateLimitGovernor, PriorityAdmissionQueue>();
+
   /** Per-attempt Codex pacing. The governor wait is deliberately outside the
    * kernel's upstream TTFB timer and uses the kernel request signal so a client
    * abort releases the waiter without charging an upstream timeout. */
@@ -3090,14 +3095,33 @@ export function createInferenceGateway(deps: GatewayDeps) {
     model: string,
     accountId: string,
     signal: AbortSignal,
+    priorityLabel: string | undefined,
   ): Promise<() => void> => {
     const governor = governorForAccount(model || SERVICEABLE_CLAMP_MODEL, accountId, 'codex');
-    const release = await governor.acquire({}, {
-      maxWaitMs: maxQueueWaitMs,
-      signal,
-      allowSoftPaused: true,
-    });
-    if (release) return release;
+    let queue = codexAttemptQueues.get(governor);
+    if (!queue) {
+      queue = new PriorityAdmissionQueue({ maxConcurrent: 1 });
+      codexAttemptQueues.set(governor, queue);
+    }
+    const deadline = new AbortController();
+    const waitingSignal = AbortSignal.any([signal, deadline.signal]);
+    const timer = setTimeout(() => deadline.abort(), maxQueueWaitMs);
+    try {
+      const release = await queue.run(priorityFromLabel(priorityLabel), () => governor.acquire({}, {
+        maxWaitMs: maxQueueWaitMs,
+        signal: waitingSignal,
+        allowSoftPaused: true,
+        priorityTier: tierOf(priorityLabel),
+      }), { signal: waitingSignal });
+      if (release) {
+        if (!waitingSignal.aborted) return release;
+        release();
+      }
+    } catch (error) {
+      if (!waitingSignal.aborted) throw error;
+    } finally {
+      clearTimeout(timer);
+    }
     if (signal.aborted) {
       throw new GatewayRequestKernelError('codex attempt pacing aborted', {
         code: 'cancelled',
@@ -3107,7 +3131,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       });
     }
     throw new GatewayRequestKernelError(`codex account '${accountId}' pacing wait exceeded ${maxQueueWaitMs}ms`, {
-      code: 'upstream-error',
+      code: 'admission-timeout',
       outcome: 'shed',
       status: 429,
       retryable: false,
@@ -8695,7 +8719,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // this seam: this transport commits its response head BEFORE the kernel call below.
           run: (context, task) => kernelAdmission.run(context, task),
           acquireAttempt: ({ route, signal }) =>
-            acquireCodexAttemptPermit(model, route.accountId ?? cli.accountId, signal),
+            acquireCodexAttemptPermit(model, route.accountId ?? cli.accountId, signal,
+              (req.headers[PRIORITY_HEADER] as string | undefined)?.trim()),
           // R-3 / P-003: hand the lane slot back once the response streams.
           ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
           observeAttempt: ({ context, error }) => {
@@ -8707,6 +8732,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // The CLI home encapsulates its own credential — there is no token to
             // resolve — so the auth stage stays the zero-width seam it was.
             if (!error) return;
+            if (error.code === 'admission-timeout') return;
             const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
             if (error.code === 'cancelled') {
               log('info', `inference-gateway: codex-cli downstream cancelled request=${requestRef} code=cancelled on '${account}': ${error.message}`);
@@ -8849,8 +8875,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const message = detail.startsWith('inference-gateway: codex-cli bridge failed')
         ? detail
         : `inference-gateway: codex-cli bridge failed: ${detail}`;
-      const rateLimited = isCodexRateLimitFailure(lastFailureDetail || detail);
-      if (rateLimited) {
+      const rateLimited = isCodexRateLimitFailure(lastFailureDetail || detail) ||
+        (e instanceof GatewayRequestKernelError && e.code === 'admission-timeout');
+      if (rateLimited && !(e instanceof GatewayRequestKernelError && e.code === 'admission-timeout')) {
         // The request ENDS on a rate limit nothing routed around. The shared
         // classifier keeps a usage/session-limit wall off the window.
         providerAdmission.recordOutcome(
@@ -9321,7 +9348,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // this seam: this transport commits its response head BEFORE the kernel call below.
             run: (context, task) => kernelAdmission.run(context, task),
             acquireAttempt: ({ route, signal }) =>
-              acquireCodexAttemptPermit(bodyModel, route.accountId ?? cli.accountId, signal),
+              acquireCodexAttemptPermit(bodyModel, route.accountId ?? cli.accountId, signal,
+                (req.headers[PRIORITY_HEADER] as string | undefined)?.trim()),
             // R-3 / P-003: hand the lane slot back once the response streams.
             ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
             observeAttempt: ({ context, response, error }) => {
@@ -9334,6 +9362,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (account !== lastAccountId) codexFailovers++;
               lastAccountId = account;
               if (error) {
+                if (error.code === 'admission-timeout') return;
                 const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
                 if (error.code === 'cancelled') {
                   log('info', `inference-gateway: codex OAuth downstream cancelled request=${requestRef} code=cancelled on '${account}': ${error.message}`);
@@ -9770,7 +9799,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
           log('error', 'inference-gateway: codex OAuth incomplete stream on ' + lastAccountId + ': ' + failure.message);
         }
         if (res.headersSent) {
-          if (incompleteOAuthStream && !reqAbort.signal.aborted && !res.destroyed && !res.writableEnded) {
+          if (failure.code === 'admission-timeout' && !reqAbort.signal.aborted && !res.destroyed && !res.writableEnded) {
+            res.end('event: error\ndata: ' + JSON.stringify({ type: 'error', error: {
+              type: 'rate_limit_error', code: 'rate_limit_exceeded', message: failure.message,
+            } }) + '\n\n');
+          } else if (incompleteOAuthStream && !reqAbort.signal.aborted && !res.destroyed && !res.writableEnded) {
             // The kernel has already exposed output, so replay is unsafe. End
             // truthfully instead of making the native client diagnose a socket
             // disconnect or inventing a successful Responses completion.
@@ -9789,6 +9822,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
           return;
         }
 
+        if (failure.code === 'admission-timeout') {
+          sendJson(res, 429, { type: 'error', error: {
+            type: 'rate_limit_error', message: failure.message,
+          }, gateway: true }, { 'retry-after': '1', [ROUTED_ACCOUNT_HEADER]: lastAccountId });
+          return;
+        }
         if (failure.code === 'upstream-error' && failure.status === 503) {
           // OAuth resolution never produced a usable token on any account.
           sendJson(
@@ -10468,7 +10507,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // against the slot this request already holds.
             run: (context, task) => kernelAdmission.run(context, task),
             acquireAttempt: ({ route, signal }) =>
-              acquireCodexAttemptPermit(requestModel ?? '', route.accountId ?? active.accountId, signal),
+              acquireCodexAttemptPermit(requestModel ?? '', route.accountId ?? active.accountId, signal,
+                (req.headers[PRIORITY_HEADER] as string | undefined)?.trim()),
             // R-3 / P-003: hand the lane slot back once the response streams.
             ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
             observeAttempt: ({ context, response, error }) => {
@@ -10479,6 +10519,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (lastRouteKey !== null && lastRouteKey !== context.route.key) codexFailovers++;
               lastRouteKey = context.route.key;
               if (error) {
+                if (error.code === 'admission-timeout') return;
                 const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
                 if (error.code === 'cancelled') {
                   log('info', `inference-gateway: Codex bearer downstream cancelled request=${requestRef} code=cancelled on '${account}': ${error.message}`);
@@ -10776,6 +10817,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
           return;
         }
 
+        if (failure.code === 'admission-timeout') {
+          sendJson(res, 429, { type: 'error', error: {
+            type: 'rate_limit_error', message: failure.message,
+          }, gateway: true }, { 'retry-after': '1', [ROUTED_ACCOUNT_HEADER]: lastAccountId });
+          return;
+        }
         if (failure.code === 'upstream-error' && failure.status === 503) {
           // Token resolution never produced a usable bearer on any account.
           sendJson(
