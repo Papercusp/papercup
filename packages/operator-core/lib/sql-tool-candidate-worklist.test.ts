@@ -45,3 +45,9 @@ it('R8 history is bounded and dependency errors disclose no private error or pop
   expect(JSON.stringify(failed)).not.toContain('private');
   expect(failed.status).toBe('UNKNOWN');
 });
+it('R8 evidence reference cap reports omitted refs on the returned entry', async () => {
+  const row = snapshot(); row.sourceIds = Array.from({ length: 101 }, (_, i) => String(i));
+  const result = await readSqlToolCandidateWorklist(opts, { read: async () => [row], history: async () => [] });
+  expect(result.candidates[0]!.evidenceRefs).toHaveLength(100);
+  expect(result.candidates[0]!.evidenceRefsOmitted).toBe(1);
+});

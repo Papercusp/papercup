@@ -13,13 +13,13 @@ it('R15 R23 realPG worklist and evidence enforce revoke, restore, unavailable an
   const allowed = await readSqlToolCandidateWorklist(opts, { history: async () => [] });
   expect(allowed.status).toBe('ok'); expect(allowed.candidates).toHaveLength(1);
   const id = allowed.candidates[0]!.candidate.id;
-  expect((await readSqlToolCandidateEvidence(opts, id)).examples).toHaveLength(1);
+  expect((await readSqlToolCandidateEvidence(opts, id)).examples).toHaveLength(2);
   for (const authorizeSource of [async (source: string) => source !== ids[1],
     async () => { throw new Error('authority unavailable'); }]) {
     expect(await readSqlToolCandidateWorklist({ ...opts, authorizeSource }, { history: async () => [] }))
       .toMatchObject({ status: 'UNKNOWN', candidates: [], population: { candidates: 0 } });
     expect(await readSqlToolCandidateEvidence({ ...opts, authorizeSource }, id))
-      .toEqual({ status: 'UNKNOWN', examples: [], evidenceRefs: [] });
+      .toEqual({ status: 'UNKNOWN', examples: [], evidenceRefs: [], evidenceRefsOmitted: 0 });
   }
   expect((await readSqlToolCandidateWorklist(opts, { history: async () => [] })).candidates).toHaveLength(1);
   await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${ids[0]!}::bigint`;

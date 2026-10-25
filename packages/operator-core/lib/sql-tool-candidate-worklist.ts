@@ -15,6 +15,7 @@ export interface SqlCandidateWorklistEntry {
   candidate: SqlToolCandidateScore;
   sourceRef: { scopeId: string; ranOn: string };
   evidenceRefs: Array<{ kind: 'tool-invocation'; id: string }>;
+  evidenceRefsOmitted: number;
   decisionHistory: SqlCandidateDecisionRef[];
   decisionHistoryTruncated: boolean;
 }
@@ -51,7 +52,8 @@ export async function readSqlToolCandidateWorklist(opts: SqlCandidateWorklistOpt
         if (entries.has(candidate.id)) continue;
         entries.set(candidate.id, { candidate,
           sourceRef: { scopeId: miningScopeId(opts.scope, opts.harnessSlug), ranOn: snapshot.ranOn },
-          evidenceRefs: snapshot.sourceIds.map(id => ({ kind: 'tool-invocation' as const, id })),
+          evidenceRefs: snapshot.sourceIds.slice(0, 100).map(id => ({ kind: 'tool-invocation' as const, id })),
+          evidenceRefsOmitted: Math.max(0, snapshot.sourceIds.length - 100),
           decisionHistory: [], decisionHistoryTruncated: false });
       }
     }
@@ -92,7 +94,8 @@ export async function readSqlToolCandidateEvidence(opts: SqlCandidateReadOptions
     const snapshots = await readSqlCandidates(opts);
     const snapshot = snapshots.find(row => rankSqlToolCandidates(row.summary).candidates.some(c => c.id === candidateId));
     return snapshot ? { status: 'ok' as const, examples: snapshot.examples,
-      evidenceRefs: snapshot.sourceIds.map(id => ({ kind: 'tool-invocation' as const, id })) }
-      : { status: 'UNKNOWN' as const, examples: [], evidenceRefs: [] };
-  } catch { return { status: 'UNKNOWN' as const, examples: [], evidenceRefs: [] }; }
+      evidenceRefs: snapshot.sourceIds.slice(0, 100).map(id => ({ kind: 'tool-invocation' as const, id })),
+      evidenceRefsOmitted: Math.max(0, snapshot.sourceIds.length - 100) }
+      : { status: 'UNKNOWN' as const, examples: [], evidenceRefs: [], evidenceRefsOmitted: 0 };
+  } catch { return { status: 'UNKNOWN' as const, examples: [], evidenceRefs: [], evidenceRefsOmitted: 0 }; }
 }
