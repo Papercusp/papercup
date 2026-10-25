@@ -18,6 +18,23 @@ import time
 from urllib.parse import urlsplit, urlunsplit
 
 
+RUNTIME_POLICY = {'PAPERCUSP_MEMORY_EMBEDDER': 'gemma', 'PAPERCUSP_EMBED_DEVICE': 'cpu',
+                  'PAPERCUSP_TRANSFORMERS_LOCAL_ONLY': '1', 'PAPERCUSP_SKIP_PG_DISCOVERY': '1'}
+
+
+def run_in_test_pg(plan_path, preflight_only=False):
+    """Apply nonsecret measurement policies after the private runtime sanitizer."""
+    validate_plan(json.loads(Path(plan_path).read_bytes()))
+    if not (Path.cwd() / '.verifier-source.json').is_file():
+        raise ValueError('requires maintained immutable source verifier')
+    command = ['node', 'scripts/with-test-pg.mjs', '--isolated-runtime', '--', 'env',
+               *[key + '=' + value for key, value in RUNTIME_POLICY.items()],
+               sys.executable, '-B', str(Path(__file__).resolve()), '--plan', str(Path(plan_path).resolve())]
+    if preflight_only:
+        command.append('--preflight-only')
+    return subprocess.call(command)
+
+
 def fingerprint(file):
     file = Path(file)
     before = file.stat()
@@ -119,8 +136,7 @@ def run(plan_path, preflight_only=False):
     endpoint = urlsplit(admin)
     if endpoint.hostname not in ('127.0.0.1', 'localhost', '::1') or not endpoint.port or endpoint.port == 5432:
         raise ValueError('requires disposable loopback PostgreSQL')
-    for key, value in {'PAPERCUSP_MEMORY_EMBEDDER': 'gemma', 'PAPERCUSP_EMBED_DEVICE': 'cpu',
-                       'PAPERCUSP_TRANSFORMERS_LOCAL_ONLY': '1', 'PAPERCUSP_SKIP_PG_DISCOVERY': '1'}.items():
+    for key, value in RUNTIME_POLICY.items():
         if os.environ.get(key) != value:
             raise ValueError('missing explicit policy: ' + key)
     destination = Path(plan['outputDirectory'])
@@ -267,5 +283,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan', required=True)
     parser.add_argument('--preflight-only', action='store_true', help='qualify runtime prerequisites without restoring corpus data')
+    parser.add_argument('--with-test-pg', action='store_true', help='launch private PostgreSQL with measurement policies inside the isolation boundary')
     options = parser.parse_args()
-    sys.exit(run(options.plan, options.preflight_only))
+    sys.exit(run_in_test_pg(options.plan, options.preflight_only) if options.with_test_pg
+             else run(options.plan, options.preflight_only))

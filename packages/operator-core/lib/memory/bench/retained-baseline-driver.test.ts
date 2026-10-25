@@ -77,7 +77,7 @@ describe('retained search baseline edition custody',()=>{
     ]);
   });
 
-  it('saves prerequisite-only success or failure without accessing PostgreSQL',()=>{
+  it('applies explicit policies after isolation and saves prerequisite verdicts without accessing PostgreSQL',()=>{
     const driver=fileURLToPath(new URL('../../../../../scripts/backup/search-bench/run-retained-baseline.py',import.meta.url));
     const result=execFileSync('python3',['-B','-c',[
       'import importlib.util,json,tempfile,pathlib,hashlib,sys,os,contextlib,io',
@@ -89,9 +89,19 @@ describe('retained search baseline edition custody',()=>{
       '  f=p/name;f.write_text(json.dumps(value));return m.fingerprint(f)',
       ' plan={"schemaVersion":2,"workItemId":"WI-fixture","expectedCounts":{"session_turns":0},"configuration":pin("config.json",{}),"consumption":pin("consumption.json",{"files":[]}),"schema":pin("schema.json",{"archives":[{"tables":["session_turns"]}]}),"queries":pin("queries.json",{"configuration":{"queryEmbeddingProfile":{"mode":"gemma","profileId":"gemma-embeddinggemma-300m-768@v1"}}})}',
       ' f=pin("benchmark.json",{});plan["protocolFixture"]={"exitCode":1,"executed":3,**{k:{"path":f["path"]+suffix,"sha256":f["sha256"]} for k,suffix in {"artifact":"","declaration":".declaration.json","attempts":".attempts.jsonl","ledger":".ledger.json"}.items()}}',
-      ' os.environ.update(PAPERCUSP_TEST_PG_ADMIN_URL="postgres://localhost:23456/postgres",PAPERCUSP_MEMORY_EMBEDDER="gemma",PAPERCUSP_EMBED_DEVICE="cpu",PAPERCUSP_TRANSFORMERS_LOCAL_ONLY="1",PAPERCUSP_SKIP_PG_DISCOVERY="1")',
+      ' os.environ.update(PAPERCUSP_TEST_PG_ADMIN_URL="postgres://localhost:23456/postgres",PAPERCUSP_MEMORY_EMBEDDER="ambient-must-be-scrubbed")',
       ' def forbidden(*args,**kwargs):raise AssertionError("PostgreSQL or restore accessed")',
       ' m.subprocess.run=forbidden',
+      ' def isolated(command):',
+      '  boundary=command.index("--");assert command[:boundary]==["node","scripts/with-test-pg.mjs","--isolated-runtime"]',
+      '  assert command[boundary+1]=="env" and not any("PAPERCUSP_" in value for value in command[:boundary])',
+      '  assignments=dict(value.split("=",1) for value in command[boundary+2:boundary+2+len(m.RUNTIME_POLICY)])',
+      '  assert assignments=={"PAPERCUSP_MEMORY_EMBEDDER":"gemma","PAPERCUSP_EMBED_DEVICE":"cpu","PAPERCUSP_TRANSFORMERS_LOCAL_ONLY":"1","PAPERCUSP_SKIP_PG_DISCOVERY":"1"}',
+      '  assert command[-1]=="--preflight-only" and "--with-test-pg" not in command',
+      '  for key in m.RUNTIME_POLICY:os.environ.pop(key,None)',
+      '  os.environ.update(assignments)',
+      '  return m.run(command[command.index("--plan")+1],preflight_only=True)',
+      ' m.subprocess.call=isolated',
       ' cases=[]',
       ' for failed in [False,True]:',
       '  destination=p/("failed" if failed else "success");plan["outputDirectory"]=str(destination);file=p/"plan.json";file.write_text(json.dumps(plan))',
@@ -99,7 +109,7 @@ describe('retained search baseline edition custody',()=>{
       '   if failed:raise ValueError("ordinary runtime rejected")',
       '   return {"verified":True}',
       '  m.runtime_preflight=preflight',
-      '  with contextlib.redirect_stdout(io.StringIO()):code=m.run(str(file),preflight_only=True)',
+      '  with contextlib.redirect_stdout(io.StringIO()):code=m.run_in_test_pg(str(file),preflight_only=True)',
       '  receipt=json.loads((destination/"receipt.json").read_text());cases.append([code,receipt["kind"],"failure" in receipt,receipt["baselineAccepted"]])',
       ' print(json.dumps(cases))',
     ].join('\n'),driver],{encoding:'utf8'});
