@@ -4066,8 +4066,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
     return { byAccount, metered: poolMetered };
   }
 
-  /** The ONE gateway adaptation into accountLoadKey. Claude supplies its live per-account governor;
-   *  Codex supplies the same durable capacity/burn hints plus shared transport state. Keeping the
+  const liveCodexGovernor = (accountId: string): RateLimitGovernor | undefined => {
+    const known = deps.codexPool?.entries?.().some(account => account.accountId === accountId) ||
+      codexCliAccounts().some(account => account.accountId === accountId);
+    // All supported Codex models use the registry's default model class.
+    return known ? governorForAccount('', accountId, 'codex') : undefined;
+  };
+
+  /** The ONE gateway adaptation into accountLoadKey. Both providers supply their live account governor
+   *  as well as durable capacity/burn hints and shared transport state. Keeping the
    *  adaptation here prevents the provider handlers from growing subtly different health formulas. */
   const accountHealthKey = (
     account: ActiveAccount,
@@ -4076,6 +4083,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     inFlightAdjustment = 0,
   ): number => {
     const accountId = account.accountId;
+    cgov ??= liveCodexGovernor(accountId);
     const h = accountRateHints.get(accountId);
     const unified = cgov?.snapshot().unified;
     // P-008/D-003: usage credits carry an overage account past its allowance, so the allowance walls
@@ -4131,6 +4139,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const consider = (value: number | undefined) => {
       if (value !== undefined && Number.isFinite(value) && value > at) recoverAt = Math.max(recoverAt, value);
     };
+    consider(liveCodexGovernor(accountId)?.state.pausedUntil);
     if (h) {
       consider(h.pausedUntil);
       if (h.usageCreditsAvailable !== true) {

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInferenceGateway, OWNER_HEADER, ROUTED_ACCOUNT_HEADER } from './gateway';
 import { createFailoverPool } from './account-failover';
+import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import {
   configureGatewayRequestOutcomeStore,
   InMemoryGatewayRequestOutcomeStore,
@@ -14,7 +15,10 @@ let gateway: ReturnType<typeof createInferenceGateway> | undefined;
 const homes: string[] = [];
 
 // Owner reports include durable outcomes; unit fixtures must not query PostgreSQL.
-beforeEach(() => configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore()));
+beforeEach(() => {
+  resetGovernorRegistry();
+  configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore());
+});
 
 afterEach(async () => {
   await gateway?.close();

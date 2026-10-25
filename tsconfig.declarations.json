@@ -500,6 +500,8 @@
     "scripts/lib/partial-task-resume.mjs",
     // P-003 shares the native config-loader policy with direct fixture producers.
     "scripts/lib/vitest-host-preflight.mjs",
-    "scripts/with-documenso-sandbox.mjs"
+    "scripts/with-documenso-sandbox.mjs",
+    // Desktop portal acceptance shares parent/child native budgets with TypeScript.
+    "scripts/lib/verify-tauri-native-env.mjs"
   ]
 }

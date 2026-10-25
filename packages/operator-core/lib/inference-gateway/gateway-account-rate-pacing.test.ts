@@ -210,6 +210,23 @@ describe('production gateway account-governor wiring', () => {
     expect(gateway.stats().codex.errors).toBe(0);
   });
 
+  it('routes a soft pin around a live governor pause even when the pool and durable hints call it healthy', async () => {
+    const affected = governorForBackend('codex', model, undefined, 'account-a');
+    affected.state.pausedUntil = Date.now() + 60_000;
+    const routed: string[] = [];
+    gateway = createInferenceGateway({ accountId: 'account-a', token: async () => 'claude-token',
+      codexPool: accounts(), maxQueueWaitMs: 100, selfHeal: { enabled: false },
+      fetchImpl: (async (_url, init) => {
+        routed.push(new Headers(init?.headers).get('authorization') ?? '');
+        return response();
+      }) as typeof fetch,
+    });
+    const result = await send();
+    expect(result.status, result.body).toBe(200);
+    expect(routed).toEqual(['Bearer token-account-b']);
+    expect(affected.state.reqInWindow).toBe(0);
+  });
+
   it('routes a real transient 429 into only the emitting account governor', async () => {
     const affected = governorForBackend('codex', model, undefined, 'account-a');
     const sibling = governorForBackend('codex', model, undefined, 'account-b');

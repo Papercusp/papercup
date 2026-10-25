@@ -2,15 +2,15 @@
 /** Installed Codex, native transcripts, managed PTYs and context bootstrap are
  * real. The provider, inspection service and resume callback are local fixtures;
  * this does not certify the production operator, custody store or work router. */
-import { expect, it, vi } from 'vitest';
+import { expect, it, vi, type TestContext } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createServer } from 'node:http';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, fork, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync,
   renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import net from 'node:net';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -27,6 +27,48 @@ import { codexCliResponsesBody, codexCliResponsesCompletionSse } from
 import { readProcessIdentity } from '../../../packages/operator-core/lib/process-identity';
 import type { AssumeExecutionObservation, AssumeTransitionReceipt } from '../../../packages/operator-core/lib/session-assume';
 import { readAssumeTranscriptPin } from '../../../packages/operator-core/lib/session-assume-preparation';
+import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
+  recordIsolatedIntegrationProof } from '../../../packages/operator-core/test/isolated-integration-proof';
+
+const nativeRuntimeOptions = isolatedWorkerOptions(180_000);
+
+/** The parent observes the original private runtime before the native case runs
+ * and retains its teardown. The child executes the same maintained case once. */
+async function nativeRuntimeJourney(context: TestContext, ...args: Parameters<typeof nativeJourney>) {
+  return nativeRuntimeCase(context, () => nativeJourney(...args));
+}
+
+async function nativeRuntimeCase(context: TestContext, execute: () => unknown | Promise<unknown>) {
+  if (process.env.PC_ASSUME_NATIVE_RUNTIME_CHILD === '1') return execute();
+  const root = resolve(import.meta.dirname, '../../..');
+  const filePath = 'apps/operator/lib/psu-identity-assume-native.integration.test.ts';
+  const pattern = '^' + context.task.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$';
+  const runId = await recordIsolatedIntegrationProof({ root, filePath,
+    sourcePaths: ['apps/operator/scripts/psu-identity-assume.mjs', 'apps/operator/scripts/psu-launcher.mjs',
+      'apps/operator/scripts/psu-pty-host.mjs', 'apps/operator/vitest-shims/identity-assume-production.ts',
+      'apps/operator/vitest-shims/psu-pty-temp-dir.ts', 'apps/operator/vitest-shims/scoped-native-fixture-cleanup.ts',
+      'packages/operator-core/lib/session-assume.ts', 'packages/operator-core/lib/session-assume-caller.ts',
+      'packages/operator-core/lib/session-assume-custody.ts', 'packages/operator-core/lib/session-assume-store.ts',
+      'packages/operator-core/lib/session-assume-preparation.ts', 'packages/operator-core/lib/adv-sessions.ts',
+      'packages/operator-core/lib/inference-gateway/codex-cli-bridge.ts', 'scripts/with-test-pg.mjs'],
+    execute: async (observe, evidenceDir) => {
+      const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', PC_ASSUME_NATIVE_RUNTIME_CHILD: '1' };
+      // Only the parent reporter owns its source map and durable receipt file.
+      for (const key of ['PC_EXECUTED_SOURCE_MAP_OUT', 'PC_EXECUTED_SOURCE_MAP_RESULT',
+        'PC_EXECUTED_SOURCE_MAP_WORKSPACE', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE']) delete env[key];
+      const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime', '--', process.execPath,
+        '--import', './scripts/lib/committed-source-loader.mjs', 'scripts/test-files.mjs', filePath,
+        '--testNamePattern=' + pattern], { cwd: root, detached: true, execArgv: [], env,
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+      observe(child);
+      const result = await captureIsolatedWorker(child, evidenceDir, nativeRuntimeOptions);
+      expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
+        timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+      expect(result.output).toMatch(/TEST_FILE_RESULT requested=1 executed=1 matched=1 .*status=passed/);
+    },
+  });
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+}
 
 type Row = Record<string, any>;
 const productionState = vi.hoisted(() => ({ sql: undefined as any, homes: new Map<string, string>() }));
@@ -75,15 +117,15 @@ function handoffToolRoute(available: Row[]) {
   return { namespace, direct, executor, discovery };
 }
 
-it('discovers a deferred handoff tool before invoking an already advertised executor', () => {
+it('discovers a deferred handoff tool before invoking an already advertised executor', context => nativeRuntimeCase(context, () => {
   const executor = { type: 'namespace', name: 'functions', tools: [{ type: 'custom', name: 'exec' }] };
   const search = { type: 'tool_search' };
   expect(handoffToolRoute([executor, search])).toMatchObject({ discovery: true });
   const tool = { type: 'function', name: 'mcp__fixture__handoff_fixture' };
   expect(handoffToolRoute([executor, search, tool])).toMatchObject({ discovery: false, direct: tool });
-});
+}), nativeRuntimeOptions.testTimeoutMs);
 
-it('read-only context preview isolates an overlapping coordination writer', async () => {
+it('read-only context preview isolates an overlapping coordination writer', context => nativeRuntimeCase(context, async () => {
   const { productionAssumeFixture } = await import('../vitest-shims/identity-assume-production');
   let entered!: () => void, written!: () => void;
   const previewEntered = new Promise<void>(resolve => { entered = resolve; });
@@ -112,7 +154,7 @@ it('read-only context preview isolates an overlapping coordination writer', asyn
     await Promise.allSettled([writer]);
     await real.dispose(); productionState.sql = undefined;
   }
-}, 30_000);
+}), nativeRuntimeOptions.testTimeoutMs);
 
 async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = false,
   contended = false, preflight = false, channelControls = false, crashRecovery = false, returnControls = false,
@@ -1120,7 +1162,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
     }
 }
 
-it('preserves the original native failure and startup evidence after fixture cleanup', async () => {
+it('preserves the original native failure and startup evidence after fixture cleanup', context => nativeRuntimeCase(context, async () => {
   const directory = mkdtempSync('/tmp/assume-native-diagnostic-guard-');
   const artifact = join(directory, 'failure.jsonl');
   const error = new Error('Controlled native diagnostic failure');
@@ -1143,34 +1185,34 @@ it('preserves the original native failure and startup evidence after fixture cle
     expect(evidence.providerRequests.some((request: Row) => request.phase === 'seed')).toBe(true);
     expect(evidence.hostEvidence.some((host: Row) => host.ptyAlive === true)).toBe(true);
   } finally { rmSync(directory, { recursive: true, force: true }); }
-}, 60_000);
+}), nativeRuntimeOptions.testTimeoutMs);
 
-it.each(['native-resume', 'checkpoint'] as const)(
-  'resumes installed native target context and returns the caller on the same managed attachment (%s)',
-  mode => nativeJourney(mode), 120_000);
-it.each(['native-resume', 'checkpoint'] as const)(
-  'uses production custody and routed responsibilities through the installed native handoff (%s)',
-  mode => nativeJourney(mode, true), 180_000);
+for (const mode of ['native-resume', 'checkpoint'] as const) {
+  it(`resumes installed native target context and returns the caller on the same managed attachment (${mode})`,
+    context => nativeRuntimeJourney(context, mode), nativeRuntimeOptions.testTimeoutMs);
+  it(`uses production custody and routed responsibilities through the installed native handoff (${mode})`,
+    context => nativeRuntimeJourney(context, mode, true), nativeRuntimeOptions.testTimeoutMs);
+}
 
 it('admits exactly one of two installed native callers and preserves the losing caller responsibilities',
-  () => nativeJourney('native-resume', true, true), 180_000);
+  context => nativeRuntimeJourney(context, 'native-resume', true, true), nativeRuntimeOptions.testTimeoutMs);
 
 it('routes installed native target input output resize interrupt and exit through the inherited managed channel',
-  () => nativeJourney('native-resume', true, false, false, true), 180_000);
+  context => nativeRuntimeJourney(context, 'native-resume', true, false, false, true), nativeRuntimeOptions.testTimeoutMs);
 
 it('previews one exact ended target without writes and refuses live, foreign and unknown custody',
-  () => nativeJourney('native-resume', true, false, true), 180_000);
+  context => nativeRuntimeJourney(context, 'native-resume', true, false, true), nativeRuntimeOptions.testTimeoutMs);
 
 it('R-8 recovers persisted native handoff after managed host SIGKILL before target execution',
-  () => nativeJourney('native-resume', true, false, false, false, true), 180_000);
+  context => nativeRuntimeJourney(context, 'native-resume', true, false, false, false, true), nativeRuntimeOptions.testTimeoutMs);
 
 it('R-5 exact caller return restores input output resize interrupt and exit on the original pane',
-  () => nativeJourney('native-resume', true, false, false, false, false, true), 180_000);
+  context => nativeRuntimeJourney(context, 'native-resume', true, false, false, false, false, true), nativeRuntimeOptions.testTimeoutMs);
 
 it('R-1 delivers the invoking native tool response before fresh completion permits caller replacement',
-  () => nativeJourney('native-resume', true, false, false, false, false, false,
-    { responseOrdering: true }), 180_000);
+  context => nativeRuntimeJourney(context, 'native-resume', true, false, false, false, false, false,
+    { responseOrdering: true }), nativeRuntimeOptions.testTimeoutMs);
 
 it('R-8 recovers after target native writer acquisition and managed host SIGKILL before verification',
-  () => nativeJourney('native-resume', true, false, false, false, false, false,
-    { crashAfterStartup: true }), 180_000);
+  context => nativeRuntimeJourney(context, 'native-resume', true, false, false, false, false, false,
+    { crashAfterStartup: true }), nativeRuntimeOptions.testTimeoutMs);

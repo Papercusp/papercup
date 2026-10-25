@@ -102,6 +102,35 @@ describe('effective SU launch preparation', () => {
     }
   });
 
+  it('repairs a legacy Codex auto response only when its managed home proves the resolved gateway route', () => {
+    const home = mkdtempSync(join(tmpdir(), 'su-codex-auto-route-'));
+    try {
+      writeFileSync(join(home, 'config.toml'), [
+        '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT',
+        'model_provider = "papercusp-codex-gateway"',
+        '# END PAPERCUSP_CODEX_GATEWAY_ROOT',
+        '# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+        '[model_providers.papercusp-codex-gateway]',
+        '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
+      ].join('\n'));
+      const legacy = bootstrap('codex');
+      delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE;
+      delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ID;
+      legacy.envelopeEnv.CODEX_HOME = home;
+      const launch = prepareSuLaunch({ ...legacy, codexHome: home }, {
+        accountRoute: 'auto', inheritedEnv: {},
+      });
+      expect(launch.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+
+      writeFileSync(join(home, 'config.toml'), 'model_provider = "papercusp-codex-gateway"\n');
+      expect(() => prepareSuLaunch({ ...legacy, codexHome: home }, {
+        accountRoute: 'auto', inheritedEnv: {},
+      })).toThrow(expect.objectContaining({ code: 'account_route_mismatch' }));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('refuses an ineligible bootstrap instead of falling back to another credential', () => {
     expect(() => prepareSuLaunch({ ...bootstrap('codex'), status: 'error' }, { inheritedEnv: {} }))
       .toThrow(expect.objectContaining({ code: 'unsupported_su_launch' }));

@@ -2649,6 +2649,30 @@ export function prepareSuLaunch(boot, {
     const lower = raw.toLowerCase();
     const mode = ["default", "none", "system"].includes(lower) ? "default"
       : ["auto", "gateway"].includes(lower) ? "auto" : "pin";
+    // A launcher can update before the long-lived operator during a rolling
+    // deployment. Operator builds predating the Codex route marker still
+    // materialize the resolved gateway provider in the per-session CODEX_HOME,
+    // but omit PAPERCUSP_ACCOUNT_ROUTING_MODE from the response. That is not an
+    // unresolved route: the generated config is the executable route decision.
+    // Repair only this measured legacy shape, and only when both managed marker
+    // blocks prove that bootstrap authored the auto gateway configuration. A
+    // missing/malformed home, a default config, or a pin still fails closed.
+    if (boot.agent === "codex" && mode === "auto" && !env.PAPERCUSP_ACCOUNT_ROUTING_MODE) {
+      const codexHome = typeof boot.codexHome === "string" && boot.codexHome.trim()
+        ? boot.codexHome.trim()
+        : typeof env.CODEX_HOME === "string" ? env.CODEX_HOME.trim() : "";
+      try {
+        const config = readFileSync(join(codexHome, "config.toml"), "utf8");
+        if (config.includes("# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT")
+          && config.includes('model_provider = "papercusp-codex-gateway"')
+          && config.includes("# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER")
+          && !env.PAPERCUSP_ACCOUNT_ID) {
+          env.PAPERCUSP_ACCOUNT_ROUTING_MODE = "auto";
+        }
+      } catch {
+        // The mismatch check below owns the fail-closed diagnostic.
+      }
+    }
     if ((env.PAPERCUSP_ACCOUNT_ROUTING_MODE || "default") !== mode
       || (mode === "pin" && env.PAPERCUSP_ACCOUNT_ID !== raw))
       refuse("account_route_mismatch", "SU launch account route differs from its resolved bootstrap");
