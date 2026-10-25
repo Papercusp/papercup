@@ -8,6 +8,8 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { expect, it, vi } from 'vitest';
 import { createDesktopPortalLifecycle } from './desktop-portal-lifecycle';
+import { admitDesktopPortalNativeParent, desktopPortalNativeTestTimeoutMs,
+  desktopPortalNativeTiming } from '../../../scripts/lib/verify-tauri-native-env.mjs';
 
 // Explicit artifact profile: compile with desktop-portal-candidate.ts first.
 // This opens only a newly initialized, test-owned PostgreSQL cluster. It uses
@@ -17,14 +19,12 @@ const run = promisify(execFile);
 const native = process.env.PAPERCUSP_TEST_DESKTOP_NATIVE === '1';
 // Run 20261025T083042Z-2215727 measured 843480ms of preparation before
 // admission refused boot. Budget that independent copy before starting it.
-const nativePrepareEstimateMs = 20 * 60_000;
-const nativeTimeoutMs = nativePrepareEstimateMs + 25 * 60_000;
-const testTimeoutMs = nativeTimeoutMs + 60_000;
+const nativePrepareEstimateMs = desktopPortalNativeTiming.prepareEstimateMs;
+const nativeTimeoutMs = desktopPortalNativeTiming.nativeTimeoutMs;
+const testTimeoutMs = desktopPortalNativeTestTimeoutMs();
 
 it.skipIf(!manifest)('retains the actual private desktop portal preferences across host and PostgreSQL restart', async () => {
-  if (native && Number(process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS ?? 600_000) < testTimeoutMs + 120_000) {
-    throw new Error(`Native profile requires PAPERCUSP_TEST_FILE_TIMEOUT_MS>=${testTimeoutMs + 120_000}; refusing before PostgreSQL or dependency copying`);
-  }
+  if (native) admitDesktopPortalNativeParent(process.env);
   const directory = dirname(manifest!);
   const receipt = JSON.parse(await readFile(manifest!, 'utf8'));
   expect(receipt.schemaVersion).toBe('desktop-portal-private-candidate-v1');
@@ -39,20 +39,16 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
   const repo = fileURLToPath(new URL('../../../', import.meta.url));
   const launcher = join(repo, 'apps/operator/scripts/ptool.mjs');
   const nativeBudget = {
-    PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Math.min(
-      Number(process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS) || Infinity,
-      Date.now() + nativeTimeoutMs,
-    )),
     VERIFY_TAURI_PREPARE_ESTIMATE_MS: String(nativePrepareEstimateMs),
     VERIFY_TAURI_ASSERT_ESTIMATE_MS: '360000',
   };
   const nativeEnvHelper = join(repo, 'scripts/lib/verify-tauri-native-env.mjs');
   const { nativeVerifierEnv } = await import(nativeEnvHelper);
   const nativeEnv = () => nativeVerifierEnv({ ...process.env, ...nativeBudget,
-    PAPERCUSP_PTOOL_LAUNCHER: launcher });
+    PAPERCUSP_PTOOL_LAUNCHER: launcher }, { timeoutMs: nativeTimeoutMs });
   if (native) {
     await run(process.execPath, [join(repo, 'scripts/lib/verify-tauri-deadline.mjs'), 'prepare', '0', '1'], {
-      cwd: repo, timeout: 15_000, env: { ...process.env, ...nativeBudget },
+      cwd: repo, timeout: 15_000, env: nativeEnv(),
     });
     // The native rig changes cwd during preparation. Check its explicit
     // launcher before initializing PostgreSQL or copying the operator tree.

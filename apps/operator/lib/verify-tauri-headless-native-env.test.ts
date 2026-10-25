@@ -6,9 +6,40 @@ import { describe, expect, it, vi } from 'vitest';
 
 const root = resolve(__dirname, '../../..');
 const helper = resolve(root, 'scripts/lib/verify-tauri-native-env.mjs');
-const { nativeVerifierEnv, preflightNativeVerifier } = await import(pathToFileURL(helper).href);
+const { nativeVerifierEnv, preflightNativeVerifier, desktopPortalNativeTiming,
+  desktopPortalNativeTestTimeoutMs, admitDesktopPortalNativeParent } = await import(pathToFileURL(helper).href);
+const { admitTaskDeadline } = await import(pathToFileURL(resolve(root, 'scripts/lib/task-deadline.mjs')).href);
 
 describe('real native verifier process boundary', () => {
+  it('preserves the rig allocation after parent setup without extending the inherited deadline', () => {
+    const start = 1_000_000;
+    const setupEnd = start + 115_000; // native14's measured readiness/PG setup
+    const nativeMs = desktopPortalNativeTiming.nativeTimeoutMs;
+    const parent = { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(start + 3_445_000) };
+    const child = nativeVerifierEnv(parent, { timeoutMs: nativeMs, nowMs: setupEnd });
+    expect(admitTaskDeadline({ env: child, nowMs: setupEnd, knownEstimateMs: 2_640_000 }))
+      .toMatchObject({ remainingMs: nativeMs });
+    expect(parent.PAPERCUSP_TASK_DEADLINE_EPOCH_MS).toBe(String(start + 3_445_000));
+    const clipped = nativeVerifierEnv(parent, { timeoutMs: nativeMs, nowMs: start + 1_000_000 });
+    expect(clipped.PAPERCUSP_TASK_DEADLINE_EPOCH_MS).toBe(parent.PAPERCUSP_TASK_DEADLINE_EPOCH_MS);
+    expect(() => admitTaskDeadline({ env: clipped, nowMs: start + 1_000_000, knownEstimateMs: 2_640_000 }))
+      .toThrow('TASK_DEADLINE_REFUSAL');
+  });
+
+  it('admits the composed parent budget and rejects an undersized parent before setup', () => {
+    const start = 1_000_000;
+    const total = desktopPortalNativeTestTimeoutMs();
+    expect(total).toBe(desktopPortalNativeTiming.setupTimeoutMs
+      + desktopPortalNativeTiming.nativeTimeoutMs + desktopPortalNativeTiming.cleanupTimeoutMs);
+    const env = { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(total + 120_000),
+      PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(start + total + 240_000) };
+    expect(admitDesktopPortalNativeParent(env, start)).toMatchObject({ knownEstimateMs: total });
+    expect(() => admitDesktopPortalNativeParent({ ...env,
+      PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(start + 3_000_000) }, start)).toThrow('TASK_DEADLINE_REFUSAL');
+    expect(() => admitDesktopPortalNativeParent({ ...env, PAPERCUSP_TEST_FILE_TIMEOUT_MS: '2880000' }, start))
+      .toThrow('refusing before PostgreSQL or dependency copying');
+  });
+
   it('keeps the parent unit rail active while the real child has no unit runner or fake census', () => {
     const parent = { ...process.env, PAPERCUSP_FORBID_REAL_PG: '1', VITEST: 'true',
       VITEST_WORKER_ID: '9', VITEST_POOL_ID: '2', PAPERCUSP_SID: 'test-owner',
