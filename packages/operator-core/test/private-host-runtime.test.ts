@@ -107,6 +107,37 @@ it('observes real private-host exit before dependent cleanup and ignores diagnos
   }
 });
 
+it.skipIf(process.platform !== 'linux')('rejects a real native crash after dependent cleanup and retains its exit evidence', async () => {
+  const child = spawn('bash', ['-c', 'ulimit -c 0; exec "$@"', 'private-native-crash', process.execPath, '-e',
+    "process.on('SIGTERM',()=>process.kill(process.pid,'SIGSEGV'));process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
+  { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
+  const closed = once(child, 'close');
+  let dependentCleaned = false;
+  try {
+    await once(child.stdout!, 'data');
+    await expect(stopPrivateOperatorHost(child, async () => { dependentCleaned = true; }, 2000))
+      .rejects.toMatchObject({
+        message: 'Private host crashed during teardown: SIGSEGV',
+        privateHostStop: {
+          phase: 'native process termination', signalCode: 'SIGSEGV',
+          exitObserved: true, closeObserved: true,
+          kernelProcess: { status: 'absent' },
+          observations: expect.arrayContaining([
+            expect.objectContaining({ phase: 'signal', signal: 'SIGTERM', accepted: true }),
+            expect.objectContaining({ phase: 'exit', signalCode: 'SIGSEGV' }),
+            expect.objectContaining({ phase: 'failed', signalCode: 'SIGSEGV' }),
+          ]),
+        },
+      });
+    expect(dependentCleaned).toBe(true);
+    expect(child.listenerCount('exit')).toBe(0);
+    expect(child.listenerCount('close')).toBe(0);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+  }
+});
+
 it.skipIf(process.platform !== 'linux').each(['graceful', 'forced', 'foreign PGDATA'])(
   'waits for owned PostgreSQL descendants after a primary exits with redirected output (%s)', async mode => {
   const forced = mode === 'forced';

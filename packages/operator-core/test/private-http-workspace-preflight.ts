@@ -482,6 +482,12 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
     phase = 'dependent cleanup';
     await afterExit?.();
     await bounded(closed, 'stdio drainage');
+    // A native crash can close every pipe and release PG while still being a
+    // failed teardown. Finish dependent cleanup first, then retain the failure.
+    if (host.signalCode && ['SIGSEGV', 'SIGABRT', 'SIGBUS', 'SIGILL', 'SIGFPE', 'SIGTRAP', 'SIGSYS'].includes(host.signalCode)) {
+      phase = 'native process termination';
+      throw new Error(`Private host crashed during teardown: ${host.signalCode}`);
+    }
     record('complete');
   } catch (error) {
     const failure = error instanceof Error ? error : new Error(String(error));

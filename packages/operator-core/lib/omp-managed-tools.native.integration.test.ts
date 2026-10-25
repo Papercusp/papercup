@@ -261,7 +261,8 @@ if (privateMcpUrl) {
     console.info('OMP_ADMITTED_LIFECYCLE ' + JSON.stringify({ retained, removed, drift, invoked }));
   }, 180_000);
 } else {
-  it('preflights installed OMP native resume and MCP before operator setup', localPreflight, 120_000);
+  // Preflight belongs to the retained runtime's prepare phase below. A separate
+  // passing case has no runtime receipt and suppresses custody for the file.
   it('retains installed OMP production MCP removal and native lifecycle evidence', async context => {
     let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>>;
     const runId = await recordIsolatedIntegrationProof({ root, filePath,
