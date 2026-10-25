@@ -2033,7 +2033,16 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
       if (failed) {
         const error = row.payload?.error;
         const text = String(typeof error === 'string' ? error : error?.message ?? '').slice(0, 2048);
-        const code = String(error?.codex_error_info ?? error?.code ?? row.payload?.type
+        // Codex also serializes error-info variants as externally tagged
+        // objects, e.g. { response_too_many_failed_attempts: { http_status_code: 429 } }.
+        // Keep the variant name; coercing the object loses it as [object Object].
+        const info = error?.codex_error_info;
+        const variants = info && typeof info === 'object' && !Array.isArray(info) ? Object.keys(info) : [];
+        const taggedCode = variants.length === 1 && /^[a-z][a-z0-9_]{0,119}$/.test(variants[0])
+          ? variants[0] : undefined;
+        const explicitCode = typeof info === 'string' ? info : taggedCode
+          ?? (typeof error?.code === 'string' || typeof error?.code === 'number' ? error.code : undefined);
+        const code = String(explicitCode ?? row.payload?.type
           ?? row.subtype ?? message?.stopReason ?? 'native_error').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 120);
         const retryable = code === 'server_overloaded' || modelCapacityLineMatch(text) != null;
         failure = { code, retryable, retryAfterMs: retryable ? modelCapacityRetryAfterMs(text) : null, atMs: at };
