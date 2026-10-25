@@ -33,6 +33,8 @@ import { mineSqlCandidateSlice, purgeSqlCandidateData, readSqlCandidates, type S
   type SqlMiningResult } from '../../bash-substitution/sql-tool-candidates';
 import { rankSqlToolCandidates, SQL_DEMAND_SCORE_VERSION } from '../../sql-tool-candidate-score';
 import { submitSqlCandidateReview } from '../../sql-tool-candidate-review';
+import { recordSqlCandidateFeedback } from '../../sql-tool-candidate-feedback';
+import type { SqlRepairMeasurement } from '../../bash-substitution/sql-census';
 import { miningFailureReason } from '../../agent-opportunities/pipeline';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { fetchSqlCorpusAtoms } from '../../bash-substitution/sql-corpus';
@@ -296,6 +298,9 @@ export async function runSqlReadCensus(
 /** Same production cadence; source dispatch has no dependency on this background path. */
 export interface SqlIntentCensusDeps extends SqlMiningDeps {
   review?: typeof submitSqlCandidateReview;
+  feedback?: typeof recordSqlCandidateFeedback;
+  /** Trusted exposure/coverage adapter; absence is explicitly UNKNOWN in the ledger. */
+  repairMeasurement?: (review: Awaited<ReturnType<typeof submitSqlCandidateReview>>) => Promise<SqlRepairMeasurement | null>;
 }
 export const SQL_CENSUS_REVIEW_LIMIT = 10;
 export async function runSqlIntentCensus(
@@ -338,6 +343,11 @@ export async function runSqlIntentCensus(
             contractRef: `sql-review-demand-v1:${candidate.parserVersion}:${SQL_DEMAND_SCORE_VERSION}`,
           }, { client: opts.client });
           if (reviewed.status === 'UNKNOWN') throw new Error('sql_candidate_review_unavailable');
+          await (deps.feedback ?? recordSqlCandidateFeedback)({ workspaceId: opts.workspaceId,
+            harnessSlug: opts.harnessSlug, review: reviewed,
+            sourceRef: { scopeId: packet.scopeId, ranOn: packet.ranOn },
+            repair: reviewed.status === 'accepted' ? await deps.repairMeasurement?.(reviewed) ?? null : null,
+          }, { client: opts.client });
         }
       }
       await deps.alert?.(packet);

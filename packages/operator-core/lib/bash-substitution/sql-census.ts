@@ -389,22 +389,26 @@ export interface SqlRepairOutcome {
 }
 
 /** Calls alone never prove adoption: compare raw-agent shares of active agents. */
-export function evaluateSqlRepairOutcome(input: SqlRepairMeasurement): SqlRepairOutcome {
+export function evaluateSqlRepairOutcome(input: SqlRepairMeasurement, measuredAt = Date.now()): SqlRepairOutcome {
   const unknown: SqlRepairOutcome = { status: 'unknown', disposition: 'insufficient-evidence',
     baselineRate: null, observedRate: null, normalizedFall: null, adoptionRate: null };
-  const valid = (w: SqlRepairWindow) => Boolean(w?.scopeRef && w.shapesRef && w.complete)
+  const valid = (w: SqlRepairWindow) => Boolean(w?.scopeRef?.trim() && w.shapesRef?.trim() && w.complete === true)
     && Number.isFinite(Date.parse(w.since)) && Number.isFinite(Date.parse(w.until))
     && Date.parse(w.until) > Date.parse(w.since)
     && [w.rawAgents, w.activeAgents, w.toolAgents].every(n => Number.isSafeInteger(n) && n >= 0)
     && w.rawAgents <= w.activeAgents && w.toolAgents <= w.activeAgents;
   const b = input.baseline, o = input.observation, e = input.exposure;
   const requiredFall = input.requiredFallPct ?? .3;
-  if (!valid(b) || !valid(o) || !e?.build || !e.evidenceRef || !Number.isFinite(Date.parse(e.observedAt))
+  if (!Number.isFinite(measuredAt) || !valid(b) || !valid(o)
+    || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(e?.build ?? '')
+    || !e?.evidenceRef?.trim() || !Number.isFinite(Date.parse(e.observedAt))
+    || Date.parse(e.observedAt) > measuredAt || Date.parse(o.until) > measuredAt
     || b.scopeRef !== o.scopeRef || b.shapesRef !== o.shapesRef
     || Date.parse(b.until) > Date.parse(e.observedAt) || Date.parse(o.since) < Date.parse(e.observedAt)
     || Date.parse(b.until) - Date.parse(b.since) !== Date.parse(o.until) - Date.parse(o.since)
     || !Number.isFinite(requiredFall) || requiredFall <= 0 || requiredFall > 1
-    || b.activeAgents < 3 || o.activeAgents < 3 || b.rawAgents < 3 || input.coverage === 'unknown') return unknown;
+    || b.activeAgents < 3 || o.activeAgents < 3 || b.rawAgents < 3
+    || !['pass', 'fail'].includes(input.coverage)) return unknown;
   const baselineRate = b.rawAgents / b.activeAgents, observedRate = o.rawAgents / o.activeAgents;
   const normalizedFall = (baselineRate - observedRate) / baselineRate;
   const adoptionRate = o.toolAgents / o.activeAgents;
