@@ -10,6 +10,7 @@ import { runHarness } from '@papercusp/verification-harness';
 import * as ts from 'typescript';
 import { archivePrivateOperatorApiBuild, buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
+import { readProcessIdentity } from '../lib/process-identity';
 
 const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
@@ -106,7 +107,9 @@ it('observes real private-host exit before dependent cleanup and ignores diagnos
   }
 });
 
-it.skipIf(process.platform !== 'linux')('waits for owned PostgreSQL descendants after a primary exits with redirected output', async () => {
+it.skipIf(process.platform !== 'linux').each(['graceful', 'forced', 'foreign PGDATA'])(
+  'waits for owned PostgreSQL descendants after a primary exits with redirected output (%s)', async mode => {
+  const forced = mode === 'forced';
   const directory = mkdtempSync(join(tmpdir(), 'private-pg-stop-'));
   dirs.push(directory);
   // A native process tree models the lifecycle independently of SQL/startup:
@@ -117,32 +120,66 @@ it.skipIf(process.platform !== 'linux')('waits for owned PostgreSQL descendants 
   const child = spawn(process.execPath, ['-e', `
     const {spawn}=require('node:child_process'),fs=require('node:fs');
     const pg=spawn(${JSON.stringify(binary)},['-e',
-      "const {spawn}=require('node:child_process');const worker=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});process.on('SIGINT',()=>{setTimeout(()=>{worker.kill('SIGTERM');worker.once('exit',()=>process.exit(0));},200)});process.stdout.write('ready');setInterval(()=>{},1000)",
+      ${JSON.stringify("const {spawn}=require('node:child_process');const worker=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});process.on('SIGINT',()=>{" + (forced ? '' : "setTimeout(()=>{worker.kill('SIGTERM');worker.once('exit',()=>process.exit(0));},200)") + "});process.stdout.write(JSON.stringify({workerPid:worker.pid}));setInterval(()=>{},1000)")},
       '--','-D',${JSON.stringify(directory)}],{stdio:['ignore','pipe','ignore']});
-    pg.stdout.once('data',()=>{
+    pg.stdout.once('data',chunk=>{
       fs.writeFileSync(${JSON.stringify(join(directory, 'postmaster.pid'))},pg.pid+'\\n'+${JSON.stringify(directory)}+'\\n');
-      process.stdout.write(JSON.stringify({pid:pg.pid})+'\\n');
+      process.stdout.write(JSON.stringify({pid:pg.pid,...JSON.parse(String(chunk))})+'\\n');
     });
     process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000);
   `], { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
   const closed = once(child, 'close');
   let pgPid: number | undefined;
+  const fixturePins: Array<{pid:number;identity:string|null}> = [];
   try {
-    pgPid = JSON.parse(String((await once(child.stdout!, 'data'))[0])).pid;
+    const ready = JSON.parse(String((await once(child.stdout!, 'data'))[0]));
+    pgPid = ready.pid;
+    for (const pid of [ready.pid, ready.workerPid]) fixturePins.push({pid,identity:readProcessIdentity(pid)});
+    expect(fixturePins.every(pin => pin.identity)).toBe(true);
+    if (mode === 'foreign PGDATA') writeFileSync(join(directory,'postmaster.pid'), pgPid+'\n'+tmpdir()+'\n');
     const observations: PrivateHostStopObservation[] = [];
-    await stopPrivateOperatorHost(child, async () => {
-      expect(() => process.kill(pgPid!, 0), 'database must stop before dependent cleanup').toThrow();
-    }, 2000, observation => observations.push(observation));
-    expect(observations).toEqual(expect.arrayContaining([
-      expect.objectContaining({ phase: 'postgres captured' }),
-      expect.objectContaining({ phase: 'postgres stopped' }),
-    ]));
-    expect(observations.findIndex(o => o.phase === 'postgres stopped')).toBeLessThan(
-      observations.findIndex(o => o.phase === 'complete'));
+    const cleanup = vi.fn(async () => {
+      try {
+        const stat = readFileSync(`/proc/${pgPid}/stat`, 'utf8');
+        expect(stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[0]).toMatch(/^[ZX]$/);
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    });
+    const stopped = stopPrivateOperatorHost(child, cleanup, forced ? 100 : 2000,
+      observation => observations.push(observation));
+    if (mode === 'foreign PGDATA') {
+      await expect(stopped).rejects.toThrow('private postmaster PGDATA mismatch');
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(fixturePins.every(pin => readProcessIdentity(pin.pid) === pin.identity)).toBe(true);
+      expect(observations.some(o => o.phase === 'complete')).toBe(false);
+      return;
+    } else if (forced) {
+      await expect(stopped).rejects.toThrow('Private PostgreSQL required forced cleanup');
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(observations.at(-1)).toMatchObject({ phase: 'failed', exitObserved: true });
+      expect(observations.some(o => o.phase === 'complete')).toBe(false);
+    } else {
+      await stopped;
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(observations.findIndex(o => o.phase === 'postgres stopped')).toBeLessThan(
+        observations.findIndex(o => o.phase === 'complete'));
+    }
+    const pins = observations.find(o => o.phase === 'postgres captured')?.postgres;
+    expect(pins).toHaveLength(2);
+    expect(pins?.filter(p => p.postmaster)).toHaveLength(1);
+    expect(observations.at(-1)?.postgres?.every(p => p.state === null || p.state === 'Z' || p.state === 'X')).toBe(true);
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    // The failing old implementation leaves this exact fixture alive.
-    if (pgPid) { try { process.kill(pgPid, 'SIGINT'); } catch { /* stopped */ } }
+    // Both negative controls and historical mutants can leave the fixture
+    // alive. Only stop the exact native processes this test measured at birth.
+    for (const pin of fixturePins) if (pin.identity && readProcessIdentity(pin.pid) === pin.identity) {
+      try { process.kill(pin.pid,'SIGKILL'); } catch { /* stopped */ }
+    }
+    await vi.waitFor(() => {
+      for (const pin of fixturePins) if (readProcessIdentity(pin.pid) === pin.identity) {
+        const stat = readFileSync(`/proc/${pin.pid}/stat`,'utf8');
+        expect(stat.slice(stat.lastIndexOf(')')+1).trim().split(/\s+/)[0]).toMatch(/^[ZX]$/);
+      }
+    });
     await closed;
   }
 });

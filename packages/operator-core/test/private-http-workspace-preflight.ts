@@ -289,8 +289,12 @@ function privatePostgresState(pin: PrivatePostgresProcess): string | null {
   try {
     const stat = readFileSync(`/proc/${pin.pid}/stat`, 'utf8');
     const identity = readProcessIdentity(pin.pid);
+    if (!identity && !existsSync(`/proc/${pin.pid}`)) return null;
     assert.ok(identity, 'private PostgreSQL identity is unreadable');
-    return identity === pin.identity ? linuxProcStateFromStat(stat) : null;
+    if (identity !== pin.identity) return null;
+    const state = linuxProcStateFromStat(stat);
+    assert.ok(state, 'private PostgreSQL process state is unreadable');
+    return state;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
@@ -326,6 +330,7 @@ function capturePrivatePostgres(host: ChildProcess) {
         assert.ok(!existsSync(`/proc/${childPid}`), 'private descendant identity is unreadable');
         continue;
       }
+      if (!privatePostgresAlive({ pid: childPid, identity: childIdentity, postmaster: false })) continue;
       let postmaster = false;
       if (!owned) {
         try {
@@ -341,7 +346,7 @@ function capturePrivatePostgres(host: ChildProcess) {
           }
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-          assert.notEqual(readProcessIdentity(childPid), childIdentity,
+          assert.ok(!privatePostgresAlive({ pid: childPid, identity: childIdentity, postmaster: false }),
             'live private postmaster ownership could not be verified');
         }
       }
@@ -369,6 +374,7 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
   let phase = 'start';
   const observations: PrivateHostStopObservation[] = [];
   let postgres = privateHostPostgres.get(host) ?? new Map<number, PrivatePostgresProcess>();
+  privateHostPostgres.set(host, postgres);
   const kernelProcess = (): NonNullable<PrivateHostStopObservation['kernelProcess']> => {
     const unknown = { state: null, startTicks: null, waitChannel: null };
     if (process.platform !== 'linux') return { ...unknown, status: 'unsupported' };
@@ -390,7 +396,10 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
     exitCode: host.exitCode, signalCode: host.signalCode,
     sigtermAccepted, sigkillAccepted, exitObserved, closeObserved,
     kernelProcess: kernelProcess(),
-    ...(postgres.size ? { postgres: [...postgres.values()].map(pin => ({ ...pin, state: privatePostgresState(pin) })) } : {}),
+    ...(postgres.size ? { postgres: [...postgres.values()].map(pin => {
+      try { return { ...pin, state: privatePostgresState(pin) }; }
+      catch { return { ...pin, state: 'unavailable' }; }
+    }) } : {}),
   });
   const record = (name: string, detail: Partial<PrivateHostStopObservation> = {}) => {
     const observation = { ...snapshot(name), ...detail };
@@ -438,7 +447,7 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
       try { await bounded(exited, 'exit'); }
       catch { signal('SIGKILL'); await bounded(exited, 'forced exit'); }
     }
-    if (captureError) throw captureError;
+    if (captureError) { phase = 'postgres capture'; throw captureError; }
     if (postgres.size) {
       phase = 'postgres shutdown';
       const signalPostgres = (pin: PrivatePostgresProcess, value: NodeJS.Signals) => {
