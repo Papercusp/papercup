@@ -18,7 +18,7 @@ import { isTerminalState, type TaskRow } from '../lib/task-manager/types';
 import { ensureGradingAuditRuntime, retireUnusedGradingAuditRuntimes, type GradingAuditRuntimeDeps,
   type GradingAuditRuntimeLocator } from '../lib/release/grading-audit-runtime';
 import { readGradingAuditSourcePin } from '../lib/release/grading-audit-source-pin';
-import { assertPrivateManagedTaskRoute, preparePrivateHttpWorkspaces, preparePrivateOperatorApiBundle, privateGitCloneBundleEnv,
+import { archivePrivateOperatorApiBuild, assertPrivateManagedTaskRoute, preparePrivateHttpWorkspaces, preparePrivateOperatorApiBundle, privateGitCloneBundleEnv,
   privateBundleRuntimeEnv } from './private-http-workspace-preflight';
 // @ts-ignore -- share the maintained dependency process-group and progress contract.
 import { runVerifierDependencyCommand } from '../../../scripts/source-preview.mjs';
@@ -279,8 +279,12 @@ async function main() {
   const movedHome = join(fixtureScratch, '.candidate-runtime-rematerialized');
   renameSync(dirname(sourceRoot), movedHome);
   sourceRoot = join(movedHome, 'checkout');
+  const recoveredOutput = join(sourceRoot, 'apps/operator/dist-host');
+  // Relocation carries the first builder's journal too. Preserve its complete
+  // output before starting an independent build at the runtime's canonical path.
+  archivePrivateOperatorApiBuild(recoveredOutput, join(fixtureScratch, 'initial-build'));
   const rebuilt = await preparePrivateOperatorApiBundle(sourceRoot,
-    join(sourceRoot, 'apps/operator/dist-host'), { builder: { timeoutMs: 240_000, maxMs: 420_000,
+    recoveredOutput, { builder: { timeoutMs: 240_000, maxMs: 420_000,
       env: privateGitCloneBundleEnv(sourceRoot, cloned.sha),
       retainedEvidenceDir: join(evidenceDir, 'grading-runtime-builds/recovered') } });
   let acceptancePending = true;

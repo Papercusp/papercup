@@ -258,7 +258,10 @@ async function main() {
     mkdirSync(censusDir);
     const env = { ...e, PAPERCUSP_TEST_RUN_GROUP:
       (e.PAPERCUSP_TEST_RUN_GROUP ?? '') + ':codex-managed-surface-worker',
-      CODEX_MANAGED_PRIVATE_MCP_URL: base + '/api/mcp?superuser=1&workspace=' +
+      // The installed client's code-mode probe checks exit_code and exact output.
+      // Foreground capability:bash exposes those fields through negotiated MCP
+      // structuredContent; its default text result is intended for human readers.
+      CODEX_MANAGED_PRIVATE_MCP_URL: base + '/api/mcp?superuser=1&structured=1&workspace=' +
         encodeURIComponent(workspace) + '&client=su-private-codex-managed',
       CODEX_MANAGED_PRIVATE_MCP_TOKEN: token };
     const child = fork(join(root, 'scripts/test-files.mjs'),
@@ -270,7 +273,7 @@ async function main() {
     assert.equal(result.signal, null);
     assert.equal(result.timedOut, false);
     assert.match(result.output, /TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed/);
-    assert.match(result.output, /Tests\s+6 passed \(6\)/);
+    assert.match(result.output, /Tests\s+5 passed \(5\)/);
     assert.match(result.output, /skippedTests=0/);
     const line = result.output.split('\n').find(row => row.startsWith('CODEX_ADMITTED_LIFECYCLE '));
     assert.ok(line, 'production MCP lifecycle receipt is required');

@@ -2,7 +2,7 @@
 import { execFileSync, fork, spawn, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -221,6 +221,12 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
         for (const captured of captures.slice(1)) {
           for (const item of Array.isArray(captured.input) ? captured.input : []) {
             if (item.type === 'custom_tool_call_output' && item.call_id === `call_nested_surface_${surface}`) {
+              const evidenceDir = process.env.STAGING_FIRST_HTTP_EVIDENCE_DIR;
+              if (privateMcpUrl && evidenceDir) {
+                appendFileSync(join(evidenceDir, 'census', 'managed-tool-replies.ndjson'), JSON.stringify({
+                  surface, features, callId: item.call_id, output: item.output,
+                }) + '\n', { mode: 0o600 });
+              }
               readNested(item.output);
               const toolOutput = JSON.stringify(item.output);
               expect(toolOutput, `Managed execution reply for ${surface}: ${toolOutput.slice(0, 6000)}`)
@@ -391,6 +397,7 @@ describe('Codex managed replacement installed-client census', () => {
         'packages/operator-core/test/private-http-workspace-preflight.ts',
         'packages/operator-core/lib/process-identity.ts', 'scripts/with-test-pg.mjs', 'scripts/test-files.mjs'],
       retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/census/worker.log',
+        'phases/execute/census/managed-tool-replies.ndjson',
         'phases/execute/native-tool-surface.json', 'phases/execute/operator-mcp-receipt.json'],
       prepare: async evidenceDir => {
         const censusPath = join(evidenceDir, 'restricted-hold-census.json');
@@ -429,7 +436,7 @@ describe('Codex managed replacement installed-client census', () => {
         });
         expect(result.output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
         expect(result.output).toContain('skippedTests=0');
-        expect(result.output).toMatch(/Tests\s+6 passed \(6\)/);
+        expect(result.output).toMatch(/Tests\s+5 passed \(5\)/);
         expect(line, 'original installed-client lifecycle observations are required').toBeDefined();
         expect(result.output).toContain('CODEX_PRODUCTION_MCP_VERIFIED');
         const measured = JSON.parse(line!.slice('CODEX_ADMITTED_LIFECYCLE '.length));

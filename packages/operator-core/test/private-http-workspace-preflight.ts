@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -969,6 +969,15 @@ type PrivateBundleBuilder = { command?: string; args?: string[]; timeoutMs: numb
   retainedEvidenceDir?: string;
   onProgress?: (progress: { step: string; completedSteps: number }) => void };
 type PrivateBundleReceipt = { path: string; sha256: string };
+/** Preserve a retired build before rebuilding at the runtime's canonical output path. */
+export function archivePrivateOperatorApiBuild(evidenceDir: string, archive: string): string {
+  assert.ok(!existsSync(archive), 'Previous private build archive must not be overwritten');
+  assert.ok(statSync(evidenceDir).isDirectory(), 'Private build output must be a directory');
+  renameSync(evidenceDir, archive);
+  mkdirSync(evidenceDir);
+  return archive;
+}
+
 export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
   builder: PrivateBundleBuilder & { maxMs: number }): Promise<PrivateBundleReceipt>;
 export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,

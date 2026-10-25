@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import { runHarness } from '@papercusp/verification-harness';
 import * as ts from 'typescript';
-import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
+import { archivePrivateOperatorApiBuild, buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 
 const dirs: string[] = [];
@@ -608,6 +608,36 @@ it('prepares the real bundle receipt after progress renews the build checkpoint'
   expect(build.elapsedMs).toBeGreaterThan(2000);
   expect(build.progress.extensions).toBeGreaterThan(0);
   expect(build.status).toBe(0);
+});
+
+it('rebuilds relocated source with a fresh journal while preserving the first build evidence', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'private-relocated-build-')); dirs.push(directory);
+  const source = join(directory, 'source');
+  let output = join(source, 'dist-host');
+  mkdirSync(output, { recursive: true });
+  const build = (value: string) => preparePrivateOperatorApiBundle(directory, output, { builder: {
+    command: 'bash', args: ['-c',
+      'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; bundle_host_run_step compile true; printf "%s" "$4" > "$3"',
+      '_', common, join(output, 'hono-host.mjs.build-steps.jsonl'), join(output, 'hono-host.mjs'), value],
+    timeoutMs: 2000, maxMs: 6000, pollMs: 20,
+  } });
+  await build('initial');
+  const names = ['hono-host.mjs', 'operator-api-preflight.json', 'operator-api-build.log',
+    'operator-api-build-result.json', 'hono-host.mjs.build-steps.jsonl'];
+  const original = names.map(name => readFileSync(join(output, name)));
+  const relocated = join(directory, 'relocated');
+  renameSync(source, relocated);
+  output = join(relocated, 'dist-host');
+  await expect(Promise.resolve().then(() => build('unarchived')))
+    .rejects.toThrow('Progress build requires a fresh retained step journal');
+  const archive = archivePrivateOperatorApiBuild(output, join(directory, 'initial-build'));
+  const rebuilt = await build('recovered');
+  expect(readFileSync(rebuilt.path, 'utf8')).toBe('recovered');
+  expect(JSON.parse(readFileSync(join(output, 'operator-api-build-result.json'), 'utf8')).status).toBe(0);
+  expect(readFileSync(join(output, 'hono-host.mjs.build-steps.jsonl'), 'utf8')).toContain('compile');
+  names.forEach((name, index) => expect(readFileSync(join(archive, name))).toEqual(original[index]));
+  expect(() => archivePrivateOperatorApiBuild(output, archive)).toThrow('must not be overwritten');
+  expect(readFileSync(rebuilt.path, 'utf8')).toBe('recovered');
 });
 
 it('reports only distinct completed build steps to the enclosing watchdog', async () => {

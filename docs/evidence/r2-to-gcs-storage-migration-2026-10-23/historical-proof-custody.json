@@ -23,6 +23,33 @@
     "retainedArtifactDirectory": "retained",
     "trackedOriginals": 2362
   },
+  "readerAccess": {
+    "reader": {
+      "module": "scripts/lib/budgeted-task-scheduler.mjs",
+      "export": "readNativeArtifactBytes"
+    },
+    "originalsVerified": 2362,
+    "retainedPinsRead": 15428,
+    "evaluatorReferencesVerified": 2922,
+    "nativeArtifactsRead": 10140,
+    "eligibleGeneratedFiles": 2349,
+    "qualifications": {
+      "newExecutionReceipt": false,
+      "orderedChainQualified": false,
+      "runtimeClosure": "unmeasured",
+      "operationalAcceptance": false
+    },
+    "indexPathBase": "archive.root",
+    "artifactPathBase": "archive.retainedArtifactDirectory",
+    "lookup": {
+      "trackedFile": "custody.json files[].path -> artifact",
+      "rawReport": "custody.json reports[].artifact",
+      "evaluator": "custody.json reports[].evaluatorArtifacts.entries[].artifact",
+      "nativeArtifact": "custody-native.json populations[].files[].artifact"
+    },
+    "validation": "Verify each index hash against archive pins before following an artifact descriptor. Read the referenced bytes with readNativeArtifactBytes(file, descriptor.byteLength, byteLimit), then compare SHA-256 to descriptor.sha256. Original report and codeRef bytes are unchanged; retained evaluator mappings were checked against the original report location, id, codeRef, digest and byte length.",
+    "scope": "Historical exact-byte access only; missing codeRef observations remain partial."
+  },
   "bindingCensus": {
     "scope": "Active evidence bindings returned for the migration plan; each immutable binding ID was read with its complete currentMeasurement",
     "plan": "r2-to-gcs-storage-migration-2026-10-23",
@@ -401,11 +428,15 @@
   },
   "state": {
     "trackedOriginalsRemoved": false,
-    "readerRelocationQualified": false,
+    "trackedGeneratedFilesRemoved": 400,
+    "trackedGeneratedFilesRemaining": 1949,
+    "supportingEvidenceDocumentsRetained": 13,
+    "readerRelocationQualified": true,
     "notes": [
       "Original raw bytes and compiler-emitted paths remain unchanged in external custody.",
       "The original codeRef equality check remains enforced. Retained hash-addressed artifacts do not invent missing historical references.",
-      "Removal and original P003 qualification remain pending."
+      "Generated sidecar removal is partial; the first 400 manifest-ordered eligible files were removed after hash recheck and exact-byte reader access verification.",
+      "Supporting evidence documents remain in source. Original P003 qualification remains pending."
     ]
   }
 }
