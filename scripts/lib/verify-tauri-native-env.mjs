@@ -12,6 +12,12 @@ export function nativeVerifierEnv(env) {
     'PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE']) {
     delete child[key];
   }
+  // Hermetic worker setup removes the live workspace pin but retains the
+  // original test-run attribution. The real native child needs that source
+  // workspace for its lock census; restore it only in this copied child env.
+  const workspace = [child.PAPERCUSP_WORKSPACE_ID, child.PAPERCUSP_WORKSPACE,
+    child.PAPERCUSP_TEST_RUN_WORKSPACE].find(value => typeof value === 'string' && value.trim());
+  if (workspace) child.PAPERCUSP_WORKSPACE_ID = workspace.trim();
   return child;
 }
 
@@ -20,7 +26,11 @@ export function nativeVerifierEnv(env) {
 // readiness check only: the real build still checks its exact inputs later.
 export function preflightNativeVerifier(repoRoot, env, spawn = spawnSync) {
   const root = resolve(repoRoot);
-  const census = censusSpawnArgs(['--tree', root], nativeVerifierEnv(env));
+  const child = nativeVerifierEnv(env);
+  if (!child.PAPERCUSP_WORKSPACE_ID?.trim()) {
+    throw new Error('Native verifier requires a source workspace before preparation');
+  }
+  const census = censusSpawnArgs(['--tree', root], child);
   const verdict = interpretRestrictedHoldPreflight(spawn(process.execPath, census.argv, {
     cwd: root, env: census.env, encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024,
   }));

@@ -31,6 +31,7 @@ describe('real native verifier process boundary', () => {
   it('actually runs the committed tree census even with inherited upstream admission', () => {
     const spawn = vi.fn(() => ({ status: 0, stdout: 'RESTRICTED_HOLD_PREFLIGHT {"verdict":"admit"}\n' }));
     preflightNativeVerifier(root, { VITEST: 'true', PAPERCUSP_FORBID_REAL_PG: '1',
+      PAPERCUSP_WORKSPACE_ID: 'source-workspace',
       PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT: 'testing-run' }, spawn);
     expect(spawn).toHaveBeenCalledOnce();
     const [, args, options] = spawn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }];
@@ -42,12 +43,37 @@ describe('real native verifier process boundary', () => {
   });
 
   it.each([
+    { PAPERCUSP_WORKSPACE_ID: 'explicit-source', PAPERCUSP_WORKSPACE: 'ambient-source',
+      PAPERCUSP_TEST_RUN_WORKSPACE: 'ledger-source', expected: 'explicit-source' },
+    { PAPERCUSP_WORKSPACE: 'ambient-source', PAPERCUSP_TEST_RUN_WORKSPACE: 'ledger-source',
+      expected: 'ambient-source' },
+    { PAPERCUSP_WORKSPACE_ID: ' ', PAPERCUSP_WORKSPACE: '',
+      PAPERCUSP_TEST_RUN_WORKSPACE: 'ledger-source', expected: 'ledger-source' },
+  ])('gives the real native child its source workspace after hermetic worker setup: %j', input => {
+    const { expected, ...parent } = input;
+    const child = nativeVerifierEnv(parent);
+    const observed = execFileSync(process.execPath, ['-e',
+      'process.stdout.write(process.env.PAPERCUSP_WORKSPACE_ID ?? "missing")'],
+    { env: child, encoding: 'utf8' });
+    expect(observed).toBe(expected);
+    expect(parent.PAPERCUSP_WORKSPACE_ID).toBe(input.PAPERCUSP_WORKSPACE_ID);
+  });
+
+  it.each([{}, { PAPERCUSP_WORKSPACE_ID: ' ', PAPERCUSP_WORKSPACE: '',
+    PAPERCUSP_TEST_RUN_WORKSPACE: '\t' }])('refuses missing workspace before the expensive census: %j', env => {
+    const spawn = vi.fn(() => ({ status: 0, stdout: 'RESTRICTED_HOLD_PREFLIGHT {"verdict":"admit"}\n' }));
+    expect(() => preflightNativeVerifier(root, env, spawn)).toThrow('Native verifier requires a source workspace');
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it.each([
     { status: 3, stdout: 'RESTRICTED_HOLD_PREFLIGHT {"verdict":"refuse","error":"restricted_write_held","hint":"held input"}\n' },
     { status: 3, stdout: 'RESTRICTED_HOLD_PREFLIGHT {"verdict":"refuse","error":"restricted_hold_state_unknown","hint":"database unavailable"}\n' },
     { status: 0, stdout: '' },
     { status: null, signal: 'SIGTERM' },
   ])('refuses native preparation on an unsafe or unavailable census: %j', result => {
-    expect(() => preflightNativeVerifier(root, {}, () => result)).toThrow('Native verifier census is not ready');
+    expect(() => preflightNativeVerifier(root, { PAPERCUSP_WORKSPACE_ID: 'source-workspace' }, () => result))
+      .toThrow('Native verifier census is not ready');
   });
 
   it('checks readiness before PostgreSQL creation and uses the child environment at native launch', () => {
