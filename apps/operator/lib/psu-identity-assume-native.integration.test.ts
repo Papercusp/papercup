@@ -4,6 +4,7 @@
  * this does not certify the production operator, custody store or work router. */
 import { expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createServer } from 'node:http';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -24,12 +25,16 @@ import { codexCliResponsesBody, codexCliResponsesCompletionSse } from
   '../../../packages/operator-core/lib/inference-gateway/codex-cli-bridge';
 import { readProcessIdentity } from '../../../packages/operator-core/lib/process-identity';
 import type { AssumeExecutionObservation } from '../../../packages/operator-core/lib/session-assume';
+import { readAssumeTranscriptPin } from '../../../packages/operator-core/lib/session-assume-preparation';
 
 type Row = Record<string, any>;
 const productionState = vi.hoisted(() => ({ sql: undefined as any, homes: new Map<string, string>() }));
+const previewDatabase = new AsyncLocalStorage<any>();
 vi.mock('@papercusp/db-org', async original => {
   const actual = await original<typeof import('@papercusp/db-org')>();
-  return { ...actual, getOrgPg: () => productionState.sql ? { sql: productionState.sql } : actual.getOrgPg() };
+  return { ...actual, getOrgPg: () => previewDatabase.getStore()
+    ? { sql: previewDatabase.getStore() }
+    : productionState.sql ? { sql: productionState.sql } : actual.getOrgPg() };
 });
 vi.mock('@papercusp/orchestrator/session-launch-dirs', async original => {
   const actual = await original<typeof import('@papercusp/orchestrator/session-launch-dirs')>();
@@ -76,6 +81,37 @@ it('discovers a deferred handoff tool before invoking an already advertised exec
   const tool = { type: 'function', name: 'mcp__fixture__handoff_fixture' };
   expect(handoffToolRoute([executor, search, tool])).toMatchObject({ discovery: false, direct: tool });
 });
+
+it('read-only context preview isolates an overlapping coordination writer', async () => {
+  const { productionAssumeFixture } = await import('../vitest-shims/identity-assume-production');
+  let entered!: () => void, written!: () => void;
+  const previewEntered = new Promise<void>(resolve => { entered = resolve; });
+  const writerFinished = new Promise<void>(resolve => { written = resolve; });
+  const real = await productionAssumeFixture('native-context-fixture', sql => { productionState.sql = sql; },
+    (sql, run) => previewDatabase.run(sql, async () => {
+      const [row] = await sql`SELECT current_setting('transaction_read_only') AS read_only`;
+      expect(row.read_only).toBe('on');
+      entered();
+      await writerFinished;
+      return run();
+    }));
+  // Created outside the preview's async context, as the telemetry flush timer is.
+  const owner = 'test-assume-overlap-' + randomUUID();
+  const writer = (async () => {
+    await previewEntered;
+    try { await real.send(owner, 'Independent writer during read-only preview'); }
+    finally { written(); }
+  })();
+  try {
+    await real.readOnlyPreview(owner, owner, 'native-resume');
+    await writer;
+    expect(await real.pending(owner)).toHaveLength(1);
+  } finally {
+    entered(); written();
+    await Promise.allSettled([writer]);
+    await real.dispose(); productionState.sql = undefined;
+  }
+}, 30_000);
 
 async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = false,
   contended = false, preflight = false, channelControls = false) {
@@ -134,6 +170,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp))).at(-1)!.payload.id as string;
     };
     let real: Awaited<ReturnType<typeof import('../vitest-shims/identity-assume-production').productionAssumeFixture>> | undefined;
+    let preflightStep = 'not-started';
     let accepted: Row | undefined, returning: Row | undefined, targetWork = '', callerWork = '';
     const routed: Row[] = [];
     const initialResponsibilities = new Map<string, Row>();
@@ -216,6 +253,62 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
                 if (!preview.ok) throw new Error('Production preview refused');
                 expect(await real.load(preview.preparation)).toBeNull();
                 await assertUnchanged();
+                // Exercise the actual installed target's transcript resolver.
+                // A valid checkpoint must not rescue explicit native mode, and
+                // a valid transcript must not rescue a stale checkpoint.
+                const targetNativeId = nativeId('target');
+                const sessionsRoot = join(homes.target, 'sessions');
+                const targetRollout = readdirSync(sessionsRoot, { recursive: true }).map(String)
+                  .filter(path => path.endsWith('.jsonl')).find(path =>
+                    JSON.parse(readFileSync(join(sessionsRoot, path), 'utf8').split('\n')[0])
+                      .payload.id === targetNativeId)!;
+                const targetRolloutPath = join(sessionsRoot, targetRollout);
+                const originalTranscript = readFileSync(targetRolloutPath, 'utf8');
+                for (const fault of ['missing', 'corrupt', 'other-conversation'] as const) {
+                  preflightStep = 'R3 native ' + fault;
+                  renameSync(targetRolloutPath, targetRolloutPath + '.saved');
+                  try {
+                    if (fault !== 'missing') {
+                      const otherId = randomUUID();
+                      const altered = fault === 'corrupt' ? '{corrupt native transcript\n'
+                        : originalTranscript.split('\n').filter(Boolean).map(line => {
+                          const entry = JSON.parse(line);
+                          if (entry.type === 'session_meta') entry.payload.id = otherId;
+                          return JSON.stringify(entry);
+                        }).join('\n') + '\n';
+                      writeFileSync(targetRolloutPath, altered);
+                      if (fault === 'other-conversation') expect(JSON.parse(altered.split('\n')[0]).payload.id)
+                        .toBe(otherId);
+                    }
+                    expect(await readAssumeTranscriptPin(targetRolloutPath, sessionsRoot, 'codex', targetNativeId),
+                      preflightStep + ' exact file').toBeNull();
+                    expect(await real.readOnlyPreview(owner, owners.target, 'native-resume'), 'R3 native ' + fault)
+                      .toEqual({ ok: false, code: 'context-unavailable' });
+                    expect(await real.readOnlyPreview(owner, owners.target, 'checkpoint'))
+                      .toMatchObject({ ok: true, preparation: { target: { context: { mode: 'checkpoint' } } } });
+                    await assertUnchanged();
+                  } finally {
+                    if (existsSync(targetRolloutPath)) unlinkSync(targetRolloutPath);
+                    renameSync(targetRolloutPath + '.saved', targetRolloutPath);
+                  }
+                }
+                const [checkpoint] = await real.sql`SELECT scope, body_ts FROM harness_shared.carry_notes
+                  WHERE workspace_id = 'native-context-fixture' AND scope LIKE ${'loop:%' + owners.target}`;
+                expect(checkpoint).toBeDefined();
+                await real.sql`UPDATE harness_shared.carry_notes SET body_ts = 0
+                  WHERE workspace_id = 'native-context-fixture' AND scope = ${checkpoint.scope}`;
+                try {
+                  preflightStep = 'R3 stale checkpoint';
+                  expect(await real.readOnlyPreview(owner, owners.target, 'checkpoint'), 'R3 stale checkpoint')
+                    .toEqual({ ok: false, code: 'context-unavailable' });
+                  expect(await real.readOnlyPreview(owner, owners.target, 'native-resume'))
+                    .toMatchObject({ ok: true, preparation: { target: { context: { mode: 'native-resume' } } } });
+                  await assertUnchanged();
+                } finally {
+                  await real.sql`UPDATE harness_shared.carry_notes SET body_ts = ${checkpoint.body_ts}
+                    WHERE workspace_id = 'native-context-fixture' AND scope = ${checkpoint.scope}`;
+                }
+                preflightStep = 'R3 complete';
                 const targetId = real.records.get(owners.target)!;
                 await real.sql`UPDATE harness_shared.adv_sessions SET workspace_id = 'foreign-native-fixture'
                   WHERE id = ${targetId}`;
@@ -444,13 +537,14 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         emitCompacted: () => null, onExit: () => {}, bridgeTty: false, io });
       const run = { owner: owners[key], signals, done }; runs.push(run); return run;
     };
-    const diagnostics = () => JSON.stringify({ phase, errors, nativeResults, toolCatalogs, mcpRequests, toolOutputs,
+    const diagnostics = () => JSON.stringify({ phase, preflightStep, errors, nativeResults, toolCatalogs, mcpRequests, toolOutputs,
       requests: requests.length, orders: orders.length,
       output: output.slice(-1200) });
     try {
       if (production) {
         const { productionAssumeFixture } = await import('../vitest-shims/identity-assume-production');
-        real = await productionAssumeFixture('native-context-fixture', sql => { productionState.sql = sql; });
+        real = await productionAssumeFixture('native-context-fixture', sql => { productionState.sql = sql; },
+          (sql, run) => previewDatabase.run(sql, run));
       }
       port = await new Promise<number>(resolve => server.listen(0, '127.0.0.1',
         () => resolve((server.address() as net.AddressInfo).port)));

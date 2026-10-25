@@ -32,7 +32,8 @@ import { createTopic, subscribeTopic, listMyTopicSubscriptions } from
   '../../../packages/operator-core/lib/agent-tools/coordination/topics';
 
 export async function productionAssumeFixture(workspaceId: string,
-  onDatabase: (sql: OrgTestDb['adminSql']) => void) {
+  onDatabase: (sql: OrgTestDb['adminSql']) => void,
+  withDatabase: <T>(sql: OrgTestDb['adminSql'], run: () => Promise<T>) => Promise<T>) {
   const database = await createOrgTestDb();
   onDatabase(database.adminSql);
   const fixture = await setupBaselineCoordFixture({ dsn: database.adminDsn });
@@ -101,11 +102,11 @@ export async function productionAssumeFixture(workspaceId: string,
       });
     },
     async readOnlyPreview(owner: string, targetOwnerId: string, contextMode: AssumeRequest['contextMode']) {
-      return database.adminSql.begin('read only', async tx => {
-        onDatabase(tx as unknown as OrgTestDb['adminSql']);
-        try { return await preview(owner, targetOwnerId, contextMode); }
-        finally { onDatabase(database.adminSql); }
-      });
+      // Scope the read-only handle to this async chain. Swapping a global handle
+      // also captures already scheduled telemetry flushes and aborts the preview
+      // transaction when those independent writers run.
+      return database.adminSql.begin('read only', tx =>
+        withDatabase(tx as unknown as OrgTestDb['adminSql'], () => preview(owner, targetOwnerId, contextMode)));
     },
     async register(owner: string, native: string, home: string, ended: boolean) {
       const [row] = await sql`INSERT INTO harness_shared.adv_sessions
