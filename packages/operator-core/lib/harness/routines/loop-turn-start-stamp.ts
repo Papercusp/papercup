@@ -46,18 +46,23 @@ export interface LoopTurnStartInput {
   workspaceId: string;
   cwd?: string | null;
   client?: string | null;
-  /** Optional test seam; production resolves this from the provenance ledger nonce. */
+  /** Resolved identity; the async recorder binds production lookups to the launch ledger. */
   loopFire?: LoopFireIdentity | null;
 }
 
 /** Resolve the typed loop identity enrolled alongside the prompt's provenance nonce.
  *  A missing/expired/malformed row is deliberately unknown: reconciliation keeps its
  *  bounded legacy retry path instead of guessing from wake text or timestamps. */
-export function resolveLoopFireIdentity(owner: string, prompt: string): LoopFireIdentity | null {
+export function resolveLoopFireIdentity(
+  owner: string, prompt: string, dir: string, nowMs = Date.now(),
+): LoopFireIdentity | null {
   const envelope = parseEnvelope(prompt ?? '');
   if (!envelope || envelope.origin !== 'loop-fire') return null;
-  const row = readLedgerRows(owner, { includeExpired: false }).find((candidate) => candidate.nonce === envelope.nonce);
-  if (!row?.loopFire) return null;
+  const row = readLedgerRows(owner, { includeExpired: false, dir, nowMs })
+    .find((candidate) => candidate.nonce === envelope.nonce);
+  if (!row || row.sid !== owner || row.origin !== 'loop-fire' || !Number.isFinite(row.ts) || row.ts > nowMs ||
+      typeof row.loopFire?.routineId !== 'string' || !row.loopFire.routineId.trim() ||
+      !Number.isInteger(row.loopFire.wakeCount) || row.loopFire.wakeCount <= 0) return null;
   return {
     routineId: row.loopFire.routineId,
     wakeCount: row.loopFire.wakeCount,
@@ -71,7 +76,7 @@ export function loopTurnStartRecord(input: LoopTurnStartInput): ActivityRecord |
   const owner = (input.owner ?? '').trim();
   if (!owner || !isLoopFirePrompt(input.prompt)) return null;
   const envelope = parseEnvelope(input.prompt);
-  const loopFire = input.loopFire === undefined ? resolveLoopFireIdentity(owner, input.prompt) : input.loopFire;
+  const loopFire = input.loopFire;
   return {
     owner,
     agent: input.client || null,
@@ -102,9 +107,31 @@ export async function recordLoopTurnStart(
   input: LoopTurnStartInput,
   store?: Pick<TelemetryStore, 'append'>,
 ): Promise<boolean> {
-  const record = loopTurnStartRecord(input);
-  if (!record) return false;
+  const owner = input.owner?.trim();
+  if (!owner || !isLoopFirePrompt(input.prompt)) return false;
+  const submittedAt = Date.now();
   try {
+    let loopFire = input.loopFire;
+    if (loopFire === undefined) {
+      loopFire = null;
+      try {
+        const { readAdvSessionLaunchRecordByOwner } = await import('../../adv-sessions');
+        const launch = await readAdvSessionLaunchRecordByOwner(owner, input.workspaceId);
+        const spec = launch?.launchSpec && typeof launch.launchSpec === 'object'
+          ? launch.launchSpec as Record<string, unknown> : null;
+        // The hook and ingest host can serve several namespaces. Only a persisted
+        // launch pin may select the live ledger; cwd and host env are not authority.
+        if (launch?.workspaceId === input.workspaceId && spec?.workspaceId === input.workspaceId &&
+            (!input.client || launch.agent === input.client) &&
+            typeof spec.turnProvenanceDir === 'string' && isAbsolute(spec.turnProvenanceDir)) {
+          loopFire = resolveLoopFireIdentity(owner, input.prompt, spec.turnProvenanceDir, submittedAt);
+        }
+      } catch {
+        // An unavailable or legacy launch stays unknown, retaining only the generic stamp.
+      }
+    }
+    const record = loopTurnStartRecord({ ...input, owner, loopFire });
+    if (!record) return false;
     const target = store ?? (await import('../../activity-pg-store')).createPgTelemetryStore();
     await target.append(record);
     return true;

@@ -111,7 +111,7 @@ describe('loop-turn-start-stamp', () => {
 
   it('appends one row for a loop-fire prompt and none otherwise', async () => {
     const append = vi.fn(async (_record: ActivityRecord) => ({ id: '1' as string | null }));
-    expect(await recordLoopTurnStart({ owner: 'su-1', prompt: LOOP_PROMPT, workspaceId: 'ws-1' }, { append })).toBe(true);
+    expect(await recordLoopTurnStart({ owner: 'su-1', prompt: LOOP_PROMPT, workspaceId: 'ws-1', loopFire: null }, { append })).toBe(true);
     expect(await recordLoopTurnStart({ owner: 'su-1', prompt: 'hi', workspaceId: 'ws-1' }, { append })).toBe(false);
     expect(append).toHaveBeenCalledTimes(1);
     expect(append.mock.calls[0][0]).toMatchObject({ summary: LOOP_TURN_START_MARKER, owner: 'su-1' });
@@ -122,7 +122,7 @@ describe('loop-turn-start-stamp', () => {
       throw new Error('pg down');
     });
     await expect(
-      recordLoopTurnStart({ owner: 'su-1', prompt: LOOP_PROMPT, workspaceId: 'ws-1' }, { append }),
+      recordLoopTurnStart({ owner: 'su-1', prompt: LOOP_PROMPT, workspaceId: 'ws-1', loopFire: null }, { append }),
     ).resolves.toBe(false);
   });
 });

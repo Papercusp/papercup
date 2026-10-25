@@ -4,12 +4,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appendLedgerRow, tagTurnForInjection, type LedgerRow } from '../../turn-provenance/turn-provenance';
 import {
-  indexedLoopLaunchBinding, indexedLoopTurnStartRecord,
+  indexedLoopLaunchBinding, indexedLoopTurnStartRecord, recordLoopTurnStart, resolveLoopFireIdentity,
   type IndexedLoopLaunchBinding, type IndexedNativeLoopTurn,
 } from './loop-turn-start-stamp';
 
+const { readLaunchRecord } = vi.hoisted(() => ({ readLaunchRecord: vi.fn() }));
+vi.mock('../../adv-sessions', async (original) => ({
+  ...await original<typeof import('../../adv-sessions')>(),
+  readAdvSessionLaunchRecordByOwner: readLaunchRecord,
+}));
+
 const dirs: string[] = [];
 afterEach(async () => {
+  readLaunchRecord.mockReset();
   vi.unstubAllEnvs();
   await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
 });
@@ -24,6 +31,54 @@ describe('indexed loop launch namespace', () => {
     agent: 'codex', session_id: 'native-a', omp_thread_id: null,
     provenance_dir: '/scoped/workspace-a/turn-provenance',
   };
+
+  it('stamps the live fire from its launch ledger rather than a host-global nonce collision', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'live-loop-namespace-'));
+    dirs.push(root);
+    const targetDir = join(root, 'workspace-a');
+    const hostDir = join(root, 'host');
+    vi.stubEnv('PAPERCUSP_TURN_PROVENANCE_DIR', hostDir);
+    const now = Date.now();
+    const tagged = await tagTurnForInjection({ sid: 'su-a', origin: 'loop-fire', text: 'Continue.',
+      dir: targetDir, nowMs: now, loopFire: { routineId: 'routine-a', wakeCount: 3 } });
+    expect(tagged.ledgerWritten).toBe(true);
+    expect(await appendLedgerRow({ sid: 'su-a', nonce: tagged.nonce, origin: 'loop-fire',
+      sha256: 'host-collision', ts: now, loopFire: { routineId: 'routine-host', wakeCount: 99 } },
+    { dir: hostDir, nowMs: now })).toBe(true);
+    readLaunchRecord.mockResolvedValue({ workspaceId: 'workspace-a', agent: 'codex',
+      launchSpec: { workspaceId: 'workspace-a', turnProvenanceDir: targetDir }, launchArgv: null });
+    const append = vi.fn(async () => ({ id: 'live-stamp' }));
+    expect(await recordLoopTurnStart({ owner: 'su-a', workspaceId: 'workspace-a',
+      client: 'codex', prompt: tagged.taggedText }, { append })).toBe(true);
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.objectContaining({
+      loopFire: { routineId: 'routine-a', wakeCount: 3 },
+    }) }));
+    expect(readLaunchRecord).toHaveBeenCalledWith('su-a', 'workspace-a');
+  });
+
+  it.each(['missing', 'wrong workspace', 'wrong spec workspace', 'wrong client', 'missing pin', 'relative pin', 'wrong directory', 'unavailable'])
+  ('keeps a %s launch unknown despite a valid host ledger', async (problem) => {
+    const hostDir = await mkdtemp(join(tmpdir(), 'live-loop-unknown-'));
+    dirs.push(hostDir);
+    vi.stubEnv('PAPERCUSP_TURN_PROVENANCE_DIR', hostDir);
+    const tagged = await tagTurnForInjection({ sid: 'su-a', origin: 'loop-fire', text: 'Continue.',
+      dir: hostDir, loopFire: { routineId: 'routine-host', wakeCount: 99 } });
+    expect(tagged.ledgerWritten).toBe(true);
+    const receipt = { workspaceId: problem === 'wrong workspace' ? 'workspace-b' : 'workspace-a',
+      agent: problem === 'wrong client' ? 'claude' : 'codex', launchArgv: null,
+      launchSpec: { workspaceId: problem === 'wrong spec workspace' ? 'workspace-b' : 'workspace-a',
+        turnProvenanceDir: problem === 'missing pin' ? undefined : problem === 'relative pin' ? 'relative'
+          : problem === 'wrong directory' ? join(hostDir, 'absent') : hostDir } };
+    if (problem === 'unavailable') readLaunchRecord.mockRejectedValue(new Error('launch store down'));
+    else readLaunchRecord.mockResolvedValue(problem === 'missing' ? null : receipt);
+    const append = vi.fn(async () => ({ id: 'unknown-stamp' }));
+    expect(await recordLoopTurnStart({ owner: 'su-a', workspaceId: 'workspace-a',
+      client: 'codex', prompt: tagged.taggedText }, { append })).toBe(true);
+    expect(append.mock.calls).toHaveLength(1);
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      detail: { origin: 'loop-fire', nonce: tagged.nonce, source: 'turn-start' },
+    }));
+  });
 
   it.each(['codex', 'claude', 'omp'])('binds the exact %s native session to its launch receipt', source => {
     const row = { ...launch, agent: source, ...(source === 'omp' ? { session_id: null, omp_thread_id: 'native-a' } : {}) };
@@ -87,6 +142,8 @@ describe('indexed loop launch namespace', () => {
       ts: now, loopFire: { routineId: 'routine-a', wakeCount: 3 }, ...change } as LedgerRow;
     if ('ts' in change && typeof change.ts === 'number') enrollment.ts = now + change.ts;
     expect(await appendLedgerRow(enrollment, { dir, nowMs: now, ttlMs: 3600000 })).toBe(true);
+    expect(resolveLoopFireIdentity('su-a', '⟦turn-origin:loop-fire nonce:1234567890abcdef⟧\nContinue.', dir, now))
+      .toBeNull();
     expect(indexedLoopTurnStartRecord({ ...turn, ts: new Date(now).toISOString(),
       text: '⟦turn-origin:loop-fire nonce:1234567890abcdef⟧\nContinue.' }, undefined,
     { dir, workspaceId: 'workspace-a' })).toBeNull();
