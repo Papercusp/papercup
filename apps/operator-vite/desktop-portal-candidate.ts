@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -76,6 +77,12 @@ export async function prepareCandidate(args = process.argv.slice(2)) {
     return;
   }
   const root = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
+  const desktopSource = () => ({
+    commitSha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
+    worktreeDirty: execFileSync('git', ['status', '--porcelain', '--untracked-files=normal'],
+      { cwd: root, encoding: 'utf8' }).trim().length > 0,
+  });
+  const sourceAtStart = desktopSource();
   const directory = candidateDirectory(root, values.output ?? '');
   if (!values['portal-root'] || !isAbsolute(values['portal-root'])) throw new Error('--portal-root must be absolute');
   // These process settings belong to this explicit CLI invocation. Ordinary
@@ -109,9 +116,13 @@ export async function prepareCandidate(args = process.argv.slice(2)) {
     bytes: item.type === 'chunk' ? item.code : item.source })),
   ...candidatePublicAssets(publicDirectory).map(item => ({ ...item, path: resolve(directory, 'spa', item.path) })),
   ...host.outputFiles.map(item => ({ path: item.path, bytes: item.contents }))];
+  if (JSON.stringify(sourceAtStart) !== JSON.stringify(desktopSource())) {
+    throw new Error('Desktop candidate source changed during preparation');
+  }
   writeCandidateFiles(root, directory, files);
   const receipt = {
     schemaVersion: 'desktop-portal-private-candidate-v1', preparedAt: new Date().toISOString(),
+    desktopSource: sourceAtStart,
     source: host.source.inputs, sourceFingerprint: host.source.sourceFingerprint,
     hostInputs: host.inputs, hostFingerprint: host.sourceFingerprint,
     desktopAdapterInput: host.desktopAdapterInput,
