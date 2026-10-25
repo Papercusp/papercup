@@ -81,6 +81,14 @@ bundle_host_prepare_esbuild() { # <repo root>
 bundle_host_esbuild() { # <repo root> [compiler args...]
   local repo_root="$1"
   shift
+  if [[ -n "${BUNDLE_HOST_BG_BUILD_CONTEXT:-}" ]]; then
+    # BG preparation supplies an ORIGINAL per-invocation record and a private
+    # pinned compiler. Never fall through to npx on a custody refusal.
+    local -a guarded_node=("${COMMITTED_NODE[@]:-node}")
+    "${guarded_node[@]}" "$repo_root/scripts/source-preview.mjs" bg-compiler \
+      --context "$BUNDLE_HOST_BG_BUILD_CONTEXT" -- "$@"
+    return $?
+  fi
   bundle_host_prepare_esbuild "$repo_root" || return 1
   # Each use holds the maintained cache lease through version validation AND
   # compilation. Cache cleanup between uses can remove the memoized path; that
