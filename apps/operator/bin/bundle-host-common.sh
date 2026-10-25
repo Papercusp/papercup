@@ -8,6 +8,30 @@ if [[ "${PAPERCUSP_BUNDLE_HOST_COMMON_LOADED:-}" == "1" ]]; then
 fi
 PAPERCUSP_BUNDLE_HOST_COMMON_LOADED=1
 
+# Resolve the selected source, never an enclosing checkout's identity.
+bundle_host_source_sha() { # <canonical source root> [node command...]
+  local repo_root="$1"
+  shift
+  local -a source_node=("${@:-node}")
+  if [[ -f "$repo_root/.verifier-source.json" ]]; then
+    "${source_node[@]}" --input-type=module - "$repo_root" <<'NODE'
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const root = process.argv[2];
+const { verifyVerifierSourceSync } = await import(pathToFileURL(join(root, 'packages/operator-core/lib/verifier-source.ts')));
+const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT || join(root, '.verifier-source.json'), 'utf8'));
+verifyVerifierSourceSync(root, receipt, { runtimeArtifacts: true });
+process.stdout.write(receipt.sourceCommit.slice(0, 12));
+NODE
+  elif [[ -n "${VERIFY_TAURI_SOURCE_RECEIPT:-}" ]]; then
+    echo 'bundle-host.sh: pinned source receipt requires its archive marker' >&2
+    return 78
+  elif [[ "$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)" == "$repo_root" ]]; then
+    git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || true
+  fi
+}
+
 # Keep step boundaries outside redirected compiler logs. A killed parent cannot
 # print those logs afterward; the private builder reads this retained journal.
 # Packaging callers without a journal keep the same command/exit contract.
