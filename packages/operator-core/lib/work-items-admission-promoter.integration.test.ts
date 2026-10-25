@@ -95,6 +95,10 @@ let vintage: InMemoryRuntimeVintageStore;
 const DDL = `
   CREATE EXTENSION IF NOT EXISTS vector;
   CREATE SCHEMA IF NOT EXISTS harness_shared;
+  CREATE TABLE harness_shared.audit_log (
+    id text PRIMARY KEY, ts bigint NOT NULL, workspace_id text NOT NULL,
+    actor text NOT NULL, action text NOT NULL, subject text NOT NULL, details jsonb
+  );
   CREATE OR REPLACE FUNCTION harness_shared.work_item_status_is_terminal(value text)
   RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
     SELECT value = ANY(ARRAY['done','dropped','deprecated','passed','failed','resolved','closed']::text[])
@@ -289,7 +293,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await flushFallbackObservations();
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.work_item_deps, harness_shared.dedup_edges,
+  await db.sql`TRUNCATE harness_shared.audit_log, harness_shared.work_items, harness_shared.coord_links, harness_shared.work_item_deps, harness_shared.dedup_edges,
     harness_shared.dedup_adjudications, harness_shared.admission_runs,
     harness_shared.work_item_occurrences, harness_shared.routines, harness_shared.fallback_observations RESTART IDENTITY`;
   h.scopeTerms = undefined;
@@ -1925,6 +1929,112 @@ describe('work-item admission promoter (real Postgres)', () => {
       ]);
       expect(await admissionOf('WI-request')).toBe('pending');
     }, 90_000);
+
+    describe('authenticated audited agent park comparison', () => {
+      const actor = 'su-f376159c-ff71-45aa-b34c-cded72705429';
+      const reason = 'future independent source work';
+      const readComparison = async () => (await db.sql`
+        SELECT * FROM harness_shared.work_items WHERE feature_id = 'WI-parked'`)[0];
+      const seedPark = async (id = 'WI-parked', admission = 'admitted') => {
+        const payload = { _claimHold: true, _ei: { source: 'su', created_by: actor },
+          claim_hold_by: actor, claim_hold_reason: reason, claim_hold_at: new Date(NOW - 1000).toISOString() };
+        await seedItem({ id, admission, takenBy: null, payload, createdAtMs: NOW - 10_000 });
+        await db.sql`INSERT INTO harness_shared.audit_log (id, ts, workspace_id, actor, action, subject, details)
+          VALUES (${id + '-audit'}, ${NOW - 992}, ${WS}, ${actor}, 'work_items:claim_hold:set', ${id},
+            ${JSON.stringify({ mode: 'claim_hold', by: actor, reason })}::text::jsonb)`;
+        return readComparison();
+      };
+      const run = (llmCall: Parameters<typeof runWorkItemAdmissionPromoter>[0]['llmCall'], beforePersist?: () => Promise<void>) =>
+        runWorkItemAdmissionPromoter({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql,
+          runId: 'authenticated-agent-park', now: () => NOW, llmCall,
+          componentScreeningItemIds: ['WI-original'], beforePersist });
+
+      it.each(['admitted', 'pending'])('advances only the distinct original against an audited %s park', async admission => {
+        const before = await seedPark('WI-parked', admission);
+        await seedItem({ id: 'WI-original', createdAtMs: NOW - 20_000 });
+        const result = await run(distinctCall());
+        expect(result).toMatchObject({ promoted: 1, merged: 0, held: 0, guardRefusals: [] });
+        expect(await admissionOf('WI-original')).toBe('admitted');
+        expect(await readComparison()).toEqual(before);
+        expect(await db.sql`SELECT verdict FROM harness_shared.dedup_adjudications`).toEqual([{ verdict: 'distinct' }]);
+        expect(await db.sql`SELECT 1 FROM harness_shared.work_item_occurrences`).toHaveLength(0);
+        expect(await db.sql`SELECT 1 FROM harness_shared.coord_links`).toHaveLength(0);
+      }, 60_000);
+
+      it.each(['omitted', 'hold', 'r-related', 'r-remedy-keep', 'r-finding-merge', 'unknown'])('holds the original for %s without changing its park', async verdict => {
+        const before = await seedPark();
+        await seedItem({ id: 'WI-original', createdAtMs: NOW - 20_000 });
+        const model = vi.fn(async () => ({ text: '', inputTokens: 10, outputTokens: 10,
+          json: { judgements: verdict === 'omitted' ? [] : [{ pairKey: 'WI-original::WI-parked', verdict, reason: 'control' }] } }));
+        if (verdict === 'unknown') await expect(run(model)).rejects.toThrow();
+        else {
+          const result = await run(model);
+          expect(result.promoted).toBe(0); expect(result.merged).toBe(0);
+        }
+        expect(await admissionOf('WI-original')).toBe('pending');
+        expect(await readComparison()).toEqual(before);
+        expect(await db.sql`SELECT 1 FROM harness_shared.work_item_occurrences`).toHaveLength(0);
+        expect(await db.sql`SELECT 1 FROM harness_shared.coord_links`).toHaveLength(0);
+      }, 60_000);
+
+      it.each(['missing', 'foreign-workspace', 'wrong-actor', 'clear', 'wrong-reason'])('refuses %s canonical provenance before calling the model', async kind => {
+        await seedPark();
+        await seedItem({ id: 'WI-original', createdAtMs: NOW - 20_000 });
+        if (kind === 'missing') await db.sql`DELETE FROM harness_shared.audit_log`;
+        else if (kind === 'foreign-workspace') await db.sql`UPDATE harness_shared.audit_log SET workspace_id = 'other'`;
+        else if (kind === 'wrong-actor') await db.sql`UPDATE harness_shared.audit_log SET actor = 'owner'`;
+        else if (kind === 'clear') await db.sql`UPDATE harness_shared.audit_log SET action = 'work_items:claim_hold:clear'`;
+        else await db.sql`UPDATE harness_shared.audit_log SET details = details || '{"reason":"forged"}'::jsonb`;
+        const before = await readComparison(), model = distinctCall();
+        const result = await run(model);
+        expect(model).not.toHaveBeenCalled(); expect(result.promoted).toBe(0);
+        expect(await readComparison()).toEqual(before);
+      }, 60_000);
+
+      it.each(['hold', 'payload', 'audit', 'claim', 'original-claim'])('refuses %s drift before persistence', async kind => {
+        await seedPark();
+        await seedItem({ id: 'WI-original', createdAtMs: NOW - 20_000 });
+        const result = await run(distinctCall(), async () => {
+          if (kind === 'audit') await db.sql`UPDATE harness_shared.audit_log SET details = details || '{"reason":"changed"}'::jsonb`;
+          else if (kind === 'hold') await db.sql`UPDATE harness_shared.work_items SET payload = payload - '_claimHold' WHERE feature_id = 'WI-parked'`;
+          else if (kind === 'payload') await db.sql`UPDATE harness_shared.work_items SET payload = payload || '{"newProof":true}'::jsonb WHERE feature_id = 'WI-parked'`;
+          else await db.sql`UPDATE harness_shared.work_items SET taken_by = ${actor}
+            WHERE feature_id = ${kind === 'original-claim' ? 'WI-original' : 'WI-parked'}`;
+        });
+        expect(result.promoted).toBe(0); expect(result.merged).toBe(0);
+        expect(result.guardRefusals).toContainEqual(expect.objectContaining({ reason: 'snapshot-drift' }));
+        expect(await admissionOf('WI-original')).toBe('pending');
+      }, 60_000);
+
+      it.each(['claimed', 'blocked', 'needs-human', 'review', 'owner', 'external', 'lease', 'policy'])('preserves the additional %s protection before model work', async kind => {
+        await seedPark();
+        await seedItem({ id: 'WI-original', createdAtMs: NOW - 20_000 });
+        if (kind === 'claimed') await db.sql`UPDATE harness_shared.work_items SET taken_by = ${actor} WHERE feature_id = 'WI-parked'`;
+        else if (kind === 'blocked' || kind === 'needs-human') await db.sql`UPDATE harness_shared.work_items SET status = ${kind} WHERE feature_id = 'WI-parked'`;
+        else {
+          const patch = kind === 'review' ? { agentReview: { status: 'pending', submittedBy: actor, ledgerIdeaId: 'idea', round: 1 } }
+            : kind === 'owner' ? { needsOwnerAction: true }
+            : kind === 'lease' ? { held_open_by: actor }
+            : kind === 'policy' ? { claim_hold_reason: 'policy-tier approval' }
+            : { externalBlockers: [{ kind: 'runtime', capability: 'live-dependency', capabilitySource: 'explicit',
+              ref: 'runtime:pending', summary: 'Runtime dependency', status: 'active',
+              createdAt: new Date(NOW).toISOString(), updatedAt: new Date(NOW).toISOString(), createdBy: actor }] };
+          await db.sql`UPDATE harness_shared.work_items SET payload = payload || ${JSON.stringify(patch)}::text::jsonb WHERE feature_id = 'WI-parked'`;
+        }
+        const before = await readComparison(), model = distinctCall();
+        const result = await run(model);
+        expect(model).not.toHaveBeenCalled(); expect(result.promoted).toBe(0);
+        expect(await readComparison()).toEqual(before);
+      }, 60_000);
+
+      it('holds the original when one of two audited parks lacks a distinct judgment', async () => {
+        await seedPark(); await seedPark('WI-second-park');
+        await seedItem({ id: 'WI-original', createdAtMs: NOW - 20_000 });
+        const result = await run(vi.fn(async () => ({ text: '', inputTokens: 10, outputTokens: 10,
+          json: { judgements: [{ pairKey: 'WI-original::WI-parked', verdict: 'distinct', reason: 'one pair only' }] } })));
+        expect(result.promoted).toBe(0); expect(await admissionOf('WI-original')).toBe('pending');
+      }, 60_000);
+    });
 
     describe('authenticated claimed comparison', () => {
       const readComparison = async () => (await db.sql`

@@ -68,7 +68,7 @@ import {
   recordWorkScopeDecision,
   workScopeSqlTerms,
 } from './work-scope-policy';
-import type { OrgSql } from './work-items';
+import { looksLikePolicyGate, type OrgSql } from './work-items';
 import { effectiveStoredProseProfileIdSql } from './search/prose-vector-dims';
 import { readProcessIdentity } from './process-identity';
 import { listRuntimeVintage, measureRuntimeVintageEnvironment } from './runtime-vintage';
@@ -201,6 +201,8 @@ export interface AdmissionMergeSnapshot {
    * fingerprint of every other snapshot is unchanged.
    */
   ownNode?: true;
+  /** Server-read durable-park audit, never taken from caller payload metadata. */
+  agentParkAudit?: { id: string; atMs: number; actor: string; action: string; details: unknown };
   assignee: string | null;
   payload: unknown;
   completionRef: unknown;
@@ -1398,6 +1400,22 @@ export async function readAdmissionMergeSnapshots(
      ORDER BY wi.feature_id
      ${endpointLock}`;
 
+  // D-340: attribution strings can be supplied at creation. Only the latest
+  // canonical hold-writer audit can qualify this separate read-only exception.
+  const parkedIds = rows.filter(row => agentParkMetadata(row.payload)).map(row => row.feature_id);
+  const parkAudits = parkedIds.length ? await sql<{
+    subject: string; id: string; ts: string | number; actor: string; action: string; details: unknown;
+  }[]>`
+    SELECT DISTINCT ON (subject) subject, id, ts, actor, action, details
+      FROM harness_shared.audit_log
+     WHERE workspace_id = ${input.workspaceId}
+       AND subject = ANY(${parkedIds}::text[])
+       AND action IN ('work_items:claim_hold:set', 'work_items:claim_hold:clear')
+     ORDER BY subject, ts DESC, id DESC` : [];
+  const parkAuditById = new Map(parkAudits.map(row => [row.subject, {
+    id: row.id, atMs: Number(row.ts), actor: row.actor, action: row.action, details: row.details,
+  }]));
+
   const incoming = await sql<IncomingReferenceRow[]>`
     SELECT target.target_id, source.feature_id AS source_id,
            source.updated_ts AS source_updated_ts
@@ -1494,6 +1512,7 @@ export async function readAdmissionMergeSnapshots(
       updatedAtMs: finiteMs(row.updated_ts),
       origin: row.origin ?? null,
       ...(ownNodeIds.has(row.feature_id) ? { ownNode: true as const } : {}),
+      ...(parkAuditById.has(row.feature_id) ? { agentParkAudit: parkAuditById.get(row.feature_id)! } : {}),
       assignee: row.taken_by?.trim() || null,
       payload: row.payload ?? null,
       completionRef: row.completion_ref ?? null,
@@ -2539,7 +2558,7 @@ export function applyClaimedReReviewHolds(
 ): PromoterPlan {
   // Authenticated ordinary screening may READ a claimed neighbour, never write it.
   const comparisons = plan.adjudications.flatMap((row) => {
-    const comparisonId = claimedComparisonEndpoint(row.a, row.b, snapshots, componentScreeningItemIds);
+    const comparisonId = readOnlyComparisonEndpoint(row.a, row.b, snapshots, componentScreeningItemIds);
     return comparisonId ? [{ row, comparisonId, itemId: row.a === comparisonId ? row.b : row.a }] : [];
   });
   if (comparisons.length > 0) {
@@ -3817,6 +3836,8 @@ interface EndpointProtectionOptions {
   claimedReReviewAtMs?: number;
   /** Only authenticated pair comparisons use this; never a mutation role. */
   readOnlyClaimedComparison?: boolean;
+  /** D-340: audited, unassigned local agent parks only; never combines with a claim. */
+  readOnlyAgentParkComparison?: boolean;
 }
 
 function endpointProtection(
@@ -3853,7 +3874,8 @@ function endpointProtection(
   ) {
     return { reason: 'claimed', detail: `${role} ${snapshot.id} is claimed by ${snapshot.assignee}` };
   }
-  if (!terminalTwin && String(payload._claimHold) === 'true') {
+  if (!terminalTwin && String(payload._claimHold) === 'true' &&
+      !(role === 'reference' && options.readOnlyAgentParkComparison && qualifiedAgentPark(snapshot))) {
     return { reason: 'claim-held', detail: `${role} ${snapshot.id} carries payload._claimHold` };
   }
   if (
@@ -4127,6 +4149,54 @@ function claimedComparisonEndpoint(
   return undefined;
 }
 
+function agentParkMetadata(value: unknown) {
+  const payload = recordValue(value), metadata = recordValue(payload._ei);
+  const actor = payload.claim_hold_by;
+  const reason = payload.claim_hold_reason;
+  const atMs = typeof payload.claim_hold_at === 'string' ? Date.parse(payload.claim_hold_at) : Number.NaN;
+  if (String(payload._claimHold) !== 'true' || typeof actor !== 'string' ||
+      !/^su-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(actor) ||
+      metadata.created_by !== actor || metadata.source !== 'su' ||
+      typeof reason !== 'string' || !reason.trim() || looksLikePolicyGate(reason) || !Number.isFinite(atMs) ||
+      Object.keys(payload).some(key => key.startsWith('held_open_'))) return undefined;
+  return { payload, actor, reason, atMs };
+}
+
+function qualifiedAgentPark(snapshot: AdmissionMergeSnapshot) {
+  const park = agentParkMetadata(snapshot.payload), audit = snapshot.agentParkAudit;
+  if (!park || !audit || snapshot.origin !== 'local' || snapshot.assignee || snapshot.state !== 'open') return false;
+  const details = recordValue(audit.details);
+  return audit.action === 'work_items:claim_hold:set' && audit.actor === park.actor &&
+    details.mode === 'claim_hold' && details.by === park.actor && details.reason === park.reason &&
+    audit.atMs >= park.atMs && audit.atMs - park.atMs <= 60_000 && park.atMs >= snapshot.createdAtMs &&
+    JSON.stringify(canonicalJsonValue(details.releaseContract ?? null)) ===
+      JSON.stringify(canonicalJsonValue(park.payload.claim_hold_release ?? null));
+}
+
+/** Independent of D-338: neither exception can compose with the other's protection. */
+function agentParkComparisonEndpoint(a: string, b: string,
+  snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>, componentScreeningItemIds: readonly string[]) {
+  for (const [itemId, comparisonId] of [[a, b], [b, a]] as const) {
+    if (!componentScreeningItemIds.includes(itemId)) continue;
+    const item = snapshots.get(itemId), comparison = snapshots.get(comparisonId);
+    if (!item || !comparison || item.origin !== 'local' || item.assignee || endpointProtection(item, 'promote') ||
+        item.workspaceId !== comparison.workspaceId || item.harnessSlug !== comparison.harnessSlug ||
+        !qualifiedAgentPark(comparison)) continue;
+    if (!endpointProtection(comparison, 'reference', { readOnlyAgentParkComparison: true })) return comparisonId;
+  }
+  return undefined;
+}
+
+function readOnlyComparisonEndpoint(a: string, b: string,
+  snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>, componentScreeningItemIds: readonly string[] = []) {
+  return claimedComparisonEndpoint(a, b, snapshots, componentScreeningItemIds) ??
+    agentParkComparisonEndpoint(a, b, snapshots, componentScreeningItemIds);
+}
+
+function readOnlyComparisonOptions(snapshot: AdmissionMergeSnapshot | undefined): EndpointProtectionOptions {
+  return snapshot?.assignee ? { readOnlyClaimedComparison: true } : { readOnlyAgentParkComparison: true };
+}
+
 /**
  * Select this tick's batch from an over-read window WITHOUT spending model time on work the
  * persistence guard is certain to refuse (WI-10004724). Before this, the oldest re-review rows —
@@ -4165,7 +4235,7 @@ export function prescreenPromoterWindow(input: {
   const block = (snapshot: AdmissionMergeSnapshot | undefined) => admissionEndpointBlock(snapshot, input.nowMs);
   const windowIds = new Set(input.window.map((item) => item.id));
   const claimedComparisons = new Map(input.pairs.flatMap((pair) => {
-    const id = claimedComparisonEndpoint(pair.a.id, pair.b.id, input.snapshots, input.componentScreeningItemIds);
+    const id = readOnlyComparisonEndpoint(pair.a.id, pair.b.id, input.snapshots, input.componentScreeningItemIds);
     return id ? [[pair.pairKey, id] as const] : [];
   }));
   const readOnlyComparisonIds = new Set(claimedComparisons.values());
@@ -5258,14 +5328,14 @@ async function persistAdmissionPlanInTransaction(
   const claimedComparisons = new Map<string, string>();
   const comparisonBlocked = new Set<string>();
   for (const row of input.plan.adjudications) {
-    const comparisonId = claimedComparisonEndpoint(row.a, row.b, capturedById, input.componentScreeningItemIds);
+    const comparisonId = readOnlyComparisonEndpoint(row.a, row.b, capturedById, input.componentScreeningItemIds);
     if (!comparisonId) continue;
     const itemId = row.a === comparisonId ? row.b : row.a;
     // Distinct is the only outcome that requires no mutation of the neighbour.
     const problem = row.verdict !== 'distinct'
       ? { reason: 'claimed' as const, detail: `comparison ${comparisonId} requires a distinct verdict` }
       : snapshotIdentityProblem(capturedById.get(comparisonId), liveById.get(comparisonId), 'reference',
-        { readOnlyClaimedComparison: true });
+        readOnlyComparisonOptions(capturedById.get(comparisonId)));
     if (problem) {
       registerRefusal(itemId, null, problem);
       comparisonBlocked.add(itemId);
@@ -5368,7 +5438,8 @@ async function persistAdmissionPlanInTransaction(
       capturedById.get(adjudication.a),
       liveById.get(adjudication.a),
       'reference',
-      { ...protectionOptions(adjudication.a), readOnlyClaimedComparison: comparisonId === adjudication.a },
+      { ...protectionOptions(adjudication.a), ...(comparisonId === adjudication.a
+        ? readOnlyComparisonOptions(capturedById.get(adjudication.a)) : {}) },
     );
     if (aProblem) {
       registerRefusal(adjudication.a, null, aProblem);
@@ -5378,7 +5449,8 @@ async function persistAdmissionPlanInTransaction(
       capturedById.get(adjudication.b),
       liveById.get(adjudication.b),
       'reference',
-      { ...protectionOptions(adjudication.b), readOnlyClaimedComparison: comparisonId === adjudication.b },
+      { ...protectionOptions(adjudication.b), ...(comparisonId === adjudication.b
+        ? readOnlyComparisonOptions(capturedById.get(adjudication.b)) : {}) },
     );
     if (bProblem) {
       registerRefusal(adjudication.b, null, bProblem);

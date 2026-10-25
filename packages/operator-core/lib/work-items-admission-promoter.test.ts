@@ -598,6 +598,60 @@ describe('admission endpoint protection — terminal twins', () => {
     });
   });
 
+  describe('authenticated audited agent park comparison', () => {
+    const actor = 'su-f376159c-ff71-45aa-b34c-cded72705429';
+    const pending = item('EI-original');
+    const twin = item('EI-parked', { admission: 'admitted' });
+    const comparison = pair(pending, twin, [pending.id]);
+    const parkPayload = { _claimHold: true, _ei: { source: 'su', created_by: actor },
+      claim_hold_by: actor, claim_hold_reason: 'future independent source work',
+      claim_hold_at: new Date(1000).toISOString() };
+    const parked = snapshot(twin.id, { payload: parkPayload, agentParkAudit: {
+      id: 'audit-park', atMs: 1008, actor, action: 'work_items:claim_hold:set',
+      details: { mode: 'claim_hold', by: actor, reason: parkPayload.claim_hold_reason },
+    } });
+    const select = (overrides: Partial<AdmissionMergeSnapshot> = {}, authenticated = true,
+      original: Partial<AdmissionMergeSnapshot> = {}) => prescreenPromoterWindow({
+      window: [pending, twin], pairs: [comparison], snapshots: new Map([
+        [pending.id, snapshot(pending.id, { admission: 'pending', ...original })],
+        [twin.id, { ...parked, ...overrides }],
+      ]), batchSize: 2, nowMs: 2000,
+      ...(authenticated ? { componentScreeningItemIds: [pending.id] } : {}),
+    });
+
+    it('judges only the eligible authenticated original and keeps the held neighbour self-blocked', () => {
+      expect(select().batch).toEqual([pending]);
+      expect(select().pairs).toEqual([comparison]);
+      expect(select({}, false).batch).toEqual([]);
+      expect(select({}, true, { assignee: actor }).batch).toEqual([]);
+      expect(select({}, true, { payload: { _claimHold: true } }).batch).toEqual([]);
+      expect(admissionEndpointBlock(parked)).toMatchObject({ reason: 'claim-held' });
+    });
+
+    it.each([
+      { agentParkAudit: undefined },
+      { agentParkAudit: { ...parked.agentParkAudit!, actor: 'owner' } },
+      { agentParkAudit: { ...parked.agentParkAudit!, action: 'work_items:claim_hold:clear' } },
+      { agentParkAudit: { ...parked.agentParkAudit!, atMs: 70_000 } },
+      { agentParkAudit: { ...parked.agentParkAudit!, details: { mode: 'held_open', by: actor, reason: parkPayload.claim_hold_reason } } },
+      { payload: { ...parkPayload, claim_hold_reason: 'different hold' } },
+      { payload: { ...parkPayload, claim_hold_by: 'system:resource-governor' } },
+      { payload: { ...parkPayload, _ei: { source: 'su', created_by: 'owner' } } },
+      { payload: { ...parkPayload, held_open_by: actor } },
+      { payload: { ...parkPayload, claim_hold_reason: 'policy-tier independent approval' } },
+      { payload: { ...parkPayload, claim_hold_release: { condition: 'changed' } } },
+      { assignee: actor }, { state: 'blocked' }, { state: 'needs-human' }, { state: 'done' },
+      { origin: 'remote', ownNode: true }, { workspaceId: 'other' }, { harnessSlug: 'other' },
+      { payload: { ...parkPayload, needsOwnerAction: true } },
+      { payload: { ...parkPayload, agentReview: pendingReview } },
+      { payload: { ...parkPayload, externalBlockers: [executionBlocker] } },
+      { dependencies: [{ id: 'dep', blockedKind: 'issue', blockedRef: twin.id, blockerKind: 'issue',
+        blockerRef: 'EI-dependency', depType: 'blocks', satisfaction: 'success', createdBy: actor, active: true }] },
+    ] satisfies Partial<AdmissionMergeSnapshot>[])('refuses forged provenance and every coexisting protection %j', protection => {
+      expect(select(protection).pairs).toEqual([]);
+    });
+  });
+
   describe('authenticated claimed comparison', () => {
     const pending = item('EI-original');
     const twin = item('EI-claimed', { admission: 'admitted' });
