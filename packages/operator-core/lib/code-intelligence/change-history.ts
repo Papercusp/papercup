@@ -209,7 +209,14 @@ export async function readSymbolProvenance(input: { workspaceId: string; harness
               AND s.started_at <= ti.invoked_at AND (s.ended_at IS NULL OR s.ended_at >= ti.invoked_at)
               AND s.coord_owner_id IS NOT NULL) AS owners
         FROM harness_shared.tool_invocations ti
-        WHERE ti.workspace_id = ${input.workspaceId} AND ti.harness_slug = ${input.harness}
+        WHERE ti.workspace_id = ${input.workspaceId}
+          -- Native hooks can report another concrete harness through a
+          -- workspace-scoped transport. Match activity:report's resolved scope,
+          -- not just the dispatch context stamped on invocation telemetry.
+          AND (CASE WHEN ti.tool_name IN ('activity:report', 'activity_report')
+            AND NULLIF(btrim(ti.args_json->>'harness_slug'), '') IS NOT NULL
+            AND lower(btrim(ti.args_json->>'harness_slug')) NOT IN ('*', 'all')
+            THEN btrim(ti.args_json->>'harness_slug') ELSE ti.harness_slug END) = ${input.harness}
           AND ti.invoked_at >= ${since}::timestamptz AND ti.status = 'ok'
           AND (ti.tool_name IN ('Edit', 'Write', 'MultiEdit', 'capability:edit', 'capability:write', 'capability:multi_edit')
             OR ti.tool_name IN ('activity:report', 'activity_report') AND ti.args_json->>'tool_name' IN ('Edit', 'Write', 'MultiEdit', 'apply_patch'))

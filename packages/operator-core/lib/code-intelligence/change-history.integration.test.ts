@@ -46,6 +46,22 @@ describe('P013 invocation/session/work-item SQL join', () => {
     const denied = await graphQuery.handler({ ...args, harnesses: ['foreign'] } as never, ctx as never) as { data: { status: string } };
     expect(denied.data.status).toBe('unknown');
   });
+  it('uses the reported harness for activity reports sent through a workspace-scoped transport', async () => {
+    await writeFile(join(root, 'reported.ts'), source);
+    const args = { session_id: SESSION, harness_slug: HARNESS, tool_name: 'Write', status: 'ok',
+      tool_input: { file_path: 'reported.ts', content: source } };
+    // The dispatcher records its transport context; activity:report separately
+    // resolves the native hook's explicit harness_slug for the actual edit.
+    await db.adminSql`INSERT INTO harness_shared.tool_invocations
+      (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,invoked_at,status,coord_owner_id,args_json)
+      VALUES (${WS},${WS},'papercusp','activity:report','su','fixture','fixture','2026-10-10T12:00:00Z','ok',
+        ${OWNER},${db.adminSql.json(args)})`;
+    const read = (harness: string) => readSymbolProvenance({ workspaceId: WS, harness, root,
+      path: 'reported.ts', since: '2026-10-01T00:00:00Z' }, db.adminSql);
+    expect((await read(HARNESS)).symbols[0]).toMatchObject({ status: 'measured', workItem: 'WI-recorded-edit' });
+    expect((await read(WS)).symbols[0]).toMatchObject({ status: 'unknown', workItem: null });
+    expect((await read('foreign')).symbols[0]).toMatchObject({ status: 'unknown', workItem: null });
+  });
   it('adds recorded provenance and an unanchored co-change through the actual claim adapter', async () => {
     const hash = (s: string) => createHash('sha256').update(s).digest('hex');
     const sourceVersion = hash(JSON.stringify([['a.ts', hash(source)]]));

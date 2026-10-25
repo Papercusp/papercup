@@ -109,6 +109,7 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
     const root = resolve(import.meta.dirname, '../../../..');
     const sourcePaths = ['packages/operator-core/lib/code-intelligence/__fixtures__/reuse-api-journey.ts',
       'packages/operator-core/lib/code-intelligence/clone-brief-provider.ts',
+      'packages/operator-core/lib/code-intelligence/change-history.ts',
       'packages/operator-core/lib/code-intelligence/reuse-brief-providers.ts',
       'packages/operator-core/lib/code-intelligence/reuse-authoring.ts',
       'packages/operator-core/lib/code-intelligence/push-channel.ts',
@@ -141,6 +142,7 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
     // Refuse before bundling/allocating PG if their fixture would be substituted.
     const committedPaths = ['packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts',
       ...(mode.startsWith('reuse') ? ['packages/operator-core/lib/code-intelligence/__fixtures__/reuse-api-journey.ts',
+        'packages/operator-core/lib/code-intelligence/change-history.ts',
         'libs/test-config/src/test-coverage-provider.ts', 'libs/test-config/src/admin-test-runs-reporter.ts',
         'libs/test-config/src/test-coverage-map.ts', 'libs/test-config/src/vitest-config.ts'] : [])];
     for (const path of committedPaths) requireCommittedNativeSource(root, path, beforeHashes[path]!);

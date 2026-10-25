@@ -1,7 +1,7 @@
 /** P010/D029: size preflight, not a native claim or acceptance receipt. */
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ts from 'typescript';
@@ -27,7 +27,7 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { privateReuseHarnessRegistration, sparseReuseFixtureFiles } from './__fixtures__/reuse-api-journey';
 import { collectHarnessSlugArgs } from '../endpoint-route/hive-harness-arg-coverage';
 
-let fx: PlanPgFixture, root: string;
+let fx: PlanPgFixture, root: string, privateRoot: string;
 const harness = 'r', owner = 'su-sparse-preflight', workItem = 'WI-1';
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const data = (value: unknown): Record<string, any> => {
@@ -45,7 +45,11 @@ beforeAll(async () => {
   // Match with-test-pg's real runtime workspace width; the shorter default
   // workspace previously understated mandatory context in the native fixture.
   fx.workspaceId = 'test-runtime-00000000-000';
-  root = await mkdtemp(join(tmpdir(), 'r-'));
+  // Match the native runtime's complete private temp-root width as well as
+  // its workspace width; both root references are part of the immutable base.
+  privateRoot = await mkdtemp(join(tmpdir(), 'papercusp-test-runtime-'));
+  await mkdir(join(privateRoot, 'tmp'));
+  root = await mkdtemp(join(privateRoot, 'tmp', 'r-'));
   // Exercise the same request through the real transport scope collector:
   // omitting pot targets the unregistered short slug and fails hive admission.
   const registration = privateReuseHarnessRegistration(fx.workspaceId, harness, root, 'a'.repeat(40));
@@ -57,7 +61,7 @@ beforeAll(async () => {
 }, 180_000);
 afterAll(async () => {
   setFlagOverridesForTest(null); vi.restoreAllMocks();
-  await fx?.dispose(); if (root) await rm(root, { recursive: true, force: true });
+  await fx?.dispose(); if (privateRoot) await rm(privateRoot, { recursive: true, force: true });
 });
 
 it('records a truthful sparse baseline and five actual producer envelopes before native admission', async () => {
@@ -70,7 +74,7 @@ it('records a truthful sparse baseline and five actual producer envelopes before
   git('config', 'user.email', 'fixture@example.invalid');
   git('add', '.'); git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture');
   for (let n = 1; n <= 3; n++) {
-    await writeFile(join(root, 'a.ts'), files['a.ts']! + `// coordinated revision ${n}\n`);
+    await writeFile(join(root, 'a.ts'), files['a.ts']! + `// r${n}\n`);
     await writeFile(join(root, 'b.ts'), files['b.ts']!.replace(/revision\s*=\s*0/, `revision=${n}`));
     git('add', '.'); git('-c', 'commit.gpgsign=false', 'commit', '-qm', `revision ${n}`);
   }
@@ -88,7 +92,7 @@ it('records a truthful sparse baseline and five actual producer envelopes before
   // Standard disposable SQL fixture records qualify the REAL provenance join.
   // They are explicitly seeded evidence, not a native CLI/session witness.
   const assigned = new Date(Date.now() - 1000), editedAt = new Date();
-  const edited = '// controlled CLI edit\n' + await readFile(join(root, 'a.ts'), 'utf8');
+  const edited = '// CLI\n' + await readFile(join(root, 'a.ts'), 'utf8');
   await writeFile(join(root, 'a.ts'), edited);
   await fx.admin`INSERT INTO harness_shared.work_items
     (workspace_id,harness_slug,feature_id,item_kind,status,title,summary,taken_by,taken_at,created_ts,updated_ts)

@@ -111,7 +111,7 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   git('init', '-q'); git('config', 'user.name', 'native reuse fixture'); git('config', 'user.email', 'fixture@example.invalid');
   git('add', '.'); git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'private fixture baseline');
   for (let revision = 1; revision <= 3; revision++) {
-    await writeFile(join(root, targetPath), files[targetPath]! + `// coordinated revision ${revision}\n`);
+    await writeFile(join(root, targetPath), files[targetPath]! + (claimOnly ? `// r${revision}\n` : `// coordinated revision ${revision}\n`));
     await writeFile(join(root, partnerPath), files[partnerPath]!.replace(/revision\s*=\s*0/, `revision=${revision}`));
     git('add', targetPath, partnerPath);
     git('-c', 'commit.gpgsign=false', 'commit', '-qm', `private coordinated revision ${revision}`);
@@ -210,7 +210,7 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   assert.equal(claimed.results?.[0]?.ok, true, JSON.stringify(claimed));
   console.log('NATIVE_INCIDENT_API_STAGE=reuse-fixture-owned');
   const before = await readFile(join(root, targetPath), 'utf8');
-  const edited = (claimOnly ? '// controlled CLI edit\n' : '// touched clone sibling in this private task\n') + before + (claimOnly ? '' : aggregate('plantedCopy'));
+  const edited = (claimOnly ? '// CLI\n' : '// touched clone sibling in this private task\n') + before + (claimOnly ? '' : aggregate('plantedCopy'));
   let controlledSession: { id: number; session: string; editedAt: string } | undefined;
   if (claimOnly) {
     const { recordAdvSession } = await import('../../adv-sessions.ts');
@@ -233,6 +233,17 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
       tool_use_id: `controlled-write-${randomUUID()}`, summary: 'Actual controlled CLI fixture write; no model invocation',
       tool_input: { file_path: join(root, targetPath), content: edited } });
     controlledSession = { id: sessionRow, session, editedAt };
+    // Prove the native producer's session/scope/assignment join before the
+    // expensive nested test. The SQL-seeded size preflight cannot prove this.
+    const { readSymbolProvenance } = await import('../change-history.ts');
+    const provenance = await readSymbolProvenance({ workspaceId: workspace, harness, root, path: targetPath,
+      since: editedAt });
+    console.log('NATIVE_REUSE_PROVENANCE_PRECONDITION=' + JSON.stringify({ workspace, harness,
+      workItem: id, controlledSession, provenance }));
+    assert.equal(provenance.status, 'measured', JSON.stringify(provenance));
+    assert(provenance.symbols.length > 0 && provenance.symbols.every(symbol => symbol.status === 'measured'
+      && symbol.workItem === id && symbol.edits.some(edit => edit.session === session && edit.owner === owner)),
+    'Actual controlled Write must qualify through the production provenance reader: ' + JSON.stringify(provenance));
   } else {
     await call('capability:edit', { file_path: join(root, targetPath), old_string: before, new_string: edited });
   }
