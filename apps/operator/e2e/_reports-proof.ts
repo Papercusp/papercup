@@ -21,7 +21,7 @@ export interface PublishedReportSession {
 
 /** Authenticate only this local operator's API, including the selected report query. */
 export async function configurePublishedReportSession(
-  page: Pick<Page, 'route' | 'unroute' | 'addInitScript'>,
+  page: Pick<Page, 'route' | 'unrouteAll' | 'addInitScript'>,
   session: PublishedReportSession,
 ): Promise<() => Promise<void>> {
   const origin = new URL(session.origin).origin;
@@ -31,7 +31,6 @@ export async function configurePublishedReportSession(
       !session.token.trim() || !session.workspaceId || !session.clientId) {
     throw new Error('Published report proof requires an explicit local operator origin, token, workspace and client');
   }
-  const pending = new Set<Promise<void>>();
   const handler: Parameters<Page['route']>[1] = async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -53,8 +52,7 @@ export async function configurePublishedReportSession(
         throw new Error(String(error).replaceAll(session.token, '[redacted]'));
       }
     })();
-    pending.add(operation);
-    try { await operation; } finally { pending.delete(operation); }
+    await operation;
   };
   await page.route('**/*', handler);
   // Match browser-workspace.ts's existing per-window routing hint before SPA startup.
@@ -62,8 +60,7 @@ export async function configurePublishedReportSession(
     window.sessionStorage.setItem('pc:selected-machine', 'local');
   }`);
   return async () => {
-    await page.unroute('**/*', handler);
-    await Promise.all([...pending]);
+    await page.unrouteAll({ behavior: 'wait' });
   };
 }
 
