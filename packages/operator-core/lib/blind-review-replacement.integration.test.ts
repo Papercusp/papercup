@@ -162,6 +162,36 @@ describe('same-activation replacement on private PostgreSQL', () => {
     expect(launch).toHaveBeenCalledTimes(1);
   });
 
+  it('binds the original reviewer when its native id arrives after the immutable launch receipt', async () => {
+    const s = await seed();
+    const key = Symbol('confinement');
+    let delayed: { ownerId: string; advSessionId: number; sessionId: string } | undefined;
+    const launch = vi.fn(async (args, ctx) => {
+      const result = await nativeLaunch(s.input, args, ctx, key);
+      delayed = result.data.launch.freshVerdict.sessions[0]!;
+      await fx.admin`UPDATE harness_shared.adv_sessions SET session_id = NULL WHERE id = ${delayed.advSessionId}`;
+      const summary = { ...result.data.launch,
+        freshVerdict: { sessions: [{ ...delayed, sessionId: null }] } };
+      await fx.admin`UPDATE harness_shared.agent_launch_idempotency SET summary = ${fx.admin.json(summary as never)}
+        WHERE workspace_id = ${WS} AND idempotency_key = ${String(args.idempotencyKey)}`;
+      return { data: { launch: summary } };
+    });
+    s.deps.launcher = async () => ({ handler: launch, confinementKey: key });
+    const pending = await replaceBlindGapReviewer(s.input, s.deps);
+    expect(pending).toMatchObject({ ok: true, attempt: { status: 'uncertain' } });
+    expect(await replaceBlindGapReviewer(s.input, s.deps)).toMatchObject({ ok: true, deduped: true,
+      attempt: { status: 'uncertain' } });
+    expect(delayed).toBeDefined();
+    await fx.admin`UPDATE harness_shared.adv_sessions SET session_id = ${delayed!.sessionId} WHERE id = ${delayed!.advSessionId}`;
+    expect(await replaceBlindGapReviewer(s.input, s.deps)).toMatchObject({ ok: true, deduped: true,
+      attempt: { status: 'ready', reviewerOwnerId: delayed!.ownerId, advSessionId: delayed!.advSessionId,
+        nativeSessionId: delayed!.sessionId } });
+    const [attempt] = await fx.admin`SELECT launch_result FROM harness_shared.plan_blind_review_sessions
+      WHERE id = ${Number((pending.attempt as { id: number }).id)}`;
+    expect(attempt!.launch_result.data.launch.freshVerdict.sessions[0].sessionId).toBeNull();
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+
   it('permits recovery after a confirmed failed start, preserving the ended native identity in ordered history', async () => {
     const s = await seed();
     const key = Symbol('confinement');

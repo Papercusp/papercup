@@ -11,6 +11,7 @@ export function replacementFixture(repoRoot: string, testFile: string) {
       outcome: 'inconclusive', summary: 'INCONCLUSIVE: could not exercise product' },
     attempts: [] as Array<Record<string, unknown>>,
     ledger: null as Record<string, unknown> | null,
+    delayedNative: null as { id: number; workspace_id: string; coord_owner_id: string; session_id: string | null } | null,
   };
   const queryMock = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const query = strings.join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -23,6 +24,11 @@ export function replacementFixture(repoRoot: string, testFile: string) {
     }
     if (query.startsWith('select * from harness_shared.plan_blind_reviews')) return [copy(state.material)];
     if (query.startsWith('select id from harness_shared.plan_blind_reviews')) return [];
+    if (query.startsWith('select session_id from harness_shared.adv_sessions')) {
+      const native = state.delayedNative;
+      return native && native.workspace_id === values[0] && native.id === values[1] && native.coord_owner_id === values[2]
+        ? [{ session_id: native.session_id }] : [];
+    }
     if (query.includes('from harness_shared.adv_sessions')) return [{ ended_at: state.ended ? '2026-10-23' : null, resume_claim_key: state.resumeClaim }];
     if (query.startsWith('select * from harness_shared.plan_blind_review_sessions')) return copy(state.attempts);
     if (query.startsWith('insert into harness_shared.plan_blind_review_sessions')) {

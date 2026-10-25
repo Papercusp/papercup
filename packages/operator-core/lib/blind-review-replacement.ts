@@ -74,6 +74,21 @@ export async function validateReplacementProductReads(reads: ProductReadBoundary
 }
 
 /** isError alone never proves no process started. Unknown/partial receipts stay reserved. */
+function openedNativeIdentity(value: unknown): { ownerId: string; advSessionId: number; sessionId: string | null } | null {
+  const env = obj(value);
+  const launch = obj(obj(env?.data)?.launch) ?? obj(env?.launch) ?? env;
+  if (!launch || launch.mode === 'deduped') return null;
+  const sessions = obj(launch.freshVerdict)?.sessions;
+  const owners = launch.ownerIds;
+  if (launch.opened !== 1 || !Array.isArray(owners) || owners.length !== 1 ||
+      !Array.isArray(sessions) || sessions.length !== 1) return null;
+  const session = obj(sessions[0]);
+  const adv = Number(session?.advSessionId);
+  return typeof owners[0] === 'string' && session?.ownerId === owners[0] &&
+    (session.sessionId == null || typeof session.sessionId === 'string') && Number.isSafeInteger(adv) && adv > 0
+    ? { ownerId: owners[0], advSessionId: adv, sessionId: session.sessionId || null } : null;
+}
+
 export function replacementLaunchReceipt(value: unknown):
   | { kind: 'not-started' }
   | { kind: 'native'; ownerId: string; advSessionId: number; sessionId: string }
@@ -87,16 +102,8 @@ export function replacementLaunchReceipt(value: unknown):
   if (launch.opened === 0 && launch.partial === false && Array.isArray(launch.tasks) && launch.tasks.length === 0) {
     return { kind: 'not-started' };
   }
-  const sessions = obj(launch.freshVerdict)?.sessions;
-  const owners = launch.ownerIds;
-  if (launch.opened !== 1 || !Array.isArray(owners) || owners.length !== 1 ||
-      !Array.isArray(sessions) || sessions.length !== 1) return { kind: 'uncertain' };
-  const session = obj(sessions[0]);
-  const adv = Number(session?.advSessionId);
-  return typeof owners[0] === 'string' && session?.ownerId === owners[0] &&
-    typeof session.sessionId === 'string' && session.sessionId.length > 0 && Number.isSafeInteger(adv) && adv > 0
-    ? { kind: 'native', ownerId: owners[0], advSessionId: adv, sessionId: session.sessionId }
-    : { kind: 'uncertain' };
+  const identity = openedNativeIdentity(value);
+  return identity?.sessionId ? { kind: 'native', ...identity, sessionId: identity.sessionId } : { kind: 'uncertain' };
 }
 
 function publicAttempt(row: Attempt) {
@@ -233,7 +240,24 @@ export async function replaceBlindGapReviewer(input: BlindReviewReplacementInput
       if (obj(ledger?.summary) && Object.keys(obj(ledger?.summary)!).length) outcome = ledger!.summary;
     }
     if (attempt.status === 'launching' || attempt.status === 'uncertain') {
-      const receipt = replacementLaunchReceipt(outcome);
+      let receipt = replacementLaunchReceipt(outcome);
+      if (receipt.kind === 'uncertain') {
+        // The launcher can return before Codex records its native id. Its
+        // immutable summary then stays incomplete even after ADV is ready.
+        // Recover only the exact opened identity; bind below still validates
+        // its recruiter profile, confinement and independent lineage.
+        const opened = openedNativeIdentity(outcome);
+        if (opened && !opened.sessionId) {
+          const [native] = await sql<Array<{ session_id: string | null }>>`
+            SELECT session_id FROM harness_shared.adv_sessions
+             WHERE workspace_id = ${input.workspaceId} AND id = ${opened.advSessionId}
+               AND coord_owner_id = ${opened.ownerId}`;
+          if (typeof native?.session_id === 'string' && native.session_id.length > 0) {
+            receipt = { kind: 'native', ownerId: opened.ownerId,
+              advSessionId: opened.advSessionId, sessionId: native.session_id };
+          }
+        }
+      }
       if (receipt.kind === 'not-started') {
         await sql`UPDATE harness_shared.plan_blind_review_sessions SET status = 'failed',
           launch_result = ${sql.json(outcome as never)}, updated_at = now()

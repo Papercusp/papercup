@@ -98,6 +98,35 @@ describe('recruiter replacement protocol', () => {
     expect(await f.run()).toMatchObject({ ok: true, deduped: true, attempt: { status: 'ready', nativeSessionId: 'native-new' } });
     expect(f.launch).toHaveBeenCalledTimes(1);
   });
+  it('reconciles a delayed native id without requiring the frozen launch summary to change', async () => {
+    const f = fixture();
+    f.state.ledger = { ...f.launchSummary,
+      freshVerdict: { sessions: [{ ownerId: 'su-new', advSessionId: 30, sessionId: null }] } };
+    f.launch.mockResolvedValueOnce({ data: { launch: f.state.ledger } });
+    expect(await f.run()).toMatchObject({ ok: true, attempt: { status: 'uncertain' } });
+    f.state.delayedNative = { id: 30, workspace_id: 'ws-unit', coord_owner_id: 'su-new', session_id: null };
+    expect(await f.run()).toMatchObject({ ok: true, deduped: true, attempt: { status: 'uncertain' } });
+    f.state.delayedNative.session_id = 'native-delayed';
+    expect(await f.run()).toMatchObject({ ok: true, deduped: true,
+      attempt: { status: 'ready', reviewerOwnerId: 'su-new', advSessionId: 30, nativeSessionId: 'native-delayed' } });
+    expect(f.launch).toHaveBeenCalledTimes(1);
+    expect(f.bind).toHaveBeenCalledTimes(1);
+    expect(f.state.ledger).toMatchObject({ freshVerdict: { sessions: [{ sessionId: null }] } });
+  });
+  it.each([
+    { id: 31, workspace_id: 'ws-unit', coord_owner_id: 'su-new', session_id: 'foreign-native' },
+    { id: 30, workspace_id: 'another-workspace', coord_owner_id: 'su-new', session_id: 'foreign-native' },
+    { id: 30, workspace_id: 'ws-unit', coord_owner_id: 'su-other', session_id: 'foreign-native' },
+  ])('keeps the reservation when delayed identity belongs to another launch: %j', async native => {
+    const f = fixture();
+    const summary = { ...f.launchSummary,
+      freshVerdict: { sessions: [{ ownerId: 'su-new', advSessionId: 30, sessionId: null }] } };
+    f.launch.mockResolvedValueOnce({ data: { launch: summary } });
+    f.state.delayedNative = native;
+    expect(await f.run()).toMatchObject({ ok: true, attempt: { status: 'uncertain' } });
+    expect(f.bind).not.toHaveBeenCalled();
+    expect(f.launch).toHaveBeenCalledTimes(1);
+  });
 });
 
 /** Static discovery, as in capability-envelope/session-confinement.test.ts: importing the
