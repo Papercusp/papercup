@@ -14,7 +14,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { ChildProcess } from 'node:child_process';
 import type { ManagedSpawnResult } from '../task-manager/managed-spawn';
 import type { ReclaimPhaseTiming } from '../release-cut-reclaim';
-import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
+import { withRetentionMutex, type RetentionMutexContext } from './retention-census-walk';
 import { openWriterPidsMany, type OpenWriterScan } from '../native-bg-task-ledger';
 import { readRegistry } from '../workspace-registry';
 import { mapWithConcurrency } from '../gym/concurrency';
@@ -155,7 +155,9 @@ export interface DiskReclaimOptions {
   inspectTrees?: typeof import('./disk-consumer-census').inspectRetentionTrees;
   /** Persistent production route for the initial complete capped-root census.
    * Fresh per-effect inspection always uses inspectTrees instead. */
-  inspectInitialCappedTrees?: typeof import('./disk-consumer-census').inspectRetentionTrees;
+  inspectInitialCappedTrees?: (root: string,
+    options: Parameters<typeof import('./disk-consumer-census').inspectRetentionTrees>[1],
+    mutex?: RetentionMutexContext) => ReturnType<typeof import('./disk-consumer-census').inspectRetentionTrees>;
   /** Production supplies an enrolled privileged remover. Only policy-selected,
    * remeasured agent children reach it, after fresh host holder evidence. */
   removeEntry?: (entry: RetentionEntry, timeoutMs: number, observeTiming?: (timing: NativeRetentionTiming) => void, dryRun?: boolean) => Promise<void | BuildRemovalResult>;
@@ -968,7 +970,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
   let activeRoot: string | undefined;
   try {
     await record('started', receipt);
-    let mutex: { hasWaiters: () => Promise<boolean> } | undefined;
+    let mutex: RetentionMutexContext | undefined;
     let yieldProgress: { phase: string; timings: typeof phaseTimings } | undefined;
     let protectedPaths: string[] = [];
     let protectionInitialized = false;
@@ -1121,12 +1123,14 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             let census: Awaited<ReturnType<NonNullable<DiskReclaimOptions['inspectTrees']>>> | undefined;
             let censusError: string | undefined;
             try {
-              const inspect = capped ? options.inspectInitialCappedTrees ?? options.inspectTrees! : options.inspectTrees!;
-              census = await outsideInspectionBudget(() => inspect(root.path, {
+              const inspectOptions = {
                 retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped, collectBuildDirs,
                 excludedPaths: excluded, timeoutMs: Math.max(1, runDeadline - Date.now()),
                 progressTimeoutMs: options.budgetMs ?? 60_000,
-              }));
+              };
+              census = await outsideInspectionBudget(() => capped && options.inspectInitialCappedTrees
+                ? options.inspectInitialCappedTrees(root.path, inspectOptions, mutex)
+                : options.inspectTrees!(root.path, inspectOptions));
             } catch (error) { censusError = message(error); throw error; }
             finally {
               const measured = { root: root.path, classId: root.classId, elapsedMs: performance.now() - censusStarted,
@@ -1430,7 +1434,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         const requestedAt = performance.now();
         let admitted = false, callbackFinishedAt: number | undefined;
         try {
-          await withFsMutex('papercusp-disk-retention', async (held) => {
+          await withRetentionMutex(async (held) => {
             admitted = true;
             phaseTimings[waitPhase] += Math.max(0, performance.now() - requestedAt);
             mutex = held;
@@ -1889,8 +1893,9 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     inspectRetentionTrees(root, { ...options, requirePrivilege: true });
   const { inspectDetachedRetentionTrees } = await import('./retention-census-walk');
   const { createHash } = await import('node:crypto');
-  const inspectInitialCappedTrees: typeof inspectRetentionTrees = (root, options) =>
+  const inspectInitialCappedTrees: NonNullable<DiskReclaimOptions['inspectInitialCappedTrees']> = (root, options, retentionMutex) =>
     inspectDetachedRetentionTrees(root, { ...options, requirePrivilege: true }, {
+      retentionMutex,
       dir: join(defaultRetentionDir(), 'retention-census', createHash('sha256').update(resolve(root)).digest('hex')),
       workerPath: join(repoRoot, 'scripts/retention-census-worker.mjs'),
       waitMs: options.timeoutMs ?? DEFAULT_RECLAIM_RUN_BUDGET_MS,

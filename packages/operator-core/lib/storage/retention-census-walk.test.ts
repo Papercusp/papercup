@@ -3,12 +3,14 @@ import { promises as fs } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { inspectDetachedRetentionTrees, RETENTION_CENSUS_LIFETIME_MS } from './retention-census-walk';
+import { inspectDetachedRetentionTrees, RETENTION_CENSUS_LIFETIME_MS, withRetentionMutex, type RetentionMutexContext } from './retention-census-walk';
+import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { readWalkState, walkAttemptFiles, type WalkLauncher } from './disk-census-detached-walk';
 
 // Mutex admission is verified by its own suite; these tests control only the
 // detached wait/measurement lifecycle, with no machine-speed admission race.
-vi.mock('../../../../scripts/lib/fs-mutex.mjs', () => ({ withFsMutex: async (_name: string, action: () => Promise<unknown>) => action() }));
+vi.mock('../../../../scripts/lib/fs-mutex.mjs', () => ({ withFsMutex: vi.fn(async (_name: string,
+  action: (held: { hasWaiters: () => Promise<boolean> }) => Promise<unknown>) => action({ hasWaiters: async () => false })) }));
 
 let dir: string, root: string, slot: string;
 const options = { retainAfterMs: Infinity, includeRecent: true };
@@ -38,6 +40,50 @@ const walk = (launcher: WalkLauncher, waitMs = 1000) => ({ dir: slot, launch: la
   pollMs: 2, isAlive: () => !existsSync(walkAttemptFiles(slot, 1).exit) });
 
 describe('complete retention census adoption', () => {
+  it('uses one retention admission for an already-admitted complete census', async () => {
+    vi.mocked(withFsMutex).mockClear();
+    const launcher = launch();
+    const result = await withRetentionMutex(retentionMutex =>
+      inspectDetachedRetentionTrees(root, options, { ...walk(launcher), retentionMutex }));
+    expect(result.error).toBeUndefined();
+    expect(result.entries.map(entry => entry.path)).toEqual([join(root, 'entry')]);
+    expect(withFsMutex).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withFsMutex).mock.calls[0]![0]).toBe('papercusp-disk-retention');
+  });
+  it('puts standalone census callers in the same retention domain', async () => {
+    vi.mocked(withFsMutex).mockClear();
+    expect((await inspectDetachedRetentionTrees(root, options, walk(launch()))).error).toBeUndefined();
+    expect(withFsMutex).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withFsMutex).mock.calls[0]![0]).toBe('papercusp-disk-retention');
+  });
+  it('rejects an expired admission before launching or consuming a slot', async () => {
+    let expired!: RetentionMutexContext;
+    await withRetentionMutex(async held => { expired = held; });
+    const launcher = launch();
+    await expect(inspectDetachedRetentionTrees(root, options, { ...walk(launcher), retentionMutex: expired }))
+      .rejects.toThrow('retention mutex context is not active');
+    expect(launcher).not.toHaveBeenCalled();
+    expect(existsSync(slot)).toBe(false);
+  });
+  it('rejects overlapping access to one slot even within the same admission', async () => {
+    let release!: () => void, entered!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const launcher = launch();
+    launcher.mockImplementation(async () => {
+      entered(); await blocked; await finish();
+      return { pid: 999_999_999, taskId: 'fixture', confined: true };
+    });
+    await withRetentionMutex(async retentionMutex => {
+      const first = inspectDetachedRetentionTrees(root, options, { ...walk(launcher), retentionMutex });
+      try {
+        await ready;
+        await expect(inspectDetachedRetentionTrees(root, options, { ...walk(launcher), retentionMutex }))
+          .rejects.toThrow('retention census slot already in use');
+      } finally { release(); await first; }
+    });
+    expect(launcher).toHaveBeenCalledOnce();
+  });
   it('abandons only the wait, then adopts the same complete measurement exactly once', async () => {
     const launcher = launch(false);
     const first = await inspectDetachedRetentionTrees(root, options, walk(launcher, 15));

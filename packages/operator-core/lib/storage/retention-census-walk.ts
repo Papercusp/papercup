@@ -13,6 +13,25 @@ import { DetachedWalkAbandoned, readWalkState, runDetachedWalk, walkAttemptFiles
   walkProcessAlive, type DetachedWalkOptions } from './disk-census-detached-walk';
 
 export const RETENTION_CENSUS_LIFETIME_MS = 15 * 60_000;
+const retentionMutexBrand = Symbol('retention-mutex');
+export type RetentionMutexContext = {
+  readonly [retentionMutexBrand]: true;
+  hasWaiters: () => Promise<boolean>;
+};
+const activeRetentionMutexes = new WeakMap<RetentionMutexContext, Set<string>>();
+
+/** Reuse the admission already held by the reclaimer. A context is valid only
+ * during this callback; standalone census callers acquire the SAME mutex. */
+export async function withRetentionMutex<T>(action: (held: RetentionMutexContext) => Promise<T>,
+  options: Parameters<typeof withFsMutex>[2] = {}): Promise<T> {
+  return withFsMutex('papercusp-disk-retention', async held => {
+    if (!held) throw new Error('retention census requires an enabled retention mutex');
+    const context: RetentionMutexContext = { ...held, [retentionMutexBrand]: true };
+    activeRetentionMutexes.set(context, new Set());
+    try { return await action(context); }
+    finally { activeRetentionMutexes.delete(context); }
+  }, options);
+}
 const identity = z.object({ dev: z.number().int().nonnegative(), ino: z.number().int().nonnegative() });
 const entry = identity.extend({ path: z.string(), newestWriteMs: z.number().finite(), bytes: z.number().int().nonnegative(),
   hardlinks: z.array(identity.extend({ bytes: z.number().int().nonnegative(), paths: z.array(z.string()) })).optional(),
@@ -58,6 +77,8 @@ export type RetentionCensusWalkOptions = Omit<DetachedWalkOptions, 'command' | '
   workerPath?: string;
   /** Caller wait, separate from the fixed native lifetime. */
   waitMs: number;
+  /** Scoped proof of the outer retention admission, never a boolean bypass. */
+  retentionMutex?: RetentionMutexContext;
 };
 
 export async function inspectDetachedRetentionTrees(root: string,
@@ -75,7 +96,7 @@ export async function inspectDetachedRetentionTrees(root: string,
   const requestKey = keyFor(request);
   const remaining = () => deadline - Date.now();
   const deadline = Date.now() + Math.max(1, Math.min(walk.waitMs, options.timeoutMs ?? walk.waitMs));
-  return withFsMutex(`retention-census:${resolve(walk.dir)}`, async () => {
+  const inspect = async () => {
     const state = await readWalkState(walk.dir);
     // The wrapper may die before it writes exit.<attempt>. A consumed or
     // obsolete measurement can be retired once its process identity is dead;
@@ -138,5 +159,17 @@ export async function inspectDetachedRetentionTrees(root: string,
     } catch (error) {
       return incomplete(error instanceof DetachedWalkAbandoned ? 'retention census pending; managed walk continues for adoption' : `retention census: ${String(error)}`);
     } finally { clearTimeout(timer); }
-  }, { timeoutMs: Math.max(1, Math.min(1000, remaining())), retryMs: 25 });
+  };
+  const underLease = async (held: RetentionMutexContext) => {
+    const slots = activeRetentionMutexes.get(held);
+    if (!slots) throw new Error('retention mutex context is not active');
+    const slot = resolve(walk.dir);
+    if (slots.has(slot)) throw new Error('retention census slot already in use');
+    if (remaining() <= 0) return incomplete('retention census caller budget exhausted before slot access');
+    slots.add(slot);
+    try { return await inspect(); }
+    finally { slots.delete(slot); }
+  };
+  return walk.retentionMutex ? underLease(walk.retentionMutex) : withRetentionMutex(underLease,
+    { timeoutMs: Math.max(1, Math.min(1000, remaining())), retryMs: 25 });
 }
