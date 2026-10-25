@@ -355,8 +355,12 @@ function capturePrivatePostgres(host: ChildProcess) {
       visit(childPid, childIdentity, owned || postmaster);
     }
   };
-  const hostIdentity = readProcessIdentity(host.pid);
-  if (hostIdentity) visit(host.pid, hostIdentity, false);
+  // Once Node has reaped the host, its numeric PID may be reused. Only the
+  // already-pinned PG identities remain ours to inspect after that boundary.
+  if (host.exitCode === null && host.signalCode === null) {
+    const hostIdentity = readProcessIdentity(host.pid);
+    if (hostIdentity) visit(host.pid, hostIdentity, false);
+  }
   for (const pin of pins.values()) if (privatePostgresAlive(pin)) visit(pin.pid, pin.identity, true);
   return pins;
 }
