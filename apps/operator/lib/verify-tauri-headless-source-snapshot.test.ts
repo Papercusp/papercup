@@ -52,6 +52,72 @@ function committedSnapshotSource(end = operatorSnapshotCallIdx) {
   return `${src.slice(src.indexOf('snapshot_committed_operator_source() {'), end)}\n${normalizeOperatorSourceTestStub}`;
 }
 
+describe('EI-26928176238125992 — one admission for frozen SPA preparation', () => {
+  const prepare = src.match(/prepare_verifier_spa\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+
+  it.each(['none', 'admission', 'prebuild', 'verify', 'build'])('admits once and stops at the first failed phase: %s', failure => {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-spa-admission-'));
+    const frozen = resolve(fixture, 'source');
+    const order = resolve(fixture, 'order');
+    const receipt = resolve(fixture, 'source-receipt.json');
+    const output = resolve(fixture, 'work/verifier-spa/dist');
+    const script = (path: string, body: string) => {
+      mkdirSync(resolve(path, '..'), { recursive: true });
+      writeFileSync(path, `#!/bin/bash\nset -eu\n${body}\n`, { mode: 0o755 });
+    };
+    try {
+      writeFileSync(receipt, 'original source receipt');
+      script(resolve(frozen, 'apps/operator-vite/bin/vite-build-singleflight'), 'exit 0');
+      script(resolve(frozen, 'apps/operator/scripts/setup-porcupine-runtime.sh'), 'echo seed >> "$ORDER"');
+      script(resolve(frozen, 'scripts/pc-heavy.sh'), [
+        'echo admission >> "$ORDER"',
+        '[ "$FAIL_STEP" != admission ] || exit 23',
+        '[ "$1" = -- ]; shift',
+        'export PC_HEAVY_BYPASS=1',
+        '"$@"',
+      ].join('\n'));
+      script(resolve(fixture, 'bin/npm'), [
+        'phase="${!#}"',
+        '[ "$PC_HEAVY_BYPASS" = 1 ]',
+        '[ "$PAPERCUSP_RETAIN_DIST_CHUNKS" = 0 ]',
+        '[ "$PAPERCUSP_VITE_OUT_DIR" = "$EXPECTED_DIST" ]',
+        '[ "$PAPERCUSP_VITE_FINAL_OUT_DIR" = "$EXPECTED_DIST" ]',
+        '[ "$VITE_BUILD_OUT_ROOT/dist" = "$EXPECTED_DIST" ]',
+        '[ -z "${VITE_BUILD_CMD+x}${VITE_BUILD_LOCK+x}${VITE_BUILD_SNAPSHOT_DIR+x}" ]',
+        'echo "$phase" >> "$ORDER"',
+        '[ "$FAIL_STEP" != "$phase" ] || exit 17',
+        'if [ "$phase" = build ]; then mkdir -p "$EXPECTED_DIST/assets"; printf index > "$EXPECTED_DIST/index.html"; printf asset > "$EXPECTED_DIST/assets/entry.js"; fi',
+      ].join('\n'));
+      script(resolve(fixture, 'bin/node'), [
+        '[ "$PC_HEAVY_BYPASS" = 1 ]',
+        '[ "$*" = "scripts/source-preview.mjs verifier-verify --out $OPERATOR_SOURCE_ROOT --receipt $VERIFY_TAURI_SOURCE_RECEIPT --runtime-artifacts" ]',
+        'echo verify >> "$ORDER"',
+        '[ "$FAIL_STEP" != verify ] || exit 19',
+      ].join('\n'));
+      const result = spawnSync('bash', ['-c', [
+        'set -eu',
+        'log() { :; }',
+        prepare,
+        'prepare_verifier_spa || exit $?',
+        '[ "$VERIFIER_SPA_DIST" = "$EXPECTED_DIST" ]',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: {
+        ...process.env, PATH: `${fixture}/bin:${process.env.PATH}`,
+        WORK: resolve(fixture, 'work'), REPO_DIR: resolve(fixture, 'donor'),
+        OPERATOR_SOURCE_ROOT: frozen, VERIFY_TAURI_SOURCE_RECEIPT: receipt,
+        VERIFY_TAURI_SOURCE_REF: 'fixture-commit', PAPERCUSP_SHARED_SPA_DIST: '',
+        ORDER: order, EXPECTED_DIST: output, FAIL_STEP: failure,
+        VITE_BUILD_CMD: 'inherited-command', VITE_BUILD_LOCK: 'inherited-lock', VITE_BUILD_SNAPSHOT_DIR: 'inherited-output',
+      } });
+      expect(result.status, result.stderr).toBe(failure === 'none' ? 0 : failure === 'admission' ? 23 : failure === 'verify' ? 19 : 17);
+      const phases = ['prebuild', 'verify', 'build'];
+      const completed = failure === 'none' ? phases : failure === 'admission' ? [] : phases.slice(0, phases.indexOf(failure) + 1);
+      expect(readFileSync(order, 'utf8').trim().split('\n')).toEqual(['seed', 'admission', ...completed]);
+      expect(readFileSync(receipt, 'utf8')).toBe('original source receipt');
+      expect(existsSync(resolve(output, 'index.html'))).toBe(failure === 'none');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+});
+
 describe('WI-6554700010027579 — committed native runtime asset inputs', () => {
   const setupSource = readFileSync(resolve(__dirname, '../scripts/setup-porcupine-runtime.sh'), 'utf8');
   const model = 'pinned fixture wake-word model\n';
