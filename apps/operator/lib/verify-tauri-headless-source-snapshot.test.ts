@@ -55,6 +55,31 @@ function committedSnapshotSource(end = operatorSnapshotCallIdx) {
 describe('EI-26928176238125992 — one admission for frozen SPA preparation', () => {
   const prepare = src.match(/prepare_verifier_spa\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
 
+  it.each([0, 37])('freezes a qualified candidate through the early validator and preserves refusal: %s', status => {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-candidate-spa-'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -eu', 'log() { :; }',
+        'node() { printf "%s\\n" "$@" > "$TEST_ROOT/args"; return "$TEST_STATUS"; }',
+        prepare, 'prepare_verifier_spa || exit $?',
+        '[ "$VERIFIER_SPA_DIST" = "$WORK/verifier-spa/dist" ]',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: {
+        ...process.env, TEST_ROOT: fixture, TEST_STATUS: String(status), WORK: resolve(fixture, 'work'),
+        VERIFY_TAURI_SOURCE_REF: 'selected-commit', VERIFY_TAURI_SOURCE_REPO_DIR: '/selected/source',
+        PAPERCUSP_SHARED_SPA_DIST: '/private/candidate/spa',
+      } });
+      expect(result.status, result.stderr).toBe(status);
+      expect(readFileSync(resolve(fixture, 'args'), 'utf8').trim().split('\n')).toEqual([
+        '/selected/source/scripts/lib/verify-tauri-native-env.mjs', '--candidate-spa', '/selected/source',
+        resolve(fixture, 'work/verifier-spa/dist'),
+      ]);
+      const earlyCheck = src.indexOf('--candidate-spa "$VERIFY_TAURI_SOURCE_REPO_DIR" || exit $?');
+      expect(earlyCheck).toBeGreaterThan(0);
+      expect(earlyCheck).toBeLessThan(workAllocationIdx);
+      expect(earlyCheck).toBeLessThan(operatorSnapshotCallIdx);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
   it.each(['none', 'admission', 'prebuild', 'verify', 'build'])('admits once and stops at the first failed phase: %s', failure => {
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-spa-admission-'));
     const frozen = resolve(fixture, 'source');
