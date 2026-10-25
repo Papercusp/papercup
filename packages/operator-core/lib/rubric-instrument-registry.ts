@@ -61,6 +61,7 @@ import {
 import {
   WORK_OVERHEAD_INSTRUMENT_KEYS, measureWorkOverheadWindow, rateWorkOverhead, workOverheadCriterionForInstrument,
 } from './agent-work-overhead-metrics';
+import { REUSE_MEASUREMENT_INSTRUMENT_KEYS, type ReuseMetric } from './code-intelligence/reuse-measurement';
 
 /** The explicit manual binding: the criterion is deliberately graded by a person. */
 export const MANUAL_INSTRUMENT_KEY = 'none';
@@ -794,6 +795,7 @@ export function platformComputedInstrumentKeys(): string[] {
     // native-code-intelligence-ecosystem-and-dream-2026-10-09 P-033 (R-30/R-31).
     ...Object.values(NATIVE_ADOPTION_INSTRUMENT_KEYS),
     ...Object.values(NATIVE_PUSH_INSTRUMENT_KEYS),
+    ...Object.values(REUSE_MEASUREMENT_INSTRUMENT_KEYS),
     ...Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS),
     // green-main-ratchet-convergence-2026-10-17 P-010 (R-9): the ratchet debt alarm.
     RATCHET_METRICS_INSTRUMENT_KEY,
@@ -818,13 +820,26 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
     const adoptionCriterion = nativeAdoptionCriterionForInstrument(key);
     const pushCriterion = nativePushCriterionForInstrument(key);
     const overheadCriterion = workOverheadCriterionForInstrument(key);
+    const reuseMetric = (Object.keys(REUSE_MEASUREMENT_INSTRUMENT_KEYS) as ReuseMetric[])
+      .find(metric => REUSE_MEASUREMENT_INSTRUMENT_KEYS[metric] === key);
     const coldEvidence = key === COLD_MOUNTS_INSTRUMENT_KEY || key === COLD_MOVES_INSTRUMENT_KEY || key === DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY;
     registry.set(key, {
       key,
       evaluator: 'platform',
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
-      ...(Object.values(OBSERVABILITY_INSTRUMENT_KEYS).some(value => value === key) ? { rescore: {
+      ...(reuseMetric ? { rescore: {
+        windowMs: 28 * 86_400_000, unit: reuseMetric === 'redundancy' ? 'count' as const : '%' as const,
+        scope: 'harness' as const,
+        resolve: async window => {
+          if (!window.workspaceId.trim() || !window.harnessSlug?.trim()) return { verdict: 'unknown' as const,
+            detail: 'Exact workspace, harness and valid window required.' };
+          const [{ getOrgPg }, { measureRecordedReuseMetric }] = await Promise.all([
+            import('@papercusp/db-org'), import('./code-intelligence/reuse-measurement'),
+          ]);
+          return measureRecordedReuseMetric(getOrgPg().sql, window, reuseMetric);
+        },
+      } } : Object.values(OBSERVABILITY_INSTRUMENT_KEYS).some(value => value === key) ? { rescore: {
         windowMs: 120_000, unit: 'count' as const, scope: 'harness' as const,
         resolve: async window => {
           const { measureOperationalObservability } = await import('./observability/operational-check');

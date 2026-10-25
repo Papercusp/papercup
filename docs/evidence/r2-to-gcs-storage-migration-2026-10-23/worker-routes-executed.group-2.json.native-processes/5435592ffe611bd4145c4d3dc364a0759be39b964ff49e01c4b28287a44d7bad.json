@@ -1,1 +1,0 @@
-{"schemaVersion":1,"kind":"native-node-process-event","event":"module-load-start","processIdentity":"6162096d-3082-4736-8351-752117c7ee86","pid":1392963,"ppid":1384045,"atMs":1792811541302,"loadId":78,"url":"file:///home/marsh-office/papercupai-workspace/papercusp/node_modules/hono/dist/router/reg-exp-router/matcher.js","scope":"node-sync-load-hook"}

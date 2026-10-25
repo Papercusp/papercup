@@ -29,6 +29,7 @@
  * cancel flag cannot be serialized; PG is the source of truth.)
  */
 import type { BenchTask, TaskCheckout, GenerationStopReason } from './types';
+import type { GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
 import type { FleetTaskResult, HiveBacklogResult, HiveBacklogRunRequest } from './hive-backlog';
 import { runHiveBacklog } from './hive-backlog';
 import { bindRealQueenBacklogDriver, dissolveBenchHive } from './hive-backlog-realqueen';
@@ -211,6 +212,7 @@ export async function currentBenchTaskProviderCapture(input: CurrentBenchProvide
     recovery: ReturnType<ReturnType<typeof currentBenchWorkloadProviderInputCapture>['recoveryState']> };
   const expected = { accountingBinding, candidateCheckoutRoot: readOnly ? resolve(input.checkout.dir) : realpathSync(input.checkout.dir), model: arm.model,
     effort: arm.effort, accountId: arm.account, maxRequests: resources.requestsPerArm!, maxBytes: 16 * 1024 * 1024,
+    ...(arm.agent === 'claude' ? { agent: 'claude' as const } : {}),
     // D-023: only a subscription arm records a payer, so API-key allocations keep their hash.
     ...(arm.payer === 'subscription' ? { payer: 'subscription' as const } : {}) };
   let capture!: ReturnType<typeof currentBenchWorkloadProviderInputCapture>;
@@ -556,7 +558,9 @@ export async function freezeCurrentBenchTaskProviderReservation(
     const identity = { attemptId: reservationId, manifestSha256: preregHash, armId: key,
       nativeSessionId: captured.nativeSessionId, nativeTurnId: captured.nativeTurnId,
       accountId: captured.accountId, bodySha256: captured.bodySha256,
-      ...currentBenchCodexRoute(captured.payer ?? 'api-key') };
+      ...(captured.agent === 'claude' ? { transport: 'anthropic-http', target: 'https://api.anthropic.com/v1/messages',
+        credentialHeader: 'x-api-key', anthropicVersion: captured.anthropicVersion, anthropicBeta: captured.anthropicBeta }
+        : currentBenchCodexRoute(captured.payer ?? 'api-key')) };
     if (!attempt || !result || Object.entries(identity).some(([field, value]) => attempt[field] !== value || result[field] !== value) ||
         !digest(attempt.credentialSha256) || result.credentialSha256 !== attempt.credentialSha256 ||
         !present(attempt.clockId) || result.clockId !== attempt.clockId || result.reservationRef !== reservationId ||
@@ -616,7 +620,8 @@ export async function currentBenchTaskProviderInputReader(input: CurrentTaskInpu
     if (typeof reservationNoteSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(reservationNoteSha256) ||
         typeof settledAt !== 'string' || !Number.isFinite(Date.parse(settledAt)) ||
         new Date(settledAt).toISOString() !== settledAt || canonicalJson(request) !== canonicalJson(captured) ||
-        native.nativeSessionId !== pin.nativeSessionId || native.nativeTurnId !== pin.nativeTurnId)
+        (pin.agent === 'claude' ? native.agent !== 'claude'
+          : native.agent === 'claude' || native.nativeSessionId !== pin.nativeSessionId || native.nativeTurnId !== pin.nativeTurnId))
       throw new Error('Provider input composition differs from the acknowledged native host request.');
     return { ...native, reservationNoteSha256, settledAt, bodyRef: pin.bodyRef, bodyPath: pin.bodyPath,
       maxBytes: host.allocation.maxBytes, model: pin.model, effort: pin.effort, accountId: pin.accountId };
@@ -730,7 +735,7 @@ export async function readCurrentBenchTaskRequestCensus(input: CurrentTaskInput,
   const { census } = await getLearningSpendPositions(sql,
     { workspaceId: options.workspaceId, loopId, includeReservations: true });
   if (!census || census.status !== 'complete') throw new Error('Native model request census is unavailable.');
-  const ids = new Set<string>();
+  const ids = new Set<string>(), messages = new Set<string>();
   const requests: CurrentBenchTaskRequestCensus['requests'][number][] = [];
   const binding = Object.freeze({ workspaceId: options.workspaceId, loopId, runId: options.runId,
     preregHash: options.preregistration.preregHash, assignmentId });
@@ -745,11 +750,33 @@ export async function readCurrentBenchTaskRequestCensus(input: CurrentTaskInput,
         attempt.manifestSha256 !== options.preregistration.preregHash || !captured ||
         canonicalJson(captured.accountingBinding) !== canonicalJson(binding) ||
         attempt.nativeSessionId !== captured.nativeSessionId || attempt.nativeTurnId !== captured.nativeTurnId ||
-        attempt.bodySha256 !== captured.bodySha256)
+        attempt.bodySha256 !== captured.bodySha256 || attempt.accountId !== captured.accountId ||
+        (options.agent === 'claude') !== (captured.agent === 'claude'))
       throw new Error('Native model request census differs from its frozen input capture.');
     // Each reservation is one admitted native model request. Include retries,
     // failed responses and refused sends; do not infer calls from agent turns.
-    requests.push(Object.freeze({ reservationId: row.id, nativeSessionId: captured.nativeSessionId,
+    if (captured.agent === 'claude') {
+      const result = note.nativeGatewayAttemptResult as GatewayCarryTrialAttemptResult | undefined;
+      if (attempt.transport !== 'anthropic-http' || attempt.target !== 'https://api.anthropic.com/v1/messages' ||
+          attempt.credentialHeader !== 'x-api-key' || attempt.anthropicVersion !== captured.anthropicVersion ||
+          attempt.anthropicBeta !== captured.anthropicBeta || result &&
+          (result.reservationRef !== row.id || Object.entries(attempt).some(([key, value]) =>
+            result[key as keyof GatewayCarryTrialAttemptResult] !== value)))
+        throw new Error('Claude request census differs from its captured provider identity.');
+      let nativeMessageId: string | undefined;
+      if (result?.outcome === 'response-completed') {
+        const completion = result.providerCompletion;
+        if (result.responseStatus < 200 || result.responseStatus >= 300 ||
+            !/^[a-f0-9]{64}$/.test(result.responseSha256) || !Number.isSafeInteger(result.responseBytes) || result.responseBytes <= 0 ||
+            typeof completion?.responseId !== 'string' || !completion.responseId.trim() || completion.responseId.length > 500 ||
+            messages.has(completion.responseId) || completion.model !== captured.model ||
+            completion.providerEffort !== null && completion.providerEffort !== captured.effort)
+          throw new Error('Claude request census has an invalid or reused provider message.');
+        nativeMessageId = completion.responseId; messages.add(nativeMessageId);
+      }
+      requests.push(Object.freeze({ agent: 'claude', reservationId: row.id, bodySha256: captured.bodySha256,
+        ...(nativeMessageId ? { nativeMessageId } : {}) }));
+    } else requests.push(Object.freeze({ reservationId: row.id, nativeSessionId: captured.nativeSessionId,
       nativeTurnId: captured.nativeTurnId, bodySha256: captured.bodySha256 }));
   }
   return Object.freeze({ binding, populationSha256: census.populationSha256,
@@ -814,9 +841,19 @@ export async function startFrontierSweCurrentAssignment(
     config: structuredClone(host.options.preregistration.config) } };
   const protocol = currentBenchmarkProtocolSchema.parse(host.protocol);
   const arm = protocol.arms.find(arm => arm.id === options.armId);
-  if (!arm || input.arm !== options.armId || !['papercusp', 'baseline'].includes(options.armId) || options.agent !== 'codex' ||
+  // Native assignment authority is shared, but Claude remains an explicit
+  // stock reference with its own measured CLI, never a su treatment or Codex fallback.
+  const nativeHandle = options.agent === 'claude'
+    ? options.armId === 'baseline' && (arm?.payer ?? 'api-key') === 'api-key' &&
+      (!arm?.control || arm.control.topology === 'stock-native-reference') &&
+      !handle.inContainerCodex && handle.inContainerClaude &&
+      arm?.runtime.clientVersion === `claude/${handle.inContainerClaude.version}` &&
+      /^[a-f0-9]{64}$/.test(handle.inContainerClaude.sha256)
+    : options.agent === 'codex' && handle.inContainerCodex && !handle.inContainerClaude;
+  if (!arm || arm.agent !== options.agent || input.arm !== options.armId ||
+      !['papercusp', 'baseline'].includes(options.armId) || !nativeHandle ||
       task.benchmark !== 'frontier-swe' || task.instanceId !== handle.instanceId ||
-      !handle.inContainerCodex || !handle.taskNetwork || !protocol.taskIds.includes(task.instanceId) ||
+      !handle.taskNetwork || !protocol.taskIds.includes(task.instanceId) ||
       options.runId !== protocol.runId || !protocol.seeds.includes(options.seed) ||
       options.model !== arm.model || options.effort !== arm.effort || options.account !== arm.account ||
       canonicalJson(options.preregistration.config) !== canonicalJson(protocol) ||

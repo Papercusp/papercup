@@ -1,5 +1,6 @@
 /** Issued contributions share the existing push ledger; unknown reads are never pushes. */
 import type { ReuseProviderContext, ReuseProviderObservation } from './reuse-brief-providers';
+import { reuseHoldout } from './reuse-measurement';
 
 export interface ReuseIssuedRecord {
   context: ReuseProviderContext;
@@ -15,11 +16,21 @@ export function reuseIssuedSubjects(input: ReuseIssuedRecord) {
     invocation: input.context.invocation, workItem: input.context.workItem ?? null,
     plan: input.context.plan ?? null, planItems: input.context.planItems ?? [],
     sourceVersion: row.sourceVersion, indexVersion: row.indexVersion, outcome: row.reason,
+    ...(row.cohort ? { cohort: row.cohort, selector: { paths: row.citedPaths, symbols: [] } } : {}),
   }) }));
 }
 
 export async function recordReuseBriefIssued(input: ReuseIssuedRecord, signal: AbortSignal): Promise<boolean> {
-  const subjects = reuseIssuedSubjects(input);
+  const held = input.observations.filter(row => row.status === 'held-out' && row.reason === 'holdout'
+    && row.cohort === 'holdout' && row.chars === 0 && row.sourceVersion && row.indexVersion
+    && input.context.workItem && reuseHoldout(input.context.workItem, row.provider));
+  const subjects = [...reuseIssuedSubjects(input), ...held.map(row => ({ row, subject: JSON.stringify({
+    schema: 'reuse-brief-v1', provider: row.provider, surface: input.context.surface,
+    invocation: input.context.invocation, workItem: input.context.workItem,
+    plan: input.context.plan ?? null, planItems: input.context.planItems ?? [],
+    sourceVersion: row.sourceVersion, indexVersion: row.indexVersion, outcome: 'holdout',
+    cohort: 'holdout', selector: { paths: row.citedPaths, symbols: [] },
+  }) }))];
   if (!subjects.length) return true;
   if (!input.context.workspaceId || !input.context.owner || !input.context.invocation || signal.aborted) return false;
   const { withWorkspace } = await import('@papercusp/db-org');
@@ -36,7 +47,7 @@ export async function recordReuseBriefIssued(input: ReuseIssuedRecord, signal: A
       await tx`INSERT INTO harness_shared.code_intel_pushes
         (workspace_id, owner_id, epoch, turn_id, leg, subject, snapshot_commit, cited_paths, suggested_call, chars)
         VALUES (${input.context.workspaceId}, ${input.context.owner}, ${Number(epochs[0]?.epoch ?? 0)},
-          ${turns[0].turn_id}, ${`reuse-${row.provider}`}, ${subject}, ${input.context.commit ?? null},
+          ${turns[0].turn_id}, ${row.status === 'held-out' ? `reuse-holdout-${row.provider}` : `reuse-${row.provider}`}, ${subject}, ${input.context.commit ?? null},
           ${row.citedPaths}::text[], ${`${input.recover.tool} ${JSON.stringify(input.recover.args)}`}, ${row.chars})
         ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING`;
     }

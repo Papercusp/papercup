@@ -1358,7 +1358,7 @@ describe('dispatchConsultResponder — the walk', () => {
     expect(spawn.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('NOT your own history');
   });
 
-  it('rejects a real cyclic source once for every conversion rank without launching it', async () => {
+  it('rejects a real cyclic source once for every conversion rank and quotes its indexed evidence in a fresh brief', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'consult-port-cycle-'));
     const path = join(dir, 'source.jsonl');
     writeFileSync(path, [
@@ -1370,6 +1370,7 @@ describe('dispatchConsultResponder — the walk', () => {
       const { deps, calls } = makeFakes({
         loadRanks: async () => [...RANKS, { rank: 3, agent: 'codex', model: 'astra' }],
         probeBackendAvailable: async (agent: string) => ({ available: agent !== 'claude', detail: 'provider capacity' }),
+        // Indexed evidence remains readable even though the native graph is cyclic.
         checkResumeTranscript: async () => ({ available: true, detail: 'exact fixture source', transcriptPath: path }),
         checkPortTranscript: async (...args: Parameters<typeof checkConsultSessionPortTranscript>) => {
           reads++;
@@ -1377,13 +1378,14 @@ describe('dispatchConsultResponder — the walk', () => {
         },
       });
       const result = await dispatchConsultResponder(OPTS, CTX, deps);
-      expect(result.dispatched).toBe(false);
-      expect(result.attempts.map((a) => a.reason)).toEqual([
+      expect(result).toMatchObject({ dispatched: true, operation: 'brief' });
+      expect(result.attempts.slice(0, 3).map((a) => a.reason)).toEqual([
         'account-walled', 'conversion-unavailable', 'conversion-unavailable',
       ]);
-      expect(result.attempts.slice(1).every((a) => a.detail.includes('cycle detected'))).toBe(true);
+      expect(result.attempts.slice(1, 3).every((a) => a.detail.includes('cycle detected'))).toBe(true);
       expect(reads).toBe(1);
-      expect(calls.spawn).toHaveLength(0);
+      expect(calls.spawn).toHaveLength(1);
+      expect(calls.spawn[0].envelope.greetingCmd).not.toMatch(/--resume|--fork/);
       expect(calls.recorded[0].result).toEqual(result);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1408,6 +1410,7 @@ describe('dispatchConsultResponder — the walk', () => {
 
       const eligible = makeFakes({
         loadRanks: async () => [RANKS[1]],
+        readCitedTurns: async () => [{ turn_idx: 1, speaker: 'user', ts: null, text: 'eligible evidence' }],
         checkResumeTranscript: async () => ({ available: true, detail: 'exact source', transcriptPath: path }),
         checkPortTranscript: checkConsultSessionPortTranscript,
       });
@@ -1423,10 +1426,11 @@ describe('dispatchConsultResponder — the walk', () => {
     }
   });
 
-  it('fails closed on unknown conversion eligibility', async () => {
+  it('fails closed on unknown conversion eligibility when cited evidence is also unreadable', async () => {
     const { deps, calls } = makeFakes({
       probeBackendAvailable: async (agent: string) => ({ available: agent !== 'claude', detail: 'provider capacity' }),
       checkPortTranscript: async () => { throw new Error('source read interrupted'); },
+      readCitedTurns: async () => { throw new Error('source read interrupted'); },
     });
     const result = await dispatchConsultResponder(OPTS, CTX, deps);
     expect(result.attempts[1]).toMatchObject({ outcome: 'skipped', reason: 'conversion-unavailable' });
@@ -2308,6 +2312,154 @@ describe('cited-turn brief launch for unforkable sources (P-002, D-008)', () => 
     const result = await dispatchConsultResponder(OPTS, CTX, deps);
     expect(result.dispatched).toBe(false);
     expect(result.attempts.some((a) => a.operation === 'brief')).toBe(false);
+    expect(calls.spawn).toHaveLength(0);
+  });
+});
+
+describe('consult port-preflight brief fallback (EI-26911042163731548)', () => {
+  const ranks: AllowedExpertModel[] = [
+    { rank: 1, agent: 'codex', model: 'sol' },
+    { rank: 2, agent: 'codex', model: 'astra' },
+  ];
+  const refusal = { available: false, detail: 'source span cannot be ported' };
+
+  it.each(['missing', 'ambiguous'] as const)('refuses a real %s span once across ranks and launches only a fresh brief', async (kind) => {
+    const dir = mkdtempSync(join(tmpdir(), 'consult-span-preflight-'));
+    const path = join(dir, 'source.jsonl');
+    const text = 'repeated native evidence';
+    const records = [
+      { type: 'user', uuid: 'u1', parentUuid: null, message: { role: 'user', content: 'question' } },
+      { type: 'assistant', uuid: 'a1', parentUuid: 'u1', message: { role: 'assistant', content: text } },
+      ...(kind === 'ambiguous' ? [
+        { type: 'assistant', uuid: 'a2', parentUuid: 'a1', message: { role: 'assistant', content: text } },
+      ] : []),
+    ];
+    writeFileSync(path, records.map((row) => JSON.stringify(row)).join('\n') + '\n');
+    try {
+      const checkPortTranscript = vi.fn(checkConsultSessionPortTranscript);
+      const readCitedTurns = vi.fn(async () => [
+        { turn_idx: 1, speaker: 'assistant', ts: null, text: kind === 'missing' ? 'indexed evidence off active path' : text },
+      ]);
+      const { deps, calls } = makeFakes({ loadRanks: async () => ranks, checkPortTranscript, readCitedTurns,
+        checkResumeTranscript: async () => ({ available: true, detail: 'real span fixture', transcriptPath: path }),
+      });
+      const result = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(result).toMatchObject({ dispatched: true, operation: 'brief' });
+      expect(result.attempts.slice(0, 2).every((a) => a.operation === 'convert' && a.reason === 'conversion-unavailable')).toBe(true);
+      expect(result.attempts[0].detail).toMatch(kind === 'missing' ? /not present/ : /ambiguously/);
+      expect(checkPortTranscript).toHaveBeenCalledTimes(1);
+      expect(readCitedTurns).toHaveBeenCalledTimes(1);
+      expect(calls.spawn).toHaveLength(1);
+      expect(calls.spawn[0].envelope.greetingCmd).not.toMatch(/--resume|--fork/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('can brief readable evidence after a thrown port preflight without repeating the source check', async () => {
+    const checkPortTranscript = vi.fn(async () => { throw new Error('native source unavailable'); });
+    const { deps, calls } = makeFakes({ loadRanks: async () => ranks, checkPortTranscript });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result).toMatchObject({ dispatched: true, operation: 'brief' });
+    expect(checkPortTranscript).toHaveBeenCalledTimes(1);
+    expect(calls.spawn).toHaveLength(1);
+    expect(calls.spawn[0].envelope.greetingCmd).not.toMatch(/--resume|--fork/);
+  });
+
+  it('keeps a refused explicit native trial from substituting a brief', async () => {
+    const { deps, calls } = makeFakes({ loadRanks: async () => ranks, checkPortTranscript: async () => refusal });
+    const result = await dispatchConsultResponder({ ...OPTS,
+      nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' },
+    }, CTX, deps);
+    expect(result.dispatched).toBe(false);
+    expect(result.attempts.map((a) => a.operation)).toEqual(['convert', 'convert']);
+    expect(calls.spawn).toHaveLength(0);
+  });
+
+  it('checks the selected source once and briefs readable cited turns under a distinct identity', async () => {
+    const checkPortTranscript = vi.fn(async () => refusal);
+    const readCitedTurns = vi.fn(async () => [
+      { turn_idx: 1, speaker: 'assistant', ts: null, text: 'indexed expert evidence' },
+    ]);
+    const { deps, calls } = makeFakes({ loadRanks: async () => ranks, checkPortTranscript, readCitedTurns });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result).toMatchObject({ dispatched: true, operation: 'brief', answeringOwnerId: 'su-answer-1' });
+    expect(checkPortTranscript).toHaveBeenCalledTimes(1);
+    expect(checkPortTranscript.mock.calls[0]).toEqual([
+      expect.objectContaining({ ownerId: OPTS.sourceOwnerId, sessionId: 'sess-1' }),
+      expect.objectContaining({ available: true }),
+      { sessionId: 'sess-1', turnIndices: [1], contextTurns: 2,
+        evidenceTurns: [{ turnIdx: 1, speaker: 'assistant', timestamp: null, text: 'indexed expert evidence' }] },
+    ]);
+    expect(readCitedTurns).toHaveBeenCalledExactlyOnceWith(CTX.workspaceId, 'sess-1', [1]);
+    expect(result.attempts.map((a) => [a.operation, a.reason ?? a.outcome])).toEqual([
+      ['convert', 'conversion-unavailable'], ['convert', 'conversion-unavailable'], ['brief', 'dispatched'],
+    ]);
+    expect(calls.spawn).toHaveLength(1);
+    const spawn = calls.spawn[0]!;
+    expect(spawn.coordOwnerId).not.toBe(OPTS.sourceOwnerId);
+    expect(spawn.envelope.greetingCmd).not.toMatch(/--resume|--fork/);
+    expect(spawn.envelope.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN).toBeUndefined();
+    expect(spawn.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('indexed expert evidence');
+    expect(spawn.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('sess-1#1');
+    expect(spawn.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('NOT your own history');
+    expect(calls.recorded[0].result).toEqual(result);
+  });
+
+  it.each(['empty', 'throwing', 'partial', 'foreign-index', 'duplicate', 'blank'] as const)(
+    'does not port or brief %s cited evidence', async (kind) => {
+      const row = { turn_idx: 1, speaker: 'assistant', ts: null, text: 'indexed evidence' };
+      const checkPortTranscript = vi.fn(async () => refusal);
+      const readCitedTurns = vi.fn(async () => {
+        if (kind === 'throwing') throw new Error('index unavailable');
+        return kind === 'empty' ? [] : kind === 'foreign-index' ? [{ ...row, turn_idx: 9 }]
+          : kind === 'duplicate' ? [row, row] : kind === 'blank' ? [{ ...row, text: ' ' }] : [row];
+      });
+      const { deps, calls } = makeFakes({ loadRanks: async () => ranks, checkPortTranscript, readCitedTurns });
+      const result = await dispatchConsultResponder({ ...OPTS,
+        evidence: kind === 'partial' ? [...OPTS.evidence, { session_id: 'sess-1', turn_idx: 2 }] : OPTS.evidence,
+      }, CTX, deps);
+      expect(result.dispatched).toBe(false);
+      expect(result.attempts.filter((a) => a.operation === 'brief')).toHaveLength(2);
+      expect(result.attempts.filter((a) => a.operation === 'brief').every((a) => a.reason === 'evidence-span-unavailable')).toBe(true);
+      expect(readCitedTurns).toHaveBeenCalledTimes(1);
+      expect(checkPortTranscript).not.toHaveBeenCalled();
+      expect(calls.spawn).toHaveLength(0);
+    });
+
+  it.each(['owner', 'native-session'] as const)('does not brief contested %s attribution', async (kind) => {
+    const readCitedTurns = vi.fn(async () => []);
+    const { deps, calls } = makeFakes({ loadRanks: async () => ranks, readCitedTurns }, { source: {
+      binding: { coordOwnerId: kind === 'owner' ? 'su-foreign' : OPTS.sourceOwnerId,
+        sessionId: kind === 'native-session' ? 'foreign-session' : 'sess-1', startedAt: '2026-09-22T00:00:00Z' },
+    } });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result.dispatched).toBe(false);
+    expect(result.attempts.some((a) => a.operation === 'brief')).toBe(false);
+    expect(readCitedTurns).not.toHaveBeenCalled();
+    expect(calls.spawn).toHaveLength(0);
+  });
+
+  it('rechecks account routing before a brief and records a changed route refusal', async () => {
+    let probes = 0;
+    const { deps, calls } = makeFakes({
+      loadRanks: async () => [ranks[0]], checkPortTranscript: async () => refusal,
+      probeBackendAvailable: async () => ++probes === 1
+        ? { available: true, detail: 'initial capacity' }
+        : { available: false, detail: 'routing unknown', failureReason: 'account-routing-unavailable' },
+    });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result.attempts.at(-1)).toMatchObject({ operation: 'brief', reason: 'account-routing-unavailable' });
+    expect(calls.spawn).toHaveLength(0);
+  });
+
+  it('does not launch a brief when the consult closes during source preflight', async () => {
+    let open = true;
+    const { deps, calls } = makeFakes({ loadRanks: async () => ranks,
+      checkPortTranscript: async () => { open = false; return refusal; }, isConsultOpen: async () => open,
+    });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result.attempts.at(-1)).toMatchObject({ operation: 'brief', reason: 'consult-closed' });
     expect(calls.spawn).toHaveLength(0);
   });
 });

@@ -15,7 +15,7 @@ import { briefCodePoints, composeReuseBrief, registerReuseBriefProvider,
   type ReuseBriefProvider, type ReuseContribution, type ReuseProviderContext, type ReuseProviderId } from './reuse-brief-providers';
 
 const context: ReuseProviderContext = { surface: 'claim', workspaceId: 'fixture-workspace', owner: 'su-fixture',
-  invocation: 'actual-claim-dispatch', workItem: 'WI-fixture', paths: ['target.ts'], sourceVersion: 'blob-v1' };
+  invocation: 'actual-claim-dispatch', workItem: 'WI-target', paths: ['target.ts'], sourceVersion: 'blob-v1' };
 interface Brief { mandatory: string; impact?: ReuseContribution[]; coChange?: ReuseContribution[];
   whatChangedSincePlanning?: ReuseContribution[]; tests?: ReuseContribution[] }
 const append = (base: Brief, value: ReuseContribution): Brief => ({ ...base, [value.section]: [...(base[value.section] ?? []), value] });
@@ -23,6 +23,47 @@ const provider = (id: ReuseProviderId, lines = [`${id}: target.ts:2; source scop
   read: async () => ({ status: 'measured', lines, sourceVersion: 'blob-v1', indexVersion: 'index-v2', citedPaths: ['target.ts'] }) });
 const compose = (base: Brief, providers: ReuseBriefProvider[], now = Date.now, deadline = now() + 6_000) =>
   composeReuseBrief({ base, providers, context, append, now, deadline });
+
+describe('R16 actual composition admission', () => {
+  it('withholds a fixed eligible provider arm across retries, retaining its own selector and source pins', async () => {
+    const read = vi.fn(provider('coverage').read);
+    for (const invocation of ['first', 'retry']) {
+      const base = { mandatory: 'preserved' };
+      const result = await composeReuseBrief({ base, context: { ...context, invocation, workItem: 'WI-12' }, append,
+        providers: [{ id: 'coverage', read }, provider('clones')], enabled: async () => true, deadline: Date.now() + 6000 });
+      expect(result.brief.mandatory).toBe('preserved');
+      expect(result.brief.tests).toBeUndefined();
+      expect(result.brief.impact?.[0]?.provider).toBe('clones');
+      expect(result.observations.find(row => row.provider === 'coverage')).toMatchObject({
+        status: 'held-out', reason: 'holdout', cohort: 'holdout', chars: 0,
+        citedPaths: ['target.ts'], sourceVersion: 'blob-v1', indexVersion: 'index-v2' });
+    }
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+  it.each(['clones', 'cochange', 'provenance', 'sql', 'coverage', 'semantic'] as const)(
+    'withdraws and restores %s independently through its maintained flag', async id => {
+      const { REUSE_PROVIDER_FLAGS } = await import('./reuse-brief-providers');
+      const { setFlagOverridesForTest } = await import('@papercusp/flags/test');
+      const read = vi.fn(provider(id).read);
+      const run = () => composeReuseBrief({ base: { mandatory: 'base' }, context, append,
+        providers: [{ id, read }], deadline: Date.now() + 6000 });
+      try {
+        setFlagOverridesForTest({ [REUSE_PROVIDER_FLAGS[id]]: false });
+        const disabled = await run();
+        expect(disabled.brief).toEqual({ mandatory: 'base' });
+        expect(disabled.observations[0]).toMatchObject({ status: 'disabled', reason: 'disabled', chars: 0 });
+        expect(read).not.toHaveBeenCalled();
+        setFlagOverridesForTest({ [REUSE_PROVIDER_FLAGS[id]]: true });
+        expect((await run()).observations[0]).toMatchObject({ status: 'issued', cohort: 'treatment' });
+      } finally { setFlagOverridesForTest(null); }
+    });
+  it('does not make authoring without a work item an experimental arm', async () => {
+    const result = await composeReuseBrief({ base: { mandatory: 'base' }, context: { ...context, workItem: undefined },
+      append, providers: [provider('coverage')], enabled: async () => true, deadline: Date.now() + 6000 });
+    expect(result.observations[0]).toMatchObject({ status: 'issued' });
+    expect(result.observations[0]?.cohort).toBeUndefined();
+  });
+});
 
 // The shared producer fixture lowers minMass for its own focused cases. Delivery
 // re-parses at the production floor; use substantial bodies rather than weaken it.

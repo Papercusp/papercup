@@ -42,6 +42,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Sql } from 'postgres';
 import { evidenceIncarnationOwnedBy } from '../session-port/source';
+import type { SessionPortEvidenceSpan } from '../session-port/service';
 import {
   buildAgentLaunchCommand,
   injectLaunchedByArg,
@@ -477,10 +478,11 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   checkResumeTranscript: (
     target: ResumeTarget,
   ) => Promise<{ available: boolean; detail: string; transcriptPath?: string }>;
-  /** Port-only role/graph preflight; a refusal leaves native fork ranks intact. */
+  /** Port-only role/graph/exact-span preflight; native fork ranks stay intact. */
   checkPortTranscript: (
     target: ResumeTarget,
     transcript: { available: boolean; detail: string; transcriptPath?: string },
+    evidenceSpan: SessionPortEvidenceSpan,
   ) => Promise<BackendAvailability>;
   /**
    * Read a Claude transcript's tail for provider "Tool reference … not found"
@@ -1240,9 +1242,9 @@ export async function dispatchConsultResponder(
         { coordOwnerId: target.ownerId, agent: target.agent }, sessionId);
     },
     checkResumeTranscript: defaultCheckResumeTranscript,
-    checkPortTranscript: async (target, transcript) => {
+    checkPortTranscript: async (target, transcript, evidenceSpan) => {
       const { checkConsultSessionPortTranscript } = await import('./resume-transcript-preflight');
-      return checkConsultSessionPortTranscript(target, transcript);
+      return checkConsultSessionPortTranscript(target, transcript, evidenceSpan);
     },
     isConsultOpen: defaultIsConsultOpen,
     analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
@@ -1473,6 +1475,30 @@ async function walkConsultDispatch(
     // launch, and retain the refusal on each affected rank for the next-expert
     // cascade. Provider walls and native fork eligibility remain independent.
     let portTranscript: BackendAvailability | null = null;
+    // Both port preflight and a fresh brief ground themselves in the same
+    // exact cited rows. Cache failures too: another model cannot repair this
+    // source. Partial/foreign/duplicate rows never authorize either operation.
+    let citedTurns: CitedTranscriptTurn[] | null = null;
+    let citedTurnsFailure: string | null = null;
+    const readCitedSource = async (): Promise<{ turns: CitedTranscriptTurn[] | null; failure: string | null }> => {
+      if (!evidenceSource || citedTurns !== null || citedTurnsFailure !== null) {
+        return { turns: citedTurns, failure: citedTurnsFailure };
+      }
+      try {
+        const wanted = [...new Set(evidenceSource.evidence.map((ref) => ref.turn_idx))];
+        const rows = await d.readCitedTurns(ctx.workspaceId, evidenceSource.sessionId, wanted);
+        if (rows.length !== wanted.length || new Set(rows.map((row) => row.turn_idx)).size !== wanted.length ||
+            rows.some((row) => !wanted.includes(row.turn_idx) || !row.text.trim())) {
+          citedTurnsFailure = `exact cited turns are not all readable for ${evidenceSource.sessionId} (${wanted.join(', ')})`;
+        } else {
+          citedTurns = rows;
+        }
+      } catch (e) {
+        citedTurnsFailure = `reading the cited turns of ${evidenceSource.sessionId} failed: ` +
+          `${(e as Error)?.message ?? String(e)}`;
+      }
+      return { turns: citedTurns, failure: citedTurnsFailure };
+    };
     // P-002 / D-008: ranks the session port skips ON PURPOSE. When nothing else
     // dispatches, each is retried as a fresh session briefed with cited turns.
     const briefRanks: AllowedExpertModel[] = [];
@@ -1558,7 +1584,17 @@ async function walkConsultDispatch(
       if (operation === 'convert') {
         if (!portTranscript) {
           try {
-            portTranscript = await d.checkPortTranscript(target, transcript);
+            const cited = await readCitedSource();
+            portTranscript = cited.failure || !cited.turns
+              ? { available: false, detail: cited.failure ?? 'no cited turns' }
+              : await d.checkPortTranscript(target, transcript, {
+                  sessionId: evidenceSource!.sessionId,
+                  turnIndices: [...new Set(evidenceSource!.evidence.map((ref) => ref.turn_idx))],
+                  contextTurns: 2,
+                  evidenceTurns: cited.turns.map((row) => ({
+                    turnIdx: row.turn_idx, timestamp: row.ts, speaker: row.speaker, text: row.text,
+                  })),
+                });
           } catch (e) {
             portTranscript = { available: false,
               detail: `session-port transcript preflight failed: ${(e as Error)?.message ?? String(e)}` };
@@ -1567,6 +1603,10 @@ async function walkConsultDispatch(
         if (!portTranscript.available) {
           attempts.push({ rank: rank.rank, agent: rank.agent, model: rank.model,
             operation, outcome: 'skipped', reason: 'conversion-unavailable', detail: portTranscript.detail });
+          // A fresh answering session can still quote indexed evidence when
+          // native porting is impossible. Keep attribution and explicit native
+          // trials fail-closed; the brief loop rechecks capacity and closure.
+          if (!briefAttributionContested && !opts.nativeConsult) briefRanks.push(rank);
           continue;
         }
       }
@@ -1612,8 +1652,6 @@ async function walkConsultDispatch(
     // P-002 / D-008: the expert cannot be forked or converted on purpose, so
     // launch a FRESH session under its own identity, briefed with the expert's
     // cited turns. Every brief rank leaves a recorded outcome (R-12).
-    let citedTurns: CitedTranscriptTurn[] | null = null;
-    let citedTurnsFailure: string | null = null;
     for (const rank of briefRanks) {
       const base = { rank: rank.rank, agent: rank.agent, model: rank.model, operation: 'brief' as const };
       if (!evidenceSource) {
@@ -1621,19 +1659,7 @@ async function walkConsultDispatch(
           detail: 'a cited-turn brief needs router-matched transcript turns; no evidence span was supplied' });
         continue;
       }
-      if (citedTurns === null && citedTurnsFailure === null) {
-        try {
-          citedTurns = await d.readCitedTurns(ctx.workspaceId, evidenceSource.sessionId,
-            evidenceSource.evidence.map((ref) => ref.turn_idx));
-          if (citedTurns.length === 0) {
-            citedTurnsFailure = `no text is readable for the cited turns of ${evidenceSource.sessionId} ` +
-              `(${evidenceSource.evidence.map((ref) => ref.turn_idx).join(', ')})`;
-          }
-        } catch (e) {
-          citedTurnsFailure = `reading the cited turns of ${evidenceSource.sessionId} failed: ` +
-            `${(e as Error)?.message ?? String(e)}`;
-        }
-      }
+      const { turns: citedTurns, failure: citedTurnsFailure } = await readCitedSource();
       if (citedTurnsFailure || !citedTurns || citedTurns.length === 0) {
         attempts.push({ ...base, outcome: 'skipped', reason: 'evidence-span-unavailable',
           detail: citedTurnsFailure ?? 'no cited turns' });

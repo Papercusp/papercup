@@ -81,4 +81,20 @@ describe('P009 existing issued-only PG ledger', () => {
     expect(persisted.map(value => JSON.parse(value.subject).provider).sort())
       .toEqual(record.observations.map(value => value.provider).sort());
   });
+  it('records a qualified holdout with zero spend and stable independent identity, without inventing issuance', async () => {
+    const record = input('holdout-dispatch');
+    record.context.workItem = 'WI-12';
+    record.observations = [{ ...row('coverage', 'held-out'), reason: 'holdout', cohort: 'holdout' }];
+    expect(reuseIssuedSubjects(record)).toEqual([]);
+    const signal = new AbortController().signal;
+    expect(await recordReuseBriefIssued(record, signal)).toBe(true);
+    expect(await recordReuseBriefIssued(record, signal)).toBe(true);
+    const rows = await fx.admin`SELECT leg, subject, chars FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${fx.workspaceId} AND owner_id = ${owner}
+        AND subject::jsonb->>'invocation' = 'holdout-dispatch'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ leg: 'reuse-holdout-coverage', chars: 0 });
+    expect(JSON.parse(rows[0]!.subject)).toMatchObject({ provider: 'coverage', workItem: 'WI-12',
+      cohort: 'holdout', selector: { paths: ['target.ts'], symbols: [] }, outcome: 'holdout' });
+  });
 });

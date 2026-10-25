@@ -1,1 +1,0 @@
-{"schemaVersion":1,"kind":"native-node-process-event","event":"module-load-limit","processIdentity":"3a9f11ff-3df5-47b3-90e2-6ce242df8a93","pid":1370413,"ppid":1361413,"atMs":1792811524133,"limit":128}

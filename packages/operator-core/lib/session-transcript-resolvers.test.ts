@@ -22,6 +22,8 @@ import {
   readClosedCodexRuntimeUsage,
   readClosedClaudeSessionUsage,
   readClosedClaudeRuntimeUsage,
+  readClosedClaudeMessageInput,
+  readClosedClaudeMessageToolResult,
   readClosedCodexTurnInput,
   readClosedCodexTurnToolResult,
 } from './session-transcript-resolvers';
@@ -424,6 +426,99 @@ describe('complete closed Claude source accounting', () => {
       const nested = join(home, 'projects', '-task', session, 'subagents'); await fs.mkdir(nested, { recursive: true });
       await fs.writeFile(join(nested, 'agent-sub.jsonl'), transcript);
       expect(await runtime(sql, home)).toEqual({ complete: false, sessions: [] });
+    });
+  });
+});
+
+describe('source-bound closed Claude input and tool results', () => {
+  const session = '11111111-2222-3333-4444-555555555555';
+  const usage = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  const records = (): Array<{ type: string; sessionId: string; uuid: string; parentUuid: string | null;
+    timestamp: string; message: { role: string; id?: string; model?: string; stop_reason?: string | null;
+      usage?: typeof usage; content: Array<Record<string, unknown>> } }> => [
+    { type: 'user', sessionId: session, uuid: 'input-record', parentUuid: null,
+      timestamp: '2026-10-24T00:00:01Z', message: { role: 'user', content: [{ type: 'text', text: 'Exact dependency π\nbytes.' }] } },
+    { type: 'assistant', sessionId: session, uuid: 'call-record', parentUuid: 'input-record',
+      timestamp: '2026-10-24T00:00:02Z', message: { role: 'assistant', id: 'msg-call', model: 'claude-sonnet-4-6',
+        stop_reason: 'tool_use', usage, content: [{ type: 'tool_use', id: 'toolu-exact', name: 'Read', input: { file_path: '/app/input' } }] } },
+    { type: 'user', sessionId: session, uuid: 'result-record', parentUuid: 'call-record',
+      timestamp: '2026-10-24T00:00:03Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu-exact',
+        content: 'Exact result\nbytes.', is_error: false }] } },
+    { type: 'assistant', sessionId: session, uuid: 'reply-record', parentUuid: 'result-record',
+      timestamp: '2026-10-24T00:00:04Z', message: { role: 'assistant', id: 'msg-reply', model: 'claude-sonnet-4-6',
+        stop_reason: 'end_turn', usage, content: [{ type: 'text', text: 'Done.' }] } },
+  ];
+  async function fixture(run: (f: { readInput: () => ReturnType<typeof readClosedClaudeMessageInput>;
+    readTool: () => ReturnType<typeof readClosedClaudeMessageToolResult>; file: string; home: string;
+    binding: { -readonly [K in keyof Parameters<typeof readClosedClaudeMessageInput>[1]]:
+      Parameters<typeof readClosedClaudeMessageInput>[1][K] }; sql: Sql }) => Promise<void>,
+    mutate?: (rows: ReturnType<typeof records>) => void, frontier?: number) {
+    const home = await fs.mkdtemp(join(tmpdir(), 'claude-native-evidence-'));
+    const project = join(home, 'projects', '-task'); await fs.mkdir(project, { recursive: true });
+    const file = join(project, `${session}.jsonl`), rows = records(); mutate?.(rows);
+    const transcript = rows.map(row => JSON.stringify(row)).join('\n') + '\n'; await fs.writeFile(file, transcript);
+    const sql = (async () => [{ byte_offset: String(frontier ?? Buffer.byteLength(transcript)),
+      parser_state: { initialized: true, fileGeneration: 0 } }]) as unknown as Sql;
+    const binding = { workspaceId: 'bench-private', nativeSessionId: session, claudeConfigDir: home,
+      nativeMessageId: 'msg-reply', messageRecordIndex: 3, recordIndex: 0, contentIndex: 0,
+      sourceSha256: createHash('sha256').update(transcript).digest('hex') };
+    try { await run({ file, home, binding, sql, readInput: () => readClosedClaudeMessageInput(sql, binding),
+      readTool: () => readClosedClaudeMessageToolResult(sql, { ...binding, callRecordIndex: 1, callContentIndex: 0,
+        resultRecordIndex: 2, resultContentIndex: 0 }) }); }
+    finally { await fs.rm(home, { recursive: true, force: true }); }
+  }
+  it('reads exact native input ancestry and tool pairing without inventing a native turn', async () => {
+    await fixture(async ({ readInput, readTool, binding }) => {
+      const input = await readInput(), tool = await readTool();
+      expect(input).toMatchObject({ nativeSessionId: session, nativeMessageId: 'msg-reply', recordUuid: 'input-record',
+        messageRecordIndex: 3, recordIndex: 0, contentIndex: 0, sourceSha256: binding.sourceSha256,
+        at: '2026-10-24T00:00:01.000Z', text: 'Exact dependency π\nbytes.' });
+      expect(tool).toMatchObject({ nativeSessionId: session, nativeMessageId: 'msg-reply', callMessageId: 'msg-call',
+        callId: 'toolu-exact', name: 'Read', arguments: '{"file_path":"/app/input"}', output: 'Exact result\nbytes.',
+        isError: false, calledAt: '2026-10-24T00:00:02.000Z', at: '2026-10-24T00:00:03.000Z' });
+      expect(input).not.toHaveProperty('nativeTurnId'); expect(tool).not.toHaveProperty('nativeTurnId');
+    });
+  });
+  it('retains structured tool output and error identity', async () => {
+    await fixture(async ({ readTool }) => {
+      expect(await readTool()).toMatchObject({ isError: true, output: [{ type: 'text', text: 'Failure detail' }] });
+    }, rows => { Object.assign(rows[2].message.content![0], { content: [{ type: 'text', text: 'Failure detail' }], is_error: true }); });
+  });
+  it.each(['foreign-session', 'sidechain', 'open', 'missing-message', 'broken-parent', 'duplicate-uuid', 'future-parent',
+    'wrong-role', 'invalid-time'] as const)('refuses %s message/input authority', async kind => {
+    await fixture(async ({ readInput, readTool }) => { expect(await readInput()).toBeNull(); expect(await readTool()).toBeNull(); }, rows => {
+      if (kind === 'foreign-session') rows[0].sessionId = 'foreign';
+      if (kind === 'sidechain') Object.assign(rows[3], { isSidechain: true });
+      if (kind === 'open') Object.assign(rows[3].message, { stop_reason: null });
+      if (kind === 'missing-message') rows[3].message.id = 'msg-other';
+      if (kind === 'broken-parent') rows[3].parentUuid = 'missing';
+      if (kind === 'duplicate-uuid') rows[2].uuid = rows[0].uuid;
+      if (kind === 'future-parent') rows[2].parentUuid = 'reply-record';
+      if (kind === 'wrong-role') rows[3].message.role = 'user';
+      if (kind === 'invalid-time') rows[3].timestamp = 'invalid';
+    });
+  });
+  it.each(['duplicate-call', 'duplicate-result', 'mismatched-call', 'nonobject-input', 'invalid-error', 'reverse-time'] as const)
+  ('refuses %s tool authority', async kind => {
+    await fixture(async ({ readTool }) => { expect(await readTool()).toBeNull(); }, rows => {
+      if (kind === 'duplicate-call') rows[1].message.content!.push({ ...rows[1].message.content![0] });
+      if (kind === 'duplicate-result') rows[2].message.content!.push({ ...rows[2].message.content![0] });
+      if (kind === 'mismatched-call') Object.assign(rows[2].message.content![0], { tool_use_id: 'toolu-other' });
+      if (kind === 'nonobject-input') Object.assign(rows[1].message.content![0], { input: [] });
+      if (kind === 'invalid-error') Object.assign(rows[2].message.content![0], { is_error: 'false' });
+      if (kind === 'reverse-time') rows[2].timestamp = '2026-10-24T00:00:01Z';
+    });
+  });
+  it('rejects a behind canonical frontier', async () => {
+    await fixture(async ({ readInput, readTool }) => { expect(await readInput()).toBeNull(); expect(await readTool()).toBeNull(); }, undefined, 1);
+  });
+  it.each(['source-hash', 'source-mutation', 'source-link', 'unknown-index'] as const)('rejects %s', async kind => {
+    await fixture(async ({ readInput, readTool, binding, file, home }) => {
+      if (kind === 'source-hash') binding.sourceSha256 = 'f'.repeat(64);
+      if (kind === 'source-mutation') await fs.appendFile(file, JSON.stringify({ type: 'summary' }) + '\n');
+      if (kind === 'source-link') { const outside = join(home, 'outside.jsonl'); await fs.rename(file, outside); await fs.symlink(outside, file); }
+      if (kind === 'unknown-index') binding.messageRecordIndex = 20;
+      expect(await readInput()).toBeNull(); expect(await readTool()).toBeNull();
     });
   });
 });

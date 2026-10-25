@@ -526,7 +526,7 @@ export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: 
       return next;
     } });
   let ledger: 'not-needed' | 'recorded' | 'unknown' = 'not-needed';
-  if (result.observations.some(row => row.status === 'issued')) {
+  if (result.observations.some(row => row.status === 'issued' || row.status === 'held-out')) {
     ledger = 'unknown';
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -757,7 +757,7 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
         append: (base, contribution) => ({ ...base, limitations: [...base.limitations, contribution.text] }) });
       Object.assign(brief, result.brief);
       let ledger: 'not-needed' | 'recorded' | 'unknown' = 'not-needed';
-      if (result.observations.some(row => row.status === 'issued')) {
+      if (result.observations.some(row => row.status === 'issued' || row.status === 'held-out')) {
         ledger = 'unknown';
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()));

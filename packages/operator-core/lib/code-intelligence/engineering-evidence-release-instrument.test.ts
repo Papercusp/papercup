@@ -70,6 +70,56 @@ describe('exact shipped engineering evidence detector', () => {
     expect(f.run.mock.calls[0]?.[2]).toMatchObject({ env: { PAPERCUSP_WORKSPACE: 'workspace-fixture', PAPERCUSP_SID: 'session-fixture' } });
     expect(engineeringEvidenceReleaseInstrument('/repository').parse(JSON.stringify(result), { now: Date.now() })).toBe(0);
   });
+  it('gives the native executor the admitted launcher budget rather than an independent fifteen-minute cap', () => {
+    const f = fixture(), nowMs = 1_000_000, deadline = nowMs + 40 * 60_000;
+    verifyEngineeringRelease({ ...f.args, now: () => nowMs,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadline) } });
+    expect(f.run.mock.calls[0]?.[2]).toMatchObject({ timeout: 38 * 60_000,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadline - 120_000) } });
+  });
+  it('subtracts completed integration time from the shared deadline before starting native preparation', () => {
+    const f = fixture(), start = 1_000_000, deadline = start + 40 * 60_000;
+    let nowMs = start;
+    f.run.mockImplementationOnce(() => {
+      nowMs += 12 * 60_000;
+      return { status: 0, stdout: 'TEST_FILE_RESULT requested=4 executed=4 matched=4 status=passed uncommittedPaths=0/4 childSubstituted=0 skippedTests=0' };
+    });
+    verifyEngineeringRelease({ ...f.args, plane: 'current-build', now: () => nowMs,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadline) } });
+    expect(f.run.mock.calls[0]?.[2]?.timeout).toBe(38 * 60_000);
+    expect(f.run.mock.calls[1]?.[2]).toMatchObject({ timeout: 26 * 60_000,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadline - 120_000) } });
+  });
+  it('retains integration evidence and refuses native launch when only the cleanup reserve remains', () => {
+    const f = fixture(), start = 1_000_000, deadline = start + 20 * 60_000;
+    let nowMs = start;
+    f.run.mockImplementationOnce(() => {
+      nowMs = deadline - 120_000;
+      return { status: 0, stdout: 'TEST_FILE_RESULT requested=4 executed=4 matched=4 status=passed uncommittedPaths=0/4 childSubstituted=0 skippedTests=0' };
+    });
+    const result = verifyEngineeringRelease({ ...f.args, plane: 'current-build', now: () => nowMs,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadline) } });
+    expect(result).toMatchObject({ status: 'unknown', reason: expect.stringContaining('TASK_DEADLINE_REFUSAL') });
+    expect(result.phases.integration?.status).toBe(0);
+    expect(result.integration?.result).toContain('status=passed');
+    expect(f.run).toHaveBeenCalledOnce();
+  });
+  it('supplies one finite combined deadline when the launcher has no clock', () => {
+    const f = fixture(), nowMs = 1_000_000;
+    verifyEngineeringRelease({ ...f.args, now: () => nowMs });
+    expect(f.run.mock.calls[0]?.[2]).toMatchObject({ timeout: 43 * 60_000,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(nowMs + 43 * 60_000) } });
+  });
+  it('keeps both registered instruments outside the finite composite budget even with a later launcher deadline', () => {
+    const f = fixture(), nowMs = 1_000_000;
+    verifyEngineeringRelease({ ...f.args, now: () => nowMs,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(nowMs + 90 * 60_000) } });
+    const options = f.run.mock.calls[0]![2];
+    expect(options.timeout).toBe(43 * 60_000);
+    expect(options.env).toMatchObject({ PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(nowMs + 43 * 60_000) });
+    for (const plane of ['current-build', 'final-release'] as const)
+      expect(engineeringEvidenceReleaseInstrument('/repository', plane).timeoutMs).toBe(46 * 60_000);
+  });
   it('makes absent inputs, a failed child, zero-test success and a replayed nonce unknown', () => {
     const missing = fixture(); missing.read.mockImplementation(() => { throw new Error('absent'); });
     expect(verifyEngineeringRelease(missing.args).status).toBe('unknown'); expect(missing.run).not.toHaveBeenCalled();

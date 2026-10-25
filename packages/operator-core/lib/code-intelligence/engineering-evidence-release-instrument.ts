@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import type { CommandInstrument } from '../rubric-instrument-registry';
+import { ENGINEERING_RELEASE_BUDGET_MS } from '../../../../scripts/verify-engineering-evidence-release.mjs';
 
 export const ENGINEERING_EVIDENCE_RELEASE_INSTRUMENT = 'native-engineering-evidence:final-release';
 export const ENGINEERING_EVIDENCE_CURRENT_INSTRUMENT = 'native-engineering-evidence:current-build';
@@ -8,7 +9,7 @@ export function engineeringEvidenceReleaseInstrument(root: string, plane: 'final
     evaluator: 'command', unit: 'count',
     description: `Fresh maintained Tauri graph/UI journey on the exact ${plane} artifact with accepted source containment and negative controls; current-build also runs the canonical integration/UI detectors on a throwaway PG. 0 verified; missing/mismatched evidence unknown. Independent acceptance remains separately enforced.`,
     argv: [process.execPath, join(root, 'scripts/verify-engineering-evidence-release.mjs'), root, plane],
-    timeoutMs: (plane === 'final-release' ? 16 : 46) * 60_000,
+    timeoutMs: ENGINEERING_RELEASE_BUDGET_MS + 60_000,
     parse(stdout) {
       try {
         const row = JSON.parse(stdout.trim());

@@ -1,6 +1,9 @@
 /** code-intel-reuse-signals P-009: bounded composition at existing brief surfaces. */
 import { pinModuleState } from '@papercusp/module-singleton';
+import { FLAGS, type FlagKey } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { postgresLineageProvider } from './postgres-lineage';
+import { reuseHoldout } from './reuse-measurement';
 
 export const REUSE_BRIEF_LIMIT = 3_000;
 export const REUSE_BRIEF_DEADLINE_MS = 6_000;
@@ -14,6 +17,11 @@ export const REUSE_PROVIDER_POLICY = {
   semantic: { priority: 60, cap: 450, section: 'impact' },
 } as const;
 export type ReuseProviderId = keyof typeof REUSE_PROVIDER_POLICY;
+export const REUSE_PROVIDER_FLAGS = {
+  clones: FLAGS.CODE_INTEL_REUSE_CLONES, cochange: FLAGS.CODE_INTEL_REUSE_COCHANGE,
+  provenance: FLAGS.CODE_INTEL_REUSE_PROVENANCE, sql: FLAGS.CODE_INTEL_REUSE_SQL,
+  coverage: FLAGS.CODE_INTEL_REUSE_COVERAGE, semantic: FLAGS.CODE_INTEL_REUSE_SEMANTIC,
+} satisfies Record<ReuseProviderId, FlagKey>;
 export type ReuseBriefSurface = 'claim' | 'authoring' | 'completion';
 export type ReuseBriefDestination = (typeof REUSE_PROVIDER_POLICY)[ReuseProviderId]['section'];
 export interface ReuseProviderContext {
@@ -60,12 +68,14 @@ export interface ReuseContribution {
 }
 export interface ReuseProviderObservation {
   provider: ReuseProviderId;
-  status: 'issued' | 'no-match' | 'unknown' | 'budget';
-  reason: 'complete' | 'truncated' | 'timeout' | 'failure' | 'unversioned' | 'budget' | 'destination-unavailable' | 'source-mismatch';
+  status: 'issued' | 'held-out' | 'disabled' | 'no-match' | 'unknown' | 'budget';
+  reason: 'complete' | 'holdout' | 'disabled' | 'truncated' | 'timeout' | 'failure' | 'unversioned' | 'budget' | 'destination-unavailable' | 'source-mismatch';
   sourceVersion: string | null;
   indexVersion: string | null;
   chars: number;
   citedPaths: string[];
+  /** Only exact work-item exposures enter the preregistered experiment. */
+  cohort?: 'treatment' | 'holdout';
 }
 const registry = pinModuleState('operator-core.reuse-brief-providers.v1', () => new Map<ReuseProviderId, ReuseBriefProvider>());
 export function registerReuseBriefProvider(provider: ReuseBriefProvider): () => void {
@@ -128,6 +138,7 @@ export async function composeReuseBrief<T>(input: {
   /** Missing upstream slots are unknown, not empty measured sections (D-011). */
   available?: (section: ReuseBriefDestination) => boolean;
   providers?: readonly ReuseBriefProvider[];
+  enabled?: (provider: ReuseProviderId) => Promise<boolean>;
   now?: () => number;
   serialize?: (brief: T) => string;
 }): Promise<{ brief: T; observations: ReuseProviderObservation[] }> {
@@ -157,14 +168,20 @@ export async function composeReuseBrief<T>(input: {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const result = await Promise.race([
-        Promise.resolve().then(() => provider.read(Object.freeze({ ...input.context,
+        Promise.resolve().then(async () => {
+          if (!await (input.enabled ?? (id => getFlag(REUSE_PROVIDER_FLAGS[id], 'system')))(provider.id)) {
+            row.status = 'disabled'; row.reason = 'disabled'; return null;
+          }
+          if (controller.signal.aborted) return null;
+          return provider.read(Object.freeze({ ...input.context,
           paths: Object.freeze([...input.context.paths]), planItems: Object.freeze([...(input.context.planItems ?? [])]),
           repository: input.context.repository ? Object.freeze({ ...input.context.repository }) : undefined,
           sourceFiles: input.context.sourceFiles ? Object.freeze(input.context.sourceFiles.map(row => Object.freeze({ ...row }))) : undefined,
           checkedPaths: input.context.checkedPaths ? Object.freeze([...input.context.checkedPaths]) : undefined,
           changedLines: input.context.changedLines ? Object.freeze(Object.fromEntries(Object.entries(input.context.changedLines)
             .map(([path, lines]) => [path, Object.freeze([...lines])]))) : undefined,
-          staticTests: input.context.staticTests ? Object.freeze([...input.context.staticTests]) : undefined }), controller.signal)),
+          staticTests: input.context.staticTests ? Object.freeze([...input.context.staticTests]) : undefined }), controller.signal);
+        }),
         new Promise<null>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(null); },
           Math.min(REUSE_PROVIDER_DEADLINE_MS, remaining)); }),
       ]);
@@ -178,6 +195,7 @@ export async function composeReuseBrief<T>(input: {
       if (input.context.sourceVersion !== result.sourceVersion) {
         row.reason = 'source-mismatch'; return { row, result: null };
       }
+      if (input.context.workItem?.trim()) row.cohort = reuseHoldout(input.context.workItem, provider.id) ? 'holdout' : 'treatment';
       row.status = result.lines.length ? 'budget' : 'no-match'; row.reason = 'complete';
       return { row, result };
     } catch {
@@ -213,7 +231,10 @@ export async function composeReuseBrief<T>(input: {
       const next = accepted!;
       const encoded = serialize(next);
       if (now() >= input.deadline || briefCodePoints(encoded) > REUSE_BRIEF_LIMIT) { row.reason = 'timeout'; continue; }
-      brief = next; row.status = 'issued'; row.chars = charged;
+      // Apply identical source, destination and budget qualification to both
+      // arms. A held-out candidate is observed, never placed in the response.
+      if (row.cohort === 'holdout') { row.status = 'held-out'; row.reason = 'holdout'; }
+      else { brief = next; row.status = 'issued'; row.chars = charged; }
     }
   }
   return { brief, observations };

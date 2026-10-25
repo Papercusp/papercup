@@ -54,8 +54,9 @@ export interface CurrentBenchTaskRequestCensus {
   readonly binding: Readonly<CurrentBenchAccountingBinding>;
   readonly populationSha256: string;
   readonly requests: readonly Readonly<{
-    reservationId: string; nativeSessionId: string; nativeTurnId: string; bodySha256: string;
-  }>[];
+    reservationId: string; bodySha256: string;
+  } & ({ agent?: never; nativeSessionId: string; nativeTurnId: string; nativeMessageId?: never } |
+    { agent: 'claude'; nativeSessionId?: never; nativeTurnId?: never; nativeMessageId?: string })>[];
 }
 interface NativeAccountingSource {
   participant: NativeCostParticipant; nativeSessionId: string;
@@ -255,7 +256,8 @@ export function currentBenchSessionRequestDelta(before: CurrentBenchTaskRequestC
   after: CurrentBenchTaskRequestCensus, nativeSessionId: string): { modelCalls: number; reservationIds: string[] } {
   const invalid = () => new Error('Fresh native session request census is foreign, reused or non-monotone.');
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeSessionId) ||
-      canonicalJson(before.binding) !== canonicalJson(after.binding)) throw invalid();
+      canonicalJson(before.binding) !== canonicalJson(after.binding) ||
+      [...before.requests, ...after.requests].some(row => row.agent === 'claude')) throw invalid();
   const previous = new Map(before.requests.map(row => [row.reservationId, row]));
   const current = new Map(after.requests.map(row => [row.reservationId, row]));
   if (previous.size !== before.requests.length || current.size !== after.requests.length ||
@@ -284,7 +286,7 @@ export function currentBenchSessionUsageDelta(input: {
     if (cost.armMeta.nativeCostAccounting.preregHash !== census.binding.preregHash) return false;
     const sources = cost.armMeta.nativeCostAccounting.sources;
     const ids = new Set(sources.map(s => s.nativeSessionId));
-    if (census.requests.some(row => !ids.has(row.nativeSessionId))) return false;
+    if (census.requests.some(row => row.agent === 'claude' || !ids.has(row.nativeSessionId))) return false;
     return sources.every(s => {
       const rows = census.requests.filter(row => row.nativeSessionId === s.nativeSessionId);
       const turns = [...new Set(rows.map(row => row.nativeTurnId))].sort();
@@ -1117,6 +1119,9 @@ export interface CurrentBenchProviderCaptureRecovery {
 export function currentBenchWorkloadProviderInputCapture(options: {
   accountingBinding: CurrentBenchAccountingBinding; captureRoot: string; candidateCheckoutRoot: string;
   model: string; effort: string; accountId: string; maxRequests: number; maxBytes: number;
+  /** Anthropic requests have no native turn identity before the response.
+   * Omission preserves existing Codex allocation hashes and receipts. */
+  agent?: 'claude';
   /** D-023 subscription route. Omission is the API-key route, so existing
    * allocations keep their configuration hash. */
   payer?: 'subscription';
@@ -1133,9 +1138,12 @@ export function currentBenchWorkloadProviderInputCapture(options: {
     !digest(binding.preregHash) || !binding.assignmentId.startsWith('bench-assignment:') ||
     !Number.isSafeInteger(frozen.maxRequests) || frozen.maxRequests < 1 || frozen.maxRequests > 10_000 ||
     !Number.isSafeInteger(frozen.maxBytes) || frozen.maxBytes < 1 || frozen.maxBytes > 16 * 1024 * 1024 ||
-    frozen.payer !== undefined && frozen.payer !== 'subscription')
+    frozen.payer !== undefined && frozen.payer !== 'subscription' ||
+    frozen.agent !== undefined && frozen.agent !== 'claude' || frozen.agent === 'claude' && frozen.payer !== undefined)
     throw new Error('Provider input capture requires an exact private assignment and bounded allocation.');
-  const route = currentBenchCodexRoute(frozen.payer ?? 'api-key');
+  const claude = frozen.agent === 'claude';
+  const route = claude ? { transport: 'anthropic-http', target: anthropicMessagesTarget, credentialHeader: 'x-api-key' }
+    : currentBenchCodexRoute(frozen.payer ?? 'api-key');
   resolveBenchWorkspace(binding.workspaceId);
   if (readOnly && !recovery) throw new Error('Read-only provider capture requires retained host recovery pins.');
   const root = lstatSync(frozen.captureRoot, { bigint: true });
@@ -1172,8 +1180,24 @@ export function currentBenchWorkloadProviderInputCapture(options: {
     throw new Error('Provider input capture recovery differs from its private host allocation.');
   type Capture = Readonly<{ schemaVersion: 1; accountingBinding: CurrentBenchAccountingBinding;
     reservationId: string; bodyRef: string; bodyPath: string; bodySha256: string;
-    nativeSessionId: string; nativeTurnId: string; model: string; effort: string; accountId: string;
-    payer?: 'subscription' }>;
+    model: string; effort: string; accountId: string; payer?: 'subscription' } &
+    ({ agent?: never; nativeSessionId: string; nativeTurnId: string; anthropicVersion?: never; anthropicBeta?: never } |
+      { agent: 'claude'; nativeSessionId?: never; nativeTurnId?: never; anthropicVersion: string; anthropicBeta: null })>;
+  const matchesNativeInput = (body: unknown, session: unknown, turn: unknown) => {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+    const request = body as Record<string, unknown>;
+    if (request.model !== frozen.model) return false;
+    const config = claude ? request.output_config : request.reasoning;
+    if (!config || typeof config !== 'object' || Array.isArray(config) ||
+        (config as Record<string, unknown>).effort !== frozen.effort) return false;
+    if (claude) return session === undefined && turn === undefined &&
+      typeof request.max_tokens === 'number' && Number.isSafeInteger(request.max_tokens) && request.max_tokens > 0 &&
+      selfContainedAnthropicInput(request);
+    const correlation = readGatewayNativeCorrelation(request);
+    return uuid(session) && uuid(turn) &&
+      correlation.status === 'observed' && correlation.turnId === turn && correlation.threadId === session &&
+      (correlation.sessionId ?? correlation.threadId) === session;
+  };
   const published = new Map(recovery?.captures.map(pin => [pin.reservationId, pin.receiptSha256]) ?? []);
   const paths = (id: string) => ({ body: `${namespace}/${id}/body.json`, receipt: `${namespace}/${id}/receipt.json` });
   const allocationCensus = () => {
@@ -1196,24 +1220,23 @@ export function currentBenchWorkloadProviderInputCapture(options: {
     async captureProviderInput(attempt: Readonly<GatewayCarryTrialAttempt>): Promise<void> {
       if (readOnly) throw new Error('Read-only provider capture cannot allocate or forward a request.');
       if (allocationCensus() >= frozen.maxRequests || attempt.signal.aborted ||
-          !uuid(attempt.attemptId) || !uuid(attempt.nativeSessionId) || !uuid(attempt.nativeTurnId) ||
+          !uuid(attempt.attemptId) ||
           attempt.manifestSha256 !== binding.preregHash || attempt.armId !== binding.assignmentId ||
           attempt.accountId !== frozen.accountId || attempt.transport !== route.transport ||
           attempt.target !== route.target || attempt.credentialHeader !== route.credentialHeader ||
-          !digest(attempt.credentialSha256) || typeof attempt.body !== 'string')
+          !digest(attempt.credentialSha256) || typeof attempt.body !== 'string' || claude &&
+          (attempt.anthropicVersion !== anthropicInputVersion || attempt.anthropicBeta !== null))
         throw new Error('Provider input capture refused a foreign, cancelled or exhausted request.');
       const bytes = Buffer.from(attempt.body), hash = createHash('sha256').update(bytes).digest('hex');
-      const body = JSON.parse(attempt.body), correlation = readGatewayNativeCorrelation(body);
+      const body = JSON.parse(attempt.body);
       if (!bytes.length || bytes.length > frozen.maxBytes || bytes.toString('utf8') !== attempt.body ||
-          hash !== attempt.bodySha256 || body.model !== frozen.model || body.reasoning?.effort !== frozen.effort ||
-          correlation.status !== 'observed' || correlation.turnId !== attempt.nativeTurnId ||
-          correlation.threadId !== attempt.nativeSessionId ||
-          (correlation.sessionId ?? correlation.threadId) !== attempt.nativeSessionId)
+          hash !== attempt.bodySha256 || !matchesNativeInput(body, attempt.nativeSessionId, attempt.nativeTurnId))
         throw new Error('Provider input capture refused mismatched request bytes or native identity.');
       const path = paths(attempt.attemptId);
       const receipt: Capture = { schemaVersion: 1, accountingBinding: { ...binding }, reservationId: attempt.attemptId,
         bodyRef: `${namespace}:${attempt.attemptId}#body`, bodyPath: path.body, bodySha256: hash,
-        nativeSessionId: attempt.nativeSessionId, nativeTurnId: attempt.nativeTurnId,
+        ...(claude ? { agent: 'claude' as const, anthropicVersion: anthropicInputVersion, anthropicBeta: null }
+          : { nativeSessionId: attempt.nativeSessionId!, nativeTurnId: attempt.nativeTurnId! }),
         model: frozen.model, effort: frozen.effort, accountId: frozen.accountId,
         ...(frozen.payer ? { payer: frozen.payer } : {}) };
       const encoded = canonicalJson(receipt);
@@ -1245,15 +1268,13 @@ export function currentBenchWorkloadProviderInputCapture(options: {
         if (receipt.schemaVersion !== 1 || canonicalJson(receipt.accountingBinding) !== canonicalJson(binding) ||
             receipt.reservationId !== reservationId || receipt.bodyPath !== path.body ||
             receipt.bodyRef !== `${namespace}:${reservationId}#body` || !digest(receipt.bodySha256) ||
-            !uuid(receipt.nativeSessionId) || !uuid(receipt.nativeTurnId) || receipt.model !== frozen.model ||
-            receipt.effort !== frozen.effort || receipt.accountId !== frozen.accountId) return null;
+            receipt.model !== frozen.model || receipt.effort !== frozen.effort || receipt.accountId !== frozen.accountId ||
+            receipt.payer !== frozen.payer || (receipt.agent === 'claude') !== claude || claude &&
+            (receipt.anthropicVersion !== anthropicInputVersion || receipt.anthropicBeta !== null)) return null;
         const body = readContainedBenchmarkFile(frozen.captureRoot, path.body, frozen.maxBytes);
         if (createHash('sha256').update(body).digest('hex') !== receipt.bodySha256 || !unchanged()) return null;
-        const request = JSON.parse(body.toString('utf8')), correlation = readGatewayNativeCorrelation(request);
-        if (request.model !== receipt.model || request.reasoning?.effort !== receipt.effort ||
-            correlation.status !== 'observed' || correlation.turnId !== receipt.nativeTurnId ||
-            correlation.threadId !== receipt.nativeSessionId ||
-            (correlation.sessionId ?? correlation.threadId) !== receipt.nativeSessionId) return null;
+        const request = JSON.parse(body.toString('utf8'));
+        if (!matchesNativeInput(request, receipt.nativeSessionId, receipt.nativeTurnId)) return null;
         return Object.freeze({ ...receipt, accountingBinding: Object.freeze({ ...receipt.accountingBinding }) });
       } catch { return null; }
     },
@@ -2743,13 +2764,31 @@ export function currentBenchWorkloadHandoffReader(options: DbScope & {
   };
 }
 
+type CurrentBenchWorkloadNativeReceipt = {
+  nativeSessionId: string;
+} & ({ agent?: 'codex'; codexHome: string; nativeTurnId: string;
+  claudeConfigDir?: never; nativeMessageId?: never; messageRecordIndex?: never } |
+  { agent: 'claude'; claudeConfigDir: string; nativeMessageId: string; messageRecordIndex: number;
+    sourceSha256: string; codexHome?: never; nativeTurnId?: never });
+
+/** Backend identity is exclusive even for untyped host allocations. */
+function validWorkloadNativeReceipt(row: CurrentBenchWorkloadNativeReceipt): boolean {
+  const present = (value: unknown) => typeof value === 'string' && !!value.trim();
+  return present(row.nativeSessionId) && (row.agent === 'claude'
+    ? present(row.claudeConfigDir) && present(row.nativeMessageId) && /^[a-f0-9]{64}$/.test(row.sourceSha256) &&
+      Number.isSafeInteger(row.messageRecordIndex) && row.messageRecordIndex >= 0 &&
+      row.codexHome === undefined && row.nativeTurnId === undefined
+    : (row.agent === undefined || row.agent === 'codex') && present(row.codexHome) && present(row.nativeTurnId) &&
+      row.claudeConfigDir === undefined && row.nativeMessageId === undefined && row.messageRecordIndex === undefined);
+}
+
 /** Resolve a host-selected text block from the exact private native task.
  * Native input recording is distinct from provider consumption; a provider
  * send proof must be composed separately when the workload requires it. */
 export function currentBenchWorkloadContextReader(options: DbScope & {
   workspaceId: string; harnessSlug: string; runId: string; trialBindingHash: string; notBefore: string;
-  receipts: Array<{ receiptRef: string; subjectId: string; taskId: string; ownerId: string; label: string;
-    codexHome: string; nativeSessionId: string; nativeTurnId: string; recordIndex: number; contentIndex: number;
+  receipts: Array<CurrentBenchWorkloadNativeReceipt & { receiptRef: string; subjectId: string; taskId: string; ownerId: string; label: string;
+    recordIndex: number; contentIndex: number;
     contextId: string; consumer: string; index: number }>;
 }): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
   const { sql: suppliedSql, ...allocation } = options;
@@ -2758,8 +2797,8 @@ export function currentBenchWorkloadContextReader(options: DbScope & {
   const present = (value: string) => typeof value === 'string' && value.trim().length > 0;
   if (![frozen.workspaceId, frozen.harnessSlug, frozen.runId].every(present) ||
       !/^[a-f0-9]{64}$/.test(frozen.trialBindingHash) || !Number.isFinite(start) || !frozen.receipts.length ||
-      frozen.receipts.some(row => ![row.receiptRef, row.subjectId, row.taskId, row.ownerId, row.label, row.codexHome,
-        row.nativeSessionId, row.nativeTurnId, row.contextId, row.consumer].every(present) ||
+      frozen.receipts.some(row => !validWorkloadNativeReceipt(row) ||
+        ![row.receiptRef, row.subjectId, row.taskId, row.ownerId, row.label, row.contextId, row.consumer].every(present) ||
         ![row.index, row.recordIndex, row.contentIndex].every(n => Number.isSafeInteger(n) && n >= 0)) ||
       new Set(frozen.receipts.map(row => row.receiptRef)).size !== frozen.receipts.length ||
       new Set(frozen.receipts.map(row => row.index)).size !== frozen.receipts.length)
@@ -2768,7 +2807,8 @@ export function currentBenchWorkloadContextReader(options: DbScope & {
   return async (ref, binding) => {
     const receipt = allowed.get(ref);
     if (!receipt || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
-    const [{ resolveDb }, { codexHomeForSessionKey }, { readClosedCodexTurnInput }] = await Promise.all([
+    const [{ resolveDb }, { codexHomeForSessionKey, sessionClaudeConfigDir },
+      { readClosedCodexTurnInput, readClosedClaudeMessageInput }] = await Promise.all([
       import('./reproducibility/db'), import('@papercusp/orchestrator/session-launch-dirs'), import('../session-transcript-resolvers'),
     ]);
     const { sql } = resolveDb({ sql: suppliedSql, workspaceId });
@@ -2779,23 +2819,31 @@ export function currentBenchWorkloadContextReader(options: DbScope & {
        WHERE t.workspace_id = ${workspaceId} AND t.task_id = ${receipt.taskId}
          AND t.class = 'agent-session' AND t.state IN ('exited', 'killed', 'timed_out')
          AND t.detail->>'coordOwnerId' = ${receipt.ownerId} AND t.detail->>'label' = ${receipt.label}
-         AND a.session_id = ${receipt.nativeSessionId} AND a.agent = 'codex'
+         AND a.session_id = ${receipt.nativeSessionId} AND a.agent = ${receipt.agent ?? 'codex'}
          AND EXISTS (SELECT 1 FROM harness_shared.work_items item
                       WHERE item.workspace_id = ${workspaceId} AND item.harness_slug = ${frozen.harnessSlug}
                         AND item.feature_id = ${receipt.subjectId})
     `;
-    if (rows.length !== 1 || codexHomeForSessionKey(rows[0].adv_id) !== receipt.codexHome) return null;
-    const observed = await readClosedCodexTurnInput(sql, { workspaceId, codexHome: receipt.codexHome,
-      nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId,
-      recordIndex: receipt.recordIndex, contentIndex: receipt.contentIndex });
+    if (rows.length !== 1 || (receipt.agent === 'claude'
+      ? sessionClaudeConfigDir(receipt.ownerId) !== receipt.claudeConfigDir
+      : codexHomeForSessionKey(rows[0].adv_id) !== receipt.codexHome)) return null;
+    const observed = receipt.agent === 'claude'
+      ? await readClosedClaudeMessageInput(sql, { ...receipt, workspaceId })
+      : await readClosedCodexTurnInput(sql, { workspaceId, codexHome: receipt.codexHome,
+        nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId,
+        recordIndex: receipt.recordIndex, contentIndex: receipt.contentIndex });
     if (!observed) return null;
     const at = Date.parse(observed.at), row = rows[0];
     const times = [row.started_at, row.ended_at, row.native_started_at].map(value => value instanceof Date ? value.getTime() : NaN);
-    if (!times.every(Number.isFinite) || at < start || at < times[0] || at > times[1] || at < times[2]) return null;
+    if (!times.every(Number.isFinite) || at < start || at < times[0] || at > times[1] || at < times[2] ||
+        'completedAt' in observed && Date.parse(observed.completedAt) > times[1]) return null;
     return [{ index: receipt.index, kind: 'input', role: receipt.consumer, at: observed.at, content: observed.text,
       metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash, receiptRef: ref, contextId: receipt.contextId,
         nativeInputSource: { basis: 'closed-native-recorded-input', nativeSessionId: observed.nativeSessionId,
-          nativeTurnId: observed.nativeTurnId, recordIndex: observed.recordIndex, contentIndex: observed.contentIndex,
+          ...('nativeMessageId' in observed ? { agent: 'claude', nativeMessageId: observed.nativeMessageId,
+            messageRecordIndex: observed.messageRecordIndex, completedAt: observed.completedAt, recordUuid: observed.recordUuid }
+            : { nativeTurnId: observed.nativeTurnId }),
+          recordIndex: observed.recordIndex, contentIndex: observed.contentIndex,
           sourceSha256: observed.sourceSha256 } } }];
   };
 }
@@ -2805,8 +2853,8 @@ export function currentBenchWorkloadContextReader(options: DbScope & {
  * recorded result into a platform transition or a provider-consumption claim. */
 export function currentBenchWorkloadToolResultReader(options:
   Omit<Parameters<typeof currentBenchWorkloadContextReader>[0], 'receipts'> & {
-    receipts: Array<{ receiptRef: string; subjectId: string; taskId: string; ownerId: string; label: string;
-      codexHome: string; nativeSessionId: string; nativeTurnId: string; callRecordIndex: number; resultRecordIndex: number;
+    receipts: Array<CurrentBenchWorkloadNativeReceipt & { receiptRef: string; subjectId: string; taskId: string; ownerId: string; label: string;
+      callRecordIndex: number; resultRecordIndex: number; callContentIndex?: number; resultContentIndex?: number;
       callId: string; toolName: string; sourceSha256: string; argumentsSha256: string; outputSha256: string; index: number;
       /** Host-selected settled dispatch, including an inner target of a native wrapper.
        * The dispatcher callId is transient; the verified MCP native fingerprints
@@ -2822,8 +2870,11 @@ export function currentBenchWorkloadToolResultReader(options:
   const digest = (value: string) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
   if (![frozen.workspaceId, frozen.harnessSlug, frozen.runId].every(present) || !digest(frozen.trialBindingHash) ||
       !Number.isFinite(start) || !frozen.receipts.length || frozen.receipts.some(row =>
-        ![row.receiptRef, row.subjectId, row.taskId, row.ownerId, row.label, row.codexHome,
-          row.nativeSessionId, row.nativeTurnId, row.callId, row.toolName].every(present) ||
+        !validWorkloadNativeReceipt(row) || ![row.receiptRef, row.subjectId, row.taskId, row.ownerId, row.label,
+          row.callId, row.toolName].every(present) ||
+        row.agent === 'claude' && (row.dispatch !== undefined ||
+          ![row.callContentIndex, row.resultContentIndex].every(n => Number.isSafeInteger(n) && n! >= 0)) ||
+        row.agent !== 'claude' && (row.callContentIndex !== undefined || row.resultContentIndex !== undefined) ||
         ![row.sourceSha256, row.argumentsSha256, row.outputSha256].every(digest) ||
         ![row.index, row.callRecordIndex, row.resultRecordIndex].every(n => Number.isSafeInteger(n) && n >= 0) ||
         row.callRecordIndex >= row.resultRecordIndex || (row.dispatch !== undefined && (
@@ -2839,7 +2890,8 @@ export function currentBenchWorkloadToolResultReader(options:
   return async (ref, binding) => {
     const receipt = allowed.get(ref);
     if (!receipt || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
-    const [{ resolveDb }, { codexHomeForSessionKey }, { readClosedCodexTurnToolResult }] = await Promise.all([
+    const [{ resolveDb }, { codexHomeForSessionKey, sessionClaudeConfigDir },
+      { readClosedCodexTurnToolResult, readClosedClaudeMessageToolResult }] = await Promise.all([
       import('./reproducibility/db'), import('@papercusp/orchestrator/session-launch-dirs'), import('../session-transcript-resolvers'),
     ]);
     const { sql } = resolveDb({ sql: suppliedSql, workspaceId });
@@ -2850,20 +2902,26 @@ export function currentBenchWorkloadToolResultReader(options:
        WHERE t.workspace_id = ${workspaceId} AND t.task_id = ${receipt.taskId}
          AND t.class = 'agent-session' AND t.state IN ('exited', 'killed', 'timed_out')
          AND t.detail->>'coordOwnerId' = ${receipt.ownerId} AND t.detail->>'label' = ${receipt.label}
-         AND a.session_id = ${receipt.nativeSessionId} AND a.agent = 'codex'
+         AND a.session_id = ${receipt.nativeSessionId} AND a.agent = ${receipt.agent ?? 'codex'}
          AND EXISTS (SELECT 1 FROM harness_shared.work_items item
                       WHERE item.workspace_id = ${workspaceId} AND item.harness_slug = ${frozen.harnessSlug}
                         AND item.feature_id = ${receipt.subjectId})
     `;
-    if (rows.length !== 1 || codexHomeForSessionKey(rows[0].adv_id) !== receipt.codexHome) return null;
-    const observed = await readClosedCodexTurnToolResult(sql, { workspaceId, codexHome: receipt.codexHome,
-      nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId,
-      callRecordIndex: receipt.callRecordIndex, resultRecordIndex: receipt.resultRecordIndex });
+    if (rows.length !== 1 || (receipt.agent === 'claude'
+      ? sessionClaudeConfigDir(receipt.ownerId) !== receipt.claudeConfigDir
+      : codexHomeForSessionKey(rows[0].adv_id) !== receipt.codexHome)) return null;
+    const observed = receipt.agent === 'claude'
+      ? await readClosedClaudeMessageToolResult(sql, { ...receipt, workspaceId,
+        callContentIndex: receipt.callContentIndex!, resultContentIndex: receipt.resultContentIndex! })
+      : await readClosedCodexTurnToolResult(sql, { workspaceId, codexHome: receipt.codexHome,
+        nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId,
+        callRecordIndex: receipt.callRecordIndex, resultRecordIndex: receipt.resultRecordIndex });
     if (!observed) return null;
     const content = typeof observed.output === 'string' ? observed.output : canonicalJson(observed.output);
     const calledAt = Date.parse(observed.calledAt), at = Date.parse(observed.at), row = rows[0];
     const times = [row.started_at, row.ended_at, row.native_started_at].map(value => value instanceof Date ? value.getTime() : NaN);
     if (!times.every(Number.isFinite) || calledAt < start || calledAt < times[0] || calledAt < times[2] || at > times[1] ||
+        'completedAt' in observed && Date.parse(observed.completedAt) > times[1] ||
         observed.callId !== receipt.callId || observed.name !== receipt.toolName || observed.sourceSha256 !== receipt.sourceSha256 ||
         createHash('sha256').update(observed.arguments).digest('hex') !== receipt.argumentsSha256 ||
         createHash('sha256').update(content).digest('hex') !== receipt.outputSha256) return null;
@@ -2912,8 +2970,13 @@ export function currentBenchWorkloadToolResultReader(options:
       metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash, receiptRef: ref,
         ...(platformInvocationSource ? { platformInvocationSource } : {}),
         nativeToolSource: { basis: 'closed-native-recorded-tool-result', nativeSessionId: observed.nativeSessionId,
-          nativeTurnId: observed.nativeTurnId, callRecordIndex: observed.callRecordIndex, resultRecordIndex: observed.resultRecordIndex,
-          callId: observed.callId, callType: observed.callType, outputKind: typeof observed.output === 'string' ? 'text' : 'blocks',
+          ...('nativeMessageId' in observed ? { agent: 'claude', nativeMessageId: observed.nativeMessageId,
+            messageRecordIndex: observed.messageRecordIndex, completedAt: observed.completedAt, callType: 'tool_use',
+            callContentIndex: observed.callContentIndex, resultContentIndex: observed.resultContentIndex,
+            callRecordUuid: observed.callRecordUuid, resultRecordUuid: observed.resultRecordUuid, callMessageId: observed.callMessageId }
+            : { nativeTurnId: observed.nativeTurnId, callType: observed.callType }),
+          callRecordIndex: observed.callRecordIndex, resultRecordIndex: observed.resultRecordIndex,
+          callId: observed.callId, outputKind: typeof observed.output === 'string' ? 'text' : 'blocks',
           sourceSha256: observed.sourceSha256, arguments: observed.arguments,
           argumentsSha256: receipt.argumentsSha256, outputSha256: receipt.outputSha256,
           calledAt: observed.calledAt, isError: observed.isError } } }];
@@ -2948,13 +3011,16 @@ export function currentBenchWorkloadProviderInputReader(options:
   const uuid = (value: string) => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
   if (!host || host.workspaceId !== frozen.workspaceId || host.runId !== frozen.runId ||
       !present(host.loopId) || !digest(host.preregHash) || !host.assignmentId?.startsWith('bench-assignment:') ||
-      frozen.receipts.some(row => !uuid(row.reservationId) || !uuid(row.nativeSessionId) || !uuid(row.nativeTurnId) ||
+      frozen.receipts.some(row => !validWorkloadNativeReceipt(row) || !uuid(row.reservationId) ||
+        (row.agent === 'claude' ? frozen.payer !== undefined || row.settledAt === undefined
+          : !uuid(row.nativeSessionId) || !uuid(row.nativeTurnId)) ||
         !digest(row.reservationNoteSha256) || row.settledAt !== undefined && !Number.isFinite(Date.parse(row.settledAt)) ||
         ![row.bodyRef, row.bodyPath, row.model, row.effort, row.accountId].every(present) ||
         !Number.isSafeInteger(row.inputIndex) || row.inputIndex < 0 ||
         row.nativeSource !== undefined && !['input', 'tool-result'].includes(row.nativeSource) ||
         row.nativeSource === 'tool-result' && ![row.contextId, row.consumer].every(present) ||
-        row.nativeSource !== 'tool-result' && (!Number.isSafeInteger(row.textIndex) || row.textIndex! < 0)) ||
+        (row.agent === 'claude' || row.nativeSource !== 'tool-result') &&
+          (!Number.isSafeInteger(row.textIndex) || row.textIndex! < 0)) ||
       new Set(frozen.receipts.map(row => row.reservationId)).size !== frozen.receipts.length)
     throw new Error('Workload provider input reader requires unique exact requests and a private accounting binding.');
   const inputReceipts = frozen.receipts.filter(row => row.nativeSource !== 'tool-result');
@@ -2986,7 +3052,7 @@ export function currentBenchWorkloadProviderInputReader(options:
          AND r.arm_id = ${host.assignmentId} AND r.attempt_kind = 'evaluation'
          AND r.status IN ('open', 'settled')
     `;
-    const row = rows[0], observed = inputs[0];
+    const row = rows[0], observed = inputs[0], claude = receipt.agent === 'claude';
     const input = receipt.nativeSource === 'tool-result' ? { ...observed, kind: 'input' as const,
       role: receipt.consumer, metadata: { ...observed.metadata, contextId: receipt.contextId } } : observed;
     if (rows.length !== 1 || typeof row.note !== 'string' ||
@@ -2995,14 +3061,19 @@ export function currentBenchWorkloadProviderInputReader(options:
         createHash('sha256').update(row.note).digest('hex') !== receipt.reservationNoteSha256 ||
         !(row.created_at instanceof Date) || !(row.ended_at instanceof Date) ||
         row.created_at.getTime() < Date.parse(input.at!) || row.created_at > row.ended_at) return null;
+    const nativeSource = observed.metadata?.[receipt.nativeSource === 'tool-result' ? 'nativeToolSource' : 'nativeInputSource'] as
+      Record<string, unknown> | undefined;
+    if (claude && (!nativeSource || typeof nativeSource.completedAt !== 'string' ||
+        !Number.isFinite(Date.parse(nativeSource.completedAt)) || row.created_at.getTime() > Date.parse(nativeSource.completedAt))) return null;
     try {
       const note = JSON.parse(row.note), attempt = note.nativeGatewayAttempt, result = note.nativeGatewayAttemptResult;
       const bodyText = Buffer.from(bytes).toString('utf8');
       if (!Buffer.from(bodyText).equals(Buffer.from(bytes))) return null;
       const body = JSON.parse(bodyText), bodySha256 = createHash('sha256').update(bytes).digest('hex');
       const identity = { attemptId: receipt.reservationId, manifestSha256: host.preregHash, armId: host.assignmentId,
-        nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId, accountId: receipt.accountId,
-        bodySha256, ...currentBenchCodexRoute(frozen.payer ?? 'api-key') };
+        nativeSessionId: claude ? undefined : receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId, accountId: receipt.accountId,
+        bodySha256, ...(claude ? { transport: 'anthropic-http', target: anthropicMessagesTarget, credentialHeader: 'x-api-key',
+          anthropicVersion: anthropicInputVersion, anthropicBeta: null } : currentBenchCodexRoute(frozen.payer ?? 'api-key')) };
       if (!attempt || !result || Object.entries(identity).some(([key, value]) => attempt[key] !== value || result[key] !== value) ||
           !digest(attempt.credentialSha256) || result.credentialSha256 !== attempt.credentialSha256 ||
           !present(attempt.clockId) || result.clockId !== attempt.clockId || result.reservationRef !== receipt.reservationId ||
@@ -3011,35 +3082,63 @@ export function currentBenchWorkloadProviderInputReader(options:
           result.costUsdMeasurementMissing !== true || !present(result.providerCompletion?.responseId) ||
           result.providerCompletion.model !== receipt.model ||
           result.providerCompletion.providerEffort !== null && result.providerCompletion.providerEffort !== receipt.effort ||
-          body.model !== receipt.model || body.reasoning?.effort !== receipt.effort || !selfContainedOpenAiInput(body)) return null;
-      const correlation = readGatewayNativeCorrelation(body);
-      if (correlation.status !== 'observed' || correlation.turnId !== receipt.nativeTurnId ||
-          (correlation.sessionId ?? correlation.threadId) !== receipt.nativeSessionId ||
-          correlation.threadId !== receipt.nativeSessionId || !Array.isArray(body.input)) return null;
-      const message = body.input[receipt.inputIndex];
-      if (receipt.nativeSource === 'tool-result') {
-        const source = observed.metadata?.nativeToolSource as Record<string, unknown> | undefined;
-        const outputs = body.input.filter((item: Record<string, unknown>) =>
-          ['function_call_output', 'custom_tool_call_output'].includes(String(item?.type)) && item.call_id === receipt.callId);
-        const calls = body.input.map((item: Record<string, unknown>, index: number) => ({ item, index })).filter(
-          (row: { item: Record<string, unknown> }) => ['function_call', 'custom_tool_call'].includes(String(row.item?.type)) && row.item.call_id === receipt.callId);
-        const call = calls[0];
-        if (!source || source.outputKind !== 'text' || outputs.length !== 1 || calls.length !== 1 ||
-            call.index >= receipt.inputIndex || call.item.type !== source.callType ||
-            `${call.item.namespace ? call.item.namespace + '.' : ''}${call.item.name}` !== receipt.toolName ||
-            (call.item.type === 'function_call' ? call.item.arguments : call.item.input) !== source.arguments ||
-            message?.type !== (source.callType === 'function_call' ? 'function_call_output' : 'custom_tool_call_output') ||
-            message.call_id !== receipt.callId || typeof message.output !== 'string' || message.output !== input.content) return null;
+          body.model !== receipt.model) return null;
+      if (claude) {
+        if (result.providerCompletion.responseId !== receipt.nativeMessageId || body.output_config?.effort !== receipt.effort ||
+            !Number.isSafeInteger(body.max_tokens) || body.max_tokens <= 0 || !selfContainedAnthropicInput(body)) return null;
+        const message = body.messages[receipt.inputIndex];
+        if (receipt.nativeSource === 'tool-result') {
+          const source = nativeSource!;
+          const blocks = body.messages.flatMap((item: Record<string, unknown>, messageIndex: number) =>
+            Array.isArray(item.content) ? item.content.map((block: Record<string, unknown>, contentIndex: number) =>
+              ({ block, role: item.role, messageIndex, contentIndex })) : []);
+          type Block = { block: Record<string, unknown>; role: unknown; messageIndex: number; contentIndex: number };
+          const calls = blocks.filter((item: Block) => item.block.type === 'tool_use' && item.block.id === receipt.callId);
+          const results = blocks.filter((item: Block) => item.block.type === 'tool_result' && item.block.tool_use_id === receipt.callId);
+          const call: Block = calls[0], output: Block = results[0];
+          if (calls.length !== 1 || results.length !== 1 || call.role !== 'assistant' || output.role !== 'user' ||
+              call.messageIndex >= output.messageIndex || output.messageIndex !== receipt.inputIndex ||
+              output.contentIndex !== receipt.textIndex || source.callType !== 'tool_use' ||
+              call.block.name !== receipt.toolName || canonicalJson(call.block.input) !== canonicalJson(JSON.parse(source.arguments as string)) ||
+              (output.block.is_error ?? null) !== source.isError ||
+              (source.outputKind === 'text' ? typeof output.block.content !== 'string' || output.block.content !== input.content
+                : source.outputKind !== 'blocks' || !Array.isArray(output.block.content) || canonicalJson(output.block.content) !== input.content)) return null;
+        } else {
+          const block = typeof message?.content === 'string' && receipt.textIndex === 0
+            ? { type: 'text', text: message.content } : message?.content?.[receipt.textIndex!];
+          if (message?.role !== 'user' || block?.type !== 'text' || block.text !== input.content) return null;
+        }
       } else {
-        const block = message?.content?.[receipt.textIndex!];
-        if ((message?.type ?? 'message') !== 'message' || message.role !== 'user' ||
-            !Array.isArray(message.content) || block?.type !== 'input_text' || block.text !== input.content) return null;
+        if (body.reasoning?.effort !== receipt.effort || !selfContainedOpenAiInput(body)) return null;
+        const correlation = readGatewayNativeCorrelation(body);
+        if (correlation.status !== 'observed' || correlation.turnId !== receipt.nativeTurnId ||
+            (correlation.sessionId ?? correlation.threadId) !== receipt.nativeSessionId ||
+            correlation.threadId !== receipt.nativeSessionId || !Array.isArray(body.input)) return null;
+        const message = body.input[receipt.inputIndex];
+        if (receipt.nativeSource === 'tool-result') {
+          const source = observed.metadata?.nativeToolSource as Record<string, unknown> | undefined;
+          const outputs = body.input.filter((item: Record<string, unknown>) =>
+            ['function_call_output', 'custom_tool_call_output'].includes(String(item?.type)) && item.call_id === receipt.callId);
+          const calls = body.input.map((item: Record<string, unknown>, index: number) => ({ item, index })).filter(
+            (row: { item: Record<string, unknown> }) => ['function_call', 'custom_tool_call'].includes(String(row.item?.type)) && row.item.call_id === receipt.callId);
+          const call = calls[0];
+          if (!source || source.outputKind !== 'text' || outputs.length !== 1 || calls.length !== 1 ||
+              call.index >= receipt.inputIndex || call.item.type !== source.callType ||
+              `${call.item.namespace ? call.item.namespace + '.' : ''}${call.item.name}` !== receipt.toolName ||
+              (call.item.type === 'function_call' ? call.item.arguments : call.item.input) !== source.arguments ||
+              message?.type !== (source.callType === 'function_call' ? 'function_call_output' : 'custom_tool_call_output') ||
+              message.call_id !== receipt.callId || typeof message.output !== 'string' || message.output !== input.content) return null;
+        } else {
+          const block = message?.content?.[receipt.textIndex!];
+          if ((message?.type ?? 'message') !== 'message' || message.role !== 'user' ||
+              !Array.isArray(message.content) || block?.type !== 'input_text' || block.text !== input.content) return null;
+        }
       }
       return [{ ...input, metadata: { ...input.metadata,
         providerInputSource: { basis: 'completed-provider-request-input', reservationId: receipt.reservationId,
           reservationNoteSha256: receipt.reservationNoteSha256, bodyRef: receipt.bodyRef, bodySha256,
           inputIndex: receipt.inputIndex, ...(receipt.nativeSource === 'tool-result' ? { callId: receipt.callId } : { textIndex: receipt.textIndex }),
-          accountId: receipt.accountId,
+          accountId: receipt.accountId, ...(claude ? { agent: 'claude', anthropicVersion: anthropicInputVersion, anthropicBeta: null } : {}),
           responseId: result.providerCompletion.responseId, responseSha256: result.responseSha256 } } }];
     } catch { return null; }
   };

@@ -52,6 +52,7 @@ import {
   measureNativePushOutcomesWindow, nativePushCriterionForInstrument, rateNativePushOutcomes,
   type NativePushOutcomeMetrics,
 } from './code-intelligence/native-adoption';
+import { REUSE_MEASUREMENT_INSTRUMENT_KEYS } from './code-intelligence/reuse-measurement';
 import {
   measureWorkOverheadWindow, rateWorkOverhead, workOverheadCriterionForInstrument,
   WORK_OVERHEAD_VERSION, type WorkOverheadMetrics, type WorkOverheadWindow,
@@ -833,6 +834,28 @@ export async function resolveScorecardInstrumentSnapshots(
           cannotObserve: measured.metrics.cannotObserve,
         },
       };
+      continue;
+    }
+    if (Object.values(REUSE_MEASUREMENT_INSTRUMENT_KEYS).some(value => value === key)) {
+      const evidenceRef = 'harness_shared.code_intel_pushes:reuse-metrics-v1';
+      const workspaceId = input.rubric.workspaceId, harnessSlug = input.rubric.subjectHarnessSlug;
+      if (subject.kind !== 'plan' || subject.ref !== input.rubric.subjectPlan || !workspaceId || !harnessSlug
+        || start >= end || end > Date.parse(measuredAt)) {
+        snapshots[key] = { ...unknown('An exact completed workspace/harness subject-plan window is required.'), evidenceRef };
+        continue;
+      }
+      try {
+        const instrument = getRegisteredInstrument(key);
+        if (instrument?.evaluator !== 'platform' || !instrument.rescore) throw new Error('Reuse metric resolver is not registered.');
+        const result = await instrument.rescore.resolve({ workspaceId, harnessSlug,
+          windowStart: subject.windowStart, windowEnd: subject.windowEnd });
+        snapshots[key] = { verdict: result.verdict, measuredAt, provenance: 'platform-computed', evidenceRef,
+          window: { ...window, workspaceId, harnessSlug },
+          value: { resolver: key, resolverVersion: 1, detail: result.detail,
+            ...(result.value === undefined ? {} : { quantity: result.value, unit: instrument.rescore.unit }) } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Reuse metric unavailable: ${error instanceof Error ? error.message : String(error)}`), evidenceRef };
+      }
       continue;
     }
     const pushCriterion = nativePushCriterionForInstrument(key);

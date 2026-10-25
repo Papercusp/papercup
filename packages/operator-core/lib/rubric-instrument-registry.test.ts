@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import * as nativeAdoption from './code-intelligence/native-adoption';
+import { REUSE_MEASUREMENT_INSTRUMENT_KEYS } from './code-intelligence/reuse-measurement';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
@@ -259,6 +260,7 @@ describe('the registry seed set', () => {
       ...Object.values(GOAL_MODE_INSTRUMENT_KEYS),
       ...Object.values(nativeAdoption.NATIVE_ADOPTION_INSTRUMENT_KEYS),
       ...Object.values(nativeAdoption.NATIVE_PUSH_INSTRUMENT_KEYS),
+      ...Object.values(REUSE_MEASUREMENT_INSTRUMENT_KEYS),
       RATCHET_METRICS_INSTRUMENT_KEY,
       POSTGRES_RETENTION_INSTRUMENT_KEY,
       SILENT_HALT_STRANDED_INSTRUMENT_KEY,
@@ -278,6 +280,14 @@ describe('the registry seed set', () => {
         if (instrument?.evaluator !== 'platform') throw new Error('expected platform instrument');
         const criterion = nativeAdoption.nativeAdoptionCriterionForInstrument(key);
         if (!criterion) {
+          if (Object.values(REUSE_MEASUREMENT_INSTRUMENT_KEYS).some(value => value === key)) {
+            expect(instrument.rescore?.windowMs).toBe(28 * 86_400_000);
+            expect(instrument.rescore?.scope).toBe('harness');
+            expect(instrument.rescore?.unit).toBe(key === REUSE_MEASUREMENT_INSTRUMENT_KEYS.redundancy ? 'count' : '%');
+            expect(await instrument.rescore!.resolve(window)).toEqual({ verdict: 'unknown',
+              detail: 'Exact workspace, harness and valid window required.' });
+            continue;
+          }
           const harnessFamilies = [COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY,
             DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, ...Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS), RATCHET_METRICS_INSTRUMENT_KEY,
             POSTGRES_RETENTION_INSTRUMENT_KEY];
