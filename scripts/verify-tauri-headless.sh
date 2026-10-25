@@ -3488,9 +3488,12 @@ teardown() {
   write_stop_script
   "$WORK/stop.sh" >"$WORK/stop.log" 2>&1 || stop_rc=$?
   if [ "$stop_rc" -ne 0 ]; then
-    [ "$ec" -ne 0 ] || ec=1
+    # Cleanup failure must not replace the step that originally aborted boot.
+    if [ "$ec" -eq 0 ]; then
+      ec=1
+      vh_step generated-stop-script
+    fi
     artifacts_retained=0
-    vh_step generated-stop-script
     log "FATAL: generated stop script failed (exit=$stop_rc)"
     tail -n 40 "$WORK/stop.log" >&2
   fi
@@ -5095,9 +5098,14 @@ log "origin health confirmed: apiHealth=200 rootHtml=200 (pid=$BRIDGE_PID)"
 # isolated profile starts without a stable sentinel, can write/read it, and can
 # clear it again. The private XDG/dataDirectory roots above make `before:null`
 # meaningful: an ambient desktop profile must never already contain this key.
-if [ "$ISOLATED_DB" = "1" ]; then
+verify_isolated_storage_sentinel() {
+  local evidence_dir="${VH_RUN_DIR:-$WORK}/phases/boot/isolated-storage" probe_status=0
+  mkdir -p -- "$evidence_dir" || return 1
   ISOLATED_STORAGE_SENTINEL_KEY='papercusp.verify-tauri-headless.isolated-sentinel.v1'
-  ISOLATED_STORAGE_SENTINEL_JSON="$("$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" "
+  # A failed evaluation is unmeasured storage, not an empty sentinel result.
+  # Keep both streams and the real status before teardown destroys the WebView.
+  timeout --signal=TERM --kill-after=1 "${HEALTH_PROBE_TIMEOUT}s" \
+    "$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" "
     (function () {
       var key = '$ISOLATED_STORAGE_SENTINEL_KEY';
       var value = 'verify-tauri-headless-isolated-v1';
@@ -5107,13 +5115,26 @@ if [ "$ISOLATED_DB" = "1" ]; then
       localStorage.removeItem(key);
       return JSON.stringify({ before: before, after: after, cleared: localStorage.getItem(key) === null });
     })()
-  " 2>&1)" || ISOLATED_STORAGE_SENTINEL_JSON=""
+  " >"$evidence_dir/probe.stdout" 2>"$evidence_dir/probe.stderr" || probe_status=$?
+  printf '%s\n' "$probe_status" >"$evidence_dir/probe.status" || return 1
+  ISOLATED_STORAGE_SENTINEL_JSON="$(cat "$evidence_dir/probe.stdout")" || return 1
+  if [ "$probe_status" -ne 0 ]; then
+    echo "FATAL: isolated WebView storage evaluation did not complete (exit=$probe_status); storage isolation is unmeasured. Evidence: $evidence_dir" >&2
+    cat "$evidence_dir/probe.stdout" "$evidence_dir/probe.stderr" >&2
+    return 1
+  fi
   if ! grep -Eq '"before"[[:space:]]*:[[:space:]]*null' <<<"$ISOLATED_STORAGE_SENTINEL_JSON" \
     || ! grep -Eq '"after"[[:space:]]*:[[:space:]]*"verify-tauri-headless-isolated-v1"' <<<"$ISOLATED_STORAGE_SENTINEL_JSON" \
     || ! grep -Eq '"cleared"[[:space:]]*:[[:space:]]*true' <<<"$ISOLATED_STORAGE_SENTINEL_JSON"; then
     echo "FATAL: isolated WebView localStorage profile failed its absent/write/read/clear sentinel check: $ISOLATED_STORAGE_SENTINEL_JSON" >&2
-    exit 1
+    echo "       Evaluation evidence: $evidence_dir" >&2
+    return 1
   fi
+}
+
+if [ "$ISOLATED_DB" = "1" ]; then
+  vh_step isolated-webview-storage
+  verify_isolated_storage_sentinel || exit 1
   # A real profile file is the second half of the guard: a mock/localStorage
   # shim could pass the JS round-trip without proving WebKit used our path.
   if ! find "$ISOLATED_WEBVIEW_ROOT" -type f -print -quit 2>/dev/null | grep -q .; then
