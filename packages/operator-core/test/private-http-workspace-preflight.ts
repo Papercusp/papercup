@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -639,6 +639,121 @@ function assertCommittedReaderClosure(closure: CommittedReaderClosure) {
 }
 
 const digestBytes = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
+
+// Node has no posix_fadvise binding. Inherit the parent's already-open file
+// description; opening its pathname again would advise a different description.
+// Python isolation avoids importing site hooks or PYTHONPATH from the caller.
+const privateArtifactReadAdvice = [
+  'import json, os, sys',
+  's = os.fstat(3)',
+  'assert [str(s.st_dev), str(s.st_ino), str(s.st_size)] == sys.argv[1:]',
+  'os.posix_fadvise(3, 0, 0, os.POSIX_FADV_RANDOM)',
+  'print(json.dumps(dict(dev=str(s.st_dev), ino=str(s.st_ino), size=str(s.st_size),',
+  '    executable=sys.executable, version=sys.version, advice="POSIX_FADV_RANDOM")))',
+].join('\n');
+
+export interface PrivateArtifactReadAdvice {
+  path: string;
+  dev: string;
+  ino: string;
+  size: string;
+  executable: string;
+  version: string;
+  advice: 'POSIX_FADV_RANDOM';
+  helperSha256: string;
+}
+
+/** Full installed-runtime census for private preparation, including large model
+ * files. Read advice changes only this open description's readahead policy;
+ * every byte is still hashed. Linux requires Python3's stdlib fadvise support.
+ * This is source preparation evidence, never loaded-host or acceptance proof.
+ */
+export function censusPrivateRuntimeArtifact(root: string, options: {
+  /** The caller's continuous setup deadline can only shorten our 120s ceiling. */
+  deadlineMs?: number;
+  /** Retain advice evidence even if a subsequent identity/stability check fails. */
+  onReadAdvice?: (record: PrivateArtifactReadAdvice) => void;
+} = {}) {
+  const started = Date.now();
+  assert.ok(options.deadlineMs === undefined || Number.isFinite(options.deadlineMs), 'Invalid artifact deadline');
+  const deadline = Math.min(started + 120_000, options.deadlineMs ?? Infinity);
+  const digest = createHash('sha256');
+  const inventory: Array<{ path: string; kind: 'directory' | 'file'; dev: string; ino: string;
+    mtimeNs: string; ctimeNs: string; mode: number; size?: number; sha256?: string }> = [];
+  const readAdvice: PrivateArtifactReadAdvice[] = [];
+  let files = 0, bytes = 0;
+  const withinBudget = () => assert.ok(Date.now() <= deadline, 'Artifact census time ceiling exceeded');
+  const stable = (before: import('node:fs').BigIntStats, after: import('node:fs').BigIntStats) => {
+    for (const key of ['dev', 'ino', 'mode', 'size', 'mtimeNs', 'ctimeNs'] as const)
+      assert.equal(after[key], before[key], `Artifact changed during census: ${key}`);
+  };
+  function walk(dir: string) {
+    withinBudget();
+    const before = lstatSync(dir, { bigint: true });
+    assert.ok(before.isDirectory(), 'Artifact directory cannot be a link or special object');
+    assert.ok(inventory.length < 50_000, 'Artifact object ceiling exceeded');
+    inventory.push({ path: relative(root, dir), kind: 'directory', dev: String(before.dev),
+      ino: String(before.ino), mode: Number(before.mode) & 0o777,
+      mtimeNs: String(before.mtimeNs), ctimeNs: String(before.ctimeNs) });
+    for (const name of readdirSync(dir).sort()) {
+      withinBudget();
+      const file = join(dir, name), st = lstatSync(file, { bigint: true });
+      if (st.isDirectory()) { walk(file); continue; }
+      assert.ok(st.isFile(), 'Artifact cannot contain a link or special object');
+      assert.ok(inventory.length < 50_000, 'Artifact object ceiling exceeded');
+      assert.ok(st.size <= BigInt(8 * 1024 ** 3 - bytes), 'Artifact byte ceiling exceeded');
+      // NONBLOCK prevents a racing replacement with a FIFO from hanging
+      // before fstat. Never follow a replacement symlink.
+      const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const hash = createHash('sha256');
+      let readBytes = 0;
+      try {
+        const opened = fstatSync(fd, { bigint: true });
+        assert.ok(opened.isFile(), 'Opened artifact is not a regular file');
+        stable(st, opened);
+        if (process.platform === 'linux' && st.size >= BigInt(16 * 1024 ** 2)) {
+          withinBudget();
+          const record: PrivateArtifactReadAdvice = {
+            ...JSON.parse(execFileSync('python3', ['-I', '-S', '-c', privateArtifactReadAdvice,
+              String(st.dev), String(st.ino), String(st.size)], {
+              stdio: ['ignore', 'pipe', 'pipe', fd], encoding: 'utf8', maxBuffer: 16 * 1024,
+              timeout: Math.max(1, Math.min(5_000, deadline - Date.now())),
+            })),
+            path: relative(root, file), helperSha256: digestBytes(privateArtifactReadAdvice),
+          };
+          for (const key of ['dev', 'ino', 'size'] as const) assert.equal(record[key], String(st[key]));
+          assert.equal(record.advice, 'POSIX_FADV_RANDOM');
+          assert.ok(record.executable && record.version, 'Read advice interpreter evidence missing');
+          readAdvice.push(record);
+          options.onReadAdvice?.({ ...record });
+          stable(st, fstatSync(fd, { bigint: true }));
+        }
+        const chunk = Buffer.allocUnsafe(Math.min(4 * 1024 ** 2, Math.max(1, Number(st.size))));
+        let count: number;
+        while ((count = readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+          readBytes += count;
+          assert.ok(readBytes <= Number(st.size), 'Artifact grew during census');
+          hash.update(chunk.subarray(0, count));
+          withinBudget();
+        }
+        assert.equal(readBytes, Number(st.size), 'Artifact byte count changed during census');
+        stable(st, fstatSync(fd, { bigint: true }));
+        stable(st, lstatSync(file, { bigint: true }));
+      } finally { closeSync(fd); }
+      const sha256 = hash.digest('hex'), path = relative(root, file), mode = Number(st.mode) & 0o777;
+      digest.update(JSON.stringify([path, mode, sha256]));
+      files++; bytes += readBytes;
+      inventory.push({ path, kind: 'file', mode, size: readBytes, sha256, dev: String(st.dev),
+        ino: String(st.ino), mtimeNs: String(st.mtimeNs), ctimeNs: String(st.ctimeNs) });
+    }
+    stable(before, lstatSync(dir, { bigint: true }));
+    withinBudget();
+  }
+  walk(root);
+  return { root, files, bytes, objects: inventory.length, sha256: digest.digest('hex'),
+    elapsedMs: Date.now() - started, inventory, readAdvice,
+    advicePlatform: process.platform === 'linux' ? 'linux-same-open-description' : 'not-applicable' };
+}
 function inside(root: string, path: string) {
   const rel = relative(realpathSync(root), realpathSync(path));
   return rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel);

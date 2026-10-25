@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, lstatSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { committedWorkRootDependencyDonor, OWNER_MARKER } from '../lint-as-committed.mjs';
 import { censusSpawnArgs, interpretRestrictedHoldPreflight } from './restricted-hold-preflight.mjs';
@@ -29,6 +30,74 @@ export function admitDesktopPortalNativeParent(env = process.env, nowMs = Date.n
   }
   return admitTaskDeadline({ env, nowMs, knownEstimateMs: testTimeoutMs,
     knownTasks: 3, unknownTasks: 0 });
+}
+
+/** Validate private candidate bytes before preparation; optionally freeze only declared SPA files. */
+export function verifyDesktopPortalCandidateSpa(repoRoot, env = process.env, output) {
+  if (!env.PAPERCUSP_SHARED_SPA_DIST) return null;
+  const manifest = env.PAPERCUSP_DESKTOP_CANDIDATE_MANIFEST;
+  const digest = env.VERIFY_TAURI_CANDIDATE_MANIFEST_SHA256;
+  if (!manifest || !digest) throw new Error('VERIFY_TAURI_SPA_UNBOUND: candidate manifest and digest required');
+  const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+  const manifestBytes = readFileSync(manifest);
+  if (hash(manifestBytes) !== digest) throw new Error('VERIFY_TAURI_SPA_UNBOUND: candidate manifest hash mismatch');
+  const receipt = JSON.parse(manifestBytes.toString());
+  const commitSha = execFileSync('git', ['rev-parse', env.VERIFY_TAURI_SOURCE_REF || 'HEAD'], {
+    cwd: repoRoot, encoding: 'utf8',
+  }).trim();
+  if (receipt.schemaVersion !== 'desktop-portal-private-candidate-v1'
+    || receipt.desktopSource?.commitSha !== commitSha || receipt.desktopSource?.worktreeDirty !== false) {
+    throw new Error('VERIFY_TAURI_SPA_UNBOUND: candidate must name the clean selected desktop commit');
+  }
+  const directory = dirname(resolve(manifest));
+  const spa = join(directory, 'spa');
+  if (env.PAPERCUSP_DESKTOP_INTERFACE !== 'portal-candidate'
+    || resolve(env.PAPERCUSP_SHARED_SPA_DIST) !== spa
+    || receipt.environment?.PAPERCUSP_DESKTOP_INTERFACE !== 'portal-candidate'
+    || receipt.environment?.PAPERCUSP_SPA_DIST !== spa
+    || receipt.environment?.PAPERCUSP_DESKTOP_PORTAL_HOST_BUNDLE !== join(directory, 'desktop-portal.cjs')) {
+    throw new Error('VERIFY_TAURI_SPA_UNBOUND: candidate SPA selection differs from its manifest');
+  }
+  if (realpathSync(directory) !== directory || realpathSync(manifest) !== resolve(manifest)) {
+    throw new Error('VERIFY_TAURI_SPA_UNBOUND: candidate cannot traverse a symlink');
+  }
+  const paths = new Set();
+  const spaFiles = [];
+  if (!Array.isArray(receipt.files)) throw new Error('VERIFY_TAURI_SPA_UNBOUND: candidate files required');
+  for (const file of receipt.files) {
+    const path = file.path;
+    if (typeof path !== 'string' || isAbsolute(path) || path.includes('\\')
+      || path.split('/').some(part => !part || part === '.' || part === '..') || paths.has(path)) {
+      throw new Error('VERIFY_TAURI_SPA_UNBOUND: unsafe candidate path');
+    }
+    paths.add(path);
+    const target = join(directory, path);
+    if (realpathSync(target) !== target || !lstatSync(target).isFile()) {
+      throw new Error('VERIFY_TAURI_SPA_UNBOUND: candidate file is not regular or traverses a symlink');
+    }
+    const bytes = readFileSync(target);
+    if (hash(bytes) !== file.sha256) throw new Error(`VERIFY_TAURI_SPA_UNBOUND: candidate hash mismatch: ${path}`);
+    if (path.startsWith('spa/')) spaFiles.push({ path: path.slice(4), bytes, sha256: file.sha256 });
+  }
+  for (const path of ['spa/index.html', 'spa/wordmark.svg', 'desktop-portal.cjs']) {
+    if (!paths.has(path)) throw new Error(`VERIFY_TAURI_SPA_UNBOUND: candidate missing ${path}`);
+  }
+  if (!spaFiles.some(file => file.path.startsWith('assets/'))
+    || !readFileSync(join(spa, 'index.html'), 'utf8').includes('content="portal-candidate"')) {
+    throw new Error('VERIFY_TAURI_SPA_UNBOUND: candidate frontend is incomplete');
+  }
+  // Copy verified buffers, not paths that may change after the hash check.
+  // Unlisted files are never served and a later source change cannot alter this run.
+  if (output !== undefined) {
+    mkdirSync(output, { recursive: true });
+    for (const file of spaFiles) {
+      const target = join(output, file.path);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, file.bytes, { flag: 'wx' });
+      if (hash(readFileSync(target)) !== file.sha256) throw new Error('Candidate SPA copy hash mismatch');
+    }
+  }
+  return { commitSha, manifestSha256: digest, files: paths.size, spaDist: output ?? spa };
 }
 
 // A real native verifier is a separate runtime. Its assertion runner will
@@ -92,6 +161,7 @@ export function nativeVerifierEnv(env, launch) {
 export function preflightNativeVerifier(repoRoot, env, spawn = spawnSync) {
   const root = resolve(repoRoot);
   const child = nativeVerifierEnv(env, { repoRoot: root });
+  verifyDesktopPortalCandidateSpa(root, child);
   if (!child.PAPERCUSP_WORKSPACE_ID?.trim()) {
     throw new Error('Native verifier requires a source workspace before preparation');
   }
@@ -106,11 +176,15 @@ export function preflightNativeVerifier(repoRoot, env, spawn = spawnSync) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    if (process.argv[2] !== '--preflight' || !process.argv[3]) {
-      throw new Error('usage: verify-tauri-native-env.mjs --preflight <repo-root>');
+    if (!process.argv[3]) throw new Error('Native verifier requires a repo root');
+    if (process.argv[2] === '--candidate-spa') {
+      console.log(JSON.stringify(verifyDesktopPortalCandidateSpa(process.argv[3], process.env, process.argv[4])));
+    } else if (process.argv[2] === '--preflight') {
+      preflightNativeVerifier(process.argv[3], process.env);
+      console.log('VERIFY_TAURI_NATIVE_PREFLIGHT admitted=1');
+    } else {
+      throw new Error('usage: verify-tauri-native-env.mjs --preflight|--candidate-spa <repo-root> [output]');
     }
-    preflightNativeVerifier(process.argv[3], process.env);
-    console.log('VERIFY_TAURI_NATIVE_PREFLIGHT admitted=1');
   } catch (error) {
     console.error(error.message);
     process.exitCode = 2;

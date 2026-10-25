@@ -272,6 +272,34 @@ it('retains the recorder and private runtime support in every original source ce
   expect(new Set(paths).size).toBe(paths.length);
 });
 
+it('pins direct calibrated fixture imports before recording an original lifetime', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'isolated-calibration-source-'));
+  const test = 'claim.e2e.test.ts', support = '__fixtures__/scoped-contracts.e2e.test.ts';
+  const testBytes = "import './__fixtures__/scoped-contracts.e2e.test';\n";
+  const supportBytes = 'export const fixture = "original";\n';
+  const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+  const git = (...args: string[]) => execFileSync('git', ['-C', root,
+    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args],
+  { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    mkdirSync(join(root, '__fixtures__'));
+    writeFileSync(join(root, test), testBytes);
+    writeFileSync(join(root, support), supportBytes);
+    git('init', '-q'); git('add', '.'); git('commit', '-qm', 'original calibrated fixture');
+    const commit = git('rev-parse', 'HEAD');
+    expect(await isolatedIntegrationSourceFiles(root, commit, [test])).toEqual([
+      { path: test, sha256: digest(testBytes), gitSha256: digest(testBytes) },
+      { path: support, sha256: digest(supportBytes), gitSha256: digest(supportBytes) },
+    ]);
+    const changed = 'export const fixture = "changed";\n';
+    writeFileSync(join(root, support), changed);
+    expect(await isolatedIntegrationSourceFiles(root, commit, [test, support, support])).toEqual([
+      { path: test, sha256: digest(testBytes), gitSha256: digest(testBytes) },
+      { path: support, sha256: digest(changed), gitSha256: digest(supportBytes) },
+    ]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 it('pins an imported private cleanup helper even when the caller lists only the launcher', async () => {
   const root = mkdtempSync(join(tmpdir(), 'isolated-cleanup-source-'));
   const launcher = 'scripts/with-test-pg.mjs';

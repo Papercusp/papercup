@@ -26,7 +26,8 @@ const testTimeoutMs = desktopPortalNativeTestTimeoutMs();
 it.skipIf(!manifest)('retains the actual private desktop portal preferences across host and PostgreSQL restart', async () => {
   if (native) admitDesktopPortalNativeParent(process.env);
   const directory = dirname(manifest!);
-  const receipt = JSON.parse(await readFile(manifest!, 'utf8'));
+  const manifestBytes = await readFile(manifest!);
+  const receipt = JSON.parse(manifestBytes.toString());
   expect(receipt.schemaVersion).toBe('desktop-portal-private-candidate-v1');
   for (const path of ['desktop-portal.cjs', 'spa/index.html', 'spa/wordmark.svg']) {
     const bytes = await readFile(join(directory, path));
@@ -45,6 +46,8 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
   const nativeEnvHelper = join(repo, 'scripts/lib/verify-tauri-native-env.mjs');
   const { nativeVerifierEnv } = await import(nativeEnvHelper);
   const nativeEnv = () => nativeVerifierEnv({ ...process.env, ...nativeBudget,
+    PAPERCUSP_SHARED_SPA_DIST: join(directory, 'spa'),
+    VERIFY_TAURI_CANDIDATE_MANIFEST_SHA256: createHash('sha256').update(manifestBytes).digest('hex'),
     PAPERCUSP_PTOOL_LAUNCHER: launcher }, { timeoutMs: nativeTimeoutMs, repoRoot: repo });
   if (native) {
     await run(process.execPath, [join(repo, 'scripts/lib/verify-tauri-deadline.mjs'), 'prepare', '0', '1'], {
@@ -132,7 +135,6 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
         join(repo, 'apps/operator/bin/desktop-portal-native.test.ts')], {
         cwd: repo, timeout: nativeTimeoutMs, maxBuffer: 8 * 1024 * 1024,
         env: { ...nativeEnv(), VERIFY_TAURI_ISOLATED_DB: '1', VERIFY_TAURI_ISOLATED_SEED: 'ready',
-          PAPERCUSP_SHARED_SPA_DIST: join(directory, 'spa'),
           PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
           PAPERCUSP_PTOOL_LAUNCHER: launcher,
         },

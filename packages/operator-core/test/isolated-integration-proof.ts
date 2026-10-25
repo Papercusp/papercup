@@ -521,6 +521,15 @@ export function observeIsolatedWorkerLifetime(child: ChildProcess, root: string,
 /** Preserve the superproject's pinned submodule identity, rather than its checkout HEAD. */
 export async function isolatedIntegrationSourceFiles(root: string, commit: string, paths: string[]) {
   const sourcePaths = [...new Set(paths)];
+  // Match fromTestRun calibration before observing the original lifetime. A
+  // side-effect test import is executable fixture input even when its cases
+  // are excluded by the selected test-name filter.
+  const { deriveFixtureSupportPaths } = await import('../lib/agent-tools/plans/bind-from-test-run');
+  for (const path of paths.filter(path => /\.(test|spec)\.[cm]?[jt]sx?$/.test(path))) {
+    for (const support of deriveFixtureSupportPaths(root, path)) {
+      if (!sourcePaths.includes(support)) sourcePaths.push(support);
+    }
+  }
   const launcher = 'scripts/with-test-pg.mjs';
   // The launcher owns teardown. Its extracted helper belongs to the same
   // source receipt even when an older caller only declares the launcher.

@@ -9,6 +9,13 @@ export function admitDesktopPortalNativeParent(env?: NodeJS.ProcessEnv, nowMs?: 
     cleanupReserveMs: number;
     childCutoffEpochMs: number | null;
 };
+/** Validate private candidate bytes before preparation; optionally freeze only declared SPA files. */
+export function verifyDesktopPortalCandidateSpa(repoRoot: any, env: NodeJS.ProcessEnv | undefined, output: any): {
+    commitSha: string;
+    manifestSha256: string;
+    files: number;
+    spaDist: any;
+} | null;
 /**
  * @param {NodeJS.ProcessEnv} env
  * @param {{ timeoutMs?: number, nowMs?: number, repoRoot?: string }} [launch]

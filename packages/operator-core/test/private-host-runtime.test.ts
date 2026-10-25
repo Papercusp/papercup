@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import { runHarness } from '@papercusp/verification-harness';
 import * as ts from 'typescript';
-import { archivePrivateOperatorApiBuild, buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
+import { archivePrivateOperatorApiBuild, buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 import { readProcessIdentity } from '../lib/process-identity';
 
@@ -18,6 +18,78 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+
+it('censuses full private artifact bytes and modes with same-descriptor large-file advice', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-artifact-census-'));
+  dirs.push(root);
+  mkdirSync(join(root, 'nested'));
+  const large = Buffer.alloc(16 * 1024 ** 2 + 17, 0xa7);
+  const entries: Array<[string, Buffer, number]> = [
+    ['empty', Buffer.alloc(0), 0o600], ['nested/model', large, 0o640],
+    ['serve.mjs', Buffer.from('real small runtime bytes'), 0o755],
+  ];
+  const digest = createHash('sha256');
+  for (const [path, data, mode] of entries) {
+    writeFileSync(join(root, path), data); chmodSync(join(root, path), mode);
+    digest.update(JSON.stringify([path, mode, createHash('sha256').update(data).digest('hex')]));
+  }
+  const before = statSync(join(root, 'nested/model'), { bigint: true });
+  const observed: unknown[] = [];
+  const result = censusPrivateRuntimeArtifact(root, { onReadAdvice: record => observed.push(record) });
+  expect(result.sha256).toBe(digest.digest('hex'));
+  expect(result.files).toBe(3);
+  expect(result.bytes).toBe(entries.reduce((total, [, data]) => total + data.length, 0));
+  expect(result.inventory.map(row => row.path)).toEqual(['', 'empty', 'nested', 'nested/model', 'serve.mjs']);
+  expect(result.readAdvice).toEqual(observed);
+  if (process.platform === 'linux') {
+    expect(result.readAdvice).toEqual([expect.objectContaining({ path: 'nested/model',
+      dev: String(before.dev), ino: String(before.ino), size: String(before.size),
+      advice: 'POSIX_FADV_RANDOM', executable: expect.any(String), version: expect.any(String),
+      helperSha256: expect.stringMatching(/^[a-f0-9]{64}$/) })]);
+  } else {
+    expect(result.advicePlatform).toBe('not-applicable');
+    expect(observed).toEqual([]);
+  }
+  const after = statSync(join(root, 'nested/model'), { bigint: true });
+  for (const key of ['dev', 'ino', 'mode', 'size', 'mtimeNs', 'ctimeNs'] as const)
+    expect(after[key]).toBe(before[key]);
+});
+
+it.skipIf(process.platform !== 'linux')('rejects changed, replaced, or unenumerated artifact content after advice', () => {
+  for (const mutation of ['truncate', 'replace', 'add'] as const) {
+    const root = mkdtempSync(join(tmpdir(), 'private-artifact-mutation-'));
+    dirs.push(root);
+    const file = join(root, 'model');
+    writeFileSync(file, Buffer.alloc(16 * 1024 ** 2));
+    expect(() => censusPrivateRuntimeArtifact(root, { onReadAdvice: () => {
+      if (mutation === 'truncate') truncateSync(file, 8);
+      if (mutation === 'replace') { renameSync(file, join(root, 'old')); writeFileSync(file, 'replacement'); }
+      if (mutation === 'add') writeFileSync(join(root, 'new-unenumerated'), 'added');
+    } })).toThrow(/Artifact changed during census/);
+  }
+});
+
+it.skipIf(process.platform !== 'linux')('fails private artifact qualification when the Linux advice prerequisite is missing', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-artifact-no-python-'));
+  dirs.push(root);
+  writeFileSync(join(root, 'model'), Buffer.alloc(16 * 1024 ** 2));
+  vi.stubEnv('PATH', root);
+  expect(() => censusPrivateRuntimeArtifact(root)).toThrow(/python3.*ENOENT/);
+});
+
+it.skipIf(process.platform === 'win32')('rejects artifact links and refuses byte/time overflow before reading', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-artifact-bounds-'));
+  dirs.push(root);
+  writeFileSync(join(root, 'real'), 'bytes');
+  symlinkSync('real', join(root, 'link'));
+  expect(() => censusPrivateRuntimeArtifact(root)).toThrow(/link or special object/);
+  rmSync(join(root, 'link'));
+  writeFileSync(join(root, 'oversized'), '');
+  truncateSync(join(root, 'oversized'), 8 * 1024 ** 3 + 1);
+  expect(() => censusPrivateRuntimeArtifact(root)).toThrow(/Artifact byte ceiling/);
+  expect(() => censusPrivateRuntimeArtifact(root, { deadlineMs: Date.now() - 1 })).toThrow(/time ceiling/);
 });
 
 it('retains teardown signal evidence on a forced-exit timeout and removes its listeners', async () => {
