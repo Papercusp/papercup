@@ -698,6 +698,39 @@ describe('retention on a real fixture tree', () => {
     expect(fresh).toHaveBeenCalledWith(root, expect.objectContaining({ paths: [source] }));
   });
 
+  it('adopts a pending continuous census before later roots can spend the next deadline', async () => {
+    const { root, options } = await setup();
+    const before = join(root, 'before'), pending = join(root, 'pending'), later = join(root, 'later');
+    for (const path of [before, pending, later]) await mkdir(path);
+    const source = join(pending, 'expired'); await mkdir(source); await writeFile(join(source, 'data'), 'old');
+    const roots = [before, pending, later].map(path => ({ path, classId: 'fixture' }));
+    const scoped = { ...options, roots, runBudgetMs: 1000,
+      policy: options.policy.map(cls => ({ ...cls, roots: [before, pending, later], maxBytes: 1 })),
+      inspectTrees: inspectRetentionTrees };
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const unfinished = () => ({ entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0,
+      error: 'retention census pending; managed walk continues for adoption' });
+    try {
+      const first = await runDiskReclaimOnce({ ...scoped, inspectInitialCappedTrees: async (path, input) => {
+        if (path !== pending) return inspectRetentionTrees(path, input);
+        clock += 2000;
+        return unfinished();
+      } });
+      expect(first.scan?.stoppedAtRoot).toBe(pending);
+      expect(first.entries.filter(entry => entry.status === 'removed')).toEqual([]);
+      const initial = vi.fn(async (path: string, input: Parameters<typeof inspectRetentionTrees>[1]) => {
+        if (path !== later) return inspectRetentionTrees(path, input);
+        clock += 2000;
+        return unfinished();
+      });
+      const resumed = await runDiskReclaimOnce({ ...scoped, previousReceipt: first, inspectInitialCappedTrees: initial });
+      expect(initial.mock.calls[0]?.[0]).toBe(pending);
+      expect(resumed.entries).toContainEqual(expect.objectContaining({ path: source, status: 'removed' }));
+      await expect(stat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { now.mockRestore(); }
+  });
+
   it('starts the next pass after a root whose census spent the preceding deadline', async () => {
     const { root, options } = await setup();
     const blocked = join(root, 'data-device'); await mkdir(blocked);

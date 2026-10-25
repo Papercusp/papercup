@@ -1041,9 +1041,15 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       if (previous && !previous.complete && !previous.dryRun && previous.host === receipt.host) {
         const blocked = previous.scan?.stoppedAtRoot;
         const index = roots.findIndex(root => blocked !== null && blocked !== undefined && root.aliases.includes(blocked));
-        // Rotate the existing physical order rather than dropping the slow root.
-        // A large first root must not spend every run before its peers start.
-        if (index >= 0) roots.push(...roots.splice(0, index + 1));
+        // An enrolled continuous measurement survives the caller deadline. Give
+        // its consumer the first turn before later roots can spend the next
+        // budget and let the completed result expire without adoption.
+        const pendingCensus = options.inspectInitialCappedTrees && previous.censuses?.some(census =>
+          roots[index]?.aliases.includes(census.root) &&
+          census.error === 'retention census pending; managed walk continues for adoption');
+        // Failed inline scans and productive partial effects still rotate past
+        // the slow root so they cannot starve their independent peers.
+        if (index >= 0) roots.push(...roots.splice(0, index + (pendingCensus ? 0 : 1)));
       }
       // Keep that rotation within each pressure tier. A healthy data-volume
       // census must not spend the pass before expired root-volume artifacts

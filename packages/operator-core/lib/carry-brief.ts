@@ -1876,11 +1876,13 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
   const parts: string[] = [
     'keep the identity block, the active plan and its open items, unverified claims awaiting owner confirmation, and owner-gated walls',
   ];
-  if (brief.directives.length > 0) {
+  const ownDirectives = brief.directives.filter((directive) => directive.recordedBy === brief.ownerId);
+  if (ownDirectives.length > 0) {
     // EI-11484: open owner directives outrank even walls — ids only (the
     // store re-renders them mechanically on every wake; copying wastes focus).
+    // Match the body renderer's ownership rule; workspace awareness is not an assignment.
     parts.push(
-      `OPEN OWNER DIRECTIVES ${brief.directives.map((d) => `#${d.id}`).join(', ')} — re-rendered every wake, keep the ids`,
+      `OPEN OWNER DIRECTIVES ${ownDirectives.map((d) => `#${d.id}`).join(', ')} — re-rendered every wake, keep the ids`,
     );
   }
   if (brief.walls.length > 0) {

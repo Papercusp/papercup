@@ -65,13 +65,18 @@ describe('complete retention census adoption', () => {
     expect(result.error).toBeDefined(); expect(result.entries).toEqual([]); expect(result.retained).toEqual([]);
     expect(launcher).toHaveBeenCalledOnce(); expect(await fs.readFile(join(slot, 'consumed'), 'utf8')).toBe('consumed\n');
   });
-  it('does not replace a live slot when its input or child population changes', async () => {
+  it('reports a finished changed-input census before replacing its live slot', async () => {
     const launcher = launch(false);
     await inspectDetachedRetentionTrees(root, options, walk(launcher, 15));
     await fs.writeFile(join(root, 'arrival'), 'new');
     expect((await inspectDetachedRetentionTrees(root, options, walk(launcher))).error).toContain('still active');
     expect(launcher).toHaveBeenCalledOnce();
     await finish();
+    const changed = await inspectDetachedRetentionTrees(root, options, walk(launcher));
+    expect(changed.error).toBe('retention census input changed since previous measurement');
+    expect(changed.entries).toEqual([]); expect(changed.retained).toEqual([]);
+    expect(launcher).toHaveBeenCalledOnce();
+    expect(await fs.readFile(join(slot, 'consumed'), 'utf8')).toBe('consumed\n');
     launcher.mockImplementation(async () => { await finish(); return { pid: 999_999_999, taskId: 'new', confined: true }; });
     await inspectDetachedRetentionTrees(root, options, walk(launcher));
     expect(launcher).toHaveBeenCalledTimes(2);
@@ -92,6 +97,12 @@ describe('complete retention census adoption', () => {
     if (mode === 'consumed') await fs.writeFile(join(slot, 'consumed'), 'consumed\n');
     else await fs.writeFile(join(root, 'arrival'), 'new');
     launcher.mockImplementation(async () => { await finish(); return { pid: 999_999_999, taskId: 'replacement', confined: true }; });
+    if (mode === 'changed-input') {
+      const changed = await inspectDetachedRetentionTrees(root, options, { ...walk(launcher), isAlive: () => false });
+      expect(changed.error).toBe('retention census input changed since previous measurement');
+      expect(launcher).toHaveBeenCalledOnce();
+      expect(await fs.readFile(join(slot, 'consumed'), 'utf8')).toBe('consumed\n');
+    }
     const replacement = await inspectDetachedRetentionTrees(root, options, { ...walk(launcher), isAlive: () => false });
     expect(replacement.error).toBeUndefined();
     expect(launcher).toHaveBeenCalledTimes(2);

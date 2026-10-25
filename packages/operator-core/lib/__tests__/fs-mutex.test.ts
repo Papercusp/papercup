@@ -1346,6 +1346,45 @@ describe('withFsMutex fairness (FIFO ticket queue)', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it('attributes FIFO timeout to the live older ticket without a waiting callback', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-fifo-timeout-owner-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const name = 'fifo-timeout-owner';
+    const queueDir = join(dir, `${name}.queue`);
+    const ticketDir = join(queueDir, '0000000000000001-live.ticket');
+    const owner = JSON.stringify({
+      pid: process.pid, host: hostname(), name,
+      intent: { workItem: 'older-retention-pass', phase: 'census' },
+    });
+    await mkdir(ticketDir, { recursive: true });
+    await writeFile(join(ticketDir, 'owner.json'), owner);
+    let ownerReads = 0;
+    let timeoutCount = 0;
+    let entered = false;
+    try {
+      await expect(withFsMutex(name, async () => { entered = true; }, {
+        timeoutMs: 0,
+        onTimedOut: () => { timeoutCount += 1; },
+        io: {
+          readFile: async (path: string, encoding: 'utf8') => {
+            if (path === join(ticketDir, 'owner.json')) ownerReads += 1;
+            return readFile(path, encoding);
+          },
+        },
+      })).rejects.toMatchObject({
+        code: 'ETIMEDOUT',
+        message: expect.stringContaining(`FIFO head (last observed): ${ticketDir}; owner: ${owner}`),
+      });
+      expect(entered).toBe(false);
+      expect(timeoutCount).toBe(1);
+      expect(ownerReads).toBe(1);
+      expect(await readdir(queueDir)).toEqual(['0000000000000001-live.ticket']);
+      expect(await readFile(join(ticketDir, 'owner.json'), 'utf8')).toBe(owner);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('checks only the live FIFO head in a wide queue instead of reading every waiter owner', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-wide-queue-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;

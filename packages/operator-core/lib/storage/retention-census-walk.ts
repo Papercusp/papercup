@@ -85,6 +85,14 @@ export async function inspectDetachedRetentionTrees(root: string,
     const used = await fs.access(consumed).then(() => true, () => false);
     if (state && (used || state.requestKey !== requestKey)) {
       if (!terminal) return incomplete('retention census previous measurement still active');
+      if (!used) {
+        // Report the obsolete terminal attempt before starting another walk.
+        // Otherwise a busy root stays "pending" on every pass and pins the
+        // retention cursor ahead of roots that can make progress. Its output
+        // remains ineligible for selection, and the next visit may replace it.
+        await fs.writeFile(consumed, 'consumed\n');
+        return incomplete('retention census input changed since previous measurement');
+      }
       await fs.rm(walk.dir, { recursive: true, force: true });
     } else if (!state && await fs.readdir(walk.dir).then(names => names.length > 0, () => false)) {
       return incomplete('retention census slot has unreadable state');

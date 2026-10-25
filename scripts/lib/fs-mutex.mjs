@@ -672,7 +672,7 @@ async function reclaimAbandonedLock(
  * Fail-open: no ordering information ⇒ the caller falls back to racing for the
  * lock directly, so a broken/unreadable queue can never deadlock acquisition.
  */
-async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase) {
+async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase, observeHead = () => {}) {
   let entries;
   try {
     entries = await readdir(ticketsDir, { withFileTypes: true });
@@ -685,7 +685,10 @@ async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase) {
     .sort();
   for (const ticketName of ticketNames) {
     const ticketDir = join(ticketsDir, ticketName);
-    if (await reclaimAbandonedLock(ticketDir, staleMs, io, measureSubphase)) continue;
+    let observedOwner = "(unreadable)";
+    if (await reclaimAbandonedLock(ticketDir, staleMs, io, measureSubphase, (rawOwner) => {
+      observedOwner = rawOwner;
+    })) continue;
     try {
       // Another waiter may have cleaned this candidate after our directory
       // snapshot. Skip that vanished entry and continue through the ordered
@@ -695,6 +698,9 @@ async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase) {
       if (error?.code === "ENOENT") continue;
       return null;
     }
+    // Reuse the liveness check's owner read. FIFO-only waiters never reach the
+    // writer-lock reclaim path, and diagnostics must not require onWaiting.
+    observeHead(ticketDir, observedOwner);
     return ticketDir;
   }
   return null;
@@ -881,6 +887,7 @@ export async function withFsMutex(name, fn, opts = {}) {
       ? Number(opts.waitingNoticeIntervalMs)
       : 0;
   let lastObservedOwner = "(not observed)";
+  let lastObservedQueueHead;
   let timeoutReported = false;
   const reportTimedOut = (error, waitedMs = Date.now() - startedAt) => {
     if (timeoutReported) return error;
@@ -912,7 +919,8 @@ export async function withFsMutex(name, fn, opts = {}) {
     if (waitedMs < timeoutMs) return;
     const error = new Error(
       "Timed out after " + timeoutMs + "ms waiting for fs-mutex \"" + name +
-      "\" (" + lockDir + "); holder (last observed): " + lastObservedOwner,
+      "\" (" + lockDir + "); holder (last observed): " + lastObservedOwner +
+      (lastObservedQueueHead ? "; FIFO head (last observed): " + lastObservedQueueHead : ""),
     );
     throw reportTimedOut(error, waitedMs);
   };
@@ -945,7 +953,9 @@ export async function withFsMutex(name, fn, opts = {}) {
       if (ticketRegistered) {
         const oldest = await measureAdmissionSubphase(
           "ticket-scan",
-          () => oldestTicketDir(ticketsDir, staleMs, io, measureAdmissionSubphase),
+          () => oldestTicketDir(ticketsDir, staleMs, io, measureAdmissionSubphase, (ticketDir, rawOwner) => {
+            if (ticketDir !== myTicketDir) lastObservedQueueHead = ticketDir + "; owner: " + rawOwner;
+          }),
         );
         throwIfAdmissionTimedOut();
         if (oldest != null && oldest !== myTicketDir) {

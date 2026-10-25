@@ -107,7 +107,7 @@ export interface OperatorE2eInvocation {
  */
 export function buildOperatorE2eInvocation(
   root: string,
-  ids: { fireId: string; workspaceId: string; harnessSlug: string },
+  ids: { fireId: string; workspaceId: string; harnessSlug: string; receiptBasePath?: string },
   baseEnv: NodeJS.ProcessEnv = process.env,
   exists: (p: string) => boolean = existsSync,
 ): OperatorE2eInvocation {
@@ -119,6 +119,15 @@ export function buildOperatorE2eInvocation(
   env.PAPERCUSP_TEST_RUN_GROUP = runGroup;
   env.PAPERCUSP_TEST_RUN_WORKSPACE = ids.workspaceId;
   env.PAPERCUSP_TEST_RUN_HARNESS = ids.harnessSlug;
+  // The default suite includes native post-onboarding journeys. Request the
+  // rig's verified ready seed and isolated worker placement, and give receipt
+  // writers distinct per-attempt outputs rather than inherited stale paths.
+  env.VERIFY_TAURI_ISOLATED_SEED = 'ready';
+  env.PAPERCUSP_DEV_BACKGROUND_WORKERS = '1';
+  const receiptBase = path.resolve(ids.receiptBasePath
+    ?? path.join(operatorE2eLogDir(), encodeURIComponent(ids.fireId)));
+  env.PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE = `${receiptBase}.inbox-ack.json`;
+  env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = `${receiptBase}.test-runs.jsonl`;
   // This standing routine must snapshot committed current-build source. The
   // generic runner treats an explicitly empty VERIFY_TAURI_SOURCE_REF as a
   // request for mutable working-tree mode, which can fail on unrelated peer
@@ -209,16 +218,16 @@ export async function runOperatorE2eIsolated(
   const taskId = opts.taskId ?? newTaskId();
   const fireId = ctx.workflowId || taskId;
   const harnessSlug = ctx.installSlug || home;
+  const logDir = opts.logDir ?? operatorE2eLogDir();
+  const stamp = (opts.now ?? new Date()).toISOString().replace(/[:.]/g, '-');
+  const logPath = path.join(logDir, `${stamp}-${taskId}.log`);
   const invocation = buildOperatorE2eInvocation(
     root,
-    { fireId, workspaceId: ctx.workspaceId, harnessSlug },
+    { fireId, workspaceId: ctx.workspaceId, harnessSlug, receiptBasePath: logPath },
     opts.env ?? process.env,
     exists,
   );
 
-  const logDir = opts.logDir ?? operatorE2eLogDir();
-  const stamp = (opts.now ?? new Date()).toISOString().replace(/[:.]/g, '-');
-  const logPath = path.join(logDir, `${stamp}-${taskId}.log`);
   let logFd: number | null = null;
   try {
     mkdirSync(logDir, { recursive: true });
