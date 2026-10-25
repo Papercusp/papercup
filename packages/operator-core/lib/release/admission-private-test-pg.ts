@@ -114,7 +114,8 @@ export async function startAdmissionTestEnvironment(root: string, options: {
     return { env: fixtureEnv, assertRunning() { if (closed) throw failure; }, stop };
   } catch (error) {
     try { await stop(); }
-    catch (cleanupError) { throw new AggregateError([error, cleanupError], 'private-PG bootstrap and cleanup failed'); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError],
+      `private-PG bootstrap and cleanup failed: ${error instanceof Error ? error.message : String(error)}`); }
     throw error;
   } finally { clearTimeout(timer); }
 }
