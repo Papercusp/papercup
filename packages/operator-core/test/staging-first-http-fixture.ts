@@ -164,7 +164,8 @@ async function main() {
   const isBlueprintRoute = e.STAGING_FIRST_HTTP_SCENARIO === 'blueprint-account-route';
   const isCurrentSuNative = ['current-su-native', 'current-su-native-carry'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
   const isCodexManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'codex-managed-tools';
-  const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative || isCodexManagedTools;
+  const isOmpManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'omp-managed-tools';
+  const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative || isCodexManagedTools || isOmpManagedTools;
   const prepared = requiresPrepared
     ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
   assert.ok(!requiresPrepared || prepared,
@@ -209,7 +210,7 @@ async function main() {
     ? await (await import('./blueprint-account-route-http-scenario')).prepareBlueprintAccountRouteScenario({ workspace, evidenceDir })
     : undefined;
   disposeScenario = blueprintRoute?.dispose ?? committedReader?.dispose;
-  if (isCodexManagedTools) {
+  if (isCodexManagedTools || isOmpManagedTools) {
     const { randomBytes } = await import('node:crypto');
     const { superuserTokenPath } = await import('../lib/superuser-token');
     mkdirSync(e.PAPERCUSP_HOME!, { recursive: true, mode: 0o700 });
@@ -250,22 +251,24 @@ async function main() {
   assert.ok(hostIdentity, 'private host kernel identity required');
   const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
-  if (isCodexManagedTools) {
+  if (isCodexManagedTools || isOmpManagedTools) {
+    const backend = isOmpManagedTools ? 'omp' : 'codex';
+    const prefix = backend.toUpperCase();
     const { readSuperuserToken } = await import('../lib/superuser-token');
     const token = readSuperuserToken();
     assert.ok(token, 'private operator MCP bearer is required');
     const censusDir = join(evidenceDir, 'census');
     mkdirSync(censusDir);
     const env = { ...e, PAPERCUSP_TEST_RUN_GROUP:
-      (e.PAPERCUSP_TEST_RUN_GROUP ?? '') + ':codex-managed-surface-worker',
+      (e.PAPERCUSP_TEST_RUN_GROUP ?? '') + ':' + backend + '-managed-surface-worker',
       // The installed client's code-mode probe checks exit_code and exact output.
       // Foreground capability:bash exposes those fields through negotiated MCP
       // structuredContent; its default text result is intended for human readers.
-      CODEX_MANAGED_PRIVATE_MCP_URL: base + '/api/mcp?superuser=1&structured=1&workspace=' +
-        encodeURIComponent(workspace) + '&client=su-private-codex-managed',
-      CODEX_MANAGED_PRIVATE_MCP_TOKEN: token };
+      [prefix + '_MANAGED_PRIVATE_MCP_URL']: base + '/api/mcp?superuser=1&structured=1&workspace=' +
+        encodeURIComponent(workspace) + '&client=su-private-' + backend + '-managed',
+      [prefix + '_MANAGED_PRIVATE_MCP_TOKEN']: token };
     const child = fork(join(root, 'scripts/test-files.mjs'),
-      ['packages/operator-core/lib/codex-managed-tools.native.integration.test.ts'],
+      ['packages/operator-core/lib/' + backend + '-managed-tools.native.integration.test.ts'],
       { cwd: root, env, execArgv: ['--import', './scripts/lib/committed-source-loader.mjs'],
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     const result = await captureIsolatedWorker(child, censusDir, isolatedTestFileWorkerOptions(env, 1));
@@ -273,12 +276,12 @@ async function main() {
     assert.equal(result.signal, null);
     assert.equal(result.timedOut, false);
     assert.match(result.output, /TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed/);
-    assert.match(result.output, /Tests\s+5 passed \(5\)/);
+    assert.match(result.output, isOmpManagedTools ? /Tests\s+1 passed \(1\)/ : /Tests\s+5 passed \(5\)/);
     assert.match(result.output, /skippedTests=0/);
-    const line = result.output.split('\n').find(row => row.startsWith('CODEX_ADMITTED_LIFECYCLE '));
+    const line = result.output.split('\n').find(row => row.startsWith(prefix + '_ADMITTED_LIFECYCLE '));
     assert.ok(line, 'production MCP lifecycle receipt is required');
-    const measured = JSON.parse(line.slice('CODEX_ADMITTED_LIFECYCLE '.length));
-    for (const row of measured.removed.lifecycle) {
+    const measured = JSON.parse(line.slice((prefix + '_ADMITTED_LIFECYCLE ').length));
+    for (const row of isOmpManagedTools ? measured.removed : measured.removed.lifecycle) {
       assert.equal(row.managedPath, 'production-capability-bash');
       assert.equal(row.managedCalls, 1);
       assert.equal(row.hasNativeExecution, false);
@@ -289,7 +292,7 @@ async function main() {
       providerForwarding: false, managedTool: 'capability:bash', surfaces: ['launch', 'resume', 'wake'] };
     writeFileSync(join(evidenceDir, 'operator-mcp-receipt.json'), JSON.stringify(receipt));
     console.log(result.output);
-    console.log('CODEX_PRODUCTION_MCP_VERIFIED ' + JSON.stringify(receipt));
+    console.log(prefix + '_PRODUCTION_MCP_VERIFIED ' + JSON.stringify(receipt));
     return;
   }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'shared-chat-recovery') {
