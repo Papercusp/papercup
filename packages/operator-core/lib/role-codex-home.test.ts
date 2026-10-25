@@ -314,6 +314,9 @@ describe('writeRoleCodexHome', () => {
     expect(toml).toContain('[mcp_servers.papercusp]');
     expect(toml).toContain(`url = "${url}"`);
     expect(toml).toContain(`[mcp_servers.papercusp]\nurl = "${url}"\ntool_timeout_sec = 1090`);
+    expect(parseToml(toml).mcp_servers).toMatchObject({ papercusp: {
+      tools: { 'tools:invoke': { approval_mode: 'approve' } },
+    } });
     const logDir = join(out.codexHome, 'log');
     expect(out.sqliteHome).toBe(join(fakeHome, 'codex-sqlite-homes', 'session-42'));
     expect(toml).toContain(`sqlite_home = "${out.sqliteHome}"`);
@@ -374,15 +377,19 @@ describe('writeRoleCodexHome', () => {
       promptText: 'P',
     };
     const su = mod.writeSuCodexHome(opts);
+    const expectedMcp = { 'papercusp-su': { tools: { 'tools:invoke': { approval_mode: 'approve' } } } };
+    expect(parseToml(readFileSync(su.configPath, 'utf8')).mcp_servers).toMatchObject(expectedMcp);
     expect(parseToml(readFileSync(su.configPath, 'utf8')).check_for_update_on_startup).toBe(false);
     const history = join(su.codexHome, 'sessions', 'retained.jsonl');
     mkdirSync(join(su.codexHome, 'sessions'), { recursive: true });
     writeFileSync(history, 'retained transcript');
     writeFileSync(su.configPath,
-      readFileSync(su.configPath, 'utf8').replace('check_for_update_on_startup = false', 'check_for_update_on_startup = true'));
+      readFileSync(su.configPath, 'utf8').replace('check_for_update_on_startup = false', 'check_for_update_on_startup = true')
+        .replace('tools = { "tools:invoke" = { approval_mode = "approve" } }', ''));
     const repaired = mod.ensureSuCodexHomeConfig(opts);
     expect(repaired.repaired).toBe(true);
     expect(parseToml(readFileSync(repaired.configPath, 'utf8')).check_for_update_on_startup).toBe(false);
+    expect(parseToml(readFileSync(repaired.configPath, 'utf8')).mcp_servers).toMatchObject(expectedMcp);
     expect(readFileSync(history, 'utf8')).toBe('retained transcript');
   });
 

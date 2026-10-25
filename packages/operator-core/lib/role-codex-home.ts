@@ -69,6 +69,7 @@ import {
   codexSqliteHomeForSessionKey,
 } from '@papercusp/orchestrator/session-launch-dirs';
 import {
+  CODEX_MANAGED_DISPATCHER_APPROVAL_TOML,
   CODEX_MANAGED_MODEL_CATALOG_FILE,
   codexGatewayConfigToml,
   codexManagedFeaturesToml,
@@ -1612,6 +1613,7 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
     // tools:invoke allows 1080s and the MCP host adds a 5s buffer; keep
     // Codex's per-server timeout 5s above that 1085s wrapper deadline.
     'tool_timeout_sec = 1090',
+    ...CODEX_MANAGED_DISPATCHER_APPROVAL_TOML,
     '',
   ].join('\n');
   publishCodexConfig(configPath, toml);
@@ -1827,6 +1829,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     // Papercusp tools can declare a 600s deadline plus a 5s MCP buffer.
     // Keep Codex's per-server client timeout just above that contract.
     'tool_timeout_sec = 610',
+    ...CODEX_MANAGED_DISPATCHER_APPROVAL_TOML,
     ...(opts.token ? [`http_headers = { Authorization = "Bearer ${tomlEscape(opts.token)}" }`] : []),
     'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }',
     ...projectHttpMcpToml(opts.denyAmbientContext ? null : opts.projectDir ?? opts.trustDir),
