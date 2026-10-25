@@ -1779,6 +1779,51 @@ export function refusalReturnedCorrectedCall(metadata: unknown): boolean {
   return !!corrected && typeof corrected === 'object';
 }
 
+const TELEMETRY_ARGS_MAX_CHARS = 32768;
+
+/** Keep completion attribution queryable even when its evidence body is too large. */
+function truncatedTelemetryArgs(toolName: string, args: unknown, size: number): string {
+  const truncated: Record<string, unknown> = { _truncated: true, _size: size };
+  if (toolName !== 'work_items:complete' || !args || typeof args !== 'object' || Array.isArray(args)) {
+    return JSON.stringify(truncated);
+  }
+  const identity = (value: unknown): Record<string, unknown> => {
+    const result: Record<string, unknown> = {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+    const fields = value as Record<string, unknown>;
+    for (const [key, max] of [['id', 120], ['harness', 80], ['state', 40]] as const) {
+      const field = fields[key];
+      // Never shorten an identifier into a different, apparently complete target.
+      if (typeof field === 'string' && field.length > 0 && field.length <= max) result[key] = field;
+    }
+    for (const key of ['validateOnly', 'recordOnly'] as const) {
+      if (typeof fields[key] === 'boolean') result[key] = fields[key];
+    }
+    return result;
+  };
+  Object.assign(truncated, identity(args));
+  const fields = args as Record<string, unknown>;
+  if (Array.isArray(fields.items)) {
+    const items: Record<string, unknown>[] = [];
+    truncated.items = items;
+    truncated._itemsCount = fields.items.length;
+    truncated._itemsOmitted = fields.items.length;
+    // Count serialized characters, including JSON escapes, before appending.
+    // The retained prefix is bounded by both the public bulk limit and the old cap.
+    let length = jsonbSafeStringify(truncated).length;
+    for (const item of fields.items.slice(0, 100)) {
+      const entry = identity(item);
+      const added = jsonbSafeStringify(entry).length + (items.length ? 1 : 0);
+      if (length + added > TELEMETRY_ARGS_MAX_CHARS) break;
+      items.push(entry);
+      length += added;
+    }
+    if (items.length === fields.items.length) delete truncated._itemsOmitted;
+    else truncated._itemsOmitted = fields.items.length - items.length;
+  }
+  return jsonbSafeStringify(truncated);
+}
+
 /**
  * Build the tool_invocations row params snapshot for one settled dispatch.
  * Synchronous + cheap (JSON.stringify of args); null when there is no workspace
@@ -1813,8 +1858,8 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
     if (input.args === undefined || input.args === null) return null;
     try {
       const s = jsonbSafeStringify(input.args);
-      if (s.length > 32768) {
-        return JSON.stringify({ _truncated: true, _size: s.length });
+      if (s.length > TELEMETRY_ARGS_MAX_CHARS) {
+        return truncatedTelemetryArgs(input.toolName, input.args, s.length);
       }
       return s;
     } catch {
