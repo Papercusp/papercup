@@ -15620,8 +15620,10 @@ describe("launchResume wiring — claim before setup or spawn", () => {
   });
 
   it("finalizes the acquired key only through runWrapper's concrete spawn callback", () => {
-    const finalizeHelper = body.indexOf(
-      "const finalizeResumeClaim = async () => {",
+    // The spawn acknowledgement can carry concrete PTY identity; the wiring
+    // guard depends on the callback and ordering, not its parameter list.
+    const finalizeHelper = body.search(
+      /const finalizeResumeClaim = async \([^)]*\) => \{/,
     );
     const finalizeReport = body.indexOf(
       "await reportSessionResumeFinalized(",
