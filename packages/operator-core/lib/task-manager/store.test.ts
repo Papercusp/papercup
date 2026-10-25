@@ -8,7 +8,7 @@ function fakeSql(row: Record<string, unknown>): Sql {
   return (async () => [row]) as unknown as Sql;
 }
 
-describe('service timeout phase', () => {
+describe('service timeout evidence', () => {
   const terminal: TaskTerminalProvenance = {
     capturedAt: '2026-10-25T01:52:22.650Z', scopeUnit: 'pc-timeout-phase.service',
     cgroupPath: null, invocationId: 'timeout-phase', loadState: 'loaded', activeState: 'failed',
@@ -16,10 +16,17 @@ describe('service timeout phase', () => {
     memoryMaxBytes: null, peakMemoryBytes: null, peakMemorySource: 'unknown',
   };
 
-  it('keeps successful payload exit separate from a failed service teardown', () => {
+  it('keeps successful main exit separate from a failed service without guessing its timeout phase', () => {
     const result = classifyTerminalClose({ state: 'exited', exitCode: 1, terminalProvenance: terminal }, null);
-    expect(result).toMatchObject({ state: 'timed_out', exitCode: 0, exitReason: 'service-teardown-timeout' });
+    expect(result).toMatchObject({ state: 'timed_out', exitCode: 0, exitReason: 'service-timeout-main-exit-0' });
     expect(result.terminalProvenance).toMatchObject({ serviceResult: 'timeout', execMainCode: 1, execMainStatus: 0 });
+  });
+
+  it('retains an observed execution deadline when the signal handler exits zero', () => {
+    expect(classifyTerminalClose({ state: 'timed_out', exitCode: 0,
+      exitReason: 'exceeded 180000ms timeout', terminalProvenance: terminal }, null)).toMatchObject({
+      state: 'timed_out', exitCode: 0, exitReason: 'exceeded 180000ms timeout',
+    });
   });
 
   it.each([
