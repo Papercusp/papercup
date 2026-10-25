@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { admitTaskDeadline, readTaskDeadlineEpochMs } from './lib/task-deadline.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -113,7 +114,7 @@ export function verifyEngineeringRelease({ root, inputsPath, env = process.env, 
   } catch { return unknown('The emitted browser artifact is missing or malformed.'); }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   const root = resolve(process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), '..'));
   const plane = process.argv[3] ?? 'final-release';
   const inputsPath = process.env.PAPERCUSP_ENGINEERING_JOURNEY_INPUTS
