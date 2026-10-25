@@ -2607,18 +2607,25 @@ async function probeTestChildScopeSupport(options) {
 }
 
 /** Share outcome retention across the asynchronous Vitest and synchronous Node:test routes. */
-export async function runGovernedTestFileProcess(governedProcessImpl, options, runChild) {
+export async function runGovernedTestFileProcess(governedProcessImpl, options, runChild, { onPhase = () => {} } = {}) {
   let childResult;
   let childCompleted = false;
+  const phase = (value) => { try { onPhase(value); } catch { /* diagnostics never own settlement */ } };
   try {
-    return await governedProcessImpl(options, (...args) => {
+    phase('governed-start');
+    const result = await governedProcessImpl(options, (...args) => {
+      phase('child-start');
       return Promise.resolve(runChild(...args)).then((result) => {
         childResult = result;
         childCompleted = true;
+        phase('child-returned');
         return result;
       });
     });
+    phase('governed-returned');
+    return result;
   } catch (cause) {
+    phase(childCompleted ? 'governed-finalization-failed' : 'child-or-admission-failed');
     const error = new Error(cause instanceof Error ? cause.message : String(cause), { cause });
     // Admission, execution and receipt finalization share one promise. Once
     // the child returned, a later rejection cannot erase its measured outcome
@@ -2801,12 +2808,17 @@ export function runCapturedTestProcess(command, args, options = {}) {
     killProcessImpl = defaultKillOwnedProcess,
     stopScopeImpl = stopTestScope,
     readProcessDiagnosticImpl = readTestChildDiagnostic,
+    finalizationDiagnosticDelayMs = 30_000,
     onProgress = (line) => console.error(line),
     onAllFilesComplete = () => null,
     // Tests may replace this narrow governance seam; production callers leave
     // the canonical bridge in place.
     governedProcessImpl = runGovernedTestProcess,
   } = options;
+  const finalizationStartedAt = Date.now();
+  const finalizationPhase = (phase) => onProgress('TEST_FILE_FINALIZATION ' + JSON.stringify({
+    pid: process.pid, cwd: cwdLabel, phase, elapsedMs: Date.now() - finalizationStartedAt,
+  }));
   // The launcher is resolved per spawn, inside runChild, against the env the child actually
   // gets (the governed env when admission supplies one) — see resolveTestChildLauncher.
   const plannedDemand = buildGovernedProcessDemand({
@@ -2939,6 +2951,14 @@ export function runCapturedTestProcess(command, args, options = {}) {
       // watchdog budget, so waiting for that watchdog loses the evidence.
       onProgress(`TEST_FILE_CHILD_DIAGNOSTIC ${JSON.stringify({ scope: scopeUnit, ...processDiagnostic, trigger })}`);
     };
+    let finalizationDiagnosticTimer = null;
+    const watchFinalization = () => {
+      if (finalizationDiagnosticTimer || settled || !readProcessDiagnosticImpl) return;
+      finalizationDiagnosticTimer = setTimeout(() => {
+        if (!settled) captureProcessDiagnostic('file-completion-finalization');
+      }, finalizationDiagnosticDelayMs);
+      finalizationDiagnosticTimer.unref?.();
+    };
     const terminate = (state) => {
       if (terminationStarted || settled) return;
       terminationStarted = true;
@@ -3027,6 +3047,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
         return;
       }
       allFilesCompleteObserved = true;
+      watchFinalization();
       try {
         // The returned cleanup is intentionally discarded here — see the note on
         // marker ownership above `runChild`. The caller keeps its own handle and
@@ -3068,7 +3089,11 @@ export function runCapturedTestProcess(command, args, options = {}) {
     child.stdout?.on('data', capture('stdout', stdout));
     child.stderr?.on('data', capture('stderr', stderr));
     child.once('error', (error) => { spawnError = error; });
-    child.once('exit', () => stopOwnedScope('exit'));
+    child.once('exit', () => {
+      finalizationPhase('child-exit');
+      watchFinalization();
+      stopOwnedScope('exit');
+    });
 
     let progressTimer = null;
     const scheduleProgress = () => {
@@ -3084,6 +3109,8 @@ export function runCapturedTestProcess(command, args, options = {}) {
 
     child.once('close', (status, signal) => {
       settled = true;
+      if (finalizationDiagnosticTimer) clearTimeout(finalizationDiagnosticTimer);
+      finalizationPhase('child-close');
       removeSignalForwarders();
       if (progressTimer) clearTimeout(progressTimer);
       progressWatchdog?.stop();
@@ -3132,6 +3159,9 @@ export function runCapturedTestProcess(command, args, options = {}) {
           { code: 'TEST_SCOPE_LAUNCH_FAILED', scopeLaunchEvidence },
         );
       }
+      finalizationPhase('demand-sample-start');
+      const actualDemand = sampler.stop({ diskBytes: capturedBytes });
+      finalizationPhase('demand-sample-returned');
       resolveRun({
         status,
         signal,
@@ -3140,7 +3170,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
         error: spawnError ?? captureError ?? scopeLaunchError,
         timedOut,
         processDiagnostic,
-        actualDemand: sampler.stop({ diskBytes: capturedBytes }),
+        actualDemand,
         admissionReceiptId: admissionContext?.receiptId ?? null,
         admissionInherited: inherited,
         // EI-21903376339103215: ms of pc-heavy SIGSTOP freeze that fell inside this run's own
@@ -3205,7 +3235,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     env,
     settle: classifyGovernedTestProcessOutcome,
   };
-  return runGovernedTestFileProcess(governedProcessImpl, governedOptions, runChild);
+  return runGovernedTestFileProcess(governedProcessImpl, governedOptions, runChild, { onPhase: finalizationPhase });
 }
 
 /**

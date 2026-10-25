@@ -1397,7 +1397,8 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(progress.at(-1)).toContain('lastOutputLine=null');
       child[channel].write(' completed\npartial');
       await vi.advanceTimersByTimeAsync(10);
-      const readLine = () => JSON.parse(progress.at(-1)!.split('lastOutputLine=')[1]!);
+      const lastChildProgress = () => progress.filter(line => line.startsWith('TEST_FILE_PROGRESS ')).at(-1)!;
+      const readLine = () => JSON.parse(lastChildProgress().split('lastOutputLine=')[1]!);
       expect(readLine()).toEqual({ channel, text: 'case "quoted" completed' });
       child[channel].write('x'.repeat(20_000) + '\n');
       await vi.advanceTimersByTimeAsync(10);
@@ -1405,7 +1406,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(readLine().text).toMatch(/^partialx+…$/);
       child.emit('close', 1, null);
       expect(await pending).toMatchObject({ status: 1, timedOut: false });
-      expect(progress.at(-1)).toContain('state=finished');
+      expect(lastChildProgress()).toContain('state=finished');
       expect(readLine().text).toHaveLength(1024);
     } finally { vi.useRealTimers(); }
   });
@@ -1593,7 +1594,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(result, output).toMatchObject({ status: 1, signal: null, timedOut: false, error: null });
       expect(completed).toHaveBeenCalledTimes(1);
       expect(progress.find((line) => line.includes('state=file-completed'))).toContain('pendingFiles=[]');
-      expect(progress.at(-1)).toContain('state=finished');
+      expect(progress.filter(line => line.startsWith('TEST_FILE_PROGRESS ')).at(-1)).toContain('state=finished');
       expect(output).not.toMatch(/Timeout terminating .* worker|Failed to terminate .* worker/);
       expect(vitestRunFailed({ status: result.status, output })).toBe(true);
     } finally {
@@ -3153,6 +3154,65 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(result.governedAdmissionError).not.toBe(true);
     expect(result.governedFinalizationError.cause).toBe(origin);
     expect(result.actualDemand).toBeDefined();
+  });
+
+  it('distinguishes a returned child from pending governed finalization without running it again', async () => {
+    const phases: string[] = [];
+    let release!: () => void;
+    const settlement = new Promise<void>(resolve => { release = resolve; });
+    const child = vi.fn(() => ({ status: 0, stdout: 'complete' }));
+    const pending = runGovernedTestFileProcess(async (_options: unknown, callback: Function) => {
+      const result = await callback();
+      await settlement;
+      return result;
+    }, {}, child, { onPhase: (phase: string) => phases.push(phase) });
+    try {
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(phases).toEqual(['governed-start', 'child-start', 'child-returned']);
+      expect(child).toHaveBeenCalledTimes(1);
+    } finally { release(); }
+    expect(await pending).toEqual({ status: 0, stdout: 'complete' });
+    expect(phases.at(-1)).toBe('governed-returned');
+  });
+
+  it('captures the owned tree after file completion while outer close is still pending', async () => {
+    vi.useFakeTimers();
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const progress: string[] = [];
+    const snapshot = { status: 'measured', rootPid: child.pid, processes: [{ pid: child.pid }], truncated: false };
+    const reader = vi.fn(() => snapshot);
+    const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      files: ['a.test.ts'], env: { PATH: '/usr/bin' }, finalizationDiagnosticDelayMs: 100,
+      systemdRunPath: null, setsidPath: null, spawnImpl: () => child,
+      readProcessDiagnosticImpl: reader, onProgress: (line: string) => progress.push(line),
+      governedProcessImpl: (_opts: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+    });
+    try {
+      child.stdout.write(' ✓ a.test.ts (1 test) 5ms\n');
+      await vi.advanceTimersByTimeAsync(99);
+      expect(reader).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reader).toHaveBeenCalledExactlyOnceWith(child.pid);
+      expect(progress.find(line => line.startsWith('TEST_FILE_CHILD_DIAGNOSTIC ')))
+        .toContain('"trigger":"file-completion-finalization"');
+      expect(child.kill).not.toHaveBeenCalled();
+      child.emit('exit', 0, null);
+      child.emit('close', 0, null);
+      expect(await pending).toMatchObject({ status: 0, processDiagnostic: snapshot, timedOut: false });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reader).toHaveBeenCalledTimes(1);
+      const phases = progress.filter(line => line.startsWith('TEST_FILE_FINALIZATION '))
+        .map(line => JSON.parse(line.slice('TEST_FILE_FINALIZATION '.length)).phase);
+      expect(phases).toEqual(['governed-start', 'child-start', 'child-exit', 'child-close',
+        'demand-sample-start', 'demand-sample-returned', 'child-returned', 'governed-returned']);
+    } finally {
+      child.emit('close', 0, null);
+      await pending;
+      vi.useRealTimers();
+    }
   });
 
   it.each([0, 1])('also preserves an actual synchronous Node child after finalization failure, exit %s', async (status) => {

@@ -436,6 +436,27 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
     });
   });
 
+  it('uses the default leader-triage writer when capture dependencies omit the review-park seam', async () => {
+    vi.mocked(markLeaderTriage).mockReset().mockResolvedValue(
+      existing({ id: 'EI-100', title: reviewInput.title, state: 'blocked' }),
+    );
+    const d = deps();
+    delete d.markReviewBlocked;
+
+    const result = await captureImprovement(reviewInput, d);
+
+    expect(markLeaderTriage).toHaveBeenCalledExactlyOnceWith(
+      'EI-100', 'agent-review enrollment pending', 'su-filer',
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      created: true,
+      reviewRequired: true,
+      reviewState: 'blocked',
+    });
+    expect(result.agentReviewFailure).toBeUndefined();
+  });
+
   it.each(['end-user', 'chat'] as const)('enrolls a %s bug in verification before it can be implemented', async (reporterKind) => {
     const d = deps();
     d.createIssue = async (input) => {

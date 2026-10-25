@@ -1230,9 +1230,10 @@ function selectBgVerifierBuildContext(context, argv) {
  * This is preparation for whole-recipe publication, not a publication receipt.
  * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
  *   invocations: BgBuildInvocation[], bank: string, stageLeaf: string,
- *   outputs: { temporary: string, final: string }[] }} args
+ *   outputs: { temporary: string, final: string }[],
+ *   recipe?: { entry: string, outfile: string, profile: 'development' | 'release' } }} args
  */
-export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs }) {
+export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, recipe }) {
   const contexts = prepareBgVerifierBuildContexts({ prepared, dependencies, invocations });
   const bankIdentity = readBgDirectoryIdentity(bank);
   const local = relative(prepared.root, bank);
@@ -1240,7 +1241,7 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
     'BG transaction bank escaped selected generation');
   assert.match(stageLeaf, /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'BG transaction stage leaf is invalid');
   const transaction = freezeBgExpectation({ schemaVersion: 'bg-build-transaction-v1', contexts,
-    bank: bankIdentity, stage: join(bank, stageLeaf), outputs });
+    bank: bankIdentity, stage: join(bank, stageLeaf), outputs, ...(recipe ? { recipe } : {}) });
   validateBgVerifierBuildTransaction(transaction);
   assert.ok(!existsSync(transaction.stage) && !isBgSymlink(transaction.stage), 'BG transaction stage already exists');
   return transaction;
@@ -1303,6 +1304,16 @@ function validateBgVerifierBuildTransaction(transaction) {
   }
   // Exact equality makes the original logical population authoritative.
   assert.deepEqual(compilerOutputs.sort(), [...temporary].sort(), 'BG transaction compiler output membership mismatch');
+  if (transaction.recipe) {
+    const { entry, outfile, profile } = transaction.recipe;
+    const main = bgCompilerOptions(contexts.invocations[0].original.argv, contexts.record.prepared.root);
+    assert.ok(isAbsolute(entry) && dirname(outfile) === stage && ['development', 'release'].includes(profile),
+      'BG recipe original command is invalid');
+    assert.deepEqual(main.options.entryPoints, [entry], 'BG recipe entry differs from original main invocation');
+    assert.equal(main.options.outfile, `${outfile}.tmp.@BG_PID@`, 'BG recipe output differs from original main invocation');
+    assert.ok(outputs.some(row => row.temporary === `${basename(outfile)}.tmp.@BG_PID@`
+      && row.final === basename(outfile)), 'BG recipe logical main output differs from original membership');
+  }
 }
 
 /** Bind a PID supplied by the recipe preflight, before its first compile.
@@ -1325,6 +1336,100 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }) {
     transactionSha256: createHash('sha256').update(JSON.stringify(transaction)).digest('hex'),
     ownerPid, contexts, outputs: transaction.outputs.map(row => ({ ...row,
       temporary: row.temporary.replaceAll('@BG_PID@', String(ownerPid)) })) });
+}
+
+/** Measure the COMPLETE temporary output population against the retained binding
+ * and each compiler's receipt. This is a detached pre-publication fence: it
+ * neither renames files nor authorizes service activation or runtime imports.
+ * The caller must retain the returned record and recheck it at publication.
+ * @param {{ binding: ReturnType<typeof beginBgVerifierBuildTransaction>,
+ *   receipts: Awaited<ReturnType<typeof compileBgVerifierInvocation>>[] }} args
+ */
+export function qualifyBgVerifierBuildOutputSet({ binding, receipts }) {
+  assert.equal(binding.schemaVersion, 'bg-build-transaction-binding-v1', 'BG output binding is UNKNOWN');
+  const { transaction, ownerPid } = binding;
+  validateBgVerifierBuildTransaction(transaction);
+  assert.ok(Number.isSafeInteger(ownerPid) && ownerPid > 0, 'BG output owner PID is invalid');
+  const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  assert.equal(binding.transactionSha256, hash(transaction), 'BG output original transaction changed');
+  const namespace = binding.contexts.record.invocation.outputNamespace;
+  assert.ok(namespace && namespace.stage.path === transaction.stage, 'BG output original stage changed');
+  assert.deepEqual(namespace.bank, transaction.bank, 'BG output original bank changed');
+  const contexts = prepareBgVerifierBuildContexts({ ...transaction.contexts.record,
+    invocations: transaction.contexts.invocations.map(entry => ({ ...entry.invocation, outputNamespace: namespace,
+      argv: entry.original.argv.map(arg => arg.replaceAll('@BG_PID@', String(ownerPid))) })) });
+  assert.deepEqual(binding.contexts, contexts, 'BG output original contexts changed');
+  const outputs = transaction.outputs.map(row => ({ ...row,
+    temporary: row.temporary.replaceAll('@BG_PID@', String(ownerPid)) }));
+  assert.deepEqual(binding.outputs, outputs, 'BG output original membership changed');
+  assert.ok(Array.isArray(receipts) && receipts.length === contexts.invocations.length,
+    'BG output compiler receipt population mismatch');
+  const commands = new Set();
+  const identities = new Map();
+  for (const entry of contexts.invocations) {
+    const key = JSON.stringify(entry.original.argv);
+    const matches = receipts.filter(receipt => JSON.stringify(receipt.argv) === key);
+    assert.equal(matches.length, 1, 'BG output compiler receipt membership mismatch');
+    const receipt = matches[0];
+    assert.equal(receipt.schemaVersion, 'bg-compiler-invocation-v1', 'BG output compiler receipt is UNKNOWN');
+    const record = { ...contexts.record, invocation: entry.original };
+    verifyBgVerifierBuildRecord(record, entry.invocation, 'before-publication');
+    assert.equal(receipt.buildRecordSha256, hash(record), 'BG output compiler original record changed');
+    assert.equal(receipt.originalSourceReceiptSha256, record.originalSourceReceiptSha256,
+      'BG output compiler original source receipt changed');
+    const { options, metafile } = bgCompilerOptions(entry.original.argv, record.prepared.root);
+    assert.equal(receipt.output.path, options.outfile, 'BG output compiler output path changed');
+    assert.equal(receipt.metafile?.path, metafile, 'BG output compiler metafile path changed');
+    for (const identity of [receipt.output, receipt.metafile].filter(Boolean)) {
+      assert.deepEqual(readBgIndependentOutputIdentity(identity.path), identity, 'BG output compiler bytes changed');
+      identities.set(relative(transaction.stage, identity.path).split(sep).join('/'), identity);
+    }
+    commands.add(key);
+  }
+  assert.equal(commands.size, receipts.length, 'BG output compiler command population mismatch');
+  assert.deepEqual([...identities.keys()].sort(), outputs.map(row => row.temporary).sort(),
+    'BG output compiler file population mismatch');
+  const controls = new Map([
+    ['.bg-build-binding.json', JSON.stringify(binding)],
+    ['.bg-build-context.json', JSON.stringify(binding.contexts)],
+  ]);
+  const expected = new Set([...identities.keys(), ...[...controls.keys()].filter(path =>
+    existsSync(join(transaction.stage, path)))]);
+  const actual = [];
+  const visit = (directory, prefix = '') => {
+    for (const name of readdirSync(directory).sort()) {
+      const path = prefix + name, absolute = join(directory, name), stat = lstatSync(absolute);
+      assert.ok(!stat.isSymbolicLink(), 'BG output population contains a symlink');
+      if (stat.isDirectory()) {
+        assert.ok([...expected].some(file => file.startsWith(path + '/')),
+          'BG output population contains an unrecorded directory');
+        visit(absolute, path + '/');
+      } else {
+        assert.ok(stat.isFile() && stat.nlink === 1, 'BG output population requires independent regular files');
+        actual.push(path);
+        if (controls.has(path)) assert.equal(readFileSync(absolute, 'utf8'), controls.get(path),
+          'BG output control record changed');
+      }
+    }
+  };
+  visit(transaction.stage);
+  assert.deepEqual(actual.sort(), [...expected].sort(), 'BG output file population mismatch');
+  // Close the census with the same source, dependency and directory identities.
+  for (const entry of contexts.invocations)
+    verifyBgVerifierBuildRecord({ ...contexts.record, invocation: entry.original }, entry.invocation, 'before-publication');
+  return freezeBgExpectation({ schemaVersion: 'bg-build-output-set-v1',
+    transactionSha256: binding.transactionSha256, bindingSha256: hash(binding),
+    compilerReceiptsSha256: hash(receipts), originalSourceReceiptSha256: contexts.record.originalSourceReceiptSha256,
+    files: outputs.map(row => ({ ...row, identity: identities.get(row.temporary) })) });
+}
+
+/** Re-measure without replacing the retained qualification record.
+ * @param {ReturnType<typeof qualifyBgVerifierBuildOutputSet>} output
+ * @param {Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]} args
+ */
+export function verifyBgVerifierBuildOutputSet(output, args) {
+  assert.deepEqual(qualifyBgVerifierBuildOutputSet(args), output, 'BG qualified output set changed');
+  return output;
 }
 
 /** The shared shell recipe delegates one EXACT recorded compiler invocation
@@ -1380,11 +1485,33 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
     return freezeBgExpectation({ schemaVersion: 'bg-compiler-invocation-v1', argv: record.invocation.argv,
       buildRecordSha256: createHash('sha256').update(JSON.stringify(record)).digest('hex'),
       originalSourceReceiptSha256: record.originalSourceReceiptSha256, compilerVersion: compiler.version,
-      binary, consumed, output: readBgFileIdentity(options.outfile) });
+      binary, consumed, output: readBgIndependentOutputIdentity(options.outfile),
+      ...(metafile ? { metafile: readBgIndependentOutputIdentity(metafile) } : {}) });
   } finally {
     try { await compiler?.stop(); }
     finally { process.env = originalEnv; }
   }
+}
+
+/** Outputs must retain the actual compiler-created file, even if replacement
+ * bytes happen to hash identically. Keep link and inode custody on the same FD
+ * used for hashing; the final path must still name that independent file.
+ * @param {string} path
+ */
+function readBgIndependentOutputIdentity(path) {
+  assert.ok(isAbsolute(path) && realpathSync(path) === path, 'BG output must be physical');
+  const fd = openSync(path, 'r');
+  try {
+    const before = fstatSync(fd, { bigint: true });
+    assert.ok(before.isFile() && before.nlink === 1n, 'BG output must be an independent regular file');
+    const sha256 = createHash('sha256').update(readFileSync(fd)).digest('hex');
+    const after = fstatSync(fd, { bigint: true }), named = lstatSync(path, { bigint: true });
+    const fields = ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs', 'nlink'];
+    assert.ok(named.isFile() && fields.every(key => before[key] === after[key] && after[key] === named[key])
+      && realpathSync(path) === path, 'BG output changed while reading');
+    return { path, realpath: path, sha256, dev: String(before.dev), ino: String(before.ino),
+      size: String(before.size), mtimeNs: String(before.mtimeNs), ctimeNs: String(before.ctimeNs) };
+  } finally { closeSync(fd); }
 }
 
 /** Read one physical file without reopening between validation and hashing.
@@ -3009,6 +3136,33 @@ function printGate(verdict) {
 }
 
 async function main(argv) {
+  if (argv[0] === 'bg-build-begin') {
+    const flags = ['--context', '--sha256', '--pid', '--entry', '--outfile', '--profile', '--builder', '--repo'];
+    assert.ok(argv.length === 1 + flags.length * 2 && flags.every((flag, index) => argv[index * 2 + 1] === flag),
+      'BG recipe requires its exact original transaction, digest, PID, command, builder and repository');
+    const [contextPath, expectedHash, pidText, entry, outfile, profile, builder, repo] = flags.map((_, index) => argv[index * 2 + 2]);
+    assert.ok(isAbsolute(contextPath) && /^[a-f0-9]{64}$/.test(expectedHash) && /^[1-9][0-9]*$/.test(pidText),
+      'BG recipe transaction path, digest or PID is invalid');
+    const bytes = readFileSync(contextPath);
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), expectedHash, 'BG transaction original digest changed');
+    const transaction = JSON.parse(bytes.toString('utf8'));
+    assert.deepEqual(transaction.recipe, { entry, outfile, profile }, 'BG recipe command differs from original transaction');
+    const record = transaction.contexts.record;
+    assert.equal(repo, record.prepared.root, 'BG recipe repository differs from selected generation');
+    assert.equal(readBgFileIdentity(builder).sha256, record.invocation.builder.sha256,
+      'BG recipe executing builder differs from original transaction');
+    const actualNode = readBgFileIdentity(process.execPath);
+    assert.ok(actualNode.realpath === record.invocation.node.realpath && actualNode.sha256 === record.invocation.node.sha256,
+      'BG recipe actual Node differs from original transaction');
+    const binding = beginBgVerifierBuildTransaction({ transaction, ownerPid: Number(pidText) });
+    const boundContext = join(transaction.stage, '.bg-build-context.json');
+    // No caller may compile until BOTH exclusive records are complete. A failed
+    // preflight retains its private stage for diagnosis and is never replayed.
+    writeFileSync(join(transaction.stage, '.bg-build-binding.json'), JSON.stringify(binding), { flag: 'wx', mode: 0o600 });
+    writeFileSync(boundContext, JSON.stringify(binding.contexts), { flag: 'wx', mode: 0o600 });
+    console.log(boundContext);
+    return 0;
+  }
   if (argv[0] === 'bg-compiler') {
     assert.ok(argv[1] === '--context' && isAbsolute(argv[2] ?? '') && (argv[3] === '--' || argv[3] === '--check'),
       'bg-compiler requires --context <absolute original context> -- <recorded compiler argv>');

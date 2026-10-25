@@ -463,9 +463,10 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
  * This is preparation for whole-recipe publication, not a publication receipt.
  * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
  *   invocations: BgBuildInvocation[], bank: string, stageLeaf: string,
- *   outputs: { temporary: string, final: string }[] }} args
+ *   outputs: { temporary: string, final: string }[],
+ *   recipe?: { entry: string, outfile: string, profile: 'development' | 'release' } }} args
  */
-export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs }: {
+export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, recipe }: {
     prepared: BgVerifierPreparation;
     dependencies: ReturnType<typeof captureVerifierDependencies>;
     invocations: BgBuildInvocation[];
@@ -475,7 +476,17 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
         temporary: string;
         final: string;
     }[];
+    recipe?: {
+        entry: string;
+        outfile: string;
+        profile: "development" | "release";
+    };
 }): {
+    recipe?: {
+        entry: string;
+        outfile: string;
+        profile: "development" | "release";
+    } | undefined;
     schemaVersion: string;
     contexts: {
         schemaVersion: string;
@@ -591,6 +602,11 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
 }): {
     schemaVersion: string;
     transaction: {
+        recipe?: {
+            entry: string;
+            outfile: string;
+            profile: "development" | "release";
+        } | undefined;
         schemaVersion: string;
         contexts: {
             schemaVersion: string;
@@ -798,6 +814,44 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
         final: string;
     }[];
 };
+/** Measure the COMPLETE temporary output population against the retained binding
+ * and each compiler's receipt. This is a detached pre-publication fence: it
+ * neither renames files nor authorizes service activation or runtime imports.
+ * The caller must retain the returned record and recheck it at publication.
+ * @param {{ binding: ReturnType<typeof beginBgVerifierBuildTransaction>,
+ *   receipts: Awaited<ReturnType<typeof compileBgVerifierInvocation>>[] }} args
+ */
+export function qualifyBgVerifierBuildOutputSet({ binding, receipts }: {
+    binding: ReturnType<typeof beginBgVerifierBuildTransaction>;
+    receipts: Awaited<ReturnType<typeof compileBgVerifierInvocation>>[];
+}): {
+    schemaVersion: string;
+    transactionSha256: string;
+    bindingSha256: string;
+    compilerReceiptsSha256: string;
+    originalSourceReceiptSha256: string;
+    files: {
+        identity: any;
+        temporary: string;
+        final: string;
+    }[];
+};
+/** Re-measure without replacing the retained qualification record.
+ * @param {ReturnType<typeof qualifyBgVerifierBuildOutputSet>} output
+ * @param {Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]} args
+ */
+export function verifyBgVerifierBuildOutputSet(output: ReturnType<typeof qualifyBgVerifierBuildOutputSet>, args: Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]): {
+    schemaVersion: string;
+    transactionSha256: string;
+    bindingSha256: string;
+    compilerReceiptsSha256: string;
+    originalSourceReceiptSha256: string;
+    files: {
+        identity: any;
+        temporary: string;
+        final: string;
+    }[];
+};
 /** The shared shell recipe delegates one EXACT recorded compiler invocation
  * here. Use its private API and binary, pass the digest-checked buffers to
  * esbuild, then fence source/dependencies again before writing any output.
@@ -812,6 +866,16 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
     argv: string[];
     expectedVersion: string;
 }): Promise<{
+    metafile?: {
+        path: string;
+        realpath: string;
+        sha256: string;
+        dev: string;
+        ino: string;
+        size: string;
+        mtimeNs: string;
+        ctimeNs: string;
+    } | undefined;
     schemaVersion: string;
     argv: string[];
     buildRecordSha256: string;
@@ -831,6 +895,11 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
         path: string;
         realpath: string;
         sha256: string;
+        dev: string;
+        ino: string;
+        size: string;
+        mtimeNs: string;
+        ctimeNs: string;
     };
 }>;
 /** Bind the maintained artifact writer's measured output to the ORIGINAL build
