@@ -142,6 +142,166 @@ export function boundedFrontier(edges, { baseline = [], priorAdditions = [], bou
   return { status: 'PARTIAL-seeded-frontier', bound, additions: [...additions], frontier, complete: false };
 }
 
+const canonicalInput = path => typeof path === 'string' && path.length > 0
+  && !path.includes('\\') && !path.startsWith('/')
+  && path.split('/').every(part => part && part !== '.' && part !== '..');
+const integer = value => Number.isSafeInteger(value) && value >= 0;
+const copy = value => structuredClone(value);
+
+/** Prospective preparation accounting only; this does not authorize a census or execution.
+ * The controller must persist snapshots and retain the same attempt/clock identity on resume.
+ * readChunk is a trusted bounded byte-reader; stat must return metadata without reading payload.
+ */
+export function createPreparationLedger(options, { now = () => Number(process.hrtime.bigint() / 1000000n), snapshot, persist } = {}) {
+  const { attemptId, candidate, clockId, baseline = [], priorAdditions = [], bound = 60,
+    maxInputs = baseline.length + bound, maxBytes = 64 * 1024 * 1024,
+    maxInputBytes = 16 * 1024 * 1024, maxElapsedMs = 120000 } = copy(options);
+  if (![attemptId, candidate, clockId].every(value => typeof value === 'string' && value.length > 0)
+      || ![bound, maxInputs, maxBytes, maxInputBytes, maxElapsedMs].every(integer)
+      || ![...baseline, ...priorAdditions].every(canonicalInput)
+      || new Set([...baseline, ...priorAdditions]).size !== baseline.length + priorAdditions.length
+      || priorAdditions.length > bound || baseline.length + priorAdditions.length > maxInputs) {
+    throw new Error('Invalid preparation identity, prefix or limits');
+  }
+  const config = copy({ attemptId, candidate, clockId, baseline, priorAdditions, bound,
+    maxInputs, maxBytes, maxInputBytes, maxElapsedMs });
+  const configHash = hash(JSON.stringify(config)), start = now();
+  if (!Number.isFinite(start)) throw new Error('Invalid monotonic clock');
+  let state = { version: 1, configHash, startedAtMs: start, lastAtMs: start,
+    additions: [...priorAdditions], bytesRead: 0, reads: [], digests: {}, pending: null,
+    status: 'PARTIAL-source-preparation', reason: null, byteAccounting: 'known' };
+  if (snapshot) {
+    const { checksum, ...saved } = snapshot;
+    if (checksum !== hash(JSON.stringify(saved)) || saved.version !== 1 || saved.configHash !== configHash
+        || !Array.isArray(saved.additions) || !saved.additions.every(canonicalInput)
+        || saved.additions.slice(0, priorAdditions.length).join('\0') !== priorAdditions.join('\0')
+        || new Set([...baseline, ...saved.additions]).size !== baseline.length + saved.additions.length
+        || saved.additions.length > bound || baseline.length + saved.additions.length > maxInputs
+        || !integer(saved.bytesRead) || !Array.isArray(saved.reads)
+        || saved.reads.some(row => !integer(row.bytes))
+        || saved.reads.reduce((sum, row) => sum + row.bytes, 0) !== saved.bytesRead
+        || !Number.isFinite(saved.startedAtMs) || !Number.isFinite(saved.lastAtMs)
+        || saved.lastAtMs < saved.startedAtMs
+        || !['PARTIAL-source-preparation', 'STOPPED'].includes(saved.status)) {
+      throw new Error('Preparation snapshot/configuration mismatch');
+    }
+    state = copy(saved);
+    if (state.pending) { state.status = 'STOPPED'; state.reason = 'interrupted-read'; state.byteAccounting = 'unknown'; }
+  }
+  const stop = reason => { state.status = 'STOPPED'; state.reason ??= reason; };
+  const checkTime = () => {
+    if (state.status === 'STOPPED') throw new Error(state.reason);
+    const at = now();
+    if (!Number.isFinite(at) || at < state.lastAtMs) stop('clock-identity-or-order');
+    else { state.lastAtMs = at; if (at - state.startedAtMs >= maxElapsedMs) stop('elapsed-limit'); }
+    if (state.status === 'STOPPED') throw new Error(state.reason);
+  };
+  const ledger = {
+    snapshot() { const saved = copy(state); return { ...saved, checksum: hash(JSON.stringify(saved)) }; },
+    report() { return { ...ledger.snapshot(), receipt: false, fullClosureQualified: false, executionAdmitted: false }; },
+    async read(path, io) {
+      checkTime();
+      if (state.pending) { stop('overlapping-read'); throw new Error(state.reason); }
+      if (!canonicalInput(path)) { stop('noncanonical-input'); throw new Error(state.reason); }
+      const frontier = boundedFrontier([{ path }], { baseline, priorAdditions: state.additions, bound });
+      if (frontier.refusedEdge || baseline.length + frontier.additions.length > maxInputs) {
+        stop('input-limit'); throw new Error(state.reason);
+      }
+      state.additions = frontier.additions;
+      state.pending = { path, bytes: 0 };
+      const chunks = [], digest = createHash('sha256');
+      try {
+        if (persist) { await persist(ledger.snapshot()); checkTime(); }
+        const before = await io.stat(); checkTime();
+        if (!before || !integer(before.size) || typeof before.identity !== 'string' || !before.identity
+            || before.canonicalPath !== path) throw new Error('unbound-input-metadata');
+        if (before.size > maxInputBytes || before.size > maxBytes - state.bytesRead) throw new Error('byte-limit');
+        let offset = 0;
+        while (offset < before.size) {
+          checkTime();
+          if (persist) { await persist(ledger.snapshot()); checkTime(); }
+          const length = Math.min(65536, before.size - offset);
+          const chunk = await io.readChunk({ offset, length });
+          if (!(chunk instanceof Uint8Array)) { state.byteAccounting = 'unknown'; throw new Error('unmeasured-read'); }
+          state.bytesRead += chunk.byteLength;
+          state.pending.bytes += chunk.byteLength;
+          state.reads.push({ path, offset, bytes: chunk.byteLength });
+          if (chunk.byteLength === 0 || chunk.byteLength > length || state.bytesRead > maxBytes) throw new Error('bounded-read-violation');
+          // Copy before another awaited callback can mutate a returned buffer.
+          const bytes = Buffer.from(chunk); chunks.push(bytes); digest.update(bytes); offset += bytes.length;
+          checkTime();
+        }
+        const after = await io.stat(); checkTime();
+        if (after?.canonicalPath !== path || before.identity !== after.identity || before.size !== after.size) throw new Error('input-drift');
+        const sha256 = digest.digest('hex');
+        if (Object.hasOwn(state.digests, path) && state.digests[path] !== sha256
+            || io.expectedSha256 && io.expectedSha256 !== sha256) throw new Error('input-digest-drift');
+        Object.defineProperty(state.digests, path, { value: sha256, writable: true, enumerable: true, configurable: true });
+        return { path, sha256, data: Buffer.concat(chunks), receipt: false, fullClosureQualified: false };
+      } catch (error) {
+        // An I/O exception cannot establish whether the failing reader consumed bytes.
+        if (!['byte-limit', 'unbound-input-metadata', 'input-drift', 'input-digest-drift',
+          'bounded-read-violation', 'elapsed-limit', 'clock-identity-or-order'].includes(error.message)) state.byteAccounting = 'unknown';
+        stop(error.message); throw error;
+      } finally {
+        state.pending = null;
+        if (persist) {
+          await persist(ledger.snapshot());
+          if (state.status !== 'STOPPED') checkTime();
+        }
+      }
+    },
+  };
+  return ledger;
+}
+
+/** Actual prospective readers must use a durable store's atomic compare-and-swap seam.
+ * Reuse the existing artifact/checkpoint store; this helper creates no storage surface.
+ * Pure createPreparationLedger remains useful for replay and synthetic control verification.
+ */
+export async function openPreparationLedger(options, { store, now } = {}) {
+  if (!store || typeof store.load !== 'function' || typeof store.compareAndSwap !== 'function') {
+    throw new Error('Durable attempt store required');
+  }
+  const saved = await store.load(options.attemptId);
+  let revision = saved?.revision ?? null;
+  const persist = async snapshot => {
+    const result = await store.compareAndSwap(options.attemptId, revision, snapshot);
+    if (!result?.ok || !integer(result.revision) || result.revision <= (revision ?? -1)) {
+      throw new Error('attempt-state-conflict');
+    }
+    revision = result.revision;
+  };
+  const ledger = createPreparationLedger(options, { now, snapshot: saved?.snapshot, persist });
+  // Create-if-absent is also atomic: two first openers cannot both reset an attempt.
+  if (!saved) await persist(ledger.snapshot());
+  return ledger;
+}
+
+/** A citation must identify an actual call in the pinned source, not a nearby journal span. */
+export function verifyPreparationCitation(unit, { candidate, expectedCandidate, sourceSha256,
+  start, end, expression, functionName }) {
+  return candidate === expectedCandidate && typeof candidate === 'string' && candidate.length > 0
+    && unit.sha256 === sourceSha256 && !!unit.sites.find(site => site.kind === 'call'
+      && site.start === start && site.end === end && site.expression === expression
+      && site.enclosingFunctions.includes(functionName));
+}
+
+/** Static evidence never grants original runtime, custody, budget or process-control admission. */
+export function preparationDisposition({ candidate, expectedCandidate, targetCandidates, unresolved = [],
+  actualArtifactSha256, expectedArtifactSha256, custodyVerified = false, sourceCurrent = false }) {
+  const residue = [...unresolved];
+  if (!candidate || candidate !== expectedCandidate) residue.push('candidate-unbound');
+  if (!Array.isArray(targetCandidates) || targetCandidates.length !== 1) residue.push('target-ambiguous');
+  if (!/^[a-f0-9]{64}$/.test(actualArtifactSha256 ?? '')
+      || actualArtifactSha256 !== expectedArtifactSha256) residue.push('actual-artifact-unbound');
+  if (!custodyVerified) residue.push('custody-unverified');
+  if (!sourceCurrent) residue.push('source-not-current');
+  return { status: residue.length ? 'BLOCKED' : 'PARTIAL-source-preparation',
+    targetCandidates: copy(targetCandidates ?? []), residue, receipt: false,
+    fullClosureQualified: false, currentGuardPassed: false, executionAdmitted: false };
+}
+
 /** Remove parser nodes/functions before persistence; the complete source is separately hash-bound. */
 export function siteEvidence(site) {
   const { node, ...evidence } = site;

@@ -19,3 +19,38 @@ export function boundedFrontier(edges: Array<{ path?: string; [key: string]: unk
     status: string; bound: number; additions: string[]; frontier: Array<Record<string, unknown>>;
     complete: false; refusedEdge?: Record<string, unknown>; pending?: Array<Record<string, unknown>> };
 export function siteEvidence(site: SourceSite): Omit<SourceSite, 'node'> & { sourceSha256: string; sourceTruncated: boolean };
+export type PreparationSnapshot = {
+    version: number; configHash: string; startedAtMs: number; lastAtMs: number;
+    additions: string[]; bytesRead: number; reads: Array<{ path: string; offset: number; bytes: number }>;
+    digests: Record<string, string>; pending: { path: string; bytes: number } | null;
+    status: string; reason: string | null; byteAccounting: string; checksum: string;
+};
+export function createPreparationLedger(options: {
+    attemptId: string; candidate: string; clockId: string; baseline?: string[]; priorAdditions?: string[];
+    bound?: number; maxInputs?: number; maxBytes?: number; maxInputBytes?: number; maxElapsedMs?: number;
+}, runtime?: { now?: () => number; snapshot?: PreparationSnapshot; persist?: (snapshot: PreparationSnapshot) => Promise<void> }): {
+    snapshot(): PreparationSnapshot;
+    report(): PreparationSnapshot & { receipt: false; fullClosureQualified: false; executionAdmitted: false };
+    read(path: string, io: {
+        stat(): Promise<{ size: number; identity: string; canonicalPath: string }>;
+        readChunk(options: { offset: number; length: number }): Promise<Uint8Array>;
+        expectedSha256?: string;
+    }): Promise<{ path: string; sha256: string; data: Buffer; receipt: false; fullClosureQualified: false }>;
+};
+export function openPreparationLedger(options: Parameters<typeof createPreparationLedger>[0], runtime: {
+    now?: () => number;
+    store: {
+        load(attemptId: string): Promise<{ revision: number; snapshot: PreparationSnapshot } | null>;
+        compareAndSwap(attemptId: string, expectedRevision: number | null, snapshot: PreparationSnapshot):
+            Promise<{ ok: boolean; revision: number }>;
+    };
+}): Promise<ReturnType<typeof createPreparationLedger>>;
+export function verifyPreparationCitation(unit: SourceUnit, binding: {
+    candidate: string; expectedCandidate: string; sourceSha256: string;
+    start: number; end: number; expression: string; functionName: string;
+}): boolean;
+export function preparationDisposition(binding: {
+    candidate: string; expectedCandidate: string; targetCandidates: string[]; unresolved?: string[];
+    actualArtifactSha256?: string; expectedArtifactSha256?: string; custodyVerified?: boolean; sourceCurrent?: boolean;
+}): { status: string; targetCandidates: string[]; residue: string[]; receipt: false;
+    fullClosureQualified: false; currentGuardPassed: false; executionAdmitted: false };
