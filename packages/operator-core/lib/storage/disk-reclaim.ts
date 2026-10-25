@@ -1877,7 +1877,7 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
   const inspectInitialCappedTrees: typeof inspectRetentionTrees = (root, options) =>
     inspectDetachedRetentionTrees(root, { ...options, requirePrivilege: true }, {
       dir: join(defaultRetentionDir(), 'retention-census', createHash('sha256').update(resolve(root)).digest('hex')),
-      workerPath: join(repoRoot, 'scripts/retention-census-worker.ts'),
+      workerPath: join(repoRoot, 'scripts/retention-census-worker.mjs'),
       waitMs: options.timeoutMs ?? DEFAULT_RECLAIM_RUN_BUDGET_MS,
     });
   const holders = createRetentionHolderScanner();

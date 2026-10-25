@@ -92,7 +92,7 @@ export async function inspectDetachedRetentionTrees(root: string,
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.max(1, remaining()));
     try {
-      const worker = walk.workerPath ?? fileURLToPath(new URL('../../../../scripts/retention-census-worker.ts', import.meta.url));
+      const worker = walk.workerPath ?? fileURLToPath(new URL('../../../../scripts/retention-census-worker.mjs', import.meta.url));
       return await runDetachedWalk(root, { ...walk, timeoutMs: RETENTION_CENSUS_LIFETIME_MS, maxAttempts: 1,
         attribution: { launchedBy: 'system:disk-retention-reclaim', workItemId: 'EI-26925507003255681', title: `retention metadata ${root}` },
         pollMs: Math.min(walk.pollMs ?? 250, 250), signal: controller.signal,
