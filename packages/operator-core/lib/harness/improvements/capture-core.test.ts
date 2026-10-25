@@ -3,6 +3,7 @@ import {
   captureImprovement,
   captureToolInvocationFriction,
   validateScoutEvidenceCitations,
+  setCaptureReviewState,
   storageKindOf,
   CaptureWatchdogIdentityConflictError,
   DUP_THRESHOLD,
@@ -19,7 +20,7 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import type { SemanticDupeResult } from '../../agent-tools/work_items/semantic-dupe-guard';
 import { titleSimilarity, titleContainment } from './digest';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
-import type { CreateIssueInput, EngineerIssue } from '../../issues-engineer';
+import { markLeaderTriage, type CreateIssueInput, type EngineerIssue } from '../../issues-engineer';
 import { assessIssueAdmissionPressure, type RecordIssueOccurrenceInput } from '../../issue-occurrence-ledger';
 import { metadataToolFailure, metadataWorkflowTargets } from '../../agent-tools/plans/coordination-metadata-fixtures';
 import { normalizeSuspectedToolFailure, type SuspectedToolFailure } from './tool-error-classifier';
@@ -32,6 +33,10 @@ vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }
 vi.mock('../../agent-tools/work_items/recent-lexical-dupe-guard', () => ({
   findRecentLexicalDupes: vi.fn(async () => null),
 }));
+vi.mock('../../issues-engineer', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../issues-engineer')>();
+  return { ...actual, markLeaderTriage: vi.fn() };
+});
 
 import { findRecentLexicalDupes } from '../../agent-tools/work_items/recent-lexical-dupe-guard';
 
@@ -410,6 +415,26 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
     reviewRequired: true,
     reviewHarness: 'papercusp',
   };
+
+  it('persists the named review blocker through the default leader-triage writer', async () => {
+    vi.mocked(markLeaderTriage).mockReset().mockResolvedValue(
+      existing({ id: 'EI-100', title: reviewInput.title, state: 'blocked' }),
+    );
+
+    const result = await setCaptureReviewState('EI-100', 'blocked', {
+      reason: 'agent-review enrollment pending',
+      by: 'su-filer',
+    });
+
+    expect(markLeaderTriage).toHaveBeenCalledExactlyOnceWith(
+      'EI-100', 'agent-review enrollment pending', 'su-filer',
+    );
+    expect(result).toEqual({
+      workItem: { id: 'EI-100', state: 'blocked' },
+      requestedState: 'blocked',
+      appliedState: 'blocked',
+    });
+  });
 
   it.each(['end-user', 'chat'] as const)('enrolls a %s bug in verification before it can be implemented', async (reporterKind) => {
     const d = deps();
