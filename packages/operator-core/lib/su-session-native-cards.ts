@@ -145,15 +145,16 @@ export class SuNativeCards {
   private async openCard(turnId: string, prompt: string,
     choices: Array<{ id: string; label: string; description?: string }> | undefined, multiSelect: boolean,
     signal?: AbortSignal, details?: string, approval?: { title: string; question: string; body: string[] },
-    input?: { sensitive?: boolean; privateLink?: string; validate?: (values: string[]) => boolean },
+    input?: { sensitive?: boolean; privateLink?: string; allowEmpty?: boolean; validate?: (values: string[]) => boolean },
   ): Promise<{ action: 'submit'; values: string[] } | { action: 'decline' | 'cancel' }> {
     if (signal?.aborted) return { action: 'cancel' };
     const presentation = choices?.length
       ? { kind: multiSelect ? 'checkbox' as const : 'radio' as const,
-        options: choices.map(choice => ({ ...choice, ...(choice.description ? { hint: choice.description } : {}) })) }
-      : { kind: 'text' as const, ...(input?.sensitive ? { sensitive: true } : {}) };
+        options: choices.map(choice => ({ ...choice, ...(choice.description ? { hint: choice.description } : {}) })),
+        ...(input?.allowEmpty ? { allowEmpty: true } : {}) }
+      : { kind: 'text' as const, ...(input?.sensitive ? { sensitive: true } : {}), ...(input?.allowEmpty ? { allowEmpty: true } : {}) };
     const baseSchema: z.ZodType<{ picks: string[] } | { value: string }> = choices?.length
-      ? z.object({ picks: z.array(z.string()).min(1).max(multiSelect ? choices.length : 1).refine((picks) => presentation.kind !== 'text'
+      ? z.object({ picks: z.array(z.string()).min(input?.allowEmpty && multiSelect ? 0 : 1).max(multiSelect ? choices.length : 1).refine((picks) => presentation.kind !== 'text'
         && new Set(picks).size === picks.length && picks.every((pick) => presentation.options.some((option) => option.id === pick)), 'Choose displayed options') })
       : z.object({ value: z.string() });
     const dataSchema = baseSchema.refine(payload => !input?.validate || input.validate('picks' in payload
@@ -232,7 +233,8 @@ export class SuNativeCards {
         }
         const choices = field.choices?.map((choice, index) => ({ id: String(index), ...choice }));
         const answer = await this.openCard(turnId, [request.title, request.message, field.prompt].filter(Boolean).join('\n'), choices, field.multi, signal, undefined, undefined,
-          { sensitive: field.sensitive, validate: values => { try { field.parse(values); return true; } catch { return false; } } });
+          { sensitive: field.sensitive, allowEmpty: field.allowEmpty,
+            validate: values => { try { field.parse(values); return true; } catch { return false; } } });
         if (cancelled() || answer.action !== 'submit') return { action: answer.action === 'decline' ? 'decline' : 'cancel' };
         Object.defineProperty(content, field.key, { enumerable: true, value: field.parse(choices
           ? answer.values.map(pick => choices[Number(pick)].label) : answer.values) });

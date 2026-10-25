@@ -4,6 +4,7 @@ import { isSensitiveValueKey } from './sensitive-text';
 
 export interface NativeFormField {
   key: string; prompt: string; optional: boolean; sensitive: boolean; multi: boolean;
+  allowEmpty: boolean;
   choices?: Array<{ label: string }>;
   parse(values: string[]): string | number | boolean | string[];
 }
@@ -29,6 +30,14 @@ export function nativeFormFields(value: unknown): NativeFormField[] {
       writeOnly: z.boolean().optional(), sensitive: z.boolean().optional(),
     }).strict().parse(raw);
     const sensitive = field.writeOnly === true || field.sensitive === true || field.format === 'password' || isSensitiveValueKey(key);
+    const has = (...keys: Array<keyof typeof field>) => keys.some(key => field[key] !== undefined);
+    if ((field.type !== 'string' && has('enum', 'enumNames', 'oneOf', 'minLength', 'maxLength', 'format')) ||
+        (!['number', 'integer'].includes(field.type) && has('minimum', 'maximum')) ||
+        (field.type !== 'array' && has('items', 'minItems', 'maxItems')) ||
+        (field.enum && field.oneOf) || (field.enumNames && !field.enum) ||
+        (field.minLength ?? 0) > (field.maxLength ?? Infinity) ||
+        (field.minimum ?? -Infinity) > (field.maximum ?? Infinity) ||
+        (field.minItems ?? 0) > (field.maxItems ?? Infinity)) throw new Error('Unsupported form constraints');
     const variants = field.type === 'array' ? field.items?.anyOf : field.oneOf;
     const values = variants?.map(item => item.const) ?? (field.type === 'array' ? field.items?.enum : field.enum);
     const labels = variants?.map(item => item.title ?? item.const) ?? field.enumNames ?? values;
@@ -36,14 +45,16 @@ export function nativeFormFields(value: unknown): NativeFormField[] {
       || new Set(labels).size !== labels.length)) throw new Error('Ambiguous form choices');
     if (field.type === 'array' && (!values || sensitive)) throw new Error('MCP arrays require public enumerated choices');
     return { key, prompt: [field.title || key, field.description].filter(Boolean).join('\n'), sensitive,
+      allowEmpty: field.type === 'array' ? (field.minItems ?? 0) === 0
+        : field.type === 'string' && !values && !field.format && (field.minLength ?? 0) === 0,
       optional: !(root.required ?? []).includes(key), multi: field.type === 'array',
       choices: sensitive ? undefined : field.type === 'boolean' ? [{ label: 'Yes' }, { label: 'No' }]
         : labels?.map(label => ({ label })),
       parse(picked: string[]): string | number | boolean | string[] {
         const selected = values && !sensitive ? picked.map(label => values[labels!.indexOf(label)]) : picked;
-        if (!selected.length || selected.some(item => typeof item !== 'string')) throw new Error('Choose a valid response');
+        if (selected.some(item => typeof item !== 'string')) throw new Error('Choose a valid response');
         if (field.type === 'array') return z.array(z.string().refine(item => values!.includes(item)))
-          .min(field.minItems ?? 1).max(field.maxItems ?? values!.length).parse(selected);
+          .min(field.minItems ?? 0).max(field.maxItems ?? values!.length).parse(selected);
         if (selected.length !== 1) throw new Error('Choose one response');
         const answer = selected[0];
         if (field.type === 'boolean') {

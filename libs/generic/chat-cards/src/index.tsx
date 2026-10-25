@@ -36,6 +36,7 @@ export interface AskChoiceArgs {
   question: string;
   options: AskChoiceOption[];
   multi?: boolean;
+  allowEmpty?: boolean;
   report?: ReportBlock;
 }
 
@@ -102,7 +103,7 @@ export function AskChoiceCard({
     if (response.action === 'submit') onAnswer?.({ picks: response.picks });
   };
   const commit = (picks: Array<{ option_id: string; label: string }>): void => {
-    if (!disabled && picks.length > 0) fire({ action: 'submit', picks });
+    if (!disabled && (picks.length > 0 || args.allowEmpty)) fire({ action: 'submit', picks });
   };
 
   return (
@@ -205,13 +206,13 @@ export function AskChoiceCard({
       {!hideOptions && multi && !isAnswered && !isExpired ? (
         <div className="ask-choice-submit-row">
           <span className="ask-choice-submit-hint">
-            {selected.size === 0 ? 'Pick one or more, then Submit' : `${selected.size} selected`}
+            {selected.size === 0 ? args.allowEmpty ? 'Submit with no selection, or choose options' : 'Pick one or more, then Submit' : `${selected.size} selected`}
           </span>
           <div className="ask-choice-actions">
             {allowDecline ? <button type="button" onClick={() => fire({ action: 'decline' })} className="ask-choice-skip" aria-label="Skip">Skip</button> : null}
             <button
               type="button"
-              disabled={selected.size === 0}
+              disabled={selected.size === 0 && !args.allowEmpty}
               onClick={() => commit(args.options
                 .filter((option) => selected.has(option.id))
                 .map((option) => ({ option_id: option.id, label: option.label })))}
@@ -232,7 +233,7 @@ export function AskChoiceCard({
 }
 
 export type InputCardPresentation =
-  | { kind: 'text'; placeholder?: string; multiline?: boolean; sensitive?: boolean }
+  | { kind: 'text'; placeholder?: string; multiline?: boolean; sensitive?: boolean; allowEmpty?: boolean }
   | { kind: 'date'; min?: string; max?: string }
   | { kind: 'slider'; min: number; max: number; step?: number };
 
@@ -262,7 +263,7 @@ export function InputCard({
   const sliderStep = presentation.kind === 'slider' ? (presentation.step ?? 1) : 1;
   const [slider, setSlider] = useState(() => Math.round((sliderMin + sliderMax) / 2 / sliderStep) * sliderStep);
   const submitText = (): void => {
-    if (text.length > 0) {
+    if (text.length > 0 || (presentation.kind === 'text' && presentation.allowEmpty)) {
       onResponse({ action: 'submit', value: text });
       if (presentation.kind === 'text' && presentation.sensitive) setText('');
     }
@@ -304,7 +305,7 @@ export function InputCard({
         {allowDecline ? <button type="button" onClick={() => onResponse({ action: 'decline' })} className="input-card-skip" aria-label="Skip">Skip</button> : null}
         <button
           type="button"
-          disabled={presentation.kind !== 'slider' && text.length === 0}
+          disabled={presentation.kind !== 'slider' && !(presentation.kind === 'text' && presentation.allowEmpty) && text.length === 0}
           onClick={() => presentation.kind === 'slider'
             ? onResponse({ action: 'submit', value: slider })
             : submitText()}
@@ -485,6 +486,7 @@ export function CardRenderer({ card, busy = false, expired = false, onResponse, 
           question: card.prompt,
           options: (presentation.options ?? []).map((option) => ({ id: option.id, label: option.label, hint: option.hint, style: option.style })),
           multi: presentation.kind === 'checkbox',
+          allowEmpty: presentation.allowEmpty,
           report: card.report,
         }}
         expired={expired}
@@ -513,7 +515,8 @@ export function CardRenderer({ card, busy = false, expired = false, onResponse, 
             min: typeof presentation.min === 'string' ? presentation.min : undefined,
             max: typeof presentation.max === 'string' ? presentation.max : undefined,
           }
-        : { kind: 'text', placeholder: presentation.placeholder, multiline: presentation.multiline, sensitive: presentation.sensitive };
+        : { kind: 'text', placeholder: presentation.placeholder, multiline: presentation.multiline,
+          sensitive: presentation.sensitive, allowEmpty: presentation.allowEmpty };
     return (
       <InputCard
         prompt={card.prompt}

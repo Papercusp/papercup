@@ -218,6 +218,8 @@ pub struct OpenCard {
     pub fallback_text: Option<String>,
     /// Validated local link only; the provider target is never on the wire.
     pub secure_link: Option<String>,
+    /// Only the server schema can opt into submitting an empty value/selection.
+    pub allow_empty: bool,
     /// The wire `details` field: shown only behind the details toggle.
     pub details: Option<String>,
     /// The wire `approval` field: present on a tool-approval card, drawn the
@@ -311,7 +313,7 @@ fn parse_open_card(
     let presentation = CardPresentation::from_json(v.get("presentation"));
     let expected_link = format!("/api/ui/cards/{}/link", correlation_id);
     let secure_link = v.get("presentation").and_then(|p| p.get("link")).and_then(|l| l.as_str())
-        .filter(|link| *link == expected_link && correlation_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|link| *link == expected_link && correlation_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.'))
         .map(str::to_string);
     let fallback_text = v
         .get("fallbackText")
@@ -344,6 +346,7 @@ fn parse_open_card(
         presentation,
         fallback_text,
         secure_link,
+        allow_empty: v.get("presentation").and_then(|p| p.get("allowEmpty")).and_then(|v| v.as_bool()).unwrap_or(false),
         details,
         approval,
         allow_decline,
@@ -736,7 +739,7 @@ impl CardState {
                     .iter()
                     .filter_map(|&i| options.get(i).map(|o| o.id.clone()))
                     .collect();
-                if picks.is_empty() {
+                if picks.is_empty() && !head.allow_empty {
                     // Nothing toggled — treat the highlighted row as the pick so
                     // Enter on a fresh checkbox still commits something.
                     let opt = options.get(self.sel)?;
@@ -745,7 +748,7 @@ impl CardState {
                 Some(CardResponse::SubmitPicks(picks))
             }
             CardPresentation::Text { .. } | CardPresentation::Date { .. } => {
-                if self.input.is_empty() {
+                if self.input.is_empty() && !head.allow_empty {
                     return None;
                 }
                 Some(CardResponse::SubmitValue(serde_json::Value::String(
@@ -1054,6 +1057,7 @@ mod tests {
             },
             fallback_text: None,
             secure_link: None,
+            allow_empty: false,
             details: None,
             approval: None,
             allow_decline: true,
