@@ -1,6 +1,6 @@
 /** Private current-build request fixture; launched only by its integration suite. */
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { fork, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -10,7 +10,7 @@ import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registr
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
-import { retainIsolatedWorkerProgress } from './isolated-integration-proof';
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, retainIsolatedWorkerProgress } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
 
 let host: ChildProcess | undefined;
@@ -163,7 +163,8 @@ async function main() {
   const isCommittedReader = e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader';
   const isBlueprintRoute = e.STAGING_FIRST_HTTP_SCENARIO === 'blueprint-account-route';
   const isCurrentSuNative = ['current-su-native', 'current-su-native-carry'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
-  const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative;
+  const isCodexManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'codex-managed-tools';
+  const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative || isCodexManagedTools;
   const prepared = requiresPrepared
     ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
   assert.ok(!requiresPrepared || prepared,
@@ -208,6 +209,12 @@ async function main() {
     ? await (await import('./blueprint-account-route-http-scenario')).prepareBlueprintAccountRouteScenario({ workspace, evidenceDir })
     : undefined;
   disposeScenario = blueprintRoute?.dispose ?? committedReader?.dispose;
+  if (isCodexManagedTools) {
+    const { randomBytes } = await import('node:crypto');
+    const { superuserTokenPath } = await import('../lib/superuser-token');
+    mkdirSync(e.PAPERCUSP_HOME!, { recursive: true, mode: 0o700 });
+    writeFileSync(superuserTokenPath(), randomBytes(32).toString('base64url'), { mode: 0o600, flag: 'wx' });
+  }
   if (isCurrentSuNative || e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-home-repair')
     await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
   // Preparation changes socket/tmp settings; compare the final host environment
@@ -243,6 +250,45 @@ async function main() {
   assert.ok(hostIdentity, 'private host kernel identity required');
   const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
+  if (isCodexManagedTools) {
+    const { readSuperuserToken } = await import('../lib/superuser-token');
+    const token = readSuperuserToken();
+    assert.ok(token, 'private operator MCP bearer is required');
+    const censusDir = join(evidenceDir, 'census');
+    mkdirSync(censusDir);
+    const env = { ...e, PAPERCUSP_TEST_RUN_GROUP:
+      (e.PAPERCUSP_TEST_RUN_GROUP ?? '') + ':codex-managed-surface-worker',
+      CODEX_MANAGED_PRIVATE_MCP_URL: base + '/api/mcp?superuser=1&workspace=' +
+        encodeURIComponent(workspace) + '&client=su-private-codex-managed',
+      CODEX_MANAGED_PRIVATE_MCP_TOKEN: token };
+    const child = fork(join(root, 'scripts/test-files.mjs'),
+      ['packages/operator-core/lib/codex-managed-tools.native.integration.test.ts'],
+      { cwd: root, env, execArgv: ['--import', './scripts/lib/committed-source-loader.mjs'],
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    const result = await captureIsolatedWorker(child, censusDir, isolatedTestFileWorkerOptions(env, 1));
+    assert.equal(result.code, 0, result.output.slice(-12000));
+    assert.equal(result.signal, null);
+    assert.equal(result.timedOut, false);
+    assert.match(result.output, /TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed/);
+    assert.match(result.output, /Tests\s+6 passed \(6\)/);
+    assert.match(result.output, /skippedTests=0/);
+    const line = result.output.split('\n').find(row => row.startsWith('CODEX_ADMITTED_LIFECYCLE '));
+    assert.ok(line, 'production MCP lifecycle receipt is required');
+    const measured = JSON.parse(line.slice('CODEX_ADMITTED_LIFECYCLE '.length));
+    for (const row of measured.removed.lifecycle) {
+      assert.equal(row.managedPath, 'production-capability-bash');
+      assert.equal(row.managedCalls, 1);
+      assert.equal(row.hasNativeExecution, false);
+    }
+    await stopHost();
+    await sql.end();
+    const receipt = { workspace, bundleSha256, health, hostStopped: true,
+      providerForwarding: false, managedTool: 'capability:bash', surfaces: ['launch', 'resume', 'wake'] };
+    writeFileSync(join(evidenceDir, 'operator-mcp-receipt.json'), JSON.stringify(receipt));
+    console.log(result.output);
+    console.log('CODEX_PRODUCTION_MCP_VERIFIED ' + JSON.stringify(receipt));
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'shared-chat-recovery') {
     const receipt = await (await import('./shared-chat-recovery-http-scenario')).measureSharedChatRecovery({ workspace, base });
     await stopHost();
