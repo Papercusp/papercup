@@ -50,7 +50,7 @@ import { createProgressAwareWatchdog } from './lib/batch-watchdog.mjs';
 import { processGroupLifetime } from '@papercusp/operator-core/lib/fleet/process-group-lifetime';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fs, appendFileSync, closeSync, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync, writeSync } from 'node:fs';
+import { promises as fs, appendFileSync, closeSync, existsSync, fstatSync, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { papercuspHome } from '@papercusp/host-platform/home';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { constants, homedir, tmpdir } from 'node:os';
@@ -1230,10 +1230,10 @@ function selectBgVerifierBuildContext(context, argv) {
  * This is preparation for whole-recipe publication, not a publication receipt.
  * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
  *   invocations: BgBuildInvocation[], bank: string, stageLeaf: string,
- *   outputs: { temporary: string, final: string }[],
+ *   outputs: { temporary: string, final: string }[], publicationLeaf?: string,
  *   recipe?: { entry: string, outfile: string, profile: 'development' | 'release' } }} args
  */
-export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, recipe }) {
+export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, recipe, publicationLeaf }) {
   const contexts = prepareBgVerifierBuildContexts({ prepared, dependencies, invocations });
   const bankIdentity = readBgDirectoryIdentity(bank);
   const local = relative(prepared.root, bank);
@@ -1241,9 +1241,12 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
     'BG transaction bank escaped selected generation');
   assert.match(stageLeaf, /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'BG transaction stage leaf is invalid');
   const transaction = freezeBgExpectation({ schemaVersion: 'bg-build-transaction-v1', contexts,
-    bank: bankIdentity, stage: join(bank, stageLeaf), outputs, ...(recipe ? { recipe } : {}) });
+    bank: bankIdentity, stage: join(bank, stageLeaf), outputs, ...(recipe ? { recipe } : {}),
+    ...(publicationLeaf === undefined ? {} : { publicationLeaf }) });
   validateBgVerifierBuildTransaction(transaction);
   assert.ok(!existsSync(transaction.stage) && !isBgSymlink(transaction.stage), 'BG transaction stage already exists');
+  if (publicationLeaf !== undefined) assert.ok(!existsSync(join(bank, publicationLeaf))
+    && !isBgSymlink(join(bank, publicationLeaf)), 'BG transaction publication already exists');
   return transaction;
 }
 
@@ -1270,6 +1273,10 @@ function validateBgVerifierBuildTransaction(transaction) {
   assert.deepEqual(readBgDirectoryIdentity(bank.path), bank, 'BG transaction bank identity changed');
   assert.equal(dirname(stage), bank.path, 'BG transaction stage escaped bank');
   assert.match(basename(stage), /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'BG transaction stage leaf is invalid');
+  if (transaction.publicationLeaf !== undefined) {
+    assert.match(transaction.publicationLeaf, /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'BG publication leaf is invalid');
+    assert.notEqual(transaction.publicationLeaf, basename(stage), 'BG publication overlaps stage');
+  }
   const safe = path => typeof path === 'string' && path && !isAbsolute(path)
     && !path.includes('\\') && !path.includes('\0')
     && path.split('/').every(part => part && part !== '.' && part !== '..');
@@ -1346,22 +1353,8 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }) {
  *   receipts: Awaited<ReturnType<typeof compileBgVerifierInvocation>>[] }} args
  */
 export function qualifyBgVerifierBuildOutputSet({ binding, receipts }) {
-  assert.equal(binding.schemaVersion, 'bg-build-transaction-binding-v1', 'BG output binding is UNKNOWN');
-  const { transaction, ownerPid } = binding;
-  validateBgVerifierBuildTransaction(transaction);
-  assert.ok(Number.isSafeInteger(ownerPid) && ownerPid > 0, 'BG output owner PID is invalid');
+  const { transaction, contexts, outputs } = verifyBgVerifierOutputBinding(binding);
   const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-  assert.equal(binding.transactionSha256, hash(transaction), 'BG output original transaction changed');
-  const namespace = binding.contexts.record.invocation.outputNamespace;
-  assert.ok(namespace && namespace.stage.path === transaction.stage, 'BG output original stage changed');
-  assert.deepEqual(namespace.bank, transaction.bank, 'BG output original bank changed');
-  const contexts = prepareBgVerifierBuildContexts({ ...transaction.contexts.record,
-    invocations: transaction.contexts.invocations.map(entry => ({ ...entry.invocation, outputNamespace: namespace,
-      argv: entry.original.argv.map(arg => arg.replaceAll('@BG_PID@', String(ownerPid))) })) });
-  assert.deepEqual(binding.contexts, contexts, 'BG output original contexts changed');
-  const outputs = transaction.outputs.map(row => ({ ...row,
-    temporary: row.temporary.replaceAll('@BG_PID@', String(ownerPid)) }));
-  assert.deepEqual(binding.outputs, outputs, 'BG output original membership changed');
   assert.ok(Array.isArray(receipts) && receipts.length === contexts.invocations.length,
     'BG output compiler receipt population mismatch');
   const commands = new Set();
@@ -1395,6 +1388,39 @@ export function qualifyBgVerifierBuildOutputSet({ binding, receipts }) {
   ]);
   const expected = new Set([...identities.keys(), ...[...controls.keys()].filter(path =>
     existsSync(join(transaction.stage, path)))]);
+  assertBgOutputPopulation(transaction.stage, expected, controls);
+  // Close the census with the same source, dependency and directory identities.
+  for (const entry of contexts.invocations)
+    verifyBgVerifierBuildRecord({ ...contexts.record, invocation: entry.original }, entry.invocation, 'before-publication');
+  return freezeBgExpectation({ schemaVersion: 'bg-build-output-set-v1',
+    transactionSha256: binding.transactionSha256, bindingSha256: hash(binding),
+    compilerReceiptsSha256: hash(receipts), originalSourceReceiptSha256: contexts.record.originalSourceReceiptSha256,
+    files: outputs.map(row => ({ ...row, identity: identities.get(row.temporary) })) });
+}
+
+/** @param {ReturnType<typeof beginBgVerifierBuildTransaction>} binding */
+function verifyBgVerifierOutputBinding(binding) {
+  assert.equal(binding.schemaVersion, 'bg-build-transaction-binding-v1', 'BG output binding is UNKNOWN');
+  const { transaction, ownerPid } = binding;
+  validateBgVerifierBuildTransaction(transaction);
+  assert.ok(Number.isSafeInteger(ownerPid) && ownerPid > 0, 'BG output owner PID is invalid');
+  const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  assert.equal(binding.transactionSha256, hash(transaction), 'BG output original transaction changed');
+  const namespace = binding.contexts.record.invocation.outputNamespace;
+  assert.ok(namespace && namespace.stage.path === transaction.stage, 'BG output original stage changed');
+  assert.deepEqual(namespace.bank, transaction.bank, 'BG output original bank changed');
+  const contexts = prepareBgVerifierBuildContexts({ ...transaction.contexts.record,
+    invocations: transaction.contexts.invocations.map(entry => ({ ...entry.invocation, outputNamespace: namespace,
+      argv: entry.original.argv.map(arg => arg.replaceAll('@BG_PID@', String(ownerPid))) })) });
+  assert.deepEqual(binding.contexts, contexts, 'BG output original contexts changed');
+  const outputs = transaction.outputs.map(row => ({ ...row,
+    temporary: row.temporary.replaceAll('@BG_PID@', String(ownerPid)) }));
+  assert.deepEqual(binding.outputs, outputs, 'BG output original membership changed');
+  return { transaction, contexts, outputs };
+}
+
+/** @param {string} stage @param {Set<string>} expected @param {Map<string, string>} [controls] */
+function assertBgOutputPopulation(stage, expected, controls = new Map()) {
   const actual = [];
   const visit = (directory, prefix = '') => {
     for (const name of readdirSync(directory).sort()) {
@@ -1412,15 +1438,8 @@ export function qualifyBgVerifierBuildOutputSet({ binding, receipts }) {
       }
     }
   };
-  visit(transaction.stage);
+  visit(stage);
   assert.deepEqual(actual.sort(), [...expected].sort(), 'BG output file population mismatch');
-  // Close the census with the same source, dependency and directory identities.
-  for (const entry of contexts.invocations)
-    verifyBgVerifierBuildRecord({ ...contexts.record, invocation: entry.original }, entry.invocation, 'before-publication');
-  return freezeBgExpectation({ schemaVersion: 'bg-build-output-set-v1',
-    transactionSha256: binding.transactionSha256, bindingSha256: hash(binding),
-    compilerReceiptsSha256: hash(receipts), originalSourceReceiptSha256: contexts.record.originalSourceReceiptSha256,
-    files: outputs.map(row => ({ ...row, identity: identities.get(row.temporary) })) });
 }
 
 /** Re-measure without replacing the retained qualification record.
@@ -1430,6 +1449,136 @@ export function qualifyBgVerifierBuildOutputSet({ binding, receipts }) {
 export function verifyBgVerifierBuildOutputSet(output, args) {
   assert.deepEqual(qualifyBgVerifierBuildOutputSet(args), output, 'BG qualified output set changed');
   return output;
+}
+
+/** Convert only the qualified temporary files to their ORIGINAL logical names
+ * inside the private stage. Exclusive links preserve compiler-created inodes
+ * without overwriting another file; unlinking the temporary names restores
+ * independent-file custody. A failure leaves an unpublished attempt for diagnosis.
+ * The maintained artifact writer qualifies the original main entry in place.
+ * @param {{ output: ReturnType<typeof qualifyBgVerifierBuildOutputSet> } &
+ *   Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]} args
+ */
+export function qualifyBgVerifierLogicalOutputSet(args) {
+  const { output, binding } = args;
+  verifyBgVerifierBuildOutputSet(output, args);
+  // The complete output fence just validated these same immutable records.
+  const { transaction, contexts } = binding;
+  const { stage } = transaction;
+  const main = contexts.invocations[0];
+  const mainOutput = bgCompilerOptions(main.original.argv, contexts.record.prepared.root).options.outfile;
+  const entry = output.files.find(row => join(stage, row.temporary) === mainOutput);
+  assert.ok(entry && transaction.recipe?.outfile === join(stage, entry.final), 'BG logical main output is UNKNOWN');
+  for (const invocation of contexts.invocations) {
+    const { options, metafile } = bgCompilerOptions(invocation.original.argv, contexts.record.prepared.root);
+    const bundle = output.files.find(row => join(stage, row.temporary) === options.outfile);
+    const meta = output.files.find(row => join(stage, row.temporary) === metafile);
+    assert.ok(bundle && meta && meta.final === bundle.final + '.meta.json', 'BG logical metafile membership mismatch');
+  }
+  for (const row of output.files) {
+    assert.equal(dirname(row.temporary), dirname(row.final), 'BG logical output directory changed');
+    assert.ok(!existsSync(join(stage, row.final)) && !isBgSymlink(join(stage, row.final)),
+      'BG logical output already exists');
+  }
+  for (const row of output.files) {
+    linkSync(join(stage, row.temporary), join(stage, row.final));
+    unlinkSync(join(stage, row.temporary));
+  }
+  const artifact = qualifyBgVerifierOutput({ record: { ...contexts.record, invocation: main.original },
+    invocation: main.invocation, entry: join(stage, entry.final) });
+  const controls = ['.bg-build-binding.json', '.bg-build-context.json']
+    .filter(path => existsSync(join(stage, path))).map(path => readBgIndependentOutputIdentity(join(stage, path)));
+  const logical = freezeBgExpectation({ schemaVersion: 'bg-logical-output-set-v1',
+    outputSetSha256: createHash('sha256').update(JSON.stringify(output)).digest('hex'),
+    directory: readBgDirectoryIdentity(stage), artifact, controls,
+    files: output.files.map(row => ({ temporary: row.temporary, final: row.final,
+      identity: readBgIndependentOutputIdentity(join(stage, row.final)) })) });
+  verifyBgVerifierLogicalOutputSet(logical, args);
+  return logical;
+}
+
+/** Recheck retained logical outputs without regenerating a manifest or receipt.
+ * @param {ReturnType<typeof qualifyBgVerifierLogicalOutputSet>} logical
+ * @param {Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
+ */
+export function verifyBgVerifierLogicalOutputSet(logical, { output, binding, receipts }) {
+  const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const { transaction, contexts, outputs } = verifyBgVerifierOutputBinding(binding);
+  assert.equal(logical.schemaVersion, 'bg-logical-output-set-v1', 'BG logical output record is UNKNOWN');
+  assert.equal(logical.outputSetSha256, hash(output), 'BG logical original output record changed');
+  assert.equal(output.bindingSha256, hash(binding), 'BG logical original binding changed');
+  assert.equal(output.compilerReceiptsSha256, hash(receipts), 'BG logical compiler receipts changed');
+  assert.deepEqual(logical.directory, readBgDirectoryIdentity(transaction.stage), 'BG logical stage changed');
+  assert.deepEqual(logical.files.map(({ temporary, final }) => ({ temporary, final })), outputs,
+    'BG logical output membership changed');
+  for (const [index, row] of logical.files.entries()) {
+    const original = output.files[index];
+    assert.ok(original?.identity, 'BG logical original file is UNKNOWN');
+    assert.equal(row.identity.path, join(transaction.stage, row.final), 'BG logical file path changed');
+    // Renaming changes ctime; byte, inode and modification-time custody survive.
+    for (const key of ['sha256', 'dev', 'ino', 'size', 'mtimeNs'])
+      assert.equal(row.identity[key], original.identity[key], 'BG logical compiler file replaced');
+    assert.deepEqual(readBgIndependentOutputIdentity(row.identity.path), row.identity, 'BG logical file changed');
+  }
+  const main = contexts.invocations[0];
+  verifyBgVerifierOutputRecord(logical.artifact, { ...contexts.record, invocation: main.original }, main.invocation);
+  const controls = new Map([['.bg-build-binding.json', JSON.stringify(binding)],
+    ['.bg-build-context.json', JSON.stringify(binding.contexts)]]);
+  for (const identity of logical.controls) {
+    assert.ok(controls.has(relative(transaction.stage, identity.path)), 'BG logical control path changed');
+    assert.deepEqual(readBgIndependentOutputIdentity(identity.path), identity, 'BG logical control changed');
+  }
+  assertBgOutputPopulation(transaction.stage, new Set([...outputs.map(row => row.final),
+    ...logical.controls.map(row => relative(transaction.stage, row.path)),
+    relative(transaction.stage, logical.artifact.manifest.path)]), controls);
+  for (const entry of contexts.invocations)
+    verifyBgVerifierBuildRecord({ ...contexts.record, invocation: entry.original }, entry.invocation, 'before-publication');
+  return logical;
+}
+
+/** Publish one COMPLETE receipt at the pre-nominated bank leaf. Linking a fully
+ * written private file is atomic and refuses an existing destination, including
+ * dangling links. Keep artifact paths physical: moving this directory would
+ * invalidate the maintained boot reader's manifest suffix check. This publishes
+ * evidence only; activation must independently recheck the receipt and cohort.
+ * @param {{ logical: ReturnType<typeof qualifyBgVerifierLogicalOutputSet> } &
+ *   Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
+ */
+export function publishBgVerifierLogicalOutputSet(args) {
+  const { logical, binding } = args;
+  const leaf = binding.transaction.publicationLeaf;
+  assert.ok(leaf, 'BG publication destination was not originally nominated');
+  assert.match(leaf, /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'BG publication leaf is invalid');
+  assert.deepEqual(readBgDirectoryIdentity(binding.transaction.bank.path), binding.transaction.bank,
+    'BG publication bank changed');
+  assert.deepEqual(readBgDirectoryIdentity(binding.transaction.stage), logical.directory,
+    'BG publication stage changed');
+  const path = join(binding.transaction.bank.path, leaf), temporary = path + '.tmp.' + binding.ownerPid;
+  const body = JSON.stringify({ schemaVersion: 'bg-build-publication-v1', logical });
+  writeFileSync(temporary, body, { flag: 'wx', mode: 0o600 });
+  try {
+    verifyBgVerifierLogicalOutputSet(logical, args);
+    linkSync(temporary, path);
+  } finally { unlinkSync(temporary); }
+  const publication = freezeBgExpectation({ schemaVersion: 'bg-build-publication-v1',
+    identity: readBgIndependentOutputIdentity(path), logical });
+  assert.equal(readFileSync(path, 'utf8'), body, 'BG publication content changed');
+  return publication;
+}
+
+/** @param {ReturnType<typeof publishBgVerifierLogicalOutputSet>} publication
+ * @param {Parameters<typeof publishBgVerifierLogicalOutputSet>[0]} args */
+export function verifyBgVerifierPublication(publication, args) {
+  assert.equal(publication.schemaVersion, 'bg-build-publication-v1', 'BG publication record is UNKNOWN');
+  assert.equal(publication.identity.path, join(args.binding.transaction.bank.path,
+    args.binding.transaction.publicationLeaf ?? ''), 'BG publication destination changed');
+  assert.deepEqual(publication.logical, args.logical, 'BG publication logical record changed');
+  assert.deepEqual(readBgIndependentOutputIdentity(publication.identity.path), publication.identity,
+    'BG publication file changed');
+  assert.equal(readFileSync(publication.identity.path, 'utf8'),
+    JSON.stringify({ schemaVersion: publication.schemaVersion, logical: args.logical }), 'BG publication content changed');
+  verifyBgVerifierLogicalOutputSet(args.logical, args);
+  return publication;
 }
 
 /** The shared shell recipe delegates one EXACT recorded compiler invocation

@@ -463,10 +463,10 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
  * This is preparation for whole-recipe publication, not a publication receipt.
  * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
  *   invocations: BgBuildInvocation[], bank: string, stageLeaf: string,
- *   outputs: { temporary: string, final: string }[],
+ *   outputs: { temporary: string, final: string }[], publicationLeaf?: string,
  *   recipe?: { entry: string, outfile: string, profile: 'development' | 'release' } }} args
  */
-export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, recipe }: {
+export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, recipe, publicationLeaf }: {
     prepared: BgVerifierPreparation;
     dependencies: ReturnType<typeof captureVerifierDependencies>;
     invocations: BgBuildInvocation[];
@@ -476,12 +476,14 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
         temporary: string;
         final: string;
     }[];
+    publicationLeaf?: string;
     recipe?: {
         entry: string;
         outfile: string;
         profile: "development" | "release";
     };
 }): {
+    publicationLeaf?: string | undefined;
     recipe?: {
         entry: string;
         outfile: string;
@@ -602,6 +604,7 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
 }): {
     schemaVersion: string;
     transaction: {
+        publicationLeaf?: string | undefined;
         recipe?: {
             entry: string;
             outfile: string;
@@ -851,6 +854,62 @@ export function verifyBgVerifierBuildOutputSet(output: ReturnType<typeof qualify
         temporary: string;
         final: string;
     }[];
+};
+/** Convert only the qualified temporary files to their ORIGINAL logical names
+ * inside the private stage. Exclusive links preserve compiler-created inodes
+ * without overwriting another file; unlinking the temporary names restores
+ * independent-file custody. A failure leaves an unpublished attempt for diagnosis.
+ * The maintained artifact writer qualifies the original main entry in place.
+ * @param {{ output: ReturnType<typeof qualifyBgVerifierBuildOutputSet> } &
+ *   Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]} args
+ */
+export function qualifyBgVerifierLogicalOutputSet(args: {
+    output: ReturnType<typeof qualifyBgVerifierBuildOutputSet>;
+} & Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]): any;
+/** Recheck retained logical outputs without regenerating a manifest or receipt.
+ * @param {ReturnType<typeof qualifyBgVerifierLogicalOutputSet>} logical
+ * @param {Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
+ */
+export function verifyBgVerifierLogicalOutputSet(logical: any, { output, binding, receipts }: Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): any;
+/** Publish one COMPLETE receipt at the pre-nominated bank leaf. Linking a fully
+ * written private file is atomic and refuses an existing destination, including
+ * dangling links. Keep artifact paths physical: moving this directory would
+ * invalidate the maintained boot reader's manifest suffix check. This publishes
+ * evidence only; activation must independently recheck the receipt and cohort.
+ * @param {{ logical: ReturnType<typeof qualifyBgVerifierLogicalOutputSet> } &
+ *   Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
+ */
+export function publishBgVerifierLogicalOutputSet(args: {
+    logical: ReturnType<typeof qualifyBgVerifierLogicalOutputSet>;
+} & Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): {
+    schemaVersion: string;
+    identity: {
+        path: string;
+        realpath: string;
+        sha256: string;
+        dev: string;
+        ino: string;
+        size: string;
+        mtimeNs: string;
+        ctimeNs: string;
+    };
+    logical: any;
+};
+/** @param {ReturnType<typeof publishBgVerifierLogicalOutputSet>} publication
+ * @param {Parameters<typeof publishBgVerifierLogicalOutputSet>[0]} args */
+export function verifyBgVerifierPublication(publication: ReturnType<typeof publishBgVerifierLogicalOutputSet>, args: Parameters<typeof publishBgVerifierLogicalOutputSet>[0]): {
+    schemaVersion: string;
+    identity: {
+        path: string;
+        realpath: string;
+        sha256: string;
+        dev: string;
+        ino: string;
+        size: string;
+        mtimeNs: string;
+        ctimeNs: string;
+    };
+    logical: any;
 };
 /** The shared shell recipe delegates one EXACT recorded compiler invocation
  * here. Use its private API and binary, pass the digest-checked buffers to

@@ -40,6 +40,10 @@ import {
   beginBgVerifierBuildTransaction,
   qualifyBgVerifierBuildOutputSet,
   verifyBgVerifierBuildOutputSet,
+  qualifyBgVerifierLogicalOutputSet,
+  verifyBgVerifierLogicalOutputSet,
+  publishBgVerifierLogicalOutputSet,
+  verifyBgVerifierPublication,
   verifyBgVerifierBuildRecord,
   compileBgVerifierInvocation,
   qualifyBgVerifierOutput,
@@ -61,6 +65,7 @@ import {
 } from '../../../scripts/source-preview.mjs';
 import { DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
 import { captureTestSourceSnapshot } from './testing-worktree';
+import { measureBootOperatorArtifact } from './release/operator-artifact';
 import { cleanupEndedVerifierDirectories, verifierSourceFiles, writeVerifierTaskReceipt } from './verifier-source';
 import { bindFrozenDependencyGeneration } from './dependency-generation-proof';
 import { closeTask } from './task-manager/store';
@@ -2501,12 +2506,14 @@ describe('BG inherited manifest and original source boundaries', () => {
       argv: invocation.argv.map(arg => arg.replaceAll(index ? fixture.workerEntry : fixture.entry,
         join(stage, outputs[index * 2]!.temporary))) }));
     const recipe = { entry: fixture.argv[0]!, outfile: join(stage, 'hono-host.mjs'), profile: 'release' as const };
-    const args = { ...fixture, bank, stageLeaf: 'owned-build', invocations, outputs, recipe };
+    const args = { ...fixture, bank, stageLeaf: 'owned-build', invocations, outputs, recipe,
+      publicationLeaf: 'published-build.json' as string | undefined };
     return { ...fixture, args, stage };
   }
 
-  async function transactionRecipe() {
+  async function transactionRecipe(configure?: (args: Awaited<ReturnType<typeof transactionCandidate>>['args']) => void) {
     const fixture = await transactionCandidate();
+    configure?.(fixture.args);
     const transaction = prepareBgVerifierBuildTransaction(fixture.args);
     const bytes = JSON.stringify(transaction);
     const path = join(dirname(fixture.prepared.root), 'original-build-transaction.json');
@@ -2599,9 +2606,13 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect(existsSync(fixture.entry)).toBe(false);
   });
 
-  async function compiledTransaction() {
-    const fixture = await transactionRecipe();
+  async function compiledTransaction(configure?: Parameters<typeof transactionRecipe>[0]) {
+    const trace = (stage: string) => { if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} ${stage}\n`); };
+    trace('fixture-start');
+    const fixture = await transactionRecipe(configure);
+    trace('fixture-ready');
     const child = fixture.runRecipe();
+    trace('binding-ready');
     expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
     const binding = JSON.parse(readFileSync(join(fixture.stage, '.bg-build-binding.json'), 'utf8')) as
       ReturnType<typeof beginBgVerifierBuildTransaction>;
@@ -2611,6 +2622,7 @@ describe('BG inherited manifest and original source boundaries', () => {
       const result = fixture.run(entry.invocation.argv);
       expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
       receipts.push(JSON.parse(result.stdout) as Awaited<ReturnType<typeof compileBgVerifierInvocation>>);
+      trace('compiler-ready');
     }
     return { ...fixture, binding, receipts };
   }
@@ -2670,6 +2682,136 @@ describe('BG inherited manifest and original source boundaries', () => {
       expect(() => verifyBgVerifierBuildOutputSet(output, fixture)).toThrow();
       expect(JSON.stringify(output)).toBe(original);
       for (const row of fixture.binding.outputs) expect(existsSync(join(fixture.stage, row.final))).toBe(false);
+    });
+
+  async function logicalTransaction(configure?: Parameters<typeof transactionRecipe>[0]) {
+    const fixture = await compiledTransaction(configure);
+    if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} qualify-temporary\n`);
+    const output = qualifyBgVerifierBuildOutputSet(fixture);
+    return { ...fixture, output };
+  }
+
+  it('logical-output qualification retains real main/worker inodes and boot-readable artifact paths', async () => {
+    const fixture = await logicalTransaction();
+    const original = JSON.stringify(fixture.binding);
+    const sourceReceipt = readFileSync(join(fixture.prepared.root, '.verifier-source.json'));
+    if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} logical-start\n`);
+    const logical = qualifyBgVerifierLogicalOutputSet(fixture);
+    if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} logical-ready\n`);
+    expect(verifyBgVerifierLogicalOutputSet(logical, fixture)).toBe(logical);
+    expect(Object.isFrozen(logical.files[0]!.identity)).toBe(true);
+    for (const [index, row] of logical.files.entries()) {
+      expect(existsSync(join(fixture.stage, row.temporary))).toBe(false);
+      expect(row.identity.ino).toBe(fixture.output.files[index]!.identity!.ino);
+      expect(statSync(row.identity.path).nlink).toBe(1);
+    }
+    const entry = join(fixture.stage, 'hono-host.mjs');
+    const boot = measureBootOperatorArtifact(entry, fixture.prepared.source.sourceCommit, Date.now() + 1000);
+    if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} boot-ready\n`);
+    expect(boot.status).toBe('measured');
+    expect(JSON.stringify(fixture.binding)).toBe(original);
+    expect(readFileSync(join(fixture.prepared.root, '.verifier-source.json'))).toEqual(sourceReceipt);
+    const imported = await import('data:text/javascript;base64,' + readFileSync(entry).toString('base64'));
+    if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} import-ready\n`);
+    expect(imported.dep).toBe(41);
+  });
+
+  it('logical-output publication atomically exposes a complete independently readable receipt', async () => {
+    const fixture = await logicalTransaction(), logical = qualifyBgVerifierLogicalOutputSet(fixture);
+    const publication = publishBgVerifierLogicalOutputSet({ ...fixture, logical });
+    if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} publication-ready\n`);
+    expect(publication.identity.path).toBe(join(fixture.args.bank, fixture.args.publicationLeaf!));
+    expect(JSON.parse(readFileSync(publication.identity.path, 'utf8'))).toEqual({
+      schemaVersion: 'bg-build-publication-v1', logical,
+    });
+    expect(verifyBgVerifierPublication(publication, { ...fixture, logical })).toBe(publication);
+  });
+
+  it('logical-output publication replay preserves the original complete receipt', async () => {
+    const fixture = await logicalTransaction(), logical = qualifyBgVerifierLogicalOutputSet(fixture);
+    const publication = publishBgVerifierLogicalOutputSet({ ...fixture, logical });
+    const bytes = readFileSync(publication.identity.path);
+    expect(() => publishBgVerifierLogicalOutputSet({ ...fixture, logical })).toThrow();
+    expect(readFileSync(publication.identity.path)).toEqual(bytes);
+    expect(existsSync(publication.identity.path + '.tmp.' + fixture.binding.ownerPid)).toBe(false);
+  });
+
+  it.each(['metafile-name', 'output-directory'] as const)(
+    'logical-output rejects original %s mismatch before converting any temporary file', async defect => {
+      const fixture = await logicalTransaction(args => {
+        if (defect === 'metafile-name') args.outputs[1]!.final = 'wrong.mjs';
+        else {
+          args.outputs[2]!.final = 'nested/worker.mjs';
+          args.outputs[3]!.final = 'nested/worker.mjs.meta.json';
+        }
+      });
+      expect(() => qualifyBgVerifierLogicalOutputSet(fixture)).toThrow(/BG logical/);
+      for (const row of fixture.output.files) expect(existsSync(join(fixture.stage, row.temporary))).toBe(true);
+      expect(existsSync(join(fixture.args.bank, fixture.args.publicationLeaf!))).toBe(false);
+    });
+
+  it.each(['source', 'dependency', 'bundle', 'metafile', 'artifact', 'control', 'extra-file', 'extra-directory',
+    'identical-replacement', 'stage', 'receipt', 'output-record'] as const)(
+    'logical-output refuses %s drift before publication and preserves its original qualification', async defect => {
+      const fixture = await logicalTransaction();
+      const logical = qualifyBgVerifierLogicalOutputSet(fixture), original = JSON.stringify(logical);
+      if (defect === 'source') writeFileSync(join(fixture.prepared.root, inputs[0]!), 'export default 999;');
+      if (defect === 'dependency') writeFileSync(join(fixture.prepared.root, 'node_modules/fixture-dependency/index.js'), 'changed');
+      if (defect === 'bundle') writeFileSync(logical.files[0]!.identity.path, 'changed');
+      if (defect === 'metafile') writeFileSync(logical.files[1]!.identity.path, '{}');
+      if (defect === 'artifact') writeFileSync(logical.artifact.manifest.path, '{}');
+      if (defect === 'control') writeFileSync(join(fixture.stage, '.bg-build-binding.json'), '{}');
+      if (defect === 'extra-file') writeFileSync(join(fixture.stage, 'unrecorded'), 'extra');
+      if (defect === 'extra-directory') await fsPromises.mkdir(join(fixture.stage, 'unrecorded'));
+      if (defect === 'identical-replacement') {
+        const path = logical.files[0]!.identity.path, bytes = readFileSync(path);
+        await fsPromises.rename(path, path + '-original');
+        writeFileSync(path, bytes);
+        rmSync(path + '-original');
+      }
+      if (defect === 'stage') {
+        await fsPromises.rename(fixture.stage, fixture.stage + '-original');
+        await fsPromises.mkdir(fixture.stage);
+      }
+      if (defect === 'receipt') fixture.receipts[0]!.buildRecordSha256 = '0'.repeat(64);
+      if (defect === 'output-record') fixture.output = { ...fixture.output, bindingSha256: '0'.repeat(64) };
+      expect(() => publishBgVerifierLogicalOutputSet({ ...fixture, logical })).toThrow();
+      expect(JSON.stringify(logical)).toBe(original);
+      expect(existsSync(join(fixture.args.bank, fixture.args.publicationLeaf!))).toBe(false);
+    });
+
+  it.each(['file', 'directory', 'dangling-link', 'unowned-temporary', 'unnominated'] as const)(
+    'logical-output publication refuses %s without overwriting or removing it', async defect => {
+      const fixture = await logicalTransaction(args => {
+        if (defect === 'unnominated') args.publicationLeaf = undefined;
+      });
+      const logical = qualifyBgVerifierLogicalOutputSet(fixture);
+      const path = join(fixture.args.bank, 'published-build.json');
+      const target = defect === 'unowned-temporary' ? path + '.tmp.' + fixture.binding.ownerPid : path;
+      if (defect === 'file' || defect === 'unowned-temporary') writeFileSync(target, 'another producer');
+      if (defect === 'directory') await fsPromises.mkdir(target);
+      if (defect === 'dangling-link') symlinkSync(join(fixture.args.bank, 'missing'), target);
+      expect(() => publishBgVerifierLogicalOutputSet({ ...fixture, logical })).toThrow();
+      if (defect === 'file' || defect === 'unowned-temporary') expect(readFileSync(target, 'utf8')).toBe('another producer');
+      if (defect === 'directory') expect(readdirSync(target)).toEqual([]);
+      if (defect === 'dangling-link') expect((await fsPromises.lstat(target)).isSymbolicLink()).toBe(true);
+      if (defect === 'unnominated') expect(existsSync(path)).toBe(false);
+      expect(verifyBgVerifierLogicalOutputSet(logical, fixture)).toBe(logical);
+    });
+
+  it.each(['receipt-bytes', 'receipt-replacement', 'worker'] as const)(
+    'logical-output publication readback refuses later %s replacement', async defect => {
+      const fixture = await logicalTransaction(), logical = qualifyBgVerifierLogicalOutputSet(fixture);
+      const publication = publishBgVerifierLogicalOutputSet({ ...fixture, logical });
+      const path = publication.identity.path, bytes = readFileSync(path);
+      if (defect === 'receipt-bytes') writeFileSync(path, '{}');
+      if (defect === 'receipt-replacement') {
+        await fsPromises.rename(path, path + '-original');
+        writeFileSync(path, bytes);
+        rmSync(path + '-original');
+      }
+      if (defect === 'worker') writeFileSync(join(fixture.stage, 'worker.mjs'), 'changed worker');
+      expect(() => verifyBgVerifierPublication(publication, { ...fixture, logical })).toThrow();
     });
 
   it.each(['missing-output', 'extra-output', 'duplicate-final', 'escape', 'pid-switch', 'pid-directory'] as const)(
