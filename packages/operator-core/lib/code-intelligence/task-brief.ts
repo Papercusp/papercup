@@ -518,6 +518,7 @@ export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: 
       return plan?.row.created ?? null;
     } }) : [];
   const result = await composeReuseBrief({ base, context, deadline: deadline - 150,
+    maxChars: ref.maxChars ?? TASK_BRIEF_MAX_CHARS,
     providers: deps.reuse?.providers ?? (() => {
       const registered = registeredReuseBriefProviders();
       return [...registered, ...history.filter(provider => !registered.some(row => row.id === provider.id))];
@@ -526,8 +527,6 @@ export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: 
     append: (brief, value) => {
       const next = adapters[value.section]!(brief, value);
       if (!preservesBriefBase(base, next)) throw new Error('Reuse adapter replaced mandatory task evidence');
-      if (JSON.stringify(next).length > (ref.maxChars ?? TASK_BRIEF_MAX_CHARS))
-        throw new Error('Reuse adapter exceeded the task brief character budget');
       return next;
     } });
   let ledger: 'not-needed' | 'recorded' | 'unknown' = 'not-needed';

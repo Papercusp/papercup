@@ -58,6 +58,41 @@ describe('D032 claim relationship protocol', () => {
     const other = { sourceFingerprint: 'c'.repeat(64) };
     expect(decodeClaimReuseContribution(other, JSON.stringify(contribution))).toBeNull();
   });
+  it('retains the actual native base capacity falsifier even with optimistic missing-provider payloads', async () => {
+    // Original failed run 20261025T090852Z-164710, invocation17. These are
+    // retained data, not a fresh producer run or acceptance proof.
+    const baseline: TaskBrief = {"status":"current","scope":{"harness":"test-runtime-ce3400cf-6e9","paths":["src/target.ts"]},"sourceFingerprint":"f432022558fd73a0226f57c00300310c32910aa117f7d9e17b020bdd025ea294","commit":"a8d355ea43fcaf0952f2d942c64185c7bc75f67d","files":[{"path":"src/target.ts","sha256":"00df9016c976083b4cd1bff8246720921d7591e571fb29cfee8cc555c247d181","kind":"implementation"}],"excerpts":[{"path":"src/target.ts","text":"// touched clone sibling in this private task\nimport { sql } from './partner';\nexport function aggregatePositive(values: number[]) {\n  let total = 0;\n  for (const value of values) { if (value > 0) total += value;\n  else total -= value;\n  } total += values.length;\n  total += values.length;\n  total += values.length;\n  total += values.length;\n  total "}],"graph":{"status":"unknown","consumers":[],"relationships":[],"reason":"Compiler evidence is unavailable or outside the measured task files."},"exclusions":["Governing decision bodies or unread authority remain at the canonical plan reader.","Evidence outside the stored task scope is excluded; compiler dependencies may be read internally. Static consumers do not prove runtime execution."],"recover":{"tool":"code:pack","args":{"op":"pack","include":["src/target.ts"],"rootPath":"/tmp/pcv/papercusp-test-runtime-USSqzJ/workspaces/test-runtime-ce3400cf-6e9/operator-home"}},"repository":{"workspaceId":"test-runtime-ce3400cf-6e9","rootPath":"/tmp/pcv/papercusp-test-runtime-USSqzJ/workspaces/test-runtime-ce3400cf-6e9/operator-home"},"decisions":{"status":"unknown","refs":[],"recover":{"tool":"plans:get","args":{"slug":"p010-2026-10-25","harness":"test-runtime-ce3400cf-6e9","heading":"Decisions"}}},"incident":{"status":"measured","cause":"unknown","failures":[],"candidates":[],"recentChanges":[],"recentChangesStatus":"unknown","workRecord":"WI-1","runtimeExecution":"unmeasured","recover":{"tool":"work_items:get","args":{"id":"WI-1","harness":"test-runtime-ce3400cf-6e9"}},"limitations":["Selected task files and their latest normal test runs only; graph paths and recent edits are candidate causes.","Failure-log hashes identify recorded errors; no distinguishing causal test or runtime execution was measured."]},"engineering":{"intent":[],"rationale":[],"validation":[],"execution":[],"gaps":["no-visible-spec","intent-not-linked","rationale-not-linked","validation-not-linked","Only named child boundaries are observed; static anchors, test outcomes and parent spans do not observe their callees."],"recover":{"tool":"graph:query","args":{"op":"evidence","harnesses":["test-runtime-ce3400cf-6e9"],"plan":"p010-2026-10-25","item":"P-001"}}}};
+    const observedWires: string[] = ["r1:[\"clones\",\"impact\",\"b82af50ca819\",\"Copy family src/sibling.ts:1 aggregateSibling; static match, review before reuse.\"]","r1:[\"cochange\",\"coChange\",\"9626a34a1834\",\"Unanchored src/partner.ts (4/4;90d)\"]","r1:[\"coverage\",\"tests\",\"41699cb445df8c917cb95eb06f2b847aee37b494597c50ac02a10e1f59d8266e\",\"src/target.ts: executed by src/target.test.ts.\"]"];
+    const missing = [{"provider":"provenance","indexVersion":"866e195a3ae6"},{"provider":"sql","indexVersion":"b61837a42c522d6cca2a1d397aee130eff2bccdcbddc7059b1a13a006d9635c4"}] as { provider: ReuseProviderId; indexVersion: string }[];
+    const observed = observedWires.map(wire => decodeClaimReuseContribution(baseline, wire)!);
+    expect(observed.map(row => row.provider)).toEqual(['clones', 'cochange', 'coverage']);
+    // A one-character missing payload is a deliberately optimistic lower bound.
+    // Keep the exact observed indexes, policy destinations and enclosing source.
+    const sourceVersion = baseline.sourceFingerprint;
+    if (!sourceVersion) throw new Error('Retained native base must have its full source fingerprint');
+    const optimistic = missing.map(row => ({ ...row, section: REUSE_PROVIDER_POLICY[row.provider].section,
+      sourceVersion, text: 'x' }));
+    const candidates = [...observed, ...optimistic].sort((a, b) =>
+      REUSE_PROVIDER_POLICY[a.provider].priority - REUSE_PROVIDER_POLICY[b.provider].priority);
+    const hypothetical = { ...baseline, graph: { ...baseline.graph,
+      relationships: candidates.map(row => encodeClaimReuseContribution(baseline, row)) } };
+    expect(briefCodePoints(JSON.stringify(baseline))).toBe(2628);
+    expect(briefCodePoints(JSON.stringify(hypothetical))).toBe(3174);
+    const before = JSON.stringify(baseline);
+    const composed = await composeReuseBrief({ base: baseline, deadline: Date.now() + 6000,
+      context: { surface: 'claim', workspaceId: 'retained', owner: 'su-retained', invocation: 'retained-capacity',
+        paths: baseline.scope.paths, sourceVersion: baseline.sourceFingerprint },
+      enabled: async () => true, providers: candidates.map(row => ({ id: row.provider, read: async () => ({
+        status: 'measured' as const, sourceVersion: row.sourceVersion, indexVersion: row.indexVersion, lines: [row.text],
+      }) })), append: (brief, row) => ({ ...brief, graph: { ...brief.graph,
+        relationships: [...brief.graph.relationships, encodeClaimReuseContribution(brief, row)] } }) });
+    expect(composed.observations.map(row => [row.provider, row.status])).toEqual([
+      ['clones', 'issued'], ['cochange', 'issued'], ['provenance', 'issued'], ['sql', 'budget'], ['coverage', 'budget'],
+    ]);
+    expect(briefCodePoints(JSON.stringify(composed.brief))).toBeLessThanOrEqual(3000);
+    expect(JSON.stringify(baseline)).toBe(before);
+    expect({ ...composed.brief, graph: { ...composed.brief.graph, relationships: baseline.graph.relationships } }).toEqual(baseline);
+  });
   it('fits all retained producer lines through the default adapter without changing base, charges or issued identity', async () => {
     // Original focused receipt21976156; retained log SHA256
     // 5565099db1494b02b385ea95bd177ffd2a82b3a04a98ab1bf6206e3ec7e1b731.

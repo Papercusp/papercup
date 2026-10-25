@@ -875,6 +875,120 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
   }
 }
 
+/** The expected population comes from the parent's accepted evidence, never
+ * the candidate or compiler metafile. `path` retains the original artifact
+ * bytes; `members` is the independently accepted literal source-blob map.
+ * @typedef {{ path: string, evidenceRef: string, sha256: string, schemaVersion: 1,
+ *   members: Record<string, string> }} BgAcceptedManifest
+ * @typedef {{ schemaVersion: 'bg-verifier-source-v1', root: string,
+ *   acceptedManifest: BgAcceptedManifest,
+ *   source: Awaited<ReturnType<typeof prepareVerifierSource>>,
+ *   sourceReceiptSha256: string }} BgVerifierPreparation
+ */
+
+/** @param {BgAcceptedManifest} expected @param {string} root */
+function readBgAcceptedManifest(expected, root) {
+  assert.ok(expected && typeof expected === 'object', 'BG parent manifest authority is UNKNOWN');
+  assert.ok(typeof expected.evidenceRef === 'string' && expected.evidenceRef.trim()
+    && !/^(?:unknown|absent|unresolved)$/i.test(expected.evidenceRef.trim()),
+  'BG parent manifest authority is UNKNOWN');
+  assert.equal(expected.schemaVersion, 1, 'BG parent manifest schema mismatch');
+  assert.match(expected.sha256 ?? '', /^[a-f0-9]{64}$/, 'BG parent manifest digest is required');
+  assert.ok(typeof expected.path === 'string' && isAbsolute(expected.path), 'BG parent manifest path is required');
+  assertOutsideArchive(root, expected.path);
+  assert.ok(lstatSync(expected.path).isFile() && realpathSync(expected.path) === expected.path,
+    'BG parent manifest must be an independent regular file');
+  const bytes = readFileSync(expected.path);
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), expected.sha256, 'BG parent manifest digest mismatch');
+  const manifest = JSON.parse(String(bytes));
+  assert.equal(manifest.schemaVersion, expected.schemaVersion, 'BG parent manifest schema mismatch');
+  assert.ok(expected.members && typeof expected.members === 'object' && !Array.isArray(expected.members)
+    && Object.keys(expected.members).length > 0, 'BG parent manifest members are required');
+  for (const [path, blob] of Object.entries(expected.members)) {
+    assert.ok(path && !isAbsolute(path) && !path.includes('\\')
+      && !path.includes('\0') && path.split('/').every(part => part && part !== '.' && part !== '..'),
+    'BG parent manifest member path is invalid');
+    assert.match(blob, /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/, 'BG parent manifest source blob is invalid');
+  }
+  assert.deepEqual(manifest.sourceBlobs, expected.members, 'BG parent manifest literal membership mismatch');
+  return bytes;
+}
+
+/** Retain a detached, recursively immutable expectation. Mutation of a caller's
+ * descriptor or the returned receipt must not bless a later source population.
+ * @template T @param {T} value @returns {T}
+ */
+function freezeBgExpectation(value) {
+  const copy = JSON.parse(JSON.stringify(value));
+  const freeze = item => {
+    if (item && typeof item === 'object') {
+      for (const child of Object.values(item)) freeze(child);
+      Object.freeze(item);
+    }
+    return item;
+  };
+  return freeze(copy);
+}
+
+/** Prepare through the maintained Git exporter, with original parent authority
+ * resolved BEFORE it creates a destination. No build or activation is implied.
+ * @param {{ repo: string, ref: string, dest: string, inputs: string[],
+ *   acceptedManifest: BgAcceptedManifest }} options
+ * @returns {Promise<BgVerifierPreparation>}
+ */
+export async function prepareBgVerifierSource({ repo, ref, dest, inputs, acceptedManifest }) {
+  readBgAcceptedManifest(acceptedManifest, dest);
+  const accepted = freezeBgExpectation(acceptedManifest);
+  const members = Object.keys(accepted.members).sort();
+  assert.deepEqual([...inputs].sort(), members, 'BG accepted input membership mismatch');
+  const selected = resolveCommit(repo, ref);
+  const trees = new Map();
+  for (const path of members) {
+    assert.equal(committedInputBlob(repo, selected, path, trees), accepted.members[path],
+      `BG accepted input blob mismatch: ${path}`);
+  }
+  const source = await prepareVerifierSource({ repo, ref: selected, dest, inputs: members, gitCheckout: true });
+  try {
+    const sourceReceiptSha256 = createHash('sha256')
+      .update(readFileSync(join(dest, '.verifier-source.json'))).digest('hex');
+    /** @type {BgVerifierPreparation} */
+    const prepared = freezeBgExpectation({ schemaVersion: 'bg-verifier-source-v1', root: realpathSync(dest),
+      acceptedManifest: accepted, source, sourceReceiptSha256 });
+    verifyBgVerifierSource(prepared, 'before-build');
+    return prepared;
+  } catch (error) {
+    // prepareVerifierSource created this previously absent destination. Leave
+    // the parent evidence and any peer/active/rollback generations untouched.
+    await fs.rm(dest, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+/** Reuse at both compiler boundaries. The original receipt is never regenerated
+ * from observed output; dependencies and compiler-consumed bytes require their
+ * separate custody checks before this source proof can qualify a build.
+ * @param {BgVerifierPreparation} prepared
+ * @param {'before-build' | 'before-publication'} boundary
+ */
+export function verifyBgVerifierSource(prepared, boundary) {
+  assert.ok(['before-build', 'before-publication'].includes(boundary), 'BG compiler boundary is invalid');
+  assert.equal(prepared.schemaVersion, 'bg-verifier-source-v1', 'BG preparation schema mismatch');
+  const { root, source, acceptedManifest } = prepared;
+  assert.equal(realpathSync(root), root, 'BG source root identity changed');
+  readBgAcceptedManifest(acceptedManifest, root);
+  assert.equal(createHash('sha256').update(readFileSync(join(root, '.verifier-source.json'))).digest('hex'),
+    prepared.sourceReceiptSha256, 'BG original source receipt changed');
+  assert.deepEqual(source.testedInputs.map(row => row.path).sort(), Object.keys(acceptedManifest.members).sort(),
+    'BG accepted input membership mismatch');
+  verifyVerifierSourceSync(root, source, { runtimeArtifacts: true });
+  const trees = new Map();
+  for (const [path, blob] of Object.entries(acceptedManifest.members)) {
+    assert.equal(committedInputBlob(root, source.sourceCommit, path, trees), blob,
+      `BG accepted input blob mismatch: ${path}`);
+  }
+  return prepared;
+}
+
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.
  * An explicit allowance is shared across phases and requires a finite caller

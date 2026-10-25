@@ -8,7 +8,7 @@ import { prepareAssume, validateAssume, commitAssume, type AssumePreparation,
   verifyAssumeExecution, type AssumeExecutionObservation,
   type AssumeTransitionReceipt, type AssumeRequest } from '../../../packages/operator-core/lib/session-assume';
 import { readAssumeCaller, readAssumeTarget } from '../../../packages/operator-core/lib/session-assume-preparation';
-import { createAssumeTransitionDeps, inspectManagedAssumeRequest } from '../../../packages/operator-core/lib/session-assume-runtime';
+import { createAssumeAuthorizer, createAssumeTransitionDeps, inspectManagedAssumeRequest } from '../../../packages/operator-core/lib/session-assume-runtime';
 import { createManagedAssumeHost } from '../../../packages/operator-core/lib/session-assume-host';
 import { findLiveHostAsync, injectIntoHostWithConfirmation } from
   '../../../packages/operator-core/lib/events/await/psu-pty-discovery';
@@ -77,6 +77,40 @@ export async function productionAssumeFixture(workspaceId: string,
   });
   return {
     sql, records, trace, responsibilitySnapshot,
+    async authorizationRefusals(owner: string, targetOwnerId: string,
+      contextMode: AssumeRequest['contextMode'], token: string, expiresAt: number) {
+      return scoped(async () => {
+        const actor = { ownerId: owner, workspaceId };
+        const request = { requestId: randomUUID(), targetOwnerId, contextMode };
+        let readerCalls = 0;
+        const deps = { ...preparationDeps,
+          caller: async (...args: Parameters<typeof readAssumeCaller>) => {
+            readerCalls++; return readAssumeCaller(...args);
+          },
+          target: async (value: AssumeRequest) => {
+            readerCalls++; return preparationDeps.target(value);
+          } };
+        const denied = [];
+        for (const isSuperuser of [true, false]) {
+          // Separate a missing principal from a valid principal without
+          // administrative authority. Exercise the production authorizer.
+          const authorize = createAssumeAuthorizer({ uiClientId: owner, workspaceId, isSuperuser,
+            log: () => {}, signal: new AbortController().signal, progress: () => {}, emit: () => {},
+            principal: isSuperuser ? undefined : { kind: 'system', slug: 'system:superuser',
+              authMethod: 'process-internal', trust: 'trusted', workspaceId, capabilities: new Set<string>() },
+            gateBypass: { role: true, capability: true } }, request);
+          denied.push(await prepareAssume(actor, request, { ...deps, authorize }));
+          denied.push(await validateAssume(actor, token, { ...deps, authorize }));
+        }
+        const corrupt = Buffer.from(token, 'base64url');
+        corrupt[corrupt.length - 1] ^= 1;
+        return { denied, readerCalls,
+          otherCaller: await validateAssume({ ...actor, ownerId: randomUUID() }, token, deps),
+          otherWorkspace: await validateAssume({ ...actor, workspaceId: randomUUID() }, token, deps),
+          tampered: await validateAssume(actor, corrupt.toString('base64url'), deps),
+          expired: await validateAssume(actor, token, { ...deps, now: () => expiresAt }) };
+      });
+    },
     async seedResponsibilities(owner: string, workId: string) {
       return scoped(async () => {
         const who = identity(owner), planSlug = 'native-plan-' + randomUUID();

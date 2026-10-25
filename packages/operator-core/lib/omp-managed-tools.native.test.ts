@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
+import { composeOmpCapabilityTools, type CapabilityPolicyRequest } from '@papercusp/orchestrator/managed-capability-policy';
+import { roleLaunchArgs, suLaunchArgs, resumeArgsFor } from '../../../apps/operator/scripts/psu-launcher.mjs';
 
 declare module 'vitest' {
   interface TaskMeta {
@@ -15,7 +17,7 @@ declare module 'vitest' {
 
 const canary = 'mcp__managed_surface_canary';
 
-function captureSurface(noTools: boolean) {
+function captureSurface(noTools: boolean | readonly string[]) {
   const omp = wellKnownBackendBin('omp') ?? resolveOnPath('omp');
   if (!omp) throw new Error('Installed OMP is required for native-tool removal evidence');
   const home = mkdtempSync(join(tmpdir(), 'omp-managed-surface-'));
@@ -65,7 +67,7 @@ export default function(pi) {
     const result = spawnSync(omp, ['--print', '--mode', 'json', '--no-session', '--no-title',
       '--no-extensions', '--no-skills', '--no-rules', '--extension', extensionPath,
       '--model', 'surface-fixture/proof', '--thinking', 'off', '--auto-approve',
-      ...(noTools ? ['--no-tools'] : []), 'Run the local tool-surface census.'], {
+      ...(Array.isArray(noTools) ? noTools : noTools ? ['--no-tools'] : []), 'Run the local tool-surface census.'], {
       cwd: home, encoding: 'utf8', timeout: 25_000, maxBuffer: 2 * 1024 * 1024,
       env: { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8', HOME: home,
         XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.local', 'share'),
@@ -84,6 +86,61 @@ export default function(pi) {
 }
 
 describe('OMP managed replacement installed-client census', () => {
+  const admitted: CapabilityPolicyRequest = {
+    client: 'omp', surface: 'launch', clientVersions: { omp: '18.0.3' },
+    ompNativeTools: ['read', 'bash', 'edit', 'write', 'grep', 'glob', 'task', 'todo', 'web_search'],
+    readiness: [{ family: 'shell-ssh-interpreters', cutoverReady: true, openGapIds: [] }],
+    cutoverStaging: { 'shell-ssh-interpreters': 'full' },
+    adoption: [{ client: 'omp', family: 'shell-ssh-interpreters',
+      managedPathProven: true, nativeBypassRefused: true, atClientVersion: '18.0.3' }],
+    matrix: [{ client: 'omp', family: 'shell-ssh-interpreters',
+      allScenariosPassed: true, declaredScenarioCount: 7, unmet: [] }],
+  };
+
+  it('applies the shared restriction on su, role, fleet and resume without losing the managed canary', ({ task }) => {
+    // Explicit operator-selected native mode is representable by --tools.
+    // Default code mode is measured separately and must remain retained.
+    const baseline = captureSurface(['--tools', admitted.ompNativeTools!.join(',')]);
+    const observations: { routes: string[]; argv: string[]; names: string[]; calls: number; version: string }[] = [];
+    task.meta.nativeToolSurface = { baseline, observations, controlVersion: admitted.clientVersions!.omp };
+    const toolSelection = (argv: string[]) => {
+      const index = argv.indexOf('--tools');
+      expect(index, JSON.stringify(argv)).toBeGreaterThanOrEqual(0);
+      return argv.slice(index, index + 2);
+    };
+    const routes = {
+      su: toolSelection(suLaunchArgs('omp', { capabilityPolicy: admitted }).args),
+      role: toolSelection(roleLaunchArgs('omp', { capabilityPolicy: admitted }).args),
+      fleet: composeOmpCapabilityTools([], admitted),
+      resume: toolSelection(resumeArgsFor({ agent: 'omp' }, { capabilityPolicy: admitted }).args),
+      wake: composeOmpCapabilityTools([], { ...admitted, surface: 'wake' }),
+    };
+    // The route builders must deliver the same cut. Probe each DISTINCT native
+    // selection once, retaining partial observations before any assertion.
+    for (const [route, argv] of Object.entries(routes)) {
+      const prior = observations.find(row => JSON.stringify(row.argv) === JSON.stringify(argv));
+      if (prior) prior.routes.push(route);
+      else observations.push({ routes: [route], argv, ...captureSurface(argv) });
+    }
+    expect(baseline.names).toContain('bash');
+    for (const result of observations) {
+      expect(result.version).toBe(baseline.version);
+      expect(result.names).not.toContain('bash');
+      expect(result.calls).toBe(1);
+      expect(result.names.filter(name => name !== canary).sort())
+        .toEqual(baseline.names.filter(name => name !== 'bash' && name !== canary).sort());
+    }
+    const defaultSurface = captureSurface(false);
+    const defaultPolicy = { ...admitted, ompNativeTools: defaultSurface.names.filter(name => name !== canary) };
+    expect(defaultSurface.names).toEqual(expect.arrayContaining(['eval', 'hub']));
+    expect(composeOmpCapabilityTools([], defaultPolicy)).toEqual([]);
+    // Version drift must keep the native surface, independently of adoption's pin.
+    const drift = composeOmpCapabilityTools([], { ...admitted, clientVersions: { omp: '18.0.4' },
+      adoption: admitted.adoption!.map(row => ({ ...row, atClientVersion: undefined })) });
+    expect(drift).toEqual([]);
+    expect(defaultSurface.names).toContain('bash');
+  }, 180_000);
+
   it('removes built-in execution tools while an extension tool still executes', ({ task }) => {
     const baseline = captureSurface(false);
     const restricted = captureSurface(true);

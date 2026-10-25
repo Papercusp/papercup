@@ -31,6 +31,8 @@ import {
   materializeCommit,
   measureVerifierSourceBytes,
   prepareVerifierSource,
+  prepareBgVerifierSource,
+  verifyBgVerifierSource,
   prepareVerifierDependencies,
   runVerifierDependencyCommand,
   captureVerifierDependencies,
@@ -2107,6 +2109,120 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs: [input] }))
       .rejects.toThrow('archive symlink escapes source root');
     expect(existsSync(dest)).toBe(false);
+  });
+});
+
+describe('BG inherited manifest and original source boundaries', () => {
+  const inputs = ['apps/operator/src/index.ts', 'libs/papercusp/package.json'];
+  const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+  let serial = 0;
+
+  function candidate() {
+    const base = join(tmp, `bg-source-${++serial}`);
+    const fixture = makeSuperproject(base);
+    git(fixture.repo, ['commit', '--allow-empty', '-qm', 'BG selected child']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const members = { [inputs[0]!]: git(fixture.repo, ['rev-parse', `${ref}:${inputs[0]}`]),
+      [inputs[1]!]: git(fixture.subSrc, ['rev-parse', `${fixture.subCommit}:package.json`]) };
+    const path = join(base, 'original-parent-manifest.json');
+    const bytes = JSON.stringify({ schemaVersion: 1, sourceBlobs: members });
+    writeFileSync(path, bytes);
+    return { fixture, options: { repo: fixture.repo, ref, dest: join(base, 'selected'), inputs: [...inputs],
+      acceptedManifest: { path, evidenceRef: 'fixture:original-parent-P002', sha256: digest(bytes),
+        schemaVersion: 1 as const, members } } };
+  }
+
+  it('preserves inherited literal inputs and recursive pins while unrelated canonical source changes', async () => {
+    const c = candidate();
+    write(c.fixture.repo, 'docs/architecture.md', 'unrelated canonical change');
+    const prepared = await prepareBgVerifierSource(c.options);
+    const original = readFileSync(join(prepared.root, '.verifier-source.json'));
+    writeFileSync(join(c.fixture.repo, inputs[0]!), 'canonical source changed after selection');
+    expect(verifyBgVerifierSource(prepared, 'before-build')).toBe(prepared);
+    expect(verifyBgVerifierSource(prepared, 'before-publication')).toBe(prepared);
+    expect(readFileSync(join(prepared.root, '.verifier-source.json'))).toEqual(original);
+    expect(prepared.source.submodules).toContainEqual({ path: 'libs/papercusp', sha: c.fixture.subCommit });
+    expect(Object.isFrozen(prepared.source.files[0])).toBe(true);
+    c.options.acceptedManifest.members[inputs[0]!] = 'f'.repeat(40);
+    expect(prepared.acceptedManifest.members[inputs[0]!]).not.toBe('f'.repeat(40));
+  });
+
+  it.each(['absent', 'unknown', 'digest', 'schema', 'literal-member', 'source-blob'] as const)(
+    'refuses %s parent authority before creating a candidate', async defect => {
+      const c = candidate();
+      if (defect === 'absent') c.options.acceptedManifest = undefined as never;
+      if (defect === 'unknown') c.options.acceptedManifest.evidenceRef = 'UNKNOWN';
+      if (defect === 'digest') c.options.acceptedManifest.sha256 = '0'.repeat(64);
+      if (defect === 'schema') c.options.acceptedManifest.schemaVersion = 2 as never;
+      if (defect === 'literal-member') delete c.options.acceptedManifest.members[inputs[0]!];
+      if (defect === 'source-blob') {
+        c.options.acceptedManifest.members[inputs[0]!] = 'f'.repeat(40);
+        const bytes = JSON.stringify({ schemaVersion: 1, sourceBlobs: c.options.acceptedManifest.members });
+        writeFileSync(c.options.acceptedManifest.path, bytes);
+        c.options.acceptedManifest.sha256 = digest(bytes);
+      }
+      await expect(prepareBgVerifierSource(c.options)).rejects.toThrow(/BG/);
+      expect(existsSync(c.options.dest)).toBe(false);
+    });
+
+  const boundaries = ['before-build', 'before-publication'] as const;
+  const changes = ['changed', 'missing', 'added'] as const;
+  async function sourceDefect(boundary: typeof boundaries[number], defect: typeof changes[number]) {
+    const c = candidate();
+    const prepared = await prepareBgVerifierSource(c.options);
+    expect(verifyBgVerifierSource(prepared, boundary)).toBe(prepared);
+    if (defect === 'changed') writeFileSync(join(prepared.root, inputs[0]!), 'substituted selected source');
+    if (defect === 'missing') rmSync(join(prepared.root, inputs[0]!));
+    if (defect === 'added') write(prepared.root, 'packages/core/unaccepted.ts', 'added source');
+    expect(() => verifyBgVerifierSource(prepared, boundary)).toThrow(/tampered verification/);
+    expect(existsSync(c.options.acceptedManifest.path)).toBe(true);
+  }
+
+  it('BG-PREP-EXACT-SELECTION rejects a changed frozen source census at either compiler boundary', async () => {
+    for (const boundary of boundaries) for (const defect of changes) await sourceDefect(boundary, defect);
+  });
+  for (const boundary of boundaries) for (const defect of changes) {
+    it(`bg-r1-source-${defect}-${boundary} rejects ${defect} frozen source ${boundary}`,
+      () => sourceDefect(boundary, defect));
+  }
+
+  async function memberDefect(boundary: typeof boundaries[number], defect: 'omitted' | 'added') {
+    const c = candidate();
+    const wrong = { ...c.options, inputs: defect === 'omitted' ? inputs.slice(1) : [...inputs, 'package.json'] };
+    await expect(prepareBgVerifierSource(wrong)).rejects.toThrow('BG accepted input membership mismatch');
+    expect(existsSync(wrong.dest)).toBe(false);
+    const prepared = await prepareBgVerifierSource(c.options);
+    expect(verifyBgVerifierSource(prepared, boundary)).toBe(prepared);
+    // Simulate a replaced attempt record; the original retained manifest and
+    // receipt still forbid either an omitted or an added literal member.
+    const members = { ...prepared.acceptedManifest.members };
+    if (defect === 'omitted') delete members[inputs[0]!];
+    else members['package.json'] = git(c.fixture.repo, ['rev-parse', `${c.options.ref}:package.json`]);
+    const replaced = { ...prepared, acceptedManifest: { ...prepared.acceptedManifest, members } };
+    expect(() => verifyBgVerifierSource(replaced, boundary)).toThrow('BG parent manifest literal membership mismatch');
+  }
+
+  it('BG-PREP-EXACT-SELECTION rejects omitted or added accepted manifest members', async () => {
+    for (const boundary of boundaries) for (const defect of ['omitted', 'added'] as const)
+      await memberDefect(boundary, defect);
+  });
+  for (const boundary of boundaries) for (const defect of ['omitted', 'added'] as const) {
+    it(`bg-r1-member-${defect}-${boundary} rejects ${defect} accepted member ${boundary}`,
+      () => memberDefect(boundary, defect));
+  }
+
+  it('rejects original receipt replacement and source Git index drift without restamping', async () => {
+    for (const defect of ['receipt', 'index', 'parent-evidence']) {
+      const c = candidate();
+      const prepared = await prepareBgVerifierSource(c.options);
+      const receipt = join(prepared.root, '.verifier-source.json');
+      const original = readFileSync(receipt);
+      if (defect === 'receipt') writeFileSync(receipt, String(original).trim());
+      if (defect === 'index') git(prepared.root, ['rm', '--cached', '--', inputs[0]!]);
+      if (defect === 'parent-evidence') writeFileSync(c.options.acceptedManifest.path, '{}');
+      expect(() => verifyBgVerifierSource(prepared, 'before-publication')).toThrow();
+      if (defect !== 'receipt') expect(readFileSync(receipt)).toEqual(original);
+    }
   });
 });
 

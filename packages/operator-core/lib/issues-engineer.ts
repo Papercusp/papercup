@@ -3349,7 +3349,9 @@ export async function claimIssue(
     UPDATE harness_shared.engineer_issues AS target SET
       payload = ${claimPayloadWithReviewRevision},
       assignee = ${assignee}, assigned_by = COALESCE(${opts.assignedBy ?? null}, assigned_by),
-      assigned_at = now(), origin = 'local', updated_at = now()
+      assigned_at = CASE
+        WHEN assignee = ${assignee} THEN COALESCE(assigned_at, now()) ELSE now() END,
+      origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
        AND ${selection.where}
        -- EI-26547411992035448: direct-by-id claims must preserve attribution on

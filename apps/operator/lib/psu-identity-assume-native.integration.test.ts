@@ -24,7 +24,7 @@ import { launchIdentityAssumeHandoff, makeIdentityAssumeHostPort,
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from
   '../../../packages/operator-core/lib/inference-gateway/codex-cli-bridge';
 import { readProcessIdentity } from '../../../packages/operator-core/lib/process-identity';
-import type { AssumeExecutionObservation } from '../../../packages/operator-core/lib/session-assume';
+import type { AssumeExecutionObservation, AssumeTransitionReceipt } from '../../../packages/operator-core/lib/session-assume';
 import { readAssumeTranscriptPin } from '../../../packages/operator-core/lib/session-assume-preparation';
 
 type Row = Record<string, any>;
@@ -114,7 +114,8 @@ it('read-only context preview isolates an overlapping coordination writer', asyn
 }, 30_000);
 
 async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = false,
-  contended = false, preflight = false, channelControls = false, crashRecovery = false, returnControls = false) {
+  contended = false, preflight = false, channelControls = false, crashRecovery = false, returnControls = false,
+  checks: { responseOrdering?: boolean; crashAfterStartup?: boolean } = {}) {
     const root = mkdtempSync('/tmp/assume-native-journey-');
     const marker = { target: `TARGET_HISTORY_${randomUUID()}`, caller: `CALLER_HISTORY_${randomUUID()}`,
       checkpoint: `TARGET_CHECKPOINT_${randomUUID()}`, rival: `RIVAL_HISTORY_${randomUUID()}`,
@@ -146,6 +147,10 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
     const hosts: McpServer[] = [];
     const orders: Row[] = [], inspections = new Map<string, Row>();
     const crashBoundaries: Array<{ hostPid: number; exitCode: number }> = [];
+    let callerResponseSeen = false, targetStartupCrashed = false;
+    let releaseCallerCompletion!: () => void, releaseStartupCrash!: () => void;
+    const callerCompletionGate = new Promise<void>(resolve => { releaseCallerCompletion = resolve; });
+    const startupCrashGate = new Promise<void>(resolve => { releaseStartupCrash = resolve; });
     let releaseTarget!: () => void;
     let retireSeed!: () => Promise<void>;
     const targetGate = new Promise<void>(resolve => { releaseTarget = resolve; });
@@ -253,6 +258,19 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
                   binding: { coordOwnerId: owners.target, sessionId: nativeId('target') },
                 } } });
                 if (!preview.ok) throw new Error('Production preview refused');
+                expect(await real.load(preview.preparation)).toBeNull();
+                await assertUnchanged();
+                const beforeResponsibilities = await real.responsibilitySnapshot(owner);
+                const unauthorized = await real.authorizationRefusals(owner, owners.target, mode,
+                  preview.token, preview.preparation.expiresAt);
+                expect(unauthorized.denied).toEqual(Array.from({ length: 4 },
+                  () => ({ ok: false, code: 'unauthorized' })));
+                expect(unauthorized.readerCalls).toBe(0);
+                expect(unauthorized.otherCaller).toEqual({ ok: false, code: 'caller-changed' });
+                expect(unauthorized.otherWorkspace).toEqual({ ok: false, code: 'caller-changed' });
+                expect(unauthorized.tampered).toEqual({ ok: false, code: 'invalid-token' });
+                expect(unauthorized.expired).toEqual({ ok: false, code: 'expired-token' });
+                expect(await real.responsibilitySnapshot(owner)).toEqual(beforeResponsibilities);
                 expect(await real.load(preview.preparation)).toBeNull();
                 await assertUnchanged();
                 // Exercise the actual installed target's transcript resolver.
@@ -403,6 +421,11 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         // A parked loser's late provider request still belongs to that caller.
         // It cannot advance the target/return phase or consume its responsibilities.
         if (!ownsPhase(actor, execution)) { finish('INACTIVE_NATIVE_EXECUTION'); return; }
+        if (checks.crashAfterStartup && phase === 'target' && !targetStartupCrashed) {
+          await startupCrashGate;
+          // This request belongs to the process killed before finalization.
+          finish('CRASHED_NATIVE_EXECUTION'); return;
+        }
         if (phase === 'seed') { finish(marker.target); return; }
         if (phase === 'return') {
           const userInput = (body.input ?? []).filter((item: Row) => item.role === 'user')
@@ -434,6 +457,12 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         let returningCall = false;
         if (results.length) {
           nativeResults.push(JSON.stringify(results).slice(0, 1800));
+          if (checks.responseOrdering && phase === 'caller') {
+            expect(JSON.stringify(results)).toContain(accepted!.transitionKey);
+            expect(alive(accepted!.preparation.caller.nativePid)).toBe(true);
+            callerResponseSeen = true;
+            await callerCompletionGate;
+          }
           if (phase === 'target') { targetReady = true; await targetGate; }
           if (channelControls && phase === 'target') { finish('TARGET_CHANNEL_READY'); return; }
           if (real && phase === 'target' && !returnIssued) { returningCall = true; }
@@ -603,6 +632,24 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       let caller = start('caller', [...baseArgs('caller'), marker.caller]);
       let losingActor: 'caller' | 'rival' | undefined;
       if (contended) start('rival', [...baseArgs('rival'), marker.rival]);
+      if (checks.responseOrdering) {
+        await vi.waitFor(() => expect(callerResponseSeen, diagnostics()).toBe(true), { timeout: 25_000 });
+        const pinned = accepted!.preparation.caller;
+        const before = JSON.parse(readFileSync(metaPathFor(owners.caller), 'utf8'));
+        expect(await real!.commit(accepted!.preparation))
+          .toMatchObject({ state: 'handoff-accepted', replayed: true });
+        for (const mode of ['turn', 'carry-respawn'])
+          expect(await control(before.sock, { v: 1, mode, ownerId: owners.caller, data: 'EARLY_INPUT' }))
+            .toMatchObject({ ok: false, reason: 'assume-caller-paused' });
+        // Cross multiple host inspection ticks while the invoking native child
+        // has consumed its tool result but has no fresh completion boundary.
+        await new Promise(resolve => setTimeout(resolve, 350));
+        expect(alive(pinned.nativePid)).toBe(true);
+        expect(orders).toHaveLength(0);
+        expect(JSON.parse(readFileSync(metaPathFor(owners.caller), 'utf8')))
+          .toMatchObject({ ptyPid: pinned.nativePid, childGeneration: before.childGeneration });
+        releaseCallerCompletion();
+      }
       await vi.waitFor(() => expect(orders, diagnostics()).toHaveLength(1), { timeout: 25_000 });
       if (contended) {
         await vi.waitFor(() => expect(race, diagnostics()).toHaveLength(2), { timeout: 10_000 });
@@ -666,7 +713,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         await real.depart(owners.caller);
       }
       const callerNative = nativeId('caller');
-      const resume = async (session: Row, options: Row) => {
+      const resume = async (session: Row, options: Row): Promise<typeof caller> => {
         await options.managedAssume.verify();
         const key = session.coordOwnerId === owners.target ? 'target' : 'caller';
         let args = [...baseArgs(key), 'resume', session.sessionId];
@@ -688,7 +735,30 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
             expect(meta.nativeSessionId).toBe(latestNativeId(key));
             expect(meta.nativeSessionId === session.sessionId).toBe(!options.managedAssume.checkpoint);
           }, { timeout: 10_000 });
-          const receipt = key === 'target' ? accepted! : returning!;
+          const receipt = (key === 'target' ? accepted! : returning!) as AssumeTransitionReceipt;
+          if (checks.crashAfterStartup && key === 'target' && !targetStartupCrashed) {
+            const meta = JSON.parse(readFileSync(metaPathFor(owners.target), 'utf8'));
+            let native: number | null = null;
+            await vi.waitFor(() => {
+              native = resolveLinuxCodexStartupPid(meta.ptyPid);
+              expect(native).not.toBeNull();
+            }, { timeout: 10_000 });
+            await vi.waitFor(() => expect(codexThreadWriterHolder(homes.target, latestNativeId(key),
+              { holderPid: native! }).held).toBe(true), { timeout: 5000 });
+            expect((await real.load(receipt.preparation))?.state).toBe('handoff-accepted');
+            run.signals.emit('SIGKILL');
+            expect(await run.done).toBe(-1);
+            await vi.waitFor(() => expect(alive(native!)).toBe(false), { timeout: 10_000 });
+            targetStartupCrashed = true; releaseStartupCrash();
+            expect(await real.commit(receipt.preparation))
+              .toMatchObject({ state: 'handoff-accepted', replayed: true });
+            expect(orders).toHaveLength(1);
+            expect((await real.recovery(receipt)).transitionKey).toBe(receipt.transitionKey);
+            expect(await real.pause(owners.caller)).not.toBeNull();
+            // The original reservation is still held. Re-enter the supported
+            // launch path only after its real native writer has exited.
+            return resume(session, options);
+          }
           await real.finalize(receipt.preparation, receipt.transitionKey, latestNativeId(key));
           await options.managedAssume.restoreReturn?.();
         }
@@ -834,6 +904,17 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           expect((await real.load(accepted!.preparation))?.state).toBe('handoff-accepted');
         }
         expect((await real.verify(accepted! as any, observation)).state).toBe('target-verified');
+        const history = await real.sql<Array<{ body: Row }>>`
+          SELECT body FROM harness_shared.coord_event_log
+          WHERE workspace_id = 'native-context-fixture'
+            AND body #>> '{sessionAssume,transitionKey}' = ${accepted!.transitionKey}
+          ORDER BY body ->> 'ts', body ->> 'msg_id'`;
+        const verified = history.filter(row => row.body.sessionAssume.state === 'target-verified');
+        expect(verified).toHaveLength(1);
+        expect(verified[0].body).toMatchObject({ from: owners.caller, category: 'session-assume-audit',
+          sessionAssume: { preparation: accepted!.preparation, observation } });
+        for (const secret of Object.values(privateCallerEnv))
+          expect(JSON.stringify(history)).not.toContain(secret);
         if (contended) {
           const loser = race.find(row => row.receipt.state === 'refused')!;
           expect(await real.commit(loser.receipt.preparation)).toMatchObject({ state: 'refused', replayed: true });
@@ -946,11 +1027,12 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       const artifact = process.env.PC_EXECUTED_SOURCE_MAP_OUT
         ? process.env.PC_EXECUTED_SOURCE_MAP_OUT + '.journey-failures.jsonl'
         : join('/tmp', 'assume-native-failure-' + randomUUID() + '.jsonl');
-      appendFileSync(artifact, JSON.stringify({ mode, production, contended, preflight, crashRecovery, returnControls, crashBoundaries,
+      appendFileSync(artifact, JSON.stringify({ mode, production, contended, preflight, crashRecovery, returnControls, checks, crashBoundaries,
         diagnostics: JSON.parse(diagnostics()), error: String(error) }) + '\n');
       console.error('Native journey failure evidence: ' + artifact);
       throw error;
     } finally {
+      releaseCallerCompletion(); releaseStartupCrash();
       releaseCallers();
       releaseControl();
       releaseTarget(); for (const run of runs) run.signals.emit('SIGTERM');
@@ -984,3 +1066,11 @@ it('R-8 recovers persisted native handoff after managed host SIGKILL before targ
 
 it('R-5 exact caller return restores input output resize interrupt and exit on the original pane',
   () => nativeJourney('native-resume', true, false, false, false, false, true), 180_000);
+
+it('R-1 delivers the invoking native tool response before fresh completion permits caller replacement',
+  () => nativeJourney('native-resume', true, false, false, false, false, false,
+    { responseOrdering: true }), 180_000);
+
+it('R-8 recovers after target native writer acquisition and managed host SIGKILL before verification',
+  () => nativeJourney('native-resume', true, false, false, false, false, false,
+    { crashAfterStartup: true }), 180_000);

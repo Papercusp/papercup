@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { papercuspPath } from '@papercusp/host-platform/home';
+import { composeOmpCapabilityTools } from '@papercusp/orchestrator/managed-capability-policy';
 /**
  * psu-launcher.mjs — the `psu` command.
  *
@@ -2340,6 +2341,10 @@ export function ompLspArgs(allowNativeLsp) {
   return allowNativeLsp === true ? [] : ["--no-lsp"];
 }
 
+/**
+ * @param {string} backend
+ * @param {{ promptFile?: string, mcpJsonPath?: string, coordExtPath?: string, injectHookPath?: string, nativeSessionId?: string | null, allowSubagents?: boolean, model?: string | null, allowNativeLsp?: boolean, claudeSettings?: ClaudeLaunchSettings, capabilityPolicy?: Partial<import('../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js').CapabilityPolicyRequest> }} [opts]
+ */
 export function roleLaunchArgs(
   backend,
   {
@@ -2352,6 +2357,7 @@ export function roleLaunchArgs(
     model,
     allowNativeLsp,
     claudeSettings,
+    capabilityPolicy = {},
   } = {},
 ) {
   if (backend === "claude") {
@@ -2430,6 +2436,7 @@ export function roleLaunchArgs(
       promptFile,
       ...modelArgsFor("omp", model),
       ...ompTitleMitigationArgs(model),
+      ...composeOmpCapabilityTools([], { ...capabilityPolicy, surface: 'launch', audience: 'headless-agent' }),
     ];
     if (coordExtPath) args.push("-e", coordExtPath);
     // omp-context-injection-parity-2026-08-09 P-003: turn-start + mid-turn
@@ -2492,6 +2499,10 @@ export function roleLaunchArgs(
  * ours) + the approvals/sandbox bypass Papercusp still uses for managed
  * Codex launches pending a current MCP-under-sandbox live smoke.
  */
+/**
+ * @param {string} backend
+ * @param {{ promptFile?: string, coordExtPath?: string, injectHookPath?: string, nativeSessionId?: string | null, allowSubagents?: boolean, allowNativeLsp?: boolean, capabilityPolicy?: Partial<import('../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js').CapabilityPolicyRequest> }} [opts]
+ */
 export function suLaunchArgs(
   backend,
   {
@@ -2501,6 +2512,7 @@ export function suLaunchArgs(
     nativeSessionId,
     allowSubagents,
     allowNativeLsp,
+    capabilityPolicy = {},
   } = {},
 ) {
   if (backend === "claude") {
@@ -2573,6 +2585,7 @@ export function suLaunchArgs(
       // provider-backed title request that lost a real tracked session while the
       // pool was throttled. Held by the suLaunchArgs > omp argv regression tests.
       ...ompTitleMitigationArgs(),
+      ...composeOmpCapabilityTools([], { ...capabilityPolicy, surface: 'launch', audience: 'interactive-su' }),
     ];
     if (coordExtPath) args.push("-e", coordExtPath);
     args.push(...nativeOmpExtensionArgs("omp"));
@@ -2944,7 +2957,7 @@ export function resolveOmpInjectHookPath(agent, home = homedir()) {
 
 /**
  * @param {any} session
- * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv, codexMcpUrl?: string | null }} [opts]
+ * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv, codexMcpUrl?: string | null, claudeSettings?: ClaudeLaunchSettings, capabilityPolicy?: Partial<import('../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js').CapabilityPolicyRequest> }} [opts]
  */
 export function resumeArgsFor(
   session,
@@ -2959,6 +2972,7 @@ export function resumeArgsFor(
     personaFile = null,
     codexMcpUrl = null,
     env = process.env,
+    capabilityPolicy = {},
     // The inherited settings a claude resume falls back to for its effort
     // (readClaudeLaunchSettings). Injected, not read here, so this stays pure.
     claudeSettings = /** @type {ClaudeLaunchSettings} */ (null),
@@ -3089,7 +3103,10 @@ export function resumeArgsFor(
     // permissive one and the half that fails closed is the one enforced here.
     const allowNativeLsp = ompModelTierAllowsNativeLsp(model);
     args.push(...ompLspArgs(allowNativeLsp));
-    return { bin: "omp", args };
+    return { bin: "omp", args: composeOmpCapabilityTools(args, {
+      ...capabilityPolicy, surface: 'resume',
+      audience: !session.role || launchesOnSuTier(session.role) ? 'interactive-su' : 'headless-agent',
+    }) };
   }
   if (session.agent === "codex") {
     const compactionLimit = compactionLimitForResumeSession(session);

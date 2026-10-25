@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   admissionEndpointBlock,
   admissionPairKey,
+  applyClaimedReReviewHolds,
   prescreenPromoterWindow,
   type AdmissionMergeSnapshot,
   ADMISSION_REVIEW_ALERT_KEY,
@@ -594,6 +595,67 @@ describe('admission endpoint protection — terminal twins', () => {
     expect(admissionEndpointBlock(snapshot('EI-1', { payload: { agentReview: pendingReview } }))).toMatchObject({
       reason: 'review-gated',
       permanent: false,
+    });
+  });
+
+  describe('authenticated claimed comparison', () => {
+    const pending = item('EI-original');
+    const twin = item('EI-claimed', { admission: 'admitted' });
+    const comparison = pair(pending, twin, [pending.id]);
+    const snapshots = new Map([
+      [pending.id, snapshot(pending.id, { admission: 'pending' })],
+      [twin.id, snapshot(twin.id, { assignee: 'su-holder' })],
+    ]);
+    const select = (authenticated: boolean, current = snapshots) => prescreenPromoterWindow({
+      window: [pending], pairs: [comparison], snapshots: current, batchSize: 1, nowMs: 1,
+      ...(authenticated ? { componentScreeningItemIds: [pending.id] } : {}),
+    });
+
+    it('judges the claimed comparison only for an authenticated eligible original', () => {
+      expect(select(false).batch).toEqual([]);
+      expect(select(true).batch).toEqual([pending]);
+      expect(select(true).pairs).toEqual([comparison]);
+      expect(select(true).forcedHolds.size).toBe(0);
+      const claimedOriginal = new Map(snapshots);
+      claimedOriginal.set(pending.id, snapshot(pending.id, { admission: 'pending', assignee: 'su-other' }));
+      expect(select(true, claimedOriginal).batch).toEqual([]);
+    });
+
+    it.each([
+      { state: 'blocked' }, { state: 'needs-human' }, { payload: { _claimHold: true } },
+      { payload: { agentReview: pendingReview } },
+      { payload: { externalBlockers: [executionBlocker] } },
+      { payload: { externalBlockers: [{ ...executionBlocker, kind: 'human', capability: 'credential' }] } },
+      { dependencies: [{ id: 'dep-1', blockedKind: 'issue', blockedRef: 'EI-claimed', blockerKind: 'issue',
+        blockerRef: 'EI-dependency', depType: 'blocks', satisfaction: 'success', createdBy: 'su-test', active: true }] },
+    ] satisfies Partial<AdmissionMergeSnapshot>[])('keeps the comparison protection %j', (protection) => {
+      const current = new Map(snapshots);
+      current.set(twin.id, snapshot(twin.id, { assignee: 'su-holder', ...protection }));
+      expect(select(true, current).batch).toEqual([]);
+    });
+
+    it('keeps remote comparisons outside the model and preserves their permanent classification', () => {
+      const current = new Map(snapshots);
+      current.set(twin.id, snapshot(twin.id, { assignee: 'su-holder', origin: 'remote' }));
+      expect(select(true, current).pairs).toEqual([]);
+      expect(select(true, current).prescreen).toMatchObject({ unresolvablePairs: 1 });
+      expect(admissionEndpointBlock(current.get(twin.id))).toMatchObject({ reason: 'remote-owned', permanent: true });
+    });
+
+    it.each([true, false])('holds a duplicate in either canonical direction (claimed canonical=%s)', (claimedCanonical) => {
+      const current = new Map(snapshots);
+      current.set(twin.id, snapshot(twin.id, { assignee: 'su-holder', admission: claimedCanonical ? 'admitted' : 'pending', createdAtMs: 2 }));
+      const candidate = { ...twin, admission: claimedCanonical ? 'admitted' : 'pending', createdAtMs: 2 };
+      const candidatePair = pair(pending, candidate, [pending.id]);
+      const plan = planPromoterDispositions([pending], [candidatePair], [{
+        pairKey: candidatePair.pairKey, verdict: 'r-finding-merge', reason: 'same finding',
+      }]);
+      const protectedPlan = applyClaimedReReviewHolds(plan, current, new Set([pending.id]), 1, [pending.id]);
+      expect(protectedPlan.dispositions).toEqual([
+        { itemId: pending.id, action: 'hold', reason: expect.stringContaining(twin.id) },
+      ]);
+      expect(protectedPlan.adjudications).toEqual([]);
+      expect(current.get(twin.id)?.assignee).toBe('su-holder');
     });
   });
 

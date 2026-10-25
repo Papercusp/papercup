@@ -489,7 +489,22 @@ export function subagentGatewayRiskNotice(agent: any, allowSubagents: any, envel
  * @returns {string[]}
  */
 export function ompLspArgs(allowNativeLsp?: boolean): string[];
-export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, model, allowNativeLsp, claudeSettings, }?: {}): {
+/**
+ * @param {string} backend
+ * @param {{ promptFile?: string, mcpJsonPath?: string, coordExtPath?: string, injectHookPath?: string, nativeSessionId?: string | null, allowSubagents?: boolean, model?: string | null, allowNativeLsp?: boolean, claudeSettings?: ClaudeLaunchSettings, capabilityPolicy?: Partial<import('../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js').CapabilityPolicyRequest> }} [opts]
+ */
+export function roleLaunchArgs(backend: string, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, model, allowNativeLsp, claudeSettings, capabilityPolicy, }?: {
+    promptFile?: string;
+    mcpJsonPath?: string;
+    coordExtPath?: string;
+    injectHookPath?: string;
+    nativeSessionId?: string | null;
+    allowSubagents?: boolean;
+    model?: string | null;
+    allowNativeLsp?: boolean;
+    claudeSettings?: ClaudeLaunchSettings;
+    capabilityPolicy?: Partial<import("../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js").CapabilityPolicyRequest>;
+}): {
     bin: string;
     args: any[];
 };
@@ -518,9 +533,21 @@ export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExt
  * ours) + the approvals/sandbox bypass Papercusp still uses for managed
  * Codex launches pending a current MCP-under-sandbox live smoke.
  */
-export function suLaunchArgs(backend: any, { promptFile, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, allowNativeLsp, }?: {}): {
+/**
+ * @param {string} backend
+ * @param {{ promptFile?: string, coordExtPath?: string, injectHookPath?: string, nativeSessionId?: string | null, allowSubagents?: boolean, allowNativeLsp?: boolean, capabilityPolicy?: Partial<import('../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js').CapabilityPolicyRequest> }} [opts]
+ */
+export function suLaunchArgs(backend: string, { promptFile, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, allowNativeLsp, capabilityPolicy, }?: {
+    promptFile?: string;
+    coordExtPath?: string;
+    injectHookPath?: string;
+    nativeSessionId?: string | null;
+    allowSubagents?: boolean;
+    allowNativeLsp?: boolean;
+    capabilityPolicy?: Partial<import("../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js").CapabilityPolicyRequest>;
+}): {
     bin: string;
-    args: any[];
+    args: (string | undefined)[];
 };
 /** Shared effective bootstrap inputs for the native launcher and structured
  * engines. Transport adapters translate argv; they do not select another
@@ -546,7 +573,7 @@ export function prepareSuLaunch(boot: any, { model, resumeSession, nativeSession
     modelArgs: any[];
     extraArgs: any[];
     bin: string;
-    args: any[];
+    args: (string | undefined)[];
 };
 /** @param {NodeJS.ProcessEnv} envelopeEnv
  * @param {NodeJS.ProcessEnv} inheritedEnv */
@@ -699,9 +726,9 @@ export function resumeKickoffText(args: any, env?: NodeJS.ProcessEnv): any;
 export function resolveOmpInjectHookPath(agent: any, home?: string): string | undefined;
 /**
  * @param {any} session
- * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv, codexMcpUrl?: string | null }} [opts]
+ * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv, codexMcpUrl?: string | null, claudeSettings?: ClaudeLaunchSettings, capabilityPolicy?: Partial<import('../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js').CapabilityPolicyRequest> }} [opts]
  */
-export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork, forkSessionId, addDir, allowSubagents, model, personaFile, codexMcpUrl, env, claudeSettings, }?: {
+export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork, forkSessionId, addDir, allowSubagents, model, personaFile, codexMcpUrl, env, capabilityPolicy, claudeSettings, }?: {
     coordExtPath?: string;
     injectHookPath?: string;
     fork?: boolean;
@@ -712,6 +739,8 @@ export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork
     personaFile?: string | null;
     env?: NodeJS.ProcessEnv;
     codexMcpUrl?: string | null;
+    claudeSettings?: ClaudeLaunchSettings;
+    capabilityPolicy?: Partial<import("../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js").CapabilityPolicyRequest>;
 }): {
     bin: string;
     args: any[];

@@ -183,6 +183,26 @@ export function runVerifierDependencyCommand(command: string, args: string[], { 
     cutoffEpochMs?: number | null;
     now?: () => number;
 }): Promise<string>;
+/** Prepare through the maintained Git exporter, with original parent authority
+ * resolved BEFORE it creates a destination. No build or activation is implied.
+ * @param {{ repo: string, ref: string, dest: string, inputs: string[],
+ *   acceptedManifest: BgAcceptedManifest }} options
+ * @returns {Promise<BgVerifierPreparation>}
+ */
+export function prepareBgVerifierSource({ repo, ref, dest, inputs, acceptedManifest }: {
+    repo: string;
+    ref: string;
+    dest: string;
+    inputs: string[];
+    acceptedManifest: BgAcceptedManifest;
+}): Promise<BgVerifierPreparation>;
+/** Reuse at both compiler boundaries. The original receipt is never regenerated
+ * from observed output; dependencies and compiler-consumed bytes require their
+ * separate custody checks before this source proof can qualify a build.
+ * @param {BgVerifierPreparation} prepared
+ * @param {'before-build' | 'before-publication'} boundary
+ */
+export function verifyBgVerifierSource(prepared: BgVerifierPreparation, boundary: "before-build" | "before-publication"): BgVerifierPreparation;
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.
  * An explicit allowance is shared across phases and requires a finite caller
@@ -774,6 +794,30 @@ export type PublicRepositoryLicenseRow = {
     errors: string[];
 };
 export type VerifierPhaseRunner = <T>(phase: string, operation: () => T | Promise<T>) => Promise<T>;
+/**
+ * The expected population comes from the parent's accepted evidence, never
+ * the candidate or compiler metafile. `path` retains the original artifact
+ * bytes; `members` is the independently accepted literal source-blob map.
+ */
+export type BgAcceptedManifest = {
+    path: string;
+    evidenceRef: string;
+    sha256: string;
+    schemaVersion: 1;
+    members: Record<string, string>;
+};
+/**
+ * The expected population comes from the parent's accepted evidence, never
+ * the candidate or compiler metafile. `path` retains the original artifact
+ * bytes; `members` is the independently accepted literal source-blob map.
+ */
+export type BgVerifierPreparation = {
+    schemaVersion: "bg-verifier-source-v1";
+    root: string;
+    acceptedManifest: BgAcceptedManifest;
+    source: Awaited<ReturnType<typeof prepareVerifierSource>>;
+    sourceReceiptSha256: string;
+};
 /**
  * Where an export is published (plan open-source-release-2026-09-29 P-002/P-003).
  * - preview: the private, invite-only evaluation snapshot. Replaced WHOLESALE by one

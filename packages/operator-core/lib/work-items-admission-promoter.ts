@@ -2535,7 +2535,42 @@ export function applyClaimedReReviewHolds(
   snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>,
   pendingIds: ReadonlySet<string>,
   nowMs: number,
+  componentScreeningItemIds: readonly string[] = [],
 ): PromoterPlan {
+  // Authenticated ordinary screening may READ a claimed neighbour, never write it.
+  const comparisons = plan.adjudications.flatMap((row) => {
+    const comparisonId = claimedComparisonEndpoint(row.a, row.b, snapshots, componentScreeningItemIds);
+    return comparisonId ? [{ row, comparisonId, itemId: row.a === comparisonId ? row.b : row.a }] : [];
+  });
+  if (comparisons.length > 0) {
+    const readOnlyIds = new Set(comparisons.map((entry) => entry.comparisonId));
+    const blocked = new Map<string, string>();
+    for (const { row, comparisonId, itemId } of comparisons) {
+      if (row.verdict !== 'distinct') blocked.set(itemId, `claimed comparison ${comparisonId}: ${row.verdict}; held without neighbour mutations`);
+      if (row.verdict === 'r-finding-merge') blocked.set(comparisonId, `claimed comparison ${comparisonId}: duplicate component held`);
+    }
+    // A claimed endpoint can be connected through several duplicate edges.
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const row of plan.adjudications) {
+        if (row.verdict !== 'r-finding-merge' || (!blocked.has(row.a) && !blocked.has(row.b))) continue;
+        for (const id of [row.a, row.b]) {
+          if (!blocked.has(id)) { blocked.set(id, blocked.get(row.a) ?? blocked.get(row.b)!); changed = true; }
+        }
+      }
+    }
+    plan = {
+      dispositions: plan.dispositions.filter((row) => !readOnlyIds.has(row.itemId)).map((row) => {
+        const reason = blocked.get(row.itemId);
+        return reason ? { itemId: row.itemId, action: 'hold' as const, reason } : row;
+      }),
+      adjudications: plan.adjudications.filter((row) =>
+        !blocked.has(row.a) && !blocked.has(row.b)),
+      relatedPairs: plan.relatedPairs.filter((row) =>
+        !readOnlyIds.has(row.a) && !readOnlyIds.has(row.b) && !blocked.has(row.a) && !blocked.has(row.b)),
+    };
+  }
   const claimed = new Set(
     [...snapshots.values()].filter((snapshot) => isOverdueClaimedReReview(snapshot, nowMs)).map((s) => s.id),
   );
@@ -3780,6 +3815,8 @@ interface EndpointProtectionOptions {
    * Every other protection still applies. Absent: every claimed row is refused, as before.
    */
   claimedReReviewAtMs?: number;
+  /** Only authenticated pair comparisons use this; never a mutation role. */
+  readOnlyClaimedComparison?: boolean;
 }
 
 function endpointProtection(
@@ -3811,7 +3848,8 @@ function endpointProtection(
   if (
     !terminalTwin &&
     snapshot.assignee &&
-    !overdueClaimedReview
+    !overdueClaimedReview &&
+    !(role === 'reference' && options.readOnlyClaimedComparison)
   ) {
     return { reason: 'claimed', detail: `${role} ${snapshot.id} is claimed by ${snapshot.assignee}` };
   }
@@ -4071,6 +4109,24 @@ export function admissionEndpointBlock(
   return { ...problem, permanent: PERMANENT_ENDPOINT_PROTECTIONS.has(problem.reason) };
 }
 
+/** Return only a claimed, otherwise unprotected neighbour of an eligible authenticated original. */
+function claimedComparisonEndpoint(
+  a: string,
+  b: string,
+  snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>,
+  componentScreeningItemIds: readonly string[] = [],
+): string | undefined {
+  for (const [itemId, comparisonId] of [[a, b], [b, a]] as const) {
+    if (!componentScreeningItemIds.includes(itemId)) continue;
+    const item = snapshots.get(itemId);
+    const comparison = snapshots.get(comparisonId);
+    if (!item || item.assignee || endpointProtection(item, 'promote')) continue;
+    if (!comparison?.assignee || ALL_TERMINAL_STATUSES.has(comparison.state)) continue;
+    if (!endpointProtection(comparison, 'reference', { readOnlyClaimedComparison: true })) return comparisonId;
+  }
+  return undefined;
+}
+
 /**
  * Select this tick's batch from an over-read window WITHOUT spending model time on work the
  * persistence guard is certain to refuse (WI-10004724). Before this, the oldest re-review rows —
@@ -4108,10 +4164,17 @@ export function prescreenPromoterWindow(input: {
   };
   const block = (snapshot: AdmissionMergeSnapshot | undefined) => admissionEndpointBlock(snapshot, input.nowMs);
   const windowIds = new Set(input.window.map((item) => item.id));
+  const claimedComparisons = new Map(input.pairs.flatMap((pair) => {
+    const id = claimedComparisonEndpoint(pair.a.id, pair.b.id, input.snapshots, input.componentScreeningItemIds);
+    return id ? [[pair.pairKey, id] as const] : [];
+  }));
+  const readOnlyComparisonIds = new Set(claimedComparisons.values());
   const selfBlocked = new Set<string>();
   for (const item of input.window) {
     const snapshot = input.snapshots.get(item.id);
-    const problem = snapshot ? endpointProtection(snapshot, 'promote', { claimedReReviewAtMs: input.nowMs }) : null;
+    const problem = readOnlyComparisonIds.has(item.id)
+      ? { reason: 'claimed' as const, detail: `comparison ${item.id} is read-only` }
+      : snapshot ? endpointProtection(snapshot, 'promote', { claimedReReviewAtMs: input.nowMs }) : null;
     if (!problem) continue;
     selfBlocked.add(item.id);
     sample({ itemId: item.id, class: 'self-blocked', reason: problem.reason, blockedBy: null });
@@ -4135,7 +4198,7 @@ export function prescreenPromoterWindow(input: {
   let protectedPairs = 0;
   for (const pair of input.pairs) {
     const blocks = [pair.a.id, pair.b.id]
-      .map((id) => ({ id, block: block(input.snapshots.get(id)) }))
+      .map((id) => ({ id, block: claimedComparisons.get(pair.pairKey) === id ? null : block(input.snapshots.get(id)) }))
       .filter((entry) => entry.block !== null);
     if (blocks.length === 0) continue;
     blockedPairKeys.add(pair.pairKey);
@@ -4195,8 +4258,8 @@ export function prescreenPromoterWindow(input: {
       (pair) =>
         !blockedPairKeys.has(pair.pairKey) &&
         windowEndpoints(pair).some((id) => batchIds.has(id)) &&
-        !pendingOutside.has(pair.a.id) &&
-        !pendingOutside.has(pair.b.id),
+        (!pendingOutside.has(pair.a.id) || claimedComparisons.get(pair.pairKey) === pair.a.id) &&
+        (!pendingOutside.has(pair.b.id) || claimedComparisons.get(pair.pairKey) === pair.b.id),
     )
     .map((pair) => ({ ...pair, pendingIds: windowEndpoints(pair).filter((id) => batchIds.has(id)).sort() }));
 
@@ -4923,6 +4986,8 @@ interface PersistAdmissionPlanInput {
   snapshots: readonly AdmissionMergeSnapshot[];
   /** A restriction, not an authorization grant. Neighbours still participate in screening. */
   mutationItemIds?: readonly string[];
+  /** Internal authenticated ordinary selection; authorizes read-only comparison only. */
+  componentScreeningItemIds?: readonly string[];
   /** Bulk already owns the encompassing transaction (including its post-write census). */
   withinTransaction?: boolean;
   /** Bulk stages adjudicate an already-admitted corpus and must not re-promote every distinct item. */
@@ -5190,8 +5255,26 @@ async function persistAdmissionPlanInTransaction(
       });
     }
   }
+  const claimedComparisons = new Map<string, string>();
+  const comparisonBlocked = new Set<string>();
+  for (const row of input.plan.adjudications) {
+    const comparisonId = claimedComparisonEndpoint(row.a, row.b, capturedById, input.componentScreeningItemIds);
+    if (!comparisonId) continue;
+    const itemId = row.a === comparisonId ? row.b : row.a;
+    // Distinct is the only outcome that requires no mutation of the neighbour.
+    const problem = row.verdict !== 'distinct'
+      ? { reason: 'claimed' as const, detail: `comparison ${comparisonId} requires a distinct verdict` }
+      : snapshotIdentityProblem(capturedById.get(comparisonId), liveById.get(comparisonId), 'reference',
+        { readOnlyClaimedComparison: true });
+    if (problem) {
+      registerRefusal(itemId, null, problem);
+      comparisonBlocked.add(itemId);
+    } else {
+      claimedComparisons.set(admissionPairKey(row.a, row.b), comparisonId);
+    }
+  }
   for (const disposition of input.plan.dispositions) {
-    if (scopeBlocked.has(disposition.itemId)) continue;
+    if (scopeBlocked.has(disposition.itemId) || comparisonBlocked.has(disposition.itemId)) continue;
     if (disposition.action === 'hold') {
       heldById.set(disposition.itemId, disposition.reason);
       const problem = snapshotIdentityProblem(
@@ -5261,12 +5344,14 @@ async function persistAdmissionPlanInTransaction(
   const approvedNonMergePairs = new Set<string>();
   for (const adjudication of input.plan.adjudications) {
     if (scopeBlocked.has(adjudication.a) || scopeBlocked.has(adjudication.b)) continue;
+    if (comparisonBlocked.has(adjudication.a) || comparisonBlocked.has(adjudication.b)) continue;
     if (adjudication.verdict === 'r-finding-merge') continue;
+    const comparisonId = claimedComparisons.get(admissionPairKey(adjudication.a, adjudication.b));
     const aProblem = snapshotIdentityProblem(
       capturedById.get(adjudication.a),
       liveById.get(adjudication.a),
       'reference',
-      protectionOptions(adjudication.a),
+      { ...protectionOptions(adjudication.a), readOnlyClaimedComparison: comparisonId === adjudication.a },
     );
     if (aProblem) {
       registerRefusal(adjudication.a, null, aProblem);
@@ -5276,7 +5361,7 @@ async function persistAdmissionPlanInTransaction(
       capturedById.get(adjudication.b),
       liveById.get(adjudication.b),
       'reference',
-      protectionOptions(adjudication.b),
+      { ...protectionOptions(adjudication.b), readOnlyClaimedComparison: comparisonId === adjudication.b },
     );
     if (bProblem) {
       registerRefusal(adjudication.b, null, bProblem);
@@ -5324,7 +5409,8 @@ async function persistAdmissionPlanInTransaction(
       (disposition) => approvedDispositionIds.has(disposition.itemId) && !replayedIds.has(disposition.itemId),
     ),
     adjudications: safeAdjudications,
-    relatedPairs: input.plan.relatedPairs.filter((pair) => safePairKeys.has(admissionPairKey(pair.a, pair.b))),
+    relatedPairs: input.plan.relatedPairs.filter((pair) =>
+      safePairKeys.has(admissionPairKey(pair.a, pair.b)) && !claimedComparisons.has(admissionPairKey(pair.a, pair.b))),
   };
 
   await persistAdmissionPlanUnchecked(sql, {
@@ -5794,6 +5880,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       snapshotsById,
       new Set(pending.map((item) => item.id)),
       startedAt,
+      targetItemIds === undefined && !noModel ? opts.componentScreeningItemIds : undefined,
     );
     // A no-model pass has no judgement for any pair, so every paired row plans as a hold. That
     // hold means "awaits the model", not "reviewed and ambiguous", so it is deferred, not
@@ -5816,6 +5903,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       plan,
       snapshots: [...snapshotsById.values()],
       mutationItemIds: targetItemIds,
+      componentScreeningItemIds: targetItemIds === undefined && !noModel ? opts.componentScreeningItemIds : undefined,
     });
     const pendingIds = new Set(pending.filter((item) => item.admission === 'pending').map((item) => item.id));
     await (opts.onNewlyAdmitted ?? announceNewlyAdmittedWorkItems)(

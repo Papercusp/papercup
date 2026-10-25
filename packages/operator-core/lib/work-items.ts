@@ -6147,7 +6147,14 @@ export async function claimWorkItem(
       return sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated AS target
          SET payload = ${claimPayloadWithReviewRevision},
-             taken_by = ${assignee}, taken_at = now(),
+             taken_by = ${assignee},
+             -- Refreshing a continuous claim must preserve the interval that
+             -- attributes earlier edits to this holder. A new holder still
+             -- starts a new interval, including after release/reclaim.
+             taken_at = CASE
+               WHEN taken_by = ${assignee}
+                 OR (taken_by IS NOT NULL AND taken_by <> '' AND position(taken_by in ${assignee}) = 1)
+               THEN COALESCE(taken_at, now()) ELSE now() END,
              -- P-001: a NEW holder starts with a clean progress slate (so the grace
              -- window anchors on the fresh taken_at, not a prior holder's stale
              -- last_progress_at); a re-claim by the SAME agent (including a

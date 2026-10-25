@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as ts from 'typescript';
-import { buildTaskBrief, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompletionTimeBrief, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
+import { buildTaskBrief, enrichTaskBriefWithReuse, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompletionTimeBrief, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
 import { nativeChangeReport, type ChangeReportRequest } from './packer-facade';
 import { firstPartyCallers } from './first-party-callers';
 import type { CodeIntelAnswer } from './contracts';
@@ -305,6 +305,29 @@ describe('native engineering evidence task context', () => {
       expect(hints.map(row => row.provider)).toEqual(issued.map((row: { provider: string }) => row.provider));
       expect(JSON.stringify(enriched).length).toBeLessThanOrEqual(maxChars);
     }
+  });
+  it.each([3000, 2900])('classifies claim overflow as budget and preserves a later fitting provider at %i characters', async maxChars => {
+    const { subject, deps } = engineeringFixture();
+    const base = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject }, deps))!.taskBrief;
+    base.exclusions.push('');
+    base.exclusions[base.exclusions.length - 1] = 'x'.repeat(maxChars - 150 - JSON.stringify(base).length);
+    const observe = vi.fn();
+    const result = await enrichTaskBriefWithReuse(base, { workspaceId: 'w', workItem: subject, maxChars,
+      reuse: { owner: 'su-fixture', invocation: 'claim-overflow', observe } }, {
+      ...deps, reuse: { recordIssued: async () => true, providers: [
+        { id: 'sql', read: async context => ({ status: 'measured', sourceVersion: context.sourceVersion,
+          indexVersion: 'sql-v1', lines: ['SQL reader ' + 'r'.repeat(190)] }) },
+        { id: 'coverage', read: async context => ({ status: 'measured', sourceVersion: context.sourceVersion,
+          indexVersion: 'coverage-v1', lines: ['Covered target.ts'] }) },
+      ] },
+    }, Date.now() + 6000);
+    expect(observe.mock.calls[0][0].observations).toEqual([
+      expect.objectContaining({ provider: 'sql', status: 'budget', reason: 'truncated' }),
+      expect.objectContaining({ provider: 'coverage', status: 'issued' }),
+    ]);
+    expect(result.graph.relationships.map(line => decodeClaimReuseContribution(result, line)?.provider)).toEqual(['coverage']);
+    expect({ ...result, graph: { ...result.graph, relationships: base.graph.relationships } }).toEqual(base);
+    expect(JSON.stringify(result).length).toBeLessThanOrEqual(maxChars);
   });
   it('ee.brief-budget: fits the complete caller brief in 2400 characters and retains scoped recovery for omitted data', async () => {
     const { subject, deps } = engineeringFixture();

@@ -177,9 +177,12 @@ export async function composeReuseBrief<T>(input: {
   enabled?: (provider: ReuseProviderId) => Promise<boolean>;
   now?: () => number;
   serialize?: (brief: T) => string;
+  /** A caller may require a smaller response; never widen the shared cap. */
+  maxChars?: number;
 }): Promise<{ brief: T; observations: ReuseProviderObservation[] }> {
   const now = input.now ?? Date.now;
   const serialize = input.serialize ?? JSON.stringify;
+  const limit = Math.min(REUSE_BRIEF_LIMIT, input.maxChars ?? REUSE_BRIEF_LIMIT);
   const providers = [...(input.providers ?? registeredReuseBriefProviders())];
   const seen = new Set<string>();
   for (const provider of providers) {
@@ -190,7 +193,7 @@ export async function composeReuseBrief<T>(input: {
   const observations: ReuseProviderObservation[] = [];
   const observation = (provider: ReuseProviderId): ReuseProviderObservation => ({ provider,
     status: 'unknown', reason: 'timeout', sourceVersion: null, indexVersion: null, chars: 0, citedPaths: [] });
-  const full = briefCodePoints(serialize(input.base)) >= REUSE_BRIEF_LIMIT;
+  const full = briefCodePoints(serialize(input.base)) >= limit;
   // Read independently: a hung high-priority provider cannot prevent the other sources from finishing.
   const results = await Promise.all(providers.map(async provider => {
     const row = observation(provider.id);
@@ -257,7 +260,7 @@ export async function composeReuseBrief<T>(input: {
       catch { row.status = 'unknown'; row.reason = 'failure'; break; }
       const size = briefCodePoints(serialize(next));
       const cost = Math.max(briefCodePoints(JSON.stringify(candidate)), size - briefCodePoints(serialize(brief)));
-      if (cost > policy.cap || size > REUSE_BRIEF_LIMIT) { row.reason = 'truncated'; break; }
+      if (cost > policy.cap || size > limit) { row.reason = 'truncated'; break; }
       if (now() >= input.deadline) { row.reason = 'timeout'; break; }
       text = candidate.text;
       accepted = next;
@@ -266,7 +269,7 @@ export async function composeReuseBrief<T>(input: {
     if (text) {
       const next = accepted!;
       const encoded = serialize(next);
-      if (now() >= input.deadline || briefCodePoints(encoded) > REUSE_BRIEF_LIMIT) { row.reason = 'timeout'; continue; }
+      if (now() >= input.deadline || briefCodePoints(encoded) > limit) { row.reason = 'timeout'; continue; }
       // Apply identical source, destination and budget qualification to both
       // arms. A held-out candidate is observed, never placed in the response.
       if (row.cohort === 'holdout') { row.status = 'held-out'; row.reason = 'holdout'; }
