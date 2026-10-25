@@ -300,7 +300,7 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(radiusFor(['pkg-a/lib/core.ts'])).toEqual(first);
   });
 
-  it('batches a reached external workspace instead of fetching each import-chain blob separately', () => {
+  it.each(['p-a/src', 'scripts/shared'])('batches a reached external import chain in %s', (sourceRoot) => {
     const fixture = mkdtempSync(join(tmpdir(), 'admission-radius-external-'));
     const chainLength = 24;
     const batchRead = vi.spyOn(admissionBlobs, 'readAdmissionBlobBatch');
@@ -312,9 +312,9 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
         'p-b/package.json': JSON.stringify({ name: '@t/consumer' }),
         'p-b/vitest.config.ts': 'export default {};\n',
         'p-b/src/core.ts': 'export const core = 1;\n',
-        'p-b/src/core.test.ts': "import { core } from './core';\nimport '../../p-a/src/dependency-0';\nexport const t = core;\n",
+        'p-b/src/core.test.ts': `import { core } from './core';\nimport '../../${sourceRoot}/dependency-0';\nexport const t = core;\n`,
         ...Object.fromEntries(Array.from({ length: chainLength }, (_, i) => [
-          `p-a/src/dependency-${i}.ts`,
+          `${sourceRoot}/dependency-${i}.ts`,
           `${i + 1 < chainLength ? `import './dependency-${i + 1}';\n` : ''}export const value = ${i};\n`,
         ])),
       });
@@ -326,7 +326,7 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
         return { mode: match[1]!, type: match[2]!, sha: match[3]!, file: match[4]! };
       });
       // Reached modules must still come from the pinned object store.
-      rmSync(join(fixture, 'p-a/src'), { recursive: true });
+      rmSync(join(fixture, sourceRoot), { recursive: true });
       const radius = ordinaryAdmissionRadius({ root: fixture, commit: frozen, top,
         signature: [], admittedPaths: ['p-b/src/core.ts'] });
       expect(radius).toMatchObject({ status: 'measured', reason: 'ok', guarded: ['p-b/src/core.test.ts'], reportOnly: [] });

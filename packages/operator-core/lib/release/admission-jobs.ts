@@ -389,15 +389,17 @@ export function ordinaryAdmissionRadius(input: {
     let playwrightExcluded = 0;
     let unroutable = 0;
     const fullReasons: string[] = [];
-    const sourcesByWorkspace = new Map<string, string[]>();
-    const workspaceSources = (repo: PinnedRepo, wsRoot: string): string[] => {
-      let files = sourcesByWorkspace.get(wsRoot);
+    const sourcesByRepo = new Map<PinnedRepo, Map<string | null, string[]>>();
+    const workspaceSources = (repo: PinnedRepo, wsRoot: string | null): string[] => {
+      let groups = sourcesByRepo.get(repo);
+      if (!groups) { groups = new Map(); sourcesByRepo.set(repo, groups); }
+      let files = groups.get(wsRoot);
       if (!files) {
         files = [...repo.blobs.keys()].filter((file) =>
           RADIUS_SOURCE_RE.test(file) && repo.blobs.get(file)!.mode !== '120000' &&
-          !relative(wsRoot, file).split(sep).some((part) => RADIUS_EXCLUDED_DIRS.has(part)) &&
+          !relative(wsRoot ?? repo.cwd, file).split(sep).some((part) => RADIUS_EXCLUDED_DIRS.has(part)) &&
           owningWorkspace(repo, file) === wsRoot);
-        sourcesByWorkspace.set(wsRoot, files);
+        groups.set(wsRoot, files);
       }
       return files;
     };
@@ -416,12 +418,13 @@ export function ordinaryAdmissionRadius(input: {
         let text = contents.get(file);
         if (text === undefined) {
           const reachedRepo = locate(file);
-          const reachedWorkspace = RADIUS_SOURCE_RE.test(file) ? owningWorkspace(reachedRepo, file) : null;
-          // buildIndex follows cross-root imports lazily. Fetch the reached
-          // workspace in bounded batches instead of spawning two Git processes
-          // for each module in an external import chain. Graph membership still
-          // comes solely from buildIndex's existing traversal.
-          const batch = readBlobs(reachedRepo, reachedWorkspace ? workspaceSources(reachedRepo, reachedWorkspace) : [file]);
+          const source = RADIUS_SOURCE_RE.test(file);
+          const reachedWorkspace = source ? owningWorkspace(reachedRepo, file) : null;
+          // Scripts outside npm workspaces form a separate group in each pinned
+          // repository. They need the same bounded reads as workspace sources;
+          // otherwise every reached script starts two more Git subprocesses.
+          // Only buildIndex's traversal determines graph membership.
+          const batch = readBlobs(reachedRepo, source ? workspaceSources(reachedRepo, reachedWorkspace) : [file]);
           for (const [path, value] of batch) contents.set(path, value);
           text = contents.get(file);
         }
