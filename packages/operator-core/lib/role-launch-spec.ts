@@ -175,7 +175,7 @@ import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/
 import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
 import { PAPERCUSP_MCP_SERVER } from './papercusp-mcp-servers';
-import { promptsDir } from './prompt-assembly';
+import { promptsDir, RolePromptUnavailableError } from './prompt-assembly';
 import { PSU_CACHE_BOUNDARY, cacheSplitBoundaryEnabled } from './inference-gateway/cache-policy';
 import { sessionClaudeConfigDir, sessionMcpDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { signSpawnParams } from './spawn-signing';
@@ -1129,6 +1129,7 @@ export function assembleWorkspaceRolePrompt(opts: {
   const chatPersonaPath = path.join(promptsDir(), `${opts.role}.persona.md`);
   if (fsSync.existsSync(chatPersonaPath)) {
     persona = fsSync.readFileSync(chatPersonaPath, 'utf8');
+    if (!persona.trim()) throw new RolePromptUnavailableError(opts.role, 'workspace-persona');
     promptFile = chatPersonaPath;
     const toolsMdPath = path.join(promptsDir(), `${opts.role}.tools.md`);
     if (fsSync.existsSync(toolsMdPath)) {
@@ -1143,11 +1144,8 @@ export function assembleWorkspaceRolePrompt(opts: {
       promptFile = spawnPersonaFiles[spawnPersonaFiles.length - 1];
     }
   }
-  if (persona == null) {
-    throw new Error(
-      `buildRoleLaunchSpec: role "${opts.role}" has no workspace-level persona ` +
-        `(no ${opts.role}.persona.md chat persona and no prompts/${opts.role}.md) — pass a harness`,
-    );
+  if (!persona?.trim()) {
+    throw new RolePromptUnavailableError(opts.role, 'workspace-persona');
   }
 
   const lines = [

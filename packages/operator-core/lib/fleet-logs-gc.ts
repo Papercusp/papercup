@@ -160,7 +160,7 @@ async function sweepLintWorkRoots(opts: LintWorkRootGcOptions, isPinned: (path: 
     try { return readFileSync(join(path, OWNER_MARKER), 'utf8'); } catch { return null; }
   };
   // Preview uses the maintained policy; removal merely records candidate identity.
-  sweepStaleWorkRoots({ root, nowMs, cwds: [], remove: (path: string) => {
+  await sweepStaleWorkRoots({ root, nowMs, cwds: [], remove: (path: string) => {
     const st = lstatSync(path);
     identities.set(path, { ino: st.ino, dev: st.dev, marker: markerAt(path) });
   } });
@@ -171,7 +171,7 @@ async function sweepLintWorkRoots(opts: LintWorkRootGcOptions, isPinned: (path: 
     catch (error) { scanError = error instanceof Error ? error.message : String(error); }
   }
   const wouldRemove: Array<{ name: string; reason: string }> = [];
-  const result = sweepStaleWorkRoots({ root, nowMs,
+  const result = await sweepStaleWorkRoots({ root, nowMs,
     cwds: [...scan.byPath].filter(([, holders]) => holders.length).map(([path]) => path),
     beforeRemove: (path: string) => {
       if (isPinned(path)) return 'pinned';

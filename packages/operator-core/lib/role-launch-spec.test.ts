@@ -1361,13 +1361,26 @@ describe('buildRoleLaunchSpec — WORKSPACE-LEVEL (harness-less) role session (h
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('refuses a blank chat persona even when a tools playbook exists, then recovers after install', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rls-prompts-'));
+    promptsDirValue = dir;
+    try {
+      writeFileSync(join(dir, 'operator.persona.md'), ' \n ');
+      writeFileSync(join(dir, 'operator.tools.md'), 'SYNTHETIC TOOLS');
+      const opts = { role: 'operator', workspaceId: 'default', harnessSlug: null, operatorBaseUrl: 'http://x' };
+      await expect(buildRoleLaunchSpec(opts)).rejects.toMatchObject({ code: 'ROLE_PROMPT_UNAVAILABLE', document: 'workspace-persona' });
+      writeFileSync(join(dir, 'operator.persona.md'), 'SYNTHETIC INSTALLED PERSONA');
+      expect((await buildRoleLaunchSpec(opts)).promptText).toContain('SYNTHETIC INSTALLED PERSONA');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('throws for a role with no workspace-level persona at all', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rls-prompts-'));
     promptsDirValue = dir;
     resolvePromptFileMock.mockReturnValueOnce(null);
     await expect(
       buildRoleLaunchSpec({ role: 'worker', workspaceId: 'default', harnessSlug: null, operatorBaseUrl: 'http://x' }),
-    ).rejects.toThrow(/no workspace-level persona/);
+    ).rejects.toMatchObject({ code: 'ROLE_PROMPT_UNAVAILABLE', role: 'worker', document: 'workspace-persona' });
     rmSync(dir, { recursive: true, force: true });
   });
 });

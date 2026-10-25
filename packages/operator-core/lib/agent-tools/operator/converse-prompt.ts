@@ -128,6 +128,10 @@ export async function buildOperatorPrompt(
   // buildPromptMs) with no visibility into WHICH phase pays it. One log line
   // per turn; grep `prompt-phases` in the operator log.
   const tP0 = Date.now();
+  // Fail before starting optional gathers or logging missing audience overlays.
+  const requiredRole = input.role ?? 'operator';
+  const converse = loadRoleConverse(requiredRole);
+  const persona = loadRolePersona(requiredRole);
   const prefs = await loadVoicePrefs().catch(() => null);
   const slimVoice = input.modality === 'voice' && input.voiceProfile !== 'standard';
   // Reuse the history selector and rolling summary: recent verbatim context
@@ -255,8 +259,8 @@ export async function buildOperatorPrompt(
     console.warn(`[converse-prompt] No audience identity found for role="${role}" audienceMode="${audienceMode}" — blueprints/${role}.audience-${audienceMode}/prompts/audience.md is installed in no tier of the prompt chain (identities-v1 P-021).`);
   }
 
-  systemSections.push(loadRoleConverse(role));
-  systemSections.push(loadRolePersona(role));
+  systemSections.push(converse);
+  systemSections.push(persona);
 
   // Look the catalog up by the colon MCP-catalog name (the registry key), but
   // DISPLAY the underscore form below — Claude Code sanitizes the colon out of

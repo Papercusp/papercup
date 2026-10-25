@@ -165,9 +165,10 @@ export async function lintPlan(
       const root = (await loadHarnessRegistry(activeWorkspaceId())).projects.find(project => project.slug === harness)?.path;
       if (!root) report.codeAdvice = { status: 'unknown', reason: 'scoped harness repository unavailable' };
       else {
+        // Keep the worker's shared hard deadline; a local short cap made valid compiler queries appear unavailable.
         const [answer, coverage, fileClaims] = await Promise.all([
           firstPartyCallersOffthread({ root, vendorDir: LSP_VENDOR_DIR, name: codeScope.symbol, filePath: codeScope.file,
-            paths: codeScope.paths ?? ['.'], op: 'impact', direction: 'downstream', maxDepth: 3, limit: 50 }, { budgetMs: 6_000 }),
+            paths: codeScope.paths ?? ['.'], op: 'impact', direction: 'downstream', maxDepth: 3, limit: 50 }),
           getAllPlanItemCoverage({ planItemRefs: codeScope.taskPaths.map(task => `${slug}#${task.itemId}`) }),
           locks.readQueue(locks.getTxPool(), { coordinationDomain: null,
             paths: [...new Set(codeScope.taskPaths.flatMap(task => task.paths))] }).then(result => ({ status: 'measured' as const,

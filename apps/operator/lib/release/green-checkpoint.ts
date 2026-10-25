@@ -12971,6 +12971,13 @@ async function applyFrozenRepairCarryAtCut(
   }
 }
 
+function frozenCandidateAlreadyGreen(
+  queue: FrozenCandidateRepairQueue, lastReady: string | null,
+): boolean {
+  return queue.phase === "ready-to-test" && lastReady !== null &&
+    queue.candidate === lastReady && queue.repairHead !== queue.candidate;
+}
+
 /** Shared read-only candidate policy; preparation and execution must use the same decision. */
 async function selectCheckpointFreshCandidate(
   cfg: ReleaseConfig,
@@ -13700,20 +13707,13 @@ async function runGreenCheckpointInner(
     // and never a re-cut (D-007). The immutable candidate is untouched. `repairHead !== candidate`
     // is required: with nothing admitted there is genuinely nothing to verify, and that row is an
     // operator `retire` decision rather than this one.
-    if (
-      repairQueue.phase === "ready-to-test" &&
-      lastReady &&
-      repairQueue.candidate === lastReady &&
-      repairQueue.repairHead !== repairQueue.candidate
-    ) {
+    if (frozenCandidateAlreadyGreen(repairQueue, lastReady)) {
       const unreachable = repairQueue;
       repairQueue = await commitFrozenRepairQueueTransition(
         deps,
         repairQueue,
         (fresh) =>
-          fresh.phase === "ready-to-test" &&
-          fresh.candidate === lastReady &&
-          fresh.repairHead !== fresh.candidate
+          frozenCandidateAlreadyGreen(fresh, lastReady)
             ? { ...fresh, phase: "ready-to-verify" }
             : fresh,
         "resume-unreachable-ready-to-test",
@@ -14470,8 +14470,16 @@ async function runGreenCheckpointInner(
     }
   }
 
-  if (opts.preparedSelection && candidate !== opts.preparedSelection.candidate)
-    throw new Error("prepared selection invalidated by changed repair authority");
+  if (opts.preparedSelection && candidate !== opts.preparedSelection.candidate) {
+    const prepared = opts.preparedSelection;
+    throw new Error(
+      `prepared selection invalidated by changed repair authority: ` +
+      `prepared=${prepared.candidate}, selected=${candidate}; ` +
+      `preparedQueue=${prepared.queue?.phase ?? "none"}@${prepared.queue?.updatedAtMs ?? "none"}, ` +
+      `selectedQueue=${repairQueue?.phase ?? "none"}@${repairQueue?.updatedAtMs ?? "none"}; ` +
+      `frozenCandidate=${repairQueue?.candidate ?? "none"}, repairHead=${repairQueue?.repairHead ?? "none"}`,
+    );
+  }
   const selected = opts.preparedSelection ?? await selectCheckpointFreshCandidate(cfg, deps, {
     candidate, lastReady, opts, repairVerification, initialCandidateVerification,
     diagnosticOnly, repairQueue,
@@ -19295,11 +19303,22 @@ async function beginPreparedCheckpointPreflight(
     const queue = structuredClone(await readCheckpointSelectionQueue(deps));
     const pendingCarry = structuredClone(await deps.readFrozenRepairPendingCarry?.() ?? null);
     const base = await refExists(cfg.integrationRoot, cfg.releaseRef) ? await revParse(cfg.integrationRoot, cfg.releaseRef) : null;
-    const explicit = opts.candidate ? await revParse(cfg.integrationRoot, opts.candidate) : null;
     const provenance = checkpointCandidateProvenance(opts);
+    const requested = opts.candidate ? await revParse(cfg.integrationRoot, opts.candidate) : null;
+    // A server-selected queue candidate is a hint, not an explicit diagnostic pin.
+    // Use the same decision as execution: an untested frozen candidate must be judged
+    // before its admitted repairs. Mirror the runner's already-green phase recovery
+    // without consuming or mutating the queue during unlocked preparation.
+    const explicit = provenance.candidateSource === "pinned" ? requested : null;
+    const queueForSelection = queue && frozenCandidateAlreadyGreen(queue, base)
+      ? { ...queue, phase: "ready-to-verify" as const } : queue;
+    const queueDecision = decideFrozenCandidateRepairQueue(queueForSelection, { nowMs: Date.now() });
+    const queueCandidate = queueDecision.kind === "test-candidate" || queueDecision.kind === "verify-repair"
+      ? queueDecision.candidate : queue?.repairHead;
     const selected = await selectCheckpointFreshCandidate(cfg, deps, {
-      candidate: explicit ?? queue?.repairHead ?? tip, lastReady: base, opts,
-      repairVerification: queue !== null, initialCandidateVerification: false,
+      candidate: explicit ?? queueCandidate ?? requested ?? tip, lastReady: base, opts,
+      repairVerification: queue !== null && queueDecision.kind !== "test-candidate",
+      initialCandidateVerification: queueDecision.kind === "test-candidate",
       diagnosticOnly: provenance.candidateSource === "pinned", repairQueue: queue,
     });
     let carry: FrozenRepairCarryRecord | null = null;

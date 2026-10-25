@@ -15,6 +15,7 @@ import {
 } from '@papercusp/agent-mcp';
 import '../../../agent-tools/index';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { rolePromptUnavailableDetails } from '../../../prompt-assembly';
 import { checkBudget, shouldBypassOperatorBudget } from '../../../operator-budget';
 import { getConversationById, getOrCreateActiveConversation } from '../../../operator-conversations';
 import { UI_CONTEXT_MAX_CHARS } from '../../../chat-context-sections';
@@ -415,7 +416,7 @@ export default defineTool({
                 console.warn('[operator-converse] tool result parse failed:', e);
               }
             } else if (ev.kind === 'error') {
-              if (!ctrl.signal.aborted) sink.event('error', { message: ev.error.message });
+              if (!ctrl.signal.aborted) sink.event('error', rolePromptUnavailableDetails(ev.error) ?? { message: ev.error.message });
               sink.close();
               return;
             }
@@ -425,7 +426,7 @@ export default defineTool({
             ...(lessonContext ? { answer: lessonAnswer ?? '' } : {}) });
         } catch (err) {
           if (!ctrl.signal.aborted) {
-            sink.event('error', { message: err instanceof Error ? err.message : String(err) });
+            sink.event('error', rolePromptUnavailableDetails(err) ?? { message: err instanceof Error ? err.message : String(err) });
           }
           sink.close();
         }

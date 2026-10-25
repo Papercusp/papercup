@@ -36,6 +36,7 @@
  */
 
 import { z } from 'zod';
+import { loadRoleConverse, loadRolePersona } from '../../prompt-assembly';
 import { defineTool, lookupByMcpName, resolveBearer } from '@papercusp/agent-mcp';
 import { endPiSession, startPiSession } from '@papercusp/agent-mcp/provisioning';
 import { agentSpawnTransformConfigured } from '@papercusp/papercusp-shared/agent';
@@ -299,6 +300,10 @@ export default defineTool({
     tool_result: z.object({ name: z.string(), summary: z.string(), ok: z.boolean(), callId: z.string().optional() }),
   },
   handler: async (input: Args, ctx) => {
+    // Required content is an operation precondition, before turn/session writes.
+    const role = input.lessonContext ? 'papercup' : input.role ?? 'operator';
+    loadRoleConverse(role);
+    loadRolePersona(role);
     const sessionUser: ConverseSessionUser | null = input.lessonContext ? null : input.sessionUser ?? null;
     // Per-turn phase timing (reply-latency instrumentation, grade-loop
     // 2026-07-16): the IPC converse path never lands in tool_invocations, so
@@ -314,7 +319,6 @@ export default defineTool({
     // backends either have no on-disk session store (anthropic-direct) or
     // are not wired for it (omp/codex). The per-surface backend override is
     // resolved here (and reused below) instead of after the build.
-    const role = input.lessonContext ? 'papercup' : input.role ?? 'operator';
     const hostTrust: ConverseHostTrust = input.lessonContext || input.hostTrust === 'public' ? 'public' : 'owner';
     // The role's model + backend, resolved ONCE up front: the backend gates
     // session reuse below (claude-code only), and the papercup pin carries its

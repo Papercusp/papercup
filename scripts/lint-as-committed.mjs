@@ -310,6 +310,10 @@ export function committedWorkRootDependencyDonor(workRoot) {
 }
 
 /** Keep the existing owner marker alive for the lifetime of a dependent artifact. */
+function committedSourceRetentionMutexName(root) {
+  return 'committed-source-retention-' + createHash('sha256').update(root).digest('hex').slice(0, 24);
+}
+
 export function retainCommittedWorkRoot(workRoot, expectedSha, artifactPath) {
   const { root } = verifyCommittedWorkRoot(workRoot, expectedSha);
   const artifact = realpathSync(artifactPath); // Missing artifacts must never create a hold.
@@ -317,8 +321,7 @@ export function retainCommittedWorkRoot(workRoot, expectedSha, artifactPath) {
     throw new Error('lint-as-committed: dependent artifact must be outside its source root');
   }
   const markerPath = join(root, OWNER_MARKER);
-  const name = 'committed-source-retention-' + createHash('sha256').update(root).digest('hex').slice(0, 24);
-  return withFsMutex(name, async () => {
+  return withFsMutex(committedSourceRetentionMutexName(root), async () => {
     // Re-read AFTER acquiring: another process may have added its own hold.
     verifyCommittedWorkRoot(root, expectedSha);
     const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
@@ -425,21 +428,33 @@ export function liveProcessCwds({ readDir = readdirSync, readLink = readlinkSync
  * it cannot prove a tree is idle, so it only removes trees whose marker names a dead
  * non-keep owner — the one verdict that needs no cwd scan.
  */
-export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds = liveProcessCwds(), isAlive = pidAlive, remove = (p) => rmSync(p, { recursive: true, force: true }), beforeRemove = () => null, maxIdleKept = MAX_IDLE_KEPT_TREES } = {}) {
+export async function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds = liveProcessCwds(), isAlive = pidAlive, remove = (p) => rmSync(p, { recursive: true, force: true }), beforeRemove = () => null, maxIdleKept = MAX_IDLE_KEPT_TREES } = {}) {
   const removed = [];
   const kept = [];
   const idleKept = [];
-  const tryRemove = (name, path, reason) => {
+  const tryRemove = async (name, path, reason) => {
     try {
-      // Scheduled callers require a complete fd/cwd census and unchanged identity.
-      // Keep the same TTL/artifact/cap policy for both scheduled and CLI sweeps.
-      const refusal = beforeRemove(path);
-      if (refusal) {
-        kept.push({ name, reason: refusal });
-        return;
-      }
-      remove(path);
-      removed.push({ name, reason });
+      await withFsMutex(committedSourceRetentionMutexName(path), async () => {
+        // Share the marker writer's lock through the final unlink. A hold can
+        // be registered after enumeration, including while this sweep waits.
+        const refusal = beforeRemove(path);
+        if (refusal) {
+          kept.push({ name, reason: refusal });
+          return;
+        }
+        let currentMarker = null;
+        try {
+          currentMarker = JSON.parse(readFileSync(join(path, OWNER_MARKER), 'utf8'));
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
+        if (hasDependentArtifact(path, currentMarker)) {
+          kept.push({ name, reason: 'dependent-artifact' });
+          return;
+        }
+        remove(path);
+        removed.push({ name, reason });
+      });
     } catch {
       kept.push({ name, reason: 'remove-failed' });
     }
@@ -475,7 +490,7 @@ export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds 
     const ownerDead = marker !== null && !marker.keep && ownerAlive === false;
     const provable = inUse !== null || ownerDead;
     if (verdict.remove && provable) {
-      tryRemove(name, path, verdict.reason);
+      await tryRemove(name, path, verdict.reason);
     } else if (verdict.reason === 'keep-young' && inUse === false) {
       // Idle only when the cwd scan ran and found nobody inside (inUse === false, not null).
       idleKept.push({ name, path, createdAtMs });
@@ -484,10 +499,10 @@ export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds 
     }
   }
   idleKept.sort((a, b) => b.createdAtMs - a.createdAtMs);
-  idleKept.forEach(({ name, path }, i) => {
+  for (const [i, { name, path }] of idleKept.entries()) {
     if (i < maxIdleKept) kept.push({ name, reason: 'keep-young' });
-    else tryRemove(name, path, 'keep-over-cap');
-  });
+    else await tryRemove(name, path, 'keep-over-cap');
+  }
   return { removed, kept };
 }
 
@@ -1209,7 +1224,7 @@ async function main() {
     console.error(`lint-as-committed: no temporary directory has critical disk headroom (${tmpdir()}); refusing to materialise the committed tree.`);
     process.exit(2);
   }
-  const swept = sweepStaleWorkRoots();
+  const swept = await sweepStaleWorkRoots();
   if (swept.removed.length > 0) {
     console.log(`  swept ${swept.removed.length} stale extracted tree(s): ${swept.removed.map((r) => `${r.name} (${r.reason})`).join(', ')}`);
   }

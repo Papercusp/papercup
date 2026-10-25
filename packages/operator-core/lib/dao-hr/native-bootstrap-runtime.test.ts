@@ -441,7 +441,11 @@ describe('native bootstrap admission and lifecycle', () => {
       const release = (phase: string) => join(dir, phase + '.release');
       const waitForRelease = (phase: string) =>
         `while [ ! -f ${JSON.stringify(release(phase))} ]; do sleep 0.01; done`;
-      const program = ['set -eu', shell.slice(start, end),
+      const program = ['set -eu',
+        // The production snapshot cleanup is defined before this slice. The
+        // fixture leaves its source path empty, so preserve its no-op contract.
+        'cleanup_verifier_source_snapshot() { :; }',
+        shell.slice(start, end),
         'printf "OPTIONAL_DISABLED=%s\\n" "${VH_DISABLED:-missing}"',
         waitForRelease('prepare'), section('boot'), waitForRelease('boot'),
         section('assert'), waitForRelease('assert')].join('\n');

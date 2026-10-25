@@ -1646,7 +1646,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       nowMs: number;
       cwds: string[] | null;
       isAlive: (pid: number) => boolean;
-    }) => { removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] };
+    }) => Promise<{ removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] }>;
     WORK_ROOT_PREFIX: string;
     OWNER_MARKER: string;
     KEEP_TTL_MS: number;
@@ -1654,7 +1654,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
   };
   const H = 3600_000;
 
-  it('retains dependent source past the age and idle cap, then releases it when the artifact disappears', () => {
+  it('retains dependent source past the age and idle cap, then releases it when the artifact disappears', async () => {
     const root = mkdtempSync(join(tmpdir(), 'lac-dependent-'));
     try {
       const source = join(root, `${WORK_ROOT_PREFIX}source`);
@@ -1666,12 +1666,50 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
         pid: 101, keep: true, sha, createdAtMs: 0, retainedFor: [{ path: artifact, sha }],
       }));
       const options = { root, nowMs: MAX_AGE_MS + H, cwds: [], isAlive: () => false, maxIdleKept: 0 };
-      expect(mod.sweepStaleWorkRoots(options).kept).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'dependent-artifact' });
+      expect((await mod.sweepStaleWorkRoots(options)).kept).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'dependent-artifact' });
       expect(existsSync(source)).toBe(true);
       rmSync(artifact, { recursive: true });
-      expect(mod.sweepStaleWorkRoots(options).removed).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'max-age' });
+      expect((await mod.sweepStaleWorkRoots(options)).removed).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'max-age' });
       expect(existsSync(source)).toBe(false);
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('serializes deletion with a retention hold being registered (EI-26972693430783811)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-retention-delete-race-'));
+    const source = join(root, `${WORK_ROOT_PREFIX}source`);
+    const artifact = join(root, 'candidate');
+    const sha = 'a'.repeat(40);
+    const marker = { pid: 101, keep: true, sha, createdAtMs: 0 };
+    const { withFsMutex } = await import('../../../scripts/lib/fs-mutex.mjs');
+    let sweeping: Promise<{ removed: unknown[]; kept: unknown[] }> | undefined;
+    let deletedDuringRegistration = false;
+    try {
+      mkdirSync(join(source, '.git'), { recursive: true });
+      mkdirSync(artifact);
+      writeFileSync(join(source, OWNER_MARKER), JSON.stringify(marker));
+      const mutex = 'committed-source-retention-' + createHash('sha256').update(source).digest('hex').slice(0, 24);
+      await withFsMutex(mutex, async () => {
+        sweeping = Promise.resolve(mod.sweepStaleWorkRoots({
+          root, nowMs: MAX_AGE_MS + H, cwds: [], isAlive: () => false,
+        }));
+        // Let cleanup attempt deletion while the actual marker writer's lock is held.
+        await new Promise(resolve => setTimeout(resolve, 100));
+        deletedDuringRegistration = !existsSync(source);
+        if (!deletedDuringRegistration) {
+          writeFileSync(join(source, OWNER_MARKER), JSON.stringify({
+            ...marker, retainedFor: [{ path: artifact, sha }],
+          }));
+        }
+      });
+      const result = await sweeping!;
+      expect(deletedDuringRegistration).toBe(false);
+      expect(result.removed).toEqual([]);
+      expect(result.kept).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'dependent-artifact' });
+      expect(existsSync(source)).toBe(true);
+    } finally {
+      await sweeping;
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -1773,7 +1811,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
         await mod.retainCommittedWorkRoot(root, sha, artifact);
         expect(mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toEqual({ root: realpathSync(root), sha });
       }
-      const swept = mod.sweepStaleWorkRoots({ root: sources, nowMs: MAX_AGE_MS + H, cwds: [], isAlive: () => false, maxIdleKept: 0 });
+      const swept = await mod.sweepStaleWorkRoots({ root: sources, nowMs: MAX_AGE_MS + H, cwds: [], isAlive: () => false, maxIdleKept: 0 });
       expect(swept.removed).toEqual([]);
       expect(swept.kept).toHaveLength(2);
       rmSync(artifact, { recursive: true });
@@ -1882,7 +1920,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     expect(c(false, null, false, Number.NaN)).toEqual({ remove: false, reason: 'age-unknown' });
   });
 
-  it('sweeps only stale trees under the root, never one a live process is inside', () => {
+  it('sweeps only stale trees under the root, never one a live process is inside', async () => {
     const root = mkdtempSync(join(tmpdir(), 'lac-sweep-'));
     try {
       const now = Date.now();
@@ -1900,7 +1938,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       mkdirSync(join(root, 'unrelated-dir'));
       const isAlive = (pid: number) => pid === 202;
 
-      const res = sweepStaleWorkRoots({ root, nowMs: now, cwds: [join(busy, 'packages', 'x')], isAlive });
+      const res = await sweepStaleWorkRoots({ root, nowMs: now, cwds: [join(busy, 'packages', 'x')], isAlive });
       const names = (rows: { name: string }[]) => rows.map((r) => r.name.slice(WORK_ROOT_PREFIX.length)).sort();
       expect(names(res.removed)).toEqual(['dead-owner', 'keep-old']);
       expect(names(res.kept)).toEqual(['keep-fresh', 'keep-old-busy', 'live-owner']);
@@ -1910,7 +1948,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
 
       // Without /proc a tree's idleness is unprovable: only a dead non-keep owner goes.
       tree('dead-owner-2', { pid: 101, keep: false, createdAtMs: now - 60_000 });
-      const blind = sweepStaleWorkRoots({ root, nowMs: now + MAX_AGE_MS * 2, cwds: null, isAlive });
+      const blind = await sweepStaleWorkRoots({ root, nowMs: now + MAX_AGE_MS * 2, cwds: null, isAlive });
       expect(names(blind.removed)).toEqual(['dead-owner-2']);
       expect(existsSync(busy)).toBe(true);
     } finally {
@@ -1943,7 +1981,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     expect(liveProcessCwds(io(new Error('EACCES')))).toBeNull();
   });
 
-  it('WI-6554700010019046: a host owner pid seen from a private PID namespace is unknown, and its tree is kept', () => {
+  it('WI-6554700010019046: a host owner pid seen from a private PID namespace is unknown, and its tree is kept', async () => {
     const { pidAlive, pidNamespaceView, INITIAL_PID_NAMESPACE } = mod as {
       pidAlive: (pid: number, view?: string) => boolean | null;
       pidNamespaceView: (readLink?: (p: string) => string) => string;
@@ -1964,20 +2002,20 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       // What the sweep sees from a private PID namespace: no cwd census, owner liveness unknown.
       const sweep = sweepStaleWorkRoots as unknown as (o: {
         root: string; nowMs: number; cwds: string[] | null; isAlive: (pid: number) => boolean | null;
-      }) => { removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] };
-      const blind = sweep({ root, nowMs: now, cwds: null, isAlive: () => null });
+      }) => Promise<{ removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] }>;
+      const blind = await sweep({ root, nowMs: now, cwds: null, isAlive: () => null });
       expect(blind.removed).toEqual([]);
       expect(blind.kept).toContainEqual({ name: `${WORK_ROOT_PREFIX}running-elsewhere`, reason: 'owner-liveness-unknown' });
       expect(existsSync(tree)).toBe(true);
       // The same tree with a provably dead owner still goes.
-      expect(sweep({ root, nowMs: now, cwds: null, isAlive: () => false }).removed)
+      expect((await sweep({ root, nowMs: now, cwds: null, isAlive: () => false })).removed)
         .toEqual([{ name: `${WORK_ROOT_PREFIX}running-elsewhere`, reason: 'owner-dead' }]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('WI-10005934: keeps only the newest MAX_IDLE_KEPT_TREES idle kept trees, never counting a busy one', () => {
+  it('WI-10005934: keeps only the newest MAX_IDLE_KEPT_TREES idle kept trees, never counting a busy one', async () => {
     const { MAX_IDLE_KEPT_TREES } = mod as { MAX_IDLE_KEPT_TREES: number };
     expect(MAX_IDLE_KEPT_TREES).toBe(4);
     const root = mkdtempSync(join(tmpdir(), 'lac-cap-'));
@@ -1996,10 +2034,10 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       const isAlive = () => false;
 
       // Without /proc nothing is provably idle, so the cap removes nothing.
-      const blind = sweepStaleWorkRoots({ root, nowMs: now, cwds: null, isAlive });
+      const blind = await sweepStaleWorkRoots({ root, nowMs: now, cwds: null, isAlive });
       expect(blind.removed).toEqual([]);
 
-      const res = sweepStaleWorkRoots({ root, nowMs: now, cwds: [join(busy, 'apps')], isAlive });
+      const res = await sweepStaleWorkRoots({ root, nowMs: now, cwds: [join(busy, 'apps')], isAlive });
       expect(names(res.removed)).toEqual(['idle-5h', 'idle-6h']);
       expect(res.removed.every((r) => r.reason === 'keep-over-cap')).toBe(true);
       expect(names(res.kept)).toEqual(['busy-oldest', 'idle-1h', 'idle-2h', 'idle-3h', 'idle-4h']);
