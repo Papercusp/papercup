@@ -231,10 +231,46 @@
         "nestedEffectFollowups": [0, 254, 259, 264, 408, 455],
         "scope": "Complete Python command bodies were read, including appended shell statements and nested tool payloads. The six named indices retain collector identity, internal artifact, mutation-wrapper or report-publication effect follow-ups. Body review is not all-callee proof, an acceptance verdict or a new test run. The earlier 191-command file remains an immutable partial edition."
       },
+      "nativeRemainingCommandDispositions": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-remaining-command-dispositions-v1.json",
+        "sha256": "8e0607e00ec98506582774999ee4a28c2e81739829b723120a021ceaa26b8d8b",
+        "completeBodiesReviewedThisEdition": 339,
+        "categories": { "internal-MCP-client": 324, "maintained-test-or-lint-wrapper": 14, "internal-DB-select": 1 },
+        "totalCompleteBodiesReviewed": 615,
+        "remainingCommandBodies": 0,
+        "nestedEffectFollowups": [0, 254, 259, 264, 408, 455],
+      "publicationSurfaceFollowups": [454, 455, 604],
+        "scope": "Completes the retained 615-command body population through full shell/payload review. Exact body, record and JSON/script hashes are retained; quoted declarative prose is data, while nested executable scripts and commands are reviewed separately. Callee effects, owner Reports publication classification, native custom methods, complete contributors/intervals and final acceptance tail remain unresolved. R-5 stays UNKNOWN. Earlier partial editions are preserved unchanged."
+      },
+      "nestedEffectReconciliation": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-nested-effect-reconciliation-v1.json",
+        "sha256": "b554527dfda2577d663405926dc325e8ba88b7cf6eda4a7de7be11dbbf2e127f",
+        "savedFollowupsAddressed": [0, 254, 259, 264, 408, 455],
+        "status": "UNKNOWN",
+        "scope": "Binds the collector creation/current bytes and actual inventory result; exact two-artifact save receipt; serialized inequality followed by complete parsed six-value equality; canonical contained mutation receipt; and exact original/retry owner-report request/result. Collector execution-time source sealing, opaque downstream effects and publication-predicate classification remain explicit gaps. Historical scope-report publish/readback are retained despite a current not_found from this session. No review command was replayed."
+      },
+      "nativeCustomScriptStructure": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-native-custom-script-structure-v1.json",
+        "sha256": "a5d105132f556d2c58cb91dddec83ec46fe34ebae9e217be917c86ceef907960",
+        "scriptsParsed": 474,
+        "parseGaps": 0,
+        "literalExecCalls": 519,
+        "literalCommandHashesInSavedPopulation": 515,
+        "dynamicExecExpressions": 41,
+        "scope": "Static complete-script syntax and tool-call spans only; no all-script semantic or executed-branch verdict. Literal command mismatches are reconciled in the separate envelope artifact; dynamic expressions and nested tool/callee effects remain."
+      },
+      "nativeCallEnvelopeReconciliation": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-native-call-envelope-reconciliation-v1.json",
+        "sha256": "5ef87b375176de007d0887b17a279cf2247b80133e3d4930985918700f560a02",
+        "unmatchedLiteralCallsites": 4,
+        "preExecutionRejectedSearches": 3,
+        "supplementalCompletedCommands": 1,
+        "scope": "Three native wrapper/result records affirmatively record pre-execution search refusals. The second peer repair completion starts inside the stored interval but completes at 14:48:39.952Z, with wrapper return 14:48:40.889Z; retain that supplemental complete body/result beyond the earlier 14:48:33.403Z endpoint. Preserve the original 615-command population and both conservative peer windows; no purpose-based deletion or whole-channel absence claim."
+      },
       "remaining": [
         "Resolve historical network boundary and downstream effects of MCP44022053, MCP44023057 and successful supplemental MCP44023451. Failed remote exit1 and current loopback configuration do not establish no contact; the third call returned snapshot metadata with native exit0.",
         "Keep conservative candidate intervals and all three SSH calls. The first ADV49752 candidate window now extends through physical handback09:05:45.808Z; no per-goal deletion or interval exclusion has been established.",
-        "Complete semantic dispositions for retained multiline native commands and all seven prohibited surfaces; static parses, command categories and record matches are insufficient.",
+        "Complete nested-callee and actual-effect reconciliation for all seven prohibited surfaces. All 615 retained command bodies now have dispositions; body review, static parses and record matches do not establish every callee effect. Reconcile saved owner Reports publication requests and exact results without inventing an internal-publication exemption.",
         "Close the complete contributor population against grading/audit/dispatch records and extend the acceptance tail beyond this cutoff before any healthy R-5 verdict."
       ]
     },
