@@ -137,9 +137,11 @@ describe('bundled typecheck service identity', () => {
   });
 
   it.each([
-    { release: 'client cancellation', serviceTimeoutMs: 30_000, clientTimeoutMs: 1_000, expectedReason: 'timed-out' },
-    { release: 'server deadline', serviceTimeoutMs: 4_000, clientTimeoutMs: 15_000, expectedReason: 'request-deadline-exceeded' },
-  ])('recovers from orphaned diagnostic RPCs and refuses same-version compiler replacement on a live daemon ($release)', async ({ serviceTimeoutMs, clientTimeoutMs, expectedReason }) => {
+    { release: 'client cancellation', faultPhase: 'diagnostic', serviceTimeoutMs: 30_000, clientTimeoutMs: 1_000, expectedReason: 'timed-out' },
+    { release: 'server deadline', faultPhase: 'diagnostic', serviceTimeoutMs: 4_000, clientTimeoutMs: 15_000, expectedReason: 'request-deadline-exceeded' },
+    { release: 'server deadline', faultPhase: 'initialize', serviceTimeoutMs: 4_000, clientTimeoutMs: 15_000, expectedReason: 'request-deadline-exceeded' },
+    { release: 'server deadline', faultPhase: 'snapshot', serviceTimeoutMs: 4_000, clientTimeoutMs: 15_000, expectedReason: 'request-deadline-exceeded' },
+  ])('recovers from orphaned compiler RPCs and refuses same-version compiler replacement on a live daemon ($release, $faultPhase)', async ({ serviceTimeoutMs, clientTimeoutMs, expectedReason, faultPhase }) => {
     const root = mkdtempSync(join(tmpdir(), 'tsc-compiler-replacement-'));
     roots.push(root);
     const scoped = join(root, 'node_modules/@typescript');
@@ -163,18 +165,28 @@ describe('bundled typecheck service identity', () => {
     // Fault injection owns this independent copy, never the donor inode.
     chmodSync(entry, 0o644);
     // Fault injection stays inside this private compiler copy. Refresh and
-    // normal checks use the real native API; this one diagnostic stalls until
-    // the service disposes its unobserved connection.
+    // normal checks use the real native API. Stall exactly one operation after
+    // a clean control, until the service disposes its unobserved connection.
     const originalApi = readFileSync(entry, 'utf8');
     expect(originalApi).toContain('async getSemanticDiagnostics(file) {');
     expect(originalApi).toContain('async updateSnapshot(params) {');
-    writeFileSync(entry, originalApi.replace('async updateSnapshot(params) {', `async updateSnapshot(params) {
-      if (this.activeSnapshots.size > 0) throw new Error('previous native snapshot still retained');
-    `).replace('async getSemanticDiagnostics(file) {', `async getSemanticDiagnostics(file) {
-      if (file.endsWith('/hang.ts')) {
-        console.log('HUNG_DIAGNOSTIC_READY');
-        return new Promise((resolve, reject) => this.client.connection.onDispose(() => reject(new Error('orphan diagnostic disposed'))));
+    expect(originalApi).toContain('async ensureInitialized() {');
+    const faultMarker = join(root, 'stall-rpc-once');
+    const stallOnce = `
+      const fs = await import('node:fs');
+      if (fs.existsSync(${JSON.stringify(faultMarker)})) {
+        fs.unlinkSync(${JSON.stringify(faultMarker)});
+        console.log('HUNG_OPERATION_READY');
+        return new Promise((resolve, reject) => this.client.connection.onDispose(() => reject(new Error('orphan ${faultPhase} disposed'))));
       }
+    `;
+    writeFileSync(entry, originalApi.replace('async ensureInitialized() {', `async ensureInitialized() {
+      ${faultPhase === 'initialize' ? stallOnce : ''}
+    `).replace('async updateSnapshot(params) {', `async updateSnapshot(params) {
+      if (this.activeSnapshots.size > 0) throw new Error('previous native snapshot still retained');
+      ${faultPhase === 'snapshot' ? stallOnce : ''}
+    `).replace('async getSemanticDiagnostics(file) {', `async getSemanticDiagnostics(file) {
+      ${faultPhase === 'diagnostic' ? stallOnce : ''}
     `));
     const socketPath = join(root, 'compiler.sock');
     const child = spawn(process.execPath, [join(root, 'scripts/tsc-service/server.mjs')], { cwd: root,
@@ -195,10 +207,10 @@ describe('bundled typecheck service identity', () => {
       const runCaller = (files = ['a.ts'], timeoutMs = 10000, operation?: string) => new Promise<any>((resolve, reject) => {
         const caller = spawn(process.execPath, ['--input-type=module', '-e', `
           const service = await import(${JSON.stringify(pathToFileURL(join(root, 'scripts/lib/tsc-service.mjs')).href)});
-          const request = { root: ${JSON.stringify(root)}, project: ${JSON.stringify(project)}, files: ${JSON.stringify(files)}, scope: 'named', operation: ${JSON.stringify(operation)} };
+          const request = { requestId: crypto.randomUUID(), root: ${JSON.stringify(root)}, project: ${JSON.stringify(project)}, files: ${JSON.stringify(files)}, scope: 'named', operation: ${JSON.stringify(operation)} };
           const result = await service.requestTscService({ socketPath: ${JSON.stringify(socketPath)}, request, timeoutMs: ${timeoutMs} })
             .catch(error => ({ ok: false, reason: error.code }));
-          console.log(JSON.stringify({ result, identity: service.tscServiceIdentity(request) }));
+          console.log(JSON.stringify({ requestId: request.requestId, result, identity: service.tscServiceIdentity(request) }));
         `], { env: { ...process.env, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
         let stdout = '', stderr = '';
         caller.stdout.on('data', data => { stdout += data; });
@@ -208,8 +220,9 @@ describe('bundled typecheck service identity', () => {
       });
       const before = await runCaller();
       expect(before.result).toMatchObject({ ok: true, kind: 'result', errorCount: 0 });
+      writeFileSync(faultMarker, 'stall once');
       const hanging = runCaller(['hang.ts'], clientTimeoutMs);
-      await expect.poll(() => output, { timeout: 5000 }).toContain('HUNG_DIAGNOSTIC_READY');
+      await expect.poll(() => output, { timeout: 5000 }).toContain('HUNG_OPERATION_READY');
       const observed = await runCaller(['a.ts'], 1000, 'identity');
       expect(observed.result).toMatchObject({ ok: true, identityOnly: true, checked: [],
         runtime: { pid: child.pid }, identity: before.identity });
@@ -219,7 +232,18 @@ describe('bundled typecheck service identity', () => {
       const recovered = await queued;
       expect(expired.result).toMatchObject({ ok: false, reason: expectedReason });
       expect(recovered.result).toMatchObject({ ok: true, kind: 'result', errorCount: 0 });
-      expect(output).toContain('orphan diagnostic disposed');
+      expect(output).toContain(`orphan ${faultPhase} disposed`);
+      const prefix = `requestId=${expired.requestId} project=tsconfig.json named=1 phase=`;
+      expect(output).toContain(`${prefix}compiler-initialize`);
+      if (faultPhase === 'initialize') {
+        expect(output).not.toContain(`${prefix}compiler-initialized`);
+        expect(output).not.toContain(`${prefix}snapshot-update`);
+      } else {
+        expect(output).toContain(`${prefix}compiler-initialized`);
+        expect(output).toContain(`${prefix}snapshot-update`);
+        if (faultPhase === 'snapshot') expect(output).not.toContain(`${prefix}snapshot-updated`);
+        else expect(output).toContain(`${prefix}snapshot-updated`);
+      }
       // Exercise a previously loaded caller's identity, after the API has
       // already reset once. Alter only the PRIVATE executable, preserving its
       // version/path and executable format (ELF permits trailing data).
@@ -252,7 +276,7 @@ describe('bundled typecheck service identity', () => {
       expect(after.result).toMatchObject({ ok: false, reason: 'identity-mismatch' });
       if (expectedReason === 'request-deadline-exceeded') {
         console.info('TSC_SERVICE_RECOVERY_RECEIPT ' + JSON.stringify({ runtime: before.result.runtime,
-          serviceSourceSha256: before.identity.serviceSourceSha256, serviceTimeoutMs, clientTimeoutMs,
+          serviceSourceSha256: before.identity.serviceSourceSha256, serviceTimeoutMs, clientTimeoutMs, faultPhase,
           terminalReason: expired.result.reason, recoveryOk: recovered.result.ok,
           recoveryChecked: recovered.result.checked, recoveryErrorCount: recovered.result.errorCount }));
       }
@@ -619,7 +643,7 @@ describe('service request phase correlation', () => {
       child.kill('SIGTERM');
       await closed;
       expect(output).not.toContain('COMMITTED_SOURCE substituted scripts/tsc-service/server.mjs');
-      for (const phase of ['queued', 'refresh', 'snapshot-update', 'snapshot-updated', 'project-roots-refresh', 'project-roots-refreshed', 'refreshed', 'program-files', 'scope', 'program-diagnostics', 'file-diagnostics', 'render-diagnostics', 'complete']) {
+      for (const phase of ['queued', 'refresh', 'compiler-initialize', 'compiler-initialized', 'snapshot-update', 'snapshot-updated', 'project-roots-refresh', 'project-roots-refreshed', 'refreshed', 'program-files', 'scope', 'program-diagnostics', 'file-diagnostics', 'render-diagnostics', 'complete']) {
         expect(output).toContain(`requestId=trace-test-123 project=tsconfig.json named=1 phase=${phase}`);
       }
       expect(output).not.toContain('requestId=trace-test-123 project=tsconfig.json named=1 phase=client-disconnected');
