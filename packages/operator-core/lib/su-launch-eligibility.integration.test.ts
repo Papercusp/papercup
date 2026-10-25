@@ -3,7 +3,7 @@
  * authentication, subscription entitlement, or execution of native hooks. */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -39,7 +39,8 @@ vi.mock('./console-launcher', () => ({ buildConsoleEnvelope: async () => ({ cwd:
 vi.mock('./role-launch-spec', async importOriginal => ({
   ...await importOriginal<typeof import('./role-launch-spec')>(),
   buildLaunchSpec: async () => ({ kind: 'su', role: 'su', promptText: 'Chosen SU persona',
-    promptFile: join(home, 'persona.md'), cwd: home, stack: [] }),
+    promptFile: join(home, 'persona.md'), cwd: home, stack: [],
+    mcpUrl: 'http://127.0.0.1:3070/api/mcp?superuser=1' }),
 }));
 
 const workspace = 'default';
@@ -48,7 +49,9 @@ let fixture: BaselineCoordFixture | undefined;
 let home: string;
 const flag = 'PAPERCUSP_FLAG_PAPERCUSP_INFERENCE_GATEWAY';
 const priorityFlag = 'PAPERCUSP_FLAG_PAPERCUSP_GATEWAY_PRIORITY_TIERS';
-const previous = { gateway: process.env[flag], priority: process.env[priorityFlag] };
+const isolatedEnvKeys = [flag, priorityFlag, 'PAPERCUSP_LAUNCH_CONTEXT_DIR',
+  'PAPERCUSP_SU_CODEX_HOMES_DIR', 'PAPERCUSP_CODEX_SQLITE_HOMES_DIR'] as const;
+const previous = new Map(isolatedEnvKeys.map(key => [key, process.env[key]]));
 beforeAll(async () => {
   db = await createOrgTestDb();
   fixture = await setupBaselineCoordFixture({ dsn: db.adminDsn });
@@ -56,6 +59,11 @@ beforeAll(async () => {
   writeFileSync(join(home, 'persona.md'), 'Chosen SU persona');
   process.env[flag] = '1';
   process.env[priorityFlag] = '0';
+  // Refusal mutants can reach artifact creation. Keep even that broken path
+  // inside this fixture instead of the invoking workspace's native homes.
+  process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR = join(home, 'launch-context');
+  process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = join(home, 'codex-homes');
+  process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(home, 'codex-sqlite');
 }, 120_000);
 beforeEach(async () => {
   transport.allocations = 0;
@@ -77,8 +85,8 @@ afterAll(async () => {
   try { await fixture?.dispose(); } finally {
     try { await db?.cleanup(); } finally {
       if (home) rmSync(home, { recursive: true, force: true });
-      for (const [key, value] of [[flag, previous.gateway], [priorityFlag, previous.priority]]) {
-        if (value === undefined) delete process.env[key!]; else process.env[key!] = value;
+      for (const [key, value] of previous) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
       }
     }
   }
@@ -125,6 +133,22 @@ async function observe(agent: 'claude' | 'codex', account: string, executionKind
 
 describe('SU bootstrap account eligibility through launch preparation', () => {
   for (const agent of ['claude', 'codex'] as const) {
+    it(`${agent} successful HTTP bootstrap confines native artifacts to the fixture`, async () => {
+      const route = (bootstrapRoutes as Array<{ method: string; handler: (req: Request, ctx: unknown) => Promise<Response> }>)
+        .find(entry => entry.method === 'POST')!;
+      const response = await route.handler(new Request('http://127.0.0.1:3070/api/agent-mcp/console/bootstrap-su', {
+        method: 'POST', headers: { host: '127.0.0.1:3070', 'content-type': 'application/json' },
+        body: JSON.stringify({ agent, account: `chosen-${agent}`, workspace, cwd: home, headless: true,
+          model: agent === 'codex' ? 'gpt-5.6-sol:high' : 'claude-sonnet-4-6:high' }),
+      }), { log() {} });
+      const result = await response.json();
+      expect(response.status, JSON.stringify(result)).toBe(200);
+      expect(result.status).toBe('ok');
+      expect(result.promptFile.startsWith(home + '/')).toBe(true);
+      expect(readFileSync(result.promptFile, 'utf8')).toContain('Chosen SU persona');
+      expect(transport.allocations).toBe(0);
+    }, 60_000);
+
     it(`${agent} HTTP bootstrap refuses ineligible accounts without recording a session`, async () => {
       const route = (bootstrapRoutes as Array<{ method: string; handler: (req: Request, ctx: unknown) => Promise<Response> }>)
         .find(entry => entry.method === 'POST')!;
