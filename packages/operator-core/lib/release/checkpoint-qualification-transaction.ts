@@ -2294,9 +2294,20 @@ export function assessTerminalRepairQueueReconciliation(
       ...base,
     };
   }
+  // Admission deliberately retains ready-to-test until the immutable candidate is judged.
+  // A terminal runner must not strand that candidate merely because a repair was admitted
+  // before its suite finished. Preserve both heads only with exact same-origin admission
+  // and pending-retest proof; the ordinary queue policy still tests the candidate first.
+  const latestAdmission = queue.admissions?.at(-1);
+  const unstartedAdmittedRepair =
+    originMatchesTerminal &&
+    latestAdmission?.toRepairHead === queue.repairHead &&
+    queue.retestRequested?.candidate === queue.candidate &&
+    queue.retestRequested.repairHead === queue.repairHead &&
+    queue.retestRequested.requestedAtMs === latestAdmission.atMs;
   if (
     queue.phase !== 'ready-to-test' ||
-    queue.repairHead !== queue.candidate ||
+    (queue.repairHead !== queue.candidate && !unstartedAdmittedRepair) ||
     queue.attempts !== 0 ||
     queue.fixerSpawnId !== null ||
     queue.dispatchReservation != null

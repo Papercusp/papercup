@@ -1337,6 +1337,71 @@ describe('logical checkpoint qualification transaction', () => {
     ).toMatchObject({ status: 'preserved', reason: 'awaiting-unassigned-fixer' });
   });
 
+  describe('unstarted candidate with an admitted repair', () => {
+    const terminal = () => settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1', reason: 'error', green: null, nowMs: 400,
+    }).transaction;
+    const successor = { attemptId: 'attempt-2', requiredAncestorSha: 'repair-1',
+      declaredPaths: ['fixed.ts'], candidate: 'candidate-2', nowMs: 500 };
+    const admitted = () => markFrozenRepairAdmitted(
+      createFrozenCandidateQueue({ candidate: 'candidate-1', qualificationAttemptId: 'attempt-1',
+        base: null, nowMs: 200 }),
+      { atMs: 350, actor: 'agent-1', source: { ref: 'staging', sha: 'repair-1' },
+        fromRepairHead: 'candidate-1', toRepairHead: 'repair-1', paths: ['fixed.ts'],
+        unchanged: [], blobs: { 'fixed.ts': 'blob-1' } },
+    );
+
+    it('preserves the admitted head across terminal handoff and judges the original candidate first', () => {
+      const queue = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(admitted())))!;
+      const before = structuredClone(queue);
+      expect(queue).toMatchObject({ phase: 'ready-to-test', candidate: 'candidate-1', repairHead: 'repair-1' });
+      expect(assessTerminalRepairQueueReconciliation(terminal(), successor, queue)).toMatchObject({
+        status: 'preserved', reason: 'exact-safe-unstarted', candidate: 'candidate-1',
+        predecessorAttemptId: 'attempt-1', successorAttemptId: 'attempt-2',
+      });
+      expect(queue).toEqual(before);
+      expect(decideFrozenCandidateRepairQueue(queue, { nowMs: 600 })).toMatchObject({
+        kind: 'test-candidate', candidate: 'candidate-1', runSuite: true, recordVerdict: true,
+      });
+      const measured = markFrozenCandidateVerificationRed(queue, {
+        failingTests: ['broken.test.ts'], nowMs: 700,
+      });
+      expect(measured).toMatchObject({ phase: 'ready-to-verify', candidate: 'candidate-1',
+        repairHead: 'repair-1', retestRequested: queue.retestRequested,
+        convergenceRounds: [{ head: 'candidate-1' }] });
+      expect(decideFrozenCandidateRepairQueue(measured, { nowMs: 800 })).toMatchObject({
+        kind: 'verify-repair', candidate: 'repair-1', originalCandidate: 'candidate-1',
+        runSuite: true, recordVerdict: true,
+      });
+    });
+
+    it('refuses competing ownership and advanced heads without exact admission and pending proof', () => {
+      const queue = admitted();
+      const entry = queue.admissions![0]!;
+      for (const changed of [
+        { ...queue, attempts: 1 },
+        { ...queue, fixerSpawnId: 'live-fixer' },
+        { ...queue, dispatchReservation: { token: 'live', claimedAtMs: 450, expiresAtMs: 1000 } },
+        { ...queue, qualificationAttemptId: 'other-attempt' },
+        { ...queue, qualificationAttemptId: null },
+        { ...queue, admissions: [] },
+        { ...queue, admissions: [{ ...entry, toRepairHead: 'other-head' }] },
+        { ...queue, admissions: [entry, { ...entry, atMs: 360, toRepairHead: 'other-head' }], updatedAtMs: 360 },
+        { ...queue, retestRequested: undefined },
+        { ...queue, retestRequested: { ...queue.retestRequested!, candidate: 'other-candidate' } },
+        { ...queue, retestRequested: { ...queue.retestRequested!, repairHead: 'other-head' } },
+        { ...queue, retestRequested: { ...queue.retestRequested!, requestedAtMs: 300 } },
+      ]) {
+        expect(parseFrozenCandidateRepairQueue(changed)).not.toBeNull();
+        expect(assessTerminalRepairQueueReconciliation(terminal(), successor, changed).status).toBe('blocked');
+      }
+      // An immediate predecessor link only authorizes the existing ready-to-verify route.
+      expect(assessTerminalRepairQueueReconciliation({ ...terminal(), previousAttemptId: 'older-attempt' },
+        successor, { ...queue, qualificationAttemptId: 'older-attempt' }))
+        .toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+    });
+  });
+
   // WI-10007398: the run that measures a red moves the queue to awaiting-fixer and exits; the
   // fixer is dispatched by the NEXT run's `dispatch-fixer` decision. Refusing that successor at
   // begin (queue-not-safe-unstarted) closed the only automatic path — measured 2026-10-07/08:
