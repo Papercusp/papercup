@@ -161,10 +161,27 @@ describe('conformance immutable dependency content', () => {
     const routed = vi.spyOn(gitSidecar, 'execFileViaSidecar');
     expect(await createTestContentEquivalence(root)({ file, recordedSha, currentSha }))
       .toEqual({ equivalent: true, reason: 'canonical semantic dependency closure matches' });
-    const treeReads = routed.mock.calls.filter(([command, args]) => command === 'git' && args[0] === 'ls-tree');
+    const treeReads = routed.mock.calls.filter(([command, args]) => command === 'git' && args[0] === 'ls-tree' && args.includes('-rz'));
     expect(treeReads.map(([, args]) => args.at(-1)).sort()).toEqual([recordedSha, currentSha].sort());
     expect(treeReads.every(([, , options]) => options.subsystem === 'conformance-test-content'
       && options.cwd === root && options.timeoutMs === 15_000)).toBe(true);
+  });
+
+  it('rejects a changed test before traversing its dependency closure and caches exact entry reads', async () => {
+    write(file, 'export const changedTest = true;');
+    const currentSha = commit();
+    const routed = vi.spyOn(gitSidecar, 'execFileViaSidecar');
+    const batch = vi.spyOn(gitBatch, 'runGitBatch');
+    const canonical = vi.spyOn(taskProvenance, 'passingTaskVerdictDependencyProvenance');
+    const compare = createTestContentEquivalence(root);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await compare({ file, recordedSha, currentSha }))
+        .toEqual({ equivalent: false, reason: 'semantic dependency closure changed' });
+    }
+    expect(routed.mock.calls).toHaveLength(2);
+    expect(routed.mock.calls.every(([, args]) => args.includes(file) && !args.includes('-rz'))).toBe(true);
+    expect(batch).not.toHaveBeenCalled();
+    expect(canonical).not.toHaveBeenCalled();
   });
 
   it.each([null, { code: 128, stdout: '', stderr: 'missing object' }])(

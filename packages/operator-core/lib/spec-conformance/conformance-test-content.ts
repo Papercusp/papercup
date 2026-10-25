@@ -240,6 +240,22 @@ async function dependencyProof(view: Snapshot, file: string): Promise<ResolvedDe
 export function createTestContentEquivalence(root = moduleRepoRoot(import.meta.url)): TestContentEquivalence {
   const snapshots = new Map<string, Promise<Snapshot>>();
   const cache: ContentCache = { trees: new Map(), submodules: new Map(), blobs: new Map(), blobLoads: Promise.resolve() };
+  const testEntries = new Map<string, Promise<string | null>>();
+  const testEntry = (sha: string, file: string) => {
+    const key = JSON.stringify([sha, file]);
+    if (!testEntries.has(key)) testEntries.set(key, (async () => {
+      try {
+        const records = (await git({ cwd: root }, ['ls-tree', '-z', '--full-tree', sha, '--', file]))
+          .toString('utf8').split('\0').filter(Boolean);
+        if (records.length !== 1) return null;
+        const tab = records[0]!.indexOf('\t');
+        const identity = records[0]!.slice(0, tab);
+        return tab >= 0 && records[0]!.slice(tab + 1) === file && /^100(?:644|755) blob [a-f0-9]{40}$/.test(identity)
+          ? identity : null;
+      } catch { return null; /* Unknown or submodule paths still require the full proof below. */ }
+    })());
+    return testEntries.get(key)!;
+  };
   const proof = (sha: string, file: string) => {
     if (!snapshots.has(sha)) snapshots.set(sha, snapshot(root, sha, cache));
     return snapshots.get(sha)!.then(view => dependencyProof(view, file));
@@ -249,6 +265,15 @@ export function createTestContentEquivalence(root = moduleRepoRoot(import.meta.u
       return { equivalent: false, reason: 'content identity unavailable' };
     }
     try {
+      if (recordedSha !== currentSha) {
+        const [recordedTest, currentTest] = await Promise.all([testEntry(recordedSha, file), testEntry(currentSha, file)]);
+        // The test itself belongs to the semantic closure. A changed immutable
+        // blob/mode is sufficient to reject reuse before enumerating dependencies;
+        // matching entries never establish equivalence on their own.
+        if (recordedTest && currentTest && recordedTest !== currentTest) {
+          return { equivalent: false, reason: 'semantic dependency closure changed' };
+        }
+      }
       const [recorded, current] = await Promise.all([proof(recordedSha, file), proof(currentSha, file)]);
       const equivalent = recorded.hash === current.hash && recorded.listHash === current.listHash;
       return { equivalent, reason: equivalent ? 'canonical semantic dependency closure matches' : 'semantic dependency closure changed' };
