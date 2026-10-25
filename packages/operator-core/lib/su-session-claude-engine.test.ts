@@ -724,6 +724,9 @@ describe('structured Claude SU engine', () => {
     await vi.waitFor(() => expect(p.interrupt).toHaveBeenCalledOnce());
     const queued = host.startCommand({ ...command(engine), type: 'queue' as const, commandId: 'after-interrupt', turnId: 'follow-up', content: 'continue' });
     await vi.waitFor(() => expect(host.descriptor().lifecycle).toBe('waiting-for-owner'));
+    // Drain the in-process delivery continuations before asserting absence.
+    // The lifecycle event can precede a wrongly unblocked follow-up's input.
+    await new Promise<void>(resolve => setImmediate(resolve));
     expect(p.prompts).toHaveLength(1);
     acknowledge();
     await expect(stop.terminal).resolves.toMatchObject({ status: 'completed' });
