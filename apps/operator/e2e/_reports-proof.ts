@@ -21,9 +21,9 @@ export interface PublishedReportSession {
 
 /** Authenticate only this local operator's API, including the selected report query. */
 export async function configurePublishedReportSession(
-  page: Pick<Page, 'route' | 'addInitScript'>,
+  page: Pick<Page, 'route' | 'unroute' | 'addInitScript'>,
   session: PublishedReportSession,
-): Promise<void> {
+): Promise<() => Promise<void>> {
   const origin = new URL(session.origin).origin;
   const target = new URL(origin);
   if (!['http:', 'https:'].includes(target.protocol) ||
@@ -31,7 +31,8 @@ export async function configurePublishedReportSession(
       !session.token.trim() || !session.workspaceId || !session.clientId) {
     throw new Error('Published report proof requires an explicit local operator origin, token, workspace and client');
   }
-  await page.route('**/*', async route => {
+  const pending = new Set<Promise<void>>();
+  const handler: Parameters<Page['route']>[1] = async route => {
     const request = route.request();
     const url = new URL(request.url());
     if (url.origin !== origin || !url.pathname.startsWith('/api/') || request.resourceType() === 'eventsource') {
@@ -40,17 +41,30 @@ export async function configurePublishedReportSession(
     }
     // route.continue header overrides survive redirects, including to foreign origins.
     // Return this one real response; a redirect gets a separate scope decision.
-    const response = await route.fetch({ maxRedirects: 0, headers: { ...request.headers(),
-      authorization: `Bearer ${session.token}`,
-      'x-papercusp-workspace': session.workspaceId,
-      'x-papercusp-client': session.clientId,
-    } });
-    await route.fulfill({ response });
-  });
+    const operation = (async () => {
+      try {
+        const response = await route.fetch({ maxRedirects: 0, headers: { ...request.headers(),
+          authorization: `Bearer ${session.token}`,
+          'x-papercusp-workspace': session.workspaceId,
+          'x-papercusp-client': session.clientId,
+        } });
+        await route.fulfill({ response });
+      } catch (error) {
+        throw new Error(String(error).replaceAll(session.token, '[redacted]'));
+      }
+    })();
+    pending.add(operation);
+    try { await operation; } finally { pending.delete(operation); }
+  };
+  await page.route('**/*', handler);
   // Match browser-workspace.ts's existing per-window routing hint before SPA startup.
   await page.addInitScript(`if (location.origin === ${JSON.stringify(origin)}) {
     window.sessionStorage.setItem('pc:selected-machine', 'local');
   }`);
+  return async () => {
+    await page.unroute('**/*', handler);
+    await Promise.all([...pending]);
+  };
 }
 
 /** Consume the complete reports:get receipt, rather than a hand-copied summary. */

@@ -21,8 +21,12 @@ const previous = { ...report, report_id: 'edition-1', supersedes_report_id: null
 const summary = { ...reportSummaryFixture, title: report.title, summary: report.summary };
 
 const finishReadiness = new WeakMap<Page, () => Promise<void>>();
+const finishAuthentication = new WeakMap<Page, () => Promise<void>>();
 test.beforeEach(async ({ page }, testInfo) => { finishReadiness.set(page, await observeReportReadiness(page, testInfo)); });
-test.afterEach(async ({ page }) => { await finishReadiness.get(page)?.(); });
+test.afterEach(async ({ page }) => {
+  await finishAuthentication.get(page)?.();
+  await finishReadiness.get(page)?.();
+});
 
 async function stubReportFlags(page: Page) {
   await page.route('**/api/flags/bootstrap', route => route.fulfill({ contentType: 'application/json',
@@ -108,42 +112,32 @@ test('report clipboard capture initializes without Node transpiler globals', asy
   expect(window.reportProofMarkdown).toBe(markdown);
 });
 
-test('published report session scopes credentials and initializes local machine routing', async () => {
-  let routeRequest!: Parameters<Parameters<Page['route']>[1]>[0];
-  let handler!: Parameters<Page['route']>[1];
-  let browserScript = '';
-  await configurePublishedReportSession({
-    route: async (_pattern, callback) => { handler = callback; },
-    addInitScript: async script => { browserScript = script as string; },
-  } as Pick<Page, 'route' | 'addInitScript'>, {
-    origin: 'http://127.0.0.1:3170', token: 'proof-token', workspaceId: 'proof-workspace', clientId: 'proof-client',
+test('published report session scopes credentials and initializes local machine routing', async ({ page }) => {
+  const observed: Array<{ path: string; auth?: string; workspace?: string; client?: string }> = [];
+  const operator = createServer((request, response) => {
+    if (request.url !== '/favicon.ico') observed.push({ path: request.url || '', auth: request.headers.authorization,
+      workspace: request.headers['x-papercusp-workspace'] as string | undefined,
+      client: request.headers['x-papercusp-client'] as string | undefined });
+    response.setHeader('content-type', 'text/html');
+    response.end('<!doctype html><title>Report authentication control</title>');
   });
-  for (const [url, authorized] of [
-    ['http://127.0.0.1:3170/api/zero-harness/rest-query?name=reports.get', true],
-    ['http://127.0.0.1:3170/api-other', false],
-    ['http://127.0.0.1:3070/api/zero-harness/rest-query', false],
-    ['https://foreign.example/api/zero-harness/rest-query', false],
-  ] as const) {
-    let headers: Record<string, string> | undefined;
-    let fellBack = false;
-    routeRequest = { request: () => ({ url: () => url, headers: () => ({ accept: 'application/json' }), resourceType: () => 'fetch' }),
-      fetch: async options => { headers = options?.headers; expect(options?.maxRedirects).toBe(0); return {}; },
-      fulfill: async () => {},
-      fallback: async () => { fellBack = true; },
-    } as typeof routeRequest;
-    await handler(routeRequest, routeRequest.request());
-    expect(fellBack).toBe(!authorized);
-    expect(headers).toEqual(authorized ? { accept: 'application/json', authorization: 'Bearer proof-token',
-      'x-papercusp-workspace': 'proof-workspace', 'x-papercusp-client': 'proof-client' } : undefined);
+  await new Promise<void>(resolve => operator.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(operator.address() as { port: number }).port}`;
+  try {
+    finishAuthentication.set(page, await configurePublishedReportSession(page, {
+      origin, token: 'proof-token', workspaceId: 'proof-workspace', clientId: 'proof-client',
+    }));
+    for (const path of ['/reports', '/api-other', '/api/zero-harness/rest-query?name=reports.get']) await page.goto(origin + path);
+    expect(observed).toEqual([
+      { path: '/reports', auth: undefined, workspace: undefined, client: undefined },
+      { path: '/api-other', auth: undefined, workspace: undefined, client: undefined },
+      { path: '/api/zero-harness/rest-query?name=reports.get', auth: 'Bearer proof-token', workspace: 'proof-workspace', client: 'proof-client' },
+    ]);
+    expect(await page.evaluate(() => sessionStorage.getItem('pc:selected-machine'))).toBe('local');
+  } finally {
+    operator.closeAllConnections();
+    await new Promise<void>(resolve => operator.close(() => resolve()));
   }
-  const values = new Map<string, string>();
-  runInNewContext(browserScript, { location: { origin: 'http://127.0.0.1:3170' },
-    window: { sessionStorage: { setItem: (key: string, value: string) => values.set(key, value) } } });
-  expect(values.get('pc:selected-machine')).toBe('local');
-  values.clear();
-  runInNewContext(browserScript, { location: { origin: 'https://foreign.example' },
-    window: { sessionStorage: { setItem: (key: string, value: string) => values.set(key, value) } } });
-  expect(values.size).toBe(0);
 });
 
 test('published report session keeps credentials off a redirected foreign origin', async ({ page }) => {
@@ -162,7 +156,7 @@ test('published report session keeps credentials off a redirected foreign origin
   await new Promise<void>(resolve => operator.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${(operator.address() as { port: number }).port}`;
   try {
-    await configurePublishedReportSession(page, { origin, token: 'redirect-proof-token', workspaceId: 'proof-workspace', clientId: 'proof-client' });
+    finishAuthentication.set(page, await configurePublishedReportSession(page, { origin, token: 'redirect-proof-token', workspaceId: 'proof-workspace', clientId: 'proof-client' }));
     await page.goto(`${origin}/api/report`);
     expect(observed).toEqual(['Bearer redirect-proof-token', undefined]);
   } finally {
@@ -233,7 +227,7 @@ test('published report text and standalone HTML stay identical', async ({ page }
     const clientId = process.env.PAPERCUSP_SID;
     if (!origin || !clientId) throw new Error('Live report proof requires OPERATOR_E2E_BASE_URL and PAPERCUSP_SID');
     const token = (await readFile(join(process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'superuser-token'), 'utf8')).trim();
-    await configurePublishedReportSession(page, { origin, token, workspaceId: expected.workspace_id, clientId });
+    finishAuthentication.set(page, await configurePublishedReportSession(page, { origin, token, workspaceId: expected.workspace_id, clientId }));
   }
   if (!input) {
     await stubReportFlags(page);
