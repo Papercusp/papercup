@@ -83,17 +83,13 @@ export interface RecoveryEpisode {
   linkage: 'exact-spill' | 'request-family';
 }
 
-export function groupResultRecovery(observations: readonly RecoveryObservation[], gapMs = 120_000): {
-  episodes: RecoveryEpisode[]; operations: RecoveryObservation[]; collisions: number; copiesCollapsed: number;
-  evidenceGaps: string[];
-} {
-  if (!Number.isFinite(gapMs) || gapMs < 1 || gapMs > 30 * 60_000) throw new Error('invalid_recovery_gap');
-  const identities = new Map<string, RecoveryObservation[]>();
+export function collapseRecoveryCopies<T extends RecoveryObservation>(observations: readonly T[]) {
+  const identities = new Map<string, T[]>();
   for (const row of observations) {
     const key = JSON.stringify([row.scopeToken, row.operationToken ?? row.sourceToken]);
     const copies = identities.get(key) ?? []; copies.push(row); identities.set(key, copies);
   }
-  const operations: RecoveryObservation[] = [], gaps = new Set<string>();
+  const operations: T[] = [], gaps = new Set<string>();
   let collisions = 0, copiesCollapsed = 0;
   for (const copies of identities.values()) {
     const signatures = new Set(copies.map(({ sourceToken: _copy, ...row }) => stable(row)));
@@ -102,6 +98,16 @@ export function groupResultRecovery(observations: readonly RecoveryObservation[]
     operations.push(copies[0]!);
   }
   operations.sort((a, b) => a.at.localeCompare(b.at) || a.sourceToken.localeCompare(b.sourceToken));
+  return { operations, collisions, copiesCollapsed, evidenceGaps: [...gaps] };
+}
+
+export function groupResultRecovery(observations: readonly RecoveryObservation[], gapMs = 120_000): {
+  episodes: RecoveryEpisode[]; operations: RecoveryObservation[]; collisions: number; copiesCollapsed: number;
+  evidenceGaps: string[];
+} {
+  if (!Number.isFinite(gapMs) || gapMs < 1 || gapMs > 30 * 60_000) throw new Error('invalid_recovery_gap');
+  const { operations, collisions, copiesCollapsed, evidenceGaps } = collapseRecoveryCopies(observations);
+  const gaps = new Set(evidenceGaps);
   const roots: { row: RecoveryObservation; episode: RecoveryEpisode; lastAt: string }[] = [];
   for (const row of operations) {
     if (!row.operationToken) { gaps.add('unverified-operation-identity'); continue; }
@@ -170,8 +176,11 @@ export type RecoveryCorpusOptions = Omit<SearchCorpusOptions, 'readOutput'> & { 
 /** Existing migrated ledger, keyset cursor, fresh source ACL before args/metadata,
  * and caller-authorized exact output hydration; no new telemetry store or alarm.
  */
-export async function fetchResultRecovery(opts: RecoveryCorpusOptions): Promise<{
-  observations: RecoveryObservation[]; next: SqlCorpusCursor | null;
+export type RecoverySource = SearchSource & { metadata: unknown; durationMs?: number | null };
+export async function fetchOperationObservations<T extends { at: string; sourceToken: string }>(
+  opts: RecoveryCorpusOptions, observe: (source: RecoverySource, scope: SqlIntentScope) => T | null,
+): Promise<{
+  observations: T[]; next: SqlCorpusCursor | null;
   coverage: { scanned: number; denied: number; status: 'unknown' | 'truncated'; unmeasuredProviders: string[] };
 }> {
   miningScopeId(opts.scope, opts.harnessSlug);
@@ -197,24 +206,24 @@ export async function fetchResultRecovery(opts: RecoveryCorpusOptions): Promise<
     } catch { /* Current ACL unavailable: fail closed before raw arguments. */ }
   }));
   const records = allowed.length ? await sql<{ id: string; tool_name: string; args_json: unknown; metadata_json: unknown;
-    output_ref: string | null; status: string; actor: string; agent: boolean; call_origin: string; call_origin_source: string; role: string }[]>`
-    SELECT id::text,tool_name,args_json,metadata_json,output_ref,status,coord_owner_id AS actor,
+    output_ref: string | null; status: string; actor: string; agent: boolean; call_origin: string; call_origin_source: string; role: string; duration_ms: number | null }[]>`
+    SELECT id::text,tool_name,args_json,metadata_json,output_ref,status,duration_ms,coord_owner_id AS actor,
       harness_shared.is_agent_coord_owner_id(coord_owner_id,role) AS agent,call_origin,call_origin_source,role
     FROM harness_shared.tool_invocations WHERE workspace_id=${opts.workspaceId} AND harness_slug=${opts.harnessSlug}
       AND id=ANY(${allowed}::bigint[])` : [];
-  const byId = new Map(records.map(row => [row.id, row])), observations: RecoveryObservation[] = [];
+  const byId = new Map(records.map(row => [row.id, row])), observations: T[] = [];
   for (let start = 0; start < page.length; start += 16) await Promise.all(page.slice(start, start + 16).map(async row => {
     const record = byId.get(row.id);
     if (!record) return;
     let output: Awaited<ReturnType<RecoveryCorpusOptions['readOutput']>> = null;
     try { output = await boundedStage(() => opts.readOutput({ id: row.id, outputRef: record.output_ref,
       tool: record.tool_name, metadata: record.metadata_json }), 1000); } catch { /* Missing output stays UNKNOWN. */ }
-    const observation = observeResultRecovery({ workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
+    const observation = observe({ workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
       authorizationScope: opts.scope.sourceBoundary, provider: 'ledger', namespace: 'operator-dispatch',
       actor: record.actor, verifiedAgent: record.agent, origin: record.call_origin === 'agent' && record.call_origin_source === 'declared'
         && object(object(record.metadata_json).nestedDispatch).codeMode !== true && !['test', 'fixture', 'replay'].includes(record.role) ? 'agent' : 'system',
       at: row.at, copyRef: `tool-invocation:${row.id}`, tool: record.tool_name, args: record.args_json,
-      metadata: record.metadata_json, callId: `invocation:${row.id}`, identityAuthority: 'ledger',
+      metadata: record.metadata_json, durationMs: record.duration_ms, callId: `invocation:${row.id}`, identityAuthority: 'ledger',
       sourceComplete: object(record.args_json)._truncated !== true, result: output ? { ...output, status: record.status } : null }, opts.scope);
     if (observation) observations.push(observation);
   }));
@@ -222,4 +231,8 @@ export async function fetchResultRecovery(opts: RecoveryCorpusOptions): Promise<
   return { observations, next: rows.length > limit ? page[page.length - 1]! : null,
     coverage: { scanned: page.length, denied: page.length - allowed.length, status: rows.length > limit || opts.after ? 'truncated' : 'unknown',
       unmeasuredProviders: ['claude', 'codex', 'omp'] } };
+}
+
+export function fetchResultRecovery(opts: RecoveryCorpusOptions) {
+  return fetchOperationObservations(opts, observeResultRecovery);
 }
