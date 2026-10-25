@@ -237,6 +237,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
   it('cannot wake a host outside the isolated discovery root, while its own host remains reachable', async () => {
     const live = MultiSessionTestbed.create();
     const isolated = MultiSessionTestbed.create();
+    const isolatedRoot = resolve(isolated.psuPtyDir, '..');
     try {
       const owner = live.session('ambient caller').ownerId;
       const liveHost = await live.spawnSocketHost(owner);
@@ -245,7 +246,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
       expect(envLine).toBeTruthy();
       expect(devUrlHelper).toBeTruthy();
       const discovery = pathToFileURL(resolve(__dirname, '../../../packages/operator-core/lib/events/await/psu-pty-discovery.ts')).href;
-      const probe = join(isolated.root, 'discover.mts');
+      const probe = join(isolatedRoot, 'discover.mts');
       writeFileSync(probe, [
         `import { findLiveHostAsync, injectIntoHost } from ${JSON.stringify(discovery)};`,
         'const owner = process.env.FIXTURE_OWNER;',
@@ -267,7 +268,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
         const result = await promisify(execFile)('bash', ['-c', script], {
           cwd: resolve(__dirname, '../../..'), encoding: 'utf8', timeout: 30_000,
           env: { ...process.env, PAPERCUSP_PSU_PTY_DIR: live.psuPtyDir,
-            FIXTURE_OWNER: owner, FIXTURE_ROOT: isolated.root, FIXTURE_NODE: process.execPath, FIXTURE_PROBE: probe },
+            FIXTURE_OWNER: owner, FIXTURE_ROOT: isolatedRoot, FIXTURE_NODE: process.execPath, FIXTURE_PROBE: probe },
         });
         return JSON.parse(result.stdout.trim());
       };
