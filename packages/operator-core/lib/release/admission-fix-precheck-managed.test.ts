@@ -91,9 +91,14 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
 
   it.each([false, true])('owns one fixture across groups and gates pass on cleanup (cleanup fails=%s)', async cleanupFails => {
     let persisted = wide();
-    const stop = vi.fn(async () => { if (cleanupFails) throw new Error('owned PG cleanup failed'); });
-    const startTestEnvironment = vi.fn(async () => ({ env: { PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private' },
-      assertRunning: vi.fn(), stop }));
+    const output = vi.fn();
+    let fixtureOutput: (() => void) | undefined;
+    const stop = vi.fn(async () => { fixtureOutput?.(); if (cleanupFails) throw new Error('owned PG cleanup failed'); });
+    const startTestEnvironment = vi.fn(async (_root: string, options: { onOutput?: () => void } = {}) => {
+      fixtureOutput = options.onOutput;
+      fixtureOutput?.();
+      return { env: { PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private' }, assertRunning: vi.fn(), stop };
+    });
     const work = runAdmissionPrecheckWorker(input, {
       startTestEnvironment,
       getTask: async () => ({ state: 'running', confined: true }),
@@ -104,7 +109,7 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
         persisted = next;
       },
       createRunner: options => async run => {
-        expect(await options.prepareTestEnvironment?.('/pinned', () => {})).toEqual({ PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private' });
+        expect(await options.prepareTestEnvironment?.('/pinned', output)).toEqual({ PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private' });
         return { ran: true, commit: run.commit, results: run.files.map(path => ({ path, status: 'pass' as const })) };
       },
     });
@@ -114,6 +119,7 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     } else await expect(work).resolves.toMatchObject({ status: 'settled', verdict: { ok: true } });
     expect(startTestEnvironment).toHaveBeenCalledTimes(1);
     expect(stop).toHaveBeenCalledTimes(1);
+    expect(output).toHaveBeenCalledTimes(1);
   });
 
   it('aggregates JSONB-reordered native results across execution groups', async () => {

@@ -365,6 +365,7 @@ export async function runAdmissionPrecheckWorker(
     ...(operation.radius ? { radius: operation.radius } : {}),
   });
   let environment: Promise<AdmissionTestEnvironment> | undefined;
+  let bootstrapping = true;
   let finishing: Promise<void> | undefined;
   const finalize = async () => { if (environment) await (finishing ??= environment.then(fixture => fixture.stop())); };
   const runner = deps.createRunner({
@@ -376,10 +377,11 @@ export async function runAdmissionPrecheckWorker(
     ...(input.clearEnv ? { clearEnv: input.clearEnv } : {}),
     prepareTestEnvironment: async (root, onOutput) => {
       environment ??= (deps.startTestEnvironment ?? startAdmissionTestEnvironment)(root, {
-        onOutput, log: line => console.log(line),
+        onOutput: () => { if (bootstrapping) onOutput(); }, log: line => console.log(line),
         testRunsDbUrl: process.env.PAPERCUSP_TEST_RUNS_DB_URL ?? getHarnessAdminUrl(),
       });
       const fixture = await environment;
+      bootstrapping = false;
       fixture.assertRunning();
       return fixture.env;
     },
