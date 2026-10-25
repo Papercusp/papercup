@@ -1,12 +1,26 @@
 import { expect, it, vi } from 'vitest';
 import { aggregateSqlDemand, observeSqlDemand, type SqlDemandObservation } from './sql-intent-corpus';
 import { mineSqlCandidateSlice, type SqlMiningOptions } from './sql-tool-candidates';
+import { sqlCandidateReviewIdentity, type SqlCandidateReviewInput } from '../sql-tool-candidate-review';
+import { rankSqlToolCandidates } from '../sql-tool-candidate-score';
 const scope = { workspaceId: 'test', sourceBoundary: 'ledger', epoch: 'one', key: new Uint8Array(32).fill(71) };
 const row = (): SqlDemandObservation => observeSqlDemand({ workspaceId: 'test', harnessSlug: 'h', namespace: 'ledger',
   callId: '1', resultCallId: '1', identityAuthority: 'ledger', provider: 'ledger', actor: 'su-actor', verifiedAgent: true,
   at: '2026-10-24T00:00:00Z', origin: 'agent', status: 'ok', durationMs: 3, sql: 'SELECT id FROM jobs',
   sourceComplete: true, copyRef: '1' }, scope);
 const coverage = { status: 'complete' as const, scannedRows: 1, cap: 1, retention: 'complete' as const, providers: ['ledger'] };
+it('stable review identity excludes volume and changes only material editions R5-CONTRACT OUTCOME-P-006', () => {
+  const candidate = rankSqlToolCandidates(aggregateSqlDemand([row()], coverage)).candidates[0]!;
+  const input: SqlCandidateReviewInput = { workspaceId: 'test', harnessSlug: 'h',
+    submittedBy: 'su-filer', candidate, contractRef: 'contract-v1' };
+  const first = sqlCandidateReviewIdentity(input);
+  expect(sqlCandidateReviewIdentity({ ...input, candidate: { ...candidate, score: 1,
+    counts: { ...candidate.counts, ok: 1000 }, activeDays: ['2026-10-25'] } })).toEqual(first);
+  const changed = sqlCandidateReviewIdentity({ ...input, contractRef: 'contract-v2' });
+  expect(changed.lifecycleId).toBe(first.lifecycleId);
+  expect(changed.editionId).not.toBe(first.editionId);
+  expect(sqlCandidateReviewIdentity({ ...input, workspaceId: 'other' }).lifecycleId).not.toBe(first.lifecycleId);
+});
 it('R19-RESUME', () => {
   const one = aggregateSqlDemand([row()], coverage), replay = aggregateSqlDemand([row(), row()], coverage);
   expect(replay.logicalCalls).toBe(one.logicalCalls); expect(replay.daily).toEqual(one.daily);
