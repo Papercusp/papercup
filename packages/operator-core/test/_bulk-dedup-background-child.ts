@@ -49,25 +49,28 @@ try {
   const comparisonCases: Array<{ name: string; modelCalls: number; promoted: number; merged: number; comparisonPreserved: boolean }> = [];
   for (const name of ['unauthenticated', 'distinct', 'duplicate-admitted', 'duplicate-pending', 'omitted', 'drift']) {
     const comparisonHarness = `claimed-comparison-${name}`;
-    for (const id of ['original', 'comparison']) await sql`
+    // feature_id is unique across the workspace, including separate harnesses.
+    const originalId = `${name}-original`;
+    const comparisonId = `${name}-comparison`;
+    for (const id of [originalId, comparisonId]) await sql`
       INSERT INTO harness_shared.work_items
         (workspace_id, harness_slug, feature_id, title, summary, status, payload, item_kind, nature,
          taken_by, created_ts, updated_ts, embedding, embedding_mode, admission)
       VALUES (${ws}, ${comparisonHarness}, ${id}, 'Private claimed finding', 'Independent private evidence', 'open',
-        '{"privateProof":"retained"}'::jsonb, 'change', 'work', ${id === 'comparison' ? 'su-private-holder' : null},
-        ${id === 'original' ? 1 : 2}, ${id === 'original' ? 1 : 2}, ${vector(0)}::vector, 'gemma',
-        ${id === 'comparison' && name !== 'duplicate-pending' ? 'admitted' : 'pending'})`;
-    const scope = { workspaceId: ws, harnessSlug: comparisonHarness, ids: ['comparison'] };
-    let expected = (await readAdmissionMergeSnapshots(sql, scope)).get('comparison');
+        '{"privateProof":"retained"}'::jsonb, 'change', 'work', ${id === comparisonId ? 'su-private-holder' : null},
+        ${id === originalId ? 1 : 2}, ${id === originalId ? 1 : 2}, ${vector(0)}::vector, 'gemma',
+        ${id === comparisonId && name !== 'duplicate-pending' ? 'admitted' : 'pending'})`;
+    const scope = { workspaceId: ws, harnessSlug: comparisonHarness, ids: [comparisonId] };
+    let expected = (await readAdmissionMergeSnapshots(sql, scope)).get(comparisonId);
     assert.ok(expected);
     let modelCalls = 0;
     const result = await runWorkItemAdmissionPromoter({ workspaceId: ws, harnessSlug: comparisonHarness,
       sql, runId: `claimed-comparison-background-${name}`, now: () => 10_000,
-      ...(name === 'unauthenticated' ? {} : { componentScreeningItemIds: ['original'] }),
+      ...(name === 'unauthenticated' ? {} : { componentScreeningItemIds: [originalId] }),
       llmCall: async (input) => {
         modelCalls += 1;
         const keys = [...input.messages[0]!.content.matchAll(/^## (.+)$/gm)].map(match => match[1]!);
-        assert.deepEqual(keys, ['comparison::original']);
+        assert.deepEqual(keys, [`${comparisonId}::${originalId}`]);
         return { text: '', inputTokens: 10, outputTokens: 10, json: { judgements: name === 'omitted' ? [] : [{
           pairKey: keys[0], verdict: name.startsWith('duplicate-') ? 'r-finding-merge' : 'distinct', reason: 'private background control',
         }] } };
@@ -75,21 +78,21 @@ try {
       beforePersist: async () => {
         if (name !== 'drift') return;
         await sql`UPDATE harness_shared.work_items SET payload = payload || '{"laterProof":true}'::jsonb,
-          updated_ts = updated_ts + 1 WHERE workspace_id = ${ws} AND harness_slug = ${comparisonHarness} AND feature_id = 'comparison'`;
-        expected = (await readAdmissionMergeSnapshots(sql, scope)).get('comparison');
+          updated_ts = updated_ts + 1 WHERE workspace_id = ${ws} AND harness_slug = ${comparisonHarness} AND feature_id = ${comparisonId}`;
+        expected = (await readAdmissionMergeSnapshots(sql, scope)).get(comparisonId);
       },
       onNewlyAdmitted: async () => {},
     });
-    const actual = (await readAdmissionMergeSnapshots(sql, scope)).get('comparison');
+    const actual = (await readAdmissionMergeSnapshots(sql, scope)).get(comparisonId);
     assert.deepEqual(actual, expected, `claimed comparison ${name} must remain unchanged`);
     assert.equal(result.promoted, name === 'distinct' ? 1 : 0);
     assert.equal(result.merged, 0);
     assert.equal(modelCalls, name === 'unauthenticated' ? 0 : 1);
-    if (name === 'drift') assert.ok(result.guardRefusals?.some(row => row.itemId === 'original' && row.reason === 'snapshot-drift'));
+    if (name === 'drift') assert.ok(result.guardRefusals?.some(row => row.itemId === originalId && row.reason === 'snapshot-drift'));
     const [links] = await sql`SELECT count(*)::int AS count FROM harness_shared.coord_links
-      WHERE workspace_id = ${ws} AND (src_ref IN ('original', 'comparison') OR dst_ref IN ('original', 'comparison')
-        OR src_ref = ${`${comparisonHarness}#original`} OR dst_ref = ${`${comparisonHarness}#original`}
-        OR src_ref = ${`${comparisonHarness}#comparison`} OR dst_ref = ${`${comparisonHarness}#comparison`})`;
+      WHERE workspace_id = ${ws} AND (src_ref IN (${originalId}, ${comparisonId}) OR dst_ref IN (${originalId}, ${comparisonId})
+        OR src_ref = ${`${comparisonHarness}#${originalId}`} OR dst_ref = ${`${comparisonHarness}#${originalId}`}
+        OR src_ref = ${`${comparisonHarness}#${comparisonId}`} OR dst_ref = ${`${comparisonHarness}#${comparisonId}`})`;
     assert.equal(links!.count, 0);
     comparisonCases.push({ name, modelCalls, promoted: result.promoted, merged: result.merged, comparisonPreserved: true });
   }

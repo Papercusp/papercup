@@ -1464,6 +1464,22 @@ describe('EI-13715 — unblock-past-a-live-plan-gate guard', () => {
     expect((await wi.getWorkItem(bug.id, 'papercup'))?.state).toBe('open');
   });
 
+  it('shares a read-only normalized plan-lane refusal with the state writer', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'preview plan-lane gate',
+      harness: 'papercup', createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } } });
+    planItemLaneBlockReasonMock.mockResolvedValue({ reason: 'owner-gated', planSlug: 'a-plan',
+      itemId: 'P-9', effectiveStatus: 'owner-gated' });
+    const refusal = await wi.workItemPlanLaneTransitionRefusal(bug, 'resolved');
+    expect(refusal).toMatch(/STILL effectively 'owner-gated'.*completing it into 'done'/s);
+    const afterPreview = await wi.getWorkItem(bug.id, 'papercup');
+    expect(afterPreview?.state).toBe('open');
+    expect(afterPreview?.terminalCompletionEvidence).toBeNull();
+    await expect(wi.setWorkItemState(bug.id, 'resolved', { harness: 'papercup', by: 'agA',
+      completionRef: 'must not persist' })).rejects.toThrow(refusal!);
+    expect((await wi.getWorkItem(bug.id, 'papercup'))?.terminalCompletionEvidence).toBeNull();
+  });
+
   it('ALLOWS the completion with { force: true } — a deliberate override', async () => {
     const bug = await wi.createWorkItem({
       kind: 'bug',

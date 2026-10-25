@@ -2,7 +2,7 @@
  * acceptance coverage; a database lease alone does not prove a takeover. */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
@@ -208,6 +208,20 @@ async function exactReturnFixture() {
 }
 
 describe('session:assume production receipt adapter (real PG)', () => {
+  it('retains durable startup provenance when verification advances the receipt', async () => {
+    const { plan, receipt } = receiptFixture();
+    const store = createAssumeReceiptStore(plan); await store.claim(receipt);
+    const started: AssumeTransitionReceipt = { ...receipt, state: 'handoff-accepted', startup: {
+      attemptId: randomUUID(), generation: 1, authorizedAt: Date.now(), launcherPid: 100,
+      launcherProcessStart: 'launcher-start', ptyPid: 101, ptyProcessStart: 'pty-start' } };
+    await store.save(started);
+    const current = (await store.load())!;
+    expect(current.startup).toEqual(started.startup);
+    await expect(store.save({ ...receipt, state: 'target-verified' })).rejects.toThrow('startup-not-owned');
+    await store.save({ ...current, state: 'target-verified', observation: observationFixture(current) });
+    expect((await store.load())?.startup).toEqual(started.startup);
+  });
+
   it('R-1 same managed attachment replaces caller execution', async () => {
     const { plan, receipt } = receiptFixture(), store = createAssumeReceiptStore(plan);
     await store.claim(receipt);
@@ -1127,6 +1141,31 @@ describe('session:assume production receipt adapter (real PG)', () => {
 });
 
 describe('session:assume existing resume reservation (real PG)', () => {
+  it('R-8 preserves original native history across an authorized startup append and retains lease fences', async () => {
+    const f = await nativeContextFixture();
+    try {
+      const prepared = await prepareAssume(f.actor, f.request, f.deps);
+      expect(prepared.ok).toBe(true);
+      if (!prepared.ok) throw new Error('Native prefix preparation refused');
+      const plan = prepared.preparation;
+      const readTarget: typeof readAssumeTarget = (...args) =>
+        runWithWorkspace(workspaceId, () => readAssumeTarget(...args));
+      const strict = createAssumeCustodyAdapters(plan, { readTarget });
+      const retry = createAssumeCustodyAdapters(plan, { readTarget, authorizedStartup: true });
+      expect(await strict.reserve(plan)).toMatchObject({ acquired: true });
+      appendFileSync(f.file, '{"type":"event_msg","payload":{"message":"own native startup"}}\n');
+      expect(await strict.checkCustody(plan)).toBe(false);
+      expect(await retry.checkCustody(plan)).toBe(true);
+      writeFileSync(f.file, readFileSync(f.file, 'utf8').replace('Exact target history', 'Other target history'));
+      expect(await retry.checkCustody(plan)).toBe(false);
+      writeFileSync(f.file, f.transcript + '{"type":"event_msg","payload":{"message":"own native startup"}}\n');
+      expect(await retry.checkCustody(plan)).toBe(true);
+      await fixture.admin`UPDATE harness_shared.adv_sessions SET resume_claim_key = 'foreign-attempt' WHERE id = ${f.id}`;
+      expect(await retry.checkCustody(plan)).toBe(false);
+      expect(await retry.releaseTarget(plan)).toBe(false);
+    } finally { f.dispose(); }
+  });
+
   async function custodyFixture() {
     const { id, pin } = await target();
     const { plan } = receiptFixture();

@@ -64,7 +64,7 @@ import {
   sessionMcpJsonPath,
   codexHomeForSessionKey,
 } from '@papercusp/orchestrator/session-launch-dirs';
-import { capabilityPolicyFlags } from '@papercusp/orchestrator/managed-capability-policy';
+import { capabilityPolicyFlags, composeOmpCapabilityTools, type CapabilityPolicyRequest } from '@papercusp/orchestrator/managed-capability-policy';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
 import {
   codexFreshDefaultAuthPreflight,
@@ -810,8 +810,8 @@ export async function defaultEnsureCodexHomeForWake(
       })),
     };
   } catch (err) {
-    // A repair failure must not turn a recoverable rollout into a dropped wake;
-    // the exact UUID check below remains the authoritative resume safety gate.
+    // Keep repair failures retryable: executeWake parks before claiming a
+    // resume, even when an old rollout is still recoverable on disk.
     console.warn(`[wake-executor] codex home repair failed: ${redactSensitiveText(err instanceof Error ? err.message : String(err))}`);
     return { ok: false, repaired: false, reason: 'repair-failed' };
   }
@@ -2839,6 +2839,7 @@ export function resumeCommandFor(
   },
   wakeText: string,
   accountRoute?: WakeAccountRoute | null,
+  capabilityPolicy: Omit<CapabilityPolicyRequest, 'client' | 'surface' | 'audience'> = {},
 ): { bin: string; args: string[]; promptViaPty: boolean } | null {
   if (handle.agent === 'claude') {
     // Exact-session resume only (see header). Prompt rides as the positional
@@ -2890,12 +2891,15 @@ export function resumeCommandFor(
   }
   if (handle.agent === 'omp') {
     if (!handle.ompThreadId) return null;
+    const restrictedArgs = (args: string[]) => composeOmpCapabilityTools(args, {
+      ...capabilityPolicy, surface: 'wake', audience: 'headless-agent',
+    });
     if (process.env.PAPERCUSP_OMP_RESUME_VIA_PTY === '1') {
       // Fallback for older OMP builds: resume interactively and inject once the
       // TUI is ready. The default modern path below is true headless one-turn.
       return {
         bin: 'omp',
-        args: ['-r', handle.ompThreadId, '--approval-mode', 'yolo'],
+        args: restrictedArgs(['-r', handle.ompThreadId, '--approval-mode', 'yolo']),
         promptViaPty: true,
       };
     }
@@ -2904,7 +2908,7 @@ export function resumeCommandFor(
     // injection so a wake has a bounded subprocess lifecycle.
     return {
       bin: 'omp',
-      args: ['-r', handle.ompThreadId, '--approval-mode', 'yolo', '-p', wakeText],
+      args: restrictedArgs(['-r', handle.ompThreadId, '--approval-mode', 'yolo', '-p', wakeText]),
       promptViaPty: false,
     };
   }
@@ -5446,14 +5450,12 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           return { ok: false, reason };
         });
         if (
-          codexAccountRoute &&
-          (codexAccountRoute.mode === 'auto' || codexAccountRoute.mode === 'pin') &&
-          (!repair.ok || repair.reason === 'no-launch-spec' || repair.reason === 'unsupported-agent')
+          !repair.ok || repair.reason === 'no-launch-spec' || repair.reason === 'unsupported-agent'
         ) {
           return {
             kind: 'park',
             reason:
-              `Codex ${codexAccountRoute.mode} gateway route repair did not complete ` +
+              `Codex ${codexAccountRoute?.mode ?? 'default'} home repair did not complete ` +
               `(${repair.reason ?? 'unknown'}); parked before native resume`,
           };
         }

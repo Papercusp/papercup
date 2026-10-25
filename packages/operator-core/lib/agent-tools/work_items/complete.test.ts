@@ -114,6 +114,7 @@ const getWorkItemsByIds = vi.fn();
 const listWorkItems = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
 const assessWorkItemHeldOpenTerminalTransition = vi.fn();
+const workItemPlanLaneTransitionRefusal = vi.fn();
 const setWorkItemClaimHold = vi.fn();
 const mergeWorkItemOutputPayload = vi.fn();
 const resolveWorkItemRef = vi.fn();
@@ -134,6 +135,7 @@ const commentWorkItem = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   assessWorkItemHeldOpenTerminalTransition: (...a: unknown[]) => assessWorkItemHeldOpenTerminalTransition(...a),
+  workItemPlanLaneTransitionRefusal: (...a: unknown[]) => workItemPlanLaneTransitionRefusal(...a),
   getWorkItemsByIds: (...a: unknown[]) => getWorkItemsByIds(...a),
   listWorkItems: (...a: unknown[]) => listWorkItems(...a),
   // The improvement-review module is imported through complete.ts's analysis
@@ -438,6 +440,8 @@ beforeEach(() => {
   getWorkItem.mockReset();
   assessWorkItemHeldOpenTerminalTransition.mockReset();
   assessWorkItemHeldOpenTerminalTransition.mockResolvedValue({ allowed: true, staleHoldOpen: false });
+  workItemPlanLaneTransitionRefusal.mockReset();
+  workItemPlanLaneTransitionRefusal.mockResolvedValue(null);
   listWorkItems.mockReset();
   listWorkItems.mockResolvedValue([]);
   setWorkItemStateWithAliasInfo.mockReset();
@@ -1888,6 +1892,34 @@ describe('work_items:complete (keyed-array)', () => {
   // believing the item closed while it stayed open and re-claimable.
   describe('WI-4529 — ok reflects whether the item actually CLOSED', () => {
     const issue = { id: 'WI-1', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
+
+    it('previews the same plan-lane refusal as a real close without writing or claiming persistence', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      const refusal = "work_item 'WI-1' is not settled, and its linked plan-item a-plan#P-001 is STILL effectively 'owner-gated'";
+      workItemPlanLaneTransitionRefusal.mockResolvedValue(refusal);
+      setWorkItemStateWithAliasInfo.mockRejectedValue(new Error(refusal));
+      const args = { id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it', tests: '5 green' } };
+      const preview = await one({ ...args, validateOnly: true });
+      expect(preview).toMatchObject({ ok: false, validationOnly: true, stateError: refusal });
+      expect(workItemPlanLaneTransitionRefusal).toHaveBeenCalledWith(issue, 'resolved');
+      expect(preview.completionContract.requirements).toContainEqual(expect.objectContaining({ key: 'plan-item-lane', applicable: true, satisfied: false }));
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+      const actual = await one(args);
+      expect(actual).toMatchObject({ ok: false, stateError: refusal, completionEvidenceStored: false, completionReturnedOnly: true });
+      expect(actual.stateWarning).toMatch(/returned.*completion.*not persisted/i);
+      expect(actual.stateWarning).not.toMatch(/recorded a completion/i);
+      expect(actual.completion).toMatchObject({ summary: 'fixed it' });
+    });
+
+    it('previews an actionable plan lane without persisting a completion', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      const preview = await one({ id: 'WI-1', state: 'resolved', validateOnly: true,
+        completion: { summary: 'fixed it', tests: '5 green' } });
+      expect(preview).toMatchObject({ ok: true, validationOnly: true });
+      expect(workItemPlanLaneTransitionRefusal).toHaveBeenCalledWith(issue, 'resolved');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
 
     it('a state write that THROWS (peer HOLD-OPEN) returns ok:false — but still records + carries the completion (EI-24)', async () => {
       getWorkItem.mockResolvedValue(issue);

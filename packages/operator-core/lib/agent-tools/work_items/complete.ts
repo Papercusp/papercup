@@ -65,6 +65,7 @@ import { buildDurableParkReleaseContract } from '../../durable-park-release-cont
 import { lookupWorkItem } from './_lookup';
 import {
   assessWorkItemHeldOpenTerminalTransition,
+  workItemPlanLaneTransitionRefusal,
   getWorkItem,
   getWorkItemsByIds,
   setWorkItemStateWithAliasInfo,
@@ -128,7 +129,7 @@ export const WORK_ITEMS_COMPLETE_TIMEOUT_SEC = 120;
  * contract that can drift from runtime.
  */
 export const WORK_ITEMS_COMPLETION_CONTRACT = {
-  version: 'work-items-completion-v5',
+  version: 'work-items-completion-v6',
   requirements: [
     { key: 'assumptions', description: 'Terminal closes declare assumptions or explicitly declare none.' },
     { key: 'root-cause-verification', description: 'Successful defect closes carry complete causal evidence v2.' },
@@ -140,6 +141,7 @@ export const WORK_ITEMS_COMPLETION_CONTRACT = {
     },
     { key: 'self-review', description: 'Pilot self-review evidence is present and ledger-visible when applicable.' },
     { key: 'gate-red-lineage', description: 'A claimed red-gate repair is admitted on the judged lineage.' },
+    { key: 'plan-item-lane', description: 'Terminal transitions respect the linked plan item readiness and owner gates.' },
     {
       key: 'spec-conformance-closure',
       description: 'Linked-plan mapped requirements are declared, discharged checks pass, and drift alarms have approved deviations.',
@@ -5408,7 +5410,11 @@ async function completeOneTracked(
     heldOpenPreview && !heldOpenPreview.allowed
       ? heldOpenPreview.refusal ?? 'held-open terminal transition refused'
       : undefined;
-  const previewError = changeKindProofError ?? liveServiceProofError ?? heldOpenPreviewError;
+  const planLanePreviewError = it.validateOnly && closeIntentRequested && effectiveState
+    ? await workItemPlanLaneTransitionRefusal(existing, effectiveState) ?? undefined
+    : undefined;
+  setContractRequirement('plan-item-lane', closeIntentRequested, planLanePreviewError);
+  const previewError = changeKindProofError ?? liveServiceProofError ?? heldOpenPreviewError ?? planLanePreviewError;
   if (it.validateOnly) {
     // EI-26592766858681844: the content floor already lowered the authority above. Surface
     // its measured paths here too, without borrowing the real close's settlement promises.
@@ -5735,6 +5741,10 @@ async function completeOneTracked(
   // `state` (exactly the fix the reporter applied). Also fires when an explicit `state` write failed
   // (stateError) or landed on a non-terminal state — in every case the item is still claimable.
   const finalState = (workItem?.state ?? existing.state ?? '').toLowerCase();
+  const completionReturnedOnly = Boolean(stateError && isPlanGateRejection(stateError))
+    && !TERMINAL_WORK_ITEM_STATES.has(finalState);
+  setContractRequirement('plan-item-lane', closeIntentRequested,
+    stateError && isPlanGateRejection(stateError) ? stateError : undefined);
   // EI-18661904412177717: the warning MUST distinguish "you passed no state" from "your state
   // was not applied". The single wording ("Pass top-level `state` …") told a caller who HAD
   // passed one to do the exact thing they just did — so the natural next move is to re-send the
@@ -5757,7 +5767,7 @@ async function completeOneTracked(
     (!finalState || TERMINAL_WORK_ITEM_STATES.has(finalState)
       ? undefined
       : stateError
-        ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${claimabilityHint}. Your state '${effectiveState}' was REJECTED by the state write: ${stateError}. Re-sending the same state will fail the same way — fix the cause, or choose a terminal state by intent ${terminalVocab}.`
+        ? `${completionReturnedOnly ? 'returned a completion, but it was not persisted' : 'recorded a completion'} for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${claimabilityHint}. Your state '${effectiveState}' was REJECTED by the state write: ${stateError}. Re-sending the same state will fail the same way — fix the cause, or choose a terminal state by intent ${terminalVocab}.`
         : effectiveState
           ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. Your state '${requestedState ?? effectiveState}' WAS received and applied as '${appliedState ?? workItem?.state ?? existing.state}', which is NOT terminal${aliasNote ? ` (${aliasNote})` : ''}. Do NOT re-send the same value — choose a terminal state by intent ${terminalVocab}.`
           : `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. No top-level \`state\` was passed. Pass top-level \`state\` ${terminalVocab} to close it.`);
@@ -6369,6 +6379,9 @@ async function completeOneTracked(
   return {
     ok: !stateNotApplied && !finishFailed,
     id: it.id,
+    ...(completionReturnedOnly
+      ? { completionEvidenceStored: false, completionReturnedOnly: true }
+      : {}),
     ...(stateFailure || finishFailure ? { error: stateFailure ?? finishFailure } : {}),
     ...(stateError ? { stateError } : {}),
     ...(deferredCompletion ? { deferredCompletion: { ...deferredCompletion, state: 'pending',

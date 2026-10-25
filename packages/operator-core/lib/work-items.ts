@@ -3978,19 +3978,33 @@ export async function selfHealAuthorOriginIfStranded(
   return rows.length > 0;
 }
 
-/** Lifecycle.setState — feature → status; issue → state. The requested state is
- *  normalized onto the family's native vocabulary first (EI-24); an unmappable
- *  state throws a typed error naming the valid set.
- *
- * Completion-integrity gate (work-item-completion-integrity-2026-07-01 WI-1403,
- * contract C-1): a transition INTO a terminal state (feature: passed|deprecated;
- * issue: resolved|closed) must carry both `opts.by` (the claiming principal) and
- * `opts.completionRef` (a completion summary / commit / coord / plan-item
- * reference — any non-empty evidence string). Reject otherwise, so a bare/
- * anonymous flip — e.g. a watchdog dedup marker — can never masquerade as a
- * genuine completion. `opts.skipCompletionGate` is a narrow, explicit bypass for
- * TRUSTED internal restore / system-sweep paths that are not completions at all
- * (mirrors `setIssueState`'s identical gate/bypass shape). */
+/** Read-only plan-lane verdict shared by completion preview and the state writer.
+ * A sole block attributed to this work-item can clear after its external blockers
+ * resolve; preview must preserve that exception as well as genuine owner gates. */
+export async function workItemPlanLaneTransitionRefusal(wi: WorkItem, state: string): Promise<string | null> {
+  const normalized = normalizeWorkItemState(wi.family, state);
+  if (normalized.ok) state = normalized.state;
+  const isUnblockingTransition = wi.state === 'blocked' && state !== 'blocked' && state !== 'needs-human';
+  const isCompletingTransition = !isSettledWorkItemState(wi.state) && isSettledWorkItemState(state);
+  if (!isUnblockingTransition && !isCompletingTransition) return null;
+  const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
+  const block = await planItemLaneBlockReason(wi).catch(() => null);
+  const attributedBlockCanClear = block?.effectiveStatus === 'blocked'
+    && block.blockAttributedToWorkItemId === wi.id && activeExternalBlockers(wi.payload).length === 0;
+  if (!block || block.effectiveStatus === 'done' || block.effectiveStatus === 'dropped' || attributedBlockCanClear) return null;
+  const verb = isUnblockingTransition ? 'unblocking' : 'completing';
+  const stateDesc = isUnblockingTransition ? 'is blocked, and its' : 'is not settled, and its';
+  return `work_item '${wi.id}' ${stateDesc} linked plan-item ${block.planSlug}#${block.itemId} is STILL ` +
+    `effectively '${block.effectiveStatus}' (${block.reason}) — ${verb} it into '${state}' now would race ` +
+    `ahead of that plan gate. Verify the plan item's blockers are actually resolved first ` +
+    `(plans:get-item { slug: '${block.planSlug}', item: '${block.itemId}' }); if they are (or the plan is ` +
+    `wrong), override with work_items:set_state { id: '${wi.id}', state: '${state}', force: true } ` +
+    '— NOTE work_items:complete does NOT accept a `force` arg, so passing one there is silently ignored (WI-4530).';
+}
+
+/** Lifecycle.setState normalizes family vocabulary and requires authenticated
+ * completion evidence for a terminal transition. skipCompletionGate is reserved
+ * for trusted internal restore/system-sweep paths that are not completions. */
 export async function setWorkItemState(
   id: string,
   state: string,
@@ -4493,35 +4507,8 @@ export async function setWorkItemState(
     }
   }
   if (!opts.force && (isUnblockingTransition || isCompletingTransition)) {
-    const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
-    const block = await planItemLaneBlockReason(wi).catch(() => null);
-    // The plan item can be blocked solely because its latest note mirrors this
-    // work-item's own external blocker. Clearing that blocker transitions the
-    // work-item before the post-transition plan reflection runs, so refusing here
-    // would make the two safe writes circular. Open that one edge only when the
-    // guard proves the plan-side block is attributed to this same item and no
-    // active typed external blocker remains on the work-item.
-    const attributedBlockCanClear =
-      block?.effectiveStatus === 'blocked' &&
-      block.blockAttributedToWorkItemId === id &&
-      activeExternalBlockers(wi.payload).length === 0;
-    if (
-      block &&
-      block.effectiveStatus !== 'done' &&
-      block.effectiveStatus !== 'dropped' &&
-      !attributedBlockCanClear
-    ) {
-      const verb = isUnblockingTransition ? 'unblocking' : 'completing';
-      const stateDesc = isUnblockingTransition ? `is blocked, and its` : `is not settled, and its`;
-      throw new Error(
-        `work_item '${id}' ${stateDesc} linked plan-item ${block.planSlug}#${block.itemId} is STILL ` +
-          `effectively '${block.effectiveStatus}' (${block.reason}) — ${verb} it into '${state}' now would race ` +
-          `ahead of that plan gate. Verify the plan item's blockers are actually resolved first ` +
-          `(plans:get-item { slug: '${block.planSlug}', item: '${block.itemId}' }); if they are (or the plan is ` +
-          `wrong), override with work_items:set_state { id: '${id}', state: '${state}', force: true } ` +
-          `— NOTE work_items:complete does NOT accept a \`force\` arg, so passing one there is silently ignored (WI-4530).`,
-      );
-    }
+    const refusal = await workItemPlanLaneTransitionRefusal(wi, state);
+    if (refusal) throw new Error(refusal);
   }
   // ── D-019 / P-007 (WI-37958): the REFUSING tier of the live-drive acceptance ──
   // The WARN tier lives at work_items:complete (`liveDriveEvidenceWarning`). It cannot

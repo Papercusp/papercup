@@ -3354,6 +3354,36 @@ describe('withClaudeResumeEffortClamp (WI-10005900)', () => {
 });
 
 describe('resumeCommandFor', () => {
+  it('reapplies an admitted OMP removal on both headless and PTY wake routes', () => {
+    const policy = {
+      clientVersions: { omp: '18.0.3' },
+      ompNativeTools: ['read', 'bash'],
+      readiness: [{ family: 'shell-ssh-interpreters' as const, cutoverReady: true, openGapIds: [] }],
+      cutoverStaging: { 'shell-ssh-interpreters': 'full' as const },
+      adoption: [{ client: 'omp' as const, family: 'shell-ssh-interpreters' as const,
+        managedPathProven: true, nativeBypassRefused: true, atClientVersion: '18.0.3' }],
+      matrix: [{ client: 'omp' as const, family: 'shell-ssh-interpreters' as const,
+        allScenariosPassed: true, declaredScenarioCount: 7, unmet: [] }],
+    };
+    const prior = process.env.PAPERCUSP_OMP_RESUME_VIA_PTY;
+    try {
+      for (const pty of ['0', '1']) {
+        process.env.PAPERCUSP_OMP_RESUME_VIA_PTY = pty;
+        const handle = { agent: 'omp', sessionId: null, ompThreadId: 'exact-thread' };
+        const result = resumeCommandFor(handle, 'WAKE', null, policy)!;
+        expect(result.promptViaPty).toBe(pty === '1');
+        expect(result.args.slice(0, 2)).toEqual(['-r', 'exact-thread']);
+        const selection = result.args[result.args.indexOf('--tools') + 1].split(',');
+        expect(selection).toContain('read');
+        expect(selection).not.toContain('bash');
+        expect(resumeCommandFor(handle, 'WAKE', null)!.args).not.toContain('--tools');
+      }
+    } finally {
+      if (prior === undefined) delete process.env.PAPERCUSP_OMP_RESUME_VIA_PTY;
+      else process.env.PAPERCUSP_OMP_RESUME_VIA_PTY = prior;
+    }
+  });
+
   it('claude: exact-session resume with the prompt as positional arg', () => {
     const r = resumeCommandFor({ agent: 'claude', sessionId: 'sid-1', ompThreadId: null }, 'WAKE');
     expect(r).not.toBeNull();
