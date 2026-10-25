@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { expect, it } from 'vitest';
+import type { IpcStatus } from '@papercusp/operator-core/lib/tauri-bindings';
 
 const pid = process.env.VERIFY_TAURI_PID;
 const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN;
@@ -26,7 +27,7 @@ it.skipIf(!pid || !tool)('opens the portal shell with desktop environments and r
   )`), { timeout: 60_000 }).toBe(true);
   const envs = await evaluate('window.__TAURI_INTERNALS__.invoke("list_envs")');
   expect(envs.map((env: { id: string }) => env.id)).toEqual(expect.arrayContaining(['local', 'dev', 'prod', 'staging']));
-  const before = await evaluate('window.__TAURI_INTERNALS__.invoke("endpoint_ipc_status")');
+  const before: IpcStatus = await evaluate('window.__TAURI_INTERNALS__.invoke("endpoint_ipc_status")');
   await evaluate(`(() => {
     window.__desktopPortalProbe = null;
     Promise.all(['/api/apps', '/api/preferences'].map(path => fetch(path).then(async response => ({
@@ -41,8 +42,8 @@ it.skipIf(!pid || !tool)('opens the portal shell with desktop environments and r
   expect(probe.result.map((response: { status: number }) => response.status)).toEqual([200, 200]);
   expect(probe.result[0].body.apps.some((app: { slug: string }) => app.slug === 'home')).toBe(true);
   expect(probe.result[1].body.preferences.theme).toBe('dark');
-  const after = await evaluate('window.__TAURI_INTERNALS__.invoke("endpoint_ipc_status")');
+  const after: IpcStatus = await evaluate('window.__TAURI_INTERNALS__.invoke("endpoint_ipc_status")');
   expect(after.client).toBe('connected');
-  expect(after.owner_is_content_origin).toBe(true);
+  expect(after.ownerIsContentOrigin).toBe(true);
   expect(after.invokes).toBeGreaterThan(before.invokes);
 }, 150_000);
