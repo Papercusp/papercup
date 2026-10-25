@@ -524,16 +524,25 @@ function checkPreflight(candidate: string) {
 describe('frozen native SPA preparation', () => {
   function prepare(options: { pinned?: boolean; missingBuilder?: boolean; buildExit?: number;
     incomplete?: boolean; external?: boolean; sourceVolumeFull?: boolean;
-    prebuildExit?: number; sourceExit?: number } = {}) {
+    prebuildExit?: number; sourceExit?: number; modelExit?: number } = {}) {
     const dir = mkdtempSync(resolve(tmpdir(), 'tauri-spa-preflight-'));
     const frozen = resolve(dir, 'frozen');
     const app = resolve(frozen, 'apps/operator-vite');
     const capture = resolve(dir, 'build.json');
     const events = resolve(dir, 'events.jsonl');
+    const model = resolve(dir, 'donor/apps/operator/public/porcupine/porcupine_params.pv');
     const preparation = source.match(/prepare_verifier_spa\(\) \{[\s\S]*?\n\}/)?.[0];
     if (!preparation) throw new Error('Frozen SPA preparation was not found');
     mkdirSync(resolve(app, 'bin'), { recursive: true });
     mkdirSync(resolve(frozen, 'scripts'), { recursive: true });
+    mkdirSync(resolve(frozen, 'apps/operator/scripts'), { recursive: true });
+    mkdirSync(resolve(model, '..'), { recursive: true });
+    writeFileSync(model, 'fixture model');
+    writeFileSync(resolve(frozen, 'apps/operator/scripts/setup-porcupine-runtime.sh'), `#!/bin/bash
+set -eu
+[ "$1" = --source ] && [ -s "$2" ]
+exit ${options.modelExit ?? 0}
+`);
     if (!options.missingBuilder) writeFileSync(resolve(app, 'bin/vite-build-singleflight'), '#!/bin/sh\n', { mode: 0o755 });
     writeFileSync(resolve(frozen, 'scripts/pc-heavy.sh'), '#!/bin/bash\n[ "$1" != -- ] || shift\nexec "$@"\n');
     writeFileSync(resolve(frozen, 'scripts/source-preview.mjs'), `
@@ -560,6 +569,7 @@ if (!${Boolean(options.incomplete)}) fs.writeFileSync(process.env.VITE_BUILD_OUT
     try {
       const result = spawnSync('bash', ['-c', `set -euo pipefail
 OPERATOR_SOURCE_ROOT="$FIXTURE_FROZEN"
+REPO_DIR="$FIXTURE_DIR/donor"
 WORK="$FIXTURE_DIR"
 log() { :; }
 ${preparation}
@@ -603,11 +613,14 @@ printf '%s' "$VERIFIER_SPA_DIST"
   });
 
   it.each([
+    [{ modelExit: 11 }, []],
     [{ prebuildExit: 19 }, ['prebuild']],
     [{ sourceExit: 23 }, ['prebuild', 'verify']],
-  ] as const)('rejects prebuild/source failures before the expensive SPA build (%j)', (options, steps) => {
+  ] as const)('rejects model/prebuild/source failures before the expensive SPA build (%j)', (options, steps) => {
     const result = prepare(options);
-    expect(result.status).toBe('prebuildExit' in options ? options.prebuildExit : options.sourceExit);
+    const expected = 'modelExit' in options ? options.modelExit
+      : 'prebuildExit' in options ? options.prebuildExit : options.sourceExit;
+    expect(result.status, result.stderr).toBe(expected);
     expect(result.events.map(event => event.step)).toEqual(steps);
     expect(result.build).toBeNull();
     expect(result.selected).toBe('');

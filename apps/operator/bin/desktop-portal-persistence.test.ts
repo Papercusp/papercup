@@ -15,7 +15,10 @@ import { createDesktopPortalLifecycle } from './desktop-portal-lifecycle';
 const manifest = process.env.PAPERCUSP_DESKTOP_CANDIDATE_MANIFEST;
 const run = promisify(execFile);
 const native = process.env.PAPERCUSP_TEST_DESKTOP_NATIVE === '1';
-const nativeTimeoutMs = 30 * 60_000;
+// Run 20261025T083042Z-2215727 measured 843480ms of preparation before
+// admission refused boot. Budget that independent copy before starting it.
+const nativePrepareEstimateMs = 20 * 60_000;
+const nativeTimeoutMs = nativePrepareEstimateMs + 25 * 60_000;
 const testTimeoutMs = nativeTimeoutMs + 60_000;
 
 it.skipIf(!manifest)('retains the actual private desktop portal preferences across host and PostgreSQL restart', async () => {
@@ -35,7 +38,18 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
 
   const repo = fileURLToPath(new URL('../../../', import.meta.url));
   const launcher = join(repo, 'apps/operator/scripts/ptool.mjs');
+  const nativeBudget = {
+    PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Math.min(
+      Number(process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS) || Infinity,
+      Date.now() + nativeTimeoutMs,
+    )),
+    VERIFY_TAURI_PREPARE_ESTIMATE_MS: String(nativePrepareEstimateMs),
+    VERIFY_TAURI_ASSERT_ESTIMATE_MS: '180000',
+  };
   if (native) {
+    await run(process.execPath, [join(repo, 'scripts/lib/verify-tauri-deadline.mjs'), 'prepare', '0', '1'], {
+      cwd: repo, timeout: 15_000, env: { ...process.env, ...nativeBudget },
+    });
     // The native rig changes cwd during preparation. Check its explicit
     // launcher before initializing PostgreSQL or copying the operator tree.
     expect((await readFile(launcher)).byteLength).toBeGreaterThan(0);
@@ -110,14 +124,10 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
         join(repo, 'apps/operator/bin/desktop-portal-native.test.ts')], {
         cwd: repo, timeout: nativeTimeoutMs, maxBuffer: 8 * 1024 * 1024,
         env: { ...process.env, VERIFY_TAURI_ISOLATED_DB: '1', VERIFY_TAURI_ISOLATED_SEED: 'ready',
+          ...nativeBudget,
           PAPERCUSP_SHARED_SPA_DIST: join(directory, 'spa'),
           PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
           PAPERCUSP_PTOOL_LAUNCHER: launcher,
-          PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Math.min(
-            Number(process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS) || Infinity,
-            Date.now() + nativeTimeoutMs,
-          )),
-          VERIFY_TAURI_ASSERT_ESTIMATE_MS: '180000',
         },
       });
       child.stdout?.on('data', data => process.stdout.write(data));

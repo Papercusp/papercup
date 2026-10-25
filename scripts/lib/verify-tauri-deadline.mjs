@@ -31,11 +31,13 @@ function main() {
     if (!Number.isSafeInteger(value) || value < minimum) throw new Error(`Invalid ${key}`);
     return value;
   };
-  let prepareMs = null;
+  let prepareMs = process.env.VERIFY_TAURI_PREPARE_ESTIMATE_MS
+    ? integer('VERIFY_TAURI_PREPARE_ESTIMATE_MS', 0, 1) : null;
   if (process.env.VERIFY_TAURI_BUDGET_FROM) {
     const { elapsedMs } = readCalibration(process.env.VERIFY_TAURI_BUDGET_FROM);
-    prepareMs = Math.max(0, Math.ceil(elapsedMs * 1.25) - Number(elapsedSec) * 1000);
+    prepareMs = Math.max(prepareMs ?? 0, Math.ceil(elapsedMs * 1.25));
   }
+  if (prepareMs !== null) prepareMs = Math.max(0, prepareMs - Number(elapsedSec) * 1000);
   const attempts = Math.max(0, integer('VERIFY_TAURI_MAX_BOOT_ATTEMPTS', 2, 1) - Number(attemptsDone));
   const bootMs = prepareOnly === '1' || phase === 'assert' ? 0 : attempts * 1000 *
     (integer('VERIFY_TAURI_BUILD_TIMEOUT', 300, 1) + integer('VERIFY_TAURI_TIMEOUT', 180, 1));

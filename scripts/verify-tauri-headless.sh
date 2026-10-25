@@ -259,6 +259,9 @@
 #                                in their existing external stores.
 #   VERIFY_TAURI_BUDGET_FROM    prior native phases.jsonl; only a completed prepare
 #                                duration is used as an admission forecast.
+#   VERIFY_TAURI_PREPARE_ESTIMATE_MS
+#                               explicit preparation forecast before copying;
+#                               cannot lower a larger calibrated forecast.
 #   VERIFY_TAURI_ASSERT_ESTIMATE_MS
 #                               explicit assertion wall estimate; unset is unknown.
 #                               Neither observation is acceptance evidence.
