@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
@@ -32,7 +32,7 @@ function source() {
 }
 
 async function candidate(out?: string) {
-  const output = out ?? resolve(root, '.papercusp/private-desktop-candidates/plugin-test');
+  const output = out ?? resolve(homedir(), '.papercusp/desktop-candidates/plugin-test');
   return desktopPortalPlugin({ papercuspRoot: root, env: {
     PAPERCUSP_DESKTOP_INTERFACE: 'portal-candidate', PAPERCUSP_DESKTOP_PORTAL_ROOT: source(),
     PAPERCUSP_VITE_OUT_DIR: output,
@@ -75,16 +75,17 @@ describe('desktop interface build selection', () => {
   it('refuses ordinary or mismatched output paths and allows only the explicitly selected private directory', async () => {
     const plugin = await candidate();
     const configure = (outDir: string) => hook(plugin, 'configResolved')({ root, build: { outDir } });
-    expect(() => configure('apps/operator-vite/dist')).toThrow('private-desktop-candidates');
-    expect(() => configure('.papercusp/private-desktop-candidates/other')).toThrow('private-desktop-candidates');
-    expect(() => configure('.papercusp/private-desktop-candidates/plugin-test')).not.toThrow();
+    expect(() => configure('apps/operator-vite/dist')).toThrow('desktop-candidates');
+    expect(() => configure('.papercusp/private-desktop-candidates/plugin-test')).toThrow('desktop-candidates');
+    expect(() => configure(resolve(homedir(), '.papercusp/desktop-candidates/other'))).toThrow('desktop-candidates');
+    expect(() => configure(resolve(homedir(), '.papercusp/desktop-candidates/plugin-test'))).not.toThrow();
     const ordinary = await candidate(resolve(root, 'apps/operator-vite/dist'));
     expect(() => hook(ordinary, 'configResolved')({ root, build: { outDir: 'apps/operator-vite/dist' } }))
-      .toThrow('private-desktop-candidates');
+      .toThrow('desktop-candidates');
   });
 
   it('refuses a symlinked private output rather than writing into its destination', async () => {
-    const link = resolve(root, '.papercusp/private-desktop-candidates/plugin-symlink-test');
+    const link = resolve(homedir(), '.papercusp/desktop-candidates/plugin-symlink-test');
     mkdirSync(dirname(link), { recursive: true });
     symlinkSync(source(), link);
     temporary.push(link);
@@ -97,7 +98,7 @@ describe('desktop interface build selection', () => {
     const portalRoot = source();
     writeFileSync(resolve(portalRoot, 'index.html'), '<meta name="papercusp-desktop-interface" content="legacy" /><script type="module" src="/main.js"></script>');
     writeFileSync(resolve(portalRoot, 'main.js'), 'import Entry from "virtual:desktop-portal-entry"; console.log(Entry);');
-    const outDir = resolve(root, '.papercusp/private-desktop-candidates/plugin-build-test');
+    const outDir = resolve(homedir(), '.papercusp/desktop-candidates/plugin-build-test');
     const plugin = await desktopPortalPlugin({ papercuspRoot: root, env: {
       PAPERCUSP_DESKTOP_INTERFACE: 'portal-candidate', PAPERCUSP_DESKTOP_PORTAL_ROOT: portalRoot,
       PAPERCUSP_VITE_OUT_DIR: outDir,

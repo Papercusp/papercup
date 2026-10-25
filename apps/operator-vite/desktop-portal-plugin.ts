@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'vite';
@@ -44,14 +45,14 @@ export async function desktopPortalPlugin(input: {
       // desktop/package/public pipeline, including through a symlinked parent.
       const directory = env.PAPERCUSP_VITE_OUT_DIR;
       if (!directory || !isAbsolute(directory)) throw new Error('Portal candidate requires an explicit private output directory');
-      const boundary = resolve(root, '.papercusp/private-desktop-candidates');
+      const boundary = resolve(homedir(), '.papercusp/desktop-candidates');
       const out = resolve(config.root, config.build.outDir);
       const path = relative(boundary, out);
       if (out !== resolve(directory) || !path || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)) {
-        throw new Error('Portal candidate output must be inside .papercusp/private-desktop-candidates');
+        throw new Error('Portal candidate output must be inside ~/.papercusp/desktop-candidates');
       }
       let parent = out;
-      while (parent !== root) {
+      while (resolve(parent, '..') !== parent) {
         try {
           if (realpathSync(parent) !== parent) throw new Error('Portal candidate output cannot traverse symlinks');
         } catch (error) {

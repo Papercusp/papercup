@@ -1,26 +1,70 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 /** Refuse overwrite and symlink traversal before spending a build or writing bytes. */
-export function candidateDirectory(root: string, directory: string): string {
+export function candidateDirectory(root: string, directory: string,
+  privateRoot = resolve(homedir(), '.papercusp/desktop-candidates')): string {
   const canonical = realpathSync(root);
   if (!isAbsolute(directory)) throw new Error('--output must be an absolute private candidate directory');
   const output = resolve(directory);
-  const boundary = resolve(canonical, '.papercusp/private-desktop-candidates');
+  const boundary = resolve(privateRoot);
+  const repositoryPath = relative(canonical, boundary);
+  if (!repositoryPath || (!repositoryPath.startsWith(`..${sep}`) && repositoryPath !== '..' && !isAbsolute(repositoryPath))) {
+    throw new Error('Private candidate storage must be outside the repository');
+  }
   const path = relative(boundary, output);
   if (!path || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)) {
-    throw new Error('--output must be below .papercusp/private-desktop-candidates');
+    throw new Error('--output must be below ~/.papercusp/desktop-candidates');
   }
   if (existsSync(output)) throw new Error('Candidate output already exists; select a new directory');
   let parent = dirname(output);
-  while (parent !== canonical) {
+  while (dirname(parent) !== parent) {
     if (existsSync(parent) && realpathSync(parent) !== parent) throw new Error('Candidate output cannot traverse symlinks');
     parent = dirname(parent);
   }
   return output;
+}
+
+/** Vite does not copy publicDir when write:false; retain those bytes explicitly. */
+export function candidatePublicAssets(directory: string | false) {
+  const files: Array<{ path: string; bytes: Uint8Array }> = [];
+  if (!directory || !existsSync(directory)) return files;
+  const root = realpathSync(directory);
+  function visit(path: string) {
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      const file = resolve(path, entry.name);
+      if (entry.isSymbolicLink()) throw new Error('Candidate public assets cannot traverse symlinks');
+      if (entry.isDirectory()) visit(file);
+      else if (entry.isFile()) files.push({ path: relative(root, file), bytes: readFileSync(file) });
+      else throw new Error('Unsupported candidate public asset');
+    }
+  }
+  visit(root);
+  return files;
+}
+
+export function writeCandidateFiles(root: string, directory: string,
+  files: Array<{ path: string; bytes: string | Uint8Array }>, privateRoot?: string) {
+  candidateDirectory(root, directory, privateRoot);
+  const destinations = new Set<string>();
+  for (const file of files) {
+    const path = relative(directory, file.path);
+    if (!path || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path) || destinations.has(file.path)) {
+      throw new Error('Candidate output escaped its directory or collided');
+    }
+    destinations.add(file.path);
+  }
+  mkdirSync(dirname(directory), { recursive: true });
+  candidateDirectory(root, directory, privateRoot);
+  mkdirSync(directory); // no recursive reuse: another writer winning is a refusal
+  for (const file of files) {
+    mkdirSync(dirname(file.path), { recursive: true });
+    writeFileSync(file.path, file.bytes, { flag: 'wx' });
+  }
 }
 
 export async function prepareCandidate(args = process.argv.slice(2)) {
@@ -28,7 +72,7 @@ export async function prepareCandidate(args = process.argv.slice(2)) {
     'portal-root': { type: 'string' }, output: { type: 'string' }, help: { type: 'boolean' },
   } });
   if (values.help) {
-    console.log('node --import tsx apps/operator-vite/desktop-portal-candidate.ts --portal-root <absolute maintained portal source> --output <new .papercusp/private-desktop-candidates directory>');
+    console.log('node --import tsx apps/operator-vite/desktop-portal-candidate.ts --portal-root <absolute maintained portal source> --output <new ~/.papercusp/desktop-candidates directory>');
     return;
   }
   const root = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
@@ -42,9 +86,13 @@ export async function prepareCandidate(args = process.argv.slice(2)) {
   const [{ build }, { prepareDesktopPortalHostBundle }] = await Promise.all([
     import('vite'), import('../operator/bin/desktop-portal-host-bundle.ts'),
   ]);
+  let publicDirectory: string | false = false;
   const [frontend, host] = await Promise.all([
     build({ root: resolve(root, 'apps/operator-vite'), configFile: resolve(root, 'apps/operator-vite/vite.config.ts'),
-      logLevel: 'error', build: { write: false, emptyOutDir: false } }),
+      logLevel: 'error', build: { write: false, emptyOutDir: false }, plugins: [{
+        name: 'private-candidate-public-assets',
+        configResolved(config) { publicDirectory = config.publicDir; },
+      }] }),
     prepareDesktopPortalHostBundle({ portalRoot: values['portal-root'], papercuspRoot: root,
       outputFile: resolve(directory, 'desktop-portal.cjs') }),
   ]);
@@ -59,17 +107,9 @@ export async function prepareCandidate(args = process.argv.slice(2)) {
   }
   const files = [...outputs.map(item => ({ path: resolve(directory, 'spa', item.fileName),
     bytes: item.type === 'chunk' ? item.code : item.source })),
+  ...candidatePublicAssets(publicDirectory).map(item => ({ ...item, path: resolve(directory, 'spa', item.path) })),
   ...host.outputFiles.map(item => ({ path: item.path, bytes: item.contents }))];
-  if (files.some(file => {
-    const path = relative(directory, file.path);
-    return !path || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path);
-  })) throw new Error('Candidate output escaped its directory');
-  candidateDirectory(root, directory);
-  mkdirSync(directory); // no recursive reuse: another writer winning is a refusal
-  for (const file of files) {
-    mkdirSync(dirname(file.path), { recursive: true });
-    writeFileSync(file.path, file.bytes, { flag: 'wx' });
-  }
+  writeCandidateFiles(root, directory, files);
   const receipt = {
     schemaVersion: 'desktop-portal-private-candidate-v1', preparedAt: new Date().toISOString(),
     source: host.source.inputs, sourceFingerprint: host.source.sourceFingerprint,
