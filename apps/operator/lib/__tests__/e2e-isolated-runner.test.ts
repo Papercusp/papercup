@@ -505,6 +505,7 @@ describe('run-operator-e2e-isolated.sh', () => {
       const child = spawn('bash', [RUNNER], { detached: wholeGroup, env: {
         ...process.env,
         VERIFY_TAURI_ISOLATED_SEED: 'ready',
+        PAPERCUSP_DEV_BACKGROUND_WORKERS: '1',
         PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: join(f.dir, 'acceptance.json'),
         PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(f.dir, 'reporter.jsonl'),
         VERIFY_TAURI_SOURCE_REF: '',
@@ -558,6 +559,7 @@ describe('run-operator-e2e-isolated.sh', () => {
     const res = spawnSync('bash', [RUNNER], { env: {
       ...process.env,
       VERIFY_TAURI_ISOLATED_SEED: 'ready',
+      PAPERCUSP_DEV_BACKGROUND_WORKERS: '1',
       PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: join(f.dir, 'acceptance.json'),
       PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(f.dir, 'reporter.jsonl'),
       VERIFY_TAURI_SOURCE_REF: '',
