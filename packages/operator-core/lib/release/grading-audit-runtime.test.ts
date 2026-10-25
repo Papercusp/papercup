@@ -1,16 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { createServer } from 'node:net';
 import * as databaseTargets from '@papercusp/db-org/connection';
 import type { TaskRow } from '../task-manager/types';
 import { readGradingAuditSourcePin } from './grading-audit-source-pin';
 import { requestOnlyIdentityGuardMarker } from '../harness/env-operator-launcher';
 import { writeOperatorArtifactManifest } from './operator-artifact';
 import { ensureGradingAuditRuntime, gradingAuditRuntimeChildEnv, retireUnusedGradingAuditRuntimes, recoverGradingAuditRuntimeSource,
-  qualifyRematerializedGradingAuditSource,
+  qualifyRematerializedGradingAuditSource, gradingAuditRuntimeSupervisorArgs,
   type GradingAuditRuntimeDeps, type GradingAuditRuntimeLocator } from './grading-audit-runtime';
 
 const spawnManaged = vi.hoisted(() => vi.fn());
@@ -80,6 +81,102 @@ function rebuiltFixture() {
   writeOperatorArtifactManifest({ root: sourceRoot, entry: bundlePath, sourceSha });
   return { sourceRoot, bundlePath, sourceSha, git, evaluatorBuild: { sha: sourceSha.slice(0, 10), version: '1.2.3' } };
 }
+
+describe('retained evaluator self-recycle supervision (EI-26950964476692806)', () => {
+  async function launch(body: string, lifetimeSec = 60) {
+    const f = fixture();
+    writeFileSync(f.source.bundlePath, body);
+    const port = await new Promise<number>((resolve, reject) => {
+      const server = createServer();
+      server.on('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        const address = server.address() as { port: number };
+        server.close(error => error ? reject(error) : resolve(address.port));
+      });
+    });
+    const locator: GradingAuditRuntimeLocator = { ...f.source,
+      bundleSha256: createHash('sha256').update(body).digest('hex'),
+      baseUrl: `http://127.0.0.1:${port}`, issueIds: ['EI-a'],
+      expiresAtSec: Math.floor(Date.now() / 1000) + lifetimeSec };
+    const child = spawn(process.execPath, gradingAuditRuntimeSupervisorArgs(locator), {
+      cwd: f.source.sourceRoot, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PORT: String(port), PAPERCUSP_BUILD_SHA: f.input.evaluatorBuild.sha,
+        PAPERCUSP_ENV_OPERATOR_ID: f.source.ownerRef },
+    });
+    let output = '';
+    child.stdout.on('data', data => { output += data; });
+    child.stderr.on('data', data => { output += data; });
+    const closed = new Promise<{ code: number | null; signal: string | null }>(resolve => {
+      child.once('close', (code, signal) => resolve({ code, signal }));
+    });
+    const stop = async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      const timer = setTimeout(() => child.kill('SIGKILL'), 7000);
+      try { return await closed; } finally { clearTimeout(timer); }
+    };
+    return { ...f, locator, child, closed, stop, output: () => output };
+  }
+
+  it('recovers a real self-SIGKILL on the same exact endpoint and stops without respawning on retirement', async () => {
+    const run = await launch(`import { readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+let attempt = 1;
+try { attempt += Number(readFileSync('attempt', 'utf8')); } catch {}
+writeFileSync('attempt', String(attempt));
+createServer((_req, res) => res.end(JSON.stringify({ sha: process.env.PAPERCUSP_BUILD_SHA,
+  identity: process.env.PAPERCUSP_ENV_OPERATOR_ID, pid: process.pid, attempt })))
+  .listen(Number(process.env.PORT), '127.0.0.1', () => {
+    console.log('READY ' + attempt);
+    if (attempt === 1) setTimeout(() => process.kill(process.pid, 'SIGKILL'), 20);
+  });`);
+    let servingPid = 0;
+    try {
+      await vi.waitFor(() => expect(run.output()).toContain('READY 2'), { timeout: 6000 });
+      const response = await fetch(run.locator.baseUrl, { signal: AbortSignal.timeout(2000) });
+      const health = await response.json();
+      expect(health).toMatchObject({ sha: run.input.evaluatorBuild.sha, identity: run.source.ownerRef, attempt: 2 });
+      servingPid = health.pid;
+      expect(await run.stop()).toEqual({ code: 0, signal: null });
+      expect(readFileSync(join(run.source.sourceRoot, 'attempt'), 'utf8')).toBe('2');
+      expect(() => process.kill(servingPid, 0)).toThrow();
+    } finally { await run.stop(); }
+  }, 12000);
+
+  it('enforces its absolute deadline and never starts an already expired evaluator', async () => {
+    const expired = await launch("console.log('CHILD_STARTED'); setInterval(() => {}, 1000);", -1);
+    try {
+      expect(await expired.closed).toEqual({ code: 0, signal: null });
+      expect(expired.output()).not.toContain('CHILD_STARTED');
+    } finally { await expired.stop(); }
+    const run = await launch("console.log('CHILD_STARTED'); setInterval(() => {}, 1000);", 2);
+    try {
+      await vi.waitFor(() => expect(run.output()).toContain('CHILD_STARTED'), { timeout: 1000 });
+      expect(await run.closed).toEqual({ code: 0, signal: null });
+      expect(run.output()).toContain('deadline');
+    } finally { await run.stop(); }
+  }, 10000);
+
+  it('halts repeated short crashes instead of spinning until its lifetime expires', async () => {
+    const run = await launch("console.log('CRASH'); process.exit(42);");
+    try {
+      expect(await run.closed).toEqual({ code: 1, signal: null });
+      expect(run.output().split('CRASH').length - 1).toBe(5);
+      expect(run.output()).toContain('restart budget exhausted');
+    } finally { await run.stop(); }
+  }, 10000);
+
+  it('refuses changed bundle bytes before restarting a recycled child', async () => {
+    const run = await launch(`import { writeFileSync } from 'node:fs';
+console.log('ORIGINAL');
+writeFileSync(process.argv[1], "console.log('CHANGED_EXECUTED')");
+process.kill(process.pid, 'SIGKILL');`);
+    try {
+      expect(await run.closed).toEqual({ code: 1, signal: null });
+      expect(run.output()).toContain('bundle digest changed');
+      expect(run.output()).not.toContain('CHANGED_EXECUTED');
+    } finally { await run.stop(); }
+  }, 10000);
+});
 
 describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
   it('retains a settled audit evaluator for claimed source acceptance and releases it when acceptance settles', async () => {
@@ -231,7 +328,8 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     spawnManaged.mockResolvedValue({ taskId: 'managed-runtime', confined: true, child: { unref } });
     const runtime = await ensureGradingAuditRuntime(f.input, f.deps);
     expect(runtime.taskId).toBe('managed-runtime');
-    expect(spawnManaged).toHaveBeenLastCalledWith(process.execPath, [f.source.bundlePath],
+    expect(spawnManaged).toHaveBeenLastCalledWith(process.execPath,
+      gradingAuditRuntimeSupervisorArgs(spawnManaged.mock.calls.at(-1)![2].detail.gradingAuditRuntime),
       expect.objectContaining({ class: 'sidecar', runtimeMaxSec: expect.any(Number),
         detail: { label: f.source.ownerRef, gradingAuditRuntime: expect.objectContaining({
           sourceRoot: f.source.sourceRoot, issueIds: ['EI-a'], bundleSha256: f.source.bundleSha256,

@@ -161,6 +161,64 @@ export function gradingAuditRuntimeChildEnv(locator: GradingAuditRuntimeLocator)
   };
 }
 
+/**
+ * The confined task owns this small supervisor AND its exact-bundle child.
+ * A host's intentional watchdog self-SIGKILL cannot restart a transient scope.
+ * Keep the supervisor inline so recovery never loads code from a mutable alias
+ * or asks an old immutable candidate to contain a newer supervisor module.
+ */
+export function gradingAuditRuntimeSupervisorArgs(locator: GradingAuditRuntimeLocator): string[] {
+  const script = String.raw`
+const { spawn } = require('node:child_process');
+const { readFileSync } = require('node:fs');
+const { createHash } = require('node:crypto');
+const config = JSON.parse(process.argv[1]);
+let child = null, retry = null, escalation = null, stopping = false, shortExits = 0;
+const log = message => console.error('[grading-audit-supervisor] ' + message);
+const finish = code => {
+  clearTimeout(retry); clearTimeout(escalation); clearTimeout(deadline);
+  process.exit(code);
+};
+const stop = reason => {
+  if (stopping) return;
+  stopping = true;
+  clearTimeout(retry);
+  log('stopping: ' + reason);
+  if (!child) return finish(0);
+  child.kill('SIGTERM');
+  escalation = setTimeout(() => { if (child) child.kill('SIGKILL'); }, 5000);
+};
+process.on('SIGTERM', () => stop('SIGTERM'));
+process.on('SIGINT', () => stop('SIGINT'));
+const deadline = setTimeout(() => stop('absolute deadline'), Math.max(0, config.expiresAtSec * 1000 - Date.now()));
+const start = () => {
+  if (stopping) return;
+  if (Date.now() >= config.expiresAtSec * 1000) return stop('absolute deadline');
+  try {
+    if (createHash('sha256').update(readFileSync(config.bundlePath)).digest('hex') !== config.bundleSha256) {
+      log('bundle digest changed; refusing launch'); return finish(1);
+    }
+  } catch (error) { log('bundle read failed: ' + error.message); return finish(1); }
+  const started = Date.now();
+  child = spawn(process.execPath, [config.bundlePath], { stdio: 'inherit' });
+  log('started child pid=' + child.pid);
+  child.once('error', error => { log('child spawn failed: ' + error.message); finish(1); });
+  child.once('exit', (code, signal) => {
+    child = null;
+    if (stopping) return finish(0);
+    if (Date.now() >= config.expiresAtSec * 1000) return stop('absolute deadline');
+    shortExits = Date.now() - started < 30000 ? shortExits + 1 : 0;
+    log('child exited code=' + code + ' signal=' + signal + ' shortExits=' + shortExits);
+    if (shortExits >= 5) { log('restart budget exhausted'); return finish(1); }
+    retry = setTimeout(start, Math.min(5000, 100 * 2 ** shortExits));
+  });
+};
+start();
+`;
+  return ['--eval', script, JSON.stringify({ bundlePath: locator.bundlePath,
+    bundleSha256: locator.bundleSha256, expiresAtSec: locator.expiresAtSec })];
+}
+
 async function spawnRuntime(workspaceId: string, locator: GradingAuditRuntimeLocator,
   logDir = papercuspPath('checkpoint-logs')): Promise<string> {
   // The task ledger owns this durable log; a candidate generation may be pruned while its row remains.
@@ -169,8 +227,9 @@ async function spawnRuntime(workspaceId: string, locator: GradingAuditRuntimeLoc
   const logPath = join(logDir, `grading-audit-runtime-${logName}.log`);
   const fd = openSync(logPath, 'a', 0o600);
   try {
-    const spawned = await managedSpawn(process.execPath, [locator.bundlePath], {
-      class: 'sidecar', title: locator.ownerRef, argv: [process.execPath, locator.bundlePath],
+    const args = gradingAuditRuntimeSupervisorArgs(locator);
+    const spawned = await managedSpawn(process.execPath, args, {
+      class: 'sidecar', title: locator.ownerRef, argv: [process.execPath, ...args],
       launchedBy: 'system:grading-audit-dispatch', cwd: locator.sourceRoot, logPath,
       runtimeMaxSec: Math.max(1, locator.expiresAtSec - Math.floor(Date.now() / 1000)),
       detail: { label: locator.ownerRef, gradingAuditRuntime: locator },
