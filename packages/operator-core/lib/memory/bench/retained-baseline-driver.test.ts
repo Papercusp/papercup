@@ -77,6 +77,47 @@ describe('retained search baseline edition custody',()=>{
     ]);
   });
 
+  it('pins completed artifact bytes including the terminal phase journal record',()=>{
+    const driver=fileURLToPath(new URL('../../../../../scripts/backup/search-bench/run-retained-baseline.py',import.meta.url));
+    const result=execFileSync('python3',['-B','-c',[
+      'import importlib.util,json,tempfile,pathlib,sys,os,contextlib,io,types',
+      'spec=importlib.util.spec_from_file_location("baseline",sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)',
+      'with tempfile.TemporaryDirectory() as root:',
+      ' p=pathlib.Path(root);os.chdir(p);(p/".verifier-source.json").write_text("{}")',
+      ' (p/"node_modules/@huggingface/transformers").mkdir(parents=True)',
+      ' def pin(name,value):',
+      '  f=p/name;f.write_text(json.dumps(value));return m.fingerprint(f)',
+      ' destination=p/"output"',
+      ' queries={"configuration":{"queryEmbeddingProfile":{"mode":"gemma","profileId":"gemma-embeddinggemma-300m-768@v1"}},"workspaceId":"fixture","pairsPerSource":1,"sources":["session_turn"],"seed":"fixture"}',
+      ' schema={"schema":"harness_shared","archives":[{"tables":["session_turns"],"path":"fixture.dump"}],"indexes":[]}',
+      ' plan={"schemaVersion":2,"workItemId":"WI-fixture","outputDirectory":str(destination),"expectedCounts":{"session_turns":0},"configuration":pin("config.json",{}),"consumption":pin("consumption.json",{"files":[]}),"schema":pin("schema.json",schema),"queries":pin("queries.json",queries)}',
+      ' f=pin("benchmark.json",{});plan["protocolFixture"]={"exitCode":1,"executed":3,**{k:{"path":f["path"]+suffix,"sha256":f["sha256"]} for k,suffix in {"artifact":"","declaration":".declaration.json","attempts":".attempts.jsonl","ledger":".ledger.json"}.items()}}',
+      ' file=p/"plan.json";file.write_text(json.dumps(plan))',
+      ' os.environ.update(m.RUNTIME_POLICY);os.environ["PAPERCUSP_TEST_PG_ADMIN_URL"]="postgres://localhost:23456/postgres"',
+      ' m.runtime_preflight=lambda *args:{"verified":True}',
+      ' def external(args,**kwargs):',
+      '  if args[0]=="psql":',
+      '   statement=kwargs["input"]',
+      '   value=str(p/"papercusp-test-pg-fixture") if "data_directory" in statement else "[]" if "json_agg" in statement else "0"',
+      '   return types.SimpleNamespace(returncode=0,stdout=value,stderr="")',
+      '  if "--output" in args:',
+      '   pathlib.Path(args[args.index("--output")+1]+".report.json").write_text(json.dumps({"qualifiedComponentsOnly":True,"searchAdapterExercised":True}))',
+      '  elif "--out" in args:',
+      '   pathlib.Path(args[args.index("--out")+1]).write_text(json.dumps({"sourceQualification":{"verdict":"pass"},"verdict":"pass","latencyVerdict":"pass"}))',
+      '  return types.SimpleNamespace(returncode=0)',
+      ' m.subprocess.run=external',
+      ' with contextlib.redirect_stdout(io.StringIO()):code=m.run(str(file))',
+      ' receipt=json.loads((destination/"receipt.json").read_text())',
+      ' assert code==0 and "failure" not in receipt',
+      ' assert receipt["phases"][-1]["phase"]=="measured-contributing-baseline"',
+      ' pins=receipt["artifacts"];assert any(pathlib.Path(x["path"]).name=="phases.jsonl" for x in pins)',
+      ' for recorded in pins:',
+      '  assert m.fingerprint(recorded["path"])==recorded, "completed artifact pin differs: "+recorded["path"]',
+      ' print(json.dumps({"exitCode":code,"terminalPhase":receipt["phases"][-1]["phase"],"everyArtifactMatches":True}))',
+    ].join('\n'),driver],{encoding:'utf8'});
+    expect(JSON.parse(result)).toEqual({exitCode:0,terminalPhase:'measured-contributing-baseline',everyArtifactMatches:true});
+  });
+
   it('applies explicit policies after isolation and saves prerequisite verdicts without accessing PostgreSQL',()=>{
     const driver=fileURLToPath(new URL('../../../../../scripts/backup/search-bench/run-retained-baseline.py',import.meta.url));
     const result=execFileSync('python3',['-B','-c',[

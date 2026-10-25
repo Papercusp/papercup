@@ -266,8 +266,8 @@ def run(plan_path, preflight_only=False):
         for pin in receipt['retainedInputs'] + assets:
             if fingerprint(pin['path']) != pin:
                 raise ValueError('input moved during run: ' + pin['path'])
-        receipt['artifacts'] = [fingerprint(p) for p in sorted(destination.iterdir()) if p.is_file()]
         phase('measured-contributing-baseline')
+        receipt['artifacts'] = [fingerprint(p) for p in sorted(destination.iterdir()) if p.is_file()]
     except Exception as error:
         receipt['failure'] = {'type': type(error).__name__, 'message': str(error).replace(admin, '<private-db>')}
         phase('failed', errorType=type(error).__name__)
