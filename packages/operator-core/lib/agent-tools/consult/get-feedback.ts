@@ -105,7 +105,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        "Named selection policy to take min/max from ('rubric-vetting' for the meta-rubric vetting consult). Prefer this over typing max_agents at a governed call site — the bound then lives in code, not in your instructions. Unknown key refuses.",
+        "Named selection policy: 'rubric-vetting' for meta-rubric vetting; 'method-review' for a prospective assessment of supplied current method inputs and controls (one reviewer, fresh evidence; no execution approval). Prefer a policy over typing max_agents at a governed call site. Unknown key refuses.",
       ),
     reviewerModel: z.object({
       agent: z.enum(['claude', 'codex', 'omp']),

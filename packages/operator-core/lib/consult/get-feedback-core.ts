@@ -83,6 +83,7 @@ import {
   BAR_CRITIQUE_POLICY,
   DEFAULT_MIN_RESPONDERS,
   DEFAULT_MAX_RESPONDERS,
+  METHOD_REVIEW_POLICY,
   RUBRIC_VETTING_POLICY,
 } from './selection-policies';
 export { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS };
@@ -1231,7 +1232,8 @@ export async function getFeedbackCore(
   //     The SELECT doubles as the capability probe: pgvector absent / column
   //     not migrated throws, and the leg degrades to normal routing (the
   //     per-source degrade contract) — the INSERT then also skips the column.
-  const archiveFloor = req.nativeConsult ? 2 : req.archiveFloor ?? DEFAULT_ARCHIVE_FLOOR;
+  const archiveFloor = req.nativeConsult || req.policy === METHOD_REVIEW_POLICY
+    ? 2 : req.archiveFloor ?? DEFAULT_ARCHIVE_FLOOR;
   const qVecStr = route.queryVec && route.queryVec.length > 0 && route.queryProfile
     ? JSON.stringify(route.queryVec)
     : null;
