@@ -10,10 +10,47 @@ const root = resolve(__dirname, '../../..');
 const helper = resolve(root, 'scripts/lib/verify-tauri-native-env.mjs');
 const { nativeVerifierEnv, preflightNativeVerifier, desktopPortalNativeTiming,
   desktopPortalNativeTestTimeoutMs, admitDesktopPortalNativeParent,
-  verifyDesktopPortalCandidateSpa } = await import(pathToFileURL(helper).href);
+  verifyDesktopPortalCandidateSpa, withNativeVerifierTypeService } = await import(pathToFileURL(helper).href);
+const { requestTscService } = await import(pathToFileURL(resolve(root, 'scripts/lib/tsc-service.mjs')).href);
 const { admitTaskDeadline } = await import(pathToFileURL(resolve(root, 'scripts/lib/task-deadline.mjs')).href);
 
 describe('real native verifier process boundary', () => {
+  it('checks the selected source through an owned service and removes its socket after a failed check', async () => {
+    const source = mkdtempSync(join(tmpdir(), 'native-types-source-'));
+    let socket = '';
+    try {
+      mkdirSync(join(source, 'scripts'), { recursive: true });
+      symlinkSync(join(root, 'scripts/tsc-service'), join(source, 'scripts/tsc-service'));
+      symlinkSync(join(root, 'scripts/lib'), join(source, 'scripts/lib'));
+      symlinkSync(join(root, 'node_modules'), join(source, 'node_modules'));
+      writeFileSync(join(source, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true, noEmit: true }, files: ['a.ts'] }));
+      writeFileSync(join(source, 'a.ts'), 'export const a: number = "wrong";');
+      await expect(withNativeVerifierTypeService(source, { ...process.env,
+        PAPERCUSP_TSC_SERVICE_SOCKET: '/wrong/shared.sock', PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: 'wrong' }, async env => {
+        socket = env.PAPERCUSP_TSC_SERVICE_SOCKET!;
+        expect(env.PAPERCUSP_TSC_SERVICE_ROOT).toBe(realpathSync(source));
+        expect(env.PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE).toBe('');
+        expect(env.PAPERCUSP_TSC_SERVICE_REQUIRED).toBe('1');
+        const verdict = await requestTscService({ socketPath: socket, request: {
+          v: 1, root: source, project: join(source, 'tsconfig.json'), files: ['a.ts'],
+        } });
+        expect(verdict).toMatchObject({ ok: true, errorCount: 1 });
+        expect(verdict.output).toContain('TS2322');
+        throw new Error('assertion failed after genuine type verdict');
+      })).rejects.toThrow('assertion failed after genuine type verdict');
+      expect(() => lstatSync(socket)).toThrow();
+    } finally { rmSync(source, { recursive: true, force: true }); }
+  }, 30_000);
+
+  it('preserves startup failure and never starts a check without its source service', async () => {
+    const source = mkdtempSync(join(tmpdir(), 'native-types-missing-'));
+    const check = vi.fn();
+    try {
+      await expect(withNativeVerifierTypeService(source, process.env, check))
+        .rejects.toThrow('Native TypeScript service exited code=1');
+      expect(check).not.toHaveBeenCalled();
+    } finally { rmSync(source, { recursive: true, force: true }); }
+  });
   it('qualifies candidate bytes against the selected commit and copies only the declared SPA', () => {
     const directory = mkdtempSync(join(tmpdir(), 'native-candidate-spa-'));
     const source = join(directory, 'source');
