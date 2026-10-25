@@ -158,10 +158,12 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
                 [SCOPED_INFERENCE_GATEWAY_ENV]: JSON.stringify(observations.nativeGateway) };
               if (agent === 'claude') Object.assign(env, { XDG_CONFIG_HOME: join(home, '.config'),
                 ANTHROPIC_BASE_URL: observations.nativeGateway!.baseURL, ANTHROPIC_AUTH_TOKEN: observations.nativeGateway!.token,
-                // The frozen API-key model-limit authority accepts no feature
-                // betas. Keep the stock CLI on that contract; final effective
-                // headers are still checked before any provider authorization.
-                CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1', DISABLE_AUTOUPDATER: '1' });
+                // The experimental switch leaves interleaved thinking and
+                // mid-conversation system betas independent in the frozen CLI.
+                // Disable those through its own controls to match the API-key
+                // model-limit contract; final headers/body still fail closed.
+                CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
+                DISABLE_INTERLEAVED_THINKING: '1', CLAUDE_CODE_MODEL_CAPABILITIES: '-mid_conv_system', DISABLE_AUTOUPDATER: '1' });
               if (task.instanceId !== host.taskId) throw new Error('Stock native task differs from its host assignment.');
               const register = async (binary: string, argv: string[], spawnOptions: import('node:child_process').SpawnOptions) => managedSpawn(binary, argv,
                   { class: 'agent-session', title: label, argv: [], cwd: handle.worktreePath, harnessSlug: handle.slug,
@@ -178,7 +180,8 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
                   // Only this assignment's route token and clean-home selectors
                   // cross into the task. No ambient provider, MCP or host config.
                   forwardEnvPatterns: ['^CLAUDE_CONFIG_DIR$', '^CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC$',
-                    '^CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS$', '^DISABLE_AUTOUPDATER$',
+                    '^CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS$', '^DISABLE_INTERLEAVED_THINKING$',
+                    '^CLAUDE_CODE_MODEL_CAPABILITIES$', '^DISABLE_AUTOUPDATER$',
                     '^XDG_CONFIG_HOME$', '^ANTHROPIC_(BASE_URL|AUTH_TOKEN)$', '^PAPERCUSP_(AGENT|SID)$', '^LANG$', '^LC_', '^TZ$'],
                 } : {});
                 wrapperDir = wrapper.dir;
