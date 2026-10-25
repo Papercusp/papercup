@@ -63,10 +63,19 @@ for arg in "$@"; do
   esac
 done
 if [ "$has_explicit_spec" -eq 0 ]; then
-  native_preflight_args=(e2e/inbox-ack-persistence.native.spec.mts)
+  native_preflight_args=(e2e/inbox-ack-persistence.native.spec.mts e2e/support-workflow-native.spec.mts)
 fi
 for arg in "${native_preflight_args[@]}"; do
   case "$arg" in
+    *support-workflow-native.spec.mts*)
+      # A receipt is admission, not a prepared worker result. Placement runs
+      # in the routines tick; a request-only desktop can never complete this
+      # journey. Reuse the launcher's isolated-only worker opt-in.
+      if [ "${VERIFY_TAURI_ISOLATED_SEED:-}" != "ready" ] || [ "${PAPERCUSP_DEV_BACKGROUND_WORKERS:-}" != "1" ]; then
+        echo "run-operator-e2e-isolated: support-workflow-native.spec.mts requires VERIFY_TAURI_ISOLATED_SEED=ready and PAPERCUSP_DEV_BACKGROUND_WORKERS=1 (isolated worker placement)" >&2
+        exit 2
+      fi
+      ;;
     *inbox-ack-persistence.native.spec.mts*)
       if [ "${VERIFY_TAURI_ISOLATED_SEED:-}" != "ready" ]; then
         echo "run-operator-e2e-isolated: inbox-ack-persistence.native.spec.mts requires VERIFY_TAURI_ISOLATED_SEED=ready" >&2

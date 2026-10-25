@@ -175,6 +175,7 @@ function run(
     'OPERATOR_SOURCE_ROOT',
     'VH_PHASE_DIR',
     'PAPERCUSP_FAKE_LLM',
+    'PAPERCUSP_DEV_BACKGROUND_WORKERS',
     'VERIFY_TAURI_ISOLATED_SEED',
     'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
     'PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE',
@@ -198,6 +199,7 @@ function run(
       PATH: `${f.dir}:${base.PATH ?? ''}`,
       ...(!args.some(arg => /\.(?:spec|test)\./.test(arg)) ? {
         VERIFY_TAURI_ISOLATED_SEED: 'ready',
+        PAPERCUSP_DEV_BACKGROUND_WORKERS: '1',
         PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: join(f.dir, 'full-suite-acceptance.json'),
         PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(f.dir, 'full-suite-reporter.jsonl'),
       } : {}),
@@ -463,6 +465,30 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(result.recorded.env.isolatedSeed).toBe('ready');
     expect(result.recorded.env.acceptanceReceipt).toBe(acceptanceReceipt);
     expect(result.recorded.env.ledgerReceipt).toBe(reporterReceipt);
+  });
+
+  it('refuses native support acceptance without an isolated worker runtime before boot', () => {
+    for (const args of [['e2e/support-workflow-native.spec.mts'], []]) {
+      for (const env of [
+        { VERIFY_TAURI_ISOLATED_SEED: 'fresh', PAPERCUSP_DEV_BACKGROUND_WORKERS: '1' },
+        { VERIFY_TAURI_ISOLATED_SEED: 'ready', PAPERCUSP_DEV_BACKGROUND_WORKERS: '0' },
+        { VERIFY_TAURI_ISOLATED_SEED: 'ready', PAPERCUSP_DEV_BACKGROUND_WORKERS: '' },
+      ]) {
+        const f = fixture(0);
+        const marker = join(f.dir, 'rig-started');
+        writeFileSync(f.rig, `#!/usr/bin/env bash\ntouch "${marker}"\nexit 0\n`);
+        const result = run(f, args, env);
+        expect(result.status, result.out).toBe(2);
+        expect(existsSync(marker)).toBe(false);
+        if (args.length) expect(result.out).toContain('isolated worker placement');
+      }
+    }
+    const f = fixture(0);
+    const result = run(f, ['e2e/support-workflow-native.spec.mts'], {
+      VERIFY_TAURI_ISOLATED_SEED: 'ready', PAPERCUSP_DEV_BACKGROUND_WORKERS: '1',
+    });
+    expect(result.status, result.out).toBe(0);
+    expect(result.recorded).not.toBeNull();
   });
 
   it.each([['SIGINT', 130, false], ['SIGTERM', 143, false], ['SIGHUP', 129, false], ['SIGTERM', 143, true]] as const)(
