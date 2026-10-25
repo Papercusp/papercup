@@ -1111,14 +1111,24 @@ export function buildIndex({
       }));
   /** @type {Map<string, Array<[string, string, boolean]>>} */
   const aliasesByDir = new Map();
+  /** @type {Map<string, Array<[string, string, boolean]>>} */
+  const aliasesByFile = new Map();
   /** The alias tuples a file's own imports resolve through: the indexed workspace's for an
    *  in-root file, else its owning package's ([] when no package owns it). */
   const aliasEntriesFor = (file) => {
     if (insideRoot(file)) return aliasEntries;
+    const cached = aliasesByFile.get(file);
+    if (cached !== undefined) return cached;
+    // Package ownership and aliases are fixed for this index. Resolve the longest
+    // package prefix once per importer, including files with no owning package.
     const owner = owningPackage(packages, file);
-    if (!owner) return [];
-    if (!aliasesByDir.has(owner.dir)) aliasesByDir.set(owner.dir, aliasTuples(aliasesFor(owner.dir)));
-    return aliasesByDir.get(owner.dir);
+    let entries = [];
+    if (owner) {
+      if (!aliasesByDir.has(owner.dir)) aliasesByDir.set(owner.dir, aliasTuples(aliasesFor(owner.dir)));
+      entries = aliasesByDir.get(owner.dir);
+    }
+    aliasesByFile.set(file, entries);
+    return entries;
   };
 
   /** @returns {{ targets: string[], unresolvable?: boolean }} */

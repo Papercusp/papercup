@@ -1262,6 +1262,40 @@ describe('writeRelatedFilterList (P-001)', () => {
 });
 
 describe('buildIndex', () => {
+  it('bounds cross-root owner scans per importer while preserving the deepest package aliases', () => {
+    const app = '/repo/app';
+    const parent = '/repo/dependency';
+    const nested = `${parent}/nested`;
+    const importer = `${nested}/index.ts`;
+    const related = `${app}/related.test.ts`;
+    const leafCount = 64;
+    const files: Record<string, string> = {
+      [`${app}/vitest.config.ts`]: 'export default {};',
+      [related]: "import '@probe/nested';",
+      [`${app}/unrelated.test.ts`]: 'export {};',
+      [importer]: Array.from({ length: leafCount }, (_, i) => `import '@/part${i}';`).join('\n'),
+    };
+    for (let i = 0; i < leafCount; i++) files[`${nested}/src/part${i}.ts`] = 'export {};';
+    let ownerProbes = 0;
+    const crossRoot = {
+      packages: [
+        { name: '@probe/parent', dir: parent },
+        { name: '@probe/nested', get dir() { ownerProbes++; return nested; }, exports: './index.ts' },
+      ],
+      aliasesFor: (dir: string) => [{ prefix: '@/', target: `${dir}/src/`, wildcard: true }],
+    };
+    const fs = vfs(files);
+    const index = buildIndex({ rootDir: app, fs, crossRoot });
+
+    expect(index.unresolved.size).toBe(0);
+    expect([...index.deps.get(importer)!].sort()).toEqual(
+      Array.from({ length: leafCount }, (_, i) => `${nested}/src/part${i}.ts`).sort(),
+    );
+    expect(ownerProbes).toBeLessThanOrEqual(8);
+    expect(selectRelatedTests({ rootDir: app, fs, index, crossRoot,
+      changedPaths: [`${nested}/src/part63.ts`], threshold: Number.POSITIVE_INFINITY }).selected).toEqual([related]);
+  });
+
   it('keeps new source and tests while excluding ignored generated modules', () => {
     const dir = mkdtempSync(join(tmpdir(), 'related-source-census-'));
     try {
