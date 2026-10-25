@@ -2,9 +2,13 @@
 import { test, expect } from './_egress';
 import { stubSyncQueries } from './_sync-stub';
 import { reportFullFixture, reportSummaryFixture } from '../../operator-vite/src/components/reports/reports-test-fixture';
-import { captureReportClipboard, navigateToPublishedReport, observeReportReadiness, readPublishedReportProof, verifyPublishedReportAndOfflineExport, waitForReportRenderer } from './_reports-proof';
+import { captureReportClipboard, configurePublishedReportSession, navigateToPublishedReport, observeReportReadiness, readPublishedReportProof, verifyPublishedReportAndOfflineExport, waitForReportRenderer } from './_reports-proof';
 import type { Page } from '@playwright/test';
 import { runInNewContext } from 'node:vm';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:http';
 import { POSTHOG_PUBLIC_DEFAULTS } from '../../../packages/operator-core/lib/posthog-public-defaults';
 
 const report = {
@@ -104,6 +108,70 @@ test('report clipboard capture initializes without Node transpiler globals', asy
   expect(window.reportProofMarkdown).toBe(markdown);
 });
 
+test('published report session scopes credentials and initializes local machine routing', async () => {
+  let routeRequest!: Parameters<Parameters<Page['route']>[1]>[0];
+  let handler!: Parameters<Page['route']>[1];
+  let browserScript = '';
+  await configurePublishedReportSession({
+    route: async (_pattern, callback) => { handler = callback; },
+    addInitScript: async script => { browserScript = script as string; },
+  } as Pick<Page, 'route' | 'addInitScript'>, {
+    origin: 'http://127.0.0.1:3170', token: 'proof-token', workspaceId: 'proof-workspace', clientId: 'proof-client',
+  });
+  for (const [url, authorized] of [
+    ['http://127.0.0.1:3170/api/zero-harness/rest-query?name=reports.get', true],
+    ['http://127.0.0.1:3170/api-other', false],
+    ['http://127.0.0.1:3070/api/zero-harness/rest-query', false],
+    ['https://foreign.example/api/zero-harness/rest-query', false],
+  ] as const) {
+    let headers: Record<string, string> | undefined;
+    let fellBack = false;
+    routeRequest = { request: () => ({ url: () => url, headers: () => ({ accept: 'application/json' }), resourceType: () => 'fetch' }),
+      fetch: async options => { headers = options?.headers; expect(options?.maxRedirects).toBe(0); return {}; },
+      fulfill: async () => {},
+      fallback: async () => { fellBack = true; },
+    } as typeof routeRequest;
+    await handler(routeRequest, routeRequest.request());
+    expect(fellBack).toBe(!authorized);
+    expect(headers).toEqual(authorized ? { accept: 'application/json', authorization: 'Bearer proof-token',
+      'x-papercusp-workspace': 'proof-workspace', 'x-papercusp-client': 'proof-client' } : undefined);
+  }
+  const values = new Map<string, string>();
+  runInNewContext(browserScript, { location: { origin: 'http://127.0.0.1:3170' },
+    window: { sessionStorage: { setItem: (key: string, value: string) => values.set(key, value) } } });
+  expect(values.get('pc:selected-machine')).toBe('local');
+  values.clear();
+  runInNewContext(browserScript, { location: { origin: 'https://foreign.example' },
+    window: { sessionStorage: { setItem: (key: string, value: string) => values.set(key, value) } } });
+  expect(values.size).toBe(0);
+});
+
+test('published report session keeps credentials off a redirected foreign origin', async ({ page }) => {
+  const observed: Array<string | undefined> = [];
+  const receiver = createServer((request, response) => {
+    observed.push(request.headers.authorization);
+    response.end('redirect target');
+  });
+  await new Promise<void>(resolve => receiver.listen(0, '127.0.0.1', resolve));
+  const receiverPort = (receiver.address() as { port: number }).port;
+  const operator = createServer((request, response) => {
+    observed.push(request.headers.authorization);
+    response.writeHead(302, { location: `http://127.0.0.1:${receiverPort}/api/report` });
+    response.end();
+  });
+  await new Promise<void>(resolve => operator.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(operator.address() as { port: number }).port}`;
+  try {
+    await configurePublishedReportSession(page, { origin, token: 'redirect-proof-token', workspaceId: 'proof-workspace', clientId: 'proof-client' });
+    await page.goto(`${origin}/api/report`);
+    expect(observed).toEqual(['Bearer redirect-proof-token', undefined]);
+  } finally {
+    operator.closeAllConnections(); receiver.closeAllConnections();
+    await Promise.all([new Promise<void>(resolve => operator.close(() => resolve())),
+      new Promise<void>(resolve => receiver.close(() => resolve()))]);
+  }
+});
+
 test('report query readiness uses the navigation budget beyond the action timeout', async ({ page }) => {
   const endpoint = `/api/zero-harness/rest-query?name=reports.get&args=${encodeURIComponent(JSON.stringify({ reportId: report.report_id }))}`;
   await page.route('**/api/zero-harness/rest-query?*', route => route.fulfill({
@@ -153,13 +221,20 @@ test('report renderer readiness still enforces its deadline when a script is mis
 test.describe('published report proof', () => {
 // The real owner session retains its consented first-party flag client. Declare
 // that exact maintained origin; fixture runs still forbid every foreign origin.
-test.use({ egressAllowedOrigins: process.env.OPERATOR_REPORT_PROOF_JSON
+test.use({ serviceWorkers: 'block', egressAllowedOrigins: process.env.OPERATOR_REPORT_PROOF_JSON
   ? [new URL(POSTHOG_PUBLIC_DEFAULTS.host).origin] : [] });
 
 test('published report text and standalone HTML stay identical', async ({ page }, testInfo) => {
   const input = process.env.OPERATOR_REPORT_PROOF_JSON;
   const expected = input ? await readPublishedReportProof(input) : report;
   await captureReportClipboard(page);
+  if (input) {
+    const origin = process.env.OPERATOR_E2E_BASE_URL;
+    const clientId = process.env.PAPERCUSP_SID;
+    if (!origin || !clientId) throw new Error('Live report proof requires OPERATOR_E2E_BASE_URL and PAPERCUSP_SID');
+    const token = (await readFile(join(process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'superuser-token'), 'utf8')).trim();
+    await configurePublishedReportSession(page, { origin, token, workspaceId: expected.workspace_id, clientId });
+  }
   if (!input) {
     await stubReportFlags(page);
     await stubSyncQueries(page, name => {
@@ -169,7 +244,8 @@ test('published report text and standalone HTML stay identical', async ({ page }
       return undefined;
     });
   }
-  await navigateToPublishedReport(page, expected, testInfo.project.use.navigationTimeout ?? 30_000);
+  const selectedQuery = await navigateToPublishedReport(page, expected, testInfo.project.use.navigationTimeout ?? 30_000);
+  if (input) expect(selectedQuery.request().headers()['x-papercusp-machine']).toBe('local');
   await verifyPublishedReportAndOfflineExport(page, expected, testInfo);
 });
 });

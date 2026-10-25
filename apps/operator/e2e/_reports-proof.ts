@@ -12,6 +12,47 @@ export interface PublishedReportProof {
   workspace_id: string;
 }
 
+export interface PublishedReportSession {
+  origin: string;
+  token: string;
+  workspaceId: string;
+  clientId: string;
+}
+
+/** Authenticate only this local operator's API, including the selected report query. */
+export async function configurePublishedReportSession(
+  page: Pick<Page, 'route' | 'addInitScript'>,
+  session: PublishedReportSession,
+): Promise<void> {
+  const origin = new URL(session.origin).origin;
+  const target = new URL(origin);
+  if (!['http:', 'https:'].includes(target.protocol) ||
+      !['localhost', '127.0.0.1', '[::1]'].includes(target.hostname) ||
+      !session.token.trim() || !session.workspaceId || !session.clientId) {
+    throw new Error('Published report proof requires an explicit local operator origin, token, workspace and client');
+  }
+  await page.route('**/*', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== origin || !url.pathname.startsWith('/api/') || request.resourceType() === 'eventsource') {
+      await route.fallback();
+      return;
+    }
+    // route.continue header overrides survive redirects, including to foreign origins.
+    // Return this one real response; a redirect gets a separate scope decision.
+    const response = await route.fetch({ maxRedirects: 0, headers: { ...request.headers(),
+      authorization: `Bearer ${session.token}`,
+      'x-papercusp-workspace': session.workspaceId,
+      'x-papercusp-client': session.clientId,
+    } });
+    await route.fulfill({ response });
+  });
+  // Match browser-workspace.ts's existing per-window routing hint before SPA startup.
+  await page.addInitScript(`if (location.origin === ${JSON.stringify(origin)}) {
+    window.sessionStorage.setItem('pc:selected-machine', 'local');
+  }`);
+}
+
 /** Consume the complete reports:get receipt, rather than a hand-copied summary. */
 export async function readPublishedReportProof(path: string): Promise<PublishedReportProof> {
   const receipt = JSON.parse(await readFile(path, 'utf8'));
@@ -137,6 +178,7 @@ export async function navigateToPublishedReport(page: Page, report: PublishedRep
   const payload = await response.json();
   expect(payload.rows?.find((row: PublishedReportProof) => row.report_id === report.report_id))
     .toMatchObject({ report_id: report.report_id, title: report.title, body_md: report.body_md });
+  return response;
 }
 
 /** Vditor assigns these ids only on script load, before resolving preview().
