@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
-import type { DockerExecTarget } from './container-exec-target';
+import { CONTAINER_CLAUDE_BIN_PATH, CONTAINER_CODEX_BIN_PATH, type DockerExecTarget } from './container-exec-target';
 import type { RunAgentChatOptions, ChatEvent } from '../agent-chat-stream';
 import type { CurrentStockBenchPorts, CurrentSuBenchOptions, CurrentSuBenchObservations } from './current-su';
 import type { BenchHarnessOps } from './bench-harness-live';
@@ -17,7 +17,7 @@ const h = vi.hoisted(() => ({
   home: '', owner: '', child: undefined as unknown as ChildProcess,
   run: vi.fn<(input: RunAgentChatOptions) => AsyncIterable<ChatEvent>>(),
   record: vi.fn(), reanchor: vi.fn(), bind: vi.fn(), end: vi.fn(), ingest: vi.fn(),
-  managed: vi.fn(), kill: vi.fn(), host: vi.fn(), begin: vi.fn(), verifySession: vi.fn(), get: vi.fn(), sandbox: vi.fn(),
+  managed: vi.fn(), kill: vi.fn(), host: vi.fn(), begin: vi.fn(), verifySession: vi.fn(), get: vi.fn(), sandbox: vi.fn(), common: vi.fn(),
 }));
 vi.mock('../adv-sessions', () => ({ recordAdvSession: h.record, reanchorAdvSessionNativeId: h.reanchor, markAdvSessionEnded: h.end }));
 vi.mock('../task-manager/store', () => ({ bindLiveAgentSessionTasksToNativeSession: h.bind }));
@@ -33,7 +33,7 @@ vi.mock('./current-su', async (original) => ({
   ...await original<typeof import('./current-su')>(),
   requireCurrentBenchHostBinding: h.host,
   beginCurrentBenchNativeSession: h.begin,
-  liveCurrentSuBenchPorts: () => ({ killTask: h.kill, getTask: h.get }),
+  liveCurrentSuBenchPorts: h.common,
   // Exercise the actual factory's ports without replacing the separately tested
   // shared assignment verifier with a fabricated committed protocol.
   currentStockBenchHarnessDriver: (lifecycle: BenchHarnessOps, ports: CurrentStockBenchPorts) => ({ lifecycle, ports }),
@@ -64,6 +64,7 @@ beforeEach(() => {
   vi.resetAllMocks(); root = mkdtempSync(join(tmpdir(), 'stock-factory-')); h.home = join(root, 'native-home'); factories = [];
   h.child = { exitCode: null, signalCode: null, kill: vi.fn(() => true) } as unknown as ChildProcess;
   h.host.mockReturnValue({ taskId: 't1' });
+  h.common.mockReturnValue({ killTask: h.kill, getTask: h.get });
   h.begin.mockReturnValue(h.verifySession);
   h.record.mockImplementation(async (input) => { h.owner = input.coordOwnerId; return 1; });
   h.reanchor.mockImplementation(async () => ({ owner: h.owner, reanchored: true }));
@@ -117,7 +118,7 @@ describe('current stock native factory', () => {
 
   it('relocates Claude into its container without Codex flags or host credentials', async () => {
     const homes = join(root, 'homes'); h.home = join(homes, 'claude-stock');
-    const target: DockerExecTarget = { kind: 'docker-exec', containerId: 'private-claude', workdir: '/app', binPath: '/opt/claude',
+    const target: DockerExecTarget = { kind: 'docker-exec', containerId: 'private-claude', workdir: '/app', binPath: CONTAINER_CLAUDE_BIN_PATH,
       sessionRelocation: { sessionEnv: 'CLAUDE_CONFIG_DIR', roots: [{ hostRoot: homes, perTaskDir: join(root, 'task-homes') }] },
       originRewrites: [{ from: 'http://127.0.0.1:32001', to: 'http://papercusp-egress:8788' }] };
     const log = join(root, 'claude-exec.json');
@@ -142,7 +143,7 @@ if (process.argv.includes('inspect')) {
     await value.ports.launchNative(input()); await value.ports.getTask('stock-task');
     const observed = JSON.parse(readFileSync(log, 'utf8'));
     expect(observed.args).toContain('c'.repeat(64));
-    expect(observed.args.slice(-4)).toEqual(['/opt/claude', '-p', '--model', 'frozen-model']);
+    expect(observed.args.slice(-4)).toEqual([CONTAINER_CLAUDE_BIN_PATH, '-p', '--model', 'frozen-model']);
     expect(observed.args).not.toContain('--no-daemon'); expect(observed.args).not.toContain('ANTHROPIC_API_KEY');
     expect(observed.args).toContain('CLAUDE_CONFIG_DIR'); expect(observed.args).toContain('ANTHROPIC_AUTH_TOKEN');
     expect(observed.args).toContain('CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS');
@@ -222,8 +223,31 @@ if (process.argv.includes('inspect')) {
     expect(h.ingest).toHaveBeenCalledOnce();
   });
 
+  it.each(['codex', 'claude'] as const)('constructs stock %s Docker ports with the real shared lifecycle adapter', async agent => {
+    const actual = await vi.importActual<typeof import('./current-su')>('./current-su');
+    h.common.mockImplementationOnce(actual.liveCurrentSuBenchPorts);
+    const target: DockerExecTarget = { kind: 'docker-exec', containerId: 'private-task', workdir: '/app',
+      binPath: agent === 'claude' ? CONTAINER_CLAUDE_BIN_PATH : CONTAINER_CODEX_BIN_PATH,
+      sessionRelocation: { sessionEnv: agent === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME',
+        roots: [{ hostRoot: '/tmp/homes', perTaskDir: '/tmp/task-homes' }] }, originRewrites: [] };
+    expect(() => factory({ ...opts(), agent }, target)).not.toThrow();
+    expect(h.record).not.toHaveBeenCalled(); expect(h.managed).not.toHaveBeenCalled();
+  });
+
+  it.each(['codex', 'claude'] as const)('refuses mismatched stock %s container controls before enrollment', agent => {
+    const target: DockerExecTarget = { kind: 'docker-exec', containerId: 'private-task', workdir: '/app',
+      binPath: agent === 'claude' ? CONTAINER_CLAUDE_BIN_PATH : CONTAINER_CODEX_BIN_PATH,
+      sessionRelocation: { sessionEnv: agent === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME',
+        roots: [{ hostRoot: '/tmp/homes', perTaskDir: '/tmp/task-homes' }] }, originRewrites: [] };
+    const options = { ...opts(), agent };
+    expect(() => factory(options, { ...target, workdir: '/other' })).toThrow(/Stock native container/);
+    expect(() => factory(options, { ...target, binPath: agent === 'claude' ? CONTAINER_CODEX_BIN_PATH : CONTAINER_CLAUDE_BIN_PATH })).toThrow(/Stock native container/);
+    expect(() => factory(options, { ...target, sessionRelocation: { ...target.sessionRelocation!, sessionEnv: agent === 'claude' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR' } })).toThrow(/Stock native container/);
+    expect(h.record).not.toHaveBeenCalled(); expect(h.managed).not.toHaveBeenCalled();
+  });
+
   it('refuses stock targets carrying host hooks or lacking the clean-home rewrite before enrollment', () => {
-    const target: DockerExecTarget = { kind: 'docker-exec', containerId: 'private-task', workdir: '/app', binPath: '/opt/codex',
+    const target: DockerExecTarget = { kind: 'docker-exec', containerId: 'private-task', workdir: '/app', binPath: CONTAINER_CODEX_BIN_PATH,
       sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: '/tmp/homes', perTaskDir: '/tmp/task-homes' }] },
       originRewrites: [] };
     expect(() => factory(opts(), { ...target, hookBridge: { url: 'http://egress:9081', recordDir: '/tmp/private-records' } })).toThrow(/without host hooks/);

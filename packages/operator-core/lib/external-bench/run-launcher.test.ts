@@ -2,7 +2,9 @@
  * the production selector, assignment loop, cancellation and persistence ordering run. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { BenchHarnessDriver } from './run-loop';
 import type { BenchTask } from './types';
@@ -310,6 +312,77 @@ describe('current launcher owns its assignment runtime', () => {
     const loadBacklog = async () => [task('t1'), task('t2')].map(value => ({ ...value, benchmark: 'frontier-swe' }));
     return { prepared, prepare, loadBacklog, request: { ...input, arm: 'baseline', suite: 'frontier-swe' } };
   }
+  function claude() {
+    config.grader.family = 'frontier-swe';
+    config.arms[1].agent = 'claude';
+    config.arms[1].runtime.clientVersion = 'claude/2.1.293';
+    config.arms[1].account = 'pinned-claude-account';
+    for (const arm of config.arms) arm.control = { topology: arm.id === 'baseline' ? 'stock-native-reference' : 'solo',
+      solverGroup: arm.id, solverToolsHash: 'a'.repeat(64), capabilities: allCapabilities(arm.id === 'baseline' ? 'off' : 'on') };
+    return { request: { ...input, arm: 'baseline', suite: 'frontier-swe' },
+      loadBacklog: async () => [task('t1'), task('t2')].map(value => ({ ...value, benchmark: 'frontier-swe' })) };
+  }
+  it.each(['suite', 'treatment', 'topology', 'auto-account', 'default-account', 'client-version', 'subscription'])
+    ('refuses unsupported Claude %s before allocation or binary access', async scenario => {
+      const f = claude(), resolveClaudeBinary = vi.fn();
+      if (scenario === 'suite') f.request.suite = 'swe-bench-pro';
+      if (scenario === 'treatment') { config.arms[0].agent = 'claude'; f.request.arm = 'papercusp'; }
+      if (scenario === 'topology') config.arms[1].control!.topology = 'solo';
+      if (scenario === 'auto-account') config.arms[1].account = 'auto';
+      if (scenario === 'default-account') config.arms[1].account = 'default';
+      if (scenario === 'client-version') config.arms[1].runtime.clientVersion = 'unfrozen';
+      if (scenario === 'subscription') for (const arm of config.arms) arm.payer = 'subscription';
+      await expect(launchBenchRun(f.request, { ...deps(), loadBacklog: f.loadBacklog,
+        currentNative: { resolveClaudeBinary } })).rejects.toThrow();
+      expect(resolveClaudeBinary).not.toHaveBeenCalled(); expect(io.register).not.toHaveBeenCalled();
+      expect(io.upsert).not.toHaveBeenCalled(); expect(io.task).not.toHaveBeenCalled();
+    });
+  it('refuses unavailable Claude bytes before durable allocation', async () => {
+    const f = claude();
+    await expect(launchBenchRun(f.request, { ...deps(), loadBacklog: f.loadBacklog,
+      currentNative: { resolveClaudeBinary: () => { throw new Error('missing native binary'); } } })).rejects.toThrow('missing native binary');
+    expect(io.register).not.toHaveBeenCalled(); expect(io.upsert).not.toHaveBeenCalled(); expect(io.task).not.toHaveBeenCalled();
+  });
+  it('binds pinned Claude bytes, stock assignment and evidence without a Codex fallback', async () => {
+    const f = claude(), root = mkdtempSync(join(tmpdir(), 'claude-selector-'));
+    const binary = join(root, 'claude'), bytes = 'private fixture bytes; never executed';
+    writeFileSync(binary, bytes, { mode: 0o700 });
+    const stop = vi.fn(async () => {});
+    const start = vi.fn<NonNullable<NonNullable<NonNullable<Parameters<typeof launchBenchRun>[1]>['currentNative']>['start']>>(
+      async (_trial, host) => ({ options: host.options,
+        observations: { admit: async () => ({ admitted: false, receiptRef: 'fixture:no-launch' }), observeIdentity: async () => null },
+        checkout: { dir: '/private/observer', repo: 'fixture', baseCommit: 'a'.repeat(40), cleanup: async () => {} },
+        readModelCalls: async () => 0, stop }));
+    const currentFrontierArm: NonNullable<Parameters<typeof launchBenchRun>[1]>['currentFrontierArm'] = vi.fn(async req => {
+      expect(req.launch.execution).toBe('claude-native');
+      expect(req.launch.seam).toEqual({ inContainerClaude: { claudeBinary: realpathSync(binary), version: '2.1.293',
+        sha256: createHash('sha256').update(bytes).digest('hex') } });
+      expect(io.register).toHaveBeenCalledOnce();
+      const assignment = await req.launch.startAssignment({ task: req.backlog![0] } as never);
+      await assignment.stop();
+      await req.onResult!({ runId: req.runId, suite: 'frontier-swe', modality: 'in-container', taskId: 't1',
+        arm: 'baseline', seed: 3, resolved: false, score: 0.5, graderStatus: 'failed', graderFamily: 'frontier-swe',
+        graderVersion: config.grader.version, tokensIn: 10, tokensOut: 20, tokensTotal: 30, costUsd: 0.001,
+        priceTableVersion: config.priceSchedule.version, wallClockMs: 100, turns: 2, budgetTokens: null,
+        capped: false, generationStatus: 'completed', generationError: null,
+        armMeta: { nativeUsage: { stopReason: 'done', tokensCacheRead: 5, tokensCacheWrite: 7 } },
+        modelId: config.arms[1].model, harnessVersion: config.arms[1].runtime.sourceRevision,
+        preregHash: input.current!.preregHash, rolloutId: req.runId });
+      return { arm: req.spec.arm, runId: req.runId, startedAtMs: 0, finishedAtMs: 1, rows: [], modelCallsSpent: 0,
+        tokensSpent: 0, costUsdSpent: 0, budgetExhausted: false, attemptedTaskIds: ['t1'], skippedTaskIds: ['t2'] };
+    });
+    try {
+      expect(currentBenchLaunchSelection(f.request, config).arm.agent).toBe('claude');
+      await (await launchBenchRun(f.request, { ...deps(), loadBacklog: f.loadBacklog,
+        currentNative: { resolveClaudeBinary: () => binary, start }, currentFrontierArm })).done;
+      expect(start).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        options: expect.objectContaining({ agent: 'claude', account: 'pinned-claude-account' }) }));
+      expect(stop).toHaveBeenCalledOnce();
+      expect(io.emit.mock.calls[0][0].generation).toMatchObject({ trajectoryKind: 'native-claude', tokensCacheRead: 5, tokensCacheWrite: 7 });
+      expect(io.snapshot.mock.calls[0][0].result.taskResults[0].attempt.blueprintId).toBe('native-claude');
+      expect(io.legacyRun).not.toHaveBeenCalled(); expect(io.legacyBind).not.toHaveBeenCalled();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it.each(['sourceRevision', 'clientVersion', 'runtimeRevision', 'harborVersion'] as const)
     ('refuses a Proximus %s mismatch before durable allocations', async field => {
       const f = proximus(); f.prepared.runtime[field] = 'different';

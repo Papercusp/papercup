@@ -48,7 +48,7 @@ import {
 } from './run-store';
 import { loadBenchTaskSet } from './task-sets';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { defaultBenchResultsDir } from './preserved-runs';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
@@ -73,7 +73,8 @@ import { frontierSweAgentNetworkArgs, type FrontierSweEnvHandle } from './fronti
 import { prepareProximusRuntime, runProximusHost, readProximusAttemptPopulation, readProximusBilling, priceProximusAttempts } from './proximus-runtime';
 import type { RunAgentInput } from './run-topology';
 import { createCurrentStockBenchHarness } from './native-harness-runner';
-import { CURRENT_STOCK_CODEX_BLUEPRINT } from './current-su';
+import { CURRENT_STOCK_CODEX_BLUEPRINT, CURRENT_STOCK_CLAUDE_BLUEPRINT } from './current-su';
+import { resolveContainerClaudeBinary } from './container-exec-target';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { resolveCoordinationSpec } from './coordination-topology';
 import { emitRollout } from './reproducibility/emit';
@@ -164,6 +165,7 @@ export interface LaunchDeps {
   currentGeneration?: Pick<import('./types').GenerationPorts, 'clone' | 'extractDiff'>;
   /** Host-owned in-container run seam; never taken from the launch JSON. */
   currentFrontierArm?: typeof runFrontierSweCurrentArm;
+  currentNative?: { start?: typeof startFrontierSweCurrentAssignment; resolveClaudeBinary?: typeof resolveContainerClaudeBinary };
   /** Trusted host seams; launch JSON cannot select an interpreter or assignment factory. */
   currentProximus?: { prepare?: typeof prepareProximusRuntime; start?: typeof startFrontierSweProximusAssignment };
 }
@@ -646,7 +648,13 @@ export function currentBenchLaunchSelection(input: LaunchBenchRunInput, config: 
   // through to a Queen or become a second su treatment under a baseline label.
   const hostReference = arm.id === 'baseline' && arm.agent === 'proximus' &&
     input.suite === 'frontier-swe' && protocol.grader.family === 'frontier-swe';
-  if (!['papercusp', 'baseline'].includes(arm.id) || arm.agent !== 'codex' && !hostReference)
+  const claudeReference = arm.id === 'baseline' && arm.agent === 'claude' &&
+    input.suite === 'frontier-swe' && protocol.grader.family === 'frontier-swe' &&
+    (arm.payer ?? 'api-key') === 'api-key' &&
+    (!arm.control || arm.control.topology === 'stock-native-reference') &&
+    arm.account === arm.account.trim() && !['auto', 'default'].includes(arm.account) &&
+    /^claude\/\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(arm.runtime.clientVersion);
+  if (!['papercusp', 'baseline'].includes(arm.id) || arm.agent !== 'codex' && !hostReference && !claudeReference)
     throw new Error('Unsupported current benchmark execution arm/client.');
   if (input.taskSetId !== 'custom' || input.taskIds && canonicalJson(input.taskIds) !== canonicalJson(protocol.taskIds) ||
       input.model !== undefined && input.model !== arm.model || input.cap !== undefined && input.cap !== 1 ||
@@ -659,7 +667,8 @@ export function currentBenchLaunchSelection(input: LaunchBenchRunInput, config: 
     protocolRunId: protocol.runId, preregHash: current.preregHash, arm: arm.id, seed: current.seed })).digest('hex');
   // Preserve the narrowed client in the returned type; host references have
   // their own driver and must never widen CurrentSuBenchOptions by accident.
-  return { protocol, arm: { ...arm, agent: arm.agent === 'codex' ? 'codex' as const : 'proximus' as const }, runId: `current-${id}` };
+  return { protocol, arm: { ...arm, agent: arm.agent === 'codex' ? 'codex' as const :
+    arm.agent === 'claude' ? 'claude' as const : 'proximus' as const }, runId: `current-${id}` };
 }
 
 function currentBenchResources(protocol: CurrentBenchmarkProtocol): LearningReservationResourceBudget {
@@ -1023,6 +1032,12 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
   if (canonicalJson(loaded.map(task => task.instanceId).sort()) !== canonicalJson([...protocol.taskIds].sort()) ||
       loaded.some(task => task.benchmark !== (input.suite ?? 'swe-bench-pro'))) throw new Error('Current benchmark task loader differs from the frozen roster/suite.');
   const backlog = protocol.taskIds.map(id => loaded.find(task => task.instanceId === id)!);
+  // Freeze host bytes before allocating a run. The existing container seam
+  // rechecks this hash and the protocol's CLI version in each actual task image.
+  const claudeBinary = arm.agent === 'claude'
+    ? realpathSync((deps.currentNative?.resolveClaudeBinary ?? resolveContainerClaudeBinary)()) : undefined;
+  const claude = claudeBinary ? { claudeBinary, version: arm.runtime.clientVersion.slice('claude/'.length),
+    sha256: createHash('sha256').update(readFileSync(claudeBinary)).digest('hex') } : undefined;
   // Installation and confined byte measurement precede every durable allocation.
   // A frozen interpreter path alone is not evidence of the installed runtime.
   const prepared = arm.agent === 'proximus'
@@ -1080,11 +1095,12 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
               { ...host, options: { ...options, agent: 'proximus' }, pythonBin: prepared!.pythonBin }));
           } }
         : { runId, protocolRunId: protocol.runId, context, signal: abort.signal,
+          ...(claude ? { execution: 'claude-native' as const, seam: { inContainerClaude: claude } } : {}),
           mcpOrigin: resolveSpawnHostOperatorBaseUrl(), hookRecordDir: join(defaultBenchResultsDir(), 'frontier-hooks', runId),
           startAssignment: async trial => {
             await upsertBenchRunTask(runId, { instanceId: trial.task.instanceId, taskStatus: 'in_progress' }, scope);
-            return ownAssignment(await startFrontierSweCurrentAssignment(trial,
-              { ...host, options: { ...options, agent: 'codex' }, observation: current.observation }));
+            return ownAssignment(await (deps.currentNative?.start ?? startFrontierSweCurrentAssignment)(trial,
+              { ...host, options: { ...options, agent: arm.agent === 'claude' ? 'claude' : 'codex' }, observation: current.observation }));
           } };
       await execute({ spec: resolveCoordinationSpec({ id: arm.id, spine: { claimModel: 'self-claim-fifo' } }),
         runId, seed: current.seed, backlog, cap: 1,
@@ -1101,7 +1117,8 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
           const stopReason = row.generationStatus === 'error' ? 'error' : row.generationStatus === 'timeout' ? 'timeout' :
             native?.stopReason ?? (row.capped ? 'budget-exhausted' : 'done');
           const result: FleetTaskResult = { attempt: { arm: arm.id,
-            blueprintId: arm.agent === 'proximus' ? 'proximus-host' : arm.id === 'baseline' ? CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT,
+            blueprintId: arm.agent === 'proximus' ? 'proximus-host' : arm.id === 'baseline'
+              ? arm.agent === 'claude' ? CURRENT_STOCK_CLAUDE_BLUEPRINT : CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT,
             instanceId: row.taskId, seed: String(current.seed), diff: '', tokensIn: row.tokensIn, tokensOut: row.tokensOut,
             tokensCacheRead: usage?.tokensCacheRead, tokensCacheWrite: usage?.tokensCacheWrite,
             costUsd: row.costUsd, turns: row.turns, wallClockMs: row.wallClockMs, trajectoryRef: row.traceRefs?.[0] ?? '',
@@ -1116,7 +1133,7 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
               tokensTotal: row.tokensTotal, tokensCacheRead: usage?.tokensCacheRead ?? null, tokensCacheWrite: usage?.tokensCacheWrite ?? null,
               wallClockMs: row.wallClockMs, turns: row.turns, budgetTokens: row.budgetTokens, capped: row.capped,
               modelId: arm.model, harnessVersion: row.harnessVersion, trajectoryRef: result.attempt.trajectoryRef,
-              trajectoryKind: arm.agent === 'proximus' ? 'proximus-host' : 'native-codex', armMeta: result.attempt.armMeta },
+              trajectoryKind: arm.agent === 'proximus' ? 'proximus-host' : arm.agent === 'claude' ? 'native-claude' : 'native-codex', armMeta: result.attempt.armMeta },
             grading: { resolved: row.resolved, status: row.graderStatus, family: protocol.grader.family,
               version: protocol.grader.version, score: row.score, structuredOutput: row.graderDetail },
             provenance: { configSnapshot: protocol, harnessGitSha: arm.runtime.sourceRevision } }, scope);

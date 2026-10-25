@@ -17,7 +17,7 @@ import { currentBenchAssignmentId, currentBenchGatewayController, type CurrentSu
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import { GatewayRequestTelemetry } from '../inference-gateway/request-stage-telemetry';
 import { startBenchEgress, type BenchEgress, type TaskNetworkLease } from './bench-egress';
-import { CONTAINER_CODEX_BIN_PATH, resolveContainerClaudeBinary, resolveContainerCodexBinary, type DockerExecTarget } from './container-exec-target';
+import { CONTAINER_CLAUDE_BIN_PATH, CONTAINER_CODEX_BIN_PATH, resolveContainerClaudeBinary, resolveContainerCodexBinary, type DockerExecTarget } from './container-exec-target';
 import { restoreRelocatedSessions } from './frontier-swe-seam';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, homes: '' }));
@@ -32,6 +32,14 @@ vi.mock('../session-end-lease-release-hook', () => ({ scheduleSessionEndLeaseRel
 vi.mock('../session-archive-hook', () => ({ scheduleArchiveForAdvSession: () => {} }));
 
 const workspaceId = 'private-stock-native';
+// A separate glibc fixture, pinned independently of the musl Codex image. These
+// coordinates qualify local refusal/lifecycle evidence, not a benchmark image.
+const claudeDockerFixture = {
+  image: 'debian@sha256:eb593cf2c358cacef45ca0a424bbc7d30cfa3466265fc2662b9466a0ca6ba1c5',
+  imageId: 'sha256:787cd32c15da653c63f8689246f8199870afdbe8d822b7e560d651e20d6def02',
+  version: '2.1.293',
+  binarySha256: '8968405e26db478af44eabc4635ab5ca557057b702a54460a59c13e1b253e978',
+};
 let db: OrgTestDb, root: string;
 const execDocker = promisify(execFile);
 async function docker(args: string[], timeout = 30000): Promise<string> {
@@ -56,11 +64,9 @@ afterAll(async () => { await db?.cleanup(); if (root) rmSync(root, { recursive: 
 
 async function refusedAssignment(name: string, problemStatement: string, inContainer = false, freshSessions = 1,
   agent: 'codex' | 'claude' = 'codex') {
-  // The Claude witness covers the host SRT boundary. Docker requires its own
-  // frozen image/native compatibility proof; never silently use the Codex image.
-  if (agent === 'claude' && inContainer) throw new Error('Claude Docker lifecycle requires its frozen image fixture.');
   const claudeBinary = agent === 'claude' ? resolveContainerClaudeBinary() : undefined;
   const claudeSha = claudeBinary && createHash('sha256').update(readFileSync(claudeBinary)).digest('hex');
+  if (agent === 'claude' && inContainer) expect(claudeSha).toBe(claudeDockerFixture.binarySha256);
   if (claudeBinary) console.info('STOCK_NATIVE_CLAUDE_BINARY', JSON.stringify({ path: claudeBinary, sha256: claudeSha,
     version: execFileSync(claudeBinary, ['--version'], { encoding: 'utf8', timeout: 30000 }).trim() }));
   const repoRoot = join(root, `protocol-${name}`), checkout = join(root, `checkout-${name}`); mkdirSync(repoRoot); mkdirSync(checkout);
@@ -88,6 +94,8 @@ async function refusedAssignment(name: string, problemStatement: string, inConta
     input: `blob\nmark :1\ndata ${Buffer.byteLength(body)}\n${body}\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1577836800 +0000\ndata 6\nfrozen\nM 100644 :1 ${frozen.filePath}\n\ndone\n` });
   const bodies: Array<Record<string, unknown>> = [];
   const requestHeaders: Array<Record<string, string | string[] | undefined>> = [];
+  const effectiveControls: Array<Record<string, string>> = [];
+  let container: string | undefined, requestWitnessError: unknown;
   // Request timing makes a cold-start budget miss distinguishable from a transport fault.
   const seen: Array<{ t: number; method?: string; url?: string }> = []; const t0 = Date.now();
   const server = createServer(async (req, res) => {
@@ -102,6 +110,25 @@ async function refusedAssignment(name: string, problemStatement: string, inConta
         .filter(([key]) => !['authorization', 'x-api-key'].includes(key)));
       requestHeaders.push(headers);
       if (agent === 'claude') console.info('STOCK_NATIVE_CLAUDE_REQUEST', JSON.stringify({ headers, body }));
+      if (agent === 'claude' && inContainer) {
+        try {
+          // Read only this mounted executable's allowlisted controls while its
+          // request is held. Never retain provider tokens or full environ data.
+          const controls = await docker(['exec', container!, '/bin/sh', '-c',
+            'for p in /proc/[0-9]*/exe; do if [ "$(readlink "$p")" = "$1" ]; then '
+            + 'tr "\\000" "\\n" < "${p%/exe}/environ" | grep -E "^(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC|CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS|CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK|DISABLE_INTERLEAVED_THINKING|CLAUDE_CODE_MODEL_CAPABILITIES|DISABLE_AUTOUPDATER)="; '
+            + 'printf "NATIVE_PID=%s\\n" "${p#/proc/}"; fi; done', 'native-controls', CONTAINER_CLAUDE_BIN_PATH]);
+          const entries = controls.split('\n').map(line => {
+            const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1)];
+          });
+          expect(entries).toHaveLength(7);
+          const observed = Object.fromEntries(entries);
+          expect(observed.NATIVE_PID).toMatch(/^\d+\/exe$/);
+          delete observed.NATIVE_PID;
+          effectiveControls.push(observed);
+          console.info('STOCK_NATIVE_CLAUDE_EFFECTIVE_CONTROLS', JSON.stringify(observed));
+        } catch (error) { requestWitnessError = error; }
+      }
     }
     res.writeHead(400, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: 'Private no-forwarding lifecycle fixture.' } }));
@@ -120,14 +147,23 @@ async function refusedAssignment(name: string, problemStatement: string, inConta
     agent, model: 'configured-alias', effort: 'high', account: 'auto', pollIntervalMs: 25, driveTimeoutMs: 45000,
     preregistration: { config, preregHash: frozen.preregHash, repoRoot } };
   const ctx = { workspaceId, principal: { slug: 'authenticated-private-fixture' } } as PapercuspUnifiedToolContext;
-  let egress: BenchEgress | undefined, lease: TaskNetworkLease | undefined, container: string | undefined;
+  let egress: BenchEgress | undefined, lease: TaskNetworkLease | undefined;
   let unbind: (() => void) | undefined, containerExec: DockerExecTarget | undefined;
   let primaryError: unknown;
   try {
     if (inContainer) {
       // Preflight every local dependency before creating Docker resources.
-      for (const image of ['alpine', 'nginx:alpine']) await docker(['image', 'inspect', image]);
-      const codex = resolveContainerCodexBinary();
+      // Claude's bypass-permissions mode requires a non-root runtime; keep
+      // mounted task/home ownership identical to the host's private fixture.
+      const nativeUid = process.getuid!(), nativeGid = process.getgid!();
+      if (agent === 'claude') expect(nativeUid, 'Claude Docker fixture requires a non-root host user').toBeGreaterThan(0);
+      // Content IDs survive an offline daemon transfer; registry digest aliases
+      // need not. Both remain recorded in the fixture's provenance below.
+      const image = agent === 'claude' ? claudeDockerFixture.imageId : 'alpine';
+      for (const dependency of [image, 'nginx:alpine']) await docker(['image', 'inspect', dependency]);
+      if (agent === 'claude') expect(await docker(['image', 'inspect', '--format', '{{.Id}}', image])).toBe(claudeDockerFixture.imageId);
+      const binary = claudeBinary ?? resolveContainerCodexBinary();
+      const binPath = agent === 'claude' ? CONTAINER_CLAUDE_BIN_PATH : CONTAINER_CODEX_BIN_PATH;
       const perTaskDir = join(root, `container-homes-${name}`); mkdirSync(perTaskDir);
       egress = await startBenchEgress({ runId: `stock-native-proof-${randomUUID()}`,
         endpoints: [{ name: 'gw', listenPort: 8788, perTask: true }] });
@@ -136,10 +172,24 @@ async function refusedAssignment(name: string, problemStatement: string, inConta
       unbind = egress.bindTaskEndpoint(lease.network, 'gw', port);
       container = await docker(['run', '-d', '--name', `stock-native-fixture-${randomUUID()}`, '--label', `papercusp.stock-proof=${egress.runId}`,
         '--network', lease.network, '--workdir', '/app',
-        '--mount', `type=bind,src=${codex},dst=${CONTAINER_CODEX_BIN_PATH},readonly`,
-        '--mount', `type=bind,src=${perTaskDir},dst=${h.homes}`, 'alpine', 'sleep', '300'], 60000);
-      containerExec = { kind: 'docker-exec', containerId: container, workdir: '/app', binPath: CONTAINER_CODEX_BIN_PATH,
-        sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: h.homes, perTaskDir }] },
+        ...(agent === 'claude' ? ['--user', `${nativeUid}:${nativeGid}`] : []),
+        '--mount', `type=bind,src=${binary},dst=${binPath},readonly`,
+        ...(agent === 'claude' ? ['--mount', `type=bind,src=${checkout},dst=/app`] : []),
+        '--mount', `type=bind,src=${perTaskDir},dst=${h.homes}`, image, 'sleep', '300'], 60000);
+      if (agent === 'claude') {
+        expect(await docker(['inspect', '--format', '{{.Image}}', container])).toBe(claudeDockerFixture.imageId);
+        expect(await docker(['exec', container, 'id', '-u'])).toBe(String(nativeUid));
+        expect(await docker(['exec', container, 'id', '-g'])).toBe(String(nativeGid));
+        expect(await docker(['exec', '-w', '/app', container, 'env', '-i', 'HOME=/tmp',
+          'CLAUDE_CONFIG_DIR=/tmp/private-version-probe', binPath, '--version'])).toBe(`${claudeDockerFixture.version} (Claude Code)`);
+        // Match the wrapper's no-policy admission without opening policy files.
+        expect(await docker(['exec', container, '/bin/sh', '-c',
+          'test -d /etc && test -x /etc && test ! -e /etc/claude-code && test ! -L /etc/claude-code && printf admitted'])).toBe('admitted');
+        console.info('STOCK_NATIVE_CLAUDE_DOCKER_PIN', JSON.stringify({ ...claudeDockerFixture, containerId: container,
+          uid: nativeUid, gid: nativeGid }));
+      }
+      containerExec = { kind: 'docker-exec', containerId: container, workdir: '/app', binPath,
+        sessionRelocation: { sessionEnv: agent === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME', roots: [{ hostRoot: h.homes, perTaskDir }] },
         originRewrites: [{ from: `http://127.0.0.1:${port}`, to: egress.originFor('gw') }] };
       console.info('STOCK_NATIVE_PHASE', JSON.stringify({ phase: 'native-start', container }));
     }
@@ -212,26 +262,27 @@ async function refusedAssignment(name: string, problemStatement: string, inConta
     if (freshSessions > 1) {
       expect(() => hosted.issueSessionBudget(config.arms[1].generationBudget)).toThrow(/exhausted/);
       expect(bodies).toHaveLength(freshSessions);
-      for (const body of bodies) expect(JSON.stringify(agent === 'claude' ? [body.system, body.messages] : body.input)).toContain(checkout);
+      for (const body of bodies) expect(JSON.stringify(agent === 'claude' ? [body.system, body.messages] : body.input)).toContain(inContainer ? '/app' : checkout);
     }
     if (inContainer) {
-      const home = join(h.homes, String(rows[0].id));
       expect(egress!.stats().gw.connections).toBeGreaterThan(0);
-      const toml = readFileSync(join(home, 'config.toml'), 'utf8');
-      expect(toml).toContain(egress!.originFor('gw'));
-      expect(toml).not.toContain('mcp_servers');
-      for (const file of ['AGENTS.md', 'hooks.json', 'auth.json']) expect(existsSync(join(home, file))).toBe(false);
-      const request = JSON.stringify(bodies[0].input);
-      expect(request).toContain('<cwd>/app</cwd>');
+      if (agent === 'codex') {
+        const toml = readFileSync(join(homeFor(rows[0]), 'config.toml'), 'utf8');
+        expect(toml).toContain(egress!.originFor('gw'));
+        expect(toml).not.toContain('mcp_servers');
+      }
+      const request = JSON.stringify(agent === 'claude' ? [bodies[0].system, bodies[0].messages] : bodies[0].input);
+      expect(request).toContain(agent === 'claude' ? '/app' : '<cwd>/app</cwd>');
       expect(request).not.toContain(checkout);
     }
+    if (requestWitnessError) throw requestWitnessError;
     const collector = new GatewayRequestTelemetry();
     const span = collector.begin({ provider: agent, protocol: agent === 'claude' ? 'anthropic-messages' : 'openai-responses' });
     span.setCacheShape(Buffer.from(JSON.stringify(bodies[0])));
     const cache = span.finish('gateway-error', 400)!.cache;
     const text = JSON.stringify(bodies[0].input);
     if (claudeBinary) expect(createHash('sha256').update(readFileSync(claudeBinary)).digest('hex')).toBe(claudeSha);
-    return { cache, checkout, body: bodies[0], bodies, requestHeaders, checkoutInInput: text?.includes(checkout), nativeSessionIds };
+    return { cache, checkout, body: bodies[0], bodies, requestHeaders, effectiveControls, checkoutInInput: text?.includes(checkout), nativeSessionIds };
   } catch (error) {
     primaryError = error;
     throw error;
@@ -282,6 +333,28 @@ it('observes fresh Claude native requests and terminal ingestion after local ref
   }
   console.info('STOCK_NATIVE_CLAUDE_SESSIONS', JSON.stringify({ sessionIds: result.nativeSessionIds }));
 }, 120000);
+
+it('qualifies pinned Claude Docker controls and fresh conversations without provider forwarding', async () => {
+  const result = await refusedAssignment('claude-docker-fresh', 'Describe the same task workspace.', true, 2, 'claude');
+  expect(result.nativeSessionIds).toHaveLength(2);
+  expect(new Set(result.nativeSessionIds).size).toBe(2);
+  expect(result.bodies).toHaveLength(2);
+  expect(result.effectiveControls).toHaveLength(2);
+  for (const [index, body] of result.bodies.entries()) {
+    expect(result.effectiveControls[index]).toEqual({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1', CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: '1',
+      DISABLE_INTERLEAVED_THINKING: '1', CLAUDE_CODE_MODEL_CAPABILITIES: '-mid_conv_system', DISABLE_AUTOUPDATER: '1' });
+    expect(body.model).toBe('configured-alias');
+    expect(JSON.stringify(body.metadata)).toContain(result.nativeSessionIds[index]);
+    expect((body.messages as Array<{ role: string }>).map(message => message.role)).toEqual(['user']);
+    expect(body).not.toHaveProperty('context_management');
+    expect(body.thinking).toEqual({ type: 'adaptive' });
+    expect(result.requestHeaders[index]['anthropic-version']).toBe('2023-06-01');
+    expect(result.requestHeaders[index]['anthropic-beta']).toBe('claude-code-20250219,effort-2025-11-24');
+    expect(result.requestHeaders[index]['x-claude-code-session-id']).toBe(result.nativeSessionIds[index]);
+  }
+  console.info('STOCK_NATIVE_CLAUDE_DOCKER_SESSIONS', JSON.stringify({ sessionIds: result.nativeSessionIds }));
+}, 240000);
 
 it('keeps source-bound native instruction templates across distinct isolated assignments', async () => {
   const first = await refusedAssignment('fingerprint-first', 'Describe the first empty repository.');

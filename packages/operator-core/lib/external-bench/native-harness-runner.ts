@@ -42,7 +42,7 @@ import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { DbScope } from './reproducibility/db';
 import type { BenchHarnessOps } from './bench-harness-live';
 import { managedSpawn } from '../task-manager/managed-spawn';
-import { materializeDockerExecWrapper, validateDockerExecTarget } from './container-exec-target';
+import { CONTAINER_CLAUDE_BIN_PATH, CONTAINER_CODEX_BIN_PATH, materializeDockerExecWrapper, validateDockerExecTarget } from './container-exec-target';
 import { redactSensitiveText } from '../sensitive-text';
 import type { ChatEvent, RunAgentChatOptions } from '../agent-chat-stream';
 import {
@@ -69,15 +69,21 @@ const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(
  * verifier, native task/session registries, sandbox and complete cost reader. */
 export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx: PapercuspUnifiedToolContext,
   observations: CurrentSuBenchObservations, db: Pick<DbScope, 'sql'> = {}) {
-  const common = liveCurrentSuBenchPorts(ctx, observations, opts, db);
   const agent = opts.agent;
   const homeEnv = agent === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME';
   const containerExec = observations.containerExec && structuredClone(observations.containerExec);
   if (containerExec) {
     validateDockerExecTarget(containerExec);
-    if (containerExec.hookBridge || containerExec.sessionRelocation?.sessionEnv !== homeEnv || !containerExec.originRewrites)
+    const binPath = agent === 'claude' ? CONTAINER_CLAUDE_BIN_PATH : CONTAINER_CODEX_BIN_PATH;
+    if (containerExec.workdir !== '/app' || containerExec.binPath !== binPath ||
+        containerExec.sessionRelocation?.sessionEnv !== homeEnv)
+      throw new Error('Stock native container requires /app, its maintained agent binary, and matching clean-home relocation.');
+    if (containerExec.hookBridge || !containerExec.originRewrites)
       throw new Error('Stock native container requires a relocated clean home and gateway rewrite without host hooks.');
   }
+  // Stock launchNative owns its validated Docker wrapper. Reuse lifecycle and
+  // accounting without configuring the separate current-su Codex launcher.
+  const common = liveCurrentSuBenchPorts(ctx, { ...observations, containerExec: undefined }, opts, db);
   const pending = new Map<string, Promise<void>>();
   const taskFinishes = new Map<string, Promise<void>>();
   const streamErrors = new Map<string, string>();
