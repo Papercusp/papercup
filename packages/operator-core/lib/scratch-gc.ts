@@ -341,12 +341,31 @@ function withScratchWorkspaceDataMutex<T>(
   workspaceId: string,
   operation: string,
   run: () => Promise<T>,
+  onWaiting?: (info: { owner: string; elapsedMs: number }) => void,
+  onAcquired?: (info: {
+    waitedMs: number;
+    fsMutexAdmissionMs: number;
+    admissionSubphaseTimingsMs?: Record<string, number>;
+  }) => void,
 ): Promise<T> {
   const mutexName = scratchWorkspaceDataMutexName(workspaceId);
   const lockRootDir = scratchQuotaMutexLockRoot();
+  const admissionStartedAt = performance.now();
+  const observeAdmission = onAcquired
+    ? (info: { waitedMs: number; admissionSubphaseTimingsMs?: Record<string, number> }) => onAcquired({
+        waitedMs: Math.max(0, performance.now() - admissionStartedAt),
+        fsMutexAdmissionMs: info.waitedMs,
+        ...(info.admissionSubphaseTimingsMs
+          ? { admissionSubphaseTimingsMs: { ...info.admissionSubphaseTimingsMs } }
+          : {}),
+      })
+    : undefined;
   return withFsMutex(mutexName, run, {
     intent: { subsystem: 'scratch-quota', operation, workspaceId },
     ...(lockRootDir ? { lockRootDir } : {}),
+    waitingNoticeIntervalMs: 5_000,
+    onWaiting,
+    onAcquired: observeAdmission,
   });
 }
 
@@ -1769,6 +1788,10 @@ export interface ScratchWriteTimings {
   quotaRecoveryMs: number;
   /** Time waiting for the shared payload-data read lease. */
   dataLeaseWaitMs?: number;
+  /** Time quota recovery waits to acquire the exclusive scratch data mutex. */
+  quotaRecoveryDataMutexWaitMs?: number;
+  /** Filesystem mutex admission time within the quota-recovery data mutex wait. */
+  quotaRecoveryDataMutexAdmissionMs?: number;
   /** Awaited shared quota-state file reads, including the revision read before publication. */
   quotaStateReadMs?: number;
   /** Awaited publication I/O (parent mkdir, temp write, rename, and failed-temp cleanup). */
@@ -2041,6 +2064,8 @@ export async function writeWithScratchQuota(
     ...(opts.captureSubphaseTimings ? { awaitSubphaseTimingsMs: {} } : {}),
   };
   let activeRecoveryDiagnostics: ScratchQuotaRecoveryDiagnostics | undefined;
+  let recoveryDataMutexWaitOwner: ScratchWriteMutexWaitOwner | undefined;
+  let emitActiveRecoveryProgress: (() => void) | undefined;
   let sharedMeasuredAt = Date.now();
   const timed = async (
     phase: 'quotaWaitMs' | 'refreshWaitMs' | 'quotaRecoveryMs' | 'writeMs',
@@ -2066,6 +2091,9 @@ export async function writeWithScratchQuota(
                 pendingWrites: entry.writes.size,
                 recoveryActive: Boolean(entry.recovering),
                 refreshActive: Boolean(entry.refreshing),
+                ...(phase === 'quotaRecoveryMs' && recoveryDataMutexWaitOwner
+                  ? { mutexWaitOwner: recoveryDataMutexWaitOwner }
+                  : {}),
                 ...(phase === 'quotaRecoveryMs' && activeRecoveryDiagnostics
                   ? { quotaRecoveryDiagnostics: snapshotScratchQuotaRecoveryDiagnostics(activeRecoveryDiagnostics) }
                   : {}),
@@ -2078,6 +2106,7 @@ export async function writeWithScratchQuota(
             // Diagnostics must never replace a write failure or invalidate a cursor.
           }
     };
+    if (phase === 'quotaRecoveryMs' && opts.onTiming) emitActiveRecoveryProgress = emitProgress;
     const progressTimeout = opts.onTiming && phase !== 'quotaRecoveryMs'
       ? setTimeout(emitProgress, SCRATCH_WRITE_PROGRESS_AFTER_MS)
       : undefined;
@@ -2093,6 +2122,9 @@ export async function writeWithScratchQuota(
       if (progressTimeout) clearTimeout(progressTimeout);
       progressInterval?.stop();
       timings[phase] += Math.max(0, performance.now() - start);
+      if (phase === 'quotaRecoveryMs' && emitActiveRecoveryProgress === emitProgress) {
+        emitActiveRecoveryProgress = undefined;
+      }
     }
   };
   let succeeded = false;
@@ -2223,6 +2255,21 @@ export async function writeWithScratchQuota(
               true,
               diagnostics,
             );
+          }, opts.onTiming ? (info) => {
+            recoveryDataMutexWaitOwner = scratchWriteMutexWaitOwner(info.owner);
+            emitActiveRecoveryProgress?.();
+          } : undefined, (info) => {
+            timings.quotaRecoveryDataMutexWaitMs = info.waitedMs;
+            timings.quotaRecoveryDataMutexAdmissionMs = info.fsMutexAdmissionMs;
+            if (opts.captureSubphaseTimings) {
+              const subphases = timings.awaitSubphaseTimingsMs ??= {};
+              for (const [name, elapsedMs] of Object.entries(info.admissionSubphaseTimingsMs ?? {})) {
+                const key = 'quota-recovery-data-admission.' + name;
+                subphases[key] = (subphases[key] ?? 0) + elapsedMs;
+              }
+            }
+            recoveryDataMutexWaitOwner = undefined;
+            emitActiveRecoveryProgress?.();
           });
           await withScratchWorkspaceMutex(opts.workspaceId, 'quota-recovery-state', async () => {
             await writeSharedScratchQuotaState(

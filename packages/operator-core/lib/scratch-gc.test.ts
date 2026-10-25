@@ -1769,6 +1769,81 @@ describe('deferred scratch quota recovery', () => {
     }
   });
 
+  it('reports the filesystem owner while quota recovery waits for the exclusive data mutex', async () => {
+    const workspaceId = 'ws-Q';
+    makeSparseRun(workspaceId, UUID(1), WORKSPACE_QUOTA_BYTES + 1024);
+    _setScratchUsageForTests(workspaceId, WORKSPACE_QUOTA_BYTES + 1024);
+
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    const dataMutexName = 'papercusp-scratch-data-' +
+      createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
+    const holderTraceId = '5d2254a2-7052-4ee2-a52f-14a29fe81834';
+    let releaseHolder!: () => void;
+    let startedHolder!: () => void;
+    const holderGate = new Promise<void>((resolveGate) => { releaseHolder = resolveGate; });
+    const holderStarted = new Promise<void>((resolveStarted) => { startedHolder = resolveStarted; });
+    const holder = withFsMutex(dataMutexName, async () => {
+      startedHolder();
+      await holderGate;
+    }, {
+      mode: 'read',
+      intent: {
+        subsystem: 'scratch-quota',
+        operation: 'test-payload-holder',
+        workspaceId,
+        requestTraceId: holderTraceId,
+      },
+      waitingNoticeIntervalMs: 5_000,
+    });
+    const timings: ScratchWriteTimings[] = [];
+    let ownerObserved = false;
+    let write: Promise<void> | undefined;
+    try {
+      await holderStarted;
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] });
+      write = writeWithScratchQuota({
+        workspaceId,
+        filePath: join(workspaceRoot, 'quota', UUID(2), 'progress.bin'),
+        bytes: 16,
+        captureSubphaseTimings: true,
+        onTiming: (row) => {
+          timings.push(row);
+          if (
+            row.progress?.phase === 'quota-recovery' &&
+            row.progress.mutexWaitOwner?.requestTraceId === holderTraceId
+          ) ownerObserved = true;
+        },
+      }, async () => {});
+
+      for (let attempt = 0; attempt < 100 && !ownerObserved; attempt += 1) {
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(ownerObserved).toBe(true);
+      expect(timings.find((row) => row.progress?.mutexWaitOwner)?.progress?.mutexWaitOwner).toMatchObject({
+        layer: 'filesystem',
+        operation: 'test-payload-holder',
+        subsystem: 'scratch-quota',
+        requestTraceId: holderTraceId,
+        pid: expect.any(Number),
+      });
+
+      releaseHolder();
+      await vi.advanceTimersByTimeAsync(100);
+      await holder;
+      await write;
+      const settled = timings.find((row) => !row.progress);
+      expect(settled?.quotaRecoveryDataMutexWaitMs).toEqual(expect.any(Number));
+      expect(settled?.quotaRecoveryDataMutexAdmissionMs).toEqual(expect.any(Number));
+      expect(settled?.awaitSubphaseTimingsMs).toEqual(expect.objectContaining({
+        'quota-recovery-data-admission.lock-root.ensure': expect.any(Number),
+      }));
+    } finally {
+      releaseHolder();
+      vi.useRealTimers();
+      await Promise.allSettled([holder, ...(write ? [write] : [])]);
+    }
+  });
+
   it('includes background scan counters in progress while a writer waits for usage refresh', async () => {
     const wsRoot = scratchRootForWorkspace('ws-Q');
     makeSparseRun('ws-Q', UUID(1), 128);
