@@ -100,7 +100,7 @@ describe('current stock native factory', () => {
     const env = h.managed.mock.calls[0][3].spawnOptions.env;
     expect(env).toMatchObject({ HOME: h.home, CLAUDE_CONFIG_DIR: h.home, XDG_CONFIG_HOME: join(h.home, '.config'),
       PAPERCUSP_AGENT: 'claude', ANTHROPIC_BASE_URL: 'http://127.0.0.1:32001', ANTHROPIC_AUTH_TOKEN: 'a'.repeat(64),
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' });
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1', DISABLE_AUTOUPDATER: '1' });
     for (const key of ['CODEX_HOME', 'ANTHROPIC_API_KEY', 'NODE_OPTIONS', 'OPENAI_API_KEY']) expect(env[key]).toBeUndefined();
     expect(h.bind).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'native-claude', initialTaskId: 'stock-task' }), undefined);
     expect(h.ingest).toHaveBeenCalledWith(expect.objectContaining({ includeIsolationRoots: false,
@@ -118,7 +118,8 @@ describe('current stock native factory', () => {
     writeFileSync(join(root, 'docker'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)}, JSON.stringify({args: process.argv.slice(2), env: process.env}));\n`, { mode: 0o755 });
     h.run.mockImplementation(async function* (options) {
       await options.spawnProcess!('claude', ['-p', '--model', 'frozen-model'], { cwd: root,
-        env: { PATH: `${root}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: h.home, ANTHROPIC_API_KEY: 'HOST_SECRET_SENTINEL' } });
+        env: { PATH: `${root}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: h.home, ANTHROPIC_API_KEY: 'HOST_SECRET_SENTINEL',
+          CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '0' } });
       options.onNativeSession!('native-claude'); terminal();
       yield { type: 'result', finalText: 'done', costUsd: 0, tokensIn: 0, tokensOut: 0 };
     });
@@ -132,6 +133,8 @@ describe('current stock native factory', () => {
     expect(observed.args.slice(-5)).toEqual(['private-claude', '/opt/claude', '-p', '--model', 'frozen-model']);
     expect(observed.args).not.toContain('--no-daemon'); expect(observed.args).not.toContain('ANTHROPIC_API_KEY');
     expect(observed.args).toContain('CLAUDE_CONFIG_DIR'); expect(observed.args).toContain('ANTHROPIC_AUTH_TOKEN');
+    expect(observed.args).toContain('CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS');
+    expect(observed.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe('1');
     expect(observed.env.ANTHROPIC_BASE_URL).toBe('http://papercusp-egress:8788');
     expect(observed.env.ANTHROPIC_AUTH_TOKEN).toBe('a'.repeat(64));
     expect(lstatSync(h.home).isSymbolicLink()).toBe(true); expect(h.sandbox).not.toHaveBeenCalled();
