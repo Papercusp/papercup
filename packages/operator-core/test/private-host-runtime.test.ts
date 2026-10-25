@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -102,6 +102,47 @@ it('observes real private-host exit before dependent cleanup and ignores diagnos
     }
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+  }
+});
+
+it.skipIf(process.platform !== 'linux')('waits for owned PostgreSQL descendants after a primary exits with redirected output', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'private-pg-stop-'));
+  dirs.push(directory);
+  // A native process tree models the lifecycle independently of SQL/startup:
+  // the postmaster accepts SIGINT, finishes later than its parent, and owns a
+  // worker whose descriptors do not hold the parent's pipes open.
+  const binary = join(directory, 'postgres');
+  copyFileSync(process.execPath, binary);
+  const child = spawn(process.execPath, ['-e', `
+    const {spawn}=require('node:child_process'),fs=require('node:fs');
+    const pg=spawn(${JSON.stringify(binary)},['-e',
+      "const {spawn}=require('node:child_process');const worker=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});process.on('SIGINT',()=>{setTimeout(()=>{worker.kill('SIGTERM');worker.once('exit',()=>process.exit(0));},200)});process.stdout.write('ready');setInterval(()=>{},1000)",
+      '--','-D',${JSON.stringify(directory)}],{stdio:['ignore','pipe','ignore']});
+    pg.stdout.once('data',()=>{
+      fs.writeFileSync(${JSON.stringify(join(directory, 'postmaster.pid'))},pg.pid+'\\n'+${JSON.stringify(directory)}+'\\n');
+      process.stdout.write(JSON.stringify({pid:pg.pid})+'\\n');
+    });
+    process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000);
+  `], { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
+  const closed = once(child, 'close');
+  let pgPid: number | undefined;
+  try {
+    pgPid = JSON.parse(String((await once(child.stdout!, 'data'))[0])).pid;
+    const observations: PrivateHostStopObservation[] = [];
+    await stopPrivateOperatorHost(child, async () => {
+      expect(() => process.kill(pgPid!, 0), 'database must stop before dependent cleanup').toThrow();
+    }, 2000, observation => observations.push(observation));
+    expect(observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'postgres captured' }),
+      expect.objectContaining({ phase: 'postgres stopped' }),
+    ]));
+    expect(observations.findIndex(o => o.phase === 'postgres stopped')).toBeLessThan(
+      observations.findIndex(o => o.phase === 'complete'));
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    // The failing old implementation leaves this exact fixture alive.
+    if (pgPid) { try { process.kill(pgPid, 'SIGINT'); } catch { /* stopped */ } }
     await closed;
   }
 });
