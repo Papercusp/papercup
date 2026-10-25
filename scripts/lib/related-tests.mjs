@@ -1094,11 +1094,36 @@ export function buildIndex({
   const packages = crossRoot ? crossRoot.packages : [];
   /** @type {Map<string, WorkspacePackage[]>} */
   const packagesByName = new Map();
+  /** @type {Map<string, WorkspacePackage>} */
+  const packagesByDir = new Map();
   for (const pkg of packages) {
     const candidates = packagesByName.get(pkg.name) ?? [];
     candidates.push(pkg);
     packagesByName.set(pkg.name, candidates);
+    // Equal directory prefixes retain the first package, just like owningPackage.
+    const dir = pkg.dir;
+    if (!packagesByDir.has(dir)) packagesByDir.set(dir, pkg);
   }
+  /** @type {Map<string, WorkspacePackage | null>} */
+  const ownersByDir = new Map();
+  const ownerOf = (file) => {
+    const walked = [];
+    let dir = path.dirname(file);
+    let owner = null;
+    for (;;) {
+      if (ownersByDir.has(dir)) { owner = ownersByDir.get(dir); break; }
+      const candidate = packagesByDir.get(dir);
+      if (candidate) { owner = candidate; break; }
+      walked.push(dir);
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    // Walk from the importer towards the root: the first directory wins, so
+    // nested packages keep their own aliases without scanning every package.
+    for (const visited of walked) ownersByDir.set(visited, owner);
+    return owner;
+  };
   const aliasesFor =
     crossRoot?.aliasesFor ??
     ((dir) =>
@@ -1119,9 +1144,8 @@ export function buildIndex({
     if (insideRoot(file)) return aliasEntries;
     const cached = aliasesByFile.get(file);
     if (cached !== undefined) return cached;
-    // Package ownership and aliases are fixed for this index. Resolve the longest
-    // package prefix once per importer, including files with no owning package.
-    const owner = owningPackage(packages, file);
+    // Package ownership and aliases are fixed for this index, including misses.
+    const owner = ownerOf(file);
     let entries = [];
     if (owner) {
       if (!aliasesByDir.has(owner.dir)) aliasesByDir.set(owner.dir, aliasTuples(aliasesFor(owner.dir)));

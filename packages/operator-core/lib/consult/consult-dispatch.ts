@@ -566,6 +566,29 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   ) => Promise<CitedTranscriptTurn[]>;
 }
 
+/** Match the router's admitted corpus without reading another tenant's turns.
+ * Keep duplicate rows visible: the dispatcher rejects ambiguous citations. */
+export async function readIndexedConsultCitedTurns(
+  sql: Sql,
+  workspaceId: string,
+  sessionId: string,
+  turnIndices: readonly number[],
+): Promise<CitedTranscriptTurn[]> {
+  const wanted = [...new Set(turnIndices)].filter((i) => Number.isSafeInteger(i) && i >= 0);
+  if (wanted.length === 0) return [];
+  const rows = await sql<{ turn_idx: number; speaker: string; ts: Date | string | null; text: string }[]>`
+    SELECT turn_idx, speaker, ts, text FROM harness_shared.session_turns
+     WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
+       AND session_id = ${sessionId} AND turn_idx = ANY(${wanted}::int[])
+     ORDER BY turn_idx`;
+  return rows.map((r) => ({
+    turn_idx: r.turn_idx,
+    speaker: r.speaker,
+    ts: r.ts == null ? null : new Date(r.ts).toISOString(),
+    text: r.text ?? '',
+  }));
+}
+
 async function defaultReadCitedTurns(
   workspaceId: string,
   sessionId: string,
@@ -574,19 +597,8 @@ async function defaultReadCitedTurns(
   const wanted = [...new Set(turnIndices)].filter((i) => Number.isSafeInteger(i) && i >= 0);
   if (wanted.length === 0) return [];
   const { getOrgPg } = await import('@papercusp/db-org');
-  const sql = getOrgPg().sql as unknown as Sql;
-  const rows = await sql<{ turn_idx: number; speaker: string; ts: Date | string | null; text: string }[]>`
-    SELECT turn_idx, speaker, ts, text FROM harness_shared.session_turns
-     WHERE workspace_id = ${workspaceId} AND session_id = ${sessionId} AND turn_idx = ANY(${wanted}::int[])
-     ORDER BY turn_idx`;
-  if (rows.length > 0) {
-    return rows.map((r) => ({
-      turn_idx: r.turn_idx,
-      speaker: r.speaker,
-      ts: r.ts == null ? null : new Date(r.ts).toISOString(),
-      text: r.text ?? '',
-    })).filter((t) => t.text.trim());
-  }
+  const rows = await readIndexedConsultCitedTurns(getOrgPg().sql as unknown as Sql, workspaceId, sessionId, wanted);
+  if (rows.length > 0) return rows.filter((t) => t.text.trim());
   const { readArchivedSessionTurns } = await import('../session-archive-read');
   const archived = await readArchivedSessionTurns(sessionId, undefined, undefined, { turnIndices: wanted });
   return (archived?.turns ?? []).map((t) => ({ turn_idx: t.turn_idx, speaker: t.speaker, ts: t.ts, text: t.text }))

@@ -1262,6 +1262,44 @@ describe('writeRelatedFilterList (P-001)', () => {
 });
 
 describe('buildIndex', () => {
+  it('bounds cross-root ownership lookup across many importers without losing deepest-package edges', () => {
+    const app = '/repo/app';
+    const parent = '/repo/dependency';
+    const nested = `${parent}/nested`;
+    const related = `${app}/related.test.ts`;
+    const count = 64;
+    const files: Record<string, string> = {
+      [`${app}/vitest.config.ts`]: 'export default {};',
+      [related]: Array.from({ length: count }, (_, i) => `import '@probe/nested/modules/part${i}';`).join('\n'),
+      [`${app}/unrelated.test.ts`]: 'export {};',
+    };
+    for (let i = 0; i < count; i++) {
+      files[`${nested}/modules/part${i}.ts`] = `import '@/leaf${i}';`;
+      files[`${nested}/src/leaf${i}.ts`] = 'export {};';
+    }
+    let unrelatedOwnerProbes = 0;
+    const noiseCount = 128;
+    const crossRoot = {
+      packages: [
+        ...Array.from({ length: noiseCount }, (_, i) => ({ name: `@noise/pkg${i}`,
+          get dir() { unrelatedOwnerProbes++; return `/repo/noise/pkg${i}`; } })),
+        { name: '@probe/parent', dir: parent },
+        { name: '@probe/nested', dir: nested, exports: { './modules/*': './modules/*.ts' } },
+      ],
+      aliasesFor: (dir: string) => [{ prefix: '@/', target: `${dir}/src/`, wildcard: true }],
+    };
+    const fs = vfs(files);
+    const index = buildIndex({ rootDir: app, fs, crossRoot });
+    expect(index.unresolved.size).toBe(0);
+    expect(index.external?.size).toBe(count * 2);
+    for (let i = 0; i < count; i++) {
+      expect([...index.deps.get(`${nested}/modules/part${i}.ts`)!]).toEqual([`${nested}/src/leaf${i}.ts`]);
+    }
+    expect(selectRelatedTests({ rootDir: app, fs, index, crossRoot,
+      changedPaths: [`${nested}/src/leaf63.ts`], threshold: Number.POSITIVE_INFINITY }).selected).toEqual([related]);
+    expect(unrelatedOwnerProbes).toBeLessThanOrEqual(noiseCount * 4);
+  });
+
   it('bounds cross-root owner scans per importer while preserving the deepest package aliases', () => {
     const app = '/repo/app';
     const parent = '/repo/dependency';
