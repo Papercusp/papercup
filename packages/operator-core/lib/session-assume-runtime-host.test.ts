@@ -4,15 +4,19 @@ import { assumePreparationFingerprint, assumeTransitionKey, type AssumePreparati
 const ports = vi.hoisted(() => ({
   sql: vi.fn(), load: vi.fn(), pause: vi.fn(), ownsPause: vi.fn(), host: vi.fn(),
   confinement: vi.fn(), checkpoint: vi.fn(), custody: vi.fn(), resolve: vi.fn(), targetBody: vi.fn(),
+  save: vi.fn(), processIdentity: vi.fn(), custodyFactory: vi.fn(),
 }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: ports.sql }) }));
 vi.mock('./agent-launch-core', () => ({ resolveResumeTarget: ports.resolve }));
-vi.mock('./session-assume-store', () => ({ createAssumeReceiptStore: () => ({ load: ports.load }) }));
+vi.mock('./session-assume-store', () => ({ createAssumeReceiptStore: () => ({ load: ports.load, save: ports.save }) }));
+vi.mock('./process-identity', () => ({ readProcessIdentity: ports.processIdentity }));
 vi.mock('./session-assume-pause', () => ({ readAssumeCallerPause: ports.pause, ownsAssumeCallerPause: ports.ownsPause }));
 vi.mock('./events/await/psu-pty-discovery', () => ({ findLiveHostAsync: ports.host, injectIntoHostWithConfirmation: vi.fn() }));
 vi.mock('./capability-envelope/session-confinement-store', () => ({ readSessionConfinement: ports.confinement }));
 vi.mock('./session-assume-caller', () => ({ readAssumeCallerCheckpoint: ports.checkpoint, createAssumeCallerAdapters: vi.fn() }));
-vi.mock('./session-assume-custody', () => ({ createAssumeCustodyAdapters: () => ({ checkCustody: ports.custody }) }));
+vi.mock('./session-assume-custody', () => ({ createAssumeCustodyAdapters: (...args: unknown[]) => {
+  ports.custodyFactory(...args); return { checkCustody: ports.custody };
+} }));
 vi.mock('./session-assume-preparation', () => ({ readAssumeCaller: vi.fn(), readAssumeTarget: vi.fn(),
   readAssumeCheckpointBody: ports.targetBody }));
 import { inspectManagedAssumeRequest } from './session-assume-runtime';
@@ -50,6 +54,38 @@ function fixture() {
 beforeEach(() => vi.resetAllMocks());
 
 describe('managed assume receipt inspection', () => {
+  it('records startup attempts before spawn and requires exact prior process exit for a new generation', async () => {
+    const { plan, request } = fixture();
+    ports.host.mockResolvedValue(null);
+    ports.processIdentity.mockImplementation(pid => pid === 501 ? 'launcher-start' : pid === 502 ? 'pty-start' : null);
+    ports.save.mockImplementation(async value => { ports.load.mockResolvedValue(value); });
+    const attemptId = '11111111-1111-4111-8111-111111111111';
+    const second = '22222222-2222-4222-8222-222222222222';
+    await inspectManagedAssumeRequest(request, true, 'begin-startup', { attemptId, launcherPid: 501 });
+    expect(ports.save.mock.calls[0][0].startup).toMatchObject({ attemptId, generation: 1, launcherPid: 501 });
+    expect(ports.save.mock.calls[0][0].preparationFingerprint).toBe(assumePreparationFingerprint(plan));
+    await inspectManagedAssumeRequest(request, true, 'startup-started', { attemptId, ptyPid: 502 });
+    await expect(inspectManagedAssumeRequest(request, true, 'begin-startup', { attemptId: second, launcherPid: 501 }))
+      .rejects.toThrow('assume-startup-not-exited');
+    // A reused PID belongs to another process: the recorded incarnation exited.
+    ports.processIdentity.mockImplementation(pid => pid === 501 ? 'launcher-start' : pid === 502 ? 'reused-pid' : null);
+    await inspectManagedAssumeRequest(request, true, 'begin-startup', { attemptId: second, launcherPid: 501 });
+    expect(ports.save.mock.calls.at(-1)![0].startup).toMatchObject({ attemptId: second, generation: 2 });
+    expect(ports.custodyFactory.mock.calls.at(-1)![1]).toEqual({ authorizedStartup: true });
+    expect(ports.save.mock.calls.at(-1)![0].preparationFingerprint).toBe(assumePreparationFingerprint(plan));
+  });
+
+  it('refuses unrecorded, unavailable and wrong-attempt startup witnesses before saving', async () => {
+    const { request } = fixture(); ports.host.mockResolvedValue(null);
+    await expect(inspectManagedAssumeRequest(request, false, 'begin-startup',
+      { attemptId: '11111111-1111-4111-8111-111111111111', launcherPid: 501 })).rejects.toThrow('invalid-action');
+    await expect(inspectManagedAssumeRequest(request, true, 'begin-startup',
+      { attemptId: '11111111-1111-4111-8111-111111111111', launcherPid: 501 })).rejects.toThrow('not-exited');
+    await expect(inspectManagedAssumeRequest(request, true, 'startup-started',
+      { attemptId: '11111111-1111-4111-8111-111111111111', ptyPid: 502 })).rejects.toThrow('startup-changed');
+    expect(ports.save).not.toHaveBeenCalled();
+  });
+
   it('checks the exact caller before and after checkpoint and target custody reads', async () => {
     const { request } = fixture();
     expect(await inspectManagedAssumeRequest(request)).toMatchObject({ ok: true, state: 'handoff-accepted' });

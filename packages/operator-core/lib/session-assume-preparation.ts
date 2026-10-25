@@ -25,6 +25,7 @@ const backendOf = (value: string | null): AssumeTarget['backend'] | null =>
  * root, incomplete JSONL, mismatched native ids and concurrent edits refuse. */
 export async function readAssumeTranscriptPin(
   file: string, root: string, backend: AssumeTarget['backend'], nativeId: string,
+  prefix?: AssumeContext,
 ): Promise<AssumeContext | null> {
   try {
     const inside = relative(root, file);
@@ -60,6 +61,15 @@ export async function readAssumeTranscriptPin(
         }
       }
       if (!bound) return null;
+      if (prefix) {
+        const [dev, ino, length] = prefix.revision.split(':');
+        const size = Number(length);
+        if (prefix.mode !== 'native-resume' || prefix.ref !== nativeId ||
+            dev !== String(before.dev) || ino !== String(before.ino) ||
+            !/^\d+$/.test(length ?? '') || !Number.isSafeInteger(size) || size <= 0 ||
+            size > bytes.length || sha256(bytes.subarray(0, size)) !== prefix.sha256) return null;
+        return { ...prefix };
+      }
       return { mode: 'native-resume', ref: nativeId, sha256: sha256(bytes),
         revision: `${before.dev}:${before.ino}:${before.size}:${before.mtimeMs}:${before.ctimeMs}` };
     } finally { await fd.close(); }
@@ -127,7 +137,8 @@ export async function readAssumeCaller(actor: AssumeActor): Promise<AssumeCaller
 /** ResolveResumeTarget may follow a successor or accept a prefix for ordinary
  * resume. Takeover additionally requires equality with the canonical owner and
  * current full-precision binding, and probes the native writer independently. */
-export async function readAssumeTarget(request: AssumeRequest, workspaceId: string): Promise<AssumeTarget | null> {
+export async function readAssumeTarget(request: AssumeRequest, workspaceId: string,
+  nativePrefix?: AssumeContext): Promise<AssumeTarget | null> {
   const target = await resolveResumeTarget({ agentId: request.targetOwnerId });
   if (!target.ok || target.ownerId !== request.targetOwnerId || target.workspaceId !== workspaceId ||
       !target.harnessSlug || !target.binding || !target.ownerId) return null;
@@ -167,7 +178,7 @@ export async function readAssumeTarget(request: AssumeRequest, workspaceId: stri
     const file = native.backend === 'codex' ? await findCodexRolloutPathByUuid(nativeId, { homeOverride: native.codexHome })
       : native.backend === 'claude' ? await findSessionTranscript(nativeId, { owner: target.ownerId })
         : await findOmpSessionPath(nativeId, { sessionKey: target.advSessionId });
-    context = root && file ? await readAssumeTranscriptPin(file, root, backend, nativeId) : null;
+    context = root && file ? await readAssumeTranscriptPin(file, root, backend, nativeId, nativePrefix) : null;
   }
   if (!context) return null;
   const pause = await readAssumeCallerPause(target.ownerId);

@@ -260,6 +260,11 @@ export interface AssumeTransitionReceipt {
   /** False is explicit: a transport result cannot assert that a failed write landed. */
   durable: boolean;
   observation?: AssumeExecutionObservation;
+  /** Write-ahead native launch attempt, distinct from immutable preparation.
+   * A successor requires the recorded process to have exited, never a timer. */
+  startup?: { attemptId: string; generation: number; authorizedAt: number;
+    launcherPid: number; launcherProcessStart: string;
+    ptyPid?: number; ptyProcessStart?: string };
   callerReturn?: { transitionKey: string; caller: AssumeCaller; nativeProcessStart: string; restoredAt: number };
 }
 

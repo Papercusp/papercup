@@ -65,6 +65,7 @@ import { runTreeRestrictedHoldPreflight, formatTreeRestrictedHoldRefusal,
   RESTRICTED_HOLD_PREFLIGHT_ENV, RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER } from './lib/restricted-hold-preflight.mjs';
 import { applyEnvLocal, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
 import { findUnusableRuntimeDeps, formatRuntimeFailures } from './check-declared-deps-extracted.mjs';
+import { writeOperatorArtifactManifest } from '@papercusp/operator-core/lib/release/operator-artifact';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const PREVIEW_REPO = 'Papercusp/papercusp-preview';
@@ -987,6 +988,217 @@ export function verifyBgVerifierSource(prepared, boundary) {
       `BG accepted input blob mismatch: ${path}`);
   }
   return prepared;
+}
+
+/** Bind esbuild's actual onLoad result to the original source/dependency census.
+ * Endpoint fences alone miss an A-to-B-to-A rewrite. Hash the buffer returned
+ * to esbuild, and retain that same buffer as its contents; never reopen it after
+ * validation. Resolution metadata, invocation/toolchain identity and runtime
+ * external imports still require their separate qualification boundaries.
+ * @param {{ prepared: BgVerifierPreparation,
+ *   dependencies: ReturnType<typeof captureVerifierDependencies> }} options
+ */
+export function createBgVerifierCompilerCustody({ prepared, dependencies }) {
+  verifyBgVerifierSource(prepared, 'before-build');
+  const original = freezeBgExpectation(dependencies);
+  assert.equal(original.root, prepared.root, 'BG compiler dependency root mismatch');
+  assert.deepEqual(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source }), original,
+    'BG compiler dependency census changed');
+  const files = new Map(prepared.source.files.map(row => [row.path, row]));
+  for (const tree of original.trees) for (const row of tree.files) {
+    const path = `${tree.path}/${row.path}`;
+    assert.ok(!files.has(path), `BG compiler duplicate input: ${path}`);
+    files.set(path, { ...row, path });
+  }
+  /** @type {Map<string, { path: string, realpath: string, sha256: string }>} */
+  const consumed = new Map();
+  // This plugin must precede any other onLoad provider. It fails closed for
+  // unknown inputs/loaders instead of asking esbuild to read them unobserved.
+  /** @type {import('esbuild').Plugin} */
+  const plugin = { name: 'bg-original-input-custody', setup(build) {
+    assert.equal(build.initialOptions.plugins?.[0], plugin, 'BG compiler custody must be the first plugin');
+    assert.equal(build.initialOptions.stdin, undefined, 'BG compiler stdin is outside original census');
+    build.onLoad({ filter: /.*/ }, ({ path, namespace }) => {
+      assert.equal(namespace, 'file', 'BG compiler virtual input is outside original census');
+      const physical = realpathSync(path);
+      const local = relative(prepared.root, physical).split(sep).join('/');
+      assert.ok(local && local !== '..' && !local.startsWith('../') && !isAbsolute(local),
+        'BG compiler input escaped selected generation');
+      const expected = files.get(local);
+      assert.ok(expected?.kind === 'file', `BG compiler input is outside original census: ${local}`);
+      /** @type {Record<string, import('esbuild').Loader>} */
+      const loaders = { js: 'js', mjs: 'js', cjs: 'js', jsx: 'jsx', ts: 'ts', mts: 'ts', cts: 'ts', tsx: 'tsx', json: 'json', css: 'css', txt: 'text' };
+      const loader = build.initialOptions.loader?.['.' + local.split('.').at(-1)]
+        ?? loaders[local.split('.').at(-1)];
+      assert.ok(loader, `BG compiler input loader is UNKNOWN: ${local}`);
+      const fd = openSync(physical, 'r');
+      /** @type {Buffer} */
+      let contents;
+      try {
+        const before = fstatSync(fd, { bigint: true });
+        assert.ok(before.isFile(), 'BG compiler input must be regular');
+        contents = readFileSync(fd);
+        const after = fstatSync(fd, { bigint: true });
+        assert.ok(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => before[key] === after[key])
+          && realpathSync(path) === physical, `BG compiler input changed while reading: ${local}`);
+      } finally { closeSync(fd); }
+      const sha256 = createHash('sha256').update(contents).digest('hex');
+      assert.equal(sha256, expected.sha256, `BG compiler consumed bytes mismatch: ${local}`);
+      consumed.set(local, { path: local, realpath: physical, sha256 });
+      return { contents, loader, resolveDir: dirname(physical) };
+    });
+  } };
+  return { plugin, consumed: () => freezeBgExpectation([...consumed.values()].sort((a, b) => a.path.localeCompare(b.path))),
+    verifyBeforePublication() {
+      verifyBgVerifierSource(prepared, 'before-publication');
+      assert.deepEqual(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source }), original,
+        'BG compiler dependency census changed');
+      assert.ok(consumed.size > 0, 'BG compiler consumed input proof is UNKNOWN');
+      return freezeBgExpectation([...consumed.values()].sort((a, b) => a.path.localeCompare(b.path)));
+    } };
+}
+
+/** @typedef {{ builder: string, argv: string[], node: string, compiler: string,
+ *   packageManager: string, configuration: string[], environment: Record<string, string> }} BgBuildInvocation
+ */
+
+/** Record actual command inputs before effects. The caller executes exactly this
+ * argv and explicit environment; inherited ambient resolution is forbidden.
+ * @param {BgVerifierPreparation} prepared @param {BgBuildInvocation} invocation
+ */
+function readBgBuildInvocation(prepared, invocation) {
+  const identity = readBgFileIdentity;
+  const builder = identity(invocation.builder), compiler = identity(invocation.compiler);
+  assert.equal(builder.realpath, join(prepared.root, 'apps/operator/bin/bundle-host.sh'),
+    'BG builder must be the maintained selected builder');
+  for (const file of [builder, compiler]) {
+    const local = relative(prepared.root, file.realpath);
+    assert.ok(local && local !== '..' && !local.startsWith(`..${sep}`) && !isAbsolute(local),
+      'BG builder/compiler escaped selected generation');
+  }
+  assert.ok(Array.isArray(invocation.argv) && invocation.argv.every(arg => typeof arg === 'string'),
+    'BG build argv is UNKNOWN');
+  assert.ok(invocation.environment.NODE_OPTIONS === '' && invocation.environment.NODE_PATH === '',
+    'BG build ambient Node resolution is forbidden');
+  assert.ok(Object.entries(invocation.environment).every(([key, value]) =>
+    /^[A-Z_][A-Z0-9_]*$/.test(key) && typeof value === 'string'), 'BG build environment is invalid');
+  const configuration = invocation.configuration.map(identity).sort((a, b) => a.path.localeCompare(b.path));
+  assert.equal(new Set(configuration.map(row => row.path)).size, configuration.length, 'BG build configuration duplicated');
+  for (const file of configuration) {
+    const local = relative(prepared.root, file.realpath).split(sep).join('/');
+    assert.ok(prepared.source.files.some(row => row.path === local && row.sha256 === file.sha256),
+      'BG build configuration is outside original source census');
+  }
+  return { builder, compiler, node: identity(invocation.node), packageManager: identity(invocation.packageManager),
+    argv: [...invocation.argv], configuration,
+    environment: Object.fromEntries(Object.entries(invocation.environment).sort(([a], [b]) => a.localeCompare(b))) };
+}
+
+/** A distinct, detached invocation record, never a restamped source receipt.
+ * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
+ *   invocation: BgBuildInvocation }} options
+ */
+export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocation }) {
+  verifyBgVerifierSource(prepared, 'before-build');
+  assert.deepEqual(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source }), dependencies,
+    'BG build dependency census changed');
+  return freezeBgExpectation({ schemaVersion: 'bg-build-invocation-v1', prepared, dependencies,
+    originalSourceReceiptSha256: prepared.sourceReceiptSha256,
+    invocation: readBgBuildInvocation(prepared, invocation) });
+}
+
+/** The same original command and physical identities fence both boundaries.
+ * @param {ReturnType<typeof prepareBgVerifierBuildRecord>} record
+ * @param {BgBuildInvocation} invocation
+ * @param {'before-build' | 'before-publication'} boundary
+ */
+export function verifyBgVerifierBuildRecord(record, invocation, boundary) {
+  assert.equal(record.schemaVersion, 'bg-build-invocation-v1', 'BG build record is UNKNOWN');
+  verifyBgVerifierSource(record.prepared, boundary);
+  assert.equal(record.originalSourceReceiptSha256, record.prepared.sourceReceiptSha256,
+    'BG build record original receipt changed');
+  assert.deepEqual(readBgBuildInvocation(record.prepared, invocation), record.invocation,
+    'BG builder configuration or toolchain identity changed');
+  assert.deepEqual(captureVerifierDependencies({ dest: record.prepared.root, receipt: record.prepared.source }), record.dependencies,
+    'BG build dependency census changed');
+  return record;
+}
+
+/** Read one physical file without reopening between validation and hashing.
+ * @param {string} path
+ */
+function readBgFileIdentity(path) {
+  assert.ok(isAbsolute(path), 'BG build identity requires an absolute path');
+  const physical = realpathSync(path);
+  const fd = openSync(physical, 'r');
+  try {
+    const before = fstatSync(fd, { bigint: true });
+    assert.ok(before.isFile(), 'BG build identity must be a regular file');
+    const sha256 = createHash('sha256').update(readFileSync(fd)).digest('hex');
+    const after = fstatSync(fd, { bigint: true });
+    assert.ok(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => before[key] === after[key])
+      && realpathSync(path) === physical, 'BG build identity changed while reading');
+    return { path, realpath: physical, sha256 };
+  } finally { closeSync(fd); }
+}
+
+/** Bind the maintained artifact writer's measured output to the ORIGINAL build
+ * record. Builder exit status alone is never artifact qualification. This is a
+ * separate output fence, not proof of compiler consumption or service readiness.
+ * @typedef {{ schemaVersion: 'bg-build-output-v1', buildRecordSha256: string,
+ *   originalSourceReceiptSha256: string, entry: ReturnType<typeof readBgFileIdentity>,
+ *   manifest: ReturnType<typeof readBgFileIdentity>,
+ *   artifact: Extract<import('@papercusp/operator-core/lib/release/operator-artifact').OperatorArtifactIdentity,
+ *     { status: 'measured' }> }} BgVerifierOutputRecord
+ * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
+ *   invocation: BgBuildInvocation, entry: string }} options
+ * @returns {BgVerifierOutputRecord}
+ */
+export function qualifyBgVerifierOutput({ record, invocation, entry }) {
+  verifyBgVerifierBuildRecord(record, invocation, 'before-publication');
+  const file = readBgFileIdentity(entry);
+  const local = relative(record.prepared.root, file.realpath);
+  assert.ok(file.path === file.realpath && local && !isAbsolute(local)
+    && local !== '..' && !local.startsWith(`..${sep}`), 'BG output escaped selected generation');
+  const artifact = writeOperatorArtifactManifest({ root: record.prepared.root, entry,
+    sourceSha: record.prepared.source.sourceCommit });
+  assert.equal(artifact.status, 'measured', 'BG output artifact is UNKNOWN');
+  if (artifact.status !== 'measured') throw new Error('BG output artifact is UNKNOWN');
+  assert.deepEqual(artifact.sourceBlobs, record.prepared.acceptedManifest.members,
+    'BG output accepted member census mismatch');
+  /** @type {BgVerifierOutputRecord} */
+  const output = freezeBgExpectation({ schemaVersion: 'bg-build-output-v1',
+    buildRecordSha256: createHash('sha256').update(JSON.stringify(record)).digest('hex'),
+    originalSourceReceiptSha256: record.originalSourceReceiptSha256,
+    entry: file, manifest: readBgFileIdentity(artifact.evidenceRef), artifact });
+  verifyBgVerifierOutputRecord(output, record, invocation);
+  return output;
+}
+
+/** Recheck the same detached output immediately before publication; never
+ * regenerate a source receipt, input record or manifest to bless replacement.
+ * @param {BgVerifierOutputRecord} output
+ * @param {ReturnType<typeof prepareBgVerifierBuildRecord>} record
+ * @param {BgBuildInvocation} invocation
+ */
+export function verifyBgVerifierOutputRecord(output, record, invocation) {
+  verifyBgVerifierBuildRecord(record, invocation, 'before-publication');
+  assert.equal(output.schemaVersion, 'bg-build-output-v1', 'BG output record is UNKNOWN');
+  assert.equal(output.buildRecordSha256, createHash('sha256').update(JSON.stringify(record)).digest('hex'),
+    'BG output original build record mismatch');
+  assert.equal(output.originalSourceReceiptSha256, record.originalSourceReceiptSha256,
+    'BG output original source receipt mismatch');
+  assert.deepEqual(readBgFileIdentity(output.entry.path), output.entry, 'BG output bundle changed');
+  assert.deepEqual(readBgFileIdentity(output.manifest.path), output.manifest, 'BG output manifest changed');
+  assert.equal(output.artifact.status, 'measured', 'BG output artifact is UNKNOWN');
+  assert.equal(output.artifact.sourceSha, record.prepared.source.sourceCommit, 'BG output source commit mismatch');
+  assert.equal(output.artifact.bundleSha256, output.entry.sha256, 'BG output bundle digest mismatch');
+  assert.equal(output.artifact.manifestSha256, output.manifest.sha256, 'BG output manifest digest mismatch');
+  assert.equal(output.artifact.evidenceRef, `${output.entry.path}.artifact-${output.entry.sha256}.json`,
+    'BG output manifest identity mismatch');
+  assert.deepEqual(output.artifact.sourceBlobs, record.prepared.acceptedManifest.members,
+    'BG output accepted member census mismatch');
+  return output;
 }
 
 /** Attach dependencies to the independently invoked tree before its first Node

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -15,6 +15,31 @@ async function source(body: string) {
 }
 
 describe('takeover native context provenance', () => {
+  it('authenticates the immutable prefix after native append without replacing its original pin', async () => {
+    const body = '{"type":"session_meta","payload":{"id":"native-1"}}\n';
+    const { root, file } = await source(body);
+    const pin = (await readAssumeTranscriptPin(file, root, 'codex', 'native-1'))!;
+    await appendFile(file, '{"type":"event_msg","payload":{"message":"native startup"}}\n');
+    expect((await readAssumeTranscriptPin(file, root, 'codex', 'native-1'))?.sha256).not.toBe(pin.sha256);
+    expect(await readAssumeTranscriptPin(file, root, 'codex', 'native-1', pin)).toEqual(pin);
+  });
+
+  it.each(['prefix mutation', 'truncation', 'replacement', 'foreign native append'])(
+    'refuses %s even when startup has authorized prefix verification', async fault => {
+      const body = '{"type":"session_meta","payload":{"id":"native-1"}}\n' +
+        '{"type":"event_msg","payload":{"message":"original history"}}\n';
+      const { root, file } = await source(body);
+      const pin = (await readAssumeTranscriptPin(file, root, 'codex', 'native-1'))!;
+      if (fault === 'prefix mutation') await writeFile(file, body.replace('original', 'modified'));
+      if (fault === 'truncation') await writeFile(file, body.split('\n')[0] + '\n');
+      if (fault === 'replacement') {
+        await rename(file, file + '.old'); await writeFile(file, body);
+      }
+      if (fault === 'foreign native append')
+        await appendFile(file, '{"type":"session_meta","payload":{"id":"foreign"}}\n');
+      expect(await readAssumeTranscriptPin(file, root, 'codex', 'native-1', pin)).toBeNull();
+    });
+
   it.each([
     ['codex', JSON.stringify({ type: 'session_meta', payload: { id: 'native-1' } })],
     ['claude', JSON.stringify({ type: 'user', sessionId: 'native-1', message: 'target history' })],

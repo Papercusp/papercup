@@ -43,7 +43,7 @@ const sessionResumed = defineTool({
         resumeClaimKey?: unknown;
         localLivenessEvidence?: unknown;
         allowRetired?: unknown;
-        assumeHost?: { request?: unknown; afterExit?: unknown; action?: unknown };
+        assumeHost?: { request?: unknown; afterExit?: unknown; action?: unknown; startup?: unknown };
       };
       if (body.assumeHost !== undefined) {
         // Extend the existing managed resume control plane; never let a normal
@@ -53,12 +53,12 @@ const sessionResumed = defineTool({
         if (principal.slug !== 'system:superuser' || principal.authMethod !== 'bearer-token' ||
             typeof body.assumeHost?.afterExit !== 'boolean') return jsonRes({ ok: false }, 403);
         if (body.assumeHost.action !== undefined && (typeof body.assumeHost.action !== 'string' ||
-            !['freeze', 'queue', 'thaw', 'observe', 'complete-return'].includes(body.assumeHost.action))) return jsonRes({ ok: false }, 400);
+            !['freeze', 'queue', 'thaw', 'observe', 'complete-return', 'begin-startup', 'startup-started'].includes(body.assumeHost.action))) return jsonRes({ ok: false }, 400);
         try {
           const { inspectManagedAssumeRequest } = await import('../../../session-assume-runtime');
           // notify-classification: {"classification":"durable","reason":"Managed assume transitions restore caller responsibilities and their mandatory audit consequences across request loss.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           return jsonRes(await inspectManagedAssumeRequest(body.assumeHost.request, body.assumeHost.afterExit,
-            body.assumeHost.action as string | undefined));
+            body.assumeHost.action as string | undefined, body.assumeHost.startup));
         } catch { return jsonRes({ ok: false, reason: 'assume-custody-unverified' }, 409); }
       }
       if (body.allowRetired !== undefined && typeof body.allowRetired !== 'boolean') {

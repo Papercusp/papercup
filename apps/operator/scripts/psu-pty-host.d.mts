@@ -5830,7 +5830,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  *   default process.exit. `killedBySignal` is the signal NAME when the child was killed
  *   (WI-38054) and null on a voluntary exit — it is the only thing distinguishing the
  *   two, because node-pty reports a signal death with exitCode 0.
- * @param {()=>any} [o.onSpawn] lifecycle callback invoked immediately after
+ * @param {(startup?: {ptyPid: number})=>any} [o.onSpawn] lifecycle callback invoked immediately after
  *   the initial pty.spawn succeeds; this is concrete resume-finalization evidence.
  * @param {boolean} [o.bridgeTty]       force the TTY bridge on/off; default = stdin.isTTY
  * @param {string | null} [o.kickoff]   first-turn text for a scripted launch
@@ -5880,7 +5880,9 @@ export function hostThroughPty(o: {
         stdout?: any;
     } | undefined;
     onExit?: ((code: number, killedBySignal: string | null) => void) | undefined;
-    onSpawn?: (() => any) | undefined;
+    onSpawn?: ((startup?: {
+        ptyPid: number;
+    }) => any) | undefined;
     bridgeTty?: boolean | undefined;
     kickoff?: string | null | undefined;
     kickoffFile?: string | undefined;

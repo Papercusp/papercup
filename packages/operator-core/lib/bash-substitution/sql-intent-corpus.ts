@@ -181,6 +181,9 @@ export interface SqlIntentCorpusOptions {
   until: string;
   after?: SqlCorpusCursor;
   limit?: number;
+  /** Stop between parser calls without advancing past unprocessed source rows. */
+  deadline?: number;
+  clock?: () => number;
   /** Measured source retention boundary; absence is UNKNOWN, never full coverage. */
   retainedFrom?: string;
   /** Current source authorization checked before touching raw invocation args. */
@@ -202,6 +205,8 @@ const partitionStatus = (status: string): SqlDemandStatus => status === 'ok' ? '
  */
 export async function fetchSqlIntentCorpus(opts: SqlIntentCorpusOptions): Promise<{
   observations: SqlDemandObservation[]; coverage: SqlDemandCoverage; next: SqlCorpusCursor | null;
+  last: SqlCorpusCursor | null;
+  sources: Array<{ token: string; id: string }>;
 }> {
   const since = Date.parse(opts.since), until = Date.parse(opts.until);
   if (opts.scope.workspaceId !== opts.workspaceId || !opts.harnessSlug || !Number.isFinite(since)
@@ -228,8 +233,12 @@ export async function fetchSqlIntentCorpus(opts: SqlIntentCorpusOptions): Promis
       ${after}
     ORDER BY invoked_at, tool_invocations.id LIMIT ${limit + 1}
   `;
-  const capped = rows.length > limit, page = rows.slice(0, limit);
-  const observations = page.map(row => {
+  const page = rows.slice(0, limit);
+  const observations: SqlDemandObservation[] = [];
+  const sources: Array<{ token: string; id: string }> = [];
+  let processed = 0;
+  for (const row of page) {
+    if (opts.deadline !== undefined && (opts.clock ?? Date.now)() >= opts.deadline) break;
     const wrapper = row.tool_name !== SQL_CORPUS_TOOL;
     const origin: SqlDemandOrigin = wrapper ? 'wrapper' : ['test', 'fixture', 'replay'].includes(row.role) ? row.role as SqlDemandOrigin
       : !row.agent ? 'system'
@@ -240,16 +249,21 @@ export async function fetchSqlIntentCorpus(opts: SqlIntentCorpusOptions): Promis
     // sequence, never an operation. Only the settled ledger row PK pairs outcome.
     // Pure wrappers contribute no SQL demand and need no fabricated inner ID.
     const callId = wrapper ? null : `invocation:${row.id}`;
-    return observeSqlDemand({ workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
+    const observation = observeSqlDemand({ workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
       namespace: 'operator-dispatch', callId, resultCallId: wrapper ? null : callId,
       identityAuthority: callId ? 'ledger' : 'unknown', provider: 'ledger', actor: row.actor,
       verifiedAgent: row.agent, at: row.at, origin, status: partitionStatus(row.status),
       durationMs: row.duration_ms, sql: row.query, sourceComplete: !row.truncated,
       copyRef: `tool-invocation:${row.id}` }, opts.scope);
-  });
+    observations.push(observation);
+    sources.push({ token: observation.sourceToken, id: row.id });
+    processed++;
+  }
+  const capped = rows.length > limit || processed < page.length;
+  const last = processed ? { at: page[processed - 1]!.at, id: page[processed - 1]!.id } : null;
   const retained = opts.retainedFrom ? Date.parse(opts.retainedFrom) : NaN;
   const retention = Number.isFinite(retained) ? retained <= since ? 'complete' : 'gap' : 'unknown';
   return { observations, coverage: { status: capped || opts.after ? 'truncated' : retention === 'complete' ? 'complete' : 'unknown',
-    scannedRows: page.length, cap: limit, retention, providers: ['ledger'] },
-    next: capped && page.length ? { at: page[page.length - 1]!.at, id: page[page.length - 1]!.id } : null };
+    scannedRows: processed, cap: limit, retention, providers: ['ledger'] },
+    next: capped ? last ?? opts.after ?? null : null, last, sources };
 }

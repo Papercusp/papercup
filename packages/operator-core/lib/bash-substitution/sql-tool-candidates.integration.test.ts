@@ -2,6 +2,46 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { aggregateSqlDemand, fetchSqlIntentCorpus, type SqlIntentCorpusOptions } from './sql-intent-corpus';
+import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
+import { mineSqlCandidateSlice } from './sql-tool-candidates';
+
+let mining: Awaited<ReturnType<typeof sqlMiningFixture>>;
+beforeAll(async () => { mining = await sqlMiningFixture(); }, 120_000);
+afterAll(async () => { await mining?.cleanup(); });
+beforeEach(async () => { await mining.clear(); });
+
+it('R6-CONTRACT', async () => {
+  await mining.seed(); await mining.seed(); await mining.seed();
+  const first = await mineSqlCandidateSlice(mining.opts());
+  expect(first).toMatchObject({ status: 'ok', rows: 2, more: true, logicalCalls: 2 });
+  const second = await mineSqlCandidateSlice(mining.opts());
+  expect(second).toMatchObject({ status: 'ok', rows: 1, more: false, logicalCalls: 3 });
+  await mining.clear();
+  expect(await mineSqlCandidateSlice(mining.opts())).toMatchObject({ status: 'ok', rows: 0, logicalCalls: 0 });
+});
+it('R19-RESUME', async () => {
+  const ids = [await mining.seed(), await mining.seed(), await mining.seed()];
+  expect(await mineSqlCandidateSlice(mining.opts())).toMatchObject({ cursor: { id: ids[1] } });
+  const aborted = await mineSqlCandidateSlice(mining.opts(), { beforeCommit: async () => { throw new Error('injected rollback'); } });
+  expect(aborted).toMatchObject({ status: 'UNKNOWN', stage: 'commit' });
+  const [old] = await mining.db.adminSql`SELECT cursor_id::text FROM harness_shared.sql_intent_progress`;
+  expect(old!.cursor_id).toBe(ids[1]);
+  expect(await mineSqlCandidateSlice(mining.opts())).toMatchObject({ status: 'ok', logicalCalls: 3, cursor: { id: ids[2] } });
+  // Deliberately overlapping/concurrent retries replace prior contributions rather than adding counts.
+  await Promise.all([mineSqlCandidateSlice(mining.opts({ rowBudget: 10 })), mineSqlCandidateSlice(mining.opts({ rowBudget: 10 }))]);
+  const [stored] = await mining.db.adminSql`SELECT summary FROM harness_shared.sql_intent_history`;
+  expect(stored!.summary.logicalCalls).toBe(3);
+  const [count] = await mining.db.adminSql`SELECT count(*)::int AS n FROM harness_shared.sql_intent_operations`;
+  expect(count!.n).toBe(3);
+});
+it('OUTCOME-P-004', async () => {
+  const id = await mining.seed();
+  expect(await mineSqlCandidateSlice(mining.opts(), { beforeCommit: async () => { throw new Error('persistence failure'); } }))
+    .toMatchObject({ status: 'UNKNOWN', stage: 'commit' });
+  const [before] = await mining.db.adminSql`SELECT count(*)::int AS n FROM harness_shared.sql_intent_operations`;
+  expect(before!.n).toBe(0);
+  expect(await mineSqlCandidateSlice(mining.opts())).toMatchObject({ status: 'ok', rows: 1, logicalCalls: 1, cursor: { id } });
+});
 
 describe('SQL intent corpus (real PG)', () => {
   let db: OrgTestDb;

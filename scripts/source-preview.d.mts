@@ -203,6 +203,169 @@ export function prepareBgVerifierSource({ repo, ref, dest, inputs, acceptedManif
  * @param {'before-build' | 'before-publication'} boundary
  */
 export function verifyBgVerifierSource(prepared: BgVerifierPreparation, boundary: "before-build" | "before-publication"): BgVerifierPreparation;
+/** Bind esbuild's actual onLoad result to the original source/dependency census.
+ * Endpoint fences alone miss an A-to-B-to-A rewrite. Hash the buffer returned
+ * to esbuild, and retain that same buffer as its contents; never reopen it after
+ * validation. Resolution metadata, invocation/toolchain identity and runtime
+ * external imports still require their separate qualification boundaries.
+ * @param {{ prepared: BgVerifierPreparation,
+ *   dependencies: ReturnType<typeof captureVerifierDependencies> }} options
+ */
+export function createBgVerifierCompilerCustody({ prepared, dependencies }: {
+    prepared: BgVerifierPreparation;
+    dependencies: ReturnType<typeof captureVerifierDependencies>;
+}): {
+    plugin: import("esbuild").Plugin;
+    consumed: () => {
+        path: string;
+        realpath: string;
+        sha256: string;
+    }[];
+    verifyBeforePublication(): {
+        path: string;
+        realpath: string;
+        sha256: string;
+    }[];
+};
+/** A distinct, detached invocation record, never a restamped source receipt.
+ * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
+ *   invocation: BgBuildInvocation }} options
+ */
+export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocation }: {
+    prepared: BgVerifierPreparation;
+    dependencies: ReturnType<typeof captureVerifierDependencies>;
+    invocation: BgBuildInvocation;
+}): {
+    schemaVersion: string;
+    prepared: BgVerifierPreparation;
+    dependencies: {
+        schemaVersion: string;
+        scope: string;
+        root: string;
+        sourceCommit: string;
+        policy: {
+            path: string;
+            sha256: string;
+        };
+        sourceReceiptSha256: string;
+        trees: {
+            path: string;
+            files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+        }[];
+    };
+    originalSourceReceiptSha256: string;
+    invocation: {
+        builder: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        compiler: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        node: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        packageManager: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        argv: string[];
+        configuration: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        }[];
+        environment: {
+            [k: string]: string;
+        };
+    };
+};
+/** The same original command and physical identities fence both boundaries.
+ * @param {ReturnType<typeof prepareBgVerifierBuildRecord>} record
+ * @param {BgBuildInvocation} invocation
+ * @param {'before-build' | 'before-publication'} boundary
+ */
+export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgVerifierBuildRecord>, invocation: BgBuildInvocation, boundary: "before-build" | "before-publication"): {
+    schemaVersion: string;
+    prepared: BgVerifierPreparation;
+    dependencies: {
+        schemaVersion: string;
+        scope: string;
+        root: string;
+        sourceCommit: string;
+        policy: {
+            path: string;
+            sha256: string;
+        };
+        sourceReceiptSha256: string;
+        trees: {
+            path: string;
+            files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+        }[];
+    };
+    originalSourceReceiptSha256: string;
+    invocation: {
+        builder: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        compiler: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        node: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        packageManager: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        argv: string[];
+        configuration: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        }[];
+        environment: {
+            [k: string]: string;
+        };
+    };
+};
+/** Bind the maintained artifact writer's measured output to the ORIGINAL build
+ * record. Builder exit status alone is never artifact qualification. This is a
+ * separate output fence, not proof of compiler consumption or service readiness.
+ * @typedef {{ schemaVersion: 'bg-build-output-v1', buildRecordSha256: string,
+ *   originalSourceReceiptSha256: string, entry: ReturnType<typeof readBgFileIdentity>,
+ *   manifest: ReturnType<typeof readBgFileIdentity>,
+ *   artifact: Extract<import('@papercusp/operator-core/lib/release/operator-artifact').OperatorArtifactIdentity,
+ *     { status: 'measured' }> }} BgVerifierOutputRecord
+ * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
+ *   invocation: BgBuildInvocation, entry: string }} options
+ * @returns {BgVerifierOutputRecord}
+ */
+export function qualifyBgVerifierOutput({ record, invocation, entry }: {
+    record: ReturnType<typeof prepareBgVerifierBuildRecord>;
+    invocation: BgBuildInvocation;
+    entry: string;
+}): BgVerifierOutputRecord;
+/** Recheck the same detached output immediately before publication; never
+ * regenerate a source receipt, input record or manifest to bless replacement.
+ * @param {BgVerifierOutputRecord} output
+ * @param {ReturnType<typeof prepareBgVerifierBuildRecord>} record
+ * @param {BgBuildInvocation} invocation
+ */
+export function verifyBgVerifierOutputRecord(output: BgVerifierOutputRecord, record: ReturnType<typeof prepareBgVerifierBuildRecord>, invocation: BgBuildInvocation): BgVerifierOutputRecord;
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.
  * An explicit allowance is shared across phases and requires a finite caller
@@ -818,6 +981,30 @@ export type BgVerifierPreparation = {
     source: Awaited<ReturnType<typeof prepareVerifierSource>>;
     sourceReceiptSha256: string;
 };
+export type BgBuildInvocation = {
+    builder: string;
+    argv: string[];
+    node: string;
+    compiler: string;
+    packageManager: string;
+    configuration: string[];
+    environment: Record<string, string>;
+};
+/**
+ * Bind the maintained artifact writer's measured output to the ORIGINAL build
+ * record. Builder exit status alone is never artifact qualification. This is a
+ * separate output fence, not proof of compiler consumption or service readiness.
+ */
+export type BgVerifierOutputRecord = {
+    schemaVersion: "bg-build-output-v1";
+    buildRecordSha256: string;
+    originalSourceReceiptSha256: string;
+    entry: ReturnType<typeof readBgFileIdentity>;
+    manifest: ReturnType<typeof readBgFileIdentity>;
+    artifact: Extract<import("@papercusp/operator-core/lib/release/operator-artifact").OperatorArtifactIdentity, {
+        status: "measured";
+    }>;
+};
 /**
  * Where an export is published (plan open-source-release-2026-09-29 P-002/P-003).
  * - preview: the private, invite-only evaluation snapshot. Replaced WHOLESALE by one
@@ -860,3 +1047,11 @@ export type Gate = (dir: string, opts: {
 export type Log = (message: string) => void;
 import { runTreeRestrictedHoldPreflight } from './lib/restricted-hold-preflight.mjs';
 declare function main(argv: any): Promise<number>;
+/** Read one physical file without reopening between validation and hashing.
+ * @param {string} path
+ */
+declare function readBgFileIdentity(path: string): {
+    path: string;
+    realpath: string;
+    sha256: string;
+};

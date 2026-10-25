@@ -11,7 +11,7 @@ import {
 
 export function createAssumeCustodyAdapters(
   preparation: AssumePreparation,
-  deps: { readTarget?: typeof readAssumeTarget } = {},
+  deps: { readTarget?: typeof readAssumeTarget; authorizedStartup?: boolean } = {},
 ): Pick<AssumeTransitionDeps, 'reserve' | 'checkCustody' | 'releaseTarget'> {
   // Own an immutable copy; neither a caller nor a host callback may change
   // which incarnation this adapter is permitted to reserve or release.
@@ -22,7 +22,8 @@ export function createAssumeCustodyAdapters(
   const matchesPlan = (value: AssumePreparation) => assumePreparationFingerprint(value) === fingerprint;
   const unchangedTarget = async () => {
     const current = await readTarget({ requestId: plan.requestId, targetOwnerId: plan.target.ownerId,
-      contextMode: plan.target.context.mode }, plan.target.workspaceId);
+      contextMode: plan.target.context.mode }, plan.target.workspaceId,
+      deps.authorizedStartup && plan.target.context.mode === 'native-resume' ? plan.target.context : undefined);
     const parsed = assumePreparationSchema.shape.target.safeParse(current);
     return parsed.success && parsed.data.ended && !parsed.data.liveHost && parsed.data.writer === 'free' &&
       JSON.stringify(parsed.data) === JSON.stringify(plan.target);

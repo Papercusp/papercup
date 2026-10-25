@@ -5313,7 +5313,7 @@ describe("resume finalization uses concrete initial pty spawn evidence", () => {
     const spawn = initialSpawn.indexOf("child = spawnChild();");
     const spawnFailure = initialSpawn.indexOf("} catch (e) {", spawn);
     const acknowledgement = initialSpawn.indexOf(
-      "const acknowledgement = onSpawn();",
+      "const acknowledgement = onSpawn({ ptyPid: child.pid });",
     );
 
     expect(spawn).toBeGreaterThan(-1);
@@ -5322,7 +5322,7 @@ describe("resume finalization uses concrete initial pty spawn evidence", () => {
   });
 
   it("does not re-finalize on later recycle spawns", () => {
-    expect(initialSpawn.match(/onSpawn\(\)/g)).toHaveLength(1);
+    expect(initialSpawn.match(/onSpawn\(/g)).toHaveLength(1);
   });
 });
 

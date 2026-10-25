@@ -19,6 +19,7 @@ import { createAssumeReceiptStore } from './session-assume-store';
 import { ownsAssumeCallerPause, readAssumeCallerPause } from './session-assume-pause';
 import { findLiveHostAsync } from './events/await/psu-pty-discovery';
 import { assumePreparationSchema, assumePreparationFingerprint } from './session-assume';
+import { readProcessIdentity } from './process-identity';
 import type { AssumeActor, AssumePreparation, AssumePreparationDeps, AssumeRequest, AssumeTransitionDeps } from './session-assume';
 
 interface AssumeAuthorizationPorts {
@@ -113,10 +114,14 @@ export function createAssumeTransitionDeps(plan: AssumePreparation,
 /** Internal launcher inspection over existing receipts, pause and keyed lease.
  * The HTTP boundary requires the local superuser principal. No public argument
  * can create a preparation, authorize a transition or manufacture a lease. */
-export async function inspectManagedAssumeRequest(value: unknown, afterExit = false, action = 'observe') {
-  if (!['freeze', 'queue', 'thaw', 'observe', 'complete-return'].includes(action) ||
-      afterExit && action === 'thaw' || action === 'complete-return' && !afterExit)
+export async function inspectManagedAssumeRequest(value: unknown, afterExit = false, action = 'observe', startupValue?: unknown) {
+  const startupAction = ['begin-startup', 'startup-started'].includes(action);
+  if (!['freeze', 'queue', 'thaw', 'observe', 'complete-return', 'begin-startup', 'startup-started'].includes(action) ||
+      afterExit && action === 'thaw' || (action === 'complete-return' || startupAction) && !afterExit)
     throw new Error('assume-host-invalid-action');
+  const startup = startupAction ? z.object({ attemptId: z.string().uuid(),
+    launcherPid: z.number().int().positive().optional(), ptyPid: z.number().int().positive().optional(),
+  }).strict().parse(startupValue) : null;
   const text = z.string().min(1).max(4096);
   const hash = z.string().regex(/^[a-f0-9]{64}$/);
   const request = z.object({ transitionKey: z.string().regex(/^session-assume:[a-f0-9]{64}$/),
@@ -172,14 +177,51 @@ export async function inspectManagedAssumeRequest(value: unknown, afterExit = fa
         managed.identityAssume?.hostId !== request.caller.hostId || managed.identityAssume?.attachmentId !== request.caller.attachmentId))
     throw new Error('assume-host-custody-changed');
   await readAssumeCallerCheckpoint(plan, receipt.recovery);
+  const processExited = (pid: number, identity: string) => {
+    const current = readProcessIdentity(pid);
+    if (current) return current !== identity;
+    try { process.kill(pid, 0); return false; }
+    catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+  };
+  if (action === 'startup-started') {
+    const prior = receipt.startup;
+    const identity = startup?.ptyPid ? readProcessIdentity(startup.ptyPid) : null;
+    if (!prior || prior.attemptId !== startup?.attemptId || !identity ||
+        readProcessIdentity(prior.launcherPid) !== prior.launcherProcessStart ||
+        prior.ptyPid !== undefined && (prior.ptyPid !== startup.ptyPid || prior.ptyProcessStart !== identity))
+      throw new Error('assume-startup-changed');
+    await requireCallerRegistration();
+    await store.save({ ...receipt, startup: { ...prior, ptyPid: startup.ptyPid!, ptyProcessStart: identity },
+      updatedAt: Date.now() });
+    return { ok: true as const, attemptId: prior.attemptId };
+  }
+  const prior = receipt.startup;
+  const priorExited = prior?.ptyPid !== undefined && prior.ptyProcessStart !== undefined &&
+    processExited(prior.ptyPid, prior.ptyProcessStart);
+  const authorizedStartup = afterExit && !!prior && (priorExited ||
+    prior.ptyPid === undefined && readProcessIdentity(prior.launcherPid) === prior.launcherProcessStart);
+  // Admission remains an exact whole-target comparison. Only a durable startup
+  // attempt may authenticate the original immutable prefix after native append.
+  const custody = createAssumeCustodyAdapters(plan, { authorizedStartup });
   // Thaw is rollback of the still-running exact caller; it must remain possible
   // after the target lease expired. The host refuses thaw once replacement began.
-  if (action !== 'thaw' && !await createAssumeCustodyAdapters(plan).checkCustody(plan))
+  if (action !== 'thaw' && !await custody.checkCustody(plan))
     throw new Error('assume-target-custody-changed');
   const checkpointBody = afterExit && plan.target.context.mode === 'checkpoint'
     ? await readAssumeCheckpointBody(plan) : undefined;
   // Neither checkpoint I/O nor target writer inspection extends caller custody.
   await requireCallerRegistration();
+  if (action === 'begin-startup') {
+    const identity = startup?.launcherPid ? readProcessIdentity(startup.launcherPid) : null;
+    const replay = prior?.attemptId === startup?.attemptId && prior?.ptyPid === undefined;
+    if (!identity || prior && !replay && !priorExited || replay &&
+        (prior!.launcherPid !== startup!.launcherPid || prior!.launcherProcessStart !== identity))
+      throw new Error('assume-startup-not-exited');
+    if (!replay) await store.save({ ...receipt, startup: { attemptId: startup!.attemptId,
+      generation: (prior?.generation ?? 0) + 1, authorizedAt: Date.now(),
+      launcherPid: startup!.launcherPid!, launcherProcessStart: identity }, updatedAt: Date.now() });
+    return { ok: true as const, attemptId: startup!.attemptId };
+  }
   return { ok: true as const, transitionKey: receipt.transitionKey, preparationHash: receipt.preparationFingerprint,
     state: receipt.state, preparation: plan, recovery: receipt.recovery,
     ...(checkpointBody === undefined ? {} : { checkpointBody }) };

@@ -443,6 +443,26 @@ describe('container exec target against a live container', () => {
     } finally { await removeContainer(cid); }
   });
 
+  it.each([
+    { label: 'managed settings file', setup: `mkdir -p /etc/claude-code && printf '%s' '{"env":{"CLAUDE_CODE_EXTRA_BODY":"POLICY_SECRET_SENTINEL"}}' > /etc/claude-code/managed-settings.json`, user: '0' },
+    { label: 'dangling policy symlink', setup: 'ln -s /missing-managed-policy /etc/claude-code', user: '0' },
+    { label: 'inaccessible policy parent', setup: 'chmod 000 /etc', user: '65534:65534' },
+  ])('stock Claude admission rejects managed policy before the CLI starts ($label)', async ({ setup, user }) => {
+    const cid = await startContainer(['--user', user]);
+    try {
+      const prepared = await command('docker', ['exec', '-u', '0', cid, '/bin/sh', '-c', setup]);
+      expect(prepared.status, prepared.stderr).toBe(0);
+      const { wrapperPath } = materializeDockerExecWrapper({ kind: 'docker-exec', containerId: cid,
+        workdir: '/tmp', binPath: '/bin/sh' }, { dir: mkdtempSync(join(root, 'claude-policy-')), guardClaudeEnv: true });
+      const result = await command(wrapperPath, ['-c', 'printf "%s" "$1"', 'sentinel', 'CLI_STARTED'],
+        { PATH: process.env.PATH });
+      expect(result.status, result.stderr).toBe(126);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain('stock Claude managed policy');
+      expect(result.stderr).not.toContain('POLICY_SECRET_SENTINEL');
+    } finally { await removeContainer(cid); }
+  });
+
   it('relocated session home: the container reads and writes it through a same-path per-task mount and sees no other session', async () => {
     const base = mkdtempSync(join(root, 'reloc-'));
     const homes = join(base, 'su-codex-homes'), perHomes = join(base, 'task-homes');

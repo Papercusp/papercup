@@ -103,10 +103,12 @@ describe('OMP managed replacement installed-client census', () => {
     const baseline = captureSurface(['--tools', admitted.ompNativeTools!.join(',')]);
     const observations: { routes: string[]; argv: string[]; names: string[]; calls: number; version: string }[] = [];
     task.meta.nativeToolSurface = { baseline, observations, controlVersion: admitted.clientVersions!.omp };
-    const toolSelection = (argv: string[]) => {
+    const toolSelection = (argv: (string | undefined)[]) => {
       const index = argv.indexOf('--tools');
       expect(index, JSON.stringify(argv)).toBeGreaterThanOrEqual(0);
-      return argv.slice(index, index + 2);
+      const selected = argv.slice(index, index + 2);
+      expect(selected).not.toContain(undefined);
+      return selected.filter((arg): arg is string => arg !== undefined);
     };
     const routes = {
       su: toolSelection(suLaunchArgs('omp', { capabilityPolicy: admitted }).args),

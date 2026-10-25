@@ -33,6 +33,11 @@ import {
   prepareVerifierSource,
   prepareBgVerifierSource,
   verifyBgVerifierSource,
+  createBgVerifierCompilerCustody,
+  prepareBgVerifierBuildRecord,
+  verifyBgVerifierBuildRecord,
+  qualifyBgVerifierOutput,
+  verifyBgVerifierOutputRecord,
   prepareVerifierDependencies,
   runVerifierDependencyCommand,
   captureVerifierDependencies,
@@ -2186,11 +2191,15 @@ describe('BG inherited manifest and original source boundaries', () => {
       () => sourceDefect(boundary, defect));
   }
 
-  async function memberDefect(boundary: typeof boundaries[number], defect: 'omitted' | 'added') {
+  it.each(['omitted', 'added'] as const)('rejects %s accepted inputs before destination allocation', async defect => {
     const c = candidate();
     const wrong = { ...c.options, inputs: defect === 'omitted' ? inputs.slice(1) : [...inputs, 'package.json'] };
     await expect(prepareBgVerifierSource(wrong)).rejects.toThrow('BG accepted input membership mismatch');
     expect(existsSync(wrong.dest)).toBe(false);
+  });
+
+  async function memberDefect(boundary: typeof boundaries[number], defect: 'omitted' | 'added') {
+    const c = candidate();
     const prepared = await prepareBgVerifierSource(c.options);
     expect(verifyBgVerifierSource(prepared, boundary)).toBe(prepared);
     // Simulate a replaced attempt record; the original retained manifest and
@@ -2224,6 +2233,187 @@ describe('BG inherited manifest and original source boundaries', () => {
       if (defect !== 'receipt') expect(readFileSync(receipt)).toEqual(original);
     }
   });
+
+  async function compilerCandidate(artifactInputs = false) {
+    const c = candidate();
+    git(c.fixture.repo, ['rm', '-rf', '--', 'node_modules', 'apps/operator/node_modules']);
+    for (const path of ['papercusp-desktop/bin/lib/pinned-deps.sh', 'apps/operator/bin/release/dependency-generation.sh',
+      'apps/operator/bin/bundle-host.sh'])
+      write(c.fixture.repo, path, readFileSync(join(SOURCE_ROOT, path), 'utf8'));
+    write(c.fixture.repo, inputs[0]!, "export { y } from '../../../packages/core/index'; export { default as dep } from 'fixture-dependency';\n");
+    git(c.fixture.repo, ['add', '-A']);
+    git(c.fixture.repo, ['commit', '-qm', 'BG compiler input custody fixture']);
+    c.options.ref = git(c.fixture.repo, ['rev-parse', 'HEAD']);
+    c.options.acceptedManifest.members[inputs[0]!] = git(c.fixture.repo, ['rev-parse', `${c.options.ref}:${inputs[0]}`]);
+    if (artifactInputs) {
+      c.options.inputs = [inputs[0]!, 'packages/core/index.ts'];
+      c.options.acceptedManifest.members = Object.fromEntries(c.options.inputs.map(path =>
+        [path, git(c.fixture.repo, ['rev-parse', `${c.options.ref}:${path}`])])) as typeof c.options.acceptedManifest.members;
+    }
+    const manifest = JSON.stringify({ schemaVersion: 1, sourceBlobs: c.options.acceptedManifest.members });
+    writeFileSync(c.options.acceptedManifest.path, manifest);
+    c.options.acceptedManifest.sha256 = digest(manifest);
+    const prepared = await prepareBgVerifierSource(c.options);
+    write(prepared.root, 'node_modules/fixture-dependency/package.json', '{"name":"fixture-dependency","main":"index.js"}');
+    write(prepared.root, 'node_modules/fixture-dependency/index.js', 'export default 41;\n');
+    write(prepared.root, 'node_modules/fixture-package-manager/cli.js', '// fixture package-manager identity\n');
+    write(prepared.root, 'node_modules/fixture-compiler/cli.js', '// fixture compiler identity\n');
+    const dependencies = captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source });
+    return { c, prepared, dependencies };
+  }
+
+  for (const kind of ['source', 'dependency'] as const) {
+    const selector = `bg-r1-compiler-${kind}-transient-substitution-restored rejects selected ${kind} changed during real compiler consumption then restored before final fence`;
+    it(selector, async () => {
+      const { prepared, dependencies } = await compilerCandidate();
+      const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
+      const { build } = await import('esbuild');
+      const local = kind === 'source' ? 'packages/core/index.ts' : 'node_modules/fixture-dependency/index.js';
+      const target = join(prepared.root, local), original = readFileSync(target);
+      let substituted = false, restored = false;
+      const result = build({ absWorkingDir: prepared.root, entryPoints: [inputs[0]!], bundle: true,
+        format: 'esm', platform: 'node', write: false, logLevel: 'silent',
+        plugins: [custody.plugin, { name: 'independent-transient-substitution', setup(builder) {
+          builder.onResolve({ filter: kind === 'source' ? /core\/index$/ : /^fixture-dependency$/ }, () => {
+            writeFileSync(target, kind === 'source' ? 'export const y = 99;\n' : 'export default 99;\n');
+            substituted = true;
+            return { path: target };
+          });
+          builder.onEnd(() => { writeFileSync(target, original); restored = true; });
+        } }] });
+      await expect(result).rejects.toThrow(`BG compiler consumed bytes mismatch: ${local}`);
+      expect({ substituted, restored }).toEqual({ substituted: true, restored: true });
+      expect(readFileSync(target)).toEqual(original);
+      expect(verifyBgVerifierSource(prepared, 'before-publication')).toBe(prepared);
+      expect(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source })).toEqual(dependencies);
+    });
+  }
+
+  it('bg-r1-compiler-immutable-input-positive-control qualifies ordinary real compilation from the frozen accepted source and dependency bytes', async () => {
+    const { prepared, dependencies } = await compilerCandidate();
+    const originalReceipt = readFileSync(join(prepared.root, '.verifier-source.json'));
+    const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
+    const { build } = await import('esbuild');
+    const result = await build({ absWorkingDir: prepared.root, entryPoints: [inputs[0]!], bundle: true,
+      format: 'esm', platform: 'node', write: false, logLevel: 'silent', plugins: [custody.plugin] });
+    const imported = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0]!.contents).toString('base64'));
+    expect({ y: imported.y, dep: imported.dep }).toEqual({ y: 2, dep: 41 });
+    expect(custody.verifyBeforePublication().map(row => row.path)).toEqual([
+      inputs[0]!, 'node_modules/fixture-dependency/index.js', 'packages/core/index.ts',
+    ]);
+    expect(readFileSync(join(prepared.root, '.verifier-source.json'))).toEqual(originalReceipt);
+  });
+
+  it.each(['stdin', 'virtual'] as const)('refuses %s compiler content that could bypass the frozen file census', async kind => {
+    const { prepared, dependencies } = await compilerCandidate();
+    const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
+    const { build } = await import('esbuild');
+    await expect(build({ absWorkingDir: prepared.root, bundle: true, platform: 'node', write: false, logLevel: 'silent',
+      ...(kind === 'stdin' ? { stdin: { contents: 'export default 99', loader: 'js' as const } } : { entryPoints: ['virtual-entry'] }),
+      plugins: [custody.plugin, { name: 'independent-virtual-provider', setup(builder) {
+        builder.onResolve({ filter: /^virtual-entry$/ }, () => ({ path: 'virtual-entry', namespace: 'fixture-virtual' }));
+        builder.onLoad({ filter: /.*/, namespace: 'fixture-virtual' }, () => ({ contents: 'export default 99' }));
+      } }],
+    })).rejects.toThrow(kind === 'stdin'
+      ? 'BG compiler stdin is outside original census' : 'BG compiler virtual input is outside original census');
+  });
+
+  async function invocationDefect(boundary: typeof boundaries[number], defect: 'builder-configuration' | 'toolchain-identity') {
+    const { prepared, dependencies } = await compilerCandidate();
+    const invocation = { builder: join(prepared.root, 'apps/operator/bin/bundle-host.sh'),
+      argv: ['--bundle', '--platform=node', '--target=node22'], node: process.execPath,
+      compiler: join(prepared.root, 'node_modules/fixture-dependency/index.js'),
+      packageManager: join(prepared.root, 'node_modules/fixture-package-manager/cli.js'),
+      configuration: [join(prepared.root, 'package-lock.json')], environment: { NODE_OPTIONS: '', NODE_PATH: '', PATH: '/fixture/bin' } };
+    const originalReceipt = readFileSync(join(prepared.root, '.verifier-source.json'));
+    const record = prepareBgVerifierBuildRecord({ prepared, dependencies, invocation });
+    const recordBytes = JSON.stringify(record);
+    expect(verifyBgVerifierBuildRecord(record, invocation, boundary)).toBe(record);
+    if (defect === 'builder-configuration') invocation.argv.push('--target=node23');
+    else invocation.node = invocation.packageManager;
+    expect(() => verifyBgVerifierBuildRecord(record, invocation, boundary))
+      .toThrow('BG builder configuration or toolchain identity changed');
+    expect(JSON.stringify(record)).toBe(recordBytes);
+    expect(readFileSync(join(prepared.root, '.verifier-source.json'))).toEqual(originalReceipt);
+  }
+
+  for (const boundary of boundaries) for (const defect of ['builder-configuration', 'toolchain-identity'] as const) {
+    it(`bg-r1-${defect}-${boundary} rejects changed ${defect} ${boundary}`, () => invocationDefect(boundary, defect));
+  }
+  it('BG-PREP-EXACT-SELECTION rejects changed builder configuration or toolchain identity', async () => {
+    for (const boundary of boundaries) for (const defect of ['builder-configuration', 'toolchain-identity'] as const)
+      await invocationDefect(boundary, defect);
+  });
+
+  async function outputCandidate() {
+    const { prepared, dependencies } = await compilerCandidate(true);
+    const invocation = { builder: join(prepared.root, 'apps/operator/bin/bundle-host.sh'),
+      argv: [inputs[0]!, '--bundle', '--platform=node', '--format=esm'], node: process.execPath,
+      compiler: join(prepared.root, 'node_modules/fixture-compiler/cli.js'),
+      packageManager: join(prepared.root, 'node_modules/fixture-package-manager/cli.js'),
+      configuration: [join(prepared.root, 'package.json')],
+      environment: { NODE_OPTIONS: '', NODE_PATH: '', PATH: '/usr/bin' } };
+    const record = prepareBgVerifierBuildRecord({ prepared, dependencies, invocation });
+    const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
+    const entry = join(prepared.root, 'apps/operator/dist-verify/hono-host.mjs');
+    const { build } = await import('esbuild');
+    const result = await build({ absWorkingDir: prepared.root, entryPoints: [inputs[0]!], outfile: entry,
+      bundle: true, format: 'esm', platform: 'node', metafile: true, logLevel: 'silent', plugins: [custody.plugin] });
+    writeFileSync(entry + '.meta.json', JSON.stringify(result.metafile));
+    custody.verifyBeforePublication();
+    return { prepared, invocation, record, entry };
+  }
+
+  it('binds a distinct immutable output record through the maintained artifact writer', async () => {
+    const { prepared, invocation, record, entry } = await outputCandidate();
+    const original = readFileSync(join(prepared.root, '.verifier-source.json'));
+    const originalRecord = JSON.stringify(record);
+    const output = qualifyBgVerifierOutput({ record, invocation, entry });
+    expect(output.artifact.sourceBlobs).toEqual(prepared.acceptedManifest.members);
+    expect(output.entry.sha256).toBe(digest(readFileSync(entry)));
+    expect(output.manifest.sha256).toBe(digest(readFileSync(output.artifact.evidenceRef)));
+    expect(output.buildRecordSha256).toBe(digest(originalRecord));
+    expect(Object.isFrozen(output.artifact.sourceBlobs)).toBe(true);
+    expect(verifyBgVerifierOutputRecord(output, record, invocation)).toBe(output);
+    expect(JSON.stringify(record)).toBe(originalRecord);
+    expect(readFileSync(join(prepared.root, '.verifier-source.json'))).toEqual(original);
+  });
+
+  it('refuses zero-exit compiler output with UNKNOWN artifact provenance', async () => {
+    const { invocation, record, entry } = await outputCandidate();
+    rmSync(entry + '.meta.json');
+    expect(() => qualifyBgVerifierOutput({ record, invocation, entry })).toThrow(/ENOENT/);
+    expect(readdirSync(dirname(entry)).some(path => path.includes('.artifact-'))).toBe(false);
+  });
+
+  it.each(['omitted', 'added'] as const)('refuses %s artifact source membership without replacing the input record', async defect => {
+    const { invocation, record, entry } = await outputCandidate();
+    const meta = JSON.parse(readFileSync(entry + '.meta.json', 'utf8'));
+    if (defect === 'omitted') delete meta.inputs['packages/core/index.ts'];
+    else meta.inputs['libs/papercusp/package.json'] = { bytes: 1 };
+    writeFileSync(entry + '.meta.json', JSON.stringify(meta));
+    const before = JSON.stringify(record);
+    expect(() => qualifyBgVerifierOutput({ record, invocation, entry })).toThrow('BG output accepted member census mismatch');
+    expect(JSON.stringify(record)).toBe(before);
+  });
+
+  it.each(['bundle', 'manifest', 'build-record', 'environment', 'dependency'] as const)(
+    'refuses %s replacement after retaining the original output record', async defect => {
+      const { prepared, invocation, record, entry } = await outputCandidate();
+      const output = qualifyBgVerifierOutput({ record, invocation, entry });
+      const outputBytes = JSON.stringify(output), originalRecord = JSON.stringify(record);
+      let supplied = record;
+      if (defect === 'bundle') writeFileSync(entry, 'export default 99;');
+      if (defect === 'manifest') writeFileSync(output.artifact.evidenceRef, '{}');
+      if (defect === 'build-record') supplied = { ...record, invocation: { ...record.invocation, argv: [...record.invocation.argv, '--minify'] } };
+      if (defect === 'environment') invocation.environment.PATH = '/unaccepted/bin';
+      if (defect === 'dependency') writeFileSync(join(prepared.root, 'node_modules/fixture-dependency/index.js'), 'export default 99;\n');
+      expect(() => verifyBgVerifierOutputRecord(output, supplied, invocation)).toThrow(defect === 'bundle'
+        ? 'BG output bundle changed' : defect === 'manifest' ? 'BG output manifest changed'
+          : defect === 'dependency' ? 'BG build dependency census changed' : 'BG builder configuration or toolchain identity changed');
+      expect(JSON.stringify(output)).toBe(outputBytes);
+      expect(JSON.stringify(record)).toBe(originalRecord);
+    });
 });
 
 describe('D044 independent operator-api input handoff', () => {

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 /** Managed identity changes reuse the parent-bound host handoff. Orders contain
  * only custody references: the successor rebuilds the target using launchResume,
@@ -111,11 +111,18 @@ export async function launchIdentityAssumeHandoff(handoff, { inspect, resolveSes
     throw new Error('assume-target-changed');
   const accountEnv = await accountFor(session);
   await check();
+  const attemptId = randomUUID();
+  const startup = async (action, details) => {
+    const result = await inspect(request, true, action, { attemptId, ...details });
+    if (result?.ok !== true || result.attemptId !== attemptId) throw new Error('assume-startup-unacknowledged');
+  };
   return resume(session, { accountEnv, headless: handoff.headless === true,
     kickoff: `Managed identity transition ${request.transitionKey}. Verify coord:whoami, then resume your own inbox and assigned work. ` +
       `Caller recovery reference: ${request.recoveryRef}; exact return identity: ${result.recovery.returnRef.ownerId}.`,
     managedAssume: { inheritedEnv: identityAssumeBaseEnv(baseEnv), attachmentId: request.caller.attachmentId,
       hostId: request.caller.hostId,
+      beginStartup: () => startup('begin-startup', { launcherPid: process.pid }),
+      started: ({ ptyPid }) => startup('startup-started', { ptyPid }),
       reservation: { advSessionId: target.advSessionId, ownerId: target.ownerId,
         claimKey: request.transitionKey, expiresAtMs: request.expiresAt },
       ...(target.returnFrom ? { restoreReturn: async () => {

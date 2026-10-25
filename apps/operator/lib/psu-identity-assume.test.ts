@@ -33,6 +33,28 @@ function fixture() {
 }
 
 describe('clean parent-bound identity launcher', () => {
+  it('requires durable attempt acknowledgements before spawn and for its exact PTY startup', async () => {
+    const { handoff, ports, result } = fixture();
+    let acknowledge = false;
+    const inspect = vi.fn(async (_request: unknown, _afterExit: boolean, _action?: string,
+      startup?: { attemptId: string; launcherPid?: number; ptyPid?: number }) =>
+      ({ ...structuredClone(result), ...(acknowledge ? { attemptId: startup?.attemptId } : {}) }));
+    await launchIdentityAssumeHandoff(handoff, { ...ports, inspect });
+    const { managedAssume } = ports.resume.mock.calls[0][1] as { managedAssume: {
+      beginStartup(): Promise<void>; started(value: { ptyPid: number }): Promise<void>;
+    } };
+    await expect(managedAssume.beginStartup()).rejects.toThrow('startup-unacknowledged');
+    acknowledge = true;
+    await managedAssume.beginStartup();
+    await managedAssume.started({ ptyPid: 202 });
+    const begin = inspect.mock.calls.at(-2)!;
+    const started = inspect.mock.calls.at(-1)!;
+    expect(begin.slice(1, 3)).toEqual([true, 'begin-startup']);
+    expect(begin[3]?.launcherPid).toBe(process.pid);
+    expect(started.slice(1, 3)).toEqual([true, 'startup-started']);
+    expect(started[3]).toEqual({ attemptId: begin[3]?.attemptId, ptyPid: 202 });
+  });
+
   it('restores a pinned caller return through the same request only after the launcher finalizes', async () => {
     const { handoff, result, ports, request } = fixture();
     Object.assign(result.preparation.target, { returnFrom: { transitionKey: 'source-key' } });

@@ -27,6 +27,11 @@
  * is an incremental ingester that never re-reads bytes (migration 811).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { createHmac } from 'node:crypto';
+import { getDbEncryptionKey } from '../../db-encryption';
+import { mineSqlCandidateSlice, purgeSqlCandidateData, type SqlMiningDeps, type SqlMiningOptions,
+  type SqlMiningResult } from '../../bash-substitution/sql-tool-candidates';
+import { miningFailureReason } from '../../agent-opportunities/pipeline';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { fetchSqlCorpusAtoms } from '../../bash-substitution/sql-corpus';
 import { SQL_READ_NO_PAIR_DECISIONS, SQL_READ_PAIRS } from '../../bash-substitution/pairs';
@@ -286,19 +291,47 @@ export async function runSqlReadCensus(
   }
 }
 
+/** Same production cadence; source dispatch has no dependency on this background path. */
+export async function runSqlIntentCensus(
+  opts: Omit<SqlMiningOptions, 'scope' | 'authorize'> & Partial<Pick<SqlMiningOptions, 'scope' | 'authorize'>>,
+  deps: SqlMiningDeps = {},
+): Promise<SqlMiningResult & { purgeBreach?: boolean }> {
+  let purgeBreach = false;
+  try {
+    const purge = await purgeSqlCandidateData(opts);
+    purgeBreach = purge.breach;
+  } catch {
+    // Mining may still advance. Expiry is enforced by reads even with a failed purge worker.
+    purgeBreach = true;
+  }
+  try {
+    const epoch = new Date(opts.now ?? Date.now()).toISOString().slice(0, 7);
+    const scope = opts.scope ?? { workspaceId: opts.workspaceId, sourceBoundary: 'authorized-tool-ledger', epoch,
+      // Existing host key custody is outside the repo, atomic, mode0600; domain separate the mining subkey.
+      key: createHmac('sha256', getDbEncryptionKey()).update(`sql-intent-mining-v1:${epoch}`).digest() };
+    const result = await mineSqlCandidateSlice({ ...opts, scope,
+      // This is the trusted system action's own workspace+harness source. Exposed reads require current ACL callbacks.
+      authorize: opts.authorize ?? (async () => true) }, deps);
+    return { ...result, purgeBreach };
+  } catch (error) {
+    return { status: 'UNKNOWN', stage: 'source', reason: miningFailureReason(error), rows: 0, purgeBreach };
+  }
+}
+
 registerSystemAction('sql-read-census', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const num = (v: unknown): number | undefined => {
     const n = Number(v);
     return Number.isFinite(n) ? n : undefined;
   };
-  const result = await runSqlReadCensus({
+  const [result, intents] = await Promise.all([runSqlReadCensus({
     workspaceId: ctx.workspaceId,
     windowDays: num(cfg.window_days),
     agentThreshold: num(cfg.agent_threshold),
     graceDays: num(cfg.grace_days),
     requiredFallPct: num(cfg.required_fall_pct),
-  });
+  }), runSqlIntentCensus({ workspaceId: ctx.workspaceId, harnessSlug: ctx.installSlug,
+    rowBudget: num(cfg.intent_row_budget), timeBudgetMs: num(cfg.intent_time_budget_ms) })]);
   const line =
     `[sql-read-census] ${ctx.workspaceId} ${result.ranOn}: ${result.outcome} — ` +
     `${result.clusters} cluster(s), uncovered ${result.uncovered}, drift ${result.drift}, ` +
@@ -306,4 +339,10 @@ registerSystemAction('sql-read-census', async (ctx: SystemActionCtx) => {
     (result.reason ? ` (${result.reason})` : '');
   if (result.outcome === 'error' || result.outcome === 'alerted') console.warn(line);
   else console.log(line);
+  if (intents.status === 'UNKNOWN' || intents.purgeBreach)
+    console.warn(`[sql-intent-census] ${ctx.workspaceId}: ${intents.status} stage=${intents.stage} reason=${intents.reason ?? 'none'} purgeBreach=${intents.purgeBreach}`);
+  return { diagnostics: { sqlRead: result, sqlIntent: intents },
+    ...(intents.status === 'UNKNOWN' || intents.purgeBreach
+      ? { softError: `sql-intent-census ${intents.status} stage=${intents.stage} reason=${intents.reason ?? 'none'} purgeBreach=${intents.purgeBreach}` }
+      : {}) };
 });

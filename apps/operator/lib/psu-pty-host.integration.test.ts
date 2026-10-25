@@ -168,6 +168,24 @@ function fakeIo() {
 const FLATTENED_CODEX_READY_FOOTER =
   '› Ask Codex to do anythingReady · GPT-5.6-Sol high · Context 100% left';
 
+it('acknowledges startup with the exact initial live PTY PID', async () => {
+  const ownerId = `su-startup-witness-${process.pid}-${Date.now()}`;
+  const signals = new EventEmitter(), onSpawn = vi.fn();
+  const { captured, io } = fakeIo();
+  const done = hostThroughPty({ command: execPath,
+    args: ['-e', "process.stdout.write('STARTUP_WITNESS_READY\\n');setInterval(()=>{},1000)"],
+    cwd: process.cwd(), env: hermeticEnv({ PAPERCUSP_SID: ownerId }), ownerId,
+    io, bridgeTty: false, signalSource: signals, onSpawn });
+  try {
+    await vi.waitFor(() => expect(captured()).toContain('STARTUP_WITNESS_READY'), { timeout: 5000 });
+    await vi.waitFor(() => expect(existsSync(metaPathFor(ownerId))).toBe(true));
+    const meta = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
+    expect(onSpawn).toHaveBeenCalledExactlyOnceWith({ ptyPid: meta.ptyPid });
+    expect(meta.ptyPid).not.toBe(process.pid);
+    expect(() => process.kill(meta.ptyPid, 0)).not.toThrow();
+  } finally { signals.emit('SIGTERM'); await done; }
+}, 10_000);
+
 it('attributes real PTY dialog submissions to machine control or human terminal input', async () => {
   const ownerId = `su-dialog-host-${process.pid}-${Date.now()}`;
   const dir = mkdtempSync(join(tmpdir(), 'dialog-host-'));

@@ -531,13 +531,12 @@ export const ADMISSION_PRECHECK_SETUP_BUDGET_MS = 40 * 60_000;
 export const ADMISSION_PRECHECK_SETUP_IDLE_MS = 15 * 60_000;
 export const ADMISSION_PRECHECK_PER_FILE_BUDGET_MS = 10 * 60_000;
 /**
- * WI-6554700010019443: the largest population the admit door will launch a managed pre-check
- * for. An admitted gitlink expands to every test file under its submodule (measured 2026-10-21:
- * 6614 files), and the runner measures one file at a time, so such a run cannot finish before
- * several queue verify ticks (two of them measured 0 files before being abandoned). Above this
- * bound the door refuses BEFORE launch and names the reasoned skipPrecheck opt-out.
- * The value is a judgment, not a measurement: an ordinary admission is already held near this
- * size (signature tests + admitted tests + an ADMISSION_RADIUS_CAP related-test radius).
+ * Maximum files accepted by one checkpoint-tree runner execution group. The managed worker
+ * runs the COMPLETE population in resumable groups of at most
+ * min(ADMISSION_RADIUS_CAP, ADMISSION_PRECHECK_MAX_FILES), persisting each file's result.
+ * This is a per-group bound, not a total-population ceiling: wide radii and admitted gitlinks
+ * may select more files. Never truncate that population or treat this constant as permission
+ * to skip its remaining files.
  */
 export const ADMISSION_PRECHECK_MAX_FILES = 200;
 /** Bound queue writes from chatty children; silent children never manufacture a heartbeat. */

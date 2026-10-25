@@ -28,6 +28,10 @@ const receiptSchema = z.object({
     pausedLoopRef: text.nullable(), pausedAwaitIds: z.array(positive),
     inbox: z.literal('retained'), directives: z.literal('retained'),
   }).strict().optional(),
+  startup: z.object({ attemptId: z.string().uuid(), generation: positive,
+    authorizedAt: z.number().int().nonnegative(), launcherPid: positive, launcherProcessStart: text,
+    ptyPid: positive.optional(), ptyProcessStart: text.optional(),
+  }).strict().refine(value => (value.ptyPid === undefined) === (value.ptyProcessStart === undefined)).optional(),
   callerReturn: z.object({ transitionKey: text, caller: assumePreparationSchema.shape.caller,
     nativeProcessStart: text, restoredAt: z.number().int().nonnegative() }).strict().optional(),
   observation: z.object({
@@ -91,6 +95,7 @@ export function createAssumeReceiptStore(plan: AssumePreparation):
       if (!previous || receipt.transitionKey !== key || receipt.preparationFingerprint !== fingerprint) {
         throw new Error('assume-receipt-not-owned');
       }
+      if (decode(previous).startup && !receipt.startup) throw new Error('assume-startup-not-owned');
       const next = summary(receipt);
       const digest = createHash('sha256').update(JSON.stringify(next)).digest('hex');
       const envelope: CoordEnvelope = {

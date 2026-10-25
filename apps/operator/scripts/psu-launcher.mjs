@@ -13635,7 +13635,7 @@ export function runWrapper(options) {
   void launchWithHostedAgentSlot(env, (finish) => {
     let nativeSpawned = false;
     const reportSpawned = onSpawn;
-    onSpawn = () => { nativeSpawned = true; return reportSpawned(); };
+    onSpawn = (...details) => { nativeSpawned = true; return reportSpawned(...details); };
     const reportEnded = reportSessionEndedImpl;
     reportSessionEndedImpl = async (...details) => {
       try { return await reportEnded(...details); } finally {
@@ -14673,8 +14673,9 @@ async function launchResume(
     }
     await reportSessionResumeReleased(session.id, resumeClaimKey);
   };
-  const finalizeResumeClaim = async () => {
+  const finalizeResumeClaim = async (startup) => {
     if (!resumeClaimed || session.id == null || !resumeClaimKey) return;
+    if (managedAssume?.started) await managedAssume.started(startup);
     if (resumeClaimLegacyReactivation) {
       // The legacy acquire already performed its one-step live transition.
       // There is no finalize endpoint to call on that operator generation.
@@ -15074,6 +15075,14 @@ async function launchResume(
       const lock = session.agent === 'codex' ? codexThreadWriterHolder(env.CODEX_HOME, session.sessionId) : null;
       if (findLiveHostFor(session.coordOwnerId) || processWriter.held || processWriter.reason !== 'clean-scan' ||
           (lock && (lock.held || !['free', 'no-lock-file'].includes(lock.reason))))
+        throw new Error('assume-target-writer-unavailable');
+      await managedAssume.beginStartup();
+      // The durable startup acknowledgement is asynchronous. Repeat the native
+      // writer probe after it, immediately before the synchronous spawn door.
+      const afterStartup = sessionProcessHolder(session.agent === 'omp' ? session.ompThreadId : session.sessionId);
+      const afterLock = session.agent === 'codex' ? codexThreadWriterHolder(env.CODEX_HOME, session.sessionId) : null;
+      if (findLiveHostFor(session.coordOwnerId) || afterStartup.held || afterStartup.reason !== 'clean-scan' ||
+          afterLock && (afterLock.held || !['free', 'no-lock-file'].includes(afterLock.reason)))
         throw new Error('assume-target-writer-unavailable');
     }
     runWrapper({
@@ -18375,9 +18384,9 @@ export async function ensureBackendInstalled(
  * the predecessor process. Consuming the handoff before the normal launch
  * flow keeps the successor on that exact row/home instead of minting a sibling.
  */
-async function inspectIdentityAssume(request, afterExit = false, action = 'observe') {
+async function inspectIdentityAssume(request, afterExit = false, action = 'observe', startup = undefined) {
   return api('/api/agent-mcp/console/bootstrap-su/session-resumed', {
-    method: 'POST', body: JSON.stringify({ assumeHost: { request, afterExit, action } }),
+    method: 'POST', body: JSON.stringify({ assumeHost: { request, afterExit, action, startup } }),
   });
 }
 
