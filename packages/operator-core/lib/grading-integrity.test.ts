@@ -2489,6 +2489,44 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.route).not.toHaveBeenCalled();
   });
 
+  it.each(['single', 'ambiguous', 'changed-task', 'not-current'] as const)(
+    'EI-26950964476692806: hands off an exact runtime under a fresh retained lease only for one identified task (%s)',
+    async (population) => {
+      const d = deps();
+      const issueId = 'EI-runtime-fresh-reservation';
+      const lease = { key: `grading-audit:${issueId}`, reservedAt: '2026-09-08T00:00:00.000Z' };
+      const target = card(issueId, {
+        gradedGeneration: { deployedSha: '2222222', hostStartedAt: null, bootHeadSha: null,
+          scoutCodeHash: null, staleHost: false },
+      });
+      target.gradingAudit = { ...target.gradingAudit!, dispatchReservation: lease };
+      d.listScorecards.mockResolvedValue([target]);
+      d.reserve.mockResolvedValue({ status: 'already-reserved' });
+      const task = { taskId: 'retained', workspaceId: 'ws-test', class: 'agent-session', state: 'running',
+        detail: { label: lease.key, coordOwnerId: 'su-independent' } } as unknown as TaskRow;
+      d.listTasks.mockResolvedValue(population === 'ambiguous'
+        ? [task, { ...task, taskId: 'second-retained' }] : [task]);
+      d.getTask.mockResolvedValue(population === 'changed-task' ? { ...task, taskId: 'different-task' } : task);
+
+      const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, {
+        ...d, isCurrentSourceAuditResponder: vi.fn().mockResolvedValue(population !== 'not-current'),
+      });
+      if (population === 'single') {
+        expect(d.notifyRetainedAuditor).toHaveBeenCalledWith(expect.objectContaining({
+          card: target, task, reservation: lease, runtime: await d.ensureRuntime.mock.results[0]!.value,
+        }));
+        expect(result.receipts[0]).toMatchObject({ state: 'deduped', dispatchReservation: lease,
+          renewalNotification: { state: 'delivered' } });
+      } else {
+        expect(d.notifyRetainedAuditor).not.toHaveBeenCalled();
+        expect(result.receipts[0]).toMatchObject({ state: 'skipped' });
+      }
+      expect(d.release).not.toHaveBeenCalled();
+      expect(d.launch).not.toHaveBeenCalled();
+      expect(d.route).not.toHaveBeenCalled();
+    },
+  );
+
   it('does not hand off a renewed lease after losing the restore CAS', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-renew')]);

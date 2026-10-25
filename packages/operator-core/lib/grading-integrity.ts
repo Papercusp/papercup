@@ -2768,6 +2768,36 @@ export async function dispatchPendingGradingAudits(
             })) {
           reservation = await reserve(issueId, idempotencyKey, reservationOptions);
         }
+        // EI-26950964476692806: exact-runtime recovery runs before reservation
+        // admission. A fresh lease must not suppress the restored endpoint's
+        // handoff to its existing auditor for the remainder of the lease TTL.
+        // Keep that epoch untouched; the notification transaction rechecks its
+        // target, fingerprint, owner and independence before updating the task.
+        const retainedRuntime = retainedRuntimes.get(issueId);
+        if (reservation.status === 'already-reserved' && retainedRuntime &&
+            cleanup.errors.length === 0 && cleanup.remainingTaskIds.length === 1) {
+          const retainedTask = await readTask(cleanup.remainingTaskIds[0]!);
+          const ownerId = typeof retainedTask?.detail?.coordOwnerId === 'string'
+            ? retainedTask.detail.coordOwnerId.trim() : '';
+          let currentResponder = false;
+          if (retainedTask?.taskId === cleanup.remainingTaskIds[0] && ownerId &&
+              retainedTask.workspaceId === workspaceId && retainedTask.class === 'agent-session' &&
+              ['pending', 'running'].includes(retainedTask.state)) {
+            try {
+              currentResponder = await (deps.isCurrentSourceAuditResponder ?? isCurrentSourceAuditResponder)(
+                issueId, heldReservation, ownerId);
+            } catch { /* Unknown responder identity cannot authorize a handoff. */ }
+          }
+          if (currentResponder && retainedTask) {
+            markPhase('retained-auditor-notification');
+            const renewalNotification = await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
+              card, task: retainedTask, reservation: heldReservation, runtime: retainedRuntime,
+              workspaceId: workspaceId!, ...(harnessResolved ? { harness } : {}),
+            });
+            return { issueId, rubricRef: card.rubricRef, state: 'deduped', idempotencyKey,
+              dispatchReservation: heldReservation, renewalNotification, ...recoveryFields() };
+          }
+        }
       }
       if (reservation.status !== 'claimed') {
         return {
