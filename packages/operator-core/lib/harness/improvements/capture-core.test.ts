@@ -3434,6 +3434,30 @@ describe('P-007 — dedupCoverage: an empty result must disclose whether it coul
     expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
   });
 
+  it('returns no duplicate verdict when both fuzzy search legs are unavailable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const d = {
+        ...deps(),
+        searchIssues: async () => {
+          throw new Error('search unavailable');
+        },
+        findSemanticDupes: async () => null,
+      };
+      const res = await captureImprovement(
+        { title: 'some novel symptom string', kind: 'bug', checkDuplicatesOnly: true },
+        d,
+      );
+
+      expect(res.possibleDuplicates).toBeNull();
+      expect(res.dedupCoverage).toEqual({ lexical: 'unavailable', semantic: 'unavailable', degraded: true });
+      expect(res.hint).toContain('NO DEDUP VERDICT');
+      expect(res.hint).toContain('both lexical and semantic searches were unavailable');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('reports semantic OK + not degraded only when the embedding leg and index coverage are healthy', async () => {
     const d = {
       ...deps(),
