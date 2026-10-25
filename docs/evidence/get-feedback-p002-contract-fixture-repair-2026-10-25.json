@@ -6,7 +6,7 @@
   "workItemId": "WI-10005889",
   "repairWorkItemId": "WI-6554700010028734",
   "decisionRef": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-037",
-  "phase": "awaiting-clean-committed-verification",
+  "phase": "clean-committed-verified-and-qualified",
   "scope": "Real SQL contract and controlled dispatch-fixture repair. Native execution, original operational proof, whole P002 acceptance and shipment remain open.",
   "testPath": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
   "rootCause": {
@@ -54,6 +54,47 @@
     "packages/operator-core/lib/consult/get-feedback-core.ts": "96b8fe7d3ee070465fc63e4ebdf683a302374c218d071298bdaf902297054bba",
     "packages/operator-core/lib/consult/get-feedback-prod.ts": "0a69bd18a8583e8bde58c857f02a3291addb65e4fbf25c5dc9c4566370f2c63f"
   },
+  "cleanVerification": {
+    "testRunId": 22017375,
+    "commitSha": "23a1fa6f7c80081f93317c3209fd9736dfcb4cd2",
+    "group": "gf-p002-contract-clean-repair-20261025-1792937439330",
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "collectionFailed": false,
+    "testSha256": "61006138b43b8fa8cad6062942abc3938122695192d727c68d58309ae86fc778",
+    "command": "node scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs --ref=23a1fa6f7c80081f93317c3209fd9736dfcb4cd2 --any test:file -- packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+    "log": "/tmp/gf-p002-contract-clean-repair-20261025.log",
+    "state": "/tmp/gf-p002-contract-clean-repair-20261025.state.json",
+    "exitCode": 0,
+    "handleDrained": true,
+    "privatePgShutdownVerified": true,
+    "receiptSemantics": "The maintained committed wrapper supplies a private per-run receipt file, test:file validates its inserted ledger receipt, and the wrapper deletes that receipt directory after completion. Canonical durable row22017375 was independently read with all nine passing case identities.",
+    "sourceAndFixtureComparison": {
+      "sourcePaths": 8,
+      "fixturePaths": 16,
+      "declaredPathEntries": 24,
+      "changedFromRunCommit": [],
+      "method": "SHA256 working bytes against the exact run commit; realpath and recorded gitlinks resolve SQL and libs/test-config symlink inputs into the pinned libs/papercusp submodule."
+    },
+    "qualifiedBinding": 70148,
+    "bindingFingerprint": "0bb57e9b7008303a7428fbfd8b4dfe95fa9b529df40788485df597cb4b9de779",
+    "independentCurrentness": {
+      "overall": "current",
+      "spec": "current",
+      "source": "current",
+      "test": "current",
+      "fixture": "current",
+      "testRun": "current",
+      "rubric": "not-applicable",
+      "environment": "not-applicable",
+      "coverageEvidence": "not-applicable",
+      "staleReasons": [],
+      "unknownReasons": []
+    },
+    "limitation": "This qualified real-SQL and controlled-launch fixture proof does not establish physical native delivery, full dependency freshness, current native acceptance or shipment."
+  },
   "oracleEvolution": {
     "retainedIntent": [
       "Four public request-schema/recovery/catalog cases.",
@@ -77,9 +118,10 @@
       68339,
       69331
     ],
-    "withdrawnThisUnit": [],
-    "newBindingsThisUnit": [],
-    "limitation": "The pending and dated source-stale rows remain historical. Neither dirty21247296 nor failed22007863 is promoted."
+    "withdrawnThisUnit": [45201, 68339, 69331, 45198],
+    "newBindingsThisUnit": [70148],
+    "additionalPendingDuplicate": "A subsequent full governing fixture assessment exposed45198. Exact canonical read confirmed the same contract test, two-source recipe, null run and pending/unexecuted/uncollected state. Clean22017375/current70148 covers that source union and calibrated cases;45198 was then withdrawn separately.",
+    "limitation": "Exact pending and dated source-stale rows were withdrawn only after clean22017375 and independently current70148 qualification. Their history remains. Neither dirty21247296/local22009144 nor failed22007863 is promoted; D037 records the three changed historical oracles."
   },
   "calibration": {
     "reader": "readIndexedConsultCitedTurns(db.sql, workspaceId, sessionId, turnIndices)",
@@ -118,5 +160,29 @@
     "reporterRootCause": "unknown",
     "fixtureDragBug": "EI-26955691110246544"
   },
-  "next": "Wait for the existing git-sync resource release; verify repaired test SHA in committedHEAD, then run a fresh clean committed nine-case integration with explicit durable reporter sink. Independently read all cases, compare named source/fixture bytes, bind first-bound calibrated proof, and only then consider exact dated-row retirement. Keep native and whole acceptance limits."
+  "postQualificationAssessment": {
+    "evaluatorBuild": "34e5b38da4",
+    "specId": "GF-P002-source",
+    "revision": 1,
+    "verdict": "fail",
+    "ratings": {
+      "traceability": "unknown",
+      "fixture-calibration": "pass",
+      "falsifiability": "pass",
+      "correct-layer": "pass",
+      "oracle-independence": "pass",
+      "execution-integrity": "unknown",
+      "freshness": "fail",
+      "plan-class-risk-floor": "pass",
+      "disclosed-gap": "fail"
+    },
+    "draggingBindingIds": {
+      "traceability": [28326, 28545],
+      "execution-integrity": [28326, 28545],
+      "freshness": [28326, 28545, 68733, 69305, 69319, 69322, 69327, 69329, 69332, 69338, 69614],
+      "disclosed-gap": [69704, 69782, 70065, 70148]
+    },
+    "limitation": "This is the emitted governing assessment after the four exact withdrawals. Fixture calibration now passes; whole source acceptance still fails on the other four named criteria. Disclosed native limitations are retained."
+  },
+  "next": "Close the fixture-repair child with the clean committed run and root-cause verification, then resume parent WI-10005889/P002 from a current governing source assessment. Preserve original native/backend proof and actor/lease/custody/cohort/whole-acceptance/final-shipment limits."
 }
