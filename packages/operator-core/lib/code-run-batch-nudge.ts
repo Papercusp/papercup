@@ -1381,10 +1381,67 @@ export interface StatePlaneNudgeInput {
   sessionKey: string;
   /** The tool just SUCCESSFULLY called (MCP or verb form). */
   toolName: string;
-  /** Effective tool arguments; used to distinguish repeated checks from distinct source probes. */
+  /** Effective tool arguments; identify quoted values and distinguish repeated source probes. */
   args?: unknown;
   /** Injectable clock for tests; defaults to Date.now(). */
   now?: number;
+}
+
+/** MCP clients can supply the transport name; tools:invoke carries the actual call inside it. */
+function statePlaneCall(toolName: string, args: unknown): { tool: string; args: unknown } {
+  const stripMcp = (name: string): string => name.replace(/^mcp__[a-z0-9_-]+?__/i, '');
+  const call = effectiveCall(stripMcp(toolName), args);
+  return { tool: stripMcp(call.tool), args: call.args };
+}
+
+// A mention of a field or a re-read instruction is not a transcribed value. Require a
+// value next to its pipeline subject, in prose or in a structured content field.
+const PIPELINE_QUOTE_PATTERNS: readonly RegExp[] = [
+  /\b(?:(?:gate\.greenCheckpoint\.)?candidate(?:[\s._-]*sha)?|deploy(?:ed)?(?:\.3070)?(?:[\s._-]*sha)?)\s*(?:is\s+|[:=]\s*)?[`"' ]*(?:[a-f0-9]{7,40}|unknown|null|absent)\b/i,
+  /\b(?:gate(?:[\s._-]*verdict)?|gate\.greenCheckpoint\.verdict)\s*(?:is\s+|[:=]\s*)?[`"' ]*(?:green|red|running|passed|failed|blocked|unknown|stale|null)\b/i,
+  /\b(?:git\.)?main[\s._-]*behind[\s._-]*staging\s*(?:is\s+|[:=]\s*)?[`"' ]*(?:true|false|\d+|unknown|null)\b/i,
+  /\bmain\s+(?:is\s+)?\d+\s+commits?\s+behind\s+staging\b/i,
+];
+const QUOTE_CONTENT_FIELDS = new Set([
+  'summary', 'title', 'body', 'comment', 'text', 'content', 'state', 'now', 'checkpoint', 'did', 'left',
+  'next', 'nextAction', 'insight', 'keyInsight', 'learned', 'note', 'completion', 'items',
+  'verifiedHow', 'testResult',
+]);
+
+/** Shared by the inline advisory and Scout: only writes containing pipeline values
+ * create an ACT/QUOTE opportunity. Routing ids/paths and other envelope metadata do not.
+ * Bounded and total because this advisory must never fail the tool it decorates. */
+export function isStatePlaneQuote(toolName: string, args: unknown): boolean {
+  try {
+    const call = statePlaneCall(toolName, args);
+    if (!QUOTE_SINK_NORMALIZED.has(normalize(call.tool))) return false;
+    if (!call.args || typeof call.args !== 'object' || Array.isArray(call.args)) return false;
+    const seen = new Set<object>();
+    const pending = Object.entries(call.args).filter(([key]) => QUOTE_CONTENT_FIELDS.has(key))
+      .map(([key, value]) => ({ path: key, value, depth: 0 }));
+    let budget = 1_000;
+    while (pending.length > 0 && budget-- > 0) {
+      const { path, value, depth } = pending.pop()!;
+      const field = normalize(path);
+      if (typeof value === 'string' && PIPELINE_QUOTE_PATTERNS.some((pattern) => pattern.test(value))) return true;
+      if (/(?:candidate(?:sha)?|deploy(?:ed)?(?:3070)?sha)$/.test(field) &&
+          (value === null || typeof value === 'string' && /^(?:[a-f0-9]{7,40}|unknown|absent)$/i.test(value))) return true;
+      if (/(?:gateverdict|greencheckpointverdict)$/.test(field) &&
+          (value === null || typeof value === 'string' && /^(?:green|red|running|passed|failed|blocked|unknown|stale)$/i.test(value))) return true;
+      if (field.endsWith('mainbehindstaging') &&
+          (value === null || typeof value === 'boolean' || typeof value === 'number' ||
+           typeof value === 'string' && /^(?:true|false|\d+|unknown)$/i.test(value))) return true;
+      if (value && typeof value === 'object' && depth < 12 && !seen.has(value)) {
+        seen.add(value);
+        for (const [key, child] of Object.entries(value)) {
+          pending.push({ path: `${path}.${key}`, value: child, depth: depth + 1 });
+        }
+      }
+    }
+  } catch {
+    // Malformed or hostile arguments carry no reliable quote evidence.
+  }
+  return false;
 }
 
 /** Pipeline-position calls are one door but can ask about unrelated files, markers, and source
@@ -1420,7 +1477,7 @@ function statePlaneDoorReadKey(toolName: string, args: unknown): string {
 export function maybeStatePlaneNudge(input: StatePlaneNudgeInput): string | null {
   if (!input.sessionKey || !input.toolName) return null;
   const { sessionKey } = input;
-  const { tool: toolName, args } = effectiveCall(input.toolName, input.args);
+  const { tool: toolName, args } = statePlaneCall(input.toolName, input.args);
   const now = input.now ?? Date.now();
   const norm = normalize(toolName);
 
@@ -1471,7 +1528,7 @@ export function maybeStatePlaneNudge(input: StatePlaneNudgeInput): string | null
     return null;
   }
 
-  if (!QUOTE_SINK_NORMALIZED.has(norm)) return null;
+  if (!isStatePlaneQuote(toolName, args)) return null;
 
   const st = sessions.get(sessionKey);
   if (!st || st.lastDoorAt === undefined) return null; // no pipeline value in hand
