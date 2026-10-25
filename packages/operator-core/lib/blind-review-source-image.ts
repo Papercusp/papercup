@@ -2,12 +2,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rm, symlink, writeFile,
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rm, stat, symlink, writeFile,
   type FileHandle } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { verifierSourceFiles, type VerifierSourceFile } from '@papercusp/test-config/verifier-source';
-import { captureVerifierDependencies, prepareVerifierDependencies, prepareVerifierSource,
+import { captureVerifierDependencies, prepareVerifierDependencies, prepareVerifierSource, runVerifierDependencyCommand,
   verifyVerifierSource } from '../../../scripts/source-preview.mjs';
 import { buildRuntimeGeneratedInputs, verifyRuntimeGeneratedInputs,
   runtimeInputsMustBeRetained, type RuntimeGeneratedInputs } from './blind-review-generated-inputs';
@@ -246,6 +246,18 @@ export async function prepareRuntimeSourceImage(options: {
   await chmod(owned, 0o700);
   let retain = false;
   try {
+    const repositoryRoot = await realpath(options.repositoryRoot);
+    if ((await stat(repositoryRoot)).dev !== (await stat(custodyRoot)).dev) {
+      // Cross-device snapshots consume an immutable dependency generation.
+      // Publish/select the exact ref through the maintained install reader
+      // before materializing source, rather than failing halfway through it.
+      await runVerifierDependencyCommand(process.execPath,
+        [join(repositoryRoot, 'scripts/npm-install-safe.mjs'), '--exec-under-lock', '--', '/bin/bash',
+          join(repositoryRoot, 'apps/operator/bin/release/dependency-generation.sh'),
+          '--integration', repositoryRoot, '--ensure-ref', options.sourceCommit],
+        { cwd: repositoryRoot, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, signal: options.signal });
+      options.signal?.throwIfAborted();
+    }
     const root = join(owned, 'source');
     const source = await prepareVerifierSource({ repo: resolve(options.repositoryRoot), ref: options.sourceCommit,
       dest: root, inputs: options.inputs, gitCheckout: true });

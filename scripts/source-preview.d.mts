@@ -255,6 +255,19 @@ export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocatio
     };
     originalSourceReceiptSha256: string;
     invocation: {
+        argv: string[];
+        configuration: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        }[];
+        environment: {
+            [k: string]: string;
+        };
+        outputNamespace?: {
+            bank: BgDirectoryIdentity;
+            stage: BgDirectoryIdentity;
+        } | undefined;
         builder: {
             path: string;
             realpath: string;
@@ -274,15 +287,6 @@ export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocatio
             path: string;
             realpath: string;
             sha256: string;
-        };
-        argv: string[];
-        configuration: {
-            path: string;
-            realpath: string;
-            sha256: string;
-        }[];
-        environment: {
-            [k: string]: string;
         };
     };
 };
@@ -311,6 +315,19 @@ export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgV
     };
     originalSourceReceiptSha256: string;
     invocation: {
+        argv: string[];
+        configuration: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        }[];
+        environment: {
+            [k: string]: string;
+        };
+        outputNamespace?: {
+            bank: BgDirectoryIdentity;
+            stage: BgDirectoryIdentity;
+        } | undefined;
         builder: {
             path: string;
             realpath: string;
@@ -330,15 +347,6 @@ export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgV
             path: string;
             realpath: string;
             sha256: string;
-        };
-        argv: string[];
-        configuration: {
-            path: string;
-            realpath: string;
-            sha256: string;
-        }[];
-        environment: {
-            [k: string]: string;
         };
     };
 };
@@ -374,6 +382,19 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
         };
         originalSourceReceiptSha256: string;
         invocation: {
+            argv: string[];
+            configuration: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            }[];
+            environment: {
+                [k: string]: string;
+            };
+            outputNamespace?: {
+                bank: BgDirectoryIdentity;
+                stage: BgDirectoryIdentity;
+            } | undefined;
             builder: {
                 path: string;
                 realpath: string;
@@ -393,21 +414,25 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
                 path: string;
                 realpath: string;
                 sha256: string;
-            };
-            argv: string[];
-            configuration: {
-                path: string;
-                realpath: string;
-                sha256: string;
-            }[];
-            environment: {
-                [k: string]: string;
             };
         };
     };
     invocations: {
         invocation: BgBuildInvocation;
         original: {
+            argv: string[];
+            configuration: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            }[];
+            environment: {
+                [k: string]: string;
+            };
+            outputNamespace?: {
+                bank: BgDirectoryIdentity;
+                stage: BgDirectoryIdentity;
+            } | undefined;
             builder: {
                 path: string;
                 realpath: string;
@@ -428,16 +453,349 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
                 realpath: string;
                 sha256: string;
             };
-            argv: string[];
-            configuration: {
-                path: string;
-                realpath: string;
-                sha256: string;
-            }[];
-            environment: {
-                [k: string]: string;
+        };
+    }[];
+};
+/** A caller nominates this namespace BEFORE the recipe knows its shell PID.
+ * Follow release-artifacts.sh's physical producer-bank/absent-output contract.
+ * The token may vary only in temporary output leaves; no observed compiler argv
+ * can nominate commands, source inputs, switches, or logical output membership.
+ * This is preparation for whole-recipe publication, not a publication receipt.
+ * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
+ *   invocations: BgBuildInvocation[], bank: string, stageLeaf: string,
+ *   outputs: { temporary: string, final: string }[] }} args
+ */
+export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs }: {
+    prepared: BgVerifierPreparation;
+    dependencies: ReturnType<typeof captureVerifierDependencies>;
+    invocations: BgBuildInvocation[];
+    bank: string;
+    stageLeaf: string;
+    outputs: {
+        temporary: string;
+        final: string;
+    }[];
+}): {
+    schemaVersion: string;
+    contexts: {
+        schemaVersion: string;
+        record: {
+            schemaVersion: string;
+            prepared: BgVerifierPreparation;
+            dependencies: {
+                schemaVersion: string;
+                scope: string;
+                root: string;
+                sourceCommit: string;
+                policy: {
+                    path: string;
+                    sha256: string;
+                };
+                sourceReceiptSha256: string;
+                trees: {
+                    path: string;
+                    files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                }[];
+            };
+            originalSourceReceiptSha256: string;
+            invocation: {
+                argv: string[];
+                configuration: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                }[];
+                environment: {
+                    [k: string]: string;
+                };
+                outputNamespace?: {
+                    bank: BgDirectoryIdentity;
+                    stage: BgDirectoryIdentity;
+                } | undefined;
+                builder: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                compiler: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                packageManager: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
             };
         };
+        invocations: {
+            invocation: BgBuildInvocation;
+            original: {
+                argv: string[];
+                configuration: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                }[];
+                environment: {
+                    [k: string]: string;
+                };
+                outputNamespace?: {
+                    bank: BgDirectoryIdentity;
+                    stage: BgDirectoryIdentity;
+                } | undefined;
+                builder: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                compiler: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                packageManager: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+            };
+        }[];
+    };
+    bank: BgDirectoryIdentity;
+    stage: string;
+    outputs: {
+        temporary: string;
+        final: string;
+    }[];
+};
+/** Bind a PID supplied by the recipe preflight, before its first compile.
+ * The original caller contract is preserved beside the resulting exact argv.
+ * Stage creation is exclusive: attach an existing attempt instead of replaying.
+ * @param {{ transaction: ReturnType<typeof prepareBgVerifierBuildTransaction>, ownerPid: number }} args
+ */
+export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
+    transaction: ReturnType<typeof prepareBgVerifierBuildTransaction>;
+    ownerPid: number;
+}): {
+    schemaVersion: string;
+    transaction: {
+        schemaVersion: string;
+        contexts: {
+            schemaVersion: string;
+            record: {
+                schemaVersion: string;
+                prepared: BgVerifierPreparation;
+                dependencies: {
+                    schemaVersion: string;
+                    scope: string;
+                    root: string;
+                    sourceCommit: string;
+                    policy: {
+                        path: string;
+                        sha256: string;
+                    };
+                    sourceReceiptSha256: string;
+                    trees: {
+                        path: string;
+                        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                    }[];
+                };
+                originalSourceReceiptSha256: string;
+                invocation: {
+                    argv: string[];
+                    configuration: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    }[];
+                    environment: {
+                        [k: string]: string;
+                    };
+                    outputNamespace?: {
+                        bank: BgDirectoryIdentity;
+                        stage: BgDirectoryIdentity;
+                    } | undefined;
+                    builder: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    compiler: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    node: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    packageManager: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                };
+            };
+            invocations: {
+                invocation: BgBuildInvocation;
+                original: {
+                    argv: string[];
+                    configuration: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    }[];
+                    environment: {
+                        [k: string]: string;
+                    };
+                    outputNamespace?: {
+                        bank: BgDirectoryIdentity;
+                        stage: BgDirectoryIdentity;
+                    } | undefined;
+                    builder: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    compiler: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    node: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    packageManager: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                };
+            }[];
+        };
+        bank: BgDirectoryIdentity;
+        stage: string;
+        outputs: {
+            temporary: string;
+            final: string;
+        }[];
+    };
+    transactionSha256: string;
+    ownerPid: number;
+    contexts: {
+        schemaVersion: string;
+        record: {
+            schemaVersion: string;
+            prepared: BgVerifierPreparation;
+            dependencies: {
+                schemaVersion: string;
+                scope: string;
+                root: string;
+                sourceCommit: string;
+                policy: {
+                    path: string;
+                    sha256: string;
+                };
+                sourceReceiptSha256: string;
+                trees: {
+                    path: string;
+                    files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                }[];
+            };
+            originalSourceReceiptSha256: string;
+            invocation: {
+                argv: string[];
+                configuration: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                }[];
+                environment: {
+                    [k: string]: string;
+                };
+                outputNamespace?: {
+                    bank: BgDirectoryIdentity;
+                    stage: BgDirectoryIdentity;
+                } | undefined;
+                builder: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                compiler: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                packageManager: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+            };
+        };
+        invocations: {
+            invocation: BgBuildInvocation;
+            original: {
+                argv: string[];
+                configuration: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                }[];
+                environment: {
+                    [k: string]: string;
+                };
+                outputNamespace?: {
+                    bank: BgDirectoryIdentity;
+                    stage: BgDirectoryIdentity;
+                } | undefined;
+                builder: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                compiler: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                packageManager: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+            };
+        }[];
+    };
+    outputs: {
+        temporary: string;
+        final: string;
     }[];
 };
 /** The shared shell recipe delegates one EXACT recorded compiler invocation
@@ -1114,6 +1472,11 @@ export type BgVerifierPreparation = {
     source: Awaited<ReturnType<typeof prepareVerifierSource>>;
     sourceReceiptSha256: string;
 };
+export type BgDirectoryIdentity = {
+    path: string;
+    dev: string;
+    ino: string;
+};
 export type BgBuildInvocation = {
     builder: string;
     argv: string[];
@@ -1122,6 +1485,10 @@ export type BgBuildInvocation = {
     packageManager: string;
     configuration: string[];
     environment: Record<string, string>;
+    outputNamespace?: {
+        bank: BgDirectoryIdentity;
+        stage: BgDirectoryIdentity;
+    };
 };
 /**
  * Bind the maintained artifact writer's measured output to the ORIGINAL build

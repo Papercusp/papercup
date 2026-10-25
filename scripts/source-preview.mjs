@@ -1058,8 +1058,10 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }) {
     } };
 }
 
+/** @typedef {{ path: string, dev: string, ino: string }} BgDirectoryIdentity */
 /** @typedef {{ builder: string, argv: string[], node: string, compiler: string,
- *   packageManager: string, configuration: string[], environment: Record<string, string> }} BgBuildInvocation
+ *   packageManager: string, configuration: string[], environment: Record<string, string>,
+ *   outputNamespace?: { bank: BgDirectoryIdentity, stage: BgDirectoryIdentity } }} BgBuildInvocation
  */
 
 /** Record actual command inputs before effects. The caller executes exactly this
@@ -1089,7 +1091,12 @@ function readBgBuildInvocation(prepared, invocation) {
     assert.ok(prepared.source.files.some(row => row.path === local && row.sha256 === file.sha256),
       'BG build configuration is outside original source census');
   }
+  if (invocation.outputNamespace) {
+    for (const expected of [invocation.outputNamespace.bank, invocation.outputNamespace.stage])
+      assert.deepEqual(readBgDirectoryIdentity(expected.path), expected, 'BG build output namespace changed');
+  }
   return { builder, compiler, node: identity(invocation.node), packageManager: identity(invocation.packageManager),
+    ...(invocation.outputNamespace ? { outputNamespace: invocation.outputNamespace } : {}),
     argv: [...invocation.argv], configuration,
     environment: Object.fromEntries(Object.entries(invocation.environment).sort(([a], [b]) => a.localeCompare(b))) };
 }
@@ -1214,6 +1221,110 @@ function selectBgVerifierBuildContext(context, argv) {
   const entry = context.invocations.find(row => JSON.stringify(row.original.argv) === JSON.stringify(argv));
   assert.ok(entry, 'BG compiler argv is outside original invocation set');
   return { record: { ...context.record, invocation: entry.original }, invocation: entry.invocation };
+}
+
+/** A caller nominates this namespace BEFORE the recipe knows its shell PID.
+ * Follow release-artifacts.sh's physical producer-bank/absent-output contract.
+ * The token may vary only in temporary output leaves; no observed compiler argv
+ * can nominate commands, source inputs, switches, or logical output membership.
+ * This is preparation for whole-recipe publication, not a publication receipt.
+ * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
+ *   invocations: BgBuildInvocation[], bank: string, stageLeaf: string,
+ *   outputs: { temporary: string, final: string }[] }} args
+ */
+export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs }) {
+  const contexts = prepareBgVerifierBuildContexts({ prepared, dependencies, invocations });
+  const bankIdentity = readBgDirectoryIdentity(bank);
+  const local = relative(prepared.root, bank);
+  assert.ok(local && local !== '..' && !local.startsWith(`..${sep}`) && !isAbsolute(local),
+    'BG transaction bank escaped selected generation');
+  assert.match(stageLeaf, /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'BG transaction stage leaf is invalid');
+  const transaction = freezeBgExpectation({ schemaVersion: 'bg-build-transaction-v1', contexts,
+    bank: bankIdentity, stage: join(bank, stageLeaf), outputs });
+  validateBgVerifierBuildTransaction(transaction);
+  assert.ok(!existsSync(transaction.stage) && !isBgSymlink(transaction.stage), 'BG transaction stage already exists');
+  return transaction;
+}
+
+/** @param {string} path @returns {BgDirectoryIdentity} */
+function readBgDirectoryIdentity(path) {
+  assert.ok(isAbsolute(path) && realpathSync(path) === path, 'BG output directory must be physical');
+  const stat = lstatSync(path, { bigint: true });
+  assert.ok(stat.isDirectory(), 'BG output directory must be independent');
+  return { path, dev: String(stat.dev), ino: String(stat.ino) };
+}
+
+/** existsSync deliberately follows links, so separately reject a dangling leaf.
+ * @param {string} path */
+function isBgSymlink(path) {
+  try { return lstatSync(path).isSymbolicLink(); }
+  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+}
+
+/** @param {ReturnType<typeof prepareBgVerifierBuildTransaction>} transaction */
+function validateBgVerifierBuildTransaction(transaction) {
+  assert.equal(transaction.schemaVersion, 'bg-build-transaction-v1', 'BG transaction is UNKNOWN');
+  const { contexts, bank, stage, outputs } = transaction;
+  validateBgVerifierBuildContexts(contexts);
+  assert.deepEqual(readBgDirectoryIdentity(bank.path), bank, 'BG transaction bank identity changed');
+  assert.equal(dirname(stage), bank.path, 'BG transaction stage escaped bank');
+  assert.match(basename(stage), /^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'BG transaction stage leaf is invalid');
+  const safe = path => typeof path === 'string' && path && !isAbsolute(path)
+    && !path.includes('\\') && !path.includes('\0')
+    && path.split('/').every(part => part && part !== '.' && part !== '..');
+  assert.ok(Array.isArray(outputs) && outputs.length > 0 && outputs.every(row =>
+    safe(row.temporary) && safe(row.final) && !row.final.includes('@BG_PID@')),
+  'BG transaction output membership is invalid');
+  const temporary = outputs.map(row => row.temporary), finals = outputs.map(row => row.final);
+  assert.equal(new Set(temporary).size, temporary.length, 'BG transaction temporary output duplicated');
+  assert.equal(new Set(finals).size, finals.length, 'BG transaction logical output duplicated');
+  for (const paths of [temporary, finals]) {
+    assert.ok(!paths.some(path => paths.some(other => other !== path && other.startsWith(`${path}/`))),
+      'BG transaction file overlaps directory');
+  }
+  const compilerOutputs = [];
+  for (const entry of contexts.invocations) {
+    verifyBgVerifierBuildRecord({ ...contexts.record, invocation: entry.original }, entry.invocation, 'before-build');
+    for (const arg of entry.original.argv) {
+      if (arg.includes('@BG_PID@')) {
+        const output = /^--(?:outfile|metafile)=(.+)$/.exec(arg)?.[1];
+        assert.ok(output && !dirname(output).includes('@BG_PID@')
+          && /\.(?:tmp|new)\.@BG_PID@(?:\.[A-Za-z0-9._-]+)?$/.test(basename(output))
+          && output.split('@BG_PID@').length === 2,
+        'BG transaction PID token is outside a temporary output leaf');
+      }
+    }
+    const { options, metafile } = bgCompilerOptions(entry.original.argv, contexts.record.prepared.root);
+    for (const path of [options.outfile, metafile].filter(Boolean)) {
+      const local = relative(stage, path).split(sep).join('/');
+      assert.ok(safe(local), 'BG transaction compiler output escaped stage');
+      compilerOutputs.push(local);
+    }
+  }
+  // Exact equality makes the original logical population authoritative.
+  assert.deepEqual(compilerOutputs.sort(), [...temporary].sort(), 'BG transaction compiler output membership mismatch');
+}
+
+/** Bind a PID supplied by the recipe preflight, before its first compile.
+ * The original caller contract is preserved beside the resulting exact argv.
+ * Stage creation is exclusive: attach an existing attempt instead of replaying.
+ * @param {{ transaction: ReturnType<typeof prepareBgVerifierBuildTransaction>, ownerPid: number }} args
+ */
+export function beginBgVerifierBuildTransaction({ transaction, ownerPid }) {
+  validateBgVerifierBuildTransaction(transaction);
+  assert.ok(Number.isSafeInteger(ownerPid) && ownerPid > 0, 'BG transaction owner PID is invalid');
+  assert.ok(!existsSync(transaction.stage) && !isBgSymlink(transaction.stage), 'BG transaction stage already exists');
+  // Never use recursive mkdir: it could adopt another attempt's stage.
+  mkdirSync(transaction.stage, { mode: 0o700 });
+  assert.deepEqual(readBgDirectoryIdentity(transaction.bank.path), transaction.bank, 'BG transaction bank identity changed');
+  const outputNamespace = { bank: transaction.bank, stage: readBgDirectoryIdentity(transaction.stage) };
+  const contexts = prepareBgVerifierBuildContexts({ ...transaction.contexts.record,
+    invocations: transaction.contexts.invocations.map(entry => ({ ...entry.invocation, outputNamespace,
+      argv: entry.original.argv.map(arg => arg.replaceAll('@BG_PID@', String(ownerPid))) })) });
+  return freezeBgExpectation({ schemaVersion: 'bg-build-transaction-binding-v1', transaction,
+    transactionSha256: createHash('sha256').update(JSON.stringify(transaction)).digest('hex'),
+    ownerPid, contexts, outputs: transaction.outputs.map(row => ({ ...row,
+      temporary: row.temporary.replaceAll('@BG_PID@', String(ownerPid)) })) });
 }
 
 /** The shared shell recipe delegates one EXACT recorded compiler invocation

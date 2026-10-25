@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { captureVerifierDependencies, prepareVerifierSource } from '../../../scripts/source-preview.mjs';
+import * as preview from '../../../scripts/source-preview.mjs';
 import { git, write } from './source-preview.fixture';
 import { packRuntimeSourceClosure, packRuntimeSourceImage, prepareRuntimeSourceImage,
   RuntimeSourcePackFailure, type RuntimeSourceImage } from './blind-review-source-image';
@@ -24,7 +25,7 @@ vi.mock('node:child_process', async importOriginal => {
 const helper = fileURLToPath(new URL('../../../scripts/lib/blind-review-sealed-source.py', import.meta.url));
 const policy = fileURLToPath(new URL('../../../apps/operator/bin/release/dependency-generation.sh', import.meta.url));
 const roots: string[] = [];
-afterEach(() => { packControl.fail = false; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); packControl.fail = false; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 async function fixture() {
   const custodyRoot = mkdtempSync(join(tmpdir(), 'broker-producer-')); roots.push(custodyRoot);
@@ -57,6 +58,40 @@ function mount(image: RuntimeSourceImage, code: string, manifestSha256 = image.m
 }
 
 describe('canonical broker source image producer', () => {
+  it.each([0, 74])('prewarms the exact cross-device input before source materialization (exit %s)', async exitCode => {
+    const f = await fixture();
+    const custodyRoot = mkdtempSync('/dev/shm/broker-source-prewarm-'); roots.push(custodyRoot);
+    expect(statSync(custodyRoot).dev).not.toBe(statSync(f.root).dev);
+    write(f.root, 'scripts/npm-install-safe.mjs', `
+import {spawnSync} from 'node:child_process';
+const args=process.argv.slice(2);
+if(args[0]!=='--exec-under-lock'||args[1]!=='--')process.exit(88);
+process.exit(spawnSync(args[2],args.slice(3),{stdio:'inherit'}).status??1);
+`);
+    write(f.root, 'apps/operator/bin/release/dependency-generation.sh', `#!/bin/bash
+set -eu
+[ "$1" = --integration ] && [ "$2" = "$PWD" ] && [ "$3" = --ensure-ref ] && [ "$4" = ${f.source.sourceCommit} ] || exit 95
+printf exact-ref > warm-marker
+exit ${exitCode}
+`);
+    const stop = new Error('source-materialization-control');
+    const materialize = vi.spyOn(preview, 'prepareVerifierSource').mockImplementationOnce(async () => {
+      expect(readFileSync(join(f.root, 'warm-marker'), 'utf8')).toBe('exact-ref');
+      throw stop;
+    });
+    const preparation = prepareRuntimeSourceImage({ repositoryRoot: f.root, custodyRoot,
+      sourceCommit: f.source.sourceCommit, inputs: ['src/input.ts'] });
+    if (exitCode === 0) {
+      await expect(preparation).rejects.toBe(stop);
+      expect(materialize).toHaveBeenCalledOnce();
+    } else {
+      await expect(preparation).rejects.toThrow('verifier dependency preflight failed');
+      expect(materialize).not.toHaveBeenCalled();
+    }
+    expect(readFileSync(join(f.root, 'warm-marker'), 'utf8')).toBe('exact-ref');
+    expect(readdirSync(custodyRoot)).toEqual([]);
+  });
+
   it('preserves the measured closure and terminal phase receipt after a real compressor failure', async () => {
     const f = await fixture();
     packControl.fail = true;

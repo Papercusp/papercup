@@ -401,16 +401,39 @@ export function installLockWaitReporter({ lock, describe, log, budgetMs }: {
         waitedMs: number;
     }) => void;
 };
+/**
+ * Run a dependency reader under the SAME repo-keyed mutex as install:safe.
+ * The marker environment prevents a wrapped script from recursively wrapping
+ * itself while keeping the contract explicit and testable at the child seam.
+ *
+ * @param {{
+ *   repoRoot?: string,
+ *   commandArgs?: string[],
+ *   runCommand?: (command: string, args: string[], options: {
+ *     cwd: string, stdio: 'inherit', env: NodeJS.ProcessEnv,
+ *   }) => { status?: number | null, signal?: NodeJS.Signals | null, error?: Error },
+ *   acquireReadMutex?: typeof withFsMutexRead,
+ *   log?: (line: string) => void,
+ *   env?: NodeJS.ProcessEnv,
+ *   cacheRead?: boolean — guard the shared package cache instead of repo dependencies,
+ * }} [options]
+ */
 export function runCommandUnderInstallMutex({ repoRoot, commandArgs, runCommand, acquireReadMutex, log, env, cacheRead, }?: {
-    repoRoot?: string | undefined;
-    runCommand?: typeof spawnSync | undefined;
-    acquireReadMutex?: typeof withFsMutexRead | undefined;
-    log?: {
-        (...data: any[]): void;
-        (message?: any, ...optionalParams: any[]): void;
-    } | undefined;
-    env?: NodeJS.ProcessEnv | undefined;
-    cacheRead?: boolean | undefined;
+    repoRoot?: string;
+    commandArgs?: string[];
+    runCommand?: (command: string, args: string[], options: {
+        cwd: string;
+        stdio: "inherit";
+        env: NodeJS.ProcessEnv;
+    }) => {
+        status?: number | null;
+        signal?: NodeJS.Signals | null;
+        error?: Error;
+    };
+    acquireReadMutex?: typeof withFsMutexRead;
+    log?: (line: string) => void;
+    env?: NodeJS.ProcessEnv;
+    cacheRead?: boolean;
 }): Promise<any>;
 /**
  * How many times a manifest-only install resolves before giving up on manifests that keep

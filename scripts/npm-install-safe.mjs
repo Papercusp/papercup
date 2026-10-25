@@ -2055,23 +2055,6 @@ export function installLockWaitReporter({ lock, describe, log, budgetMs }) {
   };
 }
 
-/**
- * Run a dependency reader under the SAME repo-keyed mutex as install:safe.
- * The marker environment prevents a wrapped script from recursively wrapping
- * itself while keeping the contract explicit and testable at the child seam.
- *
- * @param {{
- *   repoRoot?: string,
- *   commandArgs?: string[],
- *   runCommand?: (command: string, args: string[], options: {
- *     cwd: string, stdio: 'inherit', env: NodeJS.ProcessEnv,
- *   }) => { status?: number | null, signal?: NodeJS.Signals | null, error?: Error },
- *   acquireReadMutex?: typeof withFsMutexRead,
- *   log?: (line: string) => void,
- *   env?: NodeJS.ProcessEnv,
- *   cacheRead?: boolean — guard the shared package cache instead of repo dependencies,
- * }} [options]
- */
 /** Retained source shadows import dependencies from their recorded donor chain. */
 function installReaderLockNames(repoRoot) {
   const roots = new Set();
@@ -2090,6 +2073,23 @@ function installReaderLockNames(repoRoot) {
   return [...new Set([...roots].map(root => repoLockName(root)))].sort();
 }
 
+/**
+ * Run a dependency reader under the SAME repo-keyed mutex as install:safe.
+ * The marker environment prevents a wrapped script from recursively wrapping
+ * itself while keeping the contract explicit and testable at the child seam.
+ *
+ * @param {{
+ *   repoRoot?: string,
+ *   commandArgs?: string[],
+ *   runCommand?: (command: string, args: string[], options: {
+ *     cwd: string, stdio: 'inherit', env: NodeJS.ProcessEnv,
+ *   }) => { status?: number | null, signal?: NodeJS.Signals | null, error?: Error },
+ *   acquireReadMutex?: typeof withFsMutexRead,
+ *   log?: (line: string) => void,
+ *   env?: NodeJS.ProcessEnv,
+ *   cacheRead?: boolean — guard the shared package cache instead of repo dependencies,
+ * }} [options]
+ */
 export async function runCommandUnderInstallMutex({
   repoRoot = DEFAULT_REPO_ROOT,
   commandArgs,
