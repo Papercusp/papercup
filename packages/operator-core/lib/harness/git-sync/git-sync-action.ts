@@ -5970,6 +5970,7 @@ export interface GitServingResolutionDeps {
   getBootedHarness?(workspaceId: string, harnessSlug: string): GitServingRecoveryHandle | null;
   bootSingleHarness?(workspaceId: string, harnessSlug: string): Promise<GitServingBootResult>;
   getPgGitServingCapability?(request: GitServingRequest): Promise<GitServingState>;
+  getForeignStoreOwner?(request: GitServingRequest): Promise<{ pid: number; processIdentity: string | null } | null>;
 }
 
 /**
@@ -6019,6 +6020,30 @@ export async function resolveGitServingStateWithBootRecovery(
 
   let boot: GitServingBootResult;
   try {
+    // A PG snapshot describes one database's handles, not every process that
+    // can own this filesystem. Packaged and development hosts may use separate
+    // PG clusters while sharing the same Corestore. Never boot over that owner
+    // or infer a signing identity from its lock; authority still requires an
+    // exact, current owner-issued serving capability.
+    const owner = deps.getForeignStoreOwner
+      ? await deps.getForeignStoreOwner(request)
+      : await (async () => {
+          const [{ getForeignHarnessStoreOwner }, { workspacesRoot }] = await Promise.all([
+            import('../../sync/hyperbee/corestore'), import('../../workspace-registry'),
+          ]);
+          return getForeignHarnessStoreOwner({
+            workspaceRoot: join(workspacesRoot(), request.workspaceId),
+            harnessSlug: request.installSlug,
+          });
+        })();
+    if (owner) {
+      return {
+        status: 'unknown',
+        retryable: true,
+        reason: `serving discovery does not reach live Corestore owner process ${owner.pid}; ` +
+          'authenticated owner capability or an explicit store handoff is required; duplicate boot refused',
+      };
+    }
     boot = await bootSingleHarness(request.workspaceId, request.installSlug);
   } catch (error) {
     return {

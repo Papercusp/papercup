@@ -766,6 +766,39 @@ describe('WI-10000734 omitted serving-handle recovery', () => {
       reason: 'lazy serving recovery failed: substrate routing unavailable: migration 1142 failed',
     });
   });
+
+  it('refuses duplicate boot when a live owner is outside PG discovery', async () => {
+    const bootSingleHarness = vi.fn();
+    const getForeignStoreOwner = vi.fn(async () => ({ pid: 7199, processIdentity: 'linux:boot:incarnation' }));
+    const result = await resolveGitServingStateWithBootRecovery(request, {
+      getBootedHarness: () => null,
+      bootSingleHarness,
+      getForeignStoreOwner,
+      getPgGitServingCapability: async () => ({
+        status: 'absent', retryable: true, reason: 'serving handle omitted from owner snapshot',
+      }),
+    });
+    expect(result).toEqual({
+      status: 'unknown', retryable: true,
+      reason: 'serving discovery does not reach live Corestore owner process 7199; ' +
+        'authenticated owner capability or an explicit store handoff is required; duplicate boot refused',
+    });
+    expect(getForeignStoreOwner).toHaveBeenCalledExactlyOnceWith(request);
+    expect(bootSingleHarness).not.toHaveBeenCalled();
+  });
+
+  it('uses a valid owner capability without consulting the physical lock', async () => {
+    const getForeignStoreOwner = vi.fn();
+    const bootSingleHarness = vi.fn();
+    expect(await resolveGitServingStateWithBootRecovery(request, {
+      getBootedHarness: () => null,
+      getPgGitServingCapability: async () => ready(),
+      getForeignStoreOwner,
+      bootSingleHarness,
+    })).toMatchObject({ status: 'ready' });
+    expect(getForeignStoreOwner).not.toHaveBeenCalled();
+    expect(bootSingleHarness).not.toHaveBeenCalled();
+  });
 });
 
 describe('isIntegratorActorAdmitted — canonical signer membership gate (WI-38968)', () => {
