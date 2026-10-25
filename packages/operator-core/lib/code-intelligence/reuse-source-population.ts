@@ -1,7 +1,7 @@
 /** Pure Git/source collection shared with the finite code-intelligence worker.
  * Keep database, provider registration and operator initialization out of this graph.
  */
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -168,30 +168,81 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
     // and split only on output overflow, preserving the existing per-path cap.
     const readDiffs = async (batch: string[], expected: Map<string, number>): Promise<void> => {
       if (!batch.length) return;
-      let output: string;
+      let result: { identities: string[]; hunks: number[][] };
       try {
-        output = await git(['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--unified=0',
-          '--raw', '-z', '--patch', base, commit, '--', ...batch]);
+        result = await new Promise((resolve, reject) => {
+          const child = spawn('git', ['--literal-pathspecs', '-C', root, 'diff', '--no-ext-diff', '--no-textconv',
+            '--no-renames', '--unified=0', '--raw', '-z', '--patch', base, commit, '--', ...batch],
+          { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', 'pipe', 'ignore'] });
+          const empty = Buffer.alloc(0);
+          let failure: Error | null = null, bytes = 0, prefix: Buffer | null = empty, line = empty, patch = -1, skipped = false;
+          let identities: string[] = [];
+          const hunks: number[][] = [];
+          const fail = (error: Error) => { failure ??= error; child.kill('SIGKILL'); };
+          const timer = setTimeout(() => fail(new Error('Git diff deadline exceeded')), 30_000);
+          const finishLine = () => {
+            if (line.subarray(0, 11).toString() === 'diff --git ') { patch++; hunks.push([]); }
+            else if (line[0] === 64 && line[1] === 64) {
+              const match = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line.toString());
+              if (!match || patch < 0) throw new Error('Incomplete Git hunk identity');
+              const first = Number(match[1]), count = match[2] === undefined ? 1 : Number(match[2]);
+              for (let n = first; n < first + count; n++) hunks[patch]!.push(n);
+            }
+            line = empty;
+          };
+          child.stdout.on('data', (chunk: Buffer) => {
+            if (failure) return;
+            bytes += chunk.length;
+            if (bytes > 64 * 1024 * 1024) {
+              fail(Object.assign(new Error('Git diff output exceeds bound'), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' })); return;
+            }
+            try {
+              let data = chunk;
+              if (prefix !== null) {
+                prefix = Buffer.concat([prefix, data]);
+                const boundary = prefix.indexOf(Buffer.from([0, 0]));
+                if (boundary < 0) return;
+                const raw = prefix.subarray(0, boundary).toString().split('\0');
+                identities = raw.filter((_, index) => index % 2 === 1);
+                if (raw.length !== batch.length * 2 || new Set(identities).size !== batch.length
+                  || identities.some(path => !batch.includes(path))) throw new Error('Incomplete Git diff identity population');
+                data = prefix.subarray(boundary + 2); prefix = null;
+              }
+              // Only a bounded line prefix is needed to recognize a patch or
+              // hunk heading. Discard payload bytes as they arrive, including
+              // arbitrarily long source lines; the output bound still applies.
+              for (let offset = 0; offset < data.length;) {
+                const end = data.indexOf(10, offset), stop = end < 0 ? data.length : end;
+                if (!line.length && data[offset] !== 100 && data[offset] !== 64) skipped = true;
+                if (!skipped && line.length < 256) {
+                  const part = data.subarray(offset, Math.min(stop, offset + 256 - line.length));
+                  line = line.length ? Buffer.concat([line, part]) : part;
+                }
+                if (end < 0) break;
+                if (!skipped) finishLine();
+                skipped = false; offset = end + 1;
+              }
+            } catch (error) { fail(error as Error); }
+          });
+          child.once('error', error => { clearTimeout(timer); reject(error); });
+          child.once('close', code => {
+            clearTimeout(timer);
+            if (failure) { reject(failure); return; }
+            try {
+              if (line.length) finishLine();
+              if (code !== 0 || prefix !== null || hunks.length !== batch.length) throw new Error('Incomplete Git diff identity population');
+              resolve({ identities, hunks });
+            } catch (error) { reject(error); }
+          });
+        });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || batch.length < 2) throw error;
         const middle = Math.floor(batch.length / 2);
         await readDiffs(batch.slice(0, middle), expected); await readDiffs(batch.slice(middle), expected); return;
       }
-      const boundary = output.indexOf('\0\0');
-      if (boundary < 0) throw new Error('Incomplete Git diff identity population');
-      const raw = output.slice(0, boundary).split('\0');
-      const patches = output.slice(boundary + 2).split(/^diff --git /m).slice(1);
-      const identities = raw.filter((_, index) => index % 2 === 1);
-      if (raw.length !== batch.length * 2 || patches.length !== batch.length
-        || new Set(identities).size !== batch.length || identities.some(path => !batch.includes(path)))
-        throw new Error('Incomplete Git diff identity population');
+      const { identities, hunks } = result;
       for (let i = 0; i < identities.length; i++) {
-        const path = identities[i]!, patch = patches[i]!;
-        const lines: number[] = [];
-        for (const match of patch.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
-          const first = Number(match[1]), count = match[2] === undefined ? 1 : Number(match[2]);
-          for (let n = first; n < first + count; n++) lines.push(n);
-        }
+        const path = identities[i]!, lines = hunks[i]!;
         if (lines.length !== expected.get(path)) throw new Error('Incomplete Git added-line population');
         if (lines.length) addedLines[path] = lines;
       }

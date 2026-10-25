@@ -45,9 +45,14 @@ describe('finite code-intelligence worker source collection', () => {
         GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
     });
     writeFileSync(join(root, 'a.ts'), 'export const base = 1;\n');
+    const longPath = 'odd [é].ts', longComment = '// ' + 'é'.repeat(40_000);
+    writeFileSync(join(root, longPath), longComment + '\nexport const old = 1;\n');
     git('2026-10-01T00:00:00Z', 'add', '.');
     git('2026-10-01T00:00:00Z', 'commit', '-qm', 'base');
     writeFileSync(join(root, 'a.ts'), 'export function target() { return 1; }\ntarget();\n');
+    // Changed payload spans stream chunks, and a multibyte/pathspec-looking
+    // identity must remain attached to its exact zero-context hunk lines.
+    writeFileSync(join(root, longPath), longComment + ' changed\nexport const fresh = 2;\n');
     git('2026-10-01T01:00:00Z', 'add', '.');
     git('2026-10-01T01:00:00Z', 'commit', '-qm', 'change');
     // Mutable working-tree bytes must not enter the historical population.
@@ -67,8 +72,9 @@ describe('finite code-intelligence worker source collection', () => {
         child.send({ kind: 'reuse-source-population', root, start: '2026-10-01T00:30:00Z', end: '2026-10-01T01:30:00Z', captureRoot: dir });
       });
       expect(result.ok, result.error ?? stderr).toBe(true);
-      expect(result.population).toMatchObject({ addedNonGeneratedLines: 2, duplicateAddedLines: 0,
-        lineCensusComplete: true, callCensusComplete: true, method: { sourcePopulation: ['a.ts'] } });
+      expect(result.population).toMatchObject({ addedNonGeneratedLines: 4, duplicateAddedLines: 0,
+        lineCensusComplete: true, callCensusComplete: true, method: { sourcePopulation: ['a.ts', longPath],
+          addedLinePopulation: [{ path: 'a.ts', lines: [1, 2] }, { path: longPath, lines: [1, 2] }] } });
       expect(result.population.calls).toEqual([expect.objectContaining({ from: 'a.ts', to: 'a.ts', resolved: true })]);
       const start = '2026-10-01T00:30:00Z', end = '2026-10-01T01:30:00Z';
       const inline = await collectReuseSourcePopulation(root, start, end, dir);
