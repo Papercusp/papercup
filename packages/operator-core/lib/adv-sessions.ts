@@ -1025,6 +1025,10 @@ export function hasAdvSessionTerminalEvidence(
 export interface AdvSessionExpectedBinding {
   coordOwnerId: string;
   sessionId: string | null;
+  /** Optional exact cleanup scope, checked atomically with the incarnation. */
+  workspaceId?: string;
+  cwd?: string;
+  planSlug?: string;
   /** Exact OMP source handle, alongside the unchanged session_id binding. */
   ompThreadId?: string | null;
   /** PostgreSQL's full-precision started_at::text, never a JS Date round-trip. */
@@ -1088,6 +1092,9 @@ export async function markAdvSessionEnded(
            coord_owner_id = ${opts.expectedBinding?.coordOwnerId ?? null}
            AND session_id IS NOT DISTINCT FROM ${opts.expectedBinding?.sessionId ?? null}
            AND started_at = ${opts.expectedBinding?.startedAt ?? null}::timestamptz
+           AND (${opts.expectedBinding?.workspaceId === undefined} OR workspace_id = ${opts.expectedBinding?.workspaceId ?? null})
+           AND (${opts.expectedBinding?.cwd === undefined} OR cwd = ${opts.expectedBinding?.cwd ?? null})
+           AND (${opts.expectedBinding?.planSlug === undefined} OR plan_slug = ${opts.expectedBinding?.planSlug ?? null})
          ))
          AND (${opts.observedAt == null} OR started_at <= ${opts.observedAt ?? null}::timestamptz)
        RETURNING id

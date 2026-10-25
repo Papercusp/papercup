@@ -7,6 +7,20 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeClaimReuseContribution } from '../reuse-brief-providers.ts';
 
+/** The staging adapter owns this lifecycle; private callers cannot opt out of
+ * their guards merely by choosing a different workspace name. */
+export interface ManagedReuseJourney {
+  root: string;
+  harness: string;
+  planSlug: string;
+  sessionId: string;
+  register(baseline: string): Promise<void>;
+  trackClaim(id: string): Promise<void>;
+  createSession(create: () => Promise<number | null>): Promise<number>;
+  retainProof(proof: Record<string, unknown>): Promise<void>;
+  snapshotPath: string;
+}
+
 /** Keep the sparse harness inside the private session's existing pot. */
 export function privateReuseHarnessRegistration(workspace: string, harness: string, path: string, expectedCommit: string) {
   assert(workspace.startsWith('test-runtime-'), 'Private reuse workspace required');
@@ -53,12 +67,15 @@ export function sparseReuseFixtureFiles(repo: string): Record<string, string> {
   };
 }
 
-export async function runNativeReuseJourney({ call, workspace, root: privateRoot, owner, repo, handlerHash, claimOnly = false }: {
+export async function runNativeReuseJourney({ call, workspace, root: privateRoot, owner, repo, handlerHash, claimOnly = false, managed }: {
   call: (name: string, args: Record<string, unknown>) => Promise<Record<string, any>>;
   workspace: string; root: string; owner: string; repo: string; handlerHash: string; claimOnly?: boolean;
+  managed?: ManagedReuseJourney;
 }) {
-  const root = claimOnly ? await mkdtemp(join(tmpdir(), 'r-')) : privateRoot;
-  const harness = claimOnly ? 'r' : workspace;
+  assert(managed ? claimOnly && managed.root === privateRoot : workspace.startsWith('test-runtime-'),
+    'Private runtime or adapter-owned claim lifecycle required');
+  const root = managed?.root ?? (claimOnly ? await mkdtemp(join(tmpdir(), 'r-')) : privateRoot);
+  const harness = managed?.harness ?? (claimOnly ? 'r' : workspace);
   const targetPath = claimOnly ? 'a.ts' : 'src/target.ts';
   const siblingPath = claimOnly ? 'b.ts' : 'src/sibling.ts';
   const partnerPath = claimOnly ? 'b.ts' : 'src/partner.ts';
@@ -118,8 +135,11 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   }
   const baseline = git('rev-parse', 'HEAD');
   if (claimOnly) {
-    const registered = await call('harness:create', privateReuseHarnessRegistration(workspace, harness, root, baseline));
-    assert.equal(registered.ok, true, JSON.stringify(registered));
+    if (managed) await managed.register(baseline);
+    else {
+      const registered = await call('harness:create', privateReuseHarnessRegistration(workspace, harness, root, baseline));
+      assert.equal(registered.ok, true, JSON.stringify(registered));
+    }
     const { loadHarnessRegistry } = await import('../../harness-registry.ts');
     assert.equal((await loadHarnessRegistry(workspace)).projects.find(p => p.slug === harness)?.path, root);
   }
@@ -131,15 +151,15 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
     { path: targetPath, source: await readFile(join(root, targetPath), 'utf8') },
     { path: siblingPath, source: await readFile(join(root, siblingPath), 'utf8') },
   ]));
-  const snapshotPath = join(homedir(), '.papercusp/graph-snapshot', harness, 'dependency-snapshot.json');
+  const snapshotPath = managed?.snapshotPath ?? join(homedir(), '.papercusp/graph-snapshot', harness, 'dependency-snapshot.json');
   await mkdir(join(snapshotPath, '..'), { recursive: true });
   await writeFile(snapshotPath, JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
     index: { backend: 'first-party-imports', lastCommit: baseline }, edges: [],
-    clones: { schema: 'clone-advisory-v1', files: cloneFiles } }));
+    clones: { schema: 'clone-advisory-v1', files: cloneFiles } }), managed ? { flag: 'wx' } : undefined);
   // D026: a real persisted planning timestamp and one explicitly controlled CLI
   // session qualify provenance. This does not represent a model-session census.
   // D029: sparse authored context only; never shorten the returned task brief.
-  const planSlug = `${claimOnly ? 'r' : 'p010'}-${new Date().toISOString().slice(0, 10)}`;
+  const planSlug = managed?.planSlug ?? `${claimOnly ? 'r' : 'p010'}-${new Date().toISOString().slice(0, 10)}`;
   let planItem: string | undefined;
   if (claimOnly) {
     const planned = await call('plans:new', { harness, slug: planSlug,
@@ -181,12 +201,15 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
     }
     const created = await call('work_items:create', { harness, kind: 'change',
       title: claimOnly ? `Controlled R20 candidate ${attempt + 1}` : 'Private native P010 completion consequences',
-      assign_to: 'self', state: 'wip',
+      ...(managed ? { state: 'open' } : { assign_to: 'self', state: 'wip' }),
       changeKinds: ['logic'], changeKindReason: 'Private source fixture validated through an actual complete test population.',
       ...(claimOnly ? { force: true, plan_item: { slug: planSlug, item: planItem! } } : {}),
       payload: { paths: [targetPath] }, projection: { pick: ['results[].id', 'results[].item.id'] } });
     const candidate = created.results?.[0]?.id ?? created.results?.[0]?.item?.id;
     assert(candidate, JSON.stringify(created));
+    // On staging, creation is deliberately unclaimed. Journal the exact id
+    // before the later fallible claim can create an owned lease.
+    if (managed) await managed.trackClaim(candidate);
     if (!claimOnly) { id = candidate; break; }
     const { reuseHoldout } = await import('../reuse-measurement.ts');
     const cohorts = Object.fromEntries(expectedProviders.map(provider =>
@@ -205,7 +228,8 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   // The real claim primes the cooperative snapshot loader before tests run.
   // Keep the complete response as fixture evidence without certifying R20's
   // separate provenance/planning cohort from this completion-only scenario.
-  const claimed = await call('work_items:claim', { row: `${id},self,${harness}`,
+  const claimed = await call('work_items:claim', { ...(managed
+    ? { id, assignee: 'self', harness, changeKinds: ['logic'] } : { row: `${id},self,${harness}` }),
     projection: { pick: ['results[].ok', 'results[].taskBrief'] } });
   assert.equal(claimed.results?.[0]?.ok, true, JSON.stringify(claimed));
   console.log('NATIVE_INCIDENT_API_STAGE=reuse-fixture-owned');
@@ -214,9 +238,10 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   let controlledSession: { id: number; session: string; editedAt: string } | undefined;
   if (claimOnly) {
     const { recordAdvSession } = await import('../../adv-sessions.ts');
-    const session = `controlled-cli-${randomUUID()}`;
-    const sessionRow = await recordAdvSession({ workspaceId: workspace, planSlug, mode: 'console',
+    const session = managed?.sessionId ?? `controlled-cli-${randomUUID()}`;
+    const createSession = () => recordAdvSession({ workspaceId: workspace, planSlug, mode: 'console',
       label: 'Controlled P010 CLI fixture; no model invoked', cwd: root, coordOwnerId: owner, sessionId: session });
+    const sessionRow = managed ? await managed.createSession(createSession) : await createSession();
     assert(sessionRow, 'Maintained controlled CLI session writer must persist its actual start');
     // The CLI shell performs the real write. Its subsequent Write report names
     // that exact operation/session; no direct session-less Edit is fabricated.
@@ -249,6 +274,7 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   }
   // with-test-pg preserves the parent's durable evidence destination on purpose.
   // This nested run instead feeds the private operator's completion reader.
+  if (!managed) {
   Object.assign(process.env, privateReuseTestEnvironment(process.env, workspace, root, harness));
   delete process.env.PAPERCUSP_TEST_RUN_COMMIT;
   delete process.env.PAPERCUSP_TEST_RUN_CASE_TITLE_PATTERN;
@@ -256,6 +282,7 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   const { resolveTestRunsPgUrl, resolveTestRunWorkspaceId } = await import('@papercusp/test-config/admin-test-runs-reporter');
   assert.equal(resolveTestRunsPgUrl(), process.env.HARNESS_ADMIN_DATABASE_URL);
   assert.equal(resolveTestRunWorkspaceId(), workspace);
+  }
   const run = await call('testing:run', { harness, work_item_id: id, files: [testPath],
     timeoutMs: 30_000 });
   console.log('NATIVE_REUSE_TEST_RUN=' + JSON.stringify(run));
@@ -351,11 +378,14 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
     assert.deepEqual(finalIssued.map(row => JSON.parse(row.subject).provider).sort(), [...expected].sort());
     assert(finalIssued.every(row => JSON.parse(row.subject).sourceVersion === brief.sourceFingerprint
       && JSON.parse(row.subject).indexVersion && row.chars > 0));
-    console.log('NATIVE_REUSE_CLAIM_API_PROOF=' + JSON.stringify({ workspace, harness, root, fixtureWorkItem: id,
+    const proof = { workspace, harness, root, fixtureWorkItem: id,
       planSlug, baseline, handlerHash, sourceFingerprint: brief.sourceFingerprint, controlledSession, cohortCandidates,
       transport: 'real-cli-http', expectedProviders: expected, response, base, issued: finalIssued,
       testRunIds: run.testRunIds, runGroupId: run.runId,
-      scope: 'controlled private current-source CLI fixture; no model invocation, live user census or final shipment' }));
+      scope: managed ? 'controlled staging CLI fixture; no model invocation, live user census or final shipment'
+        : 'controlled private current-source CLI fixture; no model invocation, live user census or final shipment' };
+    if (managed) await managed.retainProof(proof);
+    console.log('NATIVE_REUSE_CLAIM_API_PROOF=' + JSON.stringify(proof));
     return;
   }
   const current = await readFile(join(root, 'src/target.ts'), 'utf8');
@@ -402,6 +432,6 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
     completionSignals, issued, claimed, completion: receipt.completionBrief, terminal: true,
     scope: 'private current-source compiled operator and actual CLI actions; no production receipt or final shipment' }));
   } finally {
-    if (claimOnly) await rm(root, { recursive: true, force: true });
+    if (claimOnly && !managed) await rm(root, { recursive: true, force: true });
   }
 }

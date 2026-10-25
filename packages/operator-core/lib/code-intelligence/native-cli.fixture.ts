@@ -141,6 +141,8 @@ export function nativeCliResult(result: { status: number | null; stdout: string;
 }
 
 export type NativeCliRecoveryOptions = {
+  /** Explicit fixture scope; ptool environment flags override URL query scope. */
+  env?: NodeJS.ProcessEnv;
   /**
    * Accept a field-truncated result door only when the caller requested a
    * projection and the door contains a complete JSON projection item. The
@@ -203,7 +205,7 @@ export function recoverNativeCliResult(result: Parameters<typeof nativeCliResult
 
 export function nativeCliCall(baseUrl: string, name: string, args: Record<string, unknown>,
   invoke: typeof spawnSync = spawnSync, options: NativeCliRecoveryOptions = {}): Record<string, any> {
-  const plan = nativeCliPlan(baseUrl, name, args);
+  const plan = nativeCliPlan(baseUrl, name, args, options.env ?? process.env);
   const startedAt = performance.now();
   // Write to the worker's actual descriptor: Vitest buffers console output until
   // the file settles, hiding completed requests from the router's existing
@@ -226,5 +228,5 @@ export function nativeCliCall(baseUrl: string, name: string, args: Record<string
   }
   progress('settled', result);
   return recoverNativeCliResult(result,
-    pageArgs => nativeCliCall(baseUrl, 'capability:read', pageArgs, invoke), options) as Record<string, any>;
+    pageArgs => nativeCliCall(baseUrl, 'capability:read', pageArgs, invoke, options), options) as Record<string, any>;
 }
