@@ -88,7 +88,8 @@ describe('current stock native factory', () => {
     h.run.mockImplementation(async function* (options) {
       await options.spawnProcess!('claude', ['-p'], { cwd: root, env: { PATH: '/private/runtime', CLAUDE_CONFIG_DIR: h.home,
         ANTHROPIC_API_KEY: 'HOST_SECRET_SENTINEL', ANTHROPIC_AUTH_TOKEN: 'HOST_SECRET_SENTINEL', NODE_OPTIONS: 'HOST_INJECTION',
-        DISABLE_INTERLEAVED_THINKING: '0', CLAUDE_CODE_MODEL_CAPABILITIES: 'mid_conv_system' } });
+        DISABLE_INTERLEAVED_THINKING: '0', CLAUDE_CODE_MODEL_CAPABILITIES: 'mid_conv_system',
+        CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: '0' } });
       options.onNativeSession!('native-claude'); terminal();
       yield { type: 'result', finalText: 'done', costUsd: 0, tokensIn: 0, tokensOut: 0 };
     });
@@ -102,6 +103,7 @@ describe('current stock native factory', () => {
     expect(env).toMatchObject({ HOME: h.home, CLAUDE_CONFIG_DIR: h.home, XDG_CONFIG_HOME: join(h.home, '.config'),
       PAPERCUSP_AGENT: 'claude', ANTHROPIC_BASE_URL: 'http://127.0.0.1:32001', ANTHROPIC_AUTH_TOKEN: 'a'.repeat(64),
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
+      CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: '1',
       DISABLE_INTERLEAVED_THINKING: '1', CLAUDE_CODE_MODEL_CAPABILITIES: '-mid_conv_system', DISABLE_AUTOUPDATER: '1' });
     for (const key of ['CODEX_HOME', 'ANTHROPIC_API_KEY', 'NODE_OPTIONS', 'OPENAI_API_KEY']) expect(env[key]).toBeUndefined();
     expect(h.bind).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'native-claude', initialTaskId: 'stock-task' }), undefined);
@@ -122,7 +124,7 @@ describe('current stock native factory', () => {
       await options.spawnProcess!('claude', ['-p', '--model', 'frozen-model'], { cwd: root,
         env: { PATH: `${root}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: h.home, ANTHROPIC_API_KEY: 'HOST_SECRET_SENTINEL',
           CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '0', DISABLE_INTERLEAVED_THINKING: '0',
-          CLAUDE_CODE_MODEL_CAPABILITIES: 'mid_conv_system' } });
+          CLAUDE_CODE_MODEL_CAPABILITIES: 'mid_conv_system', CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: '0' } });
       options.onNativeSession!('native-claude'); terminal();
       yield { type: 'result', finalText: 'done', costUsd: 0, tokensIn: 0, tokensOut: 0 };
     });
@@ -138,6 +140,8 @@ describe('current stock native factory', () => {
     expect(observed.args).toContain('CLAUDE_CONFIG_DIR'); expect(observed.args).toContain('ANTHROPIC_AUTH_TOKEN');
     expect(observed.args).toContain('CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS');
     expect(observed.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe('1');
+    expect(observed.args).toContain('CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK');
+    expect(observed.env.CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK).toBe('1');
     expect(observed.args).toContain('DISABLE_INTERLEAVED_THINKING');
     expect(observed.args).toContain('CLAUDE_CODE_MODEL_CAPABILITIES');
     expect(observed.env.DISABLE_INTERLEAVED_THINKING).toBe('1');

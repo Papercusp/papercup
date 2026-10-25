@@ -163,6 +163,9 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
                 // Disable those through its own controls to match the API-key
                 // model-limit contract; final headers/body still fail closed.
                 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
+                // Refusal fallback can arm a credit beta independently of the
+                // experimental switch and can change the frozen model.
+                CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: '1',
                 DISABLE_INTERLEAVED_THINKING: '1', CLAUDE_CODE_MODEL_CAPABILITIES: '-mid_conv_system', DISABLE_AUTOUPDATER: '1' });
               if (task.instanceId !== host.taskId) throw new Error('Stock native task differs from its host assignment.');
               const register = async (binary: string, argv: string[], spawnOptions: import('node:child_process').SpawnOptions) => managedSpawn(binary, argv,
@@ -180,7 +183,8 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
                   // Only this assignment's route token and clean-home selectors
                   // cross into the task. No ambient provider, MCP or host config.
                   forwardEnvPatterns: ['^CLAUDE_CONFIG_DIR$', '^CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC$',
-                    '^CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS$', '^DISABLE_INTERLEAVED_THINKING$',
+                    '^CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS$', '^CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK$',
+                    '^DISABLE_INTERLEAVED_THINKING$',
                     '^CLAUDE_CODE_MODEL_CAPABILITIES$', '^DISABLE_AUTOUPDATER$',
                     '^XDG_CONFIG_HOME$', '^ANTHROPIC_(BASE_URL|AUTH_TOKEN)$', '^PAPERCUSP_(AGENT|SID)$', '^LANG$', '^LC_', '^TZ$'],
                 } : {});
