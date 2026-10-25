@@ -406,7 +406,13 @@ export function classifyTerminalClose(
           : 'oom-kill-unattributed';
   } else if (result === 'timeout') {
     state = 'timed_out';
-    exitReason = 'timeout';
+    // Result=timeout also covers TimeoutStopSec after the main process has
+    // exited successfully (for example, lingering PostgreSQL descendants).
+    // Keep the service failed and the main process's raw exit code, but do not
+    // tell callers that their successful payload exceeded its execution limit.
+    // Default/missing wait fields and signal deaths cannot prove this phase.
+    exitReason = terminal.execMainCode === 1 && terminal.execMainStatus === 0
+      ? 'service-teardown-timeout' : 'timeout';
   } else if (result === 'signal' || result === 'core-dump') {
     state = 'killed';
     exitReason ??= result;

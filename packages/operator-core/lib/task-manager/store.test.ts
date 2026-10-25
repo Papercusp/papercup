@@ -1,11 +1,39 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { closeTask, getTask, listTasks, markEndedUnobserved, markRecoveredFromJobLog, markStranded,
+import { classifyTerminalClose, closeTask, getTask, listTasks, markEndedUnobserved, markRecoveredFromJobLog, markStranded,
   reopenStrandedTask, type CloseTaskEffectsForTask } from './store';
+import type { TaskTerminalProvenance } from './types';
 
 function fakeSql(row: Record<string, unknown>): Sql {
   return (async () => [row]) as unknown as Sql;
 }
+
+describe('service timeout phase', () => {
+  const terminal: TaskTerminalProvenance = {
+    capturedAt: '2026-10-25T01:52:22.650Z', scopeUnit: 'pc-timeout-phase.service',
+    cgroupPath: null, invocationId: 'timeout-phase', loadState: 'loaded', activeState: 'failed',
+    serviceResult: 'timeout', execMainCode: 1, execMainStatus: 0,
+    memoryMaxBytes: null, peakMemoryBytes: null, peakMemorySource: 'unknown',
+  };
+
+  it('keeps successful payload exit separate from a failed service teardown', () => {
+    const result = classifyTerminalClose({ state: 'exited', exitCode: 1, terminalProvenance: terminal }, null);
+    expect(result).toMatchObject({ state: 'timed_out', exitCode: 0, exitReason: 'service-teardown-timeout' });
+    expect(result.terminalProvenance).toMatchObject({ serviceResult: 'timeout', execMainCode: 1, execMainStatus: 0 });
+  });
+
+  it.each([
+    { execMainCode: 2, execMainStatus: 15, expectedExit: 143 },
+    { execMainCode: 1, execMainStatus: 1, expectedExit: 1 },
+    { execMainCode: 0, execMainStatus: 0, expectedExit: 1 },
+    { execMainCode: null, execMainStatus: null, expectedExit: 1 },
+  ])('does not infer successful main exit from $execMainCode/$execMainStatus', ({ expectedExit, ...main }) => {
+    expect(classifyTerminalClose({ state: 'exited', exitCode: 1,
+      terminalProvenance: { ...terminal, ...main } }, null)).toMatchObject({
+      state: 'timed_out', exitCode: expectedExit, exitReason: 'timeout',
+    });
+  });
+});
 
 describe('task-manager/store row mapping', () => {
   it('parses JSONB detail when the worker returns it as a string', async () => {
