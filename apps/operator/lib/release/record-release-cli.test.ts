@@ -1290,8 +1290,8 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
     );
 
     // The publisher must ship and publicly verify the new detail-page directory;
-    // otherwise a locally-correct index advertises links that all 404 in R2.
-    expect(publish).toContain('aws s3 sync "$SITE_DIR/work-items"');
+    // otherwise a locally-correct index advertises links that all 404 publicly.
+    expect(publish).toContain('release_storage_tree "$SITE_DIR/work-items" "${KEY_PREFIX}/work-items"');
     expect(publish).toContain('linked work-item detail page served and byte-identical');
     expect(publish).toContain('"${BASE}/${DETAIL_PAGE}"');
 
@@ -1331,8 +1331,8 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
         'PAPERCUSP_UPDATE_BASE_URL=https://release.example/secret-path\n',
       );
       fs.writeFileSync(
-        path.join(home, '.papercusp', 'r2.env'),
-        'R2_ACCOUNT_ID=acct\nR2_BUCKET=bucket\nAWS_ACCESS_KEY_ID=key\nAWS_SECRET_ACCESS_KEY=secret\n',
+        path.join(home, '.papercusp', 'release-storage.env'),
+        'PAPERCUSP_RELEASE_GCS_BUCKET=fixture-release-bucket\n',
       );
 
       // The publisher's identity gate and authenticated upload are stubbed so this
@@ -1356,7 +1356,13 @@ process.exit(0);
 `,
         { mode: 0o755 },
       );
-      fs.writeFileSync(path.join(bin, 'aws'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      fs.writeFileSync(path.join(bin, 'gcloud'), `#!/bin/sh
+if [ "$1 $2 $3" = "storage objects describe" ]; then
+  printf 'HTTPError 404 Not found\\n' >&2
+  exit 1
+fi
+exit 0
+`, { mode: 0o755 });
       fs.writeFileSync(
         path.join(bin, 'curl'),
         `#!/usr/bin/env node
@@ -1380,6 +1386,7 @@ if (args.includes('-w')) process.stdout.write('200');
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ''}`,
           HOME: home,
+          PAPERCUSP_RELEASE_STORAGE_ENV: path.join(home, '.papercusp', 'release-storage.env'),
           PAPERCUSP_RELEASE_SITE_DIR: site,
           PAPERCUSP_RELEASE_OWNER_NAME: 'Synthetic Owner',
           PROBE_SITE: site,
