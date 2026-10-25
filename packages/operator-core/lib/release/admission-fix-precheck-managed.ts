@@ -365,6 +365,7 @@ export async function runAdmissionPrecheckWorker(
     ...(operation.radius ? { radius: operation.radius } : {}),
   });
   let environment: Promise<AdmissionTestEnvironment> | undefined;
+  let fixture: AdmissionTestEnvironment | undefined;
   let bootstrapping = true;
   let finishing: Promise<void> | undefined;
   const finalize = async () => { if (environment) await (finishing ??= environment.then(fixture => fixture.stop())); };
@@ -375,17 +376,19 @@ export async function runAdmissionPrecheckWorker(
     ...(input.toolingRoot ? { toolingRoot: input.toolingRoot } : {}),
     ...(input.testCommand ? { testCommand: input.testCommand } : {}),
     ...(input.clearEnv ? { clearEnv: input.clearEnv } : {}),
+    assertTestEnvironment: () => fixture?.assertRunning(),
     prepareTestEnvironment: async (root, onOutput) => {
       environment ??= (deps.startTestEnvironment ?? startAdmissionTestEnvironment)(root, {
         onOutput: () => { if (bootstrapping) onOutput(); }, log: line => console.log(line),
         testRunsDbUrl: process.env.PAPERCUSP_TEST_RUNS_DB_URL ?? getHarnessAdminUrl(),
       });
-      const fixture = await environment;
+      fixture = await environment;
       bootstrapping = false;
       fixture.assertRunning();
       return fixture.env;
     },
   });
+  try {
   try {
   if (operation.files.length > ADMISSION_RADIUS_CAP || operation.measurement)
     return await runBoundedAdmissionPrecheck(input, queue, deps, runner, finalize);
@@ -416,6 +419,15 @@ export async function runAdmissionPrecheckWorker(
     admissionPrecheckSettlementTransition(fresh, input.operationId, verdict, settledAtMs));
   return { status: 'settled', verdict };
   } finally { await finalize(); }
+  } catch (error) {
+    // A dead fixture or failed cleanup cannot leave a running marker whose
+    // terminal event never arrives. Preserve completed rows and settle unavailable.
+    const verdict = evaluateFixPrecheck(population, { ran: false, reason: 'runner-failed',
+      detail: error instanceof Error ? error.message : String(error) }, { actor: operation.actor ?? null });
+    await deps.transition(input.queueTarget, fresh =>
+      admissionPrecheckSettlementTransition(fresh, input.operationId, verdict, (deps.now ?? Date.now)()));
+    return { status: 'settled', verdict };
+  }
 }
 
 export function parseAdmissionPrecheckWorkerInput(raw: string | undefined): AdmissionPrecheckWorkerInput | null {

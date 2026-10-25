@@ -463,6 +463,8 @@ export interface CheckpointTreeRunnerOptions {
   clearEnv?: string[];
   /** Allocate once per managed operation, after exact candidate materialization. */
   prepareTestEnvironment?: (root: string, onOutput: () => void) => Promise<NodeJS.ProcessEnv>;
+  /** Reject results as soon as an operation-owned fixture loses its lifetime. */
+  assertTestEnvironment?: () => void;
   /** The gate's isolated checkout — setup-release-checkout materializes `commit` here. */
   checkpointRoot: string;
   /** Registered harness for test-ledger attribution; never inferred from a checkout path. */
@@ -1083,6 +1085,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
     await environmentProgress;
     const results: FixPrecheckFileResult[] = [];
     for (let index = 0; index < files.length; index += 1) {
+      opts.assertTestEnvironment?.();
       const file = files[index] as string;
       await reportProgress({
         currentFile: file,
@@ -1109,6 +1112,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         },
         logFile,
       }, { currentFile: file, completedCount: index, totalCount: files.length });
+      opts.assertTestEnvironment?.();
       const c = classifyTestFileRun(r);
       const result: FixPrecheckFileResult = { path: file, status: c.status, ...(c.detail ? { detail: c.detail } : {}), exitCode: r.exitCode, durationMs: r.durationMs };
       results.push(result);

@@ -1,12 +1,13 @@
 /** Keep the queue worker on its control database; only test children receive this fixture. */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { papercuspPath } from '@papercusp/host-platform/home';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { processGroupLifetime } from '../fleet/process-group-lifetime';
 
-export const ADMISSION_TEST_ENVIRONMENT = 'pinned-private-pg-test-mode-v2';
+export const ADMISSION_TEST_ENVIRONMENT = 'pinned-private-pg-test-mode-v3';
 const CLEARED_DATABASE_PINS = ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'];
 
 export interface AdmissionTestEnvironment {
@@ -23,6 +24,7 @@ export async function startAdmissionTestEnvironment(root: string, options: {
   onOutput?: () => void;
   timeoutMs?: number;
   stopTimeoutMs?: number;
+  scratchRoot?: string;
 } = {}): Promise<AdmissionTestEnvironment> {
   const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   if (manifest.name !== '@papercupai/papercusp-monorepo') {
@@ -36,7 +38,8 @@ export async function startAdmissionTestEnvironment(root: string, options: {
   const childCode = `process.stdout.write(${JSON.stringify(marker)} + JSON.stringify({
     PAPERCUSP_TEST_PG_ADMIN_URL: process.env.PAPERCUSP_TEST_PG_ADMIN_URL,
     PAPERCUSP_PG_PORT: process.env.PAPERCUSP_PG_PORT,
-    PAPERCUSP_SKIP_PG_DISCOVERY: process.env.PAPERCUSP_SKIP_PG_DISCOVERY
+    PAPERCUSP_SKIP_PG_DISCOVERY: process.env.PAPERCUSP_SKIP_PG_DISCOVERY,
+    PAPERCUSP_ADMISSION_TMPDIR: process.env.TMPDIR
   }) + '\\n'); process.stdin.resume();`;
   const env = { ...(options.env ?? process.env) };
   const testRunsDbUrl = options.testRunsDbUrl ?? env.PAPERCUSP_TEST_RUNS_DB_URL ?? env.HARNESS_ADMIN_DATABASE_URL;
@@ -48,6 +51,12 @@ export async function startAdmissionTestEnvironment(root: string, options: {
   // loader can otherwise admit/transform its imports against a different HEAD.
   delete env.NODE_OPTIONS;
   for (const key of CLEARED_DATABASE_PINS) delete env[key];
+  // Frozen wrappers allocate PG beneath TMPDIR. Keep that directory outside
+  // shared age-only test sweeps and the checkpoint tree recreated per group.
+  const scratchRoot = options.scratchRoot ?? papercuspPath('admission-test-environments');
+  mkdirSync(scratchRoot, { recursive: true, mode: 0o700 });
+  const fixtureTmp = mkdtempSync(join(scratchRoot, 'pg-'));
+  env.TMPDIR = env.TMP = env.TEMP = fixtureTmp;
   const child: ChildProcessWithoutNullStreams = spawn(process.execPath,
     [wrapper, '--', process.execPath, '-e', childCode],
     { cwd: root, env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
@@ -62,14 +71,25 @@ export async function startAdmissionTestEnvironment(root: string, options: {
   const ready = new Promise<NodeJS.ProcessEnv>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
   const onLine = (line: string) => {
     options.onOutput?.();
-    if (!line.startsWith(marker)) { options.log?.(line); return; }
+    if (!line.startsWith(marker)) {
+      options.log?.(line);
+      if (line.includes('postgres exited unexpectedly')) {
+        failure ??= new Error('private-PG postmaster exited unexpectedly');
+        // A disposable proof fixture cannot recover by replacing its database
+        // underneath an in-flight test. End its owned group and preserve failure.
+        lifetime.signal('SIGTERM');
+        readyReject(failure);
+      }
+      return;
+    }
     try {
       const value = JSON.parse(line.slice(marker.length));
       const url = new URL(value.PAPERCUSP_TEST_PG_ADMIN_URL);
       if (!['postgres:', 'postgresql:'].includes(url.protocol) ||
           !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
           !url.port || url.port !== value.PAPERCUSP_PG_PORT ||
-          value.PAPERCUSP_SKIP_PG_DISCOVERY !== '1') throw new Error('invalid owned private-PG endpoint');
+          value.PAPERCUSP_SKIP_PG_DISCOVERY !== '1' ||
+          value.PAPERCUSP_ADMISSION_TMPDIR !== fixtureTmp) throw new Error('invalid owned private-PG endpoint or scratch root');
       readyResolve({ ...Object.fromEntries(CLEARED_DATABASE_PINS.map(key => [key, undefined])),
         PAPERCUSP_TEST_PG_ADMIN_URL: url.toString(), PAPERCUSP_PG_PORT: url.port,
         PAPERCUSP_TEST_RUNS_DB_URL: sink.toString(),
@@ -89,13 +109,14 @@ export async function startAdmissionTestEnvironment(root: string, options: {
   });
   let stopping: Promise<void> | undefined;
   const stop = () => stopping ??= (async () => {
-    if (closed) throw failure ?? new Error('private-PG wrapper exited before release');
+    const wasClosed = closed;
     // EOF exits the wrapper's owned child normally; its existing finally stops
     // the postmaster and removes only the directory it allocated.
     child.stdin.on('error', () => {});
     child.stdin.end();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let escalation: ReturnType<typeof setTimeout> | undefined;
+    let groupExited = false;
     try {
       if (!closed) await Promise.race([exited, new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
@@ -104,14 +125,19 @@ export async function startAdmissionTestEnvironment(root: string, options: {
         }, options.stopTimeoutMs ?? 30_000);
       })]);
       await lifetime.waitForExit({ timeoutMs: 10_000 });
+      groupExited = true;
       if (exitCode !== 0) throw failure ?? new Error('private-PG cleanup was not successful');
-    } finally { clearTimeout(timer); clearTimeout(escalation); }
+      if (wasClosed) throw failure ?? new Error('private-PG wrapper exited before release');
+    } finally {
+      clearTimeout(timer); clearTimeout(escalation);
+      if (groupExited) rmSync(fixtureTmp, { recursive: true, force: true });
+    }
   })();
   const timer = setTimeout(() => readyReject(new Error('private-PG bootstrap deadline expired')), options.timeoutMs ?? 20 * 60_000);
   try {
     const fixtureEnv = await ready;
     if (closed) throw failure;
-    return { env: fixtureEnv, assertRunning() { if (closed) throw failure; }, stop };
+    return { env: fixtureEnv, assertRunning() { if (failure || closed) throw failure; }, stop };
   } catch (error) {
     try { await stop(); }
     catch (cleanupError) { throw new AggregateError([error, cleanupError],

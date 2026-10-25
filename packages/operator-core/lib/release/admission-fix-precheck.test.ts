@@ -867,6 +867,26 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     expect(out).toMatchObject({ ran: true, results: [{ path: 'lib/a.test.ts', status: 'fail' }, { path: 'lib/b.test.ts', status: 'fail' }] });
   });
 
+  it('a fixture lost during execution cannot persist a passing result or start the next file', async () => {
+    const files: string[] = [];
+    const recorded = vi.fn();
+    let healthy = true;
+    const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {
+      if (argv[1] === 'scripts/test-files.mjs') {
+        files.push(argv[2]!);
+        healthy = false;
+      }
+      return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 };
+    });
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec,
+      assertTestEnvironment: () => { if (!healthy) throw new Error('private fixture lost'); },
+      runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    await expect(runner({ commit: C, files: ['lib/a.test.ts', 'lib/b.test.ts'], onFileResult: recorded }))
+      .rejects.toThrow('private fixture lost');
+    expect(files).toEqual(['lib/a.test.ts']);
+    expect(recorded).not.toHaveBeenCalled();
+  });
+
   it('a durable file-result write failure stops execution before the next file', async () => {
     const files: string[] = [];
     const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {

@@ -114,8 +114,10 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       },
     });
     if (cleanupFails) {
-      await expect(work).rejects.toThrow('owned PG cleanup failed');
-      expect(persisted.admissionPrecheck?.status).toBe('running');
+      await expect(work).resolves.toMatchObject({ status: 'settled', verdict: {
+        ok: false, code: 'admission-precheck-unavailable', detail: expect.stringContaining('owned PG cleanup failed'),
+      } });
+      expect(persisted.admissionPrecheck?.status).toBe('failed');
     } else await expect(work).resolves.toMatchObject({ status: 'settled', verdict: { ok: true } });
     expect(startTestEnvironment).toHaveBeenCalledTimes(1);
     expect(stop).toHaveBeenCalledTimes(1);
@@ -370,6 +372,7 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       integrationRoot: input.integrationRoot,
       checkpointRoot: input.checkpointRoot,
       prepareTestEnvironment: expect.any(Function),
+      assertTestEnvironment: expect.any(Function),
       testRunHarness: harness,
       toolingRoot: '/operator',
       testCommand: ['npm', 'test'],
