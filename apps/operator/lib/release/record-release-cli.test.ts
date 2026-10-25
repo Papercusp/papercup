@@ -1356,12 +1356,27 @@ process.exit(0);
 `,
         { mode: 0o755 },
       );
-      fs.writeFileSync(path.join(bin, 'gcloud'), `#!/bin/sh
-if [ "$1 $2 $3" = "storage objects describe" ]; then
-  printf 'HTTPError 404 Not found\\n' >&2
-  exit 1
-fi
-exit 0
+      fs.writeFileSync(path.join(bin, 'gcloud'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const { createHash } = require('node:crypto');
+const args = process.argv.slice(2);
+const stateFile = process.env.PROBE_GCS_STATE;
+const state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : {};
+if (args[0] === 'storage' && args[1] === 'objects' && args[2] === 'describe') {
+  const object = state[args[3]];
+  if (!object) { process.stderr.write('HTTPError 404 Not found\\n'); process.exit(1); }
+  process.stdout.write(JSON.stringify(object));
+} else if (args[0] === 'storage' && args[1] === 'cp') {
+  const bytes = fs.readFileSync(args[2]);
+  state[args[3]] = {
+    generation: '1', size: String(bytes.length),
+    metadata: { sha256: createHash('sha256').update(bytes).digest('hex') },
+  };
+  fs.writeFileSync(stateFile, JSON.stringify(state));
+} else {
+  process.stderr.write('Unexpected fixture storage command: ' + args.join(' ') + '\\n');
+  process.exit(99);
+}
 `, { mode: 0o755 });
       fs.writeFileSync(
         path.join(bin, 'curl'),
@@ -1390,6 +1405,7 @@ if (args.includes('-w')) process.stdout.write('200');
           PAPERCUSP_RELEASE_SITE_DIR: site,
           PAPERCUSP_RELEASE_OWNER_NAME: 'Synthetic Owner',
           PROBE_SITE: site,
+          PROBE_GCS_STATE: path.join(root, 'gcloud-state.json'),
           DRY_RUN: '0',
         },
         encoding: 'utf8',
@@ -1400,7 +1416,7 @@ if (args.includes('-w')) process.stdout.write('200');
 
     // Positive control: matching public bytes still complete the publisher.
     const matching = runFixture('match');
-    expect(matching.status).toBe(0);
+    expect(matching.status, [matching.error?.message, matching.stdout, matching.stderr].filter(Boolean).join('\n')).toBe(0);
     expect(matching.stdout).toContain('history.json served and byte-identical');
 
     // Falsifier: before the fix this stale feed was never fetched and the same
