@@ -98,6 +98,37 @@ test('support fixture writer loads under the native acceptance Node loader', asy
 async function submitNativeSupport(selection: NativeFixture) {
   await navigate({ wfSelId: `operation:${selection.harnessSlug}:${selection.operationId}` });
   await check(`!!document.querySelector(${JSON.stringify(form)}) && document.querySelector(${JSON.stringify(form)})?.getAttribute('aria-busy') !== 'true'`);
+  // Observe the real response without replacing it. Keep only refusal/status
+  // metadata: document bodies, request arguments and credentials are excluded.
+  await measure(`(() => {
+    const original = window.fetch.bind(window);
+    window.__supportSearchDiagnostic = null;
+    window.fetch = async (...args) => {
+      const response = await original(...args);
+      if (String(args[0]).includes('/api/agent-mcp/run-tool')) {
+        let request;
+        try { request = JSON.parse(args[1]?.body ?? '{}'); } catch {}
+        if (request?.name === 'documents:search') {
+          try {
+            const body = await response.clone().json();
+            const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}');
+            const data = payload.data;
+            const leg = data?.legs?.organization;
+            window.__supportSearchDiagnostic = {
+              httpStatus: response.status, ok: body.ok, isError: body.result?.isError,
+              error: body.error ?? payload.error ?? data?.error,
+              organization: leg && { allowed: leg.allowed, refusal: leg.refusal,
+                status: leg.status, errorCode: leg.errorCode, reason: leg.reason },
+              resultCount: Array.isArray(data?.results) ? data.results.length : null,
+              payloadKeys: Object.keys(payload), dataKeys: data ? Object.keys(data) : []
+            };
+          } catch { window.__supportSearchDiagnostic = { httpStatus: response.status, decodeFailed: true }; }
+        }
+      }
+      return response;
+    };
+    return true;
+  })()`);
   await measure(`(() => { const s=document.querySelector(${JSON.stringify(form)}); for (const [label,id] of [['Support case reference','p012-case'],['Find case evidence','p012-query']]) { const input=Array.from(s.querySelectorAll('label')).find(l=>l.textContent.includes(label))?.querySelector('input'); if (!input) throw new Error('Missing '+label); input.id=id; } return true; })()`);
   await native('type', '#p012-case', selection.supportCaseId, '--json');
   await native('type', '#p012-query', selection.query, '--json');
@@ -332,6 +363,7 @@ test.describe('P-012 current-build native acceptance', () => {
         boundary: 'Business/reviewer evidence only; native admin acceptance and shipment remain separate' });
     } finally {
       await retain(info, 'p012-journey-matrix', matrix);
+      await retain(info, 'p012-search-diagnostic', await measure('window.__supportSearchDiagnostic ?? null'));
       await retain(info, 'p012-journey-dom', await measure('({url:location.href,text:document.body.innerText.slice(0,12000)})'));
     }
   });
