@@ -100,6 +100,9 @@ beforeAll(async () => {
   // Local library: an abstract practice component and a provider-bound (incompatible) one.
   await writeBlueprint(join(home, '.papercusp', 'blueprints', PRACTICE),
     { id: PRACTICE, extends: 'base', version: '1.0.0', slots: [{ slot: 'practice' }] });
+  const practicePrompts = join(home, '.papercusp', 'blueprints', PRACTICE, 'prompts');
+  await mkdir(practicePrompts, { recursive: true });
+  await writeFile(join(practicePrompts, 'practice.md'), '# Integration practice\n');
   await writeBlueprint(join(home, '.papercusp', 'blueprints', PROVIDER), {
     id: PROVIDER, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
     contributions: [{ id: 'current-brief', purpose: 'operational', source: 'provider', refresh: 'launch',
