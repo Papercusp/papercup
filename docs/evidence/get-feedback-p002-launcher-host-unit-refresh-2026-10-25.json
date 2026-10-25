@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "kind": "get-feedback-p002-launcher-host-unit-refresh",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "ownerId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+  "scope": "Source and controlled fixtures only; native delivery, actor/lease ABA, cohort quality, independent acceptance and shipment remain open.",
+  "baseline": {
+    "commit": "cb1d304cdbec585ae81794dd873b42a943989d3a",
+    "driver": "scripts/with-test-pg.mjs + scripts/lint-as-committed.mjs test:file --any",
+    "log": "/tmp/gf-p002-launcher-host-refresh-20261025.log",
+    "logSha256": "ee3d054c662866dc94103261e3e56c42572dab2be8093daf6de78e2475ac5c69",
+    "launcher": { "testRunId": 22053282, "passed": 1208, "failed": 1, "skipped": 0, "worktreeDirty": false },
+    "host": { "testRunId": 22053283, "passed": 632, "failed": 0, "skipped": 0, "worktreeDirty": false }
+  },
+  "hostQualification": {
+    "replacementBinding": 70435,
+    "retiredBinding": 69614,
+    "independentCurrentness": "current across all applicable dimensions before retirement",
+    "originalRecipeEqual": true,
+    "originalAdequacyEqual": true,
+    "oldCaseRun": 21959884,
+    "caseKeyAndOccurrencePopulation": 632,
+    "missingCaseIdentities": [],
+    "addedCaseIdentities": [],
+    "observedCaseStatuses": ["pass"],
+    "testSha256": "79d17f42b587e2f41564ba24255aab5d898ad83a35f386422dff4fa228caaad7",
+    "fixtureChange": "Two source-string expectations accept onSpawn({ ptyPid: child.pid }) while retaining spawn-before-acknowledgement and one-finalization assertions.",
+    "governingDecision": "D-034; no equivalence to unrecovered historical 28262 case identities is claimed"
+  },
+  "launcherRepair": {
+    "rootCause": "The source-wiring test required a literal parameterless finalizeResumeClaim signature after production added the startup argument for concrete PTY identity.",
+    "failingCase": "launchResume wiring — claim before setup or spawn > finalizes the acquired key only through runWrapper's concrete spawn callback",
+    "fix": "Match the named async callback independent of its parameter list; retain legacy-guard ordering, report-before-runWrapper, onSpawn and onSpawnFailure assertions.",
+    "file": "apps/operator/lib/psu-launcher.test.ts",
+    "fixedSha256": "b21611e53835c893c24be3efb0f5c82739099bcd8919fc087462d83f68d1ef7f",
+    "focusedRecoveryRunId": "932e5f78-a027-4826-9041-1343a496947d",
+    "focusedResult": "pass / exit 0; one selected assertion, 1208 unselected assertions; working-tree proof only",
+    "originalDeclaredCases": 538,
+    "declaredCasesAbsentFromBaselineCollection": [],
+    "historicalRun21937307CaseTable": "not recorded; do not claim recovered full historical 1209-case identity equivalence",
+    "committedFullSuite": "pending exact fixed file commit; active 69327 and 69328 remain stale"
+  },
+  "commitPrerequisite": {
+    "route": "git-sync:run on sanctioned background-worker MCP host",
+    "requestOutcome": "request_timeout after 55000ms; server-side outcome unknown; never retry under a fresh idempotency key",
+    "transportIdempotencyKey": "8787a0ac-ddf6-4f41-9c5f-4ed0ee091ea8",
+    "cliResult": "/tmp/gf-p002-launcher-fixture-sync-20261025.json",
+    "cliTrace": "/tmp/gf-p002-launcher-fixture-sync-20261025.stderr"
+  },
+  "preservedHistory": [28326, 28545, 69704, 69782],
+  "reporterIncident": "EI-26900834772734276 remains open; original double-timeout cause remains unknown"
+}
