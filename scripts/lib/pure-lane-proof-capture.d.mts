@@ -140,7 +140,7 @@ export function runPureLaneProofCapture({ root, env, runGroupId, logFile, sinceM
         git: typeof defaultGit;
         laneInclude: (wsAbsDir: any) => string[];
         runnerIdentity: typeof defaultRunnerIdentity;
-        connect: (env: any) => Promise<import("pg").Client>;
+        connect: (env: any) => Promise<any>;
         loadProofs: typeof loadReuseProofs;
         loadShaOutcomes: typeof defaultLoadShaOutcomes;
         loadLatestLaneSha: typeof defaultLoadLatestLaneSha;

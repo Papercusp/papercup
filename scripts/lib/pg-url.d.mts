@@ -84,7 +84,7 @@ export function describePgUrlResolution(r: {
 export function connectScriptPg(opts?: {
     root?: string;
     env?: Record<string, string | undefined>;
-}): Promise<import("pg").Client>;
+}): Promise<any>;
 /** Env var names carrying a Postgres URL, in the order operator-core checks them. */
 export const PG_URL_ENV_VARS: string[];
 /**
