@@ -114,13 +114,14 @@ it('read-only context preview isolates an overlapping coordination writer', asyn
 }, 30_000);
 
 async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = false,
-  contended = false, preflight = false, channelControls = false, crashRecovery = false) {
+  contended = false, preflight = false, channelControls = false, crashRecovery = false, returnControls = false) {
     const root = mkdtempSync('/tmp/assume-native-journey-');
     const marker = { target: `TARGET_HISTORY_${randomUUID()}`, caller: `CALLER_HISTORY_${randomUUID()}`,
       checkpoint: `TARGET_CHECKPOINT_${randomUUID()}`, rival: `RIVAL_HISTORY_${randomUUID()}`,
       loserProbe: `LOSER_COMMAND_${randomUUID()}`, loserResponse: `LOSER_RESPONSE_${randomUUID()}`,
       channelInput: `TARGET_INPUT_${randomUUID()}`, channelResponse: `TARGET_OUTPUT_${randomUUID()}`,
-      channelHold: `TARGET_HOLD_${randomUUID()}` };
+      channelHold: `TARGET_HOLD_${randomUUID()}`, returnInput: `RETURN_INPUT_${randomUUID()}`,
+      returnResponse: `RETURN_OUTPUT_${randomUUID()}`, returnHold: `RETURN_HOLD_${randomUUID()}` };
     const privateCallerEnv = { ASSUME_CALLER_TOOL_HISTORY: `CALLER_TOOL_HISTORY_${randomUUID()}`,
       ASSUME_CALLER_TRANSCRIPT: marker.caller, OPENAI_API_KEY: `fixture-only-${randomUUID()}`,
       PAPERCUSP_NATIVE_SESSION_ID: `caller-private-${randomUUID()}` };
@@ -403,7 +404,15 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         // It cannot advance the target/return phase or consume its responsibilities.
         if (!ownsPhase(actor, execution)) { finish('INACTIVE_NATIVE_EXECUTION'); return; }
         if (phase === 'seed') { finish(marker.target); return; }
-        if (phase === 'return') { finish('CALLER_RETURNED'); return; }
+        if (phase === 'return') {
+          const userInput = (body.input ?? []).filter((item: Row) => item.role === 'user')
+            .map((item: Row) => JSON.stringify(item)).join('\n');
+          if (returnControls && userInput.includes(marker.returnHold)) {
+            controlRequested = true; await controlGate; finish('LATE_RETURN_OUTPUT'); return;
+          }
+          finish(returnControls && userInput.includes(marker.returnInput) ? marker.returnResponse : 'CALLER_RETURNED');
+          return;
+        }
         if (channelControls && phase === 'target') {
           const userInput = (body.input ?? []).filter((item: Row) => item.role === 'user')
             .map((item: Row) => JSON.stringify(item)).join('\n');
@@ -893,13 +902,51 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         expect((await real.commit(returning!.preparation)).replayed).toBe(true);
         expect(orders).toHaveLength(2);
       }
+      if (returnControls) {
+        const submit = async (text: string) => {
+          for (const step of controlWritesForAgent({ mode: 'turn', data: text }, 'codex', {})) {
+            if (step.delayMs) await new Promise(resolve => setTimeout(resolve, step.delayMs));
+            expect(alive(returnMeta.ptyPid)).toBe(true);
+            returned.signals.emit('input', step.data);
+          }
+        };
+        expect(returnMeta.ptyPid).not.toBe(original.nativePid);
+        expect(returnMeta.ptyPid).not.toBe(targetMeta.ptyPid);
+        expect(alive(original.nativePid)).toBe(false);
+        expect(alive(targetMeta.ptyPid)).toBe(false);
+        returned.signals.emit('resize', 131, 47);
+        const returnPid = resolveLinuxCodexStartupPid(returnMeta.ptyPid)!;
+        expect(returnPid).not.toBeNull();
+        expect(codexThreadWriterHolder(homes.caller, callerNative, { holderPid: returnPid }))
+          .toMatchObject({ held: true, pid: returnPid });
+        const tty = readlinkSync(`/proc/${returnPid}/fd/0`);
+        expect(tty).toMatch(/^\/dev\/pts\/\d+$/);
+        await vi.waitFor(() => expect(execFileSync('stty', ['-F', tty, 'size'], { encoding: 'utf8' }).trim())
+          .toBe('47 131'), { timeout: 5000 });
+        await submit(marker.returnInput);
+        await vi.waitFor(() => expect(output, diagnostics()).toContain(marker.returnResponse), { timeout: 10_000 });
+        expect(transcript('caller', callerNative)).toContain(marker.returnInput);
+        expect(transcript('target', runningTargetNative)).not.toContain(marker.returnInput);
+        expect(requests.filter(row => row.phase === 'return' && JSON.stringify(row.body).includes(marker.returnInput))
+          .every(row => row.actor === 'caller')).toBe(true);
+        await submit(marker.returnHold);
+        await vi.waitFor(() => expect(controlRequested, diagnostics()).toBe(true), { timeout: 10_000 });
+        returned.signals.emit('input', '\x03');
+        await vi.waitFor(() => expect(transcript('caller', callerNative)).toContain('"type":"turn_aborted"'),
+          { timeout: 10_000 });
+        expect(alive(returnMeta.ptyPid)).toBe(true);
+        await submit('/exit');
+        await vi.waitFor(() => expect(alive(returnMeta.ptyPid), diagnostics()).toBe(false), { timeout: 10_000 });
+        expect(await returned.done).toBe(0);
+        expect(orders).toHaveLength(2);
+      }
       expect(errors, diagnostics()).toEqual([]);
       returned.signals.emit('SIGTERM'); await returned.done;
     } catch (error) {
       const artifact = process.env.PC_EXECUTED_SOURCE_MAP_OUT
         ? process.env.PC_EXECUTED_SOURCE_MAP_OUT + '.journey-failures.jsonl'
         : join('/tmp', 'assume-native-failure-' + randomUUID() + '.jsonl');
-      appendFileSync(artifact, JSON.stringify({ mode, production, contended, preflight, crashRecovery, crashBoundaries,
+      appendFileSync(artifact, JSON.stringify({ mode, production, contended, preflight, crashRecovery, returnControls, crashBoundaries,
         diagnostics: JSON.parse(diagnostics()), error: String(error) }) + '\n');
       console.error('Native journey failure evidence: ' + artifact);
       throw error;
@@ -934,3 +981,6 @@ it('previews one exact ended target without writes and refuses live, foreign and
 
 it('R-8 recovers persisted native handoff after managed host SIGKILL before target execution',
   () => nativeJourney('native-resume', true, false, false, false, true), 180_000);
+
+it('R-5 exact caller return restores input output resize interrupt and exit on the original pane',
+  () => nativeJourney('native-resume', true, false, false, false, false, true), 180_000);
