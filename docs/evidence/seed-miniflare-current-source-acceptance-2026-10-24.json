@@ -115,7 +115,9 @@
   },
   "actionCensus": {
     "requirement": "R-5",
-    "status": "UNKNOWN",
+    "status": "BLOCKED-POSITIVE-PUBLICATION-EVIDENCE",
+    "coverageStatus": "UNKNOWN",
+    "predicateStatus": "FALSIFIER-OBSERVED;INDEPENDENT-GRADE-PENDING",
     "continuationReconciliation": {
       "cutoffInclusive": "2026-10-25T00:59:00Z",
       "decision": "seed-miniflare-cache-census-2026-10-24#D-005",
@@ -257,7 +259,7 @@
         "literalExecCalls": 519,
         "literalCommandHashesInSavedPopulation": 515,
         "dynamicExecExpressions": 41,
-        "scope": "Static complete-script syntax and tool-call spans only; no all-script semantic or executed-branch verdict. Literal command mismatches are reconciled in the separate envelope artifact; dynamic expressions and nested tool/callee effects remain."
+        "scope": "Static complete-script syntax and tool-call spans only; no all-script semantic or executed-branch verdict. Literal mismatches and dynamic exec expressions are reconciled in separate envelope artifacts; nested tool/callee effects remain."
       },
       "nativeCallEnvelopeReconciliation": {
         "path": "~/.papercusp/scratch/843e2-miniflare-r5-native-call-envelope-reconciliation-v1.json",
@@ -267,11 +269,49 @@
         "supplementalCompletedCommands": 1,
         "scope": "Three native wrapper/result records affirmatively record pre-execution search refusals. The second peer repair completion starts inside the stored interval but completes at 14:48:39.952Z, with wrapper return 14:48:40.889Z; retain that supplemental complete body/result beyond the earlier 14:48:33.403Z endpoint. Preserve the original 615-command population and both conservative peer windows; no purpose-based deletion or whole-channel absence claim."
       },
+      "nativeDynamicExecReconciliation": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-native-dynamic-exec-reconciliation-v1.json",
+        "sha256": "d60e564c38cd2b99520e8d09ca6edfe07bd0e84664d64c2786c9b7640a1226c5",
+        "dynamicCallsites": 41,
+        "expandedDistinctCommands": 101,
+        "exactNativeMatches": 101,
+        "matchedOriginal615": 99,
+        "supplementalCompletions": 2,
+        "unresolvedExpressions": 0,
+        "scope": "Whitelisted static dataflow and one exact saved report-result value reconstruct all 41 selected expressions into 101 distinct native command/result matches. Tools are symbolic stubs and no historical command is replayed. Retain ADV49752 native line516 at09:03:42.414Z (failed exit1, idempotency/helper refusal) and ADV51495 line671 at00:23:11.262Z beyond the original candidate endpoints; the original 615-command population remains immutable. Exact envelope reconciliation is not a downstream-effect, interval-completeness or R-5 acceptance verdict."
+      },
+      "nativeYieldedShellDrains": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-native-yielded-shell-drains-v1.json",
+        "sha256": "1d4dbc4b05ec491e744f60341e2f4b7b3c258b587f9b99aef28d1ec66d95183d",
+        "processes": ["13289", "47991"],
+        "scope": "Historical native process_id and complete command bytes join the two initially yielded shells to their physical terminal records. Retain drain source/output hashes and distinguish mixed wrapper envelopes. No live session was polled or replayed."
+      },
+      "publicationPredicateConflict": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-publication-predicate-conflict-v1.json",
+        "sha256": "a636a9250b9aded20a3daeba234b36e97f596adddb6a677eec84f723ec3bb23e",
+        "publicationObserved": true,
+        "scope": "Two successful owner Reports writes are retained against current plan19, rubric3 and R-5 spec revision2. The condition explicitly names publication without an internal-Reports exception. Healthy acceptance is blocked; the literal predicate conflicts with observed writes. Governing interpretation remains pending, and this artifact supplies no final independent verdict, exception, BAR amendment or full census claim."
+      },
+      "governingPublicationDecision": {
+        "ref": "seed-miniflare-cache-census-2026-10-24#D-006",
+        "planRevision": 20,
+        "planContentHash": "97bc1069a54d1c9f93d13a9f5a38d033fffa67a09fad2c153a977ac80b2470cd",
+        "readback": "Complete D-006 read from canonical plans:get on 2026-10-25. Owner-only Reports writes count as publication under the unchanged R-5 BAR; no internal-library exception exists. The confirmed plan-associated report rpt_459e93a7-c788-44c1-b73a-9c8efacfa84a is a counterexample; rpt_3cb376f7-4293-4ed9-9ac8-453089e904b7 remains supported by this producer's exact saved receipt. No external/public disclosure is alleged.",
+        "scope": "This resolves the previously pending interpretation in the preserved publicationPredicateConflict artifact. It does not supply an independent acceptance card, amend the BAR, erase historical evidence or clear remaining coverage and parent holds. A narrower outward/public promise requires the supported BAR amendment and outside-lineage approval route."
+      },
+      "contributorAuthorityReconciliation": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-contributor-authority-reconciliation-v1.json",
+        "sha256": "25e1b92cfa5cf33a55315c55e267f0d9c0f9f7151f6efaddce23e18d247e45dc",
+        "planRevisions": 19,
+        "storedPlanAudits": 6,
+        "linkedGradingAudits": 5,
+        "scope": "Exact canonical plan revision/audit authors, clause author groups and three spec-quality plus two adequacy cards are linked to their persisted grading-audit authors and retained native candidate identities. Thirteen consult records retain source experts and answering-owner candidates separately; failed prepared ADV51444 remains preparation without a review verdict. Acceptance-rubric card absence is bounded to that exact rubric. Contributor coverage, interval boundaries, downstream effects and final acceptance tail remain incomplete; no healthy verdict, exception or BAR amendment is supplied."
+      },
       "remaining": [
         "Resolve historical network boundary and downstream effects of MCP44022053, MCP44023057 and successful supplemental MCP44023451. Failed remote exit1 and current loopback configuration do not establish no contact; the third call returned snapshot metadata with native exit0.",
         "Keep conservative candidate intervals and all three SSH calls. The first ADV49752 candidate window now extends through physical handback09:05:45.808Z; no per-goal deletion or interval exclusion has been established.",
         "Complete nested-callee and actual-effect reconciliation for all seven prohibited surfaces. All 615 retained command bodies now have dispositions; body review, static parses and record matches do not establish every callee effect. Reconcile saved owner Reports publication requests and exact results without inventing an internal-publication exemption.",
-        "Close the complete contributor population against grading/audit/dispatch records and extend the acceptance tail beyond this cutoff before any healthy R-5 verdict."
+        "Complete contributor coverage beyond the named author/audit/consult sources, including work-item/edit-attribution and reviewer-dispatch/failed-launch records. Reconcile the saved inventory start against canonical creation records and extend the acceptance tail beyond this cutoff before any healthy R-5 verdict."
       ]
     },
     "inventoryPath": "~/.papercusp/scratch/843e2-miniflare-action-census-v4.json",
