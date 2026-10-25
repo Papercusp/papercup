@@ -553,6 +553,32 @@ describe('completed isolated runtime certification', () => {
     await state.save();
     return { ...state, basis };
   }
+  it.each(['live', 'tree'].flatMap(plane => ['filtered', 'missing-pattern', 'invalid-pattern',
+    'selected-skip', 'missing-ledger', 'missing-case', 'failed-case', 'unmatched-pass', 'wrong-pass-count']
+    .map(condition => [condition, plane])))(
+    'certifies only ledger-proven excluded direct-verifier cases: %s on the %s plane', async (condition, plane) => {
+      const state = await setupDirectVerifier();
+      state.row.details.evidencePlane = plane;
+      state.execution.skipped = 1;
+      state.execution.testNamePattern = 'selected alarm';
+      const cases = [
+        { case_key: 'suite > selected alarm', occurrence: 0, status: 'pass', duration_ms: 1,
+          file_path: state.execution.filePath },
+        { case_key: 'suite > unrelated alarm', occurrence: 0, status: 'skip', duration_ms: 0,
+          file_path: state.execution.filePath },
+      ];
+      h.caseRows = cases;
+      if (condition === 'missing-pattern') state.execution.testNamePattern = null;
+      if (condition === 'invalid-pattern') state.execution.testNamePattern = '[';
+      if (condition === 'selected-skip') cases[1].case_key = 'suite > selected alarm also';
+      if (condition === 'missing-ledger') h.caseRows = null;
+      if (condition === 'missing-case') cases.pop();
+      if (condition === 'failed-case') cases[0].status = 'fail';
+      if (condition === 'unmatched-pass') cases[0].case_key = 'suite > another alarm';
+      if (condition === 'wrong-pass-count') state.execution.passed = 2;
+      expect((await read()).currentness.dimensions.environment)
+        .toBe(condition === 'filtered' ? 'current' : 'unknown');
+    });
   async function setupDirectNativeMutation() {
     const state = await setupDirectVerifier();
     const files = state.receipt.files;

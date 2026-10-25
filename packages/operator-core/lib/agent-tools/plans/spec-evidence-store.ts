@@ -132,6 +132,25 @@ async function readRecordedTestCases(
   };
 }
 
+async function hasLedgerProvenPassingSelection(
+  row: EvidenceRow,
+  execution: NonNullable<ReturnType<typeof parseTestRunExecutionDetails>>,
+  workspaceId: string,
+): Promise<boolean> {
+  if (!row.test_run_id || execution.failed !== 0
+    || (execution.skipped !== 0 && !execution.testNamePattern)) return false;
+  try {
+    const pattern = execution.skipped !== 0 ? new RegExp(execution.testNamePattern!) : null;
+    const recorded = await withWorkspace(workspaceId, tx => readRecordedTestCases(tx, row.test_run_id!));
+    return recorded !== null
+      && recorded.cases.length === execution.passed + execution.skipped
+      && recorded.cases.filter(c => c.status === 'pass').length === execution.passed
+      && recorded.cases.filter(c => c.status === 'skip').length === execution.skipped
+      && (!pattern || recorded.cases.every(c =>
+        pattern.test(c.caseKey.replaceAll(' > ', ' ')) === (c.status === 'pass')));
+  } catch { return false; }
+}
+
 const MAX_REPO_MEASUREMENT_SOURCE_GLOBS = 16;
 const MAX_REPO_MEASUREMENT_GLOB_MATCHES = 128;
 const MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES = 4096;
@@ -3643,7 +3662,7 @@ export async function measureCompletedTestRuntime(
       ? row.test_run_framework === 'vitest' && ['integration', 'e2e'].includes(execution.testLayer ?? '')
       : execution.testLayer === (selector.kind === 'llm-in-process' ? 'llm' : 'e2e'))
     || execution.worktreeDirty
-    || execution.collectionFailed || execution.skipped !== 0
+    || execution.collectionFailed || (!directVerifier && execution.skipped !== 0)
     || (!mutationCalibration && (execution.failed !== 0 || execution.passed < 1))
     || execution.workspaceId !== scope.workspaceId || !executionHarnessMatches
     || !execution.commitSha || !/^[a-f0-9]{40,64}$/.test(execution.commitSha)
@@ -3659,6 +3678,10 @@ export async function measureCompletedTestRuntime(
   const end = instant(row.test_run_finished_at);
   if (![before, after, start, end].every(Number.isFinite)
     || before > start || start > end || end > after) return null;
+  // Focused native runs collect excluded cases as skips. The complete case
+  // ledger must prove they were outside the selector and every selected case passed.
+  if (directVerifier && execution.skipped !== 0
+    && !await hasLedgerProvenPassingSelection(row, execution, scope.workspaceId)) return null;
   if (selector.kind === 'llm-in-process') {
     try {
       // The original recorder measured these kernel pins while the process was
@@ -3811,15 +3834,7 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
       // a selected skip or missing case ledger remains unverified. Several
       // passing cases may share one original lifetime, but their complete
       // passing case ledger must still corroborate the execution counts.
-      if (!row.test_run_id || (execution.skipped !== 0 && !execution.testNamePattern)) return null;
-      const pattern = execution.skipped !== 0 ? new RegExp(execution.testNamePattern!) : null;
-      const recordedCases = await withWorkspace(scope.workspaceId,
-        tx => readRecordedTestCases(tx, row.test_run_id!));
-      if (!recordedCases || recordedCases.cases.length !== execution.passed + execution.skipped
-        || recordedCases.cases.filter(c => c.status === 'pass').length !== execution.passed
-        || recordedCases.cases.filter(c => c.status === 'skip').length !== execution.skipped
-        || (pattern && recordedCases.cases.some(c => pattern.test(c.caseKey.replaceAll(' > ', ' ')) !== (c.status === 'pass'))))
-        return null;
+      if (!await hasLedgerProvenPassingSelection(row, execution, scope.workspaceId)) return null;
     }
     const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);
     const originals = new Map(recorded.files.map(file => [`${file.dimension}:${file.path}`, file]));

@@ -5908,7 +5908,10 @@ async function amendAcceptanceBarRubric(
                superseded_by = ${subjectIdx.supersededBy}, is_legacy = ${subjectIdx.isLegacy},
                items = ${JSON.stringify(subjectIdx.items)}::text::jsonb,
                decisions = ${JSON.stringify(subjectIdx.decisions)}::text::jsonb,
-               now_state = ${subjectIdx.nowState}, now_next = ${subjectIdx.nowNext},
+               -- now_note is the source of truth after P-004; keep the indexed reader fields
+               -- aligned while the amendment's post-commit readiness refresh updates it.
+               now_state = COALESCE(harness_shared.harness_plans.now_note->>'state', ${subjectIdx.nowState}),
+               now_next = COALESCE(harness_shared.harness_plans.now_note->>'next', ${subjectIdx.nowNext}),
                promote_policy = ${JSON.stringify(subjectIdx.promotePolicy)}::text::jsonb,
                forced_past = ${subjectForcedPast ? JSON.stringify(subjectForcedPast) : null}::text::jsonb,
                acceptance_bar_set_hash = ${String(guard.data.barSetHash ?? '')},
@@ -6165,6 +6168,47 @@ async function readAmendmentRubric(rubricId: string): Promise<Rubric | null> {
   return read.kind === 'found' ? read.rubric : null;
 }
 
+/** Refresh the subject plan's canonical Now note after an acceptance-rubric write. */
+async function refreshAcceptanceRubricReadinessNow(
+  rubric: Rubric | null,
+  input: AmendRubricInput,
+  rubricScope: { workspaceId: string; harnessSlug: string },
+): Promise<Rubric | null> {
+  if (!rubric || rubric.kind !== 'acceptance' || !rubric.subjectPlan) return rubric;
+  try {
+    const subjectScope = await resolveAcceptanceSubjectScope(
+      rubricScope.workspaceId,
+      rubric.subjectPlan,
+      rubric.subjectHarnessSlug,
+    );
+    const actor = (input.actorId ?? input.by ?? rubric.createdBy ?? 'rubrics:system').trim() || 'rubrics:system';
+    input.onPhase?.('acceptance-now-readiness-refresh');
+    const [{ reevaluateBarReadinessOnScopeWrite }, { defaultBarReadinessDeps }] = await Promise.all([
+      import('./agent-tools/plans/plan-scope-cascade'),
+      import('./agent-tools/plans/plan-scope-cascade-deps'),
+    ]);
+    const readiness = await reevaluateBarReadinessOnScopeWrite(
+      {
+        workspaceId: subjectScope.workspaceId,
+        harnessSlug: subjectScope.harnessSlug,
+        planSlug: rubric.subjectPlan,
+        cause: 'rubric-amended',
+      },
+      defaultBarReadinessDeps(null, actor),
+    );
+    if (readiness.error) {
+      console.warn(`[rubrics:amend] BAR readiness Now refresh failed for ${rubric.subjectPlan}: ${readiness.error}`);
+    }
+  } catch (error) {
+    // The rubric transaction has already committed. Keep that truthful success while
+    // surfacing a post-commit refresh failure for diagnosis instead of misreporting an
+    // amendment refusal after the contract was written.
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(`[rubrics:amend] BAR readiness Now refresh failed for ${rubric.subjectPlan}: ${detail}`);
+  }
+  return rubric;
+}
+
 export async function previewAcceptanceBarAmendment(
   input: AmendRubricInput,
 ): Promise<AcceptanceBarAmendmentPreview | null> {
@@ -6333,7 +6377,9 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
     const amended = await amendAcceptanceBarRubric(input, scope);
     // A null reread still refuses. Only an explicit, locked method-only result
     // may use the ordinary writer, which refreshes the dependent revision pins.
-    if (!amended?.methodOnly) return amended?.rubric ?? null;
+    if (!amended?.methodOnly) {
+      return refreshAcceptanceRubricReadinessNow(amended?.rubric ?? null, input, scope);
+    }
     methodOnlyRevision = amended.rubricRevision;
   }
   const compatibilityAudit: { current?: RubricCompatibilityAudit } = {};
@@ -6437,7 +6483,10 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
   }
   if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
   if (!result.value) return null;
-  return getRubric(input.rubricId);
+  const amended = await getRubric(input.rubricId);
+  return currentForRouting?.kind === 'acceptance'
+    ? refreshAcceptanceRubricReadinessNow(amended, input, scope)
+    : amended;
 }
 
 /** Raw template_data for one rubric plan (the un-projected jsonb) — the merge base for

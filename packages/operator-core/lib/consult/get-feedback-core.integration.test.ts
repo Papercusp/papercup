@@ -1236,9 +1236,9 @@ describe('recoverable interactive feedback requests', () => {
     expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ request: { leaseToken: 'new-worker' } });
   });
 
-  it('recovers initial delivery after process loss at selected-row commit without re-routing or duplicate launch', async () => {
+  it.each([undefined, 'method-review'])('recovers initial delivery for %s after process loss without re-routing or duplicate launch', async (policy) => {
     const fixture = makeDeps(routeOf([cand('durable-initial-expert')]));
-    const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: 'durable-initial' }, fixture.deps);
+    const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: `durable-initial-${policy ?? 'default'}`, policy }, fixture.deps);
     const execute = vi.fn((payload: GetFeedbackRequest, context: NonNullable<GetFeedbackDeps['acceptedRequest']>) =>
       getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context,
         resumeInitialDispatch: () => { throw new Error('process stopped before initial continuation'); } }));
@@ -1250,6 +1250,14 @@ describe('recoverable interactive feedback requests', () => {
       version: 1, cursor: 0, responder: 'durable-initial-expert', leaseToken: null, leaseUntil: null,
       body: expect.stringContaining(baseReq.question),
     } });
+    if (policy === 'method-review') {
+      expect(selected.routing).toMatchObject({ policy, cascadeDispatch: {
+        body: expect.stringContaining('CURRENT METHOD'),
+      } });
+      expect(selected.routing).not.toMatchObject({ cascadeDispatch: {
+        body: expect.stringContaining('Answer FROM the transcript'),
+      } });
+    }
     expect(fixture.reached).toHaveLength(0);
     expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, requestDeps)).toBe(false);
     expect(execute).toHaveBeenCalledTimes(1);
@@ -1260,6 +1268,7 @@ describe('recoverable interactive feedback requests', () => {
     const started = new Promise<void>(resolve => { entered = resolve; });
     const dispatch = vi.fn(async (opts: Parameters<GetFeedbackDeps['reach']>[0]) => {
       expect(opts.body).toContain(baseReq.question);
+      if (policy === 'method-review') expect(opts.body).toContain('CURRENT METHOD');
       await opts.onAnsweringOwner?.('durable-initial-answerer');
       entered();
       await held;
@@ -1374,6 +1383,7 @@ describe('getFeedbackCore — routed', () => {
     ['acceptance-bar-amendment-review', 'floor'], ['acceptance-bar-amendment-review', 'minimum'],
     ['acceptance-bar-amendment-review', 'lexical'], ['rubric-vetting', 'floor'],
     ['rubric-vetting', 'minimum'], ['rubric-vetting', 'lexical'],
+    ['method-review', 'floor'], ['method-review', 'minimum'], ['method-review', 'lexical'],
   ] as const)(
     'delivers the complete current review request for %s on the initial %s route',
     async (policy, selection) => {
@@ -1392,7 +1402,8 @@ describe('getFeedbackCore — routed', () => {
       const result = asOk(await getFeedbackCore({ ...baseReq, question, policy, archiveFloor: 2 }, fixture.deps));
       expect(fixture.reached).toHaveLength(1);
       expect(fixture.reached[0].body).toContain(question);
-      expect(fixture.reached[0].body).toContain(policy === 'rubric-vetting' ? 'CURRENT RUBRIC' : 'CURRENT AMENDMENT');
+      expect(fixture.reached[0].body).toContain(policy === 'rubric-vetting'
+        ? 'CURRENT RUBRIC' : policy === 'method-review' ? 'CURRENT METHOD' : 'CURRENT AMENDMENT');
       expect(fixture.reached[0].body).toContain('results[0].conversation.body');
       expect(fixture.reached[0].body).toContain('do not decline solely');
       expect(fixture.reached[0].body).not.toContain('Answer FROM the transcript');
@@ -2295,6 +2306,18 @@ async function seedClosedConsult(opts: {
 
 describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
   const qv = vecAt(0);
+
+  it('routes a new method review even when an identical archived answer exists and archive_floor is lowered', async () => {
+    const ws = 'ws-arch-current-method';
+    await seedClosedConsult({ ws, conv: 'old-method-answer', vec: vecAt(0), responder: 'old-reviewer' });
+    const fixture = makeDeps(routeOf([cand('current-method-reviewer')], { queryVec: qv }));
+    const result = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws,
+      policy: 'method-review', archiveFloor: 0 }, fixture.deps));
+    expect(result.verdict).toBe('routed');
+    expect(fixture.reached).toHaveLength(1);
+    expect(fixture.reached[0].body).toContain('CURRENT METHOD');
+    expect((await stateRow(result.conversation_id, ws)).routing).toMatchObject({ policy: 'method-review' });
+  });
 
   it('a closed_answered consult with a highly similar question serves from the archive: instant close, no wake, provenance cited', async () => {
     const ws = 'ws-arch-serve';

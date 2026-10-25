@@ -2389,6 +2389,49 @@ describe('template_data persistence boundary — the set-template-data door', ()
     return { ...seeded, workspaceId, subject };
   }
 
+  it('refreshes a stale stored BAR readiness Now after a canonical acceptance amendment', async () => {
+    const seeded = await seedBarContract('stale-readiness-now-after-amendment', { authorMethods: true });
+    const staleState =
+      '⚠ BAR READINESS BLOCKED (2026-10-24, after decision-added): bar_snapshot_cohort_incomplete, ' +
+      'bar_snapshot_rubric_missing, bar_snapshot_bar_set_empty. Next repair: repair seed. ' +
+      '(re-evaluated in the same write by the scope-write cascade, P-030/P-031)';
+    const staleNote = {
+      state: staleState,
+      next: 'repair seed',
+      author: 'su-test',
+      writtenAt: '2026-10-24T12:00:00.000Z',
+      eventId: null,
+      rationale: null,
+      source: 'set-now',
+    };
+    await db.adminSql`UPDATE harness_shared.harness_plans
+       SET now_note = ${JSON.stringify(staleNote)}::text::jsonb,
+           now_state = ${staleNote.state}, now_next = ${staleNote.next}
+     WHERE workspace_id = ${seeded.workspaceId} AND harness_slug = 'papercusp' AND plan_slug = ${seeded.subject}`;
+
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Change the BAR meaning and refresh the subject plan readiness note.',
+      criterion: {
+        key: before.criteria[0]!.key,
+        field: 'driftMarkers' as const,
+        mode: 'replace' as const,
+        text: 'The first outcome is absent after the amendment commits.',
+      },
+    };
+    await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) });
+
+    const [after] = await db.adminSql<{ now_note: Record<string, unknown>; now_state: string; now_next: string }[]>`
+      SELECT now_note, now_state, now_next FROM harness_shared.harness_plans
+       WHERE workspace_id = ${seeded.workspaceId} AND harness_slug = 'papercusp' AND plan_slug = ${seeded.subject}`;
+    expect(after!.now_note).toMatchObject({ state: '—', next: '—', source: 'set-now' });
+    expect(after!.now_note.state).not.toContain('bar_snapshot_cohort_incomplete');
+    expect(after!.now_state).toBe(after!.now_note.state);
+    expect(after!.now_next).toBe(after!.now_note.next);
+  });
+
   it('authors an unstarted successor without changing the historical subject pin, and still refuses a pinned orphan', async () => {
     const seeded = await seedBarContract('successor-authoring-subject');
     await db.adminSql`UPDATE harness_shared.harness_plans SET status='superseded'
