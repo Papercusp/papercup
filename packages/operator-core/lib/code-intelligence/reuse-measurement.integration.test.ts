@@ -152,6 +152,7 @@ describe('R16 frozen measurement units and efficacy', () => {
         { env: { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture',
           GIT_COMMITTER_EMAIL: 'fixture@example.invalid', GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
       git('add', 'a.ts'); datedCommit('pinned baseline', '2026-09-29T00:00:00Z');
+      await writeFile(join(root, 'a.ts'), 'export const added = 1;\nexport function target() {}\n');
       await writeFile(join(root, 'b.ts'), 'import { target } from "./a"; target();\n'); git('add', 'b.ts');
       const literalPaths = ['odd [x].ts', 'quote".ts', 'line\nbreak.ts', ':colon.ts'];
       for (const path of literalPaths) await writeFile(join(root, path), 'export const café = 1;\n');
@@ -162,8 +163,12 @@ describe('R16 frozen measurement units and efficacy', () => {
       expect(phases).toEqual(['source-tree', 'source-capture', 'source-diff', 'source-clones', 'source-calls']);
       // The shared history policy excludes newline paths; batching must retain
       // every eligible literal identity without interpreting pathspec syntax.
-      expect(pinned).toMatchObject({ addedNonGeneratedLines: 4, callCensusComplete: true });
+      expect(pinned).toMatchObject({ addedNonGeneratedLines: 5, callCensusComplete: true });
       expect(pinned.method.sourcePopulation).toEqual(['a.ts', 'b.ts', ...literalPaths.filter(path => !path.includes('\n'))].sort());
+      expect(pinned.method.addedLinePopulation).toEqual(expect.arrayContaining([
+        { path: 'a.ts', lines: [1] }, { path: 'b.ts', lines: [1] },
+        ...literalPaths.filter(path => !path.includes('\n')).map(path => ({ path, lines: [1] })),
+      ]));
       expect(pinned.calls).toEqual([expect.objectContaining({ from: 'b.ts', to: 'a.ts', resolved: true })]);
       let ticks = 0;
       const timer = setInterval(() => { ticks++; }, 10);
