@@ -118,6 +118,42 @@ it.skipIf(process.platform === 'win32')('rejects artifact links and refuses byte
   expect(() => censusPrivateRuntimeArtifact(root, { deadlineMs: Date.now() - 1 })).toThrow(/time ceiling/);
 });
 
+it.skipIf(process.platform !== 'linux')('runs the private artifact census in plain Node and retains its actual preparation inputs', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-artifact-plain-node-'));
+  dirs.push(root);
+  const artifact = join(root, 'artifact');
+  mkdirSync(artifact);
+  writeFileSync(join(artifact, 'model'), Buffer.alloc(16 * 1024 ** 2, 0xa7));
+  const reader = resolve(import.meta.dirname, 'private-runtime-artifact-census.mts');
+  const trace = resolve(import.meta.dirname, '../../../scripts/lib/vitest-startup-trace.mjs');
+  const out = join(root, 'source.json');
+  const source = [
+    "import { censusPrivateRuntimeArtifact } from " + JSON.stringify(pathToFileURL(reader).href) + ";",
+    "const result = censusPrivateRuntimeArtifact(process.argv[1]);",
+    "console.log(JSON.stringify({ pid: process.pid, executable: process.execPath,",
+    "  versions: process.versions, execArgv: process.execArgv, result }));",
+  ].join('\n');
+  const result = JSON.parse(execFileSync(process.execPath,
+    ['--import', pathToFileURL(trace).href, '--input-type=module', '-e', source, artifact], {
+      env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '', PC_EXECUTED_SOURCE_MAP_OUT: out },
+      encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024,
+    }));
+  expect(result.versions.node).toBe(process.versions.node);
+  expect(result.execArgv).not.toContain('tsx');
+  expect(result.result.files).toBe(1);
+  expect(result.result.readAdvice[0].dependencies.scope).toBe('isolated-python-imports-and-native-maps');
+  const records = readdirSync(out + '.native-processes').filter(name => name.endsWith('.json'))
+    .map(name => JSON.parse(readFileSync(join(out + '.native-processes', name), 'utf8')));
+  const own = records.filter(row => row.pid === result.pid);
+  expect(own.find(row => row.event === 'node-entry').executable).toBe(process.execPath);
+  expect(own.find(row => row.event === 'node-exit')).toMatchObject({ code: 0, exitListenersComplete: true });
+  const loads = own.filter(row => row.event === 'module-load-return');
+  expect(loads.map(row => row.url)).toEqual([pathToFileURL(reader).href]);
+  expect(loads[0].source).toMatchObject({ status: 'hashed',
+    sha256: createHash('sha256').update(readFileSync(reader)).digest('hex') });
+  expect(own.filter(row => ['module-load-error', 'module-load-limit', 'module-load-unavailable'].includes(row.event))).toEqual([]);
+});
+
 it('retains teardown signal evidence on a forced-exit timeout and removes its listeners', async () => {
   vi.useFakeTimers();
   const directory = mkdtempSync(join(tmpdir(), 'private-stop-evidence-'));
