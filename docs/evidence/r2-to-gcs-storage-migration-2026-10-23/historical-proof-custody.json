@@ -20,6 +20,12 @@
       "name": "custody-native.json",
       "sha256": "ca3b449d4e1351e0779af3482ff2df059b55e867db23b43526dd764b86ae4d9c"
     },
+    "untrackedCustody": {
+      "name": "untracked-custody-c686ccf0755b1e7446aa79a793ccc8aaac54ea3cd14d61641cad5842baa9e9b3.json",
+      "sha256": "c686ccf0755b1e7446aa79a793ccc8aaac54ea3cd14d61641cad5842baa9e9b3",
+      "originals": 8149,
+      "byteLength": 9622747
+    },
     "retainedArtifactDirectory": "retained",
     "trackedOriginals": 2362
   },
@@ -33,6 +39,8 @@
     "evaluatorReferencesVerified": 2922,
     "nativeArtifactsRead": 10140,
     "eligibleGeneratedFiles": 2349,
+    "untrackedOriginalsRead": 8149,
+    "untrackedOriginalBytesRead": 9622747,
     "qualifications": {
       "newExecutionReceipt": false,
       "orderedChainQualified": false,
@@ -45,7 +53,8 @@
       "trackedFile": "custody.json files[].path -> artifact",
       "rawReport": "custody.json reports[].artifact",
       "evaluator": "custody.json reports[].evaluatorArtifacts.entries[].artifact",
-      "nativeArtifact": "custody-native.json populations[].files[].artifact"
+      "nativeArtifact": "custody-native.json populations[].files[].artifact",
+      "untrackedOriginal": "archive.untrackedCustody.name files[].path -> artifact"
     },
     "validation": "Verify each index hash against archive pins before following an artifact descriptor. Read the referenced bytes with readNativeArtifactBytes(file, descriptor.byteLength, byteLimit), then compare SHA-256 to descriptor.sha256. Original report and codeRef bytes are unchanged; retained evaluator mappings were checked against the original report location, id, codeRef, digest and byte length.",
     "scope": "Historical exact-byte access only; missing codeRef observations remain partial."
@@ -430,6 +439,8 @@
     "trackedOriginalsRemoved": false,
     "trackedGeneratedFilesRemoved": 2349,
     "trackedGeneratedFilesRemaining": 0,
+    "untrackedGeneratedFilesRemoved": 8149,
+    "untrackedGeneratedFilesRemaining": 0,
     "supportingEvidenceDocumentsRetained": 13,
     "readerRelocationQualified": true,
     "notes": [
@@ -437,6 +448,7 @@
       "The original codeRef equality check remains enforced. Retained hash-addressed artifacts do not invent missing historical references.",
       "All 2349 manifest-ordered generated sidecars, including four pending native-process files, were removed after per-batch source/archive hash rechecks. The 13 supporting evidence documents remain in source.",
       "Post-removal readback through readNativeArtifactBytes verified 2362 archived originals, 15428 retained pins, 2922 exact evaluator references and 10140 native artifacts. Historical missing codeRef observations remain partial.",
+      "The lint enumerators also include untracked source files. All 8149 additional generated reports and sidecars were removed under exact file claims after source and external byte verification; a separate post-removal readback verified all 8149 retained originals totaling 9622747 bytes. The external untracked custody index includes ten module blobs absent from the earlier indexes.",
       "Supporting evidence documents remain in source. Original P003 qualification remains pending."
     ]
   }
