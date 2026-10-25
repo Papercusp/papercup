@@ -1,10 +1,10 @@
 // @vitest-environment node
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { EMPTY_RESULT_RATE_SQL, readEmptyResultRate } from './empty-result-rate';
+import { EMPTY_RESULT_RATE_SQL, gradeEmptyResultRate, readEmptyResultRate } from './empty-result-rate';
 
 const MIGRATION = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -95,7 +95,7 @@ describe('empty-result rollup selective time index', () => {
     expect(rollup.byOwner.find(row => row.ownerId === 'owner-a')).toMatchObject({ emptyRuns: 1, totalRuns: 2 });
     expect(rollup.byOwner.find(row => row.ownerId === 'owner-b')).toMatchObject({ emptyRuns: 1, totalRuns: 1 });
     expect(rollup.byOwner.find(row => row.ownerId === null)).toMatchObject({ emptyRuns: 1, totalRuns: 1 });
-    expect(rollup.byOwner.some(row => row.ownerId === 'clean-owner')).toBe(false);
+    expect(rollup.byOwner.find(row => row.ownerId === 'clean-owner')).toMatchObject({ emptyRuns: 0, totalRuns: 1 });
     const rows = await sql.unsafe(EMPTY_RESULT_RATE_SQL, [7]);
     const byOwner = (values: unknown[]) => [...values].sort((a, b) =>
       JSON.stringify(a).localeCompare(JSON.stringify(b)));
@@ -121,5 +121,62 @@ describe('empty-result rollup selective time index', () => {
       SELECT indexdef FROM pg_indexes WHERE schemaname = 'harness_shared' AND indexname = ${INDEX}`;
     expect(row?.indexdef).toContain("WHERE (tool_name = 'code:run'::text)");
     expect(row?.indexdef).not.toContain('metadata_json');
+  });
+});
+
+describe('empty-result fleet denominator', () => {
+  let denominatorDb: FreshPgDb;
+  let denominatorSql: Sql;
+
+  beforeAll(async () => {
+    denominatorDb = await createFreshPgDb('empty-result-denominator');
+    denominatorSql = denominatorDb.sql;
+    await denominatorSql.unsafe(`CREATE TABLE harness_shared.tool_invocations (
+      tool_name text NOT NULL,
+      coord_owner_id text,
+      invoked_at timestamptz NOT NULL,
+      metadata_json jsonb
+    )`);
+  });
+  beforeEach(async () => { await denominatorSql.unsafe('TRUNCATE harness_shared.tool_invocations'); });
+  afterAll(async () => { await denominatorDb?.cleanup(); });
+
+  const read = () => readEmptyResultRate(async <T>(query: string, params: unknown[]) =>
+    await denominatorSql.unsafe(query, params as never) as unknown as T[]);
+
+  it('includes clean named and null owners in a mixed fleet denominator', async () => {
+    await denominatorSql.unsafe(`
+      INSERT INTO harness_shared.tool_invocations
+      SELECT 'code:run', 'affected-owner', now(),
+        CASE WHEN g = 1 THEN '{"emptyMapping":true}'::jsonb ELSE '{}'::jsonb END
+      FROM generate_series(1, 20) g;
+      INSERT INTO harness_shared.tool_invocations
+      SELECT 'code:run', 'clean-owner', now(), '{}'::jsonb FROM generate_series(1, 100);
+      INSERT INTO harness_shared.tool_invocations
+      SELECT 'code:run', NULL, now(), NULL FROM generate_series(1, 50);
+      INSERT INTO harness_shared.tool_invocations VALUES
+        ('code:run', 'old-owner', now() - interval '8 days', '{"emptyMapping":true}'),
+        ('other:tool', 'other-owner', now(), '{"emptyMapping":true}');
+    `);
+    const rollup = await read();
+    expect(rollup).toMatchObject({ totalEmptyRuns: 1, totalRuns: 170, pctEmpty: 1 });
+    expect(rollup.byOwner).toEqual([
+      { ownerId: 'affected-owner', emptyRuns: 1, totalRuns: 20, lastSeen: expect.anything() },
+      { ownerId: null, emptyRuns: 0, totalRuns: 50, lastSeen: null },
+      { ownerId: 'clean-owner', emptyRuns: 0, totalRuns: 100, lastSeen: null },
+    ]);
+    expect(gradeEmptyResultRate(rollup).rating).toBe('healthy');
+  });
+
+  it('grades a sufficiently populated entirely clean fleet healthy', async () => {
+    await denominatorSql.unsafe(`
+      INSERT INTO harness_shared.tool_invocations
+      SELECT 'code:run', CASE WHEN g <= 20 THEN 'clean-owner' END, now(), '{}'::jsonb
+      FROM generate_series(1, 40) g;
+    `);
+    const rollup = await read();
+    expect(rollup).toMatchObject({ totalEmptyRuns: 0, totalRuns: 40, pctEmpty: 0 });
+    expect(rollup.byOwner).toHaveLength(2);
+    expect(gradeEmptyResultRate(rollup).rating).toBe('healthy');
   });
 });
