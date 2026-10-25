@@ -1,13 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { setupPlanPgFixture, type PlanPgFixture } from './agent-tools/plans/__tests__/_pg-tool-fixture';
+import { seedPlan, setupPlanPgFixture, type PlanPgFixture } from './agent-tools/plans/__tests__/_pg-tool-fixture';
+import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
+import { createCanonicalRuntimeCustodyStore } from './blind-review-runtime-authority';
+import { blindReviewerConfinement } from './blind-reviewer-mint';
 import { assertMigrationPassesPreApplyLints } from './migration-preapply-lint';
 import { createRuntimeCustodyStore, RUNTIME_RESOURCE_KINDS, runtimeCustodyFingerprint,
   type RuntimeReviewerIdentity, type RuntimeSourceAdmission } from './blind-review-runtime-custody';
 
-// These exercise the real transaction/locking boundary, not native identity or
-// source-image admission. Those production adapters must be qualified separately.
+// Exercises the transaction boundary and canonical authority adapter. Actual OS
+// custody and sealed source-image admission require separate runtime controls.
 let fx: PlanPgFixture;
 let serial = 0;
 const migrationName = '1578-blind-review-runtime-custody.sql';
@@ -55,7 +58,112 @@ async function fixture() {
   return { identity, source, store, makeStore, reserve, allocate, deny: () => { allowed = false; } };
 }
 
+async function canonicalFixture() {
+  const f = await fixture();
+  const slug = 'custody-fixture-' + serial;
+  await seedPlan(fx.admin, 'default', 'custody-fixture', slug, `---\ntitle: Custody\nslug: ${slug}\nstatus: active\n---\n`);
+  await fx.admin`INSERT INTO harness_shared.plan_audits
+    (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind, activation,
+     audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash)
+    VALUES ('default', 'custody-fixture', ${slug}, 1, 'custody-author', 'activation', '{}', 1, 1, ${'a'.repeat(64)})`;
+  const confinement = JSON.parse(JSON.stringify(blindReviewerConfinement(slug)));
+  f.identity.confinementFingerprint = runtimeCustodyFingerprint(confinement);
+  await fx.admin`UPDATE harness_shared.plan_blind_review_sessions SET account_route = 'auto',
+    confinement_snapshot = ${JSON.stringify(confinement)}::jsonb WHERE id = ${f.identity.bindingId}`;
+  await fx.admin`UPDATE harness_shared.adv_sessions SET launch_spec =
+    ${JSON.stringify({ launchedBy: 'system:blind-gap-review', account: 'auto', headless: true })}::jsonb
+    WHERE coord_owner_id = ${f.identity.reviewerOwnerId}`;
+  await fx.admin`INSERT INTO harness_shared.operator_session_confinements (workspace_id, payload, updated_at)
+    VALUES ('default', '{}', 0) ON CONFLICT (workspace_id) DO NOTHING`;
+  await fx.admin`UPDATE harness_shared.operator_session_confinements SET payload = jsonb_set(payload,
+    '{sessions}', COALESCE(payload->'sessions', '{}') ||
+      ${JSON.stringify({ [f.identity.reviewerOwnerId]: { confinement, expiresAt: new Date(Date.now() + 60_000).toISOString() } })}::jsonb)
+    WHERE workspace_id = 'default'`;
+  return { ...f, slug, confinement, store: createCanonicalRuntimeCustodyStore(fx.admin as never) };
+}
+
 describe('blind reviewer runtime custody on private PostgreSQL', () => {
+  it('uses canonical binding, native launch and fresh confinement for production admission', async () => {
+    const f = await canonicalFixture();
+    const lease = await f.store.reserve(f.identity, 'canonical-admit', 'e'.repeat(64));
+    const receipt = await f.store.recordAdmission(f.identity, lease.id, f.source);
+    expect((await f.store.consumeAdmission(f.identity, lease.id, receipt)).state).toBe('allocating');
+    await fx.admin`UPDATE harness_shared.adv_sessions SET ended_at = clock_timestamp()
+      WHERE coord_owner_id = ${f.identity.reviewerOwnerId}`;
+    await expect(f.store.intendResource(f.identity, lease.id, 'process', 'late'))
+      .rejects.toMatchObject({ code: 'reviewer_authority_invalid' });
+    expect((await f.store.revoke(f.identity, lease.id, 'native-ended')).state).toBe('releasing');
+  });
+
+  it('refuses terminal, stale, foreign, widened, expired and missing canonical authority before reservation', async () => {
+    const edits = [
+      async (f: Awaited<ReturnType<typeof canonicalFixture>>) => {
+        await fx.admin`UPDATE harness_shared.plan_blind_review_sessions SET status = 'closed' WHERE id = ${f.identity.bindingId}`;
+      },
+      async (f: Awaited<ReturnType<typeof canonicalFixture>>) => {
+        await fx.admin`UPDATE harness_shared.plan_audits SET audit_seq = 2 WHERE plan_slug = ${f.slug}`;
+      },
+      async (f: Awaited<ReturnType<typeof canonicalFixture>>) => { f.identity.replacementEpoch = 1; },
+      async (f: Awaited<ReturnType<typeof canonicalFixture>>) => { f.identity.nativeSessionId = 'foreign'; },
+      async (f: Awaited<ReturnType<typeof canonicalFixture>>) => {
+        await fx.admin`UPDATE harness_shared.adv_sessions SET launch_spec = '{}' WHERE coord_owner_id = ${f.identity.reviewerOwnerId}`;
+      },
+      async (f: Awaited<ReturnType<typeof canonicalFixture>>) => {
+        const widened = { ...f.confinement, denyOutside: ['capability:bash', 'plans:get'] };
+        f.identity.confinementFingerprint = runtimeCustodyFingerprint(widened);
+        await fx.admin`UPDATE harness_shared.plan_blind_review_sessions SET confinement_snapshot = ${JSON.stringify(widened)}::jsonb
+          WHERE id = ${f.identity.bindingId}`;
+        await fx.admin`UPDATE harness_shared.operator_session_confinements SET payload = jsonb_set(payload,
+          ARRAY['sessions', ${f.identity.reviewerOwnerId}, 'confinement'], ${JSON.stringify(widened)}::jsonb) WHERE workspace_id = 'default'`;
+      },
+      async (f: Awaited<ReturnType<typeof canonicalFixture>>) => {
+        await fx.admin`UPDATE harness_shared.operator_session_confinements SET payload = jsonb_set(payload,
+          ARRAY['sessions', ${f.identity.reviewerOwnerId}, 'expiresAt'], '"2000-01-01T00:00:00Z"') WHERE workspace_id = 'default'`;
+      },
+      async (f: Awaited<ReturnType<typeof canonicalFixture>>) => {
+        await fx.admin`UPDATE harness_shared.operator_session_confinements SET payload = payload #- ARRAY['sessions', ${f.identity.reviewerOwnerId}]
+          WHERE workspace_id = 'default'`;
+      },
+    ];
+    for (const edit of edits) {
+      const f = await canonicalFixture();
+      await edit(f);
+      await expect(f.store.reserve(f.identity, 'must-refuse', 'e'.repeat(64)))
+        .rejects.toMatchObject({ code: 'reviewer_authority_invalid' });
+      expect(await fx.admin`SELECT id FROM harness_shared.blind_review_runtime_leases WHERE binding_id = ${f.identity.bindingId}`).toHaveLength(0);
+    }
+  });
+
+  it('waits for the canonical activation writer and evaluates its committed result', async () => {
+    const f = await canonicalFixture();
+    let dispatched!: () => void, announce!: () => void;
+    const ready = new Promise<void>(resolve => { announce = resolve; });
+    const barrier = new Promise<void>(resolve => { dispatched = resolve; });
+    const key = planAdvisoryLockKey('default', 'custody-fixture', f.slug);
+    const writer = fx.admin.begin(async tx => {
+      await acquirePlanAdvisoryLock(tx, key);
+      await tx`UPDATE harness_shared.plan_audits SET audit_seq = 2 WHERE plan_slug = ${f.slug}`;
+      announce(); await barrier;
+      // Observe the actual waiter using the writer's connection. Merely
+      // creating a promise before commit would not prove the race occurred.
+      const deadline = Date.now() + 3000;
+      let blocked = false;
+      do {
+        const [waiter] = await tx`SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 2
+          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+          AND classid::bigint = (hashtext('harness_plans')::bigint & 4294967295)
+          AND objid::bigint = (hashtext(${key})::bigint & 4294967295) AND NOT granted`;
+        blocked = !!waiter;
+        if (!blocked) await new Promise(resolve => setTimeout(resolve, 10));
+      } while (!blocked && Date.now() < deadline);
+      expect(blocked).toBe(true);
+    });
+    await ready;
+    const allocation = f.store.reserve(f.identity, 'raced-activation', 'e'.repeat(64));
+    const refused = expect(allocation).rejects.toMatchObject({ code: 'reviewer_authority_invalid' });
+    dispatched(); await writer; await refused;
+  });
+
   it('passes migration safety and gives metadata reservations no runtime authority', async () => {
     expect(() => assertMigrationPassesPreApplyLints({ filename: migrationName, sqlText: migration(migrationName),
       sqlDir: sqlRoot.pathname })).not.toThrow();
