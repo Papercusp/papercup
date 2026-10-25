@@ -163,6 +163,12 @@ async function refresh(projects, trace) {
   const toOpen = projects.filter((p) => !state.open.includes(p));
   state.open = projects;
 
+  // updateSnapshot also initializes/spawns the compiler. Trace that boundary
+  // separately so a stalled startup is not reported as native snapshot work.
+  trace('compiler-initialize');
+  await state.api.ensureInitialized();
+  trace('compiler-initialized');
+
   const previous = state.snapshot;
   // release is asynchronous native RPC. Waiting before updateSnapshot prevents
   // two complete snapshots (and queued releases) from accumulating during refresh.
