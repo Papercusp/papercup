@@ -1,5 +1,10 @@
 import { test, expect } from './_egress';
 
+// The running product may have telemetry explicitly enabled. Its consented
+// PostHog provider uses this Papercusp-owned host; keep every other unexpected
+// origin, and the fixture's live sensor control, under the shared assertions.
+test.use({ egressAllowedOrigins: ['https://flags.papercuspai.com'] });
+
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? `http://127.0.0.1:${process.env.OPERATOR_E2E_PORT ?? 3055}`;
 
 test.beforeEach(async ({ page }, testInfo) => {
