@@ -188,6 +188,44 @@ describe('real native verifier process boundary', () => {
       .toThrow('refusing before PostgreSQL or dependency copying');
   });
 
+  it('preserves boot, assertion and cleanup reserves after the observed native19 preparation', () => {
+    const start = 1_000_000;
+    const child = nativeVerifierEnv({}, {
+      timeoutMs: desktopPortalNativeTiming.nativeTimeoutMs, nowMs: start,
+    });
+    // Native19 spent 1,312,932ms preparing, then refused its remaining
+    // 16-minute boot + 6-minute assertion + 2-minute cleanup forecast.
+    expect(() => admitTaskDeadline({ env: child, nowMs: start + 1_312_932,
+      knownEstimateMs: 1_440_000 })).not.toThrow();
+  });
+
+  it('accounts for calibrated preparation before admitting either parent clock', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'native-budget-calibration-'));
+    try {
+      const history = join(directory, 'phases.jsonl');
+      writeFileSync(history, JSON.stringify({ phase: 'prepare', status: 'passed', elapsedMs: 1_745_443 }) + '\n');
+      const env = { VERIFY_TAURI_BUDGET_FROM: history };
+      const ordinary = desktopPortalNativeTestTimeoutMs({});
+      const calibrated = desktopPortalNativeTestTimeoutMs(env);
+      expect(calibrated).toBeGreaterThan(ordinary + 900_000);
+      const start = 1_000_000;
+      expect(() => admitDesktopPortalNativeParent({ ...env,
+        PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(ordinary + 120_000),
+        PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(start + calibrated + 240_000),
+      }, start)).toThrow('refusing before PostgreSQL or dependency copying');
+      expect(() => admitDesktopPortalNativeParent({ ...env,
+        PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(calibrated + 120_000),
+        PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(start + ordinary + 240_000),
+      }, start)).toThrow('TASK_DEADLINE_REFUSAL');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('budgets configured boot retries and assertion work in the parent', () => {
+    const ordinary = desktopPortalNativeTestTimeoutMs({});
+    expect(desktopPortalNativeTestTimeoutMs({ VERIFY_TAURI_MAX_BOOT_ATTEMPTS: '4',
+      VERIFY_TAURI_ASSERT_ESTIMATE_MS: '1800000' })).toBeGreaterThan(ordinary + 2_000_000);
+  });
+
   it('keeps the parent unit rail active while the real child has no unit runner or fake census', () => {
     const parent = { ...process.env, PAPERCUSP_FORBID_REAL_PG: '1', VITEST: 'true',
       VITEST_WORKER_ID: '9', VITEST_POOL_ID: '2', PAPERCUSP_SID: 'test-owner',

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, it, vi } from 'vitest';
 import { createDesktopPortalLifecycle } from './desktop-portal-lifecycle';
 import { admitDesktopPortalNativeParent, desktopPortalNativeTestTimeoutMs,
-  desktopPortalNativeTiming } from '../../../scripts/lib/verify-tauri-native-env.mjs';
+  desktopPortalNativeTimingForEnv } from '../../../scripts/lib/verify-tauri-native-env.mjs';
 
 // Explicit artifact profile: compile with desktop-portal-candidate.ts first.
 // This opens only a newly initialized, test-owned PostgreSQL cluster. It uses
@@ -17,10 +17,10 @@ import { admitDesktopPortalNativeParent, desktopPortalNativeTestTimeoutMs,
 const manifest = process.env.PAPERCUSP_DESKTOP_CANDIDATE_MANIFEST;
 const run = promisify(execFile);
 const native = process.env.PAPERCUSP_TEST_DESKTOP_NATIVE === '1';
-// Run 20261025T083042Z-2215727 measured 843480ms of preparation before
-// admission refused boot. Budget that independent copy before starting it.
-const nativePrepareEstimateMs = desktopPortalNativeTiming.prepareEstimateMs;
-const nativeTimeoutMs = desktopPortalNativeTiming.nativeTimeoutMs;
+// Use the shell guard's forecast, including caller calibration and retries,
+// for the test, parent admission and actual child allocation.
+const nativeTiming = native ? desktopPortalNativeTimingForEnv(process.env) : undefined;
+const nativeTimeoutMs = nativeTiming?.nativeTimeoutMs ?? 0;
 const testTimeoutMs = desktopPortalNativeTestTimeoutMs();
 
 it.skipIf(!manifest)('retains the actual private desktop portal preferences across host and PostgreSQL restart', async () => {
@@ -40,8 +40,8 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
   const repo = fileURLToPath(new URL('../../../', import.meta.url));
   const launcher = join(repo, 'apps/operator/scripts/ptool.mjs');
   const nativeBudget = {
-    VERIFY_TAURI_PREPARE_ESTIMATE_MS: String(nativePrepareEstimateMs),
-    VERIFY_TAURI_ASSERT_ESTIMATE_MS: '360000',
+    VERIFY_TAURI_PREPARE_ESTIMATE_MS: String(nativeTiming?.prepareEstimateMs ?? 1200000),
+    VERIFY_TAURI_ASSERT_ESTIMATE_MS: process.env.VERIFY_TAURI_ASSERT_ESTIMATE_MS || '360000',
   };
   const nativeEnvHelper = join(repo, 'scripts/lib/verify-tauri-native-env.mjs');
   const { nativeVerifierEnv } = await import(nativeEnvHelper);
@@ -64,7 +64,7 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
     // Check the generated Rust wire types before paying for a native snapshot.
     await run('systemd-run', ['--user', '--scope', '--quiet', '-p', 'MemoryMax=16G',
       process.execPath, nativeEnvHelper, '--typecheck', repo], {
-      cwd: repo, timeout: desktopPortalNativeTiming.typecheckTimeoutMs, env: nativeEnv(),
+      cwd: repo, timeout: nativeTiming!.typecheckTimeoutMs, env: nativeEnv(),
     });
     await run(process.execPath, [nativeEnvHelper, '--preflight', repo], {
       cwd: repo, timeout: 125_000, env: nativeEnv(),

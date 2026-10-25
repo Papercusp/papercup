@@ -7,26 +7,40 @@ import { promisify } from 'node:util';
 import { committedWorkRootDependencyDonor, OWNER_MARKER } from '../lint-as-committed.mjs';
 import { censusSpawnArgs, interpretRestrictedHoldPreflight } from './restricted-hold-preflight.mjs';
 import { admitTaskDeadline, readTaskDeadlineEpochMs } from './task-deadline.mjs';
+import { verifierTaskBudget } from './verify-tauri-deadline.mjs';
 
 // Sequential parent readiness commands (deadline, identity, types, census),
 // PostgreSQL init/start/stop/start, and portal setup precede the native rig.
 // They must not spend the rig's own launch clock.
 const nativeTypecheckTimeoutMs = 15_000 + 120_000 + 10_000 + 5_000;
-export const desktopPortalNativeTiming = Object.freeze({
-  prepareEstimateMs: 20 * 60_000,
-  nativeTimeoutMs: 45 * 60_000,
-  typecheckTimeoutMs: nativeTypecheckTimeoutMs,
-  setupTimeoutMs: 15_000 + 45_000 + nativeTypecheckTimeoutMs + 125_000 + 4 * 20_000 + 60_000,
-  cleanupTimeoutMs: 60_000,
-});
+/** @param {NodeJS.ProcessEnv} [env] */
+export function desktopPortalNativeTimingForEnv(env = process.env) {
+  const budget = verifierTaskBudget({ env: {
+    ...env,
+    VERIFY_TAURI_PREPARE_ESTIMATE_MS: env.VERIFY_TAURI_PREPARE_ESTIMATE_MS || '1200000',
+    VERIFY_TAURI_ASSERT_ESTIMATE_MS: env.VERIFY_TAURI_ASSERT_ESTIMATE_MS || '360000',
+  }, assertionMode: '1' });
+  // Native19's fixed 45-minute allocation had only one minute beyond the
+  // forecast and spent it during copying. Reserve forecast uncertainty for
+  // the whole journey, using the same calibrated work as the shell guard.
+  return Object.freeze({
+    prepareEstimateMs: budget.prepareMs,
+    nativeTimeoutMs: Math.ceil(budget.knownEstimateMs * 1.25),
+    typecheckTimeoutMs: nativeTypecheckTimeoutMs,
+    setupTimeoutMs: 15_000 + 45_000 + nativeTypecheckTimeoutMs + 125_000 + 4 * 20_000 + 60_000,
+    cleanupTimeoutMs: 60_000,
+  });
+}
+export const desktopPortalNativeTiming = desktopPortalNativeTimingForEnv({});
 
-export function desktopPortalNativeTestTimeoutMs() {
-  const timing = desktopPortalNativeTiming;
+/** @param {NodeJS.ProcessEnv} [env] */
+export function desktopPortalNativeTestTimeoutMs(env = process.env) {
+  const timing = desktopPortalNativeTimingForEnv(env);
   return timing.setupTimeoutMs + timing.nativeTimeoutMs + timing.cleanupTimeoutMs;
 }
 
 export function admitDesktopPortalNativeParent(env = process.env, nowMs = Date.now()) {
-  const testTimeoutMs = desktopPortalNativeTestTimeoutMs();
+  const testTimeoutMs = desktopPortalNativeTestTimeoutMs(env);
   const fileTimeoutMs = testTimeoutMs + 120_000;
   if (Number(env.PAPERCUSP_TEST_FILE_TIMEOUT_MS ?? 600_000) < fileTimeoutMs) {
     throw new Error(`Native profile requires PAPERCUSP_TEST_FILE_TIMEOUT_MS>=${fileTimeoutMs}; refusing before PostgreSQL or dependency copying`);
