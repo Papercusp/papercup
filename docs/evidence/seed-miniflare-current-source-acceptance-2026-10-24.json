@@ -78,6 +78,19 @@
   "custodyReadback": {
     "requirement": "R-4",
     "verification": "manual",
+    "continuationRecheck": {
+      "measuredAt": "2026-10-25T01:03:44.301525+00:00",
+      "cloneHead": "b9958b789d92909c0af5c1500fccd4ef7640f50f",
+      "trackedPorcelain": "",
+      "headExit": 0,
+      "statusExit": 0,
+      "receiptSha256": [
+        "e6a668986017dc75f50fb589b58b775cb3f2821bccf993e85434f166914b38c9",
+        "e273c1b6fc77c60ff22f72684154220b18ba43493b7cedff5e65824692c186d2"
+      ],
+      "matchesDesignBaseline": true,
+      "limit": "Bounded external tuple observation. Final acceptance has not occurred; the custody evidence file still requires a canonical commit and server-measured binding."
+    },
     "clone": {
       "path": "/mnt/data/offload/wi-10006692-retained-bench-2026-10-08/843e2-signed-source-proof-b9958b78",
       "observedHead": "b9958b789d92909c0af5c1500fccd4ef7640f50f",
@@ -103,6 +116,71 @@
   "actionCensus": {
     "requirement": "R-5",
     "status": "UNKNOWN",
+    "continuationReconciliation": {
+      "cutoffInclusive": "2026-10-25T00:59:00Z",
+      "decision": "seed-miniflare-cache-census-2026-10-24#D-005",
+      "nativeInventory": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-action-census-v6.json",
+        "sha256": "6b5193f1f007f30e7855219703dd92861609dba121ffde3c15112b1f24c460fd",
+        "candidateExecutionSessions": 22,
+        "parseGaps": []
+      },
+      "exactMcpTail": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-mcp-tail-v1.json",
+        "sha256": "a72b550cacef175c35c99e80682cced4593e3ffab9c6f8e6d4fb7e84640ca920",
+        "records": 1951,
+        "firstId": "44013775",
+        "lastId": "44190090",
+        "scope": "Complete arguments for retained actor candidate intervals after the prior early endpoint; three truncated argument records are reconstructed separately from native evidence."
+      },
+      "reconciliation": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-reconciliation-v1.json",
+        "sha256": "f9acd08ef8fbf703d66c512e6f867b4f3440f06a218ac5c27e221dc1ac14448d",
+        "nativeTailActions": 1702,
+        "nativeShellCommands": 615,
+        "serverShellLeaves": 24,
+        "serverShellLeavesWithNativeMatches": 24,
+        "nestedExtractionGaps": [],
+        "limit": "Exact byte matching reconciles records; it does not establish every command's effects or absence of prohibited actions."
+      },
+      "nativeMethodCensus": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-native-methods-v1.json",
+        "sha256": "b0e6b1340acdf7b6b2cd708a4da8311d52cb6508b1c69c49b02e11d227fd8e51",
+        "parsedExecScripts": 474,
+        "parseGaps": [],
+        "scope": "Static native tools.* call sites only; all retained function-call records are wait resumptions."
+      },
+      "mcpMethodCensus": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-mcp-methods-v1.json",
+        "sha256": "9bb841523c0669048f10af48373fd2adfe27e2d460ef4bc54ba708a38a8ed688",
+        "parsedScripts": 235,
+        "truncatedScriptsReconstructedFromNative": ["44044186", "44044284"],
+        "scope": "Complete static method and call-expression index, including tools:invoke targets; no branch or prohibited-effect absence verdict."
+      },
+      "scopeAnalystCompletionTail": {
+        "reason": "The administrative work-item close precedes the physical completion and final plan message. Retain this follow-through rather than cutting at the database close timestamp.",
+        "endInclusive": "2026-10-25T00:23:26.931Z",
+        "mcpPath": "~/.papercusp/scratch/843e2-miniflare-r5-scope-completion-tail-v1.json",
+        "mcpSha256": "9c8a8e64acff5869f609a58439c5f90aba8bb156efa513cc9a90f3e8e0dcd35a",
+        "mcpRecords": 5,
+        "nativePath": "~/.papercusp/scratch/843e2-miniflare-r5-scope-completion-native-v1.json",
+        "nativeSha256": "b1d05e3595d2956478b4fe3dda95cfc72e45a95156120e1b7401183a37dbcdc5",
+        "nativeRecords": 2,
+        "limit": "Later 00:23:30 wake and 00:24 member-recovery work are separately identified, not removed by goal_ref filtering."
+      },
+      "contributorConsultRecords": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-contributor-consults-v1.json",
+        "sha256": "72ac36afe52599abf20d168171b62dba67be67631b01e101e13b1f688a9f8efe",
+        "records": 13,
+        "scope": "Canonical routing and dispatch records retain source experts, actual answering owners and failed attempts separately. Additional prepared ADV51444 expired without running, per the cleanup writer and failed port record; it supplies no review verdict."
+      },
+      "remaining": [
+        "Resolve historical network boundary and downstream effects of MCP44022053 and MCP44023057; failed remote exit1 and current loopback configuration do not establish no contact.",
+        "Keep conservative candidate intervals and both SSH calls. No per-goal deletion or interval exclusion has been established.",
+        "Complete semantic dispositions for retained multiline native commands and all seven prohibited surfaces; static parses, command categories and record matches are insufficient.",
+        "Close the complete contributor population against grading/audit/dispatch records and extend the acceptance tail beyond this cutoff before any healthy R-5 verdict."
+      ]
+    },
     "inventoryPath": "~/.papercusp/scratch/843e2-miniflare-action-census-v4.json",
     "inventorySha256": "eeea638788fecb0b293210948c041af598bc681d2b53a46b0d9a9d98f954b6ac",
     "inventoryEnd": "2026-10-24T22:28:41.634643Z",
