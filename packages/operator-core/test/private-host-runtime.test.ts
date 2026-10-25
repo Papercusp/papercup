@@ -47,7 +47,21 @@ it('censuses full private artifact bytes and modes with same-descriptor large-fi
     expect(result.readAdvice).toEqual([expect.objectContaining({ path: 'nested/model',
       dev: String(before.dev), ino: String(before.ino), size: String(before.size),
       advice: 'POSIX_FADV_RANDOM', executable: expect.any(String), version: expect.any(String),
-      helperSha256: expect.stringMatching(/^[a-f0-9]{64}$/) })]);
+      helperSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      dependencySha256: expect.stringMatching(/^[a-f0-9]{64}$/) })]);
+    const inputs = result.readAdvice[0].dependencies;
+    expect(inputs.scope).toBe('isolated-python-imports-and-native-maps');
+    expect(inputs.files.map(file => file.path)).toContain(inputs.resolvedExecutable);
+    expect(inputs.modules.some(module => module.name === 'json' && module.files.length)).toBe(true);
+    expect(inputs.limitations).toEqual(['startup-file-opens-unobserved', 'mapped-memory-bytes-unobserved']);
+    for (const input of inputs.files) {
+      expect(createHash('sha256').update(readFileSync(input.path)).digest('hex')).toBe(input.sha256);
+      expect(statSync(input.path).size).toBe(input.size);
+      expect(statSync(input.path).mode & 0o7777).toBe(input.mode);
+    }
+    expect(censusPrivateRuntimeArtifact(root, {
+      expectedReadAdviceDependencySha256: result.readAdvice[0].dependencySha256,
+    }).sha256).toBe(result.sha256);
   } else {
     expect(result.advicePlatform).toBe('not-applicable');
     expect(observed).toEqual([]);
@@ -55,6 +69,18 @@ it('censuses full private artifact bytes and modes with same-descriptor large-fi
   const after = statSync(join(root, 'nested/model'), { bigint: true });
   for (const key of ['dev', 'ino', 'mode', 'size', 'mtimeNs', 'ctimeNs'] as const)
     expect(after[key]).toBe(before[key]);
+});
+
+it.skipIf(process.platform !== 'linux')('rejects private artifact advice from a different Python dependency closure', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-artifact-python-pin-'));
+  dirs.push(root);
+  writeFileSync(join(root, 'model'), Buffer.alloc(16 * 1024 ** 2));
+  expect(() => censusPrivateRuntimeArtifact(root, {
+    expectedReadAdviceDependencySha256: '0'.repeat(64),
+  })).toThrow(/Python advice dependencies differ from fixture pin/);
+  expect(() => censusPrivateRuntimeArtifact(root, {
+    expectedReadAdviceDependencySha256: 'invalid',
+  })).toThrow(/Invalid Python dependency pin/);
 });
 
 it.skipIf(process.platform !== 'linux')('rejects changed, replaced, or unenumerated artifact content after advice', () => {
