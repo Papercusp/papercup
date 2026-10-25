@@ -29,8 +29,10 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { createHmac } from 'node:crypto';
 import { getDbEncryptionKey } from '../../db-encryption';
-import { mineSqlCandidateSlice, purgeSqlCandidateData, type SqlMiningDeps, type SqlMiningOptions,
+import { mineSqlCandidateSlice, purgeSqlCandidateData, readSqlCandidates, type SqlMiningDeps, type SqlMiningOptions,
   type SqlMiningResult } from '../../bash-substitution/sql-tool-candidates';
+import { rankSqlToolCandidates, SQL_DEMAND_SCORE_VERSION } from '../../sql-tool-candidate-score';
+import { submitSqlCandidateReview } from '../../sql-tool-candidate-review';
 import { miningFailureReason } from '../../agent-opportunities/pipeline';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { fetchSqlCorpusAtoms } from '../../bash-substitution/sql-corpus';
@@ -292,11 +294,16 @@ export async function runSqlReadCensus(
 }
 
 /** Same production cadence; source dispatch has no dependency on this background path. */
+export interface SqlIntentCensusDeps extends SqlMiningDeps {
+  review?: typeof submitSqlCandidateReview;
+}
+export const SQL_CENSUS_REVIEW_LIMIT = 10;
 export async function runSqlIntentCensus(
   opts: Omit<SqlMiningOptions, 'scope' | 'authorize'> & Partial<Pick<SqlMiningOptions, 'scope' | 'authorize'>>,
-  deps: SqlMiningDeps = {},
-): Promise<SqlMiningResult & { purgeBreach?: boolean }> {
+  deps: SqlIntentCensusDeps = {},
+): Promise<SqlMiningResult & { purgeBreach?: boolean; reviewIntake?: { selected: number; outsideBatch: number } }> {
   let purgeBreach = false;
+  let reviewIntake: { selected: number; outsideBatch: number } | undefined;
   try {
     const purge = await purgeSqlCandidateData(opts);
     purgeBreach = purge.breach;
@@ -309,10 +316,33 @@ export async function runSqlIntentCensus(
     const scope = opts.scope ?? { workspaceId: opts.workspaceId, sourceBoundary: 'authorized-tool-ledger', epoch,
       // Existing host key custody is outside the repo, atomic, mode0600; domain separate the mining subkey.
       key: createHmac('sha256', getDbEncryptionKey()).update(`sql-intent-mining-v1:${epoch}`).digest() };
-    const result = await mineSqlCandidateSlice({ ...opts, scope,
+    const miningOpts: SqlMiningOptions = { ...opts, scope,
       // This is the trusted system action's own workspace+harness source. Exposed reads require current ACL callbacks.
-      authorize: opts.authorize ?? (async () => true) }, deps);
-    return { ...result, purgeBreach };
+      authorize: opts.authorize ?? (async () => true) };
+    const result = await mineSqlCandidateSlice(miningOpts, { ...deps, alert: async packet => {
+      // This callback runs only after summary+cursor commit, and remains pending on failure.
+      // The bounded top-ranked intake is advisory review demand, never a new-tool verdict.
+      const snapshots = await readSqlCandidates({ ...miningOpts, ranOn: packet.ranOn,
+        authorizeSource: async () => miningOpts.authorize({ workspaceId: opts.workspaceId,
+          harnessSlug: opts.harnessSlug, sourceBoundary: scope.sourceBoundary }) });
+      if (snapshots.length !== 1) throw new Error('sql_candidate_review_source_unavailable');
+      for (const snapshot of snapshots) {
+        const candidates = rankSqlToolCandidates(snapshot.summary).candidates.filter(c => c.eligible);
+        const selected = candidates.slice(0, SQL_CENSUS_REVIEW_LIMIT);
+        reviewIntake = { selected: selected.length, outsideBatch: candidates.length - selected.length };
+        for (const candidate of selected) {
+          const reviewed = await (deps.review ?? submitSqlCandidateReview)({
+            workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
+            submittedBy: 'system:sql-read-census', candidate,
+            sourceRef: { scopeId: packet.scopeId, ranOn: packet.ranOn },
+            contractRef: `sql-review-demand-v1:${candidate.parserVersion}:${SQL_DEMAND_SCORE_VERSION}`,
+          }, { client: opts.client });
+          if (reviewed.status === 'UNKNOWN') throw new Error('sql_candidate_review_unavailable');
+        }
+      }
+      await deps.alert?.(packet);
+    } });
+    return { ...result, purgeBreach, ...(reviewIntake ? { reviewIntake } : {}) };
   } catch (error) {
     return { status: 'UNKNOWN', stage: 'source', reason: miningFailureReason(error), rows: 0, purgeBreach };
   }

@@ -19,6 +19,8 @@ export interface SqlCandidateReviewInput {
   candidate: SqlToolCandidateScore;
   /** Versioned contract identity; counts and observation dates are not material editions. */
   contractRef: string;
+  /** Pointer to the ACL-checked, expiring aggregate; never copy source SQL into review. */
+  sourceRef?: { scopeId: string; ranOn: string };
   recommendation?: SqlToolRecommendation;
 }
 export function sqlCandidateReviewIdentity(input: SqlCandidateReviewInput) {
@@ -78,11 +80,13 @@ export async function submitSqlCandidateReview(
     await (deps.capture ?? captureImprovement)({
       artifactId: id, watchdogKey: identity.conditionKey, kind: 'feature',
       scope: `harness:${input.harnessSlug}`, workspaceId: input.workspaceId,
-      createdBy: input.submittedBy, reviewRequired: true, reviewHarness: input.harnessSlug,
+      createdBy: input.submittedBy, assignee: input.submittedBy,
+      reviewRequired: true, reviewHarness: input.harnessSlug,
       title: 'Review recurring SQL intent ' + identity.lifecycleId.slice(0, 12),
       body: 'Passive recurring SQL demand. Review scoped evidence and current contracts before proposing implementation. No tool is generated or executed.\n'
         + JSON.stringify({ lifecycleId: identity.lifecycleId, editionId: identity.editionId,
           contractRef: input.contractRef, policyVersion: input.candidate.policyVersion,
+          sourceRef: input.sourceRef ?? null, candidateId: input.candidate.id,
           recommendation: input.recommendation?.kind ?? 'review-demand' }),
       payloadExtra: { sqlCandidateReview: { lifecycleId: identity.lifecycleId, editionId: identity.editionId } },
     });
@@ -93,7 +97,9 @@ export async function submitSqlCandidateReview(
   if (ALL_TERMINAL_STATUSES.has(item.state))
     return answer(ALL_SUCCESSFUL_STATUSES.has(item.state) ? 'accepted' : 'declined', id, item.assignee);
   if (review?.status === 'approved') return answer('accepted', id, item.assignee, 'implementation');
-  if (!review) {
+  // Enrollment persists review state before releasing the filer's claim. A crash
+  // between those writes must retry enrollment, without releasing a reviewer's hold.
+  if (!review || (review.status === 'pending' && item.assignee === input.submittedBy)) {
     const enrolled = await (deps.enroll ?? enterAgentReview)({ id, submittedBy: input.submittedBy,
       harnessSlug: input.harnessSlug, workspaceId: input.workspaceId });
     if (!enrolled.entered && enrolled.state?.status !== 'pending') return answer('UNKNOWN', id);
@@ -101,7 +107,7 @@ export async function submitSqlCandidateReview(
   // Recovery after enrollment committed but the subsequent reopen was interrupted.
   if (!review || (review.status === 'pending' && item.state === 'blocked')) {
     await (deps.open ?? (async (workId, harness, by) => {
-      const result = await setWorkItemStateWithAliasInfo(workId, 'open', { harness, by, reason: 'SQL candidate entered canonical review' });
+      const result = await setWorkItemStateWithAliasInfo(workId, 'open', { harness, by });
       if ((result.appliedState ?? result.workItem?.state) !== 'open') throw new Error('sql_candidate_review_reopen_failed');
     }))(id, input.harnessSlug, input.submittedBy);
   }
