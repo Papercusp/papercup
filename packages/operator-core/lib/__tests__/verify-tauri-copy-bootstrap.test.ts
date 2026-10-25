@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -203,7 +203,8 @@ describe('native verifier parent deadline admission', () => {
   it('guards actual preparation commands and native launches, including each retry', () => {
     const wrapper = source.match(/^verifier_run_step\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
     expect(wrapper).toContain('preflight_verifier_task_deadline prepare');
-    expect(wrapper.indexOf('preflight_verifier_task_deadline')).toBeLessThan(wrapper.indexOf('vh_run_step'));
+    expect(wrapper).toContain('vh_run_step "${1}-budget-admission" preflight_verifier_task_deadline prepare');
+    expect(wrapper.indexOf('${1}-budget-admission')).toBeLessThan(wrapper.indexOf('vh_run_step "$@"'));
     expect(source).toContain('verifier_run_step operator-source-snapshot');
     expect(source).toContain('verifier_run_step verifier-spa-build');
     expect(source).toMatch(/while :; do\s+preflight_verifier_task_deadline boot \|\| exit \$\?/);
@@ -212,3 +213,97 @@ describe('native verifier parent deadline admission', () => {
       .toBeLessThan(source.indexOf('restricted-hold-tree-gate.mjs'));
   });
 });
+
+describe('native preparation deadline evidence', () => {
+  it.each([true, false])('records admission separately from the previous successful command (refuse=%s)', refuse => {
+    const evidence = mkdtempSync(join(stage, 'admission-evidence-'));
+    const runPath = join(evidence, 'run-path');
+    const wrapper = source.match(/^verifier_run_step\(\) \{[\s\S]*?^\}/m)?.[0];
+    const hostCall = source.split('\n').find(line => line.startsWith('verifier_run_step verifier-host-bundle '));
+    expect(wrapper).toBeTruthy();
+    expect(hostCall).toBeTruthy();
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$REPO_DIR/libs/generic/verification-harness/bin/vh.sh"',
+      'vh_phase prepare ""',
+      'vh_init deadline-evidence "$FIXTURE_EVIDENCE"',
+      'printf "%s" "$VH_RUN_DIR" > "$FIXTURE_RUN_PATH"',
+      'vh_bracket_trap',
+      'vh_begin prepare',
+      'vh_run_step verifier-spa-build echo SPA_FINISHED',
+      'preflight_verifier_task_deadline() { return "$FIXTURE_ADMISSION_EXIT"; }',
+      'build_verifier_operator_host() { echo HOST_PAYLOAD_STARTED; }',
+      'cleanup_operator_source_snapshot() { :; }',
+      wrapper!,
+      hostCall!,
+    ].join('\n')], { cwd: repo, encoding: 'utf8', timeout: 25_000,
+      env: { ...process.env, REPO_DIR: repo, FIXTURE_EVIDENCE: evidence,
+        FIXTURE_RUN_PATH: runPath, FIXTURE_ADMISSION_EXIT: refuse ? '2' : '0',
+        VH_DISABLE: '0', VH_FAIL_OPEN: '0' } });
+    expect(result.status, result.stderr).toBe(refuse ? 2 : 0);
+    const run = readFileSync(runPath, 'utf8');
+    const retained = JSON.parse(readFileSync(join(run, 'result.json'), 'utf8'));
+    const commands = join(run, 'phases/prepare/commands');
+    expect(JSON.parse(readFileSync(join(commands, 'verifier-spa-build.result.json'), 'utf8')))
+      .toEqual({ step: 'verifier-spa-build', exitCode: 0 });
+    expect(JSON.parse(readFileSync(join(commands, 'verifier-host-bundle-budget-admission.result.json'), 'utf8')))
+      .toEqual({ step: 'verifier-host-bundle-budget-admission', exitCode: refuse ? 2 : 0 });
+    if (refuse) {
+      expect(retained.firstFailure).toEqual({ phase: 'prepare',
+        step: 'verifier-host-bundle-budget-admission', reasonCode: 'exit-2' });
+      expect(result.stdout).not.toContain('HOST_PAYLOAD_STARTED');
+    } else {
+      expect(retained.verdict).toBe('pass');
+      expect(result.stdout).toContain('HOST_PAYLOAD_STARTED');
+    }
+  }, 30_000);
+});
+
+describe('native frozen SPA cleanup', () => {
+  it.each(['early', 'teardown'] as const)('removes bulk snapshots and retains diagnostics on %s exit', phase => {
+    const result = cleanupProbe(phase, false);
+    expect(result.status, result.stderr).toBe(phase === 'early' ? 2 : 0);
+    for (const directory of ['spa', 'verifier-spa']) {
+      expect(existsSync(join(result.work, directory)), directory).toBe(false);
+      expect(result.stdout).toContain(`GUARD ${join(result.work, directory)} run-owned`);
+    }
+    expect(readFileSync(join(result.work, 'tauri.log'), 'utf8')).toBe('diagnostic');
+    expect(readFileSync(join(result.work, 'verifier-source-receipt.json'), 'utf8')).toBe('provenance');
+  });
+
+  it.each(['early', 'teardown'] as const)('preserves snapshots when the survivor guard refuses on %s exit', phase => {
+    const result = cleanupProbe(phase, true);
+    expect(result.status, result.stderr).toBe(phase === 'early' ? 2 : 1);
+    expect(existsSync(join(result.work, 'verifier-spa/dist/index.html'))).toBe(true);
+    expect(result.stderr).toContain('preserving');
+  });
+});
+
+function cleanupProbe(phase: 'early' | 'teardown', blocked: boolean) {
+  const work = mkdtempSync(join(stage, 'spa-cleanup-'));
+  for (const directory of ['spa', 'verifier-spa/dist']) {
+    mkdirSync(join(work, directory), { recursive: true });
+    writeFileSync(join(work, directory, 'index.html'), 'bulk');
+  }
+  writeFileSync(join(work, 'tauri.log'), 'diagnostic');
+  writeFileSync(join(work, 'verifier-source-receipt.json'), 'provenance');
+  const helper = source.match(/^cleanup_verifier_spa_snapshot\(\) \{[\s\S]*?^\}/m)?.[0] || '';
+  const earlyTrap = source.split('\n').find(line => line.trimStart().startsWith('trap ') && line.includes('vh_capture_phase_stop;'));
+  const teardown = source.match(/^teardown\(\) \{[\s\S]*?^\}/m)?.[0];
+  expect(earlyTrap).toBeTruthy();
+  expect(teardown).toBeTruthy();
+  const result = spawnSync('bash', ['-c', [
+    'set -uo pipefail',
+    'SIGNAL_EXIT_CODE=0; BRIDGE_PID=""; ISOLATED_PG_PID=""; VERIFY_TAURI_SOURCE_REF=""',
+    'TAURI_LAUNCH_PROVENANCE=run-owned',
+    'for fn in vh_capture_phase_stop cleanup_verifier_source_snapshot retain_boot_attempt_evidence retain_assertion_artifacts capture_isolated_pg_diagnostics wait_owned_ports_free fed_release_port_locks display_lock_release cleanup_operator_source_snapshot release_verifier_disk_reservations cleanup_assertion_script_snapshot vh_step vh_exit; do eval "$fn() { :; }"; done',
+    'log() { echo "$*" >&2; }',
+    'write_stop_script() { printf "#!/bin/sh\\nexit 0\\n" > "$WORK/stop.sh"; chmod +x "$WORK/stop.sh"; }',
+    'reap_frozen_source_survivors() { echo "GUARD $1 $2"; return "$FIXTURE_GUARD_EXIT"; }',
+    helper,
+    phase === 'early' ? earlyTrap! : `${teardown}\ntrap teardown EXIT`,
+    phase === 'early' ? 'exit 2' : 'exit 0',
+  ].join('\n')], { cwd: repo, encoding: 'utf8', timeout: 10_000,
+    env: { ...process.env, WORK: work, FIXTURE_GUARD_EXIT: blocked ? '1' : '0' } });
+  return { ...result, work };
+}

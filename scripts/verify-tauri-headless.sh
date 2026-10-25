@@ -434,6 +434,22 @@ export VERIFY_TAURI_TRACE_SESSION_CHAT_CSS
 # itself before any argument/resource work and re-exec the frozen copy; the
 # long-lived process then never reads the mutable checkout again.
 VERIFY_TAURI_SOURCE_SNAPSHOT_PATH="${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH:-}"
+cleanup_verifier_spa_snapshot() {
+  [ -n "${WORK:-}" ] || return 0
+  local root
+  for root in "$WORK/spa" "$WORK/verifier-spa"; do
+    [ -d "$root" ] || continue
+    # Reuse the source snapshot's exact process/provenance guard. An early
+    # preparation failure runs this before full teardown is installed; a
+    # normal exit runs it after stop.sh. Never delete a tree still in use.
+    if ! reap_frozen_source_survivors "$root" "${TAURI_LAUNCH_PROVENANCE:-}"; then
+      echo "FATAL: refusing to clean frozen SPA with live survivors; preserving $root" >&2
+      return 1
+    fi
+    rm -rf -- "$root" || return 1
+  done
+}
+
 cleanup_verifier_source_snapshot() {
   if [ -n "${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH:-}" ]; then
     rm -f -- "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH" "${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH}.budget.jsonl" 2>/dev/null || true
@@ -445,7 +461,7 @@ if [ -n "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH" ]; then
   # The re-exec'd copy owns this small file until normal teardown (or an early
   # preflight failure). The SPA snapshot has its own lifecycle and is cleaned
   # separately below.
-  trap cleanup_verifier_source_snapshot EXIT
+  trap 'cleanup_verifier_spa_snapshot; cleanup_verifier_source_snapshot' EXIT
 else
   VERIFY_TAURI_SOURCE_PATH="${BASH_SOURCE[0]}"
   VERIFY_TAURI_SOURCE_DIR="$(cd "$(dirname -- "$VERIFY_TAURI_SOURCE_PATH")" 2>/dev/null && pwd -P)" || {
@@ -467,7 +483,7 @@ else
     echo "FATAL: could not allocate an immutable verifier source snapshot" >&2
     exit 1
   }
-  trap cleanup_verifier_source_snapshot EXIT
+  trap 'cleanup_verifier_spa_snapshot; cleanup_verifier_source_snapshot' EXIT
   if ! cp -- "$VERIFY_TAURI_SOURCE_PATH" "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH"; then
     echo "FATAL: could not freeze verifier source before boot" >&2
     exit 1
@@ -592,7 +608,9 @@ preflight_verifier_task_deadline() {
 preflight_verifier_task_deadline prepare || exit $?
 
 verifier_run_step() {
-  preflight_verifier_task_deadline prepare || return $?
+  # Admission has its own evidence boundary: a refusal must not overwrite the
+  # identity of the preceding successful command.
+  vh_run_step "${1}-budget-admission" preflight_verifier_task_deadline prepare || return $?
   vh_run_step "$@"
 }
 # WI-10005763 (D-012): this verifier boots the desktop FROM the live shared tree with network
@@ -1062,7 +1080,7 @@ if [ -f "$VH_SH" ]; then
   vh_init verify-tauri-headless "$VERIFY_TAURI_EVIDENCE_ROOT" \
     ${verifier_retained_args[@]+"${verifier_retained_args[@]}"}
   verifier_begin_phase prepare
-  trap 'vh_capture_phase_stop; cleanup_verifier_source_snapshot' EXIT
+  trap 'vh_capture_phase_stop; cleanup_verifier_spa_snapshot; cleanup_verifier_source_snapshot' EXIT
   vh_capture_phase_start
   if [ -n "${VERIFY_TAURI_BUDGET_FROM:-}" ]; then
     cp -- "$VERIFY_TAURI_BUDGET_FROM" "$VH_PHASE_DIR/budget-calibration.jsonl" || exit $?
@@ -1717,8 +1735,9 @@ write_run_marker() {
 }
 
 verifier_run_step write-run-marker write_run_marker "$$" || {
+  marker_rc=$?
   echo "FATAL: could not write verifier ownership marker under $WORK" >&2
-  exit 1
+  exit "$marker_rc"
 }
 
 # EI-22478219188163557: freeze the operator source/dependency graph before the
@@ -2115,7 +2134,7 @@ snapshot_committed_operator_source() {
   export VERIFY_TAURI_SOURCE_RECEIPT="$receipt"
   log "committed verifier source verified; provenance: $receipt; dependency donor: $REPO_DIR"
 }
-verifier_run_step operator-source-snapshot snapshot_operator_source || { cleanup_operator_source_snapshot; exit 1; }
+verifier_run_step operator-source-snapshot snapshot_operator_source || { snapshot_rc=$?; cleanup_operator_source_snapshot; exit "$snapshot_rc"; }
 
 # EI-22616267024724225: never boot the frozen operator through tsx's runtime
 # loader. bundle-host.sh documents the failure mechanism: every module
@@ -2283,8 +2302,8 @@ prepare_verifier_spa() {
   log "frozen operator SPA ready at $VERIFIER_SPA_DIST"
 }
 verifier_run_step verifier-spa-build prepare_verifier_spa || { spa_rc=$?; cleanup_operator_source_snapshot; exit "$spa_rc"; }
-verifier_run_step verifier-host-bundle build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
-verifier_run_step verifier-host-import-smoke smoke_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
+verifier_run_step verifier-host-bundle build_verifier_operator_host || { host_rc=$?; cleanup_operator_source_snapshot; exit "$host_rc"; }
+verifier_run_step verifier-host-import-smoke smoke_verifier_operator_host || { smoke_rc=$?; cleanup_operator_source_snapshot; exit "$smoke_rc"; }
 if [ "$PREPARE_ONLY" -eq 1 ]; then
   log "PREPARE_ONLY_OK source snapshot and host import smoke; no native acceptance"
   vh_end
@@ -3529,7 +3548,12 @@ teardown() {
   # what a post-mortem reads and they cost kilobytes. `gc-verify-instances` removes
   # the husk after its TTL, and is also what catches runs that never reach this trap
   # at all (SIGKILL, or a --boot-only caller that never ran the printed stop script).
-  rm -rf "$WORK/spa" 2>/dev/null
+  if ! cleanup_verifier_spa_snapshot; then
+    [ "$ec" -ne 0 ] || ec=1
+    artifacts_retained=0
+    vh_step frozen-spa-cleanup
+    log "FATAL: could not safely clean frozen SPA; preserving source and work logs at $WORK"
+  fi
   if [ "$artifacts_retained" -eq 1 ]; then
     cleanup_operator_source_snapshot || {
       [ "$ec" -ne 0 ] || ec=1

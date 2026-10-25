@@ -227,6 +227,7 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
     const retention = src.match(/retain_assertion_artifacts\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     const bootRetention = src.match(/retain_boot_attempt_evidence\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     const cleanup = src.match(/cleanup_operator_source_snapshot\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    const spaCleanup = src.match(/cleanup_verifier_spa_snapshot\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     const teardown = src.match(/teardown\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     const result = spawnSync('bash', ['-c', [
       'set -uo pipefail',
@@ -238,7 +239,7 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
       'wait_owned_ports_free() { :; }; fed_release_port_locks() { :; }; display_lock_release() { :; }',
       'cleanup_assertion_script_snapshot() { :; }; cleanup_verifier_source_snapshot() { :; }',
       options.copyFails ? 'cp() { return 1; }' : '',
-      retention, bootRetention, cleanup,
+      retention, bootRetention, cleanup, spaCleanup,
       options.cleanupFails ? 'cleanup_operator_source_snapshot() { return 1; }' : '',
       teardown, `(exit ${exitCode}); teardown`,
     ].join('\n')], {
@@ -1002,7 +1003,7 @@ describe("EI-22587788892654404 — a repo-local temp root cannot enter its own s
 describe("EI-22616267024724225 — frozen verifier hosts exclude the tsx runtime loader", () => {
   const bundleFunctionIdx = src.indexOf("build_verifier_operator_host() {");
   const bundleCallIdx = src.indexOf(
-    "build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }",
+    "verifier_run_step verifier-host-bundle build_verifier_operator_host",
   );
   const launchEnvIdx = src.indexOf('OPERATOR_SOURCE_ENV_LINE="');
 
@@ -1278,7 +1279,7 @@ describe("dependency snapshot root follows the selected maintained mode", () => 
       'cp -- "$WORK/.papercusp-run" "$OPERATOR_SOURCE_WORK/.papercusp-run"',
     );
     expect(src).toContain(
-      "snapshot_operator_source || { cleanup_operator_source_snapshot; exit 1; }",
+      'snapshot_operator_source || { snapshot_rc=$?; cleanup_operator_source_snapshot; exit "$snapshot_rc"; }',
     );
     expect(src).toContain('if [ -n "${OPERATOR_SOURCE_WORK:-}" ]; then');
     expect(src).toContain('reap_frozen_source_survivors "$frozen_source_root" "$TAURI_LAUNCH_PROVENANCE"');
