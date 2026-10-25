@@ -162,17 +162,23 @@ export PAPERCUSP_FLAG_PAPERCUSP_OPEN_SIGNUP="${PAPERCUSP_FLAG_PAPERCUSP_OPEN_SIG
 unset PAPERCUSP_DISABLE_TEST_RUNS_REPORTER
 RIG="${OPERATOR_E2E_RIG:-$ROOT/scripts/verify-tauri-headless.sh}"
 
-# The standing isolated runner verifies an immutable commit by default. The verifier's
-# working-tree mode intentionally refuses any active source lock because it copies the
-# whole repository; callers can explicitly set VERIFY_TAURI_SOURCE_REF empty to request
-# that mode when they need uncommitted source.
+# The standing isolated runner verifies an immutable commit by default. Resolve every
+# non-empty selector to its commit id here: downstream source receipts bind to that id,
+# not a symbolic ref such as HEAD or a branch name. The verifier's working-tree mode
+# intentionally refuses any active source lock because it copies the whole repository;
+# callers can explicitly set VERIFY_TAURI_SOURCE_REF empty to request that mode when they
+# need uncommitted source.
 if [ "${VERIFY_TAURI_SOURCE_REF+x}" != "x" ]; then
-  VERIFY_TAURI_SOURCE_REF="$(git -C "$ROOT" rev-parse --verify HEAD)" || {
-    echo "run-operator-e2e-isolated: could not resolve committed HEAD for the source snapshot" >&2
+  VERIFY_TAURI_SOURCE_REF=HEAD
+fi
+if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ]; then
+  source_ref="$VERIFY_TAURI_SOURCE_REF"
+  VERIFY_TAURI_SOURCE_REF="$(git -C "$ROOT" rev-parse --verify --end-of-options "${source_ref}^{commit}")" || {
+    echo "run-operator-e2e-isolated: could not resolve committed source ref: $source_ref" >&2
     exit 2
   }
   [ -n "$VERIFY_TAURI_SOURCE_REF" ] || {
-    echo "run-operator-e2e-isolated: committed source ref resolved empty" >&2
+    echo "run-operator-e2e-isolated: committed source ref resolved empty: $source_ref" >&2
     exit 2
   }
   export VERIFY_TAURI_SOURCE_REF
