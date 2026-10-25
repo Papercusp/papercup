@@ -11,6 +11,17 @@ import { readEngineeringJourneyConfig } from '../apps/operator/e2e/_engineering-
 import { assertPlanAuditReleaseHealth } from '../apps/operator/e2e/_plan-audit-release-config.ts';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+/** Reusable before native boot and inside the journey. Keep the actual failed
+ * health response so an artifact mismatch is distinguishable from an outage. */
+export async function readEngineeringRuntimeHealth({ origin, buildSha }, {
+  request = globalThis.fetch, retain = () => {},
+} = {}) {
+  const response = await request(origin + '/api/health', { signal: AbortSignal.timeout(30_000) });
+  const bytes = await response.text();
+  retain(response.status, bytes);
+  assert.equal(response.status, 200, 'Selected engineering runtime health returned HTTP ' + response.status);
+  return assertPlanAuditReleaseHealth(JSON.parse(bytes), buildSha);
+}
 /** Product readers use this authenticated typed route, whose structured result
  * remains complete even when the agent-context MCP preview needs truncation. */
 export async function readEngineeringTool(config, name, args, {
@@ -81,9 +92,14 @@ export async function verifyEngineeringTauri(env = process.env) {
     writeFileSync(join(output, `${id}.json`), JSON.stringify(record)); checks.push(record);
   } });
   async function health() {
-    const response = await fetch(config.origin + '/api/health');
-    assert.equal(response.status, 200);
-    return assertPlanAuditReleaseHealth(await response.json(), input.buildSha);
+    return readEngineeringRuntimeHealth({ origin: config.origin, buildSha: input.buildSha }, {
+      retain(status, bytes) {
+        const id = `${++ordinal}-health`, stdoutPath = join(output, `${id}.stdout.log`);
+        writeFileSync(stdoutPath, bytes);
+        const record = { label: 'selected-runtime-health', httpStatus: status, stdoutPath, stdoutSha256: digest(bytes) };
+        writeFileSync(join(output, `${id}.json`), JSON.stringify(record)); checks.push(record);
+      },
+    });
   }
   const before = await health();
   const promotion = config.plane === 'final-release' ? await call('release:deploy', { op: 'status' }) : null;

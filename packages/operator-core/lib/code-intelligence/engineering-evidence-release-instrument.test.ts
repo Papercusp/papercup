@@ -7,9 +7,32 @@ import { describe, expect, it, vi } from 'vitest';
 import { engineeringEvidenceReleaseInstrument } from './engineering-evidence-release-instrument';
 // The executable is ordinary Node ESM; exercise its actual orchestration, not a copy.
 import { verifyEngineeringRelease, type EngineeringReleaseChildResult } from '../../../../scripts/verify-engineering-evidence-release.mjs';
-import { readEngineeringTool } from '../../../../scripts/verify-engineering-evidence-tauri.mjs';
+import { readEngineeringRuntimeHealth, readEngineeringTool } from '../../../../scripts/verify-engineering-evidence-tauri.mjs';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+describe('selected engineering runtime health preflight', () => {
+  const config = { origin: 'http://127.0.0.1:3170', buildSha: 'a'.repeat(40) };
+  it('checks the exact selected artifact and retains its response before native boot', async () => {
+    const bytes = JSON.stringify({ ok: true, service: 'papercusp-operator', sha: 'a'.repeat(10) });
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(bytes));
+    const retain = vi.fn();
+    expect(await readEngineeringRuntimeHealth(config, { request, retain })).toBe('a'.repeat(10));
+    expect(request).toHaveBeenCalledWith(config.origin + '/api/health', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(retain).toHaveBeenCalledWith(200, bytes);
+  });
+  it.each([
+    [200, JSON.stringify({ ok: true, service: 'papercusp-operator', sha: 'b'.repeat(10) })],
+    [200, JSON.stringify({ ok: true, service: 'papercusp-operator', sha: 'a'.repeat(10), bundleStale: {} })],
+    [503, 'selected runtime unavailable'],
+    [200, 'malformed health response'],
+  ])('retains failed health HTTP %s before rejecting the preflight', async (status, bytes) => {
+    const retain = vi.fn();
+    await expect(readEngineeringRuntimeHealth(config, {
+      request: vi.fn<typeof fetch>().mockResolvedValue(new Response(bytes, { status })), retain,
+    })).rejects.toThrow();
+    expect(retain).toHaveBeenCalledWith(status, bytes);
+  });
+});
 describe('native engineering structured tool reader', () => {
   const config = { origin: 'http://127.0.0.1:3170', workspace: 'workspace-fixture', client: 'session-fixture',
     home: '/private-home', input: { harness: 'papercusp' } };
