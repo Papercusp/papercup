@@ -74,7 +74,9 @@ async function fixtureProcess(seed: boolean, permissions?: {
           const { selection, access } = JSON.parse(process.env.P012_NATIVE_PERMISSIONS);
           console.log(JSON.stringify(await setAccess(sql, selection, access)));
         } else {
-        const f = await seed(sql, { workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE });
+        const f = await seed(sql, { workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
+          workerAccountReferenceFile: process.env.VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE,
+          requireWorkerAccount: process.env.P012_NATIVE_WORKER_ACCOUNT === '1' });
         const { workspaceId, harnessSlug, operationId, supportCaseId, query, documentTitle, documentId,
           listId, role, identities, approvedRevision, candidateRevision } = f;
         const actors = Object.fromEntries(Object.entries(f.actors).map(([actor, value]) => [actor, { id: value.id }]));
@@ -84,7 +86,8 @@ async function fixtureProcess(seed: boolean, permissions?: {
         }
       } finally { await sql.end({ timeout: 5 }); }
     `], { cwd: sourceRoot, env: { ...process.env, P012_NATIVE_SEED: seed ? '1' : '0',
-      P012_NATIVE_PERMISSIONS: permissions ? JSON.stringify(permissions) : '' },
+      P012_NATIVE_PERMISSIONS: permissions ? JSON.stringify(permissions) : '',
+      P012_NATIVE_WORKER_ACCOUNT: seed && !permissions ? '1' : '0' },
     timeout: 150_000, maxBuffer: 2 * 1024 * 1024 });
   // Login scripts are ephemeral test secrets: never attach subprocess stdout.
   return JSON.parse(result.stdout.trim());

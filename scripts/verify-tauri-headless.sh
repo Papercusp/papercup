@@ -252,6 +252,11 @@
 #                                dock disabled so ordinary UI verifiers remain
 #                                isolated from terminal processes/windows.
 #   PAPERCUSP_REPO_DIR          repo root (default: derived from this script)
+#   VERIFY_TAURI_ACCOUNT_SOURCE_WORKSPACE
+#                               Explicit source workspace for eligible Codex
+#                                account references used by native workers.
+#                                Requires isolated DB mode; credentials remain
+#                                in their existing external stores.
 #   VERIFY_TAURI_BUDGET_FROM    prior native phases.jsonl; only a completed prepare
 #                                duration is used as an admission forecast.
 #   VERIFY_TAURI_ASSERT_ESTIMATE_MS
@@ -1332,6 +1337,23 @@ verifier_run_step shared-schema-readiness shared_schema_readiness_preflight || e
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/verify-tauri-headless.XXXXXX")"
 LOG="$WORK/tauri.log"
+# Explicit opt-in for genuine native worker execution. Resolve the source pool
+# before isolation changes database/home routing; transfer references only.
+if [ -n "${VERIFY_TAURI_ACCOUNT_SOURCE_WORKSPACE:-}" ]; then
+  [ "${VERIFY_TAURI_ISOLATED_DB:-0}" = 1 ] || { echo 'FATAL: worker account references require isolated DB mode' >&2; exit 1; }
+  export VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE="$WORK/account-pool-references.json"
+  node --import tsx --input-type=module - "$REPO_DIR" <<'SUPPORT_ACCOUNT_REFERENCES' || exit $?
+const { pathToFileURL } = await import('node:url');
+const { prepareSupportWorkerAccountReferences } = await import(pathToFileURL(
+  `${process.argv[2]}/apps/operator/e2e/_support-workflow-native-fixture.ts`).href);
+await prepareSupportWorkerAccountReferences(process.env.VERIFY_TAURI_ACCOUNT_SOURCE_WORKSPACE,
+  process.env.VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE);
+// The producer only needs database reads; close its pool before returning to
+// the verifier instead of retaining an idle process across isolation startup.
+const { getOrgPg } = await import('@papercusp/db-org');
+await getOrgPg().sql.end();
+SUPPORT_ACCOUNT_REFERENCES
+fi
 # The operator sidecar must not compile the mutable shared checkout while this
 # verifier is running. Keep an independent source tree (with a pinned
 # dependency farm) for the whole run; boot-only stop.sh owns its
@@ -3016,6 +3038,9 @@ write_boot_only_env_script() {
         printf 'export PAPERCUSP_PSU_PTY_DIR=%q\n' "$ISOLATED_HOME/psu-pty"
         printf 'export PAPERCUSP_WORKSPACE=%q\n' "$ISOLATED_WORKSPACE"
         printf 'export PAPERCUSP_WORKSPACE_ID=%q\n' "$ISOLATED_WORKSPACE"
+        if [ -n "${VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE:-}" ]; then
+          printf 'export VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE=%q\n' "$VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE"
+        fi
         printf 'export PAPERCUSP_WORKSPACES_ROOT=%q\n' "$ISOLATED_WORKSPACES_ROOT"
         printf 'export PAPERCUSP_OPERATOR_BASE=%q\n' "$(verify_tauri_dev_url "$DEV_PORT")"
         printf 'export PAPERCUSP_OPERATOR_URL=%q\n' "$(verify_tauri_dev_url "$DEV_PORT")"
@@ -3151,6 +3176,7 @@ write_stop_script() {
   write_xvfb_stop_script
   cat > "$WORK/stop.sh" <<STOP
 #!/usr/bin/env bash
+rm -f -- "$WORK/account-pool-references.json"
 # EI-20227529270079601 / EI-9748 Route A: stop sibling scopes first so no
 # detached descendant survives the process-group teardown below.
 if [ "$VERIFY_SCOPE_ENABLED" = 1 ] && command -v systemctl >/dev/null 2>&1; then
@@ -3348,6 +3374,9 @@ teardown() {
   # Cleanup can itself run commands which receive a signal. Disable all traps
   # before the first side effect so the EXIT path cannot run twice.
   trap - EXIT INT TERM HUP
+  if [ "${VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE:-}" = "$WORK/account-pool-references.json" ]; then
+    rm -f -- "$VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE"
+  fi
   local artifacts_retained=1
   if ! retain_boot_attempt_evidence; then
     artifacts_retained=0
