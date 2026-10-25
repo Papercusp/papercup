@@ -252,7 +252,9 @@ describe('blocker history CAS (EI-25362976472267628, real PG)', () => {
     });
     try {
       const { default: setter } = await import('./agent-tools/work_items/set_blocker');
-      const args = setter.args.parse({ id: item.id, harness: 'papercup', kind: 'event', ref: 'event:second', nextVerb: 'events:await' });
+      // Exercise the payload CAS independently of event-ref admission: an
+      // unannounced event is rejected before the stale history can be checked.
+      const args = setter.args.parse({ id: item.id, harness: 'papercup', kind: 'runtime', ref: 'runtime:cas-fixture', nextVerb: 'Recheck the fixture condition' });
       const out = await setter.handler(args, { uiClientId: 'su-a', isSuperuser: true, workspaceId: 'default' } as never) as { data: { results: Array<{ code?: string; ok?: boolean }> } };
       expect(out.data.results[0]).toMatchObject({ ok: false, code: 'blocker_history_conflict' });
       const after = await realGet(item.id, 'papercup');
