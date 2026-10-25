@@ -28,9 +28,11 @@ export async function prepareSupportWorkerAccountReferences(sourceWorkspace: str
   const { loadAccountPool } = await import('../../../packages/operator-core/lib/deployment/account-pool-store');
   const { accountsForProvider, isSpawnEligible } = await import('../../../packages/operator-core/lib/deployment/account-pool');
   const accounts = accountsForProvider(await loadAccountPool(sourceWorkspace), 'codex')
-    .filter(row => isSpawnEligible(row, Date.now()))
+    // This fixture freezes an API-key payer and requires a provider-enforced
+    // output cap. Subscription transports cannot enforce that contract.
+    .filter(row => isSpawnEligible(row, Date.now()) && !row.credentialRef.startsWith('codex-cli:'))
     .map(row => ({ ...row, boundTo: [], softPin: [], credentialRef: row.credentialRef.replace(/~/g, homedir()) }));
-  if (!accounts.length) throw new Error('Support worker references require an eligible configured Codex account');
+  if (!accounts.length) throw new Error('Support worker references require an eligible configured Codex API-key account');
   const { parseCodexCliRef } = await import('../../../packages/operator-core/lib/inference-gateway/codex-cli-bridge');
   const { makeBearerCredentialResolver, parseCredentialRef } = await import('../../../packages/operator-core/lib/inference-gateway/credential-store');
   for (const row of accounts) {
@@ -89,8 +91,9 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
     const { accountProvider, isSpawnEligible } = await import('../../../packages/operator-core/lib/deployment/account-pool');
     if (!Array.isArray(source.accounts) || !source.accounts.length || source.accounts.some((row: any) =>
       !row || typeof row.id !== 'string' || typeof row.credentialRef !== 'string'
-      || accountProvider(row) !== 'codex' || !isSpawnEligible(row, Date.now())))
-      throw new Error('Support native account references require eligible Codex accounts');
+      || accountProvider(row) !== 'codex' || !isSpawnEligible(row, Date.now())
+      || row.credentialRef.startsWith('codex-cli:')))
+      throw new Error('Support native account references require eligible Codex API-key accounts');
     const { updateAccountPool } = await import('../../../packages/operator-core/lib/deployment/account-pool-store');
     await updateAccountPool(() => ({ accounts: source.accounts.map((row: any) =>
       ({ ...row, boundTo: [], softPin: [] })) }), workspaceId);

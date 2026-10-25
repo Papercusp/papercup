@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { runInNewContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Sql } from 'postgres';
@@ -67,6 +67,15 @@ describe('maintained native support seed and production cookie switching', () =>
       expect(accountPool.update).toHaveBeenLastCalledWith(expect.any(Function), workspaceId);
       const imported = accountPool.update.mock.calls.at(-1)![0]({ accounts: [] });
       expect(imported.accounts).toMatchObject([{ id: 'native-test', boundTo: [], softPin: [], credentialRef: `env:${environmentKey}` }]);
+      const subscription = { ...pool.accounts[0], credentialRef: 'codex-cli:/unread-subscription-home' };
+      accountPool.load.mockResolvedValueOnce({ accounts: [subscription] });
+      await expect(prepareSupportWorkerAccountReferences('source-test-workspace', join(directory, 'subscription.json')))
+        .rejects.toThrow(/Codex API-key account/);
+      await writeFile(path, JSON.stringify({ accounts: [subscription] }), { mode: 0o600 });
+      const updatesBefore = accountPool.update.mock.calls.length;
+      await expect(seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId, workerAccountReferenceFile: path,
+        requireWorkerAccount: true })).rejects.toThrow(/Codex API-key accounts/);
+      expect(accountPool.update).toHaveBeenCalledTimes(updatesBefore);
       await expect(seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId,
         workerAccountReferenceFile: 'relative.json' })).rejects.toThrow(/outside the checkout/);
     } finally {
