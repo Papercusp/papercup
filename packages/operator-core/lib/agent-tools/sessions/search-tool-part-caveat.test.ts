@@ -77,6 +77,7 @@ function makeTx(results: unknown[][]) {
   }));
   return {
     tx,
+    calls: () => tx.mock.calls,
     sqlTexts: () =>
       tx.mock.calls.map((c) => (Array.isArray(c[0]) ? (c[0] as unknown as string[]).join(' ? ') : String(c[0]))),
   };
@@ -85,13 +86,13 @@ function makeTx(results: unknown[][]) {
 const TOOL_PART_PROBE_QUERY = /FROM harness_shared\.session_turn_parts p/;
 
 async function run(args: Record<string, unknown>, results: unknown[][]) {
-  const { tx, sqlTexts } = makeTx(results);
+  const { tx, sqlTexts, calls } = makeTx(results);
   const res = await (
     tool as unknown as {
       handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;
     }
   ).handler(args, { workspaceId: 'default', tx });
-  return { parsed: JSON.parse(res.content[0].text) as ParsedResult, sqls: sqlTexts() };
+  return { parsed: JSON.parse(res.content[0].text) as ParsedResult, sqls: sqlTexts(), calls: calls() };
 }
 
 const SELF = {
@@ -177,6 +178,28 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
         [{ ...TOOL_PART, source_kind: 'codex' }]],
     );
     expect(parsed.toolPartMatch?.nativeTranscript).toEqual({ path: null, status: 'unresolved' });
+  });
+
+  it('keeps a long native path unresolved rather than clipping it or overflowing the response', async () => {
+    resolveSelfSession.mockResolvedValue({ ...SELF, filePath: '/' + 'x'.repeat(4000) });
+    const { parsed } = await run(
+      { session: 'self', mode: 'verbatim', query: 'receipt' },
+      [[], [{ session_count: '1', earliest: null }],
+        [{ tool_use_ready: true, tool_result_ready: true }], [TOOL_PART]],
+    );
+    expect(parsed.toolPartMatch?.nativeTranscript).toEqual({ path: null, status: 'path-exceeds-response-budget' });
+    expect(JSON.stringify(parsed).length).toBeLessThanOrEqual(4800);
+  });
+
+  it('matches SQL wildcard characters literally when selecting the tool recovery coordinate', async () => {
+    const { calls } = await run(
+      { session: 'self', mode: 'verbatim', query: 'receipt%_\\path' },
+      [[], [{ session_count: '1', earliest: null }],
+        [{ tool_use_ready: true, tool_result_ready: true }], [TOOL_PART]],
+    );
+    const probe = calls.find((call) => Array.isArray(call[0]) &&
+      TOOL_PART_PROBE_QUERY.test((call[0] as unknown as string[]).join(' ')));
+    expect(probe?.slice(1).filter((value) => value === '%receipt\\%\\_\\\\path%')).toHaveLength(2);
   });
 
   it('skips the full-table fallback while the tool_result owner index is not ready', async () => {

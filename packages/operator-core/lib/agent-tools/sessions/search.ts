@@ -576,6 +576,7 @@ export default defineTool({
             // behavior without sending callers to the text-only reader.
             // Keep the partial-index predicates explicit as an OR so the
             // planner can BitmapOr the tool_use and tool_result owner indexes.
+            const toolPartPattern = `%${escapeLikeLiteral(args.query)}%`;
             const probe = async (probeTx: typeof tx) => probeTx<Array<{
               found: boolean; workspace_id: string; source_kind: string; session_id: string;
               part_idx: number; part_kind: string; tool_name: string | null; stored_chars: number;
@@ -591,9 +592,9 @@ export default defineTool({
                    AND (${pf.since ?? null}::timestamptz IS NULL OR COALESCE(p.ts, p.ingested_at) >= ${pf.since ?? null}::timestamptz)
                    AND (${pf.until ?? null}::timestamptz IS NULL OR COALESCE(p.ts, p.ingested_at) < ${pf.until ?? null}::timestamptz)
                    AND (
-                     (p.part_kind = 'tool_result' AND p.text ILIKE '%' || ${args.query} || '%')
+                     (p.part_kind = 'tool_result' AND p.text ILIKE ${toolPartPattern})
                      OR
-                     (p.part_kind = 'tool_use' AND p.text ILIKE '%' || ${args.query} || '%')
+                     (p.part_kind = 'tool_use' AND p.text ILIKE ${toolPartPattern})
                    )
                  LIMIT 1
             `;
@@ -613,9 +614,12 @@ export default defineTool({
             }, requestCorrelationId);
 
             if (toolParts?.found) {
-              const nativePath = resolvedSelfSession?.sourceKind === toolParts.source_kind &&
+              const matchingPath = resolvedSelfSession?.sourceKind === toolParts.source_kind &&
                 resolvedSelfSession.sessionId === toolParts.session_id
                 ? resolvedSelfSession.filePath : null;
+              // A recovery path must be complete; never clip it into a different
+              // filename or let an unusually long path exceed the response door.
+              const nativePath = matchingPath && matchingPath.length <= 800 ? matchingPath : null;
               toolPartMatch = {
                 indexedLocator: {
                   table: 'harness_shared.session_turn_parts',
@@ -625,7 +629,8 @@ export default defineTool({
                 },
                 indexedContent: { completeness: 'may-be-truncated-at-ingest', storedChars: toolParts.stored_chars },
                 nativeTranscript: {
-                  path: nativePath, status: nativePath ? 'path-resolved-content-unverified' : 'unresolved',
+                  path: nativePath, status: nativePath ? 'path-resolved-content-unverified'
+                    : matchingPath ? 'path-exceeds-response-budget' : 'unresolved',
                 },
               };
               toolPartCaveat =
