@@ -129,9 +129,10 @@ export interface ReconcileTickResult {
   summary: ReturnType<typeof summarizeReconcile>;
   result: ReconcileResult;
   scan: {
-    ownedRootExists: boolean;
+    ownedRootExists: boolean | null;
     ownedTruncated: boolean;
     foreignTruncated: boolean;
+    scanTimedOut: boolean;
     processes: number;
     userManagerRoot: string | null;
   };
@@ -234,7 +235,9 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
 
   // ── is this scan trustworthy enough to CLOSE rows? ───────────────────────
   let degradedReason: string | undefined;
-  if (!scan.ownedRootExists && live.length > 0) {
+  if (scan.scanTimedOut === true) {
+    degradedReason = 'the async process scan exceeded its IO deadline, so absence does not prove absence';
+  } else if (scan.ownedRootExists === false && live.length > 0) {
     degradedReason =
       'our cgroup slice does not exist on this host — every row would strand, which is a scan fault, not an outage';
   } else if (scan.ownedTruncated) {
@@ -254,6 +257,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
         ownedRootExists: scan.ownedRootExists,
         ownedTruncated: scan.ownedTruncated,
         foreignTruncated: scan.foreignTruncated,
+        scanTimedOut: scan.scanTimedOut === true,
         processes: scan.processes.length,
         userManagerRoot: scan.userManagerRoot,
       },
@@ -454,6 +458,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
       ownedRootExists: scan.ownedRootExists,
       ownedTruncated: scan.ownedTruncated,
       foreignTruncated: scan.foreignTruncated,
+      scanTimedOut: scan.scanTimedOut === true,
       processes: scan.processes.length,
       userManagerRoot: scan.userManagerRoot,
     },

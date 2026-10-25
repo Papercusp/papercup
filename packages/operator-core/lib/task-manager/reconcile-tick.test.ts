@@ -779,6 +779,30 @@ describe('reconcileTick — refusing to act on a bad scan', () => {
     expect(out.strandedCount).toBe(0);
   });
 
+  it('does NOT close rows when an async scan deadline leaves owned coverage incomplete', async () => {
+    const checkScopesReleased = vi.fn(async (units: readonly string[]) => new Set(units));
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'deadline888' })],
+      scan: () => scanResult([], {
+        ownedRootAbs: null,
+        ownedRootExists: null,
+        ownedTruncated: true,
+        foreignTruncated: true,
+        scanTimedOut: true,
+      }),
+      fs: memFs({}),
+      checkScopesReleased,
+    });
+    expect(checkScopesReleased).toHaveBeenCalled();
+    expect(out.scan.scanTimedOut).toBe(true);
+    expect(out.degraded).toBe(true);
+    expect(out.degradedReason).toMatch(/deadline/);
+    expect(out.strandedCount).toBe(0);
+    expect(out.endedUnobservedCount).toBe(0);
+    expect(store.stranded).toHaveLength(0);
+    expect(store.endedUnobserved).toHaveLength(0);
+  });
+
   it('a truncated FOREIGN pass does NOT degrade the verdict', async () => {
     // Found by the P-021 live run: on this box the foreign population (500+
     // matching processes) exhausted a SHARED cap, set `truncated`, and put the
