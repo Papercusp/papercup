@@ -3295,6 +3295,42 @@ export function formatRouteError(detail) {
   return `TEST_FILE_ROUTE_ERROR ${detail}; ${TESTING_RUN_GUIDANCE}`;
 }
 
+/** Evaluator code and native traces contain exact machine paths. Keep their
+ * custody outside publishable source, including when OUT's own JSON is ignored
+ * but its derived directories are not. Do not rewrite the recorded bytes. */
+export function assertExecutedProofOutputCustody(root, env = process.env) {
+  const out = env.PC_EXECUTED_SOURCE_MAP_OUT?.trim();
+  if (!out) return;
+  const canonicalRoot = realpathSync(root);
+  const physicalPath = path => {
+    let parent = resolve(path);
+    const suffix = [];
+    while (!existsSync(parent)) {
+      const next = dirname(parent);
+      if (next === parent) throw new Error('cannot resolve executed proof output parent');
+      suffix.unshift(basename(parent));
+      parent = next;
+    }
+    return join(realpathSync(parent), ...suffix);
+  };
+  const candidates = [out, `${out}.modules/`, `${out}.native-processes/`];
+  const inside = candidates.flatMap((path, index) => {
+    const rel = relative(canonicalRoot, physicalPath(path));
+    return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+      ? [rel + (index > 0 ? '/' : '')] : [];
+  });
+  if (!inside.length) return;
+  const ignored = spawnSync('git', ['check-ignore', '--no-index', '-z', '--stdin'], {
+    cwd: canonicalRoot, input: `${inside.join('\0')}\0`, encoding: 'utf8', timeout: 10_000,
+  });
+  const safe = new Set((ignored.stdout ?? '').split('\0'));
+  if (ignored.error || ignored.status !== 0 || inside.some(path => !safe.has(path))) {
+    throw new Error('PC_EXECUTED_SOURCE_MAP_OUT and its .modules/.native-processes sidecars must be ' +
+      'outside the repository or in a Git-ignored custody directory; use an external evidence path ' +
+      'or .papercusp/scratch/ instead of a tracked docs/evidence path');
+  }
+}
+
 import { vitestConfigLoaderPolicy } from './lib/vitest-host-preflight.mjs';
 export { vitestConfigLoaderPolicy };
 
@@ -3459,6 +3495,8 @@ export async function main(
   try { loaderPolicy = vitestConfigLoaderPolicy(requestedVitestArgs); }
   catch (error) { console.error(formatRouteError(error.message)); return 2; }
   const { configLoaderArgs, vitestArgs } = loaderPolicy;
+  try { assertExecutedProofOutputCustody(repoRoot); }
+  catch (error) { console.error(formatRouteError(error.message)); return 2; }
   if (files.length === 0) {
     console.error('usage: npm run test:file -- <test-file> [test-file…] [-- <vitest args>]');
     return TEST_FILE_EXIT_NOT_MEASURED;
@@ -3726,6 +3764,8 @@ export async function main(
     // meant to read a failure — never sees these args.
     const injectedReportDir = injectedReportDirFor();
     const groupChildEnv = perGroupVitestEnv(receiptChildEnv, groupIndex, groups.length);
+    try { assertExecutedProofOutputCustody(repoRoot, groupChildEnv); }
+    catch (error) { console.error(formatRouteError(error.message)); return 2; }
     const { args: groupVitestArgs, injectedReportPath } = withInjectedJsonReport(
       perGroupVitestArgs(vitestArgs, groupIndex, groups.length),
       injectedReportDir ? join(injectedReportDir, `group-${groupIndex}.json`) : null,

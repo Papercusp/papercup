@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -46,6 +46,7 @@ it('records a real node:test child when the focused router starts without a TS l
 // The production entrypoint deliberately stays executable by plain Node.
 import {
   aggregateGroupResults,
+  assertExecutedProofOutputCustody,
   assertPrivateIntegrationEvidence,
   buildNodeTestArgs,
   canonicalMatch,
@@ -820,7 +821,8 @@ describe('test-files router', () => {
 
     it('preserves each source-map group and detail rerun output through main()', async () => {
       const root = mkdtempSync(join(tmpdir(), 'source-map-groups-'));
-      const originalOut = join(root, 'sources.json');
+      const proofRoot = mkdtempSync(join(tmpdir(), 'source-map-group-proof-'));
+      const originalOut = join(proofRoot, 'sources.json');
       const files = ['one/a.test.ts', 'one/b.test.ts', 'two/c.test.ts', 'three/d.test.ts'];
       const saved = { NODE_ENV: process.env.NODE_ENV, PC_EXECUTED_SOURCE_MAP_OUT: process.env.PC_EXECUTED_SOURCE_MAP_OUT,
         PAPERCUSP_TEST_RUN_RECEIPT_FILE: process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE };
@@ -859,8 +861,8 @@ describe('test-files router', () => {
         });
         expect(code).toBe(1); // The first group's red must survive the later green groups.
         expect(captures.map(capture => capture.path)).toEqual([originalOut,
-          join(root, 'sources.detail-0.json'), join(root, 'sources.detail-1.json'),
-          join(root, 'sources.1.json'), join(root, 'sources.2.json')]);
+          join(proofRoot, 'sources.detail-0.json'), join(proofRoot, 'sources.detail-1.json'),
+          join(proofRoot, 'sources.1.json'), join(proofRoot, 'sources.2.json')]);
         for (const capture of captures) {
           expect(JSON.parse(readFileSync(capture.path, 'utf8'))).toEqual(capture.files);
           expect(logSpy.mock.calls.some(([line]) => String(line).includes(`path=${JSON.stringify(capture.path)}`))).toBe(true);
@@ -873,6 +875,7 @@ describe('test-files router', () => {
         for (const [key, value] of Object.entries(saved)) {
           if (value === undefined) delete process.env[key]; else process.env[key] = value;
         }
+        rmSync(proofRoot, { recursive: true, force: true });
         rmSync(root, { recursive: true, force: true });
       }
     });
@@ -2705,6 +2708,61 @@ describe('main() — failed assertion details survive private report cleanup (EI
     expect(visibleOutput).toContain('simulated assertion failure');
     expect(visibleOutput).not.toContain(`JSON report written to ${reportPath}`);
     expect(existsSync(reportPath!)).toBe(false);
+  });
+});
+
+describe('executed proof output custody (EI-26908539061140583)', () => {
+  let root: string;
+  let outside: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'proof-output-repo-'));
+    outside = mkdtempSync(join(tmpdir(), 'proof-output-external-'));
+    expect(spawnSync('git', ['init', '-q', root]).status).toBe(0);
+    writeFileSync(join(root, '.gitignore'), '.papercusp/\nonly-report.json\n');
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  });
+  it('refuses publishable output and an ignored JSON with publishable executable sidecars', () => {
+    for (const name of ['docs/evidence/run.json', 'only-report.json']) {
+      expect(() => assertExecutedProofOutputCustody(root, {
+        PC_EXECUTED_SOURCE_MAP_OUT: join(root, name),
+      })).toThrow('Git-ignored custody directory');
+    }
+  });
+  it('accepts external and ignored custody without changing the requested path', () => {
+    for (const path of [join(outside, 'nested/run.json'), join(root, '.papercusp/scratch/run.json')]) {
+      const env = Object.freeze({ PC_EXECUTED_SOURCE_MAP_OUT: path });
+      expect(() => assertExecutedProofOutputCustody(root, env)).not.toThrow();
+      expect(env.PC_EXECUTED_SOURCE_MAP_OUT).toBe(path);
+    }
+    expect(() => assertExecutedProofOutputCustody(root, {})).not.toThrow();
+  });
+  it('checks physical destinations when an external directory points into publishable source', () => {
+    symlinkSync(root, join(outside, 'back-to-source'), 'dir');
+    expect(() => assertExecutedProofOutputCustody(root, {
+      PC_EXECUTED_SOURCE_MAP_OUT: join(outside, 'back-to-source/run.json'),
+    })).toThrow('Git-ignored custody directory');
+  });
+  it('refuses before collection or execution and emits no measured verdict', async () => {
+    const prior = process.env.PC_EXECUTED_SOURCE_MAP_OUT;
+    process.env.PC_EXECUTED_SOURCE_MAP_OUT = join(root, 'docs/evidence/run.json');
+    const list = vi.fn(), run = vi.fn();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await main(['some.test.ts'], { repoRoot: root,
+        runVitestListImpl: list, runCapturedTestProcessImpl: run })).toBe(2);
+      expect(list).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      expect(error.mock.calls.flat().join('\n')).toContain('PC_EXECUTED_SOURCE_MAP_OUT');
+      expect(log.mock.calls.flat().join('\n')).not.toContain('TEST_FILE_RESULT');
+    } finally {
+      log.mockRestore(); error.mockRestore();
+      if (prior === undefined) delete process.env.PC_EXECUTED_SOURCE_MAP_OUT;
+      else process.env.PC_EXECUTED_SOURCE_MAP_OUT = prior;
+    }
   });
 });
 
