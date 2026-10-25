@@ -6,7 +6,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../../packages/operator-core
 import { setupBaselineCoordFixture } from '../../../packages/operator-core/lib/_baseline-coord-fixture';
 import { prepareAssume, validateAssume, commitAssume, type AssumePreparation,
   verifyAssumeExecution, type AssumeExecutionObservation,
-  type AssumeTransitionReceipt } from '../../../packages/operator-core/lib/session-assume';
+  type AssumeTransitionReceipt, type AssumeRequest } from '../../../packages/operator-core/lib/session-assume';
 import { readAssumeCaller, readAssumeTarget } from '../../../packages/operator-core/lib/session-assume-preparation';
 import { createAssumeTransitionDeps, inspectManagedAssumeRequest } from '../../../packages/operator-core/lib/session-assume-runtime';
 import { createManagedAssumeHost } from '../../../packages/operator-core/lib/session-assume-host';
@@ -14,6 +14,7 @@ import { findLiveHostAsync, injectIntoHostWithConfirmation } from
   '../../../packages/operator-core/lib/events/await/psu-pty-discovery';
 import { createAssumeReceiptStore } from '../../../packages/operator-core/lib/session-assume-store';
 import { readAssumeCallerPause } from '../../../packages/operator-core/lib/session-assume-pause';
+import { readAssumeCallerCheckpoint } from '../../../packages/operator-core/lib/session-assume-caller';
 import { loopScope, setCarryNote } from '../../../packages/operator-core/lib/carry-note';
 import { runWithWorkspace } from '../../../packages/operator-core/lib/workspace-als';
 import { getWorkItem } from '../../../packages/operator-core/lib/work-items';
@@ -36,8 +37,20 @@ export async function productionAssumeFixture(workspaceId: string,
   const scoped = <T>(fn: () => Promise<T>) => runWithWorkspace(workspaceId, fn);
   const records = new Map<string, number>();
   const trace: Array<{ stage: string; error?: string }> = [];
+  const preparationDeps = { now: Date.now, secret, authorize: async () => 'fixture:administrative-launch-grant',
+    caller: readAssumeCaller, target: (request: AssumeRequest) => readAssumeTarget(request, workspaceId) };
+  const preview = (owner: string, targetOwnerId: string, contextMode: AssumeRequest['contextMode']) =>
+    scoped(() => prepareAssume({ ownerId: owner, workspaceId },
+      { requestId: randomUUID(), targetOwnerId, contextMode }, preparationDeps));
   return {
     sql, records, trace,
+    async readOnlyPreview(owner: string, targetOwnerId: string, contextMode: AssumeRequest['contextMode']) {
+      return database.adminSql.begin('read only', async tx => {
+        onDatabase(tx as unknown as OrgTestDb['adminSql']);
+        try { return await preview(owner, targetOwnerId, contextMode); }
+        finally { onDatabase(database.adminSql); }
+      });
+    },
     async register(owner: string, native: string, home: string, ended: boolean) {
       const [row] = await sql`INSERT INTO harness_shared.adv_sessions
         (workspace_id, agent, mode, role, coord_owner_id, session_id, cwd, launch_argv, started_at, ended_at, ended_by)
@@ -51,12 +64,9 @@ export async function productionAssumeFixture(workspaceId: string,
     },
     async prepare(owner: string, targetOwnerId: string, contextMode: 'native-resume' | 'checkpoint') {
       const actor = { ownerId: owner, workspaceId };
-      const request = { requestId: randomUUID(), targetOwnerId, contextMode };
-      const deps = { now: Date.now, secret, authorize: async () => 'fixture:administrative-launch-grant',
-        caller: readAssumeCaller, target: (value: typeof request) => readAssumeTarget(value, workspaceId) };
-      const result = await scoped(() => prepareAssume(actor, request, deps));
+      const result = await preview(owner, targetOwnerId, contextMode);
       if (!result.ok) throw new Error('Production preparation refused: ' + result.code);
-      const validated = await scoped(() => validateAssume(actor, result.token, deps));
+      const validated = await scoped(() => validateAssume(actor, result.token, preparationDeps));
       if (!validated.ok) throw new Error('Production validation refused: ' + validated.code);
       return validated.preparation;
     },
@@ -86,6 +96,10 @@ export async function productionAssumeFixture(workspaceId: string,
     inspect: (request: unknown, afterExit = false, action = 'observe') =>
       scoped(() => inspectManagedAssumeRequest(request, afterExit, action)),
     load: (plan: AssumePreparation) => scoped(() => createAssumeReceiptStore(plan).load()),
+    recovery: (receipt: AssumeTransitionReceipt) => scoped(() => {
+      if (!receipt.recovery) throw new Error('Native handoff has no caller recovery');
+      return readAssumeCallerCheckpoint(receipt.preparation, receipt.recovery);
+    }),
     save: (receipt: AssumeTransitionReceipt) => scoped(() => createAssumeReceiptStore(receipt.preparation).save(receipt)),
     verify: (receipt: AssumeTransitionReceipt, observation: AssumeExecutionObservation) => scoped(async () => {
       const store = createAssumeReceiptStore(receipt.preparation);

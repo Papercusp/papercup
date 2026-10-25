@@ -7,15 +7,17 @@ import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync,
+  renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import net from 'node:net';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { hostThroughPty, metaPathFor, handoffPathFor, readHostHandoffForParentPid,
   resolveLinuxCodexStartupPid, readLinuxStartupCounters } from '../scripts/psu-pty-host.mjs';
-import { mintCarryRespawnArgs, codexThreadWriterHolder, codexNativeIdForPty } from '../scripts/psu-launcher.mjs';
+import { mintCarryRespawnArgs, codexThreadWriterHolder, codexThreadWriterLockPath,
+  codexNativeIdForPty } from '../scripts/psu-launcher.mjs';
 import { launchIdentityAssumeHandoff, makeIdentityAssumeHostPort,
   prepareIdentityAssumeCheckpoint } from '../scripts/psu-identity-assume.mjs';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from
@@ -55,7 +57,8 @@ function callOutputs(value: any): Row[] {
   return String(value.type).endsWith('call_output') ? [value] : Object.values(value).flatMap(callOutputs);
 }
 
-async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = false, contended = false) {
+async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = false,
+  contended = false, preflight = false) {
     const root = mkdtempSync('/tmp/assume-native-journey-');
     const marker = { target: `TARGET_HISTORY_${randomUUID()}`, caller: `CALLER_HISTORY_${randomUUID()}`,
       checkpoint: `TARGET_CHECKPOINT_${randomUUID()}`, rival: `RIVAL_HISTORY_${randomUUID()}`,
@@ -79,6 +82,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
     const hosts: McpServer[] = [];
     const orders: Row[] = [], inspections = new Map<string, Row>();
     let releaseTarget!: () => void;
+    let retireSeed!: () => Promise<void>;
     const targetGate = new Promise<void>(resolve => { releaseTarget = resolve; });
     const runs: Array<{ owner: string; signals: EventEmitter; done: Promise<number> }> = [];
     const callerIssued = new Set<string>();
@@ -147,6 +151,69 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
               productionState.homes.set(String(registration), homes[key]);
               const workId = await real.assign(owner);
               await real.send(owner, 'CALLER_BEFORE_HANDOFF');
+              if (preflight) {
+                // Keep the seeded native target running despite its terminal
+                // registration: a stale ended row must never admit a live writer.
+                expect(alive(JSON.parse(readFileSync(metaPathFor(owners.target), 'utf8')).ptyPid)).toBe(true);
+                expect(await real.readOnlyPreview(owner, owners.target, mode))
+                  .toEqual({ ok: false, code: 'target-live' });
+                expect(await real.pause(owner)).toBeNull();
+                await retireSeed();
+                const callerMetaPath = metaPathFor(owner);
+                const executionPin = () => {
+                  const meta = JSON.parse(readFileSync(callerMetaPath, 'utf8'));
+                  return { ownerId: meta.ownerId, ptyPid: meta.ptyPid, nativeSessionId: meta.nativeSessionId,
+                    childGeneration: meta.childGeneration, identityAssume: meta.identityAssume };
+                };
+                const beforeMeta = executionPin();
+                const beforeTarget = await real.resolve(real.records.get(owners.target)!);
+                const assertUnchanged = async () => {
+                  expect(executionPin()).toEqual(beforeMeta);
+                  expect(alive(beforeMeta.ptyPid)).toBe(true);
+                  expect(await real!.pause(owner)).toBeNull();
+                  expect(await real!.resolve(real!.records.get(owners.target)!)).toEqual(beforeTarget);
+                };
+                // PostgreSQL rejects any write from the real preparation readers.
+                // The exact registration and managed attachment must also stay put.
+                const preview = await real.readOnlyPreview(owner, owners.target, mode);
+                expect(preview).toMatchObject({ ok: true, state: 'prepared', preparation: { target: {
+                  ownerId: owners.target, advSessionId: real.records.get(owners.target),
+                  nativeSessionId: nativeId('target'), ended: true, writer: 'free',
+                  binding: { coordOwnerId: owners.target, sessionId: nativeId('target') },
+                } } });
+                if (!preview.ok) throw new Error('Production preview refused');
+                expect(await real.load(preview.preparation)).toBeNull();
+                await assertUnchanged();
+                const targetId = real.records.get(owners.target)!;
+                await real.sql`UPDATE harness_shared.adv_sessions SET workspace_id = 'foreign-native-fixture'
+                  WHERE id = ${targetId}`;
+                try {
+                  expect(await real.readOnlyPreview(owner, owners.target, mode))
+                    .toEqual({ ok: false, code: 'context-unavailable' });
+                  expect(await real.pause(owner)).toBeNull();
+                  expect(executionPin()).toEqual(beforeMeta);
+                } finally {
+                  await real.sql`UPDATE harness_shared.adv_sessions SET workspace_id = 'native-context-fixture'
+                    WHERE id = ${targetId}`;
+                }
+                await assertUnchanged();
+                // An actual filesystem error, rather than a mocked writer verdict,
+                // exercises the production native-lock reader's unknown branch.
+                const lock = codexThreadWriterLockPath(homes.target, nativeId('target'))!;
+                const hadLock = existsSync(lock);
+                if (hadLock) renameSync(lock, lock + '.saved');
+                symlinkSync(basename(lock), lock);
+                try {
+                  expect(codexThreadWriterHolder(homes.target, nativeId('target')).reason).toBe('stat-error-ELOOP');
+                  expect(await real.readOnlyPreview(owner, owners.target, mode))
+                    .toEqual({ ok: false, code: 'writer-unknown' });
+                  expect(await real.load(preview.preparation)).toBeNull();
+                  await assertUnchanged();
+                } finally {
+                  unlinkSync(lock);
+                  if (hadLock) renameSync(lock + '.saved', lock);
+                }
+              }
               const plan = await real.prepare(owner, owners.target, mode);
               if (contended) {
                 if (++preparedCallers === 2) releaseCallers();
@@ -159,6 +226,13 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
               accepted = receipt; callerWork = workId;
               if (receipt.state !== 'handoff-accepted') throw new Error('Production commit: ' + JSON.stringify({
                 state: receipt.state, reason: receipt.reason, trace: real.trace }));
+              // The native tool response has not been delivered and the caller
+              // still runs. Its independently reloaded recovery must exist now.
+              expect(alive(receipt.preparation.caller.nativePid)).toBe(true);
+              const recovery = await real.recovery(receipt);
+              expect(recovery).toMatchObject({ caller: receipt.preparation.caller,
+                transitionKey: receipt.transitionKey });
+              expect(recovery.work.some(row => row.id === workId && row.checkpoint.includes(owner))).toBe(true);
               await real.send(owners.target, 'DURING_HANDOFF');
               return { content: [{ type: 'text', text: JSON.stringify(accepted) }] };
             }
@@ -337,9 +411,12 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       }
       const seed = start('target', [...baseArgs(), 'Record the target history.']);
       await vi.waitFor(() => expect(output, diagnostics()).toContain(marker.target), { timeout: 20_000 });
-      seed.signals.emit('SIGTERM'); await seed.done;
       const seedExecution = activeExecutions.get('target')!;
-      activeExecutions.delete('target');
+      retireSeed = async () => {
+        seed.signals.emit('SIGTERM'); await seed.done;
+        activeExecutions.delete('target');
+      };
+      if (!preflight) await retireSeed();
       const targetNative = nativeId('target');
       if (real) {
         const registration = await real.register(owners.target, targetNative, root, true);
@@ -605,3 +682,6 @@ it.each(['native-resume', 'checkpoint'] as const)(
 
 it('admits exactly one of two installed native callers and preserves the losing caller responsibilities',
   () => nativeJourney('native-resume', true, true), 180_000);
+
+it('previews one exact ended target without writes and refuses live, foreign and unknown custody',
+  () => nativeJourney('native-resume', true, false, true), 180_000);
