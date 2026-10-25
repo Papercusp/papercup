@@ -89,17 +89,18 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
     clones: { schema: 'clone-advisory-v1', files: cloneFiles } }));
   // D026: a real persisted planning timestamp and one explicitly controlled CLI
   // session qualify provenance. This does not represent a model-session census.
-  const planSlug = `p010-controlled-claim-${new Date().toISOString().slice(0, 10)}`;
+  // D029: sparse authored context only; never shorten the returned task brief.
+  const planSlug = `p010-${new Date().toISOString().slice(0, 10)}`;
   let planItem: string | undefined;
   if (claimOnly) {
     const planned = await call('plans:new', { harness: workspace, slug: planSlug,
-      title: 'Controlled private P010 claim fixture',
-      content: '## Product shaping\nControlled CLI composition proof; no model pickup or live user cohort.\n\n'
+      title: 'Controlled CLI R20 fixture',
+      content: 'Controlled CLI fixture; no model or live cohort.\n\n'
         + '## Phase 1 — Fixture\n',
       projection: { pick: ['ok', 'results[].ok', 'results[].slug', 'slug'] } });
     assert.notEqual(planned.ok, false, JSON.stringify(planned));
     const added = await call('plans:add-item', { harness: workspace, slug: planSlug, phase: 'Phase 1 — Fixture',
-      text: 'Inspect src/target.ts controlled reuse consequences', importance: 'normal',
+      text: 'Inspect src/target.ts', importance: 'normal',
       projection: { pick: ['ok', 'results[].ok', 'results[].itemId'] } });
     planItem = added.results?.[0]?.itemId;
     assert.equal(added.results?.[0]?.ok, true, JSON.stringify(added));
@@ -121,7 +122,7 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
   for (let attempt = 0; attempt < (claimOnly ? 16 : 1); attempt++) {
     if (claimOnly && attempt > 0) {
       const added = await call('plans:add-item', { harness: workspace, slug: planSlug, phase: 'Phase 1 — Fixture',
-        text: `Inspect src/target.ts controlled treatment candidate ${attempt + 1}`, importance: 'normal',
+        text: `Inspect src/target.ts candidate ${attempt + 1}`, importance: 'normal',
         projection: { pick: ['results[].ok', 'results[].itemId'] } });
       planItem = added.results?.[0]?.itemId;
       assert.equal(added.results?.[0]?.ok, true, JSON.stringify(added));
@@ -130,7 +131,7 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
       assert(planItem && persisted?.items.some(item => item.id === planItem), 'Candidate anchor must persist');
     }
     const created = await call('work_items:create', { harness: workspace, kind: 'change',
-      title: claimOnly ? `Controlled CLI P010 claim composition candidate ${attempt + 1}` : 'Private native P010 completion consequences',
+      title: claimOnly ? `Controlled R20 candidate ${attempt + 1}` : 'Private native P010 completion consequences',
       assign_to: 'self', state: 'wip',
       changeKinds: ['logic'], changeKindReason: 'Private source fixture validated through an actual complete test population.',
       ...(claimOnly ? { force: true, plan_item: { slug: planSlug, item: planItem! } } : {}),
@@ -254,6 +255,19 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
     const response = await call('work_items:claim', { row: `${id},self,${workspace}`, payloadTier: 'full',
       projection: { pick: ['results[].ok', 'results[].taskBrief'] } });
     const brief = response.results?.[0]?.taskBrief;
+    // Preserve the actual dispatcher observations before a strict assertion
+    // fails and private-PG teardown removes the only copy. A missing provider
+    // can be disabled, unknown or over budget; the response alone cannot say.
+    const claimInvocations = await getOrgPg().sql`SELECT id, invoked_at,
+      metadata_json->'reuseBriefProviders' AS providers
+      FROM harness_shared.tool_invocations
+      WHERE workspace_id = ${workspace} AND coord_owner_id = ${owner}
+        AND tool_name = 'work_items:claim' AND args_json->>'row' = ${`${id},self,${workspace}`}
+      ORDER BY invoked_at DESC LIMIT 1`;
+    console.log('NATIVE_REUSE_CLAIM_DIAGNOSTIC=' + JSON.stringify({ workspace, workItem: id,
+      base, response, claimInvocations, expectedProviders,
+      baseChars: [...JSON.stringify(base)].length,
+      responseBriefChars: brief ? [...JSON.stringify(brief)].length : null }));
     assert(brief && brief.status === 'current', JSON.stringify(response));
     assert.deepEqual({ ...brief, graph: { ...brief.graph,
       relationships: brief.graph.relationships.slice(0, base.graph.relationships.length) } }, base);
