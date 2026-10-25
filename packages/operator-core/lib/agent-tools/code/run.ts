@@ -66,6 +66,12 @@ import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { readIdentity } from '../locks/identity';
 import { getTxPool } from '../locks/su-lock-store';
 import { openManagedKernel, controlManagedKernel, runManagedKernelScript } from './kernel-owner';
+import {
+  MAX_ORCHESTRATION_SCRIPT_CHARS,
+  durableOrchestrationRunSchema,
+  durableOrchestrationControlSchema,
+} from '../orchestration/public-contract';
+import { runDurableCode } from './durable-run';
 
 export type CodeRunCaptureMode = 'auto' | 'never';
 
@@ -280,6 +286,20 @@ export default defineTool({
   // recipes:run/search/list/get) and CODE_RUN_CAPABLE_ROLES (the batch-nudge audience) in lockstep.
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    execution: z.object({
+      lifecycle: z.literal('background'),
+      durability: z.literal('durable'),
+      timeoutSec: z.number().int().min(1).max(3_600).optional(),
+    }).strict().optional().describe(
+      'Run once through the existing durable orchestration runtime. Returns durableRun.workflowId immediately; ' +
+      'execution.timeoutSec is the independent execution deadline (default 3600s). ' +
+      'Read status and terminal output with code:run { durableRun:{workflowId} }; ' +
+      'cancel with durableControl:{workflowId,action:"cancel"}. Use tools.runtime.sleep for checkpointed waits. ' +
+      'Current authority is checked on every tool step; unsafe replay/nondeterminism is refused before admission. ' +
+      'Cannot combine with a kernel, foreground timeoutSec, or dryRun.',
+    ),
+    durableRun: durableOrchestrationRunSchema.optional().describe('Read an existing durable run; omit script and execution.'),
+    durableControl: durableOrchestrationControlSchema.optional().describe('Cancel or signal an existing durable run; omit script and execution.'),
     kernel: z.object({
       op: z.enum(['open', 'run', 'status', 'close']),
       id: z.string().uuid().optional(),
@@ -298,7 +318,7 @@ export default defineTool({
     script: z
       .string()
       .min(1)
-      .max(20_000)
+      .max(MAX_ORCHESTRATION_SCRIPT_CHARS)
       .optional()
       .describe(
         'Plain JavaScript body only (TypeScript annotations such as `: any` are not supported). Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
@@ -365,10 +385,11 @@ export default defineTool({
       .max(FOREGROUND_TIMEOUT_CEILING_MS / 1000)
       .optional()
       .describe(
-        `Foreground wall-clock budget: default ${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s, maximum ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s (transport cap ~55s). No run_in_background. Split longer work into cells or individual tool calls.`,
+        `Foreground wall-clock budget: default ${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s, maximum ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s (transport cap ~55s). For longer work use execution:{lifecycle:"background",durability:"durable",timeoutSec:120}; recover the same run via durableRun.`,
       ),
   }),
   async handler(args, ctx) {
+    if (args.execution || args.durableRun || args.durableControl) return runDurableCode(args, ctx);
     const runStartedAtMs = Date.now();
     // Keep the whole foreground handler below the transport ceiling, including all best-effort
     // host-side work after the orchestration worker returns. The worker's own timeout is only one
