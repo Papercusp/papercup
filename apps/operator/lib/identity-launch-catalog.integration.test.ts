@@ -92,6 +92,9 @@ beforeAll(async () => {
   const installed = { id: INSTALLED, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }] };
   await writeBlueprint(join(home, 'blueprints', INSTALLED), { ...installed,
     attestation: { contentHash: layerContentHash(installed), signedBy: 'r9-integration-fixture' } });
+  const installedPrompts = join(home, 'blueprints', INSTALLED, 'prompts');
+  await mkdir(installedPrompts, { recursive: true });
+  await writeFile(join(installedPrompts, 'agent-base-overlay.md'), '# Installed integration domain\n');
   await writeBlueprint(join(home, 'blueprints', UNSIGNED),
     { id: UNSIGNED, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }] });
   // Local library: an abstract practice component and a provider-bound (incompatible) one.
