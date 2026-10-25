@@ -20,6 +20,7 @@
 #
 # Usage:
 #   apps/operator/bin/bundle-host.sh [entry] [outfile] [development|release]
+#   apps/operator/bin/bundle-host.sh --bg-transaction <original.json> <sha256> <entry> <outfile> <profile> --binding-preflight-only
 #     entry    default bin/hono-host.ts   (relative to apps/operator)
 #     outfile  default dist-host/hono-host.mjs
 #     profile  default development (source comments); release compacts whitespace
@@ -89,6 +90,29 @@ REPO_ROOT="$(cd "$OPERATOR_DIR/../.." && pwd -P)"
 # runs under the committed-source loader, which reads its whole module before executing, unlike
 # bash. The sourced bundle-host-common.sh stays beside this script, frozen with it.
 HELPER_DIR="$OPERATOR_DIR/bin"
+
+# Bind an explicit caller-owned BG attempt before loaders, npm/cache acquisition,
+# logs or output writes. Its independently supplied digest nominates ORIGINAL
+# authority; neither observed compiler argv nor an inherited context can do so.
+if [[ "${1:-}" == --bg-transaction ]]; then
+  # Whole-set qualification/publication is a separate boundary. Until it is
+  # connected, this entrypoint permits only the effect-bounded binding preflight.
+  if [[ "$#" != 7 || "${7:-}" != --binding-preflight-only ]]; then
+    echo 'BG recipe requires --bg-transaction <original.json> <sha256> <entry> <outfile> <profile> --binding-preflight-only' >&2
+    exit 78
+  fi
+  if [[ -n "${NODE_OPTIONS:-}" || -n "${NODE_PATH:-}" ]]; then
+    echo 'BG recipe ambient Node resolution is forbidden' >&2
+    exit 78
+  fi
+  BUNDLE_HOST_BG_BUILD_CONTEXT="$(node "$REPO_ROOT/scripts/source-preview.mjs" bg-build-begin \
+    --context "$2" --sha256 "$3" --pid "$$" --entry "$4" --outfile "$5" --profile "$6" \
+    --builder "${BASH_SOURCE[0]}" --repo "$REPO_ROOT")" || exit 78
+  readonly BUNDLE_HOST_BG_BUILD_CONTEXT
+  export BUNDLE_HOST_BG_BUILD_CONTEXT
+  printf 'BG_BUILD_BINDING_PASS %s\n' "$BUNDLE_HOST_BG_BUILD_CONTEXT"
+  exit 0
+fi
 
 # WI-10005802 (D-012): every node helper this script runs BEFORE the restricted-hold gate judges
 # the build (the install-mutex re-entry, the freshness proof, the probe-window gate, the bundle
