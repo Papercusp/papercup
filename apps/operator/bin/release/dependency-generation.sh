@@ -1628,18 +1628,30 @@ dependency_generation_ref_pin_path() {
 
 dependency_generation_write_ref_pin_locked() {
   local generation_root="$1" integration_root="$2" label="$3" identity="$4" ref="$5"
-  local ttl="${DEPENDENCY_GENERATION_REF_PIN_TTL_SEC:-86400}" pin tmp now
+  local ttl="${DEPENDENCY_GENERATION_REF_PIN_TTL_SEC:-86400}" pin tmp now checkout marker
   [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || return 2
   [[ "$label" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || return 2
   [[ "$ttl" =~ ^[0-9]+$ ]] || return 2
   case "$integration_root$ref" in *$'\n'*) return 2 ;; esac
   dependency_generation_marker_matches "$generation_root/$identity" "$identity" || return 1
-  dependency_generation_ensure_store_root "$generation_root" "$generation_root/.pins"
   pin="$(dependency_generation_ref_pin_path "$generation_root" "$integration_root" "$label")" || return 1
+  # Shared stores can still be swept by a deployed helper predating ref pins.
+  # That reader removes any same-host pin without a matching checkout marker,
+  # regardless of kind/expiry. Supply its real marker contract as well as the
+  # native ref fields; never spoof a foreign host to bypass its validation.
+  # One tiny anchor per identity stays outside the immutable generation tree
+  # and is collected with that generation by the current retention code.
+  checkout="$generation_root/.ref-pins/$identity"
+  dependency_generation_ensure_store_root \
+    "$generation_root" "$generation_root/.pins" "$checkout/node_modules" || return $?
+  marker="$checkout/node_modules/.papercusp-dependency-generation"
+  tmp="$marker.tmp.$$"
+  cp "$generation_root/$identity/.papercusp-dependency-generation" "$tmp" || return $?
+  mv "$tmp" "$marker" || return $?
   tmp="$pin.tmp.$$"
   now="$(date +%s)"
-  printf 'schema=1\nkind=ref\nhost=%s\nidentity=%s\nlabel=%s\nintegration=%s\nref=%s\nupdated=%s\nexpires=%s\n' \
-    "$(dependency_generation_host)" "$identity" "$label" "$integration_root" "$ref" \
+  printf 'schema=1\nkind=ref\nhost=%s\nidentity=%s\ncheckout=%s\nlabel=%s\nintegration=%s\nref=%s\nupdated=%s\nexpires=%s\n' \
+    "$(dependency_generation_host)" "$identity" "$checkout" "$label" "$integration_root" "$ref" \
     "$now" "$((now + ttl))" > "$tmp"
   mv "$tmp" "$pin"
 }
@@ -1905,7 +1917,7 @@ dependency_generation_quarantine_unretained_locked() {
   local generation_root="$1" retain_count="${2:-${DEPENDENCY_GENERATION_RETAIN_COUNT:-2}}"
   local min_retain=1
   [ -z "${2:-}" ] || min_retain=0
-  local protected=' ' generation identity created pin lease kept=0 quarantine
+  local protected=' ' generation identity created pin lease kept=0 quarantine ref_checkout
   local ranked=()
   if [[ ! "$retain_count" =~ ^[0-9]+$ ]] || [ "$retain_count" -lt "$min_retain" ]; then
     dependency_generation_log "FATAL: DEPENDENCY_GENERATION_RETAIN_COUNT must be an integer >= 1"
@@ -1981,6 +1993,9 @@ dependency_generation_quarantine_unretained_locked() {
       "$generation_root" "$identity" || return $?
     quarantine="$generation_root/.prune-$identity-$(date +%s)-$$"
     if mv "$generation" "$quarantine"; then
+      ref_checkout="$generation_root/.ref-pins/$identity"
+      rm -f -- "$ref_checkout/node_modules/.papercusp-dependency-generation"
+      rmdir "$ref_checkout/node_modules" "$ref_checkout" 2>/dev/null || true
       dependency_generation_log "quarantined unretained generation $identity"
       DEPENDENCY_GENERATION_PRUNE_QUARANTINES+=("$quarantine")
     fi
