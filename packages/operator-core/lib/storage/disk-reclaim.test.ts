@@ -40,8 +40,11 @@ describe('per-root allocated-byte caps', () => {
       cls.enforcers.some((enforcer) => enforcer.kind === 'standing-reclaim' && !enforcer.via));
     expect(genericAgentClasses.map(cls => cls.id).sort()).toEqual([
       'agent-evidence', 'offload-work-copies', 'papercusp-home-run-dirs', 'papercusp-scratch',
-      'repo-scratch', 'tmp-scratch', 'workspace-db-dumps', 'workspace-restores',
+      'repo-scratch', 'tmp-scratch', 'workspace-db-dumps',
     ]);
+    const restores = RETENTION_POLICY.find(cls => cls.id === 'workspace-restores')!;
+    expect(restores.keep.kind).toBe('keep');
+    expect(retentionRootSizeCap(restores)).toBeUndefined();
     // Preserve the original declaration check for delegated classes too.
     for (const cls of ageCountAgentClasses) {
       const bytes = retentionRootSizeCap(cls);
@@ -282,6 +285,27 @@ describe('scheduled retention selection', () => {
 
 describe('retention holder evidence', () => {
   afterEach(() => { delegateSpawn.mockReset(); });
+
+  it('transports exact environment predicates and mapped-file checks to the enrolled worker', async () => {
+    const environmentByPath = { '/work': 'PAPERCUSP_TAURI_LAUNCH_PROVENANCE=run:exact' };
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+    let stdin = '';
+    child.stdin.on('data', data => { stdin += data.toString(); });
+    delegateSpawn.mockImplementationOnce(async (_command, args, _spec, options) => {
+      expect(args.join(' ')).toContain('includeMappedFiles: true');
+      expect(args.join(' ')).toContain('payload.environmentByPath');
+      options.onSpawn(child as unknown as ChildProcess, 'legacy-holder-task');
+      child.stdout.write(JSON.stringify({ complete: true, byPath: [[process.cwd(), [String(process.pid)]], ['/work', ['999']]] }));
+      child.emit('close', 0, null); return { child, taskId: 'legacy-holder-task' };
+    });
+    const result = await scanRetentionHolders(['/work'], {
+      uid: () => 1000, readStatus: async () => 'NSpid:\t1\n', isolate: true,
+      includeProcessLinks: true, includeMappedFiles: true, environmentByPath,
+    });
+    expect(result.complete).toBe(true);
+    expect(result.byPath.get('/work')).toEqual(['999']);
+    expect(JSON.parse(stdin)).toEqual({ paths: ['/work', process.cwd()], environmentByPath });
+  });
 
   it('passes a duration to the existing privileged scanner and requires the caller control', async () => {
     const scan = vi.fn().mockResolvedValue({ complete: true, byPath: new Map([[process.cwd(), [String(process.pid)]], ['/scratch/held', ['123']]]) });

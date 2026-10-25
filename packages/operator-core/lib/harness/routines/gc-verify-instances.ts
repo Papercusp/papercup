@@ -30,8 +30,8 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  *
  * ── DESIGN: INVOKE THE EXISTING TEARDOWN, NEVER REIMPLEMENT IT ───────────────────
  *
- * Every work dir contains a generated `stop.sh` that already encodes four separately
- * hard-won fixes:
+ * Current work dirs contain a generated `stop.sh` with identity-checked helpers.
+ * Its teardown preserves four separately hard-won fixes:
  *
  *   EI-11559              do NOT force-kill the port-lock keeper — it must survive to
  *                         self-terminate once the display is gone AND the port drains,
@@ -43,8 +43,8 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  *   (ordering)            openbox before Xvfb, group-kill before single-kill.
  *
  * A reaper that rolled its own kill logic would silently lose all four and re-earn them
- * one incident at a time. So this sweep decides only WHETHER a dir is abandoned; the
- * dir's own stop.sh decides HOW to tear it down.
+ * one incident at a time. Only validated current helpers may execute. Older native
+ * scripts are metadata for quiescent cleanup; pre-helper pattern scripts are refused.
  *
  * ── SAFETY IS THE DELIVERABLE ────────────────────────────────────────────────────
  *
@@ -55,8 +55,8 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  * included the owner's desktop window and every peer's test instance. That is the
  * failure mode this file must not have. Hence:
  *
- *   - NEVER pattern-kill. This module issues no kill of its own; it execs a specific
- *     work dir's own stop.sh and nothing else.
+ *   - NEVER pattern-kill. This module issues no kill of its own; it execs only a
+ *     specific work dir's validated identity-checked stop.sh.
  *   - REFUSE a stop.sh whose display is :0/:1/:2 (:0 is the owner's real desktop) —
  *     a defensive parse, since a well-formed stop.sh always targets its own high
  *     display, but a malformed or hand-edited one must not be trusted.
@@ -93,6 +93,7 @@ import { lstat, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import type { scanRetentionHolders } from '../../storage/disk-reclaim';
 
 // Lazily promisified (NOT `const execFileAsync = promisify(execFile)` at module
 // scope): this module is reachable via a transitive import chain from test files
@@ -267,6 +268,8 @@ export interface GcVerifyInstancesOptions {
   runStopScript?: (stopScriptPath: string) => Promise<void>;
   /** Confirm terminal ledger state before the ordinary age TTL; unavailable means false. */
   isTaskTerminal?: (taskId: string) => Promise<boolean>;
+  /** Host-wide positive-controlled evidence; a partial scan never permits deletion. */
+  scanHolders?: typeof scanRetentionHolders;
 }
 
 export interface ReapedInstance {
@@ -275,6 +278,7 @@ export interface ReapedInstance {
   bytes: number;
   /** The display its stop.sh targets, when one could be parsed. */
   display: string | null;
+  cleanup?: 'quiescent-legacy';
   /** Present when the dir was SKIPPED rather than reaped. */
   skipped?: string;
 }
@@ -309,8 +313,11 @@ export function parseStopScriptDisplay(stopScript: string): string | null {
  * provenance must agree with the caller and the helper's ownership checks.
  * Never source either script to discover metadata, or follow a helper symlink.
  */
-async function stopScriptDisplay(dir: string, stopScript: string): Promise<string | null> {
-  if (!stopScript.includes('stop-xvfb.sh')) return parseStopScriptDisplay(stopScript);
+async function stopScriptDisplay(dir: string, stopScript: string, metadataOnly = false): Promise<string | null> {
+  // An inline Xvfb pattern proves neither process identity nor ownership of
+  // saved PID/group targets. Never promote readable legacy text into signal
+  // authority, including during dry runs or for zero-padded display numbers.
+  if (!stopScript.includes('stop-xvfb.sh')) return null;
 
   const helperPath = join(dir, 'stop-xvfb.sh');
   if (!stopScript.split('\n').includes(`"${helperPath}" || true`)) return null;
@@ -318,7 +325,7 @@ async function stopScriptDisplay(dir: string, stopScript: string): Promise<strin
   // for Tauri's process group, openbox and PostgreSQL. Those numbers can belong
   // to a successor by the time GC runs. Helper metadata cannot authorize them.
   // Preserve these directories until teardown has process identity evidence.
-  if (/\bkill\s+-(?:TERM|9)\s+(?:--\s+)?-?"?\d+"?(?=\s|;)/.test(stopScript)) return null;
+  if (!metadataOnly && /\bkill\s+-(?:TERM|9)\s+(?:--\s+)?-?"?\d+"?(?=\s|;)/.test(stopScript)) return null;
   if (stopScript.includes('stop_verify_process')) {
     const reaperPath = join(dir, 'frozen-source-reaper.sh');
     if (!stopScript.split('\n').includes(`source "${reaperPath}" || exit 1`)) return null;
@@ -404,6 +411,27 @@ export async function gcVerifyInstances(
   const dryRun = opts.dryRun === true;
   const now = opts.now ?? Date.now();
   const runStopScript = opts.runStopScript ?? defaultRunStopScript;
+  const quiescent = async (dir: string, provenance?: string): Promise<string | null> => {
+    if (await runMarkerIsLive(dir)) return 'owner run still alive (.papercusp-run)';
+    try {
+      const before = await lstat(dir);
+      if (!before.isDirectory()) return 'directory identity changed — preserving directory';
+      const scan = opts.scanHolders ?? (await import('../../storage/disk-reclaim')).scanRetentionHolders;
+      const holders = await scan([dir], {
+        isolate: true, includeProcessLinks: true, includeMappedFiles: true,
+        ...(provenance ? { environmentByPath: { [dir]: `PAPERCUSP_TAURI_LAUNCH_PROVENANCE=${provenance}` } } : {}),
+      });
+      if (!holders.complete) return 'holder scan incomplete — preserving directory';
+      if (holders.byPath.get(dir)?.length) return 'live process holder — preserving directory';
+      // Marker liveness can change while the host-wide census is running.
+      if (await runMarkerIsLive(dir)) return 'owner run still alive (.papercusp-run)';
+      const after = await lstat(dir);
+      if (!after.isDirectory() || before.dev !== after.dev || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs) {
+        return 'directory identity changed — preserving directory';
+      }
+      return null;
+    } catch { return 'holder scan failed — preserving directory'; }
+  };
 
   const instances: ReapedInstance[] = [];
   let reaped = 0;
@@ -493,6 +521,12 @@ export async function gcVerifyInstances(
         continue;
       }
       const bytes = await dirBytes(dir);
+      const refusal = await quiescent(dir);
+      if (refusal) {
+        skipped += 1;
+        instances.push(record({ skipped: refusal }));
+        continue;
+      }
       if (!dryRun) {
         try {
           await rm(dir, { recursive: true, force: true });
@@ -508,7 +542,13 @@ export async function gcVerifyInstances(
       continue;
     }
 
-    const display = await stopScriptDisplay(dir, stopScript);
+    let display = await stopScriptDisplay(dir, stopScript);
+    // A validated native legacy script is metadata only. Never execute its
+    // saved numeric signals, even if those PIDs are currently absent or reused.
+    const legacy = !display && stopScript.includes('stop-xvfb.sh') &&
+      /\bkill\s+-(?:TERM|9)\s+(?:--\s+)?-?"?\d+"?(?=\s|;)/.test(stopScript) &&
+      !stopScript.includes('frozen-source-reaper.sh') && !stopScript.includes('stop_verify_process');
+    if (legacy) display = await stopScriptDisplay(dir, stopScript, true);
 
     // ── REFUSAL 2: unreadable teardown. We do not run a stop.sh we cannot parse.
     if (!display) {
@@ -528,6 +568,33 @@ export async function gcVerifyInstances(
     }
 
     const bytes = await dirBytes(dir);
+    if (legacy) {
+      const helperPath = join(dir, 'stop-xvfb.sh');
+      const helper = await readFile(helperPath, 'utf8').catch(() => '');
+      const provenance = /^EXPECTED_PROVENANCE=([a-zA-Z0-9:._-]+)$/m.exec(helper)?.[1];
+      const refusal = provenance ? await quiescent(dir, provenance) : 'missing legacy provenance';
+      // Repeat metadata validation after the scan. Replaced or newly live runs
+      // do not inherit the earlier directory's deletion authority.
+      if (refusal || await readFile(stopScriptPath, 'utf8').catch(() => '') !== stopScript ||
+          await readFile(helperPath, 'utf8').catch(() => '') !== helper ||
+          await stopScriptDisplay(dir, stopScript, true) !== display) {
+        skipped += 1;
+        instances.push(record({ display, skipped: refusal ?? 'legacy metadata changed — preserving directory' }));
+        continue;
+      }
+      if (!dryRun) {
+        try { await rm(dir, { recursive: true, force: true }); }
+        catch {
+          skipped += 1;
+          instances.push(record({ display, skipped: 'rm failed for quiescent legacy directory' }));
+          continue;
+        }
+      }
+      reaped += 1;
+      bytesFreed += bytes;
+      instances.push(record({ display, bytes, cleanup: 'quiescent-legacy' }));
+      continue;
+    }
     if (!dryRun) {
       // Teardown's nonzero status may be the identity guard preserving a live
       // source holder, or a timeout before cleanup finished. Keep its helper and

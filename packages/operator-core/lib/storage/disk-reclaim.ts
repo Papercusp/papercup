@@ -292,6 +292,8 @@ export async function scanRetentionHolders(paths: readonly string[], deps: {
   /** Reuse the isolated worker even when the host itself runs as root. */
   isolate?: boolean;
   includeProcessLinks?: boolean;
+  includeMappedFiles?: boolean;
+  environmentByPath?: Readonly<Record<string, string>>;
 } = {}): Promise<OpenWriterScan> {
   const status = await (deps.readStatus ?? (() => readFile('/proc/self/status', 'utf8')))().catch(() => '');
   const ids = /^NSpid:\s*(.+)$/m.exec(status)?.[1]?.trim().split(/\s+/);
@@ -303,8 +305,10 @@ export async function scanRetentionHolders(paths: readonly string[], deps: {
     ? await (deps.scan ?? openWriterPidsMany)(wanted, {
       descendants: true, includeCwd: true, failClosed: true, deadlineMs: RETENTION_HOLDER_SCAN_MS,
       ...(deps.includeProcessLinks ? { includeProcessLinks: true } : {}),
+      ...(deps.includeMappedFiles ? { includeMappedFiles: true } : {}),
+      ...(deps.environmentByPath ? { environmentByPath: deps.environmentByPath } : {}),
     })
-    : await (deps.privileged ?? ((paths, control) => scanPrivilegedRetentionHolders(paths, control, deps.includeProcessLinks)))(wanted, control)
+    : await (deps.privileged ?? ((paths, control) => scanPrivilegedRetentionHolders(paths, control, deps)))(wanted, control)
       .catch((err) => incompleteHolders(`privileged holder scan failed: ${message(err)}`));
   if (!scan.byPath.get(control)?.includes(String(process.pid))) {
     scan.complete = false;
@@ -313,33 +317,38 @@ export async function scanRetentionHolders(paths: readonly string[], deps: {
   return scan;
 }
 
-async function scanPrivilegedRetentionHolders(paths: readonly string[], control: string, includeProcessLinks = false): Promise<OpenWriterScan> {
+async function scanPrivilegedRetentionHolders(paths: readonly string[], control: string, options: {
+  includeProcessLinks?: boolean; includeMappedFiles?: boolean; environmentByPath?: Readonly<Record<string, string>>;
+} = {}): Promise<OpenWriterScan> {
   const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
   const require = createRequire(join(repoRoot, 'package.json'));
   // Reuse the scanner from canonical source; the elevated child only reads /proc.
   // Both namespaces and the ORIGINAL caller's PID are positive controls.
   const worker = `
     import { readFile } from 'node:fs/promises';
-    import { readdirSync, readlinkSync } from 'node:fs';
+    import { readdirSync, readlinkSync, readFileSync } from 'node:fs';
     const input = [];
     for await (const chunk of process.stdin) input.push(chunk);
-    const paths = JSON.parse(Buffer.concat(input).toString('utf8'));
+    const payload = JSON.parse(Buffer.concat(input).toString('utf8'));
+    const paths = Array.isArray(payload) ? payload : payload.paths;
     const status = await readFile('/proc/self/status', 'utf8');
     const ids = /^NSpid:\\s*(.+)$/m.exec(status)?.[1]?.trim().split(/\\s+/);
     if (!ids || ids.length !== 1) process.exit(2);
     const { openWriterPidsMany } = await import(process.argv[1]);
     const result = await openWriterPidsMany(paths, {
       descendants: true, includeCwd: true, failClosed: true, deadlineMs: ${RETENTION_HOLDER_SCAN_MS},
-      includeProcessLinks: ${includeProcessLinks},
+      includeProcessLinks: ${options.includeProcessLinks === true},
+      includeMappedFiles: ${options.includeMappedFiles === true},
+      environmentByPath: Array.isArray(payload) ? undefined : payload.environmentByPath,
       // This process is an enrolled, isolated worker, never the operator loop.
-      procIo: { readdir: (path) => readdirSync(path), readlink: (path) => readlinkSync(path) },
+      procIo: { readdir: (path) => readdirSync(path), readlink: (path) => readlinkSync(path), readFile: (path) => readFileSync(path, 'utf8') },
     });
     process.stdout.write(JSON.stringify({ complete: result.complete, byPath: [...result.byPath], diagnostics: result.diagnostics }));
   `;
   const result = await nativeRetentionCommand(repoRoot, '/usr/bin/sudo', [
     '-n', process.execPath, '--import', require.resolve('tsx/esm'), '--input-type=module', '-e', worker,
     '--', join(repoRoot, 'packages/operator-core/lib/native-bg-task-ledger.ts'),
-  ], { stdin: JSON.stringify(paths), stdoutOnly: true, outputLimit: 1024 * 1024, timeoutMs: RETENTION_HOLDER_SCAN_MS + 1_000 });
+  ], { stdin: JSON.stringify(options.environmentByPath ? { paths, environmentByPath: options.environmentByPath } : paths), stdoutOnly: true, outputLimit: 1024 * 1024, timeoutMs: RETENTION_HOLDER_SCAN_MS + 1_000 });
   if (!result.ok || !result.detail || typeof result.detail !== 'object' ||
       !('output' in result.detail) || typeof result.detail.output !== 'string') {
     const detail = result.detail as { error?: string; code?: number | null; signal?: string | null; taskId?: string | null; stderr?: string; outputTruncated?: boolean } | null;

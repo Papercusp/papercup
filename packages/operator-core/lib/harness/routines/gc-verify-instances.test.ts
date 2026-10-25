@@ -18,7 +18,7 @@ import { join, resolve } from 'node:path';
 import { utimesSync, existsSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
 import {
   defaultVerifyScanRoots,
-  gcVerifyInstances,
+  gcVerifyInstances as collectVerifyInstances,
   parseStopScriptDisplay,
   PROTECTED_DISPLAYS,
   runMarkerIsLive,
@@ -26,6 +26,11 @@ import {
   VERIFY_TERMINAL_TASK_GRACE_MS,
   VERIFY_INSTANCE_TTL_HOURS_DEFAULT,
 } from './gc-verify-instances';
+
+// Every process census is injected here; tests never inspect or signal peers.
+const emptyHolders = async () => ({ complete: true, byPath: new Map<string, string[]>() });
+const gcVerifyInstances = (opts: Parameters<typeof collectVerifyInstances>[0] = {}) =>
+  collectVerifyInstances({ scanHolders: emptyHolders, ...opts });
 
 let root: string;
 const NOW = Date.parse('2026-08-01T12:00:00.000Z');
@@ -40,11 +45,8 @@ async function makeInstance(
   await mkdir(dir, { recursive: true });
   if (opts.withStop !== false) {
     const display = opts.display === undefined ? ':144' : opts.display;
-    const body =
-      display === null
-        ? '#!/usr/bin/env bash\necho "stopped"\n'
-        : `#!/usr/bin/env bash\nkill -9 123 2>/dev/null\npkill -9 -f "Xvfb ${display} " 2>/dev/null\necho "stopped (display ${display})"\n`;
-    await writeFile(join(dir, 'stop.sh'), body);
+    if (display === null) await writeFile(join(dir, 'stop.sh'), '#!/usr/bin/env bash\necho "stopped"\n');
+    else writeNativeScripts(dir, display.slice(1));
   }
   if (opts.bytes) await writeFile(join(dir, 'spa'), 'x'.repeat(opts.bytes));
   const t = hoursAgo(opts.ageHours);
@@ -64,6 +66,12 @@ afterEach(async () => {
 async function makeNativeInstance(display = '144', ageHours = 200, targets: Record<string, string> = {}): Promise<string> {
   const dir = join(root, 'verify-tauri-headless.native');
   await mkdir(dir);
+  writeNativeScripts(dir, display, targets);
+  utimesSync(dir, hoursAgo(ageHours), hoursAgo(ageHours));
+  return dir;
+}
+
+function writeNativeScripts(dir: string, display: string, targets: Record<string, string> = {}): void {
   const source = readFileSync(resolve(__dirname, '../../../../../scripts/verify-tauri-headless.sh'), 'utf8');
   const start = source.indexOf('write_xvfb_stop_script() {');
   const end = source.indexOf('\n# ── EI-11559:', source.indexOf('write_stop_script() {', start));
@@ -84,11 +92,77 @@ async function makeNativeInstance(display = '144', ageHours = 200, targets: Reco
       ...targets,
     },
   });
-  utimesSync(dir, hoursAgo(ageHours), hoursAgo(ageHours));
-  return dir;
 }
 
 describe('gc-verify-instances — native producer protocol', () => {
+  async function makeLegacyInstance(display = '144'): Promise<string> {
+    const dir = await makeNativeInstance(display);
+    await rm(join(dir, 'frozen-source-reaper.sh'));
+    await writeFile(join(dir, 'stop.sh'), `#!/usr/bin/env bash
+kill -TERM -- -12345 2>/dev/null
+grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=agent:gc-test:run:123-456" <<<"$_env_p" || continue
+"${dir}/stop-xvfb.sh" || true
+echo "stopped (display :${display}, port 33144)"
+`);
+    utimesSync(dir, hoursAgo(200), hoursAgo(200));
+    return dir;
+  }
+
+  it.each([false, true])('collects only quiescent validated legacy metadata without executing old signals (dryRun=%s)', async (dryRun) => {
+    const dir = await makeLegacyInstance();
+    const stop = vi.fn(async () => {});
+    const scan = vi.fn(emptyHolders);
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, dryRun, runStopScript: stop, scanHolders: scan });
+    expect(result.reaped).toBe(1);
+    expect(result.instances[0]).toMatchObject({ dir, display: ':144', cleanup: 'quiescent-legacy' });
+    expect(stop).not.toHaveBeenCalled();
+    expect(scan).toHaveBeenCalledWith([dir], {
+      isolate: true, includeProcessLinks: true, includeMappedFiles: true,
+      environmentByPath: { [dir]: 'PAPERCUSP_TAURI_LAUNCH_PROVENANCE=agent:gc-test:run:123-456' },
+    });
+    expect(existsSync(dir)).toBe(dryRun);
+  });
+
+  it.each(['holder', 'partial', 'error', 'changed', 'live-marker', 'helper-symlink'])('preserves legacy WORK when %s evidence prevents quiescence', async (variant) => {
+    const dir = await makeLegacyInstance();
+    const scan = vi.fn(async () => {
+      if (variant === 'error') throw new Error('census unavailable');
+      if (variant === 'changed') await writeFile(join(dir, 'stop.sh'), '# replaced');
+      if (variant === 'live-marker') await writeFile(join(dir, '.papercusp-run'), `pid=${process.pid}\n`);
+      return { complete: variant !== 'partial', byPath: new Map(variant === 'holder' ? [[dir, ['999']]] : []) };
+    });
+    if (variant === 'helper-symlink') {
+      const path = join(dir, 'stop-xvfb.sh');
+      await writeFile(join(root, 'foreign.sh'), readFileSync(path));
+      await rm(path);
+      symlinkSync(join(root, 'foreign.sh'), path);
+      utimesSync(dir, hoursAgo(200), hoursAgo(200));
+    }
+    const stop = vi.fn(async () => {});
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop, scanHolders: scan });
+    expect(result.reaped).toBe(0);
+    expect(stop).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('preserves a legacy protected display before consulting quiescence', async () => {
+    const dir = await makeLegacyInstance('01');
+    const scan = vi.fn(emptyHolders);
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, scanHolders: scan });
+    expect(result.instances[0].skipped).toMatch(/protected display :1/);
+    expect(scan).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it.each(['holder', 'partial'])('preserves an orphan source snapshot on %s evidence after its marker exits', async (variant) => {
+    const dir = await makeInstance('source-snapshot', { ageHours: 200, withStop: false });
+    const result = await gcVerifyInstances({ roots: [root], now: NOW,
+      scanHolders: async () => ({ complete: variant !== 'partial', byPath: new Map(variant === 'holder' ? [[dir, ['999']]] : []) }),
+    });
+    expect(result.reaped).toBe(0);
+    expect(existsSync(dir)).toBe(true);
+  });
+
   it('reaps an abandoned directory using the current generated helper-based stop script', async () => {
     const dir = await makeNativeInstance();
     const stop = vi.fn(async (_path: string) => {});
@@ -192,6 +266,21 @@ describe('parseStopScriptDisplay', () => {
 });
 
 describe('gc-verify-instances — refusals (the safety surface)', () => {
+  it.each([false, true])('refuses pre-helper pattern scripts without signalling or deleting (dryRun=%s)', async (dryRun) => {
+    for (const display of [':144', ':0', ':01']) {
+      const dir = await makeInstance(`pre-helper${display.slice(1)}`, { ageHours: 500 });
+      await writeFile(join(dir, 'stop.sh'), `#!/usr/bin/env bash\nkill -9 123 2>/dev/null\npkill -9 -f "Xvfb ${display} " 2>/dev/null\n`);
+      utimesSync(dir, hoursAgo(500), hoursAgo(500));
+      const stop = vi.fn(async () => {});
+      const scan = vi.fn(emptyHolders);
+      const result = await gcVerifyInstances({ roots: [root], now: NOW, dryRun, runStopScript: stop, scanHolders: scan });
+      expect(result.reaped).toBe(0);
+      expect(stop).not.toHaveBeenCalled();
+      expect(scan).not.toHaveBeenCalled();
+      expect(existsSync(dir)).toBe(true);
+    }
+  });
+
   it('REFUSES to touch the owner\'s real desktop display', async () => {
     // The load-bearing guard. A stop.sh targeting :0 would log the owner out.
     for (const display of PROTECTED_DISPLAYS) {
