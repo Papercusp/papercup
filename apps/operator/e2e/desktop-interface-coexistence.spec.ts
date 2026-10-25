@@ -48,15 +48,20 @@ test('normal packaged GUI launches with the measured legacy SPA identity', async
   await mkdir(inputs);
   for (const artifact of artifacts) await symlink(artifact.path, join(inputs, basename(artifact.path)));
 
-  const { stdout, stderr } = await run('bash', [join(repo, 'papercusp-desktop/bin/linux-fresh-install-e2e.sh')], {
+  const launch = await run('bash', [join(repo, 'papercusp-desktop/bin/linux-fresh-install-e2e.sh')], {
     cwd: repo, timeout: 240_000, maxBuffer: 4 * 1024 * 1024,
     env: {
       ...process.env, PC_L_SOURCE: 'local', PC_L_LOCAL_DIR: inputs,
       PC_L_VERSION: version, PC_L_WORK: join(work, 'launch'), PC_L_KEEP: '1',
       PC_L_OBSERVE_SECONDS: '2', PC_L_PRISTINE: '0',
     },
-  });
-  await info.attach('native-normal-artifact-launch', { body: stdout + stderr, contentType: 'text/plain' });
+  }).then(value => ({ ...value, code: 0 }), (error: Error & { code?: unknown; stdout?: string; stderr?: string }) => ({
+    code: typeof error.code === 'number' ? error.code : -1,
+    stdout: error.stdout ?? '', stderr: (error.stderr ?? '') + '\n' + error.message,
+  }));
+  const { stdout, stderr } = launch;
+  await info.attach('native-normal-artifact-launch', { body: JSON.stringify({ work, exitCode: launch.code }) + '\n' + stdout + stderr, contentType: 'text/plain' });
+  expect(launch.code, `native launcher failed; retained work=${work}\n${stdout}\n${stderr}`).toBe(0);
   expect(stdout).toContain('VERDICT: PASS');
   expect(stdout).toContain('GUI provenance bound to extracted artifact:');
   expect(stdout).toMatch(/GUI remained alive for \d+s with no Server available/);
