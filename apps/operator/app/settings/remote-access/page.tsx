@@ -24,6 +24,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
+import { Button } from '@/app/harness/Button';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { ConfirmModal } from '@/app/harness/ConfirmModal';
 import { RadioGroup } from '@/app/harness/RadioGroup';
@@ -298,7 +299,13 @@ export default function RemoteAccessSettingsPage() {
             ariaLabel="Workspace"
           />
         </div>
-        {error && <p className="pc-settings-note" role="alert">Could not load remote access: {String(error)}</p>}
+        {error && <div className="pc-settings-note" role="alert">
+          <p>{String(error).includes('machine_signin_required')
+            ? 'Sign in to the selected machine, or choose a machine you can access, then retry loading its saved access.'
+            : 'Could not load saved access for this workspace. Check the selected machine and its connection, then retry.'}</p>
+          <a href="/cloud-workspaces?step=connect">Manage machines</a>{' '}
+          <Button variant="ghost" onClick={() => void invalidate()}>Retry loading access</Button>
+        </div>}
         {!row && loading && <p className="pc-settings-hint">Loading…</p>}
       </section>
 
@@ -565,13 +572,18 @@ function SshConnectionSetup() {
     <p>Set up once, then use the saved connection. An address works directly; an SSH alias is optional. You’ll need the psu utility on the computer you are using now.</p>
     <details>
       <summary>Prepare the computer you want to reach</summary>
-      <p>Install Papercusp and tmux, enable SSH, and authorize the SSH public key from the computer you are using now. Keep both computers on the same private network or VPN.</p>
+      <p>Do these steps on the remote computer. Keep both computers on the same private network or VPN.</p>
+      <ol>
+        <li><a href="https://papercusp.com" target="_blank" rel="noreferrer">Get Papercusp Server</a>, install the package for that computer, and open it. Leave the server running. In a terminal on that computer, run <code>curl http://127.0.0.1:3070/api/health</code> and check that it reports <code>ok: true</code> before continuing.</li>
+        <li>On Debian or Ubuntu Linux, run <code>sudo apt install openssh-server tmux</code>, then <code>sudo systemctl enable --now ssh</code>. On macOS, run <code>brew install tmux</code> and enable Remote Login in System Settings → General → Sharing. For other systems, follow the <a href="https://github.com/tmux/tmux/wiki/Installing" target="_blank" rel="noreferrer">tmux installation guide</a> and your system’s SSH server setup guide.</li>
+        <li>On the remote Linux or macOS computer, run <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code>. Keep the displayed fingerprint so you can compare it with the fingerprint shown by “Check SSH access” below. If that key file is missing or access is denied, ask the computer’s administrator for its SSH host fingerprint.</li>
+      </ol>
+      <p>Next, authorize the SSH public key from the computer you are using now:</p>
       <ol>
         <li>On the computer you are using now, find your public key: on Linux or macOS run <code>cat ~/.ssh/id_ed25519.pub</code>; in Windows PowerShell run <code>Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub</code>. If you have no SSH key, run <code>ssh-keygen -t ed25519</code> and accept the default location. Reuse an existing key rather than replacing it.</li>
         <li>On the remote computer, add that public key as a new line in your SSH account’s <code>~/.ssh/authorized_keys</code>. On Linux or macOS, create the directory if needed with <code>mkdir -p ~/.ssh</code>, then set permissions with <code>chmod 700 ~/.ssh</code> and <code>chmod 600 ~/.ssh/authorized_keys</code>. For a Windows administrator account, ask its SSH administrator to authorize the key in the configured administrator key file.</li>
         <li>Copy only the public key ending in <code>.pub</code>. Keep the private key on the computer you are using now. Continue with “Check SSH access” below to confirm the setup.</li>
       </ol>
-      <p>Papercusp on the remote computer must listen on loopback port 3070. Keep its SSH host fingerprint handy so you can verify it when connecting.</p>
     </details>
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 12, marginTop: 12 }}>
       <label>Computer address or SSH alias

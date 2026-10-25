@@ -21,6 +21,7 @@ const H = vi.hoisted(() => ({
   invalidate: vi.fn(),
   control: [] as unknown[],
   controlQueries: [] as Array<{ queryName: string; enabled?: boolean }>,
+  overviewError: null as Error | null,
 }));
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }));
@@ -40,7 +41,7 @@ vi.mock('nuqs', () => {
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (query: { queryName: string; enabled?: boolean }) => {
     if (query.queryName === 'workspaceHosts.control') H.controlQueries.push(query);
-    return { data: query.queryName === 'workspaceHosts.control' ? H.control : H.rows, loading: false, error: null, invalidate: H.invalidate };
+    return { data: query.queryName === 'workspaceHosts.control' ? H.control : H.rows, loading: false, error: query.queryName === 'remoteAccess.overview' ? H.overviewError : null, invalidate: H.invalidate };
   },
 }));
 vi.mock('@/app/harness/Select', () => ({
@@ -107,6 +108,7 @@ beforeEach(() => {
   H.invalidate.mockReset();
   H.control = [];
   H.controlQueries = [];
+  H.overviewError = null;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
@@ -175,6 +177,27 @@ describe('Remote access screen', () => {
     expect(preparation.textContent).toContain('~/.ssh/authorized_keys');
     expect(preparation.textContent).toContain('Reuse an existing key rather than replacing it');
     expect(preparation.textContent).toContain('Keep the private key');
+    expect(within(preparation).getByRole('link', { name: 'Get Papercusp Server' }).getAttribute('href')).toBe('https://papercusp.com');
+    expect(preparation.textContent).toContain('sudo apt install openssh-server tmux');
+    expect(preparation.textContent).toContain('sudo systemctl enable --now ssh');
+    expect(preparation.textContent).toContain('curl http://127.0.0.1:3070/api/health');
+    expect(preparation.textContent).toContain('ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub');
+  });
+
+  it.each([
+    ['machine_signin_required', 'Sign in to the selected machine'],
+    ['HTTP 503', 'Check the selected machine and its connection'],
+  ])('offers recovery and retry when access inventory fails: %s', (message, recovery) => {
+    H.rows = [];
+    H.overviewError = new Error(message);
+    render(<RemoteAccessSettingsPage />);
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain(recovery);
+    expect(alert.textContent).not.toContain(message);
+    expect(within(alert).getByRole('link', { name: 'Manage machines' }).getAttribute('href')).toBe('/cloud-workspaces?step=connect');
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry loading access' }));
+    expect(H.invalidate).toHaveBeenCalledOnce();
+    expect(posts).toEqual([]);
   });
 
   it.each([
@@ -182,6 +205,9 @@ describe('Remote access screen', () => {
     ['Computer address or SSH alias', '$(whoami)'],
     ['Computer address or SSH alias', '-oProxyCommand=command'],
     ['Computer address or SSH alias', 'alice@laptop.local'],
+    ['Computer address or SSH alias', 'laptop.local:2222'],
+    ['Computer address or SSH alias', '100.64.0.2:2222'],
+    ['Computer address or SSH alias', '2001:db8:::1'],
     ['SSH username (optional)', 'alice;command'],
     ['Saved connection name', 'laptop --other-option'],
     ['Saved connection name', ''],
@@ -193,6 +219,14 @@ describe('Remote access screen', () => {
     expect(screen.queryByRole('textbox', { name: 'Save SSH connection' })).toBeNull();
     expect(screen.queryByRole('textbox', { name: 'Test SSH connection' })).toBeNull();
     expect(screen.queryByRole('textbox', { name: 'Open remote terminal' })).toBeNull();
+  });
+
+  it('keeps valid IPv6 literals usable as SSH addresses', () => {
+    render(<RemoteAccessSettingsPage />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Computer address or SSH alias' }), { target: { value: '2001:db8::1' } });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect((screen.getByRole('textbox', { name: 'Test SSH connection' }) as HTMLTextAreaElement).value).toBe('ssh 2001:db8::1');
+    expect((screen.getByRole('textbox', { name: 'Save SSH connection' }) as HTMLTextAreaElement).value).toBe('psu --connect-add-ssh=my-computer --connect-host=2001:db8::1');
   });
 
   it('renders actual SSH and hosted sources with distinct authority, liveness and removal consequences', async () => {
