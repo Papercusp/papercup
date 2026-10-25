@@ -13,7 +13,7 @@ import { LSP_VENDOR_DIR } from './lsp-adapter';
 import type { CodeIntelAnswer } from './contracts';
 import { getClaimTimePlanDecisions, type ClaimTimePlanDecisionsBrief } from '../plan-decisions-claim-port';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { composeReuseBrief, registeredReuseBriefProviders, type ReuseBriefDestination, type ReuseBriefProvider,
+import { composeReuseBrief, encodeClaimReuseContribution, registeredReuseBriefProviders, type ReuseBriefDestination, type ReuseBriefProvider,
   type ReuseContribution, type ReuseProviderContext, type ReuseProviderObservation } from './reuse-brief-providers';
 import { recordReuseBriefIssued, type ReuseIssuedRecord } from './reuse-brief-ledger';
 import { boundChangeHistoryProviders, changeHistoryProviders, readCoChange } from './change-history';
@@ -504,7 +504,7 @@ export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: 
   // D011: append to the existing representation; preserve mandatory fields and
   // never manufacture parallel top-level anchor sections.
   const append: TaskBriefReuseAdapter = (brief, value) => ({ ...brief,
-    graph: { ...brief.graph, relationships: [...brief.graph.relationships, JSON.stringify(value)] } });
+    graph: { ...brief.graph, relationships: [...brief.graph.relationships, encodeClaimReuseContribution(brief, value)] } });
   const adapters = deps.reuse?.adapters ?? {
     impact: append, tests: append, coChange: append, whatChangedSincePlanning: append,
     ...Object.fromEntries(reuseAdapters),

@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { decodeClaimReuseContribution } from '../reuse-brief-providers.ts';
 
 /** Inner assertions read the private operator ledger; the outer test retains its own sink. */
 export function privateReuseTestEnvironment(env: NodeJS.ProcessEnv, workspace: string, root: string) {
@@ -272,7 +273,7 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
     assert.deepEqual({ ...brief, graph: { ...brief.graph,
       relationships: brief.graph.relationships.slice(0, base.graph.relationships.length) } }, base);
     const contributions = brief.graph.relationships.flatMap((line: string) => {
-      try { const row = JSON.parse(line); return row.provider ? [row] : []; } catch { return []; }
+      const row = decodeClaimReuseContribution(brief, line); return row ? [row] : [];
     });
     const { REUSE_PROVIDER_POLICY, briefCodePoints } = await import('../reuse-brief-providers.ts');
     const expected = expectedProviders;

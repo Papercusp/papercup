@@ -4,18 +4,108 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildTaskBrief, enrichTaskBriefWithReuse, getClaimTimeTaskBrief,
   registerTaskBriefReuseAdapter, type TaskBrief, type TaskBriefDeps } from './task-brief';
-import { briefCodePoints, composeReuseBrief, createReuseBriefIdentity, REUSE_PROVIDER_POLICY, registerReuseBriefProvider,
+import { briefCodePoints, composeReuseBrief, createReuseBriefIdentity, decodeClaimReuseContribution,
+  encodeClaimReuseContribution, REUSE_PROVIDER_POLICY, registerReuseBriefProvider,
   type ReuseBriefProvider, type ReuseContribution, type ReuseProviderId } from './reuse-brief-providers';
 import { reuseIssuedSubjects, type ReuseIssuedRecord } from './reuse-brief-ledger';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { REUSE_PROVIDER_FLAGS, type ReuseProviderResult } from './reuse-brief-providers';
 
 const dirs: string[] = [];
+describe('D032 claim relationship protocol', () => {
+  const base = { sourceFingerprint: 'a'.repeat(64) };
+  const contribution: ReuseContribution = { provider: 'sql', section: 'impact',
+    sourceVersion: base.sourceFingerprint, indexVersion: 'b'.repeat(64),
+    text: 'reader "a.ts" \\ path 😀\nSQL static lower bound; execution unknown.\n' };
+  it('round-trips exact multiline Unicode text and full index identity in the enclosing source', () => {
+    const wire = encodeClaimReuseContribution(base, contribution);
+    expect(wire).toBe('r1:' + JSON.stringify(['sql', 'impact', contribution.indexVersion, contribution.text]));
+    expect(decodeClaimReuseContribution(base, wire)).toEqual(contribution);
+    expect(decodeClaimReuseContribution(base, JSON.stringify(contribution))).toEqual(contribution);
+    expect(base.sourceFingerprint).toBe('a'.repeat(64));
+  });
+  it.each([
+    { ...contribution, sourceVersion: 'c'.repeat(64) },
+    { ...contribution, sourceVersion: 'a'.repeat(12) },
+    { ...contribution, provider: 'toString' },
+    { ...contribution, provider: '__proto__' },
+    { ...contribution, section: 'tests' },
+    { ...contribution, indexVersion: '' },
+    { ...contribution, indexVersion: '  ' },
+    { ...contribution, text: '' },
+  ])('rejects invalid or mismatched complete identities before encoding: %j', value => {
+    expect(() => encodeClaimReuseContribution(base, value as ReuseContribution)).toThrow();
+    expect(decodeClaimReuseContribution(base, JSON.stringify(value))).toBeNull();
+  });
+  it.each([null, '', 'a'.repeat(12), 'g'.repeat(64)])('rejects missing, shortened or non-hex enclosing source %s', sourceFingerprint => {
+    const source = { sourceFingerprint };
+    expect(() => encodeClaimReuseContribution(source, contribution)).toThrow();
+    expect(decodeClaimReuseContribution(source, encodeClaimReuseContribution(base, contribution))).toBeNull();
+    expect(decodeClaimReuseContribution(source, JSON.stringify(contribution))).toBeNull();
+  });
+  it.each([
+    'r2:["sql","impact","exact-index","text"]', 'r1:', 'r1:null', 'r1:{}',
+    'r1:["sql","tests","exact-index","text"]', 'r1:["toString","impact","exact-index","text"]',
+    'r1:["__proto__","impact","exact-index","text"]', 'r1:["sql","impact","","text"]',
+    'r1:["sql","impact",null,"text"]', 'r1:["sql","impact",42,"text"]',
+    'r1:["sql","impact","exact-index",null]', 'r1:["sql","impact","exact-index",""]',
+    'r1:["sql","impact","exact-index","text","extra"]', 'r1:["sql","impact","exact-index"]',
+    'null', '[]', 'observed:callers:a.ts->b.ts',
+  ])('keeps malformed and unknown relationship encodings out of evidence: %s', wire => {
+    expect(decodeClaimReuseContribution(base, wire)).toBeNull();
+  });
+  it('preserves the exact full source on legacy contributions rather than rebinding them', () => {
+    const other = { sourceFingerprint: 'c'.repeat(64) };
+    expect(decodeClaimReuseContribution(other, JSON.stringify(contribution))).toBeNull();
+  });
+  it('fits all retained producer lines through the default adapter without changing base, charges or issued identity', async () => {
+    // Original focused receipt21976156; retained log SHA256
+    // 5565099db1494b02b385ea95bd177ffd2a82b3a04a98ab1bf6206e3ec7e1b731.
+    // Data replay only: no sparse producer fixture or native acceptance rerun.
+    const baseline: TaskBrief = {"status":"current","scope":{"harness":"r","paths":["a.ts"]},"sourceFingerprint":"a0be886e1b8cff602abc5a48d18ee07ed6dd6f45a38c2d357ced998f85d0d676","commit":"b05822520ebb9133e0235752fc72f07321b04456","files":[{"path":"a.ts","sha256":"5fd81ba1b31b98d97e4c8169d7b93f874be34271196395025999d8464d43262d","kind":"implementation"}],"excerpts":[{"path":"a.ts","text":"export function f(v:number[]){let t=0;for(const x of v){if(x>0)t+=x;else t-=x;}t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;t+=v.length;db.query(`UPDATE t SET x=1`);re"}],"graph":{"status":"unknown","consumers":[],"relationships":[],"reason":"Compiler evidence is unavailable or outside the measured task files."},"exclusions":["Governing decision bodies or unread authority remain at the canonical plan reader.","Evidence outside the stored task scope is excluded; compiler dependencies may be read internally. Static consumers do not prove runtime execution."],"recover":{"tool":"code:pack","args":{"op":"pack","include":["a.ts"],"rootPath":"/tmp/pcv/r-HN5SDM"}},"repository":{"workspaceId":"default","rootPath":"/tmp/pcv/r-HN5SDM"},"decisions":{"status":"unknown","refs":[],"recover":{"tool":"plans:get","args":{"slug":"r-2026-10-25","harness":"r","heading":"Decisions"}}},"incident":{"status":"measured","cause":"unknown","failures":[],"candidates":[],"recentChanges":[],"recentChangesStatus":"unknown","workRecord":"WI-1","runtimeExecution":"unmeasured","recover":{"tool":"work_items:get","args":{"id":"WI-1","harness":"r"}},"limitations":["Selected task files and their latest normal test runs only; graph paths and recent edits are candidate causes.","Failure-log hashes identify recorded errors; no distinguishing causal test or runtime execution was measured."]},"engineering":{"intent":[],"rationale":[],"validation":[],"execution":[],"gaps":["no-visible-spec","intent-not-linked","rationale-not-linked","validation-not-linked","Only named child boundaries are observed; static anchors, test outcomes and parent spans do not observe their callees."],"recover":{"tool":"graph:query","args":{"op":"evidence","harnesses":["r"],"plan":"r-2026-10-25","item":"P-001"}}}};
+    const captured: { provider: ReuseProviderId; result: ReuseProviderResult }[] = [{"provider":"clones","result":{"status":"measured","lines":["Copy family b.ts:1 g; static match, review before reuse."],"sourceVersion":"a0be886e1b8cff602abc5a48d18ee07ed6dd6f45a38c2d357ced998f85d0d676","indexVersion":"e8d3a969b06b","citedPaths":["b.ts"]}},{"provider":"cochange","result":{"status":"measured","sourceVersion":"a0be886e1b8cff602abc5a48d18ee07ed6dd6f45a38c2d357ced998f85d0d676","indexVersion":"5235fe51637a","citedPaths":["a.ts","b.ts"],"lines":["Unanchored b.ts (4/4;90d)"]}},{"provider":"provenance","result":{"status":"measured","sourceVersion":"a0be886e1b8cff602abc5a48d18ee07ed6dd6f45a38c2d357ced998f85d0d676","indexVersion":"acd983ae6739","citedPaths":["a.ts"],"lines":["a.ts#f: WI-1 (edit 1; current bytes)"]}},{"provider":"sql","result":{"status":"measured","lines":["SQL readers/writers (static lower bound): t write f a.ts:1","SQL readers/writers (static lower bound): t.x write f a.ts:1"],"sourceVersion":"a0be886e1b8cff602abc5a48d18ee07ed6dd6f45a38c2d357ced998f85d0d676","indexVersion":"7a9fb73bcb19e213c3c6084a3eff7c7f4d7854e1d186b313b7b9053bf743776a","citedPaths":["a.ts"]}},{"provider":"coverage","result":{"status":"measured","lines":["a.ts: static reach fallback; execution unknown."],"sourceVersion":"a0be886e1b8cff602abc5a48d18ee07ed6dd6f45a38c2d357ced998f85d0d676","indexVersion":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","citedPaths":["a.ts"]}}];
+    const before = JSON.stringify(baseline), deps = await fixture();
+    const record = vi.fn(async (_input: ReuseIssuedRecord) => true);
+    const providers = captured.map(({ provider: id, result }) => ({ id, read: async () => structuredClone(result) }));
+    setFlagOverridesForTest(Object.fromEntries(captured.map(row => [REUSE_PROVIDER_FLAGS[row.provider], true])));
+    try {
+      const result = await enrichTaskBriefWithReuse(baseline, {
+        workspaceId: 'default', workItem: { id: 'WI-1', harness: 'r', payload: { paths: ['a.ts'] } },
+        reuse: { owner: 'su-retained', invocation: 'retained-wire-regression' },
+      }, { ...deps, reuse: { providers, recordIssued: record } }, Date.now() + 6000);
+      const contributions = result.graph.relationships.map(wire => decodeClaimReuseContribution(result, wire));
+      expect(contributions).toEqual(captured.map(({ provider, result }) => ({
+        provider, section: REUSE_PROVIDER_POLICY[provider].section, text: result.lines.join('\n'),
+        sourceVersion: result.sourceVersion, indexVersion: result.indexVersion,
+      })));
+      expect(briefCodePoints(before)).toBe(2318);
+      expect(briefCodePoints(JSON.stringify(result))).toBe(2985);
+      expect(JSON.stringify(baseline)).toBe(before);
+      expect({ ...result, graph: { ...result.graph,
+        relationships: result.graph.relationships.slice(0, baseline.graph.relationships.length) } }).toEqual(baseline);
+      expect(record).toHaveBeenCalledOnce();
+      const issued = record.mock.calls[0]![0];
+      expect(issued.observations.map(row => [row.provider, row.status, row.chars])).toEqual([
+        ['clones', 'issued', 219], ['cochange', 'issued', 192], ['provenance', 'issued', 221],
+        ['sql', 'issued', 332], ['coverage', 'issued', 263],
+      ]);
+      for (const row of issued.observations) expect(row.chars).toBeLessThanOrEqual(REUSE_PROVIDER_POLICY[row.provider].cap);
+      expect(reuseIssuedSubjects(issued).map(({ subject }) => {
+        const row = JSON.parse(subject);
+        return [row.provider, row.invocation, row.sourceVersion, row.indexVersion];
+      })).toEqual(captured.map(({ provider, result }) => [
+        provider, 'retained-wire-regression', baseline.sourceFingerprint, result.indexVersion,
+      ]));
+    } finally { setFlagOverridesForTest(null); }
+  });
+});
 afterEach(async () => { vi.useRealTimers(); await Promise.all(dirs.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const source = (id: ReuseProviderId): ReuseBriefProvider => ({ id, read: async context => ({
   status: 'measured', lines: [`${id} target.ts:1; bounded static evidence only`],
   sourceVersion: context.sourceVersion, indexVersion: `index-${id}`, citedPaths: ['target.ts'],
 }) });
 const append = (base: TaskBrief, value: ReuseContribution): TaskBrief => ({ ...base,
-  graph: { ...base.graph, relationships: [...base.graph.relationships, JSON.stringify(value)] } });
+  graph: { ...base.graph, relationships: [...base.graph.relationships, encodeClaimReuseContribution(base, value)] } });
 const ref = { workspaceId: 'fixture-workspace', workItem: { id: 'WI-target', harness: 'fixture-harness',
   sourcePlanSlug: 'fixture-plan', sourcePlanItemIds: ['P-009'], payload: { paths: ['target.ts'] } } };
 async function fixture(): Promise<TaskBriefDeps> {
@@ -66,7 +156,11 @@ describe('P009 real taskBrief production adapter boundary', () => {
       lines: ['x'], sourceVersion: base.sourceFingerprint, indexVersion: 'x' }) }));
     const minimum = expected.map(provider => ({ provider, section: REUSE_PROVIDER_POLICY[provider].section,
       text: 'x', sourceVersion: base.sourceFingerprint!, indexVersion: 'x' }));
-    const all = minimum.reduce(append, structuredClone(base));
+    // Preserve the historical falsifier's old representation; r1 below has its
+    // own retained-payload regression and does not rewrite historical proof.
+    const legacyAppend = (brief: TaskBrief, value: ReuseContribution): TaskBrief => ({ ...brief,
+      graph: { ...brief.graph, relationships: [...brief.graph.relationships, JSON.stringify(value)] } });
+    const all = minimum.reduce(legacyAppend, structuredClone(base));
     // Even removing ALL excerpt text and BOTH complete authored plan names is
     // insufficient. This is arithmetic only: neither altered response is emitted.
     const optionalAuthoredChars = briefCodePoints(JSON.stringify(base.excerpts[0]!.text)) - 2
@@ -75,7 +169,7 @@ describe('P009 real taskBrief production adapter boundary', () => {
     const result = await composeReuseBrief({ base, providers,
       context: { surface: 'claim', workspaceId: base.repository!.workspaceId, owner: 'controlled-lower-bound',
         invocation: 'capacity-only', workItem: 'WI-1', paths: base.scope.paths, sourceVersion: base.sourceFingerprint },
-      append, enabled: async () => true, deadline: Date.now() + 6000 });
+      append: legacyAppend, enabled: async () => true, deadline: Date.now() + 6000 });
     expect(JSON.stringify(base)).toBe(before);
     expect(briefCodePoints(JSON.stringify(result.brief))).toBeLessThanOrEqual(3000);
     expect(result.observations).toHaveLength(5);

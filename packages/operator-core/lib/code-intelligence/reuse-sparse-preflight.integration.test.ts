@@ -20,7 +20,7 @@ import { cloneBriefProvider } from './clone-brief-provider';
 import { buildCloneIndex } from './clone-index';
 import { prepareCloneAdvisories } from './clone-advisory';
 import { parsePushSnapshot } from './push-snapshot';
-import { briefCodePoints, composeReuseBrief, registeredReuseBriefProviders, REUSE_PROVIDER_POLICY,
+import { briefCodePoints, composeReuseBrief, encodeClaimReuseContribution, registeredReuseBriefProviders, REUSE_PROVIDER_POLICY,
   REUSE_PROVIDER_FLAGS, type ReuseContribution, type ReuseProviderContext } from './reuse-brief-providers';
 import { nativeCoverageBriefProvider } from './test-coverage-map';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
@@ -114,7 +114,7 @@ it('records a truthful sparse baseline and five actual producer envelopes before
   const minimum = captured.map(({ provider, result }) => ({ provider, section: REUSE_PROVIDER_POLICY[provider].section,
     text: result.lines[0]!, sourceVersion: result.sourceVersion!, indexVersion: result.indexVersion! }));
   const append = (brief: typeof base, contribution: ReuseContribution) => ({ ...brief,
-    graph: { ...brief.graph, relationships: [...brief.graph.relationships, JSON.stringify(contribution)] } });
+    graph: { ...brief.graph, relationships: [...brief.graph.relationships, encodeClaimReuseContribution(brief, contribution)] } });
   const minimumAll = minimum.reduce(append, structuredClone(base));
   setFlagOverridesForTest(Object.fromEntries(providers.map(p => [REUSE_PROVIDER_FLAGS[p.id], true])));
   const composition = await composeReuseBrief({ base, context, deadline: Date.now() + 6000, append,

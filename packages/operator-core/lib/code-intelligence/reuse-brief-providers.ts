@@ -66,6 +66,42 @@ export interface ReuseContribution {
   sourceVersion: string;
   indexVersion: string;
 }
+type ClaimReuseSource = { sourceFingerprint: string | null };
+const fullSourceFingerprint = (value: unknown): value is string =>
+  typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+function validClaimContribution(value: unknown, source: ClaimReuseSource): value is ReuseContribution {
+  if (!fullSourceFingerprint(source.sourceFingerprint) || !value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return typeof row.provider === 'string' && Object.hasOwn(REUSE_PROVIDER_POLICY, row.provider)
+    && row.section === REUSE_PROVIDER_POLICY[row.provider as ReuseProviderId].section
+    && row.sourceVersion === source.sourceFingerprint
+    && typeof row.indexVersion === 'string' && row.indexVersion.trim().length > 0
+    && typeof row.text === 'string' && row.text.length > 0;
+}
+/** r1 is local to its unchanged enclosing claim brief: sourceVersion is the
+ * complete sourceFingerprint already in that container, never a shortened hash.
+ * Keep provider/section/index/text exact; independent issued identities stay full.
+ */
+export function encodeClaimReuseContribution(source: ClaimReuseSource, value: ReuseContribution): string {
+  if (!validClaimContribution(value, source)) throw new Error('Invalid claim reuse contribution or enclosing source identity');
+  return 'r1:' + JSON.stringify([value.provider, value.section, value.indexVersion, value.text]);
+}
+/** Read both maintained r1 and legacy JSON objects. A relationship without its
+ * full enclosing fingerprint, or an unknown/malformed protocol, is not evidence.
+ */
+export function decodeClaimReuseContribution(source: ClaimReuseSource, wire: string): ReuseContribution | null {
+  if (!fullSourceFingerprint(source.sourceFingerprint) || typeof wire !== 'string') return null;
+  try {
+    let value: unknown;
+    if (wire.startsWith('r1:')) {
+      const tuple: unknown = JSON.parse(wire.slice(3));
+      if (!Array.isArray(tuple) || tuple.length !== 4) return null;
+      const [provider, section, indexVersion, text] = tuple;
+      value = { provider, section, indexVersion, text, sourceVersion: source.sourceFingerprint };
+    } else value = JSON.parse(wire);
+    return validClaimContribution(value, source) ? value : null;
+  } catch { return null; }
+}
 export interface ReuseProviderObservation {
   provider: ReuseProviderId;
   status: 'issued' | 'held-out' | 'disabled' | 'no-match' | 'unknown' | 'budget';

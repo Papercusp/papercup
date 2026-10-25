@@ -10,6 +10,7 @@ import type { CodeIntelAnswer } from './contracts';
 import { coChangeFromCommits } from './change-history';
 import { readEngineeringEvidence, type EngineeringEvidenceDeps } from './engineering-evidence';
 import { coverageHash, type TestCoverageSnapshot } from '@papercusp/test-config/test-coverage-map';
+import { decodeClaimReuseContribution } from './reuse-brief-providers';
 
 const dirs: string[] = [];
 describe('P039 completion pre-review briefs', () => {
@@ -294,10 +295,10 @@ describe('native engineering evidence task context', () => {
         ] },
       }))!.taskBrief;
       const hints = enriched.graph.relationships.flatMap(line => {
-        try { const row = JSON.parse(line); return row.provider ? [row] : []; } catch { return []; }
+        const row = decodeClaimReuseContribution(enriched, line); return row ? [row] : [];
       });
       expect({ ...enriched, graph: { ...enriched.graph,
-        relationships: enriched.graph.relationships.filter(line => !hints.some(hint => JSON.stringify(hint) === line)) } })
+        relationships: enriched.graph.relationships.slice(0, base.graph.relationships.length) } })
         .toEqual(base);
       const issued = observe.mock.calls[0][0].observations.filter((row: { status: string }) => row.status === 'issued');
       if (maxChars === 6000) expect(issued.length).toBeGreaterThan(0);
