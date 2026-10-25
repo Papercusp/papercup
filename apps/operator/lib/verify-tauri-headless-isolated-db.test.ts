@@ -121,6 +121,67 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toMatch(/rm -rf "\$ISOLATED_WEBVIEW_ROOT"/);
   });
 
+  it.each([
+    ['success', 0, '{"before":null,"after":"verify-tauri-headless-isolated-v1","cleared":true}', '', 0],
+    ['evaluation error', 17, 'partial response', 'evaluation context was destroyed', 1],
+    ['existing sentinel', 0, '{"before":"ambient","after":"verify-tauri-headless-isolated-v1","cleared":true}', '', 1],
+    ['timeout', 124, 'evaluation pending', '', 1],
+  ] as const)('retains the real storage probe evidence for %s', (kind, probeExit, stdout, stderr, expectedExit) => {
+    const work = mkdtempSync(join(tmpdir(), 'verify-storage-evidence-'));
+    try {
+      const helper = src.match(/verify_isolated_storage_sentinel\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
+      expect(helper).toBeTruthy();
+      const tools = join(work, 'agent-tools');
+      writeFileSync(tools, [
+        '#!/usr/bin/env bash',
+        'printf "%s" "$FIXTURE_STDOUT"',
+        'printf "%s" "$FIXTURE_STDERR" >&2',
+        kind === 'timeout' ? 'exec sleep 60' : 'exit "$FIXTURE_PROBE_EXIT"',
+      ].join('\n'), { mode: 0o700 });
+      const result = spawnSync('bash', ['-c', [
+        'set -eu', helper,
+        'WORK="$FIXTURE_ROOT"; BRIDGE_PID=1234; HEALTH_PROBE_TIMEOUT=1',
+        'verify_isolated_storage_sentinel',
+      ].join('\n')], {
+        encoding: 'utf8', timeout: 5000,
+        env: { ...process.env, VH_RUN_DIR: '', FIXTURE_ROOT: work,
+          VERIFY_TAURI_AGENT_TOOLS_BIN: tools, FIXTURE_STDOUT: stdout,
+          FIXTURE_STDERR: stderr, FIXTURE_PROBE_EXIT: String(probeExit) },
+      });
+      expect(result.status, result.stderr).toBe(expectedExit);
+      const evidence = join(work, 'phases/boot/isolated-storage');
+      expect(readFileSync(join(evidence, 'probe.status'), 'utf8').trim()).toBe(String(probeExit));
+      expect(readFileSync(join(evidence, 'probe.stdout'), 'utf8')).toBe(stdout);
+      expect(readFileSync(join(evidence, 'probe.stderr'), 'utf8')).toBe(stderr);
+      if (probeExit !== 0) {
+        expect(result.stderr).toContain(`exit=${probeExit}`);
+        expect(result.stderr).toContain('storage isolation is unmeasured');
+        expect(result.stderr).toContain(stdout);
+        if (stderr) expect(result.stderr).toContain(stderr);
+      }
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  });
+
+  it.each([0, 1])('preserves an earlier failed step when teardown also fails (initial exit=%s)', (initialExit) => {
+    const work = mkdtempSync(join(tmpdir(), 'verify-teardown-first-failure-'));
+    try {
+      const block = src.match(/  if \[ "\$stop_rc" -ne 0 \]; then\n[\s\S]*?\n  fi/)?.[0];
+      expect(block).toBeTruthy();
+      writeFileSync(join(work, 'stop.log'), 'unverified process\n');
+      const result = spawnSync('bash', ['-c', [
+        'set -eu', 'WORK="$FIXTURE_ROOT"; ec="$FIXTURE_INITIAL_EXIT"; stop_rc=1',
+        'step=isolated-webview-storage; artifacts_retained=1',
+        'vh_step() { step="$1"; }; log() { :; }', block,
+        'printf "%s %s %s" "$ec" "$step" "$artifacts_retained"',
+      ].join('\n')], {
+        encoding: 'utf8', timeout: 5000,
+        env: { ...process.env, FIXTURE_ROOT: work, FIXTURE_INITIAL_EXIT: String(initialExit) },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe(`1 ${initialExit ? 'isolated-webview-storage' : 'generated-stop-script'} 0`);
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  });
+
   it('creates a private registered workspace and overrides hostile inherited identity at the real launch boundary', () => {
     const work = mkdtempSync(join(tmpdir(), 'dream-workspace-isolation-'));
     try {
