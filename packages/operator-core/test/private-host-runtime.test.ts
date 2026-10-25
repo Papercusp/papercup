@@ -708,17 +708,14 @@ it('hands a verified Git clone to the real source guard without its donor archiv
   const selectedCommit = git(['rev-parse', 'HEAD']);
   const env = { VERIFY_TAURI_SOURCE_RECEIPT: '/donor/source.json', VERIFY_TAURI_SOURCE_REF: selectedCommit,
     NODE_OPTIONS: '--import=/selected/scripts/lib/committed-source-loader.mjs', OTHER: 'keep' };
-  const script = readFileSync(resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host.sh'), 'utf8');
-  const guard = script.slice(script.indexOf('if [[ -f "$REPO_ROOT/.verifier-source.json" ]]'),
-    script.indexOf('BUNDLED_SOURCE_SHA_DEFINE=()'));
-  expect(guard).toContain('pinned source receipt requires its archive marker');
-  const run = (environment: NodeJS.ProcessEnv) => spawnSync('bash', ['-c', guard + '\nprintf "%s" "$SOURCE_SHA"'],
-    { env: { PATH: process.env.PATH, REPO_ROOT: root, ...environment }, encoding: 'utf8', timeout: 10_000 });
+  const run = (environment: NodeJS.ProcessEnv) => spawnSync('bash', ['-c',
+    'source "$COMMON"; bundle_host_source_sha "$REPO_ROOT"'],
+    { env: { PATH: process.env.PATH, COMMON: common, REPO_ROOT: root, ...environment }, encoding: 'utf8', timeout: 10_000 });
   expect(run(env)).toMatchObject({ status: 78,
     stderr: 'bundle-host.sh: pinned source receipt requires its archive marker\n' });
   const environment = privateGitCloneBundleEnv(root, selectedCommit, env);
   expect(environment).toEqual({ NODE_OPTIONS: env.NODE_OPTIONS, OTHER: 'keep' });
-  expect(run(environment)).toMatchObject({ status: 0, stdout: git(['rev-parse', '--short', 'HEAD']) });
+  expect(run(environment)).toMatchObject({ status: 0, stdout: git(['rev-parse', '--short', 'HEAD']) + '\n' });
   expect(env.VERIFY_TAURI_SOURCE_RECEIPT).toBe('/donor/source.json');
   expect(() => privateGitCloneBundleEnv(root, '0'.repeat(40), env)).toThrow('differs from the selected commit');
   mkdirSync(join(root, 'nested'));
