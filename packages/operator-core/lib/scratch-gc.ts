@@ -929,7 +929,11 @@ async function childDirs(
       'readdir',
       () => readdirAsync(dir, { withFileTypes: true }),
     );
-  } catch {
+  } catch (error) {
+    if (scratchFsErrorCode(error) !== 'ENOENT' && diagnostics) {
+      diagnostics.directoryReadErrors += 1;
+      rememberScratchSizeWalkErrorCode(diagnostics, error);
+    }
     return out;
   }
   scratchGcBudgetExpired(budget);
@@ -942,7 +946,11 @@ async function childDirs(
     let st;
     try {
       st = await measureScratchQuotaRecoveryOperation(diagnostics, 'stat', () => statAsync(child));
-    } catch {
+    } catch (error) {
+      if (scratchFsErrorCode(error) !== 'ENOENT' && diagnostics) {
+        diagnostics.fileStatErrors += 1;
+        rememberScratchSizeWalkErrorCode(diagnostics, error);
+      }
       continue;
     }
     if (st.isDirectory()) out.push({ dir: child, mtimeMs: st.mtimeMs });
@@ -1116,12 +1124,18 @@ async function evictWorkspaceQuotaLocked(
   let used: number;
   if (useCachedRunSizes) {
     const runListingStartedAt = performance.now();
+    const runListingErrorCount = scratchQuotaReadErrorCount(diagnostics);
     runs = await runDirsOf(wsRoot, diagnostics);
     if (diagnostics) {
       diagnostics.runListingMs += Math.max(0, performance.now() - runListingStartedAt);
       diagnostics.runsListed += runs.length;
     }
-    if (!entry.runBytesValid || entry.refreshDeferred) {
+    if (scratchQuotaReadErrorCount(diagnostics) > runListingErrorCount) {
+      // A partial run listing cannot reconcile the cached index: absent paths may be
+      // temporarily unreadable rather than deleted. Rebuild from the workspace root.
+      useCachedRunSizes = false;
+      runs = null;
+    } else if (!entry.runBytesValid || entry.refreshDeferred) {
       // A synchronous reservation may have invalidated the index while the directory listing
       // yielded. Without a complete stable index, keep the conservative full measurement.
       useCachedRunSizes = false;
@@ -1131,6 +1145,7 @@ async function evictWorkspaceQuotaLocked(
       if (unindexedRuns.length > 0) {
         const measuredRuns = new Map<string, number>();
         let canMeasureIncrementally = true;
+        const incrementalErrorCount = scratchQuotaReadErrorCount(diagnostics);
         for (const run of unindexedRuns) {
           let stats;
           try {
@@ -1139,7 +1154,11 @@ async function evictWorkspaceQuotaLocked(
               'stat',
               () => lstatAsync(run.dir),
             );
-          } catch {
+          } catch (error) {
+            if (scratchFsErrorCode(error) !== 'ENOENT' && diagnostics) {
+              diagnostics.fileStatErrors += 1;
+              rememberScratchSizeWalkErrorCode(diagnostics, error);
+            }
             canMeasureIncrementally = false;
             break;
           }
@@ -1155,7 +1174,12 @@ async function evictWorkspaceQuotaLocked(
             await sizeOfDirAsync(run.dir, undefined, undefined, 0, undefined, diagnostics),
           );
         }
-        if (!canMeasureIncrementally || !entry.runBytesValid || entry.refreshDeferred) {
+        if (
+          !canMeasureIncrementally ||
+          scratchQuotaReadErrorCount(diagnostics) > incrementalErrorCount ||
+          !entry.runBytesValid ||
+          entry.refreshDeferred
+        ) {
           // If the index changed during incremental sizing, discard the partial measurements and
           // rebuild from the workspace root. This also handles unreadable or vanished new paths.
           useCachedRunSizes = false;
@@ -1193,10 +1217,16 @@ async function evictWorkspaceQuotaLocked(
     if (runs.some((run) => !entry.runBytesByPath.has(run.dir))) cacheChanged = true;
   } else {
     const sizeWalkStartedAt = performance.now();
+    const sizeWalkErrorCount = scratchQuotaReadErrorCount(diagnostics);
     try {
       used = await sizeOfDirAsync(wsRoot, observedWriterBytes, runBytesByPath, 0, undefined, diagnostics);
     } finally {
       if (diagnostics) diagnostics.sizeWalkMs += Math.max(0, performance.now() - sizeWalkStartedAt);
+    }
+    if (scratchQuotaReadErrorCount(diagnostics) > sizeWalkErrorCount) {
+      invalidateRunSizeIndex(entry);
+      entry.refreshDeferred = true;
+      throw incompleteScratchQuotaMeasurementError(workspaceId, diagnostics!);
     }
   }
   let evictions = 0;
@@ -1220,6 +1250,7 @@ async function evictWorkspaceQuotaLocked(
       // Symlinked tool/run directories are discovered by runDirsOf but are not traversed by
       // the workspace size walk; retain the old fallback for those paths.
       const runSizingStartedAt = performance.now();
+      const runSizingErrorCount = scratchQuotaReadErrorCount(diagnostics);
       let bytesInRun: number;
       try {
         if (useCachedRunSizes) {
@@ -1248,6 +1279,11 @@ async function evictWorkspaceQuotaLocked(
         }
       } finally {
         if (diagnostics) diagnostics.selectedRunSizingMs += Math.max(0, performance.now() - runSizingStartedAt);
+      }
+      if (scratchQuotaReadErrorCount(diagnostics) > runSizingErrorCount) {
+        invalidateRunSizeIndex(entry);
+        entry.refreshDeferred = true;
+        throw incompleteScratchQuotaMeasurementError(workspaceId, diagnostics!);
       }
       // A writer can join while candidate sizing yields. Preserve its run just as we do for
       // writers already present when the candidate was selected.
@@ -1829,6 +1865,10 @@ function rememberScratchSizeWalkErrorCode(
   if (code && !scratchSizeWalkErrorCodes.has(diagnostics)) {
     scratchSizeWalkErrorCodes.set(diagnostics, code);
   }
+}
+
+function scratchQuotaReadErrorCount(diagnostics?: ScratchQuotaRecoveryDiagnostics): number {
+  return diagnostics ? diagnostics.directoryReadErrors + diagnostics.fileStatErrors : 0;
 }
 
 function incompleteScratchQuotaMeasurementError(

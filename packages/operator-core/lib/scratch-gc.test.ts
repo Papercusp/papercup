@@ -2136,12 +2136,93 @@ describe('deferred scratch quota recovery', () => {
     const dataFileStats = vi.mocked(statAsync).mock.calls
       .map(([path]) => String(path))
       .filter((path) => path.endsWith('/data.bin') || path.endsWith('/recovery.bin'));
-    expect(dataFileStats).toEqual([join(oldest, 'data.bin')]);
+    expect(dataFileStats).toEqual([]);
+    const sizedRunReads = vi.mocked(readdirAsync).mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => [oldest, ...otherRuns].includes(path));
+    expect(sizedRunReads).toEqual([]);
+    await refreshScratchUsage('ws-Q');
+  });
+
+  it('remeasures a FIFO candidate after its run directory mtime changes', async () => {
+    const oldest = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 10_000);
+    const otherRuns = Array.from({ length: 12 }, (_, i) =>
+      makeSparseRun('ws-Q', '00000000-0000-4000-8000-' + (i + 2).toString().padStart(12, '0'), 1024));
+    await refreshScratchUsage('ws-Q');
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 2048, Date.now(), true);
+
+    const changedFile = join(oldest, 'cross-process-growth.bin');
+    writeFileSync(changedFile, Buffer.alloc(256));
+    const changedMtime = Date.now() + 5_000;
+    utimesSync(oldest, changedMtime / 1000, changedMtime / 1000);
+    const laterRunMtime = (changedMtime + 25_000) / 1000;
+    for (const run of otherRuns.slice(1)) utimesSync(run, laterRunMtime, laterRunMtime);
+    vi.mocked(readdirAsync).mockClear();
+    vi.mocked(statAsync).mockClear();
+
+    const timings: ScratchWriteTimings[] = [];
+    const writePath = join(otherRuns[0], 'recovery.bin');
+    await writeWithScratchQuota({
+      workspaceId: 'ws-Q', filePath: writePath, bytes: 64,
+      onTiming: (row) => timings.push(row),
+    }, async () => {
+      await writeFile(writePath, Buffer.alloc(64));
+      expect(existsSync(oldest)).toBe(false);
+      expect(otherRuns.every((run) => existsSync(run))).toBe(true);
+    });
+
+    const recovery = timings[0]?.quotaRecoveryDiagnostics;
+    expect(recovery).toMatchObject({ sizeWalkMs: 0, deleteAttempts: 1 });
+    const remeasuredFiles = vi.mocked(statAsync).mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path === join(oldest, 'data.bin') || path === changedFile)
+      .sort();
+    expect(remeasuredFiles).toEqual([changedFile, join(oldest, 'data.bin')].sort());
     const sizedRunReads = vi.mocked(readdirAsync).mock.calls
       .map(([path]) => String(path))
       .filter((path) => [oldest, ...otherRuns].includes(path));
     expect(sizedRunReads).toEqual([oldest]);
     await refreshScratchUsage('ws-Q');
+  });
+
+  it('fails closed when cached quota recovery cannot list run directories', async () => {
+    const workspaceId = 'ws-Q';
+    const oldest = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 10_000);
+    const otherRuns = Array.from({ length: 12 }, (_, i) =>
+      makeSparseRun('ws-Q', '00000000-0000-4000-8000-' + (i + 2).toString().padStart(12, '0'), 1024));
+    await refreshScratchUsage(workspaceId);
+    _setScratchUsageForTests(workspaceId, WORKSPACE_QUOTA_BYTES + 2048, Date.now(), true);
+
+    const workspaceRoot = scratchRootForWorkspace(workspaceId);
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    const failure = Object.assign(new Error('controlled scratch directory read failure'), { code: 'EACCES' });
+    readdirMock.mockImplementation((async (path: unknown, options?: unknown) => {
+      if (String(path) === workspaceRoot) throw failure;
+      return read(path, options);
+    }) as typeof readdirAsync);
+
+    const timings: ScratchWriteTimings[] = [];
+    const writePath = join(otherRuns[0], 'recovery.bin');
+    try {
+      await expect(writeWithScratchQuota({
+        workspaceId,
+        filePath: writePath,
+        bytes: 64,
+        onTiming: (row) => timings.push(row),
+      }, async () => {
+        await writeFile(writePath, Buffer.alloc(64));
+      })).rejects.toMatchObject({ code: 'EACCES' });
+
+      expect(existsSync(writePath)).toBe(false);
+      expect(existsSync(oldest)).toBe(true);
+      expect(scratchUsageBytes(workspaceId)).toBe(WORKSPACE_QUOTA_BYTES + 2048);
+      const recovery = timings.find((row) => row.quotaRecoveryDiagnostics)?.quotaRecoveryDiagnostics;
+      expect(recovery?.directoryReadErrors).toBeGreaterThan(0);
+    } finally {
+      readdirMock.mockImplementation(originalRead);
+    }
   });
 
   it.each(['EACCES', 'EPERM', 'EROFS'])('recovers a fresh write past an undeletable FIFO candidate (%s)', async (code) => {
