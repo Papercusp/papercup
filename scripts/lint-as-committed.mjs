@@ -875,8 +875,12 @@ export function linkNodeModulesShadow(sharedNm, cloneNm, repoRoot, workRoot, wor
     try {
       mkdirSync(target, { recursive: true });
       for (const ent of readdirSync(source, { withFileTypes: true })) {
-        // npm's mutable install cache describes the physical source topology, not this shadow.
-        if (ent.name === '.package-lock.json') continue;
+        // npm's mutable install cache describes the source topology, not this shadow.
+        // Preserve its identity for bundle freshness under a name npm will not consume.
+        if (ent.name === '.package-lock.json') {
+          symlinkSync(join(source, ent.name), join(target, '.papercusp-installed-package-lock.json'));
+          continue;
+        }
         const sharedPath = join(source, ent.name);
         const clonePath = join(target, ent.name);
         if (ent.name.startsWith('@') && statSync(sharedPath).isDirectory()) {

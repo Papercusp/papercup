@@ -108,9 +108,17 @@ function sourceIdentity(repoRoot) {
 // Walk package boundaries only (including nested/workspace node_modules), not
 // caches or every dependency file; package-content integrity is npm's job.
 function dependencyIdentity(repoRoot, entry) {
-  const installedLock = join(repoRoot, "node_modules", ".package-lock.json");
-  if (!existsSync(installedLock))
-    throw new Error(`installed dependency lock is missing: ${installedLock}`);
+  const installedLockPath = (modules) => {
+    const ordinary = join(modules, ".package-lock.json");
+    if (existsSync(ordinary)) return ordinary;
+    // Committed shadows retain the source install's lock without giving npm
+    // a mutable cache describing the wrong topology. Still measure every real
+    // package manifest and resolution below; the link alone establishes no proof.
+    const shadow = join(modules, ".papercusp-installed-package-lock.json");
+    return existsSync(shadow) && lstatSync(shadow).isSymbolicLink() ? shadow : null;
+  };
+  if (!installedLockPath(join(repoRoot, "node_modules")))
+    throw new Error(`installed dependency lock is missing: ${join(repoRoot, "node_modules", ".package-lock.json")}`);
   const rows = [];
   const seen = new Set();
   const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -120,12 +128,11 @@ function dependencyIdentity(repoRoot, entry) {
       return;
     }
     const actual = realpathSync(modules);
+    const lock = installedLockPath(actual);
     rows.push({
       path: modules,
       actual,
-      lockSha256: existsSync(join(actual, ".package-lock.json"))
-        ? digest(join(actual, ".package-lock.json"))
-        : null,
+      lockSha256: lock ? digest(lock) : null,
     });
     if (seen.has(actual)) return;
     seen.add(actual);

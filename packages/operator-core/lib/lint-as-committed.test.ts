@@ -944,6 +944,9 @@ describe('linkNodeModulesShadow (EI-24790229053787032 — a whole-directory link
       expect(parent.dependencies.leaf.version).toBe('1.0.0');
       expect(parent.dependencies.nested.dependencies.leaf.version).toBe('1.0.0');
       expect(existsSync(join(clone, 'node_modules/.package-lock.json'))).toBe(false);
+      const provenance = join(clone, 'node_modules/.papercusp-installed-package-lock.json');
+      expect(lstatSync(provenance).isSymbolicLink()).toBe(true);
+      expect(realpathSync(provenance)).toBe(join(shared, 'node_modules/.package-lock.json'));
       expect(createRequire(join(clone, 'entry.js'))('leaf')).toBe('installed-leaf');
       expect(realpathSync(join(clone, 'node_modules/leaf/index.js')))
         .toBe(join(shared, 'node_modules/leaf/index.js'));

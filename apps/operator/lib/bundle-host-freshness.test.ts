@@ -74,6 +74,22 @@ afterEach(() => {
 });
 
 describe('bundle-host-freshness output-tree identity', () => {
+  it('qualifies a committed shadow without npm cache reuse and rejects provenance drift', () => {
+    const ordinary = join(repo, 'node_modules/.package-lock.json');
+    const source = join(repo, 'node_modules/.source-package-lock.json');
+    writeFileSync(source, readFileSync(ordinary));
+    rmSync(ordinary);
+    symlinkSync(source, join(repo, 'node_modules/.papercusp-installed-package-lock.json'));
+    const stamp = run('stamp');
+    expect(stamp.status, stamp.stderr).toBe(0);
+    expect(run('check').status).toBe(0);
+    expect(existsSync(ordinary)).toBe(false);
+    writeFileSync(source, '{"lockfileVersion":3,"packages":{"sdk":{"version":"2.0.0"}}}\n');
+    const check = run('check');
+    expect(check.status).not.toBe(0);
+    expect(check.stderr).toContain('installed-dependency mismatch');
+  });
+
   it('verifies after bundle-host.sh EXIT trap deletes the build-private gate dirs', () => {
     const meta = join(outdir, '.restricted-gate-meta.4242');
     const lkg = join(outdir, '.restricted-lkg.4242');
