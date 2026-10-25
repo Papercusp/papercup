@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 986,
+  "count": 988,
   "tools": [
     {
       "name": "ablation:report",
@@ -11309,6 +11309,24 @@
       "guidance": {
         "when": "List recent /dev panel sessions — used by the dev UI to populate session pickers.",
         "notWhen": "For application AGENT chat sessions, use `agent_chats:list`. dev:sessions is the panel's own concept."
+      }
+    },
+    {
+      "name": "dev:sql_tool_candidates",
+      "http": {
+        "path": "/api/agent-tools/dev/sql_tool_candidates",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Bounded typed SQL tool opportunity worklist: scores, corpus coverage, decision history and source evidence references. Read-time source authority is mandatory; unavailable authority returns content-free UNKNOWN.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Discover repeated SQL demand in one harness for reviewed tool proposals. Coverage and unsupported residue accompany scores; candidates are advisory.",
+        "notWhen": "To execute SQL, assert substitution equivalence, or deploy a proposed tool. For recipe opportunities use recipes:candidates."
       }
     },
     {
@@ -31975,6 +31993,36 @@
       "guidance": {
         "when": "You are near your compaction limit AND at a clean stopping point (a finished unit of work — tests green, an edit landed, a decision logged).",
         "notWhen": "Mid-task — reach a stopping point first. To change WHEN this fires — config:set-compaction-limit."
+      }
+    },
+    {
+      "name": "sessions:continue-released-operation",
+      "http": {
+        "path": "/api/agent-tools/sessions/continue-released-operation",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Hook-only recovery door: turn a genuine owner prompt delivered to a released accepted-operation worker into one fresh, separately receipted base-SU continuation. Model clients are refused.",
+      "capabilities": [
+        "capability:terminal"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Only from the first-party UserPromptSubmit OWNER branch after orders:capture has durably recorded the exact turn.",
+        "notWhen": "Never call from a model, an active operation claim, or an ordinary SU session."
       }
     },
     {

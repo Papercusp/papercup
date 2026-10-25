@@ -401,9 +401,15 @@ describe('complete agenda recovery through coord:orient', () => {
     let arm: Arm = 'shared-portfolio';
     const guardOnly = process.env.PAPERCUSP_R5_ORIENT_GUARD_ONLY === '1';
     const coldDiagnostic = process.env.PAPERCUSP_R5_ORIENT_COLD_DIAGNOSTIC === '1' && !guardOnly;
-    const windowCount = guardOnly ? 0 : coldDiagnostic ? 1 : 10;
+    const warmDiagnostic = process.env.PAPERCUSP_R5_ORIENT_WARM_DIAGNOSTIC === '1' && !guardOnly;
+    if (coldDiagnostic && warmDiagnostic) throw new Error('Select only one R-5 diagnostic phase');
+    const diagnosticMode = coldDiagnostic ? 'cold-concurrent' : warmDiagnostic ? 'warm-concurrent' : null;
+    const windowCount = guardOnly ? 0 : diagnosticMode ? 1 : 10;
     if (coldDiagnostic && !process.env.PAPERCUSP_R5_ORIENT_PHASE_REPORT) {
       throw new Error('PAPERCUSP_R5_ORIENT_COLD_DIAGNOSTIC requires PAPERCUSP_R5_ORIENT_PHASE_REPORT');
+    }
+    if (warmDiagnostic && !process.env.PAPERCUSP_R5_ORIENT_PHASE_REPORT) {
+      throw new Error('PAPERCUSP_R5_ORIENT_WARM_DIAGNOSTIC requires PAPERCUSP_R5_ORIENT_PHASE_REPORT');
     }
     // Only the supported observation clock is fixed. Every provider and store
     // remains real PostgreSQL; expected values below come from the seed contract.
@@ -453,17 +459,18 @@ describe('complete agenda recovery through coord:orient', () => {
         ledgerHarness: process.env.PAPERCUSP_TEST_RUN_HARNESS ?? null,
         qualification: 'Named source hashes below identify the read files; repository HEAD alone does not identify dirty bytes or the full loaded import graph.',
       },
-      windows, mode: guardOnly ? 'guard-only' : coldDiagnostic ? 'cold-concurrent-diagnostic' : 'guard-and-performance',
+      windows, mode: guardOnly ? 'guard-only' : diagnosticMode ? diagnosticMode + '-diagnostic' : 'guard-and-performance',
       workload: { plans: 8, itemsPerPlan: 128, workItems: 128, visibleFacts: 3,
         windows: windowCount, warmReads: coldDiagnostic ? 0 : 20, concurrency: 8 },
-      ...(coldDiagnostic ? { diagnosticSelection: {
-        arms: ['shared-portfolio'], windows: 1, concurrency: 8, proofSettlementWaitMs: 15_000,
+      ...(diagnosticMode ? { diagnosticSelection: {
+        phase: diagnosticMode, arms: ['shared-portfolio'], windows: 1,
+        warmReads: warmDiagnostic ? 20 : 0, concurrency: 8, proofSettlementWaitMs: 15_000,
       } } : {}),
       scope: 'Production orient handler with real GOAL providers, plan/queue sources and fact store. Orientation only; no whole R-5 or shipment claim.',
       baselineDefinition: 'Current production reader performs its own portfolio read instead of sharing orient\'s promise. This is a source-read counterfactual, not a historical checkout.',
       coldDefinition: 'Reset the operator L1 and clear this fixture workspace from durable L2. PostgreSQL buffers, connections, imports and independent source caches remain warm.',
       limitations: ['Named hashes are not the complete imported graph.', 'The initial process read is recorded separately, not erased by warmup.', 'No HTTP transport, deployed-runtime or historical-source claim.',
-        ...(coldDiagnostic ? ['Cold diagnostic omits warm and sequential cold populations; not full R-5 proof.'] : [])],
+        ...(diagnosticMode ? ['Selected ' + diagnosticMode + ' diagnostic window only; not full R-5 proof.'] : [])],
     };
     // Observe the existing SQL argument seam using the SAME production pool.
     // No query parameters, alternate clients, deadlines or provider values change.
@@ -472,7 +479,7 @@ describe('complete agenda recovery through coord:orient', () => {
     const modeProofReads: Array<Record<string, unknown>> = [];
     const diagnosticWarnings: Array<Record<string, unknown>> = [];
     const diagnosticOrigin = performance.now();
-    if (coldDiagnostic) {
+    if (diagnosticMode) {
       report.modeProofReads = modeProofReads;
       report.diagnosticWarnings = diagnosticWarnings;
       const realGetOrgPg = getOrgPg;
@@ -665,7 +672,7 @@ describe('complete agenda recovery through coord:orient', () => {
     const read = async (phase: string, changed = false, paused = false, record = true) => {
       if (record) progress(`read-start:${phase}`);
       const start = performance.now();
-      const phases = coldDiagnostic ? createPhaseTracker({ historyCap: 128 }) : undefined;
+      const phases = diagnosticMode ? createPhaseTracker({ historyCap: 128 }) : undefined;
       const data = await readOrientation({ mode: 'full' }, OWNER, phases);
       const ms = performance.now() - start;
       // Harness-scoped facts are shared by every run of this file: a run killed before its
@@ -676,7 +683,7 @@ describe('complete agenda recovery through coord:orient', () => {
         .sort((a, b) => a.body.localeCompare(b.body));
       const states = data.obligations?.evaluations.map(row => ({ ruleId: row.ruleId, status: row.status }))
         .sort((a, b) => a.ruleId.localeCompare(b.ruleId));
-      if (record || coldDiagnostic) {
+      if (record || diagnosticMode) {
         snapshots.push({ phase, arm, ms, facts, states, obligations: data.obligations,
           ...(phases ? { handlerPhases: phases.toMetadata() } : {}),
           worklist: data.goalPortfolio?.worklist, queue: data.goalPortfolio?.queue });
@@ -790,7 +797,7 @@ describe('complete agenda recovery through coord:orient', () => {
         await getL2Store().clearWorkspace(WS);
       };
       for (let window = 0; window < windowCount; window++) {
-        const arms: Arm[] = coldDiagnostic ? ['shared-portfolio'] :
+        const arms: Arm[] = diagnosticMode ? ['shared-portfolio'] :
           window % 2 ? ['shared-portfolio', 'independent-portfolio'] : ['independent-portfolio', 'shared-portfolio'];
         for (const nextArm of arms) {
           arm = nextArm;
@@ -801,24 +808,36 @@ describe('complete agenda recovery through coord:orient', () => {
             await cold();
             row.samples.push({ phase: 'cold', ms: await read('cold', true, false, false) });
             for (let i = 0; i < 20; i++) row.samples.push({ phase: 'warm', ms: await read('warm', true, false, false) });
-            row.samples.push(...await Promise.all(Array.from({ length: 8 }, async () => ({ phase: 'warm-concurrent', ms: await read('warm-concurrent', true, false, false) }))));
+            progress('warm-concurrent:' + window + ':' + arm);
+            const warmConcurrent = await Promise.allSettled(Array.from({ length: 8 }, async () => ({
+              phase: 'warm-concurrent', ms: await read('warm-concurrent', true, false, false),
+            })));
+            for (const result of warmConcurrent) {
+              if (result.status === 'fulfilled') row.samples.push(result.value);
+            }
+            const warmFailure = warmConcurrent.find(result => result.status === 'rejected');
+            if (warmFailure?.status === 'rejected') throw warmFailure.reason;
           }
-          await cold();
-          progress(`cold-concurrent:${window}:${arm}`);
-          // Drain every diagnostic request before reporting a failure so its
-          // sibling SQL timings survive too. Each read retains the exact oracle.
-          const concurrent = await Promise.allSettled(Array.from({ length: 8 }, async () => ({ phase: 'cold-concurrent', ms: await read('cold-concurrent', true, false, false) })));
-          for (const result of concurrent) {
-            if (result.status === 'fulfilled') row.samples.push(result.value);
+          if (!warmDiagnostic) {
+            await cold();
+            progress('cold-concurrent:' + window + ':' + arm);
+            // Drain every diagnostic request before reporting a failure so its
+            // sibling SQL timings survive too. Each read retains the exact oracle.
+            const concurrent = await Promise.allSettled(Array.from({ length: 8 }, async () => ({
+              phase: 'cold-concurrent', ms: await read('cold-concurrent', true, false, false),
+            })));
+            for (const result of concurrent) {
+              if (result.status === 'fulfilled') row.samples.push(result.value);
+            }
+            const failure = concurrent.find(result => result.status === 'rejected');
+            if (failure?.status === 'rejected') throw failure.reason;
           }
-          const failure = concurrent.find(result => result.status === 'rejected');
-          if (failure?.status === 'rejected') throw failure.reason;
           row.complete = true; publish();
         }
       }
-      if (coldDiagnostic) {
-        const sampleProofReads = modeProofReads.filter(row =>
-          row.phase === 'cold-concurrent:0:shared-portfolio');
+      if (diagnosticMode) {
+        const selectedPhase = diagnosticMode + ':0:shared-portfolio';
+        const sampleProofReads = modeProofReads.filter(row => row.phase === selectedPhase);
         const waitStarted = performance.now();
         const waitCapMs = 15_000;
         while (sampleProofReads.length < 8 ||
@@ -837,15 +856,15 @@ describe('complete agenda recovery through coord:orient', () => {
         publish();
         expect(sampleProofReads).toHaveLength(8);
       }
-      const summaryArms: Arm[] = coldDiagnostic ? ['shared-portfolio'] : ['shared-portfolio', 'independent-portfolio'];
+      const summaryArms: Arm[] = diagnosticMode ? ['shared-portfolio'] : ['shared-portfolio', 'independent-portfolio'];
       const summary = guardOnly ? [] : summaryArms.map(value => ({ arm: value,
-        phases: Object.fromEntries((coldDiagnostic ? ['cold-concurrent'] : ['cold', 'warm', 'warm-concurrent', 'cold-concurrent']).map(phase => {
+        phases: Object.fromEntries((diagnosticMode ? [diagnosticMode] : ['cold', 'warm', 'warm-concurrent', 'cold-concurrent']).map(phase => {
           const times = windows.filter(row => row.arm === value).flatMap(row => row.samples).filter(s => s.phase === phase).map(s => s.ms).sort((a, b) => a - b);
           return [phase, { reads: times.length, p95Ms: times[Math.ceil(times.length * .95) - 1], maxMs: times.at(-1) }];
         })),
       }));
       report.summary = summary;
-      if (!guardOnly && !coldDiagnostic) {
+      if (!guardOnly && !diagnosticMode) {
         for (const result of Object.values(summary[0]!.phases)) expect(result.p95Ms).toBeLessThanOrEqual(5_000);
       }
       await fact('owner', key, expectedFacts(false).find(row => row.body.startsWith('R-5 ordinary'))!.body);
