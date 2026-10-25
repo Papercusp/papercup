@@ -271,7 +271,7 @@ if (privateMcpUrl) {
         'packages/operator-core/test/staging-first-http-fixture.ts'],
       retainedArtifacts: ['phases/prepare/native-mcp-preflight.json', 'phases/execute/worker.log',
         'phases/execute/native-tool-surface.json', 'phases/execute/operator-mcp-receipt.json',
-        'phases/execute/census/managed-tool-replies.ndjson'],
+        'phases/execute/managed-tool-replies.ndjson'],
       prepare: async evidenceDir => {
         const preflight = await localPreflight();
         await writeFile(join(evidenceDir, 'native-mcp-preflight.json'), JSON.stringify(preflight));
