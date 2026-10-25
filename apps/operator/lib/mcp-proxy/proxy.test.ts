@@ -1737,7 +1737,7 @@ describe("MCP proxy serving-generation affinity", () => {
         expect.stringContaining("[bounded-timeout] result-door scratch spill write exceeded 30000ms"),
       );
 
-      const spillText = spillResult.content.find((item) => item.type === "text")?.text ?? "";
+      const spillText = spillResult.content.find((item: { type: string; text?: string }) => item.type === "text")?.text ?? "";
       const spillEnvelope = JSON.parse(spillText) as {
         _projection?: { cursor?: Record<string, any> };
       };
@@ -1906,7 +1906,6 @@ describe("MCP proxy serving-generation affinity", () => {
         targetHost: "127.0.0.1",
         targetPort: port(upstream),
         retryWindowMs: 1_000,
-        readonlyRetryEnabled: false,
         log: () => {},
       }));
       await listen(proxy);
@@ -10681,6 +10680,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       listenPort: 0,
       targetHost: "127.0.0.1",
       targetPort: port(upstream),
+      retryWindowMs: 1_000,
       maxInFlight: 10,
       controlPlaneReserve: 3,
       maxCriticalContinuationQueue: 8,
