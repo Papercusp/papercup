@@ -1472,6 +1472,20 @@ frozen_source_process_matches() {
 
 # A persisted PID is a hint, never signal authority. Reuse the source reaper's
 # nonce/start-time contract for processes (openbox/PG) not rooted in its tree.
+frozen_source_process_gone() {
+  local pid="$1" expected_ticks="$2" stat rest
+  local -a fields=()
+  [ -d "/proc/$pid" ] || return 0
+  # A zombie has exited even while its parent has not waited yet. An unreadable
+  # live identity is inconclusive, so it must not authorize directory deletion.
+  IFS= read -r stat <"/proc/$pid/stat" 2>/dev/null || return 1
+  rest="${stat##*) }"
+  read -r -a fields <<<"$rest"
+  [ "${#fields[@]}" -ge 20 ] && [ -n "$expected_ticks" ] || return 1
+  [ "${fields[19]}" != "$expected_ticks" ] ||
+    [ "${fields[0]}" = Z ] || [ "${fields[0]}" = X ]
+}
+
 stop_verify_process() {
   local pid="$1" ticks="$2" provenance="$3" attempt
   [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] || return 0
@@ -1482,12 +1496,18 @@ stop_verify_process() {
   fi
   kill -TERM "$pid" 2>/dev/null || true
   for attempt in {1..20}; do
-    frozen_source_process_identity_matches "$pid" "$ticks" "$provenance" || return 0
+    frozen_source_process_gone "$pid" "$ticks" && return 0
     sleep 0.1
   done
   if frozen_source_process_identity_matches "$pid" "$ticks" "$provenance"; then
     kill -KILL "$pid" 2>/dev/null || true
   fi
+  for attempt in {1..20}; do
+    frozen_source_process_gone "$pid" "$ticks" && return 0
+    sleep 0.1
+  done
+  echo "VERIFY_PROCESS_SURVIVOR pid=$pid; preserving teardown evidence" >&2
+  return 1
 }
 
 stop_verify_process_group() {
@@ -1599,6 +1619,7 @@ write_frozen_source_reaper_script() {
     declare -f frozen_source_process_owned
     declare -f frozen_source_process_identity_matches
     declare -f frozen_source_process_matches
+    declare -f frozen_source_process_gone
     declare -f stop_verify_process
     declare -f stop_verify_process_group
     declare -f reap_frozen_source_survivors

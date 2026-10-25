@@ -138,6 +138,30 @@ describe("verify-tauri-headless frozen-source survivor reaper", () => {
     }
   });
 
+  it.each([false, true])("confirms post-KILL exit, refusing cleanup when signals fail=%s", (refuseSignals) => {
+    const script = [
+      'set -u',
+      reaperFunctions,
+      'setsid bash -c \'trap "" TERM; exec sleep 60\' &',
+      'child=$!',
+      'trap \'builtin kill -KILL "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true\' EXIT',
+      'for attempt in {1..100}; do [ "$(ps -o comm= -p "$child")" = sleep ] && break; sleep 0.01; done',
+      'ticks="$(frozen_source_process_start_ticks "$child")"',
+      refuseSignals ? 'kill() { return 1; }' : '',
+      'stop_verify_process "$child" "$ticks" this-run',
+      'status=$?',
+      'if frozen_source_process_gone "$child" "$ticks"; then state=exited; else state=alive; fi',
+      'printf "STOP_STATUS=%s CHILD_STATE=%s\\n" "$status" "$state"',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', script], {
+      encoding: 'utf8', timeout: 12_000,
+      env: { ...process.env, PAPERCUSP_TAURI_LAUNCH_PROVENANCE: 'this-run' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(`STOP_STATUS=${refuseSignals ? 1 : 0} CHILD_STATE=${refuseSignals ? 'alive' : 'exited'}`);
+    if (refuseSignals) expect(result.stderr).toContain('VERIFY_PROCESS_SURVIVOR');
+  });
+
   it("reaps a run-owned process whose cwd is inside the frozen source", () => {
     const fixture = makeFixture("frozen-source-cwd");
     const token = "test-run-owned-cwd";
