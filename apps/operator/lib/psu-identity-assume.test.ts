@@ -109,12 +109,33 @@ describe('clean parent-bound identity launcher', () => {
     expect(ports.resume).not.toHaveBeenCalled();
   });
 
-  it('keeps only machine/terminal state when reconstructing the target environment', () => {
+  it('R-10 caller history credentials and unapproved environment do not cross context boundary', async () => {
     expect(identityAssumeBaseEnv({ HOME: '/home/test', TERM: 'xterm', PAPERCUSP_PSU_REEXEC: '75',
       PAPERCUSP_SID: 'caller', PAPERCUSP_HOSTED_NATIVE_SLOT: 'caller-slot', NODE_OPTIONS: '--import=caller',
       OPENAI_API_KEY: 'secret', CLAUDE_CONFIG_DIR: '/caller', PI_CODING_AGENT_DIR: '/caller',
       CODEX_HOME: '/caller', PAPERCUSP_NATIVE_SESSION_ID: 'caller-native' })).toEqual({
         HOME: '/home/test', TERM: 'xterm', PAPERCUSP_PSU_REEXEC: '75' });
+    const f = fixture();
+    Object.assign(f.ports.baseEnv, { CALLER_TRANSCRIPT: 'private caller transcript',
+      CALLER_TOOL_HISTORY: 'private caller tool history', NODE_OPTIONS: '--import=caller-private-loader',
+      OPENAI_API_KEY: 'caller-private-key', PAPERCUSP_NATIVE_SESSION_ID: 'caller-private-native' });
+    const body = 'Only the selected target checkpoint crosses this boundary.';
+    Object.assign(f.result.preparation.target, { executionNativeSessionId: null,
+      context: { mode: 'checkpoint', ref: 'carry-note:target', revision: '7',
+        sha256: createHash('sha256').update(body).digest('hex') } });
+    Object.assign(f.result, { checkpointBody: body });
+    await launchIdentityAssumeHandoff(f.handoff, f.ports);
+    const options = f.ports.resume.mock.calls[0][1] as {
+      kickoff: string;
+      managedAssume: { inheritedEnv: Record<string, string>; checkpoint: { body: string } };
+    };
+    expect(options.managedAssume.inheritedEnv).toEqual({ HOME: '/home/test', PATH: '/bin' });
+    expect(options.managedAssume.checkpoint.body).toBe(body);
+    expect(options.kickoff).toContain(f.request.recoveryRef);
+    for (const secret of ['private caller transcript', 'private caller tool history',
+      'caller-private-loader', 'caller-private-key', 'caller-private-native', 'caller-secret', 'caller-text']) {
+      expect(JSON.stringify(options)).not.toContain(secret);
+    }
   });
 
   it.each(['codex', 'claude'])('boots %s checkpoint context with the existing fresh carry path', backend => {

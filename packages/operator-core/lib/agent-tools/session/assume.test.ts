@@ -155,6 +155,56 @@ describe('session:assume preparation and exact custody', () => {
       .toEqual({ ok: false, code: 'target-changed' });
   });
 
+  it('R-10 tampered mismatched or non-target checkpoint refuses before custody', async () => {
+    const mutations: Array<(target: AssumeTarget) => void> = [
+      target => { target.context.sha256 = 'b'.repeat(64); },
+      target => { target.context.revision = 'checkpoint-8'; },
+      target => { target.context.ref = 'carry-note:caller-private-history'; },
+      target => { target.ownerId = 'su-another-target'; },
+      target => { target.workspaceId = 'foreign-workspace'; },
+      target => { target.binding.startedAt += '-replacement'; },
+    ];
+    for (const mutate of mutations) {
+      const f = fixture();
+      f.target.context = { mode: 'checkpoint', ref: 'carry-note:target', sha256: hash, revision: 'checkpoint-7' };
+      f.target.executionNativeSessionId = null;
+      const result = await prepared(f, { ...request, contextMode: 'checkpoint' });
+      mutate(f.target);
+      const before = structuredClone({ caller: f.caller, target: f.target });
+      const refused = await validateAssume(actor, result.token, f.deps);
+      expect(refused).toMatchObject({ ok: false });
+      expect(JSON.stringify(refused)).not.toContain('caller-private-history');
+      expect({ caller: f.caller, target: f.target }).toEqual(before);
+    }
+    const f = fixture();
+    f.target.context = { mode: 'checkpoint', ref: 'carry-note:target', sha256: hash, revision: 'checkpoint-7' };
+    f.target.executionNativeSessionId = null;
+    const result = await prepared(f, { ...request, contextMode: 'checkpoint' });
+    const bytes = Buffer.from(result.token, 'base64url');
+    bytes[bytes.length - 1] ^= 1;
+    expect(await validateAssume(actor, bytes.toString('base64url'), f.deps))
+      .toEqual({ ok: false, code: 'invalid-token' });
+  });
+
+  it('R-10 caller history credentials and unapproved environment do not cross context boundary', async () => {
+    for (const key of ['transcript', 'toolHistory', 'credentials', 'environment']) {
+      const f = fixture();
+      Object.assign(f.caller, { [key]: 'private caller material' });
+      const before = structuredClone(f.caller);
+      const result = await prepareAssume(actor, request, f.deps);
+      expect(result).toEqual({ ok: false, code: 'caller-changed' });
+      expect(f.deps.target).not.toHaveBeenCalled();
+      expect(f.caller).toEqual(before);
+      expect(JSON.stringify(result)).not.toContain('private caller material');
+    }
+    for (const part of ['target', 'context'] as const) {
+      const f = fixture();
+      Object.assign(part === 'target' ? f.target : f.target.context,
+        { callerToolHistory: 'unapproved caller history', OPENAI_API_KEY: 'unapproved caller credential' });
+      expect(await prepareAssume(actor, request, f.deps)).toEqual({ ok: false, code: 'invalid-target' });
+    }
+  });
+
   it('R-3 unavailable corrupt stale and incompatible context refuses without fallback', async () => {
     const f = fixture();
     f.target.context.mode = 'checkpoint';

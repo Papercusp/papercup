@@ -8,7 +8,7 @@ import { acquireAdvSessionResume, finalizeAdvSessionResume, releaseAdvSessionRes
 import { claimAgentLaunch } from '../../agent-launch-core';
 import { createAssumeReceiptStore } from '../../session-assume-store';
 import { createAssumeCustodyAdapters } from '../../session-assume-custody';
-import { readAssumeCheckpoint } from '../../session-assume-preparation';
+import { readAssumeCheckpoint, readAssumeCheckpointBody } from '../../session-assume-preparation';
 import { loopScope, setCarryNote } from '../../carry-note';
 import { checkpointAssumeCaller, completeAssumeCallerReturn, createAssumeCallerAdapters,
   readAssumeCallerCheckpoint, readAssumeCallerReturnSource } from '../../session-assume-caller';
@@ -412,6 +412,71 @@ describe('session:assume production receipt adapter (real PG)', () => {
     await fixture.admin`UPDATE harness_shared.carry_notes SET body_ts = ${Date.now() - 120_000}
       WHERE workspace_id = ${workspaceId} AND scope = ${scope}`;
     expect(await readAssumeCheckpoint(target)).toBeNull();
+  });
+
+  it('R-10 tampered mismatched or non-target checkpoint refuses before custody', async () => {
+    const { plan } = receiptFixture();
+    const scope = loopScope(plan.target.harnessSlug, plan.target.ownerId);
+    const body = 'Private target checkpoint; never return it in a refusal.';
+    plan.target.binding.startedAt = new Date(Date.now() - 60_000).toISOString();
+    await setCarryNote({ scope, workspaceId }, body);
+    const pin = await readAssumeCheckpoint(plan.target);
+    expect(pin).not.toBeNull();
+    plan.target.context = pin!;
+    plan.target.executionNativeSessionId = null;
+    expect(await readAssumeCheckpointBody(plan)).toBe(body);
+    const before = await fixture.admin`SELECT * FROM harness_shared.carry_notes
+      WHERE workspace_id = ${workspaceId} AND scope = ${scope}`;
+    const mutations: Array<(candidate: AssumePreparation) => void> = [
+      candidate => { candidate.target.context.sha256 = 'f'.repeat(64); },
+      candidate => { candidate.target.context.revision = '0'; },
+      candidate => { candidate.target.context.ref = 'carry-note:another-owner'; },
+      candidate => { candidate.target.ownerId = `su-${randomUUID()}`; },
+      candidate => { candidate.target.workspaceId = 'foreign-workspace'; },
+      candidate => { candidate.target.binding.startedAt = new Date(Date.now() + 60_000).toISOString(); },
+    ];
+    for (const mutate of mutations) {
+      const candidate = structuredClone(plan);
+      mutate(candidate);
+      await expect(readAssumeCheckpointBody(candidate)).rejects.toThrow(/^assume-checkpoint-(changed|unavailable)$/);
+    }
+    expect(await fixture.admin`SELECT * FROM harness_shared.carry_notes
+      WHERE workspace_id = ${workspaceId} AND scope = ${scope}`).toEqual(before);
+    // A body change with the same revision must still fail the pinned hash.
+    await fixture.admin`UPDATE harness_shared.carry_notes SET note = 'tampered body'
+      WHERE workspace_id = ${workspaceId} AND scope = ${scope}`;
+    await expect(readAssumeCheckpointBody(plan)).rejects.toThrow('assume-checkpoint-changed');
+    expect(await createAssumeReceiptStore(plan).load()).toBeNull();
+  });
+
+  it('R-10 caller history credentials and unapproved environment do not cross context boundary', async () => {
+    const { plan, receipt } = receiptFixture();
+    const callerBody = JSON.stringify({ transcript: 'caller-private-transcript', toolHistory: 'caller-private-tool-history',
+      credentials: { OPENAI_API_KEY: 'caller-private-credential' }, environment: { PRIVATE_CONTEXT: 'caller-private-env' } });
+    await setCarryNote({ scope: loopScope(plan.target.harnessSlug, plan.caller.ownerId), workspaceId }, callerBody);
+    const targetBody = 'Only the selected target checkpoint is launch input.';
+    await setCarryNote({ scope: loopScope(plan.target.harnessSlug, plan.target.ownerId), workspaceId }, targetBody);
+    plan.target.binding.startedAt = new Date(Date.now() - 60_000).toISOString();
+    plan.target.context = (await readAssumeCheckpoint(plan.target))!;
+    expect(plan.target.context).not.toBeNull();
+    plan.target.executionNativeSessionId = null;
+    const recovery = await checkpointAssumeCaller(plan, { readCaller: async () => plan.caller });
+    const callerCheckpoint = await readAssumeCallerCheckpoint(plan, recovery);
+    expect(callerCheckpoint.carryNotes.some(note => note.note === callerBody)).toBe(true);
+    const input = await readAssumeCheckpointBody(plan);
+    expect(input).toBe(targetBody);
+    const store = createAssumeReceiptStore(plan);
+    const preparedReceipt = { ...receipt, preparation: plan,
+      preparationFingerprint: assumePreparationFingerprint(plan), recovery };
+    expect((await store.claim(preparedReceipt)).won).toBe(true);
+    const stored = await store.load();
+    expect(stored?.recovery).toEqual(recovery);
+    for (const secret of ['caller-private-transcript', 'caller-private-tool-history',
+      'caller-private-credential', 'caller-private-env']) {
+      expect(input).not.toContain(secret);
+      expect(JSON.stringify(stored)).not.toContain(secret);
+    }
+    expect(await readAssumeCheckpointBody(plan)).toBe(targetBody);
   });
 
   it('R-11 takeover audit retains caller target authorization and terminal provenance', async () => {

@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync,
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync,
   renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import net from 'node:net';
@@ -57,12 +57,35 @@ function callOutputs(value: any): Row[] {
   return String(value.type).endsWith('call_output') ? [value] : Object.values(value).flatMap(callOutputs);
 }
 
+function handoffToolRoute(available: Row[]) {
+  const namespace = available.find(tool => tool.type === 'namespace' &&
+    tool.tools?.some((t: Row) => t.name === 'handoff_fixture'));
+  const direct = available.find(tool => tool.type === 'function' && tool.name?.endsWith('__handoff_fixture'));
+  const executor = available.find(tool => tool.type === 'namespace' &&
+    tool.tools?.some((t: Row) => t.type === 'custom' && t.name === 'exec'));
+  // The executor may be advertised before the deferred MCP tool. Its presence
+  // does not establish that handoff_fixture is callable in ALL_TOOLS yet.
+  const discovery = !namespace && !direct && available.some(tool => tool.type === 'tool_search');
+  return { namespace, direct, executor, discovery };
+}
+
+it('discovers a deferred handoff tool before invoking an already advertised executor', () => {
+  const executor = { type: 'namespace', name: 'functions', tools: [{ type: 'custom', name: 'exec' }] };
+  const search = { type: 'tool_search' };
+  expect(handoffToolRoute([executor, search])).toMatchObject({ discovery: true });
+  const tool = { type: 'function', name: 'mcp__fixture__handoff_fixture' };
+  expect(handoffToolRoute([executor, search, tool])).toMatchObject({ discovery: false, direct: tool });
+});
+
 async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = false,
   contended = false, preflight = false) {
     const root = mkdtempSync('/tmp/assume-native-journey-');
     const marker = { target: `TARGET_HISTORY_${randomUUID()}`, caller: `CALLER_HISTORY_${randomUUID()}`,
       checkpoint: `TARGET_CHECKPOINT_${randomUUID()}`, rival: `RIVAL_HISTORY_${randomUUID()}`,
       loserProbe: `LOSER_COMMAND_${randomUUID()}`, loserResponse: `LOSER_RESPONSE_${randomUUID()}` };
+    const privateCallerEnv = { ASSUME_CALLER_TOOL_HISTORY: `CALLER_TOOL_HISTORY_${randomUUID()}`,
+      ASSUME_CALLER_TRANSCRIPT: marker.caller, OPENAI_API_KEY: `fixture-only-${randomUUID()}`,
+      PAPERCUSP_NATIVE_SESSION_ID: `caller-private-${randomUUID()}` };
     const owners = { caller: `test-assume-caller-${randomUUID()}`, target: `test-assume-target-${randomUUID()}`,
       rival: `test-assume-rival-${randomUUID()}` };
     const homes = { caller: join(root, 'caller'), target: join(root, 'target'), rival: join(root, 'rival') };
@@ -74,6 +97,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
     let phase: 'seed' | 'caller' | 'target' | 'return' = 'seed';
     let port = 0, issued = false, targetReady = false, returnIssued = false, targetProbed = false;
     const requests: Array<{ phase: string; actor: string; body: Row }> = [], errors: string[] = [], nativeResults: string[] = [];
+    const toolCatalogs: Row[] = [];
     const activeExecutions = new Map<string, string>();
     const ownsPhase = (actor: string | null, execution: string | null) =>
       actor !== null && execution !== null && activeExecutions.get(actor) === execution &&
@@ -289,21 +313,21 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         if (results.length) {
           nativeResults.push(JSON.stringify(results).slice(0, 1800));
           if (phase === 'target') { targetReady = true; await targetGate; }
-          if (real && phase === 'target' && !returnIssued) { returnIssued = true; returningCall = true; }
+          if (real && phase === 'target' && !returnIssued) { returningCall = true; }
           else { finish('HANDOFF_NATIVE_COMPLETE'); return; }
         }
         const available = [...(body.tools ?? []), ...(body.input ?? []).flatMap(
           (item: Row) => Array.isArray(item.tools) ? item.tools : [])];
-        const namespace = available.find(tool => tool.type === 'namespace' && tool.tools?.some((t: Row) => t.name === 'handoff_fixture'));
-        const direct = available.find(tool => tool.type === 'function' && tool.name?.endsWith('__handoff_fixture'));
-        const executor = available.find(tool => tool.type === 'namespace' &&
-          tool.tools?.some((t: Row) => t.type === 'custom' && t.name === 'exec'));
+        const { namespace, direct, executor, discovery } = handoffToolRoute(available);
+        toolCatalogs.push({ phase, actor, discovery, executor: executor?.name,
+          tools: available.map(tool => ({ type: tool.type, name: tool.name,
+            tools: tool.tools?.map((entry: Row) => entry.name) })) });
         const alreadyIssued = contended && phase === 'caller' ? callerIssued.has(actor) : issued;
         if (alreadyIssued && !returningCall || !namespace && !direct && !executor && !available.some(tool => tool.type === 'tool_search')) {
           finish('AUXILIARY_RESPONSE'); return;
         }
-        const discovery = !namespace && !direct && !executor;
         issued = !discovery;
+        if (!discovery && returningCall) returnIssued = true;
         if (contended && phase === 'caller' && !discovery) callerIssued.add(actor);
         const callId = returningCall ? 'handoff-target-return' : `handoff-${phase}`;
         const call = discovery ? { id: 'discover', type: 'tool_search_call', execution: 'client',
@@ -315,7 +339,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
             ...(namespace ? { namespace: namespace.name } : {}), name: direct?.name ?? 'handoff_fixture', arguments: '{}' };
         const event = (type: string, payload: Row) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
         res.end(event('response.output_item.added', { output_index: 0,
-          item: { ...call, status: 'in_progress', ...(executor ? { input: '' } : { arguments: discovery ? {} : '' }) } }) +
+          item: { ...call, status: 'in_progress', ...(!discovery && executor ? { input: '' } : { arguments: discovery ? {} : '' }) } }) +
           event('response.output_item.done', { output_index: 0, item: call }) +
           event('response.completed', { response: { ...codexCliResponsesBody({ model: 'gpt-6-sol',
             text: '', inputTokens: 0, outputTokens: 0 }), output: [call] } }));
@@ -339,6 +363,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
     };
     const start = (key: keyof typeof homes, args: string[], inherited?: Row) => {
       const signals = new EventEmitter();
+      const contextEnv = inherited?.inheritedEnv ?? (key === 'caller' ? privateCallerEnv : {});
       if (production) {
         const file = join(root, 'psu-pty-host-' + key + '.mjs');
         const hostModule = new URL('../scripts/psu-pty-host.mjs', import.meta.url).href;
@@ -366,7 +391,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           'process.exit(code);',
         ].join('\n'));
         const child = spawn(process.execPath, [file], { cwd: root,
-          env: hermeticEnv({ CODEX_HOME: homes[key], TERM: 'xterm-256color', PAPERCUSP_AGENT: 'codex',
+          env: hermeticEnv({ ...contextEnv, CODEX_HOME: homes[key], TERM: 'xterm-256color', PAPERCUSP_AGENT: 'codex',
             PAPERCUSP_SID: owners[key], PAPERCUSP_WORKSPACE: 'native-context-fixture',
             PAPERCUSP_PSU_REEXEC: '75', PAPERCUSP_PSU_REEXEC_PPID: String(process.pid) }),
           stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
@@ -387,7 +412,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           return handoffPathFor(owners[key]);
         } });
       const done = hostThroughPty({ command: 'codex', args, cwd: root, ownerId: owners[key],
-        env: hermeticEnv({ CODEX_HOME: homes[key], TERM: 'xterm-256color', PAPERCUSP_AGENT: 'codex',
+        env: hermeticEnv({ ...contextEnv, CODEX_HOME: homes[key], TERM: 'xterm-256color', PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_SID: owners[key], PAPERCUSP_WORKSPACE: 'native-context-fixture',
           PAPERCUSP_PSU_REEXEC: '75', PAPERCUSP_PSU_REEXEC_PPID: String(process.ppid) }),
         resolveRespawnNativeId: () => { try { return latestNativeId(key); } catch { return null; } },
@@ -395,7 +420,8 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         emitCompacted: () => null, onExit: () => {}, bridgeTty: false, io });
       const run = { owner: owners[key], signals, done }; runs.push(run); return run;
     };
-    const diagnostics = () => JSON.stringify({ phase, errors, nativeResults, requests: requests.length, orders: orders.length,
+    const diagnostics = () => JSON.stringify({ phase, errors, nativeResults, toolCatalogs,
+      requests: requests.length, orders: orders.length,
       output: output.slice(-1200) });
     try {
       if (production) {
@@ -504,7 +530,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       const launch = (handoff: Row) => launchIdentityAssumeHandoff(handoff, { inspect,
         resolveSession: async (id: number) => real ? real.resolve(id) : ({ id, coordOwnerId: id === 2 ? owners.target : owners.caller,
           workspaceId: original.workspaceId, agent: 'codex', role: 'su', sessionId: id === 2 ? targetNative : callerNative }),
-        accountFor: async () => ({ mode: 'default' }), resume, isAlive: alive, baseEnv: {} });
+        accountFor: async () => ({ mode: 'default' }), resume, isAlive: alive, baseEnv: privateCallerEnv });
       phase = 'target'; issued = false;
       if (contended) {
         // Exercise delayed replies before starting the replacement. Neither a
@@ -567,9 +593,20 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         observedProcesses, processTreeReads })).not.toBeNull();
       expect(codexThreadWriterHolder(homes.target, runningTargetNative,
         { holderPid: nativePid })).toMatchObject({ held: true, pid: nativePid });
+      const targetEnvironment = readFileSync(`/proc/${nativePid}/environ`, 'utf8').split('\0');
+      for (const [key, value] of Object.entries(privateCallerEnv)) {
+        // The host deliberately recomputes this carrier from the target's
+        // resume argv. Reject the caller value while accepting that new pin.
+        if (key === 'PAPERCUSP_NATIVE_SESSION_ID') {
+          const carrier = targetEnvironment.find(entry => entry.startsWith(key + '='));
+          expect(carrier === undefined || carrier === `${key}=${runningTargetNative}`).toBe(true);
+        } else expect(targetEnvironment.some(entry => entry.startsWith(key + '='))).toBe(false);
+        expect(targetEnvironment.join('\n')).not.toContain(value);
+      }
       const targetInput = requests.filter(row => row.phase === 'target' && row.actor === 'target' &&
         !JSON.stringify(row.body).includes('LATE_NATIVE_OUTPUT')).map(row => JSON.stringify(row.body)).join('\n');
       expect(targetInput).not.toContain(marker.caller);
+      for (const value of Object.values(privateCallerEnv)) expect(targetInput).not.toContain(value);
       expect(targetInput.includes(marker.target)).toBe(mode === 'native-resume');
       expect(targetInput.includes(marker.checkpoint)).toBe(mode === 'checkpoint');
       expect(orders).toHaveLength(1);
@@ -661,6 +698,14 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       }
       expect(errors, diagnostics()).toEqual([]);
       returned.signals.emit('SIGTERM'); await returned.done;
+    } catch (error) {
+      const artifact = process.env.PC_EXECUTED_SOURCE_MAP_OUT
+        ? process.env.PC_EXECUTED_SOURCE_MAP_OUT + '.journey-failures.jsonl'
+        : join('/tmp', 'assume-native-failure-' + randomUUID() + '.jsonl');
+      appendFileSync(artifact, JSON.stringify({ mode, production, contended, preflight,
+        diagnostics: JSON.parse(diagnostics()), error: String(error) }) + '\n');
+      console.error('Native journey failure evidence: ' + artifact);
+      throw error;
     } finally {
       releaseCallers();
       releaseTarget(); for (const run of runs) run.signals.emit('SIGTERM');
