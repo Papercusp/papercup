@@ -1,0 +1,1 @@
+import{o as i}from"./chunk-a1a4177d.js";import{t as n}from"./react-ea1d8b8b.js";import{t as a}from"./jsx-runtime-660d4162.js";var e=i(n(),1),s=a(),o=(0,e.createContext)({});function _({slots:t,children:r}){return(0,s.jsx)(o.Provider,{value:t,children:r})}function x({name:t,fallback:r=null}){return(0,e.useContext)(o)[t]??r}export{_ as n,x as t};

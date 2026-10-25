@@ -1,0 +1,1 @@
+import{t as s}from"./src-f2abc502.js";var r=s("papercusp.sync.bus-tap.listeners",()=>({listeners:new Set}));function n(){return r.listeners}function c(t){const e=n();return e.add(t),()=>{e.delete(t)}}function i(t){for(const e of n())try{e(t)}catch{}}export{c as n,i as t};

@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, type Plugin, type UserConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import { resolve } from 'node:path';
@@ -110,7 +110,7 @@ const initialLazyStylesheetFilterPlugin: Plugin = {
 // flagsBootstrapPlugin (./flags-bootstrap) seeds dev-server flags. It is
 // `apply: 'serve'`, so a built index.html carries no seed (WI-10004079).
 
-export default defineConfig(async () => ({
+export default defineConfig(async (): Promise<UserConfig> => ({
   // Static assets (wordmark.svg, mascot.svg, the Oracle/header icons,
   // onnx/wasm voice models, …) live in the operator's own `public/`.
   // operator-vite has no `public/` of its own, so point Vite's

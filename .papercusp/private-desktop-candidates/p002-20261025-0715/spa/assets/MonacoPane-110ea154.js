@@ -1,0 +1,1 @@
+import{t}from"./jsx-runtime-660d4162.js";import{t as n}from"./dist-6156244a.js";import"./monaco-runtime-e2adea66.js";var a=t();function p({value:e,onChange:r}){return(0,a.jsx)(n,{height:"100%",language:"markdown",theme:"vs-dark",value:e,onChange:o=>r(o??""),options:{wordWrap:"on",minimap:{enabled:!0},fontSize:13,scrollBeyondLastLine:!1}})}export{p as default};

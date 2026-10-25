@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { build } from 'vite';
 import { desktopPortalPlugin } from '../../desktop-portal-plugin';
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -16,7 +17,7 @@ function source() {
   const files: Record<string, string> = {
     'packages/ui/package.json': JSON.stringify({ name: '@portal/ui', exports: { '.': './src/index.tsx' } }),
     'packages/ui/src/index.tsx': 'export { PortalEntry } from "./shell";',
-    'packages/ui/src/shell.tsx': 'export function PortalEntry() { return null; }',
+    'packages/ui/src/shell.tsx': 'import { invoke } from "@tauri-apps/api/core"; export function PortalEntry() { return invoke; }',
     'packages/contracts/package.json': JSON.stringify({ name: '@portal/contracts', exports: { '.': './src/index.ts' } }),
     'packages/contracts/src/index.ts': 'export const PORTAL_APP_KINDS = [];',
     'app/tokens.css': ':root { --portal-gap: 1rem; }', 'app/globals.css': '.portal { display: grid; }',
@@ -90,5 +91,27 @@ describe('desktop interface build selection', () => {
     const plugin = await candidate(resolve(link, 'out'));
     expect(() => hook(plugin, 'configResolved')({ root, build: { outDir: resolve(link, 'out') } }))
       .toThrow('cannot traverse symlinks');
+  });
+
+  it('emits a candidate document with real native code through the actual Vite build pipeline', async () => {
+    const portalRoot = source();
+    writeFileSync(resolve(portalRoot, 'index.html'), '<meta name="papercusp-desktop-interface" content="legacy" /><script type="module" src="/main.js"></script>');
+    writeFileSync(resolve(portalRoot, 'main.js'), 'import Entry from "virtual:desktop-portal-entry"; console.log(Entry);');
+    const outDir = resolve(root, '.papercusp/private-desktop-candidates/plugin-build-test');
+    const plugin = await desktopPortalPlugin({ papercuspRoot: root, env: {
+      PAPERCUSP_DESKTOP_INTERFACE: 'portal-candidate', PAPERCUSP_DESKTOP_PORTAL_ROOT: portalRoot,
+      PAPERCUSP_VITE_OUT_DIR: outDir,
+    } });
+    const result = await build({ root: portalRoot, configFile: false, plugins: [plugin], logLevel: 'silent',
+      build: { outDir, write: false, minify: false } });
+    const output = (Array.isArray(result) ? result : [result]).flatMap(result => 'output' in result ? result.output : []);
+    const html = output.find(item => item.fileName === 'index.html');
+    if (!html || html.type !== 'asset') throw new Error('Vite did not emit the candidate document');
+    const text = typeof html.source === 'string' ? html.source : new TextDecoder().decode(html.source);
+    expect(text).toContain('content="portal-candidate"');
+    const code = output.filter(item => item.type === 'chunk').map(item => item.code).join('\n');
+    expect(code).toContain('__TAURI_INTERNALS__');
+    expect(code).not.toContain('web-only native shim');
+    expect(output.some(item => item.fileName.endsWith('.css'))).toBe(true);
   });
 });

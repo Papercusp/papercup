@@ -1,0 +1,1 @@
+function e(l){return l.replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll("&lt;mark&gt;","<mark>").replaceAll("&lt;/mark&gt;","</mark>")}function t(l){return e(l.highlight||l.excerpt||"")}export{t};

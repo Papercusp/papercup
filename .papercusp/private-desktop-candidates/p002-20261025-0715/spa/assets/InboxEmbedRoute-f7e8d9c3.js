@@ -1,0 +1,1 @@
+import{t}from"./jsx-runtime-660d4162.js";import{i as a}from"./InboxPane-bc4b62a1.js";var r=t();function i(){return(0,r.jsx)("div",{className:"portal-focused-work-surface","data-testid":"inbox-portal-embed","data-portal-surface":"inbox",children:(0,r.jsx)(a,{layout:"split"})})}export{i as InboxEmbedRoute,i as default};

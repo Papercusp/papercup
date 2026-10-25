@@ -1,0 +1,1 @@
+var r=435;function g(l,t,n,e){const o=(l<<16|t)>>>0,i=(n<<16|e)>>>0;return BigInt(o)<<32n|BigInt(i)}function f(l){let t=8997,n=33826,e=40164,o=52210;for(let i=0;i<l.length;i++){t^=l.charCodeAt(i);const s=t*r;let c=n*r,h=e*r+(t<<8);const a=o*r+(n<<8);c+=s>>>16,t=s&65535,h+=c>>>16,n=c&65535,o=a+(h>>>16)&65535,e=h&65535}return g(o,e,n,t).toString(36)}export{f as t};

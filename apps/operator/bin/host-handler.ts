@@ -44,7 +44,7 @@ import { isServedOnExternalIngress, notServedOnExternalIngress } from './externa
 import { MCP_OAUTH_WELL_KNOWN } from '@papercusp/operator-core/lib/connected-apps/mcp-oauth-discovery';
 import { createDesktopPortalLifecycle } from './desktop-portal-lifecycle';
 
-const host = new Hono();
+const host = new Hono<{ Bindings: HttpBindings | Http2Bindings }>();
 const desktopPortal = createDesktopPortalLifecycle({ operator: (request, bindings) => app.fetch(request, bindings) });
 export const stopDesktopPortalHost = () => desktopPortal.stop();
 

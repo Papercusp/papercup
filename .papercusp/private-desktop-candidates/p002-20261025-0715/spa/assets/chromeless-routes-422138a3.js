@@ -1,0 +1,1 @@
+import{n as o,t}from"./portal-embed-97c967eb.js";var i=["/pi","/project-docs","/el-min","/quick-panel","/tasks-roster","/plans","/inbox",t];function e(s){return i.some(r=>s===r||s.startsWith(`${r}/`))}function a(s){return["/daos","/dao"].some(r=>s===r||s.startsWith(`${r}/`))}function c(s,r=""){return!e(s)&&!a(s)&&!o(s,r)}export{a as n,c as r,e as t};

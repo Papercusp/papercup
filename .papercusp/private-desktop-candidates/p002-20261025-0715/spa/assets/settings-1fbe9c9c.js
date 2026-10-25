@@ -1,0 +1,1 @@
+import{t as r}from"./jsx-runtime-660d4162.js";import{n as o}from"./Match-a46b2ee8.js";import{n as e}from"./layout-bd58ae4f.js";var t=r();function s(){return(0,t.jsx)(e,{children:(0,t.jsx)(o,{})})}export{s as component};
