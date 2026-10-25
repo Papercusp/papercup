@@ -15,7 +15,7 @@ import net from 'node:net';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
-import { hostThroughPty, metaPathFor, handoffPathFor, readHostHandoffForParentPid,
+import { hostThroughPty, metaPathFor, handoffPathFor, readHostHandoffForParentPid, eventLogPathForOwner,
   resolveLinuxCodexStartupPid, readLinuxStartupCounters, controlWritesForAgent } from '../scripts/psu-pty-host.mjs';
 import { mintCarryRespawnArgs, codexThreadWriterHolder, codexThreadWriterLockPath,
   codexNativeIdForPty } from '../scripts/psu-launcher.mjs';
@@ -1042,9 +1042,30 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       const artifact = process.env.PC_EXECUTED_SOURCE_MAP_OUT
         ? process.env.PC_EXECUTED_SOURCE_MAP_OUT + '.journey-failures.jsonl'
         : join('/tmp', 'assume-native-failure-' + randomUUID() + '.jsonl');
+      // The isolated discovery directory is removed by afterAll. Retain its
+      // lifecycle evidence while the failed process is still observable, so a
+      // startup or return stall can be diagnosed without repeating the journey.
+      const hostEvidence = Object.values(owners).map(owner => {
+        try {
+          let meta: Row | null = null;
+          try { meta = JSON.parse(readFileSync(metaPathFor(owner), 'utf8')); } catch { /* not spawned */ }
+          const eventsPath = eventLogPathForOwner(owner);
+          const events = existsSync(eventsPath) ? readFileSync(eventsPath, 'utf8').trim().split('\n')
+            .filter(Boolean).map(line => JSON.parse(line)) : [];
+          const ptyPid = Number.isInteger(meta?.ptyPid) ? meta!.ptyPid as number : null;
+          const nativePid = ptyPid ? resolveLinuxCodexStartupPid(ptyPid) : null;
+          return { owner, ptyPid, ptyAlive: ptyPid ? alive(ptyPid) : null,
+            nativeSessionId: meta?.nativeSessionId ?? null, nativePid,
+            nativeProcessStart: nativePid ? readProcessIdentity(nativePid) : null,
+            startupCounters: nativePid ? readLinuxStartupCounters(nativePid) : null, events };
+        } catch (evidenceError) { return { owner, evidenceError: String(evidenceError) }; }
+      });
       appendFileSync(artifact, JSON.stringify({ mode, production, contended, preflight, crashRecovery, returnControls, checks, crashBoundaries,
-        diagnostics: JSON.parse(diagnostics()), error: String(error) }) + '\n');
-      console.error('Native journey failure evidence: ' + artifact);
+        diagnostics: JSON.parse(diagnostics()), hostEvidence, error: String(error),
+        errorStack: error instanceof Error ? error.stack : undefined }) + '\n');
+      // console.error is itself an assertion under fail-on-console and would
+      // replace the original failure/stack before the rethrow below can run.
+      process.stderr.write('Native journey failure evidence: ' + artifact + '\n');
       throw error;
     } finally {
       releaseCallerCompletion(); releaseStartupCrash();
