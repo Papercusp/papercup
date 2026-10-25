@@ -16,6 +16,7 @@ import {
   FLEET_LOGS_GC_DEFAULT_MAX_TOTAL_BYTES,
   runPapercuspWorkdirGc,
   runLintWorkRootGc,
+  runLintWorkRootsGc,
   PAPERCUSP_WORKDIR_GC_DEFAULT_RETENTION_MS,
   PAPERCUSP_WORKDIR_GC_PROTECTED_BASENAMES,
   WINDOWS_BUILD_SCRATCH_GC_DEFAULT_RETENTION_MS,
@@ -546,8 +547,8 @@ function makeWindowsBuildScratch(root: string): {
 describe('runLintWorkRootGc', () => {
   const HOUR = 3600_000;
   const now = 20 * HOUR;
-  const makeRoot = (name: string, ageHours: number, extra: Record<string, unknown> = {}) => {
-    const path = join(sandbox, `papercusp-lint-as-committed-${name}`);
+  const makeRoot = (name: string, ageHours: number, extra: Record<string, unknown> = {}, base = sandbox) => {
+    const path = join(base, `papercusp-lint-as-committed-${name}`);
     mkdirSync(join(path, '.git'), { recursive: true });
     writeFileSync(join(path, '.git/lint-as-committed-owner.json'), JSON.stringify({
       pid: 2147483647, keep: true, sha: 'a'.repeat(40), createdAtMs: now - ageHours * HOUR, ...extra,
@@ -642,10 +643,54 @@ describe('runLintWorkRootGc', () => {
     expect(existsSync(path)).toBe(true);
   });
 
+  it('discovers relocated producer roots once per physical directory and preserves retention protections', async () => {
+    const temp = join(sandbox, 'temp'); mkdirSync(temp);
+    const alias = join(sandbox, 'temp-alias'); symlinkSync(temp, alias);
+    const workspaceRoot = join(sandbox, 'workspaces');
+    const checkout = join(workspaceRoot, 'staging', '.papercusp', 'tmp');
+    mkdirSync(checkout, { recursive: true });
+    const hivesRoot = join(sandbox, 'hives'); mkdirSync(hivesRoot);
+    symlinkSync(join(workspaceRoot, 'staging'), join(hivesRoot, 'staging-alias'));
+    const tempExpired = makeRoot('expired', 7, {}, temp);
+    const checkoutExpired = makeRoot('expired', 7, {}, checkout);
+    const pinned = makeRoot('pinned', 7, {}, checkout);
+    createRetentionPin({ path: join(pinned, 'source.txt'), owner: 'reviewer', reason: 'proof',
+      expiresAt: new Date(Date.now() + HOUR).toISOString() });
+    const artifact = join(sandbox, 'artifact'); mkdirSync(artifact);
+    const dependent = makeRoot('dependent', 1000,
+      { retainedFor: [{ path: artifact, sha: 'a'.repeat(40) }] }, checkout);
+    const options = { discovery: { baseDirs: [temp, alias], workspaceRoot, hivesRoot,
+      dataTempDir: join(sandbox, 'missing-data') }, now, scanOpenPaths, log: () => {} };
+    const preview = await runLintWorkRootsGc(options);
+    expect(preview.map((result) => result.root)).toEqual([temp, checkout]);
+    expect(preview.map((result) => result.wouldRemove.length)).toEqual([1, 1]);
+    expect(existsSync(tempExpired) && existsSync(checkoutExpired)).toBe(true);
+    const actual = await runLintWorkRootsGc({ ...options, dryRun: false });
+    expect(actual.map((result) => result.removed.length)).toEqual([1, 1]);
+    expect(actual.every((result) => result.scanComplete)).toBe(true);
+    expect(existsSync(tempExpired) || existsSync(checkoutExpired)).toBe(false);
+    expect(existsSync(pinned) && existsSync(dependent)).toBe(true);
+  });
+
+  it('keeps relocated snapshots when the holder census is incomplete', async () => {
+    const workspaceRoot = join(sandbox, 'workspaces');
+    const checkout = join(workspaceRoot, 'staging', '.papercusp', 'tmp');
+    const expired = makeRoot('expired', 7, {}, checkout);
+    const results = await runLintWorkRootsGc({
+      discovery: { baseDirs: [], workspaceRoot, hivesRoot: join(sandbox, 'missing-hives'),
+        dataTempDir: join(sandbox, 'missing-data') },
+      now, dryRun: false, scanOpenPaths: async () => ({ complete: false, byPath: new Map() }),
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0].removed).toEqual([]);
+    expect(results[0].scanComplete).toBe(false);
+    expect(existsSync(expired)).toBe(true);
+  });
+
   it('runs on the existing hourly storage workflow', () => {
     const source = readFileSync(new URL('./dbos/periodic-workflows.ts', import.meta.url), 'utf8');
     const tick = source.slice(source.indexOf('async function fleetLogsGcTick'), source.indexOf('const fleetLogsGcWorkflow'));
-    expect(tick).toContain('await runLintWorkRootGc({ dryRun: false })');
+    expect(tick).toContain('await runLintWorkRootsGc({ dryRun: false })');
     expect(tick).toContain("defaultEvidenceRoot('release-local')");
     expect(tick).toContain('pruneEvidenceRoot(evidenceRoot)');
     expect(source).toContain("DBOS.registerScheduled(fleetLogsGcWorkflow, { name: 'fleetLogsGc', crontab: '0 5 * * * *' })");

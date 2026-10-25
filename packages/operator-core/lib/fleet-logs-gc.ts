@@ -59,6 +59,8 @@ import { AGENT_ROOT_MAX_BYTES } from './storage/retention-policy';
 import type { RetentionCapReceipt } from './storage/disk-reclaim';
 import { inspectRetentionTrees, RetentionAllocationCounter } from './storage/disk-consumer-census';
 import { resolveOperatorAppRootFromModuleDir } from './operator-app-root';
+import { PAPERCUSP_TMPDIR_CANDIDATES } from '@papercusp/test-config/tmpdir-guard';
+import { defaultVerifyScanRoots, type VerifyScanRootEnv } from './harness/routines/gc-verify-instances';
 // @ts-expect-error The maintained CLI policy is JavaScript without declarations.
 import { sweepStaleWorkRoots, OWNER_MARKER } from '../../../scripts/lint-as-committed.mjs';
 
@@ -125,6 +127,23 @@ export interface LintWorkRootGcOptions {
  * the hourly storage tick, even when no subsequent lint command starts. */
 export async function runLintWorkRootGc(opts: LintWorkRootGcOptions = {}) {
   return withRetentionPinProtection((isPinned) => sweepLintWorkRoots(opts, isPinned));
+}
+
+/** The producer can relocate TMPDIR independently of the scheduled operator.
+ * Sweep the same checkout/data roots as verifier GC, plus the test launcher's
+ * standard temp roots. Explicit single-root callers keep their existing scope. */
+export async function runLintWorkRootsGc(
+  opts: Omit<LintWorkRootGcOptions, 'root'> & { discovery?: VerifyScanRootEnv } = {},
+) {
+  const { discovery, ...sweepOptions } = opts;
+  const roots = await defaultVerifyScanRoots({
+    ...discovery,
+    baseDirs: discovery?.baseDirs ?? ['/tmp', tmpdir(), ...PAPERCUSP_TMPDIR_CANDIDATES],
+    dataTempDir: discovery?.dataTempDir ?? '/mnt/data/tmp',
+  });
+  const results = [];
+  for (const root of roots) results.push(await runLintWorkRootGc({ ...sweepOptions, root }));
+  return results;
 }
 
 async function sweepLintWorkRoots(opts: LintWorkRootGcOptions, isPinned: (path: string) => boolean): Promise<{

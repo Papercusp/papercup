@@ -1170,6 +1170,52 @@ function bgCompilerOptions(argv, root) {
   return { options, metafile };
 }
 
+/** Keep the common source/dependency receipt once, with a separate original
+ * command for every maintained main/worker/spawner invocation. Commands are
+ * selected by their complete argv, never by entry basename or call order.
+ * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
+ *   invocations: BgBuildInvocation[] }} args
+ */
+export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocations }) {
+  assert.ok(Array.isArray(invocations) && invocations.length > 0, 'BG invocation set is empty');
+  const record = prepareBgVerifierBuildRecord({ prepared, dependencies, invocation: invocations[0] });
+  const context = freezeBgExpectation({ schemaVersion: 'bg-build-contexts-v1', record,
+    invocations: invocations.map(invocation => ({ invocation, original: readBgBuildInvocation(prepared, invocation) })) });
+  validateBgVerifierBuildContexts(context);
+  return context;
+}
+
+/** @param {ReturnType<typeof prepareBgVerifierBuildContexts>} context */
+function validateBgVerifierBuildContexts(context) {
+  assert.equal(context.schemaVersion, 'bg-build-contexts-v1', 'BG invocation set is UNKNOWN');
+  assert.ok(Array.isArray(context.invocations) && context.invocations.length > 0, 'BG invocation set is empty');
+  const common = ({ argv, ...identity }) => identity;
+  const commands = new Set(), outputs = new Set();
+  for (const entry of context.invocations) {
+    assert.deepEqual(common(entry.original), common(context.record.invocation),
+      'BG invocation set changed common build identity');
+    assert.deepEqual(entry.invocation.argv, entry.original.argv, 'BG invocation set changed original argv');
+    const key = JSON.stringify(entry.original.argv);
+    assert.ok(!commands.has(key), 'BG invocation set duplicated command');
+    commands.add(key);
+    const { options, metafile } = bgCompilerOptions(entry.original.argv, context.record.prepared.root);
+    for (const output of [options.outfile, metafile].filter(Boolean)) {
+      assert.ok(!outputs.has(output), 'BG invocation set duplicated output');
+      outputs.add(output);
+    }
+  }
+}
+
+/** @param {ReturnType<typeof prepareBgVerifierBuildContexts>} context
+ * @param {string[]} argv
+ */
+function selectBgVerifierBuildContext(context, argv) {
+  validateBgVerifierBuildContexts(context);
+  const entry = context.invocations.find(row => JSON.stringify(row.original.argv) === JSON.stringify(argv));
+  assert.ok(entry, 'BG compiler argv is outside original invocation set');
+  return { record: { ...context.record, invocation: entry.original }, invocation: entry.invocation };
+}
+
 /** The shared shell recipe delegates one EXACT recorded compiler invocation
  * here. Use its private API and binary, pass the digest-checked buffers to
  * esbuild, then fence source/dependencies again before writing any output.
@@ -2853,10 +2899,21 @@ function printGate(verdict) {
 
 async function main(argv) {
   if (argv[0] === 'bg-compiler') {
-    assert.ok(argv[1] === '--context' && isAbsolute(argv[2] ?? '') && argv[3] === '--',
+    assert.ok(argv[1] === '--context' && isAbsolute(argv[2] ?? '') && (argv[3] === '--' || argv[3] === '--check'),
       'bg-compiler requires --context <absolute original context> -- <recorded compiler argv>');
     const context = JSON.parse(await fs.readFile(argv[2], 'utf8'));
-    const receipt = await compileBgVerifierInvocation({ ...context, argv: argv.slice(4), expectedVersion: '0.25.0' });
+    if (argv[3] === '--check') {
+      assert.equal(argv.length, 4, 'BG context check has unexpected arguments');
+      const entries = context.schemaVersion === 'bg-build-contexts-v1'
+        ? (validateBgVerifierBuildContexts(context), context.invocations.map(entry =>
+          ({ record: { ...context.record, invocation: entry.original }, invocation: entry.invocation })))
+        : [context];
+      for (const entry of entries) verifyBgVerifierBuildRecord(entry.record, entry.invocation, 'before-build');
+      return 0;
+    }
+    const selected = context.schemaVersion === 'bg-build-contexts-v1'
+      ? selectBgVerifierBuildContext(context, argv.slice(4)) : context;
+    const receipt = await compileBgVerifierInvocation({ ...selected, argv: argv.slice(4), expectedVersion: '0.25.0' });
     console.log(JSON.stringify(receipt));
     return 0;
   }

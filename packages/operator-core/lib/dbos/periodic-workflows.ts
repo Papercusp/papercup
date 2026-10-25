@@ -41,7 +41,7 @@ import { gcOldOperatorTurns } from '../operator-turns-gc';
 import {
   runFleetLogsGc,
   runLaunchContextGc,
-  runLintWorkRootGc,
+  runLintWorkRootsGc,
   runPapercuspWorkdirGc,
   runWindowsBuildScratchGc,
 } from '../fleet-logs-gc';
@@ -708,14 +708,16 @@ async function fleetLogsGcTick(): Promise<void> {
             : ''),
       );
 
-      // Lint snapshots live under tmpdir, outside the ~/.papercusp sweep. Their
-      // six-hour retention must run even if no new lint invocation arrives.
-      const lintRoots = await runLintWorkRootGc({ dryRun: false });
-      console.log(
-        `[lint-work-root-gc] removed ${lintRoots.removed.length} snapshot(s), kept ${lintRoots.kept.length}` +
-          (!lintRoots.scanComplete ? ', deferred: process census incomplete' : '') +
-          (lintRoots.scanError ? ` (${lintRoots.scanError})` : ''),
-      );
+      // Producers can relocate TMPDIR, including into checkout-local storage.
+      // Their retention must cover those roots even if no new lint starts.
+      const lintRootResults = await runLintWorkRootsGc({ dryRun: false });
+      for (const lintRoots of lintRootResults) {
+        console.log(
+          `[lint-work-root-gc] ${lintRoots.root}: removed ${lintRoots.removed.length} snapshot(s), kept ${lintRoots.kept.length}` +
+            (!lintRoots.scanComplete ? ', deferred: process census incomplete' : '') +
+            (lintRoots.scanError ? ` (${lintRoots.scanError})` : ''),
+        );
+      }
 
       // Third and last of the ~/.papercusp accumulations (WI-10002015). The two
       // sweeps above leave a hole exactly the shape of `launch-context`: the

@@ -8141,6 +8141,24 @@ async function runGitSyncPass(
     /** Persist the discovered repo coordinates so a resumed pointer-bump can still
      * filter submodule-relative protected paths out of the superproject stage. */
     submodulePaths: string[];
+    /** Bounded evidence from the execution that produced this checkpoint, not its replay. */
+    submoduleTiming?: {
+      schemaVersion: 1;
+      runId: string;
+      repoRoot: string;
+      pid: number;
+      sourceUrl: string;
+      startedAt: string;
+      setupMs: number;
+      batches: Array<{
+        index: number;
+        depth: number;
+        startOffsetMs: number;
+        durationMs: number;
+        repositories: Array<{ scope: string; durationMs: number; status: RepoSyncResult['status'] | 'rejected' }>;
+      }>;
+      omittedBatches: number;
+    };
     didSomething: boolean;
     /** WI-10007606: set when the walk stopped at a batch boundary to yield. Part of the
      *  checkpointed output, so a crash-replay of this step yields again instead of
@@ -8215,6 +8233,25 @@ async function runGitSyncPass(
   // pass, after which a resumed fire never re-commits/re-pushes the submodules.
   const sub = await step('git-sync:submodules', async (): Promise<PhaseCollect> => {
     const out = emptyPhase();
+    const phaseStartedAt = performance.now();
+    const timing = out.submoduleTiming = {
+      schemaVersion: 1 as const,
+      runId: randomUUID(),
+      repoRoot: repo,
+      pid: process.pid,
+      sourceUrl: import.meta.url,
+      startedAt: new Date().toISOString(),
+      setupMs: 0,
+      batches: [] as NonNullable<PhaseCollect['submoduleTiming']>['batches'],
+      omittedBatches: 0,
+    };
+    // Diagnostics must not change sync behavior, including if an injected sink fails.
+    const timingLog = (event: string, detail: object): void => {
+      try {
+        log(`[git-sync:submodule-timing] ${JSON.stringify({ event, slug, runId: timing.runId, repoRoot: repo, pid: timing.pid, ...detail })}`);
+      } catch { /* diagnostic-only */ }
+    };
+    timingLog('phase-start', { sourceUrl: timing.sourceUrl, startedAt: timing.startedAt });
     let subPaths: string[] = [];
     if (doSub) {
       // EI-20329530284626235: `.gitmodules` is the canonical transport declaration,
@@ -8261,6 +8298,7 @@ async function runGitSyncPass(
         }
       }
       if (urlSync.code !== 0) {
+        timing.setupMs = Math.round(performance.now() - phaseStartedAt);
         const detail = (urlSync.stderr || urlSync.stdout || 'no output').trim().slice(0, 300);
         const message = `canonical submodule URL sync failed: ${detail}`;
         out.errors.push({ scope: 'submodule-config', message });
@@ -8299,6 +8337,7 @@ async function runGitSyncPass(
       }
       out.submodulePaths = [...subPaths];
     }
+    timing.setupMs = Math.round(performance.now() - phaseStartedAt);
     const syncSubmodule = (s: string): Promise<RepoSyncResult> =>
       // P-004: a submodule's last-resort default is its own 'main' (resolved via
       // origin/HEAD first), never the superproject's branch (cfg.branch = 'staging').
@@ -8347,9 +8386,36 @@ async function runGitSyncPass(
           return out;
         }
         const batch = subPaths.slice(batchStart, Math.min(batchStart + SUBMODULE_SYNC_CONCURRENCY, depthEnd));
+        const batchStartedAt = performance.now();
+        const measurement: NonNullable<PhaseCollect['submoduleTiming']>['batches'][number] = {
+          index: timing.batches.length + timing.omittedBatches,
+          depth,
+          startOffsetMs: Math.round(batchStartedAt - phaseStartedAt),
+          durationMs: 0,
+          repositories: [],
+        };
+        timingLog('batch-start', { batch: measurement.index, depth, scopes: batch });
         // allSettled is a safety barrier: an unexpected rejection must not let a
         // sibling start more Git commands after the action releases its locks.
-        const results = await Promise.allSettled(batch.map(syncSubmodule));
+        const results = await Promise.allSettled(batch.map(async (scope) => {
+          const startedAt = performance.now();
+          let status: RepoSyncResult['status'] | 'rejected' = 'rejected';
+          try {
+            const result = await syncSubmodule(scope);
+            status = result.status;
+            return result;
+          } finally {
+            const repository = { scope, durationMs: Math.round(performance.now() - startedAt), status };
+            measurement.repositories.push(repository);
+            timingLog('repository-settled', { batch: measurement.index, ...repository });
+          }
+        }));
+        measurement.durationMs = Math.round(performance.now() - batchStartedAt);
+        // Retain at most 256 repositories in the durable phase output. Logs retain
+        // later batches; the omission count makes the checkpoint's coverage explicit.
+        if (timing.batches.length < 64) timing.batches.push(measurement);
+        else timing.omittedBatches++;
+        timingLog('batch-settled', measurement);
         for (let i = 0; i < results.length; i++) {
           const result = results[i]!;
           if (result.status === 'rejected') throw result.reason;

@@ -100,7 +100,53 @@ describe('bundled typecheck service identity', () => {
     const result = JSON.parse(child.stdout);
     expect(result.before.serviceSourceSha256).toBe(expected);
     expect(result.after).toEqual(result.before);
-    expect(result.before.compilerVersion).toBeTruthy();
+    expect(result.before.compilerVersion).toBe(JSON.parse(readFileSync(join(nativeDir, 'package.json'), 'utf8')).version);
+    expect(result.before.compilerInstall).toBe(nativeDir);
+    expect(result.before.compilerArtifactsSha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it.each(['source', 'host bundle'])('keeps %s metadata usable with source assets but no optional native compiler', async layout => {
+    const { root, output } = await bundled(true, false);
+    const entry = layout === 'source' ? join(root, 'scripts/lib/tsc-service.mjs') : output;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { createRequire } from 'node:module';
+      let missingCompiler;
+      try { createRequire(${JSON.stringify(pathToFileURL(entry).href)}).resolve('@typescript/native/package.json'); }
+      catch (error) { missingCompiler = error.code; }
+      const service = await import(${JSON.stringify(pathToFileURL(entry).href)});
+      let failure;
+      try { service.tscServiceIdentity({}); } catch (error) { failure = error.code; }
+      console.log(JSON.stringify({ missingCompiler, socket: service.tscServiceSocketPath({ XDG_RUNTIME_DIR: '/private' }), failure }));
+    `], { cwd: tmpdir(), encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' }, timeout: 20_000 });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({ missingCompiler: 'MODULE_NOT_FOUND',
+      socket: '/private/papercusp-tsc-service.sock', failure: 'service-identity-unavailable' });
+  });
+
+  it.each(['unreadable', 'invalid JSON'])('keeps source metadata usable when optional compiler metadata is %s', async fault => {
+    const { root } = await bundled(true, false);
+    const metadata = join(root, 'compiler-metadata.json');
+    if (fault === 'unreadable') mkdirSync(metadata);
+    else writeFileSync(metadata, '{');
+    const entry = join(root, 'scripts/lib/tsc-service.mjs');
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { registerHooks } from 'node:module';
+      let resolutions = 0;
+      registerHooks({ resolve(specifier, context, nextResolve) {
+        if (specifier === '@typescript/native/package.json') {
+          resolutions++;
+          return { url: ${JSON.stringify(pathToFileURL(metadata).href)}, shortCircuit: true };
+        }
+        return nextResolve(specifier, context);
+      } });
+      const service = await import(${JSON.stringify(pathToFileURL(entry).href)});
+      let failure;
+      try { service.tscServiceIdentity({}); } catch (error) { failure = error.code; }
+      console.log(JSON.stringify({ resolutions, socket: service.tscServiceSocketPath({ XDG_RUNTIME_DIR: '/private' }), failure }));
+    `], { cwd: tmpdir(), encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' }, timeout: 20_000 });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({ resolutions: 1,
+      socket: '/private/papercusp-tsc-service.sock', failure: 'service-identity-unavailable' });
   });
 
   it('keeps metadata imports usable without source assets and refuses identity certification', async () => {

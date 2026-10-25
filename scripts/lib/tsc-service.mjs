@@ -45,9 +45,17 @@ const serviceSourceSha256 = (() => {
 // A packaged sidecar without service sources cannot certify this service. Do
 // not resolve an optional development compiler through the builder's parent
 // node_modules just to import metadata; the bundle closure guard forbids that.
-const nativePackagePath = serviceSourceSha256
-  ? createRequire(import.meta.url).resolve('@typescript/native/package.json') : null;
-const nativePackage = nativePackagePath ? JSON.parse(readFileSync(nativePackagePath, 'utf8')) : null;
+// Source assets can also exist without a usable optional compiler installation.
+// Keep resolution, reading and parsing inside the same metadata-only fallback.
+const nativeCompiler = (() => {
+  if (!serviceSourceSha256) return null;
+  try {
+    const packagePath = createRequire(import.meta.url).resolve('@typescript/native/package.json');
+    return { packagePath, metadata: JSON.parse(readFileSync(packagePath, 'utf8')) };
+  } catch { return null; }
+})();
+const nativePackagePath = nativeCompiler?.packagePath ?? null;
+const nativePackage = nativeCompiler?.metadata ?? null;
 const nativeVersion = nativePackage?.version ?? null;
 // Capture runtime JS and executable bytes before the daemon imports the API.
 // Version/path cannot distinguish an in-place compiler replacement.

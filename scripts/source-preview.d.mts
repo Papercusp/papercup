@@ -342,6 +342,104 @@ export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgV
         };
     };
 };
+/** Keep the common source/dependency receipt once, with a separate original
+ * command for every maintained main/worker/spawner invocation. Commands are
+ * selected by their complete argv, never by entry basename or call order.
+ * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
+ *   invocations: BgBuildInvocation[] }} args
+ */
+export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocations }: {
+    prepared: BgVerifierPreparation;
+    dependencies: ReturnType<typeof captureVerifierDependencies>;
+    invocations: BgBuildInvocation[];
+}): {
+    schemaVersion: string;
+    record: {
+        schemaVersion: string;
+        prepared: BgVerifierPreparation;
+        dependencies: {
+            schemaVersion: string;
+            scope: string;
+            root: string;
+            sourceCommit: string;
+            policy: {
+                path: string;
+                sha256: string;
+            };
+            sourceReceiptSha256: string;
+            trees: {
+                path: string;
+                files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+            }[];
+        };
+        originalSourceReceiptSha256: string;
+        invocation: {
+            builder: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            compiler: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            node: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            packageManager: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            argv: string[];
+            configuration: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            }[];
+            environment: {
+                [k: string]: string;
+            };
+        };
+    };
+    invocations: {
+        invocation: BgBuildInvocation;
+        original: {
+            builder: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            compiler: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            node: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            packageManager: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            argv: string[];
+            configuration: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            }[];
+            environment: {
+                [k: string]: string;
+            };
+        };
+    }[];
+};
 /** The shared shell recipe delegates one EXACT recorded compiler invocation
  * here. Use its private API and binary, pass the digest-checked buffers to
  * esbuild, then fence source/dependencies again before writing any output.

@@ -35,6 +35,7 @@ import {
   verifyBgVerifierSource,
   createBgVerifierCompilerCustody,
   prepareBgVerifierBuildRecord,
+  prepareBgVerifierBuildContexts,
   verifyBgVerifierBuildRecord,
   compileBgVerifierInvocation,
   qualifyBgVerifierOutput,
@@ -2464,6 +2465,66 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect(receipt.consumed.map((row: { path: string }) => row.path)).toContain('packages/core/index.ts');
     expect(qualifyBgVerifierOutput(fixture).artifact.sourceBlobs).toEqual(fixture.prepared.acceptedManifest.members);
   });
+
+  async function maintainedCompilerContexts() {
+    const fixture = await maintainedCompilerCandidate();
+    const workerEntry = join(dirname(fixture.entry), 'worker.mjs');
+    const workerArgv = fixture.argv.map((arg, index) => index === 0
+      ? join(fixture.prepared.root, 'packages/core/index.ts') : arg.replaceAll(fixture.entry, workerEntry));
+    const worker = { ...fixture.invocation, argv: workerArgv };
+    const contexts = prepareBgVerifierBuildContexts({ ...fixture, invocations: [fixture.invocation, worker] });
+    const contextPath = join(dirname(fixture.prepared.root), 'original-multi-entry-contexts.json');
+    writeFileSync(contextPath, JSON.stringify(contexts));
+    const common = join(fixture.prepared.root, 'apps/operator/bin/bundle-host-common.sh');
+    const run = (argv: string[], check = false) => spawnSync('bash', ['-c',
+      'source "$1"; shift; repo="$1"; shift; bundle_host_cached_package() { echo unexpected-cache-fallback >&2; return 99; }; if [[ "$1" == check ]]; then bundle_host_prepare_esbuild "$repo"; else shift; bundle_host_esbuild "$repo" "$@"; fi',
+      'guarded-multi-entry', common, fixture.prepared.root, check ? 'check' : 'compile', ...argv],
+    { env: childEnv({ BUNDLE_HOST_BG_BUILD_CONTEXT: contextPath }), encoding: 'utf8', timeout: 60_000 });
+    return { ...fixture, worker, workerEntry, contexts, contextPath, run };
+  }
+
+  it('dispatches original per-entry contexts through the maintained shell in either order without npm resolution', async () => {
+    const fixture = await maintainedCompilerContexts();
+    const original = readFileSync(fixture.contextPath);
+    const checked = fixture.run([], true);
+    expect({ status: checked.status, stderr: checked.stderr }).toEqual({ status: 0, stderr: '' });
+    for (const argv of [fixture.worker.argv, fixture.argv]) {
+      const result = fixture.run(argv);
+      expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
+      expect(JSON.parse(result.stdout).argv).toEqual(argv);
+    }
+    const worker = await import('data:text/javascript;base64,' + readFileSync(fixture.workerEntry).toString('base64'));
+    const main = await import('data:text/javascript;base64,' + readFileSync(fixture.entry).toString('base64'));
+    expect({ worker: worker.y, main: main.dep }).toEqual({ worker: 2, main: 41 });
+    expect(readFileSync(fixture.contextPath)).toEqual(original);
+  });
+
+  it.each(['changed-argv', 'changed-original', 'duplicate-command', 'duplicate-output', 'foreign-identity'] as const)(
+    'refuses %s in per-entry contexts before output or cache fallback', async defect => {
+      const fixture = await maintainedCompilerContexts();
+      const contexts = JSON.parse(JSON.stringify(fixture.contexts));
+      let argv = fixture.argv;
+      if (defect === 'changed-argv') argv = [...argv, '--keep-names'];
+      if (defect === 'changed-original') contexts.invocations[1].invocation.argv.push('--keep-names');
+      if (defect === 'duplicate-command') contexts.invocations.push(contexts.invocations[0]);
+      if (defect === 'duplicate-output') {
+        for (const key of ['invocation', 'original']) contexts.invocations[1][key].argv =
+          fixture.worker.argv.map(arg => arg.replaceAll(fixture.workerEntry, fixture.entry));
+      }
+      if (defect === 'foreign-identity') contexts.invocations[1].original.environment.PATH = '/unaccepted';
+      writeFileSync(fixture.contextPath, JSON.stringify(contexts));
+      const checked = defect === 'changed-argv' ? null : fixture.run([], true);
+      if (checked) expect(checked.status).not.toBe(0);
+      const result = fixture.run(argv);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(defect === 'changed-argv' ? 'BG compiler argv is outside original invocation set'
+        : defect === 'changed-original' ? 'BG invocation set changed original argv'
+          : defect === 'duplicate-command' ? 'BG invocation set duplicated command'
+            : defect === 'duplicate-output' ? 'BG invocation set duplicated output' : 'BG invocation set changed common build identity');
+      expect(result.stderr).not.toContain('unexpected-cache-fallback');
+      expect(existsSync(fixture.entry)).toBe(false);
+      expect(existsSync(fixture.workerEntry)).toBe(false);
+    });
 
   it('binds a distinct immutable output record through the maintained artifact writer', async () => {
     const { prepared, invocation, record, entry } = await outputCandidate();

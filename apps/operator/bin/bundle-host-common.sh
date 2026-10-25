@@ -68,6 +68,14 @@ bundle_host_cached_package() { # <repo root> <command> [args...]
 }
 
 bundle_host_prepare_esbuild() { # <repo root>
+  if [[ -n "${BUNDLE_HOST_BG_BUILD_CONTEXT:-}" ]]; then
+    # The whole maintained recipe resolves its supplied original contexts before
+    # its first compile. A rejected BG context must never acquire an npm compiler.
+    local -a guarded_node=("${COMMITTED_NODE[@]:-node}")
+    "${guarded_node[@]}" "$1/scripts/source-preview.mjs" bg-compiler \
+      --context "$BUNDLE_HOST_BG_BUILD_CONTEXT" --check
+    return $?
+  fi
   [[ -z "$BUNDLE_HOST_ESBUILD_PATH" ]] || return 0
   local compiler
   compiler="$(bundle_host_cached_package "$1" npx --yes --package=esbuild@0.25.0 -c 'command -v esbuild')" || return 1
