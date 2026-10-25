@@ -93,9 +93,16 @@ export function nativeCliPlan(baseUrl: string, name: string, args: Record<string
   // An inherited green proxy must never reclassify an alternate/remote pin.
   delete env.PAPERCUSP_MCP_PROXY_BASE;
   delete env.PAPERCUSP_MCP_PROXY_PORT;
-  const cliUrl = staging ? resolveAgentMcpBaseUrl(baseUrl, {
+  let cliUrl = staging ? resolveAgentMcpBaseUrl(baseUrl, {
     ...env, PAPERCUSP_MCP_STAGING_PROXY_PORT: inherited.PAPERCUSP_MCP_STAGING_PROXY_PORT ?? '9171',
   }) : baseUrl.replace(/\/$/, '');
+  // Foreground bash returns prose unless structured output is negotiated.
+  // Keep JSON decoding strict and request the tool's maintained exit receipt.
+  if (name === 'capability:bash') {
+    const structured = new URL(cliUrl);
+    structured.searchParams.set('structured', '1');
+    cliUrl = structured.toString();
+  }
   if (staging) {
     const proxy = new URL(cliUrl);
     if (proxy.origin === selected.origin || ['3070', '9071'].includes(proxy.port)) {
