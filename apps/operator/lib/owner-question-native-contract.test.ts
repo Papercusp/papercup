@@ -1,9 +1,47 @@
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { coordEscalationToAttention, conversationToAttention } from '../../../packages/operator-core/lib/attention/adapters';
 import { deriveAttentionRefs } from '../../../packages/operator-core/lib/sync-resolver/attention-counts';
-import { ownerQuestionDelivery } from './owner-question-native-contract.mts';
+import { ownerQuestionButtonSelector, ownerQuestionDelivery } from './owner-question-native-contract.mts';
+
+const { JSDOM } = createRequire(import.meta.url)('jsdom') as typeof import('jsdom');
+
+describe('native owner-question button targeting', () => {
+  it('clicks Submit after Answer without targeting the earlier Answer button', () => {
+    const dom = new JSDOM('<aside data-testid="inbox-expanded-question"><button>Answer</button><button>Submit</button></aside>');
+    try {
+      const document = dom.window.document;
+      const clicked: string[] = [];
+      for (const button of document.querySelectorAll('button')) {
+        button.addEventListener('click', () => clicked.push(button.textContent!));
+      }
+      for (const label of ['Answer', 'Submit']) {
+        const selector = new Function('document', `return ${ownerQuestionButtonSelector(label)}`)(document) as string;
+        expect(document.querySelectorAll(selector)).toHaveLength(1);
+        expect(document.querySelector(selector)?.textContent).toBe(label);
+        (document.querySelector(selector) as HTMLButtonElement).click();
+      }
+      expect(clicked).toEqual(['Answer', 'Submit']);
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it('preserves product test ids and refuses absent or disabled actions', () => {
+    const dom = new JSDOM('<button>Submit</button><aside data-testid="inbox-expanded-question"><button data-testid="answer">Answer</button><button disabled>Submit</button></aside>');
+    try {
+      const document = dom.window.document;
+      const select = (label: string) => new Function('document', `return ${ownerQuestionButtonSelector(label)}`)(document) as string | null;
+      expect(document.querySelector(select('Answer')!)?.getAttribute('data-testid')).toBe('answer');
+      expect(select('Submit')).toBeNull();
+      expect(select('Missing')).toBeNull();
+    } finally {
+      dom.window.close();
+    }
+  });
+});
 
 const choice = coordEscalationToAttention({ msgId: 'choice-1', from: 'su-fixture', summary: 'Choose', severity: 'question' });
 const linkedQuestion = coordEscalationToAttention({ msgId: 'ask-1', from: 'su-fixture', summary: 'Answer', severity: 'question', conversationId: 'conv-1' });

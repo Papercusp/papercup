@@ -4,7 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
-import { ownerQuestionDelivery } from '../lib/owner-question-native-contract.mts';
+import { ownerQuestionButtonSelector, ownerQuestionDelivery } from '../lib/owner-question-native-contract.mts';
 
 // Run with scripts/run-operator-e2e-isolated.sh and
 // VERIFY_TAURI_ISOLATED_SEED=ready. Exercise the real owner UI and disposable
@@ -66,12 +66,7 @@ test('owner questions and choices survive reopening and accept an answer in the 
     await native('click', String(selector), '--json');
   }
   async function clickButton(label: string) {
-    const selector = await measure(`(() => {
-      const button = Array.from(document.querySelectorAll('[data-testid^="inbox-expanded-"] button')).find(el => el.textContent?.trim() === ${JSON.stringify(label)});
-      if (!button) return null;
-      button.setAttribute('data-testid', 'native-question-choice');
-      return '[data-testid="native-question-choice"]';
-    })()`);
+    const selector = await measure(ownerQuestionButtonSelector(label));
     expect(selector, `Expanded owner question must expose ${label}`).toBeTruthy();
     await native('click', String(selector), '--json');
   }
@@ -132,6 +127,15 @@ test('owner questions and choices survive reopening and accept an answer in the 
     const input = '[data-testid^="inbox-expanded-"] textarea';
     await expect.poll(() => measure(`!!document.querySelector(${JSON.stringify(input)})`), { timeout: 30_000 }).toBe(true);
     await native('type', input, answer, '--json');
+    await expect.poll(async () => {
+      const state = await measure(`(() => {
+        const input = document.querySelector(${JSON.stringify(input)});
+        const submit = Array.from(document.querySelectorAll('[data-testid^="inbox-expanded-"] button')).find(button => button.textContent?.trim() === 'Submit');
+        return { value: input?.value ?? null, enabled: !!submit && !submit.disabled };
+      })()`);
+      evidence.answerInput = state;
+      return state;
+    }, { timeout: 30_000 }).toEqual({ value: answer, enabled: true });
     await clickButton('Submit');
     await expect.poll(async () => {
       const result = await invoke('conversations:get', { id: ask.conversation_id });
