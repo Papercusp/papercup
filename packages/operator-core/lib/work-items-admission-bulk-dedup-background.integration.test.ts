@@ -71,6 +71,18 @@ isolatedIntegrationCases('recovers a guarded partial stage and removes its priva
       { name: 'omitted', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
       { name: 'drift', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
     ]);
+    expect(receipt.auditedParkComparison.sourceHash).toBe(promoterSourceHash);
+    expect(receipt.auditedParkComparison.runtime).toEqual(receipt.claimedComparison.runtime);
+    expect(receipt.auditedParkComparison.cases).toEqual([
+      { name: 'unauthenticated', modelCalls: 0, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'distinct-admitted', modelCalls: 1, promoted: 1, merged: 0, comparisonPreserved: true },
+      { name: 'distinct-pending', modelCalls: 1, promoted: 1, merged: 0, comparisonPreserved: true },
+      { name: 'duplicate', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'omitted', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'missing-audit', modelCalls: 0, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'audit-drift', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'dependency-drift', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
+    ]);
     expect(existsSync(receipt.runtimeRoot)).toBe(false);
     const dataDir = output.match(/datadir ([^)\n]+)/)?.[1];
     expect(dataDir).toBeTruthy();

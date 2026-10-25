@@ -74,7 +74,9 @@ export function currentSuNativeRetainedArtifacts(managedCarry: boolean): string[
 
 /** Cleanup logs must not displace a worker's original structured assertion. */
 export function isolatedWorkerFailureDetail(output: string): string {
-  const lines = output.split('\n');
+  // Full streams remain in worker.log. Connection phase clocks are useful for
+  // liveness, but must not displace the tool's actual refusal in this display.
+  const lines = output.split('\n').filter(line => !line.startsWith('ptool: connection trace '));
   const failures = lines.filter(line => /^[A-Z][A-Z0-9_]*_FAILURE /.test(line));
   if (failures.length) return failures.map(line => line.slice(0, 4_000)).join('\n');
   const fatal = lines.findIndex(line => /^\w*Error(?: \[[^\]]+\])?:/.test(line.trim()));

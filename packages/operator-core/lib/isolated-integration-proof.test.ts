@@ -7,9 +7,22 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
-import { assertIsolatedFileRunBudget, assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedTestFileWorkerOptions, isolatedWorkerOptions, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
+import { assertIsolatedFileRunBudget, assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
 import { assertPrivateUnrelatedCheckpointObservation, privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost, type PrivateUnrelatedCheckpointObservation } from '../test/private-http-workspace-preflight';
 const NEVER_EMIT_MARKER = 'never-emit-me';
+
+it('keeps a native tool refusal visible after verbose connection phase clocks', () => {
+  const trace = 'ptool: connection trace ' + JSON.stringify({ event: 'http-request-start', detail: 'x'.repeat(1000) });
+  const output = ['Error: Native CLI process failed', ...Array(20).fill(trace),
+    'stdout:', 'harness_forbidden: short harness requires the private pot',
+    'stderr:', trace, '    at nativeCliResult (fixture.ts:1:1)'].join('\n');
+  const diagnostic = isolatedWorkerFailureDetail(output);
+  expect(diagnostic).toContain('Error: Native CLI process failed');
+  expect(diagnostic).toContain('harness_forbidden: short harness requires the private pot');
+  expect(diagnostic).not.toContain('ptool: connection trace');
+  expect(diagnostic.length).toBeLessThanOrEqual(4000);
+  expect(output).toContain(trace);
+});
 
 it('keeps isolated worker phase ceilings independent of a widened outer file budget', () => {
   const baseline = isolatedWorkerOptions(480_000, {});
