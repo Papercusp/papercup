@@ -79,6 +79,7 @@ let persistedCaptures = new Map<string, Record<string, unknown>>();
 let captureTrace: string[] = [];
 /** What a successful capture reports back; `needsSummary` drives the D-004 notice. */
 let captureReply: Record<string, unknown> = { ok: true, id: 1, needsSummary: false };
+let continuationReply: Record<string, unknown> = { ok: true, launched: false, status: 'ineligible' };
 
 function sha256Normalized(s: string): string {
   return createHash('sha256').update(s.replace(/\r\n?/g, '\n').trim(), 'utf8').digest('hex');
@@ -120,6 +121,7 @@ beforeEach(async () => {
   persistedCaptures = new Map();
   captureTrace = [];
   captureReply = { ok: true, id: 1, needsSummary: false };
+  continuationReply = { ok: true, launched: false, status: 'ineligible' };
 
   server = createServer((req, res) => {
     let body = '';
@@ -160,6 +162,10 @@ beforeEach(async () => {
           return;
         }
         res.end(okEnvelope(reply));
+        return;
+      }
+      if (name === 'sessions:continue-released-operation') {
+        res.end(okEnvelope(continuationReply));
         return;
       }
       res.end(okEnvelope(captureReply));
@@ -244,6 +250,10 @@ function captureCalls(): ToolCall[] {
   return calls.filter((c) => CAPTURE_VERBS.has(c.name));
 }
 
+function continuationCalls(): ToolCall[] {
+  return calls.filter((c) => c.name === 'sessions:continue-released-operation');
+}
+
 describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail', () => {
   it('captures the complete long owner prompt with its original source hash', async () => {
     writeMachineRow();
@@ -278,6 +288,26 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     // The whole point of the hybrid rail: nothing in the session had to ask for
     // this. A successful capture is silent — no notice is appended.
     expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+  });
+
+  it('offers the exact captured owner turn to the released-operation continuation door', async () => {
+    writeMachineRow();
+    continuationReply = { ok: true, launched: true,
+      assignmentRef: 'released-operation-engineering:' + 'b'.repeat(64) };
+    const prompt = 'Fix the stale operation assignment now.';
+    const ctx = contextOf(await runHook({ prompt, session_id: 'native-session-transition', turn_id: 'turn-9' }));
+
+    const [capture] = captureCalls();
+    const [continuation] = continuationCalls();
+    expect(continuationCalls()).toHaveLength(1);
+    expect(continuation!.args).toEqual({
+      prompt,
+      sourceTurnRef: capture!.args.sourceTurnRef,
+      sessionRef: 'native-session-transition',
+      directiveId: 1,
+    });
+    expect(ctx).toContain('fresh, separately receipted SU continuation');
+    expect(ctx).toContain('old worker remains restricted');
   });
 
   it('a Codex owner turn records Codex provenance and keys repeated prompts by native turn id', async () => {
@@ -818,12 +848,14 @@ describe('userpromptsubmit-provenance.sh — dead operator pin falls back to the
         ),
       );
       // CALIBRATION: the pin received both capture verbs and the bounded
-      // same-key verification retry; the local proxy still received nothing.
+      // same-key verification retry. With no durable directive id, the
+      // continuation door is not called; the local proxy still received nothing.
       expect(pinnedVerbs.filter((v) => CAPTURE_VERBS.has(v))).toEqual([
         'orders:capture',
         'orders:capture-pending',
         'orders:capture',
       ]);
+      expect(pinnedVerbs).not.toContain('sessions:continue-released-operation');
       expect(pinnedRefs).toHaveLength(3);
       expect(new Set(pinnedRefs).size).toBe(1);
       expect(calls).toHaveLength(0);
