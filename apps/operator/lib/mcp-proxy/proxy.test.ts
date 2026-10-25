@@ -10659,7 +10659,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(hits).toEqual(["held-checkpoint", "queued-checkpoint"]);
   });
 
-  it("WI-6554700010017061: independent Codex homes progress while shared homes and unkeyed lifecycle calls stay ordered", async () => {
+  it.each(["number", "string"] as const)("WI-6554700010017061: independent Codex homes progress while shared homes and unkeyed lifecycle calls stay ordered (%s)", async (idEncoding) => {
     let releaseCompletion: () => void = () => {};
     const completionGate = new Promise<void>((resolve) => { releaseCompletion = resolve; });
     let releaseHome: () => void = () => {};
@@ -10689,7 +10689,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     }));
     await listen(proxy);
     const home = (client: string, owner: string, advSessionId: number) => {
-      const result = request(port(proxy), JSON.stringify({ owner, advSessionId }),
+      const result = request(port(proxy), JSON.stringify({ owner,
+        advSessionId: idEncoding === "string" ? String(advSessionId) : advSessionId }),
         "/api/adv/sessions/ensure-codex-home?client=" + client);
       pending.push(result);
       return result;

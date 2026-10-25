@@ -3017,7 +3017,10 @@ function classifyCriticalContinuationCall(
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
           const input = parsed as { owner?: unknown; advSessionId?: unknown };
           const owner = typeof input.owner === "string" ? input.owner.trim() : "";
-          const advSessionId = input.advSessionId;
+          // The native launcher carries its ADV id in an environment variable.
+          // Normalize its decimal string to the same conflict key as JSON numbers.
+          const advSessionId = typeof input.advSessionId === "string" && /^[1-9][0-9]*$/.test(input.advSessionId)
+            ? Number(input.advSessionId) : input.advSessionId;
           if (owner.length <= 256 && /^[A-Za-z0-9._-]+$/.test(owner) &&
               typeof advSessionId === "number" && Number.isSafeInteger(advSessionId) && advSessionId > 0) {
             conflictKeys = [
