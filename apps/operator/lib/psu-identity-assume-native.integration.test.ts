@@ -114,7 +114,7 @@ it('read-only context preview isolates an overlapping coordination writer', asyn
 }, 30_000);
 
 async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = false,
-  contended = false, preflight = false, channelControls = false) {
+  contended = false, preflight = false, channelControls = false, crashRecovery = false) {
     const root = mkdtempSync('/tmp/assume-native-journey-');
     const marker = { target: `TARGET_HISTORY_${randomUUID()}`, caller: `CALLER_HISTORY_${randomUUID()}`,
       checkpoint: `TARGET_CHECKPOINT_${randomUUID()}`, rival: `RIVAL_HISTORY_${randomUUID()}`,
@@ -144,6 +144,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         actor === 'caller' || phase === 'caller' && contended && actor === 'rival');
     const hosts: McpServer[] = [];
     const orders: Row[] = [], inspections = new Map<string, Row>();
+    const crashBoundaries: Array<{ hostPid: number; exitCode: number }> = [];
     let releaseTarget!: () => void;
     let retireSeed!: () => Promise<void>;
     const targetGate = new Promise<void>(resolve => { releaseTarget = resolve; });
@@ -503,6 +504,12 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           'const code=await hostThroughPty({command:"codex",args:' + JSON.stringify(args) +
             ',cwd:' + JSON.stringify(root) + ',ownerId:process.env.PAPERCUSP_SID,env:process.env,' +
             'resolveRespawnNativeId:latest,identityAssume,onReexec:()=>{},emitCompacted:()=>null,onExit:()=>{},activityPersistMs:100,bridgeTty:false});',
+          ...(crashRecovery && key === 'caller' && !inherited ? [
+            // Stop only after the real native-exit boundary and durable orders.
+            // The parent kills this host before any target launcher is entered.
+            'if(code===75){process.send?.({crashBoundary:{hostPid:process.pid,exitCode:code}});' +
+              'await new Promise(()=>{})}',
+          ] : []),
           'process.exit(code);',
         ].join('\n'));
         const child = spawn(process.execPath, [file], { cwd: root,
@@ -511,8 +518,12 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
             PAPERCUSP_PSU_REEXEC: '75', PAPERCUSP_PSU_REEXEC_PPID: String(process.pid) }),
           stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
         child.stdout!.on('data', data => { output += data; }); child.stderr!.on('data', data => { output += data; });
-        child.on('message', (message: any) => { if (message.handoff) orders.push(message.handoff); });
+        child.on('message', (message: any) => {
+          if (message.handoff) orders.push(message.handoff);
+          if (message.crashBoundary) crashBoundaries.push(message.crashBoundary);
+        });
         signals.on('SIGTERM', () => child.kill('SIGTERM'));
+        signals.on('SIGKILL', () => child.kill('SIGKILL'));
         signals.on('input', data => child.stdin!.write(data));
         signals.on('resize', (cols, rows) => child.send({ resize: { cols, rows } }));
         const done = new Promise<number>((resolve, reject) => {
@@ -619,7 +630,26 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       }
       const original = orders[0].assume.request.caller;
       await vi.waitFor(() => expect(alive(original.nativePid), diagnostics()).toBe(false), { timeout: 10_000 });
-      expect(await caller.done).toBe(75);
+      if (crashRecovery) {
+        await vi.waitFor(() => expect(crashBoundaries).toHaveLength(1), { timeout: 10_000 });
+        const boundary = crashBoundaries[0];
+        expect(boundary).toEqual({ hostPid: orders[0].fromPid, exitCode: 75 });
+        expect(alive(boundary.hostPid)).toBe(true);
+        expect(await real!.load(accepted!.preparation)).toMatchObject({ state: 'handoff-accepted', durable: true });
+        expect(await real!.pause(owners.caller)).not.toBeNull();
+        const [reservation] = await real!.sql`SELECT resume_claim_key FROM harness_shared.adv_sessions
+          WHERE id = ${real!.records.get(owners.target)!}`;
+        expect(reservation.resume_claim_key).toBe(accepted!.transitionKey);
+        caller.signals.emit('SIGKILL');
+        expect(await caller.done).toBe(-1);
+        await vi.waitFor(() => expect(alive(boundary.hostPid)).toBe(false));
+        expect(alive(original.nativePid)).toBe(false);
+        // The persisted receipt is the retry fence. Recovering the orders may
+        // launch exactly once; replaying the commit may not start another host.
+        expect(await real!.commit(accepted!.preparation))
+          .toMatchObject({ state: 'handoff-accepted', replayed: true });
+        expect(orders).toHaveLength(1);
+      } else expect(await caller.done).toBe(75);
       if (real) {
         const consumed = readHostHandoffForParentPid(process.pid, { ownerId: owners.caller });
         expect(consumed).not.toBeNull(); orders[0] = consumed;
@@ -869,7 +899,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       const artifact = process.env.PC_EXECUTED_SOURCE_MAP_OUT
         ? process.env.PC_EXECUTED_SOURCE_MAP_OUT + '.journey-failures.jsonl'
         : join('/tmp', 'assume-native-failure-' + randomUUID() + '.jsonl');
-      appendFileSync(artifact, JSON.stringify({ mode, production, contended, preflight,
+      appendFileSync(artifact, JSON.stringify({ mode, production, contended, preflight, crashRecovery, crashBoundaries,
         diagnostics: JSON.parse(diagnostics()), error: String(error) }) + '\n');
       console.error('Native journey failure evidence: ' + artifact);
       throw error;
@@ -901,3 +931,6 @@ it('routes installed native target input output resize interrupt and exit throug
 
 it('previews one exact ended target without writes and refuses live, foreign and unknown custody',
   () => nativeJourney('native-resume', true, false, true), 180_000);
+
+it('R-8 recovers persisted native handoff after managed host SIGKILL before target execution',
+  () => nativeJourney('native-resume', true, false, false, false, true), 180_000);
