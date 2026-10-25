@@ -33,7 +33,10 @@ vi.mock('@papercusp/db-org', async (orig) => {
       h.sql.begin(async (tx) => fn(tx as unknown as postgres.Sql)),
   };
 });
-vi.mock('../../harness-registry', () => ({
+vi.mock('../../harness-registry', async (importOriginal) => ({
+  // Real tool imports also use registry exports through the P2P sync graph.
+  // Override fixture routing while preserving that production module contract.
+  ...(await importOriginal<typeof import('../../harness-registry')>()),
   loadHarnessRegistry: async () => ({
     projects: [
       { slug: 'web', path: h.repoRoot },
@@ -92,6 +95,7 @@ const MIGRATION_1378 = migration('1378-preserve-spec-bound-test-runs.sql');
 // 1478 adds the per-case results ledger (test-rubric-unification P-002): the bind path
 // resolves declared testCases against it when the run recorded its cases.
 const MIGRATION_1478 = migration('1478-test-case-runs.sql');
+const MIGRATION_1536 = migration('1536-plan-verification-profile-columns.sql');
 const CTX = {
   isSuperuser: true,
   uiClientId: 'su-spec-evidence-integration',
@@ -284,6 +288,8 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_1378); // idempotent and replay-safe
   await applyMigrationForTest(db.sql, MIGRATION_1445);
   await applyMigrationForTest(db.sql, MIGRATION_1478);
+  // Lazy ad-hoc scopes stamp the same verification profile as plans:new.
+  await applyMigrationForTest(db.sql, MIGRATION_1536);
   const [{ present }] = await db.sql<{ present: boolean }[]>`SELECT EXISTS (
     SELECT 1 FROM information_schema.columns WHERE table_schema = 'harness_shared'
       AND table_name = 'spec_evidence_bindings' AND column_name = 'verifies_binding_id'
