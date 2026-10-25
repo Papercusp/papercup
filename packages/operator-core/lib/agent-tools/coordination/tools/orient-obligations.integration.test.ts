@@ -5,6 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
+import * as dbOrg from '@papercusp/db-org';
+import { createPhaseTracker } from '@papercusp/tooldef';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { assertFact } from '../../../agent-facts/store';
 import { runWithWorkspace } from '../../../workspace-als';
@@ -92,7 +94,11 @@ afterAll(async () => {
   await fx.dispose();
 });
 
-async function readOrientation(overrides: Record<string, unknown> = {}, ownerId = OWNER) {
+async function readOrientation(
+  overrides: Record<string, unknown> = {},
+  ownerId = OWNER,
+  phases?: ReturnType<typeof createPhaseTracker>,
+) {
   const result = await runWithWorkspace(WS, () => orientTool.handler(
     {
       mode: 'monitor',
@@ -114,6 +120,7 @@ async function readOrientation(overrides: Record<string, unknown> = {}, ownerId 
       metadata: vi.fn(),
       log: vi.fn(),
       progress: vi.fn(),
+      phases,
     } as never,
   ));
   return (result as { data: {
@@ -393,8 +400,8 @@ describe('complete agenda recovery through coord:orient', () => {
     type Arm = 'shared-portfolio' | 'independent-portfolio';
     let arm: Arm = 'shared-portfolio';
     const guardOnly = process.env.PAPERCUSP_R5_ORIENT_GUARD_ONLY === '1';
-    const coldDiagnostic = process.env.PAPERCUSP_R5_ORIENT_COLD_DIAGNOSTIC === '1';
-    const windowCount = guardOnly ? 0 : 10;
+    const coldDiagnostic = process.env.PAPERCUSP_R5_ORIENT_COLD_DIAGNOSTIC === '1' && !guardOnly;
+    const windowCount = guardOnly ? 0 : coldDiagnostic ? 1 : 10;
     if (coldDiagnostic && !process.env.PAPERCUSP_R5_ORIENT_PHASE_REPORT) {
       throw new Error('PAPERCUSP_R5_ORIENT_COLD_DIAGNOSTIC requires PAPERCUSP_R5_ORIENT_PHASE_REPORT');
     }
@@ -449,6 +456,9 @@ describe('complete agenda recovery through coord:orient', () => {
       windows, mode: guardOnly ? 'guard-only' : coldDiagnostic ? 'cold-concurrent-diagnostic' : 'guard-and-performance',
       workload: { plans: 8, itemsPerPlan: 128, workItems: 128, visibleFacts: 3,
         windows: windowCount, warmReads: coldDiagnostic ? 0 : 20, concurrency: 8 },
+      ...(coldDiagnostic ? { diagnosticSelection: {
+        arms: ['shared-portfolio'], windows: 1, concurrency: 8, proofSettlementWaitMs: 15_000,
+      } } : {}),
       scope: 'Production orient handler with real GOAL providers, plan/queue sources and fact store. Orientation only; no whole R-5 or shipment claim.',
       baselineDefinition: 'Current production reader performs its own portfolio read instead of sharing orient\'s promise. This is a source-read counterfactual, not a historical checkout.',
       coldDefinition: 'Reset the operator L1 and clear this fixture workspace from durable L2. PostgreSQL buffers, connections, imports and independent source caches remain warm.',
@@ -459,6 +469,72 @@ describe('complete agenda recovery through coord:orient', () => {
     // No query parameters, alternate clients, deadlines or provider values change.
     // Timing includes pool wait and driver/result work; it is not server EXPLAIN.
     const portfolioReads: Array<Record<string, unknown>> = [];
+    const modeProofReads: Array<Record<string, unknown>> = [];
+    const diagnosticWarnings: Array<Record<string, unknown>> = [];
+    const diagnosticOrigin = performance.now();
+    if (coldDiagnostic) {
+      report.modeProofReads = modeProofReads;
+      report.diagnosticWarnings = diagnosticWarnings;
+      const realGetOrgPg = getOrgPg;
+      vi.spyOn(dbOrg, 'getOrgPg').mockImplementation(() => {
+        const handle = realGetOrgPg();
+        const originalSql = handle.sql as unknown as (...args: unknown[]) => unknown;
+        const tracedSql = new Proxy(originalSql, {
+          apply(target, thisArg, args: unknown[]) {
+            const query = Reflect.apply(target, thisArg, args);
+            const source = Array.isArray(args[0]) ? args[0].join(' ') : '';
+            if (!source.includes('session_identity_activation_events') || !query ||
+              (typeof query !== 'object' && typeof query !== 'function')) return query;
+            const observation: Record<string, unknown> = {
+              kind: 'mode-context-proof',
+              phase: report.currentPhase ?? 'setup',
+              createdAfterMs: performance.now() - diagnosticOrigin,
+              startedAfterMs: null,
+              settledAfterMs: null,
+              elapsedMs: null,
+              outcome: null,
+            };
+            modeProofReads.push(observation);
+            return new Proxy(query as object, {
+              get(pending, property) {
+                const value = Reflect.get(pending, property, pending);
+                if (property !== 'then' || typeof value !== 'function') {
+                  return typeof value === 'function' ? value.bind(pending) : value;
+                }
+                return (fulfilled?: (result: unknown) => unknown, rejected?: (error: unknown) => unknown) => {
+                  if (observation.startedAfterMs === null) {
+                    observation.startedAfterMs = performance.now() - diagnosticOrigin;
+                  }
+                  return value.call(pending,
+                    (result: unknown) => {
+                      observation.settledAfterMs = performance.now() - diagnosticOrigin;
+                      observation.elapsedMs = Number(observation.settledAfterMs) - Number(observation.startedAfterMs);
+                      observation.outcome = 'resolved';
+                      return fulfilled ? fulfilled(result) : result;
+                    },
+                    (error: unknown) => {
+                      observation.settledAfterMs = performance.now() - diagnosticOrigin;
+                      observation.elapsedMs = Number(observation.settledAfterMs) - Number(observation.startedAfterMs);
+                      observation.outcome = 'rejected';
+                      observation.error = error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200);
+                      if (rejected) return rejected(error);
+                      throw error;
+                    });
+                };
+              },
+            });
+          },
+        });
+        return { ...handle, sql: tracedSql } as ReturnType<typeof getOrgPg>;
+      });
+      vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+        diagnosticWarnings.push({
+          phase: report.currentPhase ?? 'setup',
+          afterMs: performance.now() - diagnosticOrigin,
+          text: args.map(String).join(' ').slice(0, 500),
+        });
+      });
+    }
     if (process.env.PAPERCUSP_R5_ORIENT_PHASE_REPORT) {
       report.portfolioReads = portfolioReads;
       const origin = performance.now();
@@ -589,7 +665,8 @@ describe('complete agenda recovery through coord:orient', () => {
     const read = async (phase: string, changed = false, paused = false, record = true) => {
       if (record) progress(`read-start:${phase}`);
       const start = performance.now();
-      const data = await readOrientation({ mode: 'full' });
+      const phases = coldDiagnostic ? createPhaseTracker({ historyCap: 128 }) : undefined;
+      const data = await readOrientation({ mode: 'full' }, OWNER, phases);
       const ms = performance.now() - start;
       // Harness-scoped facts are shared by every run of this file: a run killed before its
       // `finally` leaves a 1h-TTL harness fact behind. Compare only this run's marker; the
@@ -601,6 +678,7 @@ describe('complete agenda recovery through coord:orient', () => {
         .sort((a, b) => a.ruleId.localeCompare(b.ruleId));
       if (record || coldDiagnostic) {
         snapshots.push({ phase, arm, ms, facts, states, obligations: data.obligations,
+          ...(phases ? { handlerPhases: phases.toMetadata() } : {}),
           worklist: data.goalPortfolio?.worklist, queue: data.goalPortfolio?.queue });
         if (record) publish();
       }
@@ -712,7 +790,8 @@ describe('complete agenda recovery through coord:orient', () => {
         await getL2Store().clearWorkspace(WS);
       };
       for (let window = 0; window < windowCount; window++) {
-        const arms: Arm[] = window % 2 ? ['shared-portfolio', 'independent-portfolio'] : ['independent-portfolio', 'shared-portfolio'];
+        const arms: Arm[] = coldDiagnostic ? ['shared-portfolio'] :
+          window % 2 ? ['shared-portfolio', 'independent-portfolio'] : ['independent-portfolio', 'shared-portfolio'];
         for (const nextArm of arms) {
           arm = nextArm;
           progress(`matrix-window:${window}:${arm}`);
@@ -737,14 +816,38 @@ describe('complete agenda recovery through coord:orient', () => {
           row.complete = true; publish();
         }
       }
-      const summary = guardOnly ? [] : (['shared-portfolio', 'independent-portfolio'] as Arm[]).map(value => ({ arm: value,
+      if (coldDiagnostic) {
+        const sampleProofReads = modeProofReads.filter(row =>
+          row.phase === 'cold-concurrent:0:shared-portfolio');
+        const waitStarted = performance.now();
+        const waitCapMs = 15_000;
+        while (sampleProofReads.length < 8 ||
+          sampleProofReads.some(row => typeof row.settledAfterMs !== 'number')) {
+          if (performance.now() - waitStarted >= waitCapMs) break;
+          await new Promise(resolveWait => setTimeout(resolveWait, 50));
+        }
+        report.modeProofReads = sampleProofReads;
+        report.modeProofSettlement = {
+          expected: 8,
+          captured: sampleProofReads.length,
+          settled: sampleProofReads.filter(row => typeof row.settledAfterMs === 'number').length,
+          waitMs: performance.now() - waitStarted,
+          waitCapMs,
+        };
+        publish();
+        expect(sampleProofReads).toHaveLength(8);
+      }
+      const summaryArms: Arm[] = coldDiagnostic ? ['shared-portfolio'] : ['shared-portfolio', 'independent-portfolio'];
+      const summary = guardOnly ? [] : summaryArms.map(value => ({ arm: value,
         phases: Object.fromEntries((coldDiagnostic ? ['cold-concurrent'] : ['cold', 'warm', 'warm-concurrent', 'cold-concurrent']).map(phase => {
           const times = windows.filter(row => row.arm === value).flatMap(row => row.samples).filter(s => s.phase === phase).map(s => s.ms).sort((a, b) => a - b);
           return [phase, { reads: times.length, p95Ms: times[Math.ceil(times.length * .95) - 1], maxMs: times.at(-1) }];
         })),
       }));
       report.summary = summary;
-      if (!guardOnly) for (const result of Object.values(summary[0]!.phases)) expect(result.p95Ms).toBeLessThanOrEqual(5_000);
+      if (!guardOnly && !coldDiagnostic) {
+        for (const result of Object.values(summary[0]!.phases)) expect(result.p95Ms).toBeLessThanOrEqual(5_000);
+      }
       await fact('owner', key, expectedFacts(false).find(row => row.body.startsWith('R-5 ordinary'))!.body);
       arm = 'shared-portfolio';
       await read('final-fact-write-guard');
