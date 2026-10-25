@@ -177,7 +177,10 @@ describe('Remote access screen', () => {
     expect(preparation.textContent).toContain('~/.ssh/authorized_keys');
     expect(preparation.textContent).toContain('Reuse an existing key rather than replacing it');
     expect(preparation.textContent).toContain('Keep the private key');
-    expect(within(preparation).getByRole('link', { name: 'Get Papercusp Server' }).getAttribute('href')).toBe('https://papercusp.com');
+    expect(within(preparation).getByRole('link', { name: 'request private access' }).getAttribute('href')).toBe('https://papercusp.com/#access');
+    expect(preparation.textContent).toContain('Papercusp Server is currently available through private access');
+    expect(preparation.textContent).toContain('Contact us now for private access');
+    expect(preparation.textContent).toContain('Once you receive it, install the package');
     expect(preparation.textContent).toContain('sudo apt install openssh-server tmux');
     expect(preparation.textContent).toContain('sudo systemctl enable --now ssh');
     expect(preparation.textContent).toContain('curl http://127.0.0.1:3070/api/health');
