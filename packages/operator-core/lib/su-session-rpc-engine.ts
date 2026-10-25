@@ -659,6 +659,12 @@ export function startSuRpcEngine(
       return;
     }
     if (backend === 'codex' && frameThreadId && frameThreadId !== nativeId()) throw new Error('Codex event belongs to a different thread');
+    const frameTurnId = string(object(frame.params).turnId);
+    if (backend === 'codex' && frame.id != null && frame.method && frameTurnId
+        && (!nativeTurnId || frameTurnId !== nativeTurnId || turnCompletionSettled)) {
+      peer?.send({ id: frame.id, error: { code: -32602, message: 'Native request does not belong to the active turn' } });
+      return;
+    }
     if (cards.handle(backend, frame, ownerTurnId || 'startup', (response) => { if (!closed) peer?.send(response); })) return;
     if (backend === 'codex') {
       const method = string(frame.method), params = object(frame.params);

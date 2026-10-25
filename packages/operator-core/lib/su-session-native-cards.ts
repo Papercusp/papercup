@@ -9,6 +9,31 @@ import type { RpcFrame } from './su-session-stdio-peer';
 
 const record = (value: unknown): RpcFrame => value && typeof value === 'object' && !Array.isArray(value) ? value as RpcFrame : {};
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
+const nativeQuestions = z.array(z.object({
+  id: z.string().min(1), question: z.string().min(1), header: z.string().optional(),
+  isOther: z.boolean().optional(), isSecret: z.boolean().optional(), multiSelect: z.boolean().optional(),
+  options: z.array(z.object({ label: z.string().min(1), description: z.string().optional() }))
+    .min(1).nullable().optional(),
+})).min(1).refine(questions => new Set(questions.map(question => question.id)).size === questions.length,
+  'Native questions must have distinct IDs').refine(questions => questions.every(question =>
+  !question.options || new Set(question.options.map(option => option.label)).size === question.options.length),
+  'Native options must have distinct labels');
+const permissionPath = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('path'), path: z.string().min(1) }).strict(),
+  z.object({ type: z.literal('glob_pattern'), pattern: z.string().min(1) }).strict(),
+  z.object({ type: z.literal('special'), value: z.discriminatedUnion('kind', [
+    z.object({ kind: z.enum(['root', 'minimal', 'tmpdir', 'slash_tmp']) }).strict(),
+    z.object({ kind: z.literal('project_roots'), subpath: z.string().nullable() }).strict(),
+    z.object({ kind: z.literal('unknown'), path: z.string(), subpath: z.string().nullable() }).strict(),
+  ]) }).strict(),
+]);
+const requestedPermissions = z.object({
+  network: z.object({ enabled: z.boolean().nullable() }).strict().nullable().optional(),
+  fileSystem: z.object({ read: z.array(z.string()).nullable().optional(), write: z.array(z.string()).nullable().optional(),
+    globScanMaxDepth: z.number().int().nonnegative().optional(),
+    entries: z.array(z.object({ path: permissionPath, access: z.enum(['read', 'write', 'deny']) }).strict()).optional(),
+  }).strict().nullable().optional(),
+}).strict();
 
 /** Claude's allow suggestions, re-scoped to this runtime: a PUI card never
  * writes a settings file (D-021). */
@@ -53,6 +78,8 @@ export interface SuNativeCardsOptions {
   stopTurn?: () => void;
   /** Called when option 2 switched Claude to accept-edits for the session. */
   approvalsChanged?: (mode: 'auto-edit') => void;
+  /** An unanswered native request expires without granting permission. */
+  requestTimeoutMs?: number;
 }
 
 /** What the model is told when the owner skips (Esc / Decline) a question
@@ -68,6 +95,8 @@ export class SuNativeCards {
   private readonly cwd?: string;
   /** OMP approvals answered "Yes, and don't ask again" in this runtime (D-028). */
   private readonly ompAllowed = new Set<string>();
+  private readonly codexRequests = new Map<string, string>();
+  private readonly conflictingCodexRequests = new Set<string>();
   constructor(private readonly workspaceId: string, private readonly runId: string,
     private readonly emit: (event: SuSessionEventInput) => void, private readonly options: SuNativeCardsOptions = {}) {
     this.cwd = options.cwd;
@@ -109,14 +138,15 @@ export class SuNativeCards {
   ): Promise<{ action: 'submit'; values: string[] } | { action: 'decline' | 'cancel' }> {
     if (signal?.aborted) return { action: 'cancel' };
     const presentation = choices?.length
-      ? { kind: multiSelect ? 'checkbox' as const : 'radio' as const, options: choices }
+      ? { kind: multiSelect ? 'checkbox' as const : 'radio' as const,
+        options: choices.map(choice => ({ ...choice, ...(choice.description ? { hint: choice.description } : {}) })) }
       : { kind: 'text' as const };
     const dataSchema = choices?.length
       ? z.object({ picks: z.array(z.string()).min(1).max(multiSelect ? choices.length : 1).refine((picks) => presentation.kind !== 'text'
         && new Set(picks).size === picks.length && picks.every((pick) => presentation.options.some((option) => option.id === pick)), 'Choose displayed options') })
       : z.object({ value: z.string() });
     const card = registerCard({ workspaceId: this.workspaceId, runId: this.runId,
-      spec: { prompt, dataSchema, presentation, allowDecline: true } });
+      spec: { prompt, dataSchema, presentation, allowDecline: true, timeoutMs: this.options.requestTimeoutMs ?? 300_000 } });
     const cancel = () => { resolveCardResponse({ correlationId: card.correlationId, action: 'cancel', expectedWorkspaceId: this.workspaceId }); };
     signal?.addEventListener('abort', cancel, { once: true });
     this.emit({ type: 'card', phase: 'opened', turnId, card: {
@@ -221,19 +251,41 @@ export class SuNativeCards {
           }, 'Codex');
           return { id: frame.id, result: { decision: answer === 'yes' ? 'accept' : answer === 'always' ? 'acceptForSession' : 'cancel' } };
         };
+      } else if (method === 'item/permissions/requestApproval') {
+        run = async () => {
+          const permissions = requestedPermissions.parse(params.permissions);
+          const answer = await this.askApproval(turnId, {
+            title: 'Additional permissions', question: 'Allow these permissions?',
+            body: [text(params.reason), params.cwd ? `Directory: ${displayPath(text(params.cwd), this.cwd)}` : '',
+              JSON.stringify(permissions, null, 2)].filter(Boolean),
+            always: 'Yes, for this session',
+          }, 'Codex');
+          return { id: frame.id, result: { permissions: answer === 'yes' || answer === 'always'
+            ? Object.fromEntries(Object.entries(permissions).filter(([, value]) => value != null)) : {},
+          scope: answer === 'always' ? 'session' : 'turn' } };
+        };
       } else if (method === 'item/tool/requestUserInput') {
         run = async () => {
+          // Validate the entire request before opening the first card: a bad
+          // later question must not turn an earlier answer into partial consent.
+          const questions = nativeQuestions.parse(params.questions);
+          if (questions.some(question => question.isSecret)) throw new Error('Native secret input requires a private input surface');
           const answers: Record<string, { answers: string[] }> = {};
-          for (const value of Array.isArray(params.questions) ? params.questions : []) {
-            if (epoch !== this.epoch) break;
-            const question = record(value);
-            if (!text(question.id) || !text(question.question) || question.isSecret === true) {
-              throw new Error('This native question requires a form PUI cannot safely display');
+          for (const question of questions) {
+            if (epoch !== this.epoch) return { id: frame.id, result: { answers: {} } };
+            let other = 'Type a different answer';
+            while (question.options?.some(option => option.label === other)) other += '…';
+            const choices = question.options?.length ? [...question.options,
+              ...(question.isOther ? [{ label: other }] : [])] : undefined;
+            const picked = await this.askAnswers(turnId, question.question, choices, question.multiSelect);
+            if (!picked || epoch !== this.epoch) return { id: frame.id, result: { answers: {} } };
+            const selected = choices ? picked.filter(pick => pick !== other) : picked;
+            if (choices && picked.includes(other)) {
+              const custom = await this.askAnswers(turnId, question.question);
+              if (!custom || epoch !== this.epoch) return { id: frame.id, result: { answers: {} } };
+              selected.push(...custom);
             }
-            const choices = Array.isArray(question.options) ? question.options.map((option) => text(record(option).label)) : undefined;
-            const answer = await this.ask(turnId, text(question.question), choices);
-            if (answer === null) break;
-            answers[text(question.id)] = { answers: [answer] };
+            Object.defineProperty(answers, question.id, { value: { answers: selected }, enumerable: true });
           }
           return { id: frame.id, result: { answers } };
         };
@@ -285,8 +337,23 @@ export class SuNativeCards {
       else if (method === 'cancel') { this.cancel(); return true; }
     }
     if (!run) return false;
+    if (backend === 'codex') {
+      const key = `${typeof frame.id}:${frame.id}`, fingerprint = JSON.stringify([method, turnId, params]);
+      const seen = this.codexRequests.get(key);
+      if (seen !== undefined) {
+        if (seen !== fingerprint) {
+          this.conflictingCodexRequests.add(key);
+          reply({ id: frame.id, error: { code: -32602, message: 'Native request ID was reused with different content' } });
+        }
+        return true;
+      }
+      this.codexRequests.set(key, fingerprint);
+    }
     void run().then((response) => {
-      reply(response);
+      reply(epoch === this.epoch && !this.conflictingCodexRequests.has(`${typeof frame.id}:${frame.id}`) ? response : backend === 'codex'
+        ? { id: frame.id, result: method === 'item/tool/requestUserInput' ? { answers: {} }
+          : method === 'item/permissions/requestApproval' ? { permissions: {}, scope: 'turn' } : { decision: 'cancel' } }
+        : { type: 'extension_ui_response', id: frame.id, cancelled: true });
       // OMP's "Deny" only fails the one tool call; No also stops the turn so
       // the owner says what to do instead (D-028), after OMP has the answer.
       if (stopAfterReply) this.options.stopTurn?.();

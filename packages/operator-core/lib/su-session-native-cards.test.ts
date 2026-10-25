@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { _resetCardCorrelatorForTests, resolveCardResponse } from '@papercusp/agent-mcp';
 import { REJECTED_TOOL_MESSAGE, SKIPPED_QUESTION_MESSAGE, SuNativeCards, type SuNativeCardsOptions } from './su-session-native-cards';
 import type { SuSessionEventInput } from './su-session-host';
@@ -75,6 +75,80 @@ describe('native requests through the shared PUI card correlator', () => {
     } }, 'turn', f.reply);
     f.answer({ picks: ['1'] }); await flush();
     expect(f.replies).toEqual([{ id: 12, result: { answers: { destination: { answers: ['There'] } } } }]);
+  });
+
+  it.each(['yes', 'always', 'no', 'esc'] as const)('grants only the requested scoped permissions on %s', async answer => {
+    const f = fixture(), permissions = { network: { enabled: true }, fileSystem: { read: ['/project/docs'], write: null,
+      entries: [{ path: { type: 'path', path: '/project/output' }, access: 'write' }] } };
+    f.cards.handle('codex', { id: 30, method: 'item/permissions/requestApproval', params: { permissions, reason: 'Fetch docs' } }, 'turn', f.reply);
+    expect(f.opened().card.prompt).toContain('/project/output');
+    expect((answer === 'esc' ? f.escape() : f.answer({ picks: [answer] })).ok).toBe(true);
+    await flush();
+    expect(f.replies).toEqual([{ id: 30, result: { permissions: answer === 'yes' || answer === 'always' ? permissions : {},
+      scope: answer === 'always' ? 'session' : 'turn' } }]);
+  });
+
+  it('keeps native question descriptions, multiple choices and a custom answer', async () => {
+    const f = fixture();
+    f.cards.handle('codex', { id: 31, method: 'item/tool/requestUserInput', params: { questions: [
+      { id: 'features', question: 'Which features?', isOther: true, multiSelect: true,
+        options: [{ label: 'Search', description: 'Search saved documents' }, { label: 'Export' }] },
+    ] } }, 'turn', f.reply);
+    expect(f.opened().card.presentation).toMatchObject({ kind: 'checkbox', options: [{ hint: 'Search saved documents' }, {}, {}] });
+    f.answer({ picks: ['0', '2'] }); await flush();
+    f.answer({ value: 'Print' }); await flush();
+    expect(f.replies).toEqual([{ id: 31, result: { answers: { features: { answers: ['Search', 'Print'] } } } }]);
+  });
+
+  it.each([undefined, [], [{ id: 'same', question: 'One?' }, { id: 'same', question: 'Two?' }],
+    [{ id: 'valid', question: 'One?' }, { id: 'bad', question: '' }],
+    [{ id: 'secret', question: 'Password?', isSecret: true }]])('refuses invalid question sets before any card opens: %j', async questions => {
+    const f = fixture();
+    f.cards.handle('codex', { id: 32, method: 'item/tool/requestUserInput', params: { questions } }, 'turn', f.reply);
+    await flush();
+    expect(f.events.some(event => event.type === 'card')).toBe(false);
+    expect(f.replies).toEqual([{ id: 32, error: { code: -32602, message: expect.any(String) } }]);
+  });
+
+  it('opens a native request once and refuses identity reuse with different content', async () => {
+    const f = fixture(), request = { id: 33, method: 'item/commandExecution/requestApproval', params: { command: 'pwd' } };
+    f.cards.handle('codex', request, 'turn', f.reply);
+    f.cards.handle('codex', request, 'turn', f.reply);
+    expect(f.events.filter(event => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
+    f.cards.handle('codex', { ...request, params: { command: 'other-command' } }, 'turn', f.reply);
+    expect(f.replies[0]).toMatchObject({ id: 33, error: { code: -32602 } });
+    f.answer({ picks: ['yes'] }); await flush();
+    expect(f.replies[1]).toEqual({ id: 33, result: { decision: 'cancel' } });
+    f.cards.handle('codex', request, 'turn', f.reply);
+    expect(f.replies).toHaveLength(2);
+  });
+
+  it('does not return partial answers when a later question is cancelled', async () => {
+    const f = fixture();
+    f.cards.handle('codex', { id: 34, method: 'item/tool/requestUserInput', params: { questions: [
+      { id: 'first', question: 'First?' }, { id: 'second', question: 'Second?' },
+    ] } }, 'turn', f.reply);
+    f.answer({ value: 'first answer' }); await flush();
+    f.escape(); await flush();
+    expect(f.replies).toEqual([{ id: 34, result: { answers: {} } }]);
+  });
+
+  it('expires unanswered permissions and refuses a late answer', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture({ requestTimeoutMs: 10 });
+      f.cards.handle('codex', { id: 35, method: 'item/permissions/requestApproval', params: { permissions: { network: { enabled: true } } } }, 'turn', f.reply);
+      await vi.advanceTimersByTimeAsync(11);
+      expect(f.replies).toEqual([{ id: 35, result: { permissions: {}, scope: 'turn' } }]);
+      expect(f.answer({ picks: ['yes'] }).ok).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('cancels an already submitted permission before its continuation grants it', async () => {
+    const f = fixture();
+    f.cards.handle('codex', { id: 36, method: 'item/permissions/requestApproval', params: { permissions: { network: { enabled: true } } } }, 'turn', f.reply);
+    f.answer({ picks: ['yes'] }); f.cards.cancel(); await flush();
+    expect(f.replies).toEqual([{ id: 36, result: { permissions: {}, scope: 'turn' } }]);
   });
 
   it('returns OMP text input and confirmation through native RPC', async () => {

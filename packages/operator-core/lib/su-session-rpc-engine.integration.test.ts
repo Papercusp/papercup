@@ -62,6 +62,7 @@ async function engineFixture(mode = 'normal') {
       const call = JSON.parse(line), p = call.params || {};
       if (call.id == null) return;
       calls.push(call); const reply = result => send({ id: call.id, result });
+      if (!call.method) return;
       if (call.method === 'thread/start') reply({
         thread: { id: 'native-thread', cwd: process.cwd(), path: process.env.FIXTURE_ROLLOUT }, model: 'codex-model',
       });
@@ -86,6 +87,7 @@ async function engineFixture(mode = 'normal') {
         if (process.env.FIXTURE_MODE === 'hold-interrupt') pending = call.id;
         else reply({});
       } else if (call.method === 'fixture/complete') { complete('completed'); reply({}); }
+      else if (call.method === 'fixture/server-request') { send(p.frame); reply({}); }
       else if (call.method === 'fixture/release') { send({ id: pending, result: {} }); pending = undefined; reply({}); }
       else if (call.method === 'fixture/history') reply({ calls });
       else reply({});
@@ -114,10 +116,28 @@ async function engineFixture(mode = 'normal') {
     target: host.descriptor().identity, commandId: id, type, turnId: `owner-${id}`, content: `Input ${id}`, activeTurnId,
   });
   const history = async () => (await peer.request({ method: 'fixture/history' })).calls as RpcFrame[];
-  return { engine, host, command, history, dir, request: (method: string) => peer.request({ method }) };
+  return { engine, host, command, history, dir,
+    request: (method: string, params?: RpcFrame) => peer.request({ method, ...(params ? { params } : {}) }) };
 }
 
 describe('Codex steering through real stdio', () => {
+  it('refuses stale and completed-turn native permission requests before opening a card', async () => {
+    const f = await engineFixture();
+    await f.host.startCommand(f.command('owner_turn', 'first')).terminal;
+    const request = (id: string, turnId: string) => f.request('fixture/server-request', { frame: {
+      id, method: 'item/permissions/requestApproval', params: { threadId: 'native-thread', turnId,
+        permissions: { network: { enabled: true } } },
+    } });
+    await request('stale-permission', 'older-native-turn');
+    expect((await f.history()).find(frame => frame.id === 'stale-permission'))
+      .toMatchObject({ error: { code: -32602 } });
+    await f.request('fixture/complete');
+    await request('completed-permission', 'native-1');
+    expect((await f.history()).find(frame => frame.id === 'completed-permission'))
+      .toMatchObject({ error: { code: -32602 } });
+    expect(f.host.recentSince(0).some(({ event }) => event.type === 'card' && event.phase === 'opened')).toBe(false);
+  });
+
   it('delivers actual image input on both start and steer over real pipes', async () => {
     const f = await engineFixture();
     const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9YkAAAAASUVORK5CYII=';
