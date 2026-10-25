@@ -147,6 +147,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
     const hosts: McpServer[] = [];
     const orders: Row[] = [], inspections = new Map<string, Row>();
     const crashBoundaries: Array<{ hostPid: number; exitCode: number }> = [];
+    const startupCrashCustody: Row[] = [];
     let callerResponseSeen = false, targetStartupCrashed = false;
     let releaseCallerCompletion!: () => void, releaseStartupCrash!: () => void;
     const callerCompletionGate = new Promise<void>(resolve => { releaseCallerCompletion = resolve; });
@@ -181,11 +182,13 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
     let accepted: Row | undefined, returning: Row | undefined, targetWork = '', callerWork = '';
     const routed: Row[] = [];
     const initialResponsibilities = new Map<string, Row>();
-    const inspect = async (request: Row, afterExit = false, action = 'observe') => {
-      if (real) return real.inspect(request, afterExit, action);
+    const inspect = async (request: Row, afterExit = false, action = 'observe', startup?: Row) => {
+      if (real) return real.inspect(request, afterExit, action, startup);
       const result = inspections.get(request.transitionKey);
       if (!result || JSON.stringify(result.preparation.caller) !== JSON.stringify(request.caller))
         throw new Error('Fixture inspection refused an unknown caller');
+      if (action === 'begin-startup' || action === 'startup-started')
+        return { ok: true, attemptId: startup!.attemptId };
       return result;
     };
     const server = createServer(async (req, res) => {
@@ -587,7 +590,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       const run = { owner: owners[key], signals, done }; runs.push(run); return run;
     };
     const diagnostics = () => JSON.stringify({ phase, preflightStep, errors, nativeResults, toolCatalogs, mcpRequests, toolOutputs,
-      requests: requests.length, orders: orders.length,
+      requests: requests.length, orders: orders.length, startupCrashCustody,
       output: output.slice(-1200) });
     try {
       if (production) {
@@ -727,6 +730,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         }
         // Explicit phase prompt avoids relying on PTY ready-prompt timing.
         args.push(kickoff);
+        await options.managedAssume.beginStartup();
         const run = start(key, args, options.managedAssume);
         if (real) {
           await vi.waitFor(() => {
@@ -736,6 +740,8 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
             expect(meta.nativeSessionId === session.sessionId).toBe(!options.managedAssume.checkpoint);
           }, { timeout: 10_000 });
           const receipt = (key === 'target' ? accepted! : returning!) as AssumeTransitionReceipt;
+          const startupMeta = JSON.parse(readFileSync(metaPathFor(owners[key]), 'utf8'));
+          await options.managedAssume.started({ ptyPid: startupMeta.ptyPid });
           if (checks.crashAfterStartup && key === 'target' && !targetStartupCrashed) {
             const meta = JSON.parse(readFileSync(metaPathFor(owners.target), 'utf8'));
             let native: number | null = null;
@@ -745,10 +751,19 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
             }, { timeout: 10_000 });
             await vi.waitFor(() => expect(codexThreadWriterHolder(homes.target, latestNativeId(key),
               { holderPid: native! }).held).toBe(true), { timeout: 5000 });
+            // A writer lock alone can precede the first real transcript write.
+            // Exercise recovery after native startup has advanced the pinned
+            // history, while verification remains blocked by startupCrashGate.
+            await vi.waitFor(() => expect(hash(transcript('target')))
+              .not.toBe(receipt.preparation.target.context.sha256), { timeout: 10_000 });
             expect((await real.load(receipt.preparation))?.state).toBe('handoff-accepted');
             run.signals.emit('SIGKILL');
             expect(await run.done).toBe(-1);
             await vi.waitFor(() => expect(alive(native!)).toBe(false), { timeout: 10_000 });
+            const custody = await real.custodySnapshot(receipt.preparation);
+            startupCrashCustody.push(custody);
+            if (process.env.PC_EXECUTED_SOURCE_MAP_OUT) appendFileSync(
+              process.env.PC_EXECUTED_SOURCE_MAP_OUT + '.startup-custody.jsonl', JSON.stringify(custody) + '\n');
             targetStartupCrashed = true; releaseStartupCrash();
             expect(await real.commit(receipt.preparation))
               .toMatchObject({ state: 'handoff-accepted', replayed: true });

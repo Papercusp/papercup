@@ -198,8 +198,10 @@ export async function inspectManagedAssumeRequest(value: unknown, afterExit = fa
   const prior = receipt.startup;
   const priorExited = prior?.ptyPid !== undefined && prior.ptyProcessStart !== undefined &&
     processExited(prior.ptyPid, prior.ptyProcessStart);
-  const authorizedStartup = afterExit && !!prior && (priorExited ||
-    prior.ptyPid === undefined && readProcessIdentity(prior.launcherPid) === prior.launcherProcessStart);
+  // A write-ahead launcher record is not proof that a native child ran. Only
+  // the recorded child's exited incarnation permits post-startup append.
+  // Unacknowledged spawns keep strict context pins and fail closed on growth.
+  const authorizedStartup = afterExit && !!prior && priorExited;
   // Admission remains an exact whole-target comparison. Only a durable startup
   // attempt may authenticate the original immutable prefix after native append.
   const custody = createAssumeCustodyAdapters(plan, { authorizedStartup });
@@ -214,7 +216,9 @@ export async function inspectManagedAssumeRequest(value: unknown, afterExit = fa
   if (action === 'begin-startup') {
     const identity = startup?.launcherPid ? readProcessIdentity(startup.launcherPid) : null;
     const replay = prior?.attemptId === startup?.attemptId && prior?.ptyPid === undefined;
-    if (!identity || prior && !replay && !priorExited || replay &&
+    const unstartedExited = prior?.ptyPid === undefined && !!prior &&
+      processExited(prior.launcherPid, prior.launcherProcessStart);
+    if (!identity || prior && !replay && !priorExited && !unstartedExited || replay &&
         (prior!.launcherPid !== startup!.launcherPid || prior!.launcherProcessStart !== identity))
       throw new Error('assume-startup-not-exited');
     if (!replay) await store.save({ ...receipt, startup: { attemptId: startup!.attemptId,

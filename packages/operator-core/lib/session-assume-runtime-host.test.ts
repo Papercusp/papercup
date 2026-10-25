@@ -86,6 +86,41 @@ describe('managed assume receipt inspection', () => {
     expect(ports.save).not.toHaveBeenCalled();
   });
 
+  it('does not authorize appended context from a write-ahead record without a recorded child', async () => {
+    const { request, receipt } = fixture();
+    ports.host.mockResolvedValue(null);
+    Object.assign(receipt, { startup: { attemptId: '11111111-1111-4111-8111-111111111111',
+      generation: 1, authorizedAt: Date.now(), launcherPid: 501, launcherProcessStart: 'launcher-start' } });
+    ports.processIdentity.mockReturnValue('launcher-start');
+    // The real custody adapter rejects changed context unless prefix recovery
+    // was explicitly authorized. A launcher-only record must not grant it.
+    ports.custody.mockImplementation(async () => ports.custodyFactory.mock.calls.at(-1)?.[1]?.authorizedStartup === true);
+    await expect(inspectManagedAssumeRequest(request, true)).rejects.toThrow('assume-target-custody-changed');
+    expect(ports.custodyFactory.mock.calls.at(-1)![1]).toEqual({ authorizedStartup: false });
+    expect(ports.save).not.toHaveBeenCalled();
+  });
+
+  it.each(['ESRCH', 'EPERM'])('retries unacknowledged startup only on exact launcher exit (%s)', async code => {
+    const { request, receipt } = fixture();
+    ports.host.mockResolvedValue(null);
+    Object.assign(receipt, { startup: { attemptId: '11111111-1111-4111-8111-111111111111',
+      generation: 1, authorizedAt: Date.now(), launcherPid: 501, launcherProcessStart: 'old-launcher' } });
+    ports.processIdentity.mockImplementation(pid => pid === 503 ? 'new-launcher' : null);
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => { throw Object.assign(new Error(code), { code }); });
+    try {
+      const attempt = inspectManagedAssumeRequest(request, true, 'begin-startup', {
+        attemptId: '22222222-2222-4222-8222-222222222222', launcherPid: 503 });
+      if (code === 'ESRCH') {
+        await expect(attempt).resolves.toMatchObject({ ok: true });
+        expect(ports.save.mock.calls.at(-1)![0].startup).toMatchObject({ generation: 2, launcherPid: 503 });
+      } else {
+        await expect(attempt).rejects.toThrow('assume-startup-not-exited');
+        expect(ports.save).not.toHaveBeenCalled();
+      }
+      expect(ports.custodyFactory.mock.calls.at(-1)![1]).toEqual({ authorizedStartup: false });
+    } finally { kill.mockRestore(); }
+  });
+
   it('checks the exact caller before and after checkpoint and target custody reads', async () => {
     const { request } = fixture();
     expect(await inspectManagedAssumeRequest(request)).toMatchObject({ ok: true, state: 'handoff-accepted' });

@@ -4,7 +4,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createOrgTestDb, type OrgTestDb } from '../../../packages/operator-core/test/_org-test-db';
 import { setupBaselineCoordFixture } from '../../../packages/operator-core/lib/_baseline-coord-fixture';
-import { prepareAssume, validateAssume, commitAssume, type AssumePreparation,
+import { prepareAssume, validateAssume, commitAssume, assumeTransitionKey, type AssumePreparation,
   verifyAssumeExecution, type AssumeExecutionObservation,
   type AssumeTransitionReceipt, type AssumeRequest } from '../../../packages/operator-core/lib/session-assume';
 import { readAssumeCaller, readAssumeTarget } from '../../../packages/operator-core/lib/session-assume-preparation';
@@ -184,8 +184,21 @@ export async function productionAssumeFixture(workspaceId: string,
           };
         },
       }))),
-    inspect: (request: unknown, afterExit = false, action = 'observe') =>
-      scoped(() => inspectManagedAssumeRequest(request, afterExit, action)),
+    inspect: (request: unknown, afterExit = false, action = 'observe', startup?: unknown) =>
+      scoped(() => inspectManagedAssumeRequest(request, afterExit, action, startup)),
+    custodySnapshot: (plan: AssumePreparation) => scoped(async () => {
+      const current = await readAssumeTarget({ requestId: plan.requestId,
+        targetOwnerId: plan.target.ownerId, contextMode: plan.target.context.mode }, plan.target.workspaceId);
+      const [reservation] = await sql`SELECT resume_claim_key,
+        resume_claim_key = ${assumeTransitionKey(plan)} AS owned,
+        resume_claimed_at + interval '120 seconds' > now() AS unexpired,
+        ended_at IS NOT NULL AS ended, retired_at IS NOT NULL AS retired
+        FROM harness_shared.adv_sessions WHERE id = ${plan.target.advSessionId}`;
+      return { expected: plan.target, current, reservation,
+        changedFields: Object.keys(plan.target).filter(key =>
+          JSON.stringify(current?.[key as keyof typeof plan.target]) !==
+          JSON.stringify(plan.target[key as keyof typeof plan.target])) };
+    }),
     load: (plan: AssumePreparation) => scoped(() => createAssumeReceiptStore(plan).load()),
     recovery: (receipt: AssumeTransitionReceipt) => scoped(() => {
       if (!receipt.recovery) throw new Error('Native handoff has no caller recovery');
@@ -194,8 +207,9 @@ export async function productionAssumeFixture(workspaceId: string,
     save: (receipt: AssumeTransitionReceipt) => scoped(() => createAssumeReceiptStore(receipt.preparation).save(receipt)),
     verify: (receipt: AssumeTransitionReceipt, observation: AssumeExecutionObservation) => scoped(async () => {
       const store = createAssumeReceiptStore(receipt.preparation);
-      await store.load(); // initialize the existing receipt CAS, never bypass it
-      return verifyAssumeExecution(receipt, observation, async value => {
+      const current = await store.load(); // preserve durable startup generations through verification
+      if (!current) throw new Error('Native verification receipt unavailable');
+      return verifyAssumeExecution(current, observation, async value => {
         try { await store.save(value); }
         catch (error) { trace.push({ stage: 'verify-save', error: String(error) }); throw error; }
       });
