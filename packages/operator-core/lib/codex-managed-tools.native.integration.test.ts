@@ -54,7 +54,8 @@ async function stopCensusProcess({ child, closed }: ReturnType<typeof spawnCensu
 }
 
 async function captureSurface(features: Record<string, boolean>, captureNested = true, model = 'gpt-6.1-sol',
-  capabilityPolicy?: Omit<CapabilityPolicyRequest, 'client'>, lifecycle = false, preauthorizeDispatcher = true) {
+  capabilityPolicy?: Omit<CapabilityPolicyRequest, 'client'>, lifecycle = false, preauthorizeDispatcher = true,
+  additionalMcpTools = 0) {
   const codex = wellKnownBackendBin('codex') ?? resolveOnPath('codex');
   if (!codex) throw new Error('Installed Codex is required for native-tool removal evidence');
   const catalogJson = execFileSync(codex, ['debug', 'models'], { encoding: 'utf8', timeout: 5000 });
@@ -93,7 +94,11 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
           : body.method === 'tools/list'
             ? { tools: [{ name: 'tools:invoke', description: 'Offline managed dispatcher canary.',
               inputSchema: { type: 'object', properties: {} },
-              annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } }] }
+              annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
+              ...Array.from({ length: additionalMcpTools }, (_, index) => ({
+                name: `production_catalog_padding_${index}`, description: 'Unrelated MCP catalog entry.',
+                inputSchema: { type: 'object', properties: {} },
+              }))] }
             : body.method === 'tools/call'
               ? { content: [{ type: 'text', text: managedCallMarker }] }
               : {};
@@ -122,9 +127,15 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
                     result.output !== ${JSON.stringify(managedCallMarker)})
                   throw new Error('Production capability:bash failed: ' + JSON.stringify(reply));
                 ` : ''}
+                // Keep every native name, including unknown native residue. Only
+                // unrelated MCP rows are filtered, with explicit accounting.
+                const native = ALL_TOOLS.filter(tool => !tool.name.startsWith('mcp__'));
+                const selected = [...native, managed];
                 text({ marker: ${JSON.stringify(nestedSurfaceMarker)}, managedReply: reply,
                   productionBashVerified: ${Boolean(privateMcpUrl)},
-                  tools: ALL_TOOLS.map(tool => ({ name: tool.name, callable: typeof tools[tool.name] })) });` }
+                  catalog: { total: ALL_TOOLS.length, native: native.length,
+                    omittedMcp: ALL_TOOLS.length - selected.length },
+                  tools: selected.map(tool => ({ name: tool.name, callable: typeof tools[tool.name] })) });` }
             : { id: 'nested_surface_done', type: 'message', role: 'assistant', status: 'completed',
               content: [{ type: 'output_text', text: 'Census complete.', annotations: [] }] };
           const response = { id: `surface_response_${captures.length}`, object: 'response', created_at: 1,
@@ -203,6 +214,7 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
         };
         walk(request.tools);
         const nestedTools: { name: string; callable: string }[] = [];
+        let nestedCatalog: { total: number; native: number; omittedMcp: number } | undefined;
         let productionBashReplies = 0;
         const readNested = (value: unknown): void => {
           if (typeof value === 'string' && /^[\[{]/.test(value.trim())) {
@@ -214,6 +226,7 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
           const row = value as Record<string, unknown>;
           if (row.marker === nestedSurfaceMarker && Array.isArray(row.tools)) {
             nestedTools.push(...row.tools as { name: string; callable: string }[]);
+            nestedCatalog = row.catalog as typeof nestedCatalog;
             if (row.productionBashVerified === true) productionBashReplies++;
             return;
           }
@@ -232,6 +245,8 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
               }
               readNested(item.output);
               const toolOutput = JSON.stringify(item.output);
+              expect(toolOutput, 'Census evidence must survive native exec output capture')
+                .not.toContain('Warning: truncated output');
               expect(toolOutput, `Managed execution reply for ${surface}: ${toolOutput.slice(0, 6000)}`)
                 .toContain(managedCallMarker);
             }
@@ -243,6 +258,10 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
             managedCalls.set(surface, productionBashReplies);
           }
           expect(nestedTools, `No code-mode census output; advertised tools: ${names.join(', ')}; ${stderr}`).not.toHaveLength(0);
+          expect(nestedCatalog).toBeDefined();
+          expect(nestedCatalog!.total).toBe(nestedTools.length + nestedCatalog!.omittedMcp);
+          expect(nestedCatalog!.native).toBe(nestedTools.filter(tool => !tool.name.startsWith('mcp__')).length);
+          expect(nestedCatalog!.omittedMcp).toBeGreaterThanOrEqual(additionalMcpTools);
           expect(nestedTools.every(tool => tool.callable === 'function')).toBe(true);
           expect(nestedTools.some(tool => tool.name.includes(managedTool))).toBe(true);
           expect(managedCalls.get(surface)).toBe(1);
@@ -256,6 +275,7 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
             model: selectedModel.slug, toolMode: selectedModel.tool_mode ?? 'direct',
             applyPatchToolType: selectedModel.apply_patch_tool_type },
           nestedNames: nestedTools.map(tool => tool.name),
+          nestedCatalog,
           hasNativeExecution: [...names, ...nestedTools.map(tool => tool.name)]
             .some(name => name === 'exec_command' || name === 'write_stdin') });
       } finally {
@@ -410,7 +430,10 @@ describe('Codex managed replacement installed-client census', () => {
         const features = { code_mode: true, code_mode_host: true, shell_tool: false };
         await expect(captureSurface(features, true, 'gpt-6.1-sol', undefined, false, false))
           .rejects.toThrow('MCP tool call requires approval, but approval policy is never');
-        const approved = await captureSurface(features);
+        // Exercise a production-sized catalog through installed Codex before
+        // paying for the private API build/PG runtime. The former ALL_TOOLS dump
+        // exceeded native exec's output budget and hid successful bash replies.
+        const approved = await captureSurface(features, true, 'gpt-6.1-sol', undefined, false, true, 2000);
         await writeFile(join(evidenceDir, 'dispatcher-approval-preflight.json'), JSON.stringify({
           blockedWithoutPreauthorization: true, approved,
         }) + '\n', { mode: 0o600 });

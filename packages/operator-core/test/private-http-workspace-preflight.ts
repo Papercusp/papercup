@@ -2,10 +2,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'esbuild';
 import { parse as parseToml } from '@iarna/toml';
@@ -16,7 +16,7 @@ import { presentedSecretsFromHeaders, scrubErrorText } from '../lib/inference-ga
 import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registry';
 import { PANEL_LABELS, type PanelKey, type SystemHealth } from '../lib/system-health/types';
 import { readVerifierSourceReceiptSync, verifierSourceFiles, type VerifierSourceFile } from '../lib/verifier-source';
-import { linuxProcStateFromStat, linuxStartTicksFromProcStat } from '../lib/process-identity';
+import { linuxProcStateFromStat, linuxStartTicksFromProcStat, readProcessIdentity } from '../lib/process-identity';
 import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
   CommittedReaderPreparationHandoff } from './isolated-integration-proof';
 // @ts-ignore -- reuse the maintained JS router's watchdog policy, as isolated-integration-proof does.
@@ -271,6 +271,8 @@ export interface PrivateHostStopObservation {
   closeObserved: boolean;
   signal?: NodeJS.Signals;
   accepted?: boolean;
+  /** Pinned while still descended from this host; redirected stdio is not an exit fence. */
+  postgres?: Array<{ pid: number; identity: string; postmaster: boolean; state: string | null }>;
   /** Diagnostic kernel evidence, never a replacement for exit/close events. */
   kernelProcess?: {
     status: 'present' | 'absent' | 'unavailable' | 'unsupported';
@@ -278,6 +280,80 @@ export interface PrivateHostStopObservation {
     startTicks: string | null;
     waitChannel: string | null;
   };
+}
+
+interface PrivatePostgresProcess { pid: number; identity: string; postmaster: boolean }
+const privateHostPostgres = new WeakMap<ChildProcess, Map<number, PrivatePostgresProcess>>();
+
+function privatePostgresState(pin: PrivatePostgresProcess): string | null {
+  try {
+    const stat = readFileSync(`/proc/${pin.pid}/stat`, 'utf8');
+    const identity = readProcessIdentity(pin.pid);
+    assert.ok(identity, 'private PostgreSQL identity is unreadable');
+    return identity === pin.identity ? linuxProcStateFromStat(stat) : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function privatePostgresAlive(pin: PrivatePostgresProcess) {
+  const state = privatePostgresState(pin);
+  return state !== null && state !== 'Z' && state !== 'X';
+}
+
+/** Inspect only this host's descendant tree, never a host-wide PID/name search.
+ * A root must also own its exact PGDATA pid file. Retain stable kernel identities
+ * across host exit/reparenting, and recheck them before sending any signal. */
+function capturePrivatePostgres(host: ChildProcess) {
+  const pins = privateHostPostgres.get(host) ?? new Map<number, PrivatePostgresProcess>();
+  privateHostPostgres.set(host, pins);
+  if (process.platform !== 'linux' || !host.pid) return pins;
+  const visited = new Set<number>();
+  const visit = (pid: number, identity: string, owned: boolean) => {
+    if (visited.has(pid) || readProcessIdentity(pid) !== identity) return;
+    visited.add(pid);
+    assert.ok(visited.size <= 256, 'private PostgreSQL descendant census exceeded its bound');
+    let children: string;
+    try { children = readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    for (const raw of children.trim().split(/\s+/).filter(Boolean)) {
+      const childPid = Number(raw), childIdentity = readProcessIdentity(childPid);
+      if (!childIdentity) {
+        assert.ok(!existsSync(`/proc/${childPid}`), 'private descendant identity is unreadable');
+        continue;
+      }
+      let postmaster = false;
+      if (!owned) {
+        try {
+          if (basename(readlinkSync(`/proc/${childPid}/exe`)) === 'postgres') {
+            const argv = readFileSync(`/proc/${childPid}/cmdline`, 'utf8').split('\0');
+            const at = argv.lastIndexOf('-D');
+            assert.ok(at >= 0 && argv[at + 1], 'private postmaster must name its PGDATA');
+            const dataDir = realpathSync(argv[at + 1]);
+            const [recordedPid, recordedDir] = readFileSync(join(dataDir, 'postmaster.pid'), 'utf8').split('\n');
+            assert.equal(Number(recordedPid), childPid, 'private postmaster pid file identity mismatch');
+            assert.equal(realpathSync(recordedDir), dataDir, 'private postmaster PGDATA mismatch');
+            postmaster = true;
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          assert.notEqual(readProcessIdentity(childPid), childIdentity,
+            'live private postmaster ownership could not be verified');
+        }
+      }
+      if (readProcessIdentity(childPid) !== childIdentity) continue;
+      if (owned || postmaster) pins.set(childPid, { pid: childPid, identity: childIdentity, postmaster });
+      visit(childPid, childIdentity, owned || postmaster);
+    }
+  };
+  const hostIdentity = readProcessIdentity(host.pid);
+  if (hostIdentity) visit(host.pid, hostIdentity, false);
+  for (const pin of pins.values()) if (privatePostgresAlive(pin)) visit(pin.pid, pin.identity, true);
+  return pins;
 }
 
 /** Stop admission before reaping descendants that can keep the host's pipes open.
@@ -292,6 +368,7 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
   let sigtermAccepted: boolean | null = null, sigkillAccepted: boolean | null = null;
   let phase = 'start';
   const observations: PrivateHostStopObservation[] = [];
+  let postgres = privateHostPostgres.get(host) ?? new Map<number, PrivatePostgresProcess>();
   const kernelProcess = (): NonNullable<PrivateHostStopObservation['kernelProcess']> => {
     const unknown = { state: null, startTicks: null, waitChannel: null };
     if (process.platform !== 'linux') return { ...unknown, status: 'unsupported' };
@@ -313,6 +390,7 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
     exitCode: host.exitCode, signalCode: host.signalCode,
     sigtermAccepted, sigkillAccepted, exitObserved, closeObserved,
     kernelProcess: kernelProcess(),
+    ...(postgres.size ? { postgres: [...postgres.values()].map(pin => ({ ...pin, state: privatePostgresState(pin) })) } : {}),
   });
   const record = (name: string, detail: Partial<PrivateHostStopObservation> = {}) => {
     const observation = { ...snapshot(name), ...detail };
@@ -349,10 +427,44 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
   };
   try {
     record('start');
+    // Capture before the parent disappears: PG can outlive a successful host
+    // exit without holding either of its stdout/stderr descriptors open.
+    let captureError: unknown;
+    try { postgres = capturePrivatePostgres(host); }
+    catch (error) { captureError = error; }
+    if (postgres.size) record('postgres captured');
     if (!alreadyExited) {
       signal('SIGTERM');
       try { await bounded(exited, 'exit'); }
       catch { signal('SIGKILL'); await bounded(exited, 'forced exit'); }
+    }
+    if (captureError) throw captureError;
+    if (postgres.size) {
+      phase = 'postgres shutdown';
+      const signalPostgres = (pin: PrivatePostgresProcess, value: NodeJS.Signals) => {
+        if (!privatePostgresAlive(pin)) return;
+        try { process.kill(pin.pid, value); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+      };
+      for (const pin of postgres.values()) if (pin.postmaster) signalPostgres(pin, 'SIGINT');
+      const wait = async () => {
+        const deadline = Date.now() + graceMs;
+        while ([...capturePrivatePostgres(host).values()].some(privatePostgresAlive)) {
+          if (Date.now() >= deadline) return false;
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+        return true;
+      };
+      if (!await wait()) {
+        record('postgres shutdown timed out');
+        // A disposable fixture must not leave live PG behind for its task's
+        // service teardown. Even observed forced cleanup remains a failed run.
+        for (const pin of postgres.values()) signalPostgres(pin, 'SIGKILL');
+        const stopped = await wait();
+        throw new Error(stopped ? 'Private PostgreSQL required forced cleanup'
+          : 'Private PostgreSQL exit did not settle');
+      }
+      record('postgres stopped');
     }
     phase = 'dependent cleanup';
     await afterExit?.();

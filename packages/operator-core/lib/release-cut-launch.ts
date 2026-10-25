@@ -1363,6 +1363,8 @@ export interface PreflightDeps {
   runSmokeTargetPreflight?: (scriptPath: string, platform: 'mac' | 'windows') => SmokeTargetProbe;
   /** Run the selected product's read-only model-cache predicate before launching. */
   runModelCachePreflight?: (desktopRoot: string) => SmokeTargetProbe;
+  /** Run a mandatory source identity guard from the selected target workspace. */
+  runSourceIdentityPreflight?: (scriptPath: string, workspace: string) => SmokeTargetProbe;
 }
 
 /** Raw result of bin/smoke-target-preflight.sh. exitCode null = it did not finish
@@ -1370,6 +1372,20 @@ export interface PreflightDeps {
 export interface SmokeTargetProbe {
   exitCode: number | null;
   output: string;
+}
+
+function defaultRunSourceIdentityPreflight(scriptPath: string, workspace: string): SmokeTargetProbe {
+  const result = spawnSync(process.execPath, [scriptPath], {
+    cwd: workspace,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 30_000,
+    maxBuffer: 1 << 20,
+  });
+  return {
+    exitCode: result.status,
+    output: `${result.stdout ?? ''}${result.stderr ?? ''}${result.error ? `\n${result.error.message}` : ''}`,
+  };
 }
 
 function defaultRunModelCachePreflight(root: string): SmokeTargetProbe {
@@ -1482,7 +1498,8 @@ function readDependencyGeneration(workspace: string, identityScript: string): st
 /**
  * Pure-ish preflight: verify the cut CAN run cleanly before firing the ~35-min build —
  * the signing key, the runtime dependency used by release-local.sh's pre-build
- * migration lint, release-local.sh + the three verify scripts (RELEASE-RUNBOOK §2–4)
+ * migration lint, the target's mandatory source identity guards, release-local.sh +
+ * the three verify scripts (RELEASE-RUNBOOK §2–4)
  * that compose under this cut, and that no cut is already in flight. Requested optional
  * legs (mac/windows) add an informational line naming their native Linux cross-build
  * producer (no VM). No heavy work, no mutation. The only network read is the exact
@@ -1559,6 +1576,33 @@ export function preflightCut(
   // immutable generation marker required by every journalled platform leg.
   // Validate its contents before launching the detached build.
   const workspace = path.resolve(root, '..');
+  // Mirror release-local.sh's early identity gate against the frozen product,
+  // not the current orchestrator: repairing canonical source cannot repair a
+  // previously selected cut root (WI-6554700010028333). Run every guard even
+  // after a failure so preflight reports the complete set of blockers.
+  for (const script of [
+    'check-no-owner-name-tags.mjs',
+    'check-no-box-identity.mjs',
+    'check-no-identity-literals.mjs',
+  ]) {
+    let probe: SmokeTargetProbe;
+    try {
+      probe = (deps.runSourceIdentityPreflight ?? defaultRunSourceIdentityPreflight)(
+        path.join(workspace, 'scripts', script), workspace,
+      );
+    } catch (error) {
+      probe = { exitCode: null, output: error instanceof Error ? error.message : String(error) };
+    }
+    const diagnostic = probe.output.trim().slice(0, 4_000);
+    checks.push({
+      name: `source-identity:${script}`,
+      ok: probe.exitCode === 0,
+      detail: probe.exitCode === 0
+        ? diagnostic || `${script} passed in ${workspace}`
+        : `${script} failed for selected source ${workspace} (exit ${probe.exitCode ?? 'unmeasured'}): ` +
+          (diagnostic || 'guard did not complete; source identity is not verified'),
+    });
+  }
   const modelProbe = (deps.runModelCachePreflight ?? defaultRunModelCachePreflight)(root);
   checks.push({
     name: 'embedding-models',

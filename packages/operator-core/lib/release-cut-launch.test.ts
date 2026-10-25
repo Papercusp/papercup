@@ -725,6 +725,7 @@ const dependencySource = 'a'.repeat(64);
 const dependencyReady = {
   readDependencyGeneration: () => `v1-${dependencySource}`,
   runModelCachePreflight: () => ({ exitCode: 0, output: 'fixture model cache ready' }),
+  runSourceIdentityPreflight: () => ({ exitCode: 0, output: 'fixture source identity clean' }),
 };
 
 describe('preflightCut', () => {
@@ -810,6 +811,72 @@ describe('preflightCut', () => {
     const r = preflightCut({}, { root }, { ...dependencyReady, home, exists: (p) => allPresent.has(p) && p !== scripts[0], isUnitActive: () => false });
     expect(r.go).toBe(true); // warnOnly does not block
     expect(r.checks.find((c) => c.name.includes('verify-provenance'))!.ok).toBe(false);
+  });
+  describe('mandatory selected-source identity gate', () => {
+    const guards = [
+      'check-no-owner-name-tags.mjs',
+      'check-no-box-identity.mjs',
+      'check-no-identity-literals.mjs',
+    ];
+    const base = { ...dependencyReady, home, exists: () => true, isUnitActive: () => false,
+      releaseToolingDrift: () => ({ state: 'current' as const, staleFiles: [] }),
+    };
+    it.each(guards.flatMap((script) => [1, null].map((exitCode) => [script, exitCode] as const)))(
+      'blocks %s exit %s and still measures every guard', (failedScript, exitCode) => {
+        const runSourceIdentityPreflight = vi.fn((scriptPath: string) => ({
+          exitCode: path.basename(scriptPath) === failedScript ? exitCode : 0,
+          output: 'selected target scan',
+        }));
+        const result = preflightCut({}, { root, orchestratorRoot: '/current/papercusp-desktop' }, {
+          ...base, runSourceIdentityPreflight,
+        });
+        expect(result.go).toBe(false);
+        expect(result.blockers.join()).toContain(`source-identity:${failedScript}`);
+        expect(result.checks.find((c) => c.name === `source-identity:${failedScript}`)?.warnOnly).toBeUndefined();
+        expect(runSourceIdentityPreflight.mock.calls).toEqual(guards.map((script) => [
+          path.join('/root', 'scripts', script), '/root',
+        ]));
+      },
+    );
+    it('reports every guard even when the runner throws', () => {
+      const runSourceIdentityPreflight = vi.fn(() => { throw new Error('guard spawn unavailable'); });
+      const result = preflightCut({}, { root }, { ...base, runSourceIdentityPreflight });
+      expect(result.go).toBe(false);
+      expect(result.blockers.filter((c) => c.includes('source-identity:'))).toHaveLength(3);
+      expect(runSourceIdentityPreflight).toHaveBeenCalledTimes(3);
+      expect(result.checks.find((c) => c.name === `source-identity:${guards[0]}`)?.detail).toContain('guard spawn unavailable');
+    });
+    it('executes only the selected target guards in its workspace and refuses missing scripts', () => {
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "cut identity's target-"));
+      const desktop = path.join(workspace, 'papercusp-desktop');
+      const orchestrator = fs.mkdtempSync(path.join(os.tmpdir(), 'cut-identity-current-'));
+      const leak = path.join(workspace, 'source-leak.txt');
+      for (const dir of [workspace, orchestrator]) fs.mkdirSync(path.join(dir, 'scripts'));
+      const check = () => preflightCut({}, {
+        root: desktop, orchestratorRoot: path.join(orchestrator, 'papercusp-desktop'),
+      }, { ...base, runSourceIdentityPreflight: undefined });
+      try {
+        for (const script of guards) {
+          fs.writeFileSync(path.join(workspace, 'scripts', script),
+            "import fs from 'node:fs'; console.log(process.cwd()); process.exitCode = fs.existsSync('source-leak.txt') ? 1 : 0;\n");
+          fs.writeFileSync(path.join(orchestrator, 'scripts', script), 'process.exit(0);\n');
+        }
+        fs.writeFileSync(leak, 'selected source still carries a leak');
+        const blocked = check();
+        expect(blocked.go).toBe(false);
+        expect(blocked.blockers.filter((c) => c.includes('source-identity:'))).toHaveLength(3);
+        expect(blocked.checks.find((c) => c.name === `source-identity:${guards[1]}`)?.detail).toContain(workspace);
+        fs.unlinkSync(leak);
+        expect(check().go).toBe(true);
+        fs.unlinkSync(path.join(workspace, 'scripts', guards[1]));
+        const missing = check();
+        expect(missing.go).toBe(false);
+        expect(missing.blockers.join()).toContain(`source-identity:${guards[1]}`);
+      } finally {
+        fs.rmSync(workspace, { recursive: true, force: true });
+        fs.rmSync(orchestrator, { recursive: true, force: true });
+      }
+    });
   });
   describe('exact release tag (EI-24611322499942803)', () => {
     const sourceSha = 'b'.repeat(40);
@@ -991,6 +1058,7 @@ describe('preflight dependency-generation contract', () => {
       }
       const result = preflightCut({}, { root: path.join(workspace, 'papercusp-desktop'), orchestratorRoot }, {
         runModelCachePreflight: dependencyReady.runModelCachePreflight,
+        runSourceIdentityPreflight: dependencyReady.runSourceIdentityPreflight,
         exists: () => true,
         isUnitActive: () => false,
         releaseToolingDrift: () => ({ state: 'current', staleFiles: [] }),
