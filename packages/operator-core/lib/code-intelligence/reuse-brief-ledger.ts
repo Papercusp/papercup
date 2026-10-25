@@ -14,6 +14,7 @@ export function reuseIssuedSubjects(input: ReuseIssuedRecord) {
     && row.sourceVersion && row.indexVersion).map(row => ({ row, subject: JSON.stringify({
     schema: 'reuse-brief-v1', provider: row.provider, surface: input.context.surface,
     invocation: input.context.invocation, workItem: input.context.workItem ?? null,
+    harness: input.context.repository?.harness ?? null,
     plan: input.context.plan ?? null, planItems: input.context.planItems ?? [],
     sourceVersion: row.sourceVersion, indexVersion: row.indexVersion, outcome: row.reason,
     ...(row.cohort ? { cohort: row.cohort, selector: { paths: row.citedPaths, symbols: [] } } : {}),
@@ -27,6 +28,7 @@ export async function recordReuseBriefIssued(input: ReuseIssuedRecord, signal: A
   const subjects = [...reuseIssuedSubjects(input), ...held.map(row => ({ row, subject: JSON.stringify({
     schema: 'reuse-brief-v1', provider: row.provider, surface: input.context.surface,
     invocation: input.context.invocation, workItem: input.context.workItem,
+    harness: input.context.repository?.harness ?? null,
     plan: input.context.plan ?? null, planItems: input.context.planItems ?? [],
     sourceVersion: row.sourceVersion, indexVersion: row.indexVersion, outcome: 'holdout',
     cohort: 'holdout', selector: { paths: row.citedPaths, symbols: [] },

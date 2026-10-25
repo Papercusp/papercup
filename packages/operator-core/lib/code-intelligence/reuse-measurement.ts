@@ -16,6 +16,7 @@ export const REUSE_MEASUREMENT_INSTRUMENT_KEYS = {
   redundancy: 'code-intel:reuse-redundancy-per-1000-lines',
   searchBeforeWrite: 'code-intel:reuse-search-before-write',
   crossFileCalls: 'code-intel:reuse-cross-file-call-ratio',
+  providerOutcomes: 'code-intel:reuse-provider-outcomes',
 } as const;
 export type ReuseMetric = keyof typeof REUSE_MEASUREMENT_INSTRUMENT_KEYS;
 
@@ -242,13 +243,21 @@ export function evaluateReuseProvider(input: {
  */
 export async function readRecordedReuseWindows(sql: Sql, input: { workspaceId: string; start: string; end: string }) {
   if (!input.workspaceId.trim() || time(input.start) >= time(input.end)) throw new Error('Exact workspace and half-open window required');
-  const rows = await sql<{ subject: string; owner_id: string }[]>`SELECT subject, owner_id FROM harness_shared.code_intel_pushes
+  const rows = await sql<{ subject: string; owner_id: string; suggested_call: string | null }[]>`SELECT DISTINCT ON
+      (COALESCE(subject::jsonb->>'exposureId', subject::jsonb->'observation'->'exposure'->>'id'))
+      subject, owner_id, suggested_call FROM harness_shared.code_intel_pushes
     WHERE workspace_id = ${input.workspaceId} AND leg = 'reuse-measurement' AND chars = 0
-      AND pushed_at >= ${input.start}::timestamptz AND pushed_at < ${input.end}::timestamptz ORDER BY id`;
+      AND pushed_at >= ${input.start}::timestamptz AND pushed_at < ${input.end}::timestamptz
+    ORDER BY COALESCE(subject::jsonb->>'exposureId', subject::jsonb->'observation'->'exposure'->>'id'), id DESC`;
   return rows.map(row => {
-    const record = JSON.parse(row.subject);
+    const envelope = JSON.parse(row.subject);
+    const referenced = envelope.schema === 'reuse-measurement-ref-v1';
+    if (referenced && (!row.suggested_call || createHash('sha256').update(row.suggested_call).digest('hex') !== envelope.sha256))
+      throw new Error('Reuse measurement payload digest mismatch');
+    const record = referenced ? JSON.parse(row.suggested_call!) : envelope;
     const observation = record.observation;
     if (record.schema !== 'reuse-measurement-v1' || observation?.exposure?.workspaceId !== input.workspaceId
+      || referenced && envelope.exposureId !== observation.exposure.id
       || observation.exposure.owner !== row.owner_id || !Array.isArray(observation.activities)
       || typeof observation.activityCensusComplete !== 'boolean' || typeof observation.now !== 'string'
       || !Array.isArray(record.sourceRefs) || !record.sourceRefs.length
@@ -261,6 +270,91 @@ export async function readRecordedReuseWindows(sql: Sql, input: { workspaceId: s
   });
 }
 
+/** Collect the actual persisted exposure and post-tool rows, including controls.
+ * Existing activity reporting does not certify an exhaustive client census, so
+ * this collector can prove positives but never manufactures a negative. Receipt
+ * acknowledgement also stays unknown until an independent receipt source exists.
+ * Recollection appends raw source evidence; readers choose the latest exposure
+ * edition and recompute rather than replaying a previously saved rating.
+ */
+export async function collectRecordedReuseWindows(sql: Sql, input: {
+  workspaceId: string; harnessSlug: string; start: string; end: string; now: string;
+  repoRoots?: ReadonlyMap<string, string>;
+}) {
+  const now = time(input.now);
+  if (!input.workspaceId.trim() || !input.harnessSlug.trim() || time(input.start) >= time(input.end)
+    || time(input.end) > now) throw new Error('Exact scope and closed collection window required');
+  const { REUSE_PROVIDER_POLICY } = await import('./reuse-brief-providers');
+  const providers = Object.keys(REUSE_PROVIDER_POLICY);
+  const legs = providers.flatMap(provider => [`reuse-${provider}`, `reuse-holdout-${provider}`]);
+  const rows = await sql<{ id: string; owner_id: string; epoch: number; turn_id: string; leg: string;
+    subject: string; pushed_at: Date | string; chars: number; activities: ReuseMeasurementActivity[] }[]>`
+    SELECT p.id::text, p.owner_id, p.epoch, p.turn_id, p.leg, p.subject, p.pushed_at, p.chars,
+      COALESCE((SELECT jsonb_agg(a.row ORDER BY a.created_at, a.id) FROM (
+        SELECT a.id, a.created_at, jsonb_build_object('id', a.id::text, 'workspaceId', a.workspace_id,
+          'owner', a.owner_id, 'at', a.created_at, 'tool', a.tool_name, 'status', a.status,
+          'detail', a.detail, 'harness', a.harness_slug) AS row
+        FROM harness_shared.agent_activity a WHERE a.workspace_id = p.workspace_id AND a.owner_id = p.owner_id
+          AND a.kind = 'tool' AND a.phase = 'post' AND a.created_at > p.pushed_at
+          AND a.created_at <= LEAST(${input.now}::timestamptz, p.pushed_at + interval '30 minutes')
+        ORDER BY a.created_at, a.id LIMIT 20
+      ) a), '[]'::jsonb) AS activities
+    FROM harness_shared.code_intel_pushes p WHERE p.workspace_id = ${input.workspaceId}
+      AND p.leg = ANY(${legs}::text[])
+      AND p.pushed_at >= ${input.start}::timestamptz AND p.pushed_at < ${input.end}::timestamptz
+    ORDER BY p.id LIMIT 1001`;
+  // Never publish a partial population as a complete collection. The caller
+  // can partition the same half-open window into smaller intervals.
+  if (rows.length > 1000) throw new Error('Collection exceeds 1000 exposures; partition the time window');
+  const windows: ReuseMeasuredWindow[] = [], recorded: string[] = [];
+  const rejected: { ref: string; reason: string }[] = [];
+  for (const row of rows) {
+    const ref = `code-intel-push:${row.id}`;
+    let record: Record<string, any>;
+    try { record = JSON.parse(row.subject); }
+    catch { rejected.push({ ref, reason: 'Invalid exposure metadata' }); continue; }
+    if (record.harness !== input.harnessSlug) continue;
+    const provider = record.provider;
+    if (record.schema !== 'reuse-brief-v1' || !providers.includes(provider)
+      || typeof record.workItem !== 'string' || !record.workItem.trim()
+      || typeof record.invocation !== 'string' || !record.invocation.trim()
+      || !record.sourceVersion || !record.indexVersion || !Array.isArray(record.selector?.paths)
+      || !Array.isArray(record.selector?.symbols)
+      || ![...record.selector.paths, ...record.selector.symbols].every(x => typeof x === 'string' && x.trim())) {
+      rejected.push({ ref, reason: 'Missing scoped exposure identity or provider selector' }); continue;
+    }
+    const held = reuseHoldout(record.workItem, provider), issued = row.chars > 0;
+    if (record.cohort !== (held ? 'holdout' : 'treatment') || held === issued
+      || row.leg !== (held ? `reuse-holdout-${provider}` : `reuse-${provider}`)
+      || held && record.outcome !== 'holdout') {
+      rejected.push({ ref, reason: 'Exposure disagrees with preregistered arm' }); continue;
+    }
+    const exposure: ReuseMeasurementExposure = { id: ref, workspaceId: input.workspaceId, owner: row.owner_id,
+      invocation: record.invocation, workItem: record.workItem, provider,
+      at: row.pushed_at instanceof Date ? row.pushed_at.toISOString() : new Date(time(row.pushed_at)).toISOString(), issued,
+      clientReceipt: null, selector: record.selector };
+    const observation = { exposure, activities: row.activities,
+      now: new Date(Math.min(now, time(exposure.at) + REUSE_OBSERVATION_MS)).toISOString(),
+      activityCensusComplete: false,
+      ...(input.repoRoots ? { repoRoots: Object.fromEntries(input.repoRoots) } : {}) };
+    windows.push(measureReuseWindow({ ...observation, repoRoots: input.repoRoots }));
+    const payload = JSON.stringify({ schema: 'reuse-measurement-v1',
+      sourceRefs: [ref, ...row.activities.map(a => `agent-activity:${a.id}`)], observation });
+    // subject participates in the delivery ledger's B-tree unique key. Keep
+    // that key small even for twenty high-entropy tool details. The zero-spend
+    // measurement leg reserves the existing unindexed suggested_call field for
+    // its hash-verified raw payload; it is never an issued tool suggestion.
+    const subject = JSON.stringify({ schema: 'reuse-measurement-ref-v1', exposureId: ref,
+      sha256: createHash('sha256').update(payload).digest('hex') });
+    const result = await sql<{ id: string }[]>`INSERT INTO harness_shared.code_intel_pushes
+      (workspace_id, owner_id, epoch, turn_id, leg, subject, suggested_call, chars, pushed_at)
+      VALUES (${input.workspaceId}, ${row.owner_id}, ${row.epoch}, ${row.turn_id}, 'reuse-measurement', ${subject}, ${payload}, 0, ${exposure.at}::timestamptz)
+      ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING RETURNING id::text`;
+    recorded.push(...result.map(r => r.id));
+  }
+  return { windows, recorded, rejected };
+}
+
 /** Registered remeasurement consumes raw population snapshots, never saved scores.
  * Exact window equality prevents a partial population from rating a wider window.
  * A collector may replace a snapshot by appending a newer exact-window record.
@@ -270,6 +364,32 @@ export async function measureRecordedReuseMetric(sql: Sql, scope: {
 }, metric: ReuseMetric): Promise<{ verdict: 'pass' | 'unknown'; value?: number; detail: string }> {
   if (!scope.workspaceId.trim() || !scope.harnessSlug?.trim()
     || time(scope.windowStart) >= time(scope.windowEnd)) return { verdict: 'unknown', detail: 'Exact workspace, harness and valid window required.' };
+  if (metric === 'providerOutcomes') {
+    const { loadHarnessRegistry } = await import('../harness-registry');
+    const { REUSE_PROVIDER_POLICY, REUSE_PROVIDER_FLAGS } = await import('./reuse-brief-providers');
+    const roots = new Map<string, string>();
+    try {
+      for (const project of (await loadHarnessRegistry(scope.workspaceId)).projects)
+        if (project.path) roots.set(project.slug, project.path);
+    } catch { /* Absolute paths remain unknown when the registry is unavailable. */ }
+    const collected = await collectRecordedReuseWindows(sql, { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
+      start: scope.windowStart, end: scope.windowEnd, now: scope.windowEnd, repoRoots: roots });
+    const windows = (await readRecordedReuseWindows(sql, { workspaceId: scope.workspaceId,
+      start: scope.windowStart, end: scope.windowEnd })).filter(w => collected.windows.some(row => row.exposure.id === w.exposure.id));
+    const byProvider = summarizeReuseWindows(windows), providers = Object.keys(REUSE_PROVIDER_POLICY);
+    const notObserved = providers.filter(provider => !byProvider[provider]);
+    const recommendations = providers.map(provider => {
+      const first = windows.filter(w => w.exposure.provider === provider).map(w => w.exposure.at).sort()[0] ?? scope.windowEnd;
+      return { ...evaluateReuseProvider({ workspaceId: scope.workspaceId, provider, windows,
+        experimentStartedAt: first, now: scope.windowEnd }),
+      reversal: { flag: REUSE_PROVIDER_FLAGS[provider as keyof typeof REUSE_PROVIDER_FLAGS], enabled: true } };
+    });
+    return { verdict: notObserved.length || collected.rejected.length ? 'unknown' : 'pass',
+      detail: JSON.stringify({ scope, byProvider, notObserved, recommendations, rejected: collected.rejected,
+        sourceRefs: windows.map(w => w.exposure.id),
+        cannotObserve: ['No independent client receipt source is registered; delivery remains unknown.',
+          'Activity ledger completeness is not certified; absent follow-through remains unknown.'] }) };
+  }
   const rows = await sql<{ subject: string }[]>`SELECT subject FROM harness_shared.code_intel_pushes
     WHERE workspace_id = ${scope.workspaceId} AND leg = 'reuse-metrics' AND chars = 0
       AND subject::jsonb->>'schema' = 'reuse-metrics-v1'

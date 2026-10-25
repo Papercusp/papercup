@@ -28,7 +28,7 @@ describe('R16 actual composition admission', () => {
   it('withholds a fixed eligible provider arm across retries, retaining its own selector and source pins', async () => {
     const read = vi.fn(provider('coverage').read);
     for (const invocation of ['first', 'retry']) {
-      const base = { mandatory: 'preserved' };
+      const base: Brief = { mandatory: 'preserved' };
       const result = await composeReuseBrief({ base, context: { ...context, invocation, workItem: 'WI-12' }, append,
         providers: [{ id: 'coverage', read }, provider('clones')], enabled: async () => true, deadline: Date.now() + 6000 });
       expect(result.brief.mandatory).toBe('preserved');

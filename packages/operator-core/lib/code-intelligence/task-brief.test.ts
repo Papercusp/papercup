@@ -275,6 +275,36 @@ describe('native engineering evidence task context', () => {
       { root: async () => root, engineering: deps.engineering });
     expect(completion.engineering?.recover).toEqual(claim.engineering?.recover);
   });
+
+  it('preserves the complete engineering baseline and delivers every hint recorded as issued', async () => {
+    const { root, subject, deps } = engineeringFixture();
+    writeFileSync(join(root, 'target.ts'), '// ' + 'source context '.repeat(80)
+      + '\nexport function target() { return 1; }');
+    for (const maxChars of [6000, TASK_BRIEF_MAX_CHARS, 2400]) {
+      const ref = { workspaceId: 'w', workItem: subject, maxChars };
+      const base = (await getClaimTimeTaskBrief(ref, deps))!.taskBrief;
+      const observe = vi.fn();
+      const enriched = (await getClaimTimeTaskBrief({ ...ref,
+        reuse: { owner: 'su-fixture', invocation: 'engineering-budget', observe } }, {
+        ...deps, reuse: { recordIssued: async () => true, providers: [
+          { id: 'clones', read: async context => ({ status: 'measured', sourceVersion: context.sourceVersion,
+            indexVersion: 'clones-v1', lines: ['target.ts ' + 'similar source '.repeat(22)] }) },
+          { id: 'sql', read: async context => ({ status: 'measured', sourceVersion: context.sourceVersion,
+            indexVersion: 'sql-v1', lines: ['target.ts ' + 'reader '.repeat(20)] }) },
+        ] },
+      }))!.taskBrief;
+      const hints = enriched.graph.relationships.flatMap(line => {
+        try { const row = JSON.parse(line); return row.provider ? [row] : []; } catch { return []; }
+      });
+      expect({ ...enriched, graph: { ...enriched.graph,
+        relationships: enriched.graph.relationships.filter(line => !hints.some(hint => JSON.stringify(hint) === line)) } })
+        .toEqual(base);
+      const issued = observe.mock.calls[0][0].observations.filter((row: { status: string }) => row.status === 'issued');
+      if (maxChars === 6000) expect(issued.length).toBeGreaterThan(0);
+      expect(hints.map(row => row.provider)).toEqual(issued.map((row: { provider: string }) => row.provider));
+      expect(JSON.stringify(enriched).length).toBeLessThanOrEqual(maxChars);
+    }
+  });
   it('ee.brief-budget: fits the complete caller brief in 2400 characters and retains scoped recovery for omitted data', async () => {
     const { subject, deps } = engineeringFixture();
     const brief = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject, maxChars: 2400 }, deps))!.taskBrief;

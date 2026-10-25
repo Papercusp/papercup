@@ -283,7 +283,8 @@ describe('the registry seed set', () => {
           if (Object.values(REUSE_MEASUREMENT_INSTRUMENT_KEYS).some(value => value === key)) {
             expect(instrument.rescore?.windowMs).toBe(28 * 86_400_000);
             expect(instrument.rescore?.scope).toBe('harness');
-            expect(instrument.rescore?.unit).toBe(key === REUSE_MEASUREMENT_INSTRUMENT_KEYS.redundancy ? 'count' : '%');
+            expect(instrument.rescore?.unit).toBe(key === REUSE_MEASUREMENT_INSTRUMENT_KEYS.redundancy
+              || key === REUSE_MEASUREMENT_INSTRUMENT_KEYS.providerOutcomes ? 'count' : '%');
             expect(await instrument.rescore!.resolve(window)).toEqual({ verdict: 'unknown',
               detail: 'Exact workspace, harness and valid window required.' });
             continue;

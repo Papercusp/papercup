@@ -16,7 +16,7 @@ const source = (id: ReuseProviderId): ReuseBriefProvider => ({ id, read: async c
 }) });
 const append = (base: TaskBrief, value: ReuseContribution): TaskBrief => ({ ...base,
   graph: { ...base.graph, relationships: [...base.graph.relationships, JSON.stringify(value)] } });
-const ref = { workspaceId: 'fixture-workspace', workItem: { id: 'WI-fixture', harness: 'fixture-harness',
+const ref = { workspaceId: 'fixture-workspace', workItem: { id: 'WI-target', harness: 'fixture-harness',
   sourcePlanSlug: 'fixture-plan', sourcePlanItemIds: ['P-009'], payload: { paths: ['target.ts'] } } };
 async function fixture(): Promise<TaskBriefDeps> {
   const root = await mkdtemp(join(tmpdir(), 'task-brief-reuse-')); dirs.push(root);
@@ -34,14 +34,17 @@ async function fixture(): Promise<TaskBriefDeps> {
 describe('P009 real taskBrief production adapter boundary', () => {
   it('uses the registered provider/adapter at claim time, preserves mandatory evidence and records dispatch identity', async () => {
     const deps = await fixture();
-    const base = await buildTaskBrief(ref, deps);
+    // This fixture intentionally holds coverage out while exercising the
+    // registered clone provider. Treatment/holdout coverage has its own case.
+    const claimRef = { ...ref, workItem: { ...ref.workItem, id: 'WI-fixture' } };
+    const base = await buildTaskBrief(claimRef, deps);
     const emit = vi.fn();
     const identity = createReuseBriefIdentity('su-fixture', 'real-dispatch-fixture', emit)!;
     const record = vi.fn(async (_input: ReuseIssuedRecord) => true);
     const unregisterProvider = registerReuseBriefProvider(source('clones'));
     const unregisterAdapter = registerTaskBriefReuseAdapter('impact', append);
     try {
-      const result = await getClaimTimeTaskBrief({ ...ref, reuse: identity }, { ...deps, reuse: { recordIssued: record } });
+      const result = await getClaimTimeTaskBrief({ ...claimRef, reuse: identity }, { ...deps, reuse: { recordIssued: record } });
       expect(result?.taskBrief.status).toBe('current');
       expect(result?.taskBrief).toEqual({ ...base, graph: { ...base.graph,
         relationships: [expect.stringContaining('clones')] } });
@@ -63,6 +66,19 @@ describe('P009 real taskBrief production adapter boundary', () => {
     expect(result).toBe(base); expect(read).not.toHaveBeenCalled(); expect(record).not.toHaveBeenCalled();
     expect(observe.mock.calls[0]![0]).toMatchObject({ ledger: 'not-needed', recover: base.recover,
       observations: [{ provider: 'coverage', status: 'unknown', reason: 'destination-unavailable', chars: 0 }] });
+  });
+
+  it('persists an all-holdout claim through the actual adapter without changing mandatory content', async () => {
+    const deps = await fixture(), base = await buildTaskBrief(ref, deps), observe = vi.fn();
+    const record = vi.fn(async (_input: ReuseIssuedRecord) => true);
+    const result = await enrichTaskBriefWithReuse(base, { ...ref, workItem: { ...ref.workItem, id: 'WI-12' },
+      reuse: { owner: 'su-fixture', invocation: 'all-holdout', observe } },
+    { ...deps, reuse: { providers: [source('coverage')], adapters: { tests: append }, recordIssued: record } }, Date.now() + 6000);
+    expect(result).toBe(base);
+    expect(record).toHaveBeenCalledOnce();
+    expect(record.mock.calls[0]![0].observations[0]).toMatchObject({ provider: 'coverage', status: 'held-out',
+      cohort: 'holdout', chars: 0, citedPaths: ['target.ts'] });
+    expect(observe.mock.calls[0]![0].ledger).toBe('recorded');
   });
 
   it('isolates adapter replacement and provider failure while retaining independent destination content', async () => {

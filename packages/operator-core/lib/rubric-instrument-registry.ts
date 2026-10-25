@@ -829,7 +829,7 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
       ...(reuseMetric ? { rescore: {
-        windowMs: 28 * 86_400_000, unit: reuseMetric === 'redundancy' ? 'count' as const : '%' as const,
+        windowMs: 28 * 86_400_000, unit: reuseMetric === 'redundancy' || reuseMetric === 'providerOutcomes' ? 'count' as const : '%' as const,
         scope: 'harness' as const,
         resolve: async window => {
           if (!window.workspaceId.trim() || !window.harnessSlug?.trim()) return { verdict: 'unknown' as const,

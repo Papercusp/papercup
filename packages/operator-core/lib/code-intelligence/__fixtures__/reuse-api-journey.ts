@@ -209,12 +209,16 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
     }));
   }
   if (claimOnly) {
-    const { buildTaskBrief } = await import('../task-brief.ts');
+    const { getClaimTimeTaskBrief } = await import('../task-brief.ts');
     const itemRead = await call('work_items:get', { id, harness: workspace, payloadTier: 'full',
       projection: { pick: ['results[].workItem'] } });
     const item = itemRead.results?.[0]?.workItem;
     assert(item && item.sourcePlanSlug === planSlug, JSON.stringify(itemRead));
-    const base = await buildTaskBrief({ workItem: item, workspaceId: workspace, harness: workspace });
+    // Match the complete production claim reader, including engineering evidence
+    // and compaction. Omitting reuse identity keeps only the mandatory baseline.
+    const baselineRead = await getClaimTimeTaskBrief({ workItem: item, workspaceId: workspace, harness: workspace });
+    assert(baselineRead, 'Controlled anchored claim must produce its mandatory baseline');
+    const base = baselineRead.taskBrief;
     assert.equal(base.status, 'current', JSON.stringify(base));
     const response = await call('work_items:claim', { row: `${id},self,${workspace}`, payloadTier: 'full',
       projection: { pick: ['results[].ok', 'results[].taskBrief'] } });

@@ -1,13 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { setupPlanPgFixture, type PlanPgFixture } from '../agent-tools/plans/__tests__/_pg-tool-fixture';
 import { readNativePushOutcomes } from './native-adoption';
 import { getRegisteredInstrument } from '../rubric-instrument-registry';
 import { resolveScorecardInstrumentSnapshots } from '../scorecards';
 import type { Rubric } from '../rubrics';
-import { evaluateReuseProvider, measureReuseMetrics, measureReuseWindow, readRecordedReuseWindows,
+import { collectRecordedReuseWindows, evaluateReuseProvider, measureReuseMetrics, measureReuseWindow, readRecordedReuseWindows,
   measureRecordedReuseMetric, REUSE_MEASUREMENT_INSTRUMENT_KEYS,
   reuseHoldout, summarizeReuseWindows, type ReuseMeasuredWindow, type ReuseMeasurementActivity,
   type ReuseMeasurementExposure } from './reuse-measurement';
+import { composeReuseBrief } from './reuse-brief-providers';
+import { recordReuseBriefIssued } from './reuse-brief-ledger';
 
 const at = '2026-10-01T00:00:00.000Z', now = '2026-10-01T00:31:00.000Z';
 const exposure = (patch: Partial<ReuseMeasurementExposure> = {}): ReuseMeasurementExposure => ({
@@ -198,5 +201,67 @@ describe('R16 repeatable existing-ledger reads', () => {
     await fx.admin`UPDATE harness_shared.code_intel_pushes SET subject = ${JSON.stringify(record)}
       WHERE workspace_id = ${fx.workspaceId} AND leg = 'reuse-metrics'`;
     expect((await measureRecordedReuseMetric(fx.admin, scope, 'redundancy')).value).toBe(100);
+  });
+  it('collects actual composition, push and activity rows for both arms; recollection updates raw evidence without duplicate outcomes', async () => {
+    const owner = 'live-collector-fixture', start = '2026-10-03T00:00:00.000Z', end = '2026-10-03T00:31:00.000Z';
+    const context = { surface: 'claim' as const, workspaceId: fx.workspaceId, owner,
+      invocation: 'controlled-collector-dispatch', workItem: 'WI-12', paths: ['clones.ts', 'coverage.ts'],
+      sourceVersion: 'controlled-source-v1', repository: { workspaceId: fx.workspaceId, rootPath: '/fixture', harness: 'collector-fixture' } };
+    const composed = await composeReuseBrief({ base: { mandatory: 'retained', advice: [] as string[] }, context,
+      deadline: Date.now() + 6000, enabled: async () => true,
+      append: (base, contribution) => ({ ...base, advice: [...base.advice, contribution.text] }),
+      providers: (['clones', 'coverage'] as const).map(id => ({ id, read: async () => ({ status: 'measured' as const,
+        sourceVersion: context.sourceVersion, indexVersion: 'controlled-index', lines: [`${id}.ts:1 candidate`], citedPaths: [`${id}.ts`] }) })) });
+    expect(composed.observations.map(row => row.status)).toEqual(['issued', 'held-out']);
+    await fx.admin`INSERT INTO harness_shared.identity_hook_turns (workspace_id, owner_id, turn_id)
+      VALUES (${fx.workspaceId}, ${owner}, 'collector-turn')`;
+    expect(await recordReuseBriefIssued({ context, observations: composed.observations,
+      recover: { tool: 'work_items:get', args: { id: 'WI-12' } } }, new AbortController().signal)).toBe(true);
+    await fx.admin`UPDATE harness_shared.code_intel_pushes SET pushed_at = ${start}::timestamptz
+      WHERE workspace_id = ${fx.workspaceId} AND owner_id = ${owner}`;
+    const insertActivity = async (tool: string, detail: object, suffix: string, activityOwner = owner) => fx.admin`
+      INSERT INTO harness_shared.agent_activity (workspace_id, owner_id, harness_slug, kind, phase, tool_name, status, detail, created_at)
+      VALUES (${fx.workspaceId}, ${activityOwner}, 'collector-fixture', 'tool', 'post', ${tool}, 'ok',
+        ${JSON.stringify(detail)}::jsonb, ${`2026-10-03T00:0${suffix}:00.000Z`}::timestamptz)`;
+    await insertActivity('Read', { file_path: '/fixture/clones.ts' }, '1');
+    await insertActivity('Grep', { pattern: 'coverage.ts' }, '2');
+    await insertActivity('Read', { file: 'coverage.ts' }, '3', 'foreign-owner');
+    const scope = { workspaceId: fx.workspaceId, harnessSlug: 'collector-fixture', start, end, now: end,
+      repoRoots: new Map([['collector-fixture', '/fixture']]) };
+    const first = await collectRecordedReuseWindows(fx.admin, scope);
+    expect(first.rejected).toEqual([]);
+    expect(first.recorded).toHaveLength(2);
+    expect(first.windows.find(w => w.exposure.provider === 'clones')).toMatchObject({ issued: true, holdout: false,
+      delivered: null, actedOn: true, grepAfterPush: null, complete: false });
+    expect(first.windows.find(w => w.exposure.provider === 'coverage')).toMatchObject({ issued: false, holdout: true,
+      delivered: null, actedOn: null, grepAfterPush: true, complete: false });
+    expect((await collectRecordedReuseWindows(fx.admin, scope)).recorded).toEqual([]);
+    expect(await readRecordedReuseWindows(fx.admin, scope)).toEqual(first.windows);
+    expect((await collectRecordedReuseWindows(fx.admin, { ...scope, harnessSlug: 'foreign' })).windows).toEqual([]);
+    const largeDetail = Array.from({ length: 160 }, (_, i) => createHash('sha256').update(`activity-${i}`).digest('hex')).join('');
+    await insertActivity('Read', { file: 'coverage.ts', retainedDiagnostic: largeDetail }, '4');
+    await collectRecordedReuseWindows(fx.admin, scope);
+    const latest = await readRecordedReuseWindows(fx.admin, scope);
+    expect(latest).toHaveLength(2);
+    expect(latest.find(w => w.exposure.provider === 'coverage')!.actedOn).toBe(true);
+    const raw = await fx.admin`SELECT subject, suggested_call, chars FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${fx.workspaceId} AND owner_id = ${owner} AND leg = 'reuse-measurement' ORDER BY id DESC LIMIT 1`;
+    expect(raw[0]!.chars).toBe(0);
+    expect(raw[0]!.subject.length).toBeLessThan(256);
+    expect(JSON.parse(raw[0]!.suggested_call).sourceRefs).toContainEqual(expect.stringMatching(/^agent-activity:\d+$/));
+    const instrument = getRegisteredInstrument(REUSE_MEASUREMENT_INSTRUMENT_KEYS.providerOutcomes);
+    if (instrument?.evaluator !== 'platform') throw new Error('Missing provider outcome instrument');
+    const live = await instrument.rescore!.resolve({ workspaceId: fx.workspaceId, harnessSlug: 'collector-fixture',
+      windowStart: start, windowEnd: end });
+    expect(live.verdict).toBe('unknown'); // Four providers have no exposure census.
+    const detail = JSON.parse(live.detail!);
+    expect(detail.byProvider.coverage).toMatchObject({ issued: 0, deliveryUnknown: 1,
+      actedOn: { positive: 1, negative: 0, unknown: 0 }, grepAfterPush: { positive: 1 } });
+    expect(detail.notObserved.sort()).toEqual(['cochange', 'provenance', 'semantic', 'sql']);
+    expect(detail.recommendations.every((r: { action: string; mature: boolean }) => r.action === 'keep' && !r.mature)).toBe(true);
+    await fx.admin`UPDATE harness_shared.code_intel_pushes SET suggested_call = suggested_call || ' '
+      WHERE workspace_id = ${fx.workspaceId} AND id = (SELECT max(id) FROM harness_shared.code_intel_pushes
+        WHERE workspace_id = ${fx.workspaceId} AND owner_id = ${owner} AND leg = 'reuse-measurement')`;
+    await expect(readRecordedReuseWindows(fx.admin, scope)).rejects.toThrow('payload digest mismatch');
   });
 });

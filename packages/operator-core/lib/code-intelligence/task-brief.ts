@@ -461,9 +461,8 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
             ...(ref.harness ? { harness: ref.harness } : {}) } } }), TASK_BRIEF_BUDGET_MS);
     })]);
     clearTimeout(timer);
-    const enriched = await enrichTaskBriefWithReuse(base, ref, deps, deadline);
     const harness = ref.workItem?.harness ?? ref.harness;
-    let root = enriched.repository?.rootPath ?? null;
+    let root = base.repository?.rootPath ?? null;
     if (!root && harness && deps.engineering && Date.now() < deadline) {
       let rootTimer: ReturnType<typeof setTimeout> | undefined;
       try { root = await Promise.race([
@@ -471,8 +470,12 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
         new Promise<null>(resolve => { rootTimer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now())); }),
       ]); } finally { clearTimeout(rootTimer); }
     }
-    if (root && harness) enriched.engineering = await taskEngineering(ref, root, enriched.scope.paths, deps, deadline);
-    return { taskBrief: compactTaskBrief(enriched, ref.maxChars ?? TASK_BRIEF_MAX_CHARS) };
+    if (root && harness) base.engineering = await taskEngineering(ref, root, base.scope.paths, deps, deadline);
+    // Optional reuse must fit around the complete mandatory response. Adding
+    // engineering or compacting afterwards could replace base evidence and
+    // remove hints after their issuance was recorded.
+    const mandatory = compactTaskBrief(base, ref.maxChars ?? TASK_BRIEF_MAX_CHARS);
+    return { taskBrief: await enrichTaskBriefWithReuse(mandatory, ref, deps, deadline) };
   } finally { clearTimeout(timer); }
 }
 
@@ -523,6 +526,8 @@ export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: 
     append: (brief, value) => {
       const next = adapters[value.section]!(brief, value);
       if (!preservesBriefBase(base, next)) throw new Error('Reuse adapter replaced mandatory task evidence');
+      if (JSON.stringify(next).length > (ref.maxChars ?? TASK_BRIEF_MAX_CHARS))
+        throw new Error('Reuse adapter exceeded the task brief character budget');
       return next;
     } });
   let ledger: 'not-needed' | 'recorded' | 'unknown' = 'not-needed';
