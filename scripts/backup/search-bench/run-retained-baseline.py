@@ -1,8 +1,9 @@
 """Run a NEW retained-corpus edition inside source-preview verifier + with-test-pg.
 
-The plan is an immutable JSON file with pinned consumption/schema/query/configuration
-receipts and expected table counts. Runtime instrumentation and timing use distinct
-outputs. This driver never resumes, overwrites, or extends an earlier edition.
+The v2 plan pins consumption/schema/query/configuration receipts, a real benchmark
+journal fixture and expected table counts. Journal parsing and an ordinary SDK
+runtime request must qualify before corpus restoration. Runtime instrumentation
+and timing use distinct outputs. This driver never extends an earlier edition.
 """
 import argparse
 import datetime
@@ -39,7 +40,7 @@ def pinned(pin):
 
 
 def validate_plan(plan):
-    if plan.get('schemaVersion') != 1 or not plan.get('workItemId') or not plan.get('expectedCounts'):
+    if plan.get('schemaVersion') != 2 or not plan.get('workItemId') or not plan.get('expectedCounts'):
         raise ValueError('missing edition identity or expected corpus population')
     for key in ['consumption', 'schema', 'queries', 'configuration']:
         if not plan.get(key, {}).get('path') or len(plan.get(key, {}).get('sha256', '')) != 64:
@@ -50,9 +51,65 @@ def validate_plan(plan):
     destination = Path(plan['outputDirectory'])
     if not destination.is_absolute() or destination.exists():
         raise ValueError('edition requires a new absolute output directory')
+    fixture = plan.get('protocolFixture', {})
+    if type(fixture.get('exitCode')) is not int or fixture['exitCode'] not in (0, 1) \
+            or type(fixture.get('executed')) is not int or fixture['executed'] <= 0:
+        raise ValueError('missing actual journal fixture population or terminal status')
+    suffixes = {'artifact': '', 'declaration': '.declaration.json',
+                'attempts': '.attempts.jsonl', 'ledger': '.ledger.json'}
+    artifact = fixture.get('artifact', {}).get('path', '')
+    if not Path(artifact).is_absolute():
+        raise ValueError('journal fixture requires an absolute artifact path')
+    for key, suffix in suffixes.items():
+        pin = fixture.get(key, {})
+        if pin.get('path') != artifact + suffix or len(pin.get('sha256', '')) != 64:
+            raise ValueError('missing or mismatched journal fixture pin: ' + key)
 
 
-def run(plan_path):
+def runtime_preflight(plan, destination, assets_path, command, env):
+    """Fail before restoration using the real protocol reader and ordinary SDK."""
+    fixture = plan['protocolFixture']
+    inputs = []
+    for key in ['artifact', 'declaration', 'attempts', 'ledger']:
+        actual = fingerprint(fixture[key]['path'])
+        if actual['sha256'] != fixture[key]['sha256']:
+            raise ValueError('journal fixture pin differs: ' + key)
+        inputs.append(actual)
+    protocol_path = destination / 'protocol-preflight.json'
+    script = (
+        "import fs from 'node:fs';"
+        "import {readBenchmarkRuntimeEvidence} from './packages/operator-core/lib/memory/bench/runtime-benchmark-evidence.ts';"
+        "const [artifact,exitCode,output]=process.argv.slice(1);"
+        "const result=readBenchmarkRuntimeEvidence(['--out',artifact],Number(exitCode));"
+        "fs.writeFileSync(output,JSON.stringify(result)+'\\n',{flag:'wx',mode:0o600});"
+    )
+    command('protocol-preflight', ['node', '--import', 'tsx', '--input-type=module', '-e', script,
+                                 fixture['artifact']['path'], str(fixture['exitCode']), str(protocol_path)], env)
+    protocol = json.loads(protocol_path.read_bytes())
+    if protocol.get('executed') != fixture['executed'] or protocol.get('exitCode') != fixture['exitCode'] \
+            or protocol.get('searchAdapterExercised') is not True \
+            or protocol.get('baselineAccepted') is not False or protocol.get('latencyAcceptance') is not False:
+        raise ValueError('actual journal protocol preflight did not qualify')
+    for pin in inputs:
+        if fingerprint(pin['path']) != pin:
+            raise ValueError('journal fixture moved during preflight')
+    prefix = destination / 'ordinary-runtime'
+    command('ordinary-runtime', ['node', '--import', 'tsx',
+            'packages/operator-core/lib/memory/bench/runtime-qualification-cli.ts', '--output', str(prefix),
+            '--assets', str(assets_path), '--configuration', plan['configuration']['path']], env)
+    report_path = Path(str(prefix) + '.report.json')
+    ordinary = json.loads(report_path.read_bytes())
+    if ordinary.get('kind') != 'shared-search-runtime-only-qualification' \
+            or ordinary.get('qualifiedComponentsOnly') is not True \
+            or ordinary.get('result') != {'code': 0, 'signal': None} \
+            or ordinary.get('searchAdapterExercised') is not False \
+            or ordinary.get('latencyAcceptance') is not False:
+        raise ValueError('ordinary SDK runtime preflight did not qualify')
+    return {'journalInputs': inputs, 'protocol': fingerprint(protocol_path),
+            'ordinaryRuntime': fingerprint(report_path)}
+
+
+def run(plan_path, preflight_only=False):
     plan = json.loads(Path(plan_path).read_bytes())
     validate_plan(plan)
     repo = Path.cwd().resolve()
@@ -69,7 +126,8 @@ def run(plan_path):
     destination = Path(plan['outputDirectory'])
     destination.mkdir(mode=0o700)
     started = time.monotonic()
-    receipt = {'schemaVersion': 1, 'kind': 'new-retained-search-baseline-edition',
+    receipt = {'schemaVersion': 1, 'kind': 'retained-search-runtime-prerequisites' if preflight_only
+               else 'new-retained-search-baseline-edition',
                'workItemId': plan['workItemId'], 'plan': fingerprint(plan_path), 'phases': [], 'commands': [],
                'baselineAccepted': False, 'completeRuntimeClosureVerified': False}
 
@@ -137,6 +195,10 @@ def run(plan_path):
         assets_path = destination / 'installed-model-assets.json'
         assets_path.write_text(json.dumps({'assets': assets}, indent=2) + '\n')
         receipt['installedModel'] = fingerprint(assets_path)
+        receipt['runtimePreflight'] = runtime_preflight(plan, destination, assets_path, command, dict(os.environ))
+        phase('qualified-runtime-prerequisites')
+        if preflight_only:
+            return 0
         data_directory = Path(sql("SELECT current_setting('data_directory')")).resolve()
         if not data_directory.name.startswith('papercusp-test-pg-'):
             raise ValueError('PostgreSQL is not maintained disposable cluster')
@@ -204,4 +266,6 @@ def run(plan_path):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan', required=True)
-    sys.exit(run(parser.parse_args().plan))
+    parser.add_argument('--preflight-only', action='store_true', help='qualify runtime prerequisites without restoring corpus data')
+    options = parser.parse_args()
+    sys.exit(run(options.plan, options.preflight_only))

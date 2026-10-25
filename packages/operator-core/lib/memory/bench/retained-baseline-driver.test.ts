@@ -11,7 +11,8 @@ describe('retained search baseline edition custody',()=>{
       'with tempfile.TemporaryDirectory() as root:',
       ' p=pathlib.Path(root); f=p/"input.json";f.write_text("{}")',
       ' pin={"path":str(f),"sha256":hashlib.sha256(f.read_bytes()).hexdigest()}',
-      ' plan={"schemaVersion":1,"workItemId":"WI-fixture","expectedCounts":{"session_turns":0},"outputDirectory":str(p/"new"),**{k:pin for k in ["consumption","schema","queries","configuration"]}}',
+      ' fixture={"exitCode":1,"executed":3,**{k:{"path":str(f)+suffix,"sha256":pin["sha256"]} for k,suffix in {"artifact":"","declaration":".declaration.json","attempts":".attempts.jsonl","ledger":".ledger.json"}.items()}}',
+      ' plan={"schemaVersion":2,"workItemId":"WI-fixture","expectedCounts":{"session_turns":0},"outputDirectory":str(p/"new"),"protocolFixture":fixture,**{k:pin for k in ["consumption","schema","queries","configuration"]}}',
       ' m.validate_plan(plan);assert m.pinned(pin)=={}',
       ' rejected=[]',
       ' for key in ["consumption","schema","queries","configuration"]:',
@@ -21,11 +22,90 @@ describe('retained search baseline edition custody',()=>{
       ' for label,changes in [("existing",{"outputDirectory":root}),("relative",{"outputDirectory":"relative"}),("negative",{"expectedCounts":{"t":-1}}),("unsafe",{"expectedCounts":{"t;drop":0}})]:',
       '  try:m.validate_plan({**plan,**changes})',
       '  except ValueError:rejected.append(label)',
+      ' for key in ["artifact","declaration","attempts","ledger","exitCode","executed"]:',
+      '  altered={**plan,"protocolFixture":{k:v for k,v in fixture.items() if k!=key}}',
+      '  try:m.validate_plan(altered)',
+      '  except ValueError:rejected.append(key)',
+      ' for label,changes in [("old-edition",{"schemaVersion":1}),("wrong-journal-path",{"protocolFixture":{**fixture,"attempts":pin}}),("empty-journal",{"protocolFixture":{**fixture,"executed":0}})]:',
+      '  try:m.validate_plan({**plan,**changes})',
+      '  except ValueError:rejected.append(label)',
       ' f.write_text("[]")',
       ' try:m.pinned(pin)',
       ' except ValueError:rejected.append("pin-drift")',
       ' print(json.dumps(rejected))',
     ].join('\n'),driver],{encoding:'utf8'});
-    expect(JSON.parse(result)).toEqual(['consumption','schema','queries','configuration','existing','relative','negative','unsafe','pin-drift']);
+    expect(JSON.parse(result)).toEqual(['consumption','schema','queries','configuration','existing','relative','negative','unsafe',
+      'artifact','declaration','attempts','ledger','exitCode','executed','old-edition','wrong-journal-path','empty-journal','pin-drift']);
+  });
+
+  it('requires pinned journal reconciliation and ordinary runtime qualification before restoration',()=>{
+    const driver=fileURLToPath(new URL('../../../../../scripts/backup/search-bench/run-retained-baseline.py',import.meta.url));
+    const result=execFileSync('python3',['-B','-c',[
+      'import importlib.util,json,tempfile,pathlib,hashlib,sys',
+      'spec=importlib.util.spec_from_file_location("baseline",sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)',
+      'with tempfile.TemporaryDirectory() as root:',
+      ' p=pathlib.Path(root);artifact=p/"benchmark.json";fixture={"exitCode":1,"executed":3}',
+      ' for key,suffix in {"artifact":"","declaration":".declaration.json","attempts":".attempts.jsonl","ledger":".ledger.json"}.items():',
+      '  f=pathlib.Path(str(artifact)+suffix);f.write_text("{}\\n");fixture[key]=m.fingerprint(f)',
+      ' plan={"protocolFixture":fixture,"configuration":{"path":str(p/"configuration.json")}}',
+      ' cases=[]',
+      ' for mode in ["pass","ordinary-failed","wrong-runtime-kind","journal-population","fixture-drift"]:',
+      '  destination=p/mode;destination.mkdir();calls=[]',
+      '  def command(label,args,env):',
+      '   calls.append(label)',
+      '   if label=="protocol-preflight":',
+      '    assert args[:7]==["node","--import","tsx","--input-type=module","-e",args[5],str(artifact)]',
+      '    value={"executed":2 if mode=="journal-population" else 3,"exitCode":1,"searchAdapterExercised":True,"baselineAccepted":False,"latencyAcceptance":False}',
+      '    pathlib.Path(args[-1]).write_text(json.dumps(value))',
+      '   else:',
+      '    assert "--benchmark" not in args and args[args.index("--assets")+1]==str(p/"assets.json")',
+      '    value={"kind":"wrong" if mode=="wrong-runtime-kind" else "shared-search-runtime-only-qualification","qualifiedComponentsOnly":mode!="ordinary-failed","result":{"code":0,"signal":None},"searchAdapterExercised":False,"latencyAcceptance":False}',
+      '    pathlib.Path(args[args.index("--output")+1]+".report.json").write_text(json.dumps(value))',
+      '  if mode=="fixture-drift":artifact.write_text("changed")',
+      '  try:',
+      '   receipt=m.runtime_preflight(plan,destination,p/"assets.json",command,{})',
+      '   assert len(receipt["journalInputs"])==4;cases.append([mode,"pass",calls])',
+      '  except ValueError:cases.append([mode,"rejected",calls])',
+      ' print(json.dumps(cases))',
+    ].join('\n'),driver],{encoding:'utf8'});
+    expect(JSON.parse(result)).toEqual([
+      ['pass','pass',['protocol-preflight','ordinary-runtime']],
+      ['ordinary-failed','rejected',['protocol-preflight','ordinary-runtime']],
+      ['wrong-runtime-kind','rejected',['protocol-preflight','ordinary-runtime']],
+      ['journal-population','rejected',['protocol-preflight']],
+      ['fixture-drift','rejected',[]],
+    ]);
+  });
+
+  it('saves prerequisite-only success or failure without accessing PostgreSQL',()=>{
+    const driver=fileURLToPath(new URL('../../../../../scripts/backup/search-bench/run-retained-baseline.py',import.meta.url));
+    const result=execFileSync('python3',['-B','-c',[
+      'import importlib.util,json,tempfile,pathlib,hashlib,sys,os,contextlib,io',
+      'spec=importlib.util.spec_from_file_location("baseline",sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)',
+      'with tempfile.TemporaryDirectory() as root:',
+      ' p=pathlib.Path(root);os.chdir(p);(p/".verifier-source.json").write_text("{}")',
+      ' (p/"node_modules/@huggingface/transformers").mkdir(parents=True)',
+      ' def pin(name,value):',
+      '  f=p/name;f.write_text(json.dumps(value));return m.fingerprint(f)',
+      ' plan={"schemaVersion":2,"workItemId":"WI-fixture","expectedCounts":{"session_turns":0},"configuration":pin("config.json",{}),"consumption":pin("consumption.json",{"files":[]}),"schema":pin("schema.json",{"archives":[{"tables":["session_turns"]}]}),"queries":pin("queries.json",{"configuration":{"queryEmbeddingProfile":{"mode":"gemma","profileId":"gemma-embeddinggemma-300m-768@v1"}}})}',
+      ' f=pin("benchmark.json",{});plan["protocolFixture"]={"exitCode":1,"executed":3,**{k:{"path":f["path"]+suffix,"sha256":f["sha256"]} for k,suffix in {"artifact":"","declaration":".declaration.json","attempts":".attempts.jsonl","ledger":".ledger.json"}.items()}}',
+      ' os.environ.update(PAPERCUSP_TEST_PG_ADMIN_URL="postgres://localhost:23456/postgres",PAPERCUSP_MEMORY_EMBEDDER="gemma",PAPERCUSP_EMBED_DEVICE="cpu",PAPERCUSP_TRANSFORMERS_LOCAL_ONLY="1",PAPERCUSP_SKIP_PG_DISCOVERY="1")',
+      ' def forbidden(*args,**kwargs):raise AssertionError("PostgreSQL or restore accessed")',
+      ' m.subprocess.run=forbidden',
+      ' cases=[]',
+      ' for failed in [False,True]:',
+      '  destination=p/("failed" if failed else "success");plan["outputDirectory"]=str(destination);file=p/"plan.json";file.write_text(json.dumps(plan))',
+      '  def preflight(*args):',
+      '   if failed:raise ValueError("ordinary runtime rejected")',
+      '   return {"verified":True}',
+      '  m.runtime_preflight=preflight',
+      '  with contextlib.redirect_stdout(io.StringIO()):code=m.run(str(file),preflight_only=True)',
+      '  receipt=json.loads((destination/"receipt.json").read_text());cases.append([code,receipt["kind"],"failure" in receipt,receipt["baselineAccepted"]])',
+      ' print(json.dumps(cases))',
+    ].join('\n'),driver],{encoding:'utf8'});
+    expect(JSON.parse(result)).toEqual([
+      [0,'retained-search-runtime-prerequisites',false,false],
+      [1,'retained-search-runtime-prerequisites',true,false],
+    ]);
   });
 });
