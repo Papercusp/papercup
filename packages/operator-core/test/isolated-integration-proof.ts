@@ -592,6 +592,17 @@ export function assertIsolatedFileRunBudget(requiredMs: number, env: NodeJS.Proc
     'Refusing before proof source observation or private worker allocation.');
 }
 
+/** Keep the original receipt complete for calibrated fromTestRun evidence. */
+export function isolatedIntegrationProofSourcePaths(filePath: string, sourcePaths: readonly string[]) {
+  return [...new Set([filePath,
+    'scripts/lib/isolated-runtime-start.mjs',
+    'scripts/with-test-pg.mjs',
+    'packages/operator-core/test/isolated-integration-proof.ts',
+    'packages/operator-core/test/private-http-workspace-preflight.ts',
+    ...sourcePaths,
+  ])].sort();
+}
+
 export async function recordIsolatedIntegrationProof(options: {
   root: string; filePath: string; sourcePaths: string[];
   /** Explicit encompassing allowance for multi-process proofs; validated before allocation. */
@@ -605,7 +616,7 @@ export async function recordIsolatedIntegrationProof(options: {
   if (options.minimumFileRunTimeoutMs !== undefined)
     assertIsolatedFileRunBudget(options.minimumFileRunTimeoutMs);
   const { root, filePath } = options;
-  const paths = [...new Set([filePath, 'scripts/lib/isolated-runtime-start.mjs', ...options.sourcePaths])].sort();
+  const paths = isolatedIntegrationProofSourcePaths(filePath, options.sourcePaths);
   let source: any;
   let lifecycle: any;
   let ended: any;

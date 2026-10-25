@@ -14,7 +14,8 @@ describe('managed capability acceptance over the production HTTP route', () => {
       root, filePath: 'packages/operator-core/lib/agent-tools/capability/managed-capability-api.e2e.test.ts',
       sourcePaths: ['packages/operator-core/lib/agent-tools/capability/read-handler.ts',
         'packages/operator-core/lib/agent-tools/capability/patch.ts',
-        'packages/operator-core/lib/agent-tools/capability/__fixtures__/managed-api-client.mts'],
+        'packages/operator-core/lib/agent-tools/capability/__fixtures__/managed-api-client.mts',
+        'packages/operator-core/lib/agent-tools/capability/__fixtures__/managed-api-result.ts'],
       retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/managed-api-proof.json'],
       prepare: async evidenceDir => {
         prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, {
