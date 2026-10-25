@@ -126,7 +126,7 @@ describe('R16 frozen measurement units and efficacy', () => {
       git('init', '-q');
       await writeFile(join(root, 'base.ts'), 'export const base = 1;\n');
       git('add', 'base.ts'); commit('2026-09-29T00:00:00Z');
-      const source = `/*${'x'.repeat(1024 * 1024)}*/\nexport function target() {} target();\n`;
+      const source = `/*${'é'.repeat(512 * 1024)}*/\nexport function target() {} target();\n`;
       const paths = Array.from({ length: 129 }, (_, n) => `source-${n}.ts`);
       for (const path of paths) await writeFile(join(root, path), source);
       git('add', '.'); commit('2026-10-01T00:00:00Z');
@@ -153,11 +153,17 @@ describe('R16 frozen measurement units and efficacy', () => {
           GIT_COMMITTER_EMAIL: 'fixture@example.invalid', GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
       git('add', 'a.ts'); datedCommit('pinned baseline', '2026-09-29T00:00:00Z');
       await writeFile(join(root, 'b.ts'), 'import { target } from "./a"; target();\n'); git('add', 'b.ts');
+      const literalPaths = ['odd [x].ts', 'quote".ts', 'line\nbreak.ts', ':colon.ts'];
+      for (const path of literalPaths) await writeFile(join(root, path), 'export const café = 1;\n');
+      git('add', '.');
       datedCommit('window change', '2026-10-01T00:00:00Z');
       const phases: string[] = [];
       const pinned = await collectReuseSourcePopulation(root, '2026-09-30T00:00:00Z', '2026-10-02T00:00:00Z', tmpdir(), phase => phases.push(phase));
       expect(phases).toEqual(['source-tree', 'source-capture', 'source-diff', 'source-clones', 'source-calls']);
-      expect(pinned).toMatchObject({ addedNonGeneratedLines: 1, callCensusComplete: true });
+      // The shared history policy excludes newline paths; batching must retain
+      // every eligible literal identity without interpreting pathspec syntax.
+      expect(pinned).toMatchObject({ addedNonGeneratedLines: 4, callCensusComplete: true });
+      expect(pinned.method.sourcePopulation).toEqual(['a.ts', 'b.ts', ...literalPaths.filter(path => !path.includes('\n'))].sort());
       expect(pinned.calls).toEqual([expect.objectContaining({ from: 'b.ts', to: 'a.ts', resolved: true })]);
       let ticks = 0;
       const timer = setInterval(() => { ticks++; }, 10);

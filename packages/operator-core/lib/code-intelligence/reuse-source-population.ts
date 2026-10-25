@@ -85,19 +85,20 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
   onProgress?: (phase: ReuseSourcePhase) => void) {
   if (time(start) >= time(end)) throw new Error('Valid half-open source window required');
   onProgress?.('source-tree');
-  const git = (args: string[], input?: string) => new Promise<string>((resolve, reject) => {
-    const child = execFile('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 30_000,
+  const gitBytes = (args: string[], input?: string) => new Promise<Buffer>((resolve, reject) => {
+    const child = execFile('git', ['--literal-pathspecs', '-C', root, ...args], { encoding: 'buffer', timeout: 30_000,
       maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } },
     (error, stdout) => error ? reject(error) : resolve(stdout));
     child.stdin?.end(input);
   });
+  const git = async (args: string[], input?: string) => (await gitBytes(args, input)).toString('utf8');
   const commitAt = async (at: string) => (await git(['rev-list', '--first-parent', '-1', `--before=${new Date(time(at) - 1).toISOString()}`, 'HEAD'])).trim();
   const [base, commit] = await Promise.all([commitAt(start), commitAt(end)]);
   if (!base || !commit || await git(['rev-parse', '--is-shallow-repository']).then(x => x.trim()) !== 'false')
     throw new Error('Complete source-window ancestry unavailable');
-  const tree = (await git(['ls-tree', '-rz', '--full-tree', commit])).split('\0').filter(Boolean).map(line => {
-    const tab = line.indexOf('\t'), [mode, kind, blob] = line.slice(0, tab).split(' ');
-    return { mode, kind, blob, path: line.slice(tab + 1) };
+  const tree = (await git(['ls-tree', '-rlz', '--full-tree', commit])).split('\0').filter(Boolean).map(line => {
+    const tab = line.indexOf('\t'), [mode, kind, blob, size] = line.slice(0, tab).trim().split(/\s+/);
+    return { mode, kind, blob, size: Number(size), path: line.slice(tab + 1) };
   });
     const selected = tree.filter(s => s.kind === 'blob' && /^(100644|100755)$/.test(s.mode!)
       && eligibleHistoryPath(s.path) && /\.[cm]?[jt]sx?$/.test(s.path));
@@ -110,9 +111,19 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
   const sourceFiles = new Map<string, string>();
   try {
     onProgress?.('source-capture');
-    for (let i = 0; i < selected.length; i += 16) {
-      const batch = selected.slice(i, i + 16);
-      const out = Buffer.from(await git(['cat-file', '--batch'], batch.map(s => s.blob).join('\n') + '\n'));
+    // Bound each chunk by bytes as well as identities. Sixteen small files per
+    // process spent most of the finite worker budget repeatedly starting Git.
+    for (let i = 0; i < selected.length;) {
+      const batch: typeof selected = [];
+      let bytes = 0;
+      while (i < selected.length && batch.length < 256) {
+        const entry = selected[i]!;
+        if (!Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > 2_000_000)
+          throw new Error('Incomplete bounded Git blob population');
+        if (batch.length && bytes + entry.size > 32 * 1024 * 1024) break;
+        batch.push(entry); bytes += entry.size; i++;
+      }
+      const out = await gitBytes(['cat-file', '--batch'], batch.map(s => s.blob).join('\n') + '\n');
       let offset = 0;
       for (const entry of batch) {
         const endHeader = out.indexOf(10, offset), [blob, kind, rawSize] = out.subarray(offset, endHeader).toString().split(' '), size = Number(rawSize);
@@ -128,21 +139,52 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
     const paths = (await git(['diff', '--name-only', '-z', '--no-renames', base, commit])).split('\0').filter(eligibleHistoryPath);
     const addedLines: Record<string, number[]> = {};
     const binaryChangedPaths: string[] = [];
-    for (const path of paths) {
-      const patch = await git(['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--unified=0', base, commit, '--', path]);
-      // A binary diff cannot supply a line denominator. Retain that limitation
-      // without discarding the independent syntax and assignment populations.
-      if (patch.includes('Binary files ')) { binaryChangedPaths.push(path); continue; }
-      const lines: number[] = [];
-      for (const match of patch.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
-        const first = Number(match[1]), count = match[2] === undefined ? 1 : Number(match[2]);
-        for (let n = first; n < first + count; n++) lines.push(n);
+    // NUL-delimited raw identities and their patches are emitted in the same
+    // order. Never decode a path from a quoted patch heading. Bound each batch
+    // and split only on output overflow, preserving the existing per-path cap.
+    const readDiffs = async (batch: string[]): Promise<void> => {
+      let output: string;
+      try {
+        output = await git(['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--unified=0',
+          '--raw', '-z', '--patch', base, commit, '--', ...batch]);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || batch.length < 2) throw error;
+        const middle = Math.floor(batch.length / 2);
+        await readDiffs(batch.slice(0, middle)); await readDiffs(batch.slice(middle)); return;
       }
-      if (lines.length) addedLines[path] = lines;
-    }
+      const boundary = output.indexOf('\0\0');
+      if (boundary < 0) throw new Error('Incomplete Git diff identity population');
+      const raw = output.slice(0, boundary).split('\0');
+      const patches = output.slice(boundary + 2).split(/^diff --git /m).slice(1);
+      const identities = raw.filter((_, index) => index % 2 === 1);
+      if (raw.length !== batch.length * 2 || patches.length !== batch.length
+        || new Set(identities).size !== batch.length || identities.some(path => !batch.includes(path)))
+        throw new Error('Incomplete Git diff identity population');
+      for (let i = 0; i < identities.length; i++) {
+        const path = identities[i]!, patch = patches[i]!;
+        // Binary changes cannot supply a line denominator; other populations
+        // remain independent and retain their complete immutable identities.
+        if (patch.includes('Binary files ')) { binaryChangedPaths.push(path); continue; }
+        const lines: number[] = [];
+        for (const match of patch.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
+          const first = Number(match[1]), count = match[2] === undefined ? 1 : Number(match[2]);
+          for (let n = first; n < first + count; n++) lines.push(n);
+        }
+        if (lines.length) addedLines[path] = lines;
+      }
+    };
+    const chunks = Array.from({ length: Math.ceil(paths.length / 128) }, (_, i) => paths.slice(i * 128, (i + 1) * 128));
+    let nextChunk = 0;
+    const diffs = await Promise.allSettled(Array.from({ length: Math.min(4, chunks.length) }, async () => {
+      while (nextChunk < chunks.length) await readDiffs(chunks[nextChunk++]!);
+    }));
+    const failed = diffs.find(result => result.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
+    // Concurrent completion order must not change the population identity.
+    const orderedAddedLines = Object.fromEntries(paths.filter(path => addedLines[path]).map(path => [path, addedLines[path]!]));
     const population = buildReuseSourcePopulation({ sourcePaths: [...sourceFiles.keys()],
       readSource: path => readFileSync(sourceFiles.get(path)!, 'utf8'),
-      addedLines, complete: !tree.some(s => s.kind === 'commit'), onProgress });
+      addedLines: orderedAddedLines, complete: !tree.some(s => s.kind === 'commit'), onProgress });
     return { ...population,
       addedNonGeneratedLines: binaryChangedPaths.length ? null : population.addedNonGeneratedLines,
       duplicateAddedLines: binaryChangedPaths.length ? null : population.duplicateAddedLines,
