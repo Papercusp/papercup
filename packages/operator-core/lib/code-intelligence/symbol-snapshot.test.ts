@@ -7,6 +7,36 @@ function build(sources: Record<string, string>) {
     resolveModule: (file: string, spec: string) => relativeSymbolModule(file, spec, new Set(files)) });
 }
 describe('precomputed symbol snapshot', () => {
+  it('keeps compact measurement calls and completeness identical to the full brief snapshot', () => {
+    const sources: Record<string, string> = {
+      'target.ts': 'export function target() {}\nfunction privateTarget() {} privateTarget();',
+      'barrel.ts': 'export { target as renamed } from "./target";',
+      'use.ts': 'import { renamed as alias } from "./barrel"; alias(); unknown(); new (factory())();',
+      'namespace.ts': 'import * as ns from "./target"; ns.target();',
+      'shadow.ts': 'import { target } from "./target"; function run(target: any) { target(); } target();',
+      'invalid.ts': 'export function broken(',
+    };
+    const files = Object.keys(sources), fileSet = new Set(files);
+    const input = { files, readSource: (path: string) => sources[path] ?? null,
+      resolveModule: (path: string, spec: string) => relativeSymbolModule(path, spec, fileSet), includeCallCensus: true };
+    const full = buildSymbolSnapshot(input), compact = buildSymbolSnapshot({ ...input, censusOnly: true });
+    expect(full.symbols.length).toBeGreaterThan(0);
+    expect(compact.symbols).toEqual([]);
+    expect(compact.callCensus).toEqual(full.callCensus);
+    expect(compact.stats).toEqual(full.stats);
+    expect(compact.stats.skippedFiles).toBe(1);
+    expect(compact.knowledge).toEqual(full.knowledge);
+    expect(compact.limitations).toEqual(full.limitations);
+  });
+  it('preserves the existing caller cap as incomplete in compact measurement mode', () => {
+    const text = 'export function target() {}\n' + 'target();\n'.repeat(501);
+    const input = { files: ['target.ts'], readSource: () => text, resolveModule: () => null, includeCallCensus: true };
+    const full = buildSymbolSnapshot(input), compact = buildSymbolSnapshot({ ...input, censusOnly: true });
+    expect(compact.callCensus).toEqual(full.callCensus);
+    expect(compact.callCensus).toHaveLength(501);
+    expect(compact.stats).toEqual(full.stats);
+    expect(compact.stats).toMatchObject({ truncated: true, resolvedCalls: 500 });
+  });
   it('resolves aliases, barrel re-exports and namespace calls without matching comments or strings', () => {
     const result = build({
       'target.ts': 'export function target() {}',

@@ -125,6 +125,11 @@ describe('effective SU launch preparation', () => {
         accountRoute: 'auto', inheritedEnv: {},
       });
       expect(launch.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+      const legacyWithoutDuplicateHome = { ...legacy };
+      delete legacyWithoutDuplicateHome.codexHome;
+      expect(prepareSuLaunch(legacyWithoutDuplicateHome, {
+        accountRoute: 'auto', inheritedEnv: {},
+      }).env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
 
       const port80 = readFileSync(join(home, 'config.toml'), 'utf8')
         .replace('http://127.0.0.1:8788/v1', 'http://127.0.0.1:80/v1');

@@ -697,6 +697,8 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
     },
 
     selectReattempt(context) {
+      // A local account pause cannot be repaired by changing egress IP.
+      if (context.lastError?.code === 'account-unavailable') return null;
       if (pendingAuthFailure?.attempt === context.attempt) return null;
       const currentRoute = context.currentRoute;
       if (!currentRoute) return null;
@@ -750,6 +752,18 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
     },
 
     selectFailover(context) {
+      if (context.lastError?.code === 'account-unavailable') {
+        try {
+          const next = opts.pool?.active();
+          if (!next || triedAccounts.has(next.accountId)) return null;
+          const account = opts.accounts().find(candidate => candidate.accountId === next.accountId);
+          if (!account) return null;
+          triedAccounts.add(account.accountId);
+          auth = undefined;
+          authAccount = '';
+          return routeFor(account, 'rotate', context.currentRoute?.value.modelMode ?? 'public');
+        } catch { return null; }
+      }
       if (pendingAuthFailure?.attempt === context.attempt) {
         const authFailure = pendingAuthFailure;
         pendingAuthFailure = null;

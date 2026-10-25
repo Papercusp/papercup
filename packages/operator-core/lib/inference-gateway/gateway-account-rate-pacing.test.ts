@@ -208,6 +208,8 @@ describe('production gateway account-governor wiring', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(governor.state.rpmFactor ?? 1).toBe(1);
     expect(gateway.stats().codex.errors).toBe(0);
+    expect(gateway.stats().requestStages!.outcomes.shed).toBe(1);
+    expect(gateway.stats().requestStages!.outcomes['upstream-429']).toBe(0);
   });
 
   it('routes a soft pin around a live governor pause even when the pool and durable hints call it healthy', async () => {
@@ -252,6 +254,87 @@ describe('production gateway account-governor wiring', () => {
     expect(acquireA).toHaveBeenCalled();
     expect(routed.length).toBeGreaterThan(1);
     expect(acquireA.mock.calls.length + acquireB.mock.calls.length).toBe(routed.length);
+  });
+
+  it.each(['bearer', 'oauth', 'cli'] as const)(
+    'reselects before %s dispatch when the selected account pauses during permit acquisition', async transport => {
+    const affected = governorForBackend('codex', model, undefined, 'account-a');
+    const originalAcquire = affected.acquire.bind(affected);
+    vi.spyOn(affected, 'acquire').mockImplementationOnce(async (...args) => {
+      affected.penalize({ resetAt: Date.now() + 60_000 });
+      return originalAcquire(...args);
+    });
+    const pool = accounts();
+    const routed: string[] = [];
+    const cliAccounts = await Promise.all(['account-a', 'account-b'].map(async accountId => {
+      const home = await fs.mkdtemp(join(tmpdir(), 'account-reselection-'));
+      homes.push(home);
+      const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+      const token = `${encode({ alg: 'none' })}.${encode({ exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`;
+      await fs.writeFile(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+        access_token: token, refresh_token: 'fixture-refresh', account_id: accountId,
+      } }));
+      return { accountId, home };
+    }));
+    gateway = createInferenceGateway({ accountId: 'account-a', token: async () => 'claude-token',
+      ...(transport === 'bearer' ? { codexPool: pool } : {
+        codexCliPool: pool, codexCliAccounts: () => cliAccounts, codexOAuthProxy: transport === 'oauth',
+        codexCliRun: async ({ home }) => {
+          routed.push(cliAccounts.find(account => account.home === home)!.accountId);
+          return { text: 'reselected', inputTokens: 1, outputTokens: 1 };
+        },
+      }),
+      maxQueueWaitMs: 100, selfHeal: { enabled: false },
+      fetchImpl: (async (_url, init) => {
+        const headers = new Headers(init?.headers);
+        routed.push(transport === 'bearer' ? headers.get('authorization')! : headers.get('chatgpt-account-id')!);
+        return transport === 'bearer' ? response() : new Response('data: ' + JSON.stringify({
+          type: 'response.completed', response: { id: 'resp_reselected', model, status: 'completed', output: [] },
+        }) + '\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      }) as typeof fetch,
+    });
+    const result = await send();
+    expect(result.status, result.body).toBe(200);
+    expect(routed).toEqual([transport === 'bearer' ? 'Bearer token-account-b' : 'account-b']);
+    expect(pool.parkState?.('account-a')).toBeUndefined();
+    expect(affected.state.reqInWindow).toBe(0);
+    expect(affected.state.inFlight).toBe(0);
+    expect(affected.state.rpmFactor ?? 1).toBe(1);
+    expect(gateway.stats().codex.upstream429).toBe(0);
+    expect(gateway.stats().codex.errors).toBe(0);
+  });
+
+  it('cancels an active pacing sleep on a new account pause and retains hard pins', async () => {
+    const affected = governorForBackend('codex', model, undefined, 'account-a');
+    affected.state.lastAcquireAt = Date.now();
+    const originalAcquire = affected.acquire.bind(affected);
+    let entered!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    const acquire = vi.spyOn(affected, 'acquire').mockImplementationOnce(async (...args) => {
+      const pending = originalAcquire(...args);
+      entered();
+      return pending;
+    });
+    const routed: string[] = [];
+    gateway = createInferenceGateway({ accountId: 'account-a', token: async () => 'claude-token',
+      codexPool: accounts(), smoothRpm: true, maxQueueWaitMs: 5_000, selfHeal: { enabled: false },
+      fetchImpl: (async (_url, init) => {
+        routed.push(new Headers(init?.headers).get('authorization') ?? '');
+        return response();
+      }) as typeof fetch,
+    });
+    const pending = send();
+    await waiting;
+    affected.penalize({ resetAt: Date.now() + 60_000 });
+    expect((await pending).status).toBe(200);
+    expect(acquire.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+    expect(routed).toEqual(['Bearer token-account-b']);
+    expect(affected.state.inFlight).toBe(0);
+
+    const hardPinned = await send('/v1/responses', model, { [ACCOUNT_PIN_HEADER]: 'hard' });
+    expect(hardPinned.status).toBe(429);
+    expect(routed).toEqual(['Bearer token-account-b']);
+    expect(gateway.stats().requestStages!.outcomes.shed).toBe(1);
   });
 
   it.each(['oauth', 'cli'] as const)('uses the same shared governor on the production %s transport', async transport => {

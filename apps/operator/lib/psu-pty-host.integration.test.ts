@@ -4619,14 +4619,19 @@ describe('carry-respawn STALENESS guard — only drills expire; production carri
       const eventLog = eventLogPathForOwner(ownerId);
       const { captured, io } = fakeIo();
 
-      // BOOT, then spin (busy) for ~2000ms before going quiet + echoing stdin —
-      // a generous window (well past this environment's fork/pty-startup
-      // latency) so the message, sent once BOOT is confirmed AND still while
-      // spinning, ages well past the tiny CARRY_STALE_MS below during the
-      // busy-gate's wait for it to settle.
+      const nativeHome = mkdtempSync(join(tmpdir(), 'carry-age-native-'));
+      const nativeId = 'bfbf7540-c7bd-4b6c-9d66-6557f1a13722';
+      const successorNativeId = '36c766c0-507c-41a7-ae91-f327e0dc9693';
+      let sourcePid: number | null = null;
+      const nativeTranscript = join(nativeHome, 'sessions', `rollout-${nativeId}.jsonl`);
+      mkdirSync(dirname(nativeTranscript), { recursive: true });
+      // Hold a positive native busy boundary until the accepted message has
+      // actually aged past 50ms. Timed PTY output alone did not establish that
+      // precondition: run22046694 recycled only 3ms after receipt.
       const childCode =
+        "const fs=require('node:fs');if(!fs.existsSync(process.env.NATIVE_FILE)){" +
+        "fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:'carry-age'}})+'\\n');}" +
         "process.stdout.write('BOOT:'+process.pid+'\\n');" +
-        'let n=0;const iv=setInterval(()=>{process.stdout.write(".");if(++n>100)clearInterval(iv);},20);' +
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
@@ -4644,12 +4649,13 @@ describe('carry-respawn STALENESS guard — only drills expire; production carri
           // session. Ambient identity/configuration must not rewrite the
           // handoff contract this test is asserting.
           PAPERCUSP_ADV_SESSION_ID: '42',
-          CODEX_HOME: '/tmp/codex-home-for-handoff',
+          CODEX_HOME: nativeHome,
+          NATIVE_FILE: nativeTranscript,
           PAPERCUSP_AGENT: 'codex',
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000', // generous — the busy gate must NOT defer/drop here
-          PAPERCUSP_PSU_PTY_CARRY_STALE_MS: '50', // tiny — the ~600ms spin easily ages past it
+          PAPERCUSP_PSU_PTY_CARRY_STALE_MS: '50',
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
@@ -4662,31 +4668,42 @@ describe('carry-respawn STALENESS guard — only drills expire; production carri
         ownerId,
         io,
         bridgeTty: false,
+        resolveRespawnNativeId: (pid: number) => {
+          sourcePid ??= pid;
+          return pid === sourcePid ? nativeId : successorNativeId;
+        },
+        onRespawn: async () => true,
         nativePersistenceTimeoutMs: 200,
         onExit: (c: number) => { exitCode = c; },
       });
 
       try {
-        // Poll for BOOT rather than a fixed sleep — fork/pty-startup latency
-        // varies by environment; the child's ~2000ms spin gives ample margin
-        // to detect BOOT and still inject while it's genuinely busy.
+        // BOOT follows the persisted native task_started row.
         const bootDeadline = Date.now() + 3_000;
         while (Date.now() < bootDeadline && !captured().includes('BOOT:')) {
           await sleep(20);
         }
         expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
 
-        // Sent while the child is still busy spinning: receivedAtMs is stamped
-        // NOW, then the (unconditional) busy gate waits out the remaining spin
-        // + quiet(100ms) before this would otherwise deliver — comfortably
-        // aging past the 50ms stale cap during that wait.
         await envelopeInject(sock, {
           mode: 'carry-respawn',
           ownerId,
           data: 'CARRIED',
           systemPromptAddendum: 'stale carry test',
+          sourceTranscriptPath: nativeTranscript,
           ...(isDrill ? { drillId: 'age-expiry-control' } : {}),
         });
+        await vi.waitFor(() => {
+          const events = readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+          const receipt = events.find((event) => event.kind === 'control-carry-origin-stamped');
+          expect(receipt).toBeDefined();
+          expect(Date.now() - Date.parse(receipt.ts)).toBeGreaterThan(50);
+          expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+        });
+        writeFileSync(nativeTranscript, readFileSync(nativeTranscript, 'utf8') + JSON.stringify({
+          type: 'event_msg', timestamp: new Date().toISOString(),
+          payload: { type: 'task_complete', turn_id: 'carry-age' },
+        }) + '\n');
 
         const deadline = Date.now() + 8_000;
         while (Date.now() < deadline) {
@@ -4727,6 +4744,7 @@ describe('carry-respawn STALENESS guard — only drills expire; production carri
         if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
         await done;
         if (existsSync(eventLog)) unlinkSync(eventLog);
+        rmSync(nativeHome, { recursive: true, force: true });
       }
     },
     25_000,

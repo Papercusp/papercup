@@ -122,6 +122,17 @@ async function engineFixture(mode = 'normal') {
 }
 
 describe('Codex steering through real stdio', () => {
+  it.each(['account/chatgptAuthTokens/refresh', 'attestation/generate', 'item/tool/call'])(
+    'explicitly refuses unadvertised host request %s without a renderer or private payload event', async method => {
+      const f = await engineFixture();
+      await f.request('fixture/server-request', { frame: { id: 'host-control', method,
+        params: { privateInput: 'PRIVATE_HOST_CONTROL' } } });
+      await vi.waitFor(async () => expect((await f.history()).find(frame => frame.id === 'host-control'))
+        .toMatchObject({ error: { code: -32601 } }));
+      expect(f.host.recentSince(0).some(({ event }) => event.type === 'card')).toBe(false);
+      expect(JSON.stringify(f.host.recentSince(0))).not.toContain('PRIVATE_HOST_CONTROL');
+    });
+
   it('round-trips typed MCP forms through real native pipes with workspace and cancellation fences', async () => {
     const f = await engineFixture();
     await f.host.startCommand(f.command('owner_turn', 'first')).terminal;

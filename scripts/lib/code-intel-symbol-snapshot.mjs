@@ -25,9 +25,12 @@ const identifiers = node => ts.isIdentifier(node) ? [node.text] : ts.isObjectBin
   ? node.elements.flatMap(part => ts.isBindingElement(part) ? identifiers(part.name) : []) : [];
 
 /** Inputs are the exact tracked source cohort and resolver already used by dependency edges.
- * @param {{ files: string[], readSource: (path: string) => string | null, resolveModule: (importer: string, specifier: string) => string | null, workspacePackages?: Array<[string, string[]]>, includeCallCensus?: boolean }} input
+ * `censusOnly` retains resolution and completeness guards while omitting brief
+ * proof objects that the source-population collector does not consume.
+ * @param {{ files: string[], readSource: (path: string) => string | null, resolveModule: (importer: string, specifier: string) => string | null, workspacePackages?: Array<[string, string[]]>, includeCallCensus?: boolean, censusOnly?: boolean }} input
  */
-export function buildSymbolSnapshot({ files, readSource, resolveModule, workspacePackages = [], includeCallCensus = false }) {
+export function buildSymbolSnapshot({ files, readSource, resolveModule, workspacePackages = [], includeCallCensus = false, censusOnly = false }) {
+  includeCallCensus ||= censusOnly;
   const units = new Map();
   const symbols = new Map();
   /** Optional measurement population; does not enlarge the ordinary brief snapshot. */
@@ -48,11 +51,13 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule, workspac
     const ast = ts.createSourceFile(path, text, { languageVersion: ts.ScriptTarget.Latest,
       jsDocParsingMode: ts.JSDocParsingMode.ParseNone }, false);
     if (ast.parseDiagnostics.length) { stats.skippedFiles++; continue; }
-    const sha256 = hash(text);
-    const workspace = workspaces.find(entry => path.startsWith(entry.dir + '/'));
+    const sha256 = censusOnly ? null : hash(text);
+    const workspace = censusOnly ? null : workspaces.find(entry => path.startsWith(entry.dir + '/'));
     const manifest = workspace ? manifestProof(workspace.dir + '/package.json', readSource(workspace.dir + '/package.json')) : null;
     const unit = { path, sha256, workspace, manifest, locals: new Map(), imports: new Map(), exports: new Map(), reexports: [], stars: [], shadows: new Set(), calls: [] };
-    const site = node => { const at = ast.getLineAndCharacterOfPosition(node.getStart(ast)); return { path, line: at.line + 1, column: at.character + 1, sha256 }; };
+    const site = node => { const at = ast.getLineAndCharacterOfPosition(node.getStart(ast)); return censusOnly
+      ? { path, line: at.line + 1, column: at.character + 1 }
+      : { path, line: at.line + 1, column: at.character + 1, sha256 }; };
     const topDeclarations = new Set(ast.statements);
     for (const node of ast.statements) {
       const exported = node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword);
@@ -82,7 +87,8 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule, workspac
         const name = decl.name.text;
         const location = site(decl.name);
         const id = `${path}:${location.line}:${name}`;
-        const symbol = { id, name, ...location, signature: text.slice(decl.getStart(ast), decl.body?.getStart(ast) ?? Math.min(decl.end, decl.getStart(ast) + 300)).slice(0, 300), callers: [], aliases: [], sources: new Map([[path, { path, sha256 }]]) };
+        const symbol = censusOnly ? { id, path, callerCount: 0 }
+          : { id, name, ...location, signature: text.slice(decl.getStart(ast), decl.body?.getStart(ast) ?? Math.min(decl.end, decl.getStart(ast) + 300)).slice(0, 300), callers: [], aliases: [], sources: new Map([[path, { path, sha256 }]]) };
         symbols.set(id, symbol);
         add(unit.locals, name, [id]);
         if (exported) add(unit.exports, isDefault ? 'default' : name, [id]);
@@ -126,7 +132,7 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule, workspac
   for (const unit of units.values()) for (const [name, values] of unit.exports) for (const id of values) {
     visible.add(id);
     const symbol = symbols.get(id);
-    if (symbol) {
+    if (symbol && !censusOnly) {
       symbol.sources.set(unit.path, { path: unit.path, sha256: unit.sha256 });
       if (unit.manifest !== null) symbol.sources.set(unit.manifest.path, unit.manifest);
       if (!symbol.aliases.includes(name)) symbol.aliases.push(name);
@@ -142,6 +148,10 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule, workspac
     const symbol = symbols.get([...values][0]);
     recordCall(call, symbol);
     if (!symbol || !visible.has(symbol.id)) continue;
+    if (censusOnly) {
+      if (symbol.callerCount >= 500) { stats.truncated = true; continue; }
+      symbol.callerCount++; stats.resolvedCalls++; continue;
+    }
     if (symbol.callers.length >= 500) { stats.truncated = true; continue; }
     symbol.callers.push({ path: call.path, line: call.line, column: call.column, sha256: call.sha256,
       workspace: unit.workspace ? `${unit.workspace.name} (${unit.workspace.dir})` : null,
@@ -153,7 +163,7 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule, workspac
     ...(includeCallCensus ? { callCensus } : {}),
     limitations: ['JS/TS tracked parseable files only.', 'Dynamic dispatch, shadowed bindings, external packages and unresolved imports are unknown; counts are lower bounds.',
       'No runtime execution or compiler type-resolution is asserted.'], stats,
-    symbols: [...symbols.values()].filter(symbol => visible.has(symbol.id)).map(symbol => ({ ...symbol,
+    symbols: censusOnly ? [] : [...symbols.values()].filter(symbol => visible.has(symbol.id)).map(symbol => ({ ...symbol,
       sources: [...symbol.sources.values()] })).sort((a, b) => a.id.localeCompare(b.id)) };
 }
 

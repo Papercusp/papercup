@@ -78,7 +78,7 @@ export function buildReuseSourcePopulation(input: {
   const files = paths.filter(path => /\.[cm]?[jt]sx?$/.test(path)), fileSet = new Set(files);
   input.onProgress?.('source-calls');
   const snapshot = buildSymbolSnapshot({ files, readSource,
-    resolveModule: (path, specifier) => relativeSymbolModule(path, specifier, fileSet), includeCallCensus: true });
+    resolveModule: (path, specifier) => relativeSymbolModule(path, specifier, fileSet), censusOnly: true });
   return { addedNonGeneratedLines: binary ? null : [...added.values()].reduce((n, lines) => n + lines.length, 0),
     duplicateAddedLines: binary ? null : duplicated.size,
     lineCensusComplete: !binary && input.complete && index.getFiles().every(file => file.status === 'indexed' || file.status === 'excluded')

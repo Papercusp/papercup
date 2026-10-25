@@ -2,14 +2,17 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/lib/code-intel-symbol-snapshot.mjs and regenerate.
 /** Inputs are the exact tracked source cohort and resolver already used by dependency edges.
- * @param {{ files: string[], readSource: (path: string) => string | null, resolveModule: (importer: string, specifier: string) => string | null, workspacePackages?: Array<[string, string[]]>, includeCallCensus?: boolean }} input
+ * `censusOnly` retains resolution and completeness guards while omitting brief
+ * proof objects that the source-population collector does not consume.
+ * @param {{ files: string[], readSource: (path: string) => string | null, resolveModule: (importer: string, specifier: string) => string | null, workspacePackages?: Array<[string, string[]]>, includeCallCensus?: boolean, censusOnly?: boolean }} input
  */
-export function buildSymbolSnapshot({ files, readSource, resolveModule, workspacePackages, includeCallCensus }: {
+export function buildSymbolSnapshot({ files, readSource, resolveModule, workspacePackages, includeCallCensus, censusOnly }: {
     files: string[];
     readSource: (path: string) => string | null;
     resolveModule: (importer: string, specifier: string) => string | null;
     workspacePackages?: Array<[string, string[]]>;
     includeCallCensus?: boolean;
+    censusOnly?: boolean;
 }): {
     limitations: string[];
     stats: {

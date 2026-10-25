@@ -2658,11 +2658,14 @@ export function prepareSuLaunch(boot, {
     // blocks prove that bootstrap authored the auto gateway configuration. A
     // missing/malformed home, a default config, or a pin still fails closed.
     if (boot.agent === "codex" && mode === "auto" && !env.PAPERCUSP_ACCOUNT_ROUTING_MODE) {
-      const bootstrapHome = typeof boot.codexHome === "string" ? boot.codexHome.trim() : "";
       const childHome = typeof env.CODEX_HOME === "string" ? env.CODEX_HOME.trim() : "";
       try {
-        if (!bootstrapHome || !childHome || resolvePath(bootstrapHome) !== resolvePath(childHome))
-          throw new Error("bootstrap and child Codex homes differ");
+        // CODEX_HOME is the executable child route and is supplied by the
+        // authenticated bootstrap envelope. Older operator builds can omit the
+        // duplicate top-level codexHome field while still materializing this
+        // exact managed home; requiring both representations made that rolling
+        // deployment shape fail after the route had already been proven.
+        if (!childHome) throw new Error("child Codex home is missing");
         const text = readFileSync(join(childHome, "config.toml"), "utf8");
         const completeManagedBlocks = [
           ["# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT", "# END PAPERCUSP_CODEX_GATEWAY_ROOT"],
