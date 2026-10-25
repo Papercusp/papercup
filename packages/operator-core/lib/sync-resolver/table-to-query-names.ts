@@ -429,6 +429,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'dev.coordFeed',
     'coord.history',
     'coord.inbox',
+    // EI-25579142918093536: the attention reader derives coord-message state
+    // from this log, so ack/resolution writes must refresh the list and its projections.
+    'plans.attention',
+    'plans.attentionItem',
+    'plans.attentionCounts',
+    'plans.attentionRefs',
     // EI-19304902443341820: `sidebar.cupMail` reads this same log (readInbox/readOutbox) for the
     // Swarm view's per-agent mailbox, but was never listed — so a coord message pushed to
     // coord.inbox and dev.coordFeed while the mailbox beside them stayed stale until remount.
