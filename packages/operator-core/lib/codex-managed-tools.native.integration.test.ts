@@ -8,7 +8,8 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, inject, it } from 'vitest';
-import { codexGatewayConfigToml, codexManagedFeaturesToml } from '@papercusp/orchestrator/codex-gateway-config';
+import { CODEX_MANAGED_DISPATCHER_APPROVAL_TOML, codexGatewayConfigToml,
+  codexManagedFeaturesToml } from '@papercusp/orchestrator/codex-gateway-config';
 import type { CapabilityPolicyRequest, CapabilityPolicySurface } from '@papercusp/orchestrator/managed-capability-policy';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
@@ -28,7 +29,7 @@ declare module 'vitest' {
 }
 
 const privateMcpUrl = process.env.CODEX_MANAGED_PRIVATE_MCP_URL;
-const managedTool = privateMcpUrl ? 'tools_invoke' : 'managed_surface_canary';
+const managedTool = 'tools_invoke';
 const nestedSurfaceMarker = 'CODEX_NESTED_TOOL_SURFACE';
 const managedCallMarker = 'MANAGED_SURFACE_CALL_CONFIRMED';
 
@@ -53,7 +54,7 @@ async function stopCensusProcess({ child, closed }: ReturnType<typeof spawnCensu
 }
 
 async function captureSurface(features: Record<string, boolean>, captureNested = true, model = 'gpt-6.1-sol',
-  capabilityPolicy?: Omit<CapabilityPolicyRequest, 'client'>, lifecycle = false) {
+  capabilityPolicy?: Omit<CapabilityPolicyRequest, 'client'>, lifecycle = false, preauthorizeDispatcher = true) {
   const codex = wellKnownBackendBin('codex') ?? resolveOnPath('codex');
   if (!codex) throw new Error('Installed Codex is required for native-tool removal evidence');
   const catalogJson = execFileSync(codex, ['debug', 'models'], { encoding: 'utf8', timeout: 5000 });
@@ -83,16 +84,16 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
         if (privateMcpUrl) throw new Error('Production MCP proof must not use the local canary');
         if (body.id === undefined) { res.writeHead(202); res.end(); return; }
         if (body.method === 'tools/call') {
-          expect(body.params.name).toBe(managedTool);
+          expect(body.params.name).toBe('tools:invoke');
           const surface = surfaces[surfaceIndex]!;
           managedCalls.set(surface, (managedCalls.get(surface) ?? 0) + 1);
         }
         const result = body.method === 'initialize'
           ? { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'managed-surface', version: '1' } }
           : body.method === 'tools/list'
-            ? { tools: [{ name: managedTool, description: 'Offline managed tool canary.',
+            ? { tools: [{ name: 'tools:invoke', description: 'Offline managed dispatcher canary.',
               inputSchema: { type: 'object', properties: {} },
-              annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } }] }
+              annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } }] }
             : body.method === 'tools/call'
               ? { content: [{ type: 'text', text: managedCallMarker }] }
               : {};
@@ -151,6 +152,7 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
   const gateway = codexGatewayConfigToml(null, { gateway: { baseURL, token: 'offline_surface_token_'.repeat(3) } });
   const writeConfig = (surface: CapabilityPolicySurface) => writeFileSync(join(home, 'config.toml'), [
     `model = ${JSON.stringify(measuredModel)}`, `model_catalog_json = ${JSON.stringify(catalogPath)}`,
+    'approval_policy = "never"',
     ...gateway.root, ...gateway.tables,
     ...(capabilityPolicy ? codexManagedFeaturesToml({ capabilityPolicy: { ...capabilityPolicy, surface },
       disableMemories: false, headless: true }) : ['[features]']),
@@ -158,6 +160,7 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
     '[mcp_servers.managed_surface]', `url = ${JSON.stringify(privateMcpUrl ?? `${baseURL}/mcp`)}`, 'required = true',
     ...(privateMcpUrl ? ['bearer_token_env_var = "CODEX_MANAGED_PRIVATE_MCP_TOKEN"'] : []),
     'startup_timeout_sec = 10', 'tool_timeout_sec = 10',
+    ...(preauthorizeDispatcher ? CODEX_MANAGED_DISPATCHER_APPROVAL_TOML : []),
   ].join('\n'));
   const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: home, OPENAI_API_KEY: 'offline-fixture-only' };
   delete env.CODEX_API_KEY;
@@ -398,8 +401,19 @@ describe('Codex managed replacement installed-client census', () => {
         'packages/operator-core/lib/process-identity.ts', 'scripts/with-test-pg.mjs', 'scripts/test-files.mjs'],
       retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/census/worker.log',
         'phases/execute/census/managed-tool-replies.ndjson',
+        'phases/prepare/dispatcher-approval-preflight.json',
         'phases/execute/native-tool-surface.json', 'phases/execute/operator-mcp-receipt.json'],
       prepare: async evidenceDir => {
+        // Audit the approval failure before allocating/building the full runtime.
+        // The prior read-only canary could not detect the production dispatcher's
+        // destructive/open-world approval class. Both controls use installed Codex.
+        const features = { code_mode: true, code_mode_host: true, shell_tool: false };
+        await expect(captureSurface(features, true, 'gpt-6.1-sol', undefined, false, false))
+          .rejects.toThrow('MCP tool call requires approval, but approval policy is never');
+        const approved = await captureSurface(features);
+        await writeFile(join(evidenceDir, 'dispatcher-approval-preflight.json'), JSON.stringify({
+          blockedWithoutPreauthorization: true, approved,
+        }) + '\n', { mode: 0o600 });
         const censusPath = join(evidenceDir, 'restricted-hold-census.json');
         await writeFile(censusPath, '[]\n', { mode: 0o600 });
         prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, {
