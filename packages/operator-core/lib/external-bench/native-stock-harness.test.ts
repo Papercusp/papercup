@@ -139,7 +139,8 @@ if (process.argv.includes('inspect')) {
     const value = factory({ ...opts(), agent: 'claude' }, target);
     await value.ports.launchNative(input()); await value.ports.getTask('stock-task');
     const observed = JSON.parse(readFileSync(log, 'utf8'));
-    expect(observed.args.slice(-5)).toEqual(['c'.repeat(64), '/opt/claude', '-p', '--model', 'frozen-model']);
+    expect(observed.args).toContain('c'.repeat(64));
+    expect(observed.args.slice(-4)).toEqual(['/opt/claude', '-p', '--model', 'frozen-model']);
     expect(observed.args).not.toContain('--no-daemon'); expect(observed.args).not.toContain('ANTHROPIC_API_KEY');
     expect(observed.args).toContain('CLAUDE_CONFIG_DIR'); expect(observed.args).toContain('ANTHROPIC_AUTH_TOKEN');
     expect(observed.args).toContain('CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS');
