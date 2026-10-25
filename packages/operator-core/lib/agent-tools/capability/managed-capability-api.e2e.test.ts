@@ -42,6 +42,7 @@ describe('managed capability acceptance over the production HTTP route', () => {
     expect(line, result.output).toBeDefined();
     expect(JSON.parse(line!.slice('MANAGED_API_PROOF='.length))).toMatchObject({
       transport: 'http', kernel: 'retained-across-clients', browser: 'retained-across-clients',
+      image: 'original-raster', patch: 'canonical-peer-lock-and-all-hunks',
       pty: 'refused-without-private-session-bus', foreignHandles: 'refused',
     });
   }, 200_000);

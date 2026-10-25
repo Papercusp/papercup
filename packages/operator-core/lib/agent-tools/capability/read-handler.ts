@@ -56,6 +56,17 @@ export const DEFAULT_LIMIT = 2000;
 const MAX_LINE_CHARS = 2000;
 export const MAX_FILE_BYTES = 50 * 1024 * 1024; // refuse unbounded reads outright
 export const MAX_BYTE_PAGE = 4_096;
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** Inspect bytes rather than trusting a caller-controlled extension or MIME type. */
+function rasterMimeType(bytes: Buffer): string | undefined {
+  if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'image/png';
+  if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return 'image/jpeg';
+  if (['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'))) return 'image/gif';
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      bytes.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return undefined;
+}
 
 const LINE_WINDOW_EXCLUSIVITY =
   'Mutually exclusive with byte windows (byte_offset, byte_limit), content_indexes, and evidence_class.';
@@ -721,7 +732,7 @@ export const capabilityReadDefinition = {
   description:
     'Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. query searches a saved result (spill) for lines holding every term; view_lines reads around a hit. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or a short-lived in-memory scratch fallback URI.',
   guidance: {
-    when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line. For a truncated tool result (spill), search it with query, then read around a hit with view_lines.',
+    when: 'Read a file before editing it, or inspect content. A plain read of PNG/JPEG/GIF/WebP returns original image media (up to 5 MiB). Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line. For a truncated tool result (spill), search it with query, then read around a hit with view_lines.',
     notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
     chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite). Spill: query → view_lines (follow read_around).',
     returns:
@@ -997,6 +1008,25 @@ export const capabilityReadDefinition = {
         return err(e.code, e.message);
       }
       return err('invalid_reference', e instanceof Error ? e.message : String(e));
+    }
+
+    // Decode media only after scratch ownership/expiry authorization. Explicit text,
+    // byte and reference-selection requests keep their existing exact semantics.
+    const plainRead = !exactReadRequested && !boundedLineRead && args.query === undefined &&
+      args.view_lines === undefined;
+    const imageMime = plainRead ? rasterMimeType(bytes) : undefined;
+    if (imageMime) {
+      if (credentialBearingConfig) return err('sensitive_file', 'Image reads are refused for credential-bearing config files.');
+      if (bytes.length > MAX_IMAGE_BYTES) return err('image_too_large', 'Image media exceeds 5 MiB; use byte_offset+byte_limit for exact bounded bytes.');
+      const metadata = { ok: true, file_path: abs, mimeType: imageMime, byte_length: bytes.length };
+      return markScratchReferenceRead({
+        content: [
+          { type: 'text' as const, text: JSON.stringify(metadata) },
+          { type: 'image' as const, data: bytes.toString('base64'), mimeType: imageMime },
+        ],
+        ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
+          ? { structuredContent: metadata } : {}),
+      }, reference);
     }
 
     if (args.view_lines) {

@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -107,8 +108,40 @@ const pageAddress = pageServer.address(); assert(pageAddress && typeof pageAddre
 const pageUrl = `http://127.0.0.1:${pageAddress.port}/`;
 let kernelId: string | undefined; let browserId: string | undefined; let ptyId: string | undefined;
 let current: Client | undefined; let proof: Record<string, unknown> | undefined;
+const fileRoot = join(process.env.HOME!, 'managed-files');
 try {
   current = await client(owner);
+  // A private valid repository exercises the real per-path lock store, rather
+  // than the intentional uncoordinated path for ordinary temporary files.
+  await mkdir(join(fileRoot, '.git'), { recursive: true });
+  await writeFile(join(fileRoot, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  const a = join(fileRoot, 'a.txt'); const b = join(fileRoot, 'b.txt');
+  await writeFile(a, 'one\n'); await writeFile(b, 'two\n');
+  const raster = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5xkAAAAASUVORK5CYII=', 'base64');
+  const imagePath = join(fileRoot, 'image.png'); await writeFile(imagePath, raster);
+  const imageRead = await invoke(current, 'capability:read', { file_path: imagePath });
+  assert(imageRead.result.content.some((part: any) => part.type === 'image' &&
+    part.mimeType === 'image/png' && Buffer.from(part.data, 'base64').equals(raster)), 'Original raster must cross production MCP');
+  const edits = [
+    { file_path: a, old_string: 'one', new_string: 'ONE' },
+    { file_path: b, old_string: 'two', new_string: 'TWO' },
+  ];
+  const filePeer = await client('managed-private-file-peer');
+  const hold = (await invoke(filePeer, 'locks:acquire', { paths: ['a.txt'], intent: 'MC-P026-PATCH peer conflict', wait: { max_sec: 0 } })).body;
+  assert.equal(hold.ok, true, JSON.stringify(hold)); assert(hold.lock_id);
+  try {
+    const blocked = await invoke(current, 'capability:patch', { edits }, false);
+    assert.equal(blocked.body?.reason, 'file_locked', JSON.stringify(blocked));
+    assert.equal(await readFile(a, 'utf8'), 'one\n'); assert.equal(await readFile(b, 'utf8'), 'two\n');
+  } finally {
+    await invoke(filePeer, 'locks:release', { lock_id: hold.lock_id });
+  }
+  const rejected = await invoke(current, 'capability:patch', { edits: [edits[0], { ...edits[1], old_string: 'absent' }] }, false);
+  assert.equal(rejected.body?.reason, 'hunk_not_found', JSON.stringify(rejected));
+  assert.equal(await readFile(a, 'utf8'), 'one\n'); assert.equal(await readFile(b, 'utf8'), 'two\n');
+  const patched = (await invoke(current, 'capability:patch', { edits })).body;
+  assert.equal(patched.filesWritten, 2, JSON.stringify(patched));
+  assert.equal(await readFile(a, 'utf8'), 'ONE\n'); assert.equal(await readFile(b, 'utf8'), 'TWO\n');
   const { probeScopeSupport } = await import('../../../task-manager/managed-spawn.ts');
   const scope = await probeScopeSupport();
   stage('scope-preflight:' + JSON.stringify(scope));
@@ -154,6 +187,7 @@ try {
   assert.equal((await invoke(current, 'code:run', { kernel: { op: 'close', id: kernelId } })).body.kernel.state, 'closed'); kernelId = undefined;
   proof = { transport: 'http', workspace,
     kernel: 'retained-across-clients', browser: 'retained-across-clients', pty: 'refused-without-private-session-bus',
+    image: 'original-raster', patch: 'canonical-peer-lock-and-all-hunks',
     foreignHandles: 'refused' };
 } catch (error) {
   console.error('MANAGED_API_FAILURE=' + (error instanceof Error ? error.stack : String(error)));
@@ -195,6 +229,7 @@ try {
     }
   }
   await finishManagedApiTeardown({ hasProof: !!proof, rowCount: rows.length, cleanupErrors, close: [
+    async () => { await rm(fileRoot, { recursive: true, force: true }); },
     ...clients.map(entry => async () => { await entry.close(); }),
     async () => {
       if ('closeAllConnections' in server) server.closeAllConnections();

@@ -4155,7 +4155,7 @@
         "judge"
       ],
       "guidance": {
-        "when": "Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line. For a truncated tool result (spill), search it with query, then read around a hit with view_lines.",
+        "when": "Read a file before editing it, or inspect content. A plain read of PNG/JPEG/GIF/WebP returns original image media (up to 5 MiB). Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line. For a truncated tool result (spill), search it with query, then read around a hit with view_lines.",
         "notWhen": "To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.",
         "chaining": "capability:read → capability:edit (exact string replace) or capability:write (overwrite). Spill: query → view_lines (follow read_around)."
       }
