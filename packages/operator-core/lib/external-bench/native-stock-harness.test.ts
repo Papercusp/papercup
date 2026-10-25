@@ -86,7 +86,7 @@ afterEach(async () => {
 describe('current stock native factory', () => {
   it('enrolls Claude with its scoped transport and ingests only its retained projects', async () => {
     h.run.mockImplementation(async function* (options) {
-      await options.spawnProcess!('claude', ['-p'], { cwd: root, env: { PATH: '/private/runtime', CLAUDE_CONFIG_DIR: h.home,
+      await options.spawnProcess!('claude', ['-p'], { cwd: h.home, env: { PATH: '/private/runtime', CLAUDE_CONFIG_DIR: h.home,
         ANTHROPIC_API_KEY: 'HOST_SECRET_SENTINEL', ANTHROPIC_AUTH_TOKEN: 'HOST_SECRET_SENTINEL', NODE_OPTIONS: 'HOST_INJECTION',
         DISABLE_INTERLEAVED_THINKING: '0', CLAUDE_CODE_MODEL_CAPABILITIES: 'mid_conv_system',
         CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: '0' } });
@@ -100,6 +100,8 @@ describe('current stock native factory', () => {
       isolateDir: h.home, statelessGateway: { baseURL: 'http://127.0.0.1:32001', token: 'a'.repeat(64) } });
     expect(h.run.mock.calls[0][0].codexGateway).toBeUndefined();
     const env = h.managed.mock.calls[0][3].spawnOptions.env;
+    expect(h.managed.mock.calls[0][3].spawnOptions.cwd).toBe(root);
+    expect(h.sandbox).toHaveBeenCalledWith(expect.objectContaining({ cwd: root }));
     expect(env).toMatchObject({ HOME: h.home, CLAUDE_CONFIG_DIR: h.home, XDG_CONFIG_HOME: join(h.home, '.config'),
       PAPERCUSP_AGENT: 'claude', ANTHROPIC_BASE_URL: 'http://127.0.0.1:32001', ANTHROPIC_AUTH_TOKEN: 'a'.repeat(64),
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
@@ -125,7 +127,7 @@ if (process.argv.includes('inspect')) {
 } else require('node:fs').writeFileSync(${JSON.stringify(log)}, JSON.stringify({args: process.argv.slice(2), env: process.env}));
 `, { mode: 0o755 });
     h.run.mockImplementation(async function* (options) {
-      await options.spawnProcess!('claude', ['-p', '--model', 'frozen-model'], { cwd: root,
+      await options.spawnProcess!('claude', ['-p', '--model', 'frozen-model'], { cwd: h.home,
         env: { PATH: `${root}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: h.home, ANTHROPIC_API_KEY: 'HOST_SECRET_SENTINEL',
           CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '0', DISABLE_INTERLEAVED_THINKING: '0',
           CLAUDE_CODE_MODEL_CAPABILITIES: 'mid_conv_system', CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: '0' } });
@@ -156,9 +158,12 @@ if (process.argv.includes('inspect')) {
     expect(lstatSync(h.home).isSymbolicLink()).toBe(true); expect(h.sandbox).not.toHaveBeenCalled();
   });
 
-  it.each(['codex', 'different-claude'])('refuses a Claude command/home conflict before managed spawn (%s)', async command => {
+  it.each(['command', 'home', 'cwd'])('refuses a Claude transport conflict before managed spawn (%s)', async conflict => {
     h.run.mockImplementation(async function* (options) {
-      await options.spawnProcess!(command, [], { cwd: root, env: { CLAUDE_CONFIG_DIR: command === 'codex' ? h.home : '/other' } });
+      await options.spawnProcess!(conflict === 'command' ? 'codex' : 'claude', [], {
+        cwd: conflict === 'cwd' ? root : h.home,
+        env: { CLAUDE_CONFIG_DIR: conflict === 'home' ? '/other' : h.home },
+      });
     });
     await expect(factory({ ...opts(), agent: 'claude' }).ports.launchNative(input())).rejects.toThrow(/identity transport/);
     expect(h.managed).not.toHaveBeenCalled(); expect(h.end).toHaveBeenCalledOnce();

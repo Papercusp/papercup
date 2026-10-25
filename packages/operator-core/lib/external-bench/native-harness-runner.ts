@@ -149,8 +149,12 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
               const host = requireCurrentBenchHostBinding(observations, opts);
               verifySession();
               if (opts.signal?.aborted) throw new Error('Stock native assignment was cancelled before process creation.');
+              // Shared isolated Claude stages its spawn in the config home.
+              // Validate that exact input; the stock sandbox and managed task
+              // below still launch in the owned task worktree.
+              const stagedCwd = agent === 'claude' ? home : handle.worktreePath;
               if (!(agent === 'claude' ? ['claude'] : ['codex', 'codex.js']).includes(basename(command)) ||
-                  options.cwd !== handle.worktreePath || options.env?.[homeEnv] !== home)
+                  options.cwd !== stagedCwd || options.env?.[homeEnv] !== home)
                 throw new Error('Stock native identity transport cannot be observed in this host.');
               const env: NodeJS.ProcessEnv = { PATH: options.env.PATH, LANG: options.env.LANG, LC_ALL: options.env.LC_ALL,
                 TERM: options.env.TERM, TZ: options.env.TZ, HOME: home, [homeEnv]: home, PAPERCUSP_AGENT: agent,
