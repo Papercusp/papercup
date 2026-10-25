@@ -2296,6 +2296,67 @@ describe('runBudgetedTasks', () => {
 });
 
 describe('task-sized shared admission (EI-26797533961242022)', () => {
+  it('does not charge an unrelated reader against a private cgroup memory budget', async () => {
+    const release = deferred<void>();
+    let started = false;
+    const holder = withFsMutexBudget(admissionMutexName(), async () => {
+      started = true; await release.promise;
+    }, { workers: 3, workerBudget: 8, maxConcurrentTasks: 4, resource: 'host-reader',
+      workerMemoryMb: 131_072, memoryBudgetMb: 1_048_576, timeoutMs: 8_000 });
+    try {
+      await until(() => started, 'the host-budget reader');
+      const run = runBudgetedTasks(['private'], { ...config,
+        workerBudget: 8, maxConcurrentTasks: 4, memoryBudgetMb: 7168,
+        memoryBudgetScope: 'cgroup:fixture-private', sharedMemoryBudgetMb: 1_048_576,
+        admissionTimeoutMs: 1000, onAdmissionNotice: () => {}, taskAdmissionKey: task => task,
+        runTask: async (_task, allocation) => allocation.workers });
+      await expect(run).resolves.toMatchObject({ results: [{ value: 4 }] });
+      // A different cgroup must still obey the host's explicitly shared budget.
+      await expect(withFsMutexBudget(admissionMutexName(), async () => 'must-not-run', {
+        workers: 1, workerBudget: 8, maxConcurrentTasks: 4, resource: 'capped-private',
+        workerMemoryMb: 1024, memoryBudgetMb: 7168,
+        memoryBudgetScope: 'cgroup:fixture-private', sharedMemoryBudgetMb: 393_216,
+        timeoutMs: 100, retryMs: 5,
+      })).rejects.toThrow('Timed out');
+    } finally { release.resolve(); await holder; }
+  }, 20_000);
+
+  it('retains same-cgroup reservations and live legacy writer exclusion until release', async () => {
+    const release = deferred<void>();
+    let started = false, queued = false, peerStarted = false;
+    const options = { workers: 1, workerBudget: 8, maxConcurrentTasks: 4,
+      workerMemoryMb: 4096, memoryBudgetMb: 7168,
+      memoryBudgetScope: 'cgroup:fixture-shared', sharedMemoryBudgetMb: 65_536,
+      timeoutMs: 8000, retryMs: 5 };
+    const holder = withFsMutexBudget(admissionMutexName(), async () => {
+      started = true; await release.promise;
+    }, { ...options, resource: 'same-cgroup-holder' });
+    let peer: Promise<unknown> | undefined;
+    try {
+      await until(() => started, 'the same-cgroup reader');
+      peer = withFsMutexBudget(admissionMutexName(), async () => { peerStarted = true; }, {
+        ...options, resource: 'same-cgroup-peer', onWaiting: () => { queued = true; },
+      });
+      await until(() => queued, 'same-cgroup memory exclusion');
+      expect(peerStarted).toBe(false);
+    } finally { release.resolve(); await Promise.allSettled([holder, ...(peer ? [peer] : [])]); }
+    expect(peerStarted).toBe(true);
+
+    const writerRelease = deferred<void>(), acquired = deferred<void>();
+    const writer = withFsMutex(admissionMutexName(), async () => {
+      acquired.resolve(); await writerRelease.promise;
+    });
+    await acquired.promise;
+    try {
+      await expect(withFsMutexBudget(admissionMutexName(), async () => 'must-not-run', {
+        ...options, resource: 'private-under-writer', timeoutMs: 100,
+      })).rejects.toThrow('Timed out');
+    } finally { writerRelease.resolve(); await writer; }
+    await expect(withFsMutexBudget(admissionMutexName(), async () => 'after-release', {
+      ...options, resource: 'private-after-writer',
+    })).resolves.toBe('after-release');
+  }, 20_000);
+
   it('reports a blocking reader and exact reservation constraints when no writer exists', async () => {
     const release = deferred<string>();
     let started = false, peerStarted = false;
