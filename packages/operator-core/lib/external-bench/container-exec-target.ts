@@ -615,7 +615,7 @@ if (cfg.guardClaudeEnv) {
       image.env.some(v => typeof v !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*=/.test(v)))
     refuse('invalid stock Claude image environment');
   const declared = new Set(names);
-  const controls = /^(?:_*CLAUDE_|ANTHROPIC_|OPENAI_|CODEX_|ENABLE_|DISABLE_|MCP_|AWS_|AZURE_|GOOGLE_|GCLOUD_|VERTEX_|OTEL_|NODE_(?:OPTIONS|PATH|EXTRA_CA_CERTS|TLS_REJECT_UNAUTHORIZED)$|BUN_OPTIONS$|LD_|DYLD_|SSL_CERT_|CURL_CA_BUNDLE$|REQUESTS_CA_BUNDLE$|BASH_ENV$|ENV$|SHELLOPTS$|BASHOPTS$|(?:HTTPS?|ALL|NO)_PROXY$|XDG_(?:CONFIG_HOME|CONFIG_DIRS|STATE_HOME|CACHE_HOME)$)/i;
+  const controls = /^(?:_*CLAUDE_|ANTHROPIC_|OPENAI_|CODEX_|ENABLE_|DISABLE_|FORCE_|USE_API_CONTEXT_MANAGEMENT$|MAX_(?:THINKING|OUTPUT)_TOKENS$|MCP_|AWS_|AZURE_|GOOGLE_|GCLOUD_|VERTEX_|OTEL_|NODE_(?:OPTIONS|PATH|EXTRA_CA_CERTS|TLS_REJECT_UNAUTHORIZED)$|BUN_OPTIONS$|LD_|DYLD_|SSL_CERT_|CURL_CA_BUNDLE$|REQUESTS_CA_BUNDLE$|BASH_ENV$|ENV$|SHELLOPTS$|BASHOPTS$|(?:HTTPS?|ALL|NO)_PROXY$|XDG_(?:CONFIG_HOME|CONFIG_DIRS|STATE_HOME|CACHE_HOME)$)/i;
   const denied = [...new Set(image.env.map(v => v.slice(0, v.indexOf('='))))]
     .filter(name => controls.test(name) && !declared.has(name)).sort();
   if (denied.length) refuse('undeclared stock Claude image controls: ' + denied.join(', '));

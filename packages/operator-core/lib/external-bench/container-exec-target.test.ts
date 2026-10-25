@@ -122,7 +122,8 @@ process.exit(child.status ?? 127);
   }
 
   it.each(['CLAUDE_CODE_EXTRA_BODY', '_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL', 'ANTHROPIC_API_KEY',
-    'CLAUDE_CODE_ENVIRONMENT_KIND', 'ENABLE_TOOL_SEARCH', 'NODE_OPTIONS', 'HTTPS_PROXY'])
+    'CLAUDE_CODE_ENVIRONMENT_KIND', 'ENABLE_TOOL_SEARCH', 'NODE_OPTIONS', 'HTTPS_PROXY',
+    'MAX_THINKING_TOKENS', 'FORCE_PROMPT_CACHING_5M', 'USE_API_CONTEXT_MANAGEMENT'])
   ('rejects an undeclared image control before the CLI starts (%s)', key => {
     const { result, args } = launch({ PATH: '/usr/bin:/bin', [key]: 'IMAGE_SECRET_SENTINEL' });
     expect(result.status, result.stderr).toBe(126);
