@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildTaskBrief, enrichTaskBriefWithReuse, getClaimTimeTaskBrief,
   registerTaskBriefReuseAdapter, type TaskBrief, type TaskBriefDeps } from './task-brief';
-import { createReuseBriefIdentity, registerReuseBriefProvider,
+import { briefCodePoints, composeReuseBrief, createReuseBriefIdentity, REUSE_PROVIDER_POLICY, registerReuseBriefProvider,
   type ReuseBriefProvider, type ReuseContribution, type ReuseProviderId } from './reuse-brief-providers';
 import { reuseIssuedSubjects, type ReuseIssuedRecord } from './reuse-brief-ledger';
 
@@ -32,6 +32,59 @@ async function fixture(): Promise<TaskBriefDeps> {
 }
 
 describe('P009 real taskBrief production adapter boundary', () => {
+  it('retains the R20 native baseline capacity falsifier before another expensive replay', async () => {
+    // Original failed native 21965707, source 853b255b; worker.log retained at
+    // isolated-integration/20261025T040502Z-2431061/phases/execute/worker.log.
+    // Only the observed optional clone contribution is excluded from the base.
+    const base: TaskBrief = {
+      status: 'current', scope: { harness: 'test-runtime-26aacbd5-00e', paths: ['src/target.ts'] },
+      sourceFingerprint: 'f432022558fd73a0226f57c00300310c32910aa117f7d9e17b020bdd025ea294',
+      commit: '2c79bc76d931cbf30d0f321aa9d9003afe69b0bf',
+      files: [{ path: 'src/target.ts', sha256: '00df9016c976083b4cd1bff8246720921d7591e571fb29cfee8cc555c247d181', kind: 'implementation' }],
+      excerpts: [{ path: 'src/target.ts', text: "// touched clone sibling in this private task\nimport { sql } from './partner';\nexport function aggregatePositive(values: number[]) {\n  let total = 0;\n  for (const value of values) { if (value > 0) total += value;\n  else total -= value;\n  } total += values.length;\n  total += values.length;\n  total += values.length;\n  total += values.length;\n  total " }],
+      graph: { status: 'unknown', consumers: [], relationships: [], reason: 'Compiler evidence is unavailable or outside the measured task files.' },
+      exclusions: ['Governing decision bodies or unread authority remain at the canonical plan reader.',
+        'Evidence outside the stored task scope is excluded; compiler dependencies may be read internally. Static consumers do not prove runtime execution.'],
+      recover: { tool: 'code:pack', args: { op: 'pack', include: ['src/target.ts'], rootPath: '/tmp/pcv/papercusp-test-runtime-ANxILq/workspaces/test-runtime-26aacbd5-00e/operator-home' } },
+      repository: { workspaceId: 'test-runtime-26aacbd5-00e', rootPath: '/tmp/pcv/papercusp-test-runtime-ANxILq/workspaces/test-runtime-26aacbd5-00e/operator-home' },
+      decisions: { status: 'unknown', refs: [], recover: { tool: 'plans:get', args: { slug: 'p010-controlled-claim-2026-10-25', harness: 'test-runtime-26aacbd5-00e', heading: 'Decisions' } } },
+      incident: { status: 'measured', cause: 'unknown', failures: [], candidates: [], recentChanges: [], recentChangesStatus: 'unknown',
+        workRecord: 'WI-1', runtimeExecution: 'unmeasured', recover: { tool: 'work_items:get', args: { id: 'WI-1', harness: 'test-runtime-26aacbd5-00e' } },
+        limitations: ['Selected task files and their latest normal test runs only; graph paths and recent edits are candidate causes.',
+          'Failure-log hashes identify recorded errors; no distinguishing causal test or runtime execution was measured.'] },
+      engineering: { intent: [], rationale: [], validation: [], execution: [],
+        gaps: ['no-visible-spec', 'intent-not-linked', 'rationale-not-linked', 'validation-not-linked',
+          'Only named child boundaries are observed; static anchors, test outcomes and parent spans do not observe their callees.'],
+        recover: { tool: 'graph:query', args: { op: 'evidence', harnesses: ['test-runtime-26aacbd5-00e'], plan: 'p010-controlled-claim-2026-10-25', item: 'P-001' } } },
+    };
+    const expected = ['clones', 'cochange', 'provenance', 'sql', 'coverage'] as const;
+    const before = JSON.stringify(base);
+    expect(briefCodePoints(before)).toBe(2662);
+    // Deliberately optimistic lower bound, NOT producer evidence or R20 credit:
+    // one nonempty code point and a one-code-point index in every envelope.
+    const providers = expected.map(id => ({ id, read: async () => ({ status: 'measured' as const,
+      lines: ['x'], sourceVersion: base.sourceFingerprint, indexVersion: 'x' }) }));
+    const minimum = expected.map(provider => ({ provider, section: REUSE_PROVIDER_POLICY[provider].section,
+      text: 'x', sourceVersion: base.sourceFingerprint!, indexVersion: 'x' }));
+    const all = minimum.reduce(append, structuredClone(base));
+    // Even removing ALL excerpt text and BOTH complete authored plan names is
+    // insufficient. This is arithmetic only: neither altered response is emitted.
+    const optionalAuthoredChars = briefCodePoints(JSON.stringify(base.excerpts[0]!.text)) - 2
+      + 2 * briefCodePoints('p010-controlled-claim-2026-10-25');
+    expect(briefCodePoints(JSON.stringify(all)) - optionalAuthoredChars).toBeGreaterThan(3000);
+    const result = await composeReuseBrief({ base, providers,
+      context: { surface: 'claim', workspaceId: base.repository!.workspaceId, owner: 'controlled-lower-bound',
+        invocation: 'capacity-only', workItem: 'WI-1', paths: base.scope.paths, sourceVersion: base.sourceFingerprint },
+      append, enabled: async () => true, deadline: Date.now() + 6000 });
+    expect(JSON.stringify(base)).toBe(before);
+    expect(briefCodePoints(JSON.stringify(result.brief))).toBeLessThanOrEqual(3000);
+    expect(result.observations).toHaveLength(5);
+    expect(result.observations.some(row => row.status === 'budget')).toBe(true);
+    console.info('R20_COMPOSER_LOWER_BOUND', JSON.stringify({ baseChars: briefCodePoints(before),
+      allMinimumChars: briefCodePoints(JSON.stringify(all)), optionalAuthoredChars,
+      observations: result.observations, scope: 'historical actual base; optimistic envelopes only; no native acceptance credit' }));
+  });
+
   it('uses the registered provider/adapter at claim time, preserves mandatory evidence and records dispatch identity', async () => {
     const deps = await fixture();
     // This fixture intentionally holds coverage out while exercising the
