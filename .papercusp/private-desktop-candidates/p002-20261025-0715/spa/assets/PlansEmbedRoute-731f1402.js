@@ -1,1 +1,0 @@
-import{t as r}from"./jsx-runtime-660d4162.js";import{a as t}from"./PlanPopupModal-c9edca1e.js";var a=r();function o(){return(0,a.jsx)("div",{className:"portal-focused-work-surface","data-testid":"plans-portal-embed","data-portal-surface":"plans",children:(0,a.jsx)(t,{layout:"split"})})}export{o as PlansEmbedRoute,o as default};

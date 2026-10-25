@@ -142,7 +142,7 @@ export function withFsMutex<T>(name: string, fn: (context?: {
  * @template T
  * @param {string} name
  * @param {(workers: number) => Promise<T>} fn
- * @param {{ workers: number, workerMemoryMb: number, workerBudget: number, memoryBudgetMb: number, maxConcurrentTasks: number, resource: string, intent?: Record<string, string | number | boolean>, timeoutMs?: number, retryMs?: number, lockRootDir?: string, remainingMs?: () => number, onWaiting?: (info: {owner: string, elapsedMs: number}) => void, onAcquired?: (info: {waitedMs: number}) => void }} opts
+ * @param {{ workers: number, workerMemoryMb: number, workerBudget: number, memoryBudgetMb: number, memoryBudgetScope?: string, sharedMemoryBudgetMb?: number, maxConcurrentTasks: number, resource: string, intent?: Record<string, string | number | boolean>, timeoutMs?: number, retryMs?: number, lockRootDir?: string, remainingMs?: () => number, onWaiting?: (info: {owner: string, elapsedMs: number}) => void, onAcquired?: (info: {waitedMs: number}) => void }} opts
  * @returns {Promise<T>}
  */
 export function withFsMutexBudget<T>(name: string, fn: (workers: number) => Promise<T>, opts: {
@@ -150,6 +150,8 @@ export function withFsMutexBudget<T>(name: string, fn: (workers: number) => Prom
     workerMemoryMb: number;
     workerBudget: number;
     memoryBudgetMb: number;
+    memoryBudgetScope?: string;
+    sharedMemoryBudgetMb?: number;
     maxConcurrentTasks: number;
     resource: string;
     intent?: Record<string, string | number | boolean>;

@@ -1,1 +1,0 @@
-var _="chat";function o(r){return Number.isFinite(r)&&r<=920}function n(r){return Math.max(56,Math.floor(r*.75))}function i(r,t){return Number.isFinite(r)?Math.max(56,Math.min(n(t),r)):360}function e(r,t,a){return i(r-(Number.isFinite(t)?Math.max(0,t):0),a)}export{e as i,i as n,o as r,_ as t};

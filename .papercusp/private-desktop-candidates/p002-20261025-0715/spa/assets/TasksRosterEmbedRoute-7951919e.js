@@ -1,1 +1,0 @@
-import{t as e}from"./jsx-runtime-660d4162.js";/* empty css                         */import{t as r}from"./TasksRosterPanel-bf7bcc32.js";var t=e();function i(){return(0,t.jsx)("div",{className:"pc-tasks-roster-embed","data-testid":"tasks-roster-embed",children:(0,t.jsx)(r,{active:!0})})}export{i as TasksRosterEmbedRoute,i as default};

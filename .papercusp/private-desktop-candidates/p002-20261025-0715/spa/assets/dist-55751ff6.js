@@ -1,1 +1,0 @@
-import{o}from"./chunk-a1a4177d.js";import{t as u}from"./react-ea1d8b8b.js";var t=o(u(),1);function n(r){const e=t.useRef({value:r,previous:r});return t.useMemo(()=>(e.current.value!==r&&(e.current.previous=e.current.value,e.current.value=r),e.current.previous),[r])}export{n as t};

@@ -1,1 +1,0 @@
-import{t}from"./hotkeys-152fbf6c.js";function n(){const o={enableOnFormTags:["INPUT","TEXTAREA","SELECT"]};return t("navigation.back",()=>{window.history.back()},o),t("navigation.forward",()=>{window.history.forward()},o),null}export{n as t};

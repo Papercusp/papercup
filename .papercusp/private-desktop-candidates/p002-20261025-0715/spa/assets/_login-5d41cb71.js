@@ -1,2 +1,0 @@
-const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/_login-c389df25.js","assets/chunk-a1a4177d.js","assets/useNavigate-1fd525ef.js","assets/useRouter-ba22070c.js","assets/react-ea1d8b8b.js","assets/jsx-runtime-660d4162.js"])))=>i.map(i=>d[i]);
-import{n as o,t}from"./preload-helper-9c81c42c.js";import{n as e,t as r}from"./lazy-route-component-retry-2a1485af.js";o();var n=()=>t(()=>import("./_login-c389df25.js"),__vite__mapDeps([0,1,2,3,4,5])),i=e("/users/$login")({component:r(n,"component")});export{i as t};

@@ -1,1 +1,0 @@
-import{t}from"./jsx-runtime-660d4162.js";import{t as e}from"./SetupWizard-a6b9f673.js";var r=t(),s={title:"Setup Wizard · Settings · Papercusp"};function u(){return(0,r.jsx)(e,{mode:"settings"})}export{u as default,s as metadata};

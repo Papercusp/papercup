@@ -1,1 +1,0 @@
-function r(){throw new Error("undici is server-only and cannot run in the operator-vite browser bundle")}var n={get(o,e){return e===Symbol.toPrimitive||e==="toString"?()=>"[undici-browser-shim]":r},apply:r,construct:r},t=new Proxy(function(){r()},n),i=new Proxy(function(){r()},n),u=new Proxy(function(){r()},n),c=new Proxy(function(){r()},n),y=new Proxy({},n);export{t as Agent};

@@ -1,1 +1,0 @@
-var r=["trivial","low","moderate","high","critical"],N=["never-auto",...r],i=["draft","ready","active","awaiting-acceptance","shipped","superseded"],S=["shipped","superseded"],T=i.filter(a=>!S.includes(a)),A=["urgent","high","normal","low"],E=new Map(A.map((a,e)=>[a,e]));

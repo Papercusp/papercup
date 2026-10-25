@@ -1,1 +1,0 @@
-var t=new Set(["hud","overview","brainstorm","plans","harnesses","learning","insights","settings","docs","history","git","stats","testing","prs"]);function n(s){return{show:t.has(s),withStatus:s==="hud"}}export{n,t};

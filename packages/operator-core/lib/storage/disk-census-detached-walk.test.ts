@@ -239,6 +239,5 @@ describe('census walk directories', () => {
 
   it('returns 0 when the walk root does not exist yet', async () => {
     expect(await pruneCensusWalks({ root: join(dir, 'absent') })).toBe(0);
-    expect(readFileSync.length).toBeGreaterThan(0);
   });
 });

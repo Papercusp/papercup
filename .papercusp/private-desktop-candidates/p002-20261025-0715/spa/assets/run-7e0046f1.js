@@ -1,1 +1,0 @@
-import{t}from"./jsx-runtime-660d4162.js";import{t as i}from"./AdminOps-a8382c19.js";import{t as m}from"./AdminShell-b3811268.js";var r=t();function s(){return(0,r.jsx)(m,{title:"Run",children:(0,r.jsx)(i,{})})}export{s as component};

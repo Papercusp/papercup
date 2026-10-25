@@ -1,6 +1,8 @@
 export interface TaskBudgetInput {
   workerBudget: number | string;
   memoryBudgetMb: number | string;
+  memoryBudgetScope?: string;
+  sharedMemoryBudgetMb?: number;
   workerMemoryMb: number | string;
   maxConcurrentTasks?: number | string;
   reserveWorkers?: number | string;
@@ -193,6 +195,8 @@ export function readBudgetedTaskComparisonArtifacts(evidenceRoot: string,
 export interface ResolvedTaskBudget {
   workerBudget: number;
   memoryBudgetMb: number;
+  memoryBudgetScope?: string;
+  sharedMemoryBudgetMb?: number;
   workerMemoryMb: number;
   memoryWorkerBudget: number;
   effectiveWorkerBudget: number;

@@ -1090,7 +1090,7 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @template T
  * @param {string} name
  * @param {(workers: number) => Promise<T>} fn
- * @param {{ workers: number, workerMemoryMb: number, workerBudget: number, memoryBudgetMb: number, maxConcurrentTasks: number, resource: string, intent?: Record<string, string | number | boolean>, timeoutMs?: number, retryMs?: number, lockRootDir?: string, remainingMs?: () => number, onWaiting?: (info: {owner: string, elapsedMs: number}) => void, onAcquired?: (info: {waitedMs: number}) => void }} opts
+ * @param {{ workers: number, workerMemoryMb: number, workerBudget: number, memoryBudgetMb: number, memoryBudgetScope?: string, sharedMemoryBudgetMb?: number, maxConcurrentTasks: number, resource: string, intent?: Record<string, string | number | boolean>, timeoutMs?: number, retryMs?: number, lockRootDir?: string, remainingMs?: () => number, onWaiting?: (info: {owner: string, elapsedMs: number}) => void, onAcquired?: (info: {waitedMs: number}) => void }} opts
  * @returns {Promise<T>}
  */
 export async function withFsMutexBudget(name, fn, opts) {
@@ -1099,6 +1099,12 @@ export async function withFsMutexBudget(name, fn, opts) {
   }
   if (typeof opts.resource !== 'string' || !opts.resource || opts.resource.length > 500)
     throw new Error('Invalid admission resource');
+  const validScope = a => a.memoryBudgetScope === undefined
+    ? a.sharedMemoryBudgetMb === undefined
+    : typeof a.memoryBudgetScope === 'string' && a.memoryBudgetScope.trim().length > 0 &&
+      a.memoryBudgetScope.length <= 500 && Number.isSafeInteger(a.sharedMemoryBudgetMb) &&
+      a.sharedMemoryBudgetMb > 0;
+  if (!validScope(opts)) throw new Error('Scoped admission requires a shared memory budget and non-empty scope');
   if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === '1') return fn(opts.workers);
   const root = await ensureFsMutexLockRoot(undefined, { lockRootDir: opts.lockRootDir });
   const writer = join(root, `${safeName(name)}.lock`), readers = readerRoot(root, name);
@@ -1110,6 +1116,8 @@ export async function withFsMutexBudget(name, fn, opts) {
   const reader = join(readers, `${process.pid}-${randomUUID()}.lock`);
   const request = { workers: opts.workers, workerMemoryMb: opts.workerMemoryMb,
     workerBudget: opts.workerBudget, memoryBudgetMb: opts.memoryBudgetMb,
+    ...(opts.memoryBudgetScope ? { memoryBudgetScope: opts.memoryBudgetScope,
+      sharedMemoryBudgetMb: opts.sharedMemoryBudgetMb } : {}),
     maxConcurrentTasks: opts.maxConcurrentTasks, resource: opts.resource };
   const owner = { pid: process.pid, ...processIdentity(process.pid), host: hostname(),
     name, startedAt: new Date(started).toISOString(), admission: request,
@@ -1120,7 +1128,7 @@ export async function withFsMutexBudget(name, fn, opts) {
   const readAdmission = async path => {
     const value = JSON.parse(await readOwner(path));
     const a = value.admission;
-    const valid = a && typeof a.resource === 'string' && a.resource &&
+    const valid = a && validScope(a) && typeof a.resource === 'string' && a.resource &&
         ['workers', 'workerMemoryMb', 'workerBudget', 'memoryBudgetMb', 'maxConcurrentTasks']
           .every(key => Number.isSafeInteger(a[key]) && a[key] > 0);
     return { owner: value, admission: valid ? a : null };
@@ -1131,7 +1139,18 @@ export async function withFsMutexBudget(name, fn, opts) {
       return { workers: 0, constraints: ['resource-exclusion'] };
     const taskCap = Math.min(candidate.maxConcurrentTasks, ...active.map(a => a.maxConcurrentTasks));
     const workers = Math.min(candidate.workerBudget, ...active.map(a => a.workerBudget)) - active.reduce((n, a) => n + a.workers, 0);
-    const memory = Math.min(candidate.memoryBudgetMb, ...active.map(a => a.memoryBudgetMb)) - active.reduce((n, a) => n + a.workers * a.workerMemoryMb, 0);
+    // A private cgroup ceiling constrains only processes in that cgroup. All
+    // readers still pay into the host envelope; legacy readers describe that
+    // shared envelope with memoryBudgetMb and retain conservative accounting.
+    const sharedBudget = a => a.memoryBudgetScope ? a.sharedMemoryBudgetMb : a.memoryBudgetMb;
+    const sharedMemory = Math.min(sharedBudget(candidate), ...active.map(sharedBudget)) -
+      active.reduce((n, a) => n + a.workers * a.workerMemoryMb, 0);
+    const local = candidate.memoryBudgetScope
+      ? active.filter(a => a.memoryBudgetScope === candidate.memoryBudgetScope) : [];
+    const privateMemory = candidate.memoryBudgetScope
+      ? Math.min(candidate.memoryBudgetMb, ...local.map(a => a.memoryBudgetMb)) -
+        local.reduce((n, a) => n + a.workers * a.workerMemoryMb, 0) : Infinity;
+    const memory = Math.min(sharedMemory, privateMemory);
     const constraints = [];
     if (active.length >= taskCap) constraints.push('task-cap');
     if (workers < 1) constraints.push('worker-budget');

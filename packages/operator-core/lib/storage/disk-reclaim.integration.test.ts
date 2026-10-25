@@ -681,6 +681,23 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.entries.filter(entry => entry.status === 'removed')).toEqual([]);
   });
 
+  it('keeps pending initial cap measurements away from selection and fresh effect inspections', async () => {
+    const { root, options } = await setup();
+    const source = join(root, 'source'); await mkdir(source); await writeFile(join(source, 'data'), 'retained until complete');
+    const fresh = vi.fn(inspectRetentionTrees);
+    const initial = vi.fn(async () => ({ entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0,
+      error: 'retention census pending; managed walk continues for adoption' }));
+    const policy = options.policy.map(cls => ({ ...cls, maxBytes: 1 }));
+    const pending = await runDiskReclaimOnce({ ...options, policy, inspectTrees: fresh, inspectInitialCappedTrees: initial });
+    expect(pending.complete).toBe(false); expect(pending.caps ?? []).toEqual([]);
+    expect(initial).toHaveBeenCalledOnce(); expect(fresh).not.toHaveBeenCalled();
+    expect(pending.entries.filter(e => e.status === 'removed')).toEqual([]);
+    const complete = await runDiskReclaimOnce({ ...options, policy, inspectTrees: fresh,
+      inspectInitialCappedTrees: inspectRetentionTrees });
+    expect(complete.entries).toContainEqual(expect.objectContaining({ path: source, status: 'removed' }));
+    expect(fresh).toHaveBeenCalledWith(root, expect.objectContaining({ paths: [source] }));
+  });
+
   it('starts the next pass after a root whose census spent the preceding deadline', async () => {
     const { root, options } = await setup();
     const blocked = join(root, 'data-device'); await mkdir(blocked);
