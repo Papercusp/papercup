@@ -16,6 +16,29 @@ export function benchmarkRuntimeArguments(args: readonly string[]): string[] {
   return selected;
 }
 
+function readAttemptJournal(bytes: Buffer, declaration: ReturnType<typeof declareBm25Attempts>): Bm25AttemptReceipt[] {
+  const declared = new Set(declaration.attempts.map(attempt => attempt.id));
+  const started = new Set<string>(), settled = new Set<string>();
+  const receipts: Bm25AttemptReceipt[] = [];
+  for (const line of bytes.toString().split('\n').filter(line => line.trim())) {
+    const { event, at, ...receipt } = JSON.parse(line);
+    if (!declared.has(receipt.id) || typeof at !== 'string' || !Number.isFinite(Date.parse(at)))
+      throw new Error('runtime benchmark attempt journal has an undeclared identity or invalid timestamp');
+    if (event === 'started') {
+      if (started.has(receipt.id) || settled.has(receipt.id) || Object.keys(receipt).length !== 1)
+        throw new Error('runtime benchmark attempt journal has a duplicate or invalid start');
+      started.add(receipt.id);
+    } else if (event === 'settled') {
+      if (!started.delete(receipt.id) || settled.has(receipt.id))
+        throw new Error('runtime benchmark attempt journal has a duplicate or unstarted settlement');
+      settled.add(receipt.id);
+      receipts.push(receipt);
+    } else throw new Error('runtime benchmark attempt journal has an unknown event');
+  }
+  if (started.size) throw new Error('runtime benchmark attempt journal has unsettled attempts');
+  return receipts;
+}
+
 export function readBenchmarkRuntimeEvidence(args: readonly string[], exitCode: number) {
   const output = path.resolve(args[args.indexOf('--out') + 1]);
   const read = (file: string) => {
@@ -26,7 +49,7 @@ export function readBenchmarkRuntimeEvidence(args: readonly string[], exitCode: 
   const attempts = read(output+'.attempts.jsonl'), ledger = read(output+'.ledger.json');
   const result = JSON.parse(artifact.bytes.toString());
   const declared: ReturnType<typeof declareBm25Attempts> = JSON.parse(declaration.bytes.toString());
-  const receipts: Bm25AttemptReceipt[] = attempts.bytes.toString().trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));
+  const receipts = readAttemptJournal(attempts.bytes, declared);
   const reconciled = reconcileBm25Attempts(declared,receipts);
   if (![0,1].includes(exitCode) || result.kind!=='bm25-hybrid-recall'
     || !['pass','fail'].includes(result.verdict) || !['pass','fail'].includes(result.latencyVerdict)

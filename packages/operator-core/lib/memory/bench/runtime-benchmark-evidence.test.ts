@@ -12,7 +12,8 @@ describe('real benchmark runtime evidence boundary',()=>{
     for(const tail of [[],['--prepare-only'],['--replay-from','old.json'],['--out','duplicate.json']])
       expect(()=>benchmarkRuntimeArguments(['--benchmark',...(tail.length?['--','--out','new.json',...tail]:[])] )).toThrow();
   });
-  it.each(['valid','missing','unknown','duplicate','moved-ledger','wrong-profile','invalid','failed-budget'])(
+  it.each(['valid','interleaved','missing','unknown','duplicate','moved-ledger','wrong-profile','invalid','failed-budget',
+    'unstarted','duplicate-start','duplicate-settlement','undeclared-start','unknown-event','unsettled','bad-time','eventless'])(
     'keeps adapter execution distinct from acceptance: %s',variant=>{
       const root=fs.mkdtempSync(path.join(os.tmpdir(),'benchmark-runtime-'));
       try {
@@ -31,10 +32,24 @@ describe('real benchmark runtime evidence boundary',()=>{
         if(variant==='missing') receipts.pop();
         if(variant==='unknown') receipts[0].outcome='unknown';
         if(variant==='duplicate') receipts.push(receipts[0]);
-        fs.writeFileSync(output+'.attempts.jsonl',receipts.map(r=>JSON.stringify(r)).join('\n'));
+        // trackedMeasure writes both lifecycle events; only settlements are receipts.
+        const journal: Array<Record<string, unknown>> = receipts.flatMap(receipt => [
+          {id:receipt.id,event:'started',at:'2026-10-25T00:00:00.000Z'},
+          {...receipt,event:'settled',at:'2026-10-25T00:00:00.001Z'},
+        ]);
+        if(variant==='interleaved') journal.sort((a,b)=>Number(a.event==='settled')-Number(b.event==='settled'));
+        if(variant==='unstarted') journal.shift();
+        if(variant==='duplicate-start') journal.splice(1,0,journal[0]);
+        if(variant==='duplicate-settlement') journal.push(journal[1]);
+        if(variant==='undeclared-start') journal.push({id:'undeclared',event:'started',at:'2026-10-25T00:00:00.000Z'});
+        if(variant==='unknown-event') journal[0].event='unknown';
+        if(variant==='unsettled') journal.pop();
+        if(variant==='bad-time') journal[0].at='invalid';
+        if(variant==='eventless') delete journal[1].event;
+        fs.writeFileSync(output+'.attempts.jsonl',journal.map(row=>JSON.stringify(row)).join('\n'));
         fs.writeFileSync(output+'.ledger.json',JSON.stringify(variant==='moved-ledger'?{}:ledger));
         const read=()=>readBenchmarkRuntimeEvidence(['--out',output],variant==='failed-budget'?1:0);
-        if(['valid','failed-budget'].includes(variant)) expect(read()).toMatchObject({searchAdapterExercised:true,
+        if(['valid','interleaved','failed-budget'].includes(variant)) expect(read()).toMatchObject({searchAdapterExercised:true,
           baselineAccepted:false,latencyAcceptance:false,executed:6});
         else expect(read).toThrow();
       } finally { fs.rmSync(root,{recursive:true,force:true}); }
