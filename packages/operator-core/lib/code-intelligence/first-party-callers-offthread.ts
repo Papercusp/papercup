@@ -64,7 +64,8 @@ const isProgress = (value: unknown): value is FirstPartyCallersProgress => {
   if (typeof value !== 'object' || value === null) return false;
   const progress = value as FirstPartyCallersProgress;
   return progress.kind === 'first-party-callers-progress'
-    && ['job-received', 'typescript-load', 'compiler-query'].includes(progress.phase)
+    && ['job-received', 'typescript-load', 'compiler-query', 'source-tree', 'source-capture',
+      'source-diff', 'source-clones', 'source-calls'].includes(progress.phase)
     && Number.isFinite(progress.elapsedMs) && progress.elapsedMs >= 0;
 };
 

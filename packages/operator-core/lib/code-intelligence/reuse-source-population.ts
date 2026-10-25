@@ -16,6 +16,8 @@ const time = (value: string): number => {
   return n;
 };
 
+export type ReuseSourcePhase = 'source-tree' | 'source-capture' | 'source-diff' | 'source-clones' | 'source-calls';
+
 /** Exact source population plus net added line identities, never a saved ratio.
  * Reuse the maintained clone floor/normalization and syntax-bound call resolver.
  * Non-JS/TS additions or unavailable clone sources keep redundancy unknown.
@@ -23,6 +25,7 @@ const time = (value: string): number => {
 export function buildReuseSourcePopulation(input: {
   addedLines: Readonly<Record<string, readonly number[]>>;
   complete: boolean;
+  onProgress?: (phase: ReuseSourcePhase) => void;
 } & ({ sources: readonly { path: string; source: string }[] } | {
   sourcePaths: readonly string[];
   readSource: (path: string) => string;
@@ -39,6 +42,7 @@ export function buildReuseSourcePopulation(input: {
   }));
   const index = new CloneIndex();
   const addedByFunction = new Map<string, number[]>();
+  input.onProgress?.('source-clones');
   for (const path of paths.filter(path => /\.tsx?$/.test(path))) {
     const source = readSource(path);
     const { file } = index.update({ path, source });
@@ -58,6 +62,7 @@ export function buildReuseSourcePopulation(input: {
     for (const member of members.slice(1)) for (const n of addedIn(member)) duplicated.add(`${member.path}:${n}`);
   }
   const files = paths.filter(path => /\.[cm]?[jt]sx?$/.test(path)), fileSet = new Set(files);
+  input.onProgress?.('source-calls');
   const snapshot = buildSymbolSnapshot({ files, readSource,
     resolveModule: (path, specifier) => relativeSymbolModule(path, specifier, fileSet), includeCallCensus: true });
   return { addedNonGeneratedLines: [...added.values()].reduce((n, lines) => n + lines.size, 0),
@@ -76,8 +81,10 @@ export function buildReuseSourcePopulation(input: {
  * today's source with yesterday's scheduled measurement window. Gitlinks remain
  * explicit unknowns here; no submodule's mutable checkout is substituted.
  */
-export async function collectReuseSourcePopulation(root: string, start: string, end: string, captureRoot = tmpdir()) {
+export async function collectReuseSourcePopulation(root: string, start: string, end: string, captureRoot = tmpdir(),
+  onProgress?: (phase: ReuseSourcePhase) => void) {
   if (time(start) >= time(end)) throw new Error('Valid half-open source window required');
+  onProgress?.('source-tree');
   const git = (args: string[], input?: string) => new Promise<string>((resolve, reject) => {
     const child = execFile('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 30_000,
       maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } },
@@ -102,6 +109,7 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
   const capture = mkdtempSync(join(captureRoot, 'reuse-source-capture-'));
   const sourceFiles = new Map<string, string>();
   try {
+    onProgress?.('source-capture');
     for (let i = 0; i < selected.length; i += 16) {
       const batch = selected.slice(i, i + 16);
       const out = Buffer.from(await git(['cat-file', '--batch'], batch.map(s => s.blob).join('\n') + '\n'));
@@ -116,6 +124,7 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
         offset = endHeader + 2 + size;
       }
     }
+    onProgress?.('source-diff');
     const paths = (await git(['diff', '--name-only', '-z', '--no-renames', base, commit])).split('\0').filter(eligibleHistoryPath);
     const addedLines: Record<string, number[]> = {};
     const binaryChangedPaths: string[] = [];
@@ -133,7 +142,7 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
     }
     const population = buildReuseSourcePopulation({ sourcePaths: [...sourceFiles.keys()],
       readSource: path => readFileSync(sourceFiles.get(path)!, 'utf8'),
-      addedLines, complete: !tree.some(s => s.kind === 'commit') });
+      addedLines, complete: !tree.some(s => s.kind === 'commit'), onProgress });
     return { ...population,
       addedNonGeneratedLines: binaryChangedPaths.length ? null : population.addedNonGeneratedLines,
       duplicateAddedLines: binaryChangedPaths.length ? null : population.duplicateAddedLines,

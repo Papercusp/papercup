@@ -154,7 +154,9 @@ describe('R16 frozen measurement units and efficacy', () => {
       git('add', 'a.ts'); datedCommit('pinned baseline', '2026-09-29T00:00:00Z');
       await writeFile(join(root, 'b.ts'), 'import { target } from "./a"; target();\n'); git('add', 'b.ts');
       datedCommit('window change', '2026-10-01T00:00:00Z');
-      const pinned = await collectReuseSourcePopulation(root, '2026-09-30T00:00:00Z', '2026-10-02T00:00:00Z');
+      const phases: string[] = [];
+      const pinned = await collectReuseSourcePopulation(root, '2026-09-30T00:00:00Z', '2026-10-02T00:00:00Z', tmpdir(), phase => phases.push(phase));
+      expect(phases).toEqual(['source-tree', 'source-capture', 'source-diff', 'source-clones', 'source-calls']);
       expect(pinned).toMatchObject({ addedNonGeneratedLines: 1, callCensusComplete: true });
       expect(pinned.calls).toEqual([expect.objectContaining({ from: 'b.ts', to: 'a.ts', resolved: true })]);
       let ticks = 0;

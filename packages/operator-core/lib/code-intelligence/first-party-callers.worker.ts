@@ -13,6 +13,7 @@
  */
 import { failedCallersAnswer, firstPartyCallers, type FirstPartyCallersAnswer, type FirstPartyCallersQuery } from './first-party-callers.ts';
 import { loadVendoredTypescript } from './typescript-service.ts';
+import type { ReuseSourcePhase } from './reuse-source-population.ts';
 
 export interface FirstPartyCallersJob extends Omit<FirstPartyCallersQuery, 'ts' | 'now'> {
   readonly vendorDir: string;
@@ -28,7 +29,7 @@ export interface FirstPartyCallersJob extends Omit<FirstPartyCallersQuery, 'ts' 
 /** Progress extends the existing IPC exchange; it never counts as an answer. */
 export interface FirstPartyCallersProgress {
   readonly kind: 'first-party-callers-progress';
-  readonly phase: 'job-received' | 'typescript-load' | 'compiler-query';
+  readonly phase: 'job-received' | 'typescript-load' | 'compiler-query' | ReuseSourcePhase;
   readonly elapsedMs: number;
 }
 
@@ -46,7 +47,7 @@ if ('kind' in job && job.kind === 'reuse-source-population') {
   const sourceJob = job as ReuseSourceJob;
   try {
     const { collectReuseSourcePopulation } = await import('./reuse-source-population.ts');
-    result = { kind: job.kind, ok: true, population: await collectReuseSourcePopulation(sourceJob.root, sourceJob.start, sourceJob.end, sourceJob.captureRoot) };
+    result = { kind: job.kind, ok: true, population: await collectReuseSourcePopulation(sourceJob.root, sourceJob.start, sourceJob.end, sourceJob.captureRoot, progress) };
   } catch (error) {
     result = { kind: job.kind, ok: false, error: error instanceof Error ? error.message : String(error) };
   }
