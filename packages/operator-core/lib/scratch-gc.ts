@@ -33,7 +33,7 @@
  * Plan ref: phase-4-endpoint-system-2026-05-12.md § T2.3.
  */
 
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync, type Dirent } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   mkdir as mkdirAsync,
@@ -488,8 +488,7 @@ function invalidateLocalScratchUsage(workspaceId: string): void {
   const entry = usageEntry(workspaceId);
   entry.measuredAt = 0;
   entry.refreshDeferred = false;
-  entry.runBytesByPath.clear();
-  entry.runBytesValid = false;
+  invalidateRunSizeIndex(entry);
 }
 
 function adoptSharedScratchUsage(
@@ -512,8 +511,7 @@ function adoptSharedScratchUsage(
   entry.refreshDeferred = false;
   entry.sharedUpdatedAt = updatedAt;
   if (!preserveRunIndex) {
-    entry.runBytesByPath.clear();
-    entry.runBytesValid = false;
+    invalidateRunSizeIndex(entry);
   }
   return entry;
 }
@@ -923,9 +921,24 @@ async function childDirs(
   budget?: ScratchGcBudget,
 ): Promise<Array<{ dir: string; mtimeMs: number }>> {
   const out: Array<{ dir: string; mtimeMs: number }> = [];
-  for (const name of await listDir(dir, diagnostics, budget)) {
+  if (scratchGcBudgetExpired(budget)) return out;
+  let entries: Dirent[];
+  try {
+    entries = await measureScratchQuotaRecoveryOperation(
+      diagnostics,
+      'readdir',
+      () => readdirAsync(dir, { withFileTypes: true }),
+    );
+  } catch {
+    return out;
+  }
+  scratchGcBudgetExpired(budget);
+  for (const entry of entries) {
     if (scratchGcBudgetExpired(budget)) break;
-    const child = join(dir, name);
+    // Keep following directory symlinks as before, but do not stat regular files just
+    // to discover that they are not run directories.
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    const child = join(dir, entry.name);
     let st;
     try {
       st = await measureScratchQuotaRecoveryOperation(diagnostics, 'stat', () => statAsync(child));
@@ -984,6 +997,8 @@ interface ScratchUsageEntry {
   refreshDeferred: boolean;
   /** Last stable per-run sizes; request-time recovery remeasures FIFO candidates on demand. */
   runBytesByPath: Map<string, number>;
+  /** Mtimes for runs rechecked after the full workspace measurement. */
+  runMtimeByPath: Map<string, number>;
   /** False when the per-run index does not cover a stable, complete workspace measurement. */
   runBytesValid: boolean;
   /** Last observed/persisted shared-state revision; gates reuse of this process's run index. */
@@ -1004,7 +1019,8 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
     entry = {
       bytes: 0, measuredAt: 0, refreshing: null, refreshDiagnostics: null,
       recovering: null, maintenanceEpoch: 0, writes: new Map(),
-      writeGeneration: 0, refreshDeferred: false, runBytesByPath: new Map(), runBytesValid: false,
+      writeGeneration: 0, refreshDeferred: false, runBytesByPath: new Map(),
+      runMtimeByPath: new Map(), runBytesValid: false,
       sharedUpdatedAt: null,
     };
     usageState.byWorkspace.set(workspaceId, entry);
@@ -1017,10 +1033,17 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
     entry.writeGeneration ??= 0;
     entry.refreshDeferred ??= false;
     entry.runBytesByPath ??= new Map();
+    entry.runMtimeByPath ??= new Map();
     entry.runBytesValid ??= false;
     entry.sharedUpdatedAt ??= null;
   }
   return entry;
+}
+
+function invalidateRunSizeIndex(entry: ScratchUsageEntry): void {
+  entry.runBytesByPath.clear();
+  entry.runMtimeByPath.clear();
+  entry.runBytesValid = false;
 }
 
 function scratchRunDirForFile(workspaceId: string, filePath: string): string | null {
@@ -1042,11 +1065,17 @@ function adjustCachedRunBytes(
   if (!entry.runBytesValid) return;
   const runDir = scratchRunDirForFile(workspaceId, filePath);
   if (!runDir) {
-    entry.runBytesValid = false;
+    invalidateRunSizeIndex(entry);
     return;
   }
+  // A local write changes the run directory mtime. Its byte delta is known, but the
+  // mtime marker must be revalidated before a later recovery trusts this per-run size.
+  entry.runMtimeByPath.delete(runDir);
   const next = (entry.runBytesByPath.get(runDir) ?? 0) + delta;
-  if (next <= 0) entry.runBytesByPath.delete(runDir);
+  if (next <= 0) {
+    entry.runBytesByPath.delete(runDir);
+    entry.runMtimeByPath.delete(runDir);
+  }
   else entry.runBytesByPath.set(runDir, next);
 }
 
@@ -1132,8 +1161,11 @@ async function evictWorkspaceQuotaLocked(
           useCachedRunSizes = false;
           runs = null;
         } else {
-          for (const [runDir, bytes] of measuredRuns) {
-            entry.runBytesByPath.set(runDir, bytes);
+          for (const run of unindexedRuns) {
+            const bytes = measuredRuns.get(run.dir);
+            if (bytes === undefined) continue;
+            entry.runBytesByPath.set(run.dir, bytes);
+            entry.runMtimeByPath.set(run.dir, run.mtimeMs);
             newlyDiscoveredRunBytes += bytes;
           }
           // Cross-process growth changed the index. Re-measure it after this recovery settles.
@@ -1142,6 +1174,7 @@ async function evictWorkspaceQuotaLocked(
       }
     }
   }
+  if (!useCachedRunSizes) entry.runMtimeByPath.clear();
   if (useCachedRunSizes && runs) {
     const liveRuns = new Set(runs.map((run) => run.dir));
     used = entry.bytes + newlyDiscoveredRunBytes;
@@ -1153,6 +1186,7 @@ async function evictWorkspaceQuotaLocked(
       if ([...entry.writes.values()].some((write) => write.filePath.startsWith(runDir + sep))) continue;
       used -= cachedBytes;
       entry.runBytesByPath.delete(runDir);
+      entry.runMtimeByPath.delete(runDir);
       cacheChanged = true;
     }
     used = Math.max(0, used);
@@ -1190,9 +1224,19 @@ async function evictWorkspaceQuotaLocked(
       try {
         if (useCachedRunSizes) {
           const cachedBytes = entry.runBytesByPath.get(run.dir) ?? 0;
-          // Recheck only the FIFO candidates we may delete. This catches cross-process changes
-          // to those runs without recursively sizing every run in the workspace.
-          bytesInRun = await sizeOfDirAsync(run.dir, observedWriterBytes, undefined, 0, undefined, diagnostics);
+          // The full index covers runs unchanged since its measurement. Directory mtime
+          // detects later cross-process changes, so only changed candidates need a recursive
+          // file-stat walk while the exclusive data lease is held.
+          const recheckedMtime = entry.runMtimeByPath.get(run.dir);
+          const runSizeIsCurrent = recheckedMtime === undefined
+            ? run.mtimeMs <= entry.measuredAt
+            : run.mtimeMs === recheckedMtime;
+          if (runSizeIsCurrent) {
+            bytesInRun = cachedBytes;
+          } else {
+            bytesInRun = await sizeOfDirAsync(run.dir, observedWriterBytes, undefined, 0, undefined, diagnostics);
+            entry.runMtimeByPath.set(run.dir, run.mtimeMs);
+          }
           if (bytesInRun !== cachedBytes) cacheChanged = true;
           used += bytesInRun - cachedBytes;
           entry.runBytesByPath.set(run.dir, bytesInRun);
@@ -1234,6 +1278,7 @@ async function evictWorkspaceQuotaLocked(
       evictedRuns.push(run.dir);
       if (useCachedRunSizes) entry.runBytesByPath.delete(run.dir);
       else runBytesByPath.delete(run.dir);
+      entry.runMtimeByPath.delete(run.dir);
       evictions += 1;
       bytes += bytesInRun;
       if (diagnostics) {
@@ -1261,10 +1306,12 @@ async function evictWorkspaceQuotaLocked(
     entry.refreshDeferred = overlappingWrites || cacheChanged;
     if (useCachedRunSizes) {
       entry.runBytesValid = !entry.refreshDeferred;
+      if (!entry.runBytesValid) entry.runMtimeByPath.clear();
     } else if (overlappingWrites) {
-      entry.runBytesValid = false;
+      invalidateRunSizeIndex(entry);
     } else {
       entry.runBytesByPath = runBytesByPath;
+      entry.runMtimeByPath.clear();
       entry.runBytesValid = [...runBytesByPath.values()].every(Number.isFinite)
         && (!diagnostics || (diagnostics.directoryReadErrors === 0 && diagnostics.fileStatErrors === 0));
     }
@@ -1273,12 +1320,13 @@ async function evictWorkspaceQuotaLocked(
     // reservation-based total by exactly the bytes evicted, then re-measure once writers settle.
     entry.bytes = Math.max(0, entry.bytes - bytes);
     entry.refreshDeferred = true;
-    entry.runBytesValid = false;
+    invalidateRunSizeIndex(entry);
   } else {
     entry.bytes = used;
     entry.measuredAt = now();
     entry.refreshDeferred = false;
     entry.runBytesByPath = runBytesByPath;
+    entry.runMtimeByPath.clear();
     entry.runBytesValid = [...runBytesByPath.values()].every(Number.isFinite)
       && (!diagnostics || (diagnostics.directoryReadErrors === 0 && diagnostics.fileStatErrors === 0));
   }
@@ -1303,8 +1351,7 @@ async function evictWorkspaceQuotaWithLock(
       const sharedNow = await withScratchWorkspaceMutex(workspaceId, 'quota-eviction-validate', () =>
         readSharedScratchQuotaState(workspaceId));
       if ((sharedNow?.updatedAt ?? null) !== (options.expectedSharedUpdatedAt ?? null)) {
-        entry.runBytesByPath.clear();
-        entry.runBytesValid = false;
+        invalidateRunSizeIndex(entry);
         entry.refreshDeferred = true;
         if (sharedNow) {
           entry.bytes = sharedNow.bytes;
@@ -1318,8 +1365,7 @@ async function evictWorkspaceQuotaWithLock(
       return evictWorkspaceQuotaLocked(workspaceId, targetBytes, true, diagnostics, now);
     }
 
-    entry.runBytesByPath.clear();
-    entry.runBytesValid = false;
+    invalidateRunSizeIndex(entry);
     entry.refreshDeferred = false;
     return evictWorkspaceQuotaLocked(workspaceId, targetBytes, false, diagnostics, now);
   });
@@ -1511,7 +1557,7 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
       // writeGeneration, and a currently reserved write may still be changing its file.
       if (hasReservedWrites() || entry.writeGeneration !== writeGeneration) {
         entry.refreshDeferred = true;
-        entry.runBytesValid = false;
+        invalidateRunSizeIndex(entry);
         return;
       }
 
@@ -1520,7 +1566,7 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
           const sharedNow = await readSharedScratchQuotaState(workspaceId);
           const sharedChanged = (sharedNow?.updatedAt ?? null) !== (sharedAtStart?.updatedAt ?? null);
           if (hasReservedWrites() || entry.writeGeneration !== writeGeneration || sharedChanged) {
-            entry.runBytesValid = false;
+            invalidateRunSizeIndex(entry);
             if (hasReservedWrites() || entry.writeGeneration !== writeGeneration || !sharedNow) {
               entry.refreshDeferred = true;
             }
@@ -1539,6 +1585,7 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
           entry.measuredAt = now();
           entry.refreshDeferred = false;
           entry.runBytesByPath = runBytesByPath;
+          entry.runMtimeByPath.clear();
           entry.runBytesValid = [...runBytesByPath.values()].every(Number.isFinite);
           entry.sharedUpdatedAt = sharedAtStart?.updatedAt ?? null;
           adoptedStableRunIndex = entry.runBytesValid && !entry.refreshDeferred;
@@ -1590,8 +1637,7 @@ export function _setScratchUsageForTests(
   }) + '\n', { mode: 0o600 });
   entry.sharedUpdatedAt = updatedAt;
   if (!preserveRunBytes) {
-    entry.runBytesByPath.clear();
-    entry.runBytesValid = false;
+    invalidateRunSizeIndex(entry);
   }
 }
 
@@ -1649,7 +1695,7 @@ export function reserveScratchSpace(opts: {
   entry.bytes = used + opts.bytes;
   entry.writeGeneration += 1;
   if (opts.filePath) adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, opts.bytes);
-  else entry.runBytesValid = false;
+  else invalidateRunSizeIndex(entry);
   // Start after this reservation: only later reservations can invalidate the new walk.
   // Fire-and-forget keeps both accepted and rejected reservations free of filesystem waits.
   // An untracked synchronous writer will call noteScratchWriteSettled after touching disk; defer
@@ -1662,7 +1708,7 @@ export function noteScratchWriteSettled(workspaceId: string, needsRefresh = fals
   const entry = usageEntry(workspaceId);
   entry.writeGeneration += 1;
   if (needsRefresh || entry.refreshing) {
-    entry.runBytesValid = false;
+    invalidateRunSizeIndex(entry);
     entry.refreshDeferred = true;
   }
   if (entry.refreshDeferred) {
@@ -2389,7 +2435,7 @@ export async function writeWithScratchQuota(
           // it when the ledger was fresh. The stale-ledger case still needs an async reconciliation
           // to account for changes made by another process before this reservation.
           if (reservation!.sharedStateStale) {
-            entry.runBytesValid = false;
+            invalidateRunSizeIndex(entry);
             entry.refreshDeferred = true;
           } else {
             entry.refreshDeferred = false;
