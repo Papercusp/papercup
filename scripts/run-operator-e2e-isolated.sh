@@ -258,6 +258,13 @@ NODE
   fi
 fi
 
+# Native acceptance consumers also inspect the inline custody list. Derive it
+# from the same file used by admission so both representations name the same inputs.
+if [ -z "${VERIFY_TAURI_SOURCE_INPUTS:-}" ] && [ -n "${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ]; then
+  VERIFY_TAURI_SOURCE_INPUTS="$(node -e 'const fs = require("node:fs"); const paths = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (!Array.isArray(paths) || paths.some(p => typeof p !== "string" || /[\s,]/.test(p))) process.exit(2); process.stdout.write(paths.join(","));' "$VERIFY_TAURI_SOURCE_INPUTS_FILE")" || exit $?
+  export VERIFY_TAURI_SOURCE_INPUTS
+fi
+
 # Refuse stale acceptance inputs before the rig allocates native build slots or
 # runs platform preparation. Include the same mandatory tooling profile as the
 # rig; the rig rechecks after export to protect against racing edits.

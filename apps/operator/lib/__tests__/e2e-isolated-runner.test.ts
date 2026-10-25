@@ -289,6 +289,7 @@ describe('run-operator-e2e-isolated.sh', () => {
       mkdirSync(dir, { recursive: true });
       const refFile = join(dir, 'source-ref.txt');
       const inputsPathFile = join(dir, 'inputs-path.txt');
+      const inlineInputsFile = join(dir, 'inline-inputs.txt');
       const script = [
         'set -uo pipefail',
         'ROOT=' + JSON.stringify(REPO_ROOT),
@@ -296,6 +297,7 @@ describe('run-operator-e2e-isolated.sh', () => {
         sourceSelection,
         'printf "%s" "$VERIFY_TAURI_SOURCE_REF" > ' + JSON.stringify(refFile),
         'printf "%s" "${VERIFY_TAURI_SOURCE_INPUTS_FILE-}" > ' + JSON.stringify(inputsPathFile),
+        'printf "%s" "${VERIFY_TAURI_SOURCE_INPUTS-}" > ' + JSON.stringify(inlineInputsFile),
       ].join('\n');
       const env: NodeJS.ProcessEnv = { ...process.env };
       delete env.VERIFY_TAURI_SOURCE_REF;
@@ -305,7 +307,7 @@ describe('run-operator-e2e-isolated.sh', () => {
       const result = spawnSync('bash', ['-c', script, 'source-selection', ...args], {
         cwd: REPO_ROOT, encoding: 'utf8', env, timeout: 15_000,
       });
-      return { result, refFile, inputsPathFile };
+      return { result, refFile, inputsPathFile, inlineInputsFile };
     };
 
     const head = spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf8' });
@@ -325,6 +327,7 @@ describe('run-operator-e2e-isolated.sh', () => {
     const fullSuite = exercise(join(f.dir, 'full-suite-' + index), undefined, args);
     expect(fullSuite.result.status, fullSuite.result.stderr).toBe(0);
     const fullSuiteInputs = JSON.parse(readFileSync(readFileSync(fullSuite.inputsPathFile, 'utf8'), 'utf8'));
+    expect(readFileSync(fullSuite.inlineInputsFile, 'utf8').split(',')).toEqual(fullSuiteInputs);
     expect(fullSuiteInputs).toEqual(expect.arrayContaining([
       'apps/operator/e2e/ongoing-work-native-collection.spec.mts',
       'apps/operator/e2e/_ongoing-work-native-fixture.ts',
