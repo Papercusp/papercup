@@ -99,6 +99,72 @@ try {
   const claimedComparison = { sourceHash: promoterSourceHash, runtime: getServingHostIdentity(), cases: comparisonCases };
   assert.ok(claimedComparison.runtime.processId);
   assert.ok(claimedComparison.runtime.buildSha, 'private source runtime must report its measured build identity');
+  const parkCases: typeof comparisonCases = [];
+  const parkActor = 'su-11111111-1111-4111-8111-111111111111';
+  const parkReason = 'future independent private source work';
+  for (const name of ['unauthenticated', 'distinct-admitted', 'distinct-pending', 'duplicate', 'omitted',
+    'missing-audit', 'audit-drift', 'dependency-drift']) {
+    const parkHarness = `audited-park-${name}`;
+    const originalId = `${parkHarness}-original`, comparisonId = `${parkHarness}-comparison`;
+    const payload = { _claimHold: true, _ei: { source: 'su', created_by: parkActor },
+      claim_hold_by: parkActor, claim_hold_reason: parkReason, claim_hold_at: new Date(5_000).toISOString() };
+    for (const id of [originalId, comparisonId]) await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, payload, item_kind, nature,
+         created_ts, updated_ts, embedding, embedding_mode, admission)
+      VALUES (${ws}, ${parkHarness}, ${id}, 'Private audited park finding', 'Independent private park evidence', 'open',
+        ${sql.json(id === comparisonId ? payload : {})}::jsonb, 'change', 'work',
+        ${id === originalId ? 1 : 2}, ${id === originalId ? 1 : 2}, ${vector(0)}::vector, 'gemma',
+        ${id === comparisonId && name !== 'distinct-pending' ? 'admitted' : 'pending'})`;
+    if (name !== 'missing-audit') await sql`
+      INSERT INTO harness_shared.audit_log (id, ts, workspace_id, actor, action, subject, details)
+      VALUES (${comparisonId + '-audit'}, ${5_001}, ${ws}, ${parkActor}, 'work_items:claim_hold:set', ${comparisonId},
+        ${sql.json({ mode: 'claim_hold', by: parkActor, reason: parkReason })}::jsonb)`;
+    const scope = { workspaceId: ws, harnessSlug: parkHarness, ids: [comparisonId] };
+    let expected = (await readAdmissionMergeSnapshots(sql, scope)).get(comparisonId);
+    assert.ok(expected);
+    let modelCalls = 0;
+    const result = await runWorkItemAdmissionPromoter({ workspaceId: ws, harnessSlug: parkHarness,
+      sql, runId: `audited-park-background-${name}`, now: () => 10_000,
+      ...(name === 'unauthenticated' ? {} : { componentScreeningItemIds: [originalId] }),
+      llmCall: async (input) => {
+        modelCalls += 1;
+        const keys = [...input.messages[0]!.content.matchAll(/^## (.+)$/gm)].map(match => match[1]!);
+        assert.deepEqual(keys, [`${comparisonId}::${originalId}`]);
+        return { text: '', inputTokens: 10, outputTokens: 10, json: { judgements: name === 'omitted' ? [] : [{
+          pairKey: keys[0], verdict: name === 'duplicate' ? 'r-finding-merge' : 'distinct', reason: 'private audited park control',
+        }] } };
+      },
+      beforePersist: async () => {
+        if (name === 'audit-drift') await sql`UPDATE harness_shared.audit_log
+          SET details = details || '{"reason":"changed private evidence"}'::jsonb
+          WHERE workspace_id = ${ws} AND id = ${comparisonId + '-audit'}`;
+        else if (name === 'dependency-drift') await sql`INSERT INTO harness_shared.work_item_deps
+          (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by)
+          VALUES (${ws}, 'issue', ${comparisonId}, 'issue', ${comparisonId + '-blocker'}, 'blocks', ${parkActor})`;
+        else return;
+        expected = (await readAdmissionMergeSnapshots(sql, scope)).get(comparisonId);
+      },
+      onNewlyAdmitted: async () => {},
+    });
+    const actual = (await readAdmissionMergeSnapshots(sql, scope)).get(comparisonId);
+    assert.deepEqual(actual, expected, `audited park ${name} must remain unchanged`);
+    const distinct = name.startsWith('distinct-');
+    assert.equal(result.promoted, distinct ? 1 : 0);
+    assert.equal(result.merged, 0);
+    assert.equal(modelCalls, ['unauthenticated', 'missing-audit'].includes(name) ? 0 : 1);
+    if (name.endsWith('-drift')) assert.ok(result.guardRefusals?.some(row =>
+      row.itemId === originalId && row.reason === 'snapshot-drift'));
+    const [original] = await sql`SELECT admission FROM harness_shared.work_items
+      WHERE workspace_id = ${ws} AND harness_slug = ${parkHarness} AND feature_id = ${originalId}`;
+    assert.equal(original!.admission, distinct ? 'admitted' : 'pending');
+    const [links] = await sql`SELECT count(*)::int AS count FROM harness_shared.coord_links
+      WHERE workspace_id = ${ws} AND (src_ref IN (${originalId}, ${comparisonId}, ${parkHarness + '#' + originalId}, ${parkHarness + '#' + comparisonId})
+        OR dst_ref IN (${originalId}, ${comparisonId}, ${parkHarness + '#' + originalId}, ${parkHarness + '#' + comparisonId}))`;
+    assert.equal(links!.count, 0);
+    parkCases.push({ name, modelCalls, promoted: result.promoted, merged: result.merged, comparisonPreserved: true });
+  }
+  const auditedParkComparison = { sourceHash: promoterSourceHash, runtime: claimedComparison.runtime, cases: parkCases };
   const insertColumns = ['workspace_id', 'harness_slug', 'feature_id', 'title', 'summary', 'status', 'payload',
     'item_kind', 'nature', 'created_ts', 'updated_ts', 'embedding', 'embedding_mode', 'admission', 'admitted_at', 'admitted_by'];
   const generatedInputs = await sql`
@@ -431,6 +497,7 @@ try {
       executions, terminalReplayWithoutModel: true, merged: workerStage!.outcome.successful, durableSteps },
     pinnedRecompute,
     claimedComparison,
+    auditedParkComparison,
   }) + '\n');
   } finally {
     releaseWorker();
