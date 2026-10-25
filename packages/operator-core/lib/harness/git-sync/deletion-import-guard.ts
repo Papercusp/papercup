@@ -174,7 +174,7 @@ export async function detectUnsafeDeletions(deps: DeletionGuardDeps): Promise<Co
       let grep: { code: number; stdout: string; stderr: string };
       try {
         grep = await runGit(
-          ['grep', '-zIl', '-F', token, '--untracked', '--', ...RESOLVABLE_EXTS.map((ext) => `*${ext}`)],
+          ['grep', '--untracked', '-zIl', '-F', '-e', token, '--', ...RESOLVABLE_EXTS.map((ext) => `*${ext}`)],
           repoPath,
         );
       } catch (e) {
