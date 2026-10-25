@@ -319,6 +319,22 @@ async function stopScriptDisplay(dir: string, stopScript: string): Promise<strin
   // to a successor by the time GC runs. Helper metadata cannot authorize them.
   // Preserve these directories until teardown has process identity evidence.
   if (/\bkill\s+-(?:TERM|9)\s+(?:--\s+)?-?"?\d+"?(?=\s|;)/.test(stopScript)) return null;
+  if (stopScript.includes('stop_verify_process')) {
+    const reaperPath = join(dir, 'frozen-source-reaper.sh');
+    if (!stopScript.split('\n').includes(`source "${reaperPath}" || exit 1`)) return null;
+    try {
+      if (!(await lstat(reaperPath)).isFile()) return null;
+      const reaper = await readFile(reaperPath, 'utf8');
+      if (!reaper.includes('frozen_source_process_identity_matches') ||
+          !reaper.includes('[ -n "$expected_ticks" ] && [ "$ticks" = "$expected_ticks" ] || return 1') ||
+          !reaper.includes('[ -n "$provenance" ] || return 1') ||
+          !reaper.includes('PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$provenance') ||
+          !reaper.includes('if ! frozen_source_process_identity_matches "$pid" "$ticks" "$provenance"; then') ||
+          !reaper.includes('kill -TERM "$pid"')) return null;
+    } catch {
+      return null;
+    }
+  }
   let helper: string;
   try {
     if (!(await lstat(join(dir, 'stop.sh'))).isFile() || !(await lstat(helperPath)).isFile()) return null;
@@ -513,12 +529,15 @@ export async function gcVerifyInstances(
 
     const bytes = await dirBytes(dir);
     if (!dryRun) {
-      // Best-effort teardown: a dead instance's stop.sh exits nonzero on every kill
-      // (the pids are long gone), which is SUCCESS for our purposes, not failure.
+      // Teardown's nonzero status may be the identity guard preserving a live
+      // source holder, or a timeout before cleanup finished. Keep its helper and
+      // evidence for a later safe retry; a failed stop is never deletion authority.
       try {
         await runStopScript(stopScriptPath);
       } catch {
-        /* pids already dead, or a hung child hit the timeout — remove the dir anyway */
+        skipped += 1;
+        instances.push(record({ display, skipped: 'teardown failed — preserving directory' }));
+        continue;
       }
       try {
         await rm(dir, { recursive: true, force: true });

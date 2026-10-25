@@ -102,6 +102,42 @@ function generateStopScript(root: string, sourceRoot: string, sourceWork: string
 }
 
 describe("verify-tauri-headless frozen-source survivor reaper", () => {
+  it.each([
+    ['pid', 'owned', false, false],
+    ['pid', 'foreign', false, true],
+    ['pid', 'owned', true, true],
+    ['group', 'owned', false, false],
+    ['group', 'foreign', false, true],
+  ] as const)("guards %s teardown for %s provenance and staleTicks=%s", (kind, ownership, staleTicks, preserved) => {
+    const fixture = makeFixture("verify-process-identity");
+    const script = [
+      "set -u",
+      reaperFunctions,
+      'setsid sleep 60 &',
+      'child=$!',
+      'trap \'kill -KILL "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true\' EXIT',
+      'for attempt in {1..100}; do [ "$(ps -o comm= -p "$child")" = sleep ] && break; sleep 0.01; done',
+      'ticks="$(frozen_source_process_start_ticks "$child")"',
+      staleTicks ? 'ticks=1' : '',
+      kind === 'group'
+        ? 'stop_verify_process_group "$child" this-run'
+        : 'stop_verify_process "$child" "$ticks" this-run',
+      'status=$?',
+      'if kill -0 "$child" 2>/dev/null; then state=alive; else state=exited; fi',
+      'printf "STOP_STATUS=%s CHILD_STATE=%s\\n" "$status" "$state"',
+    ].join('\n');
+    try {
+      const result = spawnSync('bash', ['-c', script], {
+        encoding: 'utf8', timeout: 12_000,
+        env: { ...process.env, PAPERCUSP_TAURI_LAUNCH_PROVENANCE: ownership === 'owned' ? 'this-run' : 'another-run' },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain(`STOP_STATUS=${preserved ? 1 : 0} CHILD_STATE=${preserved ? 'alive' : 'exited'}`);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("reaps a run-owned process whose cwd is inside the frozen source", () => {
     const fixture = makeFixture("frozen-source-cwd");
     const token = "test-run-owned-cwd";

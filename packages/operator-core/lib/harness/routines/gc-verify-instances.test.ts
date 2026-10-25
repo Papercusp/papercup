@@ -67,9 +67,11 @@ async function makeNativeInstance(display = '144', ageHours = 200, targets: Reco
   const source = readFileSync(resolve(__dirname, '../../../../../scripts/verify-tauri-headless.sh'), 'utf8');
   const start = source.indexOf('write_xvfb_stop_script() {');
   const end = source.indexOf('\n# ── EI-11559:', source.indexOf('write_stop_script() {', start));
+  const reaperStart = source.indexOf('frozen_source_path_is_inside() {');
+  const reaperEnd = source.indexOf('\nwrite_frozen_source_reaper_script || {', reaperStart);
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
-  execFileSync('bash', ['-c', `${source.slice(start, end)}\nwrite_stop_script`], {
+  execFileSync('bash', ['-c', `${source.slice(reaperStart, reaperEnd)}\n${source.slice(start, end)}\nwrite_frozen_source_reaper_script\nwrite_stop_script`], {
     env: {
       ...process.env,
       WORK: dir,
@@ -107,7 +109,8 @@ describe('gc-verify-instances — native producer protocol', () => {
     expect(existsSync(dir)).toBe(true);
   });
 
-  it.each(['missing', 'symlink', 'wrong-display', 'wrong-provenance', 'unguarded', 'foreign-helper', 'footer-only'])
+  it.each(['missing', 'symlink', 'wrong-display', 'wrong-provenance', 'unguarded', 'foreign-helper', 'footer-only',
+    'missing-reaper', 'symlink-reaper', 'unguarded-reaper', 'foreign-reaper'])
     ('refuses a native stop script with %s helper evidence', async (variant) => {
       const dir = await makeNativeInstance();
       const path = join(dir, 'stop-xvfb.sh');
@@ -127,9 +130,24 @@ describe('gc-verify-instances — native producer protocol', () => {
         await writeFile(path, helper.replace('PAPERCUSP_VERIFY_XVFB_DISPLAY=$EXPECTED_DISPLAY', 'IGNORED=$EXPECTED_DISPLAY'));
       } else if (variant === 'foreign-helper') {
         await writeFile(stopPath, readFileSync(stopPath, 'utf8').replace(`${dir}/stop-xvfb.sh`, `${root}/stop-xvfb.sh`));
+      } else if (variant.endsWith('-reaper')) {
+        const reaperPath = join(dir, 'frozen-source-reaper.sh');
+        const reaper = readFileSync(reaperPath, 'utf8');
+        if (variant === 'missing-reaper' || variant === 'symlink-reaper') {
+          await rm(reaperPath);
+          if (variant === 'symlink-reaper') {
+            await writeFile(join(root, 'foreign-reaper.sh'), reaper);
+            symlinkSync(join(root, 'foreign-reaper.sh'), reaperPath);
+          }
+        } else if (variant === 'unguarded-reaper') {
+          await writeFile(reaperPath, reaper.replaceAll('PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$provenance', 'IGNORED=$provenance'));
+        } else {
+          await writeFile(stopPath, readFileSync(stopPath, 'utf8').replace(`source "${reaperPath}"`, `source "${root}/foreign-reaper.sh"`));
+        }
       } else {
         await writeFile(stopPath, '#!/usr/bin/env bash\necho "stopped (display :144, port 33144)"\n');
       }
+      utimesSync(dir, hoursAgo(200), hoursAgo(200));
       const stop = vi.fn(async () => {});
       const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
       expect(result.reaped).toBe(0);
@@ -151,6 +169,11 @@ describe('gc-verify-instances — native producer protocol', () => {
   it.each(['TAURI_PID', 'OPENBOX_PID', 'ISOLATED_PG_PID'])
     ('refuses unverified saved %s signals even when the Xvfb helper has valid provenance', async (target) => {
       const dir = await makeNativeInstance('144', 200, { [target]: String(process.pid) });
+      // Model the pre-identity native emitter. Current emitters delegate these
+      // hints to a nonce/start-time checked helper rather than signalling them.
+      const path = join(dir, 'stop.sh');
+      await writeFile(path, `${readFileSync(path, 'utf8')}\nkill -9 ${process.pid} 2>/dev/null\n`);
+      utimesSync(dir, hoursAgo(200), hoursAgo(200));
       const stop = vi.fn(async () => {});
       const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
       expect(result.reaped).toBe(0);
@@ -284,14 +307,20 @@ describe('gc-verify-instances — reaping', () => {
     expect(existsSync(dir)).toBe(false);
   });
 
-  it('still removes the dir when stop.sh fails — dead pids exit nonzero, that is success', async () => {
-    const dir = await makeInstance('deadpids', { ageHours: 200 });
+  it.each(['unverified process survivor', 'teardown timeout', 'kill: no such process'])
+    ('preserves the directory and its teardown evidence after %s', async (failure) => {
+    const dir = await makeNativeInstance();
+    await writeFile(join(dir, 'survivor-evidence.log'), failure);
+    utimesSync(dir, hoursAgo(200), hoursAgo(200));
     const stop = vi.fn(async () => {
-      throw new Error('kill: no such process');
+      throw new Error(failure);
     });
     const res = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
-    expect(res.reaped).toBe(1);
-    expect(existsSync(dir)).toBe(false);
+    expect(stop).toHaveBeenCalledWith(join(dir, 'stop.sh'));
+    expect(res.reaped).toBe(0);
+    expect(res.bytesFreed).toBe(0);
+    expect(res.instances[0]).toMatchObject({ dir, display: ':144', skipped: 'teardown failed — preserving directory' });
+    expect(readFileSync(join(dir, 'survivor-evidence.log'), 'utf8')).toBe(failure);
   });
 
   it('dryRun names what it WOULD reap and deletes nothing', async () => {

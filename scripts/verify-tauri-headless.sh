@@ -1455,13 +1455,51 @@ frozen_source_process_owned() {
   return 1
 }
 
-frozen_source_process_matches() {
-  local pid="$1" expected_ticks="$2" root="$3" provenance="$4" ticks
+frozen_source_process_identity_matches() {
+  local pid="$1" expected_ticks="$2" provenance="$3" ticks
+  [ -n "$provenance" ] || return 1
   [ -d "/proc/$pid" ] || return 1
   ticks="$(frozen_source_process_start_ticks "$pid" 2>/dev/null)" || return 1
   [ -n "$expected_ticks" ] && [ "$ticks" = "$expected_ticks" ] || return 1
-  frozen_source_process_owned "$pid" "$provenance" || return 1
+  frozen_source_process_owned "$pid" "$provenance"
+}
+
+frozen_source_process_matches() {
+  local pid="$1" expected_ticks="$2" root="$3" provenance="$4"
+  frozen_source_process_identity_matches "$pid" "$expected_ticks" "$provenance" || return 1
   frozen_source_process_rooted "$pid" "$root"
+}
+
+# A persisted PID is a hint, never signal authority. Reuse the source reaper's
+# nonce/start-time contract for processes (openbox/PG) not rooted in its tree.
+stop_verify_process() {
+  local pid="$1" ticks="$2" provenance="$3" attempt
+  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] || return 0
+  [ -d "/proc/$pid" ] || return 0
+  if ! frozen_source_process_identity_matches "$pid" "$ticks" "$provenance"; then
+    echo "VERIFY_PROCESS_UNVERIFIED pid=$pid; preserving teardown evidence" >&2
+    return 1
+  fi
+  kill -TERM "$pid" 2>/dev/null || true
+  for attempt in {1..20}; do
+    frozen_source_process_identity_matches "$pid" "$ticks" "$provenance" || return 0
+    sleep 0.1
+  done
+  if frozen_source_process_identity_matches "$pid" "$ticks" "$provenance"; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+}
+
+stop_verify_process_group() {
+  local group="$1" provenance="$2" pid ticks failed=0
+  [[ "$group" =~ ^[0-9]+$ ]] && [ "$group" -gt 1 ] || return 0
+  # Never signal the saved group number: a successor can reuse it. Each live
+  # member needs its own current start time and exact invocation provenance.
+  while IFS= read -r pid; do
+    ticks="$(frozen_source_process_start_ticks "$pid" 2>/dev/null || true)"
+    stop_verify_process "$pid" "$ticks" "$provenance" || failed=1
+  done < <(pgrep -g "$group" 2>/dev/null || true)
+  return "$failed"
 }
 
 reap_frozen_source_survivors() (
@@ -1559,7 +1597,10 @@ write_frozen_source_reaper_script() {
     declare -f frozen_source_rooted_processes
     declare -f frozen_source_process_start_ticks
     declare -f frozen_source_process_owned
+    declare -f frozen_source_process_identity_matches
     declare -f frozen_source_process_matches
+    declare -f stop_verify_process
+    declare -f stop_verify_process_group
     declare -f reap_frozen_source_survivors
   } >"$helper" || return 1
   chmod 700 "$helper"
@@ -3176,9 +3217,14 @@ XVFB_STOP
 }
 
 write_stop_script() {
+  local openbox_ticks pg_ticks
+  openbox_ticks="$(frozen_source_process_start_ticks "$OPENBOX_PID" 2>/dev/null || true)"
+  pg_ticks="$(frozen_source_process_start_ticks "$ISOLATED_PG_PID" 2>/dev/null || true)"
   write_xvfb_stop_script
   cat > "$WORK/stop.sh" <<STOP
 #!/usr/bin/env bash
+source "$WORK/frozen-source-reaper.sh" || exit 1
+SOURCE_CLEANUP_FAILED=0
 rm -f -- "$WORK/account-pool-references.json"
 # EI-20227529270079601 / EI-9748 Route A: stop sibling scopes first so no
 # detached descendant survives the process-group teardown below.
@@ -3191,7 +3237,7 @@ fi
 # the display-derived port. Instead we tear down the display/app and let the keeper
 # SELF-terminate once Xvfb is gone AND the port is free (it holds the lock through
 # that drain), so a next run reusing this display can't collide with a straggler.
-[ -n "$TAURI_PID" ] && { kill -TERM -- -$TAURI_PID 2>/dev/null; sleep 1; kill -9 -- -$TAURI_PID 2>/dev/null; }
+stop_verify_process_group "$TAURI_PID" "$TAURI_LAUNCH_PROVENANCE" || SOURCE_CLEANUP_FAILED=1
 # EI-18745117818375852: the group-kill above only reaches \$TAURI_PID's OWN
 # process group — under load, dev-operator-ifneeded.sh's WI-3042 restart-on-
 # nonzero-exit supervisor can have already spawned replacement sidecars that
@@ -3207,6 +3253,8 @@ for _p in \$(pgrep -f "$OPERATOR_HOST_PROCESS_RE" 2>/dev/null); do
   _env_p="\$(tr '\\0' '\\n' < "/proc/\$_p/environ" 2>/dev/null)" || continue
   grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"\$_env_p" || continue
   grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" <<<"\$_env_p" || continue
+  _ticks_p="\$(frozen_source_process_start_ticks "\$_p" 2>/dev/null || true)"
+  frozen_source_process_identity_matches "\$_p" "\$_ticks_p" "$TAURI_LAUNCH_PROVENANCE" || continue
   kill -TERM "\$_p" 2>/dev/null
 done
 sleep 1
@@ -3214,19 +3262,20 @@ for _p in \$(pgrep -f "$OPERATOR_HOST_PROCESS_RE" 2>/dev/null); do
   _env_p="\$(tr '\\0' '\\n' < "/proc/\$_p/environ" 2>/dev/null)" || continue
   grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"\$_env_p" || continue
   grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" <<<"\$_env_p" || continue
+  _ticks_p="\$(frozen_source_process_start_ticks "\$_p" 2>/dev/null || true)"
+  frozen_source_process_identity_matches "\$_p" "\$_ticks_p" "$TAURI_LAUNCH_PROVENANCE" || continue
   kill -9 "\$_p" 2>/dev/null
 done
-[ -n "$OPENBOX_PID" ] && kill -9 $OPENBOX_PID 2>/dev/null
+stop_verify_process "$OPENBOX_PID" "$openbox_ticks" "$TAURI_LAUNCH_PROVENANCE" || SOURCE_CLEANUP_FAILED=1
 # This helper matches this run's provenance and display before each signal.
 # Xvfb removes its own socket and lock during normal SIGTERM shutdown.
 "$WORK/stop-xvfb.sh" || true
 # EI-10387: stop our throwaway isolated-DB postgres (if VERIFY_TAURI_ISOLATED_DB
 # booted one) — SIGTERM lets it shut the postmaster down cleanly before we reap.
-[ -n "$ISOLATED_PG_PID" ] && { kill -TERM "$ISOLATED_PG_PID" 2>/dev/null; sleep 1; kill -9 "$ISOLATED_PG_PID" 2>/dev/null; }
+stop_verify_process "$ISOLATED_PG_PID" "$pg_ticks" "$TAURI_LAUNCH_PROVENANCE" || SOURCE_CLEANUP_FAILED=1
 # Boot-only stop.sh owns the per-run source/dependency snapshot.
 # Assertion teardown retains reports first and owns its own snapshot cleanup.
-SOURCE_CLEANUP_FAILED=0
-if [ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ]; then
+if [ "\$SOURCE_CLEANUP_FAILED" -eq 0 ] && [ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ]; then
   # The original verifier shell has exited in --boot-only mode, so use the
   # identical proc census/reaper that normal teardown calls.
   if ! source "$WORK/frozen-source-reaper.sh" \
@@ -3241,7 +3290,9 @@ fi
 # EI-20191224828837149: the isolated verifier owns a disposable Tauri/WebKit
 # profile too. Remove it on the explicit --boot-only stop path as well as the
 # normal EXIT teardown; otherwise localStorage would outlive the run.
-[ -n "$ISOLATED_WEBVIEW_ROOT" ] && rm -rf "$ISOLATED_WEBVIEW_ROOT" 2>/dev/null
+if [ "\$SOURCE_CLEANUP_FAILED" -eq 0 ]; then
+  [ -n "$ISOLATED_WEBVIEW_ROOT" ] && rm -rf "$ISOLATED_WEBVIEW_ROOT" 2>/dev/null
+fi
 echo "stopped (display :$DISPLAY_NUM, port $DEV_PORT)"
 if [ "\$SOURCE_CLEANUP_FAILED" -ne 0 ]; then
   exit 1
