@@ -39,14 +39,100 @@
     "originalDeclaredCases": 538,
     "declaredCasesAbsentFromBaselineCollection": [],
     "historicalRun21937307CaseTable": "not recorded; do not claim recovered full historical 1209-case identity equivalence",
-    "committedFullSuite": "pending exact fixed file commit; active 69327 and 69328 remain stale"
+    "committedFullSuite": {
+      "commit": "ce119f4c1de76803438457abc72cb464b2b7ac41",
+      "testRunId": 22057755,
+      "passed": 1209,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "perCaseRecords": 1209,
+      "nonpassingCaseRecords": 0,
+      "originalDeclaredCases": 538,
+      "missingDeclaredPassedCases": [],
+      "driver": "scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs test:file --any --ref=ce119f4c1de76803438457abc72cb464b2b7ac41 -- apps/operator/lib/psu-launcher.test.ts",
+      "reporterSink": "Explicit caller-supplied durable PAPERCUSP_TEST_RUNS_DB_URL; PAPERCUSP_TEST_RUN_HARNESS=papercusp; canonical inserted-receipt validation passed",
+      "log": "/tmp/gf-p002-launcher-committed-repair-20261025-v2.log",
+      "logSha256": "70d73199cf20c9112701a31f457cca43f914376c0f72f95d6c752f1bc7b6a7ad",
+      "state": "/tmp/gf-p002-launcher-committed-repair-20261025-v2.state.json",
+      "exit": 0
+    },
+    "qualification": {
+      "replacements": [
+        { "binding": 70464, "retired": 69328, "specId": "AUTO-BAR-R-2-P-002", "specRevision": 3 },
+        { "binding": 70465, "retired": 69327, "specId": "GF-P002-source", "specRevision": 1 }
+      ],
+      "independentCurrentness": "Both replacements independently server-measured CURRENT across all applicable dimensions before exact old-row retirement",
+      "originalRecipesEqual": true,
+      "originalAdequacyEqual": true,
+      "retirementVerified": true,
+      "historicalLimit": "Original run21937307 full case identities were not recorded; the preserved538 declared cases and current1209 passing case records do not reconstruct that historical population"
+    }
   },
   "commitPrerequisite": {
     "route": "git-sync:run on sanctioned background-worker MCP host",
-    "requestOutcome": "request_timeout after 55000ms; server-side outcome unknown; never retry under a fresh idempotency key",
+    "requestOutcome": "Original request timed out after55000ms; no fresh-key replay. Later actual local commit ce119f4c1de76803438457abc72cb464b2b7ac41 independently verified the exact fixed test SHA before the full run",
     "transportIdempotencyKey": "8787a0ac-ddf6-4f41-9c5f-4ed0ee091ea8",
     "cliResult": "/tmp/gf-p002-launcher-fixture-sync-20261025.json",
     "cliTrace": "/tmp/gf-p002-launcher-fixture-sync-20261025.stderr"
+  },
+  "barAttributionReuse": {
+    "replacementBinding": 70471,
+    "retiredBinding": 65897,
+    "reusedCurrentBinding": 70016,
+    "testRunId": 21999419,
+    "passed": 0,
+    "expectedFailed": 2,
+    "unselected": 162,
+    "worktreeDirty": false,
+    "collectionFailed": false,
+    "originalRecipeEqual": true,
+    "originalAdequacyEqual": true,
+    "originalTwoCasesEqual": true,
+    "independentCurrentness": "CURRENT across applicable dimensions before old-row retirement",
+    "descriptorComparison": "Same subjectPath, mutateExpression and testCommandSha256; source/test hashes and diff offsets differ across the recorded commits",
+    "newMutationRunRequired": false,
+    "scope": "Attribution rejection source guard only; no current native, actor/lease, cohort, independent acceptance or shipment credit"
+  },
+  "dispatcherSelectionRefresh": {
+    "trigger": "Binding69965 server measurement identified changed selection-policies.ts",
+    "commit": "ce119f4c1de76803438457abc72cb464b2b7ac41",
+    "testRunId": 22059153,
+    "passed": 164,
+    "failed": 0,
+    "skipped": 0,
+    "collectionFailed": false,
+    "worktreeDirty": false,
+    "isScratchConfig": false,
+    "passingCaseRecords": 164,
+    "originalDeclaredCases": 164,
+    "missingDeclaredPassedCases": [],
+    "replacements": [
+      { "binding": 70480, "retired": 69965, "specId": "GF-P002-source" },
+      { "binding": 70481, "retired": 68603, "specId": "AUTO-BAR-R-2-P-002" }
+    ],
+    "independentCurrentness": "Both replacements server-measured CURRENT before exact old-row retirement",
+    "originalRecipesEqual": true,
+    "originalAdequacyEqual": true,
+    "historicalOracleAuthority": "D-035 governs older148-case oracle evolution; current164 declared cases retained",
+    "log": "/tmp/gf-p002-dispatcher-selection-refresh-20261025.log",
+    "logSha256": "fa80e9da968b05d4fba6011aacd8f467188c62eb275487ea21b2974b56cf06ce",
+    "exit": 0
+  },
+  "governingAssessment": {
+    "barRequirement": "AUTO-BAR-R-2-P-002@3",
+    "barVerdict": "pass",
+    "barWouldBlock": [],
+    "passingTestBindings": [70464, 70481, 65882, 70202],
+    "caughtMutantBindings": [70471],
+    "sourceRequirement": "GF-P002-source@1",
+    "sourceVerdict": "fail",
+    "sourceWouldBlock": ["traceability", "execution-integrity", "freshness", "disclosed-gap"],
+    "freshnessDraggingBindings": [28326, 28545, 68733, 69319, 69322, 69332, 69338, 69875, 70148],
+    "disclosedGapBindings": [45261, 69704, 69782, 70065, 70148, 70480],
+    "scope": "Mechanical tree BAR pass does not establish native delivery, actor/lease ABA, cohort quality, independent acceptance or shipment"
   },
   "preservedHistory": [28326, 28545, 69704, 69782],
   "reporterIncident": "EI-26900834772734276 remains open; original double-timeout cause remains unknown"
