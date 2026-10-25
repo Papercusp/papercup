@@ -2,13 +2,13 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { stringify } from '@iarna/toml';
 import { afterEach, expect, it, vi } from 'vitest';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
-import { forkCodexNativeHistory } from './su-session-codex-fork';
+import { forkCodexNativeHistory, prepareCodexForkHistory, type PreparedCodexForkHistory } from './su-session-codex-fork';
 import { startSuStdioPeer, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
 
 const processes = vi.hoisted(() => new Map<string, ChildProcess>());
@@ -25,7 +25,7 @@ afterEach(async () => {
   expect([...processes.values()].every(p => p.exitCode !== null || p.signalCode !== null)).toBe(true); processes.clear();
 });
 
-it('refuses incomplete paginated history in a fresh home without mutating the live parent', async () => {
+it.each(['complete', 'incomplete'] as const)('transfers %s paginated history across homes and preserves parent isolation', async mode => {
   const bodies: RpcFrame[] = [];
   const server = createServer(async (req, res) => {
     const chunks: Buffer[] = []; for await (const c of req) chunks.push(Buffer.from(c));
@@ -39,9 +39,10 @@ it('refuses incomplete paginated history in a fresh home without mutating the li
     model_providers: { local_fork: { name: 'Local fork fixture', base_url: `http://127.0.0.1:${address.port}/v1`,
       wire_api: 'responses', requires_openai_auth: false, supports_websockets: false, request_max_retries: 0 } },
     features: { apps: false, shell_tool: false }, web_search: 'disabled' });
-  async function open(home?: string) {
+  async function open(home?: string, beforeStart?: (home: string) => Promise<void>) {
     home ??= mkdtempSync(join(tmpdir(), 'su-native-fork-')); if (!homes.includes(home)) homes.push(home);
     writeFileSync(join(home, 'config.toml'), config);
+    await beforeStart?.(home);
     const events: RpcFrame[] = [];
     const peer = await startSuStdioPeer({ binary: 'codex', args: ['app-server'], cwd: home,
       env: { PATH: process.env.PATH, CODEX_HOME: home }, workspaceId: 'fork-fixture', ownerId: randomUUID(),
@@ -63,20 +64,58 @@ it('refuses incomplete paginated history in a fresh home without mutating the li
     await turn(parent, parentId, 'PARENT_HISTORY_MARKER');
     const read = await parent.peer.request({ method: 'thread/read', params: { threadId: parentId, includeTurns: true } });
     const sourcePath = String((read.thread as RpcFrame).path), before = readFileSync(sourcePath);
-    console.info('FORK_SOURCE_STORAGE', JSON.stringify({ historyMode: (read.thread as RpcFrame).historyMode,
-      turnStatuses: ((read.thread as RpcFrame).turns as RpcFrame[]).map(turn => turn.status),
-      homeFiles: readdirSync(parent.home), historyBytes: before.length,
-      recordTypes: before.toString().trim().split('\n').map(line => { const row = JSON.parse(line); return [row.type, row.payload?.type]; }) }));
-    const child = await open();
-    await expect(forkCodexNativeHistory({ peer: child.peer,
-      source: { backend: 'codex', source: 'adv_sessions', ownerId: 'su-parent', codexHome: parent.home,
-        rolloutId: parentId, exactResumeSupported: true, missingReason: null }, childOwnerId: 'su-child', childHome: child.home,
-      params: { cwd: parent.home, approvalPolicy: 'never', sandbox: 'read-only' } }))
-      .rejects.toThrow('Codex fork has no completed parent turn boundary');
-    // This is safety proof for an incomplete transfer, never successful fork
-    // parity. P008 still owes the complete native history transfer, divergent
-    // continuation, restart and tracked launch/registration acceptance.
-    expect(bodies).toHaveLength(1);
-    expect(readFileSync(sourcePath)).toEqual(before);
+    expect((read.thread as RpcFrame).historyMode).toBe('paginated');
+    let sourceHome = parent.home;
+    if (mode === 'incomplete') {
+      sourceHome = mkdtempSync(join(tmpdir(), 'su-incomplete-fork-')); homes.push(sourceHome);
+      const dest = join(sourceHome, relative(parent.home, sourcePath));
+      mkdirSync(dirname(dest), { recursive: true }); copyFileSync(sourcePath, dest);
+    }
+    const source = { backend: 'codex' as const, source: 'adv_sessions' as const, ownerId: 'su-parent', codexHome: sourceHome,
+      rolloutId: parentId, exactResumeSupported: true, missingReason: null };
+    let prepared: PreparedCodexForkHistory | undefined;
+    const child = await open(undefined, async home => {
+      prepared = await prepareCodexForkHistory({ source, childOwnerId: 'su-child', childHome: home });
+    });
+    const fork = forkCodexNativeHistory({ peer: child.peer, source, prepared,
+      childOwnerId: 'su-child', childHome: child.home,
+      params: { cwd: parent.home, approvalPolicy: 'never', sandbox: 'read-only' } });
+    if (mode === 'incomplete') {
+      await expect(fork).rejects.toThrow('Codex fork has no completed parent turn boundary');
+      expect(bodies).toHaveLength(1);
+    } else {
+      const result = await fork, childId = String((result.thread as RpcFrame).id);
+      expect(childId).not.toBe(parentId);
+      expect((result.thread as RpcFrame).forkedFromId).toBe(parentId);
+      expect(readFileSync(sourcePath)).toEqual(before);
+      await turn(child, childId, 'CHILD_ONLY_MARKER');
+      expect(JSON.stringify(bodies[1])).toContain('PARENT_HISTORY_MARKER');
+      expect(JSON.stringify(bodies[1])).toContain('CHILD_ONLY_MARKER');
+      await turn(parent, parentId, 'PARENT_ONLY_MARKER');
+      expect(JSON.stringify(bodies[2])).not.toContain('CHILD_ONLY_MARKER');
+      await child.peer.close(); await child.peer.done;
+      const restarted = await open(child.home);
+      await restarted.peer.request({ method: 'thread/resume', params: { threadId: childId } });
+      await turn(restarted, childId, 'CHILD_AFTER_RESTART');
+      expect(JSON.stringify(bodies[3])).toContain('PARENT_HISTORY_MARKER');
+      expect(JSON.stringify(bodies[3])).toContain('CHILD_ONLY_MARKER');
+      expect(JSON.stringify(bodies[3])).not.toContain('PARENT_ONLY_MARKER');
+      let descendantHistory: PreparedCodexForkHistory | undefined;
+      const descendantSource = { ...source, ownerId: 'su-child', codexHome: child.home, rolloutId: childId };
+      const descendant = await open(undefined, async home => {
+        descendantHistory = await prepareCodexForkHistory({ source: descendantSource, childOwnerId: 'su-grandchild', childHome: home });
+      });
+      const descendantResult = await forkCodexNativeHistory({ peer: descendant.peer, source: descendantSource,
+        prepared: descendantHistory, childOwnerId: 'su-grandchild', childHome: descendant.home,
+        params: { cwd: parent.home, approvalPolicy: 'never', sandbox: 'read-only' } });
+      await turn(descendant, String((descendantResult.thread as RpcFrame).id), 'GRANDCHILD_ONLY_MARKER');
+      expect(JSON.stringify(bodies[4])).toContain('PARENT_HISTORY_MARKER');
+      expect(JSON.stringify(bodies[4])).toContain('CHILD_ONLY_MARKER');
+      expect(JSON.stringify(bodies[4])).toContain('CHILD_AFTER_RESTART');
+      expect(JSON.stringify(bodies[4])).not.toContain('PARENT_ONLY_MARKER');
+      expect(readFileSync(join(child.home, 'config.toml'), 'utf8')).toBe(config);
+      expect(readdirSync(child.home)).not.toContain('parent-only-lock');
+    }
+    if (mode === 'incomplete') expect(readFileSync(sourcePath)).toEqual(before);
   } finally { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); }
 }, 90_000);

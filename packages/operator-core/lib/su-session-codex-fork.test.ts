@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { forkCodexNativeHistory } from './su-session-codex-fork';
+import Database from 'better-sqlite3';
+import { forkCodexNativeHistory, prepareCodexForkHistory } from './su-session-codex-fork';
 import type { RpcFrame } from './su-session-stdio-peer';
 
 const dirs: string[] = [];
@@ -16,7 +17,7 @@ function fixture() {
   const sourcePath = join(historyDir, `rollout-2026-${PARENT}.jsonl`);
   const history = JSON.stringify({ type: 'session_meta', payload: { id: PARENT } }) + '\n';
   writeFileSync(sourcePath, history);
-  writeFileSync(join(sourceHome, 'config.toml'), 'parent-only-config');
+  writeFileSync(join(sourceHome, 'config.toml'), 'model = "parent-only-config"');
   const childPath = join(childHome, 'rollout-child.jsonl');
   const request = vi.fn(async (frame: RpcFrame): Promise<RpcFrame> => {
     if (frame.method === 'thread/read') return { thread: { id: PARENT, turns: [
@@ -32,14 +33,75 @@ function fixture() {
       params: { cwd: root, model: 'selected-model', approvalPolicy: 'on-request', sandbox: 'workspace-write' } } };
 }
 describe('tracked Codex history fork', () => {
-  it('forks only through a completed turn in the fresh home and removes the temporary parent seed', async () => {
+  it.each(['missing', 'cycle'] as const)('refuses %s ancestor history before creating a child seed', async kind => {
+    const f = fixture();
+    writeFileSync(f.sourcePath, JSON.stringify({ type: 'session_meta', payload: { id: PARENT,
+      forked_from_id: kind === 'cycle' ? PARENT : '22222222-2222-4222-8222-222222222222' } }) + '\n');
+    await expect(prepareCodexForkHistory(f.input)).rejects.toThrow(/ancestor history/);
+    expect(readdirSync(f.childHome)).toEqual([]);
+    expect(f.request).not.toHaveBeenCalled();
+  });
+  it('finds a completed boundary beyond the first native page', async () => {
+    const f = fixture();
+    f.request.mockResolvedValueOnce({ thread: { id: PARENT, historyMode: 'paginated', turns: [] } })
+      .mockResolvedValueOnce({ data: [{ id: 'pending', status: 'inProgress' }], nextCursor: 'older' })
+      .mockResolvedValueOnce({ data: [{ id: 'older-completed', status: 'completed' }], nextCursor: null });
+    await forkCodexNativeHistory(f.input);
+    expect(f.request.mock.calls[2][0]).toMatchObject({ method: 'thread/turns/list', params: { cursor: 'older' } });
+    expect(f.request.mock.calls[3][0]).toMatchObject({ method: 'thread/fork', params: { lastTurnId: 'older-completed' } });
+  });
+  it('refuses repeated native history cursors without forking', async () => {
+    const f = fixture();
+    f.request.mockResolvedValueOnce({ thread: { id: PARENT, historyMode: 'paginated', turns: [] } })
+      .mockResolvedValue({ data: [], nextCursor: 'repeated' });
+    await expect(forkCodexNativeHistory(f.input)).rejects.toThrow('pagination did not advance');
+    expect(f.request.mock.calls.every(([frame]) => frame.method !== 'thread/fork')).toBe(true);
+  });
+  it('snapshots only the declared thread, including uncheckpointed WAL history, into the configured child storage', async () => {
+    const f = fixture();
+    const parentState = join(f.sourceHome, 'native-state'), childState = join(f.childHome, 'native-state');
+    mkdirSync(parentState); mkdirSync(childState);
+    writeFileSync(join(f.sourceHome, 'config.toml'), `sqlite_home = ${JSON.stringify(parentState)}`);
+    writeFileSync(join(f.childHome, 'config.toml'), `sqlite_home = ${JSON.stringify(childState)}`);
+    writeFileSync(join(parentState, 'queue_1.sqlite'), 'parent queue must not cross');
+    const db = new Database(join(parentState, 'thread_history_1.sqlite'));
+    try {
+      db.pragma('journal_mode = WAL');
+      db.exec('CREATE TABLE thread_turns(thread_id TEXT, turn_id TEXT, status TEXT)');
+      const insert = db.prepare('INSERT INTO thread_turns VALUES(?,?,?)');
+      insert.run(PARENT, 'completed-parent', 'completed');
+      insert.run('unrelated-thread', 'secret-unrelated-turn', 'completed');
+      const prepared = await prepareCodexForkHistory(f.input);
+      const child = new Database(join(childState, 'thread_history_1.sqlite'));
+      try {
+        expect(child.prepare('SELECT * FROM thread_turns').all()).toEqual([
+          { thread_id: PARENT, turn_id: 'completed-parent', status: 'completed' },
+        ]);
+        expect(readdirSync(childState)).not.toContain('queue_1.sqlite');
+        child.prepare('INSERT INTO thread_turns VALUES(?,?,?)').run('new-child', 'own-turn', 'completed');
+        await prepared.cleanup(); await prepared.cleanup();
+        expect(child.prepare('SELECT thread_id FROM thread_turns').all()).toEqual([{ thread_id: 'new-child' }]);
+        expect(db.prepare('SELECT COUNT(*) AS n FROM thread_turns').get()).toEqual({ n: 2 });
+      } finally { child.close(); }
+    } finally { db.close(); }
+  });
+  it('refuses an existing child database before replacing any child history', async () => {
+    const f = fixture();
+    const db = new Database(join(f.sourceHome, 'thread_history_1.sqlite'));
+    db.exec('CREATE TABLE thread_turns(thread_id TEXT)'); db.close();
+    const childDb = join(f.childHome, 'thread_history_1.sqlite'); writeFileSync(childDb, 'existing-child');
+    await expect(prepareCodexForkHistory(f.input)).rejects.toThrow();
+    expect(readFileSync(childDb, 'utf8')).toBe('existing-child');
+    expect(readdirSync(join(f.childHome, 'sessions', '2026', '10', '25'))).toEqual([]);
+  });
+  it('forks only through a completed turn and retains the frozen ancestor needed by paginated history', async () => {
     const f = fixture(); await expect(forkCodexNativeHistory(f.input)).resolves.toMatchObject({ thread: { id: 'child-thread' } });
     expect(f.request.mock.calls[1][0]).toEqual({ method: 'thread/fork', params: {
       ...f.input.params, threadId: PARENT, ephemeral: false, lastTurnId: 'done',
     } });
     expect(readFileSync(f.sourcePath, 'utf8')).toBe(f.history);
     expect(readdirSync(f.childHome)).not.toContain('config.toml');
-    expect(readdirSync(join(f.childHome, 'sessions', '2026', '10', '25'))).toEqual([]);
+    expect(readdirSync(join(f.childHome, 'sessions', '2026', '10', '25'))).toEqual([`rollout-2026-${PARENT}.jsonl`]);
   });
   it.each(['owner', 'home', 'missing-id', 'unpersisted'] as const)('refuses invalid fork authority before RPC (%s)', async mode => {
     const f = fixture();
