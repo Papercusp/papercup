@@ -383,6 +383,28 @@ describe('release:cut — constrained root selector', () => {
     expect(outside).toMatchObject({ ok: false, reason: expect.stringMatching(/root_not_registered/) });
   });
 
+  it('admits an independent clone only through exact-source verification against the registry', async () => {
+    const sourceSha = 'a'.repeat(40);
+    const cloneRoot = '/isolated/source-clone';
+    const projects = [{ slug: 'source', path: '/registered/source' }];
+    const verifySourceClone = vi.fn(async () => ({ ok: true as const, path: cloneRoot }));
+    const result = await resolveCutRoot(`${cloneRoot}/papercusp-desktop`, {
+      loadRegistry: async () => ({ projects }), listWorktrees: () => [],
+      canonicalPath: (candidate) => candidate, status: () => '', verifySourceClone,
+    }, { sourceSha });
+    expect(result).toMatchObject({ ok: true, worktreeRoot: cloneRoot });
+    expect(verifySourceClone).toHaveBeenCalledWith(cloneRoot, projects, sourceSha, { sourceSha });
+  });
+
+  it('propagates clone verification failure without falling through to cut preflight', async () => {
+    const result = await resolveCutRoot('/isolated/source-clone', {
+      loadRegistry: async () => ({ projects: [] }), listWorktrees: () => [],
+      canonicalPath: (candidate) => candidate,
+      verifySourceClone: async () => ({ ok: false, reason: 'root_clone_invalid — pin mismatch' }),
+    }, { sourceSha: 'a'.repeat(40) });
+    expect(result).toEqual({ ok: false, reason: 'root_clone_invalid — pin mismatch' });
+  });
+
   it('rejects a selected worktree with uncommitted changes', async () => {
     const result = await resolveCutRoot('isolated', {
       loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),

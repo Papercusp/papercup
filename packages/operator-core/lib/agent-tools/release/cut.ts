@@ -100,12 +100,13 @@ import {
   type BeginCutOperationResult,
 } from '../../release-cut-operation';
 import { markSpawned } from '../../task-manager/store';
+import { verifyCutSourceClone } from './cut-source-clone';
 
 const cutRootArg = z
   .string()
   .min(1)
   .describe(
-    'Optional registered Git worktree selector. Write operations require a clean worktree; read-only handoff/status can inspect a dirty root. Accepts a project slug, linked worktree path, or its papercusp-desktop path.',
+    'Optional registered Git worktree or verified independent source clone selector. Clones require exact sourceSha and are re-verified against a registered local origin, including recursive pins and cleanliness. Accepts a project slug, root path, or its papercusp-desktop path.',
   );
 
 const cutOwnerNameArg = z
@@ -170,6 +171,7 @@ export type CutRootResolution =
   | { ok: false; reason: string };
 
 export interface CutRootResolutionDeps {
+  verifySourceClone?: typeof verifyCutSourceClone;
   loadRegistry?: (workspaceId: string) => Promise<HarnessRegistry>;
   listWorktrees?: (repoPath: string) => CutWorktree[] | Promise<CutWorktree[]>;
   status?: (worktreePath: string) => string | Promise<string>;
@@ -186,6 +188,8 @@ export interface CutRootResolutionDeps {
 }
 
 export interface CutRootResolutionOptions {
+  /** Exact registered source object required to admit independent clone roots. */
+  sourceSha?: string;
   /** A completed seed may be reused only when the remaining tracked edits are the
    * exact idempotent version bump written by release-local.sh for this version. */
   reuseSeedVersion?: string;
@@ -646,9 +650,9 @@ function resolveCutSeedMode(args: {
 
 /**
  * Resolve the optional cut root without allowing an arbitrary filesystem path.
- * Explicit selectors must identify a non-prunable linked worktree belonging to a
- * project in the active harness registry, and that worktree must be clean at the
- * moment of the read. The cutter itself receives the worktree's desktop subdir.
+ * Explicit selectors identify a registered linked worktree or an independent
+ * clone re-verified against registered exact source objects at admission time.
+ * The cutter itself receives the selected root's desktop subdir.
  */
 export async function resolveCutRoot(
   selector: string | undefined,
@@ -712,6 +716,15 @@ export async function resolveCutRoot(
   let selected: CutWorktree | undefined;
   if (requestedDesktopParent) selected = candidates.get(requestedDesktopParent);
   if (!selected) selected = candidates.get(requestedPath);
+  if (!selected) {
+    if (options.sourceSha && path.isAbsolute(requested)) {
+      const clone = await (deps.verifySourceClone ?? verifyCutSourceClone)(
+        requestedDesktopParent ?? requestedPath, projects, options.sourceSha, options,
+      );
+      if (!clone.ok) return clone;
+      selected = { path: clone.path, prunable: false };
+    }
+  }
   if (!selected) {
     const project = projects.find((candidate) => candidate.slug === requested);
     if (project) selected = candidates.get(canonical(project.path));
@@ -1017,6 +1030,7 @@ export default defineTool({
     }),
     z.object({
       op: z.literal('handoff'),
+      sourceSha: z.string().optional().describe('Exact source SHA required for independent clone admission.'),
       version: z.string().min(1).describe('The version whose cut artifacts to collect for the owner.'),
       root: cutRootArg.optional(),
     }),
@@ -1056,6 +1070,7 @@ export default defineTool({
     }),
     z.object({
       op: z.literal('gate-status'),
+      sourceSha: z.string().optional().describe('Exact source SHA required for independent clone admission.'),
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease).'),
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
       root: cutRootArg.optional(),
@@ -1181,7 +1196,7 @@ export default defineTool({
     }
     // ── preflight: read-only go/no-go ──
     if (args.op === 'preflight') {
-      const selected = await resolveCutRoot(args.root);
+      const selected = await resolveCutRoot(args.root, undefined, { sourceSha: args.sourceSha });
       if (!selected.ok) return json({ ok: false, op: 'preflight', refused: true, reason: selected.reason });
       const release =
         args.version && args.sourceSha
@@ -1240,7 +1255,7 @@ export default defineTool({
       // Ref-only operation: a completed speculative build leaves version/sidecar
       // residue in its isolated root. Do not apply the clean-build precondition
       // here; the helper still validates the exact commit and create-only lease.
-      const selected = await resolveCutRoot(args.root, undefined, { readOnly: true });
+      const selected = await resolveCutRoot(args.root, undefined, { readOnly: true, sourceSha: args.sourceSha });
       const tag = desktopReleaseTag(args.version, channel);
       if (!selected.ok) {
         // An implicit auto-managed checkout is unsafe for the write, but a
@@ -1373,7 +1388,7 @@ export default defineTool({
     if (args.op === 'status') {
       const selected = args.root === undefined
         ? undefined
-        : await resolveCutRoot(args.root, undefined, { readOnly: true });
+        : await resolveCutRoot(args.root, undefined, { readOnly: true, sourceSha: args.sourceSha });
       if (selected && !selected.ok) {
         return json({ ok: false, op: 'status', refused: true, reason: selected.reason });
       }
@@ -1422,7 +1437,7 @@ export default defineTool({
           reason: `bad_version '${args.version}' — expected X.Y.Z with an optional -prerelease suffix.`,
         });
       }
-      const selected = await resolveCutRoot(args.root, {}, { readOnly: true });
+      const selected = await resolveCutRoot(args.root, {}, { readOnly: true, sourceSha: args.sourceSha });
       if (!selected.ok) return json({ ok: false, op: 'handoff', refused: true, reason: selected.reason });
       const h = collectHandoff(args.version, { root: selected.desktopRoot });
       if (!h.found) {
@@ -1468,7 +1483,7 @@ export default defineTool({
           reason: `bad_version '${args.version}' — expected X.Y.Z with an optional -prerelease suffix.`,
         });
       }
-      const selected = await resolveCutRoot(args.root);
+      const selected = await resolveCutRoot(args.root, undefined, { sourceSha: args.sourceSha });
       if (!selected.ok) return json({ ok: false, op: 'gate-status', refused: true, reason: selected.reason });
       const { ownerLabel } = readIdentity(ctx);
       const { gate, created } = readOrCreateGate(args.version, args.channel as Channel, ownerLabel, {
@@ -1546,7 +1561,7 @@ export default defineTool({
       const orchestratorRoot = desktopRoot();
       const seedMode = resolveCutSeedMode(args);
       if (!seedMode.ok) return json({ ok: false, op: 'run-leg', refused: true, reason: seedMode.reason });
-      const selected = await resolveCutRoot(args.root, undefined, seedMode.rootOptions);
+      const selected = await resolveCutRoot(args.root, undefined, { ...seedMode.rootOptions, sourceSha: args.sourceSha });
       if (!selected.ok) return json({ ok: false, op: 'run-leg', refused: true, reason: selected.reason });
 
       const pre = preflightCut(legs, {
@@ -1762,7 +1777,7 @@ export default defineTool({
     const orchestratorRoot = desktopRoot();
     const seedMode = resolveCutSeedMode(args);
     if (!seedMode.ok) return json({ ok: false, op: 'run', refused: true, reason: seedMode.reason });
-    const selected = await resolveCutRoot(args.root, undefined, seedMode.rootOptions);
+    const selected = await resolveCutRoot(args.root, undefined, { ...seedMode.rootOptions, sourceSha: args.sourceSha });
     if (!selected.ok) return json({ ok: false, op: 'run', refused: true, reason: selected.reason });
 
     // Refuse to start a second cut over an in-flight one (structured, so the caller waits).
