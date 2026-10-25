@@ -3,7 +3,7 @@ import { execFileSync, fork, spawn, type SpawnOptions } from 'node:child_process
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -14,6 +14,7 @@ import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
 import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail,
   recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
+import { preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../..');
 const filePath = 'packages/operator-core/lib/codex-managed-tools.native.integration.test.ts';
@@ -26,7 +27,8 @@ declare module 'vitest' {
   }
 }
 
-const managedTool = 'managed_surface_canary';
+const privateMcpUrl = process.env.CODEX_MANAGED_PRIVATE_MCP_URL;
+const managedTool = privateMcpUrl ? 'tools_invoke' : 'managed_surface_canary';
 const nestedSurfaceMarker = 'CODEX_NESTED_TOOL_SURFACE';
 const managedCallMarker = 'MANAGED_SURFACE_CALL_CONFIRMED';
 
@@ -78,6 +80,7 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       if (req.url === '/mcp') {
+        if (privateMcpUrl) throw new Error('Production MCP proof must not use the local canary');
         if (body.id === undefined) { res.writeHead(202); res.end(); return; }
         if (body.method === 'tools/call') {
           expect(body.params.name).toBe(managedTool);
@@ -105,8 +108,21 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
             ? { id: 'nested_surface_call', type: 'custom_tool_call', namespace: 'functions', name: 'exec',
               call_id: `call_nested_surface_${surfaces[surfaceIndex]}`, status: 'completed', input:
                 `const managed = ALL_TOOLS.find(tool => tool.name.includes(${JSON.stringify(managedTool)}));
-                const reply = await tools[managed.name]({});
+                if (!managed) throw new Error('Managed dispatcher absent from installed client catalog');
+                const reply = await tools[managed.name](${privateMcpUrl
+                  ? JSON.stringify({ name: 'capability:bash', args: {
+                    command: `printf '${managedCallMarker}'`, cwd: home, timeout: 10000, yield_after_ms: 10000 } })
+                  : '{}'});
+                ${privateMcpUrl ? `
+                const result = reply.structuredContent ?? reply.content?.filter(row => row.type === 'text')
+                  .map(row => { try { return JSON.parse(row.text); } catch { return null; } })
+                  .find(row => row && typeof row.exit_code === 'number');
+                if (reply.isError || result?.ok !== true || result.exit_code !== 0 ||
+                    result.output !== ${JSON.stringify(managedCallMarker)})
+                  throw new Error('Production capability:bash failed: ' + JSON.stringify(reply));
+                ` : ''}
                 text({ marker: ${JSON.stringify(nestedSurfaceMarker)}, managedReply: reply,
+                  productionBashVerified: ${Boolean(privateMcpUrl)},
                   tools: ALL_TOOLS.map(tool => ({ name: tool.name, callable: typeof tools[tool.name] })) });` }
             : { id: 'nested_surface_done', type: 'message', role: 'assistant', status: 'completed',
               content: [{ type: 'output_text', text: 'Census complete.', annotations: [] }] };
@@ -139,7 +155,8 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
     ...(capabilityPolicy ? codexManagedFeaturesToml({ capabilityPolicy: { ...capabilityPolicy, surface },
       disableMemories: false, headless: true }) : ['[features]']),
     ...Object.entries(features).map(([key, value]) => `${key} = ${value}`),
-    '[mcp_servers.managed_surface]', `url = "${baseURL}/mcp"`, 'required = true',
+    '[mcp_servers.managed_surface]', `url = ${JSON.stringify(privateMcpUrl ?? `${baseURL}/mcp`)}`, 'required = true',
+    ...(privateMcpUrl ? ['bearer_token_env_var = "CODEX_MANAGED_PRIVATE_MCP_TOKEN"'] : []),
     'startup_timeout_sec = 10', 'tool_timeout_sec = 10',
   ].join('\n'));
   const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: home, OPENAI_API_KEY: 'offline-fixture-only' };
@@ -183,6 +200,7 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
         };
         walk(request.tools);
         const nestedTools: { name: string; callable: string }[] = [];
+        let productionBashReplies = 0;
         const readNested = (value: unknown): void => {
           if (typeof value === 'string' && /^[\[{]/.test(value.trim())) {
             try { readNested(JSON.parse(value)); } catch { /* Other output strings are not the census. */ }
@@ -193,6 +211,7 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
           const row = value as Record<string, unknown>;
           if (row.marker === nestedSurfaceMarker && Array.isArray(row.tools)) {
             nestedTools.push(...row.tools as { name: string; callable: string }[]);
+            if (row.productionBashVerified === true) productionBashReplies++;
             return;
           }
           Object.values(row).forEach(readNested);
@@ -208,6 +227,10 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
           }
         }
         if (captureNested) {
+          if (privateMcpUrl) {
+            expect(productionBashReplies, 'successful production dispatcher reply is required').toBe(1);
+            managedCalls.set(surface, productionBashReplies);
+          }
           expect(nestedTools, `No code-mode census output; advertised tools: ${names.join(', ')}; ${stderr}`).not.toHaveLength(0);
           expect(nestedTools.every(tool => tool.callable === 'function')).toBe(true);
           expect(nestedTools.some(tool => tool.name.includes(managedTool))).toBe(true);
@@ -215,6 +238,7 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
         }
         expect(JSON.stringify({ request, nestedTools }), `Advertised tools: ${names.join(', ')}; ${stderr}`).toContain(managedTool);
         observations.push({ surface, managedCalls: managedCalls.get(surface) ?? 0,
+          managedPath: privateMcpUrl ? 'production-capability-bash' : 'local-canary',
           version: execFileSync(codex, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim(), names,
           requestKeys: Object.keys(request), executedOuterNames: captureNested ? ['exec'] : [],
           catalog: { source: 'installed-codex-debug-models', sha256: createHash('sha256').update(catalogJson).digest('hex'),
@@ -354,28 +378,47 @@ describe('Codex managed replacement installed-client census', () => {
 } else {
   const workerOptions = isolatedTestFileWorkerOptions(process.env, 1);
   it('retains the installed Codex removal, resume, wake and drift controls with their original runtime', async context => {
+    let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
     const runId = await recordIsolatedIntegrationProof({ root, filePath,
       sourcePaths: ['packages/operator-core/lib/backend-bin-resolve.mjs',
         'libs/papercusp/packages/orchestrator/src/codex-gateway-config.ts',
         'libs/papercusp/packages/orchestrator/src/managed-capability-policy.ts',
         'libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory.ts',
         'packages/operator-core/test/isolated-integration-proof.ts',
+        'packages/operator-core/test/staging-first-http-fixture.ts',
+        'packages/operator-core/test/private-http-workspace-preflight.ts',
         'packages/operator-core/lib/process-identity.ts', 'scripts/with-test-pg.mjs', 'scripts/test-files.mjs'],
-      retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/native-tool-surface.json'],
+      retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/census/worker.log',
+        'phases/execute/native-tool-surface.json', 'phases/execute/operator-mcp-receipt.json'],
+      prepare: async evidenceDir => {
+        const censusPath = join(evidenceDir, 'restricted-hold-census.json');
+        await writeFile(censusPath, '[]\n', { mode: 0o600 });
+        prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, {
+          builder: { timeoutMs: 240_000, maxMs: 420_000,
+            env: { ...process.env, VITEST: 'true', PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: censusPath } },
+        });
+      },
       execute: async (observe, evidenceDir) => {
+        expect(prepared, 'Prepared current-build API is required before private PG allocation').toBeDefined();
+        await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+        await mkdir(join(evidenceDir, 'tmp'));
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
-          PAPERCUSP_TEST_RUN_GROUP: (process.env.PAPERCUSP_TEST_RUN_GROUP ?? '') + workerGroupSuffix };
+          STAGING_FIRST_HTTP_SCENARIO: 'codex-managed-tools', STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
+          TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') };
         // The outer reporter owns the canonical sink. The inner router runs
         // against its disposable database and retains its own native output.
         for (const key of ['PC_EXECUTED_SOURCE_MAP_OUT', 'PC_EXECUTED_SOURCE_MAP_RESULT',
           'PC_EXECUTED_SOURCE_MAP_WORKSPACE', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
           'PAPERCUSP_TEST_RUNS_DB_URL', 'PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE']) delete env[key];
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), [
-          '--isolated-runtime', '--', process.execPath,
-          '--import', './scripts/lib/committed-source-loader.mjs', 'scripts/test-files.mjs', filePath,
+          '--isolated-runtime=operator-api', '--managed-tasks', '--', process.execPath,
+          '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+          '--prepared-api-sha=' + prepared!.sha256, '--prepared-receipt-sha=' + prepared!.receiptSha256,
         ], { cwd: root, detached: true, execArgv: [], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
-        const result = await captureIsolatedWorker(child, evidenceDir, workerOptions);
+        let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+        try { result = await captureIsolatedWorker(child, evidenceDir, workerOptions); }
+        finally { await rm(join(evidenceDir, 'node_modules')); }
         const line = result.output.split('\n').find(row => row.startsWith('CODEX_ADMITTED_LIFECYCLE '));
         if (line) await writeFile(join(evidenceDir, 'native-tool-surface.json'),
           line.slice('CODEX_ADMITTED_LIFECYCLE '.length) + '\n', { flag: 'wx' });
@@ -386,10 +429,12 @@ describe('Codex managed replacement installed-client census', () => {
         expect(result.output).toContain('skippedTests=0');
         expect(result.output).toMatch(/Tests\s+6 passed \(6\)/);
         expect(line, 'original installed-client lifecycle observations are required').toBeDefined();
+        expect(result.output).toContain('CODEX_PRODUCTION_MCP_VERIFIED');
         const measured = JSON.parse(line!.slice('CODEX_ADMITTED_LIFECYCLE '.length));
         expect(measured.removed.lifecycle.map((row: { surface: string }) => row.surface))
           .toEqual(['launch', 'resume', 'wake']);
         for (const row of measured.removed.lifecycle) {
+          expect(row.managedPath).toBe('production-capability-bash');
           expect(row.managedCalls).toBe(1);
           expect(row.hasNativeExecution).toBe(false);
         }
