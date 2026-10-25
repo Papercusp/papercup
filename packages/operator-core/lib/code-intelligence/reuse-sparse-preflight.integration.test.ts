@@ -1,0 +1,139 @@
+/** P010/D029: size preflight, not a native claim or acceptance receipt. */
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import ts from 'typescript';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { setupPlanPgFixture, registerHarnessProject, type PlanPgFixture } from '../agent-tools/plans/__tests__/_pg-tool-fixture';
+import newPlan from '../agent-tools/plans/new';
+import addItem from '../agent-tools/plans/add-item';
+import { readPlanBySlug } from '../agent-tools/plans/source';
+import * as registry from '../harness-registry';
+import { getClaimTimeTaskBrief, readTaskFailureSignals, type TaskBriefDeps } from './task-brief';
+import { DEFAULT_PACKER_EFFECTS, packerFacade } from './packer-facade';
+import { firstPartyCallers } from './first-party-callers';
+import { readEngineeringEvidence } from './engineering-evidence';
+import { boundChangeHistoryProviders } from './change-history';
+import { cloneBriefProvider } from './clone-brief-provider';
+import { buildCloneIndex } from './clone-index';
+import { prepareCloneAdvisories } from './clone-advisory';
+import { parsePushSnapshot } from './push-snapshot';
+import { briefCodePoints, composeReuseBrief, registeredReuseBriefProviders, REUSE_PROVIDER_POLICY,
+  REUSE_PROVIDER_FLAGS, type ReuseContribution, type ReuseProviderContext } from './reuse-brief-providers';
+import { nativeCoverageBriefProvider } from './test-coverage-map';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
+
+let fx: PlanPgFixture, root: string;
+const harness = 'r', owner = 'su-sparse-preflight', workItem = 'WI-1';
+const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+const data = (value: unknown): Record<string, any> => {
+  const result = value as { data?: Record<string, any>; content?: { text: string }[] };
+  return result.data ?? JSON.parse(result.content![0]!.text);
+};
+beforeAll(async () => {
+  fx = await setupPlanPgFixture({ isolated: true });
+  root = await mkdtemp(join(tmpdir(), 'r-'));
+  await registerHarnessProject(fx.admin, fx.workspaceId, harness);
+  vi.spyOn(registry, 'loadHarnessRegistry').mockResolvedValue({ projects: [{ slug: harness, path: root }] });
+}, 180_000);
+afterAll(async () => {
+  setFlagOverridesForTest(null); vi.restoreAllMocks();
+  await fx?.dispose(); if (root) await rm(root, { recursive: true, force: true });
+});
+
+it('records a truthful sparse baseline and five actual producer envelopes before native admission', async () => {
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8', timeout: 10_000 }).trim();
+  // One substantial function is required by the production clone mass floor.
+  // Short identifiers/paths reduce authored bytes without altering any response.
+  const source = 'export function f(v:number[]){let t=0;for(const x of v){if(x>0)t+=x;else t-=x;}'
+    + 't+=v.length;'.repeat(20) + 'db.query(`UPDATE t SET x=1`);return t;}\n';
+  await writeFile(join(root, 'a.ts'), source);
+  await writeFile(join(root, 'b.ts'), source.replace('function f', 'function g'));
+  git('init', '-q'); git('config', 'user.name', 'Controlled sparse fixture');
+  git('config', 'user.email', 'fixture@example.invalid');
+  git('add', '.'); git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture');
+  for (let n = 1; n <= 3; n++) {
+    await writeFile(join(root, 'a.ts'), source + `// ${n}\n`);
+    await writeFile(join(root, 'b.ts'), source.replace('function f', 'function g') + `// ${n}\n`);
+    git('add', '.'); git('-c', 'commit.gpgsign=false', 'commit', '-qm', `revision ${n}`);
+  }
+  const ctx = { workspaceId: fx.workspaceId, harnessSlug: harness, uiClientId: owner,
+    isSuperuser: true, log: vi.fn(), emit: vi.fn(), progress: vi.fn(), metadata: vi.fn() };
+  const created = data(await newPlan.handler(newPlan.args.parse({ harness, slug: 'r-2026-10-25',
+    title: 'R', content: '## Phase 1 — Work\n', force: true }), ctx as never));
+  expect(created.ok, JSON.stringify(created)).toBe(true);
+  const plan = created.slug as string;
+  const added = data(await addItem.handler(addItem.args.parse({ harness, slug: plan,
+    phase: 'Phase 1 — Work', text: 'Inspect a.ts', importance: 'normal' }), ctx as never)).results[0];
+  expect(added.ok, JSON.stringify(added)).toBe(true);
+  const persisted = await readPlanBySlug(plan, { workspaceId: fx.workspaceId, harnessSlug: harness });
+  expect(persisted).not.toBeNull();
+  // Standard disposable SQL fixture records qualify the REAL provenance join.
+  // They are explicitly seeded evidence, not a native CLI/session witness.
+  const assigned = new Date(Date.now() - 1000), editedAt = new Date();
+  const edited = await readFile(join(root, 'a.ts'), 'utf8');
+  await fx.admin`INSERT INTO harness_shared.work_items
+    (workspace_id,harness_slug,feature_id,item_kind,status,title,summary,taken_by,taken_at,created_ts,updated_ts)
+    VALUES (${fx.workspaceId},${harness},${workItem},'change','open','R','R',${owner},${assigned},1,1)`;
+  await fx.admin`INSERT INTO harness_shared.adv_sessions (workspace_id,mode,coord_owner_id,session_id,started_at)
+    VALUES (${fx.workspaceId},'console',${owner},'controlled-sparse',${assigned})`;
+  const args = { session_id: 'controlled-sparse', tool_name: 'Write', status: 'ok',
+    tool_input: { file_path: 'a.ts', content: edited } };
+  await fx.admin`INSERT INTO harness_shared.tool_invocations
+    (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,invoked_at,status,coord_owner_id,args_json)
+    VALUES (${fx.workspaceId},${harness},'papercusp','activity:report','su','fixture','fixture',${editedAt},'ok',${owner},${fx.admin.json(args)})`;
+  const item = { id: workItem, harness, sourcePlanSlug: plan, sourcePlanItemIds: [added.itemId], payload: { paths: ['a.ts'] } };
+  // Cold producer setup is outside this deterministic SIZE preflight. Capture
+  // real safe-pack/compiler results; neither a timeout nor a stub shrinks base.
+  const packed = await packerFacade('pack', { rootPath: root, include: ['a.ts'], format: 'xml', compress: false }, DEFAULT_PACKER_EFFECTS);
+  expect(packed.answer.error, JSON.stringify(packed.answer)).toBeNull();
+  const graph = firstPartyCallers({ ts, root, name: 'f', filePath: 'a.ts', paths: ['a.ts'], op: 'callers', limit: 8 });
+  expect(graph.error, JSON.stringify(graph)).toBeNull();
+  const deps: TaskBriefDeps = { root: async () => root, effects: DEFAULT_PACKER_EFFECTS,
+    pack: async () => packed, graph: async () => graph, failures: readTaskFailureSignals, engineering: readEngineeringEvidence };
+  const baseline = await getClaimTimeTaskBrief({ workspaceId: fx.workspaceId, workItem: item }, deps);
+  expect(baseline?.taskBrief.status).toBe('current');
+  const base = baseline!.taskBrief, before = JSON.stringify(base);
+  const context: ReuseProviderContext = { surface: 'claim', workspaceId: fx.workspaceId, owner,
+    invocation: 'focused-size-only', workItem, plan, planItems: [added.itemId], paths: base.scope.paths,
+    sourceVersion: base.sourceFingerprint, commit: base.commit, repository: { ...base.repository!, harness },
+    sourceFiles: base.files.map(({ path, sha256 }) => ({ path, sha256 })) };
+  const cloneFiles = prepareCloneAdvisories(buildCloneIndex([
+    { path: 'a.ts', source: edited }, { path: 'b.ts', source: await readFile(join(root, 'b.ts'), 'utf8') },
+  ]));
+  const snapshot = parsePushSnapshot(JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
+    index: { backend: 'first-party-imports', lastCommit: base.commit }, edges: [], clones: { schema: 'clone-advisory-v1', files: cloneFiles } }));
+  const sql = registeredReuseBriefProviders().find(p => p.id === 'sql')!;
+  const providers = [cloneBriefProvider({ snapshot: () => snapshot }),
+    ...boundChangeHistoryProviders({ root: async () => root, harness,
+      plannedAt: async () => persisted!.row.created }), sql, nativeCoverageBriefProvider];
+  const captured = await Promise.all(providers.map(async provider => ({ provider: provider.id,
+    result: await provider.read(context, new AbortController().signal) })));
+  const minimum = captured.map(({ provider, result }) => ({ provider, section: REUSE_PROVIDER_POLICY[provider].section,
+    text: result.lines[0]!, sourceVersion: result.sourceVersion!, indexVersion: result.indexVersion! }));
+  const append = (brief: typeof base, contribution: ReuseContribution) => ({ ...brief,
+    graph: { ...brief.graph, relationships: [...brief.graph.relationships, JSON.stringify(contribution)] } });
+  const minimumAll = minimum.reduce(append, structuredClone(base));
+  setFlagOverridesForTest(Object.fromEntries(providers.map(p => [REUSE_PROVIDER_FLAGS[p.id], true])));
+  const composition = await composeReuseBrief({ base, context, deadline: Date.now() + 6000, append,
+    providers: captured.map(({ provider: id, result }) => ({ id, read: async () => structuredClone(result) })) });
+  const measurement = { scope: 'focused size preflight; real producers, seeded provenance SQL; no native acceptance',
+    coverage: 'actual native provider; absent execution snapshots remain an explicit static fallback',
+    baseline: base, captured, minimum, observations: composition.observations, response: composition.brief,
+    baseChars: briefCodePoints(before), minimumAllChars: briefCodePoints(JSON.stringify(minimumAll)),
+    allIssued: composition.observations.every(row => row.status === 'issued') };
+  console.info('R20_SPARSE_REAL_PRODUCER_PREFLIGHT', JSON.stringify(measurement));
+  expect(captured.map(row => row.provider)).toEqual(['clones', 'cochange', 'provenance', 'sql', 'coverage']);
+  for (const { result } of captured) {
+    expect(result.status, JSON.stringify(measurement)).toBe('measured');
+    expect(result.sourceVersion).toBe(base.sourceFingerprint);
+    expect(result.lines.length, JSON.stringify(measurement)).toBeGreaterThan(0);
+  }
+  expect(JSON.stringify(base)).toBe(before);
+  expect({ ...composition.brief, graph: { ...composition.brief.graph,
+    relationships: composition.brief.graph.relationships.slice(0, base.graph.relationships.length) } }).toEqual(base);
+  expect(briefCodePoints(JSON.stringify(composition.brief))).toBeLessThanOrEqual(3000);
+  for (const row of composition.observations) expect(row.chars).toBeLessThanOrEqual(REUSE_PROVIDER_POLICY[row.provider].cap);
+}, 90_000);
