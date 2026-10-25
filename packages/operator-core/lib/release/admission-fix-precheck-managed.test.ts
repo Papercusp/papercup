@@ -8,6 +8,7 @@ import type { managedSpawn } from '../task-manager/managed-spawn';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ADMISSION_PRECHECK_WORKER_MODE_ENV,
+  ADMISSION_TEST_ENVIRONMENT,
   admissionPrecheckProgressTransition,
   admissionPrecheckSettlementTransition,
   admissionPrecheckMeasurementIdentity,
@@ -28,6 +29,7 @@ const operation = (overrides: Partial<FrozenRepairAdmissionPrecheck> = {}): Froz
   repairHead: 'b'.repeat(40),
   builtCommit: 'c'.repeat(40),
   builtTree: 'd'.repeat(40),
+  testEnvironment: ADMISSION_TEST_ENVIRONMENT,
   files: ['lib/red.test.ts'],
   actor: 'su-test',
   runnerPid: 100,
@@ -70,6 +72,11 @@ const input: AdmissionPrecheckWorkerInput = {
 };
 
 describe('managed R6 admission pre-check runner (WI-10006003)', () => {
+  it('does not identify old shared-PG evidence as the private fixture measurement', () => {
+    const current = operation();
+    const legacy = { ...current, testEnvironment: undefined };
+    expect(admissionPrecheckMeasurementIdentity(current, [])).not.toBe(admissionPrecheckMeasurementIdentity(legacy, []));
+  });
   const wide = (size = 81) => {
     const files = ['lib/red.test.ts', ...Array.from({ length: size - 1 }, (_, i) => `lib/file-${i}.test.ts`)];
     return queue(operation({ files, totalCount: files.length, radius: { status: 'measured', reason: 'ok',
@@ -81,6 +88,33 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       nested && typeof nested === 'object' && !Array.isArray(nested)
         ? Object.fromEntries(Object.entries(nested).sort(([a], [b]) => a.localeCompare(b)))
         : nested));
+
+  it.each([false, true])('owns one fixture across groups and gates pass on cleanup (cleanup fails=%s)', async cleanupFails => {
+    let persisted = wide();
+    const stop = vi.fn(async () => { if (cleanupFails) throw new Error('owned PG cleanup failed'); });
+    const startTestEnvironment = vi.fn(async () => ({ env: { PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private' },
+      assertRunning: vi.fn(), stop }));
+    const work = runAdmissionPrecheckWorker(input, {
+      startTestEnvironment,
+      getTask: async () => ({ state: 'running', confined: true }),
+      readQueue: async () => ({ status: 'value', queue: persisted }), now: () => 30,
+      transition: async (_target, update) => {
+        const next = update(persisted);
+        if (next.admissionPrecheck?.status === 'passed') expect(stop).toHaveBeenCalledTimes(1);
+        persisted = next;
+      },
+      createRunner: options => async run => {
+        expect(await options.prepareTestEnvironment?.('/pinned', () => {})).toEqual({ PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private' });
+        return { ran: true, commit: run.commit, results: run.files.map(path => ({ path, status: 'pass' as const })) };
+      },
+    });
+    if (cleanupFails) {
+      await expect(work).rejects.toThrow('owned PG cleanup failed');
+      expect(persisted.admissionPrecheck?.status).toBe('running');
+    } else await expect(work).resolves.toMatchObject({ status: 'settled', verdict: { ok: true } });
+    expect(startTestEnvironment).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
 
   it('aggregates JSONB-reordered native results across execution groups', async () => {
     let persisted = jsonbRoundTrip(wide(41));
@@ -329,6 +363,7 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     expect(createRunner).toHaveBeenCalledWith({
       integrationRoot: input.integrationRoot,
       checkpointRoot: input.checkpointRoot,
+      prepareTestEnvironment: expect.any(Function),
       testRunHarness: harness,
       toolingRoot: '/operator',
       testCommand: ['npm', 'test'],

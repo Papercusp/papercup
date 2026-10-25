@@ -484,6 +484,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     const checkpointRoot = join(root, 'checkpoint');
     const precheckRoot = `${checkpointRoot}-admission-precheck`;
     const commands: string[][] = [];
+    const prepareTestEnvironment = vi.fn(async () => ({ PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private@localhost:12345/postgres' }));
     const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
       commands.push([...argv]);
       if (argv.includes('/operator/apps/operator/bin/release/setup-release-checkout.sh')) {
@@ -497,18 +498,21 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
         }));
         return { exitCode: 0, signal: null, timedOut: false, output: 'fixture prepared', durationMs: 1 };
       }
+      expect(opts.env?.PAPERCUSP_TEST_PG_ADMIN_URL).toBe('postgres://private@localhost:12345/postgres');
       return defaultExec(argv, opts);
     };
     try {
       const runner = createCheckpointTreeFixPrecheckRunner({
         ...base, integrationRoot: '/app', toolingRoot: '/operator', checkpointRoot,
         testCommand: ['npm', 'run', 'test:affected'], exec,
+        prepareTestEnvironment,
         runLockHeld: () => ({ held: false, elapsedSec: null }),
       });
       expect(await runner({ commit: C, files: ['tests/host.test.ts'] })).toMatchObject({
         ran: true, results: [{ path: 'tests/host.test.ts', status: 'pass' }],
       });
       expect(commands.at(-1)).toEqual(['npm', 'run', 'test:file', '--', 'tests/host.test.ts']);
+      expect(prepareTestEnvironment).toHaveBeenCalledWith(precheckRoot, expect.any(Function));
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

@@ -483,6 +483,8 @@ export interface FrozenRepairAdmissionPrecheck {
   ledgerRowIds?: number[];
   /** Immutable content identity; unlike builtCommit, it excludes provenance-only message changes. */
   builtTree?: string;
+  /** Versioned fixture policy; legacy shared-PG measurements cannot resume under a new policy. */
+  testEnvironment?: string;
   files: string[];
   actor: string;
   /** Process that owns the in-memory runner; absent on legacy R6 markers. */
@@ -2148,6 +2150,7 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     ...(typeof row.sourceCommit === 'string' ? { sourceCommit: row.sourceCommit } : {}),
     ...(Array.isArray(row.ledgerRowIds) ? { ledgerRowIds: [...row.ledgerRowIds] as number[] } : {}),
     ...(nonBlank(row.builtTree) ? { builtTree: row.builtTree } : {}),
+    ...(nonBlank(row.testEnvironment) ? { testEnvironment: row.testEnvironment } : {}),
     ...(measurement ? { measurement } : {}),
     files: [...(row.files as string[])],
     actor: row.actor as string,

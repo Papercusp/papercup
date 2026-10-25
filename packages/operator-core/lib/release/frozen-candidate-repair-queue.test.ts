@@ -68,6 +68,7 @@ describe('frozen-candidate repair queue', () => {
         repairHead: C,
         builtCommit: C1,
         builtTree: C2,
+        testEnvironment: 'pinned-private-pg-v1',
         files: ['lib/a.test.ts'],
         actor: 'su-test',
         runnerPid: 123,

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { getTask } from '../task-manager/store';
+import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { managedSpawn, type ManagedSpawnResult } from '../task-manager/managed-spawn';
 import { isValidTaskId, type TaskRow } from '../task-manager/types';
 import { resolveSidecarSpawnPlan, type SidecarSpawnPlan } from '../process-supervision/sidecar-spawn-shared';
@@ -26,6 +27,8 @@ import {
   type FixPrecheckVerdict,
 } from './admission-fix-precheck';
 import { ADMISSION_RADIUS_CAP } from './admission-jobs';
+import { startAdmissionTestEnvironment, type AdmissionTestEnvironment } from './admission-private-test-pg';
+export { ADMISSION_TEST_ENVIRONMENT } from './admission-private-test-pg';
 import type {
   FrozenCandidateRepairQueue,
   FrozenCandidateRepairQueueRead,
@@ -182,6 +185,7 @@ export function admissionPrecheckSettlementTransition(
 }
 
 export interface AdmissionPrecheckWorkerDeps {
+  startTestEnvironment?: typeof startAdmissionTestEnvironment;
   runProposal?: (input: AdmissionPrecheckWorkerInput) => Promise<void>;
   getTask: (taskId: string) => Promise<Pick<TaskRow, 'state' | 'confined'> | null>;
   readQueue: (target: AdmissionPrecheckQueueTarget) => Promise<FrozenCandidateRepairQueueRead>;
@@ -189,7 +193,8 @@ export interface AdmissionPrecheckWorkerDeps {
     target: AdmissionPrecheckQueueTarget,
     update: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
   ) => Promise<unknown>;
-  createRunner: (options: { integrationRoot: string; checkpointRoot: string; testRunHarness: string }) => FixPrecheckRunner;
+  createRunner: (options: { integrationRoot: string; checkpointRoot: string; testRunHarness: string;
+    prepareTestEnvironment?: (root: string, onOutput: () => void) => Promise<NodeJS.ProcessEnv> }) => FixPrecheckRunner;
   now?: () => number;
 }
 
@@ -210,7 +215,8 @@ const defaultWorkerDeps: AdmissionPrecheckWorkerDeps = {
 export function admissionPrecheckMeasurementIdentity(operation: FrozenRepairAdmissionPrecheck, signature: readonly RepairSignatureEntry[]): string {
   return createHash('sha256').update(JSON.stringify({ operationId: operation.operationId, candidate: operation.candidate,
     repairHead: operation.repairHead, builtCommit: operation.builtCommit, builtTree: operation.builtTree,
-    sourceCommit: operation.sourceCommit, files: operation.files, radius: operation.radius, signature })).digest('hex');
+    sourceCommit: operation.sourceCommit, files: operation.files, radius: operation.radius, signature,
+    testEnvironment: operation.testEnvironment })).digest('hex');
 }
 
 export function validateAdmissionPrecheckResults(files: readonly string[], results: readonly FixPrecheckFileResult[], complete = false): void {
@@ -229,6 +235,7 @@ async function runBoundedAdmissionPrecheck(
   queue: FrozenCandidateRepairQueue,
   deps: AdmissionPrecheckWorkerDeps,
   runner: FixPrecheckRunner,
+  finalize: () => Promise<void>,
 ): Promise<AdmissionPrecheckWorkerOutcome> {
   const operation = queue.admissionPrecheck!;
   const identity = admissionPrecheckMeasurementIdentity(operation, queue.signature);
@@ -242,6 +249,7 @@ async function runBoundedAdmissionPrecheck(
     return current;
   };
   const unavailable = async (detail: string): Promise<AdmissionPrecheckWorkerOutcome> => {
+    await finalize();
     const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files, ...(operation.radius ? { radius: operation.radius } : {}) });
     const verdict = evaluateFixPrecheck(population, { ran: false, reason: 'runner-failed', detail });
     await deps.transition(input.queueTarget, fresh => {
@@ -313,6 +321,7 @@ async function runBoundedAdmissionPrecheck(
     if (now() >= operation.expiresAtMs) return unavailable('bounded pre-check deadline expired before settlement');
     validateAdmissionPrecheckResults(operation.files, completed, true);
     const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files, ...(operation.radius ? { radius: operation.radius } : {}) });
+    await finalize();
     const verdict = evaluateFixPrecheck(population, { ran: true, commit: operation.builtCommit,
       results: operation.files.map(file => completed.find(result => result.path === file)!) }, { actor: operation.actor });
     await deps.transition(input.queueTarget, fresh => {
@@ -355,6 +364,9 @@ export async function runAdmissionPrecheckWorker(
     // P-007 (#D-037): without the persisted partition every radius file would count as admitted.
     ...(operation.radius ? { radius: operation.radius } : {}),
   });
+  let environment: Promise<AdmissionTestEnvironment> | undefined;
+  let finishing: Promise<void> | undefined;
+  const finalize = async () => { if (environment) await (finishing ??= environment.then(fixture => fixture.stop())); };
   const runner = deps.createRunner({
     integrationRoot: input.integrationRoot,
     checkpointRoot: input.checkpointRoot,
@@ -362,9 +374,19 @@ export async function runAdmissionPrecheckWorker(
     ...(input.toolingRoot ? { toolingRoot: input.toolingRoot } : {}),
     ...(input.testCommand ? { testCommand: input.testCommand } : {}),
     ...(input.clearEnv ? { clearEnv: input.clearEnv } : {}),
+    prepareTestEnvironment: async (root, onOutput) => {
+      environment ??= (deps.startTestEnvironment ?? startAdmissionTestEnvironment)(root, {
+        onOutput, log: line => console.log(line),
+        testRunsDbUrl: process.env.PAPERCUSP_TEST_RUNS_DB_URL ?? getHarnessAdminUrl(),
+      });
+      const fixture = await environment;
+      fixture.assertRunning();
+      return fixture.env;
+    },
   });
+  try {
   if (operation.files.length > ADMISSION_RADIUS_CAP || operation.measurement)
-    return runBoundedAdmissionPrecheck(input, queue, deps, runner);
+    return await runBoundedAdmissionPrecheck(input, queue, deps, runner, finalize);
   let run: FixPrecheckRunResult;
   try {
     run = await runner({
@@ -383,12 +405,15 @@ export async function runAdmissionPrecheckWorker(
     };
   }
 
+  // Cleanup is evidence too: an unverified stop must never leave a passed marker.
+  await finalize();
   // P-006: the admission ratchet routes an imports-red refusal to the admitting actor.
   const verdict = evaluateFixPrecheck(population, run, { actor: operation.actor ?? null });
   const settledAtMs = (deps.now ?? Date.now)();
   await deps.transition(input.queueTarget, (fresh) =>
     admissionPrecheckSettlementTransition(fresh, input.operationId, verdict, settledAtMs));
   return { status: 'settled', verdict };
+  } finally { await finalize(); }
 }
 
 export function parseAdmissionPrecheckWorkerInput(raw: string | undefined): AdmissionPrecheckWorkerInput | null {

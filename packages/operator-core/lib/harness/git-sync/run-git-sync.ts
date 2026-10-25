@@ -5817,7 +5817,21 @@ async function commitAttributedGroupsPass(
         );
       }
       if (present.files.length === 0) continue;
-      const add = await privateGit(['add', '--', ...present.files], repoPath);
+      let add = await privateGit(['add', '--', ...present.files], repoPath);
+      if (add.code !== 0 && addFailureIgnoredPaths(`${add.stdout}\n${add.stderr}`).length > 0) {
+        // EI-26936210212113630: the census uses the shared index, but this add uses
+        // a HEAD-seeded private index. A shared-only addition can therefore be
+        // ignored here; an ignore edit after the census creates the same mismatch.
+        // Ask this index which paths are ignored, preserving tracked updates even
+        // beneath a reported ignored ancestor. Never force private candidates in.
+        const { ignoredUntracked } = await classifyProtectedPathExclusions(privateGit, repoPath, present.files);
+        if (ignoredUntracked.size > 0) {
+          const eligible = present.files.filter((file) => !ignoredUntracked.has(file));
+          log(`[git-sync] ${repoPath}: ${groupLabel} omitted ${ignoredUntracked.size} ignored untracked path(s) from explicit staging`);
+          if (eligible.length === 0) continue;
+          add = await privateGit(['add', '--', ...eligible], repoPath);
+        }
+      }
       if (add.code !== 0) {
         fail(`${groupLabel} add failed: ${gitFailureDetail(add)}`);
         continue;

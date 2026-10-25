@@ -36,6 +36,7 @@ import {
   createBgVerifierCompilerCustody,
   prepareBgVerifierBuildRecord,
   verifyBgVerifierBuildRecord,
+  compileBgVerifierInvocation,
   qualifyBgVerifierOutput,
   verifyBgVerifierOutputRecord,
   prepareVerifierDependencies,
@@ -2234,12 +2235,14 @@ describe('BG inherited manifest and original source boundaries', () => {
     }
   });
 
-  async function compilerCandidate(artifactInputs = false) {
+  async function compilerCandidate(artifactInputs = false, cliHarness = false) {
     const c = candidate();
     git(c.fixture.repo, ['rm', '-rf', '--', 'node_modules', 'apps/operator/node_modules']);
     for (const path of ['papercusp-desktop/bin/lib/pinned-deps.sh', 'apps/operator/bin/release/dependency-generation.sh',
-      'apps/operator/bin/bundle-host.sh'])
+      'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'])
       write(c.fixture.repo, path, readFileSync(join(SOURCE_ROOT, path), 'utf8'));
+    if (cliHarness) write(c.fixture.repo, 'scripts/source-preview.mjs',
+      `const { runCli } = await import(${JSON.stringify(new URL('../../../scripts/source-preview.mjs', import.meta.url).href)});\nprocess.exitCode = await runCli(process.argv.slice(2));\n`);
     write(c.fixture.repo, inputs[0]!, "export { y } from '../../../packages/core/index'; export { default as dep } from 'fixture-dependency';\n");
     git(c.fixture.repo, ['add', '-A']);
     git(c.fixture.repo, ['commit', '-qm', 'BG compiler input custody fixture']);
@@ -2363,6 +2366,104 @@ describe('BG inherited manifest and original source boundaries', () => {
     custody.verifyBeforePublication();
     return { prepared, invocation, record, entry };
   }
+
+  async function maintainedCompilerCandidate() {
+    const { prepared } = await compilerCandidate(true, true);
+    const installed = dirname(createRequire(import.meta.url).resolve('@papercusp/host-esbuild/package.json'));
+    const privateCompiler = join(prepared.root, 'node_modules/@papercusp/host-esbuild');
+    cpSync(installed, privateCompiler, { recursive: true, dereference: true });
+    const dependencies = captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source });
+    const entry = join(prepared.root, 'apps/operator/dist-verify/guarded.mjs');
+    const argv = [join(prepared.root, inputs[0]!), '--bundle', '--platform=node', '--format=esm', '--target=node22',
+      '--outfile=' + entry, '--metafile=' + entry + '.meta.json', '--log-level=silent',
+      '--banner:js=/* retained banner */', '--define:__PAPERCUSP_BUNDLED_SIDECAR__=true',
+      '--external:unused-native/*', '--minify-whitespace', '--minify-syntax'];
+    const invocation = { builder: join(prepared.root, 'apps/operator/bin/bundle-host.sh'), argv,
+      compiler: join(privateCompiler, 'lib/main.js'), node: process.execPath,
+      packageManager: join(prepared.root, 'node_modules/fixture-package-manager/cli.js'),
+      configuration: [join(prepared.root, 'package.json')], environment: { NODE_OPTIONS: '', NODE_PATH: '', PATH: '/usr/bin',
+        TMPDIR: tmpdir(),
+        ESBUILD_BINARY_PATH: join(privateCompiler, 'bin/esbuild'), ESBUILD_WORKER_THREADS: '0' } };
+    const record = prepareBgVerifierBuildRecord({ prepared, dependencies, invocation });
+    const expectedVersion = '0.25.0';
+    expect(JSON.parse(readFileSync(join(privateCompiler, 'package.json'), 'utf8')).version).toBe(expectedVersion);
+    return { prepared, dependencies, invocation, record, argv, entry, expectedVersion };
+  }
+
+  it('compiles exact maintained host switches using private real esbuild and retains original custody', async () => {
+    const fixture = await maintainedCompilerCandidate();
+    const original = JSON.stringify(fixture.record), receipt = readFileSync(join(fixture.prepared.root, '.verifier-source.json'));
+    const env = process.env;
+    const compiled = await compileBgVerifierInvocation(fixture);
+    expect(process.env).toBe(env);
+    expect(compiled.argv).toEqual(fixture.argv);
+    expect(compiled.consumed.map(row => row.path)).toContain('node_modules/fixture-dependency/index.js');
+    const imported = await import('data:text/javascript;base64,' + readFileSync(fixture.entry).toString('base64'));
+    expect({ y: imported.y, dep: imported.dep }).toEqual({ y: 2, dep: 41 });
+    expect(readFileSync(fixture.entry, 'utf8')).toContain('retained banner');
+    expect(JSON.stringify(fixture.record)).toBe(original);
+    expect(readFileSync(join(fixture.prepared.root, '.verifier-source.json'))).toEqual(receipt);
+    expect(qualifyBgVerifierOutput(fixture).artifact.sourceBlobs).toEqual(fixture.prepared.acceptedManifest.members);
+  });
+
+  it.each(['argv', 'unknown-switch', 'version', 'ambient-binary', 'actual-node', 'output-escape'] as const)(
+    'refuses %s before guarded compiler output', async defect => {
+      const fixture = await maintainedCompilerCandidate();
+      if (defect === 'argv') fixture.argv = [...fixture.argv, '--keep-names'];
+      if (defect === 'version') fixture.expectedVersion = '0.0.0';
+      if (defect === 'actual-node') {
+        fixture.invocation.node = fixture.invocation.packageManager;
+        fixture.record = prepareBgVerifierBuildRecord(fixture);
+      }
+      if (defect === 'ambient-binary') {
+        fixture.invocation.environment.ESBUILD_BINARY_PATH = process.execPath;
+        fixture.record = prepareBgVerifierBuildRecord(fixture);
+      }
+      if (defect === 'unknown-switch' || defect === 'output-escape') {
+        fixture.invocation.argv = fixture.argv = [...fixture.argv,
+          defect === 'unknown-switch' ? '--inject=/unaccepted.js' : '--outfile=' + join(tmp, 'outside-bg.mjs')];
+        fixture.record = prepareBgVerifierBuildRecord(fixture);
+      }
+      await expect(compileBgVerifierInvocation(fixture)).rejects.toThrow(defect === 'argv'
+        ? 'BG compiler argv differs' : defect === 'version' ? 'BG compiler package version mismatch'
+          : defect === 'ambient-binary' ? 'BG compiler binary must be explicitly pinned'
+            : defect === 'actual-node' ? 'BG compiler actual Node differs'
+            : defect === 'unknown-switch' ? 'BG compiler switch is outside maintained recipe' : 'BG compiler output escaped');
+      expect(existsSync(fixture.entry)).toBe(false);
+    });
+
+  it('routes guarded shared-shell compilation to its recorded adapter without cache fallback', () => {
+    const root = join(tmp, 'bg-shared-dispatch');
+    write(root, 'scripts/source-preview.mjs', 'console.log(JSON.stringify(process.argv.slice(2))); process.exit(37);');
+    const common = join(SOURCE_ROOT, 'apps/operator/bin/bundle-host-common.sh');
+    const child = spawnSync('bash', ['-c',
+      'source "$1"; bundle_host_cached_package() { echo cache-fallback >&2; return 99; }; BUNDLE_HOST_BG_BUILD_CONTEXT="$3"; bundle_host_esbuild "$2" "$4" --bundle --outfile="$5"',
+      'guarded-dispatch', common, root, join(root, 'original context.json'), 'entry with spaces.ts', 'out with spaces.mjs'],
+    { env: childEnv(), encoding: 'utf8', timeout: 30_000 });
+    expect(child.status).toBe(37);
+    expect(child.stderr).not.toContain('cache-fallback');
+    expect(JSON.parse(child.stdout)).toEqual(['bg-compiler', '--context', join(root, 'original context.json'), '--',
+      'entry with spaces.ts', '--bundle', '--outfile=out with spaces.mjs']);
+  });
+
+  it('runs the selected shared shell through the actual guarded CLI and private pinned esbuild 0.25.0', async () => {
+    const fixture = await maintainedCompilerCandidate();
+    const context = join(tmp, 'original-bg-compiler-context.json');
+    writeFileSync(context, JSON.stringify({ record: fixture.record, invocation: fixture.invocation }));
+    const common = join(fixture.prepared.root, 'apps/operator/bin/bundle-host-common.sh');
+    const result = spawnSync('bash', ['-c',
+      'source "$1"; shift; repo="$1"; shift; bundle_host_cached_package() { echo unexpected-cache-fallback >&2; return 99; }; bundle_host_esbuild "$repo" "$@"',
+      'real-guarded-compiler', common, fixture.prepared.root, ...fixture.argv],
+    { env: childEnv({ BUNDLE_HOST_BG_BUILD_CONTEXT: context }), encoding: 'utf8', timeout: 60_000 });
+    expect(result.stderr).not.toContain('unexpected-cache-fallback');
+    expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.compilerVersion).toBe('0.25.0');
+    expect(receipt.argv).toEqual(fixture.argv);
+    expect(receipt.binary.realpath).toBe(fixture.invocation.environment.ESBUILD_BINARY_PATH);
+    expect(receipt.consumed.map((row: { path: string }) => row.path)).toContain('packages/core/index.ts');
+    expect(qualifyBgVerifierOutput(fixture).artifact.sourceBlobs).toEqual(fixture.prepared.acceptedManifest.members);
+  });
 
   it('binds a distinct immutable output record through the maintained artifact writer', async () => {
     const { prepared, invocation, record, entry } = await outputCandidate();

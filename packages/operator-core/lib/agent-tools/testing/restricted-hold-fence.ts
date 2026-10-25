@@ -32,7 +32,7 @@ import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { readVerifierSourceReceiptSync } from '@papercusp/test-config/verifier-source';
+import { readVerifierSourceReceiptSync, type VerifierSourceReceipt } from '@papercusp/test-config/verifier-source';
 import { readCommittedFiles } from '../plans/committed-tree-reader';
 import type { BundleHoldProgress } from '../../../../../scripts/lib/restricted-hold-preflight.mjs';
 import {
@@ -229,6 +229,32 @@ export async function restrictedTreeHoldRefusal(
 export interface BundleInputs {
   files: readonly string[];
   dirs: readonly string[];
+}
+
+/**
+ * Frozen-image face of the maintained bundle oracle. The caller supplies the
+ * receipt measured by the trusted full census of its retained sealed handle,
+ * never a marker/receipt selected by a reviewer. Git objects are independent
+ * origin evidence; dirty canonical working bytes are never read or executed.
+ * Like the archive bundle face below, qualifying committed bytes replaces the
+ * live dirty-tree intersection, rather than pretending a no-Git mount is a checkout.
+ */
+export async function restrictedFrozenSourceRefusal(root: string,
+  source: VerifierSourceReceipt): Promise<RestrictedHoldRefusal | null> {
+  try {
+    const realRoot = await realpath(root);
+    if (!/^[a-f0-9]{40,64}$/.test(source.sourceCommit) || !source.files.length)
+      throw new Error('invalid frozen source population');
+    const repositories = new Set((source.submodules ?? []).map(row => row.path));
+    const committed = await readCommittedFiles(realRoot, source.sourceCommit, source.files.map(file => file.path),
+      { exists: async repo => repositories.has(repo) });
+    for (const file of source.files)
+      if (committed.get(file.path)?.sha256 !== file.sha256) throw new Error('frozen input differs from committed origin');
+    return null;
+  } catch {
+    return { error: 'restricted_hold_state_unknown',
+      hint: 'The sealed source census could not be qualified against independent committed origin; runtime allocation refused.' };
+  }
 }
 
 /**

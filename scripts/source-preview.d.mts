@@ -342,6 +342,41 @@ export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgV
         };
     };
 };
+/** The shared shell recipe delegates one EXACT recorded compiler invocation
+ * here. Use its private API and binary, pass the digest-checked buffers to
+ * esbuild, then fence source/dependencies again before writing any output.
+ * This does not qualify resolver metadata, compiler self-consumption, runtime
+ * imports, a complete multi-entry host build, or service readiness.
+ * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
+ *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string }} args
+ */
+export function compileBgVerifierInvocation({ record, invocation, argv, expectedVersion }: {
+    record: ReturnType<typeof prepareBgVerifierBuildRecord>;
+    invocation: BgBuildInvocation;
+    argv: string[];
+    expectedVersion: string;
+}): Promise<{
+    schemaVersion: string;
+    argv: string[];
+    buildRecordSha256: string;
+    originalSourceReceiptSha256: string;
+    compilerVersion: string;
+    binary: {
+        path: string;
+        realpath: string;
+        sha256: string;
+    };
+    consumed: {
+        path: string;
+        realpath: string;
+        sha256: string;
+    }[];
+    output: {
+        path: string;
+        realpath: string;
+        sha256: string;
+    };
+}>;
 /** Bind the maintained artifact writer's measured output to the ORIGINAL build
  * record. Builder exit status alone is never artifact qualification. This is a
  * separate output fence, not proof of compiler consumption or service readiness.

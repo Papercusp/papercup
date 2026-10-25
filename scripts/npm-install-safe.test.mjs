@@ -1627,6 +1627,43 @@ test("npmChildEnv preserves an explicit caller install choice in offline-safe mo
   );
 });
 
+for (const scenario of ["NODE_ENV", "npm-config", "npmrc", "save-dev", "fresh-save-dev", "explicit-production"]) {
+  test(`development install protects dev tools: ${scenario}`, { timeout: 60_000 }, () => {
+    const root = mkdtempSync(join(tmpdir(), "install-safe-dev-selection-"));
+    const repoRoot = join(root, "repo"), toolRoot = join(root, "tool");
+    const cli = fileURLToPath(new URL("./npm-install-safe.mjs", import.meta.url));
+    mkdirSync(toolRoot); mkdirSync(repoRoot);
+    writeFileSync(join(toolRoot, "package.json"), JSON.stringify({ name: "fixture-dev-tool", version: "1.0.0", main: "index.js" }));
+    writeFileSync(join(toolRoot, "index.js"), "module.exports = 41;\n");
+    writeFileSync(join(repoRoot, "package.json"), JSON.stringify({
+      name: "dev-selection-fixture", version: "1.0.0", private: true,
+      ...(scenario === "fresh-save-dev" ? {} : { devDependencies: { "fixture-dev-tool": "file:../tool" } }),
+      scripts: { postinstall: `node -e "require('node:assert/strict').equal(require('fixture-dev-tool'),41)"` },
+    }));
+    mkdirSync(join(repoRoot, "node_modules"));
+    symlinkSync(toolRoot, join(repoRoot, "node_modules/fixture-dev-tool"), "junction");
+    if (scenario === "npmrc") writeFileSync(join(repoRoot, ".npmrc"), "omit=dev\n");
+    const production = scenario === "explicit-production";
+    const npmArgs = production ? ["--omit=dev", "--ignore-scripts"]
+      : scenario.endsWith("save-dev") ? ["--save-dev", "--save-exact", "file:../tool"] : [];
+    try {
+      const child = spawnSync(process.execPath, [cli, "--repo-root", repoRoot, "--", "install", "--offline", "--cache", join(root, "cache"), "--no-audit", "--no-fund", ...npmArgs], {
+        encoding: "utf8", timeout: 55_000, env: {
+          ...process.env, ...NPM_FIXTURE_CONFIG_RESET,
+          NODE_ENV: scenario === "NODE_ENV" || scenario.endsWith("save-dev") ? "production" : "test",
+          npm_config_omit: scenario === "npm-config" ? "dev" : undefined, NPM_CONFIG_OMIT: undefined,
+          npm_config_include: undefined, NPM_CONFIG_INCLUDE: undefined,
+          npm_config_production: undefined, NPM_CONFIG_PRODUCTION: undefined,
+          PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, "mutex"),
+          PAPERCUSP_SKIP_DEP_GENERATION: "1", PAPERCUSP_SKIP_DEP_VERIFY: "1",
+        },
+      });
+      assert.equal(child.status, 0, child.error?.stack ?? child.stdout + child.stderr);
+      assert.equal(existsSync(join(repoRoot, "node_modules/fixture-dev-tool/package.json")), !production);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+}
+
 test('dependency verification repairs nested dependency executable links before publishing', async () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'install-safe-nested-bin-'));
   const owner = join(repoRoot, 'node_modules/@scope/owner');
@@ -2360,6 +2397,79 @@ test("verifyNpmCacheExclusive reports verify's own failure instead of treating i
     }),
     /verify crashed/,
   );
+});
+
+test("retained-source readers protect every dependency donor through child completion", async () => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-retained-reader-"));
+  const donor = join(root, "donor");
+  const intermediate = join(root, "intermediate");
+  const reader = join(root, "reader");
+  const lockRootDir = join(root, "locks");
+  for (const path of [donor, intermediate, reader]) mkdirSync(join(path, ".git"), { recursive: true });
+  for (const [path, sourceRepoRoot] of [[reader, intermediate], [intermediate, donor]]) {
+    writeFileSync(join(path, ".git", "lint-as-committed-owner.json"), JSON.stringify({ sha: "a".repeat(40), sourceRepoRoot }));
+  }
+  const fsMutexUrl = new URL("./lib/fs-mutex.mjs", import.meta.url).href;
+  const acquired = [];
+  try {
+    const result = await runCommandUnderInstallMutex({
+      repoRoot: reader,
+      commandArgs: ["node", "fixture-reader.mjs"],
+      // An inherited lease for the clone alone must not bypass its donor.
+      env: { PAPERCUSP_INSTALL_MUTEX_HELD: repoLockName(reader) },
+      acquireReadMutex: (name, run, options) => {
+        acquired.push(name);
+        return withFsMutexRead(name, run, { ...options, lockRootDir });
+      },
+      runCommand: (_command, _args, options) => {
+        assert.equal(options.cwd, reader);
+        for (const path of [intermediate, donor]) {
+          assert.ok(options.env.PAPERCUSP_INSTALL_MUTEX_HELD.split(",").includes(repoLockName(path)));
+          const writer = spawnSync(process.execPath, ["--input-type=module", "-e", `
+            import { withFsMutex } from ${JSON.stringify(fsMutexUrl)};
+            try {
+              await withFsMutex(${JSON.stringify(repoLockName(path))}, async () => {}, {
+                lockRootDir: ${JSON.stringify(lockRootDir)}, timeoutMs: 50, retryMs: 5,
+              });
+              process.exitCode = 9;
+            } catch (error) {
+              if (!String(error.message).includes('Timed out')) throw error;
+            }
+          `], { encoding: "utf8", env: { ...process.env, PAPERCUSP_INSTALL_MUTEX_HELD: "" } });
+          assert.equal(writer.status, 0, writer.stderr);
+        }
+        return { status: 17 };
+      },
+    });
+    assert.equal(result, 17);
+    assert.deepEqual(acquired.sort(), [repoLockName(intermediate), repoLockName(donor)].sort());
+    for (const path of [intermediate, donor]) {
+      await withFsMutex(repoLockName(path), async () => {}, { lockRootDir, timeoutMs: 100, retryMs: 5 });
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("retained-source readers refuse cyclic or missing donor provenance before fork", async () => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-retained-invalid-"));
+  mkdirSync(join(root, ".git"));
+  let childStarted = false;
+  try {
+    for (const marker of [{ sha: "a".repeat(40), sourceRepoRoot: root }, { sha: "a".repeat(40) }]) {
+      writeFileSync(join(root, ".git", "lint-as-committed-owner.json"), JSON.stringify(marker));
+      await assert.rejects(runCommandUnderInstallMutex({
+        repoRoot: root,
+        commandArgs: ["node", "fixture-reader.mjs"],
+        acquireReadMutex: async (_name, run) => run(),
+        runCommand: () => { childStarted = true; return { status: 0 }; },
+        env: {},
+      }), /dependency donor/);
+    }
+    assert.equal(childStarted, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("install reader preserves real child signals and ordinary exit codes", async () => {

@@ -84,6 +84,18 @@ def verify_source(expected, size):
         refuse('sealed_handle_invalid')
 
 
+def export_source(expected, max_bytes):
+    size = seal_source(expected, max_bytes)
+    info = os.fstat(SOURCE_FD)
+    # The host duplicates /proc/<this child>/fd/3 while this process holds it
+    # open, compares the kernel device/inode, then acknowledges. This is a
+    # duplicate of the sealed object, never another read of an image pathname.
+    print(json.dumps({'version': 1, 'device': str(info.st_dev), 'inode': str(info.st_ino),
+                      'sha256': expected, 'bytes': size}), flush=True)
+    if sys.stdin.buffer.read(1) != b'\x01':
+        refuse('sealed_export_not_acknowledged')
+
+
 def clean_exec(command, expected, size, extra_fds=0):
     if not command or not os.path.isabs(command[0]):
         refuse('host_command_must_be_absolute')
@@ -189,6 +201,25 @@ def verify_manifest(root, expected):
                 refuse('closure_input_bytes_changed')
     if actual != set(records):
         refuse('closure_input_missing')
+    return manifest
+
+
+def inspect_source(expected, size, manifest_hash):
+    verify_source(expected, size)
+    manifest = verify_manifest('/source', manifest_hash)
+    with open('/source/.verifier-source.json', 'rb') as source:
+        receipt = json.load(source)
+    recorded = {row['path']: row for row in manifest['files']}
+    if (receipt.get('sourceCommit') != manifest['sourceCommit'] or
+            not isinstance(receipt.get('files'), list) or
+            any(recorded.get(row.get('path')) != row for row in receipt['files'])):
+        refuse('source_receipt_population_mismatch')
+    with open('/source/.broker-build.json', 'rb') as source:
+        generated_hash = hashlib.file_digest(source, 'sha256').hexdigest()
+    # Only trusted helper code runs. No source entry point, shell, startup hook
+    # or generated output is executed in order to produce this measurement.
+    print(json.dumps({'version': 1, 'source': receipt, 'generatedSha256': generated_hash},
+                     separators=(',', ':')), flush=True)
 
 
 def extract_source(command, expected, size, manifest_hash):
@@ -226,7 +257,7 @@ def extract_source(command, expected, size, manifest_hash):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=['seal-exec', 'mount-exec', '_extract-exec'])
+    parser.add_argument('mode', choices=['seal-exec', 'seal-export', 'mount-exec', '_extract-exec', 'inspect', '_inspect'])
     parser.add_argument('--sha256', required=True)
     parser.add_argument('--max-bytes', required=True, type=int)
     parser.add_argument('--manifest-sha256')
@@ -236,13 +267,22 @@ def main():
     if (not re.fullmatch('[a-f0-9]{64}', options.sha256) or
             not 0 < options.max_bytes <= MAX_IMAGE_BYTES):
         refuse('invalid_image_identity')
-    if options.mode == 'seal-exec':
+    if options.mode == 'seal-export':
+        export_source(options.sha256, options.max_bytes)
+    elif options.mode == 'seal-exec':
         size = seal_source(options.sha256, options.max_bytes)
         clean_exec(command, options.sha256, size)
     else:
         if not options.manifest_sha256 or not re.fullmatch('[a-f0-9]{64}', options.manifest_sha256):
             refuse('closure_manifest_identity_missing')
-        if options.mode == 'mount-exec':
+        if options.mode == 'inspect':
+            mount_source(['/usr/bin/python3', '-I', '-S', '/init.py', '_inspect',
+                          '--sha256', options.sha256, '--max-bytes', str(options.max_bytes),
+                          '--manifest-sha256', options.manifest_sha256],
+                         options.sha256, options.max_bytes, options.manifest_sha256)
+        elif options.mode == '_inspect':
+            inspect_source(options.sha256, options.max_bytes, options.manifest_sha256)
+        elif options.mode == 'mount-exec':
             mount_source(command, options.sha256, options.max_bytes, options.manifest_sha256)
         else:
             extract_source(command, options.sha256, options.max_bytes, options.manifest_sha256)

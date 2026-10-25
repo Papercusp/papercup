@@ -1883,6 +1883,31 @@ export function npmChildEnv({
   };
 }
 
+/** A development checkout must not lose its tools because NODE_ENV, npm config,
+ * or .npmrc implicitly omits dev dependencies. An explicit production selection
+ * on this invocation remains authoritative. Apply before resolve AND reify so
+ * repairs inherit the same selection. Reader/cache commands never reach here.
+ * @param {string} repoRoot @param {string[]} npmArgs
+ */
+export function developmentInstallArgs(repoRoot, npmArgs) {
+  if (!["install", "i", "ci", "update", "up", "dedupe", "prune", "uninstall", "remove", "rm", "link", "unlink"].includes(npmArgs[0]))
+    return npmArgs;
+  const savesDev = npmBooleanArg(npmArgs, "--save-dev") === true || npmArgs.includes("-D");
+  const manifestPath = join(repoRoot, "package.json");
+  if (!savesDev && (!existsSync(manifestPath) ||
+      !Object.keys(JSON.parse(readFileSync(manifestPath, "utf8")).devDependencies ?? {}).length)) return npmArgs;
+  for (let index = 1; index < npmArgs.length; index++) {
+    const [flag, inline] = npmArgs[index].split(/=(.*)/s);
+    const value = inline ?? npmArgs[index + 1];
+    if ((flag === "--omit" && value?.split(/[\s,]+/).includes("dev")) ||
+        (flag === "--include" && value?.split(/[\s,]+/).includes("dev")) ||
+        (flag === "--only" && ["prod", "production"].includes(value)) ||
+        (flag === "--also" && ["dev", "development"].includes(value)) ||
+        ["--production", "--no-production", "--dev"].includes(flag)) return npmArgs;
+  }
+  return [...npmArgs, "--include=dev"];
+}
+
 /**
  * Publish the verified install as an immutable dependency generation under a
  * shared reader marker for the repo-keyed install mutex. The generation builder
@@ -2047,6 +2072,24 @@ export function installLockWaitReporter({ lock, describe, log, budgetMs }) {
  *   cacheRead?: boolean — guard the shared package cache instead of repo dependencies,
  * }} [options]
  */
+/** Retained source shadows import dependencies from their recorded donor chain. */
+function installReaderLockNames(repoRoot) {
+  const roots = new Set();
+  let root = realpathSync(repoRoot);
+  while (true) {
+    if (roots.has(root)) throw new Error("Cyclic retained-source dependency donor provenance");
+    roots.add(root);
+    const markerPath = join(root, ".git", "lint-as-committed-owner.json");
+    if (!existsSync(markerPath)) break;
+    const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+    if (typeof marker.sourceRepoRoot !== "string" || !isAbsolute(marker.sourceRepoRoot)) {
+      throw new Error("Missing retained-source dependency donor provenance");
+    }
+    root = realpathSync(marker.sourceRepoRoot);
+  }
+  return [...new Set([...roots].map(root => repoLockName(root)))].sort();
+}
+
 export async function runCommandUnderInstallMutex({
   repoRoot = DEFAULT_REPO_ROOT,
   commandArgs,
@@ -2060,9 +2103,10 @@ export async function runCommandUnderInstallMutex({
     throw new Error(`${EXEC_UNDER_LOCK_FLAG} requires a command`);
   }
   const [command, ...args] = commandArgs;
-  const lockName = repoLockName(repoRoot);
-  const mutexAlreadyHeld = installMutexIsHeld(lockName, env);
-  const childEnv = cacheRead ? env : envWithInstallMutex(lockName, env);
+  const lockNames = cacheRead ? [] : installReaderLockNames(repoRoot);
+  const pendingLocks = lockNames.filter(name => !installMutexIsHeld(name, env));
+  const mutexAlreadyHeld = pendingLocks.length === 0;
+  const childEnv = lockNames.reduce((child, name) => envWithInstallMutex(name, child), env);
   let childStarted = false;
 
   const executeReader = async () => {
@@ -2078,7 +2122,7 @@ export async function runCommandUnderInstallMutex({
     // Reader diagnostics belong on stderr: callers such as ptool expose the
     // child command's stdout as a machine-readable JSON stream.
     console.error(
-      `${cacheRead ? "NPM_INSTALL_SAFE guarding package-cache reader" : mutexAlreadyHeld ? "NPM_INSTALL_SAFE mutex already held; running nested reader directly" : "NPM_INSTALL_SAFE guarding reader"}: ${commandArgs.join(" ")} (root=${repoRoot}, lock=${cacheRead ? PACKAGE_CACHE_MUTEX_NAME : lockName})`,
+      `${cacheRead ? "NPM_INSTALL_SAFE guarding package-cache reader" : mutexAlreadyHeld ? "NPM_INSTALL_SAFE mutex already held; running nested reader directly" : "NPM_INSTALL_SAFE guarding reader"}: ${commandArgs.join(" ")} (root=${repoRoot}, lock=${cacheRead ? PACKAGE_CACHE_MUTEX_NAME : lockNames.join(",")})`,
     );
     const result = runCommand(command, args, {
       cwd: repoRoot,
@@ -2108,7 +2152,9 @@ export async function runCommandUnderInstallMutex({
   if (mutexAlreadyHeld) return executeReader();
 
   try {
-    return await acquireReadMutex(lockName, executeReader, {
+    const acquireReader = (index) => index === pendingLocks.length
+      ? executeReader()
+      : acquireReadMutex(pendingLocks[index], () => acquireReader(index + 1), {
       // Reader diagnostics stay on stderr (see executeReader).
       ...installLockWaitReporter({
         lock: "reader",
@@ -2120,6 +2166,7 @@ export async function runCommandUnderInstallMutex({
       }),
       waitingNoticeIntervalMs: 30_000,
     });
+    return await acquireReader(0);
   } catch (error) {
     const testFileRouter = resolve(repoRoot, "scripts/test-files.mjs");
     const invokesTestFileRouter = commandArgs.some(
@@ -2146,6 +2193,8 @@ Serializes npm installs in a shared checkout behind a repo-keyed mutex, then ver
 declared dependency landed on disk. Arguments that start with "-" get an implicit \`install\`
 prepended, so \`-- --legacy-peer-deps\` means \`npm install --legacy-peer-deps\`.
 --help / -h is recognised only as the first argument; use \`install --help\` for npm's own help.
+Installs in roots declaring devDependencies include dev tools by default, even under
+NODE_ENV=production or inherited omit config. Use --omit=dev for an explicit production install.
 `;
 
 export const RESOLUTION_STALE_ATTEMPTS_DEFAULT = 3;
@@ -2172,7 +2221,8 @@ export async function main(argv = process.argv.slice(2)) {
   }
   if ("commandArgs" in parsed) return runCommandUnderInstallMutex(parsed);
 
-  const { repoRoot, npmArgs } = parsed;
+  const { repoRoot } = parsed;
+  const npmArgs = developmentInstallArgs(repoRoot, parsed.npmArgs);
   const lockName = repoLockName(repoRoot);
   const npmEnv = {
     ...npmChildEnv({

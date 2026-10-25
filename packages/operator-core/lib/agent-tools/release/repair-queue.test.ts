@@ -10,6 +10,7 @@ import { AdmissionOffthreadTimeoutError } from '../../release/admission-offthrea
 import { ADMISSION_PRECHECK_MAX_FILES, precheckPopulation } from '../../release/admission-fix-precheck';
 import {
   admissionPrecheckMeasurementIdentity,
+  ADMISSION_TEST_ENVIRONMENT,
   runAdmissionPrecheckWorker,
   type AdmissionPrecheckWorkerInput,
 } from '../../release/admission-fix-precheck-managed';
@@ -39,6 +40,7 @@ const queue = {
   admissionPrecheck: {
     schemaVersion: 1 as const,
     operationId: 'repair-precheck-fixture',
+    testEnvironment: ADMISSION_TEST_ENVIRONMENT,
     status: 'passed' as const,
     candidate: 'a'.repeat(40),
     repairHead: 'c'.repeat(40),
@@ -2168,6 +2170,19 @@ describe('release:repair-queue', () => {
       body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never));
       expect(dryRuns()).toEqual([true]);
       expect(mocks.precheckFactory).not.toHaveBeenCalled();
+    });
+
+    it('starts fresh rather than accepting evidence from the legacy shared-PG environment', async () => {
+      mocks.admit.mockReturnValue(admissionOf(false));
+      mocks.readState.mockResolvedValue({ status: 'value', queue: {
+        ...queue, admissionPrecheck: { ...queue.admissionPrecheck, testEnvironment: undefined },
+      } });
+      const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true,
+        retryPrecheck: true } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ pending: true, admitted: false,
+        precheckOperation: { testEnvironment: ADMISSION_TEST_ENVIRONMENT, status: 'running' } });
+      expect(result.precheckOperation.operationId).not.toBe(queue.admissionPrecheck.operationId);
+      expect(result.precheckOperation.measurement).toBeUndefined();
     });
 
     // EI-23408302754355167: the `skipPrecheck` + `precheckReason` opt-out was the ONE arm of the

@@ -81,6 +81,7 @@ import {
 import { ratchetAllowsPublication } from '../../release/admission-ratchet';
 import {
   admissionPrecheckMeasurementIdentity,
+  ADMISSION_TEST_ENVIRONMENT,
   settleAdmissionPrecheck,
   startAdmissionPrecheckWorker,
   validateAdmissionPrecheckResults,
@@ -921,7 +922,7 @@ function sameAdmissionPrecheck(
     signature: FrozenCandidateRepairQueue['signature'];
   },
 ): state is FrozenRepairAdmissionPrecheck {
-  if (!state) return false;
+  if (!state || state.testEnvironment !== ADMISSION_TEST_ENVIRONMENT) return false;
   // Resume retains the original measured commit. A rebuilt synthetic commit may
   // have a new message/time but must prove the same tree and source provenance.
   if (state.measurement && (
@@ -1935,6 +1936,7 @@ export default defineTool({
           const freshOperation: FrozenRepairAdmissionPrecheck = {
             schemaVersion: 1,
             operationId,
+            testEnvironment: ADMISSION_TEST_ENVIRONMENT,
             status: 'running',
             candidate: queue.candidate,
             repairHead: queue.repairHead,

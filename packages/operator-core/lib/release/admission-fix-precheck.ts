@@ -461,6 +461,8 @@ export interface CheckpointTreeRunnerOptions {
   testCommand?: string[];
   /** Foreign routing removes operator credentials from the app's test environment. */
   clearEnv?: string[];
+  /** Allocate once per managed operation, after exact candidate materialization. */
+  prepareTestEnvironment?: (root: string, onOutput: () => void) => Promise<NodeJS.ProcessEnv>;
   /** The gate's isolated checkout — setup-release-checkout materializes `commit` here. */
   checkpointRoot: string;
   /** Registered harness for test-ledger attribution; never inferred from a checkout path. */
@@ -1069,6 +1071,16 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       }
       fileTestCommand = [fileTestCommand[0] as string, 'run', 'test:file'];
     }
+    let environmentProgress: Promise<void> | undefined;
+    let lastEnvironmentHeartbeat = -Infinity;
+    const testEnvironment = await opts.prepareTestEnvironment?.(precheckRoot, () => {
+      const heartbeatAtMs = Date.now();
+      if (environmentProgress || heartbeatAtMs - lastEnvironmentHeartbeat < ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS) return;
+      lastEnvironmentHeartbeat = heartbeatAtMs;
+      environmentProgress = reportProgress({ currentFile: files[0] as string, completedCount: 0,
+        totalCount: files.length, heartbeatAtMs }).finally(() => { environmentProgress = undefined; });
+    }) ?? {};
+    await environmentProgress;
     const results: FixPrecheckFileResult[] = [];
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index] as string;
@@ -1090,6 +1102,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
           PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}`,
           ...(opts.testRunHarness ? { PAPERCUSP_TEST_RUN_HARNESS: opts.testRunHarness } : {}),
           ...clearedEnv,
+          ...testEnvironment,
         },
         logFile,
       }, { currentFile: file, completedCount: index, totalCount: files.length });

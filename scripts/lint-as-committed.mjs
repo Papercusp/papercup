@@ -111,9 +111,11 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
 import { applyEnvLocal, parseEnvFile, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
 import { withFsMutex } from './lib/fs-mutex.mjs';
+import { installLockNameForRoot, installMutexIsHeld } from './lib/install-lock-name.mjs';
 
 export function requireDurableTestRunSink(environment = process.env) {
   if (typeof environment.PAPERCUSP_TEST_RUNS_DB_URL !== 'string' ||
@@ -1154,6 +1156,18 @@ async function main() {
   } catch {
     console.error('lint-as-committed: not inside a git repository.');
     process.exit(2);
+  }
+
+  // Prepared clones borrow installed bytes from this physical donor. Protect
+  // shadow creation, workspace builds and the forwarded command with the same
+  // reader boundary as install:safe; a clone's own mutex cannot protect it.
+  if (!installMutexIsHeld(installLockNameForRoot(repoRoot))) {
+    const { runCommandUnderInstallMutex } = await import('./npm-install-safe.mjs');
+    process.exitCode = await runCommandUnderInstallMutex({
+      repoRoot,
+      commandArgs: [process.execPath, fileURLToPath(import.meta.url), ...process.argv.slice(2)],
+    });
+    return;
   }
 
   let sha;

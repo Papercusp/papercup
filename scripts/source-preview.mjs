@@ -56,7 +56,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { constants, homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError, writeVerifierTaskReceipt } from '@papercusp/operator-core/lib/verifier-source';
@@ -1122,6 +1122,112 @@ export function verifyBgVerifierBuildRecord(record, invocation, boundary) {
   assert.deepEqual(captureVerifierDependencies({ dest: record.prepared.root, receipt: record.prepared.source }), record.dependencies,
     'BG build dependency census changed');
   return record;
+}
+
+/** Translate only the maintained host recipe's compiler switches. Unknown
+ * switches refuse before loading the compiler or creating output. Keep the
+ * original argv in the build record; this translation never replaces it.
+ * @param {string[]} argv @param {string} root
+ */
+function bgCompilerOptions(argv, root) {
+  /** @type {import('esbuild').BuildOptions} */
+  const options = { absWorkingDir: root, entryPoints: [], write: false };
+  /** @type {string | undefined} */
+  let metafile;
+  for (const arg of argv) {
+    if (!arg.startsWith('-')) { options.entryPoints.push(arg); continue; }
+    const flag = { '--bundle': 'bundle', '--minify-whitespace': 'minifyWhitespace',
+      '--minify-syntax': 'minifySyntax', '--keep-names': 'keepNames' }[arg];
+    if (flag) { options[flag] = true; continue; }
+    const scalar = /^--(platform|format|target|outfile|log-level|log-limit)=(.+)$/s.exec(arg);
+    if (scalar) {
+      const key = { 'log-level': 'logLevel', 'log-limit': 'logLimit' }[scalar[1]] ?? scalar[1];
+      options[key] = scalar[1] === 'log-limit' ? Number(scalar[2]) : scalar[2];
+      continue;
+    }
+    if (arg.startsWith('--metafile=')) { metafile = arg.slice(11); options.metafile = true; continue; }
+    if (arg.startsWith('--external:')) { (options.external ??= []).push(arg.slice(11)); continue; }
+    const mapping = /^--(define|alias|banner):([^=]+)=(.*)$/s.exec(arg);
+    if (mapping) { (options[mapping[1]] ??= {})[mapping[2]] = mapping[3]; continue; }
+    throw new Error(`BG compiler switch is outside maintained recipe: ${arg}`);
+  }
+  assert.equal(options.entryPoints.length, 1, 'BG compiler requires exactly one maintained entry');
+  assert.ok(options.outfile, 'BG compiler output path is required');
+  const ownedPath = path => {
+    const output = resolve(root, path), local = relative(root, output);
+    assert.ok(local && !isAbsolute(local) && local !== '..' && !local.startsWith(`..${sep}`),
+      'BG compiler output escaped selected generation');
+    // Refuse existing directory-link parents as well as lexical escapes.
+    let parent = dirname(output);
+    while (!existsSync(parent)) parent = dirname(parent);
+    const physical = realpathSync(parent), inside = relative(root, physical);
+    assert.ok(inside !== '..' && !inside.startsWith(`..${sep}`) && !isAbsolute(inside),
+      'BG compiler output escaped selected generation');
+    return output;
+  };
+  options.outfile = ownedPath(options.outfile);
+  if (metafile !== undefined) metafile = ownedPath(metafile);
+  return { options, metafile };
+}
+
+/** The shared shell recipe delegates one EXACT recorded compiler invocation
+ * here. Use its private API and binary, pass the digest-checked buffers to
+ * esbuild, then fence source/dependencies again before writing any output.
+ * This does not qualify resolver metadata, compiler self-consumption, runtime
+ * imports, a complete multi-entry host build, or service readiness.
+ * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
+ *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string }} args
+ */
+export async function compileBgVerifierInvocation({ record, invocation, argv, expectedVersion }) {
+  verifyBgVerifierBuildRecord(record, invocation, 'before-build');
+  assert.deepEqual(argv, record.invocation.argv, 'BG compiler argv differs from original invocation');
+  const { options, metafile } = bgCompilerOptions(argv, record.prepared.root);
+  const actualNode = readBgFileIdentity(process.execPath);
+  assert.ok(actualNode.realpath === record.invocation.node.realpath && actualNode.sha256 === record.invocation.node.sha256,
+    'BG compiler actual Node differs from original invocation');
+  const compilerRoot = dirname(dirname(invocation.compiler));
+  assert.equal(invocation.compiler, join(compilerRoot, 'lib/main.js'), 'BG compiler requires its private esbuild API');
+  const metadataPath = join(compilerRoot, 'package.json');
+  const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+  assert.equal(metadata.name, 'esbuild', 'BG compiler package identity mismatch');
+  assert.equal(metadata.version, expectedVersion, 'BG compiler package version mismatch');
+  const binary = readBgFileIdentity(join(compilerRoot, 'bin/esbuild'));
+  for (const identity of [readBgFileIdentity(invocation.compiler), readBgFileIdentity(metadataPath), binary]) {
+    const local = relative(record.prepared.root, identity.realpath).split(sep).join('/');
+    const expected = record.dependencies.trees.flatMap(tree => tree.files.map(row =>
+      ({ ...row, path: `${tree.path}/${row.path}` }))).find(row => row.path === local);
+    assert.ok(expected?.kind === 'file' && expected.sha256 === identity.sha256,
+      'BG compiler toolchain file is outside original dependency census');
+  }
+  assert.equal(invocation.environment.ESBUILD_BINARY_PATH, binary.realpath, 'BG compiler binary must be explicitly pinned');
+  assert.equal(invocation.environment.ESBUILD_WORKER_THREADS, '0', 'BG compiler requires its owned service process');
+  const custody = createBgVerifierCompilerCustody({ prepared: record.prepared, dependencies: record.dependencies });
+  const originalEnv = process.env;
+  /** @type {typeof import('esbuild') | undefined} */
+  let compiler;
+  try {
+    process.env = { ...invocation.environment };
+    compiler = await import(pathToFileURL(invocation.compiler).href);
+    assert.equal(compiler.version, expectedVersion, 'BG compiler API version mismatch');
+    const result = await compiler.build({ ...options, plugins: [custody.plugin] });
+    const consumed = custody.verifyBeforePublication();
+    verifyBgVerifierBuildRecord(record, invocation, 'before-publication');
+    // esbuild write:false leaves failed or incoherent attempts unpublished.
+    for (const file of result.outputFiles ?? []) {
+      assert.equal(file.path, options.outfile, 'BG compiler produced an unrecorded output');
+      await fs.mkdir(dirname(file.path), { recursive: true });
+      await fs.writeFile(file.path, file.contents, { flag: 'wx' });
+    }
+    assert.equal(result.outputFiles?.length, 1, 'BG compiler output is UNKNOWN');
+    if (metafile) await fs.writeFile(metafile, JSON.stringify(result.metafile), { flag: 'wx' });
+    return freezeBgExpectation({ schemaVersion: 'bg-compiler-invocation-v1', argv: record.invocation.argv,
+      buildRecordSha256: createHash('sha256').update(JSON.stringify(record)).digest('hex'),
+      originalSourceReceiptSha256: record.originalSourceReceiptSha256, compilerVersion: compiler.version,
+      binary, consumed, output: readBgFileIdentity(options.outfile) });
+  } finally {
+    try { await compiler?.stop(); }
+    finally { process.env = originalEnv; }
+  }
 }
 
 /** Read one physical file without reopening between validation and hashing.
@@ -2746,6 +2852,14 @@ function printGate(verdict) {
 }
 
 async function main(argv) {
+  if (argv[0] === 'bg-compiler') {
+    assert.ok(argv[1] === '--context' && isAbsolute(argv[2] ?? '') && argv[3] === '--',
+      'bg-compiler requires --context <absolute original context> -- <recorded compiler argv>');
+    const context = JSON.parse(await fs.readFile(argv[2], 'utf8'));
+    const receipt = await compileBgVerifierInvocation({ ...context, argv: argv.slice(4), expectedVersion: '0.25.0' });
+    console.log(JSON.stringify(receipt));
+    return 0;
+  }
   const { cmd, opts } = parseArgs(argv);
   const log = (m) => console.error(`==> ${m}`);
   if (cmd === 'verifier-run') {

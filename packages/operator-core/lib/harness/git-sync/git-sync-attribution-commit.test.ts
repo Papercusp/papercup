@@ -712,6 +712,56 @@ describe('commitAttributedGroups failure isolation (WI-6554700010018197, real gi
     expect(logs.some((m) => m.includes('dropped 1 path(s)') && m.includes(phantom))).toBe(true);
   });
 
+  it.each(['shared-index', 'ignore-after-census'] as const)(
+    'EI-26936210212113630: ignored positive residual path from %s preserves legitimate work',
+    async (origin) => {
+      const repo = await seededRepo('gs-attr-ignored-positive-');
+      const ignored = '.papercusp/private-desktop-candidates/probe/input.txt';
+      await mkdir(join(repo, '.papercusp/private-desktop-candidates/probe'), { recursive: true });
+      await writeFile(join(repo, ignored), 'private candidate\n');
+      await writeFile(join(repo, 'loose.ts'), 'export const loose = 1;\n');
+      await writeFile(join(repo, 'a.ts'), 'export const a = 1;\n');
+      const ignoreRule = '.papercusp/private-desktop-candidates/\n';
+      if (origin === 'shared-index') {
+        await git(repo, 'add', '--', ignored);
+        await writeFile(join(repo, '.gitignore'), ignoreRule);
+      }
+      let observedCensus = false;
+      const runner: RunGit = async (args, cwd, options) => {
+        const result = await realRunGit(args, cwd, options);
+        if (args[0] === 'status' && !observedCensus) {
+          observedCensus = true;
+          expect(result.stdout).toContain(ignored);
+          if (origin === 'ignore-after-census') await writeFile(join(repo, '.gitignore'), ignoreRule);
+        }
+        return result;
+      };
+      const result = await commitAttributedGroups(runner, repo, new Map([
+        ['a.ts', { agent: 'ag1', intent: 'add a' }],
+      ]), [], MSG);
+
+      expect(observedCensus).toBe(true);
+      expect(result.groupFailures).toBeUndefined();
+      expect(result.committedCount).toBe(2);
+      expect(await git(repo, 'show', 'HEAD:loose.ts')).toBe('export const loose = 1;');
+      expect((await realRunGit(['cat-file', '-e', `HEAD:${ignored}`], repo)).code).not.toBe(0);
+      expect(await git(repo, 'ls-files', '--', ignored)).toBe(origin === 'shared-index' ? ignored : '');
+      expect(await readFile(join(repo, ignored), 'utf8')).toBe('private candidate\n');
+    },
+  );
+
+  it('EI-26936210212113630: an ignored tracked residual update still commits', async () => {
+    const repo = await seededRepo('gs-attr-ignored-tracked-');
+    await writeFile(join(repo, '.gitignore'), 'base.ts\n');
+    await writeFile(join(repo, 'base.ts'), 'export const base = 2;\n');
+    await writeFile(join(repo, 'a.ts'), 'export const a = 1;\n');
+    const result = await commitAttributedGroups(realRunGit, repo, new Map([
+      ['a.ts', { agent: 'ag1', intent: 'add a' }],
+    ]), [], MSG);
+    expect(result.groupFailures).toBeUndefined();
+    expect(await git(repo, 'show', 'HEAD:base.ts')).toBe('export const base = 2;');
+  });
+
   it('keeps a real deletion (gone from the tree, present in HEAD) in its group', async () => {
     const repo = await seededRepo('gs-attr-delete-');
     await rm(join(repo, 'base.ts'));
