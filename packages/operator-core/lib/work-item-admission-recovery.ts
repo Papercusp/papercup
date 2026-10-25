@@ -511,14 +511,53 @@ export async function requestAdmissionRecovery(
       throw new AdmissionRecoveryRefused('original recovery changed during registration; retry this same item');
     }
     if (request.state === 'queued') {
-      // Queueing and acceleration commit together. The routine engine still owns its fire.
+      // Acceleration must retain the natural ordinary deadline. Otherwise each
+      // queued exact request can consume another recurring ordinary opportunity.
       const updated = await tx`
-        UPDATE harness_shared.routines SET next_fire_at = LEAST(COALESCE(next_fire_at, now()), now())
-         WHERE id = ${routineId} AND active = true RETURNING id`;
+        UPDATE harness_shared.routines
+           SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{admissionOrdinarySlot}',
+                 COALESCE(metadata->'admissionOrdinarySlot',
+                   jsonb_build_object('dueAt', COALESCE(next_fire_at, now())))),
+               next_fire_at = LEAST(COALESCE(next_fire_at, now()), now())
+         WHERE id = ${routineId} AND workspace_id = ${input.workspaceId}
+           AND install_slug = ${input.harnessSlug} AND name = ${WORK_ITEM_ADMISSION_PROMOTER}
+           AND target_role = ${`system:${WORK_ITEM_ADMISSION_PROMOTER}`} AND active = true
+           AND jsonb_typeof(COALESCE(metadata, '{}'::jsonb)) = 'object'
+         RETURNING id`;
       if (updated.length !== 1) throw new AdmissionRecoveryRefused('promoter was paused during recovery registration');
     }
     return { ok: true as const, workItemId: input.workItemId, request, inProgress: false };
   });
+}
+
+/** Serialize the ordinary/recovery choice without holding a transaction across
+ * model I/O. A later workflow can resume a stranded slot's original run id. */
+export async function withAdmissionPromoterLock<T>(
+  scope: Pick<AdmissionRecoveryScope, 'workspaceId' | 'harnessSlug'>,
+  lockSql: Sql | undefined,
+  action: () => Promise<T>,
+): Promise<T | null> {
+  const client = lockSql ?? createAdmissionRecoveryLockSql();
+  const key = JSON.stringify(['admission-promoter-slot', scope.workspaceId, scope.harnessSlug]);
+  try {
+    const reserved = await client.reserve();
+    let locked = false;
+    try {
+      const [row] = await reserved<{ locked: boolean }[]>`
+        SELECT pg_try_advisory_lock(hashtextextended(${key}, 0)) AS locked`;
+      locked = row?.locked === true;
+      if (!locked) return null;
+      return await action();
+    } finally {
+      try {
+        if (locked) await reserved`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`;
+      } finally {
+        reserved.release();
+      }
+    }
+  } finally {
+    if (!lockSql) await client.end({ timeout: 5 });
+  }
 }
 
 export interface ComponentScreeningReceipt {

@@ -251,12 +251,16 @@ describe('original authority context fidelity', () => {
     const [a, b] = [original.id, twin.id].sort();
     h.model.mockResolvedValue({ text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
       json: { judgements: [{ pairKey: `${a}::${b}`, verdict: 'distinct', reason: 'Independent fixes' }] } });
+    const [natural] = await db.sql`SELECT next_fire_at FROM harness_shared.routines WHERE id = 'original-promoter'`;
     await request(original.id);
     await tick();
     expect((await row(original.id)).payload._admissionRecovery).toMatchObject({ state: 'held', stage: 'screen' });
 
     const unrelated = await create('First unrelated exact recovery');
     await request(unrelated.id);
+    const [preserved] = await db.sql`SELECT metadata->'admissionOrdinarySlot' AS slot
+      FROM harness_shared.routines WHERE id = 'original-promoter'`;
+    expect(new Date(preserved!.slot.dueAt)).toEqual(natural!.next_fire_at);
     await tick();
     expect(await row(unrelated.id)).toMatchObject({ admission: 'admitted', taken_by: reviewerOwnerId });
     expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: null });
@@ -269,8 +273,8 @@ describe('original authority context fidelity', () => {
     const next = await create('Second unrelated exact recovery');
     const queued = await request(next.id);
     const ordinaryRunId = `chain-ordinary-restart-${++run}`;
-    const invoke = () => runAdmissionPromoterWithRecovery({
-      ...scope, runId: ordinaryRunId, batchSize: 10, recentTerminalDays: 30, model: undefined,
+    const invoke = (runId = ordinaryRunId) => runAdmissionPromoterWithRecovery({
+      ...scope, runId, batchSize: 10, recentTerminalDays: 30, model: undefined,
     }, { sql: db.sql, lockSql: db.sql, llmCall: h.model, authorize: authorizeAdmissionRecovery, dispatch });
     h.model.mockRejectedValueOnce(new Error('controlled interruption after ordinary slot claim'));
     await expect(invoke()).rejects.toThrow('controlled interruption after ordinary slot claim');
@@ -282,7 +286,8 @@ describe('original authority context fidelity', () => {
     expect(retained!.slot.runId).toBe(ordinaryRunId);
 
     // Re-enter through the production composition with only PG as continuity.
-    await invoke();
+    const successorRunId = `${ordinaryRunId}-successor`;
+    await invoke(successorRunId);
     expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: null });
     expect((await row(next.id)).payload._admissionRecovery).toMatchObject({ state: 'queued' });
     const [ledger] = await db.sql`SELECT detail FROM harness_shared.admission_runs WHERE id = ${ordinaryRunId}`;
@@ -290,9 +295,98 @@ describe('original authority context fidelity', () => {
     expect(ledger!.detail.componentScreening.receipts).toContainEqual({
       itemId: original.id, stage: 'recheck', reason: 'selected',
     });
+    const calls = h.model.mock.calls.length;
+    expect(await invoke()).toMatchObject({ runId: ordinaryRunId });
+    expect(await invoke(successorRunId)).toMatchObject({ runId: ordinaryRunId });
+    expect(h.model).toHaveBeenCalledTimes(calls);
+    expect((await row(next.id)).payload._admissionRecovery).toMatchObject({ state: 'queued' });
+    const [scheduled] = await db.sql`SELECT next_fire_at <= now() AS due
+      FROM harness_shared.routines WHERE id = 'original-promoter'`;
+    expect(scheduled!.due).toBe(true);
     await tick();
     expect(await row(next.id)).toMatchObject({ admission: 'admitted', taken_by: reviewerOwnerId });
+    // A later ordinary cycle replaces the small metadata witness. The original
+    // workflow still reads its own completed ledger rather than consuming C.
+    await tick();
+    const afterCycle = h.model.mock.calls.length;
+    expect(await invoke()).toMatchObject({ runId: ordinaryRunId });
+    expect(h.model).toHaveBeenCalledTimes(afterCycle);
   });
+
+  it('keeps an explicit target separate from a due ordinary slot', async () => {
+    const selected = await create('Explicit target');
+    const unrelated = await create('Unrelated ordinary target');
+    const slot = { dueAt: '2000-01-01T00:00:00.000Z' };
+    await db.sql`UPDATE harness_shared.routines SET metadata =
+      ${JSON.stringify({ admissionOrdinarySlot: slot })}::text::jsonb WHERE id = 'original-promoter'`;
+    const result = await runAdmissionPromoterWithRecovery({
+      ...scope, runId: `chain-exact-${++run}`, batchSize: 10, recentTerminalDays: 30,
+      model: undefined, targetItemIds: [selected.id],
+    }, { sql: db.sql, lockSql: db.sql, llmCall: h.model, authorize: authorizeAdmissionRecovery, dispatch });
+    expect(result.promoted).toBe(1);
+    expect(await row(selected.id)).toMatchObject({ admission: 'admitted', taken_by: null });
+    expect(await row(unrelated.id)).toMatchObject({ admission: 'pending', taken_by: null });
+    const [routine] = await db.sql`SELECT metadata FROM harness_shared.routines WHERE id = 'original-promoter'`;
+    expect(routine!.metadata.admissionOrdinarySlot).toEqual(slot);
+  });
+
+  it('serializes competing ordinary invocations without a transaction across model I/O', async () => {
+    const original = await create('Concurrent ordinary slot');
+    const twin = await create(original.title);
+    const [a, b] = [original.id, twin.id].sort();
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let finish!: () => void;
+    const waiting = new Promise<void>((resolve) => { finish = resolve; });
+    h.model.mockImplementationOnce(async () => {
+      entered();
+      await waiting;
+      return { text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+        json: { judgements: [{ pairKey: `${a}::${b}`, verdict: 'distinct', reason: 'Independent fixes' }] } };
+    });
+    const first = tick();
+    try {
+      await started;
+      expect(await tick()).toMatchObject({ batchSize: 0, promoted: 0, modelCalled: false });
+      const [tx] = await db.sql`SELECT count(*)::int AS count FROM pg_stat_activity
+        WHERE datname = current_database() AND state = 'idle in transaction'`;
+      expect(tx!.count).toBe(0);
+    } finally {
+      finish();
+      await first;
+    }
+    expect(h.model).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles an ordinary slot after the last finite recurrence', async () => {
+    await create('Final ordinary occurrence');
+    await db.sql`UPDATE harness_shared.routines SET
+      trigger_config = '{"rrule":"FREQ=DAILY;COUNT=1","dtstart":"2000-01-01T00:00:00.000Z"}',
+      metadata = '{"admissionOrdinarySlot":{"dueAt":"2000-01-01T00:00:00.000Z"}}'
+      WHERE id = 'original-promoter'`;
+    expect(await tick()).toMatchObject({ promoted: 1 });
+    const [routine] = await db.sql`SELECT metadata FROM harness_shared.routines WHERE id = 'original-promoter'`;
+    expect(routine!.metadata.admissionOrdinarySlot.dueAt).toBeNull();
+  });
+
+  it.each(['paused', 'role', 'workspace', 'harness', 'malformed'] as const)(
+    'refuses ordinary screening with a %s promoter rather than consuming queued authority', async (invalid) => {
+      const original = await create('Refused ordinary slot');
+      await request(original.id);
+      await db.sql`UPDATE harness_shared.routines SET metadata =
+        '{"admissionOrdinarySlot":{"dueAt":"2000-01-01T00:00:00.000Z"}}' WHERE id = 'original-promoter'`;
+      if (invalid === 'paused') await db.sql`UPDATE harness_shared.routines SET active = false`;
+      if (invalid === 'role') await db.sql`UPDATE harness_shared.routines SET target_role = 'system:other'`;
+      if (invalid === 'workspace') await db.sql`UPDATE harness_shared.routines SET workspace_id = 'other'`;
+      if (invalid === 'harness') await db.sql`UPDATE harness_shared.routines SET install_slug = 'other'`;
+      if (invalid === 'malformed') await db.sql`UPDATE harness_shared.routines SET metadata =
+        '{"admissionOrdinarySlot":{"dueAt":"not-a-date"}}'`;
+      await expect(tick()).rejects.toThrow();
+      expect(h.model).not.toHaveBeenCalled();
+      expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: null });
+      expect((await row(original.id)).payload._admissionRecovery.state).toBe('queued');
+    },
+  );
 
   it('uses ordinary component screening for an authenticated scope-held request beyond the FIFO window', async () => {
     const original = await create('Component screening target');
@@ -368,7 +462,7 @@ describe('original authority context fidelity', () => {
     expect(h.wake).not.toHaveBeenCalled();
   });
 
-  it('keeps a prioritized component pending when a peer claims its twin before ordinary screening', async () => {
+  it('judges an authenticated original while keeping its newly claimed twin read-only', async () => {
     const original = await create('Protected component screening target');
     const twin = await create(original.title);
     const [a, b] = [original.id, twin.id].sort();
@@ -380,8 +474,10 @@ describe('original authority context fidelity', () => {
     expect(held).toMatchObject({ state: 'held', stage: 'screen', reason: expect.stringContaining('outside-mutation-scope') });
     await db.sql`UPDATE harness_shared.work_items SET taken_by = 'live-peer' WHERE feature_id = ${twin.id}`;
     await tick();
-    expect(h.model).toHaveBeenCalledTimes(1);
-    expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: null });
+    // The ordinary authenticated comparison exception permits a read-only
+    // claimed twin; it grants no assignment or write authority over that twin.
+    expect(h.model).toHaveBeenCalledTimes(2);
+    expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: null });
     expect(await row(twin.id)).toMatchObject({ admission: 'pending', taken_by: 'live-peer' });
     expect((await row(original.id)).payload._admissionRecovery).toEqual(held);
     expect(h.claim).not.toHaveBeenCalled();
