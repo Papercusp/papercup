@@ -32,6 +32,7 @@ import {
   readRubricPlanRevision,
 } from '../../rubrics';
 import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
+import { resolveLiveAcceptanceRubric } from '../../acceptance-live-requirements';
 import { getIssue } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -1839,7 +1840,7 @@ export async function emitScorecard(
     };
   }
   if (rubricRead.kind === 'missing') return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
-  const rubric = rubricRead.rubric;
+  const { rubric } = await resolveLiveAcceptanceRubric(rubricRead.rubric, input.workspaceId);
   // WI-6554700010009556: the independent grading and author adoption must use
   // the same subject tuple. A rubric already pins its plan; do not persist an
   // unscoped card merely because a judge omitted that redundant input. Normalize

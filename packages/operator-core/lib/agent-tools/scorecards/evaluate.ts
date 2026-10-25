@@ -4,6 +4,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { readRubricWithoutSeeding, type Rubric } from '../../rubrics';
+import { resolveLiveAcceptanceRubric } from '../../acceptance-live-requirements';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -278,7 +279,7 @@ export async function evaluateScorecard(
   if (rubricRead.kind === 'missing') {
     return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
   }
-  const rubric = rubricRead.rubric;
+  const { rubric } = await resolveLiveAcceptanceRubric(rubricRead.rubric, caller?.workspaceId);
   const pendingRefusal = pendingDeliveryReviewRefusal(rubric, args.pendingDeliveryBarKeys,
     args.ratings && Object.keys(args.ratings).length > 0 ? args.ratings : undefined);
   if (pendingRefusal) return { ok: false as const, code: 'pending_delivery_review_invalid', error: pendingRefusal };
