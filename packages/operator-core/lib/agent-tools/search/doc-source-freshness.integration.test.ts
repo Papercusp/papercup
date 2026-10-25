@@ -52,7 +52,7 @@ describe('P001 — docs authority, section sync and changing reader scope', () =
       url: `/docs/${slug}`, toc: [] });
     const authority: DocSource = { name: sourceKey,
       listPages: async () => [...pages.keys()].map(page),
-      getPage: async slug => pages.has(slug) ? page(slug) : undefined,
+      getPage: async slug => pages.has(slug) ? page(slug) : null,
       getContent: async p => pages.get(p.slug)!.body,
     };
     const canonical = async () => {
