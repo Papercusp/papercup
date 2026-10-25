@@ -456,7 +456,15 @@ export class ClaudeSuSessionAdapter {
     this.ownerTurnReceipts = options.ownerTurnReceipts ?? null;
     this.controls ={ ...defaultControls(), ...(options.controls ?? {}) };
     const hostOptions = {
-      descriptor: descriptorFor(binding, runtime, options),
+      descriptor: (() => {
+        const descriptor = descriptorFor(binding, runtime, options);
+        if (options.executionKind !== 'programmatic' || !options.controls?.ownerTurn) return descriptor;
+        return { ...descriptor, capabilities: { ...descriptor.capabilities,
+          commands: { ...descriptor.capabilities.commands,
+            queue: { state: 'supported' as const, implementation: 'host' as const },
+          },
+        } };
+      })(),
       executeCommand: (command: SuSessionCommand<'claude'>, context: SuSessionCommandContext<'claude'>) => this.execute(command, context),
       runtimeReady: options.runtimeReady,
       persistDescriptor: async (descriptor: SuSessionDescriptor<'claude'>) => {
@@ -813,6 +821,7 @@ export class ClaudeSuSessionAdapter {
     let verdict: ClaudeNativeCommandVerdict;
     switch (command.type) {
       case 'owner_turn':
+      case 'queue':
         if (!this.transportCorrelatesTurns) this.currentTurnId = command.turnId;
         this.receiptMatcher.markUsed(command.turnId);
         context.transition('running', 'owner turn accepted');
@@ -849,8 +858,9 @@ export class ClaudeSuSessionAdapter {
           'Claude native fork must be created through the tracked launcher so it receives a new durable identity',
           true,
         ));
-      case 'queue':
       case 'steer':
+        return commandRefusal(refused('unsupported',
+          'Claude has no Codex same-turn steer; interrupt and queue a follow-up on the persistent session', false));
       case 'handoff':
         return commandRefusal(refused('unsupported', `${command.type} is not attached to this runtime`, false));
       default:

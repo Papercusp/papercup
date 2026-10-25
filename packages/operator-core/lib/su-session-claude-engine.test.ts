@@ -155,8 +155,8 @@ describe('structured Claude SU engine', () => {
       settingSources: ['user', 'project', 'local'],
       permissionMode: toolApproval === 'prompt' ? 'default' : 'bypassPermissions' });
     expect(actual.env).not.toHaveProperty('PAPERCUSP_TTY');
-    expect(actual.disallowedTools).toEqual(prepared.args.filter((arg: string) => arg.startsWith('--disallowedTools='))
-      .flatMap((arg: string) => arg.slice('--disallowedTools='.length).split(',')));
+    expect(actual.disallowedTools).toEqual(prepared.args.filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('--disallowedTools='))
+      .flatMap(arg => arg.slice('--disallowedTools='.length).split(',')));
     expect(actual.disallowedTools).toEqual(expect.arrayContaining(['Task', 'Agent']));
     expect(typeof actual.settings === 'object' ? actual.settings.disableAllHooks : undefined).not.toBe(true);
     expect(actual.strictMcpConfig).not.toBe(true);
@@ -189,6 +189,49 @@ describe('structured Claude SU engine', () => {
     expect(p.prompts).toHaveLength(0);
     release();
     await expect(dispatch.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts).toHaveLength(1);
+  });
+
+  it('cancels the admitting turn without dropping later queued inputs', async () => {
+    let release!: () => void;
+    nativeFunding.mockImplementationOnce(async () => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return { ok: true };
+    });
+    const p = peer(), engine = open(p); await engine.ready;
+    const host = engine.adapter.host;
+    const first = host.startCommand(command(engine));
+    await vi.waitFor(() => expect(nativeFunding).toHaveBeenCalledOnce());
+    const queued = { ...command(engine), type: 'queue' as const, commandId: 'after-admission', turnId: 'after-admission', content: 'keep this follow-up' };
+    const follow = host.startCommand(queued);
+    await expect(host.startCommand(command(engine, 'interrupt')).terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(p.interrupt).not.toHaveBeenCalled();
+    release();
+    await expect(first.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'turn_interrupted' } });
+    await expect(follow.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts.map(prompt => prompt.message.content)).toEqual(['keep this follow-up']);
+    expect(p.prompts[0].session_id).toBe(nativeId);
+    expect(host.startCommand(queued).replayed).toBe(true);
+    expect(host.recent.filter(({ event }) => event.type === 'command_result'
+      && event.commandId === 'cmd-owner_turn' && event.status !== 'accepted')).toHaveLength(1);
+  });
+
+  it.each(['model', 'approvals'] as const)('cancels input interrupted during the %s switch', async control => {
+    let release!: () => void;
+    const switchControl = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; }); });
+    const p = peer();
+    const factory: NonNullable<ClaudeEngineOptions['query']> = args => Object.assign(p.factory(args),
+      control === 'model' ? { setModel: switchControl } : { setPermissionMode: switchControl });
+    const engine = open({ ...p, factory }, { model: 'claude-opus-4-1' }); await engine.ready;
+    const first = engine.adapter.host.startCommand({ ...command(engine),
+      ...(control === 'model' ? { model: 'claude-sonnet-4-6' } : { approvals: 'read-only' as const }) });
+    await vi.waitFor(() => expect(switchControl).toHaveBeenCalledOnce());
+    await expect(engine.adapter.host.startCommand(command(engine, 'interrupt')).terminal).resolves.toMatchObject({ status: 'completed' });
+    release();
+    await expect(first.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'turn_interrupted' } });
+    expect(p.prompts).toHaveLength(0);
+    expect(p.interrupt).not.toHaveBeenCalled();
+    await expect(engine.adapter.host.startCommand({ ...command(engine), commandId: 'next', turnId: 'next' }).terminal).resolves.toMatchObject({ status: 'completed' });
     expect(p.prompts).toHaveLength(1);
   });
 
@@ -645,6 +688,60 @@ describe('structured Claude SU engine', () => {
       await new Promise((resolve) => setTimeout(resolve, 400));
       expect(stalledReports(engine)).toEqual([]);
     });
+  });
+
+  it('queues an explicit follow-up on the same native session with one terminal receipt', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    const host = engine.adapter.host;
+    expect(host.descriptor().capabilities.commands.queue?.state).toBe('supported');
+    expect(host.descriptor().capabilities.commands.steer?.state).toBe('unsupported');
+    await host.startCommand(command(engine)).terminal;
+    const queued = { ...command(engine), type: 'queue' as const, commandId: 'queued-command', turnId: 'queued-turn', content: 'follow-up' };
+    const dispatched = host.startCommand(queued);
+    expect(host.startCommand(queued).replayed).toBe(true);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(p.prompts).toHaveLength(1);
+    p.output.write({ type: 'assistant', session_id: nativeId, message: { content: [{ type: 'text', text: 'first reply' }] } });
+    p.output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
+    await expect(dispatched.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts.map(prompt => prompt.session_id)).toEqual([nativeId, nativeId]);
+    expect(p.prompts[0].uuid).not.toBe(p.prompts[1].uuid);
+    expect(p.prompts[1].message.content).toBe('follow-up');
+    expect(host.recent.map(({ event }) => event).filter(event => event.type === 'command_result'
+      && event.commandId === queued.commandId && event.status !== 'accepted')).toHaveLength(1);
+  });
+
+  it('holds an interrupt follow-up until both the native result and control acknowledgement settle', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    const host = engine.adapter.host;
+    await host.startCommand(command(engine)).terminal;
+    let acknowledge!: () => void;
+    p.interrupt.mockImplementation(async () => {
+      p.output.write({ type: 'result', subtype: 'error_during_execution', session_id: nativeId, is_error: true, errors: ['interrupted tool'] });
+      await new Promise<void>(resolve => { acknowledge = resolve; });
+    });
+    const stop = host.startCommand(command(engine, 'interrupt'));
+    await vi.waitFor(() => expect(p.interrupt).toHaveBeenCalledOnce());
+    const queued = host.startCommand({ ...command(engine), type: 'queue' as const, commandId: 'after-interrupt', turnId: 'follow-up', content: 'continue' });
+    await vi.waitFor(() => expect(host.descriptor().lifecycle).toBe('waiting-for-owner'));
+    expect(p.prompts).toHaveLength(1);
+    acknowledge();
+    await expect(stop.terminal).resolves.toMatchObject({ status: 'completed' });
+    await expect(queued.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts.map(prompt => prompt.session_id)).toEqual([nativeId, nativeId]);
+    expect(host.recent.some(({ event }) => event.type === 'error' && event.code === 'claude_turn_failed')).toBe(false);
+  });
+
+  it('refuses queued delivery after an uncertain interrupt acknowledgement', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    const host = engine.adapter.host;
+    await host.startCommand(command(engine)).terminal;
+    p.interrupt.mockRejectedValue(new Error('control pipe closed'));
+    await expect(host.startCommand(command(engine, 'interrupt')).terminal).resolves.toMatchObject({ status: 'refused' });
+    const follow = host.startCommand({ ...command(engine), type: 'queue' as const, commandId: 'uncertain-follow', turnId: 'follow', content: 'continue' });
+    p.output.write({ type: 'result', subtype: 'error_during_execution', session_id: nativeId, is_error: true, errors: ['interrupted'] });
+    await expect(follow.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'engine_delivery_unknown', retryable: false } });
+    expect(p.prompts).toHaveLength(1);
   });
 
   it('keeps overlapping accepted turns queued until the current reply completes', async () => {

@@ -233,6 +233,11 @@ export function startClaudeSuEngine(
   let heartbeat: ManagedHandle | undefined;
   let sdk: ClaudeEngineQuery;
   let inputTail = Promise.resolve();
+  let interruptInFlight: Promise<ClaudeNativeCommandVerdict> | undefined;
+  let interruptFailure: ClaudeNativeCommandVerdict | undefined;
+  // Include the head while admission/configuration is pending, before it has
+  // a native input UUID. Interrupt cancels that delivery, never later inputs.
+  const deliveries: Array<{ interrupted: boolean }> = [];
   let activeInputUuid: string | undefined;
   let activeOwnerTurnId: string | undefined;
   // Filled once the SU tool connection is up; until then every request asks.
@@ -303,19 +308,32 @@ export function startClaudeSuEngine(
         const uuid = randomUUID();
         const receipt = deferred<ClaudeNativeCommandVerdict>();
         pending.set(uuid, receipt);
+        const delivery = { interrupted: false };
+        deliveries.push(delivery);
+        const deliveryStopped = () => {
+          if (delivery.interrupted) {
+            receipt.resolve({ ok: false, code: 'turn_interrupted', retryable: false,
+              message: 'The owner interrupted this turn before native delivery' });
+            return true;
+          }
+          if (closed) { receipt.resolve(unavailable('Claude closed before this saved turn was sent')); return true; }
+          return false;
+        };
         let timer: ReturnType<typeof setTimeout> | undefined;
         inputTail = inputTail.then(async () => {
-          if (closed) { receipt.resolve(unavailable('Claude closed before this saved turn was sent')); return; }
+          // The interrupted result can arrive before the SDK control receipt.
+          // A follow-up must wait for both boundaries on this same session.
+          await interruptInFlight;
+          if (deliveryStopped()) return;
+          if (interruptFailure) { receipt.resolve(interruptFailure); return; }
           if (su) {
             if (!binding.workspaceId || !binding.ownerId) {
               receipt.resolve(unavailable('Native admission requires the authenticated workspace and owner')); return;
             }
             const admission = await admitNativeIdentityInference({ workspaceId: binding.workspaceId,
               ownerId: binding.ownerId, backend: 'claude' });
+            if (deliveryStopped()) return;
             if (!admission.ok) { receipt.resolve(admission); return; }
-            // A funding read can outlive teardown; it never authorizes writing
-            // a querying input to an engine that closed while admission waited.
-            if (closed) { receipt.resolve(unavailable('Claude closed during native admission')); return; }
           }
           // P-026: switch in the input order, after any earlier queued turn has
           // finished (so it never changes the model under that turn) and before
@@ -332,6 +350,7 @@ export function startClaudeSuEngine(
             }
             currentModel = nextModel;
             adapter.host.updateModel(nextModel);
+            if (deliveryStopped()) return;
           }
           // D-026: the approvals switch follows the same order and refusal rule.
           if (nextApprovals && nextApprovals !== currentApprovals) {
@@ -346,6 +365,7 @@ export function startClaudeSuEngine(
             }
             currentApprovals = nextApprovals;
             adapter.host.updateApprovals(nextApprovals);
+            if (deliveryStopped()) return;
           }
           const finished = deferred<void>();
           finishActiveTurn = () => finished.resolve();
@@ -366,16 +386,34 @@ export function startClaudeSuEngine(
             activeOwnerTurnId = undefined;
             finishActiveTurn = undefined;
           }
-        }).catch((error: unknown) => receipt.resolve(unavailable(String(error))));
+        }).catch((error: unknown) => receipt.resolve(unavailable(String(error))))
+          .finally(() => { deliveries.shift(); });
         try {
           return await receipt.promise;
         } finally { clearTimeout(timer); pending.delete(uuid); }
       },
       async interrupt() {
-        cards.cancel();
-        if (activeInputUuid) activeTurnInterrupted = true;
-        await sdk.interrupt();
-        return { ok: true };
+        if (interruptInFlight) return interruptInFlight;
+        if (interruptFailure) return interruptFailure;
+        if (deliveries[0] && !activeInputUuid) {
+          deliveries[0].interrupted = true;
+          cards.cancel();
+          return { ok: true };
+        }
+        const request = (async (): Promise<ClaudeNativeCommandVerdict> => {
+          cards.cancel();
+          if (activeInputUuid) activeTurnInterrupted = true;
+          try {
+            await sdk.interrupt();
+            return { ok: true };
+          } catch (error) {
+            interruptFailure = unavailable(`Claude interrupt acknowledgement is unknown; reconcile before sending a follow-up: ${String(error)}`);
+            return interruptFailure;
+          }
+        })();
+        interruptInFlight = request;
+        try { return await request; }
+        finally { if (interruptInFlight === request) interruptInFlight = undefined; }
       },
       async resume() { return ready && !closed ? { ok: true } : unavailable('Reconnect the structured Claude runtime before resuming'); },
       async focus() { return { ok: true }; },
@@ -442,7 +480,8 @@ export function startClaudeSuEngine(
     if (env.CLAUDE_CONFIG_DIR) syncPersonalClaudeMemory(env.CLAUDE_CONFIG_DIR, !su, env.HOME || undefined);
   }
   // Reuse the launcher's deny policy as well as its environment sanitizer.
-  const disallowedTools = launch.args.filter((a: string) => a.startsWith('--disallowedTools=')).flatMap((a: string) => a.slice('--disallowedTools='.length).split(','));
+  const disallowedTools = launch.args.filter((a): a is string => typeof a === 'string' && a.startsWith('--disallowedTools='))
+    .flatMap(a => a.slice('--disallowedTools='.length).split(','));
   const sdkOptions: Options = {
     cwd: boot.cwd,
     env,
