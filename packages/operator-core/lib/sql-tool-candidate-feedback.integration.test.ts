@@ -8,6 +8,7 @@ import { runSqlIntentCensus } from './harness/routines/sql-read-census-action';
 import { rescoreRubric } from './harness/routines/rubric-rescore-action';
 import './agent-tools/dev/pg_query';
 import { continuityProbeSchema } from './continuity-probes';
+import { buildTenantScopeAdvisory } from './pg-read-query';
 
 let db: OrgTestDb;
 beforeAll(async () => { db = await createOrgTestDb(); }, 180_000);
@@ -127,13 +128,21 @@ it('production census persists feedback after the actual mined review with missi
 it('registered workspace rubric rescores the real ledger without masking another candidate and grades from ledger R7-CONTRACT OUTCOME-P-007', async () => {
   const workspaceId = "feedback-aggregate-'scope";
   const definition = sqlFeedbackRubricDefinition(workspaceId);
+  // The live SQL dispatcher rejects this advisory before execution. Prove the
+  // negative control and run the same boundary on every real-ledger measurement.
+  expect(await buildTenantScopeAdvisory(definition.criteria[0]!.check.probe.sql.replace(" AND source='local'", '')))
+    .toContain('NULL-by-design');
   // Match rubrics:propose's writer normalization: stored probes pin the registered read contract.
   for (const criterion of definition.criteria) criterion.check.probe = continuityProbeSchema.parse(criterion.check.probe) as typeof criterion.check.probe;
   const rubric = { ...definition, rubricId: definition.rubricRef, workspaceId };
   const measure = async () => {
     const rescore = await rescoreRubric({ rubricRef: definition.rubricRef, workspaceId, harnessSlug: 'papercusp' }, {
       getRubric: async () => rubric as never,
-      dispatchTool: async (_tool, args) => ({ rows: await db.adminSql.unsafe(String(args.sql)) }),
+      dispatchTool: async (_tool, args) => {
+        const sql = String(args.sql);
+        expect(await buildTenantScopeAdvisory(sql, { workspaceId, harnessSlug: 'papercusp' })).toBeNull();
+        return { rows: await db.adminSql.unsafe(sql) };
+      },
       readLatest: value => readLatestRubricCheckResults(value, db.adminSql),
       record: (rows, scope) => import('./check-results-ledger').then(m => m.recordRubricCheckResults(rows, scope, db.adminSql)),
       emit: async () => ({}) as never,

@@ -17,7 +17,7 @@ export function sqlFeedbackRubricDefinition(workspaceId: string) {
     const sql = `WITH latest AS (
       SELECT DISTINCT ON (file_path) file_path,status,execution_details->'check'->>'criterionKey' AS key
       FROM harness_shared.test_runs
-      WHERE workspace_id='${workspace}' AND framework='rubric-check'
+      WHERE workspace_id='${workspace}' AND source='local' AND framework='rubric-check'
         AND finished_at >= NOW() - INTERVAL '14 days' AND finished_at <= NOW()
         AND file_path ~ '^rubric-check/sql-tool-opportunity-feedback/[a-f0-9]{64}:(proposal-quality|repair-outcome):0$'
       ORDER BY file_path,finished_at DESC,id DESC
