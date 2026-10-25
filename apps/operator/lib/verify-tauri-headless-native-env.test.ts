@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -8,10 +9,78 @@ import { describe, expect, it, vi } from 'vitest';
 const root = resolve(__dirname, '../../..');
 const helper = resolve(root, 'scripts/lib/verify-tauri-native-env.mjs');
 const { nativeVerifierEnv, preflightNativeVerifier, desktopPortalNativeTiming,
-  desktopPortalNativeTestTimeoutMs, admitDesktopPortalNativeParent } = await import(pathToFileURL(helper).href);
+  desktopPortalNativeTestTimeoutMs, admitDesktopPortalNativeParent,
+  verifyDesktopPortalCandidateSpa } = await import(pathToFileURL(helper).href);
 const { admitTaskDeadline } = await import(pathToFileURL(resolve(root, 'scripts/lib/task-deadline.mjs')).href);
 
 describe('real native verifier process boundary', () => {
+  it('qualifies candidate bytes against the selected commit and copies only the declared SPA', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'native-candidate-spa-'));
+    const source = join(directory, 'source');
+    const candidate = join(directory, 'candidate');
+    const hash = (bytes: string) => createHash('sha256').update(bytes).digest('hex');
+    try {
+      mkdirSync(source);
+      execFileSync('git', ['init', '--quiet'], { cwd: source });
+      writeFileSync(join(source, 'input'), 'selected source');
+      execFileSync('git', ['add', 'input'], { cwd: source });
+      execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '--quiet', '-m', 'candidate source'], { cwd: source });
+      const commitSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
+      const bytes = { 'spa/index.html': '<meta content="portal-candidate">',
+        'spa/assets/entry.js': 'candidate UI', 'spa/wordmark.svg': '<svg/>',
+        'desktop-portal.cjs': 'candidate host' };
+      for (const [path, content] of Object.entries(bytes)) {
+        mkdirSync(resolve(candidate, path, '..'), { recursive: true });
+        writeFileSync(join(candidate, path), content);
+      }
+      writeFileSync(join(candidate, 'spa/unlisted.js'), 'must never be served');
+      const manifest = join(candidate, 'candidate.json');
+      const receipt = { schemaVersion: 'desktop-portal-private-candidate-v1',
+        desktopSource: { commitSha, worktreeDirty: false },
+        environment: { PAPERCUSP_DESKTOP_INTERFACE: 'portal-candidate',
+          PAPERCUSP_SPA_DIST: join(candidate, 'spa'),
+          PAPERCUSP_DESKTOP_PORTAL_HOST_BUNDLE: join(candidate, 'desktop-portal.cjs') },
+        files: Object.entries(bytes).map(([path, content]) => ({ path, sha256: hash(content) })) };
+      const env: NodeJS.ProcessEnv = { VERIFY_TAURI_SOURCE_REF: commitSha,
+        PAPERCUSP_DESKTOP_INTERFACE: 'portal-candidate', PAPERCUSP_SHARED_SPA_DIST: join(candidate, 'spa'),
+        PAPERCUSP_DESKTOP_CANDIDATE_MANIFEST: manifest };
+      const save = () => {
+        const content = JSON.stringify(receipt);
+        writeFileSync(manifest, content);
+        env.VERIFY_TAURI_CANDIDATE_MANIFEST_SHA256 = hash(content);
+      };
+      save();
+      const output = join(directory, 'frozen');
+      expect(verifyDesktopPortalCandidateSpa(source, env, output)).toMatchObject({ commitSha, files: 4 });
+      expect(readFileSync(join(output, 'assets/entry.js'), 'utf8')).toBe('candidate UI');
+      expect(() => readFileSync(join(output, 'unlisted.js'))).toThrow();
+      writeFileSync(join(candidate, 'spa/assets/entry.js'), 'later change');
+      expect(() => verifyDesktopPortalCandidateSpa(source, env)).toThrow('hash mismatch');
+      expect(readFileSync(join(output, 'assets/entry.js'), 'utf8')).toBe('candidate UI');
+      writeFileSync(join(candidate, 'spa/assets/entry.js'), bytes['spa/assets/entry.js']);
+      expect(() => verifyDesktopPortalCandidateSpa(source, { ...env,
+        VERIFY_TAURI_CANDIDATE_MANIFEST_SHA256: '0'.repeat(64) })).toThrow('manifest hash');
+      expect(() => verifyDesktopPortalCandidateSpa(source, { ...env,
+        PAPERCUSP_SHARED_SPA_DIST: source })).toThrow('SPA selection');
+      receipt.desktopSource.worktreeDirty = true; save();
+      expect(() => verifyDesktopPortalCandidateSpa(source, env)).toThrow('clean selected desktop commit');
+      receipt.desktopSource.worktreeDirty = false;
+      receipt.desktopSource.commitSha = '0'.repeat(40); save();
+      expect(() => verifyDesktopPortalCandidateSpa(source, env)).toThrow('clean selected desktop commit');
+      receipt.desktopSource.commitSha = commitSha;
+      receipt.files.push({ path: '../outside', sha256: hash('escape') }); save();
+      expect(() => verifyDesktopPortalCandidateSpa(source, env)).toThrow('unsafe candidate path');
+      receipt.files.pop(); save();
+      rmSync(join(candidate, 'spa/assets/entry.js'));
+      symlinkSync(join(source, 'input'), join(candidate, 'spa/assets/entry.js'));
+      expect(() => verifyDesktopPortalCandidateSpa(source, env)).toThrow('symlink');
+      expect(() => verifyDesktopPortalCandidateSpa(source, {
+        PAPERCUSP_SHARED_SPA_DIST: join(candidate, 'spa') })).toThrow('manifest and digest');
+      expect(verifyDesktopPortalCandidateSpa(source, {})).toBeNull();
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('uses the physical donor while keeping a retained shadow and its acceptance source pinned', () => {
     const directory = mkdtempSync(join(tmpdir(), 'native-donor-'));
     const donor = join(directory, 'installed');
@@ -152,6 +221,8 @@ describe('real native verifier process boundary', () => {
   it('checks readiness before PostgreSQL creation and uses the child environment at native launch', () => {
     const test = readFileSync(resolve(root, 'apps/operator/bin/desktop-portal-persistence.test.ts'), 'utf8');
     expect(test.indexOf("[nativeEnvHelper, '--preflight', repo]")).toBeLessThan(test.indexOf("join(pg, 'initdb')"));
+    expect(test.indexOf('VERIFY_TAURI_CANDIDATE_MANIFEST_SHA256:'))
+      .toBeLessThan(test.indexOf("[nativeEnvHelper, '--preflight', repo]"));
     expect(test).toContain("env: { ...nativeEnv(), VERIFY_TAURI_ISOLATED_DB: '1'");
   });
 });
