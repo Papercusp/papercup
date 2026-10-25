@@ -302,6 +302,13 @@ export function ordinaryAdmissionRadius(input: {
     };
     inventory(superRepo);
     const repos = [superRepo, ...children.values()];
+    // Graph resolution probes the same extension candidates many times. The
+    // complete pinned inventory already tells us their membership and identity;
+    // traversing gitlink prefixes for each probe dominates large graphs.
+    const pinnedBlobs = new Map<string, Entry>();
+    for (const repo of repos) {
+      for (const [file, entry] of repo.blobs) pinnedBlobs.set(file, entry);
+    }
     type Manifest = { name?: string; workspaces?: string[] | { packages?: string[] }; exports?: unknown; main?: string;
       dependencies?: Record<string, string>; devDependencies?: Record<string, string>; peerDependencies?: Record<string, string> };
     const manifestRepos = new Map<string, PinnedRepo>();
@@ -418,8 +425,8 @@ export function ordinaryAdmissionRadius(input: {
       const fs = {
         list: () => [...new Set([...wsSources, ...configs.filter(file => RADIUS_SOURCE_RE.test(file))])],
         read: (file: string) => { try { return readFile(file); } catch { return null; } },
-        key: (file: string) => locate(file).blobs.get(file)?.sha ?? null,
-        exists: (file: string) => locate(file).blobs.has(file),
+        key: (file: string) => pinnedBlobs.get(file)?.sha ?? null,
+        exists: (file: string) => pinnedBlobs.has(file),
       };
       const index = buildIndex({ rootDir: wsRoot, aliases, fs, edgeCache, crossRoot });
       // Combining a reachable edit with an orphan must not launder the orphan into a

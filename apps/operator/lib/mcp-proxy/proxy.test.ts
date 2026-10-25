@@ -10660,6 +10660,87 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(hits).toEqual(["held-checkpoint", "queued-checkpoint"]);
   });
 
+  it("WI-6554700010017061: independent Codex homes progress while shared homes and unkeyed lifecycle calls stay ordered", async () => {
+    let releaseCompletion: () => void = () => {};
+    const completionGate = new Promise<void>((resolve) => { releaseCompletion = resolve; });
+    let releaseHome: () => void = () => {};
+    const homeGate = new Promise<void>((resolve) => { releaseHome = resolve; });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const pending: Array<Promise<unknown>> = [];
+    let completionSettled = false;
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("client") ?? "";
+      hits.push(client);
+      const gate = client === "held-completion" ? completionGate
+        : client === "held-home" ? homeGate : Promise.resolve();
+      void gate.then(() => res.end('{"ok":true}'));
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: "127.0.0.1",
+      targetPort: port(upstream),
+      maxInFlight: 10,
+      controlPlaneReserve: 3,
+      maxCriticalContinuationQueue: 8,
+      criticalContinuationQueueWaitLogMs: 10,
+      log: (line) => logs.push(line),
+    }));
+    await listen(proxy);
+    const home = (client: string, owner: string, advSessionId: number) => {
+      const result = request(port(proxy), JSON.stringify({ owner, advSessionId }),
+        "/api/adv/sessions/ensure-codex-home?client=" + client);
+      pending.push(result);
+      return result;
+    };
+    const queuedCount = () => logs.filter((line) => line.includes("queued critical-continuation request")).length;
+    try {
+      const completion = request(port(proxy), JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "tools/call",
+        params: { name: "work_items:complete", arguments: { id: "WI-held" } },
+      }), "/api/mcp?client=held-completion").then((result) => {
+        completionSettled = true;
+        return result;
+      });
+      pending.push(completion);
+      await waitFor(() => hits.includes("held-completion"));
+
+      const firstHome = home("held-home", "su-home-a", 101);
+      // Home preparation must reach its upstream while an unrelated mutation is held.
+      await waitFor(() => hits.includes("held-home"));
+      const sameOwner = home("same-owner", "su-home-a", 102);
+      const sameHome = home("same-home", "su-home-b", 101);
+      await waitFor(() => queuedCount() >= 2);
+      expect((await home("independent-home", "su-home-c", 103)).status).toBe(200);
+      expect(completionSettled).toBe(false);
+      expect(hits).toEqual(["held-completion", "held-home", "independent-home"]);
+
+      releaseHome();
+      expect((await firstHome).status).toBe(200);
+      expect((await sameOwner).status).toBe(200);
+      expect((await sameHome).status).toBe(200);
+      expect(completionSettled).toBe(false);
+
+      const malformed = request(port(proxy), JSON.stringify({ owner: "su-home-a" }),
+        "/api/adv/sessions/ensure-codex-home?client=unkeyed-home");
+      const lifecycle = request(port(proxy), JSON.stringify({ advSessionId: 103 }),
+        "/api/agent-mcp/console/bootstrap-su/session-ended?client=lifecycle");
+      pending.push(malformed, lifecycle);
+      await waitFor(() => queuedCount() >= 4);
+      expect(hits).not.toContain("unkeyed-home");
+      expect(hits).not.toContain("lifecycle");
+      releaseCompletion();
+      expect((await completion).status).toBe(200);
+      expect((await malformed).status).toBe(200);
+      expect((await lifecycle).status).toBe(200);
+    } finally {
+      releaseHome();
+      releaseCompletion();
+      await Promise.allSettled(pending);
+    }
+  }, 10_000);
+
   it("BYOC P-004: disjoint work-item continuations bypass a slow completion while same-item writes stay ordered", async () => {
     let releaseItemA: () => void = () => {};
     const itemAGate = new Promise<void>((resolve) => {

@@ -7,8 +7,44 @@ import { describe, expect, it, vi } from 'vitest';
 import { engineeringEvidenceReleaseInstrument } from './engineering-evidence-release-instrument';
 // The executable is ordinary Node ESM; exercise its actual orchestration, not a copy.
 import { verifyEngineeringRelease, type EngineeringReleaseChildResult } from '../../../../scripts/verify-engineering-evidence-release.mjs';
+import { readEngineeringTool } from '../../../../scripts/verify-engineering-evidence-tauri.mjs';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+describe('native engineering structured tool reader', () => {
+  const config = { origin: 'http://127.0.0.1:3170', workspace: 'workspace-fixture', client: 'session-fixture',
+    home: '/private-home', input: { harness: 'papercusp' } };
+  it('retains and reads a large complete graph through the authenticated product route', async () => {
+    const graph = { status: 'measured', evidence: { nodes: Array.from({ length: 128 }, (_, id) =>
+      ({ id, data: { body: 'canonical rationale '.repeat(100) } })), execution: { observations: [{ runId: 42 }] } } };
+    const bytes = JSON.stringify({ ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ data: graph }) }] } });
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(bytes));
+    const retain = vi.fn();
+    expect(await readEngineeringTool(config, 'graph:query', { op: 'evidence' }, {
+      request, read: () => 'private-token\n', retain,
+    })).toEqual(graph);
+    expect(request).toHaveBeenCalledWith(config.origin + '/api/agent-mcp/run-tool', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer private-token',
+        'x-papercusp-workspace': config.workspace, 'x-papercusp-client': config.client }),
+    }));
+    const body = JSON.parse(String(request.mock.calls[0]![1]!.body));
+    expect(body).toEqual({ name: 'graph:query', harness: 'papercusp', confirmed: true,
+      args: { op: 'evidence', payloadTier: 'full' } });
+    expect(retain).toHaveBeenCalledWith('graph:query', 200, bytes);
+  });
+  it('rejects refusals, partial results and missing or malformed canonical objects', async () => {
+    for (const result of [{ ok: false }, { isError: true }, { _partial: true },
+      { _projection: { truncated: true } }, { data: { ok: false } },
+      { content: [{ type: 'text', text: 'null' }] }, { content: [{ type: 'text', text: 'invalid-json' }] }, null]) {
+      const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ ok: true, result })));
+      await expect(readEngineeringTool(config, 'graph:query', {}, { request, read: () => 'token' })).rejects.toThrow();
+    }
+    const retain = vi.fn();
+    await expect(readEngineeringTool(config, 'graph:query', {}, { read: () => 'token', retain,
+      request: vi.fn<typeof fetch>().mockResolvedValue(new Response('refused', { status: 403 })),
+    })).rejects.toThrow('HTTP 403');
+    expect(retain).toHaveBeenCalledWith('graph:query', 403, 'refused');
+  });
+});
 describe('exact shipped engineering evidence detector', () => {
   function fixture() {
     const bytes = JSON.stringify({ workspaceId: 'workspace-fixture', clientId: 'session-fixture',

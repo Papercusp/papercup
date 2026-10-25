@@ -6,7 +6,7 @@ export const ENGINEERING_EVIDENCE_CURRENT_INSTRUMENT = 'native-engineering-evide
 export function engineeringEvidenceReleaseInstrument(root: string, plane: 'final-release' | 'current-build' = 'final-release'): CommandInstrument {
   return { key: plane === 'final-release' ? ENGINEERING_EVIDENCE_RELEASE_INSTRUMENT : ENGINEERING_EVIDENCE_CURRENT_INSTRUMENT,
     evaluator: 'command', unit: 'count',
-    description: `Fresh maintained Playwright graph/UI journey on the exact ${plane} artifact with accepted source containment and negative controls; current-build also runs the canonical integration/UI detectors on a throwaway PG. 0 verified; missing/mismatched evidence unknown. Independent acceptance remains separately enforced.`,
+    description: `Fresh maintained Tauri graph/UI journey on the exact ${plane} artifact with accepted source containment and negative controls; current-build also runs the canonical integration/UI detectors on a throwaway PG. 0 verified; missing/mismatched evidence unknown. Independent acceptance remains separately enforced.`,
     argv: [process.execPath, join(root, 'scripts/verify-engineering-evidence-release.mjs'), root, plane],
     timeoutMs: (plane === 'final-release' ? 16 : 46) * 60_000,
     parse(stdout) {

@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as admissionBlobs from './admission-import-completeness';
 import { ADMISSION_RADIUS_CAP, admissionRadiusEdgeCache, executeAdmissionJob, ordinaryAdmissionRadius } from './admission-jobs';
 import { edgeCacheKey } from '../../../../scripts/lib/related-tests.mjs';
+import * as relatedTests from '../../../../scripts/lib/related-tests.mjs';
 import { evaluateFixPrecheck } from './admission-fix-precheck';
 import { expandWorkspaces } from '../../../../scripts/assert-workspace-links.mjs';
 import { pinnedNonWorkspacePathRoutes } from '../../../../scripts/lib/affected-path-routes.mjs';
@@ -157,6 +158,38 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     const radius = radiusFor(['pkg-a/lib/core.ts', 'pkg-a/lib/core.test.ts'], { signature: [{ kind: 'test-file', id: 'pkg-a/lib/alias.test.ts' }] });
     expect(radius).toMatchObject({ status: 'measured', guarded: ['pkg-b/src/uses-a.test.ts'], reportOnly: [] });
     expect(radius.legs).toEqual({ 'pkg-a/lib/core.test.ts': '@t/a', 'pkg-b/src/uses-a.test.ts': '@t/b' });
+  });
+
+  it('bounds repository-prefix probes during dependency candidate lookup', () => {
+    const startsWith = String.prototype.startsWith;
+    const prefix = join(root, 'component') + '/';
+    const buildIndex = relatedTests.buildIndex;
+    let membershipMatches = true;
+    const index = vi.spyOn(relatedTests, 'buildIndex').mockImplementation(options => {
+      // Dependency resolution repeatedly probes the same existing and missing
+      // extension candidates; exercise the actual immutable filesystem adapter.
+      for (let i = 0; i < 1_000; i += 1) {
+        membershipMatches = options!.fs!.exists(join(root, 'component/addon/src/api.ts')) && membershipMatches;
+        membershipMatches = !options!.fs!.exists(join(root, 'component/addon/src/missing.ts')) && membershipMatches;
+      }
+      return buildIndex(options);
+    });
+    let probes = 0;
+    const probe = vi.spyOn(String.prototype, 'startsWith').mockImplementation(function (this: string, search, position) {
+      if (search === prefix) probes += 1;
+      return startsWith.call(this, search, position);
+    });
+    let radius: ReturnType<typeof radiusFor>;
+    try {
+      radius = radiusFor(['pkg-a/lib/core.ts', 'component/src/api.ts']);
+    } finally {
+      probe.mockRestore();
+      index.mockRestore();
+    }
+    expect(membershipMatches).toBe(true);
+    expect(radius!.guarded).toEqual(['component/src/api.test.ts', 'pkg-a/lib/alias.test.ts', 'pkg-a/lib/core.test.ts', 'pkg-b/src/uses-a.test.ts']);
+    // Candidate extension probes must not each traverse the pinned repository tree.
+    expect(probes).toBeLessThan(100);
   });
 
   it('groups per owning workspace, including one inside a pinned submodule', () => {

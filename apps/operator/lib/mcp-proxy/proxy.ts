@@ -2752,7 +2752,7 @@ interface CriticalContinuationIdentity {
   /** Bounded, argument-free tool/path identities safe to expose in health + failure telemetry. */
   tools: string[];
   /**
-   * Work-item identities whose mutations must remain ordered. `null` is the conservative
+   * Resource identities whose mutations must remain ordered. `null` is the conservative
    * global key for continuation calls that cannot prove a narrower conflict domain.
    */
   conflictKeys: string[] | null;
@@ -3004,7 +3004,33 @@ function classifyCriticalContinuationCall(
 ): CriticalContinuationIdentity {
   if (isCriticalSessionLifecyclePath(requestPath)) {
     const path = requestPath?.split("?")[0]?.replace(/\/+$/, "") || "/";
-    return { critical: true, tools: [`rest:${path}`], conflictKeys: null };
+    let conflictKeys: string[] | null = null;
+    // Home preparation writes a per-ADV home and its owner's launch artifact. Blocking
+    // it behind an unrelated work-item mutation can consume the launcher's entire
+    // request deadline before the home handler runs (WI-6554700010017061).
+    // Both identities must be present: two owners naming the same ADV, or one owner
+    // naming two ADVs, still overlap. Other lifecycle writes and unknown inputs retain
+    // the global barrier; this does not increase the existing reserve's capacity.
+    if (path === "/api/adv/sessions/ensure-codex-home") {
+      try {
+        const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const input = parsed as { owner?: unknown; advSessionId?: unknown };
+          const owner = typeof input.owner === "string" ? input.owner.trim() : "";
+          const advSessionId = input.advSessionId;
+          if (owner.length <= 256 && /^[A-Za-z0-9._-]+$/.test(owner) &&
+              typeof advSessionId === "number" && Number.isSafeInteger(advSessionId) && advSessionId > 0) {
+            conflictKeys = [
+              "codex-home:owner:" + createHash("sha256").update(owner).digest("hex"),
+              "codex-home:adv:" + advSessionId,
+            ];
+          }
+        }
+      } catch {
+        // Parsing is classification only; the upstream still validates the request.
+      }
+    }
+    return { critical: true, tools: [`rest:${path}`], conflictKeys };
   }
   try {
     const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
