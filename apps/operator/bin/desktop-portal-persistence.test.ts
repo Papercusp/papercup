@@ -15,8 +15,13 @@ import { createDesktopPortalLifecycle } from './desktop-portal-lifecycle';
 const manifest = process.env.PAPERCUSP_DESKTOP_CANDIDATE_MANIFEST;
 const run = promisify(execFile);
 const native = process.env.PAPERCUSP_TEST_DESKTOP_NATIVE === '1';
+const nativeTimeoutMs = 30 * 60_000;
+const testTimeoutMs = nativeTimeoutMs + 60_000;
 
 it.skipIf(!manifest)('retains the actual private desktop portal preferences across host and PostgreSQL restart', async () => {
+  if (native && Number(process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS ?? 600_000) < testTimeoutMs + 120_000) {
+    throw new Error(`Native profile requires PAPERCUSP_TEST_FILE_TIMEOUT_MS>=${testTimeoutMs + 120_000}; refusing before PostgreSQL or dependency copying`);
+  }
   const directory = dirname(manifest!);
   const receipt = JSON.parse(await readFile(manifest!, 'utf8'));
   expect(receipt.schemaVersion).toBe('desktop-portal-private-candidate-v1');
@@ -27,6 +32,19 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
     );
   }
   expect(await readFile(join(directory, 'spa/index.html'), 'utf8')).toContain('content="portal-candidate"');
+
+  const repo = fileURLToPath(new URL('../../../', import.meta.url));
+  const launcher = join(repo, 'apps/operator/scripts/ptool.mjs');
+  if (native) {
+    // The native rig changes cwd during preparation. Check its explicit
+    // launcher before initializing PostgreSQL or copying the operator tree.
+    expect((await readFile(launcher)).byteLength).toBeGreaterThan(0);
+    const { stdout } = await run('ptool', ['coord:whoami', '--json', '{}'], {
+      cwd: tmpdir(), timeout: 45_000,
+      env: { ...process.env, PAPERCUSP_PTOOL_LAUNCHER: launcher },
+    });
+    expect(JSON.parse(stdout).ownerId).toBeTruthy();
+  }
 
   const root = await mkdtemp(join(tmpdir(), 'desktop-portal-persistent-'));
   const data = join(root, 'data');
@@ -82,7 +100,6 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
     expect((await (await request('/api/health')).json()).source).toBe('test-inner-operator');
     expect(upstream).toEqual(['/api/health']);
     if (native) {
-      const repo = fileURLToPath(new URL('../../../', import.meta.url));
       // Reuse the maintained native rig. Its full operator gets its own
       // isolated DB; portal state remains in this separately owned cluster.
       // The focused test router moves workers into a separate systemd scope;
@@ -91,10 +108,16 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
         'bash', join(repo, 'scripts/verify-tauri-headless.sh'), '--',
         process.execPath, join(repo, 'scripts/test-files.mjs'),
         join(repo, 'apps/operator/bin/desktop-portal-native.test.ts')], {
-        cwd: repo, timeout: 1_200_000, maxBuffer: 8 * 1024 * 1024,
+        cwd: repo, timeout: nativeTimeoutMs, maxBuffer: 8 * 1024 * 1024,
         env: { ...process.env, VERIFY_TAURI_ISOLATED_DB: '1', VERIFY_TAURI_ISOLATED_SEED: 'ready',
           PAPERCUSP_SHARED_SPA_DIST: join(directory, 'spa'),
           PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+          PAPERCUSP_PTOOL_LAUNCHER: launcher,
+          PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Math.min(
+            Number(process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS) || Infinity,
+            Date.now() + nativeTimeoutMs,
+          )),
+          VERIFY_TAURI_ASSERT_ESTIMATE_MS: '180000',
         },
       });
       child.stdout?.on('data', data => process.stdout.write(data));
@@ -109,4 +132,4 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
     vi.unstubAllEnvs();
     await rm(root, { recursive: true, force: true });
   }
-}, native ? 1_260_000 : 60_000);
+}, native ? testTimeoutMs : 60_000);
