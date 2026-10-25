@@ -119,7 +119,11 @@ describe('current stock native factory', () => {
       sessionRelocation: { sessionEnv: 'CLAUDE_CONFIG_DIR', roots: [{ hostRoot: homes, perTaskDir: join(root, 'task-homes') }] },
       originRewrites: [{ from: 'http://127.0.0.1:32001', to: 'http://papercusp-egress:8788' }] };
     const log = join(root, 'claude-exec.json');
-    writeFileSync(join(root, 'docker'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)}, JSON.stringify({args: process.argv.slice(2), env: process.env}));\n`, { mode: 0o755 });
+    writeFileSync(join(root, 'docker'), `#!${process.execPath}
+if (process.argv.includes('inspect')) {
+  process.stdout.write(JSON.stringify({ id: 'c'.repeat(64), env: ['CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0', 'PATH=/task/tools'] }));
+} else require('node:fs').writeFileSync(${JSON.stringify(log)}, JSON.stringify({args: process.argv.slice(2), env: process.env}));
+`, { mode: 0o755 });
     h.run.mockImplementation(async function* (options) {
       await options.spawnProcess!('claude', ['-p', '--model', 'frozen-model'], { cwd: root,
         env: { PATH: `${root}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: h.home, ANTHROPIC_API_KEY: 'HOST_SECRET_SENTINEL',
@@ -135,7 +139,7 @@ describe('current stock native factory', () => {
     const value = factory({ ...opts(), agent: 'claude' }, target);
     await value.ports.launchNative(input()); await value.ports.getTask('stock-task');
     const observed = JSON.parse(readFileSync(log, 'utf8'));
-    expect(observed.args.slice(-5)).toEqual(['private-claude', '/opt/claude', '-p', '--model', 'frozen-model']);
+    expect(observed.args.slice(-5)).toEqual(['c'.repeat(64), '/opt/claude', '-p', '--model', 'frozen-model']);
     expect(observed.args).not.toContain('--no-daemon'); expect(observed.args).not.toContain('ANTHROPIC_API_KEY');
     expect(observed.args).toContain('CLAUDE_CONFIG_DIR'); expect(observed.args).toContain('ANTHROPIC_AUTH_TOKEN');
     expect(observed.args).toContain('CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS');

@@ -180,6 +180,7 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
                 // socket/mounts; the existing wrapper relocates only this clean
                 // home, rewrites its gateway and runs in the task's /app.
                 const wrapper = materializeDockerExecWrapper(containerExec, agent === 'claude' ? {
+                  guardClaudeEnv: true,
                   // Only this assignment's route token and clean-home selectors
                   // cross into the task. No ambient provider, MCP or host config.
                   forwardEnvPatterns: ['^CLAUDE_CONFIG_DIR$', '^CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC$',

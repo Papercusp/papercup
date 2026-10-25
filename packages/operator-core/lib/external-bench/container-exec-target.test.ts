@@ -84,6 +84,82 @@ function runWrapper(args: string[], env: Record<string, string>) {
   return { r, argv, wrapperPath };
 }
 
+describe('stock Claude image environment admission', () => {
+  // Unlike the argv-only Docker double above, model inspection and execute
+  // the command with Docker's image-default + explicit -e environment merge.
+  function launch(imageEnv: Record<string, string>, guarded = true, inspection?: { id?: unknown; env?: unknown }) {
+    const dir = mkdtempSync(join(root, 'image-env-'));
+    const docker = join(dir, 'docker');
+    const argvFile = join(dir, 'argv.json');
+    writeFileSync(docker, `#!${process.execPath}
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const args = process.argv.slice(2), env = ${JSON.stringify(imageEnv)};
+fs.writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(args));
+if (args[0] === 'inspect') {
+  process.stdout.write(JSON.stringify(${JSON.stringify(inspection)} ?? { id: 'c'.repeat(64), env: Object.entries(env).map(([k, v]) => k + '=' + v) }));
+  process.exit(0);
+}
+let i = 1;
+while (args[i].startsWith('-')) {
+  const flag = args[i++];
+  if (flag === '-e') { const key = args[i++]; env[key] = process.env[key]; }
+  else if (flag === '-w') i++;
+}
+i++;
+const child = spawnSync(args[i], args.slice(i + 1), { env, stdio: 'inherit' });
+process.exit(child.status ?? 127);
+`, { mode: 0o755 });
+    const wrapper = materializeDockerExecWrapper({ ...target, binPath: process.execPath }, {
+      dir, dockerBin: docker, dockerHost: '', guardClaudeEnv: guarded,
+      forwardEnvPatterns: ['^ANTHROPIC_AUTH_TOKEN$', '^CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS$'],
+    });
+    const result = spawnSync(wrapper.wrapperPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], {
+      env: { ANTHROPIC_AUTH_TOKEN: 'ASSIGNMENT_TOKEN_SENTINEL', CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1' },
+      encoding: 'utf8', timeout: 10_000,
+    });
+    return { result, args: JSON.parse(readFileSync(argvFile, 'utf8')) as string[] };
+  }
+
+  it.each(['CLAUDE_CODE_EXTRA_BODY', '_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL', 'ANTHROPIC_API_KEY',
+    'CLAUDE_CODE_ENVIRONMENT_KIND', 'ENABLE_TOOL_SEARCH', 'NODE_OPTIONS', 'HTTPS_PROXY'])
+  ('rejects an undeclared image control before the CLI starts (%s)', key => {
+    const { result, args } = launch({ PATH: '/usr/bin:/bin', [key]: 'IMAGE_SECRET_SENTINEL' });
+    expect(result.status, result.stderr).toBe(126);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain(key);
+    expect(result.stderr).not.toContain('IMAGE_SECRET_SENTINEL');
+    expect(args.join(' ')).not.toContain('ASSIGNMENT_TOKEN_SENTINEL');
+    expect(args[0]).toBe('inspect');
+  });
+
+  it('overrides declared image controls while preserving task tool environment and argument boundaries', () => {
+    const { result, args } = launch({ PATH: '/task/tools:/usr/bin:/bin', VIRTUAL_ENV: '/task/venv', NODE_VERSION: '22',
+      ANTHROPIC_AUTH_TOKEN: 'IMAGE_SECRET_SENTINEL', CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '0' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ PATH: '/task/tools:/usr/bin:/bin', VIRTUAL_ENV: '/task/venv', NODE_VERSION: '22',
+      ANTHROPIC_AUTH_TOKEN: 'ASSIGNMENT_TOKEN_SENTINEL', CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1' });
+    expect(args.join(' ')).not.toContain('ASSIGNMENT_TOKEN_SENTINEL');
+    expect(args).toContain('c'.repeat(64));
+    expect(args).not.toContain(target.containerId);
+  });
+
+  it.each([{}, { id: 'replaced-container', env: [] }, { id: 'c'.repeat(64), env: null },
+    { id: 'c'.repeat(64), env: ['not-an-env-assignment'] }])
+  ('fails closed on unverifiable Docker inspection (%j)', inspection => {
+    const { result, args } = launch({}, true, inspection);
+    expect(result.status, result.stderr).toBe(126);
+    expect(result.stdout).toBe('');
+    expect(args[0]).toBe('inspect');
+  });
+
+  it('leaves the existing unguarded Codex wrapper environment behavior intact', () => {
+    const { result } = launch({ PATH: '/usr/bin:/bin', CLAUDE_CODE_EXTRA_BODY: 'image-default' }, false);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).CLAUDE_CODE_EXTRA_BODY).toBe('image-default');
+  });
+});
+
 describe('validateDockerExecTarget', () => {
   it.each([
     ['a shell-metacharacter container id', { containerId: 'abc;rm -rf /' }],

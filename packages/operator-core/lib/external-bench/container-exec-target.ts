@@ -16,6 +16,8 @@
  *     wrapper's own environment, so secrets never appear in a process listing.
  *   - only names matching the forward patterns cross into the container, and the
  *     never-forward set (PATH, HOME, the override keys themselves) never does.
+ *   - stock-Claude admission rejects undeclared image control variables and
+ *     executes the inspected container ID; task tool environment stays intact.
  *   - `-t` is requested only when stdin AND stdout are TTYs (psu-pty vs a pipe).
  *   - the CLI's exit code (or terminating signal) is the wrapper's.
  *   - with `originRewrites`, the agent never starts on a config.toml that still names a
@@ -278,6 +280,9 @@ export interface RenderWrapperOptions {
   nodeBin?: string;
   forwardEnvPatterns?: readonly string[];
   neverForwardEnvPatterns?: readonly string[];
+  /** Stock Claude: reject undeclared image controls before starting the CLI.
+   * Forwarded names override image values; task PATH/tool variables remain intact. */
+  guardClaudeEnv?: boolean;
 }
 
 function shebangFor(nodeBin: string | undefined): string {
@@ -307,6 +312,7 @@ export function renderDockerExecWrapper(target: DockerExecTarget, opts: RenderWr
       : [],
     forward: [...(opts.forwardEnvPatterns ?? DEFAULT_FORWARD_ENV_PATTERNS)],
     never: [...(opts.neverForwardEnvPatterns ?? NEVER_FORWARD_ENV_PATTERNS)],
+    guardClaudeEnv: opts.guardClaudeEnv === true,
     relocation: target.sessionRelocation
       ? { sessionEnv: target.sessionRelocation.sessionEnv,
           roots: target.sessionRelocation.roots.map(r => ({ hostRoot: resolve(r.hostRoot), perTaskDir: resolve(r.perTaskDir) })) }
@@ -597,6 +603,24 @@ const never = cfg.never.map((s) => new RegExp(s));
 const names = Object.keys(process.env)
   .filter((k) => forward.some((r) => r.test(k)) && !never.some((r) => r.test(k)))
   .sort();
+let containerId = cfg.containerId;
+if (cfg.guardClaudeEnv) {
+  // Docker exec retains Config.Env as well as explicit -e overrides. Inspect
+  // without running any image code, then exec the immutable inspected ID so a
+  // replaced container name cannot bypass this admission check.
+  let image;
+  try { image = dockerJson(['inspect', '--format', '{"id":{{json .Id}},"env":{{json .Config.Env}}}', containerId]); }
+  catch { refuse('cannot verify stock Claude image environment'); }
+  if (!/^[a-f0-9]{64}$/.test(image?.id) || !Array.isArray(image.env) ||
+      image.env.some(v => typeof v !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*=/.test(v)))
+    refuse('invalid stock Claude image environment');
+  const declared = new Set(names);
+  const controls = /^(?:_*CLAUDE_|ANTHROPIC_|OPENAI_|CODEX_|ENABLE_|DISABLE_|MCP_|AWS_|AZURE_|GOOGLE_|GCLOUD_|VERTEX_|OTEL_|NODE_(?:OPTIONS|PATH|EXTRA_CA_CERTS|TLS_REJECT_UNAUTHORIZED)$|BUN_OPTIONS$|LD_|DYLD_|SSL_CERT_|CURL_CA_BUNDLE$|REQUESTS_CA_BUNDLE$|BASH_ENV$|ENV$|SHELLOPTS$|BASHOPTS$|(?:HTTPS?|ALL|NO)_PROXY$|XDG_(?:CONFIG_HOME|CONFIG_DIRS|STATE_HOME|CACHE_HOME)$)/i;
+  const denied = [...new Set(image.env.map(v => v.slice(0, v.indexOf('='))))]
+    .filter(name => controls.test(name) && !declared.has(name)).sort();
+  if (denied.length) refuse('undeclared stock Claude image controls: ' + denied.join(', '));
+  containerId = image.id;
+}
 const argv = [...cfg.dockerArgs, 'exec', '-i'];
 if (process.stdin.isTTY && process.stdout.isTTY) argv.push('-t');
 argv.push('-w', cfg.workdir);
@@ -609,7 +633,7 @@ if (tracksNative) {
   fs.writeFileSync(identityPath(process.pid), JSON.stringify(identity), { flag: 'wx', mode: 0o600 });
   process.on('exit', () => { try { fs.unlinkSync(identityPath(process.pid)); } catch {} });
 }
-argv.push(cfg.containerId, ...(identity ? ['/bin/sh', '-c', 'exec "$@"', identity.marker] : []),
+argv.push(containerId, ...(identity ? ['/bin/sh', '-c', 'exec "$@"', identity.marker] : []),
   cfg.binPath, ...cfg.codexWorkdirArgs, ...process.argv.slice(2));
 const child = spawn(cfg.dockerBin, argv, { stdio: 'inherit' });
 const relay = ['SIGINT', 'SIGTERM', 'SIGHUP'];
