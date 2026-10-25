@@ -1088,7 +1088,7 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, intent?: Record<string, string | number | boolean>, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 /**
@@ -1291,6 +1291,7 @@ export async function withFsMutexRead(name, fn, opts = {}) {
   // filesystem and makes the fully written lease visible in one operation.
   const readerStagingRoot = join(root, `${safeName(name)}.readers-staging`);
   const readerStagingDir = join(readerStagingRoot, readerMarkerName);
+  const intent = sanitizeIntent(opts.intent);
   const owner = {
     pid: process.pid,
     ...processIdentity(process.pid),
@@ -1298,6 +1299,7 @@ export async function withFsMutexRead(name, fn, opts = {}) {
     startedAt: new Date(startedAt).toISOString(),
     name,
     mode: "read",
+    ...(intent ? { intent } : {}),
   };
 
   await mkdir(readersDir, { recursive: true });

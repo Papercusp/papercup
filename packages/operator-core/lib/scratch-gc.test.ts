@@ -1797,10 +1797,14 @@ describe('deferred scratch quota recovery', () => {
     });
     const timings: ScratchWriteTimings[] = [];
     let ownerObserved = false;
+    let signalOwnerObserved!: () => void;
+    const ownerObservation = new Promise<void>((resolveObservation) => {
+      signalOwnerObserved = resolveObservation;
+    });
+    let ownerObservationTimeout: ReturnType<typeof setTimeout> | undefined;
     let write: Promise<void> | undefined;
     try {
       await holderStarted;
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] });
       write = writeWithScratchQuota({
         workspaceId,
         filePath: join(workspaceRoot, 'quota', UUID(2), 'progress.bin'),
@@ -1811,13 +1815,22 @@ describe('deferred scratch quota recovery', () => {
           if (
             row.progress?.phase === 'quota-recovery' &&
             row.progress.mutexWaitOwner?.requestTraceId === holderTraceId
-          ) ownerObserved = true;
+          ) {
+            ownerObserved = true;
+            signalOwnerObserved();
+          }
         },
       }, async () => {});
 
-      for (let attempt = 0; attempt < 100 && !ownerObserved; attempt += 1) {
-        await vi.advanceTimersByTimeAsync(100);
-      }
+      await Promise.race([
+        ownerObservation,
+        new Promise<void>((_resolve, reject) => {
+          ownerObservationTimeout = setTimeout(() => {
+            reject(new Error('Timed out waiting for quota-recovery owner progress'));
+          }, 5_000);
+        }),
+      ]);
+      if (ownerObservationTimeout) clearTimeout(ownerObservationTimeout);
       expect(ownerObserved).toBe(true);
       expect(timings.find((row) => row.progress?.mutexWaitOwner)?.progress?.mutexWaitOwner).toMatchObject({
         layer: 'filesystem',
@@ -1828,7 +1841,6 @@ describe('deferred scratch quota recovery', () => {
       });
 
       releaseHolder();
-      await vi.advanceTimersByTimeAsync(100);
       await holder;
       await write;
       const settled = timings.find((row) => !row.progress);
@@ -1838,8 +1850,8 @@ describe('deferred scratch quota recovery', () => {
         'quota-recovery-data-admission.lock-root.ensure': expect.any(Number),
       }));
     } finally {
+      if (ownerObservationTimeout) clearTimeout(ownerObservationTimeout);
       releaseHolder();
-      vi.useRealTimers();
       await Promise.allSettled([holder, ...(write ? [write] : [])]);
     }
   });
