@@ -310,13 +310,21 @@ function findNowOwnerGateMarker(nowText: string, itemId: string, allItemIds: rea
  * prose. Attribute each marker locally; preserved restrictions about another
  * subject must not become new gates on the implementation item (EI-26939203566923309).
  * Unqualified gate clauses still apply to the Decision's referenced items. */
-function findDecisionOwnerGateMarker(text: string, itemId: string): string | null {
+function findDecisionOwnerGateMarker(text: string, itemId: string, itemText: string): string | null {
   for (const segment of markerScopeSegments(text)) {
     const mentionedIds = segment.match(/\bP-\d{3,}\b/gi) ?? [];
     if (mentionedIds.length > 0 && !mentionedIds.some((id) => id.toUpperCase() === itemId.toUpperCase())) continue;
-    // "No change to owner-gated Flywheel ask" preserves a different subject's
-    // wall. An explicitly named own-item wall remains a genuine gate.
-    if (mentionedIds.length === 0 && /^no change to\b/i.test(segment)) continue;
+    // Only a separately named subject proves preservation is unrelated. Bare
+    // approval/execution/status restrictions still gate the referenced item.
+    const preservation = /^no change to\s+(?:owner-gated|hard-deferred)\s+/i.exec(segment);
+    const subject = preservation
+      ? /^([A-Z][\p{L}\p{N}_-]*(?:\s+[A-Z][\p{L}\p{N}_-]*)*)\s+(?:ask|lane|work)\b/u.exec(segment.slice(preservation[0].length))
+      : null;
+    if (mentionedIds.length === 0 && subject && !new RegExp(`\\b${escapeRegExp(subject[1])}\\b`, 'i').test(itemText)) {
+      const laterMarker = findOwnerGateMarker(segment.slice(preservation![0].length + subject[0].length), itemId);
+      if (laterMarker) return laterMarker;
+      continue;
+    }
     const marker = findOwnerGateMarker(segment, itemId);
     if (marker) return marker;
   }
@@ -531,7 +539,7 @@ export async function planItemLaneBlockReason(
       const nowMarker = findNowOwnerGateMarker(nowText, li.id, allItemIds);
       const decisionMarker = decisions
         .filter((d) => d.itemRefs.includes(li.id))
-        .map((d) => findDecisionOwnerGateMarker(d.title, li.id) ?? findDecisionOwnerGateMarker(d.body, li.id))
+        .map((d) => findDecisionOwnerGateMarker(d.title, li.id, li.text) ?? findDecisionOwnerGateMarker(d.body, li.id, li.text))
         .find((m): m is string => Boolean(m));
       return ownMarker ?? nowMarker ?? decisionMarker ?? null;
     };
