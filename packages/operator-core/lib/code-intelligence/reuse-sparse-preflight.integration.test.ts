@@ -24,7 +24,8 @@ import { briefCodePoints, decodeClaimReuseContribution, registeredReuseBriefProv
   REUSE_PROVIDER_FLAGS, type ReuseProviderContext, type ReuseProviderObservation } from './reuse-brief-providers';
 import { nativeCoverageBriefProvider } from './test-coverage-map';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
-import { sparseReuseFixtureFiles } from './__fixtures__/reuse-api-journey';
+import { privateReuseHarnessRegistration, sparseReuseFixtureFiles } from './__fixtures__/reuse-api-journey';
+import { collectHarnessSlugArgs } from '../endpoint-route/hive-harness-arg-coverage';
 
 let fx: PlanPgFixture, root: string;
 const harness = 'r', owner = 'su-sparse-preflight', workItem = 'WI-1';
@@ -45,6 +46,12 @@ beforeAll(async () => {
   // workspace previously understated mandatory context in the native fixture.
   fx.workspaceId = 'test-runtime-00000000-000';
   root = await mkdtemp(join(tmpdir(), 'r-'));
+  // Exercise the same request through the real transport scope collector:
+  // omitting pot targets the unregistered short slug and fails hive admission.
+  const registration = privateReuseHarnessRegistration(fx.workspaceId, harness, root, 'a'.repeat(40));
+  expect(collectHarnessSlugArgs(registration, { toolName: 'harness:create' })).toEqual([
+    { arg: 'pot', slug: fx.workspaceId },
+  ]);
   await registerHarnessProject(fx.admin, fx.workspaceId, harness);
   vi.spyOn(registry, 'loadHarnessRegistry').mockResolvedValue({ projects: [{ slug: harness, path: root }] });
 }, 180_000);

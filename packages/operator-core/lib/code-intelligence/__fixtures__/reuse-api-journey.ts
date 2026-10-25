@@ -7,6 +7,13 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeClaimReuseContribution } from '../reuse-brief-providers.ts';
 
+/** Keep the sparse harness inside the private session's existing pot. */
+export function privateReuseHarnessRegistration(workspace: string, harness: string, path: string, expectedCommit: string) {
+  assert(workspace.startsWith('test-runtime-'), 'Private reuse workspace required');
+  return { slug: harness, path, pot: workspace, registrationOnly: true, expectedCommit,
+    projection: { pick: ['ok', 'slug', 'path'] } };
+}
+
 /** Inner assertions read the private operator ledger; the outer test retains its own sink. */
 export function privateReuseTestEnvironment(env: NodeJS.ProcessEnv, workspace: string, root: string, harness = workspace) {
   assert(workspace.startsWith('test-runtime-'), 'Private reuse workspace required');
@@ -111,8 +118,7 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   }
   const baseline = git('rev-parse', 'HEAD');
   if (claimOnly) {
-    const registered = await call('harness:create', { slug: harness, path: root,
-      registrationOnly: true, expectedCommit: baseline, projection: { pick: ['ok', 'slug', 'path'] } });
+    const registered = await call('harness:create', privateReuseHarnessRegistration(workspace, harness, root, baseline));
     assert.equal(registered.ok, true, JSON.stringify(registered));
     const { loadHarnessRegistry } = await import('../../harness-registry.ts');
     assert.equal((await loadHarnessRegistry(workspace)).projects.find(p => p.slug === harness)?.path, root);
