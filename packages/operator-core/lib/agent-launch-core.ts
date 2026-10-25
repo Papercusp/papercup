@@ -486,7 +486,9 @@ export async function resolveResumeTarget(ref: {
     // Exact native UUID pins are never replaced by the logical owner's older
     // adv_sessions.session_id. session_turns supplies owner METADATA only.
     sessionId: nativeSessionId,
-    ompThreadId: row.ompThreadId,
+    // OMP transcript readers use this alias ahead of sessionId. Keep the
+    // selected incarnation here; binding below still identifies the current row.
+    ompThreadId: row.agent === 'omp' ? nativeSessionId : row.ompThreadId,
     resumeId: nativeSessionId ?? String(row.id),
     ownerId: row.coordOwnerId,
     workspaceId: row.workspaceId?.trim() || null,

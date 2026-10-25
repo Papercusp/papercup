@@ -943,6 +943,32 @@ describe('resolveResumeTarget', () => {
     });
   });
 
+  it('uses the exact historical OMP thread for transcript consumers while preserving the current row binding', async () => {
+    launchCoreSql.mockResolvedValue([{
+      id: 22663, workspace_id: 'ws-omp', coord_owner_id: OWNER,
+      session_id: null, omp_thread_id: 'current-omp-thread', agent: 'omp', cwd: '/repo',
+      started_at: '2026-10-14T13:30:00.000Z',
+      binding_started_at: '2026-10-14 13:30:00.000123+00',
+      ended_at: '2026-10-14T13:33:17.000Z', ended_by: 'self',
+    }] as unknown[]);
+
+    const target = await resolveResumeTarget({ sessionId: 'historical-omp-thread' });
+    expect(target).toMatchObject({
+      ok: true,
+      sessionId: 'historical-omp-thread',
+      ompThreadId: 'historical-omp-thread',
+      resumeId: 'historical-omp-thread',
+      ownerId: OWNER,
+      advSessionId: 22663,
+      binding: {
+        coordOwnerId: OWNER,
+        sessionId: null,
+        ompThreadId: 'current-omp-thread',
+        startedAt: '2026-10-14 13:30:00.000123+00',
+      },
+    });
+  });
+
   it('rejects a ref with neither agentId nor sessionId (no DB round-trip)', async () => {
     const r = await resolveResumeTarget({});
     expect(r.ok).toBe(false);
