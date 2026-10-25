@@ -1257,6 +1257,74 @@ console.log('CLONE_PREREQUISITES_OK');
     });
   }
 
+  it('holds the physical donor install reader through preparation and the committed command', async () => {
+    const f = fixture('node build.cjs');
+    const ready = join(f.root, 'reader-ready');
+    const release = join(f.root, 'reader-release');
+    const lockDir = join(f.root, 'mutexes');
+    const { installLockNameForRoot } = await import(pathToFileURL(join(repoRoot, 'scripts/lib/install-lock-name.mjs')).href);
+    const lockName = installLockNameForRoot(f.root);
+    const probe = `
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+assert.ok(process.env.PAPERCUSP_INSTALL_MUTEX_HELD.split(',').includes(${JSON.stringify(lockName)}));
+assert.equal(require('@fixture/runtime'), 'pinned-source');
+fs.writeFileSync(${JSON.stringify(ready)}, 'ready');
+const timer = setInterval(() => {
+  if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(timer); console.log('DONOR_READER_OK'); }
+}, 10);
+setTimeout(() => { if (!fs.existsSync(${JSON.stringify(release)})) process.exit(9); }, 15000).unref();
+`;
+    snapshot(f.root, { 'probe.cjs': probe }, f.head);
+    // This fixture exercises the runner under test, including an uncommitted
+    // repair; the launcher's committed-source loader would substitute HEAD.
+    const childEnv = { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir };
+    const committedLoader = `--import=${resolve(repoRoot, 'scripts/lib/committed-source-loader.mjs')}`;
+    childEnv.NODE_OPTIONS = (childEnv.NODE_OPTIONS ?? '').split(/\s+/)
+      .filter(option => option !== committedLoader).join(' ');
+    if (!childEnv.NODE_OPTIONS) delete childEnv.NODE_OPTIONS;
+    const child = spawn(process.execPath, [scriptPath, 'lint:probe'], {
+      cwd: f.root, env: childEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { output += chunk; });
+    const exited = new Promise<number | null>((resolveExit, reject) => {
+      child.once('error', reject);
+      child.once('close', resolveExit);
+    });
+    try {
+      const deadline = Date.now() + 15000;
+      while (!existsSync(ready) && child.exitCode === null && Date.now() < deadline) {
+        await new Promise(resolveWait => setTimeout(resolveWait, 20));
+      }
+      if (!existsSync(ready)) throw new Error(`Donor reader did not start (exit=${child.exitCode}): ${output}`);
+      // A real writer must time out while the committed reader is alive, then
+      // acquire the same lease after its command and cleanup finish.
+      const writer = `import { withFsMutex } from ${JSON.stringify(pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href)};
+await withFsMutex(${JSON.stringify(lockName)}, () => console.log('WRITER_ACQUIRED'), { timeoutMs: 200, retryMs: 10 });`;
+      const attempt = () => spawnSync(process.execPath, ['--input-type=module', '-e', writer], {
+        env: { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir }, encoding: 'utf8', timeout: 5000,
+      });
+      const blocked = attempt();
+      expect(blocked.status, blocked.stdout + blocked.stderr).not.toBe(0);
+      expect(blocked.stderr).toContain('waiting for fs-mutex');
+      expect(blocked.stdout).not.toContain('WRITER_ACQUIRED');
+      writeFileSync(release, 'release');
+      expect(await exited, output).toBe(0);
+      expect(output).toContain('DONOR_READER_OK');
+      const acquired = attempt();
+      expect(acquired.status, acquired.stdout + acquired.stderr).toBe(0);
+      expect(acquired.stdout).toContain('WRITER_ACQUIRED');
+    } finally {
+      writeFileSync(release, 'release');
+      if (child.exitCode === null) child.kill('SIGTERM');
+      await exited;
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it('refuses insufficient temporary headroom before cloning or running the committed command', () => {
     const f = fixture('node build.cjs');
     try {
