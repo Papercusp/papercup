@@ -89,8 +89,58 @@
   "procedureConsult": "thread-post:1204772",
   "completionAuditSeq": 7,
   "acceptanceStatus": "blocked",
+  "sourceEnrollmentRecovery": {
+    "activationAuditSeq": 5,
+    "ownerTurnCount": 0,
+    "itemProvenance": {
+      "P-001": "agent-added",
+      "P-002": "agent-added"
+    },
+    "excludedSources": [
+      {
+        "ref": "session_turn:codex:01a16bbc-832f-70c0-81a8-263b7a8fc69b:1",
+        "observedOrigin": "self-compaction",
+        "briefDisposition": "not-owner"
+      },
+      {
+        "ref": "session_turn:codex:01a16bbc-832f-70c0-81a8-263b7a8fc69b:4",
+        "observedSpeaker": "assistant",
+        "briefDisposition": "not-owner"
+      }
+    ],
+    "inheritedDirectiveCandidates": [
+      "session_turn:codex:01a163d2-4c49-7d60-b3bb-047f4f1617fb:1",
+      "session_turn:codex:01a16510-9e88-7300-908d-8fce23ed8384:19"
+    ],
+    "candidateProvenance": "Persisted unenrolled-origin; resolver verdict unknown. These are source candidates, not authenticated owner evidence.",
+    "boundedOrderLookup": {
+      "workspace": "papercusp-workspace",
+      "recordedBy": [
+        "su-843e294a-e363-4b17-b899-52a3c0f75fb6",
+        "su-449b148a-0f8b-4323-9824-70eb8a71ad59"
+      ],
+      "additionalPredicate": "verbatim_text contains the full su-449b148a-0f8b-4323-9824-70eb8a71ad59 identifier",
+      "matchedRows": 0,
+      "positiveControl": {
+        "sameWorkspaceDirectiveId": 2195,
+        "status": "passed"
+      },
+      "limit": "Only these recorded-by and literal identifier predicates were checked. This does not establish absence of every possible governing owner source."
+    },
+    "existingFollowups": [
+      "EI-26039268349575485#thread-post:1204822",
+      "EI-26641094941437310"
+    ],
+    "consult": {
+      "ref": "conv-request-39b59270fa53556609bf69acced576adeaa3108cc3f45dc04d0db41ff2deb18b",
+      "state": "expired",
+      "answer": "No usable answer; routed expert declined the unrelated evidence span."
+    },
+    "supervisorRequest": "coord-send-46feadd096ffe83a51497007f85501bc4ff1fcda18b8618161dc075d6bad557f",
+    "disposition": "No source-origin stamps or historical classifications were changed. No blind reviewer was launched. Source recovery and independent acceptance remain blocked."
+  },
   "remaining": [
-    "Blind-review mint refused no_owner_turns: activation audit5 resolves no authenticated owner turns. Repair real source-origin enrollment and audit mappings; do not substitute agent notes for owner input.",
+    "Blind-review mint refused no_owner_turns: activation audit5 resolves no authenticated owner turns. Original recovery directives are unenrolled-origin candidates and the bounded authenticated-order lookup returned no matches. Obtain a supported authenticated source; do not substitute agent notes or manufacture historical provenance.",
     "No blind reviewer or independent acceptance grader was launched by the failed attempts.",
     "After canonical prerequisites, obtain a complete independent card and record a separate author rejection using acceptanceOf; preserve the literal R-5 failure.",
     "P-002 remains unfinished. Parent admission, original native-stall root cause, Windows baseline and shipment remain unresolved."
