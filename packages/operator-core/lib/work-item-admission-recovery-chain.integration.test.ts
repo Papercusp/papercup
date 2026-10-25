@@ -245,6 +245,55 @@ function request(id: string) {
 }
 
 describe('original authority context fidelity', () => {
+  it('retains a durable ordinary opportunity while unrelated exact recoveries keep arriving', async () => {
+    const original = await create('Ordinary fairness target');
+    const twin = await create(original.title);
+    const [a, b] = [original.id, twin.id].sort();
+    h.model.mockResolvedValue({ text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+      json: { judgements: [{ pairKey: `${a}::${b}`, verdict: 'distinct', reason: 'Independent fixes' }] } });
+    await request(original.id);
+    await tick();
+    expect((await row(original.id)).payload._admissionRecovery).toMatchObject({ state: 'held', stage: 'screen' });
+
+    const unrelated = await create('First unrelated exact recovery');
+    await request(unrelated.id);
+    await tick();
+    expect(await row(unrelated.id)).toMatchObject({ admission: 'admitted', taken_by: reviewerOwnerId });
+    expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: null });
+
+    // Advance the persisted timer as if the host restarted after the natural
+    // deadline. A new exact request must not replace that ordinary obligation.
+    await db.sql`UPDATE harness_shared.routines SET metadata = jsonb_set(
+      COALESCE(metadata, '{}'::jsonb), '{admissionOrdinarySlot}',
+      jsonb_build_object('dueAt', now() - interval '1 second')) WHERE id = 'original-promoter'`;
+    const next = await create('Second unrelated exact recovery');
+    const queued = await request(next.id);
+    const ordinaryRunId = `chain-ordinary-restart-${++run}`;
+    const invoke = () => runAdmissionPromoterWithRecovery({
+      ...scope, runId: ordinaryRunId, batchSize: 10, recentTerminalDays: 30, model: undefined,
+    }, { sql: db.sql, lockSql: db.sql, llmCall: h.model, authorize: authorizeAdmissionRecovery, dispatch });
+    h.model.mockRejectedValueOnce(new Error('controlled interruption after ordinary slot claim'));
+    await expect(invoke()).rejects.toThrow('controlled interruption after ordinary slot claim');
+    expect((await row(next.id)).payload._admissionRecovery).toMatchObject({
+      requestId: queued.request.requestId, state: 'queued',
+    });
+    const [retained] = await db.sql`SELECT metadata->'admissionOrdinarySlot' AS slot
+      FROM harness_shared.routines WHERE id = 'original-promoter'`;
+    expect(retained!.slot.runId).toBe(ordinaryRunId);
+
+    // Re-enter through the production composition with only PG as continuity.
+    await invoke();
+    expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: null });
+    expect((await row(next.id)).payload._admissionRecovery).toMatchObject({ state: 'queued' });
+    const [ledger] = await db.sql`SELECT detail FROM harness_shared.admission_runs WHERE id = ${ordinaryRunId}`;
+    expect(ledger!.detail.componentScreening.itemIds).toContain(original.id);
+    expect(ledger!.detail.componentScreening.receipts).toContainEqual({
+      itemId: original.id, stage: 'recheck', reason: 'selected',
+    });
+    await tick();
+    expect(await row(next.id)).toMatchObject({ admission: 'admitted', taken_by: reviewerOwnerId });
+  });
+
   it('uses ordinary component screening for an authenticated scope-held request beyond the FIFO window', async () => {
     const original = await create('Component screening target');
     const twin = await create(original.title);
