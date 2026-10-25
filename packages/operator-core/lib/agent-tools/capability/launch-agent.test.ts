@@ -2652,13 +2652,41 @@ describe('resume + fork (D-004/D-007)', () => {
       });
 
       it.each([
-        { state: 'running', endedAt: null },
-        { detail: { ...task.detail, advSessionId: 12 } },
-      ])('does not filter a newer conflicting task %j behind an older ended task', async change => {
+        { qualification: 'terminality', change: { state: 'running', endedAt: null } },
+        { qualification: 'headless surface', change: { detail: { ...task.detail, launchSurface: 'other' } } },
+        { qualification: 'ADV', change: { detail: { ...task.detail, advSessionId: 12 } } },
+        { qualification: 'PID', change: { pid: 4103 } },
+      ])('does not filter a newer task failing $qualification behind an older exact terminal task', async ({ change }) => {
         listSuccessorTasksMock.mockResolvedValue([{ ...task, taskId: 'newer', startedAt: '2026-07-11T09:02:00.000Z', ...change }, task]);
         const res = await launchAgent.handler(request, ctx);
-        expect(isError(res)).toBe(true);
+        expect(isError(res), textOf(res)).toBe(true);
+        expect(textOf(res)).toContain('newest predecessor task lacks exact terminal ADV/PID/incarnation custody');
+        expect(resolveSessionStatesMock).not.toHaveBeenCalled();
         expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+        expect(acquireAdvSessionResumeMock).not.toHaveBeenCalled();
+        expect(releaseAdvSessionResumeMock).not.toHaveBeenCalled();
+        noSpawn();
+      });
+
+      it('does not filter a newer task from a later binding incarnation behind an older exact terminal task', async () => {
+        // Same owner/native session/PID, but ADV 12 denotes a later persisted
+        // binding. Its terminal task cannot authorize reconciling source ADV 11.
+        const laterIncarnation = {
+          ...source, advSessionId: 12,
+          binding: { ...source.binding, startedAt: '2026-07-11 09:01:30.000000+00' },
+        };
+        listSuccessorTasksMock.mockResolvedValue([{
+          ...task, taskId: 'newer-incarnation', startedAt: '2026-07-11T09:02:00.000Z',
+          detail: { ...task.detail, advSessionId: laterIncarnation.advSessionId },
+        }, task]);
+        expect(Date.parse(laterIncarnation.binding.startedAt)).toBeGreaterThan(Date.parse(task.startedAt));
+        const res = await launchAgent.handler(request, ctx);
+        expect(isError(res), textOf(res)).toBe(true);
+        expect(textOf(res)).toContain('newest predecessor task lacks exact terminal ADV/PID/incarnation custody');
+        expect(resolveSessionStatesMock).not.toHaveBeenCalled();
+        expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+        expect(acquireAdvSessionResumeMock).not.toHaveBeenCalled();
+        expect(releaseAdvSessionResumeMock).not.toHaveBeenCalled();
         noSpawn();
       });
 
@@ -2738,7 +2766,7 @@ describe('resume + fork (D-004/D-007)', () => {
       });
 
       it('does not read tasks or acquire a lease when the launch claim is held', async () => {
-        claimAgentLaunchMock.mockResolvedValueOnce({ won: false });
+        claimAgentLaunchMock.mockResolvedValueOnce({ won: false, priorSummary: null, priorLaunchedAt: null, priorLaunchedBy: null });
         await launchAgent.handler(request, ctx);
         expect(listSuccessorTasksMock).not.toHaveBeenCalled();
         expect(acquireAdvSessionResumeMock).not.toHaveBeenCalled();
