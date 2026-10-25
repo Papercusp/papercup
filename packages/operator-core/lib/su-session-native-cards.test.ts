@@ -3,6 +3,7 @@ import { _resetCardCorrelatorForTests, readPrivateCardLink, resolveCardResponse 
 import { REJECTED_TOOL_MESSAGE, SKIPPED_QUESTION_MESSAGE, SuNativeCards, type SuNativeCardsOptions } from './su-session-native-cards';
 import type { SuSessionEventInput } from './su-session-host';
 import type { RpcFrame } from './su-session-stdio-peer';
+import { nativeFormFields } from './su-session-native-form';
 
 afterEach(_resetCardCorrelatorForTests);
 function fixture(options: SuNativeCardsOptions = {}) {
@@ -32,6 +33,45 @@ function openedChoiceLabels(events: SuSessionEventInput[]): string[] {
 }
 
 describe('native requests through the shared PUI card correlator', () => {
+  it('never replays a settled private Claude answer after turn cancellation', async () => {
+    const f = fixture(), request = { serverName: 'example', mode: 'form' as const, message: '', requestedSchema: {
+      type: 'object' as const, properties: { apiKey: { type: 'string' as const } }, required: ['apiKey'] } };
+    const options = { requestId: 'secret-repeat', signal: new AbortController().signal };
+    const pending = f.cards.handleClaudeElicitation(request as never, 'turn', options);
+    f.answer({ value: 'private-no-replay' });
+    expect(await pending).toMatchObject({ action: 'accept', content: { apiKey: 'private-no-replay' } });
+    f.cards.cancel();
+    expect(await f.cards.handleClaudeElicitation(request as never, 'turn', options)).toEqual({ action: 'cancel' });
+    expect(f.events.filter(event => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
+  });
+
+  it.each(['claude', 'codex'] as const)('preserves valid empty %s form values and explicit optional omission', async provider => {
+    const f = fixture(), request = { mode: 'form' as const, serverName: 'example', message: '', requestedSchema: {
+      type: 'object' as const, properties: { text: { type: 'string' }, roles: { type: 'array', items: { enum: ['read'] }, maxItems: 0 },
+        omitted: { type: 'string' } }, required: ['text', 'roles'],
+    } };
+    const pending = provider === 'claude' ? f.cards.handleClaudeElicitation(request as never, 'turn', {
+      signal: new AbortController().signal, requestId: 'empty',
+    }) : (f.cards.handle('codex', { id: 'empty', method: 'mcpServer/elicitation/request', params: request }, 'turn', f.reply), undefined);
+    expect(f.opened().card.presentation).toMatchObject({ kind: 'text', allowEmpty: true });
+    expect(f.answer({ value: '' }).ok).toBe(true); await flush();
+    expect(f.opened().card.presentation).toMatchObject({ kind: 'checkbox', allowEmpty: true });
+    expect(f.answer({ picks: ['0'] }).ok).toBe(false);
+    expect(f.answer({ picks: [] }).ok).toBe(true); await flush();
+    expect(f.answer({ picks: ['no'] }).ok).toBe(true); await flush();
+    const expected = { action: 'accept', content: { text: '', roles: [] } };
+    if (pending) expect(await pending).toEqual(expected);
+    else expect(f.replies).toEqual([{ id: 'empty', result: { ...expected, _meta: null } }]);
+  });
+
+  it.each([
+    { type: 'number', enum: ['one'] }, { type: 'boolean', minLength: 2 },
+    { type: 'string', minimum: 3 }, { type: 'array', items: { enum: ['one'] }, minItems: 2, maxItems: 1 },
+    { type: 'string', enum: ['one'], oneOf: [{ const: 'two' }] }, { type: 'string', enumNames: ['One'] },
+  ])('refuses unsupported or contradictory form constraints before asking (%j)', field => {
+    expect(() => nativeFormFields({ type: 'object', properties: { answer: field } })).toThrow();
+  });
+
   it('requires the matching workspace and an explicit approval before answering Codex', async () => {
     const f = fixture();
     expect(f.cards.handle('codex', { id: 10, method: 'item/commandExecution/requestApproval', params: { command: 'touch approved.txt' } }, 'turn', f.reply)).toBe(true);

@@ -9,6 +9,19 @@ import { CardRenderer, PendingCardsBar, ReportBlockCard, type ResolvedGoalOwnerR
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('@papercusp/chat-cards', () => {
+  it('submits empty form input and checkbox selections only with schema opt-in', () => {
+    const onResponse = vi.fn();
+    const textCard = { correlationId: 'empty', prompt: 'Empty form', createdAt: 1,
+      presentation: { kind: 'text' as const, allowEmpty: true } };
+    const view = render(<CardRenderer card={textCard} onResponse={onResponse} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    expect(onResponse).toHaveBeenLastCalledWith({ action: 'submit', correlationId: 'empty', value: { value: '' } });
+    view.rerender(<CardRenderer card={{ ...textCard, presentation: { kind: 'checkbox', allowEmpty: true,
+      options: [{ id: '0', label: 'one' }] } }} onResponse={onResponse} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    expect(onResponse).toHaveBeenLastCalledWith({ action: 'submit', correlationId: 'empty', value: { picks: [] } });
+  });
+
   it('masks and clears private card input, without rendering it as a saved answer', () => {
     const onResponse = vi.fn();
     render(<CardRenderer card={{ correlationId: 'private', createdAt: 1, prompt: 'Credential',

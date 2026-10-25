@@ -204,6 +204,7 @@ describe('su-session owner routing across cluster workers (WI-10003879)', () => 
 
   it.each(['claude', 'codex'])('delivers %s private forms and URL completion to their real owning worker', async backend => {
     let opened = await op(a, { op: 'open-private-card', backend });
+    expect(opened.error).toBeUndefined();
     await op(b, { op: 'set-owner-record', owner: opened.owner });
     await op(b, { op: 'set-card-record', record: opened.record });
     let card = opened.events.find((event: any) => event.type === 'card' && event.phase === 'opened').card;
@@ -221,6 +222,7 @@ describe('su-session owner routing across cluster workers (WI-10003879)', () => 
     expect((await op(b, { op: 'private-card-state' })).answer).toBeNull();
 
     opened = await op(a, { op: 'open-private-card', backend, url: true });
+    expect(opened.error).toBeUndefined();
     card = opened.events.find((event: any) => event.type === 'card' && event.phase === 'opened').card;
     expect(JSON.stringify(opened.events)).not.toContain('PRIVATE_NATIVE');
     const link = { workspaceId: target.workspaceId, request: { kind: 'link', correlationId: card.correlationId } };
@@ -237,6 +239,7 @@ describe('su-session owner routing across cluster workers (WI-10003879)', () => 
 
   it('falls back for ordinary session reads but never for native cards once the owner worker is gone', async () => {
     const opened = await op(a, { op: 'open-private-card', backend: 'claude', url: true });
+    expect(opened.error).toBeUndefined();
     const card = opened.events.find((event: any) => event.type === 'card' && event.phase === 'opened').card;
     await op(b, { op: 'set-card-record', record: opened.record });
     await op(b, { op: 'set-owner-record', owner: opened.owner });

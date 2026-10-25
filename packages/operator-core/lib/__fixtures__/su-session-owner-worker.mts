@@ -102,6 +102,7 @@ const executed: string[] = [];
 let cards: SuNativeCards | null = null;
 let cardEvents: unknown[] = [];
 let cardAnswer: unknown = null;
+let releaseCardHost: (() => void) | undefined;
 
 // D-063 reuses this real worker/IPC fixture. Only the host's authenticated
 // funding/provenance inputs and persistence are fixture-owned. Observation
@@ -166,10 +167,12 @@ async function handle(message: any): Promise<unknown> {
   switch (message.op) {
     case 'open-private-card': {
       cards?.cancel(); cardEvents = []; cardAnswer = null;
+      releaseCardHost?.();
       const base = descriptor();
       const d = { ...base, identity: { ...base.identity, advSessionId: 79, agentChatId: 'native-card-chat',
-        backend: message.backend, nativeSessionId: `native-card-${message.backend}` }, lifecycle: 'ready' } as SuSessionDescriptor;
-      registerSuSessionHost(new SuSessionHost({ descriptor: d, executeCommand: async () => ({ status: 'completed' }) }));
+        backend: message.backend, nativeSessionId: `native-card-${message.backend}` }, lifecycle: 'ready',
+        backendExtension: message.backend === 'codex' ? { backend: 'codex', codexHome: null } : base.backendExtension } as SuSessionDescriptor;
+      releaseCardHost = registerSuSessionHost(new SuSessionHost({ descriptor: d, executeCommand: async () => ({ status: 'completed' }) }));
       cardRecord = { advSessionId: 79, agentChatId: d.identity.agentChatId, workspaceId: ADDRESS.workspaceId,
         ownerId: d.identity.ownerId, nativeSessionId: d.identity.nativeSessionId, backend: message.backend,
         harnessSlug: 'fixture', runtimeGeneration: 1, lifecycle: 'ready', descriptor: d,

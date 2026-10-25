@@ -1,6 +1,7 @@
 /** Translate native questions into the existing PUI card/response protocol.
  * The shared correlator validates the workspace and response exactly once. */
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { cancelPendingCardsForRun, registerCard, resolveCardResponse } from '@papercusp/agent-mcp';
 import type { CanUseTool, OnElicitation, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
 import { nativeFormFields } from './su-session-native-form';
@@ -109,8 +110,16 @@ export class SuNativeCards {
 
   cancel(): void {
     this.epoch++;
-    for (const request of this.elicitations.values()) request.abort.abort();
-    for (const request of this.claudeTools.values()) request.abort.abort();
+    for (const request of this.elicitations.values()) {
+      request.abort.abort();
+      // Retain a cancellation tombstone, never a settled private answer that
+      // an old callback could replay into a later turn.
+      request.result = Promise.resolve({ action: 'cancel' });
+    }
+    for (const request of this.claudeTools.values()) {
+      request.abort.abort();
+      request.result = Promise.resolve({ behavior: 'deny', message: 'Native request was cancelled' });
+    }
     cancelPendingCardsForRun(this.runId);
   }
 
@@ -180,12 +189,13 @@ export class SuNativeCards {
 
   handleClaudeElicitation(request: Parameters<OnElicitation>[0], turnId: string,
     options: Parameters<OnElicitation>[1]): ReturnType<OnElicitation> {
-    const key = options.requestId, fingerprint = JSON.stringify([turnId, request]);
+    const key = options.requestId, fingerprint = createHash('sha256').update(JSON.stringify([turnId, request])).digest('hex');
     const seen = this.elicitations.get(key);
     if (seen) {
       if (seen.fingerprint === fingerprint) return seen.result;
       seen.abort.abort();
-      return Promise.resolve({ action: 'cancel' });
+      seen.result = Promise.resolve({ action: 'cancel' });
+      return seen.result;
     }
     const abort = new AbortController();
     const cancel = () => abort.abort();
@@ -251,12 +261,13 @@ export class SuNativeCards {
 
   handleClaude(toolName: string, input: Record<string, unknown>, turnId: string,
     options: Parameters<CanUseTool>[2]): ReturnType<CanUseTool> {
-    const fingerprint = JSON.stringify([toolName, input, turnId, options.toolUseID, options.suggestions]);
+    const fingerprint = createHash('sha256').update(JSON.stringify([toolName, input, turnId, options.toolUseID, options.suggestions])).digest('hex');
     const seen = this.claudeTools.get(options.requestId);
     if (seen) {
       if (seen.fingerprint === fingerprint) return seen.result;
       seen.abort.abort();
-      return Promise.resolve({ behavior: 'deny', message: 'Native request ID was reused with different content' });
+      seen.result = Promise.resolve({ behavior: 'deny', message: 'Native request ID was reused with different content' });
+      return seen.result;
     }
     const abort = new AbortController(), cancel = () => abort.abort();
     if (options.signal.aborted) cancel();
@@ -466,7 +477,7 @@ export class SuNativeCards {
     }
     if (!run) return false;
     if (backend === 'codex') {
-      const key = `${typeof frame.id}:${frame.id}`, fingerprint = JSON.stringify([method, turnId, params]);
+      const key = `${typeof frame.id}:${frame.id}`, fingerprint = createHash('sha256').update(JSON.stringify([method, turnId, params])).digest('hex');
       const seen = this.codexRequests.get(key);
       if (seen !== undefined) {
         if (seen !== fingerprint) {

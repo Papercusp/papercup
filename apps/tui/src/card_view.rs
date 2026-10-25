@@ -951,6 +951,23 @@ mod tests {
         assert!(parse_open_card(&data, "run", Some("ws")).unwrap().secure_link.is_some());
         data["presentation"]["link"] = serde_json::json!("https://external.example/private");
         assert!(parse_open_card(&data, "run", Some("ws")).unwrap().secure_link.is_none());
+        data["correlationId"] = serde_json::json!("su-card.79.1.aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        data["presentation"]["link"] = serde_json::json!("/api/ui/cards/su-card.79.1.aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/link");
+        assert!(parse_open_card(&data, "run", Some("ws")).unwrap().secure_link.is_some());
+    }
+
+    #[test]
+    fn su_exec_p007_schema_opt_in_preserves_empty_form_answers() {
+        for kind in ["text", "checkbox"] {
+            let mut state = CardState::default();
+            let data = serde_json::json!({ "runId": "form", "version": 1, "snapshot": { "openCards": [{
+                "correlationId": "empty", "prompt": "Empty allowed", "presentation": { "kind": kind,
+                    "allowEmpty": true, "options": [{ "id": "0", "label": "one" }] } }] } });
+            state.apply_snapshot(SnapshotEnvelope::from_json(&data.to_string()).unwrap());
+            let expected = if kind == "text" { CardResponse::SubmitValue(serde_json::json!("")) }
+                else { CardResponse::SubmitPicks(vec![]) };
+            assert_eq!(state.submit(), Some(expected));
+        }
     }
 
     #[test]

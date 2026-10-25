@@ -34,7 +34,7 @@ export function nativeFormFields(value: unknown): NativeFormField[] {
     if ((field.type !== 'string' && has('enum', 'enumNames', 'oneOf', 'minLength', 'maxLength', 'format')) ||
         (!['number', 'integer'].includes(field.type) && has('minimum', 'maximum')) ||
         (field.type !== 'array' && has('items', 'minItems', 'maxItems')) ||
-        (field.enum && field.oneOf) || (field.enumNames && !field.enum) ||
+        (field.enum && field.oneOf) || (field.enumNames && !field.enum) || (field.items?.enum && field.items.anyOf) ||
         (field.minLength ?? 0) > (field.maxLength ?? Infinity) ||
         (field.minimum ?? -Infinity) > (field.maximum ?? Infinity) ||
         (field.minItems ?? 0) > (field.maxItems ?? Infinity)) throw new Error('Unsupported form constraints');
@@ -46,7 +46,7 @@ export function nativeFormFields(value: unknown): NativeFormField[] {
     if (field.type === 'array' && (!values || sensitive)) throw new Error('MCP arrays require public enumerated choices');
     return { key, prompt: [field.title || key, field.description].filter(Boolean).join('\n'), sensitive,
       allowEmpty: field.type === 'array' ? (field.minItems ?? 0) === 0
-        : field.type === 'string' && !values && !field.format && (field.minLength ?? 0) === 0,
+        : field.type === 'string' && !values && (!field.format || field.format === 'password') && (field.minLength ?? 0) === 0,
       optional: !(root.required ?? []).includes(key), multi: field.type === 'array',
       choices: sensitive ? undefined : field.type === 'boolean' ? [{ label: 'Yes' }, { label: 'No' }]
         : labels?.map(label => ({ label })),

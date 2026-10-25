@@ -14,12 +14,15 @@ vi.mock('./cluster-owner-rpc', () => ({ callOwnerProcess: rpc.call,
 
 function descriptor(backend: 'claude' | 'codex' = 'claude'): SuSessionDescriptor {
   const supported = { state: 'supported', implementation: 'native' } as const;
-  return { identity: { workspaceId: 'workspace', agentChatId: 'chat', advSessionId: 77, ownerId: 'owner',
-    nativeSessionId: 'native-77', backend, harnessSlug: 'fixture' }, runtimeGeneration: 3, lifecycle: 'ready',
+  const base: SuSessionDescriptor<'claude'> = { identity: { workspaceId: 'workspace', agentChatId: 'chat', advSessionId: 77, ownerId: 'owner',
+    nativeSessionId: 'native-77', backend: 'claude', harnessSlug: 'fixture' }, runtimeGeneration: 3, lifecycle: 'ready',
     role: 'su', model: null, accountServed: null, accountRoute: 'default', carry: 'warm', modes: [],
     capabilities: { commands: { owner_turn: supported, interrupt: supported, resume: supported, fork: supported,
-      focus: supported, end: supported }, features: {} },
-    backendExtension: backend === 'claude' ? { backend, configDir: null } : { backend, codexHome: null } };
+      focus: supported, end: supported }, features: { approvals: supported, compaction: supported, context: supported,
+      'interactive-cards': supported, modes: supported, 'reasoning-stream': supported, 'tool-events': supported, usage: supported } },
+    backendExtension: { backend: 'claude', configDir: null, configDirSource: null } };
+  return backend === 'claude' ? base : { ...base, identity: { ...base.identity, backend: 'codex' },
+    backendExtension: { backend: 'codex', codexHome: null } };
 }
 function row(d: SuSessionDescriptor): DurableSuSessionRecord {
   return { ...d.identity, descriptor: d, runtimeGeneration: d.runtimeGeneration, lifecycle: d.lifecycle,
@@ -107,5 +110,16 @@ describe('P007 exact-incarnation private card routing', () => {
     expect(await serveForwardedSuSessionOp({ ...payload, address: { ...payload.address, runtimeGeneration: 4 },
       request: { op: 'native-card', body: { ...payload.request.body,
         correlationId: nativeCardCorrelationId('pui-native:77:4') } } })).toEqual({ status: 'absent' });
+  });
+
+  it('never resolves another run even when its public correlation hint matches the live incarnation', async () => {
+    const f = fixture(); _resetCardCorrelatorForTests();
+    const foreign = registerCard({ correlationId: f.correlationId, workspaceId: 'workspace', runId: 'foreign-run',
+      spec: { prompt: 'Foreign', privateLink: 'https://auth.example/?code=FOREIGN', dataSchema: z.object({ value: z.string() }) } });
+    expect(await routeSuNativeCard(f.input)).toMatchObject({ ok: false, status: 404 });
+    expect(await routeSuNativeCard({ workspaceId: 'workspace', request: { kind: 'link', correlationId: f.correlationId } }))
+      .toEqual({ kind: 'link', target: null });
+    let settled = false; void foreign.result.then(() => { settled = true; });
+    await Promise.resolve(); expect(settled).toBe(false);
   });
 });
