@@ -268,6 +268,46 @@ describe('R16 repeatable existing-ledger reads', () => {
     expect((await collectRecordedReuseMetrics(fx.admin,scope,load,census)).population.workItems.every(w=>!w.complete)).toBe(true);
     expect((await measureRecordedReuseMetric(fx.admin,scope,'searchBeforeWrite')).verdict).toBe('unknown');
   });
+  it('retains call and assignment measurements when immutable Git additions include binary files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'reuse-binary-population-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+    const commit = (date: string) => execFileSync('git', ['-C', root, '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'binary population fixture'],
+      { env: { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
+        GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid', GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+    const scope = { workspaceId: fx.workspaceId, harnessSlug: 'binary-producer', windowStart: at, windowEnd: now };
+    try {
+      git('init', '-q');
+      await writeFile(join(root, 'a.ts'), 'export function target() {}\n');
+      git('add', '.'); commit('2026-09-29T00:00:00Z');
+      const base = git('rev-parse', 'HEAD').trim();
+      await writeFile(join(root, 'b.ts'), 'import { target } from "./a"; target();\n');
+      await writeFile(join(root, 'asset.bin'), Buffer.from([0, 255, 1, 254]));
+      git('add', '.'); commit('2026-10-01T00:10:00Z');
+      const end = git('rev-parse', 'HEAD').trim();
+      // Neither later working bytes nor an unknown line denominator may erase
+      // independently observable cross-file calls and search-before-write.
+      await writeFile(join(root, 'b.ts'), 'uncommitted();\n');
+      await fx.admin`INSERT INTO harness_shared.work_items
+        (workspace_id,harness_slug,feature_id,item_kind,status,title,summary,taken_by,taken_at,created_ts,updated_ts)
+        VALUES (${fx.workspaceId},'binary-producer','WI-binary-assignment','feature','open','fixture','fixture','binary-owner',${at},1,1)`;
+      for (const [tool, minute] of [['Grep',1],['Edit',2]] as const) await fx.admin`
+        INSERT INTO harness_shared.agent_activity(workspace_id,owner_id,harness_slug,kind,phase,tool_name,status,detail,created_at)
+        VALUES (${fx.workspaceId},'binary-owner','binary-producer','tool','post',${tool},'ok','{}'::jsonb,
+          ${`2026-10-01T00:0${minute}:00.000Z`}::timestamptz)`;
+      const load = () => collectReuseSourcePopulation(root, at, now);
+      const collected = await collectRecordedReuseMetrics(fx.admin, scope, load,
+        [{ ref: 'fixture:complete-binary-activity', owner: 'binary-owner', start: at, end: now }]);
+      expect(collected.population).toMatchObject({ addedNonGeneratedLines: null, duplicateAddedLines: null,
+        lineCensusComplete: false, callCensusComplete: true, method: {
+          binaryChangedPaths: ['asset.bin'], sourcePopulation: ['a.ts', 'b.ts'], addedLinePopulation: [{ path: 'b.ts', lines: [1] }],
+        } });
+      expect(collected.population.calls).toEqual([expect.objectContaining({ from: 'b.ts', to: 'a.ts', resolved: true })]);
+      expect(collected.sourceRefs).toEqual(expect.arrayContaining([`git:${base}`, `git:${end}`]));
+      expect(await measureRecordedReuseMetric(fx.admin, scope, 'redundancy')).toMatchObject({ verdict: 'unknown' });
+      expect(await measureRecordedReuseMetric(fx.admin, scope, 'crossFileCalls')).toMatchObject({ verdict: 'pass', value: 100 });
+      expect(await measureRecordedReuseMetric(fx.admin, scope, 'searchBeforeWrite')).toMatchObject({ verdict: 'pass', value: 100 });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('persists mature disable evidence before using the flag writer, while immature evidence never writes', async () => {
     const windows: ReuseMeasuredWindow[] = [];
     for (let i=0,t=0,h=0;t<100||h<100;i++) {

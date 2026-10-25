@@ -118,19 +118,28 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
     }
     const paths = (await git(['diff', '--name-only', '-z', '--no-renames', base, commit])).split('\0').filter(eligibleHistoryPath);
     const addedLines: Record<string, number[]> = {};
+    const binaryChangedPaths: string[] = [];
     for (const path of paths) {
       const patch = await git(['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--unified=0', base, commit, '--', path]);
+      // A binary diff cannot supply a line denominator. Retain that limitation
+      // without discarding the independent syntax and assignment populations.
+      if (patch.includes('Binary files ')) { binaryChangedPaths.push(path); continue; }
       const lines: number[] = [];
       for (const match of patch.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
         const first = Number(match[1]), count = match[2] === undefined ? 1 : Number(match[2]);
         for (let n = first; n < first + count; n++) lines.push(n);
       }
-      if (patch.includes('Binary files ')) throw new Error('Binary additions cannot be counted as source lines');
       if (lines.length) addedLines[path] = lines;
     }
-    return { ...buildReuseSourcePopulation({ sourcePaths: [...sourceFiles.keys()],
+    const population = buildReuseSourcePopulation({ sourcePaths: [...sourceFiles.keys()],
       readSource: path => readFileSync(sourceFiles.get(path)!, 'utf8'),
-      addedLines, complete: !tree.some(s => s.kind === 'commit') }),
+      addedLines, complete: !tree.some(s => s.kind === 'commit') });
+    return { ...population,
+      addedNonGeneratedLines: binaryChangedPaths.length ? null : population.addedNonGeneratedLines,
+      duplicateAddedLines: binaryChangedPaths.length ? null : population.duplicateAddedLines,
+      lineCensusComplete: population.lineCensusComplete && binaryChangedPaths.length === 0,
+      method: { ...population.method,
+        ...(binaryChangedPaths.length ? { binaryChangedPaths: binaryChangedPaths.sort() } : {}) },
       sourceRefs: [`git:${base}`, `git:${commit}`], base, commit };
   } finally { rmSync(capture, { recursive: true, force: true }); }
 }
