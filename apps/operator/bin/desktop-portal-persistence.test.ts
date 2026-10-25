@@ -46,6 +46,10 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
     VERIFY_TAURI_PREPARE_ESTIMATE_MS: String(nativePrepareEstimateMs),
     VERIFY_TAURI_ASSERT_ESTIMATE_MS: '180000',
   };
+  const nativeEnvHelper = join(repo, 'scripts/lib/verify-tauri-native-env.mjs');
+  const { nativeVerifierEnv } = await import(nativeEnvHelper);
+  const nativeEnv = () => nativeVerifierEnv({ ...process.env, ...nativeBudget,
+    PAPERCUSP_PTOOL_LAUNCHER: launcher });
   if (native) {
     await run(process.execPath, [join(repo, 'scripts/lib/verify-tauri-deadline.mjs'), 'prepare', '0', '1'], {
       cwd: repo, timeout: 15_000, env: { ...process.env, ...nativeBudget },
@@ -58,6 +62,9 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
       env: { ...process.env, PAPERCUSP_PTOOL_LAUNCHER: launcher },
     });
     expect(JSON.parse(stdout).ownerId).toBeTruthy();
+    await run(process.execPath, [nativeEnvHelper, '--preflight', repo], {
+      cwd: repo, timeout: 125_000, env: nativeEnv(),
+    });
   }
 
   const root = await mkdtemp(join(tmpdir(), 'desktop-portal-persistent-'));
@@ -123,8 +130,7 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
         process.execPath, join(repo, 'scripts/test-files.mjs'),
         join(repo, 'apps/operator/bin/desktop-portal-native.test.ts')], {
         cwd: repo, timeout: nativeTimeoutMs, maxBuffer: 8 * 1024 * 1024,
-        env: { ...process.env, VERIFY_TAURI_ISOLATED_DB: '1', VERIFY_TAURI_ISOLATED_SEED: 'ready',
-          ...nativeBudget,
+        env: { ...nativeEnv(), VERIFY_TAURI_ISOLATED_DB: '1', VERIFY_TAURI_ISOLATED_SEED: 'ready',
           PAPERCUSP_SHARED_SPA_DIST: join(directory, 'spa'),
           PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
           PAPERCUSP_PTOOL_LAUNCHER: launcher,
