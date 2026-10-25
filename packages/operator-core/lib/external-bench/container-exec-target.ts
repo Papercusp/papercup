@@ -17,7 +17,8 @@
  *   - only names matching the forward patterns cross into the container, and the
  *     never-forward set (PATH, HOME, the override keys themselves) never does.
  *   - stock-Claude admission rejects undeclared image control variables and
- *     executes the inspected container ID; task tool environment stays intact.
+ *     filesystem managed policy before executing the inspected container ID;
+ *     task tool environment stays intact.
  *   - `-t` is requested only when stdin AND stdout are TTYs (psu-pty vs a pipe).
  *   - the CLI's exit code (or terminating signal) is the wrapper's.
  *   - with `originRewrites`, the agent never starts on a config.toml that still names a
@@ -280,7 +281,7 @@ export interface RenderWrapperOptions {
   nodeBin?: string;
   forwardEnvPatterns?: readonly string[];
   neverForwardEnvPatterns?: readonly string[];
-  /** Stock Claude: reject undeclared image controls before starting the CLI.
+  /** Stock Claude: reject undeclared image controls and filesystem managed policy before starting the CLI.
    * Forwarded names override image values; task PATH/tool variables remain intact. */
   guardClaudeEnv?: boolean;
 }
@@ -633,7 +634,15 @@ if (tracksNative) {
   fs.writeFileSync(identityPath(process.pid), JSON.stringify(identity), { flag: 'wx', mode: 0o600 });
   process.on('exit', () => { try { fs.unlinkSync(identityPath(process.pid)); } catch {} });
 }
-argv.push(containerId, ...(identity ? ['/bin/sh', '-c', 'exec "$@"', identity.marker] : []),
+// Ordinary --setting-sources does not disable Claude's Linux managed policy.
+// Check under the exec user's credentials in the SAME inspected-container
+// invocation as the CLI; never read policy values or launch it after a refusal.
+const admission = cfg.guardClaudeEnv
+  ? 'if [ ! -x /etc ] || [ -e /etc/claude-code ] || [ -L /etc/claude-code ]; then '
+    + 'printf "%s\\n" "papercusp container-exec: cannot admit stock Claude managed policy" >&2; exit 126; fi; '
+  : '';
+argv.push(containerId, ...(identity || cfg.guardClaudeEnv
+  ? ['/bin/sh', '-c', admission + 'exec "$@"', identity ? identity.marker : 'papercusp-claude-admission'] : []),
   cfg.binPath, ...cfg.codexWorkdirArgs, ...process.argv.slice(2));
 const child = spawn(cfg.dockerBin, argv, { stdio: 'inherit' });
 const relay = ['SIGINT', 'SIGTERM', 'SIGHUP'];
