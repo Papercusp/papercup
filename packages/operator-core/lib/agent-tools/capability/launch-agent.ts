@@ -90,6 +90,7 @@ import {
   type FreshLaunchSessionProbe,
   type LaunchMode,
   type MemberSpec,
+  type ResumeTarget,
   normalizeLaunchMode,
   resolveLaunchMode,
 } from '../../agent-launch-core';
@@ -113,6 +114,8 @@ import {
   RESUME_RESERVATION_MAX_LEASE_SEC,
 } from '../../adv-sessions';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
+import { listTasks } from '../../task-manager/store';
+import { isTerminalState, type TaskRow } from '../../task-manager/types';
 import type { ColorScheme } from '../../console-color-schemes';
 import { findLiveHostAsync, shutdownViaPty } from '../../events/await/psu-pty-discovery';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
@@ -139,6 +142,39 @@ import {
  * successor's already-enrolled first-turn provenance. It is not part of the
  * public launch-agent schema or ordinary caller arguments. */
 export const INTERNAL_LOOP_FIRE_ORIGIN: unique symbol = Symbol('internal-loop-fire-origin');
+
+/** The ledger orders by started_at DESC. Read TWO unqualified candidates so a
+ * tie or a newer running/later-incarnation row cannot disappear behind a filter.
+ * Only wake-resume tasks record both the native PID and exact ADV identity. */
+async function readSuccessorTerminalTask(source: ResumeTarget): Promise<TaskRow | null> {
+  if (!source.workspaceId || !source.ownerId || !source.sessionId) return null;
+  const rows = await listTasks({ workspaceId: source.workspaceId, coordOwnerId: source.ownerId,
+    sessionId: source.sessionId, includeEnded: true, limit: 2 });
+  if (!rows.length) return null;
+  const task = rows[0];
+  const started = Date.parse(task.startedAt);
+  const bindingStarted = Date.parse(source.binding?.startedAt ?? '');
+  // Unknown timestamps and precision-collapsed ties are deliberately ambiguous.
+  if (!Number.isFinite(started) || started <= 0 || rows.some((row, i) =>
+    !Number.isFinite(Date.parse(row.startedAt)) || Date.parse(row.startedAt) <= 0 ||
+    (i > 0 && Date.parse(row.startedAt) >= started))) {
+    throw new Error('newest predecessor task ordering is unknown or tied');
+  }
+  if (task.workspaceId !== source.workspaceId || task.detail.coordOwnerId !== source.ownerId ||
+      task.sessionId !== source.sessionId || task.class !== 'agent-session' ||
+      task.detail.launchSurface !== 'wake-resume-headless' || task.detail.advSessionId !== source.advSessionId ||
+      !source.pid || task.pid !== source.pid || !Number.isFinite(bindingStarted) || started <= bindingStarted ||
+      !isTerminalState(task.state) || !task.endedAt || !Number.isFinite(Date.parse(task.endedAt)) ||
+      Date.parse(task.endedAt) < started) {
+    throw new Error('newest predecessor task lacks exact terminal ADV/PID/incarnation custody');
+  }
+  return task;
+}
+
+function successorTaskFingerprint(task: TaskRow): string {
+  return JSON.stringify([task.taskId, task.workspaceId, task.sessionId, task.pid, task.startedAt,
+    task.endedAt, task.state, task.detail.coordOwnerId, task.detail.advSessionId, task.detail.launchSurface]);
+}
 
 /** Exact scorecard binding stored on a fresh headless grading-auditor task row. */
 export interface GradingAuditTaskDetail {
@@ -1169,7 +1205,8 @@ export default defineTool({
     let resumeModelSource: CodexModelSource | null = null;
     let resumeAccount: string | null = null;
     let successorBrief: string | null = null;
-    const successorPreparation: { reconcile?: () => Promise<string | null> } = {};
+    const successorPreparation: { reconcile?: () => Promise<string | null>;
+      beforeSpawn?: () => Promise<void>; release?: () => Promise<void> } = {};
     let reconcileOriginalRouting: (() => Promise<void>) | null = null;
     let recheckInPlaceResume: (() => Promise<void>) | null = null;
     let fork = !!args.fork;
@@ -1492,6 +1529,7 @@ export default defineTool({
           }
           const current = await resolveResumeTarget({ agentId: binding.coordOwnerId });
           if (!current.ok || current.advSessionId !== target.advSessionId ||
+              current.ownerId !== target.ownerId || current.sessionId !== target.sessionId || current.pid !== target.pid ||
               current.binding?.coordOwnerId !== binding.coordOwnerId ||
               current.binding?.sessionId !== binding.sessionId ||
               current.binding?.startedAt !== binding.startedAt ||
@@ -1512,7 +1550,38 @@ export default defineTool({
             return 'Cannot start successor: an active native Codex writer appeared during preparation. No process was opened.';
           }
           if (current.endedAt != null) return null;
-          if (!hasAdvSessionTerminalEvidence(current)) {
+          const task = !hasAdvSessionTerminalEvidence(current) ? await readSuccessorTerminalTask(current) : null;
+          if (task) {
+            const fingerprint = successorTaskFingerprint(task);
+            const claimKey = `successor-task:${randomUUID()}`;
+            const expected = { workspaceId: current.workspaceId!, binding };
+            // Exact terminal task evidence replaces only the legacy stale-age
+            // wait, never the row lock, reservation or expected-binding pin.
+            const reserve = () => acquireAdvSessionResume(target.advSessionId, claimKey,
+              RESUME_RESERVATION_MAX_LEASE_SEC, 1, undefined, false, expected);
+            const reservation = await reserve();
+            if (!reservation.acquired) return `Cannot start successor: task custody reservation refused (${reservation.status}). No process was opened.`;
+            successorPreparation.release = async () => { await releaseAdvSessionResume(target.advSessionId, claimKey); };
+            const expiresAt = Date.parse(reservation.leaseExpiresAt);
+            successorPreparation.beforeSpawn = async () => {
+              if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('task custody lease expired');
+              const lease = await reserve();
+              if (!lease.acquired || !lease.replayed) throw new Error('task custody lease lost before spawn');
+              const fresh = await resolveResumeTarget({ agentId: binding.coordOwnerId });
+              if (!fresh.ok || fresh.ownerId !== target.ownerId || fresh.advSessionId !== target.advSessionId ||
+                  fresh.sessionId !== target.sessionId || fresh.workspaceId !== target.workspaceId ||
+                  fresh.harnessSlug !== target.harnessSlug || fresh.pid !== target.pid ||
+                  fresh.binding?.coordOwnerId !== binding.coordOwnerId || fresh.binding?.sessionId !== binding.sessionId ||
+                  fresh.binding?.startedAt !== binding.startedAt) throw new Error('predecessor binding changed after task observation');
+              const latest = await readSuccessorTerminalTask(fresh);
+              if (!latest || successorTaskFingerprint(latest) !== fingerprint) throw new Error('predecessor task changed after observation');
+              if (fresh.live || await findLiveHostAsync(binding.coordOwnerId)) throw new Error('LIVE source host appeared after task observation');
+              const writer = readSourceCodexWriter();
+              if (writer && (writer.held || !['free', 'no-lock-file'].includes(writer.reason)))
+                throw new Error('active or unknown native Codex writer appeared after task observation');
+            };
+            await successorPreparation.beforeSpawn();
+          } else if (!hasAdvSessionTerminalEvidence(current)) {
             const verdicts = await resolveSessionStates(
               [{ ownerId: binding.coordOwnerId }],
               { hydratePerId: true },
@@ -1535,6 +1604,7 @@ export default defineTool({
           if (!ended) {
             return 'Cannot start successor: predecessor binding reconciliation lost its compare-and-swap. Re-resolve the source; no process was opened.';
           }
+          await successorPreparation.beforeSpawn?.();
           notes.push(`✓ Reconciled terminal predecessor binding #${target.advSessionId} before successor launch; actual exit time remains unknown.`);
           return null;
         };
@@ -2463,6 +2533,7 @@ export default defineTool({
       workspaceId,
       idempotencyKey: args.idempotencyKey,
       launchedBy: callerOwnerId,
+      ...(isSuccessor ? { failClosed: true } : {}),
     });
     if (!claim.won) {
       const prior = claim.priorSummary && Object.keys(claim.priorSummary).length ? claim.priorSummary : null;
@@ -2503,6 +2574,7 @@ export default defineTool({
         failure = `Cannot start successor: predecessor reconciliation failed (${(e as Error)?.message ?? e}). No process was opened.`;
       }
       if (failure) {
+        await successorPreparation.release?.();
         await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey });
         return err(failure);
       }
@@ -2518,6 +2590,7 @@ export default defineTool({
         const { clearContextEstimate } = await import('../coordination/presence');
         await clearContextEstimate(resumeOwnerId);
       } catch (error) {
+        await successorPreparation.release?.();
         await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey });
         return err(`Cannot start successor: failed to invalidate predecessor context pressure (${String(error)}). No process was opened.`);
       }
@@ -2656,6 +2729,7 @@ export default defineTool({
           async (admissionContext) => {
             if (recheckInPlaceResume) await recheckInPlaceResume();
             if (reconcileOriginalRouting) await reconcileOriginalRouting();
+            await successorPreparation.beforeSpawn?.();
             if (startupReservation && startupReservation.expiresAtMs <= Date.now())
               throw new Error('Ended-source resume startup reservation expired before process start.');
             const governedEnv = {
@@ -2748,6 +2822,8 @@ export default defineTool({
             code: 500,
             error: `governed spawn failed: ${(error as Error)?.message ?? error}`,
           };
+        } finally {
+          await successorPreparation.release?.();
         }
       }),
     );

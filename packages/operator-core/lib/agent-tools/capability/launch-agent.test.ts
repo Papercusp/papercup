@@ -111,6 +111,11 @@ vi.mock('../../adv-sessions', async (orig) => ({
   readAdvSessionLaunchRecordByOwner: (...args: unknown[]) => readAdvSessionLaunchRecordByOwnerMock(...args),
 }));
 const resolveSessionStatesMock = vi.hoisted(() => vi.fn());
+const listSuccessorTasksMock = vi.hoisted(() => vi.fn());
+vi.mock('../../task-manager/store', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  listTasks: (...args: unknown[]) => listSuccessorTasksMock(...args),
+}));
 vi.mock('../coordination/liveness-oracle', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   resolveSessionStates: (...args: unknown[]) => resolveSessionStatesMock(...args),
@@ -410,6 +415,7 @@ beforeEach(() => {
   releaseAdvSessionResumeMock.mockReset().mockResolvedValue(true);
   readAdvSessionLaunchRecordByOwnerMock.mockReset().mockResolvedValue(null);
   resolveSessionStatesMock.mockReset();
+  listSuccessorTasksMock.mockReset().mockResolvedValue([]);
   resolveSessionStatesMock.mockResolvedValue(new Map([['su-a1a71', { sessionState: 'ended' }]]));
   fetchPresenceFleetMock.mockResolvedValue(new Map());
   latestFleetMembershipMock.mockResolvedValue(null);
@@ -2574,6 +2580,191 @@ describe('resume + fork (D-004/D-007)', () => {
       resolveResumeTargetMock.mockResolvedValue(stale);
       findLiveHostMock.mockReset();
       findLiveHostMock.mockReturnValue(null);
+    });
+
+    describe('exact terminal headless task custody (EI-26731140517030664)', () => {
+      const source = { ...stale, agent: 'codex', workspaceId: 'ws-test', harnessSlug: 'papercusp', pid: 4102 };
+      const task = {
+        taskId: 'task-exact-ended', workspaceId: 'ws-test', sessionId: source.sessionId,
+        class: 'agent-session', pid: source.pid, state: 'exited', exitCode: 0,
+        startedAt: '2026-07-11T09:01:00.000Z', endedAt: '2026-07-11T10:00:00.000Z',
+        detail: { coordOwnerId: source.ownerId, advSessionId: source.advSessionId, launchSurface: 'wake-resume-headless' },
+      };
+      beforeEach(() => {
+        resolveResumeTargetMock.mockResolvedValue(source);
+        resolveSessionStatesMock.mockResolvedValue(new Map([[source.ownerId, { sessionState: 'live', pid: null, host: null }]]));
+        listSuccessorTasksMock.mockResolvedValue([task]);
+        acquireAdvSessionResumeMock.mockImplementation(async () => ({
+          acquired: true, replayed: acquireAdvSessionResumeMock.mock.calls.length > 1,
+          leaseExpiresAt: new Date(Date.now() + 300_000).toISOString(),
+        }));
+      });
+
+      it('uses the exact scoped native-task reader despite unavailable presence process details', async () => {
+        const res = await launchAgent.handler(request, ctx);
+        expect(isError(res), textOf(res)).toBe(false);
+        expect(listSuccessorTasksMock).toHaveBeenCalledWith({
+          workspaceId: 'ws-test', coordOwnerId: source.ownerId, sessionId: source.sessionId,
+          includeEnded: true, limit: 2,
+        });
+        expect(resolveSessionStatesMock).not.toHaveBeenCalled();
+        expect(markAdvSessionEndedMock).toHaveBeenCalledWith(11, null, 'reconciler', {
+          expectedBinding: source.binding, throwOnError: true,
+        });
+        expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+        expect(claimAgentLaunchMock.mock.invocationCallOrder[0]).toBeLessThan(acquireAdvSessionResumeMock.mock.invocationCallOrder[0]);
+        expect(acquireAdvSessionResumeMock.mock.invocationCallOrder[0]).toBeLessThan(markAdvSessionEndedMock.mock.invocationCallOrder[0]);
+        expect(markAdvSessionEndedMock.mock.invocationCallOrder[0]).toBeLessThan(spawnConsoleMock.mock.invocationCallOrder[0]);
+        expect(releaseAdvSessionResumeMock).toHaveBeenCalledWith(11, acquireAdvSessionResumeMock.mock.calls[0][1]);
+      });
+
+      const noSpawn = () => {
+        expect(spawnConsoleMock).not.toHaveBeenCalled();
+        expect(spawnHeadlessMock).not.toHaveBeenCalled();
+        expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas' });
+      };
+
+      it('qualifies only the newest exact row when older terminal history exists', async () => {
+        listSuccessorTasksMock.mockResolvedValue([task, { ...task, taskId: 'older', pid: 123, startedAt: '2026-07-11T09:00:30.000Z' }]);
+        expect(isError(await launchAgent.handler(request, ctx))).toBe(false);
+        expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+        expect(releaseAdvSessionResumeMock).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([
+        { workspaceId: 'other-workspace' }, { sessionId: 'other-native' }, { pid: 4103 },
+        { class: 'command' }, { detail: { ...task.detail, coordOwnerId: 'su-other' } },
+        { detail: { ...task.detail, advSessionId: 12 } },
+        { detail: { ...task.detail, launchSurface: 'other' } },
+        { startedAt: '2026-07-11T08:59:00.000Z' }, { startedAt: 'unknown' },
+        { startedAt: '2026-07-11T09:00:00.123Z' },
+        { state: 'unknown' }, { state: 'exited', endedAt: null },
+        { state: 'running' }, { state: 'running', endedAt: null },
+        { endedAt: 'unknown' }, { endedAt: '2026-07-11T09:00:00.000Z' },
+      ])('refuses incomplete or mismatched newest task %j even if legacy liveness says ended', async change => {
+        listSuccessorTasksMock.mockResolvedValue([{ ...task, ...change }]);
+        resolveSessionStatesMock.mockResolvedValue(new Map([[source.ownerId, { sessionState: 'ended' }]]));
+        const res = await launchAgent.handler(request, ctx);
+        expect(isError(res), textOf(res)).toBe(true);
+        expect(resolveSessionStatesMock).not.toHaveBeenCalled();
+        expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+        noSpawn();
+      });
+
+      it.each([
+        { state: 'running', endedAt: null },
+        { detail: { ...task.detail, advSessionId: 12 } },
+      ])('does not filter a newer conflicting task %j behind an older ended task', async change => {
+        listSuccessorTasksMock.mockResolvedValue([{ ...task, taskId: 'newer', startedAt: '2026-07-11T09:02:00.000Z', ...change }, task]);
+        const res = await launchAgent.handler(request, ctx);
+        expect(isError(res)).toBe(true);
+        expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+        noSpawn();
+      });
+
+      it.each([task.startedAt, 'unknown', '1970-01-01T00:00:00.000Z', '2026-07-11T09:02:00.000Z'])('refuses tied or unknown/contradictory candidate ordering %s', async startedAt => {
+        listSuccessorTasksMock.mockResolvedValue([task, { ...task, taskId: 'second', startedAt }]);
+        expect(isError(await launchAgent.handler(request, ctx))).toBe(true);
+        expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+        noSpawn();
+      });
+
+      it.each([
+        { ownerId: 'su-other' }, { workspaceId: 'other' }, { sessionId: 'other' }, { advSessionId: 12 },
+        { pid: 4103 }, { binding: { ...source.binding, startedAt: '2026-07-11 09:00:00.123457+00' } },
+      ])('refuses binding movement after task observation %j', async change => {
+        resolveResumeTargetMock.mockResolvedValueOnce(source).mockResolvedValueOnce(source).mockResolvedValue({ ...source, ...change });
+        expect(isError(await launchAgent.handler(request, ctx))).toBe(true);
+        expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+        noSpawn();
+        expect(releaseAdvSessionResumeMock).toHaveBeenCalledTimes(1);
+      });
+
+      it.each(['host', 'writer'])('refuses a %s appearing after the task read without reconciling', async kind => {
+        listSuccessorTasksMock.mockImplementation(async () => {
+          if (kind === 'host') findLiveHostMock.mockReturnValue({ pid: 99 });
+          else codexThreadWriterHolderMock.mockReturnValue({ held: true, pid: 99, reason: 'held', lockPath: 'lock', sessionId: source.sessionId });
+          return [task];
+        });
+        expect(isError(await launchAgent.handler(request, ctx))).toBe(true);
+        expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+        noSpawn();
+        expect(releaseAdvSessionResumeMock).toHaveBeenCalledTimes(1);
+      });
+
+      it.each(['host', 'writer', 'binding', 'task'])('refuses changed %s after successful CAS with only that lifecycle mutation', async kind => {
+        markAdvSessionEndedMock.mockImplementationOnce(async () => {
+          if (kind === 'host') findLiveHostMock.mockReturnValue({ pid: 99 });
+          if (kind === 'writer') codexThreadWriterHolderMock.mockReturnValue({ held: true, pid: 99, reason: 'held', lockPath: 'lock', sessionId: source.sessionId });
+          if (kind === 'binding') resolveResumeTargetMock.mockResolvedValue({ ...source, pid: 4103 });
+          if (kind === 'task') listSuccessorTasksMock.mockResolvedValue([{ ...task, state: 'running' }]);
+          return true;
+        });
+        expect(isError(await launchAgent.handler(request, ctx))).toBe(true);
+        expect(markAdvSessionEndedMock).toHaveBeenCalledTimes(1);
+        expect(clearContextEstimateMock).not.toHaveBeenCalled();
+        noSpawn();
+        expect(releaseAdvSessionResumeMock).toHaveBeenCalledTimes(1);
+      });
+
+      it.each(['host', 'writer', 'binding', 'task', 'lease'])('rechecks %s inside governed admission immediately before spawn', async kind => {
+        spawnGovernedAgentProcessMock.mockImplementationOnce(async (_input, spawnProcess) => {
+          if (kind === 'host') findLiveHostMock.mockReturnValue({ pid: 99 });
+          if (kind === 'writer') codexThreadWriterHolderMock.mockReturnValue({ held: true, pid: 99, reason: 'held', lockPath: 'lock', sessionId: source.sessionId });
+          if (kind === 'binding') resolveResumeTargetMock.mockResolvedValue({ ...source, binding: { ...source.binding, startedAt: '2026-07-11 09:00:00.123457+00' } });
+          if (kind === 'task') listSuccessorTasksMock.mockResolvedValue([{ ...task, taskId: 'replacement' }]);
+          if (kind === 'lease') acquireAdvSessionResumeMock.mockResolvedValue({ acquired: false, status: 'reserved' });
+          return spawnProcess({ receiptId: 'WI-governed-test', leaseId: 'lease-governed-test' });
+        });
+        await launchAgent.handler(request, ctx);
+        expect(markAdvSessionEndedMock).toHaveBeenCalledTimes(1);
+        noSpawn();
+        expect(releaseAdvSessionResumeMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('refuses an unknown native writer observation without CAS or spawn', async () => {
+        codexThreadWriterHolderMock.mockReturnValue({ held: false, pid: null, reason: 'unreadable', lockPath: null, sessionId: source.sessionId });
+        expect(isError(await launchAgent.handler(request, ctx))).toBe(true);
+        expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+        noSpawn();
+        expect(releaseAdvSessionResumeMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('releases task custody when governed admission refuses before invoking its callback', async () => {
+        spawnGovernedAgentProcessMock.mockImplementationOnce(async () => ({ status: 'error', code: 409, error: 'admission refused' }));
+        await launchAgent.handler(request, ctx);
+        noSpawn();
+        expect(releaseAdvSessionResumeMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not read tasks or acquire a lease when the launch claim is held', async () => {
+        claimAgentLaunchMock.mockResolvedValueOnce({ won: false });
+        await launchAgent.handler(request, ctx);
+        expect(listSuccessorTasksMock).not.toHaveBeenCalled();
+        expect(acquireAdvSessionResumeMock).not.toHaveBeenCalled();
+        expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+        expect(spawnConsoleMock).not.toHaveBeenCalled();
+      });
+
+      it('refuses a held task custody reservation before CAS', async () => {
+        acquireAdvSessionResumeMock.mockResolvedValueOnce({ acquired: false, status: 'reserved' });
+        expect(isError(await launchAgent.handler(request, ctx))).toBe(true);
+        expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+        expect(releaseAdvSessionResumeMock).not.toHaveBeenCalled();
+        noSpawn();
+      });
+
+      it.each(['lost', 'expired', 'CAS', 'reader'])('releases acquired task custody on %s refusal', async kind => {
+        if (kind === 'lost') acquireAdvSessionResumeMock.mockResolvedValueOnce({ acquired: true, leaseExpiresAt: new Date(Date.now() + 300_000).toISOString() })
+          .mockResolvedValueOnce({ acquired: false, status: 'reserved' });
+        if (kind === 'expired') acquireAdvSessionResumeMock.mockResolvedValueOnce({ acquired: true, leaseExpiresAt: new Date(0).toISOString() });
+        if (kind === 'CAS') markAdvSessionEndedMock.mockResolvedValueOnce(false);
+        if (kind === 'reader') listSuccessorTasksMock.mockResolvedValueOnce([task]).mockRejectedValueOnce(new Error('ledger unavailable'));
+        expect(isError(await launchAgent.handler(request, ctx))).toBe(true);
+        expect(markAdvSessionEndedMock).toHaveBeenCalledTimes(kind === 'CAS' ? 1 : 0);
+        expect(releaseAdvSessionResumeMock).toHaveBeenCalledTimes(1);
+        noSpawn();
+      });
     });
 
     it.each(['ended', 'suspect'])('reconciles a stale open binding with %s evidence before spawn', async (sessionState) => {

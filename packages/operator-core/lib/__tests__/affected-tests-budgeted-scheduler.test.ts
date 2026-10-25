@@ -15,6 +15,7 @@ import {
   admissionMutexName,
   classifyAffectedBlastRadius,
   createCgroupMemoryObserver,
+  createNativeArtifactPersister,
   durationEstimate,
   emptyDurationHistory,
   estimateBudgetedTaskWallMs,
@@ -40,6 +41,7 @@ import {
   resolveMemoryBudgetMb,
   resolveTaskBudget,
   resolveWorkerMemoryMb,
+  retainReporterEvaluatorArtifacts,
   runBudgetedTaskShards,
   runBudgetedTasks,
   timeoutDurationEstimate,
@@ -469,6 +471,31 @@ describe('native affected-task parent receipt transport', () => {
       entries: [pin], vmInputs: [{ ...pin, inputIndex: 0, api: 'runInThisContext', filename: 'observed.ts' }],
       reasons: ['external-loader-bytes-unobserved'] } };
   }
+  it('retains historical evaluator custody without inventing a native execution receipt', () => {
+    const root = mkdtempSync(join(tmpdir(), 'historical-evaluator-custody-'));
+    try {
+      const out = join(root, 'original.json');
+      const { bytes, pin, observation } = evaluatorObservation(out);
+      const payload = { rows: [{ moduleEvaluations: observation }] };
+      const original = Buffer.from(JSON.stringify(payload));
+      const store = createNativeArtifactPersister(join(root, 'retained'));
+      const reporter = store.persist(original, 'native-vitest-out.json');
+      const retained = retainReporterEvaluatorArtifacts(payload, out, store.persist);
+      expect(retained).toMatchObject({ status: 'retained', referencesVisited: 2, gaps: [] });
+      // A foreign codeRef stays rejected even when the expected digest exists.
+      const foreign = { rows: [{ moduleEvaluations: { ...observation,
+        entries: [{ ...pin, codeRef: join(root, 'elsewhere', basename(pin.codeRef)) }], vmInputs: [] } }] };
+      expect(retainReporterEvaluatorArtifacts(foreign, out, store.persist)).toMatchObject({
+        status: 'partial', entries: [], gaps: ['evaluator-sidecar-rejected:redirected-reference'] });
+      expect(() => store.persist(bytes, '../escape')).toThrow('invalid artifact bytes or suffix');
+      rmSync(`${out}.modules`, { recursive: true });
+      expect(readFileSync(join(store.root, reporter.ref))).toEqual(original);
+      for (const row of retained.entries)
+        expect(readFileSync(join(store.root, row.artifact.ref))).toEqual(bytes);
+      expect(readdirSync(store.root).some(name => name.endsWith('.receipt.json'))).toBe(false);
+      expect(JSON.parse(readFileSync(join(store.root, reporter.ref), 'utf8'))).toEqual(payload);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it.each(['passed', 'failed'] as const)('archives evaluator reference occurrences and bytes without qualifying %s reporter output', reason => {
     const root = mkdtempSync(join(tmpdir(), 'native-evaluator-retained-'));
     try {

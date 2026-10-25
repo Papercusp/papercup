@@ -12,6 +12,14 @@ export interface TaskBudgetInput {
 /** Bounded descriptor read shared by native receipt and continuation readers. */
 export function readNativeArtifactBytes(file: string, byteLength: number, byteLimit: number,
   recordRead?: (count: number) => void): Buffer;
+export interface NativeArtifactPin { ref: string; sha256: string; byteLength: number; }
+/** Custody only: these helpers never create execution or acceptance proof. */
+export function createNativeArtifactPersister(evidenceRoot: string): {
+  root: string; persist: (bytes: Buffer, suffix: string) => NativeArtifactPin;
+};
+export function retainReporterEvaluatorArtifacts(payload: unknown, out: string,
+  persist: (bytes: Buffer, suffix: string) => NativeArtifactPin):
+  NonNullable<ReturnType<typeof writeBudgetedTaskNativeExecutionReceipt>['observation']['processTrace']['reporter']['evaluatorArtifacts']>;
 export function readNativeProcessTraceArtifacts(out: string, startedAtMs?: number, finishedAtMs?: number): {
   sourceRoot: string;
   rows: Array<{ row: Record<string, any>; bytes: Buffer }>;

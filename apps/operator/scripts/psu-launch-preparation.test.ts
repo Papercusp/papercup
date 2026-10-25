@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
-import { prepareSuLaunch } from './psu-launcher.mjs';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { contextTrimmingEnv, launchFreshSu, prepareSuLaunch, prepareSuLaunchEnvironment } from './psu-launcher.mjs';
 
 const dir = mkdtempSync(join(tmpdir(), 'su-launch-preparation-'));
 writeFileSync(join(dir, 'settings.json'), JSON.stringify({ effortLevel: 'max' }));
@@ -20,6 +20,50 @@ function bootstrap(agent: 'claude' | 'codex') {
 }
 
 describe('effective SU launch preparation', () => {
+  it.each(['claude', 'codex'] as const)('%s PTY production launcher consumes the canonical prepared configuration', async agent => {
+    const home = mkdtempSync(join(tmpdir(), 'su-prepared-consumer-'));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const persona = join(home, 'persona.md');
+      writeFileSync(persona, 'Chosen persona, authority and memory inputs');
+      const boot = { ...bootstrap(agent), cwd: home, promptFile: persona,
+        envelopeEnv: { ...bootstrap(agent).envelopeEnv,
+          ...contextTrimmingEnv(agent), PAPERCUSP_TOOLS: 'coord_orient',
+          PAPERCUSP_TOOLS_COMPACT: 'coord_orient', CODEX_HOME: home, CLAUDE_CONFIG_DIR: home,
+          PAPERCUSP_LAUNCH_CONTEXT_FILE: persona, PAPERCUSP_AUTO_MODE: '1',
+          ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788',
+        } };
+      const canonical = prepareSuLaunch(boot, { executionKind: 'pty', accountRoute: 'chosen-account', model: 'stale-caller:low' });
+      // Capture the real launcher's final assembly. Existing transport tests
+      // exercise the wrapper's same sanitizer and real PTY/stdio children.
+      const launch = vi.fn();
+      await launchFreshSu({ agent, workspace: 'chosen-workspace' }, {
+        model: 'stale-caller:low', account: 'chosen-account', auto: true,
+        picker: false, noKickoff: true,
+      }, { apiImpl: async () => boot, preflightCodexAutoPoolImpl: async () => true,
+        runLaunchPreflightImpl: () => {}, runWrapperImpl: launch });
+      expect(launch).toHaveBeenCalledOnce();
+      const actual = launch.mock.calls[0][0];
+      expect(actual).toMatchObject({ wrapperBin: canonical.bin, cwd: canonical.cwd,
+        args: [...canonical.args, ...canonical.extraArgs], envelopeEnv: boot.envelopeEnv });
+      const effective = prepareSuLaunchEnvironment(actual.envelopeEnv, {
+        ANTHROPIC_API_KEY: 'parent-secret', PAPERCUSP_ACCOUNT_ID: 'parent-account',
+      });
+      expect(effective).toMatchObject(boot.envelopeEnv);
+      expect(effective.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(readFileSync(effective.PAPERCUSP_LAUNCH_CONTEXT_FILE, 'utf8')).toBe('Chosen persona, authority and memory inputs');
+      if (agent === 'claude') {
+        expect(actual.args).toContain(persona);
+        expect(actual.args).toContain('--dangerously-skip-permissions');
+        expect(actual.args.some((arg: string) => arg.includes('Task,Agent'))).toBe(true);
+      } else {
+        expect(actual.args).toContain('--dangerously-bypass-hook-trust');
+        expect(actual.args).toContain('--dangerously-bypass-approvals-and-sandbox');
+        expect(actual.args).toContain('model_auto_compact_token_limit=288000');
+      }
+    } finally { log.mockRestore(); rmSync(home, { recursive: true, force: true }); }
+  });
+
   it.each(['claude', 'codex'] as const)('%s preserves bootstrap scope, configuration and model across transports', agent => {
     const boot = bootstrap(agent);
     const inheritedEnv = { HOME: dir, PAPERCUSP_SID: 'parent', CODEX_HOME: '/parent/home',

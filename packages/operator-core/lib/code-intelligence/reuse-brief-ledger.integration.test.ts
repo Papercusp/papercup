@@ -46,4 +46,39 @@ describe('P009 existing issued-only PG ledger', () => {
       WHERE workspace_id = ${fx.workspaceId} AND owner_id = 'no-turn-fixture'`;
     expect(turns).toEqual([]);
   });
+  it('records five issued sources atomically while concurrent identical dispatches dedupe', async () => {
+    const record = input('five-source-concurrency');
+    record.observations = ['clones', 'cochange', 'provenance', 'sql', 'coverage'].map(provider =>
+      row(provider as ReuseProviderObservation['provider']));
+    // Inspect the migrated fixture, since source declarations alone cannot rule
+    // out a trigger or an index added by a different migration.
+    const triggers = await fx.admin`SELECT tgname, pg_get_triggerdef(oid) AS definition
+      FROM pg_trigger WHERE tgrelid = 'harness_shared.code_intel_pushes'::regclass
+      AND NOT tgisinternal`;
+    const indexes = await fx.admin`SELECT indexname, indexdef FROM pg_indexes
+      WHERE schemaname = 'harness_shared' AND tablename = 'code_intel_pushes'`;
+    const sample = reuseIssuedSubjects(record)[0]!;
+    const plan = await fx.admin.begin(async tx => {
+      await tx`SET LOCAL ROLE harness_app`;
+      await tx`SELECT set_config('app.workspace_id', ${fx.workspaceId}, true)`;
+      const result = await tx`EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT JSON)
+        INSERT INTO harness_shared.code_intel_pushes
+          (workspace_id, owner_id, epoch, turn_id, leg, subject, snapshot_commit, cited_paths, suggested_call, chars)
+        VALUES (${fx.workspaceId}, ${owner}, 0, 'actual-fixture-turn', ${`reuse-${sample.row.provider}`},
+          ${sample.subject}, NULL, ${sample.row.citedPaths}::text[], 'fixture-explain', ${sample.row.chars})
+        ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING`;
+      await tx`ROLLBACK`;
+      return result;
+    });
+    console.info('REUSE_LEDGER_PG_EXECUTION', JSON.stringify({ triggers, indexes, plan }));
+    const results = await Promise.all([record, record, input('independent-concurrent-dispatch')]
+      .map(value => recordReuseBriefIssued(value, new AbortController().signal)));
+    expect(results).toEqual([true, true, true]);
+    const persisted = await fx.admin`SELECT subject FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${fx.workspaceId} AND owner_id = ${owner}
+      AND subject::jsonb->>'invocation' = 'five-source-concurrency'`;
+    expect(persisted).toHaveLength(5);
+    expect(persisted.map(value => JSON.parse(value.subject).provider).sort())
+      .toEqual(record.observations.map(value => value.provider).sort());
+  });
 });

@@ -8,6 +8,7 @@ import { registerProjectedTool, unregisterProjectedToolsForPlugin, type Projecte
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import type { PuiSuSessionBinding } from './launch-agent';
 import type { RpcFrame, SuStdioPeerOptions } from './su-session-stdio-peer';
+import { prepareSuLaunch } from '../../../apps/operator/scripts/psu-launcher.mjs';
 
 const mocks = vi.hoisted(() => ({
   link: vi.fn(async () => 'linked'), persist: vi.fn(async () => true),
@@ -147,7 +148,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     peerFactory: async (options) => { transport = options; return { request, send: (frame) => sent.push(frame), done, close, pid: () => 7171 }; },
   });
   engines.push(engine);
-  return { engine, sent, request, close, failExit, transport: () => transport, emit: (frame: RpcFrame) => transport.onMessage(frame) };
+  return { engine, boot, sent, request, close, failExit, transport: () => transport, emit: (frame: RpcFrame) => transport.onMessage(frame) };
 }
 
 function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: string = type) {
@@ -157,6 +158,32 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
 }
 
 describe('effective launch configuration consumed by the Codex engine', () => {
+  it.each([undefined, 'prompt'] as const)('consumes complete canonical preparation at app-server boundary (approval=%s)', async toolApproval => {
+    const f = fixture('codex', { bootstrapModel: 'gpt-5.6-sol:high', model: 'gpt-5.6-sol', compactionLimit: 360000,
+      toolApproval, env: { PAPERCUSP_WORKSPACE: 'workspace', PAPERCUSP_HARNESS_SLUG: 'project',
+        PAPERCUSP_PLAN_SLUG: 'chosen-plan', PAPERCUSP_AUTO_MODE: '1',
+        PAPERCUSP_LAUNCH_CONTEXT_FILE: '/sealed/context.md', PAPERCUSP_TOOLS: 'coord_orient',
+        PAPERCUSP_TTY: '/dev/pts/parent', PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' } });
+    const prepared = prepareSuLaunch(f.boot, { executionKind: 'programmatic', accountRoute: 'default' });
+    await f.engine.ready;
+    const actual = f.transport();
+    for (const [key, value] of Object.entries(prepared.env)) expect(actual.env[key], key).toBe(value);
+    const modelArgs: string[] = [];
+    for (let i = 0; i < prepared.modelArgs.length; i++) {
+      if (prepared.modelArgs[i] === '-m') modelArgs.push('-c', `model=${JSON.stringify(prepared.modelArgs[++i])}`);
+      else modelArgs.push(prepared.modelArgs[i]);
+    }
+    expect(actual.args).toEqual([...prepared.args, 'app-server', ...modelArgs]);
+    expect(actual.cwd).toBe(prepared.cwd);
+    expect(actual.env).not.toHaveProperty('PAPERCUSP_TTY');
+    expect(actual.env.CODEX_HOME).toBe('/configured/codex');
+    expect(actual.env.PAPERCUSP_LAUNCH_CONTEXT_FILE).toBe('/sealed/context.md');
+    expect(actual.args).toContain('--dangerously-bypass-hook-trust');
+    expect(f.sent.find(frame => frame.method === 'thread/start')?.params).toEqual({ cwd: prepared.cwd,
+      approvalPolicy: toolApproval === 'prompt' ? 'on-request' : 'never',
+      sandbox: toolApproval === 'prompt' ? 'workspace-write' : 'danger-full-access' });
+  });
+
   it('passes the resolved bootstrap model, effort and managed budget to app-server', async () => {
     const f = fixture('codex', { bootstrapModel: 'gpt-5.6-sol:high', model: 'gpt-5.6-sol', compactionLimit: 360000 });
     await f.engine.ready;

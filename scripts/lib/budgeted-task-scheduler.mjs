@@ -113,7 +113,7 @@ export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAt
 
 // Retain only bytes referenced by the process-bound reporter protocol. This is
 // an archive of stated observations, never an enumeration of runtime inputs.
-function retainReporterEvaluatorArtifacts(payload, out, persist) {
+export function retainReporterEvaluatorArtifacts(payload, out, persist) {
   const result = { scope: "referenced-evaluator-code", status: "unobserved",
     referenceLimit: 4096, artifactByteLimit: 16 * 1024 * 1024,
     totalByteLimit: 64 * 1024 * 1024, referencesVisited: 0,
@@ -237,6 +237,33 @@ export function syncBudgetedTaskNativeExecutionReceipt(saved) {
   sync(dirname(dirname(saved.root)));
 }
 
+/** Exact-byte custody shared with historical proof retention. Archiving an
+ * observation does not mint an execution receipt or qualify its verdict. */
+export function createNativeArtifactPersister(evidenceRoot) {
+  mkdirSync(evidenceRoot, { recursive: true });
+  if (!lstatSync(evidenceRoot).isDirectory() || lstatSync(evidenceRoot).isSymbolicLink()) {
+    throw new Error("NATIVE_TASK_RECEIPT_REFUSAL redirected artifact root");
+  }
+  const root = realpathSync(evidenceRoot);
+  const persist = (bytes, suffix) => {
+    if (!Buffer.isBuffer(bytes) || !/^[a-z][a-z0-9.-]*$/.test(suffix))
+      throw new Error("NATIVE_TASK_RECEIPT_REFUSAL invalid artifact bytes or suffix");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const ref = `${sha256}.${suffix}`, path = join(root, ref);
+    try { writeFileSync(path, bytes, { flag: "wx", mode: 0o600 }); } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    try {
+      if (!readNativeArtifactBytes(path, bytes.length, bytes.length + 1).equals(bytes))
+        throw new Error('different bytes');
+    } catch {
+      throw new Error("NATIVE_TASK_RECEIPT_REFUSAL artifact bytes differ or are redirected");
+    }
+    return { ref, sha256, byteLength: bytes.length };
+  };
+  return { root, persist };
+}
+
 export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
   if (!input || typeof input.task !== "string" || !input.task ||
       typeof input.attempt !== "string" || !input.attempt ||
@@ -257,25 +284,7 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
       !Buffer.isBuffer(input.stdout) || !Buffer.isBuffer(input.stderr)) {
     throw new Error("NATIVE_TASK_RECEIPT_REFUSAL malformed native child observation");
   }
-  mkdirSync(evidenceRoot, { recursive: true });
-  if (!lstatSync(evidenceRoot).isDirectory() || lstatSync(evidenceRoot).isSymbolicLink()) {
-    throw new Error("NATIVE_TASK_RECEIPT_REFUSAL redirected artifact root");
-  }
-  const root = realpathSync(evidenceRoot);
-  const persist = (bytes, suffix) => {
-    const sha256 = createHash("sha256").update(bytes).digest("hex");
-    const ref = `${sha256}.${suffix}`, path = join(root, ref);
-    try { writeFileSync(path, bytes, { flag: "wx", mode: 0o600 }); } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-    }
-    try {
-      if (!readNativeArtifactBytes(path, bytes.length, bytes.length + 1).equals(bytes))
-        throw new Error('different bytes');
-    } catch {
-      throw new Error("NATIVE_TASK_RECEIPT_REFUSAL artifact bytes differ or are redirected");
-    }
-    return { ref, sha256, byteLength: bytes.length };
-  };
+  const { root, persist } = createNativeArtifactPersister(evidenceRoot);
   const validInputs = rows => Array.isArray(rows) && rows.length > 0 &&
     rows.every(row => row && comparisonPath(row.path) && comparisonDigest(row.sha256)) &&
     new Set(rows.map(row => row.path)).size === rows.length;

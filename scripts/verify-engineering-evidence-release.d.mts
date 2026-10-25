@@ -34,12 +34,14 @@ export interface EngineeringReleaseProof {
   integration?: { logPath: string; sha256: string; result: string; files: string[] };
 }
 export const CURRENT_ENGINEERING_TEST_FILES: string[];
+export const ENGINEERING_RELEASE_BUDGET_MS: number;
 export function verifyEngineeringRelease(options: {
   root: string;
   inputsPath: string;
   env?: NodeJS.ProcessEnv;
   nonce?: string;
   plane?: 'final-release' | 'current-build';
+  now?: () => number;
   write?: (path: string, bytes: string) => void;
   read?: (path: string) => string | Buffer;
   run?: (command: string, argv: string[], options: Record<string, unknown>) => EngineeringReleaseChildResult;

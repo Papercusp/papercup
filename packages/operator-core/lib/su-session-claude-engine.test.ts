@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import type { Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
-import { contextTrimmingEnv } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { contextTrimmingEnv, prepareSuLaunch } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import { humanToolName } from './su-session-approval-display';
 import {
@@ -133,6 +133,37 @@ function stalledReports(engine: ClaudeSuEngine) {
 }
 
 describe('structured Claude SU engine', () => {
+  it.each([undefined, 'prompt'] as const)('consumes complete canonical preparation at the SDK boundary (approval=%s)', async toolApproval => {
+    const p = peer();
+    const selected = { ...boot, model: 'claude-sonnet-4-6:high', envelopeEnv: {
+      ...boot.envelopeEnv, ...contextTrimmingEnv('claude'), PAPERCUSP_PLAN_SLUG: 'chosen-plan',
+      PAPERCUSP_AUTO_MODE: '1', PAPERCUSP_LAUNCH_CONTEXT_FILE: promptFile,
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'pin', PAPERCUSP_ACCOUNT_ID: 'chosen-claude',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788', PAPERCUSP_TTY: '/dev/pts/parent',
+    } };
+    const prepared = prepareSuLaunch(selected, { executionKind: 'programmatic', accountRoute: 'chosen-claude' });
+    const engine = startClaudeSuEngine(selected, binding, runtime, {
+      agentChatId: 'chat', model: 'stale-caller:low', accountRoute: 'chosen-claude',
+      query: p.factory, register: false, startupTimeoutMs: 300, toolApproval,
+    });
+    engines.push(engine); await engine.ready;
+    const actual = p.options()!;
+    // Adapter-specific additions are allowed; every prepared input survives.
+    for (const [key, value] of Object.entries(prepared.env)) expect(actual.env?.[key], key).toBe(value);
+    expect(actual).toMatchObject({ cwd: prepared.cwd, model: 'claude-sonnet-4-6', effort: 'high',
+      systemPrompt: { type: 'custom', prompt: readFileSync(promptFile, 'utf8'), snapshot: true },
+      settingSources: ['user', 'project', 'local'],
+      permissionMode: toolApproval === 'prompt' ? 'default' : 'bypassPermissions' });
+    expect(actual.env).not.toHaveProperty('PAPERCUSP_TTY');
+    expect(actual.disallowedTools).toEqual(prepared.args.filter((arg: string) => arg.startsWith('--disallowedTools='))
+      .flatMap((arg: string) => arg.slice('--disallowedTools='.length).split(',')));
+    expect(actual.disallowedTools).toEqual(expect.arrayContaining(['Task', 'Agent']));
+    expect(typeof actual.settings === 'object' ? actual.settings.disableAllHooks : undefined).not.toBe(true);
+    expect(actual.strictMcpConfig).not.toBe(true);
+    expect(actual.env?.CLAUDE_CONFIG_DIR).toBe(dir);
+    expect(actual.env?.PAPERCUSP_LAUNCH_CONTEXT_FILE).toBe(promptFile);
+  });
+
   it('consumes the resolved bootstrap model and effort instead of a stale caller selection', async () => {
     const p = peer();
     const engine = startClaudeSuEngine({ ...boot, model: 'claude-sonnet-4-6:high' }, binding, runtime, {

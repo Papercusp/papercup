@@ -19282,6 +19282,13 @@ export async function launchFreshSu(selections, args, {
 
   // codex's superuser bearer is baked into its per-session config.toml
   // server-side (D-006); nothing for psu to export here.
+  // A resolved bootstrap may narrow its tool seed. Fill missing launch defaults
+  // without replacing that selected policy, just as structured consumers do.
+  const preparedEnvelopeEnv = {
+    ...contextTrimmingEnv(res.agent),
+    ...res.envelopeEnv,
+  };
+  healContextTrimmingEnv(preparedEnvelopeEnv, res.agent);
   runWrapperImpl({
     wrapperBin: bin,
     args: kickoff.args,
@@ -19300,7 +19307,7 @@ export async function launchFreshSu(selections, args, {
     // shared-tree git guard must all be armed. Direct non-psu Claude terminals
     // stay unmarked, preserving the owner-session exemption.
     envelopeEnv: {
-      ...res.envelopeEnv,
+      ...preparedEnvelopeEnv,
       // The SU account picker defines no gateway route as "default — system/CLI
       // login". Make that an explicit envelope decision so ambient API/OAuth
       // credentials cannot silently override what the user selected.
@@ -19331,7 +19338,6 @@ export async function launchFreshSu(selections, args, {
       // ENABLE_TOOL_SEARCH + PAPERCUSP_TOOLS (D-010 spine) + PAPERCUSP_CONTEXT_TIER (P-009
       // tier) come from ONE helper so the host-code handoff successor re-derives the same
       // trio (WI-2140943 lane 2) — see contextTrimmingEnv for the rationale of each key.
-      ...contextTrimmingEnv(res.agent),
       // P-014 (agent-managed-compaction): the MECHANICAL compaction backstop. For a
       // P-022: native auto-compact is retired — every Claude launch runs with
       // DISABLE_AUTO_COMPACT; the carry-respawn ladder owns the boundary
