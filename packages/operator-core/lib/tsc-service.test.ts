@@ -871,6 +871,17 @@ describe('focused service protocol', () => {
     });
   }, 15_000);
 
+  it('refuses a wrong checkout without falling back when the caller requires its service', async () => {
+    await withCompiler(async ({ socketPath, request, root }) => {
+      const lines: string[] = [];
+      await expect(typecheckViaService({ root: join(root, 'another-checkout'), project: request.project,
+        files: ['a.ts'], label: 'native-readiness',
+        env: { PAPERCUSP_TSC_SERVICE_SOCKET: socketPath, PAPERCUSP_TSC_SERVICE_REQUIRED: '1' },
+        log: line => lines.push(line) })).rejects.toThrow('TSC_SERVICE_REQUIRED');
+      expect(lines.join('\n')).not.toContain('running the full');
+    });
+  }, 15_000);
+
   it('preserves cross-project selection and delegated diagnostic correctness', async () => {
     await withCompiler(async ({ root, socketPath, request }) => {
       writeFileSync(join(root, 'b.ts'), 'export const b: number = "wrong";');

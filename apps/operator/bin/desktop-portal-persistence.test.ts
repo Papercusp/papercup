@@ -62,9 +62,9 @@ it.skipIf(!manifest)('retains the actual private desktop portal preferences acro
     });
     expect(JSON.parse(stdout).ownerId).toBeTruthy();
     // Check the generated Rust wire types before paying for a native snapshot.
-    await run(process.execPath, [join(repo, 'scripts/lint-tsc.mjs'),
-      '--files=apps/operator/bin/desktop-portal-native.test.ts'], {
-      cwd: repo, timeout: 120_000, env: nativeEnv(),
+    await run('systemd-run', ['--user', '--scope', '--quiet', '-p', 'MemoryMax=16G',
+      process.execPath, nativeEnvHelper, '--typecheck', repo], {
+      cwd: repo, timeout: desktopPortalNativeTiming.typecheckTimeoutMs, env: nativeEnv(),
     });
     await run(process.execPath, [nativeEnvHelper, '--preflight', repo], {
       cwd: repo, timeout: 125_000, env: nativeEnv(),

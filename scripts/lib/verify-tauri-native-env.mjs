@@ -1,8 +1,9 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { committedWorkRootDependencyDonor, OWNER_MARKER } from '../lint-as-committed.mjs';
 import { censusSpawnArgs, interpretRestrictedHoldPreflight } from './restricted-hold-preflight.mjs';
 import { admitTaskDeadline, readTaskDeadlineEpochMs } from './task-deadline.mjs';
@@ -10,10 +11,12 @@ import { admitTaskDeadline, readTaskDeadlineEpochMs } from './task-deadline.mjs'
 // Sequential parent readiness commands (deadline, identity, types, census),
 // PostgreSQL init/start/stop/start, and portal setup precede the native rig.
 // They must not spend the rig's own launch clock.
+const nativeTypecheckTimeoutMs = 15_000 + 120_000 + 10_000 + 5_000;
 export const desktopPortalNativeTiming = Object.freeze({
   prepareEstimateMs: 20 * 60_000,
   nativeTimeoutMs: 45 * 60_000,
-  setupTimeoutMs: 15_000 + 45_000 + 120_000 + 125_000 + 4 * 20_000 + 60_000,
+  typecheckTimeoutMs: nativeTypecheckTimeoutMs,
+  setupTimeoutMs: 15_000 + 45_000 + nativeTypecheckTimeoutMs + 125_000 + 4 * 20_000 + 60_000,
   cleanupTimeoutMs: 60_000,
 });
 
@@ -174,19 +177,84 @@ export function preflightNativeVerifier(repoRoot, env, spawn = spawnSync) {
   }
 }
 
+/**
+ * Own a short-lived service for the exact tested checkout. The caller runs this helper in
+ * the same bounded systemd scope as its checker; neither compiler outlives readiness.
+ * A retained source must never silently ask the tower's fixed-root service or fall back.
+ * @template T
+ * @param {string} repoRoot
+ * @param {NodeJS.ProcessEnv} env
+ * @param {(env: NodeJS.ProcessEnv) => Promise<T>} check
+ * @returns {Promise<T>}
+ */
+export async function withNativeVerifierTypeService(repoRoot, env, check) {
+  const root = realpathSync(repoRoot);
+  // A systemd-escaped checkout path can exceed the Unix socket path limit.
+  const directory = mkdtempSync('/tmp/pc-native-tsc-');
+  const childEnv = { ...env, PAPERCUSP_TSC_SERVICE: '1', PAPERCUSP_TSC_SERVICE_REQUIRED: '1',
+    PAPERCUSP_TSC_SERVICE_ROOT: root, PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: '',
+    PAPERCUSP_TSC_SERVICE_SOCKET: join(directory, 'service.sock') };
+  const child = spawn(process.execPath, [join(root, 'scripts/tsc-service/server.mjs')], {
+    cwd: root, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  const capture = chunk => { output = (output + chunk.toString()).slice(-8192); };
+  child.stdout.on('data', capture);
+  child.stderr.on('data', capture);
+  const closed = new Promise(resolve => child.once('close', resolve));
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`Native TypeScript service startup timed out: ${output}`)), 15_000);
+      const ready = () => {
+        if (!output.includes('listening on ')) return;
+        clearTimeout(timer);
+        child.stdout.off('data', ready);
+        resolve(undefined);
+      };
+      child.stdout.on('data', ready);
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.once('exit', (code, signal) => {
+        clearTimeout(timer);
+        reject(new Error(`Native TypeScript service exited code=${code} signal=${signal}: ${output}`));
+      });
+    });
+    return await check(childEnv);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    const kill = setTimeout(() => child.kill('SIGKILL'), 10_000);
+    await closed;
+    clearTimeout(kill);
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     if (!process.argv[3]) throw new Error('Native verifier requires a repo root');
     if (process.argv[2] === '--candidate-spa') {
       console.log(JSON.stringify(verifyDesktopPortalCandidateSpa(process.argv[3], process.env, process.argv[4])));
+    } else if (process.argv[2] === '--typecheck') {
+      const root = resolve(process.argv[3]);
+      await withNativeVerifierTypeService(root, process.env, async env => {
+        const child = promisify(execFile)(process.execPath, [join(root, 'scripts/lint-tsc-operator.mjs'),
+          '--files=apps/operator/bin/desktop-portal-native.test.ts'], {
+          cwd: root, env, timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
+        });
+        child.child.stdout.on('data', data => process.stdout.write(data));
+        child.child.stderr.on('data', data => process.stderr.write(data));
+        await child;
+      });
+      console.log('VERIFY_TAURI_NATIVE_TYPES ready=1');
     } else if (process.argv[2] === '--preflight') {
       preflightNativeVerifier(process.argv[3], process.env);
       console.log('VERIFY_TAURI_NATIVE_PREFLIGHT admitted=1');
     } else {
-      throw new Error('usage: verify-tauri-native-env.mjs --preflight|--candidate-spa <repo-root> [output]');
+      throw new Error('usage: verify-tauri-native-env.mjs --preflight|--candidate-spa|--typecheck <repo-root> [output]');
     }
   } catch (error) {
     console.error(error.message);
+    console.error(`VERIFY_TAURI_NATIVE_FAILURE ${JSON.stringify({ step: process.argv[2],
+      code: error.code ?? null, signal: error.signal ?? null, killed: error.killed ?? null })}`);
     process.exitCode = 2;
   }
 }

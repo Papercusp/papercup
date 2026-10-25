@@ -1070,30 +1070,36 @@ export async function typecheckViaService({
   timeoutMs = TSC_SERVICE_TIMEOUT_MS,
   env = process.env,
 }) {
+  const unavailable = (reason, state = '') => {
+    if (env.PAPERCUSP_TSC_SERVICE_REQUIRED === '1') {
+      throw new Error(`TSC_SERVICE_REQUIRED: ${reason}; full compile fallback refused`);
+    }
+    log(`⚠ TSC_SERVICE ${reason} — running the full ${label} compile instead.${state ? ` state=${state}` : ''} resultOrigin=full-compile-required`);
+    return null;
+  };
   let socketPath = tscServiceSocketPath(env);
   const template = env[TSC_SERVICE_UNIT_TEMPLATE_ENV];
   if (template) {
     const located = tscServiceTemplateSocket({ template, root, env });
     if ('error' in located) {
-      log(`⚠ TSC_SERVICE unavailable (${located.error}) — running the full ${label} compile instead.`);
-      return null;
+      return unavailable(`unavailable (${located.error})`);
     }
     socketPath = located.socketPath;
   }
+  let response;
   try {
-    const response = await requestTscService({
+    response = await requestTscService({
       socketPath,
       request: { v: 1, root, project, files, ...(scope === undefined ? {} : { scope }) },
       timeoutMs: resolveTscServiceTimeoutMs(timeoutMs),
       onProgress: (response) => log(`TSC_SERVICE state=${response.phase} requestId=${response.requestId} resultOrigin=pending`),
     });
-    if (response.ok) return response;
-    log(`⚠ TSC_SERVICE declined (${response.reason}${response.detail ? `: ${response.detail}` : ''}) — running the full ${label} compile instead. state=${response.reason} resultOrigin=full-compile-required`);
   } catch (error) {
     const state = ['ENOENT', 'ECONNREFUSED'].includes(error?.code) ? 'unavailable' : error?.code ?? 'request-failed';
-    log(`⚠ TSC_SERVICE request failed at ${socketPath} (${error instanceof Error ? error.message : String(error)}) — running the full ${label} compile instead. state=${state} resultOrigin=full-compile-required`);
+    return unavailable(`request failed at ${socketPath} (${error instanceof Error ? error.message : String(error)})`, state);
   }
-  return null;
+  if (response.ok) return response;
+  return unavailable(`declined (${response.reason}${response.detail ? `: ${response.detail}` : ''})`, response.reason);
 }
 
 /**

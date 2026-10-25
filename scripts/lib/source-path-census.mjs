@@ -1,6 +1,9 @@
 /** Static preparation only. Sites are syntax evidence, never runtime/callee closure. */
 import ts from 'typescript';
 import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
+import { lstat, open, realpath } from 'node:fs/promises';
+import { isAbsolute, resolve } from 'node:path';
 const hash = text => createHash('sha256').update(text).digest('hex');
 const functions = node => ts.isFunctionLike(node) && !!node.body;
 const unwrap = node => ts.isAwaitExpression(node) || ts.isParenthesizedExpression(node)
@@ -143,7 +146,7 @@ export function boundedFrontier(edges, { baseline = [], priorAdditions = [], bou
 }
 
 const canonicalInput = path => typeof path === 'string' && path.length > 0
-  && !path.includes('\\') && !path.startsWith('/')
+  && !path.includes('\\') && !path.includes('\0') && !path.startsWith('/')
   && path.split('/').every(part => part && part !== '.' && part !== '..');
 const integer = value => Number.isSafeInteger(value) && value >= 0;
 const copy = value => structuredClone(value);
@@ -155,16 +158,18 @@ const copy = value => structuredClone(value);
 export function createPreparationLedger(options, { now = () => Number(process.hrtime.bigint() / 1000000n), snapshot, persist } = {}) {
   const { attemptId, candidate, clockId, baseline = [], priorAdditions = [], bound = 60,
     maxInputs = baseline.length + bound, maxBytes = 64 * 1024 * 1024,
-    maxInputBytes = 16 * 1024 * 1024, maxElapsedMs = 120000 } = copy(options);
+    maxInputBytes = 16 * 1024 * 1024, maxElapsedMs = 120000, sourceBinding } = copy(options);
   if (![attemptId, candidate, clockId].every(value => typeof value === 'string' && value.length > 0)
       || ![bound, maxInputs, maxBytes, maxInputBytes, maxElapsedMs].every(integer)
       || ![...baseline, ...priorAdditions].every(canonicalInput)
       || new Set([...baseline, ...priorAdditions]).size !== baseline.length + priorAdditions.length
-      || priorAdditions.length > bound || baseline.length + priorAdditions.length > maxInputs) {
+      || priorAdditions.length > bound || baseline.length + priorAdditions.length > maxInputs
+      || sourceBinding && (typeof sourceBinding.root !== 'string' || !isAbsolute(sourceBinding.root)
+        || !/^[a-f0-9]{64}$/.test(sourceBinding.inputsSha256))) {
     throw new Error('Invalid preparation identity, prefix or limits');
   }
   const config = copy({ attemptId, candidate, clockId, baseline, priorAdditions, bound,
-    maxInputs, maxBytes, maxInputBytes, maxElapsedMs });
+    maxInputs, maxBytes, maxInputBytes, maxElapsedMs, ...(sourceBinding ? { sourceBinding } : {}) });
   const configHash = hash(JSON.stringify(config)), start = now();
   if (!Number.isFinite(start)) throw new Error('Invalid monotonic clock');
   let state = { version: 1, configHash, startedAtMs: start, lastAtMs: start,
@@ -200,18 +205,26 @@ export function createPreparationLedger(options, { now = () => Number(process.hr
     snapshot() { const saved = copy(state); return { ...saved, checksum: hash(JSON.stringify(saved)) }; },
     report() { return { ...ledger.snapshot(), receipt: false, fullClosureQualified: false, executionAdmitted: false }; },
     async read(path, io) {
-      checkTime();
-      if (state.pending) { stop('overlapping-read'); throw new Error(state.reason); }
-      if (!canonicalInput(path)) { stop('noncanonical-input'); throw new Error(state.reason); }
-      const frontier = boundedFrontier([{ path }], { baseline, priorAdditions: state.additions, bound });
-      if (frontier.refusedEdge || baseline.length + frontier.additions.length > maxInputs) {
-        stop('input-limit'); throw new Error(state.reason);
+      let frontier;
+      try {
+        checkTime();
+        if (state.pending) { stop('overlapping-read'); throw new Error(state.reason); }
+        if (!canonicalInput(path)) { stop('noncanonical-input'); throw new Error(state.reason); }
+        frontier = boundedFrontier([{ path }], { baseline, priorAdditions: state.additions, bound });
+        if (frontier.refusedEdge || baseline.length + frontier.additions.length > maxInputs) {
+          stop('input-limit'); throw new Error(state.reason);
+        }
+      } catch (error) {
+        // A refusal is terminal even when no metadata/read callback was reached.
+        if (persist) await persist(ledger.snapshot());
+        throw error;
       }
       state.additions = frontier.additions;
       state.pending = { path, bytes: 0 };
       const chunks = [], digest = createHash('sha256');
       try {
         if (persist) { await persist(ledger.snapshot()); checkTime(); }
+        if (io.candidate !== undefined && io.candidate !== candidate) throw new Error('candidate-drift');
         const before = await io.stat(); checkTime();
         if (!before || !integer(before.size) || typeof before.identity !== 'string' || !before.identity
             || before.canonicalPath !== path) throw new Error('unbound-input-metadata');
@@ -241,13 +254,20 @@ export function createPreparationLedger(options, { now = () => Number(process.hr
       } catch (error) {
         // An I/O exception cannot establish whether the failing reader consumed bytes.
         if (!['byte-limit', 'unbound-input-metadata', 'input-drift', 'input-digest-drift',
-          'bounded-read-violation', 'elapsed-limit', 'clock-identity-or-order'].includes(error.message)) state.byteAccounting = 'unknown';
+          'bounded-read-violation', 'elapsed-limit', 'clock-identity-or-order', 'candidate-drift',
+          'candidate-input-unbound', 'input-path-alias', 'input-not-regular'].includes(error.message)) state.byteAccounting = 'unknown';
         stop(error.message); throw error;
       } finally {
-        state.pending = null;
-        if (persist) {
-          await persist(ledger.snapshot());
-          if (state.status !== 'STOPPED') checkTime();
+        try {
+          if (io.close) await io.close();
+        } catch (error) {
+          stop('input-close-failed'); throw error;
+        } finally {
+          state.pending = null;
+          if (persist) {
+            await persist(ledger.snapshot());
+            if (state.status !== 'STOPPED') checkTime();
+          }
         }
       }
     },
@@ -276,6 +296,87 @@ export async function openPreparationLedger(options, { store, now } = {}) {
   // Create-if-absent is also atomic: two first openers cannot both reset an attempt.
   if (!saved) await persist(ledger.snapshot());
   return ledger;
+}
+
+/** Bind revisions to one existing PG text artifact, using its atomic content CAS. */
+export function createArtifactPreparationStore({ slug, relPath, loadTextArtifact, compareAndSwapTextArtifact }) {
+  if (typeof slug !== 'string' || !slug || !canonicalInput(relPath)
+      || typeof loadTextArtifact !== 'function' || typeof compareAndSwapTextArtifact !== 'function') {
+    throw new Error('Canonical artifact store binding required');
+  }
+  const decode = (text, attemptId) => {
+    if (text === null) return null;
+    const row = JSON.parse(text);
+    if (row?.version !== 1 || row.attemptId !== attemptId || !integer(row.revision) || !row.snapshot) {
+      throw new Error('attempt-artifact-binding');
+    }
+    return row;
+  };
+  return {
+    async load(attemptId) {
+      const row = decode(await loadTextArtifact(slug, relPath), attemptId);
+      return row ? { revision: row.revision, snapshot: row.snapshot } : null;
+    },
+    async compareAndSwap(attemptId, expectedRevision, snapshot) {
+      const current = await loadTextArtifact(slug, relPath), row = decode(current, attemptId);
+      if ((row?.revision ?? null) !== expectedRevision) return { ok: false, revision: row?.revision ?? 0 };
+      const revision = (expectedRevision ?? -1) + 1;
+      const next = JSON.stringify({ version: 1, attemptId, revision, snapshot });
+      return { ok: await compareAndSwapTextArtifact(slug, relPath, current, next), revision };
+    },
+  };
+}
+
+/** Source preparation only. No reads occur at construction. Each file is opened
+ * after the ledger's durable pre-read guard, pinned to one descriptor and digest.
+ * Root/ordered input bindings are part of the same immutable attempt config.
+ */
+export async function openBoundPreparationLedger(options, { store, root, manifest, now } = {}) {
+  if (typeof root !== 'string' || !isAbsolute(root) || resolve(root) !== root
+      || !manifest || manifest.candidate !== options.candidate || !manifest.inputs
+      || typeof manifest.inputs !== 'object' || Array.isArray(manifest.inputs)) {
+    throw new Error('candidate-source-binding');
+  }
+  const entries = Object.entries(copy(manifest.inputs));
+  if (entries.some(([path, digest]) => !canonicalInput(path) || !/^[a-f0-9]{64}$/.test(digest))) {
+    throw new Error('candidate-input-binding');
+  }
+  const inputs = new Map(entries), candidate = manifest.candidate;
+  const ledger = await openPreparationLedger({ ...options,
+    sourceBinding: { root, inputsSha256: hash(JSON.stringify(entries)) } }, { store, now });
+  return {
+    snapshot: () => ledger.snapshot(), report: () => ledger.report(),
+    async read(path) {
+      let handle;
+      const file = canonicalInput(path) ? resolve(root, path) : root;
+      const io = {
+        candidate, expectedSha256: inputs.get(path),
+        async stat() {
+          if (!inputs.has(path)) throw new Error('candidate-input-unbound');
+          if (await realpath(root) !== root || await realpath(file) !== file) throw new Error('input-path-alias');
+          handle ??= await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+          const opened = await realpath(process.platform === 'linux' ? `/proc/self/fd/${handle.fd}` : file);
+          const stat = await handle.stat({ bigint: true }), current = await lstat(file, { bigint: true });
+          if (opened !== file || !current.isFile() || current.dev !== stat.dev || current.ino !== stat.ino) {
+            throw new Error('input-path-alias');
+          }
+          if (!stat.isFile()) throw new Error('input-not-regular');
+          return { canonicalPath: path, size: Number(stat.size),
+            identity: [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':') };
+        },
+        async readChunk({ offset, length }) {
+          if (!handle || !integer(offset) || !integer(length) || length < 1 || length > 65536) {
+            throw new Error('bounded-read-violation');
+          }
+          const bytes = Buffer.alloc(length);
+          const result = await handle.read(bytes, 0, length, offset);
+          return bytes.subarray(0, result.bytesRead);
+        },
+        async close() { if (handle) await handle.close(); },
+      };
+      return ledger.read(path, io);
+    },
+  };
 }
 
 /** A citation must identify an actual call in the pinned source, not a nearby journal span. */

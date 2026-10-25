@@ -129,6 +129,20 @@ describe('prospective preparation controls (no candidate census or execution)', 
     const io = input('known'); await expect(stale.read('known', io)).rejects.toThrow('attempt-state-conflict');
     expect(io.stat).not.toHaveBeenCalled(); expect(io.readChunk).not.toHaveBeenCalled();
   });
+  it('persists a pre-read terminal refusal before reopening the durable attempt', async () => {
+    const store = durableStore(), first = await openPreparationLedger(config, { store });
+    await expect(first.read('loader61', input('loader61'))).rejects.toThrow('input-limit');
+    const resumed = await openPreparationLedger(config, { store }), known = input('known');
+    await expect(resumed.read('known', known)).rejects.toThrow('input-limit');
+    expect(known.stat).not.toHaveBeenCalled(); expect(known.readChunk).not.toHaveBeenCalled();
+    expect((await store.load(config.attemptId))?.snapshot.status).toBe('STOPPED');
+  });
+  it('closes the real-reader seam when metadata rejects an oversized input', async () => {
+    const ledger = createPreparationLedger({ ...config, maxInputBytes: 2 });
+    const io = { ...input('known'), close: vi.fn(async () => {}) };
+    await expect(ledger.read('known', io)).rejects.toThrow('byte-limit');
+    expect(io.readChunk).not.toHaveBeenCalled(); expect(io.close).toHaveBeenCalledOnce();
+  });
   it('records pending access before the reader runs and stops after a simulated process loss', async () => {
     const store = durableStore(), first = await openPreparationLedger(config, { store }), io = input('known');
     io.readChunk.mockImplementation(async () => {
@@ -139,7 +153,12 @@ describe('prospective preparation controls (no candidate census or execution)', 
       expect(retry.stat).not.toHaveBeenCalled();
       return Buffer.from('abc');
     });
-    await first.read('known', io);
+    // Recovery persists a terminal stop; the original in-flight writer must
+    // lose its revision rather than overwrite that stop with a successful read.
+    await expect(first.read('known', io)).rejects.toThrow('attempt-state-conflict');
+    expect((await store.load(config.attemptId))?.snapshot).toMatchObject({
+      status: 'STOPPED', reason: 'interrupted-read', byteAccounting: 'unknown',
+    });
   });
   it('charges durable-store waits to the global deadline before payload access', async () => {
     let at = 0;

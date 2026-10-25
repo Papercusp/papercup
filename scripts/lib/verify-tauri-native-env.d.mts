@@ -28,9 +28,21 @@ export function nativeVerifierEnv(env: NodeJS.ProcessEnv, launch?: {
     [key: string]: string | undefined;
 };
 export function preflightNativeVerifier(repoRoot: any, env: any, spawn?: typeof spawnSync): void;
+/**
+ * Own a short-lived service for the exact tested checkout. The caller runs this helper in
+ * the same bounded systemd scope as its checker; neither compiler outlives readiness.
+ * A retained source must never silently ask the tower's fixed-root service or fall back.
+ * @template T
+ * @param {string} repoRoot
+ * @param {NodeJS.ProcessEnv} env
+ * @param {(env: NodeJS.ProcessEnv) => Promise<T>} check
+ * @returns {Promise<T>}
+ */
+export function withNativeVerifierTypeService<T>(repoRoot: string, env: NodeJS.ProcessEnv, check: (env: NodeJS.ProcessEnv) => Promise<T>): Promise<T>;
 export const desktopPortalNativeTiming: Readonly<{
     prepareEstimateMs: number;
     nativeTimeoutMs: number;
+    typecheckTimeoutMs: number;
     setupTimeoutMs: number;
     cleanupTimeoutMs: 60000;
 }>;
