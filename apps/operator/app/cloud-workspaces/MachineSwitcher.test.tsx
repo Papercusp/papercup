@@ -33,13 +33,24 @@ describe("persistent machine selection", () => {
     render(<MachineSwitcher localMode={localMode} onSelect={onSelect} />, {
       wrapper: withNuqsTestingAdapter({ searchParams: "?app=mail&ws=own", onUrlUpdate: update }),
     });
-    await vi.waitFor(() => expect(getBrowserMachineId()).toBe("a"));
+    const expected = localMode ? "local" : "a";
+    await vi.waitFor(() => expect(getBrowserMachineId()).toBe(expected));
     await vi.waitFor(() => expect(update).toHaveBeenCalled());
     const params = update.mock.calls.at(-1)![0].searchParams as URLSearchParams;
-    expect(params.get("desktopHost")).toBe("a");
+    expect(params.get("desktopHost")).toBe(expected);
     expect(params.get("app")).toBe("mail");
     expect(params.get("ws")).toBe("own");
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("preserves an explicitly selected remote machine in a local GUI", () => {
+    query.mockReturnValue({ data: rows, loading: false, error: null });
+    const update = vi.fn();
+    render(<MachineSwitcher localMode onSelect={vi.fn()} />, {
+      wrapper: withNuqsTestingAdapter({ searchParams: "?desktopHost=b&host=b", onUrlUpdate: update }),
+    });
+    expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value).toBe("b");
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("does not establish an implicit target from a refused inventory", () => {

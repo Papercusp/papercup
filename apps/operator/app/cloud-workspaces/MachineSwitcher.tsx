@@ -34,7 +34,7 @@ function AuthorizedMachineSwitcher({ localMode, onSelect, connectHref }: Machine
   const value = target.desktopHost ?? target.host ?? getBrowserMachineId() ?? null;
   const machines = (control.data ?? []).filter((row): row is WorkspaceHostControlRow =>
     row.kind === "workspace" && row.observedState !== "absent" && row.observedState !== "destroying");
-  const defaultMachine = preferredDesktopWorkspace(machines)?.id ?? (localMode ? LOCAL_DESKTOP_HOST : null);
+  const defaultMachine = localMode ? LOCAL_DESKTOP_HOST : preferredDesktopWorkspace(machines)?.id ?? null;
   useEffect(() => {
     if (value !== null || control.loading || control.error || !defaultMachine) return;
     // The visible default must also route workspace reads and launches. This
@@ -78,7 +78,7 @@ export function MachineSwitcherView({ localMode, value, rows, loading, error, on
 }) {
   const machines = rows.filter((row): row is WorkspaceHostControlRow => row.kind === "workspace"
     && row.observedState !== "absent" && row.observedState !== "destroying");
-  const selected = value ?? preferredDesktopWorkspace(machines)?.id ?? (localMode ? LOCAL_DESKTOP_HOST : "");
+  const selected = value ?? (localMode ? LOCAL_DESKTOP_HOST : preferredDesktopWorkspace(machines)?.id ?? "");
   const options = [
     ...(localMode ? [{ value: LOCAL_DESKTOP_HOST, label: "This computer" }] : []),
     ...machines.map((row) => ({ value: row.id, label: `${row.name} — ${row.observedState}` })),
