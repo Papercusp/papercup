@@ -5,7 +5,7 @@
 import { expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync,
   renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -15,7 +15,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { hostThroughPty, metaPathFor, handoffPathFor, readHostHandoffForParentPid,
-  resolveLinuxCodexStartupPid, readLinuxStartupCounters } from '../scripts/psu-pty-host.mjs';
+  resolveLinuxCodexStartupPid, readLinuxStartupCounters, controlWritesForAgent } from '../scripts/psu-pty-host.mjs';
 import { mintCarryRespawnArgs, codexThreadWriterHolder, codexThreadWriterLockPath,
   codexNativeIdForPty } from '../scripts/psu-launcher.mjs';
 import { launchIdentityAssumeHandoff, makeIdentityAssumeHostPort,
@@ -78,11 +78,13 @@ it('discovers a deferred handoff tool before invoking an already advertised exec
 });
 
 async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = false,
-  contended = false, preflight = false) {
+  contended = false, preflight = false, channelControls = false) {
     const root = mkdtempSync('/tmp/assume-native-journey-');
     const marker = { target: `TARGET_HISTORY_${randomUUID()}`, caller: `CALLER_HISTORY_${randomUUID()}`,
       checkpoint: `TARGET_CHECKPOINT_${randomUUID()}`, rival: `RIVAL_HISTORY_${randomUUID()}`,
-      loserProbe: `LOSER_COMMAND_${randomUUID()}`, loserResponse: `LOSER_RESPONSE_${randomUUID()}` };
+      loserProbe: `LOSER_COMMAND_${randomUUID()}`, loserResponse: `LOSER_RESPONSE_${randomUUID()}`,
+      channelInput: `TARGET_INPUT_${randomUUID()}`, channelResponse: `TARGET_OUTPUT_${randomUUID()}`,
+      channelHold: `TARGET_HOLD_${randomUUID()}` };
     const privateCallerEnv = { ASSUME_CALLER_TOOL_HISTORY: `CALLER_TOOL_HISTORY_${randomUUID()}`,
       ASSUME_CALLER_TRANSCRIPT: marker.caller, OPENAI_API_KEY: `fixture-only-${randomUUID()}`,
       PAPERCUSP_NATIVE_SESSION_ID: `caller-private-${randomUUID()}` };
@@ -98,6 +100,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
     let port = 0, issued = false, targetReady = false, returnIssued = false, targetProbed = false;
     const requests: Array<{ phase: string; actor: string; body: Row }> = [], errors: string[] = [], nativeResults: string[] = [];
     const toolCatalogs: Row[] = [];
+    const mcpRequests: Row[] = [], toolOutputs: Row[] = [];
     const activeExecutions = new Map<string, string>();
     const ownsPhase = (actor: string | null, execution: string | null) =>
       actor !== null && execution !== null && activeExecutions.get(actor) === execution &&
@@ -108,6 +111,8 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
     let releaseTarget!: () => void;
     let retireSeed!: () => Promise<void>;
     const targetGate = new Promise<void>(resolve => { releaseTarget = resolve; });
+    let controlRequested = false, releaseControl!: () => void;
+    const controlGate = new Promise<void>(resolve => { releaseControl = resolve; });
     const runs: Array<{ owner: string; signals: EventEmitter; done: Promise<number> }> = [];
     const callerIssued = new Set<string>();
     const race: Array<{ owner: string; receipt: Row; workId: string }> = [];
@@ -131,6 +136,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
     let real: Awaited<ReturnType<typeof import('../vitest-shims/identity-assume-production').productionAssumeFixture>> | undefined;
     let accepted: Row | undefined, returning: Row | undefined, targetWork = '', callerWork = '';
     const routed: Row[] = [];
+    const initialResponsibilities = new Map<string, Row>();
     const inspect = async (request: Row, afterExit = false, action = 'observe') => {
       if (real) return real.inspect(request, afterExit, action);
       const result = inspections.get(request.transitionKey);
@@ -149,6 +155,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         if (req.url?.split('?')[0] === '/mcp') {
           const query = new URL(req.url, 'http://localhost').searchParams;
           const actor = query.get('actor'), execution = query.get('execution');
+          mcpRequests.push({ phase, actor, method: body?.method });
           const host = new McpServer({ name: 'native-handoff-fixture', version: '1' }); hosts.push(host);
           host.registerTool('handoff_fixture', { inputSchema: {} }, async () => {
             if (phase !== 'caller' && phase !== 'target') throw new Error('Handoff outside an execution phase');
@@ -174,6 +181,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
               const registration = await real.register(owner, id, root, false);
               productionState.homes.set(String(registration), homes[key]);
               const workId = await real.assign(owner);
+              initialResponsibilities.set(owner, (await real.seedResponsibilities(owner, workId))!);
               await real.send(owner, 'CALLER_BEFORE_HANDOFF');
               if (preflight) {
                 // Keep the seeded native target running despite its terminal
@@ -257,6 +265,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
               expect(recovery).toMatchObject({ caller: receipt.preparation.caller,
                 transitionKey: receipt.transitionKey });
               expect(recovery.work.some(row => row.id === workId && row.checkpoint.includes(owner))).toBe(true);
+              expect(await real.responsibilitySnapshot(owners.target)).toEqual(initialResponsibilities.get(owners.target));
               await real.send(owners.target, 'DURING_HANDOFF');
               return { content: [{ type: 'text', text: JSON.stringify(accepted) }] };
             }
@@ -301,10 +310,20 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         if (!ownsPhase(actor, execution)) { finish('INACTIVE_NATIVE_EXECUTION'); return; }
         if (phase === 'seed') { finish(marker.target); return; }
         if (phase === 'return') { finish('CALLER_RETURNED'); return; }
+        if (channelControls && phase === 'target') {
+          const userInput = (body.input ?? []).filter((item: Row) => item.role === 'user')
+            .map((item: Row) => JSON.stringify(item)).join('\n');
+          if (userInput.includes(marker.channelHold)) {
+            controlRequested = true; await controlGate; finish('LATE_INTERRUPTED_OUTPUT'); return;
+          }
+          if (userInput.includes(marker.channelInput)) { finish(marker.channelResponse); return; }
+        }
         if (contended && phase === 'caller' && JSON.stringify(body).includes(marker.loserProbe)) {
           finish(marker.loserResponse); return;
         }
         const outputs = callOutputs(body.input);
+        toolOutputs.push(...outputs.map(row => ({ phase, actor, type: row.type,
+          callId: row.call_id, output: JSON.stringify(row.output ?? null).slice(0, 1800) })));
         if (real && phase === 'target' && outputs.some(row => row.call_id === 'handoff-target-return')) {
           finish('RETURN_NATIVE_COMPLETE'); return;
         }
@@ -313,6 +332,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         if (results.length) {
           nativeResults.push(JSON.stringify(results).slice(0, 1800));
           if (phase === 'target') { targetReady = true; await targetGate; }
+          if (channelControls && phase === 'target') { finish('TARGET_CHANNEL_READY'); return; }
           if (real && phase === 'target' && !returnIssued) { returningCall = true; }
           else { finish('HANDOFF_NATIVE_COMPLETE'); return; }
         }
@@ -381,6 +401,8 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           'const latest=()=>{try{const root=join(process.env.CODEX_HOME,"sessions");return readdirSync(root,{recursive:true})' +
             '.map(String).filter(p=>p.endsWith(".jsonl")).map(p=>JSON.parse(readFileSync(join(root,p),"utf8").split("\\n")[0]))' +
             '.sort((a,b)=>String(a.timestamp).localeCompare(String(b.timestamp))).at(-1)?.payload.id??null}catch{return null}};',
+          'process.on("message",message=>{if(message.resize){process.stdout.columns=message.resize.cols;' +
+            'process.stdout.rows=message.resize.rows;process.stdout.emit("resize")}});',
           'const identityAssume=makeIdentityAssumeHostPort({ownerId:process.env.PAPERCUSP_SID,inspect,reexecCode:75,' +
             'hostId:' + JSON.stringify(inherited?.hostId ?? null) + ',attachmentId:' + JSON.stringify(inherited?.attachmentId ?? null) +
             ',writeHandoff:(owner,record)=>{const path=writeHostHandoff(owner,record);' +
@@ -398,6 +420,8 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         child.stdout!.on('data', data => { output += data; }); child.stderr!.on('data', data => { output += data; });
         child.on('message', (message: any) => { if (message.handoff) orders.push(message.handoff); });
         signals.on('SIGTERM', () => child.kill('SIGTERM'));
+        signals.on('input', data => child.stdin!.write(data));
+        signals.on('resize', (cols, rows) => child.send({ resize: { cols, rows } }));
         const done = new Promise<number>((resolve, reject) => {
           child.once('error', reject); child.once('close', code => resolve(code ?? -1));
         });
@@ -420,7 +444,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         emitCompacted: () => null, onExit: () => {}, bridgeTty: false, io });
       const run = { owner: owners[key], signals, done }; runs.push(run); return run;
     };
-    const diagnostics = () => JSON.stringify({ phase, errors, nativeResults, toolCatalogs,
+    const diagnostics = () => JSON.stringify({ phase, errors, nativeResults, toolCatalogs, mcpRequests, toolOutputs,
       requests: requests.length, orders: orders.length,
       output: output.slice(-1200) });
     try {
@@ -433,7 +457,9 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       for (const [key, home] of Object.entries(homes)) {
         writeFileSync(join(home, 'AGENTS.md'), 'Isolated native context fixture persona.');
         writeFileSync(join(home, 'config.toml'),
-          `[mcp_servers.fixture]\nurl = "http://127.0.0.1:${port}/mcp?actor=${key}"\n`);
+          // Each journey needs the real MCP handler before its first tool call.
+          // Optional startup otherwise races the already available exec tool.
+          `[mcp_servers.fixture]\nrequired = true\nurl = "http://127.0.0.1:${port}/mcp?actor=${key}"\n`);
       }
       const seed = start('target', [...baseArgs(), 'Record the target history.']);
       await vi.waitFor(() => expect(output, diagnostics()).toContain(marker.target), { timeout: 20_000 });
@@ -450,6 +476,14 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         await real.checkpoint(owners.target, marker.checkpoint);
         await real.send(owners.target, 'BEFORE_HANDOFF');
         targetWork = await real.assign(owners.target);
+        const retained = (await real.seedResponsibilities(owners.target, targetWork))!;
+        expect(retained).toMatchObject({ ownerId: owners.target,
+          work: { id: targetWork, assignee: owners.target }, planClaim: { owner: owners.target },
+          directives: [{ recordedBy: owners.target, disposition: null }],
+          routines: [{ active: true, ownerId: owners.target }, { active: false, ownerId: owners.target }],
+          awaited: { subscriberId: owners.target }, fleet: { leaderOwnerId: owners.target },
+          subscriptions: [{ subscriber: owners.target }], historical: { from: owners.target } });
+        initialResponsibilities.set(owners.target, retained);
       }
       phase = 'caller'; issued = false;
       let caller = start('caller', [...baseArgs('caller'), marker.caller]);
@@ -612,6 +646,11 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       expect(orders).toHaveLength(1);
       if (real) {
         expect(routed).toHaveLength(1);
+        const retained = initialResponsibilities.get(owners.target)!;
+        expect(routed[0].responsibilities).toEqual(retained);
+        expect(await real.responsibilitySnapshot(owners.target)).toEqual(retained);
+        for (const value of [retained.planClaim.planSlug, retained.directives[0].text,
+          retained.fleet.slug, retained.subscriptions[0].target]) expect(targetInput).toContain(value);
         expect(routed[0]).toMatchObject({ ownerId: owners.target,
           assignment: { id: targetWork, assignee: owners.target, observedBy: owners.target } });
         expect(routed[0].messages).toHaveLength(2);
@@ -619,7 +658,9 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         expect((await real.pending(owners.caller)).map(row => row.summary)).toEqual(['CALLER_BEFORE_HANDOFF']);
         expect((await real.probe(owners.target, targetWork)).messages).toEqual([]);
         const after = await real.send(owners.target, 'AFTER_HANDOFF');
-        expect((await real.probe(owners.target, targetWork)).messages.map(row => row.id)).toEqual([after.msg_id]);
+        const afterProbe = await real.probe(owners.target, targetWork);
+        expect(afterProbe.messages.map(row => row.id)).toEqual([after.msg_id]);
+        expect(afterProbe.responsibilities).toEqual(retained);
         expect((await real.load(accepted!.preparation))?.state).toBe('handoff-accepted');
         expect((await real.pause(owners.caller))?.transitionKey).toBe(accepted!.transitionKey);
         expect((await real.commit(accepted!.preparation)).replayed).toBe(true);
@@ -667,6 +708,37 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
           expect(codexThreadWriterHolder(homes.target, runningTargetNative, { holderPid: nativePid }).pid).toBe(writer.pid);
         }
       }
+      if (channelControls) {
+        const submit = async (text: string) => {
+          for (const step of controlWritesForAgent({ mode: 'turn', data: text }, 'codex', {})) {
+            if (step.delayMs) await new Promise(resolve => setTimeout(resolve, step.delayMs));
+            if (!alive(targetMeta.ptyPid)) return;
+            targetRun.signals.emit('input', step.data);
+          }
+        };
+        releaseTarget();
+        await vi.waitFor(() => expect(output, diagnostics()).toContain('TARGET_CHANNEL_READY'), { timeout: 10_000 });
+        targetRun.signals.emit('resize', 147, 53);
+        const tty = readlinkSync(`/proc/${nativePid}/fd/0`);
+        expect(tty).toMatch(/^\/dev\/pts\/\d+$/);
+        await vi.waitFor(() => expect(execFileSync('stty', ['-F', tty, 'size'], { encoding: 'utf8' }).trim())
+          .toBe('53 147'), { timeout: 5000 });
+        await submit(marker.channelInput);
+        await vi.waitFor(() => expect(output, diagnostics()).toContain(marker.channelResponse), { timeout: 10_000 });
+        expect(transcript('target', runningTargetNative)).toContain(marker.channelInput);
+        expect(alive(original.nativePid)).toBe(false);
+        await submit(marker.channelHold);
+        await vi.waitFor(() => expect(controlRequested, diagnostics()).toBe(true), { timeout: 10_000 });
+        targetRun.signals.emit('input', '\x03');
+        await vi.waitFor(() => expect(transcript('target', runningTargetNative)).toContain('"type":"turn_aborted"'),
+          { timeout: 10_000 });
+        expect(alive(targetMeta.ptyPid)).toBe(true);
+        await submit('/exit');
+        await vi.waitFor(() => expect(alive(targetMeta.ptyPid), diagnostics()).toBe(false), { timeout: 10_000 });
+        expect(await targetRun.done).toBe(0);
+        expect(orders).toHaveLength(1);
+        return;
+      }
       releaseTarget();
       await vi.waitFor(() => expect(alive(targetMeta.ptyPid), diagnostics()).toBe(false), { timeout: 10_000 });
       expect(await targetRun.done).toBe(75);
@@ -690,6 +762,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         expect(originalReceipt?.callerReturn?.transitionKey).toBe(returning!.transitionKey);
         expect(await real.pause(owners.caller)).toBeNull();
         const restored = await real.probe(owners.caller, callerWork);
+        expect(restored.responsibilities).toEqual(initialResponsibilities.get(owners.caller));
         expect(restored.assignment).toMatchObject({ assignee: owners.caller, observedBy: owners.caller });
         expect(restored.messages).toHaveLength(1);
         expect((await real.probe(owners.caller, callerWork)).messages).toEqual([]);
@@ -708,6 +781,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       throw error;
     } finally {
       releaseCallers();
+      releaseControl();
       releaseTarget(); for (const run of runs) run.signals.emit('SIGTERM');
       await Promise.allSettled(runs.map(run => run.done));
       await Promise.allSettled(hosts.map(host => host.close()));
@@ -727,6 +801,9 @@ it.each(['native-resume', 'checkpoint'] as const)(
 
 it('admits exactly one of two installed native callers and preserves the losing caller responsibilities',
   () => nativeJourney('native-resume', true, true), 180_000);
+
+it('routes installed native target input output resize interrupt and exit through the inherited managed channel',
+  () => nativeJourney('native-resume', true, false, false, true), 180_000);
 
 it('previews one exact ended target without writes and refuses live, foreign and unknown custody',
   () => nativeJourney('native-resume', true, false, true), 180_000);

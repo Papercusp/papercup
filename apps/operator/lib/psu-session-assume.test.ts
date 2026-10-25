@@ -131,3 +131,67 @@ it('R-1 reject unrelated-window and env-only fake takeover', async () => {
     expect(f.ports.resume).not.toHaveBeenCalled();
   }
 });
+
+it.each([
+  { signal: 'SIGTERM', deliverExit: true },
+  { signal: 'SIGHUP', deliverExit: true },
+  { signal: 'SIGTERM', deliverExit: false },
+])('host completion after $signal requires native child exit (delivered=$deliverExit)', async ({ signal, deliverExit }) => {
+  const ownerId = 'test-assume-exit-' + randomUUID();
+  const signals = new EventEmitter();
+  const onExit = vi.fn();
+  let releaseExit!: () => void;
+  const exitGate = new Promise<void>((resolve) => { releaseExit = resolve; });
+  let observeExit!: () => void;
+  const nativeExit = new Promise<void>((resolve) => { observeExit = resolve; });
+  let output = '';
+  let childPid = 0;
+  const stdin = Object.assign(new EventEmitter(), { isTTY: false, resume() {}, pause() {} });
+  const stdout = Object.assign(new EventEmitter(), { isTTY: false,
+    write(data: string) { output += data; return true; } });
+  const done = hostThroughPty({ command: process.execPath,
+    args: ['-e', 'process.stdout.write("READY\\n");setInterval(()=>{},1000)'],
+    cwd: process.cwd(), ownerId, env: hermeticEnv({ PAPERCUSP_AGENT: 'node' }),
+    signalSource: signals, onExit, emitCompacted: () => null,
+    bridgeTty: false, io: { stdin, stdout },
+    spawnPty(file: string, args: string[], options: any, realSpawn: any) {
+      const child = realSpawn(file, args, options);
+      childPid = child.pid;
+      const subscribe = child.onExit.bind(child);
+      subscribe(() => observeExit());
+      return new Proxy(child, {
+        get(target, key) {
+          if (key === 'onExit') return (listener: any) => subscribe((event: any) => {
+            void exitGate.then(() => listener(event));
+          });
+          const value = Reflect.get(target, key, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    },
+  });
+  try {
+    await vi.waitFor(() => expect(output).toContain('READY'), { timeout: 5000 });
+    signals.emit(signal, signal);
+    await nativeExit;
+    expect(alive(childPid)).toBe(false);
+    // The child is gone but the host has not received its exit event yet.
+    // Signals and process absence alone must not publish completed custody.
+    const state = await Promise.race([
+      done.then(() => 'completed'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('waiting-for-exit'), 100)),
+    ]);
+    expect(state).toBe('waiting-for-exit');
+    expect(onExit).not.toHaveBeenCalled();
+    if (deliverExit) releaseExit();
+    const expectedCode = deliverExit ? 0 : 1;
+    expect(await done).toBe(expectedCode);
+    expect(onExit).toHaveBeenCalledWith(expectedCode, signal);
+    expect(stdin.listenerCount('data')).toBe(0);
+    expect(stdout.listenerCount('resize')).toBe(0);
+  } finally {
+    releaseExit();
+    signals.emit('SIGTERM');
+    await done;
+  }
+}, 15_000);

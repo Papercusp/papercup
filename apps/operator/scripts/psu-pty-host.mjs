@@ -16790,6 +16790,7 @@ export function hostThroughPty(o) {
      *  `{ code, go }` — never a bare boolean: the successor's marching orders are
      *  already on disk by the time this is set, and `go` is what actually leaves. */
     let reexecRequested = null;
+    const exitedChildren = new WeakSet();
     const cleanup = (code, signal = null) => {
       hooksObservationRecovery?.close();
       if (cleaned) return;
@@ -16815,6 +16816,19 @@ export function hostThroughPty(o) {
         appendHostEvent(ownerId, 'carry-rearm-cleanup-failed', hostErrorEvidence(error));
       }
       const endedSignal = signal ?? teardownSignal;
+      // Subscribe before sending the kill: signalling a process is not an
+      // observed exit. Natural exits have already crossed wireChildExit below.
+      const departingChild = child;
+      const childExit = exitedChildren.has(departingChild) ? Promise.resolve(true) : new Promise((resolve) => {
+        let subscription;
+        const finish = (observed) => {
+          clearTimeout(timer);
+          subscription?.dispose?.();
+          resolve(observed);
+        };
+        const timer = setTimeout(() => finish(false), RECYCLE_FORCE_KILL_WAIT_MS);
+        subscription = departingChild.onExit(() => finish(true));
+      });
       // A PTY leader can exit before its descendants. Reap the group while its
       // forkpty pgid is still unambiguous, then remove our signal listeners.
       killPtyProcessTree(child, 'SIGKILL');
@@ -16966,10 +16980,14 @@ export function hostThroughPty(o) {
         }
       };
       const finishExit = async () => {
-        // cleanup() sends SIGKILL but can finish before node-pty reaps the
-        // process. Identity replacement needs the native exit event AND an
-        // absent exact PID; sending a signal alone cannot authorize a spawn.
-        const callerExited = reexecRequested?.callerExit ? await reexecRequested.callerExit : true;
+        // Ordinary shutdown must wait too: done/onExit are consumed as a
+        // custody boundary by embedding callers. Identity replacement also
+        // requires the existing exact-PID absence check before spawning.
+        const childExited = await childExit;
+        const callerExited = childExited && (reexecRequested?.callerExit ? await reexecRequested.callerExit : true);
+        if (!childExited) {
+          appendHostEvent(ownerId, 'pty-child-exit-unverified', { childPid: departingChild.pid });
+        }
         await metadataClosed;
         releaseDiscovery();
         const [screenDrained, diagnosticsDrained] = await Promise.all([
@@ -17002,8 +17020,9 @@ export function hostThroughPty(o) {
         }
         // `resolve` keeps its numeric contract for embedding callers; the signal rides
         // the onExit channel, which is the one that reaches the adv_sessions record.
-        resolve(code ?? 0);
-        onExit(code ?? 0, endedSignal);
+        const confirmedCode = childExited ? (code ?? 0) : 1;
+        resolve(confirmedCode);
+        onExit(confirmedCode, endedSignal);
       };
       if (managedKickoff && !managedKickoffDisposition) {
         void acknowledgeManagedKickoff({
@@ -17095,6 +17114,7 @@ export function hostThroughPty(o) {
     wireChildExit = () => {
       const thisChild = child;
       thisChild.onExit(({ exitCode, signal }) => {
+        exitedChildren.add(thisChild);
         if (recycling) return; // an intended recycle kill — respawn re-wires; host lives on
         if (child !== thisChild) return; // a superseded child that died late — ignore
         // WI-10006574: a resumed CLI dying before its prompt is a failed resume —

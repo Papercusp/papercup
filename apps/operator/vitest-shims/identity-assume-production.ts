@@ -24,6 +24,12 @@ import { sendMessage, readInbox, appendAck, readAckedMsgIds } from
 import { resolveAgentIdentity } from '../../../packages/operator-core/lib/agent-tools/coordination/identity';
 import { getAdvSession, finalizeAdvSessionResume, reanchorAdvSessionNativeId } from '../../../packages/operator-core/lib/adv-sessions';
 import { cleanupScopedNativeFixtureDatabase } from './scoped-native-fixture-cleanup';
+import { acquireClaim, getClaim } from '../../../packages/operator-core/lib/plan-items/claims';
+import { registerAwait, listActiveAwaits } from '../../../packages/operator-core/lib/events/await/store';
+import { recordOwnerDirective, listOwnerDirectives } from '../../../packages/operator-core/lib/owner-directives';
+import { createFleetIfAbsent, getFleet } from '../../../packages/operator-core/lib/agent-fleets-store';
+import { createTopic, subscribeTopic, listMyTopicSubscriptions } from
+  '../../../packages/operator-core/lib/agent-tools/coordination/topics';
 
 export async function productionAssumeFixture(workspaceId: string,
   onDatabase: (sql: OrgTestDb['adminSql']) => void) {
@@ -42,8 +48,58 @@ export async function productionAssumeFixture(workspaceId: string,
   const preview = (owner: string, targetOwnerId: string, contextMode: AssumeRequest['contextMode']) =>
     scoped(() => prepareAssume({ ownerId: owner, workspaceId },
       { requestId: randomUUID(), targetOwnerId, contextMode }, preparationDeps));
+  const responsibilitySeeds = new Map<string, { workId: string; planSlug: string; routineIds: string[];
+    awaitId: number; directiveId: number; fleetSlug: string; historicalId: string }>();
+  const responsibilitySnapshot = (owner: string) => scoped(async () => {
+    const seed = responsibilitySeeds.get(owner);
+    if (!seed) return null;
+    const who = identity(owner);
+    const work = await getWorkItem(seed.workId, 'papercusp');
+    const claim = await getClaim(workspaceId, 'papercusp', seed.planSlug, 'P-001');
+    const directives = await listOwnerDirectives({ workspaceId, recordedBy: owner, open: true }, sql);
+    const routines = await sql`SELECT id, active, target_owner_id FROM harness_shared.routines
+      WHERE id IN (${seed.routineIds[0]}, ${seed.routineIds[1]}) ORDER BY active DESC`;
+    const awaited = (await listActiveAwaits(owner)).find(row => row.id === seed.awaitId);
+    const fleet = await getFleet(workspaceId, seed.fleetSlug, sql);
+    const historical = (await readInbox('test-assume-router')).find(row => row.msg_id === seed.historicalId);
+    return { ownerId: who.ownerId, work: { id: work?.id, assignee: work?.assignee },
+      planClaim: { planSlug: seed.planSlug, owner: claim?.owner },
+      directives: directives.filter(row => row.id === seed.directiveId).map(row => ({ id: row.id,
+        recordedBy: row.recordedBy, text: row.verbatimText, disposition: row.dispositionStatus })),
+      routines: routines.map(row => ({ id: row.id, active: row.active, ownerId: row.target_owner_id })),
+      awaited: awaited ? { id: awaited.id, subscriberId: awaited.subscriberId, eventKey: awaited.eventKey } : null,
+      fleet: { slug: seed.fleetSlug, leaderOwnerId: fleet?.leaderOwnerId },
+      subscriptions: (await listMyTopicSubscriptions(who)).map(row => ({ target: row.target_ref,
+        subscriber: row.subscriber_id })).sort((a, b) => a.target.localeCompare(b.target)),
+      historical: historical ? { id: historical.msg_id, from: historical.from, to: historical.to,
+        summary: historical.summary } : null };
+  });
   return {
-    sql, records, trace,
+    sql, records, trace, responsibilitySnapshot,
+    async seedResponsibilities(owner: string, workId: string) {
+      return scoped(async () => {
+        const who = identity(owner), planSlug = 'native-plan-' + randomUUID();
+        const claim = await acquireClaim({ workspaceId, harnessSlug: 'papercusp', planSlug,
+          itemId: 'P-001', owner, ttlSec: 1200 });
+        if (!claim.ok) throw new Error('Native responsibility plan claim refused');
+        const routineIds = [randomUUID(), randomUUID()];
+        for (const [index, id] of routineIds.entries()) await sql`INSERT INTO harness_shared.routines
+          (id, install_slug, name, workspace_id, target_owner_id, active, trigger_kind, trigger_config, target_role)
+          VALUES (${id}, 'papercusp', ${'native-duty-' + id}, ${workspaceId}, ${owner},
+            ${index === 0}, 'cron', '{}'::jsonb, 'su')`;
+        const awaited = await registerAwait({ subscriberId: owner, eventKey: 'native-duty:' + randomUUID(), once: false });
+        const directive = await recordOwnerDirective({ workspaceId, recordedBy: owner,
+          sourceTurnRef: randomUUID(), verbatimText: 'Retain native responsibilities for ' + owner }, sql);
+        const fleetSlug = 'native-fleet-' + randomUUID(), topic = 'native-topic-' + randomUUID();
+        await createFleetIfAbsent({ workspaceId, fleetSlug, leaderOwnerId: owner, owner }, sql);
+        await createTopic(who, { slug: topic, description: 'Native responsibility continuity' });
+        await subscribeTopic(who, topic);
+        const historical = await sendMessage(who, { to: ['test-assume-router'], summary: 'Authored before native handoff by ' + owner });
+        responsibilitySeeds.set(owner, { workId, planSlug, routineIds, awaitId: awaited.id,
+          directiveId: directive.id, fleetSlug, historicalId: historical.msg_id });
+        return responsibilitySnapshot(owner);
+      });
+    },
     async readOnlyPreview(owner: string, targetOwnerId: string, contextMode: AssumeRequest['contextMode']) {
       return database.adminSql.begin('read only', async tx => {
         onDatabase(tx as unknown as OrgTestDb['adminSql']);
@@ -149,7 +205,8 @@ export async function productionAssumeFixture(workspaceId: string,
         for (const row of unread) await appendAck(who, row.msg_id, row.from);
         const work = await getWorkItem(workId, 'papercusp');
         return { ownerId: who.ownerId, messages: unread.map(row => ({ id: row.msg_id, to: row.to, from: row.from })),
-          assignment: { id: work?.id, assignee: work?.assignee, observedBy: who.ownerId } };
+          assignment: { id: work?.id, assignee: work?.assignee, observedBy: who.ownerId },
+          responsibilities: await responsibilitySnapshot(owner) };
       });
     },
     pending: (owner: string) => scoped(async () => {
