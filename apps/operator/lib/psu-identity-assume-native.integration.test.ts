@@ -119,6 +119,15 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
   checks: { responseOrdering?: boolean; crashAfterStartup?: boolean;
     diagnosticProbe?: { error: Error; artifact: string } } = {}) {
     const root = mkdtempSync('/tmp/assume-native-journey-');
+    // Diagnostic treatment changes only the Responses item identity. Tool
+    // correlation, prompts, custody checks and deadlines stay identical.
+    const returnItemIdentity = process.env.PC_ASSUME_RETURN_ITEM_ID_MODE ?? 'duplicate';
+    if (!['duplicate', 'unique'].includes(returnItemIdentity)) throw new Error('Invalid return item identity mode');
+    const milestone = (stage: string, detail: Row = {}) => {
+      const path = process.env.PC_EXECUTED_SOURCE_MAP_OUT;
+      if (path) appendFileSync(path + '.native-milestones.jsonl', JSON.stringify({
+        journey: root, atMs: Date.now(), mode, production, returnItemIdentity, stage, ...detail }) + '\n');
+    };
     const marker = { target: `TARGET_HISTORY_${randomUUID()}`, caller: `CALLER_HISTORY_${randomUUID()}`,
       checkpoint: `TARGET_CHECKPOINT_${randomUUID()}`, rival: `RIVAL_HISTORY_${randomUUID()}`,
       loserProbe: `LOSER_COMMAND_${randomUUID()}`, loserResponse: `LOSER_RESPONSE_${randomUUID()}`,
@@ -220,6 +229,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
               returning = await real.commit(plan);
               if (returning.state !== 'handoff-accepted') throw new Error('Production return refused: ' +
                 JSON.stringify({ state: returning.state, reason: returning.reason, trace: real.trace }));
+              milestone('C-return-tool-result', { returning });
               return { content: [{ type: 'text', text: JSON.stringify(returning) }] };
             }
             if (real) {
@@ -456,6 +466,7 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         toolOutputs.push(...outputs.map(row => ({ atMs: Date.now(), phase, actor, type: row.type,
           callId: row.call_id, output: JSON.stringify(row.output ?? null).slice(0, 1800) })));
         if (real && phase === 'target' && outputs.some(row => row.call_id === 'handoff-target-return')) {
+          milestone('D-provider-received-return-result', { actor, execution, input: body.input });
           finish('RETURN_NATIVE_COMPLETE'); return;
         }
         const results = outputs.filter(row => row.call_id === `handoff-${phase}`);
@@ -468,7 +479,10 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
             callerResponseSeen = true;
             await callerCompletionGate;
           }
-          if (phase === 'target') { targetReady = true; await targetGate; }
+          if (phase === 'target') {
+            milestone('A-provider-received-target-result', { actor, execution, input: body.input });
+            targetReady = true; await targetGate;
+          }
           if (channelControls && phase === 'target') { finish('TARGET_CHANNEL_READY'); return; }
           if (real && phase === 'target' && !returnIssued) { returningCall = true; }
           else { finish('HANDOFF_NATIVE_COMPLETE'); return; }
@@ -487,14 +501,16 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
         if (!discovery && returningCall) returnIssued = true;
         if (contended && phase === 'caller' && !discovery) callerIssued.add(actor);
         const callId = returningCall ? 'handoff-target-return' : `handoff-${phase}`;
+        const itemId = returningCall && returnItemIdentity === 'unique' ? 'call-target-return' : `call-${phase}`;
         const call = discovery ? { id: 'discover', type: 'tool_search_call', execution: 'client',
           call_id: 'discover-handoff', status: 'completed', arguments: { query: 'handoff_fixture', limit: 1 } } : executor
-          ? { id: `call-${phase}`, type: 'custom_tool_call', namespace: executor.name, name: 'exec',
+          ? { id: itemId, type: 'custom_tool_call', namespace: executor.name, name: 'exec',
             call_id: callId, status: 'completed',
             input: "const tool=ALL_TOOLS.find(t=>t.name.endsWith('__handoff_fixture')); if(!tool)throw new Error('Missing handoff fixture');text(await tools[tool.name]({}));" }
-          : { id: `call-${phase}`, type: 'function_call', call_id: callId, status: 'completed',
+          : { id: itemId, type: 'function_call', call_id: callId, status: 'completed',
             ...(namespace ? { namespace: namespace.name } : {}), name: direct?.name ?? 'handoff_fixture', arguments: '{}' };
         const event = (type: string, payload: Row) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
+        if (returningCall) milestone('B-return-call-emitted', { actor, execution, call });
         res.end(event('response.output_item.added', { output_index: 0,
           item: { ...call, status: 'in_progress', ...(!discovery && executor ? { input: '' } : { arguments: discovery ? {} : '' }) } }) +
           event('response.output_item.done', { output_index: 0, item: call }) +
@@ -973,6 +989,10 @@ async function nativeJourney(mode: 'native-resume' | 'checkpoint', production = 
       }
       releaseTarget();
       await vi.waitFor(() => expect(alive(targetMeta.ptyPid), diagnostics()).toBe(false), { timeout: 10_000 });
+      milestone('E-target-native-exit-after-completion', { nativeSessionId: runningTargetNative,
+        transcript: transcript('target', runningTargetNative),
+        events: existsSync(eventLogPathForOwner(owners.target))
+          ? readFileSync(eventLogPathForOwner(owners.target), 'utf8') : null });
       expect(await targetRun.done).toBe(75);
       expect(orders).toHaveLength(2); expect(alive(targetMeta.ptyPid)).toBe(false);
       if (real) {
