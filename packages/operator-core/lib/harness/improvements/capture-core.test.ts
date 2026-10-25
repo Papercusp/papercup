@@ -114,6 +114,11 @@ function deps(
       created.push(input);
       return existing({ id: 'EI-100', title: input.title, kind: (input.kind as 'bug' | 'change') ?? 'bug' });
     },
+    markReviewBlocked: async (id) => ({
+      workItem: { id, state: 'blocked' },
+      requestedState: 'blocked',
+      appliedState: 'blocked',
+    }),
   };
 }
 
@@ -413,6 +418,11 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
       return existing({ id: 'EI-100', title: input.title, payload: input.payload });
     };
     const transitions: string[] = [];
+    const blockedWrites: { id: string; reason: string; by?: string }[] = [];
+    d.markReviewBlocked = async (id, reason, by) => {
+      blockedWrites.push({ id, reason, by });
+      return { workItem: { id, state: 'blocked' }, requestedState: 'blocked', appliedState: 'blocked' };
+    };
     d.setWorkItemStateWithAliasInfo = async (id, state) => {
       transitions.push(state);
       return { workItem: { id, state }, requestedState: state, appliedState: state };
@@ -436,7 +446,10 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
     expect(d.enterAgentReview).toHaveBeenCalledWith({
       id: 'EI-100', submittedBy: 'system:connector', harnessSlug: 'papercusp', workspaceId: 'ws',
     });
-    expect(transitions).toEqual(['blocked', 'open']);
+    expect(blockedWrites).toEqual([{
+      id: 'EI-100', reason: 'agent-review enrollment pending', by: 'system:connector',
+    }]);
+    expect(transitions).toEqual(['open']);
     expect(result).toMatchObject({ reviewRequired: true, reviewState: 'open' });
   });
 
@@ -470,10 +483,10 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
 
   it('creates with pending admission, then durably parks the row as blocked', async () => {
     const d = deps();
-    const transitions: { id: string; state: string; opts?: Record<string, unknown> }[] = [];
-    d.setWorkItemStateWithAliasInfo = async (id, state, opts) => {
-      transitions.push({ id, state, opts });
-      return { workItem: { id, state }, requestedState: state, appliedState: state };
+    const blockedWrites: { id: string; reason: string; by?: string }[] = [];
+    d.markReviewBlocked = async (id, reason, by) => {
+      blockedWrites.push({ id, reason, by });
+      return { workItem: { id, state: 'blocked' }, requestedState: 'blocked', appliedState: 'blocked' };
     };
 
     const result = await captureImprovement(reviewInput, d);
@@ -487,13 +500,9 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
         reason: 'awaiting-agent-review',
       },
     });
-    expect(transitions).toEqual([
-      {
-        id: 'EI-100',
-        state: 'blocked',
-        opts: { harness: 'papercusp', by: 'su-filer', reason: 'agent-review enrollment pending' },
-      },
-    ]);
+    expect(blockedWrites).toEqual([{
+      id: 'EI-100', reason: 'agent-review enrollment pending', by: 'su-filer',
+    }]);
     expect(result).toMatchObject({
       ok: true,
       created: true,
@@ -507,7 +516,7 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
     const merged: Record<string, unknown>[] = [];
     const d = {
       ...deps(),
-      setWorkItemStateWithAliasInfo: async () => {
+      markReviewBlocked: async () => {
         throw new Error('blocked write failed');
       },
       releaseIssue: async (id: string, opts?: { expectedAssignee?: string }) => {
@@ -538,12 +547,12 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
 
   it('does not apply the review park to bugs or observation-lane captures', async () => {
     const d = deps();
-    const writer = vi.fn(async (id: string, state: 'blocked' | 'open') => ({
-      workItem: { id, state },
-      requestedState: state,
-      appliedState: state,
+    const writer = vi.fn(async (id: string) => ({
+      workItem: { id, state: 'blocked' },
+      requestedState: 'blocked',
+      appliedState: 'blocked',
     }));
-    d.setWorkItemStateWithAliasInfo = writer;
+    d.markReviewBlocked = writer;
 
     await captureImprovement({ ...reviewInput, kind: 'bug' }, d);
     await captureImprovement({ ...reviewInput, lane: 'observation' }, d);
