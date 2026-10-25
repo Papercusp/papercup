@@ -184,7 +184,7 @@ describe('WI-6554700010027579 — committed native runtime asset inputs', () => 
 });
 
 describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown', () => {
-  function finishFixture(exitCode: number, options: { copyFails?: boolean; noArtifacts?: boolean; noHarness?: boolean } = {}) {
+  function finishFixture(exitCode: number, options: { copyFails?: boolean; stopFails?: boolean; cleanupFails?: boolean; noArtifacts?: boolean; noHarness?: boolean } = {}) {
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-retained-artifacts-'));
     const source = resolve(fixture, 'source snapshot/operator-source');
     const work = resolve(fixture, 'work');
@@ -209,11 +209,13 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
       'VH_RUN_DIR="$TEST_EVIDENCE"; ASSERTION_MODE=1; SIGNAL_EXIT_CODE=0; ISOLATED_PG_PID=""; BRIDGE_PID=""; TAURI_LAUNCH_PROVENANCE=test-provenance; VERIFY_SCOPE_BASE=test-scope',
       'release_verifier_disk_reservations() { :; }; log() { echo "$*" >&2; }',
       'vh_capture_phase_stop() { :; }; vh_step() { :; }; vh_exit() { echo "verdict:$1"; }; capture_isolated_pg_diagnostics() { :; }; reap_frozen_source_survivors() { :; }',
-      'write_stop_script() { printf "#!/bin/sh\\nexit 0\\n" > "$WORK/stop.sh"; chmod +x "$WORK/stop.sh"; }',
+      `write_stop_script() { printf '#!/bin/sh\\nexit ${options.stopFails ? 37 : 0}\\n' > "$WORK/stop.sh"; chmod +x "$WORK/stop.sh"; }`,
       'wait_owned_ports_free() { :; }; fed_release_port_locks() { :; }; display_lock_release() { :; }',
       'cleanup_assertion_script_snapshot() { :; }; cleanup_verifier_source_snapshot() { :; }',
       options.copyFails ? 'cp() { return 1; }' : '',
-      retention, bootRetention, cleanup, teardown, `(exit ${exitCode}); teardown`,
+      retention, bootRetention, cleanup,
+      options.cleanupFails ? 'cleanup_operator_source_snapshot() { return 1; }' : '',
+      teardown, `(exit ${exitCode}); teardown`,
     ].join('\n')], {
       encoding: 'utf8', timeout: 10_000,
       env: { ...process.env, TEST_SOURCE: source, TEST_WORK: work, TEST_EVIDENCE: options.noHarness ? '' : evidence },
@@ -244,6 +246,16 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
     } finally { rmSync(run.fixture, { recursive: true, force: true }); }
   });
 
+  it.each(['stopFails', 'cleanupFails'] as const)('records a failing terminal verdict when %s after passing assertions', failure => {
+    const run = finishFixture(0, { [failure]: true });
+    try {
+      expect(run.result.status, run.result.stderr).toBe(1);
+      expect(run.result.stdout).toContain('verdict:1');
+      expect(run.result.stdout).not.toContain('verdict:0');
+      expect(existsSync(run.source)).toBe(true);
+    } finally { rmSync(run.fixture, { recursive: true, force: true }); }
+  });
+
   it('retains artifacts with instrumentation disabled in the surviving work directory', () => {
     const run = finishFixture(0, { noHarness: true });
     try {
@@ -270,7 +282,7 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
     expect(stop).toContain('SOURCE_CLEANUP_FAILED=1');
     expect(stop).toContain('exit 1');
     const teardown = src.slice(src.indexOf('teardown() {'), src.indexOf('\nverify_assertion_input_integrity()'));
-    expect(teardown).toContain('"$WORK/stop.sh" >/dev/null 2>&1 || stop_rc=$?');
+    expect(teardown).toContain('"$WORK/stop.sh" >"$WORK/stop.log" 2>&1 || stop_rc=$?');
     expect(teardown).toContain('log "FATAL: generated stop script failed (exit=$stop_rc)"');
     expect(teardown).toContain('cleanup_operator_source_snapshot || {');
   });
