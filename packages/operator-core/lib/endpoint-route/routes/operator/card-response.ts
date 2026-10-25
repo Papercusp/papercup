@@ -13,6 +13,8 @@ import { findConverseCard } from '../../../agent-tools/operator/converse-card';
 import { cardResponseRateAllow } from '../../../card-response-rate-limit';
 import { getConversationById } from '../../../operator-conversations';
 import { defineTool } from '@papercusp/agent-mcp';
+import { isNativeCardCorrelationId } from '../../../su-session-native-card-identity';
+import { routeSuNativeCard } from '../../../su-session-owner-routing';
 
 interface Body {
   correlationId: string;
@@ -56,6 +58,19 @@ export default defineTool({
         { error: 'rate limit: 30 RPS per user' },
         { status: 429 },
       );
+    }
+
+    // Native cards answer a live SU callback, not a persisted conversation
+    // card. The agent-chat id and exact incarnation must both match before
+    // crossing the existing owner relay. Never fall back to a local waiter.
+    if (isNativeCardCorrelationId(body.correlationId)) {
+      if (body.workspaceId !== user.workspace_id) return Response.json({ error: 'card not found' }, { status: 404 });
+      try {
+        const result = await routeSuNativeCard({ workspaceId: user.workspace_id, agentChatId: ctx.params.id as string,
+          request: { kind: 'response', correlationId: body.correlationId, action: body.action, payload: body.payload } });
+        if (!result || result.kind !== 'response') return Response.json({ error: 'card not found' }, { status: 404 });
+        return result.ok ? Response.json({ ok: true }) : Response.json({ error: result.error }, { status: result.status });
+      } catch { return Response.json({ error: 'native card owner unavailable; reconnect and request a new card' }, { status: 503 }); }
     }
 
     const conversation = await getConversationById(ctx.params.id as string, user.workspace_id);

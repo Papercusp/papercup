@@ -110,6 +110,10 @@ describe('R16 frozen measurement units and efficacy', () => {
     expect(buildReuseSourcePopulation({ sources, addedLines, complete: true })).toEqual(first);
     expect(buildReuseSourcePopulation({ sources, addedLines: { ...addedLines, 'README.md': [1] }, complete: true }).lineCensusComplete).toBe(false);
     expect(buildReuseSourcePopulation({ sources, addedLines, complete: false }).callCensusComplete).toBe(false);
+    // Git added-line identities count LF, even when TypeScript treats a bare
+    // carriage return before the function as another source line.
+    expect(buildReuseSourcePopulation({ sources: [sources[0]!, { path: 'b.ts', source: `const prefix=0;\r${b}` }],
+      addedLines, complete: true }).duplicateAddedLines).toBe(29);
     // A lazy immutable reader must preserve the same independently enumerated
     // line and call population as the in-memory fixture, including repeats.
     const sourceMap = new Map(sources.map(s => [s.path, s.source]));
@@ -307,13 +311,22 @@ describe('R16 repeatable existing-ledger reads', () => {
         INSERT INTO harness_shared.agent_activity(workspace_id,owner_id,harness_slug,kind,phase,tool_name,status,detail,created_at)
         VALUES (${fx.workspaceId},'binary-owner','binary-producer','tool','post',${tool},'ok','{}'::jsonb,
           ${`2026-10-01T00:0${minute}:00.000Z`}::timestamptz)`;
-      const load = () => collectReuseSourcePopulation(root, at, now);
+      const phases: string[] = [];
+      const load = () => collectReuseSourcePopulation(root, at, now, tmpdir(), phase => phases.push(phase));
       const collected = await collectRecordedReuseMetrics(fx.admin, scope, load,
         [{ ref: 'fixture:complete-binary-activity', owner: 'binary-owner', start: at, end: now }]);
       expect(collected.population).toMatchObject({ addedNonGeneratedLines: null, duplicateAddedLines: null,
         lineCensusComplete: false, callCensusComplete: true, method: {
           binaryChangedPaths: ['asset.bin'], sourcePopulation: ['a.ts', 'b.ts'], addedLinePopulation: [{ path: 'b.ts', lines: [1] }],
+          cloneVersion: null, cloneCensus: { status: 'unknown', reason: 'binary-additions', computed: false },
         } });
+      expect(phases).toEqual(['source-tree', 'source-capture', 'source-diff', 'source-calls']);
+      const oracle = buildReuseSourcePopulation({ complete: true, addedLines: { 'b.ts': [1] }, sources: [
+        { path: 'a.ts', source: 'export function target() {}\n' },
+        { path: 'b.ts', source: 'import { target } from "./a"; target();\n' },
+      ] });
+      expect(collected.population.calls).toEqual(oracle.calls);
+      expect(collected.population.callCensusComplete).toBe(oracle.callCensusComplete);
       expect(collected.population.calls).toEqual([expect.objectContaining({ from: 'b.ts', to: 'a.ts', resolved: true })]);
       expect(collected.sourceRefs).toEqual(expect.arrayContaining([`git:${base}`, `git:${end}`]));
       expect(await measureRecordedReuseMetric(fx.admin, scope, 'redundancy')).toMatchObject({ verdict: 'unknown' });

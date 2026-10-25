@@ -43,13 +43,17 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule, workspac
     if (!sourceFile(path)) continue;
     const text = readSource(path);
     if (text === null || Buffer.byteLength(text) > 2_000_000) { stats.skippedFiles++; continue; }
-    const ast = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+    // No resolver operation uses parent pointers. Avoid an extra full-tree
+    // parent traversal and retain only the syntax needed by the existing walk.
+    const ast = ts.createSourceFile(path, text, { languageVersion: ts.ScriptTarget.Latest,
+      jsDocParsingMode: ts.JSDocParsingMode.ParseNone }, false);
     if (ast.parseDiagnostics.length) { stats.skippedFiles++; continue; }
     const sha256 = hash(text);
     const workspace = workspaces.find(entry => path.startsWith(entry.dir + '/'));
     const manifest = workspace ? manifestProof(workspace.dir + '/package.json', readSource(workspace.dir + '/package.json')) : null;
     const unit = { path, sha256, workspace, manifest, locals: new Map(), imports: new Map(), exports: new Map(), reexports: [], stars: [], shadows: new Set(), calls: [] };
     const site = node => { const at = ast.getLineAndCharacterOfPosition(node.getStart(ast)); return { path, line: at.line + 1, column: at.character + 1, sha256 }; };
+    const topDeclarations = new Set(ast.statements);
     for (const node of ast.statements) {
       const exported = node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword);
       const isDefault = node.modifiers?.some(m => m.kind === ts.SyntaxKind.DefaultKeyword);
@@ -69,6 +73,7 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule, workspac
           unit.reexports.push({ name: part.name.text, target, from: (part.propertyName ?? part.name).text, local: !node.moduleSpecifier });
       }
       const declarations = ts.isVariableStatement(node) ? node.declarationList.declarations : [node];
+      for (const decl of declarations) topDeclarations.add(decl);
       for (const decl of declarations) {
         if (!decl.name || !ts.isIdentifier(decl.name) || !(ts.isVariableDeclaration(decl) || ts.isFunctionDeclaration(decl)
           || ts.isClassDeclaration(decl) || ts.isInterfaceDeclaration(decl) || ts.isTypeAliasDeclaration(decl) || ts.isEnumDeclaration(decl))) continue;
@@ -86,8 +91,7 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule, workspac
     const walk = node => {
       if ((ts.isParameter(node) || ts.isVariableDeclaration(node) || ts.isBindingElement(node)
         || ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name) {
-        const top = ast.statements.some(statement => statement === node || ts.isVariableStatement(statement) && statement.declarationList.declarations.includes(node));
-        if (!top) for (const name of identifiers(node.name)) unit.shadows.add(name);
+        if (!topDeclarations.has(node)) for (const name of identifiers(node.name)) unit.shadows.add(name);
       }
       if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
         const expression = node.expression;

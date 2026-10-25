@@ -33,6 +33,7 @@ export type ReuseSourcePhase = 'source-tree' | 'source-capture' | 'source-diff' 
 export function buildReuseSourcePopulation(input: {
   addedLines: Readonly<Record<string, readonly number[]>>;
   complete: boolean;
+  binaryChangedPaths?: readonly string[];
   onProgress?: (phase: ReuseSourcePhase) => void;
 } & ({ sources: readonly { path: string; source: string }[] } | {
   sourcePaths: readonly string[];
@@ -48,17 +49,21 @@ export function buildReuseSourcePopulation(input: {
     if (lines.some(n => !Number.isSafeInteger(n) || n < 1)) throw new Error('Positive added line identities required');
     return [path, [...new Set(lines)].sort((a, b) => a - b)] as const;
   }));
+  // An actual binary diff makes both line counts unknowable. D035 permits
+  // omitting this otherwise unused clone census; calls retain the full cohort.
+  const binary = (input.binaryChangedPaths?.length ?? 0) > 0;
   const index = new CloneIndex({ includeNear: false });
   const addedByFunction = new Map<string, number[]>();
-  input.onProgress?.('source-clones');
-  for (const path of paths.filter(path => /\.tsx?$/.test(path))) {
+  if (!binary) input.onProgress?.('source-clones');
+  for (const path of binary ? [] : paths.filter(path => /\.tsx?$/.test(path))) {
     const source = readSource(path);
     const { file } = index.update({ path, source });
     const lineStarts = [0], lines = added.get(path) ?? [];
     for (let i = 0; i < source.length; i++) if (source.charCodeAt(i) === 10) lineStarts.push(i + 1);
     for (const fn of file.functions) {
+      const first = lowerBound(lineStarts, fn.start + 1);
       const end = lowerBound(lineStarts, Math.max(fn.start, fn.end - 1) + 1);
-      addedByFunction.set(fn.id, lines.slice(lowerBound(lines, fn.line), lowerBound(lines, end + 1)));
+      addedByFunction.set(fn.id, lines.slice(lowerBound(lines, first), lowerBound(lines, end + 1)));
     }
   }
   const duplicated = new Set<string>();
@@ -74,14 +79,16 @@ export function buildReuseSourcePopulation(input: {
   input.onProgress?.('source-calls');
   const snapshot = buildSymbolSnapshot({ files, readSource,
     resolveModule: (path, specifier) => relativeSymbolModule(path, specifier, fileSet), includeCallCensus: true });
-  return { addedNonGeneratedLines: [...added.values()].reduce((n, lines) => n + lines.length, 0),
-    duplicateAddedLines: duplicated.size,
-    lineCensusComplete: input.complete && index.getFiles().every(file => file.status === 'indexed' || file.status === 'excluded')
+  return { addedNonGeneratedLines: binary ? null : [...added.values()].reduce((n, lines) => n + lines.length, 0),
+    duplicateAddedLines: binary ? null : duplicated.size,
+    lineCensusComplete: !binary && input.complete && index.getFiles().every(file => file.status === 'indexed' || file.status === 'excluded')
       && [...added.keys()].every(path => /\.tsx?$/.test(path)
       && index.getFile(path)?.status === 'indexed'),
     calls: (snapshot.callCensus ?? []) as ReuseMetricPopulation['calls'],
     callCensusComplete: input.complete && snapshot.stats.skippedFiles === 0 && !snapshot.stats.truncated,
-    method: { cloneVersion: index.version, callKnowledge: snapshot.knowledge,
+    method: { cloneVersion: binary ? null : index.version,
+      cloneCensus: binary ? { status: 'unknown', reason: 'binary-additions', computed: false }
+        : { status: 'computed', computed: true }, callKnowledge: snapshot.knowledge,
       sourcePopulation: [...paths].sort(), addedLinePopulation: [...added].map(([path, lines]) => ({ path, lines: [...lines].sort((a,b) => a-b) })),
       limitations: snapshot.limitations } };
 }
@@ -199,8 +206,9 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
       for (const stat of stats) {
         const first = stat.indexOf('\t'), second = stat.indexOf('\t', first + 1);
         const path = stat.slice(second + 1), added = stat.slice(0, first), removed = stat.slice(first + 1, second);
-        if (first < 0 || second < 0 || !batch.includes(path) || seen.has(path))
+        if (first < 0 || second < 0 || seen.has(path))
           throw new Error('Incomplete Git diff identity population');
+        if (!batch.includes(path)) throw new Error('Incomplete Git diff identity population');
         seen.add(path);
         if (added === '-' && removed === '-') { binaryChangedPaths.push(path); continue; }
         const count = Number(added);
@@ -211,9 +219,23 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
         else modified.set(path, count);
       }
       if (seen.size !== batch.length) throw new Error('Incomplete Git diff identity population');
-      await readDiffs([...modified.keys()], modified);
+      // Numstat is compact; only modified textual patches need small batches.
+      const modifiedPaths = [...modified.keys()];
+      const chunks = Array.from({ length: Math.ceil(modifiedPaths.length / 128) }, (_, i) => modifiedPaths.slice(i * 128, (i + 1) * 128));
+      for (const chunk of chunks) await readDiffs(chunk, modified);
     };
-    const chunks = Array.from({ length: Math.ceil(paths.length / 128) }, (_, i) => paths.slice(i * 128, (i + 1) * 128));
+    // Preserve the exact eligible path set while avoiding both repeated tree
+    // traversals for tiny chunks and diffing excluded large generated files.
+    const chunks: string[][] = [];
+    let batch: string[] = [], pathBytes = 0;
+    for (const path of paths) {
+      const bytes = Buffer.byteLength(path) + 1;
+      if (batch.length && (batch.length >= 4096 || pathBytes + bytes > 256 * 1024)) {
+        chunks.push(batch); batch = []; pathBytes = 0;
+      }
+      batch.push(path); pathBytes += bytes;
+    }
+    if (batch.length) chunks.push(batch);
     let nextChunk = 0;
     const diffs = await Promise.allSettled(Array.from({ length: Math.min(4, chunks.length) }, async () => {
       while (nextChunk < chunks.length) await readChanges(chunks[nextChunk++]!);
@@ -224,7 +246,7 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
     const orderedAddedLines = Object.fromEntries(paths.filter(path => addedLines[path]).map(path => [path, addedLines[path]!]));
     const population = buildReuseSourcePopulation({ sourcePaths: [...sourceFiles.keys()],
       readSource: path => readFileSync(sourceFiles.get(path)!, 'utf8'),
-      addedLines: orderedAddedLines, complete: !tree.some(s => s.kind === 'commit'), onProgress });
+      addedLines: orderedAddedLines, complete: !tree.some(s => s.kind === 'commit'), binaryChangedPaths, onProgress });
     return { ...population,
       addedNonGeneratedLines: binaryChangedPaths.length ? null : population.addedNonGeneratedLines,
       duplicateAddedLines: binaryChangedPaths.length ? null : population.duplicateAddedLines,

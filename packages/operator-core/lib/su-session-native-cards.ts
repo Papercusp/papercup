@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { cancelPendingCardsForRun, registerCard, resolveCardResponse } from '@papercusp/agent-mcp';
 import type { CanUseTool, OnElicitation, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
 import { nativeFormFields } from './su-session-native-form';
+import { nativeCardCorrelationId } from './su-session-native-card-identity';
 import { approvalCardText, displayPath, humanToolName } from './su-session-approval-display';
 import type { SuSessionEventInput } from './su-session-host';
 import type { RpcFrame } from './su-session-stdio-peer';
@@ -158,6 +159,7 @@ export class SuNativeCards {
     const dataSchema = baseSchema.refine(payload => !input?.validate || input.validate('picks' in payload
         ? payload.picks.map(pick => choices!.find(choice => choice.id === pick)!.label) : [payload.value]), 'Invalid response');
     const card = registerCard({ workspaceId: this.workspaceId, runId: this.runId,
+      correlationId: nativeCardCorrelationId(this.runId),
       spec: { prompt, dataSchema, presentation, privateLink: input?.privateLink,
         allowDecline: true, timeoutMs: this.options.requestTimeoutMs ?? 300_000 } });
     const cancel = () => { resolveCardResponse({ correlationId: card.correlationId, action: 'cancel', expectedWorkspaceId: this.workspaceId }); };

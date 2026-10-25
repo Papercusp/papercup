@@ -39,6 +39,26 @@ describe('precomputed symbol snapshot', () => {
     expect(result.symbols.find((x: { name: string }) => x.name === 'work')?.callers).toHaveLength(1);
     expect(result.symbols.find((x: { name: string }) => x.name === 'arrow')?.callers).toHaveLength(1);
   });
+  it('distinguishes top-level declarations from nested shadow bindings', () => {
+    const result = build({
+      'target.ts': 'export function target() {}',
+      'top.ts': 'export const local=()=>{}; local();',
+      'nested.ts': 'import { target } from "./target"; { const target=()=>{}; target(); } target();',
+      'binding.ts': 'import { target } from "./target"; function run({target}: any) { target(); } target();',
+      'class.ts': 'import { target } from "./target"; function run() { class target {} new target(); } target();',
+    });
+    expect(result.symbols.find((x: { name: string }) => x.name === 'local')?.callers).toHaveLength(1);
+    expect(result.symbols.find((x: { name: string }) => x.name === 'target')?.callers).toEqual([]);
+    expect(result.stats).toMatchObject({ files: 5, skippedFiles: 0, resolvedCalls: 1, unresolvedCalls: 6, truncated: false });
+  });
+  it('keeps comment-only JSDoc syntax out of the runtime call census', () => {
+    const result = build({
+      'target.ts': '/** @template {unknown} T\n * @param {{value: T}} input\n * target(); import("./missing");\n */\nexport function target(input: unknown) {}',
+      'use.ts': 'import { target } from "./target"; /** @type {ReturnType<typeof target>} */ const value=target(1);',
+    });
+    expect(result.stats).toMatchObject({ files: 2, skippedFiles: 0, resolvedCalls: 1, unresolvedCalls: 0, truncated: false });
+    expect(result.symbols[0].callers).toEqual([expect.objectContaining({ path: 'use.ts', spelling: 'target' })]);
+  });
   it('binds caller workspace names to maintained package manifests, including nested workspaces', () => {
     const sources: Record<string, string> = {
       'lib/target.ts': 'export function target() {}',
