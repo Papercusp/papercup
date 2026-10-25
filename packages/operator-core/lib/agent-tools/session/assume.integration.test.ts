@@ -24,7 +24,7 @@ import { runWithWorkspace } from '../../workspace-als';
 import { persistControlAnchor, type ControlAnchorState } from '../coordination/control-anchor';
 import {
   assumePreparationFingerprint, assumePreparationSchema, assumeTransitionKey,
-  type AssumePreparation, type AssumeTransitionReceipt,
+  type AssumePreparation, type AssumeTransitionReceipt, type AssumeExecutionObservation,
 } from '../../session-assume';
 
 let database: OrgTestDb;
@@ -72,6 +72,18 @@ function receiptFixture(): { plan: AssumePreparation; receipt: AssumeTransitionR
   plan.target.binding.coordOwnerId = plan.target.ownerId;
   return { plan, receipt: { transitionKey: assumeTransitionKey(plan), preparationFingerprint: assumePreparationFingerprint(plan),
     preparation: plan, state: 'prepared', updatedAt: now, durable: true } };
+}
+
+function observationFixture(receipt: AssumeTransitionReceipt): AssumeExecutionObservation {
+  const { caller, target } = receipt.preparation;
+  return { transitionKey: receipt.transitionKey, observedAt: receipt.updatedAt + 1,
+    hostId: caller.hostId, attachmentId: caller.attachmentId, callerNativePid: caller.nativePid,
+    callerExited: true, targetOwnerId: target.ownerId, targetNativeSessionId: target.nativeSessionId,
+    backend: target.backend, contextSha256: target.context.sha256,
+    nativePid: 102, nativeProcessStart: 'fixture-native-start', nativeWriterPids: [102],
+    directedMessage: { id: 'fixture-directed-probe', recipient: target.ownerId,
+      consumedBy: target.ownerId, consumptions: 1 },
+    assignment: { id: 'fixture-routed-work', assignee: target.ownerId, observedBy: target.ownerId } };
 }
 
 async function exactReturnFixture() {
@@ -122,7 +134,7 @@ async function exactReturnFixture() {
     preparationFingerprint: assumePreparationFingerprint(returning) };
   await returnStore.claim(returnReceipt);
   await returnStore.save({ ...returnReceipt, state: 'handoff-accepted' });
-  expect((await acquireAdvSessionResume(a.id, key, 120, 300, undefined, a.pin)).acquired).toBe(true);
+  expect((await acquireAdvSessionResume(a.id, key, 120, 300, undefined, false, a.pin)).acquired).toBe(true);
   expect(await finalizeAdvSessionResume(a.id, key)).toBe(true);
   const [row] = await fixture.admin`SELECT started_at::text AS incarnation FROM harness_shared.adv_sessions WHERE id = ${a.id}`;
   const caller = { ...original.caller, incarnation: row.incarnation as string,
@@ -131,7 +143,7 @@ async function exactReturnFixture() {
 }
 
 describe('session:assume production receipt adapter (real PG)', () => {
-  it('restores the exact returning caller at its new finalized incarnation and refuses replay', async () => {
+  it('R-5 caller return reference resumes exactly once and rejects stale replay', async () => {
     const f = await exactReturnFixture();
     const deps = { readCaller: async () => f.caller };
     expect(await completeAssumeCallerReturn(f.returning, deps)).toBe(true);
@@ -198,7 +210,7 @@ describe('session:assume production receipt adapter (real PG)', () => {
     expect(brief.control_state.lifecycle).toEqual({ shutdown: { at: '2026-01-01T00:00:00Z', by: 'fixture' } });
   });
 
-  it('quiesces and restores caller loops and plan claims while retaining awaits and target wake sources', async () => {
+  it('R-5 caller wakes quiesce while target wakes remain live', async () => {
     const { plan } = receiptFixture();
     const loopId = randomUUID(), targetLoopId = randomUUID();
     for (const [id, owner] of [[loopId, plan.caller.ownerId], [targetLoopId, plan.target.ownerId]]) {
@@ -375,7 +387,7 @@ describe('session:assume production receipt adapter (real PG)', () => {
     await expect(readAssumeCallerCheckpoint(plan, recovery)).rejects.toThrow('assume-caller-recovery-changed');
   });
 
-  it('pins the checkpoint body revision in the exact workspace and rejects a stale body with a recent attestation', async () => {
+  it('R-3 checkpoint selection pins revision hash and fresh context', async () => {
     const ownerId = `su-checkpoint-${randomUUID()}`;
     const scope = loopScope('fixture-harness', ownerId);
     const startedAt = new Date(Date.now() - 60_000).toISOString();
@@ -388,12 +400,21 @@ describe('session:assume production receipt adapter (real PG)', () => {
     await fixture.admin`UPDATE harness_shared.carry_notes SET updated_ts = ${Date.now() + 5_000}
       WHERE workspace_id = ${workspaceId} AND scope = ${scope}`;
     expect(await readAssumeCheckpoint(target)).toEqual(pin);
+    // The deliberately future attestation above must be restored before a real
+    // body write: the carry writer correctly rejects an older write watermark.
+    await fixture.admin`UPDATE harness_shared.carry_notes SET updated_ts = ${Date.now() - 1}
+      WHERE workspace_id = ${workspaceId} AND scope = ${scope}`;
+    expect(await setCarryNote({ scope, workspaceId }, 'a different target-owned checkpoint'))
+      .toBe('a different target-owned checkpoint');
+    const changed = await readAssumeCheckpoint(target);
+    expect(changed?.sha256).not.toBe(pin?.sha256);
+    expect(changed?.revision).not.toBe(pin?.revision);
     await fixture.admin`UPDATE harness_shared.carry_notes SET body_ts = ${Date.now() - 120_000}
       WHERE workspace_id = ${workspaceId} AND scope = ${scope}`;
     expect(await readAssumeCheckpoint(target)).toBeNull();
   });
 
-  it('admits one request winner and fences a stale receipt writer without adding its audit', async () => {
+  it('R-11 takeover audit retains caller target authorization and terminal provenance', async () => {
     const { plan, receipt } = receiptFixture();
     const stores = [createAssumeReceiptStore(plan), createAssumeReceiptStore(plan)];
     const claims = await Promise.all(stores.map(store => store.claim(receipt)));
@@ -418,7 +439,55 @@ describe('session:assume production receipt adapter (real PG)', () => {
        WHERE workspace_id = ${workspaceId} AND body #>> '{sessionAssume,transitionKey}' = ${receipt.transitionKey}
     `;
     expect(Number(count)).toBe(1);
+    const terminal = { ...accepted, state: 'target-verified' as const,
+      observation: observationFixture(accepted), updatedAt: accepted.updatedAt + 1 };
+    await winner.save(terminal);
+    const history = await fixture.admin<{ body: Record<string, any> }[]>`
+      SELECT body FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${workspaceId} AND body #>> '{sessionAssume,transitionKey}' = ${receipt.transitionKey}
+       ORDER BY body ->> 'ts', body ->> 'msg_id'
+    `;
+    expect(history).toHaveLength(2);
+    expect(history[0].body.sessionAssume).toEqual(accepted);
+    expect(history[1].body).toMatchObject({ from: plan.caller.ownerId, category: 'session-assume-audit',
+      sessionAssume: { ...terminal, preparation: { caller: plan.caller,
+        target: plan.target, authorizationRef: plan.authorizationRef } } });
   });
+
+  it.each(['refused', 'target-verified', 'rolled-back'] as const)(
+    'R-11 refused verified and rolled-back outcomes remain append-only: %s', async state => {
+      const { plan, receipt } = receiptFixture();
+      const store = createAssumeReceiptStore(plan);
+      await store.claim(receipt);
+      const prior = { ...receipt, state: 'handoff-requested' as const, updatedAt: receipt.updatedAt + 1 };
+      await store.save(prior);
+      const terminal = { ...receipt, state, updatedAt: receipt.updatedAt + 2,
+        ...(state === 'target-verified' ? { observation: observationFixture(prior) } : {}) };
+      await store.save(terminal);
+      await store.save(terminal); // acknowledgement replay must not duplicate history
+      const history = await fixture.admin<{ body: { sessionAssume: AssumeTransitionReceipt } }[]>`
+        SELECT body FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${workspaceId} AND body #>> '{sessionAssume,transitionKey}' = ${receipt.transitionKey}
+         ORDER BY body ->> 'ts', body ->> 'msg_id'
+      `;
+      expect(history.map(row => row.body.sessionAssume)).toEqual([prior, terminal]);
+      expect(await createAssumeReceiptStore(plan).load()).toEqual(terminal);
+      // A stale writer must neither overwrite the terminal receipt nor append a
+      // conflicting audit. This checks the database CAS, not an in-memory log.
+      const stale = createAssumeReceiptStore(plan);
+      await stale.load();
+      const newer = { ...terminal, updatedAt: terminal.updatedAt + 1 };
+      await store.save(newer);
+      await expect(stale.save({ ...terminal, state: 'indeterminate' }))
+        .rejects.toThrow('assume-receipt-changed');
+      const after = await fixture.admin<{ body: { sessionAssume: AssumeTransitionReceipt } }[]>`
+        SELECT body FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${workspaceId} AND body #>> '{sessionAssume,transitionKey}' = ${receipt.transitionKey}
+         ORDER BY body ->> 'ts', body ->> 'msg_id'
+      `;
+      expect(after.map(row => row.body.sessionAssume)).toEqual([prior, terminal, newer]);
+    },
+  );
 
   it('rolls back the mutable receipt when its append-only audit cannot commit', async () => {
     const { plan, receipt } = receiptFixture();
@@ -521,7 +590,7 @@ describe('session:assume existing resume reservation (real PG)', () => {
     expect(await adapter.checkCustody(plan)).toBe(false);
   });
 
-  it('serializes different caller keys on the exact same ended incarnation', async () => {
+  it('R-4 two callers race one target with one unchanged loser', async () => {
     const { id, pin } = await target();
     const keys = ['caller-a', 'caller-b'];
     const results = await Promise.all(keys.map(key =>

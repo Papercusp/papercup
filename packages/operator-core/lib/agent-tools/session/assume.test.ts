@@ -137,6 +137,24 @@ describe('session:assume preparation and exact custody', () => {
     expect(await validateAssume(actor, result.token, f.deps)).toEqual({ ok: false, code: 'target-changed' });
   });
 
+  it('R-3 native resume preserves exact conversation and backend', async () => {
+    const f = fixture();
+    const result = await prepared(f);
+    expect(result.preparation.target).toMatchObject({
+      ownerId: f.target.ownerId, nativeSessionId: 'target-native',
+      executionNativeSessionId: 'target-native', backend: 'codex',
+      context: { mode: 'native-resume', ref: 'target-native', sha256: hash, revision: 'transcript-7' },
+    });
+    // A different native conversation must require a new preparation even when
+    // the public identity and checkpoint bytes happen to be identical.
+    f.target.nativeSessionId = 'other-conversation';
+    f.target.executionNativeSessionId = 'other-conversation';
+    f.target.binding.sessionId = 'other-conversation';
+    f.target.context.ref = 'other-conversation';
+    expect(await validateAssume(actor, result.token, f.deps))
+      .toEqual({ ok: false, code: 'target-changed' });
+  });
+
   it('R-3 unavailable corrupt stale and incompatible context refuses without fallback', async () => {
     const f = fixture();
     f.target.context.mode = 'checkpoint';
@@ -183,6 +201,7 @@ describe('session:assume preparation and exact custody', () => {
 function transitionFixture() {
   let stored: AssumeTransitionReceipt | null = null;
   const effects: string[] = [];
+  const writes: AssumeTransitionReceipt[] = [];
   const deps: AssumeTransitionDeps = {
     now: () => 2_000,
     claim: vi.fn(async initial => {
@@ -190,7 +209,11 @@ function transitionFixture() {
       stored = structuredClone(initial);
       return { won: true, prior: null };
     }),
-    save: vi.fn(async receipt => { effects.push(`save:${receipt.state}`); stored = structuredClone(receipt); }),
+    save: vi.fn(async receipt => {
+      effects.push(`save:${receipt.state}`);
+      stored = structuredClone(receipt);
+      writes.push(structuredClone(receipt));
+    }),
     reserve: vi.fn<AssumeTransitionDeps['reserve']>(async () => ({ status: 'acquired', acquired: true, replayed: false, leaseExpiresAt: 'later' })),
     checkpointCaller: vi.fn(async plan => {
       effects.push('checkpoint');
@@ -209,7 +232,7 @@ function transitionFixture() {
     releaseTarget: vi.fn(async () => { effects.push('release'); return true; }),
     handoff: vi.fn<AssumeTransitionDeps['handoff']>(async () => { effects.push('handoff'); return 'accepted'; }),
   };
-  return { deps, effects, stored: () => stored };
+  return { deps, effects, writes, stored: () => stored };
 }
 
 describe('session:assume durable transition boundaries', () => {
@@ -337,6 +360,47 @@ describe('session:assume durable transition boundaries', () => {
     expect(result.state).toBe('target-verified');
     expect(f.stored()?.observation?.directedMessage.id).toBe('message-after-handoff');
   });
+
+  it('R-11 takeover audit retains caller target authorization and terminal provenance', async () => {
+    const { preparation: plan } = await prepared(fixture());
+    const f = transitionFixture();
+    const accepted = await commitAssume(plan, f.deps);
+    const beforeVerification = JSON.stringify(f.writes);
+    const observation = witness(accepted);
+    await verifyAssumeExecution(accepted, observation, f.deps.save);
+    expect(f.writes.at(-1)).toMatchObject({ state: 'target-verified',
+      transitionKey: assumeTransitionKey(plan), preparationFingerprint: assumePreparationFingerprint(plan),
+      preparation: { caller: plan.caller, target: plan.target, authorizationRef: plan.authorizationRef },
+      observation,
+    });
+    for (const receipt of f.writes) {
+      expect(receipt.preparation).toEqual(plan);
+      expect(receipt.transitionKey).toBe(assumeTransitionKey(plan));
+    }
+    expect(JSON.stringify(f.writes.slice(0, -1))).toBe(beforeVerification);
+    expect(f.writes.map(row => row.state)).toEqual([
+      'caller-checkpointed', 'caller-quiesced', 'target-custody-acquired',
+      'handoff-requested', 'handoff-accepted', 'target-verified',
+    ]);
+  });
+
+  it.each(['refused', 'verified', 'rolled-back'] as const)(
+    'R-11 refused verified and rolled-back outcomes remain append-only: %s', async outcome => {
+      const { preparation: plan } = await prepared(fixture());
+      const f = transitionFixture();
+      if (outcome === 'refused') vi.mocked(f.deps.reserve).mockResolvedValue({
+        status: 'reserved', acquired: false, leaseExpiresAt: 'later', retryAfterMs: 100,
+      });
+      if (outcome === 'rolled-back') vi.mocked(f.deps.handoff).mockResolvedValue('refused');
+      const receipt = await commitAssume(plan, f.deps);
+      if (outcome === 'verified') await verifyAssumeExecution(receipt, witness(receipt), f.deps.save);
+      const terminal = outcome === 'verified' ? 'target-verified' : outcome;
+      expect(f.writes.at(-1)?.state).toBe(terminal);
+      const immutableHistory = JSON.stringify(f.writes);
+      expect(await commitAssume(plan, f.deps)).toMatchObject({ state: terminal, replayed: true });
+      expect(JSON.stringify(f.writes)).toBe(immutableHistory);
+    },
+  );
 
   it('requires the observed target reanchor for a backend-minted checkpoint id', async () => {
     const value = fixture();
