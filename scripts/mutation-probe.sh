@@ -1415,9 +1415,12 @@ sandbox_vite_temp_dirs() {
 # shows a read-only refusal, name the sandbox as the cause and the route around it.
 sandbox_readonly_hint() {
   local log_file="$1" label="$2" hits
-  [ "$DELETES_ACK" -eq 1 ] || return 0
+  # Return success only when a sandbox refusal was observed. The baseline
+  # callers use the diagnostic; run_guard also uses it to invalidate scored
+  # legs before an assertion about the wrong exception can become a catch.
+  [ "$DELETES_ACK" -eq 1 ] || return 1
   hits="$(grep -E 'EROFS|Read-only file system' "$log_file" 2>/dev/null | head -5)"
-  [ -n "$hits" ] || return 0
+  [ -n "$hits" ] || return 1
   log "SANDBOX READ-ONLY WRITE: the $label tried to WRITE outside the --sandbox-root sandbox, and the read-only / refused it (EROFS). This is the SANDBOX, not your guard — nothing was measured:
 $hits
 
@@ -1431,6 +1434,7 @@ $hits
       verified marker through, so the router reuses that lease:
           --test 'node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs <path>'
       If the guard itself writes elsewhere, point it at \$TMPDIR or under $SANDBOX_ROOT."
+  return 0
 }
 
 if [ "$DELETES_ACK" -eq 1 ]; then
@@ -2144,6 +2148,18 @@ run_guard() {
     fi
     if [ -n "$contain_stamp" ]; then
       contain_report_leaks "$phase" "$contain_stamp"
+    fi
+    # EI-26951876523801680: a test can reach an assertion while its child
+    # census/build failed on the sandbox, then assert about that wrong error.
+    # Reporter assertion evidence does not make that a semantic measurement.
+    # Baseline failures already refuse unconditionally at their call sites;
+    # invalidate every other failed leg here, including historical snapshots.
+    if [ "$phase" != baseline ] && [ "$phase" != copy-baseline ] &&
+        [ "$rc" -ne 0 ] && sandbox_readonly_hint "$output" "$label"; then
+      cat "$output"
+      printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s guard_exit=%d sandbox_readonly=yes phase=%s\n' \
+        "$EXPECT" "${TARGET_MODE:-pre-mutation}" "$rc" "$phase"
+      die "the $label failed after a sandbox read-only write refusal; its assertion failure cannot establish a mutation verdict. Move the child write under the declared sandbox root or TMPDIR before rerunning."
     fi
     # The committed-source loader can replace the intentional overlay in a
     # test-spawned child with HEAD. Its router notice means this leg measured
