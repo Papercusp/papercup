@@ -25,6 +25,7 @@ import { SuSessionStartupTimeoutError, type SuSessionHost, type SuSessionEventIn
 import { claudeModelOptions } from './su-session-engine-models';
 import { SuNativeCards } from './su-session-native-cards';
 import { loadSuOwnerTurnReceipts } from './su-session-commands';
+import { prepareSuSessionInput, SuInputRefusal } from './su-session-input';
 import { admitNativeIdentityInference } from './cupboard/identity-activation-gate-io';
 
 export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initializationResult' | 'mcpServerStatus' | 'interrupt' | 'close'>
@@ -298,12 +299,12 @@ export function startClaudeSuEngine(
     ok: false, code: 'engine_delivery_unknown', message, retryable: false,
   });
   const adapter = createClaudeSuSessionAdapter(binding, runtime, {
-    ...options, executionKind: 'programmatic', ready: false, runtimeReady: () => ready && !closed, ownerTurnCorrelation: 'transport', cardSource: 'transport',
+    ...options, executionKind: 'programmatic', typedInput: true, ready: false, runtimeReady: () => ready && !closed, ownerTurnCorrelation: 'transport', cardSource: 'transport',
     resultErrorSource: 'transport',
     ...(currentApprovals ? { approvals: currentApprovals } : {}),
     ownerTurnReceipts: (identity) => loadSuOwnerTurnReceipts(identity),
     controls: {
-      async ownerTurn({ content, turnId, model: nextModel, approvals: nextApprovals }) {
+      async ownerTurn({ content, input: richInput, turnId, model: nextModel, approvals: nextApprovals }) {
         if (!ready || closed) return unavailable('The structured Claude connection is not ready');
         const uuid = randomUUID();
         const receipt = deferred<ClaudeNativeCommandVerdict>();
@@ -367,6 +368,17 @@ export function startClaudeSuEngine(
             adapter.host.updateApprovals(nextApprovals);
             if (deliveryStopped()) return;
           }
+          // Resolve references after admission/model/permission waits, at the
+          // serialized native write boundary. Earlier validation can go stale.
+          let prepared: Awaited<ReturnType<typeof prepareSuSessionInput>>;
+          try {
+            prepared = await prepareSuSessionInput({ content, input: richInput }, { workspaceId: boot.workspaceId, root: boot.cwd });
+          } catch (error) {
+            if (!(error instanceof SuInputRefusal)) throw error;
+            receipt.resolve({ ok: false, code: error.code, message: error.message, retryable: false });
+            return;
+          }
+          if (deliveryStopped()) return;
           const finished = deferred<void>();
           finishActiveTurn = () => finished.resolve();
           adapter.correlateOwnerTurn(turnId);
@@ -378,7 +390,7 @@ export function startClaudeSuEngine(
           try {
             timer = setTimeout(() => receipt.resolve(unavailable('Claude did not acknowledge this saved turn; reconcile delivery before retrying')), deliveryTimeoutMs);
             input.write({ type: 'user', uuid, session_id: nativeId, parent_tool_use_id: null,
-              origin: { kind: 'human' }, message: { role: 'user', content } } satisfies SDKUserMessage);
+              origin: { kind: 'human' }, message: { role: 'user', content: prepared.claude } } satisfies SDKUserMessage);
             await finished.promise;
           } finally {
             disarmStallWatch();

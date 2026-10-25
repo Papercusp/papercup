@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -104,10 +105,58 @@ async function fixture() {
   });
   const history = () => readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
   const control = (action: string) => { child.stdin.write(JSON.stringify({ type: 'fixture', action }) + '\n'); };
-  return { engine, host, command, history, control, nativeId };
+  return { engine, host, command, history, control, nativeId, dir };
 }
 
 describe('Claude persistent input through the installed SDK and real pipes', () => {
+  it('delivers inline and pinned project image bytes through the installed SDK without flattening', async () => {
+    const f = await fixture();
+    const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9YkAAAAASUVORK5CYII=';
+    const bytes = Buffer.from(data, 'base64');
+    writeFileSync(join(f.dir, 'image.png'), bytes);
+    const image = { type: 'image', mediaType: 'image/png', data } as const;
+    await expect(f.host.startCommand({ ...f.command('owner_turn', 'inline'), input: [image] }).terminal)
+      .resolves.toMatchObject({ status: 'completed' });
+    const next = f.host.startCommand({ ...f.command('queue', 'project'), input: [{ type: 'file',
+      uri: 'project:image.png', mediaType: 'image/png', workspaceId: 'workspace',
+      sha256: createHash('sha256').update(bytes).digest('hex') }] });
+    f.control('finish');
+    await expect(next.terminal).resolves.toMatchObject({ status: 'completed' });
+    const inputs = f.history().filter(call => call.type === 'user');
+    expect(inputs.map(call => call.message.content)).toEqual(['inline', 'project'].map(id => [
+      { type: 'text', text: `input ${id}` }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data } },
+    ]));
+    expect(inputs.map(call => call.session_id)).toEqual([f.nativeId, f.nativeId]);
+  });
+
+  it.each(['revoked', 'expired', 'foreign', 'moved', 'deleted', 'changed', 'unsupported'] as const)
+    ('refuses %s queued references at delivery and keeps the SDK connection usable', async reason => {
+      const f = await fixture();
+      const bytes = Buffer.from('private file contents');
+      const path = join(f.dir, 'notes.txt'); writeFileSync(path, bytes);
+      await f.host.startCommand(f.command('owner_turn', 'first')).terminal;
+      const part = { type: 'file' as const, uri: 'project:notes.txt', mediaType: 'text/plain', workspaceId: 'workspace',
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        ...(reason === 'expired' ? { expiresAt: '2000-01-01T00:00:00Z' } : {}),
+        ...(reason === 'foreign' ? { workspaceId: 'other-workspace' } : {}),
+        ...(reason === 'unsupported' ? { mediaType: 'application/zip' } : {}),
+      };
+      const queued = f.host.startCommand({ ...f.command('queue', 'invalid'), input: [part] });
+      if (reason === 'revoked') chmodSync(path, 0);
+      if (reason === 'moved') renameSync(path, join(f.dir, 'moved.txt'));
+      if (reason === 'deleted') rmSync(path);
+      if (reason === 'changed') writeFileSync(path, 'replacement');
+      const next = f.host.startCommand(f.command('queue', 'after-refusal'));
+      f.control('finish');
+      const codes = { revoked: 'input_unreadable', expired: 'input_expired', foreign: 'input_workspace_mismatch',
+        moved: 'input_unreadable', deleted: 'input_unreadable', changed: 'input_identity_changed', unsupported: 'unsupported_input_media_type' };
+      await expect(queued.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: codes[reason] } });
+      await expect(next.terminal).resolves.toMatchObject({ status: 'completed' });
+      expect(f.history().filter(call => call.type === 'user').map(call => call.message.content))
+        .toEqual(['input first', 'input after-refusal']);
+      expect(f.host.snapshot().terminal).toBe(false);
+    });
+
   it('queues concurrent follow-ups once and keeps the native session and transcript ordering', async () => {
     const f = await fixture();
     await expect(f.host.startCommand(f.command('owner_turn', 'first')).terminal).resolves.toMatchObject({ status: 'completed' });

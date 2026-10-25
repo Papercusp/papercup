@@ -2,8 +2,8 @@
  * child. Only launch/persistence/enrollment dependencies are substituted.
  * This observes the protocol boundary, not provider inference or shipment. */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -114,10 +114,40 @@ async function engineFixture(mode = 'normal') {
     target: host.descriptor().identity, commandId: id, type, turnId: `owner-${id}`, content: `Input ${id}`, activeTurnId,
   });
   const history = async () => (await peer.request({ method: 'fixture/history' })).calls as RpcFrame[];
-  return { engine, host, command, history, request: (method: string) => peer.request({ method }) };
+  return { engine, host, command, history, dir, request: (method: string) => peer.request({ method }) };
 }
 
 describe('Codex steering through real stdio', () => {
+  it('delivers actual image input on both start and steer over real pipes', async () => {
+    const f = await engineFixture();
+    const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9YkAAAAASUVORK5CYII=';
+    const input = [{ type: 'image', mediaType: 'image/png', data }] as const;
+    const first = f.host.startCommand({ ...f.command('owner_turn', 'first'), input });
+    await expect(first.terminal).resolves.toMatchObject({ status: 'completed' });
+    await expect(f.host.startCommand({ ...f.command('steer', 'correction'), input }).terminal)
+      .resolves.toMatchObject({ status: 'completed' });
+    const calls = (await f.history()).filter(call => ['turn/start', 'turn/steer'].includes(String(call.method)));
+    expect(calls.map(call => (call.params as Record<string, unknown>)?.input)).toEqual(['first', 'correction'].map(id => [
+      { type: 'text', text: `Input ${id}` }, { type: 'image', url: `data:image/png;base64,${data}` },
+    ]));
+  });
+
+  it('revalidates queued file permissions before any Codex native request', async () => {
+    const f = await engineFixture();
+    await f.host.startCommand(f.command('owner_turn', 'first')).terminal;
+    const bytes = Buffer.from('sensitive notes'), path = join(f.dir, 'notes.txt'); writeFileSync(path, bytes);
+    const queued = f.host.startCommand({ ...f.command('queue', 'revoked'), input: [{ type: 'file',
+      uri: 'project:notes.txt', mediaType: 'text/plain', workspaceId: 'workspace',
+      sha256: createHash('sha256').update(bytes).digest('hex') }] });
+    chmodSync(path, 0);
+    const next = f.host.startCommand(f.command('queue', 'after-refusal'));
+    await f.request('fixture/complete');
+    await expect(queued.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'input_unreadable' } });
+    await expect(next.terminal).resolves.toMatchObject({ status: 'completed' });
+    const calls = (await f.history()).filter(call => call.method === 'turn/start');
+    expect(calls.map(call => (call.params as Record<string, unknown>)?.input)).toEqual(['first', 'after-refusal'].map(id => [{ type: 'text', text: `Input ${id}` }]));
+  });
+
   it('delivers a correlated steer before completion and queues the next turn exactly once', async () => {
     const f = await engineFixture();
     await f.host.startCommand(f.command('owner_turn', 'first')).terminal;

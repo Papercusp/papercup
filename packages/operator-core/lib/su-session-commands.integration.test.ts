@@ -1,6 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { Hono } from 'hono';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SU_SESSION_SCHEMA, type SuSessionCommand, type SuSessionDescriptor } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../test/_org-test-db';
 
@@ -22,6 +26,7 @@ const { persistSuSessionDescriptor, readDurableSuSession } = await import('./su-
 const { suSessionRoutes } = await import('./endpoint-route/routes/agent-chats/su-session');
 const { registerRoute } = await import('./endpoint-route/define-route');
 const { runWithWorkspace } = await import('./workspace-als');
+const { prepareSuSessionInput } = await import('./su-session-input');
 
 const workspaceId = 'papercusp-workspace';
 const harnessSlug = 'papercusp';
@@ -83,6 +88,61 @@ async function storedTurns() {
 }
 
 describe('SU command acceptance through real PostgreSQL', () => {
+  it('preserves usable image bytes through durable command storage and reconnect for both providers', async () => {
+    const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9YkAAAAASUVORK5CYII=';
+    for (const backend of ['claude', 'codex'] as const) {
+      await sql`UPDATE harness_shared.adv_sessions SET agent = ${backend} WHERE id = ${advSessionId}`;
+      const snapshot = { ...descriptor(), executionKind: 'programmatic', identity: { ...descriptor().identity, backend },
+        backendExtension: backend === 'claude' ? descriptor().backendExtension : { backend, codexHome: null },
+        capabilities: { ...descriptor().capabilities, input: { parts: ['text', 'image', 'file'], origins: ['owner'] } },
+      } as SuSessionDescriptor;
+      const nativeInputs: unknown[] = [];
+      const execute = vi.fn(async (command: SuSessionCommand) => {
+        const saved = (await storedTurns()).find(turn => (turn.su_command.command as SuSessionCommand).commandId === command.commandId)!;
+        expect(saved.su_command.command).toEqual(command);
+        const prepared = await prepareSuSessionInput(saved.su_command.command as { content: string; input: never[] }, { workspaceId, root: tmpdir() });
+        nativeInputs.push(prepared[backend]);
+        return { status: 'completed' as const };
+      });
+      const host = new SuSessionHost({ descriptor: snapshot, executeCommand: execute });
+      const command = { ...ownerTurn(`${backend}-persisted-image`), target: snapshot.identity,
+        input: [{ type: 'image' as const, mediaType: 'image/png', data }] };
+      await expect((await host.acceptCommand(command)).terminal).resolves.toMatchObject({ status: 'completed' });
+      host.dispose();
+      const replacement = new SuSessionHost({ descriptor: snapshot, executeCommand: execute });
+      try {
+        const replay = await replacement.acceptCommand(command);
+        expect(replay.replayed).toBe(true);
+        await expect(replay.terminal).resolves.toMatchObject({ status: 'completed' });
+        expect(execute).toHaveBeenCalledOnce();
+        const saved = (await storedTurns()).find(turn => (turn.su_command.command as SuSessionCommand).commandId === command.commandId)!;
+        const prepared = await prepareSuSessionInput(saved.su_command.command as typeof command, { workspaceId, root: tmpdir() });
+        expect(prepared[backend]).toEqual(nativeInputs[0]);
+        expect(JSON.stringify(prepared[backend])).toContain(data);
+      } finally { replacement.dispose(); }
+    }
+  });
+
+  it('refuses a revoked persisted file when content is prepared for a replacement runtime', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'su-durable-input-'));
+    const path = join(root, 'private.txt'), bytes = Buffer.from('private content'); writeFileSync(path, bytes);
+    const snapshot = descriptor();
+    snapshot.capabilities = { ...snapshot.capabilities, input: { parts: ['file'], origins: ['owner'] } };
+    const host = new SuSessionHost({ descriptor: snapshot, executeCommand: async () => ({ status: 'completed' }) });
+    const command = { ...ownerTurn('persisted-file'), input: [{ type: 'file' as const, uri: 'project:private.txt',
+      workspaceId, sha256: createHash('sha256').update(bytes).digest('hex'), mediaType: 'text/plain' }] };
+    try {
+      await (await host.acceptCommand(command)).terminal;
+      const saved = (await storedTurns())[0].su_command.command as typeof command;
+      await prepareSuSessionInput(saved, { workspaceId, root });
+      chmodSync(path, 0);
+      await expect(prepareSuSessionInput(saved, { workspaceId, root })).rejects.toMatchObject({ code: 'input_unreadable' });
+      await expect(prepareSuSessionInput(saved, { workspaceId: 'foreign-workspace', root }))
+        .rejects.toMatchObject({ code: 'input_workspace_mismatch' });
+      expect(saved.input).toEqual(command.input);
+    } finally { host.dispose(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('old-client-compatibility: preserves legacy descriptors and refuses unadvertised extended commands', async () => {
     const legacy = descriptor();
     expect(await persistSuSessionDescriptor(advSessionId, legacy, workspaceId)).toBe(true);

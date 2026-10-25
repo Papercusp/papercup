@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -133,6 +134,46 @@ function stalledReports(engine: ClaudeSuEngine) {
 }
 
 describe('structured Claude SU engine', () => {
+  it('rechecks a file revoked while native admission was pending', async () => {
+    const p = peer(), engine = open(p), path = join(dir, 'admission-notes.txt'), bytes = Buffer.from('private notes');
+    writeFileSync(path, bytes);
+    await engine.ready;
+    let release!: () => void;
+    nativeFunding.mockImplementationOnce(async () => { await new Promise<void>(done => { release = done; }); return { ok: true }; });
+    const turn = engine.adapter.host.startCommand({ ...command(engine), input: [{ type: 'file',
+      uri: 'project:admission-notes.txt', mediaType: 'text/plain', workspaceId: 'workspace',
+      sha256: createHash('sha256').update(bytes).digest('hex') }] });
+    await vi.waitFor(() => expect(nativeFunding).toHaveBeenCalledOnce());
+    chmodSync(path, 0); release();
+    await expect(turn.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'input_unreadable' } });
+    expect(p.prompts).toHaveLength(0);
+    expect(p.close).not.toHaveBeenCalled();
+  });
+
+  it('delivers typed image content and advertises only attached rich input', async () => {
+    const p = peer(), engine = open(p);
+    await engine.ready;
+    expect(engine.adapter.host.descriptor().capabilities.input?.parts).toEqual(['text', 'image', 'file']);
+    const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9YkAAAAASUVORK5CYII=';
+    await expect(engine.adapter.host.startCommand({ ...command(engine), input: [{ type: 'image', mediaType: 'image/png', data }] }).terminal)
+      .resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts[0].message.content).toEqual([{ type: 'text', text: '  hi 雪\n\n' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data } }]);
+  });
+
+  it('preserves typed input refusal without closing the Claude connection', async () => {
+    const p = peer(), engine = open(p);
+    await engine.ready;
+    await expect(engine.adapter.host.startCommand({ ...command(engine), commandId: 'invalid-image',
+      input: [{ type: 'image', mediaType: 'image/jpeg', data: 'YWJj' }] }).terminal)
+      .resolves.toMatchObject({ status: 'refused', refusal: { code: 'input_media_mismatch' } });
+    expect(p.prompts).toHaveLength(0);
+    await expect(engine.adapter.host.startCommand({ ...command(engine), commandId: 'after-refusal' }).terminal)
+      .resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts).toHaveLength(1);
+    expect(p.close).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, 'prompt'] as const)('consumes complete canonical preparation at the SDK boundary (approval=%s)', async toolApproval => {
     const p = peer();
     const selected = { ...boot, model: 'claude-sonnet-4-6:high', envelopeEnv: {

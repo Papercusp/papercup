@@ -7,7 +7,8 @@
 // Establish the maintained PTY discovery isolation before either side of that
 // production seam is imported. These fake children must never look like fleet sessions.
 import { hermeticEnv } from '../../../apps/operator/vitest-shims/psu-pty-temp-dir';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
+import { crc32, deflateSync } from 'node:zlib';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -345,6 +346,114 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       }
     }
   }, 60_000);
+
+  it.each(['claude', 'codex'] as const)('P006 actual-image-dependent native result and durable reconnect (%s)', async backend => {
+    const [{ createChat, archiveChat, getChat }, { default: launchRoutes }, { suSessionRoutes },
+      { getRegisteredSuSessionHost }, { readSuperuserToken }, { activeWorkspaceId }] = await Promise.all([
+      import('./agent-chats-data'), import('./endpoint-route/routes/adv/launch-su'),
+      import('./endpoint-route/routes/agent-chats/su-session'), import('./su-session-host'),
+      import('./superuser-token'), import('./workspace-registry'),
+    ]);
+    const harness = process.env.PAPERCUSP_ATTACHED_TEST_HARNESS ?? 'papercusp', workspaceId = activeWorkspaceId();
+    const created = await createChat({ slug: harness, role: 'operator', title: `P006 image ${backend} ${randomUUID()}` });
+    if (!created.ok) throw new Error(created.error);
+    const chatId = created.data.id, key = { workspaceId, harnessSlug: harness, agentChatId: chatId };
+    const headers = { 'content-type': 'application/json', host: 'localhost', authorization: `Bearer ${readSuperuserToken()}` };
+    const context = { params: { slug: harness, chatId } } as never;
+    let host: ReturnType<typeof getRegisteredSuSessionHost>;
+    try {
+      let model: string | undefined = backend === 'claude' ? 'sonnet' : undefined;
+      const launch = await launchRoutes.find(route => route.method === 'POST')!.handler(new Request('http://localhost/api/adv/sessions/launch-su', {
+        method: 'POST', headers, body: JSON.stringify({ agent: backend, attached_engine: true, execution_kind: 'programmatic',
+          agent_chat_id: chatId, harness_slug: harness, model, account: 'auto', carry: 'warm' }),
+      }), context);
+      const launched = await launch.json() as { status: string; transport?: string; error?: string };
+      expect(launch.status, JSON.stringify(launched)).toBe(200);
+      host = getRegisteredSuSessionHost(key);
+      if (!host) throw new Error('Image acceptance did not attach a native host');
+      await vi.waitFor(() => {
+        expect(host!.snapshot().terminal, JSON.stringify(host!.recent.slice(-6))).toBe(false);
+        expect(host!.snapshot()).toMatchObject({ executorAttached: true, streamReady: true });
+      }, { timeout: 120_000, interval: 100 });
+      expect(host.descriptor().capabilities.input?.parts).toContain('image');
+      if (backend === 'codex') {
+        await vi.waitFor(() => expect(host!.descriptor().models?.length).toBeGreaterThan(0), { timeout: 30_000 });
+        const models = host.descriptor().models!;
+        model = (models.find(row => row.isDefault) ?? models[0]).id;
+      }
+      // Randomize the arrangement only in the bitmap; neither the prompt nor
+      // a filename contains the answer. This requires actual visual inference.
+      const palette = [{ name: 'red', rgb: [255, 0, 0] }, { name: 'blue', rgb: [0, 0, 255] },
+        { name: 'green', rgb: [0, 200, 0] }, { name: 'yellow', rgb: [255, 255, 0] }];
+      for (let i = palette.length - 1; i > 0; i--) { const j = randomInt(i + 1); [palette[i], palette[j]] = [palette[j], palette[i]]; }
+      const width = 256, pixels = Buffer.alloc((1 + width * 3) * width);
+      for (let y = 0; y < width; y++) for (let x = 0; x < width; x++) {
+        const quadrant = y < width / 2 ? (x < width / 2 ? 0 : 1) : (x < width / 2 ? 3 : 2);
+        const offset = y * (1 + width * 3) + 1 + x * 3;
+        palette[quadrant].rgb.forEach((value, channel) => { pixels[offset + channel] = value; });
+      }
+      const chunk = (name: string, bytes: Buffer) => {
+        const size = Buffer.alloc(4), checksum = Buffer.alloc(4), type = Buffer.from(name);
+        size.writeUInt32BE(bytes.length); checksum.writeUInt32BE(crc32(Buffer.concat([type, bytes])));
+        return Buffer.concat([size, type, bytes, checksum]);
+      };
+      const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width); ihdr.writeUInt32BE(width, 4); ihdr[8] = 8; ihdr[9] = 2;
+      const image = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk('IHDR', ihdr),
+        chunk('IDAT', deflateSync(pixels)), chunk('IEND', Buffer.alloc(0))]).toString('base64');
+      const command = { schema: SU_SESSION_SCHEMA, protocolVersion: SU_SESSION_PROTOCOL_VERSION, type: 'owner_turn',
+        commandId: `image-${randomUUID()}`, turnId: `image-turn-${randomUUID()}`, issuedAt: new Date().toISOString(),
+        target: host.descriptor().identity, model,
+        content: 'Read the attached image. Reply only with the four quadrant colors clockwise starting at top left, comma separated. Do not use tools or change anything.',
+        input: [{ type: 'image', mediaType: 'image/png', data: image }],
+      };
+      const route = suSessionRoutes.find(route => route.method === 'POST')!;
+      const post = () => route.handler(new Request('http://localhost/commands', { method: 'POST', headers, body: JSON.stringify(command) }), context);
+      const accepted = await post(); expect(accepted.status, JSON.stringify(await accepted.json())).toBe(202);
+      const saved = await getChat({ slug: harness, chatId });
+      expect(saved.ok && saved.data.transcript.some(turn => JSON.stringify(turn).includes(image))).toBe(true);
+      const stream = host.subscribe()[Symbol.asyncIterator]();
+      const observed = new Map(host.recent.map(row => [row.event.sequence, row.event]));
+      const deadline = Date.now() + 120_000;
+      let answer = '';
+      try {
+        while (true) {
+          const events = [...observed.values()];
+          const errors = events.flatMap(event => event.type === 'error' ? [`${event.code}: ${event.message}`] : []);
+          if (errors.length) throw new Error(errors.join('\n'));
+          answer = events.flatMap(event => event.type === 'transcript' && event.role === 'assistant'
+            && event.channel === 'text' && event.phase === 'completed' && event.turnId === command.turnId
+            ? [event.content ?? ''] : []).join(' ').toLowerCase();
+          if (host.descriptor().lifecycle === 'waiting-for-owner' && answer) break;
+          let timer: ReturnType<typeof setTimeout>;
+          try {
+            const next = await Promise.race([stream.next(), new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error(`Native image result missing: ${JSON.stringify({ backend,
+                model, answer, lifecycle: host!.descriptor().lifecycle, eventTypes: events.slice(-8).map(event => event.type) })}`)),
+              Math.max(1, deadline - Date.now()));
+            })]);
+            if (next.done) throw new Error('Native image stream ended without a final result');
+            observed.set(next.value.event.sequence, next.value.event);
+          } finally { clearTimeout(timer!); }
+        }
+      } finally { await stream.return?.(); }
+      console.info('SU_EXEC_P006_NATIVE_IMAGE_OBSERVED', JSON.stringify({ backend, model, answer,
+        expectedColors: palette.map(color => color.name), lifecycle: host.descriptor().lifecycle }));
+      expect(answer.match(/\b(?:red|blue|green|yellow)\b/g), answer).toEqual(palette.map(color => color.name));
+      // A reconnect/retry reads the existing durable receipt. It never drops
+      // the image or sends this already delivered command a second time.
+      const reconnected = await post(); expect(await reconnected.json()).toMatchObject({ ok: true, replayed: true });
+      console.info('SU_EXEC_P006_NATIVE_IMAGE', JSON.stringify({ backend, model, ownerId: host.descriptor().identity.ownerId,
+        nativeSessionId: host.descriptor().identity.nativeSessionId, expectedColors: palette.map(color => color.name), answer,
+        persistedImage: true, reconnectReplayed: true }));
+    } finally {
+      host ??= getRegisteredSuSessionHost(key);
+      if (host && !host.snapshot().terminal) await host.startCommand({ schema: SU_SESSION_SCHEMA,
+        protocolVersion: SU_SESSION_PROTOCOL_VERSION, type: 'end', commandId: `end-${randomUUID()}`,
+        issuedAt: new Date().toISOString(), target: host.descriptor().identity }).terminal;
+      host?.dispose('P006 native image acceptance finished');
+      expect((await archiveChat({ slug: harness, chatId })).ok).toBe(true);
+    }
+  }, 240_000);
 
   it('creates through launch-su, commits an owner turn, proves scoped SU tools, and ends the child', async (ctx) => {
     const [{ createChat, archiveChat, getChat }, { default: launchRoutes }, { suSessionRoutes }, { getRegisteredSuSessionHost }, { readSuperuserToken }, { activeWorkspaceId }, { readDurableSuSession }] = await Promise.all([

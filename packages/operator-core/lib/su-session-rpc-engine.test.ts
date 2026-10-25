@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
@@ -73,6 +74,7 @@ afterEach(async () => {
 });
 
 function fixture(backend: 'codex' | 'omp', overrides: {
+  cwd?: string;
   nativeId?: string; tools?: boolean; model?: string; contextWindow?: number;
   bootstrapModel?: string; compactionLimit?: number;
   servedAccountReader?: (ownerId: string) => Promise<string | null>;
@@ -100,7 +102,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   const boot: BootstrapSuResult = { status: 'ok', specificationRevision: 'spec', stateRevision: 'state', compositionSource: 'blueprint',
     codexHome: '/configured/codex', coordExtPath: null,
     model: overrides.bootstrapModel, compactionLimit: overrides.compactionLimit,
-    agent: backend, sessionId: 71, nativeSessionId: null, cwd: '/project', promptFile: '/sealed/su.md',
+    agent: backend, sessionId: 71, nativeSessionId: null, cwd: overrides.cwd ?? '/project', promptFile: '/sealed/su.md',
     workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'plan', envelopeEnv: {
       PAPERCUSP_SID: binding.ownerId!, CODEX_HOME: '/configured/codex', PAPERCUSP_PROFILE: 'engineer',
       ...overrides.env,
@@ -115,7 +117,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     const override = await overrides.request?.(frame);
     if (override) return override;
     if (frame.method === 'thread/start' || frame.method === 'thread/resume') return {
-      thread: { id: overrides.nativeId ?? 'native-codex', cwd: '/project', path: nativePath },
+      thread: { id: overrides.nativeId ?? 'native-codex', cwd: overrides.cwd ?? '/project', path: nativePath },
       model: overrides.model ?? 'codex-model',
     };
     if (frame.method === 'mcpServerStatus/list') return { data: overrides.tools === false ? [] : [{ name: 'papercusp-su', tools: { 'coord:whoami': {} } }] };
@@ -172,6 +174,56 @@ function steerCommand(engine: SuRpcEngine, id = 'correction', activeTurnId = 'ow
 function completeCodex(f: ReturnType<typeof fixture>, id = 'native-turn') {
   f.emit({ method: 'turn/completed', params: { threadId: 'native-codex', turn: { id, status: 'completed' } } });
 }
+
+describe('Codex typed native input', () => {
+  const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9YkAAAAASUVORK5CYII=';
+  it('rechecks project references after admission and reconciles a refused delivery', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'su-codex-input-admission-')); nativeDirs.push(root);
+    const path = join(root, 'notes.txt'), bytes = Buffer.from('sensitive'); writeFileSync(path, bytes);
+    const barrier = deferred<void>();
+    const reconcile = vi.fn(async () => {});
+    const admit = vi.fn(async () => { await barrier.promise; return { ok: true as const,
+      bindNativeTurn: async () => {}, complete: async () => {}, reconcile }; });
+    const f = fixture('codex', { cwd: root, turnLifecycle: { admit } });
+    await f.engine.ready;
+    const turn = f.engine.adapter.host.startCommand({ ...command(f.engine, 'owner_turn'), input: [{ type: 'file',
+      uri: 'project:notes.txt', mediaType: 'text/plain', workspaceId: 'workspace',
+      sha256: createHash('sha256').update(bytes).digest('hex') }] });
+    await vi.waitFor(() => expect(admit).toHaveBeenCalledOnce());
+    chmodSync(path, 0); barrier.resolve();
+    await expect(turn.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'input_unreadable' } });
+    expect(reconcile).toHaveBeenCalledExactlyOnceWith({ phase: 'delivery', message: 'File reference is no longer available under this session project' });
+    expect(f.request.mock.calls.filter(([call]) => call.method === 'turn/start')).toHaveLength(0);
+    expect(f.close).not.toHaveBeenCalled();
+  });
+
+  it('delivers image bytes through turn/start and turn/steer instead of plain text', async () => {
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/steer' ? { turnId: 'native-turn' } : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    const input = [{ type: 'image' as const, mediaType: 'image/png', data }];
+    expect(host.descriptor().capabilities.input?.parts).toEqual(['text', 'image', 'file']);
+    expect(await host.startCommand({ ...command(f.engine, 'owner_turn'), input } as never).terminal).toMatchObject({ status: 'completed' });
+    expect(f.sent.find(frame => frame.method === 'turn/start')?.params).toMatchObject({
+      input: [{ type: 'text', text: 'Hello from PUI' }, { type: 'image', url: `data:image/png;base64,${data}` }],
+    });
+    expect(await host.startCommand({ ...steerCommand(f.engine), input } as never).terminal).toMatchObject({ status: 'completed' });
+    expect(f.sent.find(frame => frame.method === 'turn/steer')?.params).toMatchObject({
+      input: [{ type: 'text', text: 'Hello from PUI' }, { type: 'image', url: `data:image/png;base64,${data}` }], expectedTurnId: 'native-turn',
+    });
+    completeCodex(f);
+  });
+  it('refuses invalid content before native delivery and keeps the connection usable', async () => {
+    const f = fixture('codex'); await f.engine.ready;
+    const host = f.engine.adapter.host;
+    const result = await host.startCommand({ ...command(f.engine, 'owner_turn', 'bad-image'),
+      input: [{ type: 'image', mediaType: 'image/jpeg', data }] } as never).terminal;
+    expect(result).toMatchObject({ status: 'refused', refusal: { code: 'input_media_mismatch' } });
+    expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(0);
+    expect(await host.startCommand(command(f.engine, 'owner_turn', 'good-text') as never).terminal).toMatchObject({ status: 'completed' });
+    completeCodex(f);
+  });
+});
 
 describe('Codex exact active-turn steering', () => {
   it('steers without waiting for completion and correlates one idempotent receipt', async () => {

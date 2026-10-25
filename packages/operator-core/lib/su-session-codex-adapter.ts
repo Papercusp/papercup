@@ -13,11 +13,13 @@ import { createInterface } from 'node:readline';
 
 import {
   assertNeverSuSession,
+  SU_SESSION_INPUT_LIMITS,
   type SuApprovalsMode,
   type SuSessionCapabilities,
   type SuSessionCommand,
   type SuSessionDescriptor,
   type SuSessionExecutionKind,
+  type SuSessionInputPart,
   type SuSessionJsonValue,
   type SuSessionRefusal,
 } from '@papercusp/chat-protocol';
@@ -73,10 +75,10 @@ export type CodexNativeCommandVerdict = { ok: true } | ({ ok: false } & SuSessio
 
 export interface CodexSuSessionControls {
   /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
-  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
+  ownerTurn(input: { ownerId: string; turnId: string; content: string; input?: readonly SuSessionInputPart[]; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
   /** Only attached programmatic runtimes advertise these explicit controls. */
-  queue?(input: { ownerId: string; turnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
-  steer?(input: { ownerId: string; turnId: string; activeTurnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
+  queue?(input: { ownerId: string; turnId: string; content: string; input?: readonly SuSessionInputPart[]; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
+  steer?(input: { ownerId: string; turnId: string; activeTurnId: string; content: string; input?: readonly SuSessionInputPart[]; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<CodexNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -101,6 +103,8 @@ export interface CodexSuSessionDescriptorOptions {
 }
 
 export interface CreateCodexSuSessionAdapterOptions extends CodexSuSessionDescriptorOptions {
+  /** Set only by a transport which validates and delivers typed input. */
+  typedInput?: boolean;
   host?: SuSessionHost<'codex'>;
   controls?: Partial<CodexSuSessionControls>;
   ready?: boolean;
@@ -476,7 +480,12 @@ export class CodexSuSessionAdapter {
     this.ownerTurnReceipts = options.ownerTurnReceipts ?? null;
     this.controls = { ...defaultControls(), ...(options.controls ?? {}) };
     const hostOptions = {
-      descriptor: descriptorFor(binding, runtime, options),
+      descriptor: (() => {
+        const descriptor = descriptorFor(binding, runtime, options);
+        return options.executionKind === 'programmatic' && options.typedInput && options.controls?.ownerTurn
+          ? { ...descriptor, capabilities: { ...descriptor.capabilities, input: { parts: ['text', 'image', 'file'] as const, origins: ['owner'] as const, limits: SU_SESSION_INPUT_LIMITS } } }
+          : descriptor;
+      })(),
       executeCommand: (command: SuSessionCommand<'codex'>, context: SuSessionCommandContext<'codex'>) => this.execute(command, context),
       runtimeReady: options.runtimeReady,
       persistDescriptor: async (descriptor: SuSessionDescriptor<'codex'>) => {
@@ -798,6 +807,7 @@ export class CodexSuSessionAdapter {
           ownerId,
           turnId: command.turnId,
           content: command.content,
+          ...(command.input ? { input: command.input } : {}),
           ...(command.model !== undefined ? { model: command.model } : {}),
           ...(command.approvals !== undefined ? { approvals: command.approvals } : {}),
         });
@@ -811,6 +821,7 @@ export class CodexSuSessionAdapter {
         this.receiptMatcher.markUsed(command.turnId);
         verdict = await this.controls.steer!({ ownerId, turnId: command.turnId,
           activeTurnId: command.activeTurnId, content: command.content,
+          ...(command.input ? { input: command.input } : {}),
           ...(command.model !== undefined ? { model: command.model } : {}),
           ...(command.approvals !== undefined ? { approvals: command.approvals } : {}),
         });

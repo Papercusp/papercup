@@ -13,12 +13,14 @@ import { basename, join } from 'node:path';
 
 import {
   assertNeverSuSession,
+  SU_SESSION_INPUT_LIMITS,
   type OpenCardSnapshot,
   type SuApprovalsMode,
   type SuSessionCapabilities,
   type SuSessionCommand,
   type SuSessionDescriptor,
   type SuSessionExecutionKind,
+  type SuSessionInputPart,
   type SuSessionJsonValue,
   type SuSessionRefusal,
 } from '@papercusp/chat-protocol';
@@ -76,7 +78,7 @@ export type ClaudeNativeCommandVerdict =
 
 export interface ClaudeSuSessionControls {
   /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
-  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<ClaudeNativeCommandVerdict>;
+  ownerTurn(input: { ownerId: string; turnId: string; content: string; input?: readonly SuSessionInputPart[]; model?: string; approvals?: SuApprovalsMode }): Promise<ClaudeNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<ClaudeNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -103,6 +105,8 @@ export interface ClaudeSuSessionDescriptorOptions {
 export interface CreateClaudeSuSessionAdapterOptions extends ClaudeSuSessionDescriptorOptions {
   host?: SuSessionHost<'claude'>;
   controls?: Partial<ClaudeSuSessionControls>;
+  /** Only an attached native content transport may advertise rich input. */
+  typedInput?: boolean;
   register?: boolean;
   /** Structured transports set this false until their identity handshake completes. */
   ready?: boolean;
@@ -460,6 +464,7 @@ export class ClaudeSuSessionAdapter {
         const descriptor = descriptorFor(binding, runtime, options);
         if (options.executionKind !== 'programmatic' || !options.controls?.ownerTurn) return descriptor;
         return { ...descriptor, capabilities: { ...descriptor.capabilities,
+          ...(options.typedInput ? { input: { parts: ['text', 'image', 'file'] as const, origins: ['owner'] as const, limits: SU_SESSION_INPUT_LIMITS } } : {}),
           commands: { ...descriptor.capabilities.commands,
             queue: { state: 'supported' as const, implementation: 'host' as const },
           },
@@ -827,6 +832,7 @@ export class ClaudeSuSessionAdapter {
         context.transition('running', 'owner turn accepted');
         verdict = await this.controls.ownerTurn({
           ownerId, turnId: command.turnId, content: command.content,
+          ...(command.input ? { input: command.input } : {}),
           ...(command.model ? { model: command.model } : {}),
           ...(command.approvals ? { approvals: command.approvals } : {}),
         });
