@@ -6,7 +6,8 @@ import { dirname } from 'node:path';
 import postgres from 'postgres';
 import { runWorkItemAdmissionBulkDedup } from '../lib/work-items-admission-bulk-dedup';
 import { runWorkItemAdmissionDailyDigest } from '../lib/work-items-admission-daily-digest';
-import { readAdmissionMergeSnapshots } from '../lib/work-items-admission-promoter';
+import { readAdmissionMergeSnapshots, runWorkItemAdmissionPromoter } from '../lib/work-items-admission-promoter';
+import { getServingHostIdentity } from '../lib/serving-host-identity';
 import { lexicalHardEdges } from '../lib/work-items-admission-census';
 import { ADMISSION_MERGE_QUALITY_GOLD_CORPUS, admissionMergeQualityGoldJudgements } from '../lib/work-items-admission-merge-quality';
 import { enqueueBulkDedupRun } from '../lib/work-items-admission-bulk-dedup-enqueue';
@@ -42,6 +43,59 @@ try {
      WHERE attrelid = 'harness_shared.work_items'::regclass AND attname = 'embedding'`;
   const dims = Number(column?.atttypmod) > 0 ? Number(column!.atttypmod) : 3;
   const vector = (axis: number) => JSON.stringify(Array.from({ length: dims }, (_, i) => i === axis ? 1 : 0));
+  const promoterSourceHash = createHash('sha256').update(await readFile(
+    new URL('../lib/work-items-admission-promoter.ts', import.meta.url))).digest('hex');
+  assert.equal(promoterSourceHash, process.env.BULK_BG_EXPECTED_PROMOTER_SHA);
+  const comparisonCases: Array<{ name: string; modelCalls: number; promoted: number; merged: number; comparisonPreserved: boolean }> = [];
+  for (const name of ['unauthenticated', 'distinct', 'duplicate-admitted', 'duplicate-pending', 'omitted', 'drift']) {
+    const comparisonHarness = `claimed-comparison-${name}`;
+    for (const id of ['original', 'comparison']) await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, payload, item_kind, nature,
+         taken_by, created_ts, updated_ts, embedding, embedding_mode, admission)
+      VALUES (${ws}, ${comparisonHarness}, ${id}, 'Private claimed finding', 'Independent private evidence', 'open',
+        '{"privateProof":"retained"}'::jsonb, 'change', 'work', ${id === 'comparison' ? 'su-private-holder' : null},
+        ${id === 'original' ? 1 : 2}, ${id === 'original' ? 1 : 2}, ${vector(0)}::vector, 'gemma',
+        ${id === 'comparison' && name !== 'duplicate-pending' ? 'admitted' : 'pending'})`;
+    const scope = { workspaceId: ws, harnessSlug: comparisonHarness, ids: ['comparison'] };
+    let expected = (await readAdmissionMergeSnapshots(sql, scope)).get('comparison');
+    assert.ok(expected);
+    let modelCalls = 0;
+    const result = await runWorkItemAdmissionPromoter({ workspaceId: ws, harnessSlug: comparisonHarness,
+      sql, runId: `claimed-comparison-background-${name}`, now: () => 10_000,
+      ...(name === 'unauthenticated' ? {} : { componentScreeningItemIds: ['original'] }),
+      llmCall: async (input) => {
+        modelCalls += 1;
+        const keys = [...input.messages[0]!.content.matchAll(/^## (.+)$/gm)].map(match => match[1]!);
+        assert.deepEqual(keys, ['comparison::original']);
+        return { text: '', inputTokens: 10, outputTokens: 10, json: { judgements: name === 'omitted' ? [] : [{
+          pairKey: keys[0], verdict: name.startsWith('duplicate-') ? 'r-finding-merge' : 'distinct', reason: 'private background control',
+        }] } };
+      },
+      beforePersist: async () => {
+        if (name !== 'drift') return;
+        await sql`UPDATE harness_shared.work_items SET payload = payload || '{"laterProof":true}'::jsonb,
+          updated_ts = updated_ts + 1 WHERE workspace_id = ${ws} AND harness_slug = ${comparisonHarness} AND feature_id = 'comparison'`;
+        expected = (await readAdmissionMergeSnapshots(sql, scope)).get('comparison');
+      },
+      onNewlyAdmitted: async () => {},
+    });
+    const actual = (await readAdmissionMergeSnapshots(sql, scope)).get('comparison');
+    assert.deepEqual(actual, expected, `claimed comparison ${name} must remain unchanged`);
+    assert.equal(result.promoted, name === 'distinct' ? 1 : 0);
+    assert.equal(result.merged, 0);
+    assert.equal(modelCalls, name === 'unauthenticated' ? 0 : 1);
+    if (name === 'drift') assert.ok(result.guardRefusals?.some(row => row.itemId === 'original' && row.reason === 'snapshot-drift'));
+    const [links] = await sql`SELECT count(*)::int AS count FROM harness_shared.coord_links
+      WHERE workspace_id = ${ws} AND (src_ref IN ('original', 'comparison') OR dst_ref IN ('original', 'comparison')
+        OR src_ref = ${`${comparisonHarness}#original`} OR dst_ref = ${`${comparisonHarness}#original`}
+        OR src_ref = ${`${comparisonHarness}#comparison`} OR dst_ref = ${`${comparisonHarness}#comparison`})`;
+    assert.equal(links!.count, 0);
+    comparisonCases.push({ name, modelCalls, promoted: result.promoted, merged: result.merged, comparisonPreserved: true });
+  }
+  const claimedComparison = { sourceHash: promoterSourceHash, runtime: getServingHostIdentity(), cases: comparisonCases };
+  assert.ok(claimedComparison.runtime.processId);
+  assert.ok(claimedComparison.runtime.buildSha, 'private source runtime must report its measured build identity');
   const insertColumns = ['workspace_id', 'harness_slug', 'feature_id', 'title', 'summary', 'status', 'payload',
     'item_kind', 'nature', 'created_ts', 'updated_ts', 'embedding', 'embedding_mode', 'admission', 'admitted_at', 'admitted_by'];
   const generatedInputs = await sql`
@@ -373,6 +427,7 @@ try {
       controlsPreserved: true, serializedInputsPreserved: true, status: completedWorkflow!.status,
       executions, terminalReplayWithoutModel: true, merged: workerStage!.outcome.successful, durableSteps },
     pinnedRecompute,
+    claimedComparison,
   }) + '\n');
   } finally {
     releaseWorker();

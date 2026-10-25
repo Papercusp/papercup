@@ -5273,6 +5273,23 @@ async function persistAdmissionPlanInTransaction(
       claimedComparisons.set(admissionPairKey(row.a, row.b), comparisonId);
     }
   }
+  // A merge writes both loser and canonical. Comparator drift must therefore
+  // refuse the connected duplicate component, including out-of-batch losers.
+  let comparisonComponentChanged = true;
+  while (comparisonComponentChanged) {
+    comparisonComponentChanged = false;
+    for (const row of input.plan.dispositions) {
+      if (row.action !== 'merge') continue;
+      if (!comparisonBlocked.has(row.itemId) && !comparisonBlocked.has(row.canonicalId)) continue;
+      for (const id of [row.itemId, row.canonicalId]) {
+        if (comparisonBlocked.has(id)) continue;
+        comparisonBlocked.add(id);
+        registerRefusal(id, null, { reason: 'snapshot-drift',
+          detail: 'duplicate component depends on a claimed comparison that changed after judging' });
+        comparisonComponentChanged = true;
+      }
+    }
+  }
   for (const disposition of input.plan.dispositions) {
     if (scopeBlocked.has(disposition.itemId) || comparisonBlocked.has(disposition.itemId)) continue;
     if (disposition.action === 'hold') {

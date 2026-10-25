@@ -2008,6 +2008,29 @@ describe('work-item admission promoter (real Postgres)', () => {
         expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
       }, 60_000);
 
+      it('refuses a transitive merge into the original when its claimed comparison drifts', async () => {
+        await seedComparison();
+        await seedItem({ id: 'WI-peer', createdAtMs: NOW - 10_000 });
+        const before = await db.sql`SELECT feature_id, payload, admission FROM harness_shared.work_items
+          WHERE feature_id IN ('WI-original', 'WI-peer') ORDER BY feature_id`;
+        const result = await runWorkItemAdmissionPromoter({ workspaceId: WS, harnessSlug: HARNESS,
+          sql: db.sql, runId: 'claimed-comparison-component-drift', now: () => NOW, batchSize: 1,
+          componentScreeningItemIds: ['WI-original'],
+          llmCall: async (input) => ({ text: '', inputTokens: 10, outputTokens: 10, json: { judgements:
+            [...input.messages[0]!.content.matchAll(/^## (.+)$/gm)].map(match => ({ pairKey: match[1]!,
+              verdict: match[1]!.includes('WI-peer') ? 'r-finding-merge' : 'distinct', reason: 'component control' })) } }),
+          beforePersist: async () => {
+            await db.sql`UPDATE harness_shared.work_items SET payload = payload || '{"laterProof":true}'::jsonb,
+              updated_ts = updated_ts + 1 WHERE feature_id = 'WI-comparison'`;
+          },
+        });
+        expect(result).toMatchObject({ promoted: 0, merged: 0 });
+        expect(result.guardRefusals).toContainEqual(expect.objectContaining({ itemId: 'WI-original', reason: 'snapshot-drift' }));
+        expect(await db.sql`SELECT feature_id, payload, admission FROM harness_shared.work_items
+          WHERE feature_id IN ('WI-original', 'WI-peer') ORDER BY feature_id`).toEqual(before);
+        expect(await db.sql`SELECT 1 FROM harness_shared.work_item_occurrences`).toHaveLength(0);
+      }, 60_000);
+
       it.each([
         { name: 'ordinary', noModel: false, targeted: false, authenticated: false },
         { name: 'no-model', noModel: true, targeted: false, authenticated: true },
