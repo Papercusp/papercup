@@ -6,7 +6,10 @@ import { DEFAULT_SCRIPT_TIMEOUT_MS } from '@papercusp/tooldef';
 // These dispatch fixtures must not flush diagnostics into real PostgreSQL.
 vi.mock('./degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 
-afterAll(() => { expect(readRealPgRailBlocks().blocked).toBe(0); });
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.blocked, rail.callers.join('\n')).toBe(0);
+});
 import { poolVerdictByProvider, type AccountStatusRow } from './deployment/account-pool-store';
 import type { Rubric } from './rubrics';
 import * as rubricStore from './rubrics';
@@ -2416,6 +2419,50 @@ describe('dispatchPendingGradingAudits', () => {
       reservedAt: '2026-09-08T00:00:00.000Z',
       restore: auditorLease,
     });
+  });
+
+  it('keeps the old auditor epoch through a separate dispatch claim and never promotes a retained task', async () => {
+    const d = deps();
+    const prior = { key: 'grading-audit:EI-retained-claim', reservedAt: '2026-09-07T23:40:00.000Z' };
+    const claim = { ...prior, reservedAt: '2026-09-08T00:00:00.000Z' };
+    d.listScorecards.mockResolvedValue([card('EI-retained-claim')]);
+    d.reserve.mockResolvedValue({ status: 'claimed', reservation: prior, prior, dispatchClaim: claim });
+    d.listTasks.mockResolvedValue([{ taskId: 'retained', state: 'running',
+      detail: { label: prior.key, coordOwnerId: 'su-independent' } } as unknown as TaskRow]);
+    const promoteClaim = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['promoteClaim']>>();
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-retained-claim'], ctx }, {
+      ...d, promoteClaim, resolveOwnerLiveness: vi.fn(async () => ({ sessionState: 'live' as const })),
+    });
+    expect(result.receipts[0]).toMatchObject({ state: 'deduped', dispatchReservation: prior });
+    expect(d.confirmReservation).toHaveBeenCalledWith('EI-retained-claim', prior.key, expect.objectContaining({
+      reservedAt: prior.reservedAt, dispatchClaimReservedAt: claim.reservedAt, snapshot: undefined,
+    }));
+    expect(d.release).toHaveBeenCalledWith('EI-retained-claim', prior.key, {
+      workspaceId: 'ws-test', reservedAt: prior.reservedAt, dispatchClaimReservedAt: claim.reservedAt, restore: prior,
+    });
+    expect(d.notifyRetainedAuditor).toHaveBeenCalledWith(expect.objectContaining({ reservation: prior }));
+    expect(promoteClaim).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('publishes a claimed replacement only after no viable auditor remains (CAS=%s)', async (wins) => {
+    const d = deps();
+    const prior = { key: 'grading-audit:EI-promote-claim', reservedAt: '2026-09-07T23:40:00.000Z' };
+    const claim = { ...prior, reservedAt: '2026-09-08T00:00:00.000Z' };
+    d.listScorecards.mockResolvedValue([card('EI-promote-claim')]);
+    d.reserve.mockResolvedValue({ status: 'claimed', reservation: prior, prior, dispatchClaim: claim });
+    d.listTasks.mockResolvedValue([]);
+    const promoteClaim = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['promoteClaim']>>().mockResolvedValue(wins);
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-promote-claim'], ctx }, { ...d, promoteClaim });
+    expect(promoteClaim).toHaveBeenCalledWith('EI-promote-claim', prior, claim, 'ws-test');
+    if (wins) {
+      expect(d.confirmReservation).toHaveBeenLastCalledWith('EI-promote-claim', prior.key,
+        expect.objectContaining({ reservedAt: claim.reservedAt }));
+    } else {
+      expect(result.receipts[0]).toMatchObject({ state: 'skipped', reason: expect.stringContaining('claim changed') });
+      expect(d.launch).not.toHaveBeenCalled();
+      expect(d.route).not.toHaveBeenCalled();
+    }
   });
 
   it.each([false, true])('passes the recovered evaluator to the existing auditor with prior lease=%s', async (hasPrior) => {

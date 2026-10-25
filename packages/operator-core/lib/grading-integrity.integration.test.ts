@@ -22,6 +22,7 @@ import {
   dispatchPendingGradingAudits,
   GRADING_AUDIT_DISPATCH_ACTOR,
   notifyRetainedGradingAuditor,
+  promotePendingGradingAuditClaim,
   reconcilePendingGradingAudits,
   releasePendingGradingAudit,
   reservePendingGradingAudit,
@@ -130,6 +131,45 @@ describe.each([false, true])('grading audit JSON writes with prepare=%s', (prepa
     expect(await confirmPendingGradingAuditReservation(issueId, reservation.key, {
       workspaceId, reservedAt: prior.reservedAt,
     })).toBe(false);
+  });
+
+  it('keeps the auditor lease visible while one dispatcher checks a retained task', async () => {
+    await seed(issueId, { state: 'pending', dispatchReservation: prior, lastDispatchReservation: prior });
+    const claim = await reservePendingGradingAudit(issueId, reservation.key, { workspaceId, now, preserveAuditorLease: true });
+    expect(claim).toMatchObject({ status: 'claimed', reservation: prior, dispatchClaim: reservation });
+    // A separate read during slow task/native checks must still authorize the
+    // original auditor, before any replacement notice could have been saved.
+    expect(await readAudit()).toMatchObject({ dispatchReservation: prior, lastDispatchReservation: prior });
+    expect(await confirmPendingGradingAuditReservation(issueId, prior.key, {
+      workspaceId, reservedAt: prior.reservedAt,
+    })).toBe(true);
+    expect(await reservePendingGradingAudit(issueId, reservation.key, {
+      workspaceId, now: new Date(now.getTime() + 1_000), preserveAuditorLease: true,
+    })).toMatchObject({ status: 'already-reserved' });
+    // An unclaimed cleanup path cannot erase this dispatcher's election.
+    expect(await releasePendingGradingAudit(issueId, prior.key, {
+      workspaceId, reservedAt: prior.reservedAt,
+    })).toBe(false);
+    expect(await promotePendingGradingAuditClaim(issueId, prior, {
+      ...reservation, reservedAt: new Date(now.getTime() + 1_000).toISOString(),
+    }, workspaceId)).toBe(false);
+    expect(await promotePendingGradingAuditClaim(issueId, prior, reservation, workspaceId)).toBe(true);
+    expect(await readAudit()).toMatchObject({ dispatchReservation: reservation, lastDispatchReservation: reservation });
+    expect((await readAudit()).dispatchClaim).toBeUndefined();
+  });
+
+  it('retains the auditor epoch on release and cannot promote after settlement or a competing claim', async () => {
+    await seed(issueId, { state: 'pending', dispatchReservation: prior, lastDispatchReservation: prior });
+    await reservePendingGradingAudit(issueId, reservation.key, { workspaceId, now, preserveAuditorLease: true });
+    expect(await releasePendingGradingAudit(issueId, prior.key, {
+      workspaceId, reservedAt: prior.reservedAt, dispatchClaimReservedAt: reservation.reservedAt, restore: prior,
+    })).toBe(true);
+    expect(await readAudit()).toMatchObject({ dispatchReservation: prior, lastDispatchReservation: prior });
+    expect(await promotePendingGradingAuditClaim(issueId, prior, reservation, workspaceId)).toBe(false);
+    await reservePendingGradingAudit(issueId, reservation.key, { workspaceId, now, preserveAuditorLease: true });
+    await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{observation,gradingAudit,state}', '"passed"'::jsonb)
+      WHERE workspace_id = ${workspaceId} AND feature_id = ${issueId}`;
+    expect(await promotePendingGradingAuditClaim(issueId, prior, reservation, workspaceId)).toBe(false);
   });
 
   it.each(['restore-and-backoff', 'restore', 'backoff'] as const)('round-trips the %s release branch', async (branch) => {

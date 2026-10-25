@@ -704,6 +704,7 @@ export interface DispatchPendingGradingAuditsDeps {
   /** A live task is viable only while it remains the active consult answerer for its lease. */
   isCurrentSourceAuditResponder?: typeof isCurrentSourceAuditResponder;
   getTask?: typeof getTask;
+  promoteClaim?: typeof promotePendingGradingAuditClaim;
   notifyRetainedAuditor?: typeof notifyRetainedGradingAuditor;
   readLogTail?: (path: string) => string | Promise<string>;
   /** Read log progress time; null means missing/unreadable and cannot prove a stall. */
@@ -953,13 +954,14 @@ export interface GradingAuditDispatchBackoff {
 export interface GradingAuditReservationResult {
   status: GradingAuditReservationStatus;
   reservation?: GradingAuditReservationLease;
+  /** Private election epoch while the original auditor lease stays visible. */
+  dispatchClaim?: GradingAuditReservationLease;
   /** Present on a live quota or general dispatch backoff that refused the claim. */
   backoff?: GradingAuditDispatchBackoff;
   /**
-   * The retained pending lease this claim replaced, whether it was still active or had already
-   * lapsed and been cleared by an earlier sweep. A dispatcher that dedupes to the live auditor
-   * still holding that lease must hand it back with `releasePendingGradingAudit({ restore })`;
-   * otherwise the new epoch invalidates the auditor's brief before a renewal notice can arrive.
+   * The prior auditor lease. preserveAuditorLease keeps it visible while the
+   * separate dispatchClaim elects a dispatcher. Legacy callers replace it and
+   * must restore it if they dedupe to an existing auditor.
    */
   prior?: GradingAuditReservationLease;
 }
@@ -985,6 +987,7 @@ export async function confirmPendingGradingAuditReservation(
   reservationKey: string,
   options: Pick<GradingAuditReservationOptions, 'workspaceId'> & {
     reservedAt?: string;
+    dispatchClaimReservedAt?: string;
     snapshot?: ScorecardGradingAuditReservationSnapshot;
     /** Commit-boundary confirmation on the notification's own transaction. */
     tx?: OrgSql;
@@ -1001,6 +1004,8 @@ export async function confirmPendingGradingAuditReservation(
          AND scorecard.item_kind = ANY (ARRAY['bug', 'change', 'task'])
          AND scorecard.payload->'observation'->'gradingAudit'->>'state' = 'pending'
          AND scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${reservationKey}
+         AND (${options.dispatchClaimReservedAt ?? null}::text IS NULL OR
+           scorecard.payload->'observation'->'gradingAudit'->'dispatchClaim'->>'reservedAt' = ${options.dispatchClaimReservedAt ?? null})
          AND (
            ${reservedAt}::text IS NULL
            OR scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${reservedAt}
@@ -1316,6 +1321,8 @@ export async function notifyCancelledGradingAuditors(
 interface GradingAuditReservationOptions {
   workspaceId?: string | null;
   now?: Date;
+  /** Dispatcher election leaves an earlier auditor epoch visible until task checks finish. */
+  preserveAuditorLease?: boolean;
   /** Point-in-time evidence/evaluator identity to persist with the lease. */
   snapshot?: ScorecardGradingAuditReservationSnapshot;
   /** Currentness from scorecards:list; stale or legacy identity-less settled cards are reopened atomically. */
@@ -1596,6 +1603,11 @@ export async function reservePendingGradingAudit(
           ? parsePriorGradingAuditReservation(priorRow.prior_last_reservation)
           : undefined)
       : undefined;
+    // EI-26929808782001216: a temporary election must not invalidate the
+    // original auditor during slow task/native checks. Publish a separate
+    // expiring claim, then promote it only after proving no viable task remains.
+    const retained = options.preserveAuditorLease && prior?.key === reservationKey ? prior : undefined;
+    const retainedJson = retained ? JSON.stringify(retained) : null;
     const claimed = await tx<{ feature_id: string }[]>`
       UPDATE harness_shared.work_items
          SET payload = jsonb_set(
@@ -1603,13 +1615,14 @@ export async function reservePendingGradingAudit(
                  -- A claim only succeeds once any blocking backoff below has expired,
                  -- or a compatible dispatcher has proved it can clear a legacy
                  -- generation-incompatible stamp, so clearing it here spends the stamp.
-                 COALESCE(payload, '{}'::jsonb) #- '{observation,gradingAudit,dispatchBackoff}',
-                 '{observation,gradingAudit,dispatchReservation}',
+                 COALESCE(payload, '{}'::jsonb) #- '{observation,gradingAudit,dispatchBackoff}'
+                   #- '{observation,gradingAudit,dispatchClaim}',
+                 ${retained ? tx`'{observation,gradingAudit,dispatchClaim}'` : tx`'{observation,gradingAudit,dispatchReservation}'`},
                  ${reservation}::text::jsonb,
                  true
                ),
-               '{observation,gradingAudit,lastDispatchReservation}',
-               ${reservation}::text::jsonb,
+               ${retained ? tx`'{observation,gradingAudit,dispatchReservation}'` : tx`'{observation,gradingAudit,lastDispatchReservation}'`},
+               ${retainedJson ?? reservation}::text::jsonb,
                true
              ),
              origin = 'local',
@@ -1629,6 +1642,15 @@ export async function reservePendingGradingAudit(
                     THEN (payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt')::timestamptz < ${staleBefore}::timestamptz
                     ELSE TRUE
                   END
+             )
+             AND (
+               payload->'observation'->'gradingAudit'->'dispatchClaim'->>'reservedAt' IS NULL
+               OR CASE
+                 WHEN payload->'observation'->'gradingAudit'->'dispatchClaim'->>'reservedAt'
+                   ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
+                 THEN (payload->'observation'->'gradingAudit'->'dispatchClaim'->>'reservedAt')::timestamptz < ${staleBefore}::timestamptz
+                 ELSE TRUE
+               END
              )
              -- EI-22978598482930667: a live reset-aware quota backoff refuses the
              -- claim outright. Fail OPEN on an unparseable stamp, exactly like the
@@ -1687,7 +1709,8 @@ export async function reservePendingGradingAudit(
       }
       return {
         status: 'claimed' as const,
-        reservation: lease,
+        reservation: retained ?? lease,
+        ...(retained ? { dispatchClaim: lease } : {}),
         ...(prior ? { prior } : {}),
       };
     }
@@ -1747,6 +1770,7 @@ export async function releasePendingGradingAudit(
   options: Pick<GradingAuditReservationOptions, 'workspaceId'> & {
     backoff?: GradingAuditDispatchBackoff;
     reservedAt?: string;
+    dispatchClaimReservedAt?: string;
     restore?: GradingAuditReservationLease;
   } = {},
 ): Promise<boolean> {
@@ -1796,7 +1820,7 @@ export async function releasePendingGradingAudit(
                      payload->'observation'->'gradingAudit'->'dispatchReservation',
                      true
                    )`
-         },
+         } #- '{observation,gradingAudit,dispatchClaim}',
              origin = 'local',
              updated_ts = ${Date.now()}
        WHERE workspace_id = ${workspaceId}
@@ -1805,12 +1829,45 @@ export async function releasePendingGradingAudit(
          AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
          AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${reservationKey}
          AND (
+           (${options.dispatchClaimReservedAt ?? null}::text IS NULL AND
+             payload->'observation'->'gradingAudit'->'dispatchClaim' IS NULL)
+           OR payload->'observation'->'gradingAudit'->'dispatchClaim'->>'reservedAt' = ${options.dispatchClaimReservedAt ?? null}
+         )
+         AND (
            ${reservedAt}::text IS NULL
            OR payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${reservedAt}
          )
       RETURNING feature_id`,
   ));
   return Boolean(released[0]);
+}
+
+/** Publish a new auditor epoch only after the elected dispatcher's task checks. */
+export async function promotePendingGradingAuditClaim(
+  issueId: string,
+  prior: GradingAuditReservationLease,
+  claim: GradingAuditReservationLease,
+  workspaceId: string,
+): Promise<boolean> {
+  return withGradingAuditSubjectMutex(workspaceId, issueId, () => boundedOrgTxn(async (tx: OrgSql) => {
+    const lease = JSON.stringify(claim);
+    const rows = await tx<{ feature_id: string }[]>`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(jsonb_set(
+               payload #- '{observation,gradingAudit,dispatchClaim}',
+               '{observation,gradingAudit,dispatchReservation}', ${lease}::text::jsonb, true),
+               '{observation,gradingAudit,lastDispatchReservation}', ${lease}::text::jsonb, true),
+             origin = 'local', updated_ts = ${Date.now()}
+       WHERE workspace_id = ${workspaceId} AND feature_id = ${issueId}
+         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
+         AND payload->'observation'->'retracted' IS NULL
+         AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${prior.key}
+         AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${prior.reservedAt}
+         AND payload->'observation'->'gradingAudit'->'dispatchClaim' = ${lease}::text::jsonb
+       RETURNING feature_id`;
+    return rows.length > 0;
+  }));
 }
 
 function currentPendingScorecard(card: ScorecardRow): boolean {
@@ -2537,6 +2594,7 @@ export async function dispatchPendingGradingAudits(
     let attempts = 0;
     let reservationHeld = false;
     let reservationReservedAt = 'reservation-unknown';
+    let dispatchClaim: GradingAuditReservationLease | undefined;
     let priorReservation: GradingAuditReservationResult['prior'];
     let launchBackend: 'claude' | 'codex' = profile?.agent ?? 'claude';
     let routingFallback: string | undefined;
@@ -2554,8 +2612,9 @@ export async function dispatchPendingGradingAudits(
         return await release(issueId, idempotencyKey, {
           workspaceId: input.ctx.workspaceId,
           reservedAt: reservationReservedAt,
+          ...(dispatchClaim ? { dispatchClaimReservedAt: dispatchClaim.reservedAt } : {}),
           ...(backoff ? { backoff } : {}),
-          ...(restore ? { restore } : {}),
+          ...(restore || dispatchClaim ? { restore: restore ?? priorReservation } : {}),
         });
       } catch {
         // The reservation TTL is the durable cleanup fallback if this release
@@ -2568,7 +2627,8 @@ export async function dispatchPendingGradingAudits(
       const current = await confirmReservation(issueId, idempotencyKey, {
         workspaceId: input.ctx.workspaceId,
         reservedAt: reservationReservedAt,
-        snapshot: reservationSnapshot,
+        ...(dispatchClaim ? { dispatchClaimReservedAt: dispatchClaim.reservedAt } : {}),
+        snapshot: dispatchClaim ? priorReservation?.snapshot : reservationSnapshot,
         expectedCard: {
           evidenceFingerprint: card.evidenceFingerprint,
           createdBy: card.createdBy,
@@ -2654,7 +2714,7 @@ export async function dispatchPendingGradingAudits(
         // later 15-minute reservation epoch must not dedupe its one allowed
         // recovery to the previous epoch's already-terminal fallback task.
         .update(
-          `${reservationReservedAt}\0` +
+          `${dispatchClaim?.reservedAt ?? reservationReservedAt}\0` +
             `${currentIdempotencyKey}\0${taskId}\0${failureCode}\0${GRADING_AUDIT_FALLBACK.agent}`,
         )
         .digest('hex')
@@ -2686,6 +2746,7 @@ export async function dispatchPendingGradingAudits(
       markPhase('reservation');
       const reservationOptions = {
         workspaceId: input.ctx.workspaceId,
+        preserveAuditorLease: true,
         currentness: card.gradingAuditCurrentness,
         snapshot: reservationSnapshot,
         ...(generationCompatible ? { allowGenerationIncompatibleBackoff: true } : {}),
@@ -2728,6 +2789,7 @@ export async function dispatchPendingGradingAudits(
       }
       reservationReservedAt = reservation.reservation?.reservedAt ?? reservationReservedAt;
       priorReservation = reservation.prior;
+      dispatchClaim = reservation.dispatchClaim;
       reservationHeld = true;
       if (!(await confirmOwnedPendingReservation())) {
         return receipt!;
@@ -3070,6 +3132,17 @@ export async function dispatchPendingGradingAudits(
           ...recoveryFields(),
         };
         return receipt;
+      }
+      if (dispatchClaim) {
+        if (!(await (deps.promoteClaim ?? promotePendingGradingAuditClaim)(
+          issueId, reservation.reservation!, dispatchClaim, workspaceId!,
+        ))) {
+          await releaseReservation();
+          return { issueId, state: 'skipped', idempotencyKey, reason: 'dispatch claim changed before replacement promotion' };
+        }
+        reservationReservedAt = dispatchClaim.reservedAt;
+        dispatchClaim = undefined;
+        if (!(await confirmOwnedPendingReservation())) return receipt!;
       }
       markPhase('source-audit-route');
       const routed = profile || generationBound || evaluatorBuildBound
