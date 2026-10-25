@@ -147,9 +147,12 @@ export interface SqlCandidateReadOptions extends SqlMiningOptions {
   authorizeSource: (ledgerId: string) => Promise<boolean>;
   ranOn?: string;
 }
-export async function readSqlCandidates(opts: SqlCandidateReadOptions): Promise<Array<{
+export interface SqlCandidateSnapshot {
   ranOn: string; summary: SqlDemandAggregate; examples: unknown[];
-}>> {
+  /** References are released only after every contributing source passes current authority. */
+  sourceIds: string[];
+}
+export async function readSqlCandidates(opts: SqlCandidateReadOptions): Promise<SqlCandidateSnapshot[]> {
   const sql = opts.client ?? getOrgPg().sql, scopeId = miningScopeId(opts.scope, opts.harnessSlug);
   if (opts.scope.workspaceId !== opts.workspaceId || !await opts.authorize({ workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug, sourceBoundary: opts.scope.sourceBoundary })) return [];
@@ -160,7 +163,7 @@ export async function readSqlCandidates(opts: SqlCandidateReadOptions): Promise<
       AND computed_at > ${new Date(now - AGGREGATE_LIFETIME_DAYS * 86400_000).toISOString()}::timestamptz
       AND (${opts.ranOn ?? null}::date IS NULL OR ran_on=${opts.ranOn ?? null}::date)
     ORDER BY ran_on DESC LIMIT 120`;
-  const result: Array<{ ranOn: string; summary: SqlDemandAggregate; examples: unknown[] }> = [];
+  const result: SqlCandidateSnapshot[] = [];
   for (const row of rows) {
     if (!await sourcesCurrentlyReadable(row.source_ids, async id => {
       const [source] = await sql`SELECT 1 FROM harness_shared.tool_invocations WHERE id=${id}::bigint
@@ -171,7 +174,7 @@ export async function readSqlCandidates(opts: SqlCandidateReadOptions): Promise<
       FROM harness_shared.sql_intent_examples WHERE workspace_id=${opts.workspaceId} AND scope_id=${scopeId}
         AND source_token=ANY(${row.source_tokens}::text[])
         AND expires_at > ${new Date(now).toISOString()}::timestamptz ORDER BY source_token LIMIT 5`;
-    result.push({ ranOn: row.ran_on, summary: row.summary,
+    result.push({ ranOn: row.ran_on, summary: row.summary, sourceIds: [...new Set(row.source_ids)],
       examples: examples.filter(e => exampleReadable(e.expires_at, now)).map(e => e.example) });
   }
   return result;

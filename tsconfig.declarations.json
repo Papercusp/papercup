@@ -502,6 +502,7 @@
     "scripts/lib/vitest-host-preflight.mjs",
     "scripts/with-documenso-sandbox.mjs",
     // Desktop portal acceptance shares parent/child native budgets with TypeScript.
-    "scripts/lib/verify-tauri-native-env.mjs"
+    "scripts/lib/verify-tauri-native-env.mjs",
+    "scripts/lib/verify-tauri-deadline.mjs"
   ]
 }
