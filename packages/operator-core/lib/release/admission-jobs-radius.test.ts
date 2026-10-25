@@ -360,6 +360,65 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(radiusFor(['wide/src/core.ts']).guarded).toEqual(census('wide'));
   }, 60_000);
 
+  it('assigns nested pinned workspace ownership without rescanning every gitlink for every repository', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'admission-radius-owners-'));
+    const count = 8;
+    const prefixes = new Set(Array.from({ length: count }, (_, i) => join(fixture, `component-${i}`) + '/'));
+    let ownerProbes = 0;
+    let spy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      init(fixture);
+      put(fixture, {
+        'package.json': JSON.stringify({ private: true, workspaces: ['pkg-a', 'component-*/inner'] }),
+        'pkg-a/package.json': JSON.stringify({ name: '@t/provider' }),
+        'pkg-a/vitest.config.ts': 'export default {};\n',
+        'pkg-a/src/core.ts': 'export const core = 1;\n',
+        'pkg-a/src/core.test.ts': "import { core } from './core';\nexport const t = core;\n",
+      });
+      for (let i = 0; i < count; i += 1) {
+        const child = join(fixture, `component-${i}`);
+        mkdirSync(child);
+        init(child);
+        put(child, {
+          'package.json': JSON.stringify({ private: true, workspaces: ['inner'] }),
+          'inner/package.json': JSON.stringify({ name: `@t/nested-${i}`, dependencies: { '@t/provider': '*' } }),
+          'inner/vitest.config.ts': 'export default {};\n',
+          'inner/src/uses.test.ts': "import { core } from '../../../pkg-a/src/core';\nexport const t = core;\n",
+        });
+        git(child, 'add', '.');
+        git(child, 'commit', '-q', '-m', 'pinned nested consumer');
+        git(fixture, 'update-index', '--add', '--cacheinfo', `160000,${git(child, 'rev-parse', 'HEAD')},component-${i}`);
+        put(child, { 'inner/src/uses.test.ts': 'BROKEN UNCOMMITTED CONSUMER' });
+      }
+      git(fixture, 'add', 'package.json', 'pkg-a');
+      git(fixture, 'commit', '-q', '-m', 'pinned workspace owners');
+      const frozen = git(fixture, 'rev-parse', 'HEAD');
+      const top = git(fixture, 'ls-tree', '-r', '--full-tree', frozen).split('\n').map((row) => {
+        const match = /^(\d{6}) (\w+) ([0-9a-f]+)\t(.+)$/.exec(row)!;
+        return { mode: match[1]!, type: match[2]!, sha: match[3]!, file: match[4]! };
+      });
+      const original = String.prototype.startsWith;
+      spy = vi.spyOn(String.prototype, 'startsWith').mockImplementation(function (this: string, prefix: string, position?: number) {
+        if (this.endsWith('/package.json') && prefixes.has(prefix)) ownerProbes += 1;
+        return original.call(this, prefix, position);
+      });
+      const radius = ordinaryAdmissionRadius({ root: fixture, commit: frozen, top, signature: [], admittedPaths: ['pkg-a/src/core.ts'] });
+      spy.mockRestore();
+      spy = undefined;
+      expect(radius).toMatchObject({ status: 'measured', reason: 'ok' });
+      expect(radius.guarded).toEqual([
+        ...Array.from({ length: count }, (_, i) => `component-${i}/inner/src/uses.test.ts`),
+        'pkg-a/src/core.test.ts',
+      ]);
+      for (let i = 0; i < count; i += 1)
+        expect(radius.legs[`component-${i}/inner/src/uses.test.ts`]).toBe(`@t/nested-${i}`);
+      expect(ownerProbes).toBeLessThan(160);
+    } finally {
+      spy?.mockRestore();
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a supplied tree from a different source identity instead of measuring it', () => {
     const top = topTree().map(entry => entry.file === 'pkg-a/lib/core.ts' ? { ...entry, sha: '0'.repeat(40) } : entry);
     expect(ordinaryAdmissionRadius({ root, commit, top, signature: [], admittedPaths: ['pkg-a/lib/core.ts'] }))

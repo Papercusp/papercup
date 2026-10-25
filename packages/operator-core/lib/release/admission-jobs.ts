@@ -340,7 +340,15 @@ export function ordinaryAdmissionRadius(input: {
       } else roots.add(repo.cwd);
     }
     for (const dir of roots) manifestAt(dir);
-    for (const repo of repos) repo.workspaceRoots = new Set([...roots].filter(dir => locate(dir + sep + 'package.json') === repo));
+    // Each pinned manifest already records its exact repository, including nested
+    // gitlinks. Assign each workspace once instead of traversing all gitlinks for
+    // every (repository, workspace) pair.
+    for (const repo of repos) repo.workspaceRoots = new Set();
+    for (const dir of roots) {
+      const repo = manifestRepos.get(dir);
+      if (!repo) throw new Error(`pinned workspace manifest unavailable: ${dir}`);
+      repo.workspaceRoots.add(dir);
+    }
     ownerMemo.clear();
     const workspaces = [...roots].map(dir => ({ dir, ...manifests.get(dir)!, name: legOf(manifests.get(dir)!.repo, dir) }));
     const byName = new Map(workspaces.map(ws => [ws.name, ws]));
