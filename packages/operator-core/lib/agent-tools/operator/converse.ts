@@ -68,6 +68,7 @@ import { classifyChatModelFailure } from '../../chat-model-failure';
 import type { AgentBackend } from '../../agent-config-constants';
 import {
   buildConverseMcpMount,
+  compactConverseSchemasForAdmission,
   CONVERSE_HOST_TRUSTS,
   selectConverseTools,
   PUBLIC_MANUAL_TOOLS,
@@ -367,15 +368,16 @@ export default defineTool({
               && projected.capabilities.every((capability) => publicPrincipal.capabilities.has(capability));
           })
           : selectedOperatorTools;
-    // The `?tools=` MCP mount loads exactly these selected schemas non-deferred.
-    // Account for the selected set at that runtime seam; promptWeight() remains
-    // the description/guidance-only metric for the assembled prompt catalog.
+    // The `?tools=` MCP mount loads exactly this selected set, and
+    // `?tools_compact=` serves its compact schemas. Admission measures the same
+    // projection the MCP host will list; promptWeight() remains the separate
+    // description/guidance-only metric for the assembled prompt catalog.
     assertSelectedInputSchemaBudget(
-      operatorTools.flatMap((fullName) => {
+      compactConverseSchemasForAdmission(operatorTools.flatMap((fullName) => {
         const canonicalName = fullName.replace(/^mcp__agentmcp__/, '');
         const projected = lookupByMcpName(canonicalName);
         return projected ? [{ name: canonicalName, inputSchema: projected.inputSchema }] : [];
-      }),
+      })),
       { label: `operator:converse ${hostTrust} tool set` },
     );
     const convId =

@@ -77,6 +77,8 @@ source "$(dirname "$BACKUP_SELF")/kopia-cache-bootstrap.sh"
 BACKUP_REPO_ROOT="$(git -C "$(dirname "$BACKUP_SELF")" rev-parse --show-toplevel 2>/dev/null || true)"
 STATUS="$DUMP/STATUS.json"
 LOG="$DUMP/db-backup.log"
+RECENT_SUCCESS_AGE_SEC=''
+RECENT_SUCCESS_WINDOW_SEC=''
 BACKUP_USER="${USER:-$(id -un)}"
 BACKUP_GROUP="$(id -gn)"
 BACKUP_HOME="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
@@ -86,6 +88,28 @@ BACKUP_HOME="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
 # successful "previous backup still running" skip.
 LOCK="${PC_BACKUP_LOCK:-$BACKUP_HOME/.cache/papercusp/db-backup.lock}"
 PSQL="sudo -n -u postgres psql -h /var/run/postgresql -d postgres -tAc"
+
+# A calendar expiration that passes while this oneshot is active can dispatch
+# immediately after the previous run exits. Suppress only that scheduled
+# catch-up after a recent successful run; manual invocations and failures still
+# execute normally.
+recent_success_is_fresh() {
+  [ "${PC_BACKUP_SCHEDULED:-0}" = 1 ] || return 1
+  local window success_epoch previous_ok now_epoch age
+  window="${PC_BACKUP_RECENT_SUCCESS_WINDOW_SEC:-2700}"
+  case "$window" in ''|*[!0-9]*|0) window=2700 ;; esac
+  [ -f "$STATUS" ] || return 1
+  previous_ok=$(sed -n 's/.*"ok": *\(true\|false\).*/\1/p' "$STATUS" 2>/dev/null | head -1)
+  [ "$previous_ok" = true ] || return 1
+  success_epoch=$(sed -n 's/.*"lastSuccessEpoch": *\([0-9][0-9]*\).*/\1/p' "$STATUS" 2>/dev/null | head -1)
+  case "$success_epoch" in ''|*[!0-9]*|0) return 1 ;; esac
+  now_epoch=$(date +%s)
+  age=$(( now_epoch - success_epoch ))
+  [ "$age" -ge 0 ] && [ "$age" -lt "$window" ] || return 1
+  RECENT_SUCCESS_AGE_SEC="$age"
+  RECENT_SUCCESS_WINDOW_SEC="$window"
+  return 0
+}
 
 # pg_dump runs as the `postgres` OS user (peer auth on the unix socket — there is
 # no backup-service PG role, and TCP is scram-only), so IT opens the output files.
@@ -210,6 +234,11 @@ fs_avail_gb() {
 EXCLUDE_RE='(_test$|_e2e|^e2e|^repro_|scratch|restore_check|gym_smoke|^template|^tmpl_|^papercusp_it_baseline_)'
 
 log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" | tee -a "$LOG" >&2; }
+
+if recent_success_is_fresh; then
+  log "scheduled backup SKIP: last successful run was ${RECENT_SUCCESS_AGE_SEC}s ago (< ${RECENT_SUCCESS_WINDOW_SEC}s); no new attempt"
+  exit 0
+fi
 
 if ! mkdir -p "$DUMP"; then
   printf '[%s] FATAL: unable to create backup dump directory %s\n' \
@@ -598,6 +627,8 @@ reap_foreign_dumps
 
 FAILED=()
 DUMPED=()
+declare -A ARTIFACT_DUMP_START_EPOCHS=()
+declare -A ARTIFACT_DUMP_SYSTEM_IDENTIFIERS=()
 
 # ── globals (roles, tablespaces) — tiny, but a restore is useless without them
 if run_bounded 120 sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
@@ -722,7 +753,7 @@ PY
 dump_one() {
   local db="$1" label="$2"; shift 2
   local out="$PGOUT/$label"
-  local prev_gb prev_kb need_gb avail_gb dumperr rc sz detail
+  local prev_gb prev_kb need_gb avail_gb dumperr rc sz detail dump_started_epoch dump_system_id
   rm_tmp "$out.tmp"
 
   # Per-database precondition. The previous successful dump of THIS database is
@@ -746,6 +777,14 @@ dump_one() {
     log "$label SKIPPED — needs ~${need_gb} GiB (last dump ${prev_gb} GiB x ${PC_BACKUP_SPACE_SAFETY}%) plus the ${PC_BACKUP_MIN_FREE_GB} GiB floor, but only ${avail_gb} GiB free; previous dump left intact"
     return 2
   fi
+
+  # The per-artifact boundary is after admission (and after guarded_dump_one
+  # acquired the migration rendezvous when required) but before pg_dump starts.
+  # A failed identity probe is recorded as empty, so readers fail closed.
+  dump_started_epoch=$(date +%s)
+  dump_system_id=$($PSQL "SELECT system_identifier FROM pg_control_system()" 2>/dev/null | tr -dc '0-9' || true)
+  ARTIFACT_DUMP_START_EPOCHS["$label"]="$dump_started_epoch"
+  ARTIFACT_DUMP_SYSTEM_IDENTIFIERS["$label"]="$dump_system_id"
 
   dumperr=$(mktemp -t "pcbackup-$label-XXXXXX.err")
   if run_bounded_watched "$TIMEOUT_SEC" "$TIMEOUT_MAX_SEC" "$out.tmp" \
@@ -1261,6 +1300,29 @@ json_arr() {
   printf '"%s",' "$@" | sed 's/,$//'
 }
 
+json_string() {
+  local value="$1"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  value=${value//$'\r'/\\r}
+  value=${value//$'\t'/\\t}
+  printf '"%s"' "$value"
+}
+
+artifact_receipts_json() {
+  local label started identity first=1
+  for label in "${DUMPED[@]}"; do
+    started="${ARTIFACT_DUMP_START_EPOCHS[$label]:-0}"
+    case "$started" in ''|*[!0-9]*) started=0 ;; esac
+    identity="${ARTIFACT_DUMP_SYSTEM_IDENTIFIERS[$label]:-}"
+    [ "$first" = 1 ] || printf ','
+    first=0
+    printf '{"artifact":%s,"dumpStartEpoch":%s,"systemIdentifier":%s}' \
+      "$(json_string "$label")" "$started" "$(json_string "$identity")"
+  done
+}
+
 # Cluster identity of what we just dumped, so a consumer can prove a database it
 # is looking at is THE SAME SERVER rather than a same-named database elsewhere.
 # The per-workspace hook uses this to stand down (host-dump-coverage.ts); it
@@ -1278,6 +1340,7 @@ SYSID=$($PSQL "SELECT system_identifier FROM pg_control_system()" 2>/dev/null | 
        || printf '  "lastSuccessEpoch": %s,\n' "$(sed -n 's/.*"lastSuccessEpoch": \([0-9]*\).*/\1/p' "$STATUS" 2>/dev/null | head -1 || echo 0)"
   printf '  "elapsedSec": %s,\n' "$ELAPSED"
   printf '  "dumped": [%s],\n' "$(json_arr ${DUMPED[@]+"${DUMPED[@]}"})"
+  printf '  "artifactReceipts": [%s],\n' "$(artifact_receipts_json)"
   printf '  "failed": [%s],\n' "$(json_arr ${FAILED[@]+"${FAILED[@]}"})"
   # WI-10003455: invalid (datconnlimit=-2) databases skipped — undumpable by
   # definition, so NOT a failure, but listed so an interrupted-DROP leak stays visible.
