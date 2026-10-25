@@ -996,7 +996,18 @@ export function requestTscService({ socketPath, request, timeoutMs = TSC_SERVICE
         try {
           const response = JSON.parse(line);
           if (response.requestId !== requestId || JSON.stringify(response.identity) !== JSON.stringify(identity)) {
-            return fail(Object.assign(new Error('service response identity mismatch'), { code: 'identity-mismatch' }));
+            // A correctly correlated refusal can carry a changed source/config
+            // identity. Retain the distinction from a reply for another request.
+            // Log field names, never source contents or the complete identity.
+            const changedIdentityFields = [...new Set([
+              ...Object.keys(identity), ...Object.keys(response.identity ?? {}),
+            ])].filter(key => JSON.stringify(identity[key]) !== JSON.stringify(response.identity?.[key]));
+            const quoted = value => JSON.stringify(typeof value === 'string' ? value.slice(0, 256) : null);
+            const detail = `expectedRequestId=${quoted(requestId)} actualRequestId=${quoted(response.requestId)}` +
+              ` changedIdentityFields=${JSON.stringify(changedIdentityFields.slice(0, 16).map(key => key.slice(0, 80)))}` +
+              ` responseKind=${quoted(response.kind)} serverReason=${quoted(response.reason)}` +
+              ` serverDetail=${quoted(response.detail)}`;
+            return fail(Object.assign(new Error(`service response identity mismatch: ${detail}`), { code: 'identity-mismatch' }));
           }
           if (response.kind === 'progress' && ['accepted', 'queued'].includes(response.phase)) {
             onProgress(response);

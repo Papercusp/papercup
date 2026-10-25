@@ -34,22 +34,34 @@ export interface FirstPartyCallersProgress {
 
 if (!process.send) throw new Error('first-party-callers.worker must be forked with an IPC channel');
 
-const job = await new Promise<FirstPartyCallersJob>((resolve) => process.once('message', resolve));
+interface ReuseSourceJob { kind: 'reuse-source-population'; root: string; start: string; end: string }
+const job = await new Promise<FirstPartyCallersJob | ReuseSourceJob>((resolve) => process.once('message', resolve));
 const started = Date.now();
 const progress = (phase: FirstPartyCallersProgress['phase']) => process.send!({
   kind: 'first-party-callers-progress', phase, elapsedMs: Date.now() - started,
 } satisfies FirstPartyCallersProgress);
 progress('job-received');
-let result: FirstPartyCallersAnswer;
-try {
+let result: unknown;
+if ('kind' in job && job.kind === 'reuse-source-population') {
+  const sourceJob = job as ReuseSourceJob;
+  try {
+    const { collectReuseSourcePopulation } = await import('./reuse-measurement.ts');
+    result = { kind: job.kind, ok: true, population: await collectReuseSourcePopulation(sourceJob.root, sourceJob.start, sourceJob.end) };
+  } catch (error) {
+    result = { kind: job.kind, ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+} else {
+  const callersJob = job as FirstPartyCallersJob;
+  try {
   progress('typescript-load');
-  const ts = loadVendoredTypescript(job.vendorDir);
+  const ts = loadVendoredTypescript(callersJob.vendorDir);
   progress('compiler-query');
-  result = firstPartyCallers({ ...job, ts });
+  result = firstPartyCallers({ ...callersJob, ts });
 } catch (error) {
   // Loading TypeScript is the one step firstPartyCallers does not guard itself.
   const why = error instanceof Error ? error.message : String(error);
-  result = failedCallersAnswer(job.name, `could not load the vendored TypeScript from ${job.vendorDir}: ${why}`, started, Date.now(), job);
+  result = failedCallersAnswer(callersJob.name, `could not load the vendored TypeScript from ${callersJob.vendorDir}: ${why}`, started, Date.now(), callersJob);
+  }
 }
 await new Promise<void>((resolve, reject) => process.send!(result, (error: Error | null) => (error ? reject(error) : resolve())));
 process.disconnect();

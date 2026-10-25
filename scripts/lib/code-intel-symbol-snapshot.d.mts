@@ -2,16 +2,15 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/lib/code-intel-symbol-snapshot.mjs and regenerate.
 /** Inputs are the exact tracked source cohort and resolver already used by dependency edges.
- * @param {{ files: string[], readSource: (path: string) => string | null, resolveModule: (importer: string, specifier: string) => string | null, workspacePackages?: Array<[string, string[]]> }} input
+ * @param {{ files: string[], readSource: (path: string) => string | null, resolveModule: (importer: string, specifier: string) => string | null, workspacePackages?: Array<[string, string[]]>, includeCallCensus?: boolean }} input
  */
-export function buildSymbolSnapshot({ files, readSource, resolveModule, workspacePackages }: {
+export function buildSymbolSnapshot({ files, readSource, resolveModule, workspacePackages, includeCallCensus }: {
     files: string[];
     readSource: (path: string) => string | null;
     resolveModule: (importer: string, specifier: string) => string | null;
     workspacePackages?: Array<[string, string[]]>;
+    includeCallCensus?: boolean;
 }): {
-    schema: string;
-    knowledge: string;
     limitations: string[];
     stats: {
         files: number;
@@ -21,6 +20,9 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule, workspac
         truncated: boolean;
     };
     symbols: any[];
+    callCensus?: any[] | undefined;
+    schema: string;
+    knowledge: string;
 };
 /** Reuse the dependency producer's resolver by deriving one synthetic import through it. */
 export function relativeSymbolModule(importer: any, specifier: any, fileSet: any): string | null;

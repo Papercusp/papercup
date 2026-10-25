@@ -4,9 +4,13 @@
  * remains a separate caller responsibility.
  */
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import type { Sql } from 'postgres';
 import { wilsonInterval } from '@papercusp/bench-metrics';
 import { canonicalPushActivityTool, pushActivityRepoPath, shellSearchPatterns } from './native-adoption';
+import { buildCloneIndex } from './clone-index';
+import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
+import { eligibleHistoryPath } from './change-history';
 
 export const REUSE_OBSERVATION_MS = 30 * 60_000;
 export const REUSE_OBSERVATION_INVOCATIONS = 20;
@@ -200,6 +204,178 @@ export function measureReuseMetrics(input: {
   };
 }
 
+export type ReuseMetricPopulation = Parameters<typeof measureReuseMetrics>[0];
+
+/** Exact source population plus net added line identities, never a saved ratio.
+ * Reuse the maintained clone floor/normalization and syntax-bound call resolver.
+ * Non-JS/TS additions or unavailable clone sources keep redundancy unknown.
+ */
+export function buildReuseSourcePopulation(input: {
+  sources: readonly { path: string; source: string }[];
+  addedLines: Readonly<Record<string, readonly number[]>>;
+  complete: boolean;
+}) {
+  const sources = new Map(input.sources.filter(s => eligibleHistoryPath(s.path)).map(s => [s.path, s.source]));
+  if (sources.size !== input.sources.filter(s => eligibleHistoryPath(s.path)).length) throw new Error('Duplicate source identity');
+  const added = new Map(Object.entries(input.addedLines).filter(([path]) => eligibleHistoryPath(path)).map(([path, lines]) => {
+    if (lines.some(n => !Number.isSafeInteger(n) || n < 1)) throw new Error('Positive added line identities required');
+    return [path, new Set(lines)] as const;
+  }));
+  const index = buildCloneIndex([...sources].filter(([path]) => /\.tsx?$/.test(path)).map(([path, source]) => ({ path, source })));
+  const duplicated = new Set<string>();
+  const addedIn = (fn: { path: string; start: number; end: number }) => {
+    const source = sources.get(fn.path)!;
+    const start = source.slice(0, fn.start).split('\n').length;
+    const end = source.slice(0, Math.max(fn.start, fn.end - 1)).split('\n').length;
+    return [...(added.get(fn.path) ?? [])].filter(n => n >= start && n <= end);
+  };
+  for (const family of index.families('renamed', { crossFile: false, includeTests: true })) {
+    // Preserve an existing copy where possible. If every copy is added, the
+    // lexicographically first location is the one necessary implementation.
+    const members = [...family.members].sort((a, b) => Number(addedIn(a).length > 0) - Number(addedIn(b).length > 0)
+      || a.path.localeCompare(b.path) || a.start - b.start);
+    for (const member of members.slice(1)) for (const n of addedIn(member)) duplicated.add(`${member.path}:${n}`);
+  }
+  const files = [...sources.keys()].filter(path => /\.[cm]?[jt]sx?$/.test(path)), fileSet = new Set(files);
+  const snapshot = buildSymbolSnapshot({ files, readSource: path => sources.get(path) ?? null,
+    resolveModule: (path, specifier) => relativeSymbolModule(path, specifier, fileSet), includeCallCensus: true });
+  return { addedNonGeneratedLines: [...added.values()].reduce((n, lines) => n + lines.size, 0),
+    duplicateAddedLines: duplicated.size,
+    lineCensusComplete: input.complete && index.getFiles().every(file => file.status === 'indexed' || file.status === 'excluded')
+      && [...added.keys()].every(path => /\.tsx?$/.test(path)
+      && index.getFile(path)?.status === 'indexed'),
+    calls: (snapshot.callCensus ?? []) as ReuseMetricPopulation['calls'],
+    callCensusComplete: input.complete && snapshot.stats.skippedFiles === 0 && !snapshot.stats.truncated,
+    method: { cloneVersion: index.version, callKnowledge: snapshot.knowledge,
+      sourcePopulation: [...sources.keys()].sort(), addedLinePopulation: [...added].map(([path, lines]) => ({ path, lines: [...lines].sort((a,b) => a-b) })),
+      limitations: snapshot.limitations } };
+}
+
+/** Bounded immutable Git capture. Reading working-tree bytes would silently mix
+ * today's source with yesterday's scheduled measurement window. Gitlinks remain
+ * explicit unknowns here; no submodule's mutable checkout is substituted.
+ */
+export async function collectReuseSourcePopulation(root: string, start: string, end: string) {
+  if (time(start) >= time(end)) throw new Error('Valid half-open source window required');
+  const git = (args: string[], input?: string) => new Promise<string>((resolve, reject) => {
+    const child = execFile('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 30_000,
+      maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } },
+    (error, stdout) => error ? reject(error) : resolve(stdout));
+    child.stdin?.end(input);
+  });
+  const commitAt = async (at: string) => (await git(['rev-list', '--first-parent', '-1', `--before=${new Date(time(at) - 1).toISOString()}`, 'HEAD'])).trim();
+  const [base, commit] = await Promise.all([commitAt(start), commitAt(end)]);
+  if (!base || !commit || await git(['rev-parse', '--is-shallow-repository']).then(x => x.trim()) !== 'false')
+    throw new Error('Complete source-window ancestry unavailable');
+  const tree = (await git(['ls-tree', '-rz', '--full-tree', commit])).split('\0').filter(Boolean).map(line => {
+    const tab = line.indexOf('\t'), [mode, kind, blob] = line.slice(0, tab).split(' ');
+    return { mode, kind, blob, path: line.slice(tab + 1) };
+  });
+    const selected = tree.filter(s => s.kind === 'blob' && /^(100644|100755)$/.test(s.mode!)
+      && eligibleHistoryPath(s.path) && /\.[cm]?[jt]sx?$/.test(s.path));
+  if (selected.length > 25_000) throw new Error('Source population exceeds bounded collector');
+  const sources: { path: string; source: string }[] = [];
+  let sourceBytes = 0;
+  for (let i = 0; i < selected.length; i += 16) {
+    const batch = selected.slice(i, i + 16);
+    const out = Buffer.from(await git(['cat-file', '--batch'], batch.map(s => s.blob).join('\n') + '\n'));
+    let offset = 0;
+    for (const entry of batch) {
+      const endHeader = out.indexOf(10, offset), [blob, kind, rawSize] = out.subarray(offset, endHeader).toString().split(' '), size = Number(rawSize);
+      if (blob !== entry.blob || kind !== 'blob' || !Number.isSafeInteger(size) || size < 0 || size > 2_000_000
+        || out[endHeader + 1 + size] !== 10) throw new Error('Incomplete bounded Git blob population');
+      sourceBytes += size;
+      if (sourceBytes > 128 * 1024 * 1024) throw new Error('Source population exceeds bounded collector bytes');
+      sources.push({ path: entry.path, source: out.subarray(endHeader + 1, endHeader + 1 + size).toString() });
+      offset = endHeader + 2 + size;
+    }
+  }
+  const paths = (await git(['diff', '--name-only', '-z', '--no-renames', base, commit])).split('\0').filter(eligibleHistoryPath);
+  const addedLines: Record<string, number[]> = {};
+  for (const path of paths) {
+    const patch = await git(['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--unified=0', base, commit, '--', path]);
+    const lines: number[] = [];
+    for (const match of patch.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
+      const first = Number(match[1]), count = match[2] === undefined ? 1 : Number(match[2]);
+      for (let n = first; n < first + count; n++) lines.push(n);
+    }
+    if (patch.includes('Binary files ')) throw new Error('Binary additions cannot be counted as source lines');
+    if (lines.length) addedLines[path] = lines;
+  }
+  return { ...buildReuseSourcePopulation({ sources, addedLines, complete: !tree.some(s => s.kind === 'commit') }),
+    sourceRefs: [`git:${base}`, `git:${commit}`], base, commit };
+}
+
+/** A source-wide parse cannot run on the operator event loop. Reuse the
+ * maintained finite worker; a timeout/failure is unknown, never an inline retry.
+ */
+export async function collectReuseSourcePopulationOffthread(root: string, start: string, end: string) {
+  const { codeIntelWorkerRequest } = await import('./first-party-callers-offthread');
+  type Reply = { kind: 'reuse-source-population'; ok: boolean;
+    population?: Awaited<ReturnType<typeof collectReuseSourcePopulation>>; error?: string };
+  const result = await codeIntelWorkerRequest<Reply>({ kind: 'reuse-source-population', root, start, end }, {
+    accept: (value: unknown): value is Reply => typeof value === 'object' && value !== null
+      && (value as Reply).kind === 'reuse-source-population' && typeof (value as Reply).ok === 'boolean',
+    fail: error => ({ kind: 'reuse-source-population', ok: false, error }),
+  }, { sourceLoader: true });
+  if (!result.ok || !result.population) throw new Error(result.error ?? 'Worker source population unavailable');
+  return result.population;
+}
+
+/** Successful native searches and writes are attributed only to the current,
+ * exact assignment interval. Missing complete client telemetry cannot vote no.
+ */
+export async function collectRecordedReuseMetrics(sql: Sql, scope: {
+  workspaceId: string; harnessSlug: string; windowStart: string; windowEnd: string;
+}, loadSource?: () => ReturnType<typeof collectReuseSourcePopulation>,
+completeActivityCensuses: readonly { ref: string; owner: string; start: string; end: string }[] = []) {
+  const { loadHarnessRegistry } = await import('../harness-registry');
+  const root = loadSource ? null : (await loadHarnessRegistry(scope.workspaceId)).projects.find(p => p.slug === scope.harnessSlug)?.path;
+  if (!loadSource && !root) throw new Error('Registered repository required');
+  const source = await (loadSource ? loadSource() : collectReuseSourcePopulationOffthread(root!, scope.windowStart, scope.windowEnd));
+  const rows = await sql<{ id: string; taken_by: string; taken_at: string | Date; ambiguous: boolean; activities: ReuseMeasurementActivity[] }[]>`
+    SELECT w.feature_id AS id, w.taken_by, w.taken_at,
+      EXISTS(SELECT 1 FROM harness_shared.work_items other WHERE other.workspace_id=w.workspace_id
+        AND other.harness_slug=w.harness_slug AND other.taken_by=w.taken_by AND other.feature_id<>w.feature_id) AS ambiguous,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('id', a.id::text, 'workspaceId', a.workspace_id,
+        'owner', a.owner_id, 'at', a.created_at, 'tool', a.tool_name, 'status', a.status, 'detail', a.detail)
+        ORDER BY a.created_at, a.id) FROM harness_shared.agent_activity a
+        WHERE a.workspace_id = w.workspace_id AND a.owner_id = w.taken_by AND a.harness_slug = w.harness_slug
+          AND a.kind = 'tool' AND a.phase = 'post' AND a.created_at >= w.taken_at
+          AND a.created_at < ${scope.windowEnd}::timestamptz), '[]'::jsonb) AS activities
+    FROM harness_shared.work_items w WHERE w.workspace_id = ${scope.workspaceId} AND w.harness_slug = ${scope.harnessSlug}
+      AND w.taken_by IS NOT NULL AND w.taken_at >= ${scope.windowStart}::timestamptz
+      AND w.item_kind IN ('change','bug','feature')
+      AND w.taken_at < ${scope.windowEnd}::timestamptz ORDER BY w.feature_id LIMIT 1001`;
+  if (rows.length > 1000) throw new Error('Assignment census exceeds bounded collector');
+  const workItems = rows.map(row => {
+    const writes = row.activities.filter(a => a.status === 'ok' && /^(Edit|Write|MultiEdit|mcp__papercusp-su__capability_(edit|write))$/.test(canonicalPushActivityTool(a.tool)));
+    const searches = row.activities.filter(a => a.status === 'ok' && (grepTools.has(canonicalPushActivityTool(a.tool))
+      || ['graph:query', 'lsp:query', 'code:pack'].includes(a.tool.replace(/^mcp__papercusp[-_]su__/, '').replace('_', ':'))
+      || shellTools.has(canonicalPushActivityTool(a.tool)) && shellSearchPatterns(String(a.detail?.command ?? a.detail?.cmd ?? '')).length > 0));
+    const firstWriteAt = writes[0] ? new Date(time(writes[0].at)).toISOString() : null;
+    const successfulSearchAt = searches[0] ? new Date(time(searches[0].at)).toISOString() : null;
+    const census = completeActivityCensuses.some(c => c.ref.trim() && c.owner === row.taken_by
+      && time(c.start) <= new Date(row.taken_at).getTime() && time(c.end) >= time(scope.windowEnd));
+    return { id: row.id, eligible: true, firstWriteAt, successfulSearchAt,
+      complete: !row.ambiguous && census && firstWriteAt !== null };
+  });
+  const population: ReuseMetricPopulation = { ...source, workItems };
+  const sourceRefs = [...source.sourceRefs, ...completeActivityCensuses.map(c=>c.ref),
+    ...rows.map(r => `assignment:${r.id}:${new Date(r.taken_at).toISOString()}`),
+    ...rows.flatMap(r => r.activities.map(a => `agent-activity:${a.id}`))];
+  const payload = JSON.stringify({ schema: 'reuse-metrics-v1', harness: scope.harnessSlug,
+    windowStart: new Date(time(scope.windowStart)).toISOString(), windowEnd: new Date(time(scope.windowEnd)).toISOString(),
+    sourceRefs, population, method: source.method });
+  const subject = JSON.stringify({ schema: 'reuse-metrics-ref-v1', harness: scope.harnessSlug,
+    windowStart: new Date(time(scope.windowStart)).toISOString(), windowEnd: new Date(time(scope.windowEnd)).toISOString(),
+    sha256: createHash('sha256').update(payload).digest('hex') });
+  await sql`INSERT INTO harness_shared.code_intel_pushes (workspace_id, owner_id, turn_id, leg, subject, suggested_call, chars)
+    VALUES (${scope.workspaceId}, 'system:reuse-measurement', ${scope.windowEnd}, 'reuse-metrics', ${subject}, ${payload}, 0)
+    ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING`;
+  return { population, sourceRefs };
+}
+
 /** Efficacy decisions preserve both outcomes and both arms; unknowns never vote. */
 export function evaluateReuseProvider(input: {
   provider: string; workspaceId: string; experimentStartedAt: string; now: string; windows: readonly ReuseMeasuredWindow[];
@@ -235,6 +411,30 @@ export function evaluateReuseProvider(input: {
     evidenceIds: distinct.map(w => w.exposure.id).sort(),
     reason: !mature ? 'Insufficient age or observed population; retain provider.'
       : ineffective ? 'Treatment has no improvement over holdout for both Wilson95% outcomes.' : 'Disable condition not established.' };
+}
+
+/** Apply only the recomputed mature decision, preserving the exact evidence and
+ * reversal before changing the maintained flag. A saved recommendation is never
+ * sufficient authority for an action. Unknown or beneficial data does no write.
+ */
+export async function applyReuseProviderDecision(sql: Sql, input: Parameters<typeof evaluateReuseProvider>[0],
+  setEnabled?: (provider: string, enabled: boolean) => Promise<{ ok: boolean; reason?: string }>) {
+  const decision = evaluateReuseProvider(input);
+  if (decision.action !== 'disable') return { ...decision, applied: false };
+  const { REUSE_PROVIDER_FLAGS } = await import('./reuse-brief-providers');
+  if (!Object.hasOwn(REUSE_PROVIDER_FLAGS, input.provider)) throw new Error('Registered provider required');
+  const flag = REUSE_PROVIDER_FLAGS[input.provider as keyof typeof REUSE_PROVIDER_FLAGS];
+  const payload = JSON.stringify({ schema: 'reuse-provider-action-v1', workspaceId: input.workspaceId,
+    at: input.now, decision, reversal: { flag, enabled: true } });
+  const subject = JSON.stringify({ schema: 'reuse-provider-action-ref-v1', provider: input.provider,
+    sha256: createHash('sha256').update(payload).digest('hex') });
+  await sql`INSERT INTO harness_shared.code_intel_pushes (workspace_id, owner_id, turn_id, leg, subject, suggested_call, chars)
+    VALUES (${input.workspaceId}, 'system:reuse-measurement', ${input.now}, 'reuse-provider-action', ${subject}, ${payload}, 0)
+    ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING`;
+  const result = await (setEnabled ? setEnabled(input.provider, false)
+    : (await import('@papercusp/flags/server')).setFlagOverride(flag, false));
+  if (!result.ok) throw new Error(`Provider disable failed: ${result.reason ?? 'unavailable flag store'}`);
+  return { ...decision, applied: true, reversal: { flag, enabled: true } };
 }
 
 /** Read fixture or collector records from the EXISTING ledger, under exact scope.
@@ -378,28 +578,41 @@ export async function measureRecordedReuseMetric(sql: Sql, scope: {
       start: scope.windowStart, end: scope.windowEnd })).filter(w => collected.windows.some(row => row.exposure.id === w.exposure.id));
     const byProvider = summarizeReuseWindows(windows), providers = Object.keys(REUSE_PROVIDER_POLICY);
     const notObserved = providers.filter(provider => !byProvider[provider]);
-    const recommendations = providers.map(provider => {
+    const recommendations = await Promise.all(providers.map(async provider => {
       const first = windows.filter(w => w.exposure.provider === provider).map(w => w.exposure.at).sort()[0] ?? scope.windowEnd;
-      return { ...evaluateReuseProvider({ workspaceId: scope.workspaceId, provider, windows,
+      return { ...await applyReuseProviderDecision(sql, { workspaceId: scope.workspaceId, provider, windows,
         experimentStartedAt: first, now: scope.windowEnd }),
       reversal: { flag: REUSE_PROVIDER_FLAGS[provider as keyof typeof REUSE_PROVIDER_FLAGS], enabled: true } };
-    });
+    }));
     return { verdict: notObserved.length || collected.rejected.length ? 'unknown' : 'pass',
       detail: JSON.stringify({ scope, byProvider, notObserved, recommendations, rejected: collected.rejected,
         sourceRefs: windows.map(w => w.exposure.id),
         cannotObserve: ['No independent client receipt source is registered; delivery remains unknown.',
           'Activity ledger completeness is not certified; absent follow-through remains unknown.'] }) };
   }
-  const rows = await sql<{ subject: string }[]>`SELECT subject FROM harness_shared.code_intel_pushes
+  const readPopulation = async () => await sql<{ subject: string; suggested_call: string | null }[]>`SELECT subject, suggested_call FROM harness_shared.code_intel_pushes
     WHERE workspace_id = ${scope.workspaceId} AND leg = 'reuse-metrics' AND chars = 0
-      AND subject::jsonb->>'schema' = 'reuse-metrics-v1'
-      AND subject::jsonb->>'harness' = ${scope.harnessSlug}
+      AND subject::jsonb->>'schema' IN ('reuse-metrics-v1', 'reuse-metrics-ref-v1')
+      AND subject::jsonb->>'harness' = ${scope.harnessSlug!}
       AND subject::jsonb->>'windowStart' = ${new Date(time(scope.windowStart)).toISOString()}
       AND subject::jsonb->>'windowEnd' = ${new Date(time(scope.windowEnd)).toISOString()}
     ORDER BY id DESC LIMIT 1`;
+  let rows = await readPopulation();
+  if (!rows.length) {
+    try {
+      await collectRecordedReuseMetrics(sql, { ...scope, harnessSlug: scope.harnessSlug });
+      rows = await readPopulation();
+    } catch (error) { return { verdict: 'unknown', detail: `Raw collection unavailable: ${error instanceof Error ? error.message : 'unknown cause'}` }; }
+  }
   if (!rows.length) return { verdict: 'unknown', detail: 'No raw exact-window population has been recorded; absence is not zero.' };
   try {
-    const record = JSON.parse(rows[0]!.subject);
+    const envelope = JSON.parse(rows[0]!.subject), raw = rows[0]!.suggested_call;
+    if (envelope.schema === 'reuse-metrics-ref-v1' && (!raw
+      || createHash('sha256').update(raw).digest('hex') !== envelope.sha256)) throw new Error('Raw population digest mismatch');
+    const record = envelope.schema === 'reuse-metrics-ref-v1' ? JSON.parse(raw!) : envelope;
+    if (record.schema !== 'reuse-metrics-v1' || record.harness !== scope.harnessSlug
+      || record.windowStart !== new Date(time(scope.windowStart)).toISOString()
+      || record.windowEnd !== new Date(time(scope.windowEnd)).toISOString()) throw new Error('Raw population scope mismatch');
     if (!Array.isArray(record.sourceRefs) || !record.sourceRefs.length
       || !record.sourceRefs.every((ref: unknown) => typeof ref === 'string' && ref.trim())
       || !Array.isArray(record.population?.workItems) || !Array.isArray(record.population?.calls)

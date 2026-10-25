@@ -25,11 +25,17 @@ const identifiers = node => ts.isIdentifier(node) ? [node.text] : ts.isObjectBin
   ? node.elements.flatMap(part => ts.isBindingElement(part) ? identifiers(part.name) : []) : [];
 
 /** Inputs are the exact tracked source cohort and resolver already used by dependency edges.
- * @param {{ files: string[], readSource: (path: string) => string | null, resolveModule: (importer: string, specifier: string) => string | null, workspacePackages?: Array<[string, string[]]> }} input
+ * @param {{ files: string[], readSource: (path: string) => string | null, resolveModule: (importer: string, specifier: string) => string | null, workspacePackages?: Array<[string, string[]]>, includeCallCensus?: boolean }} input
  */
-export function buildSymbolSnapshot({ files, readSource, resolveModule, workspacePackages = [] }) {
+export function buildSymbolSnapshot({ files, readSource, resolveModule, workspacePackages = [], includeCallCensus = false }) {
   const units = new Map();
   const symbols = new Map();
+  /** Optional measurement population; does not enlarge the ordinary brief snapshot. */
+  const callCensus = [];
+  const recordCall = (call, target) => {
+    if (includeCallCensus) callCensus.push({ id: `${call.path}:${call.line}:${call.column}:${callCensus.length}`,
+      from: call.path, to: target?.path ?? null, resolved: !!target });
+  };
   const workspaces = workspacePackages.flatMap(([name, dirs]) => dirs.map(dir => ({ name, dir })))
     .sort((a, b) => b.dir.length - a.dir.length);
   const stats = { files: 0, skippedFiles: 0, unresolvedCalls: 0, resolvedCalls: 0, truncated: false };
@@ -88,7 +94,7 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule, workspac
         if (ts.isIdentifier(expression)) unit.calls.push({ local: expression.text, ...site(expression) });
         else if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression))
           unit.calls.push({ local: expression.expression.text, member: expression.name.text, ...site(expression.name) });
-        else stats.unresolvedCalls++;
+        else { stats.unresolvedCalls++; recordCall(site(expression), null); }
       }
       ts.forEachChild(node, walk);
     };
@@ -123,13 +129,14 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule, workspac
     }
   }
   for (const unit of units.values()) for (const call of unit.calls) {
-    if (unit.shadows.has(call.local)) { stats.unresolvedCalls++; continue; }
+    if (unit.shadows.has(call.local)) { stats.unresolvedCalls++; recordCall(call, null); continue; }
     const binding = unit.imports.get(call.local);
     const values = call.member
       ? binding?.name === '*' ? units.get(binding.target)?.exports.get(call.member) : null
       : unit.locals.get(call.local) ?? imported(binding);
-    if (!values || values.size !== 1) { stats.unresolvedCalls++; continue; }
+    if (!values || values.size !== 1) { stats.unresolvedCalls++; recordCall(call, null); continue; }
     const symbol = symbols.get([...values][0]);
+    recordCall(call, symbol);
     if (!symbol || !visible.has(symbol.id)) continue;
     if (symbol.callers.length >= 500) { stats.truncated = true; continue; }
     symbol.callers.push({ path: call.path, line: call.line, column: call.column, sha256: call.sha256,
@@ -139,6 +146,7 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule, workspac
     if (unit.manifest !== null) symbol.sources.set(unit.manifest.path, unit.manifest);
   }
   return { schema: 'code-intel-symbol-snapshot-v1', knowledge: 'syntax-bound',
+    ...(includeCallCensus ? { callCensus } : {}),
     limitations: ['JS/TS tracked parseable files only.', 'Dynamic dispatch, shadowed bindings, external packages and unresolved imports are unknown; counts are lower bounds.',
       'No runtime execution or compiler type-resolution is asserted.'], stats,
     symbols: [...symbols.values()].filter(symbol => visible.has(symbol.id)).map(symbol => ({ ...symbol,

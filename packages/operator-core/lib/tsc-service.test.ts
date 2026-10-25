@@ -738,7 +738,10 @@ describe('focused service protocol', () => {
       });
     await withSocket((request, socket) => socket.end(frame(request, { ...success, requestId: 'another-request' })),
       async ({ socketPath, request }) => {
-        await expect(requestTscService({ socketPath, request })).rejects.toMatchObject({ code: 'identity-mismatch' });
+        await expect(requestTscService({ socketPath, request })).rejects.toMatchObject({
+          code: 'identity-mismatch',
+          message: expect.stringContaining('expectedRequestId="protocol-test" actualRequestId="another-request" changedIdentityFields=[]'),
+        });
       });
   });
 
@@ -755,10 +758,37 @@ describe('focused service protocol', () => {
     for (const key of ['compilerVersion', 'compilerArtifactsSha256', 'serviceSourceSha256', 'projectConfigSha256', 'namedSources']) {
       await withSocket((request, socket) => socket.end(frame(request, { ok: true,
         identity: { ...request.identity, [key]: 'different' } })), async ({ socketPath, request }) => {
-        await expect(requestTscService({ socketPath, request })).rejects.toMatchObject({ code: 'identity-mismatch' });
+        await expect(requestTscService({ socketPath, request })).rejects.toMatchObject({
+          code: 'identity-mismatch',
+          message: expect.stringContaining(`expectedRequestId="protocol-test" actualRequestId="protocol-test" changedIdentityFields=["${key}"]`),
+        });
       });
     }
   });
+
+  it('identifies a real compiler source-drift refusal without blaming request correlation', async () => {
+    await withCompiler(async ({ root, socketPath, request }) => {
+      const identity = tscServiceIdentity(request);
+      await expect(requestTscService({ socketPath, request: { ...request, identity } }))
+        .resolves.toMatchObject({ ok: true, checked: ['a.ts'], errorCount: 0 });
+      writeFileSync(join(root, 'a.ts'), 'export const a = 2;');
+      await expect(requestTscService({ socketPath, request: { ...request, identity } })).rejects.toMatchObject({
+        code: 'identity-mismatch',
+        message: expect.stringContaining('expectedRequestId="live-protocol" actualRequestId="live-protocol" changedIdentityFields=["namedSources"] responseKind="result" serverReason="identity-mismatch"'),
+      });
+      const phases: string[] = [];
+      await expect(requestTscService({ socketPath, request,
+        onProgress: progress => {
+          phases.push(progress.phase);
+          writeFileSync(join(root, 'a.ts'), 'export const a = 3;');
+        },
+      })).rejects.toMatchObject({
+        code: 'identity-mismatch',
+        message: expect.stringContaining('changedIdentityFields=["namedSources"] responseKind="result" serverReason="identity-mismatch" serverDetail="source or config changed during the request"'),
+      });
+      expect(phases).toEqual(['accepted']);
+    });
+  }, 15_000);
 
   it('refuses oversized scopes with an explicit full-compile fallback', async () => {
     await withCompiler(async ({ socketPath, request, root }) => {

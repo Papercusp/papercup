@@ -113,14 +113,45 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
         workspace, planSlug, planItem, added, persisted,
       }));
   }
-  const created = await call('work_items:create', { harness: workspace, kind: 'change',
-    title: claimOnly ? 'Controlled CLI P010 claim composition' : 'Private native P010 completion consequences',
-    assign_to: 'self', state: 'wip',
-    changeKinds: ['logic'], changeKindReason: 'Private source fixture validated through an actual complete test population.',
-    ...(claimOnly ? { plan_item: { slug: planSlug, item: planItem! } } : {}),
-    payload: { paths: ['src/target.ts'] }, projection: { pick: ['results[].id', 'results[].item.id'] } });
-  const id = created.results?.[0]?.id ?? created.results?.[0]?.item?.id;
-  assert(id, JSON.stringify(created));
+  const expectedProviders = ['clones', 'cochange', 'provenance', 'sql', 'coverage'];
+  const cohortCandidates: { id: string; cohorts: Record<string, string> }[] = [];
+  let id: string | undefined;
+  // Explicit controlled-treatment selection: retain actual persisted identities,
+  // never override the production selector or mislabel held-out advice as failure.
+  for (let attempt = 0; attempt < (claimOnly ? 16 : 1); attempt++) {
+    if (claimOnly && attempt > 0) {
+      const added = await call('plans:add-item', { harness: workspace, slug: planSlug, phase: 'Phase 1 — Fixture',
+        text: `Inspect src/target.ts controlled treatment candidate ${attempt + 1}`, importance: 'normal',
+        projection: { pick: ['results[].ok', 'results[].itemId'] } });
+      planItem = added.results?.[0]?.itemId;
+      assert.equal(added.results?.[0]?.ok, true, JSON.stringify(added));
+      const { getPlanItemRow } = await import('../../agent-tools/plans/source.ts');
+      const persisted = await getPlanItemRow(planSlug, { workspaceId: workspace, harnessSlug: workspace });
+      assert(planItem && persisted?.items.some(item => item.id === planItem), 'Candidate anchor must persist');
+    }
+    const created = await call('work_items:create', { harness: workspace, kind: 'change',
+      title: claimOnly ? `Controlled CLI P010 claim composition candidate ${attempt + 1}` : 'Private native P010 completion consequences',
+      assign_to: 'self', state: 'wip',
+      changeKinds: ['logic'], changeKindReason: 'Private source fixture validated through an actual complete test population.',
+      ...(claimOnly ? { force: true, plan_item: { slug: planSlug, item: planItem! } } : {}),
+      payload: { paths: ['src/target.ts'] }, projection: { pick: ['results[].id', 'results[].item.id'] } });
+    const candidate = created.results?.[0]?.id ?? created.results?.[0]?.item?.id;
+    assert(candidate, JSON.stringify(created));
+    if (!claimOnly) { id = candidate; break; }
+    const { reuseHoldout } = await import('../reuse-measurement.ts');
+    const cohorts = Object.fromEntries(expectedProviders.map(provider =>
+      [provider, reuseHoldout(candidate, provider) ? 'holdout' : 'treatment']));
+    cohortCandidates.push({ id: candidate, cohorts });
+    console.log('NATIVE_REUSE_COHORT_CANDIDATE=' + JSON.stringify({ id: candidate, cohorts }));
+    if (Object.values(cohorts).every(cohort => cohort === 'treatment')) { id = candidate; break; }
+    const dropped = await call('work_items:complete', { id: candidate, harness: workspace, state: 'dropped', assumptions: 'none',
+      completion: { summary: 'Discarded controlled treatment candidate because its actual provider cohort contains a holdout.',
+        testsRun: 'Maintained reuseHoldout for five required providers', testResult: JSON.stringify(cohorts),
+        verifiedHow: 'Hash of actual persisted work-item identity before explicit claim', filesChanged: [] },
+      projection: { pick: ['results[].ok', 'results[].error'] } });
+    assert.equal(dropped.results?.[0]?.ok, true, JSON.stringify(dropped));
+  }
+  assert(id, 'No five-provider treatment fixture within bounded candidate budget: ' + JSON.stringify(cohortCandidates));
   // The real claim primes the cooperative snapshot loader before tests run.
   // Keep the complete response as fixture evidence without certifying R20's
   // separate provenance/planning cohort from this completion-only scenario.
@@ -230,7 +261,7 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
       try { const row = JSON.parse(line); return row.provider ? [row] : []; } catch { return []; }
     });
     const { REUSE_PROVIDER_POLICY, briefCodePoints } = await import('../reuse-brief-providers.ts');
-    const expected = ['clones', 'cochange', 'provenance', 'sql', 'coverage'];
+    const expected = expectedProviders;
     assert.deepEqual(contributions.map((row: { provider: string }) => row.provider), expected, JSON.stringify(response));
     for (const row of contributions) {
       const policy = REUSE_PROVIDER_POLICY[row.provider as keyof typeof REUSE_PROVIDER_POLICY];
@@ -247,7 +278,7 @@ export async function runNativeReuseJourney({ call, workspace, root, owner, repo
     assert(finalIssued.every(row => JSON.parse(row.subject).sourceVersion === brief.sourceFingerprint
       && JSON.parse(row.subject).indexVersion && row.chars > 0));
     console.log('NATIVE_REUSE_CLAIM_API_PROOF=' + JSON.stringify({ workspace, fixtureWorkItem: id,
-      planSlug, baseline, handlerHash, sourceFingerprint: brief.sourceFingerprint, controlledSession,
+      planSlug, baseline, handlerHash, sourceFingerprint: brief.sourceFingerprint, controlledSession, cohortCandidates,
       transport: 'real-cli-http', expectedProviders: expected, response, base, issued: finalIssued,
       testRunIds: run.testRunIds, runGroupId: run.runId,
       scope: 'controlled private current-source CLI fixture; no model invocation, live user census or final shipment' }));

@@ -1,12 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { setupPlanPgFixture, type PlanPgFixture } from '../agent-tools/plans/__tests__/_pg-tool-fixture';
 import { readNativePushOutcomes } from './native-adoption';
 import { getRegisteredInstrument } from '../rubric-instrument-registry';
 import { resolveScorecardInstrumentSnapshots } from '../scorecards';
 import type { Rubric } from '../rubrics';
 import { collectRecordedReuseWindows, evaluateReuseProvider, measureReuseMetrics, measureReuseWindow, readRecordedReuseWindows,
-  measureRecordedReuseMetric, REUSE_MEASUREMENT_INSTRUMENT_KEYS,
+  measureRecordedReuseMetric, REUSE_MEASUREMENT_INSTRUMENT_KEYS, buildReuseSourcePopulation,
+  collectReuseSourcePopulation, collectReuseSourcePopulationOffthread, collectRecordedReuseMetrics, applyReuseProviderDecision,
   reuseHoldout, summarizeReuseWindows, type ReuseMeasuredWindow, type ReuseMeasurementActivity,
   type ReuseMeasurementExposure } from './reuse-measurement';
 import { composeReuseBrief } from './reuse-brief-providers';
@@ -87,6 +92,51 @@ describe('R16 provider-specific recorded outcome windows', () => {
 });
 
 describe('R16 frozen measurement units and efficacy', () => {
+  it('derives exact added clone lines and a complete syntax-bound call census, including hidden locals and unresolved calls', () => {
+    const body = Array.from({ length: 25 }, (_, n) => `  total += input + ${n};`).join('\n');
+    const a = `export function sum(input:number) {\n  let total=0;\n${body}\n  return total;\n}\n`, b = a.replace('sum', 'copy');
+    const sources = [{ path: 'a.ts', source: a }, { path: 'b.ts', source: b },
+      { path: 'use.ts', source: 'import {sum} from "./a"; function local() {} local(); sum(2); missing();' }];
+    const addedLines = { 'b.ts': b.trimEnd().split('\n').map((_, i) => i + 1) };
+    const first = buildReuseSourcePopulation({ sources, addedLines, complete: true });
+    expect(first.addedNonGeneratedLines).toBe(29);
+    expect(first.duplicateAddedLines).toBe(29);
+    expect(first.lineCensusComplete).toBe(true);
+    expect(first.calls.map(c => [c.from, c.to, c.resolved])).toEqual([
+      ['use.ts', 'use.ts', true], ['use.ts', 'a.ts', true], ['use.ts', null, false],
+    ]);
+    expect(first.callCensusComplete).toBe(true);
+    expect(buildReuseSourcePopulation({ sources, addedLines, complete: true })).toEqual(first);
+    expect(buildReuseSourcePopulation({ sources, addedLines: { ...addedLines, 'README.md': [1] }, complete: true }).lineCensusComplete).toBe(false);
+    expect(buildReuseSourcePopulation({ sources, addedLines, complete: false }).callCensusComplete).toBe(false);
+  });
+  it('captures a historical committed source window despite later working-tree changes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'reuse-source-population-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8',
+      env: { ...process.env, GIT_AUTHOR_NAME: 'Controlled measurement fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
+        GIT_COMMITTER_NAME: 'Controlled measurement fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' } });
+    try {
+      git('init', '-q'); await writeFile(join(root, 'a.ts'), 'export function target() {}\n');
+      // Git uses committer date for rev-list windows: fix both clocks explicitly.
+      const datedCommit = (message: string, date: string) => execFileSync('git', ['-C', root, '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', message],
+        { env: { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture',
+          GIT_COMMITTER_EMAIL: 'fixture@example.invalid', GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+      git('add', 'a.ts'); datedCommit('pinned baseline', '2026-09-29T00:00:00Z');
+      await writeFile(join(root, 'b.ts'), 'import { target } from "./a"; target();\n'); git('add', 'b.ts');
+      datedCommit('window change', '2026-10-01T00:00:00Z');
+      const pinned = await collectReuseSourcePopulation(root, '2026-09-30T00:00:00Z', '2026-10-02T00:00:00Z');
+      expect(pinned).toMatchObject({ addedNonGeneratedLines: 1, callCensusComplete: true });
+      expect(pinned.calls).toEqual([expect.objectContaining({ from: 'b.ts', to: 'a.ts', resolved: true })]);
+      let ticks = 0;
+      const timer = setInterval(() => { ticks++; }, 10);
+      try {
+        expect(await collectReuseSourcePopulationOffthread(root, '2026-09-30T00:00:00Z', '2026-10-02T00:00:00Z')).toEqual(pinned);
+        expect(ticks).toBeGreaterThan(0);
+      } finally { clearInterval(timer); }
+      await writeFile(join(root, 'b.ts'), 'not historical source');
+      expect(await collectReuseSourcePopulation(root, '2026-09-30T00:00:00Z', '2026-10-02T00:00:00Z')).toEqual(pinned);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('measures exact units and keeps unresolved populations separate', () => {
     expect(measureReuseMetrics({ addedNonGeneratedLines: 200, duplicateAddedLines: 10, lineCensusComplete: true,
       callCensusComplete: true, workItems: [
@@ -137,6 +187,63 @@ describe('R16 repeatable existing-ledger reads', () => {
   let fx: PlanPgFixture;
   beforeAll(async () => { fx = await setupPlanPgFixture({ isolated: true }); }, 180_000);
   afterAll(async () => { await fx?.dispose(); });
+  it('records hash-pinned raw metric populations, then the registered reader recomputes and rejects corrupted evidence', async () => {
+    const scope = { workspaceId: fx.workspaceId, harnessSlug: 'raw-producer', windowStart: at, windowEnd: now };
+    const load = async () => ({ ...buildReuseSourcePopulation({ sources: [{ path: 'a.ts', source: 'export function a() {} a();' }],
+      addedLines: { 'a.ts': [1] }, complete: true }), sourceRefs: ['git:controlled-base', 'git:controlled-end'], base: 'controlled-base', commit: 'controlled-end' });
+    await collectRecordedReuseMetrics(fx.admin, scope, load);
+    expect(await measureRecordedReuseMetric(fx.admin, scope, 'redundancy')).toMatchObject({ verdict: 'pass', value: 0 });
+    expect(await measureRecordedReuseMetric(fx.admin, scope, 'crossFileCalls')).toMatchObject({ verdict: 'pass', value: 0 });
+    expect((await measureRecordedReuseMetric(fx.admin, scope, 'searchBeforeWrite')).verdict).toBe('unknown');
+    await fx.admin`UPDATE harness_shared.code_intel_pushes SET suggested_call = suggested_call || 'corrupted'
+      WHERE workspace_id = ${fx.workspaceId} AND leg = 'reuse-metrics' AND subject::jsonb->>'harness' = 'raw-producer'`;
+    expect((await measureRecordedReuseMetric(fx.admin, scope, 'redundancy')).verdict).toBe('unknown');
+  });
+  it('counts a recorded search-before-write positive only through a unique exact assignment', async () => {
+    const scope = { workspaceId: fx.workspaceId, harnessSlug: 'assignment-producer', windowStart: at, windowEnd: now };
+    const load = async () => ({ ...buildReuseSourcePopulation({ sources: [{ path: 'a.ts', source: 'export const a=1;' }],
+      addedLines: { 'a.ts': [1] }, complete: true }), sourceRefs: ['git:assignment-baseline', 'git:assignment-end'], base: 'assignment-baseline', commit: 'assignment-end' });
+    await fx.admin`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,item_kind,status,title,summary,taken_by,taken_at,created_ts,updated_ts)
+      VALUES (${fx.workspaceId},'assignment-producer','WI-measurement-assignment','feature','open','fixture','fixture','assignment-owner',${at},1,1)`;
+    for (const [tool, minute] of [['Grep',1],['Edit',2]] as const) await fx.admin`
+      INSERT INTO harness_shared.agent_activity(workspace_id,owner_id,harness_slug,kind,phase,tool_name,status,detail,created_at)
+      VALUES (${fx.workspaceId},'assignment-owner','assignment-producer','tool','post',${tool},'ok','{}'::jsonb,
+        ${`2026-10-01T00:0${minute}:00.000Z`}::timestamptz)`;
+    expect((await collectRecordedReuseMetrics(fx.admin,scope,load)).population.workItems[0]!.complete).toBe(false);
+    const census = [{ref:'fixture:complete-assignment-activity',owner:'assignment-owner',start:at,end:now}];
+    expect((await collectRecordedReuseMetrics(fx.admin,scope,load,census)).population.workItems).toMatchObject([
+      { id:'WI-measurement-assignment',complete:true,firstWriteAt:'2026-10-01T00:02:00.000Z',successfulSearchAt:'2026-10-01T00:01:00.000Z' }]);
+    expect(await measureRecordedReuseMetric(fx.admin,scope,'searchBeforeWrite')).toMatchObject({verdict:'pass',value:100});
+    await fx.admin`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,item_kind,status,title,summary,taken_by,taken_at,created_ts,updated_ts)
+      VALUES (${fx.workspaceId},'assignment-producer','WI-measurement-overlap','feature','open','fixture','fixture','assignment-owner',${at},1,1)`;
+    expect((await collectRecordedReuseMetrics(fx.admin,scope,load,census)).population.workItems.every(w=>!w.complete)).toBe(true);
+    expect((await measureRecordedReuseMetric(fx.admin,scope,'searchBeforeWrite')).verdict).toBe('unknown');
+  });
+  it('persists mature disable evidence before using the flag writer, while immature evidence never writes', async () => {
+    const windows: ReuseMeasuredWindow[] = [];
+    for (let i=0,t=0,h=0;t<100||h<100;i++) {
+      const workItem = `WI-${i}`, held = reuseHoldout(workItem, 'clones');
+      if (held ? h>=100 : t>=100) continue;
+      const w = measure([], { id: `action-${i}`, workspaceId: fx.workspaceId, workItem, issued: !held });
+      w.actedOn = w.grepAfterPush = held; windows.push(w); if (held) h++; else t++;
+    }
+    const input = { provider: 'clones', workspaceId: fx.workspaceId, experimentStartedAt: at,
+      now: '2026-10-16T00:00:00.000Z', windows };
+    const changes: boolean[] = [];
+    const write = async (_provider: string, enabled: boolean) => {
+      const rows = await fx.admin`SELECT suggested_call FROM harness_shared.code_intel_pushes
+        WHERE workspace_id = ${fx.workspaceId} AND leg = 'reuse-provider-action'`;
+      expect(rows).toHaveLength(1);
+      expect(JSON.parse(rows[0]!.suggested_call)).toMatchObject({ decision: { action: 'disable' }, reversal: { enabled: true } });
+      changes.push(enabled); return { ok: true };
+    };
+    expect(await applyReuseProviderDecision(fx.admin, { ...input, now: '2026-10-02T00:00:00.000Z' }, write)).toMatchObject({ applied: false });
+    expect(changes).toEqual([]);
+    expect(await applyReuseProviderDecision(fx.admin, input, write)).toMatchObject({ applied: true, reversal: { enabled: true } });
+    expect(changes).toEqual([false]);
+  });
   it('repeats the same scoped result without changing issued rows or coercing unknowns', async () => {
     const window = measure([activity()], { workspaceId: fx.workspaceId });
     const subject = JSON.stringify({ schema: 'reuse-measurement-v1', sourceRefs: ['fixture:known-activity-population'],
@@ -150,7 +257,8 @@ describe('R16 repeatable existing-ledger reads', () => {
     expect(first).toEqual([window]); expect(second).toEqual(first);
     expect(summarizeReuseWindows(first)).toEqual(summarizeReuseWindows(second));
     expect(await readRecordedReuseWindows(fx.admin, { ...input, workspaceId: 'foreign' })).toEqual([]);
-    const rows = await fx.admin`SELECT chars FROM harness_shared.code_intel_pushes WHERE workspace_id = ${fx.workspaceId} ORDER BY id`;
+    const rows = await fx.admin`SELECT chars FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${fx.workspaceId} AND owner_id = 'owner' ORDER BY id`;
     expect(rows.map(r => r.chars)).toEqual([0, 100]);
     const issued = await readNativePushOutcomes({ workspaceId: fx.workspaceId, windowStart: at, windowEnd: now }, fx.admin);
     expect(issued.map(r => r.leg)).toEqual(['reuse-clones']);
@@ -199,7 +307,7 @@ describe('R16 repeatable existing-ledger reads', () => {
     expect((await measureRecordedReuseMetric(fx.admin, { ...scope, windowEnd: '2026-10-02T00:00:00.000Z' }, 'redundancy')).verdict).toBe('unknown');
     record.population.duplicateAddedLines = 20;
     await fx.admin`UPDATE harness_shared.code_intel_pushes SET subject = ${JSON.stringify(record)}
-      WHERE workspace_id = ${fx.workspaceId} AND leg = 'reuse-metrics'`;
+      WHERE workspace_id = ${fx.workspaceId} AND leg = 'reuse-metrics' AND owner_id = 'metric-fixture'`;
     expect((await measureRecordedReuseMetric(fx.admin, scope, 'redundancy')).value).toBe(100);
   });
   it('collects actual composition, push and activity rows for both arms; recollection updates raw evidence without duplicate outcomes', async () => {
@@ -236,7 +344,7 @@ describe('R16 repeatable existing-ledger reads', () => {
     expect(first.windows.find(w => w.exposure.provider === 'coverage')).toMatchObject({ issued: false, holdout: true,
       delivered: null, actedOn: null, grepAfterPush: true, complete: false });
     expect((await collectRecordedReuseWindows(fx.admin, scope)).recorded).toEqual([]);
-    expect(await readRecordedReuseWindows(fx.admin, scope)).toEqual(first.windows);
+    expect(await readRecordedReuseWindows(fx.admin, scope)).toEqual(expect.arrayContaining(first.windows));
     expect((await collectRecordedReuseWindows(fx.admin, { ...scope, harnessSlug: 'foreign' })).windows).toEqual([]);
     const largeDetail = Array.from({ length: 160 }, (_, i) => createHash('sha256').update(`activity-${i}`).digest('hex')).join('');
     await insertActivity('Read', { file: 'coverage.ts', retainedDiagnostic: largeDetail }, '4');
