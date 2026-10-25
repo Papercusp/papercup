@@ -520,6 +520,7 @@
     "@nx/nest": "22.6.5",
     "@nx/node": "22.6.5",
     "@nx/workspace": "22.6.5",
+    "@papercusp/host-esbuild": "npm:esbuild@0.25.0",
     "@testcontainers/postgresql": "^11.14.0",
     "@types/adm-zip": "^0.5.8",
     "@types/cors": "^2.8.19",

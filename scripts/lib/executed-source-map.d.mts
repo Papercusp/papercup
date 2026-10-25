@@ -37,7 +37,7 @@ export function resolveExecutedMapPgUrl(env?: Record<string, string | undefined>
 export function connectExecutedMapPg({ env, timeoutMs }?: {
     env?: Record<string, string | undefined>;
     timeoutMs?: number;
-}): Promise<any>;
+}): Promise<import("pg").Client>;
 /**
  * Turn stored rows into the selector's map. Pure — exported for the unit tests.
  *
