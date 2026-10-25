@@ -5,6 +5,7 @@ import { closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { getTask } from '../task-manager/store';
 import { managedSpawn, type ManagedSpawnResult } from '../task-manager/managed-spawn';
 import { isValidTaskId, type TaskRow } from '../task-manager/types';
@@ -259,7 +260,7 @@ async function runBoundedAdmissionPrecheck(
   try {
     await deps.transition(input.queueTarget, fresh => {
       const current = assertFresh(fresh);
-      if (JSON.stringify(current.measurement?.results ?? []) !== JSON.stringify(completed))
+      if (!isDeepStrictEqual(current.measurement?.results ?? [], completed))
         throw new Error('saved measurement moved before resume');
       return { ...fresh, admissionPrecheck: { ...current, measurement: { schemaVersion: 1, identity, results: completed } } };
     });
@@ -275,7 +276,7 @@ async function runBoundedAdmissionPrecheck(
         await deps.transition(input.queueTarget, fresh => {
           const current = assertFresh(fresh);
           const prior = current.measurement;
-          if (!prior || prior.identity !== identity || JSON.stringify(prior.results) !== JSON.stringify(completed))
+          if (!prior || prior.identity !== identity || !isDeepStrictEqual(prior.results, completed))
             throw new Error('persisted measurement moved while recording a file');
           const results = [...completed, result];
           const at = now();
@@ -305,7 +306,7 @@ async function runBoundedAdmissionPrecheck(
       catch (error) { return unavailable(String(error)); }
       for (const result of run.results) {
         const prior = completed.find(item => item.path === result.path);
-        if (prior && JSON.stringify(prior) !== JSON.stringify(result)) return unavailable('native final result disagrees with persisted per-file evidence');
+        if (prior && !isDeepStrictEqual(prior, result)) return unavailable('native final result disagrees with persisted per-file evidence');
         if (!prior) await record(result);
       }
     }

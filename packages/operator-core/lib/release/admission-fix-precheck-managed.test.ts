@@ -76,6 +76,51 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       guarded: files.slice(1), reportOnly: [], legs: Object.fromEntries(files.map(file => [file, '@t/core'])) } }));
   };
 
+  const jsonbRoundTrip = (value: FrozenCandidateRepairQueue): FrozenCandidateRepairQueue =>
+    JSON.parse(JSON.stringify(value, (_key, nested) =>
+      nested && typeof nested === 'object' && !Array.isArray(nested)
+        ? Object.fromEntries(Object.entries(nested).sort(([a], [b]) => a.localeCompare(b)))
+        : nested));
+
+  it('aggregates JSONB-reordered native results across execution groups', async () => {
+    let persisted = jsonbRoundTrip(wide(41));
+    const outcome = await runAdmissionPrecheckWorker(input, {
+      getTask: async () => ({ state: 'running', confined: true }),
+      readQueue: async () => ({ status: 'value', queue: persisted }),
+      transition: async (_target, update) => { persisted = jsonbRoundTrip(update(persisted)); },
+      now: () => 30,
+      createRunner: () => async run => {
+        const results = run.files.map(path => ({ path, status: 'pass' as const, exitCode: 0, durationMs: 1, detail: 'native receipt' }));
+        for (const result of results) await run.onFileResult?.(result);
+        return { ran: true, commit: run.commit, results: results.map(result => ({
+          detail: result.detail, durationMs: result.durationMs, exitCode: result.exitCode,
+          status: result.status, path: result.path,
+        })) };
+      },
+    });
+    expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: true, ran: true } });
+    expect(persisted.admissionPrecheck?.measurement?.results.map(result => result.path)).toEqual(persisted.admissionPrecheck?.files);
+    expect(persisted.admissionPrecheck?.completedCount).toBe(41);
+  });
+
+  it('refuses changed native results after a JSONB round trip', async () => {
+    let persisted = jsonbRoundTrip(wide(41));
+    const outcome = await runAdmissionPrecheckWorker(input, {
+      getTask: async () => ({ state: 'running', confined: true }),
+      readQueue: async () => ({ status: 'value', queue: persisted }),
+      transition: async (_target, update) => { persisted = jsonbRoundTrip(update(persisted)); },
+      now: () => 30,
+      createRunner: () => async run => {
+        const results = run.files.map(path => ({ path, status: 'pass' as const, exitCode: 0 }));
+        for (const result of results) await run.onFileResult?.(result);
+        return { ran: true, commit: run.commit, results: results.map((result, index) =>
+          index === 0 ? { ...result, status: 'fail' as const, exitCode: 1 } : result) };
+      },
+    });
+    expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: false, code: 'admission-precheck-unavailable' } });
+    expect(persisted.admissionPrecheck?.status).toBe('failed');
+  });
+
   it('bounds two-plus native groups without raising the existing cap and never passes a partial aggregate', async () => {
     let persisted = wide();
     const sizes: number[] = [];
