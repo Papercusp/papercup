@@ -1383,6 +1383,76 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(repaired.configPath, 'utf8')).toBe(before);
   });
 
+  it.each([
+    { writerName: 'writeSuCodexHome', changeRoot: false },
+    { writerName: 'writeSuCodexHome', changeRoot: true },
+    { writerName: 'writeSuCodexHomeAsync', changeRoot: false },
+    { writerName: 'writeSuCodexHomeAsync', changeRoot: true },
+  ] as const)('preserves same-owner native state when rebuilding an SU home ($writerName, changed root=$changeRoot)', async ({ writerName, changeRoot }) => {
+    const mod = await loadMod();
+    const writer = mod[writerName];
+    const { ensureSuCodexHomeConfig } = mod;
+    const input = { sessionKey: 'same-owner-rebuild', mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-same-owner-rebuild', promptText: 'FIRST' };
+    const first = await writer(input);
+    const database = join(first.sqliteHome, 'state_5.sqlite');
+    const wal = `${database}-wal`;
+    const transcript = join(first.codexHome, 'sessions', 'rollout.jsonl');
+    mkdirSync(join(first.codexHome, 'sessions'), { recursive: true });
+    writeFileSync(database, 'original native state');
+    writeFileSync(wal, 'uncheckpointed native state');
+    writeFileSync(transcript, 'original native transcript');
+    const changedRoot = join(fakeHome, 'different-rebuild-serving-root');
+    if (changeRoot) process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = changedRoot;
+
+    const second = await writer({ ...input, promptText: 'CURRENT RULES' });
+    expect(second.sqliteHome).toBe(first.sqliteHome);
+    expect(parseToml(readFileSync(second.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
+    expect(readFileSync(database, 'utf8')).toBe('original native state');
+    expect(readFileSync(wal, 'utf8')).toBe('uncheckpointed native state');
+    expect(readFileSync(transcript, 'utf8')).toBe('original native transcript');
+    expect(readFileSync(second.agentsPath, 'utf8')).toContain('CURRENT RULES');
+    expect(existsSync(changedRoot)).toBe(false);
+    expect(ensureSuCodexHomeConfig({ ...input, recordedSqliteHome: first.sqliteHome }).sqliteHome).toBe(first.sqliteHome);
+  });
+
+  it.each(['missing-config', 'missing-binding', 'relative-binding', 'duplicate-binding'])('refuses an ambiguous same-owner rebuild before mutation (%s)', async (damage) => {
+    const { writeSuCodexHome } = await loadMod();
+    const input = { sessionKey: 'ambiguous-rebuild', mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-ambiguous-rebuild', promptText: 'KEEP ORIGINAL RULES' };
+    const first = writeSuCodexHome(input);
+    const database = join(first.sqliteHome, 'state_5.sqlite');
+    writeFileSync(database, 'original native state');
+    const config = readFileSync(first.configPath, 'utf8');
+    if (damage === 'missing-config') rmSync(first.configPath);
+    else writeFileSync(first.configPath, damage === 'missing-binding'
+      ? config.replace(/^sqlite_home.*\n/m, '')
+      : damage === 'relative-binding'
+        ? config.replace(/^sqlite_home.*$/m, 'sqlite_home = "relative-state"')
+        : config.replace(/^sqlite_home.*$/m, '$&\nsqlite_home = "duplicate"'));
+    const before = existsSync(first.configPath) ? readFileSync(first.configPath, 'utf8') : null;
+    const changedRoot = join(fakeHome, 'ambiguous-serving-root');
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = changedRoot;
+
+    expect(() => writeSuCodexHome({ ...input, promptText: 'SHOULD NOT REPLACE' })).toThrow();
+    expect(existsSync(first.configPath) ? readFileSync(first.configPath, 'utf8') : null).toBe(before);
+    expect(readFileSync(first.agentsPath, 'utf8')).toContain('KEEP ORIGINAL RULES');
+    expect(readFileSync(database, 'utf8')).toBe('original native state');
+    expect(existsSync(changedRoot)).toBe(false);
+  });
+
+  it('retains fresh-launch SQLite isolation when a home is reused for a different owner', async () => {
+    const { writeSuCodexHome } = await loadMod();
+    const input = { sessionKey: 'fresh-owner-rebuild', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P' };
+    const first = writeSuCodexHome({ ...input, sid: 'su-previous-owner' });
+    const database = join(first.sqliteHome, 'state_5.sqlite');
+    writeFileSync(database, 'previous owner state');
+    const fresh = writeSuCodexHome({ ...input, sid: 'su-new-owner', isOwnerLive: () => false });
+    expect(existsSync(database)).toBe(false);
+    expect(fresh.sqliteHome).toBe(first.sqliteHome);
+    expect(readFileSync(join(fresh.codexHome, '.owner-sid'), 'utf8')).toBe('su-new-owner');
+  });
+
   it.each(['', '  ', '\t'])('keeps an SU session on its native SQLite companion after the serving root changes (indent=%j)', async (indent) => {
     const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
     const input = { sessionKey: 'stable-sqlite', mcpUrl: 'http://x/api/mcp?superuser=1',
@@ -2514,6 +2584,39 @@ describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
     const out = writeSuCodexHome({ sessionKey: 63, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-journal-63' });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
     expect(journalEntries(hooks)).toHaveLength(0);
+  });
+
+  it('discovers installed hooks independently of the workspace data home for fresh and resumed homes', async () => {
+    const dir = await installFakeHooks();
+    const { writeSuCodexHome, writeRoleCodexHome, repairSuCodexHomeIdentity } = await loadMod();
+    const sid = 'su-workspace-journal';
+    const old = writeSuCodexHome({ sessionKey: 'workspace-journal-old', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid });
+    const hooksPath = join(old.codexHome, 'hooks.json');
+    expect(journalEntries(JSON.parse(readFileSync(hooksPath, 'utf8')))).toHaveLength(0);
+    writeFileSync(join(dir, 'stop-turn-journal.sh'), '#!/usr/bin/env bash\n');
+    const injectDir = join(fakeHome, '.papercusp', 'hooks', 'inject');
+    mkdirSync(injectDir, { recursive: true });
+    writeFileSync(join(injectDir, 'index.mjs'), '// installed dispatcher\n');
+    process.env.PAPERCUSP_HOME = join(fakeHome, 'workspace-data', '.papercusp');
+
+    expect(repairSuCodexHomeIdentity(old.codexHome, sid)).toMatchObject({ repaired: true, hooksInstalled: true });
+    const repaired = readFileSync(hooksPath, 'utf8');
+    expect(journalEntries(JSON.parse(repaired))).toHaveLength(1);
+    expect(repaired).toContain(join(dir, 'stop-turn-journal.sh'));
+    expect(repaired).toContain(join(injectDir, 'index.mjs'));
+    expect(repaired).not.toContain(process.env.PAPERCUSP_HOME);
+    expect(repairSuCodexHomeIdentity(old.codexHome, sid)).toMatchObject({ repaired: false, hooksInstalled: true });
+    expect(readFileSync(hooksPath, 'utf8')).toBe(repaired);
+
+    const fresh = [
+      writeSuCodexHome({ sessionKey: 'workspace-journal-su', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid }),
+      writeRoleCodexHome({ sessionKey: 'workspace-journal-role', mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid }),
+    ];
+    for (const out of fresh) {
+      const text = readFileSync(join(out.codexHome, 'hooks.json'), 'utf8');
+      expect(journalEntries(JSON.parse(text))).toHaveLength(1);
+      expect(text).toContain(join(injectDir, 'index.mjs'));
+    }
   });
 
   it('a resumed pre-fix home is repaired once, then left byte-identical', async () => {

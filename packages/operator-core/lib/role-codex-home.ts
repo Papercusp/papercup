@@ -1,4 +1,3 @@
-import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * role-codex-home.ts — materialize a per-session CODEX_HOME for an
  * INTERACTIVE codex role session (psu --role=<role> --agent=codex).
@@ -101,6 +100,13 @@ import { runCodexHomeMaterializerJob, type CodexHomeMaterializerJob } from './ro
 let materializerHomeOverride: string | undefined;
 function homedir(): string {
   return materializerHomeOverride ?? osHomedir();
+}
+
+// Match desktop-install's installed destination, independently of the workspace
+// data root in PAPERCUSP_HOME. Reuse this path for enrollment AND repair checks
+// so a missing workspace copy cannot hide an installed journal or guard.
+function installedHookPath(...parts: string[]): string {
+  return join(homedir(), '.papercusp', 'hooks', ...parts);
 }
 
 import { dirname as __esmDirname } from 'node:path';
@@ -288,12 +294,15 @@ function freshCodexSqliteHome(sessionKey: string | number): string {
 
 /** A resume must retain its recorded state location even when the serving
  * operator has a different TMPDIR or SQLite-root override from the launch. */
-function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null, allowUnreadableConfig = false): string {
+function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null, allowUnreadableConfig = false, requireExistingBinding = false): string {
   if (recordedHome && (!isAbsolute(recordedHome) || recordedHome.includes('\0'))) {
     throw new Error('Cannot repair Codex home: recorded sqlite_home must be an absolute path');
   }
   const configPath = join(codexHome, 'config.toml');
-  if (!existsSync(configPath)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
+  if (!existsSync(configPath)) {
+    if (requireExistingBinding) throw new Error('Cannot rebuild Codex home: same-owner sqlite_home binding is missing');
+    return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
+  }
   let text: string;
   try {
     text = readFileSync(configPath, 'utf8');
@@ -305,7 +314,10 @@ function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number
     if (allowUnreadableConfig && recordedHome && (code === 'EACCES' || code === 'EPERM')) return recordedHome;
     throw error;
   }
-  if (!/^[ \t]*sqlite_home[ \t]*=/m.test(text)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
+  if (!/^[ \t]*sqlite_home[ \t]*=/m.test(text)) {
+    if (requireExistingBinding) throw new Error('Cannot rebuild Codex home: same-owner sqlite_home binding is missing');
+    return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
+  }
   let config: ReturnType<typeof parseToml>;
   try {
     config = parseToml(text);
@@ -805,7 +817,7 @@ export function writeCodexLockHooks(
     mcpUsesSuperuserToken?: boolean;
   } = {},
 ): boolean {
-  const dir = papercuspPath('hooks', 'cc');
+  const dir = installedHookPath('cc');
   const pre = join(dir, 'pretooluse-locks-acquire.sh');
   const post = join(dir, 'posttooluse-locks-release.sh');
   if (!existsSync(pre) || !existsSync(post)) return false;
@@ -935,7 +947,7 @@ export function writeCodexLockHooks(
   // codex adapter's portForEvent. UserPromptSubmit -> turn-start,
   // PostToolUse -> mid-turn (PER CALL on codex — it has no batch event; D-002
   // §5 explains why the frozen array interface absorbs that).
-  const injectDispatcher = papercuspPath('hooks', 'inject', 'index.mjs');
+  const injectDispatcher = installedHookPath('inject', 'index.mjs');
   const userPromptSubmit: CodexHook[] = [];
   const provenance = join(dir, 'userpromptsubmit-provenance.sh');
   if (opts.injectSid && existsSync(provenance)) {
@@ -1388,7 +1400,7 @@ function repairSuCodexHomeIdentityImpl(
         ['UserPromptSubmit', 'userpromptsubmit-provenance.sh', null],
       ];
       return turnHooks.every(([event, script, marker]) =>
-        !existsSync(papercuspPath('hooks', 'cc', script)) ||
+        !existsSync(installedHookPath('cc', script)) ||
         parsed.hooks?.[event]?.some((group) =>
           group.hooks?.some(
             (hook) =>
@@ -1407,7 +1419,7 @@ function repairSuCodexHomeIdentityImpl(
   // otherwise read as current, so a RESUMED su codex session would keep running
   // its shell without RTK. Gated on the script being installed, like the writer.
   const rtkRewriteHookMatches = (() => {
-    if (!hooksExpected || !existsSync(papercuspPath('hooks', 'cc', CODEX_RTK_REWRITE_HOOK))) {
+    if (!hooksExpected || !existsSync(installedHookPath('cc', CODEX_RTK_REWRITE_HOOK))) {
       return true;
     }
     try {
@@ -1431,7 +1443,7 @@ function repairSuCodexHomeIdentityImpl(
   // the gate WITHOUT the agent marker (D-003). Gated on the script being
   // installed, like the writer, so a host without it never repair-loops.
   const bashGateHookMatches = (() => {
-    if (!hooksExpected || !existsSync(papercuspPath('hooks', 'cc', CODEX_BASH_GATE_HOOK))) {
+    if (!hooksExpected || !existsSync(installedHookPath('cc', CODEX_BASH_GATE_HOOK))) {
       return true;
     }
     try {
@@ -1447,7 +1459,7 @@ function repairSuCodexHomeIdentityImpl(
     }
   })();
   const ownerQuestionGuardMatches = (() => {
-    if (!hooksExpected || !existsSync(papercuspPath('hooks', 'cc', 'ask-gate-mirror.sh'))) return true;
+    if (!hooksExpected || !existsSync(installedHookPath('cc', 'ask-gate-mirror.sh'))) return true;
     try {
       const parsed = JSON.parse(hooksText) as { hooks?: { PreToolUse?: Array<{ hooks?: Array<{ command?: string }> }> } };
       const guards = parsed.hooks?.PreToolUse?.flatMap((g) => g.hooks ?? [])
@@ -2139,8 +2151,16 @@ function writeSuCodexHomeImpl(opts: WriteSuCodexHomeOptions, ownerSidIo?: CodexH
         `not collide with a live session's home.`,
     );
   }
+  // Resolve the verified same-owner binding BEFORE freshCodexHome removes the
+  // generated config. Re-preparation retains native transcripts, so it must
+  // retain their SQLite database and WAL too, even if the serving root changed.
+  // A missing/invalid binding refuses before either home is mutated.
+  const retainedSqliteHome = priorSid === opts.sid
+    ? preservedCodexSqliteHome(targetHome, opts.sessionKey, undefined, false, true)
+    : null;
   const codexHome = freshCodexHome(targetHome, opts.denyAmbientContext !== true);
-  const sqliteHome = freshCodexSqliteHome(opts.sessionKey);
+  const sqliteHome = retainedSqliteHome ?? freshCodexSqliteHome(opts.sessionKey);
+  if (retainedSqliteHome) mkdirSync(sqliteHome, { recursive: true, mode: 0o700 });
   const inheritedPromptsCopied = !opts.denyAmbientContext && copyInheritedCodexPrompts(codexHome);
 
   const agentsPath = join(codexHome, 'AGENTS.md');
