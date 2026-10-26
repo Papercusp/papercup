@@ -657,7 +657,117 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       transaction: member,
       now: 20_000,
     });
-    expect(resumed).toMatchObject({ action: 'wait', pruneCandidateIds: [], productiveMemberCount: 1 });
+    // WI-6554700010029346: `none` (verdict `productive`), not `wait` (verdict
+    // `unverified`) — a `wait` here IS the stale attestation outweighing the work
+    // evidence, which is what this case exists to forbid.
+    expect(resumed).toMatchObject({
+      action: 'none',
+      pruneCandidateIds: [],
+      unreadyMemberIds: [],
+      productiveMemberCount: 1,
+    });
+  });
+
+  // WI-6554700010029346 — the Luna Max wedge (2026-10-26): a verified carry-respawned
+  // member whose boot attestation was recorded ready:false, outside probeOwnerIds (so
+  // never re-attested, never retryable) and with no attempt count. It is executing, so
+  // it is never a prune candidate either. Before the fix it fell through to
+  // `wait: prune is unsafe` on every tick and the fleet sat under target forever.
+  it('does not let an EXECUTING member with a stale ready:false attestation block refill', () => {
+    const live = ['su-respawn-stale', 'su-b', 'su-c'];
+    const current = transaction(['su-c93062c0-dead'], {
+      openedMemberIds: [],
+      verifiedMemberIds: ['su-respawn-stale'],
+      unconfirmedMemberIds: [],
+      workerAttestations: [workerAttestation('su-respawn-stale', false)],
+      failed: [{ phase: 'spawn', ownerId: 'su-c93062c0-dead', reason: 'died at boot (exit 1)' }],
+      governor: {
+        version: 1,
+        probeOwnerIds: [],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+    const assessment = assessFleetHeadcountGovernor({
+      target: 9,
+      productiveCapacityFloor: 2,
+      liveMemberIds: live,
+      executingMemberIds: new Set(live),
+      transaction: current,
+      now: 1_000 + 300_000 + 1,
+    });
+    expect(assessment.unreadyMemberIds).toEqual([]);
+    expect(assessment.pruneCandidateIds).toEqual([]);
+    expect(assessment).toMatchObject({ action: 'spawn', productiveMemberCount: 3, deficit: 6 });
+    expect(assessment.reason).not.toContain('prune is unsafe');
+  });
+
+  // The other half of the same boundary: the identical stale attestation on a member
+  // that is NOT executing is still genuine non-ready evidence, and pruning it without
+  // a verified-start or terminal-failure proof stays unsafe.
+  it('still waits on a stale ready:false member that is NOT executing', () => {
+    const current = transaction([], {
+      openedMemberIds: [],
+      verifiedMemberIds: ['su-respawn-stale'],
+      unconfirmedMemberIds: [],
+      waves: [],
+      workerAttestations: [workerAttestation('su-respawn-stale', false)],
+      governor: {
+        version: 1,
+        probeOwnerIds: [],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+    const assessment = assessFleetHeadcountGovernor({
+      target: 9,
+      productiveCapacityFloor: 2,
+      liveMemberIds: ['su-respawn-stale', 'su-b', 'su-c'],
+      executingMemberIds: new Set(['su-b', 'su-c']),
+      transaction: current,
+      now: 1_000 + 300_000 + 1,
+    });
+    expect(assessment.unreadyMemberIds).toEqual(['su-respawn-stale']);
+    expect(assessment).toMatchObject({
+      action: 'wait',
+      reason: 'non-ready evidence lacks a verified-start or terminal-failure proof; prune is unsafe',
+    });
+  });
+
+  // And the live-attestation boundary: a CURRENT probe owner inside its retry budget
+  // is still being re-attested, so its not-ready attestation is live evidence even
+  // while it executes (an attestation mismatch — wrong model — is exactly this shape)
+  // and the retry machinery keeps owning the decision.
+  it('keeps an executing probe owner inside its retry budget on the retry path', () => {
+    const current = transaction(['su-probing'], {
+      verifiedMemberIds: ['su-probing'],
+      unconfirmedMemberIds: [],
+      workerAttestations: [workerAttestation('su-probing', false)],
+      governor: {
+        version: 1,
+        probeOwnerIds: ['su-probing'],
+        attestationAttempts: { 'su-probing': FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT - 1 },
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+    expect(assessFleetHeadcountGovernor({
+      target: 1,
+      liveMemberIds: ['su-probing'],
+      executingMemberIds: new Set(['su-probing']),
+      transaction: current,
+      now: 20_000,
+    })).toMatchObject({
+      action: 'retry',
+      actionOwnerId: 'su-probing',
+      unreadyMemberIds: ['su-probing'],
+      pruneCandidateIds: [],
+    });
   });
 
   it('refuses a prune even at the retry cap when start/failure proof is still unknown', () => {

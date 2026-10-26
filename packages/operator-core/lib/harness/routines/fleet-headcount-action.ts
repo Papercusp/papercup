@@ -220,8 +220,26 @@ export function assessFleetHeadcountGovernor(args: {
   const workerReadyMemberIds = liveMemberIds.filter(
     (ownerId) => !retired.has(ownerId) && attestationByOwner.get(ownerId)?.ready === true,
   );
+  const attempts = transaction?.governor?.attestationAttempts ?? {};
+  const retryLimit = Math.max(1, Math.floor(args.retryLimit ?? FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT));
+  const currentProbeOwners = new Set(transaction?.governor?.probeOwnerIds ?? []);
+  // WI-6554700010029346: a not-ready attestation is live evidence only while the
+  // governor is still re-taking it — a current probe owner inside its retry budget.
+  // Outside that window it is a frozen snapshot that will never be refreshed, and
+  // for a member that is DEMONSTRABLY EXECUTING the stronger productivity proof
+  // (recent agent-origin execution, WI-2034624) supersedes it. Counting such a
+  // member as unready wedged a live fleet: it is never a prune candidate
+  // (executing), never retryable (not a probe owner / budget spent), so it fell
+  // through to `wait: prune is unsafe` on EVERY tick and the deficit below was
+  // never reached (Luna Max sat at 42/50 for hours with zero spawns).
+  const attestationStillProbed = (ownerId: string): boolean =>
+    currentProbeOwners.has(ownerId) && (attempts[ownerId] ?? 0) < retryLimit;
   const unreadyMemberIds = liveMemberIds.filter(
-    (ownerId) => !retired.has(ownerId) && attestationByOwner.has(ownerId) && attestationByOwner.get(ownerId)?.ready !== true,
+    (ownerId) =>
+      !retired.has(ownerId) &&
+      attestationByOwner.has(ownerId) &&
+      attestationByOwner.get(ownerId)?.ready !== true &&
+      (attestationStillProbed(ownerId) || !args.executingMemberIds?.has(ownerId)),
   );
   const unverifiedMemberIds = liveMemberIds.filter(
     (ownerId) => !retired.has(ownerId) && !attestationByOwner.has(ownerId),
@@ -232,8 +250,6 @@ export function assessFleetHeadcountGovernor(args: {
       .map((failure) => failure.ownerId),
   );
   const verified = new Set(transaction?.verifiedMemberIds ?? []);
-  const attempts = transaction?.governor?.attestationAttempts ?? {};
-  const retryLimit = Math.max(1, Math.floor(args.retryLimit ?? FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT));
   const pruneCandidateIds = unreadyMemberIds.filter(
     (ownerId) =>
       !args.executingMemberIds?.has(ownerId) &&
@@ -270,7 +286,6 @@ export function assessFleetHeadcountGovernor(args: {
   // governor fall through to the deficit path and spawn replacements, instead of returning
   // `wait` on every tick for the life of the transaction.
   const launchDeadlineExceededMemberIds = withinLaunchWindow ? [] : openedButNotLive;
-  const currentProbeOwners = new Set(transaction?.governor?.probeOwnerIds ?? []);
   const retryable = unreadyMemberIds.filter(
     (ownerId) => currentProbeOwners.has(ownerId) && (attempts[ownerId] ?? 0) < retryLimit,
   );
