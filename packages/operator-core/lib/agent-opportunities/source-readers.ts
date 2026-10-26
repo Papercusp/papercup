@@ -12,6 +12,7 @@ import { nativeTranscriptSources, type NativeCorpusOptions, type NativeProvider 
 import type { SearchCorpusOptions } from './search-reformulation';
 import { readSqlIntentRetention } from '../bash-substitution/sql-intent-corpus';
 import type { MonitoredFamily } from './pipeline';
+import { canonicalNativeRuntimeSources, reconcileNativeCapture } from './native-capture';
 
 type Client = ReturnType<typeof getOrgPg>['sql'];
 export interface OpportunityReaderOptions {
@@ -91,6 +92,29 @@ export function productionOpportunityReaders(opts: OpportunityReaderOptions, dep
   const readTranscript: NonNullable<NativeCorpusOptions['readTranscript']> = async input => {
     try {
       if (!input.callId || !await activity(input.id)) return null;
+      if (!deps.locateTranscript) {
+        // The latest native ID is not a runtime's source population: managed
+        // carries leave earlier canonical transcripts in the same issued home.
+        const bindings = () => sql<{ id: string; owner: string; provider: NativeProvider; harness: string | null }[]>`
+          SELECT s.id::text,s.coord_owner_id AS owner,s.agent AS provider,${opts.harnessSlug}::text AS harness
+          FROM harness_shared.adv_sessions s JOIN harness_shared.agent_activity a
+            ON s.workspace_id=a.workspace_id AND s.coord_owner_id=a.owner_id AND s.agent=a.agent
+          WHERE a.id=${input.id}::bigint AND a.workspace_id=${opts.workspaceId} AND a.harness_slug=${opts.harnessSlug}
+            AND a.owner_id=${input.actor} AND a.agent=${input.provider} AND a.session_id=${input.sessionId}
+            AND a.tool_use_id=${input.callId} AND harness_shared.is_agent_coord_owner_id(a.owner_id)
+          ORDER BY s.id LIMIT 3`;
+        const before = await bindings();
+        if (!before.length || before.length > 2) return null;
+        const matching = [];
+        const deadline = Date.now() + 1000;
+        for (const binding of before) {
+          const read = await canonicalNativeRuntimeSources(binding, opts, deadline);
+          const sources = read.sources.filter(s => s.namespace === input.sessionId && s.callId === input.callId);
+          if (sources.length) matching.push(sources);
+        }
+        if (matching.length !== 1 || JSON.stringify(before) !== JSON.stringify(await bindings()) || !await activity(input.id)) return null;
+        return { sources: matching[0]!, status: 'measured' };
+      }
       const binding = () => sql<{ id: string }[]>`SELECT s.id::text FROM harness_shared.agent_activity a
         JOIN harness_shared.adv_sessions s ON s.workspace_id=a.workspace_id AND s.coord_owner_id=a.owner_id
           AND s.agent=a.agent AND (s.session_id=a.session_id OR s.omp_thread_id=a.session_id OR s.id::text=a.session_id)
@@ -123,7 +147,7 @@ export function productionOpportunityReaders(opts: OpportunityReaderOptions, dep
       harnessSlug: opts.harnessSlug, sourceBoundary: opts.sourceBoundary, ...window });
     // The SQL receipt tracks mutations to the entire scoped ledger, so the
     // three ledger adapters reuse it. It proves nothing about native capture.
-    return window.family === 'native-operation' ? 'unknown' as const
+    return window.family === 'native-operation' ? reconcileNativeCapture({ ...opts, ...window, authorize: scopeAllowed })
       : readSqlIntentRetention({ ...opts, ...window });
   };
   return { authorizeLedgerSource: ledger, authorizeActivitySource: activity, readOutput, readTranscript, readContinuity };
