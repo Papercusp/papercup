@@ -184,7 +184,7 @@ export interface SqlIntentCorpusOptions {
   /** Stop between parser calls without advancing past unprocessed source rows. */
   deadline?: number;
   clock?: () => number;
-  /** Measured source retention boundary; absence is UNKNOWN, never full coverage. */
+  /** Trusted adapter/test seam. Production reads the native detector when absent. */
   retainedFrom?: string;
   /** Current source authorization checked before touching raw invocation args. */
   authorize: (scope: { workspaceId: string; harnessSlug: string; sourceBoundary: string }) => Promise<boolean>;
@@ -199,6 +199,33 @@ interface LedgerRow {
 const partitionStatus = (status: string): SqlDemandStatus => status === 'ok' ? 'ok'
   : ['error', 'timeout'].includes(status) ? 'error'
     : ['quota-exceeded', 'role-not-allowed', 'refused', 'invalid-input', 'denied'].includes(status) ? 'refused' : 'unknown';
+
+/** Live source receipt: no policy, oldest-row or prune-completion inference.
+ * SQL comparisons preserve microseconds at an invalidated window edge.
+ */
+export async function readSqlIntentRetention(opts: Pick<SqlIntentCorpusOptions,
+  'workspaceId' | 'harnessSlug' | 'since' | 'until' | 'client'>): Promise<SqlDemandCoverage['retention']> {
+  const sql = opts.client ?? getOrgPg().sql;
+  const [detector] = await sql<{ ready: boolean }[]>`
+    SELECT EXISTS(SELECT 1 FROM pg_attribute
+      WHERE attrelid=to_regclass('harness_shared.sql_intent_progress') AND attname='retained_from'
+        AND NOT attisdropped)
+      AND (SELECT count(*)=3 FROM pg_trigger
+        WHERE tgrelid=to_regclass('harness_shared.tool_invocations') AND tgenabled='A' AND NOT tgisinternal
+          AND (tgname,tgtype,tgfoid) IN (
+            ('sql_intent_retention_delete',8,to_regprocedure('harness_shared.sql_intent_retention_changed()')),
+            ('sql_intent_retention_update',16,to_regprocedure('harness_shared.sql_intent_retention_rewritten()')),
+            ('sql_intent_retention_truncate',32,to_regprocedure('harness_shared.sql_intent_retention_truncated()'))))
+      AS ready`;
+  if (!detector?.ready) return 'unknown';
+  const [row] = await sql<{ retention: SqlDemandCoverage['retention'] }[]>`
+    SELECT CASE WHEN min(retained_from) IS NULL OR ${opts.until}::timestamptz > clock_timestamp()
+      THEN 'unknown' WHEN min(retained_from) <= ${opts.since}::timestamptz THEN 'complete'
+      ELSE 'gap' END AS retention
+    FROM harness_shared.sql_intent_progress
+    WHERE workspace_id=${opts.workspaceId} AND harness_slug=${opts.harnessSlug}`;
+  return row?.retention ?? 'unknown';
+}
 
 /** Bounded stable page. Caller persists/replays an overlap and replaces aggregates by
  * operationToken; a page boundary never asserts whole-window completeness.
@@ -262,7 +289,8 @@ export async function fetchSqlIntentCorpus(opts: SqlIntentCorpusOptions): Promis
   const capped = rows.length > limit || processed < page.length;
   const last = processed ? { at: page[processed - 1]!.at, id: page[processed - 1]!.id } : null;
   const retained = opts.retainedFrom ? Date.parse(opts.retainedFrom) : NaN;
-  const retention = Number.isFinite(retained) ? retained <= since ? 'complete' : 'gap' : 'unknown';
+  const retention = opts.retainedFrom === undefined ? await readSqlIntentRetention(opts)
+    : Number.isFinite(retained) ? retained <= since ? 'complete' : 'gap' : 'unknown';
   return { observations, coverage: { status: capped || opts.after ? 'truncated' : retention === 'complete' ? 'complete' : 'unknown',
     scannedRows: processed, cap: limit, retention, providers: ['ledger'] },
     next: capped ? last ?? opts.after ?? null : null, last, sources };
