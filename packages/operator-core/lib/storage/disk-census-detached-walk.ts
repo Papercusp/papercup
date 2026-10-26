@@ -226,6 +226,7 @@ export async function runDetachedDuWalk(root: string, opts: DetachedWalkOptions)
       (exitCode !== null && exitCode >= 125 && exitCode <= 127 ? `walk command could not run (exit ${exitCode})` : undefined);
     return {
       summary, deniedCount: parser.deniedCount, deniedSample: parser.deniedSample,
+      ...(parser.stderrSample.length ? { stderrSample: parser.stderrSample } : {}),
       timedOut: overdue || exitCode === TIMEOUT_EXIT_STATUS, exitCode, privileged,
       walkNote: walkNote(state), ...(error ? { error } : {}),
     };

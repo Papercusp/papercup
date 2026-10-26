@@ -87,6 +87,28 @@ describe('resolveBundledNode', () => {
     expect(await resolveBundledNode()).toBe(bundled);
   });
 
+  it('finds packaged node.exe when the application runs under a different interpreter', async () => {
+    const bundled = path.join(tmp, 'Papercusp GUI', 'sidecar', 'bin', 'node.exe');
+    await touch(bundled);
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', path.dirname(bundled));
+    setExecPath(path.join(tmp, 'Papercusp GUI', 'sidecar', 'bin', 'bun.exe'));
+
+    expect(await resolveBundledNode()).toBe(bundled);
+  });
+
+  it('validates interpreter identity for the packaged node.exe candidate too', async () => {
+    const bin = path.join(tmp, 'sidecar', 'bin');
+    const executable = path.join(bin, 'node.exe');
+    await fs.mkdir(bin, { recursive: true });
+    if (process.env.PAPERCUSP_RUNTIME_TEST_BUN) {
+      await fs.symlink(process.env.PAPERCUSP_RUNTIME_TEST_BUN, executable);
+    } else await fs.writeFile(executable, '');
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', bin);
+    setExecPath(path.join(tmp, 'Papercusp'));
+
+    expect(await resolveBundledNode()).toBeNull();
+  });
+
   it('prefers $PAPERCUSP_SIDECAR_BIN/node over process.execPath when both exist', async () => {
     const envNode = path.join(tmp, 'sidecar', 'bin', 'node');
     const execNode = path.join(tmp, 'other-node', 'node');

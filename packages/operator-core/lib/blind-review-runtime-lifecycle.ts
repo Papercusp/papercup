@@ -121,14 +121,17 @@ export async function provisionRuntimeNamespace(options: {
         rejectOnAbort = () => reject(signal.reason);
         signal.addEventListener('abort', rejectOnAbort, { once: true });
       });
-      await Promise.race([backend.provision({ lease, resources, image, signal,
+      // Schedule invocation after Promise.race installs both handlers. A
+      // backend may throw synchronously before returning its Promise; that
+      // must not orphan the abort rejection during failure cleanup.
+      await Promise.race([Promise.resolve().then(() => backend.provision({ lease, resources, image, signal,
         beforeCreate: async () => { signal.throwIfAborted(); await store.checkProvisioning(identity, leaseId); },
         record: async (intentId, observed) => {
           signal.throwIfAborted();
           if (!planned.has(intentId)) throw new RuntimeCustodyRefusal('resource_intent_missing');
           await store.recordResource(identity, leaseId, intentId, observed);
         },
-      }), stopped]);
+      })), stopped]);
       signal.throwIfAborted();
       return { state: 'ready' as const, lease: await store.markReady(identity, leaseId) };
     } catch (error) {

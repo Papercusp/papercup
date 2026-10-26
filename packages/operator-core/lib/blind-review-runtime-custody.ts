@@ -8,6 +8,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
+import { getLongLivedAdminPool } from './long-lived-admin-pool';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -61,7 +62,12 @@ export function runtimeCustodyFingerprint(value: unknown): string {
  * authoritative confinement; the transaction protocol is independently testable.
  */
 export type RuntimeAuthorityCheck = (tx: Sql, identity: RuntimeReviewerIdentity) => Promise<boolean>;
-export function createRuntimeCustodyStore(deps: { sql?: Sql; checkAuthority: RuntimeAuthorityCheck }) {
+export function createRuntimeCustodyStore(deps: {
+  sql?: Sql;
+  /** Explicit direct/session-affine test or host pool; never a transaction pooler. */
+  lifecycleSql?: Sql;
+  checkAuthority: RuntimeAuthorityCheck;
+}) {
   const sql = deps.sql ?? getOrgPg().sql;
   async function transaction<T>(identity: RuntimeReviewerIdentity, run: (tx: Sql) => Promise<T>, maintenance = false): Promise<T> {
     identity = identitySchema.parse(identity);
@@ -109,7 +115,12 @@ export function createRuntimeCustodyStore(deps: { sql?: Sql; checkAuthority: Run
       { acquired: false } | { acquired: true; value: T }
     > {
       identitySchema.parse(identity); z.string().uuid().parse(leaseId);
-      const connection = await sql.reserve();
+      // reserve() pins a client, not a server behind PgBouncer transaction
+      // pooling. This session lock MUST use the maintained direct pool. Keep
+      // that backend alive while OS work runs on other query connections.
+      const connection = await (deps.lifecycleSql ?? getLongLivedAdminPool('blind-review-runtime-lifecycle', {
+        max: 8, idle_timeout: 0,
+      })).reserve();
       const key = identity.workspaceId + ':runtime-lifecycle:' + leaseId;
       let held = false;
       try {

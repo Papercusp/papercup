@@ -48,8 +48,9 @@ export async function resolveBundledNode(): Promise<string | null> {
   const sidecarBin = process.env.PAPERCUSP_SIDECAR_BIN;
   const execBase = path.basename(process.execPath).toLowerCase();
   const execIsNode = execBase === 'node' || execBase === 'node.exe';
+  const bundledNames = process.platform === 'win32' ? ['node.exe', 'node'] : ['node', 'node.exe'];
   const candidates = [
-    sidecarBin ? path.join(sidecarBin, 'node') : '',
+    ...(sidecarBin ? bundledNames.map(name => path.join(sidecarBin, name)) : []),
     execIsNode ? process.execPath : '',
   ].filter(Boolean).map(candidate => path.resolve(candidate));
   for (const c of candidates) {

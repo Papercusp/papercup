@@ -192,6 +192,8 @@ export function reconcileWalkUsage(
 
 /** Bound on the one `sudo -n true` probe per census pass. */
 export const CENSUS_SUDO_PROBE_TIMEOUT_MS = 5_000;
+const CENSUS_DU_STDERR_SAMPLE_LINES = 5;
+const CENSUS_DU_STDERR_SAMPLE_LINE_CHARS = 400;
 
 /**
  * The sudo binary to run the census du through, or null to walk as the current user.
@@ -234,6 +236,8 @@ export interface DuRun {
   summary: DuTreeSummary;
   deniedCount: number;
   deniedSample: string[];
+  /** Bounded first-line diagnostics, retained in the census row when the walk is incomplete. */
+  stderrSample?: string[];
   timedOut: boolean;
   exitCode: number | null;
   error?: string;
@@ -251,6 +255,7 @@ export interface DuRun {
 export class DuOutputParser {
   deniedCount = 0;
   readonly deniedSample: string[] = [];
+  readonly stderrSample: string[] = [];
   private pending = '';
   private errPending = '';
 
@@ -280,6 +285,10 @@ export class DuOutputParser {
   }
 
   private deniedLine(line: string): void {
+    const normalized = line.replace(/\s+/g, ' ').trim();
+    if (normalized && this.stderrSample.length < CENSUS_DU_STDERR_SAMPLE_LINES) {
+      this.stderrSample.push(normalized.slice(0, CENSUS_DU_STDERR_SAMPLE_LINE_CHARS));
+    }
     if (!/Permission denied/.test(line)) return;
     this.deniedCount += 1;
     const m = /'([^']+)'/.exec(line);
@@ -332,6 +341,7 @@ export async function runDuTree(
         summary,
         deniedCount: parser.deniedCount,
         deniedSample: parser.deniedSample,
+        ...(parser.stderrSample.length ? { stderrSample: parser.stderrSample } : {}),
         timedOut,
         exitCode: code,
         privileged,
@@ -1219,12 +1229,16 @@ export async function censusOneDevice(
       du.summary.rootBytes !== null &&
       du.deniedCount === 0 &&
       ownFilesNotes.length === 0;
+    const stderrNote = du.exitCode !== 0 && du.stderrSample?.length
+      ? 'du stderr: ' + du.stderrSample.join(' | ').slice(0, 1200)
+      : null;
     const notes = [
       du.privileged ? 'du walked as root (sudo -n)' : 'du walked unprivileged (sudo -n unavailable)',
       censusPhaseNote(walkMs, attributionMs, du.summary.ownFiles.length),
       du.walkNote ?? null,
       ...ownFilesNotes,
       usageNote,
+      stderrNote,
       du.timedOut ? 'du timed out; sizes are lower bounds' : null,
       !du.timedOut && du.exitCode !== 0
         ? `du exited ${du.exitCode === null ? 'without an exit status' : `with status ${du.exitCode}`}; sizes are lower bounds`

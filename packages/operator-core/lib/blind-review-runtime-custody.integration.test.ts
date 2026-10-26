@@ -12,6 +12,7 @@ import { packRuntimeSourceImage } from './blind-review-source-image';
 import { consumeRuntimeSourceImage } from './blind-review-source-custody';
 import { provisionRuntimeNamespace, releaseRuntimeNamespace,
   type RuntimeNamespaceBackend } from './blind-review-runtime-lifecycle';
+import { _endLongLivedAdminPoolForTests } from './long-lived-admin-pool';
 import { createRuntimeCustodyStore, RUNTIME_RESOURCE_KINDS, runtimeCustodyFingerprint,
   type RuntimeReviewerIdentity, type RuntimeSourceAdmission } from './blind-review-runtime-custody';
 
@@ -19,6 +20,11 @@ import { createRuntimeCustodyStore, RUNTIME_RESOURCE_KINDS, runtimeCustodyFinger
 // custody and sealed source-image admission require separate runtime controls.
 let fx: PlanPgFixture;
 let serial = 0;
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
 const migrationName = '1578-blind-review-runtime-custody.sql';
 const sqlRoot = new URL('../../../libs/papercusp/libs/db/sql/', import.meta.url);
 function migration(name: string) {
@@ -32,7 +38,10 @@ beforeAll(async () => {
   const [present] = await fx.admin`SELECT to_regclass('harness_shared.blind_review_runtime_leases') AS table_name`;
   if (!present!.table_name) await fx.admin.begin(tx => tx.unsafe(migration(migrationName)));
 }, 120_000);
-afterAll(async () => { await fx?.dispose(); });
+afterAll(async () => {
+  await _endLongLivedAdminPoolForTests('blind-review-runtime-lifecycle');
+  await fx?.dispose();
+});
 
 async function fixture() {
   const n = ++serial;
@@ -381,7 +390,7 @@ describe('blind reviewer runtime custody on private PostgreSQL', () => {
 
   it('runs one host provisioner, returns pending to overlap, and never reexecutes a ready retry', async () => {
     await withAdmittedRuntime(async ({ f, leaseId, image }) => {
-      const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+      const entered = deferred<void>(), finish = deferred<void>();
       let creates = 0;
       const backend: RuntimeNamespaceBackend = {
         async provision(input) {
@@ -415,7 +424,7 @@ describe('blind reviewer runtime custody on private PostgreSQL', () => {
 
   it('commits cutoff while a creator is active and refuses release until independent discovery fences that creator', async () => {
     await withAdmittedRuntime(async ({ f, leaseId, image }) => {
-      const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+      const entered = deferred<void>(), finish = deferred<void>();
       let creatorStopped = false, teardownCalls = 0;
       const backend: RuntimeNamespaceBackend = {
         async provision(input) {
@@ -474,8 +483,8 @@ describe('blind reviewer runtime custody on private PostgreSQL', () => {
 
   it('does not wait for a canceled backend that ignores its signal and blocks its late resource writes', async () => {
     await withAdmittedRuntime(async ({ f, leaseId, image }) => {
-      const entered = Promise.withResolvers<Parameters<RuntimeNamespaceBackend['provision']>[0]>();
-      const finish = Promise.withResolvers<void>();
+      const entered = deferred<Parameters<RuntimeNamespaceBackend['provision']>[0]>();
+      const finish = deferred<void>();
       const controller = new AbortController();
       let inspectCalls = 0;
       const backend: RuntimeNamespaceBackend = {
@@ -503,6 +512,25 @@ describe('blind reviewer runtime custody on private PostgreSQL', () => {
     });
   }, 60_000);
 
+  it('cleans up a synchronous backend exception without leaving an unhandled abort rejection', async () => {
+    await withAdmittedRuntime(async ({ f, leaseId, image }) => {
+      let reaped = false;
+      const backend: RuntimeNamespaceBackend = {
+        provision() { throw new Error('synchronous-backend-failure'); },
+        async teardown() { reaped = true; },
+        async inspect(_lease, resources) {
+          return { creatorStopped: true, scopeAbsent: true, checkedKinds: [...RUNTIME_RESOURCE_KINDS],
+            absentIntentIds: resources.map(resource => resource.id) };
+        },
+      };
+      await expect(provisionRuntimeNamespace({ store: f.store, identity: f.identity, leaseId, image, backend }))
+        .rejects.toThrow('synchronous-backend-failure');
+      expect(reaped).toBe(true);
+      const [row] = await fx.admin`SELECT state FROM harness_shared.blind_review_runtime_leases WHERE id = ${leaseId}`;
+      expect(row!.state).toBe('released');
+    });
+  }, 60_000);
+
   it('serializes host lifecycle work across connections while allowing immediate durable revocation', async () => {
     const f = await fixture(), { lease } = await f.allocate();
     const outer = await f.store.withLifecycle(f.identity, lease.id, async () => {
@@ -522,6 +550,24 @@ describe('blind reviewer runtime custody on private PostgreSQL', () => {
     })).rejects.toThrow('interrupted lifecycle');
     expect(await f.makeStore().withLifecycle(f.identity, lease.id, async () => 'recovery'))
       .toEqual({ acquired: true, value: 'recovery' });
+  });
+
+  it('keeps lifecycle locks on a direct session even when the query pool cannot reserve a server session', async () => {
+    const f = await fixture(), { lease } = await f.allocate();
+    const pooled = new Proxy(fx.admin, {
+      get(target, key, receiver) {
+        if (key === 'reserve') return () => { throw new Error('transaction-pooler-cannot-pin-session'); };
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const store = createRuntimeCustodyStore({ sql: pooled as never, checkAuthority: async () => true });
+    expect(await store.withLifecycle(f.identity, lease.id, async () => {
+      expect(await f.makeStore().withLifecycle(f.identity, lease.id, async () => 'duplicate'))
+        .toEqual({ acquired: false });
+      return 'direct-session';
+    })).toEqual({ acquired: true, value: 'direct-session' });
+    expect(await f.makeStore().withLifecycle(f.identity, lease.id, async () => 'released'))
+      .toEqual({ acquired: true, value: 'released' });
   });
 
   it('never reclaims a partial boot inventory or rolls a failed plan transaction into creation authority', async () => {

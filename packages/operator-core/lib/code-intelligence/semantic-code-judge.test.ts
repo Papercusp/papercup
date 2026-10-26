@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({ modelCalls: [] as Record<string, unknown>[], routes: [] as string[], response: '' }));
 vi.mock('../agent-chat-stream', () => ({ resolveStatelessTransport: (account: string) => {
@@ -8,11 +9,22 @@ vi.mock('../llm-testing/llm-client', () => ({ llmCall: async (request: Record<st
     execution: { model: request.model, codeHash: null, loadedCode: { llmClient: 'fixture' } } };
 } }));
 import { extractSemanticFunctions } from './semantic-code';
-import { isVerifiedSemanticPair, judgeSemanticPair, summarizeSemanticFunction, type SemanticJudgeCall, type SemanticPair } from './semantic-code-judge';
+import { loadSemanticJudgePrompt, isVerifiedSemanticPair, judgeSemanticPair, summarizeSemanticFunction,
+  type SemanticJudgeCall, type SemanticPair } from './semantic-code-judge';
 import recorded from './__fixtures__/semantic-judge-replay-v1.json';
 import frozen from './__fixtures__/semantic-calibration-v1.json';
 import contractsV2 from './__fixtures__/semantic-judge-contracts-v2.json';
 import * as ts from 'typescript';
+
+describe('semantic judge identity prompt', () => {
+  it('loads the fixed identity document and pins the original prompt bytes', async () => {
+    const prompt = await loadSemanticJudgePrompt();
+    expect(prompt.sourcePath.endsWith('/semantic-code-judge/prompts/domain.md')).toBe(true);
+    expect(prompt.text.endsWith('\n')).toBe(false);
+    expect(createHash('sha256').update(prompt.text).digest('hex'))
+      .toBe('aa5885cd5bb6d71ecc015faad47dc0c952f16af79e275737b50955acc28986bc');
+  });
+});
 
 const pair: SemanticPair = [
   extractSemanticFunctions({ path: 'src/a.ts', source: 'export function f(xs: number[]) { return xs.reduce((a,b) => a+b, 0); }' })[0],

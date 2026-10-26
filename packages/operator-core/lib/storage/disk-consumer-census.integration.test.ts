@@ -373,22 +373,26 @@ describe('disk consumer census (real du, real PG)', () => {
   });
 
   it.each([
-    { label: '0', exitCode: 0, expectedComplete: true, note: null },
-    { label: '1', exitCode: 1, expectedComplete: false, note: 'du exited with status 1; sizes are lower bounds' },
-    { label: 'null', exitCode: null, expectedComplete: false, note: 'du exited without an exit status; sizes are lower bounds' },
-  ] as const)('persists completeness for du exitCode $label', async ({ label, exitCode, expectedComplete, note }) => {
+    { label: '0', exitCode: 0, expectedComplete: true, note: null, stderrSample: [] },
+    { label: '1', exitCode: 1, expectedComplete: false, note: 'du exited with status 1; sizes are lower bounds',
+      stderrSample: ['du: cannot access path-gone: No such file or directory'] },
+    { label: 'null', exitCode: null, expectedComplete: false,
+      note: 'du exited without an exit status; sizes are lower bounds', stderrSample: [] },
+  ] as const)('persists completeness for du exitCode $label', async ({ label, exitCode, expectedComplete, note, stderrSample }) => {
     const at = new Date('2026-10-13T18:00:00Z'); const host = `du-exit-status-${label}-host`;
     const result = await runDiskConsumerCensusOnce({ sql, host, devices: [device()], now: () => at,
       statDevice: null, resolveSudo: async () => null,
       measurePostgres: async () => null, measureDocker: async () => null,
       runDu: async () => ({ summary: { rootBytes: 50 * G, consumers: [dir('/test-dev/data', 50 * G)], ownFiles: [], records: 2 },
-        deniedCount: 0, deniedSample: [], timedOut: false, exitCode }),
+        deniedCount: 0, deniedSample: [], timedOut: false, exitCode,
+        ...(stderrSample.length ? { stderrSample: [...stderrSample] } : {}) }),
     });
     expect(result.failures).toEqual([]);
     expect(result.runs[0]!.complete).toBe(expectedComplete);
     const persisted = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
     expect(persisted.complete).toBe(expectedComplete);
     if (note) expect(persisted.note).toContain(note);
+    if (stderrSample.length) expect(persisted.note).toContain('du stderr: ' + stderrSample.join(' | '));
   });
 
   it('distinguishes unreadable baseline candidates from an absent qualified baseline', async () => {
