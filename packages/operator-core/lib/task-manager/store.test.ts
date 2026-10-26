@@ -190,7 +190,7 @@ describe('closeTask terminal event', () => {
       state: 'running', ended_at: null, launched_by: 'fixture' };
     let updates = 0;
     const sql = (async (strings: TemplateStringsArray) => {
-      if (strings.join('').includes('UPDATE harness_shared.task_ledger')) updates++;
+      if (strings.join('').includes('SET state =')) updates++;
       return [row];
     }) as unknown as Sql;
     const emitTerminal = vi.fn();

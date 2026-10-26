@@ -15,12 +15,13 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { Sql } from 'postgres';
 import { lstat, unlink } from 'node:fs/promises';
 import { activeWorkspaceId } from '../workspace-registry';
 import { redactSensitiveText } from '../sensitive-text';
 import { readSuperuserToken } from '../superuser-token';
-import { emitTaskTerminalEvent, type TaskTerminalEventEmitter } from './task-terminal-events';
+import { emitTaskTerminalEvent, type TaskTerminalEventEmitter, type TaskTerminalEventInput } from './task-terminal-events';
 import { recordAttemptOnClose } from '../verification-attempts/attempt-ledger';
 import { nudgeOnNewLoop } from '../verification-attempts/loop-gate';
 import { cleanupEndedVerifierDirectories } from '../verifier-source';
@@ -498,12 +499,12 @@ export async function closeTask(
                THEN ${classified.terminalProvenance?.peakMemoryBytes ?? null}::bigint
              ELSE GREATEST(peak_memory_bytes, ${classified.terminalProvenance?.peakMemoryBytes ?? null}::bigint)
            END,
-           detail = CASE
+           detail = (CASE
              WHEN ${terminalJson}::text IS NULL THEN detail
              ELSE detail || jsonb_build_object(
                'terminalProvenance', ${terminalJson}::text::jsonb
              )
-           END,
+           END) || jsonb_build_object('terminalEventPending', true),
            ended_at = COALESCE(ended_at, now()),
            last_seen_at = now(),
            updated_at = now()
@@ -548,7 +549,7 @@ export async function closeTask(
     );
   }
   effects.stage?.('task-close-event');
-  await (effects.emitTerminal ?? emitTaskTerminalEvent)({
+  await deliverTaskTerminalEvent({
     taskId: closed.task_id,
     workspaceId: closed.workspace_id,
     harnessSlug: closed.harness_slug,
@@ -557,9 +558,72 @@ export async function closeTask(
     state: classified.state,
     exitCode: classified.exitCode ?? null,
     exitReason: classified.exitReason ?? null,
-  });
+  }, inject, effects.emitTerminal);
   effects.stage?.('task-close-event-complete');
   return true;
+}
+
+/** A terminal UPDATE is durable even when its event bridge is unavailable. */
+async function deliverTaskTerminalEvent(
+  event: TaskTerminalEventInput,
+  inject?: Sql,
+  emit: TaskTerminalEventEmitter = emitTaskTerminalEvent,
+): Promise<boolean> {
+  try {
+    if (await emit(event) === false) return false;
+    const sql = sqlOf(inject);
+    // An unobserved close can be upgraded while this emit is in flight. Never
+    // acknowledge that newer tuple with an older delivery's receipt.
+    await sql`
+      UPDATE harness_shared.task_ledger
+         SET detail = detail || jsonb_build_object('terminalEventPending', false)
+       WHERE task_id = ${event.taskId} AND ended_at IS NOT NULL
+         AND state = ${event.state}
+         AND exit_code IS NOT DISTINCT FROM ${event.exitCode}
+         AND exit_reason IS NOT DISTINCT FROM ${event.exitReason}
+    `;
+    return true;
+  } catch (error) {
+    console.warn(`[task-manager] terminal event pending for ${event.taskId}: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+/** Bounded restart recovery, called by the existing task reconciler. Delivery is
+ * at least once if the process dies after emitting but before acknowledging it.
+ * Legacy terminal rows with no latch are included so existing lost exits recover. */
+export async function recoverPendingTaskTerminalEvents(
+  workspaceId?: string,
+  inject?: Sql,
+  emit: TaskTerminalEventEmitter = emitTaskTerminalEvent,
+): Promise<number> {
+  const sql = sqlOf(inject);
+  const rows = await sql`
+    SELECT t.task_id, t.workspace_id, t.harness_slug, t.class, t.launched_by,
+           t.state, t.exit_code, t.exit_reason
+      FROM harness_shared.task_ledger t
+     WHERE t.workspace_id = ${workspaceId ?? activeWorkspaceId()}
+       AND t.ended_at IS NOT NULL
+       AND t.state IN ('exited', 'killed', 'timed_out', 'stranded', 'ended_unobserved')
+       AND (t.detail -> 'terminalEventPending' = 'true'::jsonb OR (
+         NOT (t.detail ? 'terminalEventPending') AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.event_key_fires f
+            WHERE f.workspace_id = ${DEFAULT_COORD_WORKSPACE}
+              AND f.event_key = 'task:terminal:' || t.task_id
+         )
+       ))
+     ORDER BY t.ended_at, t.task_id
+     LIMIT 100
+  `;
+  let delivered = 0;
+  for (const row of rows) {
+    if (await deliverTaskTerminalEvent({
+      taskId: row.task_id, workspaceId: row.workspace_id, harnessSlug: row.harness_slug,
+      taskClass: row.class, launchedBy: row.launched_by, state: row.state,
+      exitCode: row.exit_code, exitReason: row.exit_reason,
+    }, inject, emit)) delivered++;
+  }
+  return delivered;
 }
 
 export type PersistFailedTaskUnitTerminalOutcome =

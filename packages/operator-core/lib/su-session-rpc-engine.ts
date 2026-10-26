@@ -763,6 +763,7 @@ export function startSuRpcEngine(
   let done: Promise<void> = Promise.resolve();
   let starting: Promise<void>;
   let forkHistory: PreparedCodexForkHistory | undefined;
+  let nativeForkHistory = false;
   let closing: Promise<void> | undefined;
   function close(): Promise<void> {
     if (closing) return closing;
@@ -777,7 +778,7 @@ export function startSuRpcEngine(
       // (seconds, or never when startup fails). Best-effort: the replay once the
       // peer is up stays authoritative and adds only what it wrote since.
       await (backend === 'codex'
-        ? (adapter as CodexSuSessionAdapter).consumeRolloutSnapshot({ preserveLifecycle: true })
+        ? (adapter as CodexSuSessionAdapter).consumeRolloutSnapshot({ preserveLifecycle: true, deferForkHistory: true })
         : (adapter as OmpSuSessionAdapter).consumeTranscriptSnapshot({ preserveLifecycle: true })
       ).catch(() => undefined);
       if (closed) throw new Error('Structured connection closed during startup');
@@ -824,6 +825,7 @@ export function startSuRpcEngine(
         : await peer.request({ method: nativeId() ? 'thread/resume' : 'thread/start', params });
       forkHistory = undefined;
       const thread = object(result.thread), id = string(thread.id);
+      nativeForkHistory = thread.historyMode === 'paginated' && (typeof thread.forkedFromId === 'string' || !!options.forkFrom);
       if (!id || nativeId() && id !== nativeId()) throw new Error('Codex did not return the requested native identity');
       if (thread.cwd && resolve(string(thread.cwd)) !== resolve(boot.cwd)) throw new Error('Codex started in a different project');
       nativePath = string(thread.path) || null;
@@ -911,13 +913,16 @@ export function startSuRpcEngine(
     if (!await persistSuSessionDescriptor(binding.advSessionId, host.descriptor(), boot.workspaceId)) {
       throw new Error('Could not persist the native session identity and resume descriptor');
     }
-    if (options.nativeSession) {
+    if (options.nativeSession || options.forkFrom) {
       // The native runtime restores inference context; the adapter restores
       // the owner's visible history before this connection accepts new input.
       // Historical turn completion must not advertise current readiness.
       host.transition('resuming', 'Restoring saved conversation before attaching the executor');
       options.stage?.('rpc-replay-history');
-      if (backend === 'codex') await (adapter as CodexSuSessionAdapter).consumeRolloutSnapshot({ preserveLifecycle: true });
+      if (backend === 'codex') {
+        if (nativeForkHistory) await (adapter as CodexSuSessionAdapter).consumeThreadHistory(frame => peer!.request(frame));
+        else await (adapter as CodexSuSessionAdapter).consumeRolloutSnapshot({ preserveLifecycle: true });
+      }
       else await (adapter as OmpSuSessionAdapter).consumeTranscriptSnapshot({ preserveLifecycle: true });
     }
     if (closed) throw new Error('Structured connection closed during startup');

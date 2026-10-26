@@ -5604,7 +5604,12 @@ export function makeCarryRearmController({
      *  @param {string | null} [mode]
      */
     pendingCount(mode = null) {
-      const counts = (msg) => !isCancelled(msg) && (mode == null || rearmModeOf(msg) === mode);
+      // A newer child can supersede a carry while its idle/prompt gate is
+      // unresolved. That obsolete request must stop suppressing fresh wakes
+      // immediately; its detached retry still owns terminal settlement.
+      const counts = (msg) => !isCancelled(msg) &&
+        (rearmModeOf(msg) !== 'carry-respawn' || !isSuperseded(msg)) &&
+        (mode == null || rearmModeOf(msg) === mode);
       return [...pending].filter((key) => counts(latest.get(key))).length +
         [...inFlight].filter(counts).length;
     },

@@ -46,6 +46,8 @@ import {
   findCodexRolloutPath,
 } from './session-transcript-resolvers';
 import { createCodexTimelineParser, type TimelineLineParser } from './session-timeline-parsers';
+import { readCodexVisibleHistory } from './su-session-codex-history';
+import type { SuStdioPeer } from './su-session-stdio-peer';
 import { codexPlanCall, codexTokenUsage } from './su-session-usage';
 import { gatewayServedAccountForOwner } from './compaction-usage';
 import {
@@ -750,7 +752,7 @@ export class CodexSuSessionAdapter {
     }
   }
 
-  async consumeRolloutSnapshot({ preserveLifecycle = false }: { preserveLifecycle?: boolean } = {}): Promise<void> {
+  async consumeRolloutSnapshot({ preserveLifecycle = false, deferForkHistory = false }: { preserveLifecycle?: boolean; deferForkHistory?: boolean } = {}): Promise<void> {
     if (!this.runtimeValue.rolloutPath) {
       throw new Error('Codex runtime has no resolved rollout path');
     }
@@ -759,7 +761,49 @@ export class CodexSuSessionAdapter {
     if (this.ownerTurnReceipts) {
       this.receiptMatcher.load(await this.ownerTurnReceipts(this.host.descriptor().identity).catch(() => []));
     }
-    for await (const line of readCodexRolloutSnapshotLines(this.runtimeValue.rolloutPath)) this.ingestNativeLine(line, { preserveLifecycle, replay: true });
+    for await (const line of readCodexRolloutSnapshotLines(this.runtimeValue.rolloutPath)) {
+      // A paginated fork's own rollout omits inherited turns. Defer the entire
+      // replay to its native view, avoiding an out-of-order partial replay.
+      if (deferForkHistory) {
+        const row = asRecord(JSON.parse(line));
+        if (row?.type === 'session_meta' && asRecord(row.payload)?.forked_from_id) return;
+      }
+      this.ingestNativeLine(line, { preserveLifecycle, replay: true });
+    }
+  }
+
+  /** Historical questions are transcript text, never new actionable cards.
+   * This path does not touch the live turn, queue, lifecycle or tool executor. */
+  async consumeThreadHistory(request: SuStdioPeer['request']): Promise<void> {
+    if (this.ownerTurnReceipts) this.receiptMatcher.load(await this.ownerTurnReceipts(this.host.descriptor().identity).catch(() => []));
+    const nativeId = this.runtimeValue.nativeSession.rolloutId;
+    for await (const { turn, items } of readCodexVisibleHistory(request, nativeId)) {
+      let turnId = `codex-history-${String(turn.id)}`;
+      for await (const item of items) {
+        const fresh = this.host.claimNativeRecord(`codex-history:${nativeId}:${String(turn.id)}:${String(item.id)}`);
+        if (item.type === 'userMessage') {
+          const content = (Array.isArray(item.content) ? item.content : []).map(part => {
+            const value = asRecord(part);
+            return value?.type === 'text' && typeof value.text === 'string' ? value.text : '';
+          }).filter(Boolean).join('\n');
+          turnId = this.replayTurnId(content, String(turn.id));
+          if (!fresh) continue;
+          this.emitTranscript({ turnId, role: 'owner', channel: 'text', content });
+        } else if (!fresh) continue;
+        else if (item.type === 'agentMessage' || item.type === 'plan') {
+          this.emitTranscript({ turnId, role: 'assistant', channel: 'text', content: String(item.text ?? '') });
+        } else if (item.type === 'reasoning') {
+          const content = [...(Array.isArray(item.summary) ? item.summary : []), ...(Array.isArray(item.content) ? item.content : [])]
+            .filter(value => typeof value === 'string').join('\n');
+          this.emitTranscript({ turnId, role: 'assistant', channel: 'reasoning', content });
+        } else if (['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'functionCallOutput', 'webSearch', 'collabAgentToolCall'].includes(String(item.type))) {
+          const name = String(item.tool ?? item.name ?? item.type), callId = String(item.id);
+          this.host.emit({ type: 'tool', phase: 'started', turnId, callId, name, input: asJsonValue(item) });
+          this.host.emit({ type: 'tool', phase: 'completed', turnId, callId, name, output: asJsonValue(item),
+            isError: item.status === 'failed' || item.exitCode != null && item.exitCode !== 0 });
+        }
+      }
+    }
   }
 
   /** P-004 calls this after an exact resume/carry replacement attaches. The

@@ -81,6 +81,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   request?: (frame: RpcFrame) => Promise<RpcFrame | undefined>;
   resume?: boolean;
   fork?: boolean;
+  paginatedFork?: boolean;
   history?: RpcFrame[];
   missingTranscript?: boolean;
   deliveryTimeoutMs?: number;
@@ -118,7 +119,8 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     const override = await overrides.request?.(frame);
     if (override) return override;
     if (frame.method === 'thread/start' || frame.method === 'thread/resume' || frame.method === 'thread/fork') return {
-      thread: { id: overrides.nativeId ?? 'native-codex', cwd: overrides.cwd ?? '/project', path: nativePath },
+      thread: { id: overrides.nativeId ?? 'native-codex', cwd: overrides.cwd ?? '/project', path: nativePath,
+        ...(overrides.paginatedFork ? { historyMode: 'paginated', forkedFromId: '11111111-1111-4111-8111-111111111111' } : {}) },
       model: overrides.model ?? 'codex-model',
     };
     if (frame.method === 'mcpServerStatus/list') return { data: overrides.tools === false ? [] : [{ name: 'papercusp-su', tools: { 'coord:whoami': {} } }] };
@@ -209,6 +211,28 @@ it.each(['fork', 'tools', 'registration'] as const)('refuses tracked child readi
   expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
   expect(f.close).toHaveBeenCalled();
   expect(f.sent.some(frame => frame.method === 'thread/start' || frame.method === 'thread/resume')).toBe(false);
+});
+
+it('restores visible fork history before readiness without reviving historical questions or tool calls', async () => {
+  const stages: string[] = [];
+  const f = fixture('codex', { fork: true, paginatedFork: true, stage: name => { stages.push(name); },
+    request: async frame => {
+      if (frame.method === 'thread/turns/list') return { data: [{ id: 'completed-parent', status: 'completed' }], nextCursor: null };
+      if (frame.method === 'thread/items/list') return { data: [
+        { turnId: 'completed-parent', item: { id: 'prompt', type: 'userMessage', content: [{ type: 'text', text: 'Parent visible input' }] } },
+        { turnId: 'completed-parent', item: { id: 'answer', type: 'agentMessage', text: 'Parent visible answer', questions: [{ id: 'parent-question' }] } },
+        { turnId: 'completed-parent', item: { id: 'tool', type: 'mcpToolCall', server: 'fixture', tool: 'read', status: 'completed', result: {} } },
+      ], nextCursor: null };
+      return undefined;
+    } });
+  await f.engine.ready;
+  const events = f.engine.adapter.host.recent.map(row => row.event);
+  expect(events).toContainEqual(expect.objectContaining({ type: 'transcript', role: 'owner', content: 'Parent visible input' }));
+  expect(events).toContainEqual(expect.objectContaining({ type: 'transcript', role: 'assistant', content: 'Parent visible answer' }));
+  expect(events).toContainEqual(expect.objectContaining({ type: 'tool', phase: 'completed', name: 'read' }));
+  expect(events.some(event => event.type === 'card')).toBe(false);
+  expect(f.sent.some(frame => frame.method === 'turn/start')).toBe(false);
+  expect(stages.indexOf('rpc-replay-history')).toBeLessThan(stages.indexOf('rpc-ready'));
 });
 
 function steerCommand(engine: SuRpcEngine, id = 'correction', activeTurnId = 'owner-owner_turn') {

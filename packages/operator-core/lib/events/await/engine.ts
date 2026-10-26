@@ -239,6 +239,8 @@ export interface EmitAwaitedEventOpts {
 
 export interface EmitResult {
   ok: true;
+  /** False when the fail-soft key-fire write failed; durable producers must retry. */
+  latchRecorded?: boolean;
   key: string;
   /** Wake awaits fired by this emit (deliveries queued). */
   woken: number;
@@ -591,6 +593,7 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
 
   return {
     ok: true,
+    latchRecorded: latchAnswered,
     key: opts.key,
     woken: wakes.length - deferred,
     deferred,

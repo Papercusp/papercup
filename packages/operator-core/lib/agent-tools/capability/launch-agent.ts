@@ -1823,7 +1823,7 @@ export default defineTool({
     })) {
       return err(
         `Cannot launch a managed fork of ${resumeId ?? 'that session'}: tracked fork is unavailable for this ` +
-          `${resumeAgent ?? 'unknown'} source. It currently requires a Claude source with a native session id, ` +
+          `${resumeAgent ?? 'unknown'} source. It requires a Claude or Codex source with a native session id, ` +
           'coord owner and tracked session row. No process was admitted or opened. ' +
           'Resume in place with `fork:false` only after the source and its writer have ended, ' +
           'or launch a fresh agent with a context-seeded brief.',

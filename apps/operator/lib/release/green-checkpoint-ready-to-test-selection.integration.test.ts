@@ -15,6 +15,7 @@ import {
 import { releaseConfig } from "./release-config";
 import {
   markFrozenRepairAdmitted,
+  settleFrozenRepairRetestRequest,
   type FrozenCandidateRepairQueue,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 
@@ -134,6 +135,50 @@ describe("prepared frozen candidate selection", () => {
     const prepared = await f.prepare({});
     expect(prepared.candidate).toBe(f.candidate);
     expect(prepared.prewarmedDependencyGeneration.inputFingerprint).toBe(f.candidateGeneration.inputFingerprint);
+  }, 180_000);
+
+  it("retains the pending repair after a prepared original exhausts its disk retry", async () => {
+    const f = await fixture();
+    const before = structuredClone(f.queue);
+    const prepared = await f.prepare({ candidate: f.repairHead, candidateSource: "frozen-repair-queue" });
+    expect(prepared.candidate).toBe(f.candidate);
+    const logs: string[] = [];
+    f.deps.log = (line) => logs.push(line);
+    f.deps.preconditionRetryDelayMs = 0;
+    f.deps.reclaimDependencyHeadroom = vi.fn(async () => "fixture retains its prepared generation");
+    const headroom = vi.fn(async () => ({
+      ok: false, blocker: "disk-headroom" as const, summary: "fixture headroom still unavailable",
+    }));
+    f.deps.checkDiskHeadroom = headroom;
+    const consume = vi.fn<NonNullable<CheckpointDeps["consumeFrozenRepairRetestRequest"]>>(async (input) => {
+      if (f.queue.retestRequested?.repairHead === input.judgedRepairHead && !input.settleJudgedHead) {
+        return { kind: "none", queue: f.queue, request: null };
+      }
+      const decision = settleFrozenRepairRetestRequest(f.queue, input.judgedRepairHead);
+      Object.assign(f.queue, decision.queue);
+      return decision;
+    });
+    f.deps.consumeFrozenRepairRetestRequest = consume;
+
+    const result = await runGreenCheckpoint(f.cfg, f.deps, {
+      noPush: true, candidate: prepared.candidate, preparedSelection: prepared.preparedSelection,
+    });
+
+    expect(result).toMatchObject({ candidate: f.candidate, green: null, advanced: false,
+      reason: "disk-headroom", preconditionRetry: { blocker: "disk-headroom", delayMs: 0 } });
+    expect(headroom).toHaveBeenCalledTimes(2);
+    expect(f.deps.reclaimDependencyHeadroom).toHaveBeenCalledTimes(1);
+    expect(consume).toHaveBeenCalledExactlyOnceWith({ judgedRepairHead: f.candidate, settleJudgedHead: false });
+    expect(f.queue).toEqual(before);
+    expect(f.queue.retestRequested?.repairHead).toBe(f.repairHead);
+    expect(prepared.preparedSelection?.candidate).toBe(f.candidate);
+    expect(logs.some((line) => line.includes("admission retest deferred") && line.includes("unlocked preparation"))).toBe(true);
+    expect(f.setupTree).not.toHaveBeenCalled();
+    expect(f.runGreen).not.toHaveBeenCalled();
+    // Deferral never weakens the guard against callers changing the committed selection.
+    await expect(runGreenCheckpoint(f.cfg, f.deps, {
+      candidate: f.repairHead, preparedSelection: prepared.preparedSelection,
+    })).rejects.toThrow("prepared selection candidate changed");
   }, 180_000);
 
   it.each(["already-green", "ready-to-verify"] as const)("prepares the admitted head for %s", async (state) => {

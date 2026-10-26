@@ -26,7 +26,7 @@ vi.mock('../workspace-registry', async (importOriginal) => ({
 const taskStore = await import('./store');
 const eventStore = await import('../events/await/store');
 const eventEngine = await import('../events/await/engine');
-const { taskTerminalEventKey } = await import('./task-terminal-events');
+const { taskTerminalEventKey, emitTaskTerminalEvent } = await import('./task-terminal-events');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 async function waitForEmission(eventKey: string): Promise<{
@@ -78,6 +78,96 @@ describe('task terminal awaited-event bridge (real PG)', () => {
   afterAll(async () => {
     eventEngine.setAutoPumpEnabledForTests(true);
     await db?.cleanup();
+  });
+
+  async function insertTask(taskId: string) {
+    await h.sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, harness_slug, class, title,
+        argv, launched_by, confined, state, detail
+      ) VALUES (${taskId}, ${h.ws}, ${taskId}, 'papercusp', 'bash-job', ${taskId},
+        '[]'::jsonb, 'su-terminal-owner', true, 'running', '{}'::jsonb)
+    `;
+  }
+
+  it('recovers persisted delivery failure after losing the closer and wakes the exact waiter once', async () => {
+    const taskId = 'terminal-restart-retry';
+    const eventKey = taskTerminalEventKey(taskId);
+    await insertTask(taskId);
+    await eventStore.registerAwait({ subscriberId: 'su-restart-waiter', eventKey, policy: 'wake' });
+    await expect(taskStore.closeTask(taskId, { state: 'exited', exitCode: 7, exitReason: 'runner-log' }, undefined, {
+      emitTerminal: event => emitTaskTerminalEvent(event, { emit: async () => { throw new Error('event backend unavailable'); }, warn: () => {} }),
+    })).resolves.toBe(true);
+    expect(await h.sql`SELECT state, exit_code, detail -> 'terminalEventPending' AS pending
+      FROM harness_shared.task_ledger WHERE task_id = ${taskId}`)
+      .toEqual([{ state: 'exited', exit_code: 7, pending: true }]);
+    expect(await h.sql`SELECT event_key FROM harness_shared.event_key_fires WHERE event_key = ${eventKey}`).toHaveLength(0);
+    // No closure-local memory or original emitter survives into this call.
+    await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws)).resolves.toBe(1);
+    const { fire, delivery } = await waitForEmission(eventKey);
+    expect(fire.last_payload).toMatchObject({ taskId, state: 'exited', exitCode: 7, exitReason: 'runner-log' });
+    expect(delivery.payload).toEqual(fire.last_payload);
+    await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws)).resolves.toBe(0);
+    expect(await h.sql`SELECT fire_count FROM harness_shared.event_key_fires WHERE event_key = ${eventKey}`)
+      .toEqual([{ fire_count: 1 }]);
+  });
+
+  it('backfills an existing terminal row with no pending marker and no exact fire', async () => {
+    const taskId = 'terminal-legacy-missing-fire';
+    const eventKey = taskTerminalEventKey(taskId);
+    await insertTask(taskId);
+    await h.sql`UPDATE harness_shared.task_ledger SET state = 'exited', exit_code = 2, ended_at = now()
+      WHERE task_id = ${taskId}`;
+    await eventStore.registerAwait({ subscriberId: 'su-legacy-waiter', eventKey, policy: 'wake' });
+    await expect(taskStore.recoverPendingTaskTerminalEvents('other-workspace')).resolves.toBe(0);
+    await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws)).resolves.toBe(1);
+    expect((await waitForEmission(eventKey)).fire.last_payload).toMatchObject({ taskId, state: 'exited', exitCode: 2 });
+    await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws)).resolves.toBe(0);
+  });
+
+  it('retries a fail-soft latch failure so late exact waiters have durable fire evidence', async () => {
+    const taskId = 'terminal-latch-write-failed';
+    const eventKey = taskTerminalEventKey(taskId);
+    await insertTask(taskId);
+    await eventStore.registerAwait({ subscriberId: 'su-latch-waiter', eventKey, policy: 'wake' });
+    await h.sql.unsafe(`CREATE FUNCTION harness_shared.reject_terminal_test_fire() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.event_key = 'task:terminal:terminal-latch-write-failed' THEN
+        RAISE EXCEPTION 'injected terminal latch failure'; END IF; RETURN NEW; END $$`);
+    await h.sql.unsafe(`CREATE TRIGGER reject_terminal_test_fire BEFORE INSERT OR UPDATE ON harness_shared.event_key_fires
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_terminal_test_fire()`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(taskStore.closeTask(taskId, { state: 'exited', exitCode: 0 })).resolves.toBe(true);
+      expect(await h.sql`SELECT detail -> 'terminalEventPending' AS pending FROM harness_shared.task_ledger WHERE task_id = ${taskId}`)
+        .toEqual([{ pending: true }]);
+      expect(await h.sql`SELECT event_key FROM harness_shared.event_key_fires WHERE event_key = ${eventKey}`).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('injected terminal latch failure'));
+    } finally {
+      warn.mockRestore();
+      await h.sql.unsafe('DROP TRIGGER reject_terminal_test_fire ON harness_shared.event_key_fires');
+      await h.sql.unsafe('DROP FUNCTION harness_shared.reject_terminal_test_fire()');
+    }
+    await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws)).resolves.toBe(1);
+    expect((await waitForEmission(eventKey)).fire.last_payload).toMatchObject({ taskId, state: 'exited', exitCode: 0 });
+    // This is the unconditional evidence queried by events:await's late-registration latch.
+    expect(await h.sql`SELECT fire_count FROM harness_shared.event_key_fires WHERE event_key = ${eventKey}`)
+      .toEqual([{ fire_count: 1 }]);
+    expect(await h.sql`SELECT count(*)::int AS count FROM harness_shared.event_wake_deliveries WHERE event_key = ${eventKey}`)
+      .toEqual([{ count: 1 }]);
+  });
+
+  it('does not acknowledge a newer terminal tuple with an older in-flight emit', async () => {
+    const taskId = 'terminal-upgrade-during-emit';
+    await insertTask(taskId);
+    await taskStore.closeTask(taskId, { state: 'ended_unobserved' }, undefined, { emitTerminal: async () => {
+      await h.sql`UPDATE harness_shared.task_ledger SET state = 'exited', exit_code = 9,
+        exit_reason = 'late-runner-log' WHERE task_id = ${taskId}`;
+    } });
+    expect(await h.sql`SELECT detail -> 'terminalEventPending' AS pending FROM harness_shared.task_ledger WHERE task_id = ${taskId}`)
+      .toEqual([{ pending: true }]);
+    const emitted = vi.fn(async () => true);
+    await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws, undefined, emitted)).resolves.toBe(1);
+    expect(emitted).toHaveBeenCalledWith(expect.objectContaining({ taskId, state: 'exited', exitCode: 9, exitReason: 'late-runner-log' }));
   });
 
   it('fires and queues exactly one event after the first authoritative terminal update', async () => {

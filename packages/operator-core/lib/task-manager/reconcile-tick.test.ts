@@ -19,6 +19,7 @@ const store = vi.hoisted(() => ({
 }));
 
 vi.mock('./store', () => ({
+  recoverPendingTaskTerminalEvents: vi.fn(async () => 0),
   listLiveTasks: async () => [] as TaskRow[],
   listReconcileTasks: async () => [] as TaskRow[],
   touchAlive: async (u: unknown[]) => {

@@ -36,6 +36,7 @@ import { readJobLogTerminal, type JobLogTerminal } from './job-log-terminal';
 import {
   clearVanishedUnaccounted,
   listReconcileTasks,
+  recoverPendingTaskTerminalEvents,
   markEndedUnobserved,
   markRecoveredFromJobLog,
   markStranded,
@@ -274,6 +275,11 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
       confirmedUnaccounted: [],
     };
   }
+
+  // Terminal-event recovery uses committed ledger truth, independent of scan
+  // health. The read-only path above must never emit or clear pending intent.
+  deps.stage?.('reconcile-terminal-events');
+  await recoverPendingTaskTerminalEvents(deps.workspaceId);
 
   // This confirmation is deliberately computed once per healthy tick and shared
   // by notification plus enforcement. Calling the debounce helper separately for

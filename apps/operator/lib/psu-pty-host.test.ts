@@ -7495,6 +7495,50 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
     expect(h.events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
   });
 
+  it.each(['first attempt', 'rearmed retry'])(
+    'a superseded carry stops blocking fresh wakes during its %s',
+    async (phase) => {
+      let superseded = false;
+      let releasePrompt: ((result: { deferred: boolean }) => void) | undefined;
+      const waitAtPrompt = vi.fn(() => new Promise<{ deferred: boolean }>((resolve) => {
+        releasePrompt = resolve;
+      }));
+      const recycle = vi.fn(async () => {});
+      const controller = makeCarryRearmController({
+        acquireInject: async () => () => {},
+        waitAtPrompt,
+        recycle,
+        emitEvent: () => {},
+        isSuperseded: () => superseded,
+      });
+      const carry = { mode: 'carry-respawn', data: 'older carry' };
+      try {
+        if (phase === 'first attempt') controller.beginFirstAttempt(carry);
+        else {
+          expect(controller.schedule(carry)).toBe('queued');
+          await vi.waitFor(() => expect(waitAtPrompt).toHaveBeenCalledOnce());
+        }
+        const turn = { mode: 'turn', data: 'pending wake' };
+        controller.beginFirstAttempt(turn);
+        expect(controller.pendingCount('carry-respawn')).toBe(1);
+        expect(shouldDeferWakeForPendingRespawn('turn', controller.pendingCount('carry-respawn'))).toBe(true);
+
+        // A newer child exists while the old carry is still waiting at its gate.
+        // Admission must stop counting that carry before the gate can resolve.
+        superseded = true;
+        expect(controller.pendingCount('carry-respawn')).toBe(0);
+        expect(shouldDeferWakeForPendingRespawn('turn', controller.pendingCount('carry-respawn'))).toBe(false);
+        expect(controller.pendingCount('turn')).toBe(1);
+        expect(controller.pendingCount()).toBe(1);
+      } finally {
+        controller.dispose('host-ending');
+        releasePrompt?.({ deferred: false });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(recycle).not.toHaveBeenCalled();
+    },
+  );
+
   it('carry-only arbitration excludes turn retries while counting accepted and re-armed carries', () => {
     const h = makeHarness({ promptResults: [] });
     expect(h.controller.schedule({ mode: 'turn', data: 'wake' })).toBe('queued');

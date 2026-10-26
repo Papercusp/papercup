@@ -117,6 +117,7 @@ import { bindLiveAgentSessionTasksToNativeSession } from '../../../task-manager/
 import { resolveCodexModel, resolveCodexModelSelection } from '../../../model-context-budget.mjs';
 import { requestSessionIdentityActivation } from '../../../agent-tools/coordination/control-anchor';
 import type { ModeRow } from '../../../modes/store';
+import { completeTrackedCodexFork, resolveTrackedCodexForkSource, type NativeForkLineage, type TrackedCodexForkSource } from '../../../su-session-tracked-codex-fork';
 
 
 /**
@@ -157,6 +158,8 @@ export interface BootstrapSuResult {
    *  session is resumable + recognizable by id. claude → a forced UUID
    *  (`claude --session-id`); omp/codex → null (they don't take a forced id). */
   nativeSessionId: string | null;
+  /** Persisted on the child's launch spec before a tracked native fork succeeds. */
+  nativeFork?: NativeForkLineage;
   agent: SuAgent;
   /** Effective server-selected model, after identity defaults and launch overrides. */
   model?: string | null;
@@ -1595,6 +1598,7 @@ export const bootstrapSu = defineTool({
 
     let body: {
       agent?: string;
+      native_fork_source?: TrackedCodexForkSource;
       workspace?: string | null;
       harness_slug?: string | null;
       plan_slug?: string | null;
@@ -1735,6 +1739,15 @@ export const bootstrapSu = defineTool({
       );
     }
     const agent: SuAgent = body.agent;
+    if (body.native_fork_source !== undefined && (agent !== 'codex'
+      || !body.native_fork_source || !Number.isSafeInteger(body.native_fork_source.advSessionId)
+      || body.native_fork_source.advSessionId <= 0
+      || typeof body.native_fork_source.nativeSessionId !== 'string'
+      || !NATIVE_SESSION_ID_RE.test(body.native_fork_source.nativeSessionId)
+      || body.session_port_token !== undefined || body.session_port_protocol !== undefined
+      || body.session_port_transform_version !== undefined)) {
+      return jsonRes({ status: 'error', code: 'invalid_native_fork_source', error: 'Native fork requires one tracked Codex parent and cannot be combined with a session port' }, 400);
+    }
     const requestOriginUrl = new URL(req.url);
     let launchMcpBaseUrl = requestOriginUrl.origin;
     const rawMcpBaseUrl = body.mcp_base_url;
@@ -2275,6 +2288,12 @@ export const bootstrapSu = defineTool({
     }
 
     try {
+    if (body.native_fork_source) {
+      try { await resolveTrackedCodexForkSource(body.native_fork_source, workspace, cwd); }
+      catch (error) {
+        return jsonRes({ status: 'error', code: 'native_fork_source_mismatch', error: String(error) }, 409);
+      }
+    }
     // Per-session coord/lock owner (P-022). Replaces the wrapper's SID
     // minting: claude's user-level papercusp-su url env-expands ${PAPERCUSP_SID}
     // and the lock hooks read the same var, so a session's interactive calls
@@ -3471,6 +3490,9 @@ export const bootstrapSu = defineTool({
           }
         : null,
     };
+    if (body.native_fork_source) {
+      Object.assign(result, await completeTrackedCodexFork(result, body.native_fork_source));
+    }
     if (sessionPortContext && sessionId != null) {
       const store = await import('../../../session-port/store');
       await store.recordSessionPortBootstrapReceipt({

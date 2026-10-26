@@ -18620,6 +18620,12 @@ export async function runGreenCheckpoint(
       );
     } else if (consumed?.kind === "refire" && consumed.request) {
       const admissionRefires = opts.admissionRefires ?? 0;
+      // Preparation is committed before acquiring the checkpoint serializer. A changed
+      // head needs a new unlocked preflight; recursive execution must neither reuse the
+      // old generation nor discard its identity guard. The refire decision retains the
+      // durable marker, so a later run can select and prepare under current authority.
+      const requiresUnlockedPreparation = Boolean(opts.preparedSelection &&
+        consumed.request.repairHead !== opts.preparedSelection.candidate);
       const nowMs = Date.now();
       const deadlineExceeded = refireDeadlineExceeded({
         elapsedMs: nowMs - admissionRunStartedAtMs,
@@ -18627,6 +18633,7 @@ export async function runGreenCheckpoint(
         budgetMs: refireRunBudgetMsFromEnv(),
       });
       if (
+        !requiresUnlockedPreparation &&
         admissionRefires < MAX_ADMISSION_REFIRE_ATTEMPTS &&
         !deadlineExceeded
       ) {
@@ -18643,8 +18650,10 @@ export async function runGreenCheckpoint(
         });
       }
       deps.log(
-        `repair admission retest remains requested at ${consumed.request.repairHead.slice(0, 8)}; ` +
-          (deadlineExceeded
+        `repair admission retest ${requiresUnlockedPreparation ? "deferred" : "remains requested"} at ${consumed.request.repairHead.slice(0, 8)}; ` +
+          (requiresUnlockedPreparation
+            ? "the changed candidate requires unlocked preparation in a future checkpoint run"
+            : deadlineExceeded
             ? "the shared gate-run wall budget cannot fit another pass"
             : `the admission self-refire bound ${MAX_ADMISSION_REFIRE_ATTEMPTS} is exhausted`) +
           ". The durable marker remains pending for a future checkpoint run; no immediate retry was scheduled.",

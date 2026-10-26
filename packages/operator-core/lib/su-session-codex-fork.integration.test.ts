@@ -10,6 +10,9 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 import { forkCodexNativeHistory, prepareCodexForkHistory, type PreparedCodexForkHistory } from './su-session-codex-fork';
 import { startSuStdioPeer, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
+import { createCodexSuSessionAdapter } from './su-session-codex-adapter';
+
+vi.mock('./su-session-persistence', () => ({ bindSuSessionToAdvSession: vi.fn(async () => ({ status: 'bound' })), persistSuSessionDescriptor: vi.fn(async () => true) }));
 
 const processes = vi.hoisted(() => new Map<string, ChildProcess>());
 vi.mock('./task-manager/managed-spawn', () => ({ managedSpawn: async (bin: string, args: string[], _spec: unknown,
@@ -57,6 +60,27 @@ it.each(['complete', 'incomplete'] as const)('transfers %s paginated history acr
     await vi.waitFor(() => expect(p.events).toContainEqual(expect.objectContaining({ method: 'turn/completed',
       params: expect.objectContaining({ threadId, turn: expect.objectContaining({ id, status: 'completed' }) }) })), { timeout: 20_000 });
   }
+  async function visible(p: Awaited<ReturnType<typeof open>>, id: string, path: string) {
+    const adapter = createCodexSuSessionAdapter({ operation: 'created', backend: 'codex', advSessionId: 17,
+      ownerId: 'su-child', workspaceId: 'fork-fixture', harnessSlug: null, planSlug: null, nativeSession: null }, {
+      nativeSession: { backend: 'codex', source: 'adv_sessions', ownerId: 'su-child', codexHome: p.home,
+        rolloutId: id, exactResumeSupported: true, missingReason: null }, rolloutPath: path,
+    }, { agentChatId: 'fork-visible-history', register: false, ready: false, runtimeReady: () => false, executionKind: 'programmatic' });
+    try {
+      expect(adapter.host.snapshot().streamReady).toBe(false);
+      // The initial snapshot must not show the child's local messages before
+      // the inherited prefix. Native history is the authoritative ordered view.
+      await adapter.consumeRolloutSnapshot({ preserveLifecycle: true, deferForkHistory: true });
+      expect(adapter.host.recent.some(({ event }) => event.type === 'transcript')).toBe(false);
+      await adapter.consumeThreadHistory(frame => p.peer.request(frame));
+      const transcript = adapter.host.recent.filter(({ event }) => event.type === 'transcript');
+      const count = transcript.length;
+      await adapter.consumeThreadHistory(frame => p.peer.request(frame));
+      expect(adapter.host.recent.filter(({ event }) => event.type === 'transcript')).toHaveLength(count);
+      expect(adapter.host.snapshot().streamReady).toBe(false);
+      return transcript.map(({ event }) => 'content' in event ? event.content : '').filter(Boolean).join('\n');
+    } finally { adapter.dispose(); }
+  }
   try {
     const parent = await open();
     const start = await parent.peer.request({ method: 'thread/start', params: { cwd: parent.home, approvalPolicy: 'never', sandbox: 'read-only' } });
@@ -87,6 +111,7 @@ it.each(['complete', 'incomplete'] as const)('transfers %s paginated history acr
       const result = await fork, childId = String((result.thread as RpcFrame).id);
       expect(childId).not.toBe(parentId);
       expect((result.thread as RpcFrame).forkedFromId).toBe(parentId);
+      expect(await visible(child, childId, String((result.thread as RpcFrame).path))).toContain('PARENT_HISTORY_MARKER');
       expect(readFileSync(sourcePath)).toEqual(before);
       await turn(child, childId, 'CHILD_ONLY_MARKER');
       expect(JSON.stringify(bodies[1])).toContain('PARENT_HISTORY_MARKER');
@@ -109,6 +134,14 @@ it.each(['complete', 'incomplete'] as const)('transfers %s paginated history acr
         prepared: descendantHistory, childOwnerId: 'su-grandchild', childHome: descendant.home,
         params: { cwd: parent.home, approvalPolicy: 'never', sandbox: 'read-only' } });
       await turn(descendant, String((descendantResult.thread as RpcFrame).id), 'GRANDCHILD_ONLY_MARKER');
+      const restored = await visible(descendant, String((descendantResult.thread as RpcFrame).id), String((descendantResult.thread as RpcFrame).path));
+      expect(restored).toContain('PARENT_HISTORY_MARKER');
+      expect(restored).toContain('CHILD_ONLY_MARKER');
+      expect(restored).toContain('CHILD_AFTER_RESTART');
+      expect(restored).toContain('GRANDCHILD_ONLY_MARKER');
+      expect(restored).not.toContain('PARENT_ONLY_MARKER');
+      expect(restored.indexOf('PARENT_HISTORY_MARKER')).toBeLessThan(restored.indexOf('CHILD_ONLY_MARKER'));
+      expect(restored.indexOf('CHILD_ONLY_MARKER')).toBeLessThan(restored.indexOf('CHILD_AFTER_RESTART'));
       expect(JSON.stringify(bodies[4])).toContain('PARENT_HISTORY_MARKER');
       expect(JSON.stringify(bodies[4])).toContain('CHILD_ONLY_MARKER');
       expect(JSON.stringify(bodies[4])).toContain('CHILD_AFTER_RESTART');

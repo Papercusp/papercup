@@ -3627,7 +3627,7 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(clearContextEstimateMock).not.toHaveBeenCalled();
   });
 
-  it('refuses an unsupported managed Codex fork when a writer is active without a registered pty host', async () => {
+  it('uses a tracked Codex fork when a writer is active without a registered pty host', async () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex', live: false });
     findLiveHostMock.mockReturnValue(null);
     codexThreadWriterHolderMock.mockReturnValue({
@@ -3643,16 +3643,14 @@ describe('resume + fork (D-004/D-007)', () => {
       ctx,
     );
 
-    expect(isError(res)).toBe(true);
+    expect(isError(res), textOf(res)).toBe(false);
     expect(codexThreadWriterHolderMock).toHaveBeenCalledWith(expect.any(String), 'sid-dead');
-    expect(textOf(res)).toContain('tracked fork is unavailable');
-    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
-    expect(spawnConsoleMock).not.toHaveBeenCalled();
-    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(spawnedCommand()).toContain('--fork');
+    expect(acquireAdvSessionResumeMock).not.toHaveBeenCalled();
     expect(shutdownViaPtyMock).not.toHaveBeenCalled();
   });
 
-  it.each(['codex', 'omp'])('refuses explicit and protective managed %s forks before admission in either placement', async (agent) => {
+  it.each(['omp'])('refuses explicit and protective managed %s forks before admission in either placement', async (agent) => {
     for (const fork of [true, undefined]) {
       for (const headless of [true, false]) {
         resolveResumeTargetMock.mockResolvedValue({ ...dead, agent, live: fork === undefined, endedAt: null });
@@ -3668,6 +3666,18 @@ describe('resume + fork (D-004/D-007)', () => {
         expect(shutdownViaPtyMock).not.toHaveBeenCalled();
       }
     }
+  });
+
+  it.each([true, false])('admits a tracked Codex fork without taking parent custody (headless=%s)', async headless => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex' });
+    findLiveHostMock.mockReturnValue(null);
+    const res = await launchAgent.handler(
+      { resume: { sessionId: dead.sessionId }, fork: true, headless, brief: 'branch the recovery' }, ctx,
+    );
+    expect(isError(res), textOf(res)).toBe(false);
+    expect(spawnedCommand(headless ? spawnHeadlessMock : spawnConsoleMock)).toContain('--fork');
+    expect(acquireAdvSessionResumeMock).not.toHaveBeenCalled();
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
   });
 
   it('refuses a managed Claude fork without a tracked source row before admission', async () => {
