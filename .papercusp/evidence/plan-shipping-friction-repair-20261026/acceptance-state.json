@@ -17,8 +17,8 @@
     "red": 22131848
   },
   "applied": {
-    "rubricRevision": 3,
-    "criteriaHash": "3fc084d6802854ebebb7625faf87be2f04eda7e414343a325c1f8e62febfaef9",
+    "rubricRevision": 4,
+    "criteriaHash": "4b63a8cd3b4eb6ef1fe78f19768bd3f21967eb775758a43388a342004bd06693",
     "atomicApproval": "thread-post:1206471",
     "wordingApproval": "thread-post:1206604",
     "activationAuditSeq": 3
@@ -56,7 +56,8 @@
     "receipt": "review-85c4eedda7c0c8bd8fe6b91dd0a09e508bd43af946f334c9176412a07ed2a61c",
     "previewPost": "thread-post:1206612",
     "taskId": "0mvp6fzjk136s1ck6sj",
-    "applied": false
+    "applied": true,
+    "approvalRef": "thread-post:1206635"
   },
   "vetting": {
     "conversationId": "conv-mvp6b1zz-0000-b6679daa601341dfa50f327b356f8466",
@@ -566,9 +567,31 @@
         }
       }
     ],
-    "expectedRubricRevision": 3,
+    "expectedRubricRevision": 4,
+    "expectedSubjectPlanRevision": 14,
     "idempotencyKey": "shipping-friction-vetting-sufficiency-20261026-v1",
     "reason": "Address canonical rubric-vetting critique1206611: correct R5/R11 evidence planes and runtimes; bind exact positive/control cases; name operational receipts and distinguish R2/R7 diagnostic surfaces. Include semantically unchanged R3 plain-language falsifier. All original obligations preserved; manual-provenance rejected because not a supported test layer; explicit manual inspections retained. No evidence binding or adequacy card precedes critique reconciliation."
   },
-  "next": "PREPARED ONLY: first reconcile rubric revision/current R3 review, read exact current plan Requirements, render matching requirements and Design map runtime planes, then canonical full-set amendment dryRun requestReview on WI-6554700010029270. Static case validation may refine computed it.each selectors using recorded titles. Apply only actual outside-lineage approval and current CAS. Post final exact criteriaHash to SAME critique conversation and get disposition before binding. R11 now explicitly final-release evidence; never infer shipment from staging."
+  "parserBlocker": {
+    "workItem": "WI-6554700010029462",
+    "state": "done",
+    "completionAuthority": "committed",
+    "redRun": "94df22cf-3021-4661-ac90-6ec81b505494",
+    "greenRun": "82ee97a0-7554-4c70-8b35-d47b688a2f1a",
+    "greenTestRun": 22227434,
+    "result": "4FAIL/2PASS before;6PASS/0FAIL/0SKIP after;real rubric file122literal titles includes strict-reader case",
+    "lostRun": "ca57e377-c7bb-4c40-bacc-efdd7bc443e6 ended_unobserved zero ledgerRows; no passing claim",
+    "stagingBuildContainsFix": "bbfbf45a59",
+    "locksReleased": true
+  },
+  "fullAmendmentReview": {
+    "receipt": "review-99bbb239f5b23ab811bd6c2ca50829a02bb8ef6bfda48b932e75bdd98649e91f",
+    "previewPost": "thread-post:1206752",
+    "taskId": "0mvpgcjyt165nbg3ymk",
+    "reviewer": "su-37068955-1083-4ce3-bdcc-4cd4615b4b57",
+    "awaitId": 373488,
+    "staticCases": { "checked": 22, "computed": 3, "failures": [] },
+    "applied": false
+  },
+  "next": "Full12criterion amendment preview1206752 pending outside-lineage review. Plan Requirements/Design already updated rev14 hash eae981c48e9366b17b1a32c574977d61954ee3dba1e4c7cf81d9457f77a547e6. Rubricrev4 R3falsifier applied approval1206635 D003. Reaudit dryRun passed carrying8mappings and4agent-addeditems. On review event read currentclaim/thread/CAS, apply exact nextPreparedPatch only actual approval. Post final exact criteriaHash SAME critique conversation and get disposition before binding; record activationreaudit, exactspecquality+independentintegrity thenstart/proof/grading/recovery. R11 requires final release; historical/native restrictions remain; no LIVE_GATE_OPS."
 }
