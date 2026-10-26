@@ -1652,7 +1652,10 @@ copy_up_generation_dependency_path() {
   chmod -R u+w "$tmp"
   mv "$path" "$old"
   mv "$tmp" "$path"
-  chmod -R u+w "$old" 2>/dev/null || true
+  # Retired files may still share inodes with the immutable generation. Only
+  # directories need write permission to unlink entries; chmodding files here
+  # would mutate the donor snapshot while deleting the checkout's old links.
+  find "$old" -type d -exec chmod u+rwx {} + 2>/dev/null || true
   rm -rf "$old"
 }
 

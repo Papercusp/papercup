@@ -882,6 +882,63 @@ describe('setup-release-checkout.sh pinned submodule node_modules survive the re
   });
 });
 
+describe('setup-release-checkout.sh generation package copy-up', () => {
+  it('preserves frozen donor modes and snapshot while retiring hardlinked patch targets', () => {
+    const work = mkdtempSync(join(tmpdir(), 'generation-copy-up-'));
+    const donor = join(work, 'generation/node_modules/example');
+    const target = join(work, 'checkout/node_modules/example');
+    mkdirSync(join(donor, 'bin'), { recursive: true });
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(join(donor, 'index.js'), 'original dependency\n');
+    writeFileSync(join(donor, 'bin/tool'), '#!/bin/sh\nexit 0\n');
+    chmodSync(join(donor, 'index.js'), 0o444);
+    chmodSync(join(donor, 'bin/tool'), 0o555);
+    chmodSync(join(donor, 'bin'), 0o555);
+    chmodSync(donor, 0o555);
+    try {
+      const result = spawnSync('bash', ['-euo', 'pipefail', '-c', [
+        'source "$GENERATION_SCRIPT"',
+        'source <(sed -n "/^copy_up_generation_dependency_path()/,/^}/p" "$SETUP_SCRIPT")',
+        'dependency_generation_tree_fingerprint "$DONOR" > "$WORK/before"',
+        'cp -al "$DONOR" "$TARGET"',
+        'copy_up_generation_dependency_path "$TARGET"',
+        'dependency_generation_tree_fingerprint "$DONOR" > "$WORK/after"',
+      ].join('\n')], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: {
+          ...process.env,
+          GENERATION_SCRIPT: DEPENDENCY_GENERATION_SCRIPT,
+          SETUP_SCRIPT: SCRIPT_PATH,
+          PINNED_DEPENDENCY_GENERATION_ID: 'fixture-generation',
+          DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(work, 'copy.lock'),
+          DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '0',
+          DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '0',
+          WORK: work,
+          DONOR: donor,
+          TARGET: target,
+        },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(statSync(join(donor, 'index.js')).mode & 0o777).toBe(0o444);
+      expect(statSync(join(donor, 'bin/tool')).mode & 0o777).toBe(0o555);
+      expect(readFileSync(join(work, 'after'), 'utf8')).toBe(readFileSync(join(work, 'before'), 'utf8'));
+      for (const path of ['index.js', 'bin/tool']) {
+        expect(statSync(join(target, path)).ino).not.toBe(statSync(join(donor, path)).ino);
+        expect(statSync(join(target, path)).mode & 0o200).toBe(0o200);
+      }
+      writeFileSync(join(target, 'index.js'), 'patched dependency\n');
+      expect(readFileSync(join(donor, 'index.js'), 'utf8')).toBe('original dependency\n');
+      expect(readdirSync(dirname(target))).toEqual(['example']);
+    } finally {
+      // Only directories need write permission to unlink their children.
+      chmodSync(donor, 0o755);
+      chmodSync(join(donor, 'bin'), 0o755);
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+});
+
 /**
  * sync_one_node_modules() — the ATOMIC node_modules refresh (2026-06-25 all-pages
  * connection-refused outage). The old in-place `rm -rf "$dest"; cp -al` left the LIVE
