@@ -40,7 +40,7 @@ type OrdinaryRoutine = {
 };
 
 async function ordinaryRoutine(sql: Sql, options: ReturnType<typeof admissionPromoterOptions>) {
-  const rows = await sql<OrdinaryRoutine[]>`
+  const rows = await sql<(Omit<OrdinaryRoutine, 'now'> & { now: Date | string })[]>`
     SELECT id, trigger_config, metadata, now() AS now FROM harness_shared.routines
      WHERE workspace_id = ${options.workspaceId} AND install_slug = ${options.harnessSlug}
        AND name = ${WORK_ITEM_ADMISSION_PROMOTER}
@@ -48,7 +48,13 @@ async function ordinaryRoutine(sql: Sql, options: ReturnType<typeof admissionPro
        AND (trigger_config->>'cron' IS NOT NULL OR trigger_config->>'rrule' IS NOT NULL)
      FOR UPDATE`;
   if (rows.length !== 1) throw new Error('ordinary admission requires one active recurring promoter');
-  return rows[0]!;
+  const routine = rows[0]!;
+  // The operator's SQL transport can return raw timestamptz strings. Normalize
+  // before both deadline comparison and recurrence calculation; the fresh-PG
+  // connection's default Date parser otherwise hides this production boundary.
+  const now = routine.now instanceof Date ? routine.now : new Date(routine.now);
+  if (!Number.isFinite(now.getTime())) throw new Error('ordinary admission requires a valid database clock');
+  return { ...routine, now };
 }
 
 function nextOrdinaryDeadline(routine: OrdinaryRoutine): string | null {

@@ -6,7 +6,7 @@
  * A transport receipt is explicitly NOT proof of a running agent or a live deploy.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Sql } from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolve } from 'node:path';
 import {
@@ -245,6 +245,43 @@ function request(id: string) {
 }
 
 describe('original authority context fidelity', () => {
+  it.each(['due', 'legacy'] as const)(
+    'screens and replays a %s ordinary slot with the operator string timestamp representation', async (slot) => {
+      const original = await create('String timestamp ordinary admission');
+      if (slot === 'due') await db.sql`UPDATE harness_shared.routines SET metadata =
+        '{"admissionOrdinarySlot":{"dueAt":"2000-01-01T00:00:00.000Z"}}'
+        WHERE id = 'original-promoter'`;
+      // Reproduce the production wire shape with a real PG connection, rather
+      // than replacing the scheduler, slot writes, or screening composition.
+      const wireSql = postgres(db.url, {
+        max: 2, prepare: false, onnotice: () => {},
+        types: { timestamptz: { to: 1184, from: [1184], serialize: String, parse: (value) => value } },
+      });
+      try {
+        const [clock] = await wireSql`SELECT now() AS now`;
+        expect(typeof clock!.now).toBe('string');
+        const options = { ...scope, runId: `string-clock-${slot}`, batchSize: 10,
+          recentTerminalDays: 30, model: undefined };
+        const deps = { sql: wireSql, lockSql: db.sql, llmCall: h.model,
+          authorize: authorizeAdmissionRecovery, dispatch };
+        const result = await runAdmissionPromoterWithRecovery(options, deps);
+        expect(result).toMatchObject({ promoted: 1, modelCalled: false });
+        expect(await row(original.id)).toMatchObject({ admission: 'admitted' });
+        const [routine] = await db.sql`SELECT metadata FROM harness_shared.routines
+          WHERE id = 'original-promoter'`;
+        const savedSlot = routine!.metadata.admissionOrdinarySlot;
+        expect(Date.parse(savedSlot.dueAt)).toBeGreaterThan(Date.parse(clock!.now));
+        expect(await runAdmissionPromoterWithRecovery(options, deps)).toEqual(result);
+        const [replayed] = await db.sql`SELECT metadata FROM harness_shared.routines
+          WHERE id = 'original-promoter'`;
+        expect(replayed!.metadata.admissionOrdinarySlot).toEqual(savedSlot);
+        expect(h.model).not.toHaveBeenCalled();
+      } finally {
+        await wireSql.end({ timeout: 5 });
+      }
+    },
+  );
+
   it('retains a durable ordinary opportunity while unrelated exact recoveries keep arriving', async () => {
     const original = await create('Ordinary fairness target');
     const twin = await create(original.title);
