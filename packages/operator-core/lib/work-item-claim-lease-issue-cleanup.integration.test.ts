@@ -191,7 +191,12 @@ describe('EI-6480 — issue-family stale-lease cleanup (WORKITEM_CLAIM_LEASE on)
   it.each([
     { label: 'recent content write preserves the claim', fedAgoMin: 0, updatedAgoMin: 30, released: false },
     { label: 'bookkeeping-only write does not preserve the claim', fedAgoMin: 30, updatedAgoMin: 0, released: true },
-    { label: 'legacy NULL content clock uses the recent update fallback', fedAgoMin: null, updatedAgoMin: 0, released: false },
+    // WI-6554700010029303: a sibling's NULL fed_ts is NOT a sign of life, even with a
+    // recent updated_ts. updated_ts is bookkeeping (WI-10005935), and the sibling
+    // clause deliberately reads fed_ts alone since 2026-10-07. This case had pinned the
+    // earlier COALESCE(fed_ts, updated_ts) rule and went stale; the canonical cases
+    // are in work-items-stale-claims.integration.test.ts ('...is NOT a sign of life').
+    { label: 'legacy NULL content clock with a recent update is not a sign of life', fedAgoMin: null, updatedAgoMin: 0, released: true },
   ])('unknown holder: $label', async ({ fedAgoMin, updatedAgoMin, released }) => {
     await seedIssue('EI-CLOCK', 'bug', 'never-seen-holder', 30);
     await seedLease('EI-CLOCK', 'never-seen-holder');
