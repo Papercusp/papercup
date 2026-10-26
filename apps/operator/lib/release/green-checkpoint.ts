@@ -4203,8 +4203,17 @@ export async function scheduledAttemptPrewarmTarget(
     );
   }
 
+  // Only a SUITE-PRODUCING decision names the candidate this run will judge. `recover-dead-fixer`
+  // also proceeds (the writer recovers the dead fixer, then re-runs the policy), but its
+  // repairHead is a recovery target, not a judging one. Attaching with it while the queue is still
+  // awaiting-fixer is refused by the reservation's pre-suite retarget guard
+  // (`candidate-mismatch:pre-suite-retarget-queue-not-ready-to-verify`), so every fire that joined
+  // the attempt crashed before the writer could recover the queue (WI-6554700010010801).
+  const judgesPolicyCandidate = queuePreflight.queueDecision === "test-candidate" ||
+    queuePreflight.queueDecision === "verify-repair" ||
+    queuePreflight.queueDecision === "run-normal-gate";
   const policyCandidate =
-    queuePreflight.proceed && queuePreflight.candidate?.trim()
+    queuePreflight.proceed && judgesPolicyCandidate && queuePreflight.candidate?.trim()
       ? queuePreflight.candidate.trim()
       : null;
   const candidate = policyCandidate ?? pinnedCandidate;

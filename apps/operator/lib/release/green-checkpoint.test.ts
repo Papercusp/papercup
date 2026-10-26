@@ -4627,6 +4627,37 @@ describe("acquireCheckpointRunLock", () => {
       candidateSource: 'frozen-repair-queue',
     });
   });
+  it("a joined scheduled attempt keeps its pinned candidate while the frozen policy only recovers a dead fixer (WI-6554700010010801)", async () => {
+    // Live shape (papercusp, 2026-10-26 15:23Z and 20:24Z): the queue is awaiting-fixer with a
+    // dead fixer, so the policy proceeds with `recover-dead-fixer` and names the repairHead —
+    // a recovery target, with no suite at that head. Attaching with it was refused by the
+    // reservation's pre-suite retarget guard (queue-not-ready-to-verify) on every joined fire.
+    const preflight = (queueDecision: 'recover-dead-fixer' | 'verify-repair') => ({
+      proceed: true as const,
+      reason: 'clear' as const,
+      candidate: 'repair-head-sha',
+      candidateSource: 'frozen-repair-queue' as const,
+      repairQueue: null,
+      frozenLineageIdentity: null,
+      queueDecision,
+      nextAttempt: null,
+      fixerSpawnId: queueDecision === 'recover-dead-fixer' ? 'dead-fixer-spawn' : null,
+      fixerAlive: queueDecision === 'recover-dead-fixer' ? false : null,
+    });
+
+    const recovering = await scheduledAttemptPrewarmTarget('frozen-candidate-sha', {
+      assess: vi.fn(async () => preflight('recover-dead-fixer')),
+      root: '/checkpoint',
+    });
+    expect(recovering).toEqual({ candidate: 'frozen-candidate-sha', candidateSource: 'pinned' });
+
+    // Positive control: the same queue answer under a suite-producing decision still retargets.
+    const verifying = await scheduledAttemptPrewarmTarget('frozen-candidate-sha', {
+      assess: vi.fn(async () => preflight('verify-repair')),
+      root: '/checkpoint',
+    });
+    expect(verifying).toEqual({ candidate: 'repair-head-sha', candidateSource: 'frozen-repair-queue' });
+  });
   it("blocks a second live checkpoint process from mutating the same checkpoint tree", () => {
     const lockDir = join(
       repo,
