@@ -10,8 +10,12 @@ const UNKNOWN = '\u0000';
  * every unrelated selector in the file from validation.
  */
 export function declaredCaseTitles(file: string, source: string): { titles: string[]; unresolvedTitles: string[] } {
-  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false,
-    /\.[cm]?jsx?$/.test(file) ? ts.ScriptKind.JSX : ts.ScriptKind.TSX);
+  // TSX treats a TypeScript generic arrow such as async <T>(...) as JSX and
+  // can consume every following suite. Only JSX-bearing extensions use that grammar.
+  const scriptKind = /\.tsx$/.test(file) ? ts.ScriptKind.TSX
+    : /\.jsx$/.test(file) ? ts.ScriptKind.JSX
+      : /\.[cm]?js$/.test(file) ? ts.ScriptKind.JS : ts.ScriptKind.TS;
+  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false, scriptKind);
   const aliases = new Map<string, string>([['it', 'it'], ['test', 'test'], ['describe', 'describe'], ['suite', 'suite']]);
   const namespaces = new Set<string>();
   for (const statement of sf.statements) {
