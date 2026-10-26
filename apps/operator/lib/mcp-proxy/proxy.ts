@@ -1441,6 +1441,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "docs:get",
   "docs:search",
   "docs:outline",
+  // PG-canonical artifact reads; replay safely recovers a lost body after a socket reset.
+  "artifacts:load",
   "search:fulltext",
   "search:semantic",
   // LSP compiler intelligence is read-only and safe to replay after a socket reset.

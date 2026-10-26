@@ -3418,6 +3418,47 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     expect(upstream.hits()).toBe(2);
   });
 
+  it("tools:invoke-wrapped artifacts:load retries once after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"found":true,"content":"artifact-tail"}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "artifacts:load",
+            args: {
+              slug: "papercusp",
+              rel_path: "audits/example.json",
+              offset: 527_000,
+              max_chars: 4_000,
+            },
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"found":true,"content":"artifact-tail"}}');
+    expect(upstream.hits()).toBe(2);
+  });
+
   it("EI-25892935669084367: tools:invoke-wrapped dev:rate_governor_status retries once after a post-connect reset", async () => {
     const upstream = resetOnceUpstream(
       '{"result":"rate-governor-status-recovered"}',
