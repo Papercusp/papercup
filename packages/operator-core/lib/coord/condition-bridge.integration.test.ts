@@ -479,6 +479,77 @@ describe('D-020 — settle is gated on the bridge mint marker', () => {
   });
 });
 
+describe('WI-6554700010029296 — holder-side sweep settles orphaned bridge items', () => {
+  // The recycling defect: 214 `alarm:*` items were minted while `alarm:` was in the
+  // actionable catalog, the catalog was narrowed, and reconcileConditions (gated on
+  // that catalog) could never settle them again. Simulate the narrowing by minting
+  // with an actionable key and moving the row onto a non-actionable one.
+  async function orphan(alarmKey: string, mintKey: string): Promise<string> {
+    const { workItem } = await bridge.acquireConditionOwner(mintKey, spec('provider failing'));
+    await db.sql`UPDATE harness_shared.work_items SET condition_key = ${alarmKey} WHERE feature_id = ${workItem!}`;
+    return workItem!;
+  }
+
+  it('a RESOLVED orphan with a non-actionable key is settled and its key freed', async () => {
+    const alarmKey = 'alarm:codex-rollout-provider:orphan-resolved';
+    const workItem = await orphan(alarmKey, 'green-stall:orphan-a');
+    const asked: string[] = [];
+
+    const out = await bridge.reconcileHeldConditionOwners({
+      coveredKeys: new Set(),
+      readKeyOpen: async (key) => {
+        asked.push(key);
+        return false;
+      },
+      workspaceId: WS,
+    });
+
+    expect(asked).toEqual([alarmKey]);
+    expect(out).toEqual([expect.objectContaining({ conditionKey: alarmKey, released: workItem, settled: true })]);
+    expect(await isTerminal(workItem)).toBe(true);
+    expect(await holdersOf(alarmKey)).toEqual([]);
+  });
+
+  it('leaves OPEN, UNKNOWN, COVERED and HAND-FILED holders untouched, and honours the limit', async () => {
+    const openItem = await orphan('alarm:carry-delivery:still-open', 'green-stall:orphan-b');
+    const unknownItem = await orphan('alarm:loop-dead-man:no-evidence', 'green-stall:orphan-c');
+    const coveredKey = 'green-stall:covered';
+    const { workItem: coveredItem } = await bridge.acquireConditionOwner(coveredKey, spec('covered'));
+    const handFiled = await handFiledOwner('single-primary:no-primary', 'documented root cause');
+    const asked: string[] = [];
+    const verdicts: Record<string, boolean | null> = {
+      'alarm:carry-delivery:still-open': true,
+      'alarm:loop-dead-man:no-evidence': null,
+    };
+
+    const out = await bridge.reconcileHeldConditionOwners({
+      coveredKeys: new Set([coveredKey]),
+      readKeyOpen: async (key) => {
+        asked.push(key);
+        return key in verdicts ? verdicts[key]! : false;
+      },
+      workspaceId: WS,
+    });
+
+    expect(out).toEqual([]);
+    // The covered key belongs to the aggregate reconcile; the hand-filed row has no mint marker.
+    expect(asked.sort()).toEqual(['alarm:carry-delivery:still-open', 'alarm:loop-dead-man:no-evidence']);
+    for (const id of [openItem, unknownItem, coveredItem!, handFiled]) expect(await isTerminal(id)).toBe(false);
+
+    const limited: string[] = [];
+    await bridge.reconcileHeldConditionOwners({
+      coveredKeys: new Set(),
+      readKeyOpen: async (key) => {
+        limited.push(key);
+        return true;
+      },
+      workspaceId: WS,
+      limit: 1,
+    });
+    expect(limited).toHaveLength(1);
+  });
+});
+
 describe('the completion-integrity gate — the defect this file found', () => {
   it('a terminal transition with NO owner is REJECTED by the store (the throw the bridge used to swallow)', async () => {
     // The falsifier for the fix. Both of the bridge's closes ran without a `by`

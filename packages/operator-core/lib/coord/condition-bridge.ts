@@ -640,6 +640,98 @@ export async function releaseConditionOwner(
 }
 
 /**
+ * Per-tick bound for {@link reconcileHeldConditionOwners}. Each candidate costs one
+ * exact-key envelope read, so the sweep stays small and rotates instead of scanning.
+ */
+export const HELD_CONDITION_SWEEP_LIMIT = 20;
+
+/** One non-terminal, bridge-minted row that still holds a condition key. */
+export interface HeldConditionOwner {
+  workItem: string;
+  conditionKey: string;
+  harness: string;
+}
+
+/**
+ * PURE. Which held keys did the aggregate reconcile NOT cover this tick?
+ *
+ * `reconcileConditions` only acts on a key that is BOTH in the bounded aggregate
+ * fold AND in the actionable catalog. Every other bridge-minted holder has no path
+ * to settle, which is how WI-6554700010029296 stranded 214 `alarm:*` items: they
+ * were minted while `alarm:` was actionable, the catalog was narrowed, and from then
+ * on nothing presented their resolution to the bridge. They stayed open, claimable
+ * as kind=bug, and recycled through hundreds of holders.
+ */
+export function heldOwnersNeedingExactReconcile(
+  holders: readonly HeldConditionOwner[],
+  coveredKeys: ReadonlySet<string>,
+): HeldConditionOwner[] {
+  return holders.filter((h) => !coveredKeys.has(h.conditionKey));
+}
+
+/**
+ * Settle bridge-minted items whose condition RESOLVED but which the aggregate
+ * reconcile cannot reach (WI-6554700010029296).
+ *
+ * Reconciles from the HOLDER side: list non-terminal `_bridge` rows that still hold
+ * a key, skip the keys the aggregate pass already presented (`coveredKeys`), fold
+ * each remaining key exactly via `readKeyOpen`, and settle only on an explicit
+ * `false`. `true` (still open) and `null` (no lifecycle evidence) are left alone.
+ * Absence of evidence is not a resolution, and an open orphan is a policy question
+ * (see WI-6554700010016287), not a reconcile defect.
+ *
+ * Release is deliberately NOT gated on the actionable catalog. The catalog decides
+ * what may be MINTED; an item already minted must still be able to close.
+ *
+ * Rotation is stateless: candidates are ordered by md5(feature_id || minute bucket)
+ * and capped at `limit`, so every holder is examined over successive ticks without
+ * module-scoped state. Fail-soft per holder.
+ */
+export async function reconcileHeldConditionOwners(opts: {
+  coveredKeys: ReadonlySet<string>;
+  readKeyOpen: (conditionKey: string) => Promise<boolean | null>;
+  workspaceId?: string;
+  now?: number;
+  limit?: number;
+}): Promise<ReleaseResult[]> {
+  const limit = opts.limit ?? HELD_CONDITION_SWEEP_LIMIT;
+  if (limit <= 0) return [];
+  const bucket = String(Math.floor((opts.now ?? Date.now()) / 60_000));
+  const sql = getOrgPg().sql;
+  const rows = await sql<{ feature_id: string; condition_key: string; harness_slug: string }[]>`
+    SELECT feature_id, condition_key, harness_slug
+      FROM harness_shared.work_items
+     WHERE condition_key IS NOT NULL
+       AND (payload -> ${BRIDGE_MINT_MARKER}) IS NOT NULL
+       AND (status IS NULL OR status <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+       AND (${opts.workspaceId ?? null}::text IS NULL OR workspace_id = ${opts.workspaceId ?? null})
+     ORDER BY md5(feature_id || ${bucket})
+     LIMIT 2000`;
+  const candidates = heldOwnersNeedingExactReconcile(
+    rows.map((r) => ({ workItem: r.feature_id, conditionKey: r.condition_key, harness: r.harness_slug })),
+    opts.coveredKeys,
+  ).slice(0, limit);
+
+  const out: ReleaseResult[] = [];
+  for (const holder of candidates) {
+    try {
+      if ((await opts.readKeyOpen(holder.conditionKey)) !== false) continue;
+      out.push(
+        await releaseConditionOwner(holder.conditionKey, {
+          harness: holder.harness,
+          workspaceId: opts.workspaceId,
+          settle: true,
+          reason: `condition '${holder.conditionKey}' resolved — closed by the condition bridge holder sweep`,
+        }),
+      );
+    } catch {
+      // One unreadable key must not stop the rest; the next tick retries it.
+    }
+  }
+  return out;
+}
+
+/**
  * Was this work-item MINTED by the bridge (as opposed to hand-filed and merely
  * holding the key)?
  *
