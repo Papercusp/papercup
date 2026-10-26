@@ -56,6 +56,7 @@ import {
   readFleetWindDownLoopEndRequirement,
   readFleetWindDownLoopEndAuthorization,
 } from '../coordination/tools/continuation-gate';
+import { readFleetMemberLoopEndRefusal } from './fleet-member-claimable-work';
 import { describeParkResumePath } from '../../fleet-park-resume-path';
 
 /** Bound the receipt's surviving-awaits enumeration (the count stays exact). */
@@ -557,6 +558,33 @@ export default defineTool({
           ],
           isError: true,
         };
+      }
+    }
+    // WI-6554700010029607: the rails above only ask whether this session will wake again.
+    // A fleet member of an ACTIVE fleet also may not park while work it could take now is
+    // claimable under its own spec. Self-ends only (the count is read as the caller);
+    // positive-finding-only reads; a get_next call since the refusal is the bounded escape.
+    if (workspaceId && ownerId === identity.ownerId && (wakeRead?.autonomyModes.length ?? 0) > 0) {
+      const goalAchievedForFleet = Boolean(activeGoal) && args.disposition === 'achieved';
+      const stopVerified =
+        ownerStopDirectiveHonored !== null ||
+        (args.ownerStopDirectiveId != null &&
+          (
+            await verifyOwnerStopDirective({ id: args.ownerStopDirectiveId, ownerId, workspaceId }).catch(
+              () => null,
+            )
+          )?.ok === true);
+      if (!goalAchievedForFleet && !stopVerified) {
+        const refusal = await readFleetMemberLoopEndRefusal({
+          ownerId,
+          workspaceId,
+          sessionHarness: (ctx as { harnessSlug?: string | null }).harnessSlug ?? null,
+          ctx,
+          held: wakeRead?.claimHolder?.held ?? null,
+        }).catch(() => null);
+        if (refusal) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify(refusal) }], isError: true };
+        }
       }
     }
     const fleetMemberWindDown =
