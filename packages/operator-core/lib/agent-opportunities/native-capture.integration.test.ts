@@ -198,3 +198,55 @@ it('R13-NATIVE refuses ambiguous attribution, wrong same-ID index copies and rev
   await f.db.adminSql`DELETE FROM harness_shared.session_briefs WHERE owner_id=${s.owner}`;
   expect(await reconcileNativeCapture(options())).toBe('unknown');
 });
+
+it('R13-NATIVE pages a roster above 500 and resumes prospective enrollment without certifying partial coverage', async () => {
+  const seeds = [];
+  for (let i = 0; i < 33; i++) seeds.push(await seed());
+  // Other harnesses contribute to the authoritative roster, not this manifest.
+  await f.db.adminSql`INSERT INTO harness_shared.session_briefs (owner_id,workspace_id,harness_slug)
+    VALUES ('su-other-harness',${workspaceId},'another-harness')`;
+  await f.db.adminSql`INSERT INTO harness_shared.adv_sessions
+    (workspace_id,mode,coord_owner_id,agent,session_id,first_seen_at)
+    SELECT ${workspaceId},'console','su-other-harness','codex','other-' || n,
+      ${new Date(f.now - 2000).toISOString()}::timestamptz FROM generate_series(1,501) n`;
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+  const read = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt,native_capture_from AS started
+    FROM harness_shared.sql_intent_progress WHERE scope_id LIKE 'native:%'`)[0]!;
+  const partial = await read();
+  expect(partial.receipt).toMatchObject({ enrolling: true, cursor: expect.stringMatching(/^[a-f0-9]{64}$/) });
+  expect(Object.keys(partial.receipt.manifest)).toHaveLength(32);
+  expect(await reconcileNativeCapture({ ...options(), authorize: async () => false })).toBe('unknown');
+  expect((await read()).receipt).toEqual(partial.receipt);
+  // Ordinary new launches must not restart already completed batches.
+  seeds.push(await seed());
+  // A completed root may disappear while later batches enroll. Its identity
+  // must survive in the baseline so the next reconciliation detects the loss.
+  await rm(seeds[0]!.paths[0]!);
+  expect(await reconcileNativeCapture(options())).toBe('gap');
+  const completed = await read();
+  expect(completed.receipt).toMatchObject({ baseline: true, sources: 68 });
+  expect(Object.keys(completed.receipt.manifest)).toHaveLength(34);
+  expect(completed.started.getTime()).toBeGreaterThanOrEqual(partial.started.getTime());
+  expect(JSON.stringify(completed.receipt)).not.toMatch(/private-source|session-|su-|jsonl/);
+  await f.db.adminSql`UPDATE harness_shared.sql_intent_progress SET native_capture_from=${options().since}::timestamptz
+    WHERE workspace_id=${workspaceId} AND scope_id LIKE 'native:%'`;
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+}, 120_000);
+
+it('R13-NATIVE prepares known roots without treating unattributed runtimes as outside the harness', async () => {
+  await seed();
+  const [runtime] = await f.db.adminSql<{ id: string }[]>`INSERT INTO harness_shared.adv_sessions
+    (workspace_id,mode,coord_owner_id,agent,session_id,first_seen_at)
+    VALUES (${workspaceId},'console',${`su-${randomUUID()}`},'codex',${randomUUID()},
+      ${new Date(f.now - 2000).toISOString()}::timestamptz) RETURNING id::text`;
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+  const read = async () => (await f.db.adminSql`SELECT native_capture_receipt AS receipt FROM harness_shared.sql_intent_progress
+    WHERE scope_id LIKE 'native:%'`)[0]!.receipt;
+  const partial = await read();
+  expect(partial).toMatchObject({ enrolling: true }); expect(Object.keys(partial.manifest)).toHaveLength(1);
+  expect(await reconcileNativeCapture(options())).toBe('unknown'); expect(await read()).toEqual(partial);
+  // Population loss invalidates the partial receipt just like a final one.
+  await f.db.adminSql`DELETE FROM harness_shared.adv_sessions WHERE id=${runtime!.id}::bigint`;
+  expect(await read()).toBeNull();
+  expect(await reconcileNativeCapture(options())).toBe('gap');
+});

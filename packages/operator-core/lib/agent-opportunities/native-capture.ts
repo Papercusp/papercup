@@ -13,6 +13,9 @@ import type { SearchSource } from './search-reformulation';
 
 type Client = ReturnType<typeof getOrgPg>['sql'];
 type Binding = { id: string; owner: string; provider: NativeProvider; harness: string | null };
+type CaptureReceipt = { manifest?: Record<string, string[]>; enrolling?: boolean;
+  population?: string; cursor?: string };
+const ENROLLMENT_BATCH = 32;
 export interface NativeCaptureOptions {
   workspaceId: string; harnessSlug: string; sourceBoundary: string; since: string; until: string;
   client?: Client; authorize: () => Promise<boolean>;
@@ -147,7 +150,7 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
     await sql`INSERT INTO harness_shared.sql_intent_progress (workspace_id,scope_id,harness_slug)
       VALUES (${opts.workspaceId},${scope},${opts.harnessSlug}) ON CONFLICT DO NOTHING`;
     const [progress] = await sql<{ revision: string; since: string; historical: boolean; future: boolean;
-      receipt: { manifest?: Record<string, string[]> } | null }[]>`
+      receipt: CaptureReceipt | null }[]>`
       SELECT native_capture_revision::text AS revision,
         native_capture_receipt AS receipt,
         to_char(GREATEST(native_capture_from,${opts.since}::timestamptz) AT TIME ZONE 'UTC',
@@ -156,17 +159,67 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
         ${opts.until}::timestamptz > clock_timestamp() AS future
       FROM harness_shared.sql_intent_progress WHERE workspace_id=${opts.workspaceId} AND scope_id=${scope}`;
     if (!progress || progress.future) return 'unknown';
-    const population = () => sql<Binding[]>`SELECT id::text,coord_owner_id AS owner,agent AS provider,
-      harness_shared.harness_slug_for_usage_attribution(workspace_id,coord_owner_id,session_id,id) AS harness
-      FROM harness_shared.adv_sessions WHERE workspace_id=${opts.workspaceId}
-        AND first_seen_at < ${opts.until}::timestamptz
-        AND (ended_at IS NULL OR ended_at >= ${progress.since}::timestamptz)
-      ORDER BY id LIMIT 501`;
+    const population = async () => {
+      const rows: Binding[] = [];
+      let cursor = '0';
+      for (;;) {
+        if (Date.now() >= deadline) throw new Error('native_capture_bound');
+        const page = await sql<Binding[]>`SELECT s.id::text,s.coord_owner_id AS owner,s.agent AS provider,
+          harness_shared.harness_slug_for_usage_attribution(s.workspace_id,s.coord_owner_id,s.session_id,s.id) AS harness
+          FROM harness_shared.adv_sessions s WHERE s.workspace_id=${opts.workspaceId} AND s.id > ${cursor}::bigint
+            AND s.first_seen_at < ${opts.until}::timestamptz
+            AND (s.ended_at IS NULL OR s.ended_at >= ${progress.since}::timestamptz)
+          ORDER BY s.id LIMIT 250`;
+        rows.push(...page);
+        if (page.length < 250) return rows;
+        cursor = page.at(-1)!.id;
+      }
+    };
     const roster = await population();
-    // Null attribution is not evidence that a session is outside this harness.
-    if (roster.length > 500 || roster.some(r => !r.harness)) return 'unknown';
     const bindings = roster.filter(r => r.harness === opts.harnessSlug);
     if (!bindings.length) return 'unknown';
+    if (!progress.receipt || progress.receipt.enrolling) {
+      // Enrollment is prospective: a partial manifest certifies no interval.
+      // Save opaque source identities between calls instead of rescanning every
+      // already-enrolled home before a large roster can make any progress.
+      const populationHash = digest(roster);
+      // Inserts can grow the roster between batches. Detector revisions already
+      // revoke deletion/rebinding, so retain earlier identities and enroll only
+      // newly discovered bindings instead of restarting on every insertion.
+      const pending = progress.receipt?.enrolling ? progress.receipt : null;
+      const manifest = { ...pending?.manifest };
+      const remaining = bindings.filter(b => !manifest[digest([b.id, b.owner, b.provider])]);
+      let index = 0;
+      for (; index < Math.min(ENROLLMENT_BATCH, remaining.length); index++) {
+        // Leave budget for the authority/population recheck and durable write.
+        if (Date.now() >= deadline - 100) break;
+        try {
+          const binding = remaining[index]!;
+          const read = await canonicalNativeRuntimeSources(binding, opts, deadline - 100);
+          manifest[digest([binding.id, binding.owner, binding.provider])] = read.identities;
+        } catch { break; } // Retain earlier progress, but never skip a failed root.
+      }
+      if (!await opts.authorize() || JSON.stringify(await population()) !== JSON.stringify(roster)) return 'unknown';
+      // Unknown attribution remains in the population and blocks completion.
+      // It does not prevent preparation of the positively attributed roots.
+      const complete = index === remaining.length && !roster.some(r => !r.harness);
+      const receipt = complete
+        ? { version: 1, baseline: true, sources: Object.values(manifest).reduce((n, ids) => n + ids.length, 0),
+            manifest, population: populationHash, revision: progress.revision }
+        : { version: 1, enrolling: true, manifest, population: populationHash,
+            cursor: index ? digest([remaining[index - 1]!.id, remaining[index - 1]!.owner,
+              remaining[index - 1]!.provider]) : pending?.cursor ?? null, revision: progress.revision };
+      const previous = progress.receipt == null ? null : sql.json(progress.receipt);
+      const written = await sql`UPDATE harness_shared.sql_intent_progress SET
+        native_capture_from=CASE WHEN ${complete} THEN GREATEST(native_capture_from,clock_timestamp()) ELSE native_capture_from END,
+        native_capture_receipt=${sql.json(receipt)}
+        WHERE workspace_id=${opts.workspaceId} AND scope_id=${scope}
+          AND native_capture_revision=${progress.revision}::bigint
+          AND native_capture_receipt IS NOT DISTINCT FROM ${previous}::jsonb RETURNING 1`;
+      return complete && written.length ? 'gap' : 'unknown';
+    }
+    // Null attribution is not evidence that a session is outside this harness.
+    if (roster.some(r => !r.harness)) return 'unknown';
     const sources: SearchSource[] = [], fingerprints: string[] = [], identities: string[] = [];
     const manifest: Record<string, string[]> = {};
     for (const binding of bindings) {
@@ -186,21 +239,6 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
       const prior = unique.get(key);
       if (prior && digest([prior.tool, prior.args, prior.at]) !== digest([source.tool, source.args, source.at])) return 'unknown';
       unique.set(key, source);
-    }
-    if (!progress.receipt) {
-      // Enrollment is a source manifest, not evidence for the time spent taking
-      // that first snapshot. Start at its completion and prove only later calls.
-      for (let i = 0; i < bindings.length; i++) {
-        if ((await canonicalNativeRuntimeSources(bindings[i]!, opts, deadline)).fingerprint !== fingerprints[i]) return 'unknown';
-      }
-      if (!await opts.authorize() || JSON.stringify(await population()) !== JSON.stringify(roster)) return 'unknown';
-      const baseline = { version: 1, baseline: true, sources: identities.length, manifest,
-        population: digest(roster), canonical: digest(fingerprints), revision: progress.revision };
-      const written = await sql`UPDATE harness_shared.sql_intent_progress SET
-        native_capture_from=GREATEST(native_capture_from,clock_timestamp()),native_capture_receipt=${sql.json(baseline)}
-        WHERE workspace_id=${opts.workspaceId} AND scope_id=${scope}
-          AND native_capture_revision=${progress.revision}::bigint AND native_capture_receipt IS NULL RETURNING 1`;
-      return written.length ? 'gap' : 'unknown';
     }
     if (micros(progress.since) >= micros(opts.until)) return 'gap';
     // Use the existing canonical index. Retain no command, arguments, result body
