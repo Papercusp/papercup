@@ -91,6 +91,8 @@ INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-$_REPO_DEFAULT}"
 LEGACY_STAGING_ROOT="${PAPERCUSP_STAGING_ROOT:-$(dirname "$INTEGRATION_ROOT")/papercusp-staging}"
 STAGING_ROOT="${LEGACY_STAGING_ROOT}.current"
 STAGING_GENERATIONS_ROOT="${LEGACY_STAGING_ROOT}.generations"
+# Measured on-disk size of the last published generation (WI-6554700010029252).
+STAGING_GENERATION_BYTES_FILE="${STAGING_GENERATION_BYTES_FILE:-$STAGING_GENERATIONS_ROOT/.generation-bytes}"
 UNIT="${PAPERCUSP_STAGING_UNIT:-papercusp-staging-api.service}"
 HEALTH_URL="${PAPERCUSP_STAGING_HEALTH_URL:-http://127.0.0.1:3170/api/health}"
 BRANCH="${PAPERCUSP_INTEGRATION_BRANCH:-staging}"
@@ -315,8 +317,8 @@ staging_alias_bootstrap() {
 staging_preparation_has_headroom() {
   (
     cd "$INTEGRATION_ROOT" || exit 1
-    timeout --kill-after=2s 10s node --experimental-strip-types --input-type=module - "$STAGING_GENERATIONS_ROOT" <<'NODE'
-import { statfsSync } from 'node:fs';
+    timeout --kill-after=2s 10s node --experimental-strip-types --input-type=module - "$STAGING_GENERATIONS_ROOT" "${STAGING_GENERATION_BYTES_FILE:-}" <<'NODE'
+import { readFileSync, statfsSync } from 'node:fs';
 import { criticalWriteHeadroomBytes, diskPolicyFromEnv } from './packages/operator-core/lib/storage/disk-space-policy.ts';
 const snapshot = statfsSync(process.argv[2]);
 const total = Number(snapshot.blocks) * Number(snapshot.bsize);
@@ -325,8 +327,18 @@ if (!Number.isSafeInteger(total) || total <= 0 || !Number.isSafeInteger(availabl
   throw new Error('staging source preparation: filesystem capacity is unmeasured');
   }
 const reserve = criticalWriteHeadroomBytes(total, diskPolicyFromEnv());
-if (available < reserve) {
-  console.error(`staging source preparation deferred: ${available} available bytes below ${reserve} required on ${process.argv[2]}; retaining the serving generation while cleanup continues`);
+// WI-6554700010029252: preparing a candidate writes about one more generation, so
+// the reserve must still hold AFTER it lands. With no usable measurement yet the
+// check is the writer reserve alone. (Closing braces stay indented: tests
+// extract this function with a sed range that ends at the first column-0 `}`.)
+let generationBytes = 0;
+try {
+  const raw = readFileSync(process.argv[3], 'utf8').trim();
+  if (/^[0-9]+$/.test(raw) && Number.isSafeInteger(Number(raw))) generationBytes = Number(raw);
+  } catch {}
+const required = reserve + generationBytes;
+if (available < required) {
+  console.error(`staging source preparation deferred: ${available} available bytes below ${required} required (${reserve} writer reserve + ${generationBytes} measured generation size) on ${process.argv[2]}; retaining the serving generation while cleanup continues`);
   process.exitCode = 75;
   }
 NODE
@@ -571,6 +583,50 @@ launch_staging_trash_drain() {
   fi
   setsid nice -n 10 "$rm_bin" -rf -- "${trash[@]}" </dev/null >/dev/null 2>&1 &
   log "launched detached retired staging generation drain pid=$! trees=${#trash[@]}"
+  return 0
+}
+
+# WI-6554700010029252: record a published generation's real on-disk size for
+# staging_preparation_has_headroom. A df delta across preparation is unusable
+# because the detached trash drain frees space at the same time, so this walks
+# the tree. That walk took over a minute under gate load, so it runs detached,
+# like the drain, never inside the tick. A failed or partial walk writes nothing
+# and leaves the previous measurement in place.
+STAGING_GENERATION_MEASURE_SCRIPT='set -o pipefail
+bytes="$(du -sxB1 -- "$1" | awk "NR==1 {print \$1}")" || exit 1
+[[ "$bytes" =~ ^[0-9]+$ ]] && ((bytes > 0)) || exit 1
+printf "%s\n" "$bytes" > "$2.tmp.$$" && mv -f -- "$2.tmp.$$" "$2" || { rm -f -- "$2.tmp.$$"; exit 1; }'
+
+launch_staging_generation_measure() {
+  local home="$1" file="${2:-$STAGING_GENERATION_BYTES_FILE}" unit bash_bin status
+  [[ -n "$home" && -d "$home" && -n "$file" ]] || return 0
+  bash_bin="$(command -v bash)"
+  if [[ "${STAGING_GENERATION_MEASURE_MODE:-detached}" == inline ]]; then
+    if "$bash_bin" -c "$STAGING_GENERATION_MEASURE_SCRIPT" staging-generation-measure "$home" "$file"; then
+      log "measured staging generation size inline: $(cat -- "$file" 2>/dev/null) bytes"
+    else
+      status=$?
+      log "staging generation size measurement failed inline (status=$status); keeping the previous measurement"
+    fi
+    return 0
+  fi
+  unit="papercup-staging-generation-size-$(printf '%s' "$file" | sha256sum | cut -c1-12)"
+  if command -v systemd-run >/dev/null 2>&1; then
+    if systemctl --user is-active --quiet "$unit.service" 2>/dev/null; then
+      log "staging generation size measurement already running unit=$unit; the next publication re-measures"
+      return 0
+    fi
+    if systemd-run --user --quiet --collect --unit="$unit" \
+        --description="Measure the published papercusp staging generation size (WI-6554700010029252)" \
+        --nice=10 -p IOSchedulingClass=best-effort -p IOSchedulingPriority=7 \
+        -- "$bash_bin" -c "$STAGING_GENERATION_MEASURE_SCRIPT" staging-generation-measure "$home" "$file" >/dev/null 2>&1; then
+      log "launched detached staging generation size measurement unit=$unit home=$home"
+      return 0
+    fi
+    log "systemd-run could not launch $unit; falling back to a detached session"
+  fi
+  setsid nice -n 10 "$bash_bin" -c "$STAGING_GENERATION_MEASURE_SCRIPT" staging-generation-measure "$home" "$file" </dev/null >/dev/null 2>&1 &
+  log "launched detached staging generation size measurement pid=$! home=$home"
   return 0
 }
 
@@ -1545,6 +1601,7 @@ if [ "$checkout_needs_advance" = 1 ]; then
   fi
   publish_staging_generation "$STAGING_CANDIDATE_ROOT" "$STAGING_CANDIDATE_HOME" "$target" "$require_host_bundle"
   staging_sync_checkpoint "generation published"
+  launch_staging_generation_measure "$STAGING_CANDIDATE_HOME"
 fi
 
 # WI-5710 — SPA-only advance: the stable alias now points at the complete

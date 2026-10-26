@@ -1018,6 +1018,7 @@ describe('sync-staging-checkout.sh generation admission (EI-26746441745558411)',
         'preflight_staging_migrations() { require_shared migrations; }; prebuild_staging_host_bundle() { require_shared bundle; }; prepare_staging_schema() { require_shared schema; }',
         'mark_staging_candidate_ready() { require_exclusive ready; }',
         'publish_staging_generation() { require_exclusive publication; printf "%s" "$3" > "$TEST_ROOT/published-sha"; }',
+        'launch_staging_generation_measure() { :; }',
         driver,
       ].join('\n')], {
         env: { ...process.env, TEST_ROOT: root, TEST_LOCK: join(root, 'generation.lock'),
@@ -1370,6 +1371,118 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
         expect(result.stdout).toContain('the next tick retries cleanup');
       }
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // WI-6554700010029252: the reserve must still hold after the candidate lands,
+  // so the check adds the last measured generation size to it.
+  it.each([
+    // Larger than any real filesystem, but still a safe integer (an unsafe one is
+    // treated as unparseable, like the case below).
+    ['a measured generation that would breach the reserve defers', '9000000000000000', 75],
+    ['an unparseable measurement falls back to the reserve alone', 'not-a-number', 0],
+    ['a missing measurement falls back to the reserve alone', null, 0],
+  ] as const)('%s', (_name, stamp, status) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-headroom-measured-'));
+    try {
+      const bytesFile = join(root, '.generation-bytes');
+      if (stamp !== null) writeFileSync(bytesFile, `${stamp}\n`);
+      const result = runFn(['staging_preparation_has_headroom'],
+        'if staging_preparation_has_headroom; then echo HEADROOM_OK; else echo "HEADROOM_STATUS=$?"; fi', {
+          env: {
+            INTEGRATION_ROOT: resolve(dirname(SCRIPT_PATH), '../../../..'),
+            STAGING_GENERATIONS_ROOT: root,
+            STAGING_GENERATION_BYTES_FILE: bytesFile,
+            PAPERCUSP_DISK_ALARM_CRITICAL_GB: '0.000001',
+            PAPERCUSP_DISK_ALARM_CRITICAL_PCT: '0.000001',
+          },
+        });
+      expect(result.status, result.stderr).toBe(0);
+      if (status === 75) {
+        expect(result.stdout).toContain('HEADROOM_STATUS=75');
+        expect(result.stderr).toContain(`+ ${stamp} measured generation size`);
+        expect(result.stderr).toContain('retaining the serving generation while cleanup continues');
+      } else {
+        expect(result.stdout).toContain('HEADROOM_OK');
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('records a published generation size atomically and keeps the previous value when the walk fails', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-generation-measure-'));
+    const home = join(root, '.candidate-abc.x');
+    const bytesFile = join(root, '.generation-bytes');
+    const bin = join(root, 'bin');
+    try {
+      mkdirSync(join(home, 'checkout'), { recursive: true });
+      writeFileSync(join(home, 'checkout', 'payload'), Buffer.alloc(256 * 1024, 1));
+      // The walk body is a top-level assignment, not a function, so runFn's
+      // function extraction cannot source it: hand the live text in instead.
+      const body = /^STAGING_GENERATION_MEASURE_SCRIPT='([^']*)'$/m.exec(readFileSync(SCRIPT_PATH, 'utf8'))?.[1];
+      expect(body).toContain('du -sxB1');
+      const measure = (env: Record<string, string> = {}) => runFn(['launch_staging_generation_measure'],
+        `log() { echo "$*"; }; launch_staging_generation_measure ${JSON.stringify(home)} ${JSON.stringify(bytesFile)}`,
+        { env: { STAGING_GENERATION_MEASURE_MODE: 'inline', STAGING_GENERATION_MEASURE_SCRIPT: body, ...env } });
+
+      const first = measure();
+      expect(first.status, first.stderr).toBe(0);
+      const recorded = readFileSync(bytesFile, 'utf8').trim();
+      expect(recorded).toMatch(/^[0-9]+$/);
+      expect(Number(recorded)).toBeGreaterThanOrEqual(256 * 1024);
+      expect(first.stdout).toContain(`measured staging generation size inline: ${recorded} bytes`);
+
+      // A failing walk must not overwrite or delete the last good measurement.
+      mkdirSync(bin);
+      writeFileSync(join(bin, 'du'), '#!/usr/bin/env bash\necho "1 $2"\nexit 1\n', { mode: 0o755 });
+      const failed = measure({ PATH: `${bin}:${process.env.PATH}` });
+      expect(failed.status, failed.stderr).toBe(0);
+      expect(failed.stdout).toContain('keeping the previous measurement');
+      expect(readFileSync(bytesFile, 'utf8').trim()).toBe(recorded);
+      expect(readdirSync(root).filter((n) => n.includes('.tmp.'))).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('launches the size measurement as a collected transient unit, and skips while one is already running', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-generation-measure-unit-'));
+    const home = join(root, '.candidate-abc.x');
+    const bytesFile = join(root, '.generation-bytes');
+    const bin = join(root, 'bin');
+    const runs = join(root, 'systemd-run.log');
+    try {
+      mkdirSync(home, { recursive: true });
+      mkdirSync(bin);
+      writeFileSync(join(bin, 'systemd-run'), `#!/usr/bin/env bash\nprintf '%s\\n' "$@" >> ${JSON.stringify(runs)}\nexit 0\n`, { mode: 0o755 });
+      const launch = (active: boolean) => {
+        writeFileSync(join(bin, 'systemctl'), `#!/usr/bin/env bash\nexit ${active ? 0 : 3}\n`, { mode: 0o755 });
+        return runFn(['launch_staging_generation_measure'],
+          `log() { echo "$*"; }; launch_staging_generation_measure ${JSON.stringify(home)} ${JSON.stringify(bytesFile)}`,
+          { env: { PATH: `${bin}:${process.env.PATH}`, STAGING_GENERATION_MEASURE_MODE: 'detached', STAGING_GENERATION_MEASURE_SCRIPT: 'exit 0' } });
+      };
+      const busy = launch(true);
+      expect(busy.status, busy.stderr).toBe(0);
+      expect(busy.stdout).toContain('measurement already running');
+      expect(existsSync(runs)).toBe(false);
+
+      const started = launch(false);
+      expect(started.status, started.stderr).toBe(0);
+      expect(started.stdout).toContain('launched detached staging generation size measurement unit=');
+      const args = readFileSync(runs, 'utf8').split('\n');
+      expect(args).toContain('--user');
+      expect(args).toContain('--collect');
+      expect(args.find((a) => a.startsWith('--unit='))).toMatch(/^--unit=papercup-staging-generation-size-[0-9a-f]{12}$/);
+      expect(args).not.toContain('IOSchedulingClass=idle');
+      expect(args).toContain(home);
+      expect(args).toContain(bytesFile);
+      expect(existsSync(bytesFile)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('measures the generation it just published, after publication and outside the publication lock', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const publish = script.indexOf('\n  publish_staging_generation "$STAGING_CANDIDATE_ROOT"');
+    const measure = script.indexOf('\n  launch_staging_generation_measure "$STAGING_CANDIDATE_HOME"');
+    expect(publish).toBeGreaterThan(0);
+    expect(measure).toBeGreaterThan(publish);
+    expect(script.slice(publish, measure)).toContain('staging_sync_checkpoint "generation published"');
   });
 
   it('bounds a stalled git worktree prune so runtime preparation continues, with the generation already retired', () => {
