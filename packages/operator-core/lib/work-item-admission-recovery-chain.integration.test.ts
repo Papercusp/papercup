@@ -266,6 +266,24 @@ describe('original authority context fidelity', () => {
       .toBe(true);
   });
 
+  it('fails fresh PG teardown on a lost observation while still closing its pool', async () => {
+    await flushFallbackObservations({ sql: db.sql });
+    const retiring = await createFreshPgDb('admission_fallback_rejected');
+    await retiring.sql.unsafe(`ALTER TABLE harness_shared.fallback_observations
+      ADD CONSTRAINT reject_cleanup_probe CHECK (reason <> 'rejected-at-teardown')`);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      observeFallback('admission-cleanup-regression', {
+        eligible: 1, applied: 0, reason: 'rejected-at-teardown',
+      }, { sql: retiring.sql });
+      await expect(retiring.cleanup()).rejects.toThrow('Fresh PG cleanup lost fallback observations');
+      expect(_pendingFallbackObservationCount()).toBe(0);
+      await expect(retiring.sql`SELECT 1`).rejects.toMatchObject({ code: 'CONNECTION_ENDED' });
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it.each(['due', 'legacy'] as const)(
     'screens and replays a %s ordinary slot with the operator string timestamp representation', async (slot) => {
       const original = await create('String timestamp ordinary admission');
