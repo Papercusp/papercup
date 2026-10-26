@@ -18,6 +18,7 @@ import { DREAM_CONTROL_LIVE_INSTRUMENT_KEY } from './dream/dream-control-live-in
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
 import { WORK_OVERHEAD_INSTRUMENT_KEYS } from './agent-work-overhead-metrics';
 import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
+import { DEFERRED_SPEND_INSTRUMENT_KEYS } from './workspace-host/deferred-spend-acceptance-instruments';
 import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { LIVE_FORKSERVER_INSTRUMENT_KEY } from './fleet/forkserver/live-instrument';
@@ -248,6 +249,7 @@ describe('the registry seed set', () => {
       'woe.goal-mode-base-scorecard',
       ...TOOL_DELIVERY_INSTRUMENTS,
       ...Object.values(PROVIDER_PACKAGE_INSTRUMENT_KEYS),
+      ...Object.values(DEFERRED_SPEND_INSTRUMENT_KEYS),
       GATE_REUSE_AUDIT_INSTRUMENT_KEY,
       'storage:disk-headroom-post-shipment-72h',
       DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY,
