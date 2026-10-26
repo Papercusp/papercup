@@ -1055,18 +1055,22 @@ describe('exact spec evidence bindings', () => {
         schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'], runtimeUnits: ['bg-host'] } } };
     const first = await evidenceStore.bindSpecEvidence(input);
     expect(first).toMatchObject({ status: 'created' });
+    expect(first, 'a witnessed live row carries no unproven warning').not.toHaveProperty('environmentUnproven');
     const [pinned] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings`;
     expect(pinned.environment_fingerprint).toBe(witness.fingerprint);
     execution.runtimeEnvironmentAfter.fingerprint = 'b'.repeat(64);
     await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
       WHERE id = ${testRunId}`;
     const drift = await evidenceStore.bindSpecEvidence({ ...input, evidenceRef: 'test/reconnect.test.ts#drift' });
-    expect(drift).toMatchObject({ status: 'created' });
+    // EI-27081440896857039: still stored (unproven by design), but the binder says so now.
+    expect(drift).toMatchObject({ status: 'created', environmentUnproven: {
+      reason: 'test_run_runtime_witness_missing', testRunId, runtimeUnits: ['bg-host'], evidencePlane: 'live' } });
     const [unproven] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings
       WHERE evidence_ref = 'test/reconnect.test.ts#drift'`;
     expect(unproven.environment_fingerprint).toBeNull();
     await db.sql`UPDATE harness_shared.test_runs SET execution_details = NULL WHERE id = ${testRunId}`;
-    await evidenceStore.bindSpecEvidence({ ...input, evidenceRef: 'test/reconnect.test.ts#historical' });
+    expect(await evidenceStore.bindSpecEvidence({ ...input, evidenceRef: 'test/reconnect.test.ts#historical' }))
+      .toMatchObject({ status: 'created', environmentUnproven: { reason: 'test_run_runtime_witness_missing' } });
     const [historical] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings
       WHERE evidence_ref = 'test/reconnect.test.ts#historical'`;
     expect(historical.environment_fingerprint).toBeNull();

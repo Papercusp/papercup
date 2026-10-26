@@ -103,7 +103,38 @@ import {
   measureWorkItemsEvidenceForScope,
   hasMatchingDeclaredCaseTitle,
   retractSpecEvidence,
+  testRunEnvironmentUnprovenWarning,
 } from './spec-evidence-store';
+
+describe('test-run environment-unproven bind warning (EI-27081440896857039)', () => {
+  const base = {
+    testRunId: 22264238,
+    runtimeUnits: ['postgres:5432'],
+    completedRuntime: false,
+    environmentFingerprint: null,
+    details: { evidencePlane: 'live' },
+  };
+  it('warns when a live or deployed test-run row has no execution-time witness for its units', () => {
+    expect(testRunEnvironmentUnprovenWarning(base)).toMatchObject({
+      reason: 'test_run_runtime_witness_missing', testRunId: 22264238, runtimeUnits: ['postgres:5432'],
+      evidencePlane: 'live',
+    });
+    expect(testRunEnvironmentUnprovenWarning(base)?.message).toContain('omit testRunId');
+    expect(testRunEnvironmentUnprovenWarning({ ...base, details: { adequacy: { evidencePlane: ' Deployed ' } } }))
+      .toMatchObject({ evidencePlane: 'deployed' });
+  });
+  it.each([
+    ['a witnessed environment', { environmentFingerprint: 'a'.repeat(64) }],
+    ['a live probe with no test run', { testRunId: null }],
+    ['no declared runtime units', { runtimeUnits: undefined }],
+    ['an empty runtime unit list', { runtimeUnits: [] }],
+    ['a completed-runtime recipe', { completedRuntime: true }],
+    ['the tree plane', { details: { evidencePlane: 'tree' } }],
+    ['no declared plane', { details: {} }],
+  ])('stays silent for %s', (_label, override) => {
+    expect(testRunEnvironmentUnprovenWarning({ ...base, ...override })).toBeUndefined();
+  });
+});
 import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntimeVintageStore,
   reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
 

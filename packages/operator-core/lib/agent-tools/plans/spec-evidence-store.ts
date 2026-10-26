@@ -1368,6 +1368,48 @@ export type IndependentVerificationRefusalStatus =
 export type WorkItemPlanItemRefusalStatus = 'work_item_plan_item_mismatch';
 export type MutationCaughtCaseClaimRefusalStatus = 'mutation_caught_case_claim_mismatch';
 
+/**
+ * EI-27081440896857039: a test-run binding takes its environment ONLY from that run's own
+ * execution-time witness. A run that recorded none for the declared runtimeUnits is still
+ * stored (environment unproven, by design), but a live/deployed claim on it can never read
+ * environment=current — so the binder says so at bind time instead of leaving the caller to
+ * discover a NULL environment_fingerprint later.
+ */
+export interface TestRunEnvironmentUnprovenWarning {
+  reason: 'test_run_runtime_witness_missing';
+  testRunId: number;
+  runtimeUnits: string[];
+  evidencePlane: 'live' | 'deployed';
+  message: string;
+}
+
+/** Pure: the bind-time warning for a stored test-run row whose live/deployed environment is unprovable. */
+export function testRunEnvironmentUnprovenWarning(input: {
+  testRunId: number | null | undefined;
+  runtimeUnits: readonly string[] | undefined;
+  completedRuntime: boolean;
+  environmentFingerprint: string | null | undefined;
+  details: Record<string, unknown>;
+}): TestRunEnvironmentUnprovenWarning | undefined {
+  if (input.testRunId == null || !input.runtimeUnits?.length || input.completedRuntime) return undefined;
+  if (input.environmentFingerprint != null) return undefined;
+  const plane = readSpecEvidencePlane(input.details);
+  const normalizedPlane = typeof plane === 'string' ? plane.trim().toLowerCase() : null;
+  if (normalizedPlane !== 'live' && normalizedPlane !== 'deployed') return undefined;
+  return {
+    reason: 'test_run_runtime_witness_missing',
+    testRunId: input.testRunId,
+    runtimeUnits: [...input.runtimeUnits],
+    evidencePlane: normalizedPlane,
+    message:
+      `Stored, but environment is UNPROVEN: test-run ${input.testRunId} recorded no stable execution-time ` +
+      `runtime witness for runtimeUnits ${JSON.stringify(input.runtimeUnits)}, so this ${normalizedPlane}-plane ` +
+      'binding can never read environment=current or satisfy that plane. Retract it and either omit testRunId ' +
+      'so the server stamps the binding-time runtime of the declared units (a live probe), or record a new run ' +
+      'whose execution carries runtimeEnvironmentBefore/After for exactly these units.',
+  };
+}
+
 export type BindSpecEvidenceResult =
   | {
       status: 'created' | 'unchanged';
@@ -1380,6 +1422,8 @@ export type BindSpecEvidenceResult =
       specFingerprint: string;
       bindingFingerprint: string;
       advisory?: DuplicateLiveTestRunBindingAdvisory;
+      /** EI-27081440896857039: the stored live/deployed row can never read environment=current. */
+      environmentUnproven?: TestRunEnvironmentUnprovenWarning;
     }
   | { status: 'work_item_not_found'; workItemId: string }
   | {
@@ -2059,6 +2103,16 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       }
     }
 
+    // EI-27081440896857039: completed-runtime recipes are exempt — their environment is
+    // certified from the completed runtime at read time, not from a bind-time witness.
+    const environmentUnproven = testRunEnvironmentUnprovenWarning({
+      testRunId: input.testRunId,
+      runtimeUnits,
+      completedRuntime: Boolean(runtimeRecipe?.kind === 'repo-files' && runtimeRecipe.completedRuntime),
+      environmentFingerprint,
+      details,
+    });
+
     // P-008 (D-005): an independent-verification row is a non-implementer re-observing the
     // SAME thing the implementer bound. It must cite a live, non-independent binding on the
     // same clause, and both fingerprints must match that row exactly — a re-observation of a
@@ -2317,6 +2371,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       specFingerprint: revision.content_hash,
       bindingFingerprint,
       ...(duplicateLiveTestRunAdvisory ? { advisory: duplicateLiveTestRunAdvisory } : {}),
+      ...(environmentUnproven ? { environmentUnproven } : {}),
     };
   });
   // Pin explicitly retained bytes before accepting a receipt binding. The
