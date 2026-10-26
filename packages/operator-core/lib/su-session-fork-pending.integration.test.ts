@@ -5,7 +5,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stringify } from '@iarna/toml';
@@ -19,8 +19,10 @@ import type { PuiSuSessionBinding } from './launch-agent';
 import type { RpcFrame } from './su-session-stdio-peer';
 
 const fixture = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql,
-  children: new Map<string, ChildProcess>() }));
+  children: new Map<string, ChildProcess>(), homes: new Map<string, string>() }));
 vi.mock('@papercusp/db-org', async original => ({ ...await original<object>(), getOrgPg: () => ({ sql: fixture.sql }) }));
+vi.mock('@papercusp/orchestrator/session-launch-dirs', async original => ({ ...await original<object>(),
+  codexHomeForSessionKey: (id: number) => fixture.homes.get(String(id))! }));
 vi.mock('./su-session-persistence', () => ({ bindSuSessionToAdvSession: vi.fn(async () => ({ status: 'bound' })),
   persistSuSessionDescriptor: vi.fn(async () => true) }));
 vi.mock('./su-session-commands', async original => ({ ...await original<object>(), loadSuOwnerTurnReceipts: async () => [] }));
@@ -39,13 +41,17 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async original => ({
 }));
 
 import { startSuRpcEngine } from './su-session-rpc-engine';
+import { recordAdvSession } from './adv-sessions';
+import { completeTrackedCodexFork } from './su-session-tracked-codex-fork';
 import { startClaudeSuEngine } from './su-session-claude-engine';
 import { startSuStdioPeer } from './su-session-stdio-peer';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 import { registerAwait, fireAwaitsForKey, insertDeliveries, markDeliveryDelivered, ackDelivery } from './events/await/store';
 
 let mutex: postgres.Sql;
-const engines: Array<{ close(): Promise<void>; done: Promise<void>; adapter: { dispose(): void } }> = [];
+const engines: Array<{ close(): Promise<void>; done: Promise<void>; adapter: {
+  dispose(): void; host: { snapshot(): { streamReady: boolean } };
+} }> = [];
 const roots: string[] = [], subscribers: string[] = [];
 beforeAll(async () => {
   mutex = await acquireBaselineSchemaMutex(inject('baselineSchemaDsn'), { label: 'fork-pending-isolation' });
@@ -55,12 +61,25 @@ afterEach(async () => {
   for (const engine of engines.splice(0).reverse()) { await engine.close(); await engine.done; engine.adapter.dispose(); }
   await vi.waitFor(() => expect([...fixture.children.values()]
     .every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true));
-  fixture.children.clear();
+  fixture.homes.clear();
   for (const subscriber of subscribers.splice(0)) {
     await fixture.sql`DELETE FROM harness_shared.event_wake_deliveries WHERE subscriber_id = ${subscriber}`;
     await fixture.sql`DELETE FROM harness_shared.event_awaits WHERE subscriber_id = ${subscriber}`;
+    await fixture.sql`DELETE FROM harness_shared.adv_sessions WHERE coord_owner_id = ${subscriber}`;
   }
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  while (roots.length) {
+    const root = roots.at(-1)!;
+    try { rmSync(root, { recursive: true, force: true }); }
+    catch (cause) {
+      // Preserve attribution and the failed root for diagnosis; no retry hides a writer race.
+      throw new Error(`Native fork cleanup failed: ${JSON.stringify({ root,
+        processes: [...fixture.children.values()].map(child => ({ pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode })),
+        remaining: readdirSync(root, { recursive: true }).map(String).slice(0, 40),
+      })}`, { cause });
+    }
+    roots.pop();
+  }
+  fixture.children.clear();
 });
 afterAll(async () => { await fixture.sql?.end({ timeout: 5 }); if (mutex) await releaseBaselineSchemaMutex(mutex); });
 
@@ -108,7 +127,11 @@ function toolNames(tools: RpcFrame[], prefix = ''): string[] {
     ? toolNames(tool.tools, `${prefix}${tool.name}.`) : typeof tool.name === 'string' ? [prefix + tool.name] : []);
 }
 
-it.each(['codex', 'claude'] as const)('%s native fork leaves pending question, queued input and accepted wake exclusively with parent', async backend => {
+for (const { backend, registrationFailure, name } of [
+  { backend: 'codex', registrationFailure: false, name: 'codex native fork leaves pending question, queued input and accepted wake exclusively with parent' },
+  { backend: 'claude', registrationFailure: false, name: 'claude native fork leaves pending question, queued input and accepted wake exclusively with parent' },
+  { backend: 'claude', registrationFailure: true, name: 'claude native fork refuses changed lineage and removes unregistered history' },
+] as const) { it(name, async () => {
   const root = mkdtempSync(join(tmpdir(), 'su-fork-pending-')); roots.push(root);
   const parentOwner = `su-parent-${randomUUID()}`, childOwner = `su-child-${randomUUID()}`;
   subscribers.push(parentOwner, childOwner);
@@ -141,17 +164,25 @@ it.each(['codex', 'claude'] as const)('%s native fork leaves pending question, q
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('No loopback port');
   const baseUrl = `http://127.0.0.1:${address.port}`;
   let parentNativeId = '';
+  let parentAdvSessionId = 0;
   async function open(owner: string, child = false) {
     const home = join(root, child ? 'child' : 'parent'); mkdirSync(home);
     const nativeId = backend === 'claude' ? randomUUID() : null;
-    const binding = { operation: 'created', backend, advSessionId: child ? 92 : 91, ownerId: owner,
+    const advSessionId = Number(await recordAdvSession({ agent: backend, workspaceId: 'fork-pending-fixture',
+      mode: 'console', coordOwnerId: owner, cwd: root, sessionId: nativeId }));
+    expect(advSessionId).toBeGreaterThan(0);
+    fixture.homes.set(String(advSessionId), home);
+    await fixture.sql`UPDATE harness_shared.adv_sessions SET launch_spec = ${JSON.stringify({ v: 1, agent: backend,
+      workspaceId: 'fork-pending-fixture' })}::text::jsonb WHERE id = ${advSessionId}`;
+    if (!child) parentAdvSessionId = advSessionId;
+    const binding = { operation: 'created', backend, advSessionId, ownerId: owner,
       workspaceId: 'fork-pending-fixture', harnessSlug: null, planSlug: null, nativeSession: null } as PuiSuSessionBinding;
     const boot = { status: 'ok', agent: backend, sessionId: binding.advSessionId, nativeSessionId: nativeId,
       workspaceId: binding.workspaceId!, harnessSlug: null, planSlug: null, cwd: root,
       promptFile: join(home, 'su.md'), codexHome: backend === 'codex' ? home : null, coordExtPath: null,
       model: backend === 'codex' ? 'gpt-6-sol' : 'claude-haiku-4-5', specificationRevision: 'fixture', stateRevision: 'fixture',
       compositionSource: 'compatibility', envelopeEnv: { PAPERCUSP_SID: owner, PATH: process.env.PATH!, HOME: home,
-        ...(backend === 'codex' ? { CODEX_HOME: home } : { CLAUDE_CONFIG_DIR: join(root, 'claude-config'),
+        ...(backend === 'codex' ? { CODEX_HOME: home } : { CLAUDE_CONFIG_DIR: join(home, 'claude-config'),
           ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: 'offline-fixture-only',
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' }) } } satisfies BootstrapSuResult;
     writeFileSync(boot.promptFile, 'Fork isolation fixture.'); outbound.set(owner, []);
@@ -160,11 +191,23 @@ it.each(['codex', 'claude'] as const)('%s native fork leaves pending question, q
         model_providers: { local_fork: { name: 'Local fixture', base_url: `${baseUrl}/v1`, wire_api: 'responses',
           requires_openai_auth: false, supports_websockets: false, request_max_retries: 0 } },
         features: { apps: false, shell_tool: false }, web_search: 'disabled' }));
+      // Use the production tracked-fork transaction before attaching the exact
+      // registered child. A direct engine fork does not prove that route.
+      const fork = child ? await completeTrackedCodexFork(boot, {
+        advSessionId: parentAdvSessionId, nativeSessionId: parentNativeId,
+      }) : null;
+      const resumed = fork ? { backend: 'codex' as const, source: 'adv_sessions' as const, ownerId: owner,
+        codexHome: home, rolloutId: fork.nativeSessionId, exactResumeSupported: true, missingReason: null } : null;
+      if (fork) {
+        const [registered] = await fixture.sql`SELECT session_id, launch_spec FROM harness_shared.adv_sessions WHERE id = ${advSessionId}`;
+        expect(registered.session_id).toBe(fork.nativeSessionId);
+        expect(registered.launch_spec.nativeFork).toEqual({ advSessionId: parentAdvSessionId,
+          nativeSessionId: parentNativeId, ownerId: parentOwner });
+      }
       const engine = startSuRpcEngine(boot, binding as PuiSuSessionBinding & { backend: 'codex' }, {
         agentChatId: owner, register: false, identity: 'coding-assistant', servedAccountReader: async () => null,
         ownerTurnReceipts: async () => [], startupTimeoutMs: 20_000,
-        ...(child ? { forkFrom: { backend: 'codex' as const, source: 'adv_sessions' as const, ownerId: parentOwner,
-          codexHome: join(root, 'parent'), rolloutId: parentNativeId, exactResumeSupported: true, missingReason: null } } : {}),
+        ...(resumed ? { nativeSession: resumed } : {}),
         turnLifecycle: { admit: async () => ({ ok: true, bindNativeTurn: async () => {}, complete: async () => {}, reconcile: async () => {} }) },
         peerFactory: async options => {
           const peer = await startSuStdioPeer({ ...options, onMessage: frame => {
@@ -186,26 +229,42 @@ it.each(['codex', 'claude'] as const)('%s native fork leaves pending question, q
       engines.push(engine); await engine.ready;
       const handle = engine.nativeSession();
       if (handle.backend !== 'codex' || !handle.rolloutId) throw new Error('Missing native Codex identity');
-      if (!child) parentNativeId = handle.rolloutId;
+      if (!child) {
+        parentNativeId = handle.rolloutId;
+        await fixture.sql`UPDATE harness_shared.adv_sessions SET session_id = ${parentNativeId} WHERE id = ${advSessionId}`;
+      }
       return { host: engine.adapter.host, nativeId: handle.rolloutId };
     }
     const engine = startClaudeSuEngine(boot, binding as PuiSuSessionBinding & { backend: 'claude' }, {
       nativeSession: { backend: 'claude', source: 'adv_sessions', ownerId: owner, sessionId: nativeId!,
-        configDir: join(root, 'claude-config'), configDirSource: 'live-process', configDirUnresolvedReason: null,
+        configDir: join(home, 'claude-config'), configDirSource: 'live-process', configDirUnresolvedReason: null,
         exactResumeSupported: true, missingReason: null }, transcriptPath: null,
     }, { agentChatId: owner, register: false, identity: 'coding-assistant', toolApproval: 'prompt',
+      ...(child && registrationFailure ? { beforeReady: async () => {
+        await fixture.sql`UPDATE harness_shared.adv_sessions SET session_id = ${randomUUID()} WHERE id = ${parentAdvSessionId}`;
+      } } : {}),
+      ...(child ? { forkFrom: { advSessionId: parentAdvSessionId, nativeSession: {
+        backend: 'claude' as const, source: 'adv_sessions' as const, ownerId: parentOwner, sessionId: parentNativeId,
+        configDir: join(root, 'parent', 'claude-config'), configDirSource: 'live-process' as const,
+        configDirUnresolvedReason: null, exactResumeSupported: true, missingReason: null,
+      } } } : {}),
       servedAccountReader: async () => null, startupTimeoutMs: 20_000, query: input => query({
         ...input, prompt: (async function* () { for await (const message of input.prompt) {
           outbound.get(owner)!.push(JSON.stringify(message)); yield message;
         } })(), options: { ...input.options, env: { ...boot.envelopeEnv },
           settingSources: [], settings: { disableAllHooks: true }, mcpServers: {},
-          ...(child ? { resume: parentNativeId, forkSession: true, sessionId: nativeId! } : {}),
           spawnClaudeCodeProcess: options => {
             const process = spawn(options.command, options.args, { cwd: root, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] });
             fixture.children.set(randomUUID(), process); return process;
           } },
       }) });
     engines.push(engine); await engine.ready;
+    if (child) {
+      const [registered] = await fixture.sql`SELECT session_id, launch_spec FROM harness_shared.adv_sessions WHERE id = ${advSessionId}`;
+      expect(registered.session_id).toBe(nativeId);
+      expect(registered.launch_spec.nativeFork).toEqual({ advSessionId: parentAdvSessionId,
+        nativeSessionId: parentNativeId, ownerId: parentOwner });
+    }
     if (!child) parentNativeId = nativeId!;
     return { host: engine.adapter.host, nativeId: nativeId! };
   }
@@ -234,8 +293,21 @@ it.each(['codex', 'claude'] as const)('%s native fork leaves pending question, q
     const [before] = await fixture.sql`SELECT * FROM harness_shared.event_wake_deliveries WHERE id = ${delivery.id}`;
     expect(before).toMatchObject({ status: 'delivered', turn_proof: 'awaiting', turn_started_at: null });
     expect(queueSettled).toBe(false);
+    if (registrationFailure) {
+      await expect(open(childOwner, true)).rejects.toThrow('lineage registration refused');
+      const [child] = await fixture.sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE coord_owner_id = ${childOwner}`;
+      expect(child.launch_spec.nativeFork).toBeUndefined();
+      const entries = readdirSync(join(root, 'child', 'claude-config', 'projects'), { recursive: true });
+      expect(entries.some(path => String(path).endsWith('.jsonl'))).toBe(false);
+      expect(engines.at(-1)!.adapter.host.snapshot().streamReady).toBe(false);
+      expect(queueSettled).toBe(false);
+      const [retained] = await fixture.sql`SELECT * FROM harness_shared.event_wake_deliveries WHERE id = ${delivery.id}`;
+      expect(retained).toEqual(before);
+      return;
+    }
     const child = await open(childOwner, true);
     expect(child.nativeId).not.toBe(parent.nativeId);
+    expect(child.host.recentSince(0).some(({ event }) => event.type === 'transcript' && 'content' in event && event.content === 'PARENT_HISTORY')).toBe(true);
     expect(child.host.recentSince(0).some(({ event }) => event.type === 'card')).toBe(false);
     expect(queueSettled).toBe(false);
     expect(outbound.get(childOwner)).toEqual([]);
@@ -263,4 +335,4 @@ it.each(['codex', 'claude'] as const)('%s native fork leaves pending question, q
     expect(retained).toEqual(before);
     expect(readFileSync(join(root, 'child', 'su.md'), 'utf8')).toBe('Fork isolation fixture.');
   } finally { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); }
-}, 120_000);
+}, 120_000); }

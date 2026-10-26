@@ -29,7 +29,6 @@ export type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from './su-session-us
 import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { SuSessionStartupTimeoutError, type SuSessionEventInput, type SuSessionHost, type SuSessionServedAccountReader } from './su-session-host';
 import { startSuStdioPeer, SuStdioRequestRefusal, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
-import { forkCodexNativeHistory, prepareCodexForkHistory, type PreparedCodexForkHistory } from './su-session-codex-fork';
 import { SuNativeCards } from './su-session-native-cards';
 import { readSuperuserToken } from './superuser-token';
 import { admitNativeIdentityInference } from './cupboard/identity-activation-gate-io';
@@ -53,8 +52,6 @@ export interface SuRpcEngineOptions {
   modes?: readonly string[];
   runtimeGeneration?: number;
   nativeSession?: NativeHandle;
-  /** A new tracked child, never an in-place resume of the parent. */
-  forkFrom?: CodexNativeSessionHandle;
   host?: SuSessionHost;
   beforeReady?: (pid: number | null) => Promise<void>;
   register?: boolean;
@@ -145,8 +142,8 @@ export function startSuRpcEngine(
     throw new Error('Structured engine bootstrap does not match the durable SU identity');
   }
   if (options.nativeSession && options.nativeSession.backend !== backend) throw new Error('Resume handle has a different backend');
-  if (options.forkFrom && (backend !== 'codex' || options.nativeSession)) {
-    throw new Error('Native Codex fork cannot be combined with resume or another provider');
+  if (Object.prototype.hasOwnProperty.call(options, 'forkFrom')) {
+    throw new Error('Native Codex forks require the tracked launcher; attach the registered child identity');
   }
   const su = (options.identity ?? 'su') === 'su';
   if (su) assertLaunchPersona(boot.promptFile);
@@ -762,17 +759,16 @@ export function startSuRpcEngine(
   }
   let done: Promise<void> = Promise.resolve();
   let starting: Promise<void>;
-  let forkHistory: PreparedCodexForkHistory | undefined;
   let nativeForkHistory = false;
   let closing: Promise<void> | undefined;
   function close(): Promise<void> {
     if (closing) return closing;
     closed = true; ready = false; turnFinished?.(); cards.cancel();
-    closing = (async () => { await peer?.close(); await forkHistory?.cleanup(); forkHistory = undefined; })();
+    closing = (async () => { await peer?.close(); })();
     return closing;
   }
   starting = (async () => {
-    if (options.nativeSession || options.forkFrom) {
+    if (options.nativeSession) {
       options.stage?.('rpc-restore-visible-history');
       // WI-10004162: show the saved conversation before the native peer starts
       // (seconds, or never when startup fails). Best-effort: the replay once the
@@ -782,12 +778,6 @@ export function startSuRpcEngine(
         : (adapter as OmpSuSessionAdapter).consumeTranscriptSnapshot({ preserveLifecycle: true })
       ).catch(() => undefined);
       if (closed) throw new Error('Structured connection closed during startup');
-    }
-    if (options.forkFrom) {
-      options.stage?.('rpc-transfer-fork-history');
-      forkHistory = await prepareCodexForkHistory({ source: options.forkFrom,
-        childOwnerId: binding.ownerId!, childHome: env.CODEX_HOME! });
-      if (closed) { await forkHistory.cleanup(); forkHistory = undefined; throw new Error('Structured fork startup was cancelled'); }
     }
     options.stage?.('rpc-spawn-peer');
     const resolvedBinary = resolveAgentBinarySync(backend) ?? backend;
@@ -819,13 +809,9 @@ export function startSuRpcEngine(
         sandbox: options.toolApproval === 'prompt' ? 'workspace-write' : 'danger-full-access',
         ...(nativeId() ? { threadId: nativeId() } : {}) };
       options.stage?.('rpc-native-thread');
-      const result = options.forkFrom
-        ? await forkCodexNativeHistory({ peer, source: options.forkFrom,
-          childOwnerId: binding.ownerId!, childHome: env.CODEX_HOME!, prepared: forkHistory, params })
-        : await peer.request({ method: nativeId() ? 'thread/resume' : 'thread/start', params });
-      forkHistory = undefined;
+      const result = await peer.request({ method: nativeId() ? 'thread/resume' : 'thread/start', params });
       const thread = object(result.thread), id = string(thread.id);
-      nativeForkHistory = thread.historyMode === 'paginated' && (typeof thread.forkedFromId === 'string' || !!options.forkFrom);
+      nativeForkHistory = thread.historyMode === 'paginated' && typeof thread.forkedFromId === 'string';
       if (!id || nativeId() && id !== nativeId()) throw new Error('Codex did not return the requested native identity');
       if (thread.cwd && resolve(string(thread.cwd)) !== resolve(boot.cwd)) throw new Error('Codex started in a different project');
       nativePath = string(thread.path) || null;
@@ -913,7 +899,7 @@ export function startSuRpcEngine(
     if (!await persistSuSessionDescriptor(binding.advSessionId, host.descriptor(), boot.workspaceId)) {
       throw new Error('Could not persist the native session identity and resume descriptor');
     }
-    if (options.nativeSession || options.forkFrom) {
+    if (options.nativeSession) {
       // The native runtime restores inference context; the adapter restores
       // the owner's visible history before this connection accepts new input.
       // Historical turn completion must not advertise current readiness.

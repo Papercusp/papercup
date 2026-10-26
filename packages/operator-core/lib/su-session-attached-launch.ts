@@ -160,6 +160,8 @@ export interface AttachedSuLaunchInput {
   agent: string;
   /** Presence is significant: invalid explicit choices never become defaults. */
   execution_kind?: unknown;
+  /** Fork into this new chat through the native Claude structured engine. */
+  fork_from?: { advSessionId: number; nativeSessionId: string };
   agent_chat_id: string;
   harness_slug: string;
   plan_slug?: string | null;
@@ -329,6 +331,8 @@ export async function launchAttachedSuSession(
     if (forwarded) return forwarded;
   }
   let start = state.starting.get(key);
+  if (start && input.fork_from) return Response.json({ status: 'error', code: 'fork_target_busy',
+    error: 'A fork requires a new conversation without an in-flight launch' }, { status: 409 });
   let trace: LaunchStageTracer | null = null;
   if (!start) {
     trace = launchStageTracer(key);
@@ -353,6 +357,7 @@ export async function launchAttachedSuSession(
     trace?.stage('read-durable-session');
     if (chat.data.su_runtime_class !== 'su-session') throw new Error('This conversation is not classified as an SU session; its existing history was preserved');
     const previous = await readDurableSuSession({ workspaceId, agentChatId: input.agent_chat_id });
+    if (input.fork_from && previous) throw new Error('A fork requires a new, unbound conversation');
     if (previous) {
       if (previous.backend !== input.agent || previous.harnessSlug !== input.harness_slug) throw new Error('The conversation is already bound to a different engine or project');
       const host = getRegisteredSuSessionHost({ workspaceId, harnessSlug: input.harness_slug, agentChatId: input.agent_chat_id });
@@ -466,6 +471,18 @@ export async function launchAttachedSuSession(
         nativeSession: existingEngine && 'nativeSession' in existingEngine ? existingEngine.nativeSession()
           : row ? nativeSessionHandleForAdvSession(row) : null };
     }
+    let claudeForkSource: import('./su-session-tracked-claude-fork').TrackedClaudeForkSource | undefined;
+    if (input.fork_from) {
+      if (input.agent !== 'claude') throw new Error('Structured fork source requires Claude');
+      const { getAdvSessionInWorkspace } = await import('./adv-sessions');
+      const parent = await getAdvSessionInWorkspace(input.fork_from.advSessionId, workspaceId);
+      const handle = parent && nativeSessionHandleForAdvSession(parent);
+      if (!parent || parent.retiredAt || parent.sessionId !== input.fork_from.nativeSessionId
+        || handle?.backend !== 'claude' || !handle.exactResumeSupported || !handle.configDir) {
+        throw new Error('Claude fork source is unavailable or does not match its tracked identity');
+      }
+      claudeForkSource = { advSessionId: Number(parent.id), nativeSession: handle };
+    }
     trace?.stage('bootstrap');
     // A forwarded re-attach carries no caller request; bootstrap needs its
     // authenticated principal, so it never runs on the caller's behalf.
@@ -536,7 +553,7 @@ export async function launchAttachedSuSession(
       engine = result.agent === 'claude'
         ? startClaudeSuEngine(result, binding as PuiSuSessionBinding & { backend: 'claude' },
           { nativeSession: nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
-          { ...options, identity: await engineIdentityForLaunch(workspaceId, result.cwd) })
+          { ...options, forkFrom: claudeForkSource, identity: await engineIdentityForLaunch(workspaceId, result.cwd) })
         : startSuRpcEngine(result, binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
           { ...options, identity: await engineIdentityForLaunch(workspaceId, result.cwd) });
       state.engines.set(key, engine);

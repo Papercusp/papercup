@@ -27,6 +27,7 @@ import { SuNativeCards } from './su-session-native-cards';
 import { loadSuOwnerTurnReceipts } from './su-session-commands';
 import { prepareSuSessionInput, SuInputRefusal } from './su-session-input';
 import { admitNativeIdentityInference } from './cupboard/identity-activation-gate-io';
+import { prepareTrackedClaudeFork, type TrackedClaudeForkSource } from './su-session-tracked-claude-fork';
 
 export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initializationResult' | 'mcpServerStatus' | 'interrupt' | 'close'>
   // P-026: the streaming-input model switch. Optional so a peer without it
@@ -68,6 +69,8 @@ export interface ClaudeEngineOptions extends ClaudeSuSessionDescriptorOptions {
   /** Defaults to `su`. */
   identity?: ClaudeEngineIdentity;
   resume?: boolean;
+  /** Fresh tracked child only; the SDK forks history and registration gates ready. */
+  forkFrom?: TrackedClaudeForkSource;
   /** Acceptance-only opt-in to the native permission request/card path. */
   toolApproval?: 'prompt';
   beforeReady?: (pid: number | null) => Promise<void>;
@@ -209,6 +212,7 @@ export function startClaudeSuEngine(
   options: ClaudeEngineOptions,
 ): ClaudeSuEngine {
   const nativeId = runtime.nativeSession.sessionId;
+  if (options.forkFrom && options.resume) throw new Error('Claude fork and exact resume are mutually exclusive');
   if (boot.agent !== 'claude' || boot.sessionId !== binding.advSessionId || boot.nativeSessionId !== nativeId
     || boot.workspaceId !== binding.workspaceId || boot.harnessSlug !== binding.harnessSlug
     || boot.envelopeEnv.PAPERCUSP_SID !== binding.ownerId) {
@@ -630,6 +634,17 @@ export function startClaudeSuEngine(
   const startup = (async () => {
     if (!options.query) await probeScopeSupport();
     if (closed) throw new Error('Claude startup was cancelled');
+    let fork: Awaited<ReturnType<typeof prepareTrackedClaudeFork>> | undefined;
+    if (options.forkFrom) {
+      if (!runtime.nativeSession.configDir) throw new Error('Claude child configuration is unavailable');
+      enterStartupStage('tracked fork preparation');
+      fork = await prepareTrackedClaudeFork({ source: options.forkFrom, workspaceId: boot.workspaceId,
+        cwd: boot.cwd, childAdvSessionId: binding.advSessionId, childOwnerId: binding.ownerId!,
+        childNativeSessionId: nativeId, childConfigDir: runtime.nativeSession.configDir });
+      Object.assign(sdkOptions, { resume: options.forkFrom.nativeSession.sessionId!, forkSession: true, sessionId: nativeId });
+    }
+    try {
+    if (closed) throw new Error('Claude fork preparation was cancelled');
     if (options.resume) {
       // WI-10004162: show the saved conversation now, not after the SDK launch,
       // its initialization and the SU tool connection (seconds, or never when
@@ -781,6 +796,12 @@ export function startClaudeSuEngine(
     if (closed) throw new Error('Claude connection closed during startup');
     enterStartupStage('resume finalization');
     await options.beforeReady?.(processId);
+    if (fork) {
+      enterStartupStage('fork visible history');
+      await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true, path: fork.transcriptPath });
+      enterStartupStage('tracked fork registration');
+      await fork.register();
+    }
     if (closed) throw new Error('Claude connection closed while finalizing resume');
     ready = true;
     adapter.host.transition('ready', su
@@ -790,6 +811,13 @@ export function startClaudeSuEngine(
     // workspace's routing tiers. Published after every startup descriptor
     // write so none of them can drop it.
     adapter.host.updateModels(claudeModelOptions(initialization?.models));
+    } catch (error) {
+      // Stop the native writer before removing any unregistered fork artifacts.
+      if (!adapter.host.snapshot().terminal) adapter.reconcileRuntimeExit({ expected: false, reason: String(error) });
+      await close();
+      await fork?.cleanup();
+      throw error;
+    }
   })();
   let timer: ReturnType<typeof setTimeout>;
   const readyPromise = Promise.race([

@@ -2652,12 +2652,15 @@ export function prepareSuLaunch(boot, {
     // A launcher can update before the long-lived operator during a rolling
     // deployment. Operator builds predating the Codex route marker still
     // materialize the resolved gateway provider in the per-session CODEX_HOME,
-    // but omit PAPERCUSP_ACCOUNT_ROUTING_MODE from the response. That is not an
-    // unresolved route: the generated config is the executable route decision.
+    // but omit PAPERCUSP_ACCOUNT_ROUTING_MODE or retain the envelope's default
+    // marker in the response. The latter was captured on adv session 52656:
+    // its default marker contradicted the authored auto provider and notice.
+    // The generated config is the executable route decision.
     // Repair only this measured legacy shape, and only when both managed marker
     // blocks prove that bootstrap authored the auto gateway configuration. A
     // missing/malformed home, a default config, or a pin still fails closed.
-    if (boot.agent === "codex" && mode === "auto" && !env.PAPERCUSP_ACCOUNT_ROUTING_MODE) {
+    if (boot.agent === "codex" && mode === "auto"
+      && (!env.PAPERCUSP_ACCOUNT_ROUTING_MODE || env.PAPERCUSP_ACCOUNT_ROUTING_MODE === "default")) {
       const childHome = typeof env.CODEX_HOME === "string" ? env.CODEX_HOME.trim() : "";
       try {
         // CODEX_HOME is the executable child route and is supplied by the

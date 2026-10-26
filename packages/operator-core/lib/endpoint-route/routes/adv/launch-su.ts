@@ -74,6 +74,7 @@ async function handleLaunchSu(req: Request): Promise<Response> {
   let body: {
     agent?: string;
     execution_kind?: unknown;
+    fork_from?: { advSessionId: number; nativeSessionId: string };
     harness_slug?: string | null;
     plan_slug?: string | null;
     stack?: string[] | null;
@@ -315,6 +316,14 @@ async function handleLaunchSu(req: Request): Promise<Response> {
     return json({ status: 'error', error: 'carry must be warm|cold' }, 400);
   }
   const agentChatId = body.agent_chat_id?.trim() || null;
+  if (body.fork_from !== undefined && (!body.fork_from || !Number.isSafeInteger(body.fork_from.advSessionId)
+    || body.fork_from.advSessionId <= 0 || typeof body.fork_from.nativeSessionId !== 'string'
+    || !SESSION_ID_RE.test(body.fork_from.nativeSessionId) || agent !== 'claude'
+    || !body.attached_engine || !agentChatId || attachAdvSessionId != null
+    || executionRequest.execution_kind === 'pty')) {
+    return json({ status: 'error', code: 'invalid_fork_source',
+      error: 'A structured Claude fork requires a tracked source and a new attached conversation' }, 400);
+  }
   if (agentChatId && !/^[A-Za-z0-9._:-]{1,200}$/.test(agentChatId)) {
     return json({ status: 'error', error: 'invalid agent chat id' }, 400);
   }
@@ -478,6 +487,7 @@ async function handleLaunchSu(req: Request): Promise<Response> {
       agent,
       ...executionRequest,
       agent_chat_id: agentChatId,
+      ...(body.fork_from ? { fork_from: body.fork_from } : {}),
       harness_slug: harness,
       plan_slug: plan,
       account,

@@ -1,5 +1,6 @@
 /** Prepare a native fork without starting a turn or inheriting runtime duties. */
 import { resolve } from 'node:path';
+import { unlink } from 'node:fs/promises';
 import { getOrgPg } from '@papercusp/db-org';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import { prepareSuLaunch } from '../../../apps/operator/scripts/psu-launcher.mjs';
@@ -69,6 +70,7 @@ export async function completeTrackedCodexFork(boot: BootstrapSuResult,
   const launch = prepareSuLaunch(boot, { executionKind: 'programmatic' });
   const prepared = await prepareCodexForkHistory({ source: parent, childOwnerId: ownerId, childHome: boot.codexHome });
   let peer: SuStdioPeer | undefined;
+  let unregisteredRollout: string | undefined;
   try {
     const binary = resolveAgentBinarySync('codex') ?? 'codex';
     peer = await (deps.startPeer ?? startSuStdioPeer)({ binary, args: ['app-server'],
@@ -80,14 +82,22 @@ export async function completeTrackedCodexFork(boot: BootstrapSuResult,
     peer.send({ method: 'initialized', params: {} });
     const result = await forkCodexNativeHistory({ peer, source: parent, prepared,
       childOwnerId: ownerId, childHome: boot.codexHome,
+      retainHistory: false,
       params: { cwd: boot.cwd, approvalPolicy: 'never', sandbox: 'danger-full-access' } });
     const nativeSessionId = String((result.thread as { id: string }).id);
+    // forkCodexNativeHistory has verified this path belongs to the fresh child.
+    unregisteredRollout = (result.thread as { path: string }).path;
     await peer.close(); await peer.done; peer = undefined;
     await registerTrackedCodexFork({ workspaceId: boot.workspaceId, childAdvSessionId: boot.sessionId,
       childOwnerId: ownerId, childNativeSessionId: nativeSessionId, source: nativeFork });
+    prepared.retain();
+    unregisteredRollout = undefined;
     return { nativeSessionId, nativeFork };
   } finally {
     try { if (peer) { await peer.close(); await peer.done; } }
-    finally { await prepared.cleanup(); }
+    finally {
+      try { if (unregisteredRollout) await unlink(unregisteredRollout); }
+      finally { await prepared.cleanup(); }
+    }
   }
 }

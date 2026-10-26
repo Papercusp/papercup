@@ -8,7 +8,11 @@ const dir = mkdtempSync(join(tmpdir(), 'su-launch-preparation-'));
 writeFileSync(join(dir, 'settings.json'), JSON.stringify({ effortLevel: 'max' }));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-function bootstrap(agent: 'claude' | 'codex') {
+function bootstrap(agent: 'claude' | 'codex'): {
+  status: string; agent: 'claude' | 'codex'; cwd: string; promptFile: string;
+  nativeSessionId: string; compactionLimit: number; model: string;
+  codexHome?: string; envelopeEnv: Record<string, string>;
+} {
   return { status: 'ok', agent, cwd: '/chosen/workspace', promptFile: '/chosen/persona.md',
     nativeSessionId: 'chosen-native-id', compactionLimit: 360000,
     model: agent === 'claude' ? 'claude-sonnet-4-6:high' : 'gpt-5.6-sol:high',
@@ -36,12 +40,12 @@ describe('effective SU launch preparation', () => {
       const canonical = prepareSuLaunch(boot, { executionKind: 'pty', accountRoute: 'chosen-account', model: 'stale-caller:low' });
       // Capture the real launcher's final assembly. Existing transport tests
       // exercise the wrapper's same sanitizer and real PTY/stdio children.
-      const launch = vi.fn();
+      const launch = vi.fn<(...args: any[]) => void>();
       await launchFreshSu({ agent, workspace: 'chosen-workspace' }, {
         model: 'stale-caller:low', account: 'chosen-account', auto: true,
         picker: false, noKickoff: true,
       }, { apiImpl: async () => boot, preflightCodexAutoPoolImpl: async () => true,
-        runLaunchPreflightImpl: () => {}, runWrapperImpl: launch });
+        runLaunchPreflightImpl: vi.fn(), runWrapperImpl: launch });
       expect(launch).toHaveBeenCalledOnce();
       const actual = launch.mock.calls[0][0];
       expect(actual).toMatchObject({ wrapperBin: canonical.bin, cwd: canonical.cwd,
@@ -102,7 +106,7 @@ describe('effective SU launch preparation', () => {
     }
   });
 
-  it('repairs a legacy Codex auto response only when its managed home proves the resolved gateway route', () => {
+  it.each([undefined, 'default'])('repairs a legacy Codex auto response with route marker %s only when its managed home proves the resolved gateway route', routeMarker => {
     const home = mkdtempSync(join(tmpdir(), 'su-codex-auto-route-'));
     try {
       writeFileSync(join(home, 'config.toml'), [
@@ -119,6 +123,7 @@ describe('effective SU launch preparation', () => {
       ].join('\n'));
       const legacy = bootstrap('codex');
       delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE;
+      if (routeMarker) legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE = routeMarker;
       delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ID;
       legacy.envelopeEnv.CODEX_HOME = home;
       const launch = prepareSuLaunch({ ...legacy, codexHome: home }, {
@@ -213,7 +218,7 @@ describe('effective SU launch preparation', () => {
     }
   });
 
-  it('passes a repaired legacy Codex auto route into the spawned child environment', async () => {
+  it.each([undefined, 'default'])('passes a repaired legacy Codex auto route with marker %s into the spawned child environment', async routeMarker => {
     const home = mkdtempSync(join(tmpdir(), 'su-codex-auto-child-'));
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -231,14 +236,15 @@ describe('effective SU launch preparation', () => {
       ].join('\n'));
       const legacy = bootstrap('codex');
       delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE;
+      if (routeMarker) legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE = routeMarker;
       delete legacy.envelopeEnv.PAPERCUSP_ACCOUNT_ID;
       legacy.envelopeEnv.CODEX_HOME = home;
-      const launch = vi.fn();
+      const launch = vi.fn<(...args: any[]) => void>();
       await launchFreshSu({ agent: 'codex', workspace: 'chosen-workspace' }, {
         model: legacy.model, account: 'auto', picker: false, noKickoff: true,
       }, { apiImpl: async () => ({ ...legacy, codexHome: home }),
         preflightCodexAutoPoolImpl: async () => true,
-        runLaunchPreflightImpl: () => {}, runWrapperImpl: launch });
+        runLaunchPreflightImpl: vi.fn(), runWrapperImpl: launch });
       expect(launch).toHaveBeenCalledOnce();
       expect(launch.mock.calls[0][0].envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
     } finally {

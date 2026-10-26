@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   ended: vi.fn(), pid: vi.fn(), persist: vi.fn(), reconcile: vi.fn(), rpc: vi.fn(),
   resume: vi.fn(), rehydrate: vi.fn(), registry: vi.fn(), owner: vi.fn(), recordOwner: vi.fn(),
   callOwner: vi.fn(), forwardable: vi.fn(),
+  forkParent: vi.fn(), nativeHandle: vi.fn(),
 }));
 // WI-10003879: the cross-worker relay is proven for real in
 // su-session-owner-routing.integration.test.ts; here only the launch's
@@ -26,10 +27,11 @@ vi.mock('./agent-chats-data', () => ({ getChat: mocks.chat }));
 vi.mock('./adv-sessions', async (orig) => ({
   ...(await orig<typeof import('./adv-sessions')>()),
   getAdvSession: vi.fn(),
+  getAdvSessionInWorkspace: mocks.forkParent,
   markAdvSessionEnded: mocks.ended,
   setAdvSessionPid: mocks.pid,
 }));
-vi.mock('./native-session-handles', () => ({ nativeSessionHandleForAdvSession: vi.fn() }));
+vi.mock('./native-session-handles', () => ({ nativeSessionHandleForAdvSession: mocks.nativeHandle }));
 vi.mock('./su-session-host', () => ({ getRegisteredSuSessionHost: mocks.host, rehydrateRegisteredSuSessionHost: mocks.rehydrate }));
 vi.mock('./su-session-resume', () => ({ prepareStructuredSuResume: mocks.resume }));
 vi.mock('./su-session-persistence', () => ({ readDurableSuSession: mocks.read, bindSuSessionToAdvSession: mocks.bind, persistSuSessionDescriptor: mocks.persist,
@@ -81,6 +83,41 @@ afterEach(() => {
 });
 
 describe('attached launch authority', () => {
+  it('does not coalesce a fork request into a different in-flight launch', async () => {
+    let release!: (value: unknown) => void;
+    mocks.chat.mockReturnValueOnce(new Promise(done => { release = done; }));
+    const first = launchAttachedSuSession(request(), { ...input, agent_chat_id: 'busy-fork-chat' });
+    await vi.waitFor(() => expect(mocks.chat).toHaveBeenCalled());
+    const second = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'busy-fork-chat',
+      fork_from: { advSessionId: 17, nativeSessionId: 'parent-native' } });
+    expect(second.status).toBe(409);
+    expect(await second.json()).toMatchObject({ code: 'fork_target_busy' });
+    release({ ok: true, data: { archived_at: null, su_runtime_class: 'su-session' } });
+    expect((await first).status).toBe(200);
+    expect(mocks.engine.mock.calls[0][3].forkFrom).toBeUndefined();
+  });
+
+  it('routes a tracked Claude parent to the production structured fork engine', async () => {
+    mocks.forkParent.mockResolvedValue({ id: 17, sessionId: 'parent-native' });
+    const handle = { backend: 'claude', sessionId: 'parent-native', ownerId: 'parent-owner',
+      configDir: '/parent/claude', exactResumeSupported: true };
+    mocks.nativeHandle.mockReturnValue(handle);
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'new-fork-chat',
+      fork_from: { advSessionId: 17, nativeSessionId: 'parent-native' } });
+    expect(response.status).toBe(200);
+    expect(mocks.engine.mock.calls[0][3].forkFrom).toEqual({ advSessionId: 17, nativeSession: handle });
+    expect(mocks.forkParent).toHaveBeenCalledWith(17, 'workspace');
+  });
+
+  it('refuses an unavailable fork source before child bootstrap', async () => {
+    mocks.forkParent.mockResolvedValue(null);
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'missing-fork-chat',
+      fork_from: { advSessionId: 17, nativeSessionId: 'parent-native' } });
+    expect(response.status).toBe(503);
+    expect(mocks.bootstrap).not.toHaveBeenCalled();
+    expect(mocks.engine).not.toHaveBeenCalled();
+  });
+
   it.each([null, '', 'sdk', ['pty', 'programmatic']].map(execution_kind => ({ execution_kind })))('refuses invalid explicit execution $execution_kind before looking up or starting an engine', async ({ execution_kind }) => {
     const response = await launchAttachedSuSession(request(), { ...input, execution_kind });
     expect(response.status).toBe(400);

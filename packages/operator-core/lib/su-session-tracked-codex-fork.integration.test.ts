@@ -94,6 +94,7 @@ it.each(['registered', 'stale-source', 'startup-failure'] as const)('registers n
       compositionSource: 'compatibility', coordExtPath: null,
       envelopeEnv: { PAPERCUSP_SID: 'su-child', CODEX_HOME: childHome } } satisfies BootstrapSuResult;
     const methods: unknown[] = [];
+    let attemptedNativeId: string | undefined;
     const result = completeTrackedCodexFork(boot, { advSessionId: parentId, nativeSessionId: native }, {
       startPeer: async options => {
         // Exercise a real installed CLI process exiting before initialization,
@@ -104,6 +105,7 @@ it.each(['registered', 'stale-source', 'startup-failure'] as const)('registers n
         return { ...peer, request: async (frame, timeout) => {
           methods.push(frame.method); const result = await peer.request(frame, timeout);
           if (stale && frame.method === 'thread/fork') {
+            attemptedNativeId = String((result.thread as RpcFrame).id);
             await h.sql`UPDATE harness_shared.adv_sessions SET session_id = ${randomUUID()} WHERE id = ${parentId}`;
           }
           return result;
@@ -122,6 +124,9 @@ it.each(['registered', 'stale-source', 'startup-failure'] as const)('registers n
       await expect(result).rejects.toThrow('lineage registration refused');
       const [child] = await h.sql`SELECT session_id, launch_spec FROM harness_shared.adv_sessions WHERE id = ${childId}`;
       expect(child.session_id).toBeNull(); expect(child.launch_spec).not.toHaveProperty('nativeFork');
+      expect(attemptedNativeId).toBeTruthy();
+      expect(await findCodexRolloutPathByUuid(attemptedNativeId!, { homeOverride: childHome })).toBeNull();
+      expect(await findCodexRolloutPathByUuid(native, { homeOverride: childHome })).toBeNull();
     } else {
       const fork = await result;
       const [child] = await h.sql`SELECT session_id, launch_spec FROM harness_shared.adv_sessions WHERE id = ${childId}`;

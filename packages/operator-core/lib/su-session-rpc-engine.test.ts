@@ -80,7 +80,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   servedAccountReader?: (ownerId: string) => Promise<string | null>;
   request?: (frame: RpcFrame) => Promise<RpcFrame | undefined>;
   resume?: boolean;
-  fork?: boolean;
+  legacyFork?: boolean;
   paginatedFork?: boolean;
   history?: RpcFrame[];
   missingTranscript?: boolean;
@@ -140,23 +140,6 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   const nativeSession = backend === 'codex'
     ? { backend: 'codex' as const, source: 'adv_sessions' as const, ownerId: binding.ownerId, codexHome: '/configured/codex', rolloutId: 'native-codex', exactResumeSupported: true, missingReason: null }
     : { backend: 'omp' as const, source: 'adv_sessions' as const, ownerId: binding.ownerId, agentHome: '/configured/omp', ompThreadId: 'native-omp', exactResumeSupported: true, missingReason: null };
-  let forkFrom: import('./native-session-handles').CodexNativeSessionHandle | undefined;
-  if (overrides.fork) {
-    const root = mkdtempSync(join(tmpdir(), 'pui-engine-fork-')); nativeDirs.push(root);
-    const parentHome = join(root, 'parent'), childHome = join(root, 'child');
-    const history = join(parentHome, 'sessions', '2026', '10', '25');
-    mkdirSync(history, { recursive: true }); mkdirSync(childHome);
-    writeFileSync(join(history, 'rollout-2026-11111111-1111-4111-8111-111111111111.jsonl'),
-      JSON.stringify({ type: 'session_meta', payload: { id: '11111111-1111-4111-8111-111111111111' } }) + '\n');
-    nativePath = join(childHome, 'child.jsonl'); writeFileSync(nativePath, '');
-    boot.envelopeEnv.CODEX_HOME = childHome;
-    forkFrom = { backend: 'codex', source: 'adv_sessions', ownerId: 'parent-owner',
-      codexHome: parentHome, rolloutId: '11111111-1111-4111-8111-111111111111', exactResumeSupported: true, missingReason: null };
-    const existing = overrides.request;
-    overrides.request = async frame => frame.method === 'thread/read'
-      ? { thread: { id: '11111111-1111-4111-8111-111111111111', turns: [{ id: 'completed-parent', status: 'completed' }] } }
-      : existing?.(frame);
-  }
   const engine = startSuRpcEngine(boot, binding, {
     agentChatId: `chat-${backend}`, model: backend === 'codex' ? 'codex-model' : 'openai/omp-model',
     startupTimeoutMs: 500,
@@ -169,7 +152,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     stage: overrides.stage,
     accountRoute: 'default', carry: 'warm', modes: ['auto'], register: false,
     ...(overrides.resume ? { nativeSession } : {}),
-    ...(forkFrom ? { forkFrom } : {}),
+    ...(overrides.legacyFork ? { forkFrom: {} } : {}),
     peerFactory: async (options) => { transport = options; return { request, send: (frame) => sent.push(frame), done, close, pid: () => 7171 }; },
   });
   engines.push(engine);
@@ -188,34 +171,38 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-it('starts a new tracked Codex child with native fork instead of resuming or creating a blank thread', async () => {
-  const f = fixture('codex', { fork: true }); await f.engine.ready;
-  expect(f.sent).toContainEqual({ method: 'thread/fork', params: {
+it('attaches the exact registered Codex child without creating a second fork', async () => {
+  const f = fixture('codex', { resume: true }); await f.engine.ready;
+  expect(f.sent).toContainEqual({ method: 'thread/resume', params: {
     cwd: '/project', approvalPolicy: 'never', sandbox: 'danger-full-access',
-    threadId: '11111111-1111-4111-8111-111111111111', lastTurnId: 'completed-parent', ephemeral: false,
+    threadId: 'native-codex',
   } });
-  expect(f.sent.some(frame => frame.method === 'thread/start' || frame.method === 'thread/resume')).toBe(false);
+  expect(f.sent.some(frame => frame.method === 'thread/start' || frame.method === 'thread/fork')).toBe(false);
   expect(f.engine.adapter.host.descriptor().identity).toMatchObject({ ownerId: 'su-rpc-fixture', nativeSessionId: 'native-codex' });
   expect(f.engine.nativeSession()).toMatchObject({ ownerId: 'su-rpc-fixture', rolloutId: 'native-codex' });
   expect(mocks.persist).toHaveBeenCalled();
 });
 
-it.each(['fork', 'tools', 'registration'] as const)('refuses tracked child readiness on %s failure', async failure => {
+it('refuses the legacy unregistered fork option before native startup', () => {
+  expect(() => fixture('codex', { legacyFork: true })).toThrow('tracked launcher');
+});
+
+it.each(['resume', 'tools', 'registration'] as const)('refuses registered child readiness on %s failure', async failure => {
   if (failure === 'registration') mocks.persist.mockResolvedValue(false);
-  const f = fixture('codex', { fork: true, tools: failure !== 'tools',
+  const f = fixture('codex', { resume: true, tools: failure !== 'tools',
     request: async frame => {
-      if (failure === 'fork' && frame.method === 'thread/fork') throw new Error('native fork refused');
+      if (failure === 'resume' && frame.method === 'thread/resume') throw new Error('native resume refused');
       return undefined;
     } });
   await expect(f.engine.ready).rejects.toThrow();
   expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
   expect(f.close).toHaveBeenCalled();
-  expect(f.sent.some(frame => frame.method === 'thread/start' || frame.method === 'thread/resume')).toBe(false);
+  expect(f.sent.some(frame => frame.method === 'thread/start' || frame.method === 'thread/fork')).toBe(false);
 });
 
 it('restores visible fork history before readiness without reviving historical questions or tool calls', async () => {
   const stages: string[] = [];
-  const f = fixture('codex', { fork: true, paginatedFork: true, stage: name => { stages.push(name); },
+  const f = fixture('codex', { resume: true, paginatedFork: true, stage: name => { stages.push(name); },
     request: async frame => {
       if (frame.method === 'thread/turns/list') return { data: [{ id: 'completed-parent', status: 'completed' }], nextCursor: null };
       if (frame.method === 'thread/items/list') return { data: [

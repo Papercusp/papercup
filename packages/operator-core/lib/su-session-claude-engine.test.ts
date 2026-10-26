@@ -19,6 +19,14 @@ import {
 import type { ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
 
 const nativeFunding = vi.hoisted(() => vi.fn<typeof import('./cupboard/identity-activation-gate-io').admitNativeIdentityInference>());
+const forkPreparation = vi.hoisted(() => ({ prepare: vi.fn(), register: vi.fn(), cleanup: vi.fn() }));
+vi.mock('./su-session-tracked-claude-fork', () => ({ prepareTrackedClaudeFork: forkPreparation.prepare }));
+beforeEach(() => {
+  forkPreparation.prepare.mockReset(); forkPreparation.register.mockReset(); forkPreparation.cleanup.mockReset();
+  const transcriptPath = join(dir, 'fork-parent.jsonl');
+  writeFileSync(transcriptPath, JSON.stringify({ type: 'user', uuid: 'parent-prompt', message: { role: 'user', content: 'Parent visible input' } }) + '\n');
+  forkPreparation.prepare.mockResolvedValue({ transcriptPath, register: forkPreparation.register, cleanup: forkPreparation.cleanup });
+});
 vi.mock('./cupboard/identity-activation-gate-io', () => ({ admitNativeIdentityInference: nativeFunding }));
 beforeEach(() => { nativeFunding.mockReset(); nativeFunding.mockResolvedValue({ ok: true }); });
 
@@ -134,6 +142,33 @@ function stalledReports(engine: ClaudeSuEngine) {
 }
 
 describe('structured Claude SU engine', () => {
+  const forkSource = { advSessionId: 60, nativeSession: { ...runtime.nativeSession,
+    ownerId: 'parent-owner', sessionId: '22222222-2222-4222-8222-222222222222', configDir: join(dir, 'parent') } };
+
+  it('forks through the SDK and waits for tracked lineage registration before readiness', async () => {
+    let release!: () => void;
+    forkPreparation.register.mockImplementation(async () => new Promise<void>(done => { release = done; }));
+    const p = peer(), engine = open(p, { forkFrom: forkSource, startupTimeoutMs: 2_000 });
+    await vi.waitFor(() => expect(forkPreparation.register).toHaveBeenCalledOnce());
+    expect(p.options()).toMatchObject({ resume: forkSource.nativeSession.sessionId, forkSession: true, sessionId: nativeId });
+    expect(engine.adapter.host.snapshot().streamReady).toBe(false);
+    expect(p.prompts).toHaveLength(0);
+    expect(engine.adapter.host.recent.some(({ event }) => event.type === 'transcript' && 'content' in event && event.content === 'Parent visible input')).toBe(true);
+    release(); await engine.ready;
+    expect(engine.adapter.host.snapshot().streamReady).toBe(true);
+    expect(forkPreparation.cleanup).not.toHaveBeenCalled();
+  });
+
+  it('closes the native fork and cleans its artifacts when lineage registration refuses', async () => {
+    forkPreparation.register.mockRejectedValue(new Error('lineage changed'));
+    const p = peer(), engine = open(p, { forkFrom: forkSource });
+    await expect(engine.ready).rejects.toThrow('lineage changed');
+    expect(engine.adapter.host.snapshot().streamReady).toBe(false);
+    expect(p.close).toHaveBeenCalled();
+    expect(p.prompts).toHaveLength(0);
+    expect(forkPreparation.cleanup).toHaveBeenCalledOnce();
+  });
+
   it('rechecks a file revoked while native admission was pending', async () => {
     const p = peer(), engine = open(p), path = join(dir, 'admission-notes.txt'), bytes = Buffer.from('private notes');
     writeFileSync(path, bytes);
