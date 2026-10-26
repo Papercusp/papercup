@@ -29609,7 +29609,7 @@
           "POST"
         ]
       },
-      "description": "Fetch one OR many published reports by id — including the full markdown body. Pass `id` (or the publish receipt alias `report_id`) for one or `ids` for several. A RETIRED report still resolves (retirement is soft, so a citation to a report id never breaks); its `retired_at` is set. Pass `lineage:true` to also get the full supersede history behind each report, newest first. Read-only. Reports you may not see come back as `not_found`.",
+      "description": "Fetch one OR many published reports by id — including the full markdown body. Pass `id` (or the publish receipt alias `report_id`) for one or `ids` for several. A RETIRED report still resolves (retirement is soft, so a citation to a report id never breaks); its `retired_at` is set. Pass `lineage:true` to also get the full supersede history behind each report, newest first. Read-only. Existing reports you may not read return `access_denied`; missing ids return `not_found`.",
       "capabilities": [
         "reports:read"
       ],
