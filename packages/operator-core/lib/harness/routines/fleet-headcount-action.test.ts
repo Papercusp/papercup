@@ -399,7 +399,11 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     });
   });
 
-  it('waits on a stale non-ready attestation outside the current probe cohort until its fate is proven', () => {
+  // WI-6554700010029353 superseded the original "wait until its fate is proven" policy
+  // for this shape. Outside the probe cohort nothing ever re-takes the attestation, so
+  // its fate is never proven and that wait was unbounded, which contradicts P-004's
+  // bounded retry. The member is still never pruned, and the deficit is refilled.
+  it('refills past a stale non-ready attestation outside the current probe cohort without pruning it', () => {
     const current = transaction(['su-ready', 'su-stale-unready'], {
       openedMemberIds: [],
       verifiedMemberIds: ['su-ready'],
@@ -428,10 +432,11 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     })).toMatchObject({
       productiveMemberCount: 1,
       deficit: 1,
-      action: 'wait',
-      spawnCount: 0,
+      action: 'spawn',
+      spawnCount: 1,
       pruneCandidateIds: [],
       unreadyMemberIds: ['su-stale-unready'],
+      frozenUnreadyMemberIds: ['su-stale-unready'],
     });
   });
 
@@ -704,10 +709,13 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     expect(assessment.reason).not.toContain('prune is unsafe');
   });
 
-  // The other half of the same boundary: the identical stale attestation on a member
-  // that is NOT executing is still genuine non-ready evidence, and pruning it without
-  // a verified-start or terminal-failure proof stays unsafe.
-  it('still waits on a stale ready:false member that is NOT executing', () => {
+  // WI-6554700010029353 — the other half of the same boundary. The identical stale
+  // attestation on a member that is NOT executing is still non-ready evidence, so it is
+  // never pruned without a verified-start or terminal-failure proof. But it sits outside
+  // probeOwnerIds, so nothing ever re-takes it: holding refill on it was an unbounded
+  // wait (Luna Max, 10:15Z: one member silent 28m kept a 42/50 fleet at `wait`). It is
+  // already excluded from the productive count, so the deficit refills past it.
+  it('refills past a frozen stale ready:false member that is NOT executing, without pruning it', () => {
     const current = transaction([], {
       openedMemberIds: [],
       verifiedMemberIds: ['su-respawn-stale'],
@@ -732,6 +740,49 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       now: 1_000 + 300_000 + 1,
     });
     expect(assessment.unreadyMemberIds).toEqual(['su-respawn-stale']);
+    expect(assessment.frozenUnreadyMemberIds).toEqual(['su-respawn-stale']);
+    expect(assessment.pruneCandidateIds).toEqual([]);
+    expect(assessment).toMatchObject({
+      action: 'spawn',
+      actionOwnerId: null,
+      productiveMemberCount: 2,
+      deficit: 7,
+    });
+    expect(assessment.reason).toContain('1 unready member(s) outside the probe cohort hold frozen non-ready evidence');
+    expect(assessment.reason).not.toContain('prune is unsafe');
+  });
+
+  // Control for the boundary above: a member the governor IS still probing keeps
+  // holding refill once its retry budget is spent without a verified-start or
+  // terminal-failure proof. Its evidence is re-taken every tick, so that wait is the
+  // bounded one the fail-closed rule exists for.
+  it('still waits on a PROBED unready member whose retry budget is spent without proof', () => {
+    const current = transaction([], {
+      openedMemberIds: [],
+      verifiedMemberIds: [],
+      unconfirmedMemberIds: ['su-probed-unproven'],
+      waves: [],
+      workerAttestations: [workerAttestation('su-probed-unproven', false)],
+      governor: {
+        version: 1,
+        probeOwnerIds: ['su-probed-unproven'],
+        attestationAttempts: { 'su-probed-unproven': 99 },
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+    const assessment = assessFleetHeadcountGovernor({
+      target: 9,
+      productiveCapacityFloor: 2,
+      liveMemberIds: ['su-probed-unproven', 'su-b', 'su-c'],
+      executingMemberIds: new Set(['su-b', 'su-c']),
+      transaction: current,
+      now: 1_000 + 300_000 + 1,
+    });
+    expect(assessment.unreadyMemberIds).toEqual(['su-probed-unproven']);
+    expect(assessment.frozenUnreadyMemberIds).toEqual([]);
+    expect(assessment.pruneCandidateIds).toEqual([]);
     expect(assessment).toMatchObject({
       action: 'wait',
       reason: 'non-ready evidence lacks a verified-start or terminal-failure proof; prune is unsafe',

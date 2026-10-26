@@ -728,7 +728,10 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
     });
   });
 
-  it('settles a late verified probe while preserving an unrelated legacy non-ready wait', async () => {
+  // WI-6554700010029353: the legacy member's ready:false is a frozen snapshot outside the
+  // probe cohort. It is reported as unready but no longer holds a `wait`. At target 1
+  // with su-late productive, the fleet is simply satisfied.
+  it('settles a late verified probe; an unrelated frozen legacy non-ready member holds no wait', async () => {
     const transaction = {
       version: 1 as const,
       transactionId: 'tx-late-with-legacy-seat',
@@ -770,8 +773,10 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
     expect(mocks.spawnHeadless).not.toHaveBeenCalled();
     expect(mocks.kill).not.toHaveBeenCalled();
     expect(mocks.recordAttempt).toHaveBeenLastCalledWith(
+      expect.objectContaining({ succeeded: true }),
+    );
+    expect(mocks.recordAttempt).not.toHaveBeenCalledWith(
       expect.objectContaining({
-        succeeded: false,
         error: 'non-ready evidence lacks a verified-start or terminal-failure proof; prune is unsafe',
       }),
     );
@@ -782,17 +787,87 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
       unconfirmedMemberIds: [],
       recovery: {
         retryOwnerIds: [],
-        nextAction: 'non-ready evidence lacks a verified-start or terminal-failure proof; prune is unsafe',
+        nextAction: 'target and productive-capacity floor are both satisfied',
       },
       waves: [{ state: 'verified', verifiedOwnerIds: ['su-late'] }],
       governor: {
         terminalVerdict: {
-          outcome: 'unverified',
-          action: 'wait',
+          outcome: 'productive',
+          action: 'none',
           unreadyMemberIds: ['su-legacy-unready'],
         },
       },
     });
+  });
+
+  // WI-6554700010029353 — the Luna Max shape end to end: a verified member with a
+  // frozen ready:false attestation, outside probeOwnerIds and silent (not executing),
+  // beside a deficit. Before the fix the governor returned `wait: prune is unsafe` on
+  // every tick and never spawned. Now it refills the deficit and still never kills
+  // the frozen member.
+  it('refills a deficit past a frozen non-executing unready member and never prunes it', async () => {
+    const config = { ...baseConfig };
+    const transaction = {
+      version: 1 as const,
+      transactionId: 'tx-frozen-unready',
+      launcherOwnerId: 'su-leader',
+      state: 'verified' as const,
+      requestedAt: 1,
+      updatedAt: 1,
+      requestedMemberIds: ['su-frozen-unready', 'su-b'],
+      openedMemberIds: [],
+      verifiedMemberIds: ['su-frozen-unready', 'su-b'],
+      unconfirmedMemberIds: [],
+      workerReadyMemberIds: ['su-b'],
+      workerAttestations: [
+        readyAttestation('su-frozen-unready', false),
+        readyAttestation('su-b', true),
+      ],
+      failed: [],
+      waves: [],
+      recovery: { retryOwnerIds: [], nextAction: 'none' },
+      governor: {
+        version: 1 as const,
+        probeOwnerIds: [],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    };
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a',
+      leaderOwnerId: 'su-leader',
+      lastLaunchTransaction: transaction,
+    });
+    mocks.listTargets.mockResolvedValue([{ ...grantedTarget(config), target: 2 }]);
+    mocks.claimAttempt.mockResolvedValue({
+      workspaceId: 'ws',
+      fleetSlug: 'fleet-a',
+      target: 2,
+      config,
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+      claimedAt: 1,
+    });
+    mocks.orgSql.mockResolvedValue([{ status: 'active' }]);
+    mocks.liveMemberIds.mockResolvedValue(['su-frozen-unready', 'su-b']);
+    mocks.executingOwnersSince.mockResolvedValue(new Set(['su-b']));
+    mocks.verify.mockImplementation(async (args: { expectedOwnerIds: string[] }) =>
+      verifierResult(args.expectedOwnerIds[0]!, true));
+
+    await runFleetHeadcountGovernor({
+      installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+    });
+
+    expect(mocks.spawnHeadless).toHaveBeenCalledTimes(1);
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.recordAttempt).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'non-ready evidence lacks a verified-start or terminal-failure proof; prune is unsafe',
+      }),
+    );
   });
 
   it.each(['silent', 'executing', 'unknown'] as const)(

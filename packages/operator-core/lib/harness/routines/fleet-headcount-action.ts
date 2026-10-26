@@ -163,6 +163,13 @@ export interface FleetHeadcountGovernorAssessment {
   liveMemberIds: string[];
   workerReadyMemberIds: string[];
   unreadyMemberIds: string[];
+  /**
+   * WI-6554700010029353: the subset of `unreadyMemberIds` outside the governor's
+   * current probe cohort. Their attestation is never re-taken, so they never hold the
+   * `wait` (only probed unready members do). Refill proceeds against the deficit
+   * instead. They are surfaced so a spawn past a non-empty unready set can be explained.
+   */
+  frozenUnreadyMemberIds: string[];
   unverifiedMemberIds: string[];
   pendingOpenedMemberIds: string[];
   /**
@@ -289,6 +296,20 @@ export function assessFleetHeadcountGovernor(args: {
   const retryable = unreadyMemberIds.filter(
     (ownerId) => currentProbeOwners.has(ownerId) && (attempts[ownerId] ?? 0) < retryLimit,
   );
+  // WI-6554700010029353: only an unready member the governor is STILL PROBING may hold
+  // refill. A probe owner is re-attested every tick (refreshGovernorWorkerAttestation),
+  // so its evidence can still move to ready, to verified-and-prunable, or to a terminal
+  // failure, and waiting for that is bounded. An unready member OUTSIDE probeOwnerIds is a
+  // frozen snapshot: nothing re-takes its attestation and its attempt count never grows,
+  // so it can never become a prune candidate either. Letting it gate the deficit branch
+  // made the wait unbounded by construction. It also contradicted the headcount itself:
+  // such a member is not executing, so it is already excluded from the productive count.
+  // An ordinary idle member gets replaced through that deficit, while one with a stale
+  // ready:false stalled every spawn (Luna Max, 2026-10-26 10:15Z: one member silent 28m
+  // held a 42/50 fleet at `wait`). Frozen members still never get pruned. They are only
+  // treated like every other non-productive member.
+  const probedUnreadyMemberIds = unreadyMemberIds.filter((ownerId) => currentProbeOwners.has(ownerId));
+  const frozenUnreadyMemberIds = unreadyMemberIds.filter((ownerId) => !currentProbeOwners.has(ownerId));
   const headcountMeasurement = measureFleetProductiveHeadcount(
     transaction,
     liveMemberIds,
@@ -305,6 +326,7 @@ export function assessFleetHeadcountGovernor(args: {
     liveMemberIds,
     workerReadyMemberIds,
     unreadyMemberIds,
+    frozenUnreadyMemberIds,
     unverifiedMemberIds,
     pendingOpenedMemberIds,
     launchDeadlineExceededMemberIds,
@@ -351,7 +373,7 @@ export function assessFleetHeadcountGovernor(args: {
       reason: 'worker stages are observed but not yet terminal; retry after durable backoff',
     };
   }
-  if (unreadyMemberIds.length > 0) {
+  if (probedUnreadyMemberIds.length > 0) {
     return {
       ...common,
       action: 'wait',
@@ -388,6 +410,11 @@ export function assessFleetHeadcountGovernor(args: {
     const launchFailedPrefix = launchDeadlineExceededMemberIds.length > 0
       ? `${launchDeadlineExceededMemberIds.length} opened member(s) never became live within the ${Math.round(FLEET_HEADCOUNT_LAUNCH_WINDOW_MS / 1000)}s launch window and are classified launch-failed; `
       : '';
+    // WI-6554700010029353: same observability duty for a refill that proceeds past
+    // frozen unready members, which used to hold `wait` here. Empty otherwise.
+    const frozenUnreadyPrefix = frozenUnreadyMemberIds.length > 0
+      ? `${frozenUnreadyMemberIds.length} unready member(s) outside the probe cohort hold frozen non-ready evidence; they are not pruned and do not count as productive, so the deficit is refilled; `
+      : '';
     return {
       ...common,
       action: 'spawn',
@@ -395,7 +422,7 @@ export function assessFleetHeadcountGovernor(args: {
       spawnCount: floorMet
         ? Math.min(deficit, FLEET_HEADCOUNT_BULK_WAVE_SIZE)
         : 1,
-      reason: launchFailedPrefix + (floorMet
+      reason: launchFailedPrefix + frozenUnreadyPrefix + (floorMet
         ? hasUnverifiedSeats
           ? 'productive-capacity floor is evidenced; preserve unverified live seats and open a capacity-clamped bounded refill wave'
           : 'productive-capacity floor is evidenced; a bounded refill wave is safe'
