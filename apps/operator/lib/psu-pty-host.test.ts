@@ -7498,7 +7498,8 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
   it.each(['first attempt', 'rearmed retry'])(
     'a superseded carry stops blocking fresh wakes during its %s',
     async (phase) => {
-      let superseded = false;
+      let lastRespawnAtMs = 100;
+      let lastRespawnRequest: object | null = null;
       let releasePrompt: ((result: { deferred: boolean }) => void) | undefined;
       const waitAtPrompt = vi.fn(() => new Promise<{ deferred: boolean }>((resolve) => {
         releasePrompt = resolve;
@@ -7509,23 +7510,31 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
         waitAtPrompt,
         recycle,
         emitEvent: () => {},
-        isSuperseded: () => superseded,
+        isSuperseded: (message) => message !== lastRespawnRequest &&
+          isCarryRespawnSuperseded(message.receivedAtMs, lastRespawnAtMs),
       });
-      const carry = { mode: 'carry-respawn', data: 'older carry' };
+      const carry = { mode: 'carry-respawn', data: 'older carry', receivedAtMs: 110 };
       try {
         if (phase === 'first attempt') controller.beginFirstAttempt(carry);
         else {
           expect(controller.schedule(carry)).toBe('queued');
           await vi.waitFor(() => expect(waitAtPrompt).toHaveBeenCalledOnce());
         }
-        const turn = { mode: 'turn', data: 'pending wake' };
+        const turn = { mode: 'turn', data: 'pending wake', receivedAtMs: 110 };
         controller.beginFirstAttempt(turn);
         expect(controller.pendingCount('carry-respawn')).toBe(1);
         expect(shouldDeferWakeForPendingRespawn('turn', controller.pendingCount('carry-respawn'))).toBe(true);
 
-        // A newer child exists while the old carry is still waiting at its gate.
-        // Admission must stop counting that carry before the gate can resolve.
-        superseded = true;
+        // This request's own cut must retain its delivery priority.
+        lastRespawnRequest = carry;
+        lastRespawnAtMs = 120;
+        expect(controller.pendingCount('carry-respawn')).toBe(1);
+        expect(shouldDeferWakeForPendingRespawn('turn', controller.pendingCount('carry-respawn'))).toBe(true);
+
+        // A different request's newer child makes this waiting carry obsolete.
+        // Admission must stop counting it before its old gate can resolve.
+        lastRespawnRequest = {};
+        lastRespawnAtMs = 130;
         expect(controller.pendingCount('carry-respawn')).toBe(0);
         expect(shouldDeferWakeForPendingRespawn('turn', controller.pendingCount('carry-respawn'))).toBe(false);
         expect(controller.pendingCount('turn')).toBe(1);

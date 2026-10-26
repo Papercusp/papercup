@@ -11521,6 +11521,9 @@ export function hostThroughPty(o) {
   // carry-respawn is checked against right before delivery (isCarryRespawnSuperseded).
   // 0 = never respawned yet, so nothing can be superseded.
   let lastRespawnAtMs = 0;
+  // The request delivering this child still owns its carry priority. Only
+  // other requests predating that cut are superseded by its timestamp.
+  let lastRespawnCarryRequest = null;
   let wireChildData = () => {};
   let wireChildExit = () => {};
   let recycleChild = async () => {};
@@ -14293,6 +14296,7 @@ export function hostThroughPty(o) {
     isStale: (msg) =>
       isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs }),
     isSuperseded: (msg) =>
+      msg !== lastRespawnCarryRequest &&
       isCarryRespawnSuperseded(msg.receivedAtMs, lastRespawnAtMs),
     isCancelled: (msg) => pendingCarryFence.isFenced(msg),
   });
@@ -17956,6 +17960,9 @@ export function hostThroughPty(o) {
         // gate-waiting or pending a carryRearm retry, whose receivedAtMs predates
         // this instant, is recognized as superseded the next time it is checked.
         lastRespawnAtMs = Date.now();
+        // Native-proof retries belong to the same carry. They intentionally
+        // do not re-admit its already-committed fence against the new child.
+        if (carryProofRetryCount === 0) lastRespawnCarryRequest = carryRequest;
       } catch (e) {
         // The failed successor never ran: give the surviving host env back exactly
         // as it was (a no-op when the successor switches were already set).
