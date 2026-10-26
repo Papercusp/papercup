@@ -7,7 +7,9 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/release/cut.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
 import type { ExecFileOptions } from 'node:child_process';
 import type { PreflightResult, CutStatus, HandoffResult, ReleaseGate } from '../../release-cut-launch';
 
@@ -1097,6 +1099,45 @@ describe('release:cut — run (operator-gated write)', () => {
       expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('seed_uuid_mode_conflict') });
     }
     expect(beginOpM).not.toHaveBeenCalled(); expect(launchM).not.toHaveBeenCalled();
+  });
+  it('transports a validated releaseHostEnv through the schema, preview and runtime, and refuses a bad one before any operation (WI-6554700010029602)', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cut-release-host-'));
+    vi.stubEnv('HOME', home);
+    try {
+      mkdirSync(path.join(home, '.papercusp'));
+      const hostEnv = path.join(home, '.papercusp', 'release-host-gcs.env');
+      writeFileSync(hostEnv, 'PAPERCUSP_RELEASE_HOST=https://cupboard.example.test/releases/SECRETPATHSEGMENT\n');
+      expect(tool.args.safeParse({ ...runArgs, releaseHostEnv: hostEnv }).success).toBe(true);
+      const preview = body(await tool.handler({ ...runArgs, releaseHostEnv: hostEnv } as never, { role: 'operator' } as never));
+      expect(preview).toMatchObject({ ok: true, dry_run: true, releaseHostEnv: hostEnv });
+      expect(preview.wouldRun).toContain(`PAPERCUSP_RELEASE_HOST_ENV='${hostEnv}'`);
+      expect(JSON.stringify(preview)).not.toContain('SECRETPATHSEGMENT');
+      await tool.handler({ ...runArgs, releaseHostEnv: hostEnv, confirm: true } as never, { role: 'operator' } as never);
+      expect(launchM).toHaveBeenCalledWith(expect.objectContaining({
+        runtime: expect.objectContaining({ releaseHostEnv: hostEnv }),
+      }));
+
+      // Omitted ⇒ the canonical file, so the allowlist adds nothing.
+      const canonical = body(await tool.handler(runArgs as never, { role: 'operator' } as never));
+      expect(canonical.releaseHostEnv).toBeNull();
+      expect(canonical.wouldRun).not.toContain('PAPERCUSP_RELEASE_HOST_ENV');
+
+      vi.clearAllMocks();
+      const missing = path.join(home, '.papercusp', 'release-host-absent.env');
+      const outside = path.join(home, 'release-host-gcs.env');
+      for (const op of [{ op: 'run' }, { op: 'run-leg', platform: 'linux' }]) {
+        for (const [releaseHostEnv, code] of [[missing, 'release_host_env_unreadable'], [outside, 'release_host_env_invalid']]) {
+          const refused = body(await tool.handler(
+            { ...runArgs, ...op, releaseHostEnv, confirm: true } as never, { role: 'operator' } as never));
+          expect(refused).toMatchObject({ ok: false, refused: true, reason: expect.stringContaining(code) });
+        }
+      }
+      expect(beginOpM).not.toHaveBeenCalled();
+      expect(launchM).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
   it('binds the whole-cut task, detached tests, and preview to the same caller harness', async () => {
     const ctx = { role: 'operator', harnessSlug: 'customer-app' } as never;

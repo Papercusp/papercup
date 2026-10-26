@@ -46,6 +46,7 @@
 import { z } from 'zod';
 import { execFile, type ExecFileOptions } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import * as path from 'node:path';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
@@ -78,6 +79,7 @@ import {
   isValidVersion,
   isValidSourceSha,
   validateMigrationBootSmokeOverride,
+  checkReleaseHostEnvFile,
   CHANNELS,
   CUT_UNIT,
   PLATFORMS,
@@ -150,6 +152,19 @@ const cutSeedlessArg = z
   .describe(
     'Explicit seedless build: require src-tauri/seed to contain only the canonical placeholder, then skip the seed cut without enabling retry residue. Mutually exclusive with reuseSeed.',
   );
+const cutReleaseHostEnvArg = z
+  .string()
+  .trim()
+  .min(1)
+  .optional()
+  .describe(
+    'Absolute path of a release-host env file in ~/.papercusp (release-host.env or release-host-<name>.env) to bake the update source from. Omit for the canonical, permanent release-host.env; use for a host migration candidate. Refused if it defines no https PAPERCUSP_RELEASE_HOST.',
+  );
+
+/** Refusal reason for a caller-selected release-host env file, or null (absent ⇒ canonical). */
+function releaseHostEnvRefusal(releaseHostEnv: string | undefined): string | null {
+  return releaseHostEnv === undefined ? null : checkReleaseHostEnvFile(releaseHostEnv, homedir());
+}
 
 export const RELEASE_SEEDLESS_PLACEHOLDER_NAME = 'SEEDLESS_RELEASE.txt';
 export const RELEASE_SEEDLESS_PLACEHOLDER_CONTENT =
@@ -352,6 +367,7 @@ function cutRuntimeEnv(
     seedUuidIdempotency?: CutRuntimeEnv['seedUuidIdempotency'];
     seedless?: boolean;
     migrationBootSmokeOverride?: MigrationBootSmokeOverride;
+    releaseHostEnv?: string;
   },
   operation?: BeginCutOperationResult | null,
   harnessSlug?: string | null,
@@ -367,6 +383,8 @@ function cutRuntimeEnv(
     ...(args.seedUuidIdempotency ? { seedUuidIdempotency: args.seedUuidIdempotency } : {}),
     ...(args.seedless ? { seedless: true } : {}),
     ...(args.migrationBootSmokeOverride ? { migrationBootSmokeOverride: args.migrationBootSmokeOverride } : {}),
+    // WI-6554700010029602: the update source to bake. Absent ⇒ the canonical file.
+    ...(args.releaseHostEnv ? { releaseHostEnv: args.releaseHostEnv } : {}),
     // P-001: present ⇒ release-local.sh runs its phase journal and the cut becomes
     // resumable and discoverable; absent ⇒ unchanged unmanaged behavior. buildCutEnv
     // refuses a half-set pair, so these two always travel together.
@@ -994,6 +1012,7 @@ export default defineTool({
       seedFindingProof: cutSeedFindingProofArg,
       seedUuidIdempotency: cutSeedUuidIdempotencyArg,
       seedless: cutSeedlessArg,
+      releaseHostEnv: cutReleaseHostEnvArg,
       migrationBootSmokeOverride: migrationBootSmokeOverrideArg
         .optional()
         .describe(
@@ -1054,6 +1073,7 @@ export default defineTool({
       seedFindingProof: cutSeedFindingProofArg,
       seedUuidIdempotency: cutSeedUuidIdempotencyArg,
       seedless: cutSeedlessArg,
+      releaseHostEnv: cutReleaseHostEnvArg,
       migrationBootSmokeOverride: migrationBootSmokeOverrideArg
         .optional()
         .describe(
@@ -1555,6 +1575,8 @@ export default defineTool({
       }
       const overrideError = validateMigrationBootSmokeOverride(args.migrationBootSmokeOverride, args.sourceSha);
       if (overrideError) return json({ ok: false, op: 'run-leg', refused: true, reason: overrideError });
+      const hostEnvError = releaseHostEnvRefusal(args.releaseHostEnv);
+      if (hostEnvError) return json({ ok: false, op: 'run-leg', refused: true, reason: hostEnvError });
       const channel = args.channel as Channel;
       const platform = args.platform as Platform;
       const legs = legsForPlatform(platform);
@@ -1608,6 +1630,7 @@ export default defineTool({
           fullHistory: args.fullHistory === true,
           deferTag: args.deferTag === true,
           migrationBootSmokeOverride: args.migrationBootSmokeOverride ?? null,
+          releaseHostEnv: args.releaseHostEnv ?? null,
           root: selected.desktopRoot,
           orchestratorRoot,
           ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
@@ -1772,6 +1795,8 @@ export default defineTool({
     }
     const overrideError = validateMigrationBootSmokeOverride(args.migrationBootSmokeOverride, args.sourceSha);
     if (overrideError) return json({ ok: false, op: 'run', refused: true, reason: overrideError });
+    const hostEnvError = releaseHostEnvRefusal(args.releaseHostEnv);
+    if (hostEnvError) return json({ ok: false, op: 'run', refused: true, reason: hostEnvError });
     const channel = args.channel as Channel;
     const legs = legsFrom(args);
     const orchestratorRoot = desktopRoot();
@@ -1819,6 +1844,7 @@ export default defineTool({
         fullHistory: args.fullHistory === true,
         deferTag: args.deferTag === true,
         migrationBootSmokeOverride: args.migrationBootSmokeOverride ?? null,
+        releaseHostEnv: args.releaseHostEnv ?? null,
         root: selected.desktopRoot,
         orchestratorRoot,
         ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),

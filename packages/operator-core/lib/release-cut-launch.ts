@@ -218,6 +218,15 @@ export interface CutRuntimeEnv {
    *  quiescing the operator (a fleet-affecting outage) — neither of which is necessary
    *  (EI-23917342543376581). Carrying it restores parity with the manual path. */
   headSnapshotTimeoutMs?: number;
+  /** Absolute path of the release-host env file the cut bakes its update source from
+   *  (WI-6554700010029602). bin/lib/release-host.sh reads `PAPERCUSP_RELEASE_HOST_ENV`
+   *  and defaults it to the canonical ~/.papercusp/release-host.env. That file is
+   *  PERMANENT for every already-shipped install, so a host migration cannot flip it
+   *  ahead of publication. The new host has to reach the build some other way, and
+   *  the explicit env allowlist below drops any name it does not set. Absent ⇒ the
+   *  canonical file, unchanged. Path-validated (and checked to define a host) by
+   *  checkReleaseHostEnvFile before launch; buildCutEnv only forwards it. */
+  releaseHostEnv?: string;
   /** Managed-release journal identity (P-001). release-local.sh runs its phase journal
    *  — stage receipts, reuse/reconcile decisions, restart resume — only when BOTH of
    *  these are present; absent, the cut runs UNMANAGED exactly as before, which is how
@@ -365,6 +374,18 @@ export function buildCutEnv(
   if (Number.isSafeInteger(headSnapshotTimeoutMs) && (headSnapshotTimeoutMs as number) > 0) {
     env.PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS = String(headSnapshotTimeoutMs);
   }
+  // Unlike the timeout above, a bad value here is fatal: silently falling back to the
+  // canonical file would bake the OLD update source into a migration candidate, and
+  // the build would succeed with nothing red.
+  if (runtime.releaseHostEnv !== undefined) {
+    const releaseHostEnv = runtime.releaseHostEnv.trim();
+    if (!releaseHostEnv || !path.isAbsolute(releaseHostEnv)) {
+      throw new Error(
+        'release_host_env_invalid — releaseHostEnv must be an absolute path; omit it to use the canonical release-host.env',
+      );
+    }
+    env.PAPERCUSP_RELEASE_HOST_ENV = releaseHostEnv;
+  }
   // A platform leg still runs the shared release-local collector. Non-Linux legs
   // must consume the already-successful Linux bytes through its existing,
   // provenance-checked salvage path; otherwise a Windows/macOS/arm64 retry
@@ -374,6 +395,57 @@ export function buildCutEnv(
   if (legs.windows) env.WITH_WINDOWS = '1';
   if (legs.arm64) env.WITH_ARM64 = '1';
   return env;
+}
+
+/** A release-host env file name: the canonical `release-host.env` or a sibling such as
+ *  `release-host-gcs.env`. */
+const RELEASE_HOST_ENV_BASENAME = /^release-host(?:[-.][A-Za-z0-9_-]+)*\.env$/;
+/** An assignment of the baked host, as release-host.sh's `set -a; . file` would export it. */
+const RELEASE_HOST_ASSIGNMENT = /^[ \t]*(?:export[ \t]+)?PAPERCUSP_RELEASE_HOST=(.*)$/;
+
+/** Validate a caller-selected release-host env file BEFORE a cut launches
+ *  (WI-6554700010029602). Returns a refusal reason, or null when the file is usable.
+ *
+ *  Fails closed on every way a wrong file could still produce a green build:
+ *    - outside `<home>/.papercusp/` (no hand-pointing a release at an arbitrary file),
+ *    - not named like a release-host env file,
+ *    - unreadable or missing (release-host.sh would silently skip it and fall through to
+ *      an EMPTY host, which the updater renders as "up to date" forever),
+ *    - defining no non-empty `https://` PAPERCUSP_RELEASE_HOST.
+ *  The reason never echoes the host value: its path segment is the shared secret
+ *  (release-host.sh "path redacted"), and refusal text lands in coord and work-items. */
+export function checkReleaseHostEnvFile(
+  filePath: string,
+  home: string,
+  readFile: (p: string) => string = (p) => fs.readFileSync(p, 'utf8'),
+): string | null {
+  const trimmed = filePath.trim();
+  const dir = path.join(home, '.papercusp');
+  if (!path.isAbsolute(trimmed) || path.normalize(trimmed) !== trimmed || path.dirname(trimmed) !== dir) {
+    return `release_host_env_invalid — releaseHostEnv must be an absolute file directly inside ${dir}/`;
+  }
+  if (!RELEASE_HOST_ENV_BASENAME.test(path.basename(trimmed))) {
+    return 'release_host_env_invalid — releaseHostEnv must be named release-host.env or release-host-<name>.env';
+  }
+  let text: string;
+  try {
+    text = readFile(trimmed);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? 'unreadable';
+    return `release_host_env_unreadable — ${trimmed} (${code}); release-host.sh would skip it and bake an EMPTY update source`;
+  }
+  let host = '';
+  for (const line of text.split(/\r?\n/)) {
+    const m = RELEASE_HOST_ASSIGNMENT.exec(line);
+    if (m) host = m[1]!.trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+  }
+  if (!host) {
+    return `release_host_env_no_host — ${trimmed} defines no non-empty PAPERCUSP_RELEASE_HOST`;
+  }
+  if (!host.startsWith('https://')) {
+    return `release_host_env_no_host — ${trimmed} defines PAPERCUSP_RELEASE_HOST without an https:// scheme`;
+  }
+  return null;
 }
 
 /** The flock file papercup-staging-sync (apps/operator/bin/release/sync-staging-checkout.sh)

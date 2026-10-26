@@ -25,6 +25,7 @@ import {
   isValidSourceSha,
   buildCutEnv,
   buildCutArgv,
+  checkReleaseHostEnvFile,
   launchDetachedCut,
   type SpawnLike,
   orchestratorNeedsStagingSyncLock,
@@ -337,6 +338,82 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
     expect(buildCutEnv({}, sourceSha, runtime)).not.toHaveProperty(
       'PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS',
     );
+  });
+
+  // WI-6554700010029602: release-host.sh reads PAPERCUSP_RELEASE_HOST_ENV, but the cut env
+  // is an explicit allowlist, so a host-migration candidate could only bake the canonical
+  // (permanent, legacy) file. Unlike the timeout, a bad value must be FATAL: a silent
+  // fallback bakes the old update source with nothing red.
+  it('forwards an explicit release-host env file, and refuses a non-absolute one', () => {
+    const file = '/home/owner/.papercusp/release-host-gcs.env';
+    expect(buildCutEnv({}, sourceSha, { ...runtime, releaseHostEnv: file })).toMatchObject({
+      PAPERCUSP_RELEASE_HOST_ENV: file,
+    });
+    expect(buildCutEnv({}, sourceSha, runtime)).not.toHaveProperty('PAPERCUSP_RELEASE_HOST_ENV');
+    for (const bad of ['', '   ', 'release-host-gcs.env', '~/.papercusp/release-host-gcs.env']) {
+      expect(() => buildCutEnv({}, sourceSha, { ...runtime, releaseHostEnv: bad })).toThrow(
+        /release_host_env_invalid/,
+      );
+    }
+    const argv = buildCutArgv('/r/papercusp-desktop', '0.0.30', 'alpha', {}, sourceSha, '/usr/bin', {
+      ...runtime,
+      releaseHostEnv: file,
+    });
+    expect(argv.at(-1)).toContain(`PAPERCUSP_RELEASE_HOST_ENV='${file}'`);
+  });
+
+  describe('checkReleaseHostEnvFile', () => {
+    const home = '/home/owner';
+    const file = '/home/owner/.papercusp/release-host-gcs.env';
+    const secret = 'https://cupboard.example.test/releases/SECRETPATHSEGMENT';
+    const reader = (text: string) => (p: string) => {
+      if (p !== file) throw Object.assign(new Error('nope'), { code: 'ENOENT' });
+      return text;
+    };
+
+    it('accepts a file that defines an https host, in every shell assignment form', () => {
+      for (const text of [
+        `PAPERCUSP_RELEASE_HOST=${secret}\n`,
+        `# comment\nexport PAPERCUSP_RELEASE_HOST="${secret}"\nPAPERCUSP_UPDATE_BASE_URL=${secret}\n`,
+        `PAPERCUSP_RELEASE_HOST='${secret}'\r\n`,
+      ]) {
+        expect(checkReleaseHostEnvFile(file, home, reader(text))).toBeNull();
+      }
+      expect(checkReleaseHostEnvFile('/home/owner/.papercusp/release-host.env', home, () => `PAPERCUSP_RELEASE_HOST=${secret}`)).toBeNull();
+    });
+
+    it('refuses paths outside ~/.papercusp or with a non-release-host name', () => {
+      for (const bad of [
+        '/tmp/release-host-gcs.env',
+        '/home/owner/.papercusp/sub/release-host-gcs.env',
+        '/home/owner/.papercusp/../.papercusp/release-host-gcs.env',
+        'release-host-gcs.env',
+      ]) {
+        expect(checkReleaseHostEnvFile(bad, home, reader(''))).toMatch(/^release_host_env_invalid/);
+      }
+      for (const name of ['r2.env', 'release-storage.env', 'release-host-gcs.env.bak', 'release-host-.env']) {
+        expect(checkReleaseHostEnvFile(`/home/owner/.papercusp/${name}`, home, reader(''))).toMatch(
+          /^release_host_env_invalid/,
+        );
+      }
+    });
+
+    it('refuses a missing file, an empty or commented host, and a non-https host', () => {
+      expect(checkReleaseHostEnvFile(file, home, () => {
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      })).toMatch(/^release_host_env_unreadable .*ENOENT/);
+      for (const text of ['', 'PAPERCUSP_RELEASE_HOST=\n', `# PAPERCUSP_RELEASE_HOST=${secret}\n`, 'PAPERCUSP_RELEASE_HOST=""']) {
+        expect(checkReleaseHostEnvFile(file, home, reader(text))).toMatch(/^release_host_env_no_host/);
+      }
+      // Last assignment wins, exactly as `set -a; . file` would export it.
+      expect(checkReleaseHostEnvFile(file, home, reader(`PAPERCUSP_RELEASE_HOST=${secret}\nPAPERCUSP_RELEASE_HOST=\n`)))
+        .toMatch(/^release_host_env_no_host/);
+      const insecure = 'http://cupboard.example.test/releases/SECRETPATHSEGMENT';
+      const reason = checkReleaseHostEnvFile(file, home, reader(`PAPERCUSP_RELEASE_HOST=${insecure}\n`));
+      expect(reason).toMatch(/without an https:\/\/ scheme/);
+      // The host's path segment is the shared secret: refusals must never carry it.
+      expect(reason).not.toContain('SECRETPATHSEGMENT');
+    });
   });
 
   it('only forwards a migration smoke bypass backed by matching exact-source proof', () => {
