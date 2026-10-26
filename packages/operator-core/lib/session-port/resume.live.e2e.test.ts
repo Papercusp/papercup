@@ -120,6 +120,17 @@ function assertMatrixCapacity(provider: 'claude' | 'codex', report: Record<strin
   }
 }
 
+function matrixCapacityProbeArgs(provider: 'claude' | 'codex') {
+  // The explicit Codex matrix target is gpt-6.1-sol:xhigh. Probe that same
+  // model family: accounts:probe-capacity otherwise defaults to gpt-5.6-sol,
+  // which can report serving capacity while the requested model is at capacity.
+  return {
+    provider,
+    ...(provider === 'codex' ? { model: 'gpt-6.1-sol' } : {}),
+    apply: false,
+  };
+}
+
 function assertResumableArchiveRow(source: Session, sessions: Array<Record<string, any>>) {
   const row = sessions.find(candidate => Number(candidate.id) === Number(source.id));
   const expectedNativeId = source.agent === 'omp'
@@ -163,6 +174,13 @@ describe('final resume archived-source preflight', () => {
 });
 
 describe('owned matrix capacity preflight', () => {
+  it('probes the same Codex model family as the explicit matrix target', () => {
+    expect(matrixCapacityProbeArgs('codex')).toEqual({
+      provider: 'codex', model: 'gpt-6.1-sol', apply: false,
+    });
+    expect(matrixCapacityProbeArgs('claude')).toEqual({ provider: 'claude', apply: false });
+  });
+
   it('accepts measured serving capacity without requiring an unwall correction', () => {
     expect(() => assertMatrixCapacity('claude', { provider: 'claude', dryRun: true,
       probed: 1, serving: ['healthy'], unwalled: [] })).not.toThrow();
@@ -349,8 +367,10 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
     // by the unchanged matrix profile. Refuse known capacity walls before any
     // fixture is launched; dry probes neither unwall nor readmit accounts.
     for (const provider of ['claude', 'codex'] as const) {
-      const capacity = call('accounts:probe-capacity', { provider, apply: false }, origin);
+      const capacityArgs = matrixCapacityProbeArgs(provider);
+      const capacity = call('accounts:probe-capacity', capacityArgs, origin);
       console.info('CBP_FINAL_CAPACITY_PREFLIGHT', JSON.stringify({ provider,
+        model: capacityArgs.model ?? 'tool-default',
         dryRun: capacity.dryRun, probed: capacity.probed, serving: capacity.serving,
         confirmedWalled: capacity.confirmedWalled, failed: capacity.failed }));
       assertMatrixCapacity(provider, capacity);
