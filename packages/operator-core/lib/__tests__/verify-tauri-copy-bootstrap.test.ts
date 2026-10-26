@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -35,11 +35,66 @@ beforeAll(() => {
 });
 afterAll(() => { if (stage) rmSync(stage, { recursive: true, force: true }); });
 
+function runProbe(command: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) {
+  const startedAt = performance.now();
+  const result = spawnSync(command, args, options);
+  const error = result.error as NodeJS.ErrnoException | undefined;
+  const diagnostics = JSON.stringify({
+    command, args, status: result.status, signal: result.signal,
+    elapsedMs: performance.now() - startedAt, timeoutMs: options.timeout ?? null,
+    error: error ? { name: error.name, message: error.message, code: error.code,
+      errno: error.errno, syscall: error.syscall } : null,
+    stdout: result.stdout, stderr: result.stderr,
+  });
+  if (error || result.status === null) {
+    throw new Error(`Subprocess probe terminated abnormally: ${diagnostics}`, { cause: error });
+  }
+  return { ...result, diagnostics };
+}
+
+function expectProbeStatus(result: ReturnType<typeof runProbe>, expected: number) {
+  expect(result.status, result.diagnostics).toBe(expected);
+}
+
+describe('native probe subprocess diagnostics', () => {
+  it.each([
+    { kind: 'spawn error', command: () => join(stage, 'missing-probe'), args: [],
+      code: 'ENOENT', signal: null, timeout: 10_000 },
+    { kind: 'signal', command: () => 'bash',
+      args: ['-c', 'printf probe-output; printf probe-error >&2; kill -TERM $$'],
+      code: undefined, signal: 'SIGTERM', timeout: 10_000 },
+    { kind: 'timeout', command: () => 'bash', args: ['-c', 'exec sleep 30'],
+      code: 'ETIMEDOUT', signal: 'SIGTERM', timeout: 100 },
+  ])('retains process evidence after a controlled $kind', ({ command, args, code, signal, timeout }) => {
+    let failure: unknown;
+    try {
+      runProbe(command(), args, { encoding: 'utf8', timeout });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toMatch(/^Subprocess probe terminated abnormally: /);
+    const evidence = JSON.parse(message.slice(message.indexOf(': ') + 2));
+    expect(evidence).toMatchObject({ command: command(), args, status: null, signal, timeoutMs: timeout });
+    expect(evidence.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(evidence.elapsedMs)).toBe(true);
+    if (code) {
+      expect(evidence.error).toMatchObject({ code, message: expect.stringContaining(code) });
+      expect((failure as Error).cause).toMatchObject({ code });
+    } else {
+      expect(evidence.error).toBeNull();
+      expect(evidence.stdout).toBe('probe-output');
+      expect(evidence.stderr).toBe('probe-error');
+    }
+  });
+});
+
 function probe(memory: string) {
   const env = { ...process.env, FIXTURE_PRELOAD: join(stage, 'cgroup-fixture.mjs'),
     NODE_PATH: '', STAGED_ROOT: stage, WORK: join(stage, 'work'), REPO_DIR: repo,
     VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'copy', FIXTURE_MEMORY: memory };
-  return spawnSync('bash', ['-c', [
+  return runProbe('bash', ['-c', [
     'set -euo pipefail',
     // Governed nested runners may normalize NODE_OPTIONS. Use Node's explicit
     // preload argument so these measured OS/clock fixtures cannot be dropped.
@@ -55,14 +110,14 @@ function probe(memory: string) {
 describe('native dependency-copy bootstrap before node_modules', () => {
   it('measures a finite task limit before admitting the copy without installed packages', () => {
     const result = probe(String(8 * 1024 * 1024 * 1024));
-    expect(result.status, result.stderr).toBe(0);
+    expectProbeStatus(result, 0);
     expect(result.stderr).toContain('VERIFY_TAURI_COPY_MEMORY_MAX_MB=8192');
     expect(result.stdout).toContain('COPY_FIXTURE_ALLOCATED');
   });
 
   it.each(['max', 'unreadable'])('refuses %s limits before allocating a copy', memory => {
     const result = probe(memory);
-    expect(result.status, result.stderr).toBe(2);
+    expectProbeStatus(result, 2);
     expect(result.stderr).toContain('VERIFY_TAURI_COPY_MEMORY_UNBOUNDED');
     expect(result.stdout).not.toContain('COPY_FIXTURE_ALLOCATED');
   });
@@ -75,7 +130,7 @@ function deadlineProbe({ phase = 'prepare', remainingMs = 1_800_000, history,
   expect(guard, 'native task admission must run before dependencies exist').toBeTruthy();
   const historyPath = join(stage, 'budget-history.jsonl');
   if (history) writeFileSync(historyPath, history.map(row => JSON.stringify(row)).join('\n') + '\n');
-  return spawnSync('bash', ['-c', [
+  return runProbe('bash', ['-c', [
     'set -euo pipefail',
     'node() { command node --import "$FIXTURE_PRELOAD" "$@"; }',
     'PREPARE_ONLY=0; ASSERTION_MODE=1; BOOT_ATTEMPTS=0',
@@ -105,7 +160,7 @@ describe('native verifier parent deadline admission', () => {
   it.each(['', '240000'])('refuses a 45-minute launch below its live-profile assertion budget (%j)', estimate => {
     const result = deadlineProbe({ remainingMs: 2_700_000,
       extra: { ...profileBudget(3_600_000), VERIFY_TAURI_ASSERT_ESTIMATE_MS: estimate } });
-    expect(result.status, result.stderr).toBe(2);
+    expectProbeStatus(result, 2);
     expect(result.stderr).toContain('TASK_DEADLINE_REFUSAL');
     expect(result.stdout).not.toContain('NATIVE_FIXTURE_ALLOCATED');
   });
@@ -113,7 +168,7 @@ describe('native verifier parent deadline admission', () => {
   it('admits the profile plus measured preparation, retries and cleanup when the parent fits', () => {
     const result = deadlineProbe({ history: preparation, remainingMs: 7_000_000,
       extra: profileBudget(3_600_000) });
-    expect(result.status, result.stderr).toBe(0);
+    expectProbeStatus(result, 0);
     expect(result.stderr).toContain('knownEstimateMs=6861804');
     expect(result.stdout).toContain('NATIVE_FIXTURE_ALLOCATED');
   });
@@ -121,14 +176,14 @@ describe('native verifier parent deadline admission', () => {
   it('keeps a larger caller assertion estimate instead of lowering it to the profile', () => {
     const result = deadlineProbe({ phase: 'assert', remainingMs: 4_000_000,
       extra: { ...profileBudget(3_600_000), VERIFY_TAURI_ASSERT_ESTIMATE_MS: '4000000' } });
-    expect(result.status, result.stderr).toBe(2);
+    expectProbeStatus(result, 2);
     expect(result.stderr).toContain('knownEstimateMs=4120000');
     expect(result.stdout).not.toContain('NATIVE_FIXTURE_ALLOCATED');
   });
 
   it.each([0, -1, '3600000', 1.5])('refuses an invalid live-profile assertion estimate %j', estimate => {
     const result = deadlineProbe({ remainingMs: 7_000_000, extra: profileBudget(estimate) });
-    expect(result.status, result.stderr).toBe(2);
+    expectProbeStatus(result, 2);
     expect(result.stderr).toContain('Invalid live-profile assertionEstimateMs');
     expect(result.stdout).not.toContain('NATIVE_FIXTURE_ALLOCATED');
   });
@@ -141,7 +196,7 @@ describe('native verifier parent deadline admission', () => {
 
   it('refuses the retained 29-minute preparation forecast before any native allocation', () => {
     const result = deadlineProbe({ history: preparation });
-    expect(result.status, result.stderr).toBe(2);
+    expectProbeStatus(result, 2);
     expect(result.stderr).toContain('TASK_DEADLINE_REFUSAL');
     expect(result.stderr).toContain('knownEstimateMs=3501804');
     expect(result.stdout).not.toContain('NATIVE_FIXTURE_ALLOCATED');
@@ -149,36 +204,36 @@ describe('native verifier parent deadline admission', () => {
 
   it.each(['prepare', 'boot', 'assert'])('refuses an exhausted parent in %s', phase => {
     const result = deadlineProbe({ phase, remainingMs: 0 });
-    expect(result.status, result.stderr).toBe(2);
+    expectProbeStatus(result, 2);
     expect(result.stderr).toContain('TASK_DEADLINE_REFUSAL');
     expect(result.stdout).not.toContain('NATIVE_FIXTURE_ALLOCATED');
   });
 
   it('refuses boot after preparation spent the parent clock', () => {
     const result = deadlineProbe({ phase: 'boot', remainingMs: 45_000 });
-    expect(result.status, result.stderr).toBe(2);
+    expectProbeStatus(result, 2);
     expect(result.stderr).toContain('knownEstimateMs=1320000');
     expect(result.stdout).not.toContain('NATIVE_FIXTURE_ALLOCATED');
   });
 
   it('reserves every remaining boot attempt plus assertions and cleanup at the strict boundary', () => {
-    expect(deadlineProbe({ phase: 'boot', remainingMs: 1_320_000 }).status).toBe(2);
+    expectProbeStatus(deadlineProbe({ phase: 'boot', remainingMs: 1_320_000 }), 2);
     const admitted = deadlineProbe({ phase: 'boot', remainingMs: 1_320_001 });
-    expect(admitted.status, admitted.stderr).toBe(0);
+    expectProbeStatus(admitted, 0);
     expect(admitted.stdout).toContain('NATIVE_FIXTURE_ALLOCATED');
-    expect(deadlineProbe({ phase: 'boot', remainingMs: 840_001,
-      extra: { VERIFY_TAURI_MAX_BOOT_ATTEMPTS: '1' } }).status).toBe(0);
+    expectProbeStatus(deadlineProbe({ phase: 'boot', remainingMs: 840_001,
+      extra: { VERIFY_TAURI_MAX_BOOT_ATTEMPTS: '1' } }), 0);
   });
 
   it('rechecks the assertion reserve without charging completed boot work again', () => {
-    expect(deadlineProbe({ phase: 'assert', remainingMs: 360_000 }).status).toBe(2);
-    expect(deadlineProbe({ phase: 'assert', remainingMs: 360_001 }).status).toBe(0);
+    expectProbeStatus(deadlineProbe({ phase: 'assert', remainingMs: 360_000 }), 2);
+    expectProbeStatus(deadlineProbe({ phase: 'assert', remainingMs: 360_001 }), 0);
   });
 
   it('admits a measured forecast that fits and leaves an absent parent explicitly unknown', () => {
-    expect(deadlineProbe({ history: preparation, remainingMs: 3_501_805 }).status).toBe(0);
+    expectProbeStatus(deadlineProbe({ history: preparation, remainingMs: 3_501_805 }), 0);
     const unconfined = deadlineProbe({ history: preparation, remainingMs: null });
-    expect(unconfined.status, unconfined.stderr).toBe(0);
+    expectProbeStatus(unconfined, 0);
     expect(unconfined.stderr).toContain('deadlineEpochMs=unknown');
   });
 
@@ -188,16 +243,16 @@ describe('native verifier parent deadline admission', () => {
     [{ phase: 'prepare', status: 'passed', elapsedMs: 1 }, { phase: 'prepare', status: 'passed', elapsedMs: 2 }],
   ])('rejects incomplete or ambiguous preparation observations', (...rows) => {
     const result = deadlineProbe({ history: rows });
-    expect(result.status, result.stderr).toBe(2);
+    expectProbeStatus(result, 2);
     expect(result.stderr).toContain('completed prepare phase');
     expect(result.stdout).not.toContain('NATIVE_FIXTURE_ALLOCATED');
   });
 
   it('keeps unknown work visible and rejects invalid configured estimates', () => {
     const unknown = deadlineProbe({ extra: { VERIFY_TAURI_ASSERT_ESTIMATE_MS: '' } });
-    expect(unknown.status, unknown.stderr).toBe(0);
+    expectProbeStatus(unknown, 0);
     expect(unknown.stderr).toContain('unknownTasks=2');
-    expect(deadlineProbe({ extra: { VERIFY_TAURI_ASSERT_ESTIMATE_MS: '-1' } }).status).toBe(2);
+    expectProbeStatus(deadlineProbe({ extra: { VERIFY_TAURI_ASSERT_ESTIMATE_MS: '-1' } }), 2);
   });
 
   it('guards actual preparation commands and native launches, including each retry', () => {
@@ -222,7 +277,7 @@ describe('native preparation deadline evidence', () => {
     const hostCall = source.split('\n').find(line => line.startsWith('verifier_run_step verifier-host-bundle '));
     expect(wrapper).toBeTruthy();
     expect(hostCall).toBeTruthy();
-    const result = spawnSync('bash', ['-c', [
+    const result = runProbe('bash', ['-c', [
       'set -euo pipefail',
       'source "$REPO_DIR/libs/generic/verification-harness/bin/vh.sh"',
       'vh_phase prepare ""',
@@ -240,7 +295,7 @@ describe('native preparation deadline evidence', () => {
       env: { ...process.env, REPO_DIR: repo, FIXTURE_EVIDENCE: evidence,
         FIXTURE_RUN_PATH: runPath, FIXTURE_ADMISSION_EXIT: refuse ? '2' : '0',
         VH_DISABLE: '0', VH_FAIL_OPEN: '0' } });
-    expect(result.status, result.stderr).toBe(refuse ? 2 : 0);
+    expectProbeStatus(result, refuse ? 2 : 0);
     const run = readFileSync(runPath, 'utf8');
     const retained = JSON.parse(readFileSync(join(run, 'result.json'), 'utf8'));
     const commands = join(run, 'phases/prepare/commands');
@@ -262,7 +317,7 @@ describe('native preparation deadline evidence', () => {
 describe('native frozen SPA cleanup', () => {
   it.each(['early', 'teardown'] as const)('removes bulk snapshots and retains diagnostics on %s exit', phase => {
     const result = cleanupProbe(phase, false);
-    expect(result.status, result.stderr).toBe(phase === 'early' ? 2 : 0);
+    expectProbeStatus(result, phase === 'early' ? 2 : 0);
     for (const directory of ['spa', 'verifier-spa']) {
       expect(existsSync(join(result.work, directory)), directory).toBe(false);
       expect(result.stdout).toContain(`GUARD ${join(result.work, directory)} run-owned`);
@@ -273,7 +328,7 @@ describe('native frozen SPA cleanup', () => {
 
   it.each(['early', 'teardown'] as const)('preserves snapshots when the survivor guard refuses on %s exit', phase => {
     const result = cleanupProbe(phase, true);
-    expect(result.status, result.stderr).toBe(phase === 'early' ? 2 : 1);
+    expectProbeStatus(result, phase === 'early' ? 2 : 1);
     expect(existsSync(join(result.work, 'verifier-spa/dist/index.html'))).toBe(true);
     expect(result.stderr).toContain('preserving');
   });
@@ -292,7 +347,7 @@ function cleanupProbe(phase: 'early' | 'teardown', blocked: boolean) {
   const teardown = source.match(/^teardown\(\) \{[\s\S]*?^\}/m)?.[0];
   expect(earlyTrap).toBeTruthy();
   expect(teardown).toBeTruthy();
-  const result = spawnSync('bash', ['-c', [
+  const result = runProbe('bash', ['-c', [
     'set -uo pipefail',
     'SIGNAL_EXIT_CODE=0; BRIDGE_PID=""; ISOLATED_PG_PID=""; VERIFY_TAURI_SOURCE_REF=""',
     'TAURI_LAUNCH_PROVENANCE=run-owned',
