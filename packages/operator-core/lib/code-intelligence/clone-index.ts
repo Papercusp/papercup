@@ -47,7 +47,10 @@ export const cloneBlobSha = (source: string) => createHash('sha1').update(`blob 
 export function classifyClonePath(path: string): CloneClassification {
   return {
     test: /(?:\.(?:test|spec)\.tsx?$)|(?:^|\/)(?:__tests__|__fixtures__|__mocks__)(?:\/|$)/.test(path),
-    vendored: /(?:^|\/)node_modules\/|^templates\/|\/template-kit\//.test(path),
+    // env-sidecars/ holds build-generated copies of harness sources bundled into
+    // the desktop app; they are synced from the canonical tree, never merged into
+    // it (code-cleanup-campaigns-2026-10-26 P-002 precision sample).
+    vendored: /(?:^|\/)node_modules\/|^templates\/|\/template-kit\/|(?:^|\/)env-sidecars\//.test(path),
     retired: /(?:^|\/)_retired\/|^apps\/operator\/app\//.test(path),
   };
 }
