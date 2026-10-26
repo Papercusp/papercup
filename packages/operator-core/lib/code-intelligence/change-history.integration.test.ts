@@ -2,8 +2,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { applyRawSerializerFixes, createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { changeHistoryProviders, coChangeFromCommits, readSymbolProvenance } from './change-history';
 import { enrichTaskBriefWithReuse, type TaskBrief, type TaskBriefDeps } from './task-brief';
 import graphQuery from '../agent-tools/gitnexus/query';
@@ -12,55 +13,69 @@ vi.mock('@papercusp/db-org', async original => ({ ...await original<typeof impor
   getOrgPg: () => ({ sql: holder.sql }) }));
 const source = 'export function work() { return 2; }\n';
 
-describe('P013 invocation/session/work-item SQL join', () => {
+describe('P001 migrated edit-time attribution ledger', () => {
   let db: OrgTestDb;
   let root: string;
   const WS = 'test-p013-history', HARNESS = 'history-fixture', OWNER = 'su-history-fixture', SESSION = 'native-history-fixture';
+  const since = '2026-10-01T00:00:00Z';
+  const read = (patch: Partial<Parameters<typeof readSymbolProvenance>[0]> = {}) => readSymbolProvenance({
+    workspaceId: WS, harness: HARNESS, root, path: 'a.ts', name: 'work', since, ...patch }, db.adminSql);
   beforeAll(async () => {
-    db = await createOrgTestDb(); root = await mkdtemp(join(tmpdir(), 'provenance-')); await writeFile(join(root, 'a.ts'), source);
+    db = await createOrgTestDb(); root = await mkdtemp(join(tmpdir(), 'provenance-'));
+    for (const path of ['a.ts', 'b.ts', 'cap.ts', 'hot.ts']) await writeFile(join(root, path), source);
     holder.sql = db.adminSql;
-    await db.adminSql`INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, session_id, started_at)
-      VALUES (${WS}, 'console', ${OWNER}, ${SESSION}, '2026-10-01T00:00:00Z')`;
-    await db.adminSql`INSERT INTO harness_shared.work_items
-      (workspace_id, harness_slug, feature_id, item_kind, status, title, summary, taken_by, taken_at, created_ts, updated_ts)
-      VALUES (${WS}, ${HARNESS}, 'WI-recorded-edit', 'feature', 'open', 'fixture', 'fixture', ${OWNER}, '2026-10-02T00:00:00Z', 1, 1)`;
-    const args = { session_id: SESSION, tool_name: 'Edit', status: 'ok',
-      tool_input: { file_path: 'a.ts', old_string: 'return 1;', new_string: 'return 2;' } };
-    await db.adminSql`INSERT INTO harness_shared.tool_invocations
-      (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, invoked_at, status, coord_owner_id, args_json)
-      VALUES (${WS}, ${HARNESS}, 'papercusp', 'activity:report', 'su', 'spawn-history', 'fixture', '2026-10-10T12:00:00Z', 'ok',
-        ${OWNER}, ${db.adminSql.json(args)})`;
+    for (const [id, state] of [['WI-done', 'done'], ['WI-released', 'open']]) {
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, title, summary, taken_by, created_ts, updated_ts)
+        VALUES (${WS}, ${HARNESS}, ${id}, 'feature', ${state}, 'fixture', 'fixture', NULL, 1, 1)`;
+    }
+    // No invocation/session rows or current holders: historical attribution must
+    // come from the edit-time record even after a work item has been released.
+    await db.adminSql`INSERT INTO harness_shared.edit_attribution_ledger
+      (workspace_id, harness_slug, repo_root, file, agent_id, session_id, work_item_id, ts, symbols)
+      VALUES (${WS}, ${HARNESS}, ${root}, 'a.ts', ${OWNER}, ${SESSION}, 'WI-done', now(), ARRAY['work']),
+        (${WS}, ${HARNESS}, ${root}, 'a.ts', ${OWNER}, ${SESSION}, 'WI-done', now(), ARRAY['work']),
+        (${WS}, ${HARNESS}, ${root}, 'a.ts', ${OWNER}, ${SESSION}, 'WI-released', now(), ARRAY['work']),
+        (${WS}, ${HARNESS}, ${root}, 'b.ts', ${OWNER}, ${SESSION}, 'WI-other-file', now(), ARRAY['work']),
+        (${WS}, 'foreign', ${root}, 'a.ts', ${OWNER}, ${SESSION}, 'WI-other-harness', now(), ARRAY['work']),
+        (${WS + '-other'}, ${HARNESS}, ${root}, 'a.ts', ${OWNER}, ${SESSION}, 'WI-other-workspace', now(), ARRAY['work']),
+        (${WS}, ${HARNESS}, ${root + '-other'}, 'a.ts', ${OWNER}, ${SESSION}, 'WI-other-root', now(), ARRAY['work']),
+        (${WS}, ${HARNESS}, ${root}, 'a.ts', ${OWNER}, ${SESSION}, 'WI-old', '2020-01-01', ARRAY['work']),
+        (${WS}, ${HARNESS}, ${root}, 'a.ts', ${OWNER}, ${SESSION}, 'WI-other-symbol', now(), ARRAY['other'])`;
   });
   afterAll(async () => { await db?.cleanup(); if (root) await rm(root, { recursive: true, force: true }); });
-  it('names the expected recorded WI through real migrated tables and excludes other workspaces', async () => {
-    const result = await readSymbolProvenance({ workspaceId: WS, harness: HARNESS, root, path: 'a.ts', since: '2026-10-01T00:00:00Z' }, db.adminSql);
-    expect(result.symbols[0]).toMatchObject({ status: 'measured', workItem: 'WI-recorded-edit' });
-    const other = await readSymbolProvenance({ workspaceId: `${WS}-other`, harness: HARNESS, root, path: 'a.ts', since: '2026-10-01T00:00:00Z' }, db.adminSql);
-    expect(other.symbols[0]).toMatchObject({ status: 'unknown', workItem: null });
+  it('lists done and released items once, scoped to exact file, symbol, root, workspace, harness and time', async () => {
+    const result = await read();
+    expect(result.history).toHaveLength(1);
+    expect(result.history[0]).toMatchObject({ status: 'measured', symbol: 'work', currentIdentity: 'unknown' });
+    expect(result.history[0]!.workItems.sort()).toEqual(['WI-done', 'WI-released']);
+    expect(result.fileEdits).toHaveLength(3);
+    expect(result.symbols[0]).toMatchObject({ status: 'unknown', workItem: null });
+    expect((await read({ path: 'b.ts' })).history[0]?.workItems).toEqual(['WI-other-file']);
+    expect((await read({ workspaceId: WS + '-absent' })).fileEdits).toEqual([]);
   });
-  it('exposes the same exact join through graph:query and refuses a foreign harness', async () => {
+  it('exposes historical labels through graph:query and refuses a foreign harness', async () => {
     const args = { op: 'provenance', file_path: 'a.ts', harnesses: [HARNESS], name: 'work' };
     const ctx = { workspaceId: WS, harnessSlug: HARNESS, projectDir: root };
-    const result = await graphQuery.handler(args as never, ctx as never) as { data: { symbols: { workItem: string }[] } };
-    expect(result.data.symbols[0]?.workItem).toBe('WI-recorded-edit');
+    const result = await graphQuery.handler(args as never, ctx as never) as { data: { history: { workItems: string[] }[] } };
+    expect(result.data.history[0]?.workItems.sort()).toEqual(['WI-done', 'WI-released']);
     const denied = await graphQuery.handler({ ...args, harnesses: ['foreign'] } as never, ctx as never) as { data: { status: string } };
     expect(denied.data.status).toBe('unknown');
   });
-  it('uses the reported harness for activity reports sent through a workspace-scoped transport', async () => {
-    await writeFile(join(root, 'reported.ts'), source);
-    const args = { session_id: SESSION, harness_slug: HARNESS, tool_name: 'Write', status: 'ok',
-      tool_input: { file_path: 'reported.ts', content: source } };
-    // The dispatcher records its transport context; activity:report separately
-    // resolves the native hook's explicit harness_slug for the actual edit.
-    await db.adminSql`INSERT INTO harness_shared.tool_invocations
-      (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,invoked_at,status,coord_owner_id,args_json)
-      VALUES (${WS},${WS},'papercusp','activity:report','su','fixture','fixture','2026-10-10T12:00:00Z','ok',
-        ${OWNER},${db.adminSql.json(args)})`;
-    const read = (harness: string) => readSymbolProvenance({ workspaceId: WS, harness, root,
-      path: 'reported.ts', since: '2026-10-01T00:00:00Z' }, db.adminSql);
-    expect((await read(HARNESS)).symbols[0]).toMatchObject({ status: 'measured', workItem: 'WI-recorded-edit' });
-    expect((await read(WS)).symbols[0]).toMatchObject({ status: 'unknown', workItem: null });
-    expect((await read('foreign')).symbols[0]).toMatchObject({ status: 'unknown', workItem: null });
+  it('retains legacy NULL captures as file-level unknown and surfaces the 50-row cap', async () => {
+    await db.adminSql`INSERT INTO harness_shared.edit_attribution_ledger
+      (workspace_id, harness_slug, repo_root, file, agent_id, work_item_id, symbols)
+      VALUES (${WS}, ${HARNESS}, ${root}, 'b.ts', ${OWNER}, NULL, NULL)`;
+    const legacy = await read({ path: 'b.ts' });
+    expect(legacy.fileEdits).toHaveLength(2); expect(legacy.symbolStatus).toBe('unknown');
+    expect(legacy.history[0]?.workItems).toEqual(['WI-other-file']);
+    await db.adminSql`INSERT INTO harness_shared.edit_attribution_ledger
+      (workspace_id, harness_slug, repo_root, file, agent_id, work_item_id, symbols)
+      SELECT ${WS}, ${HARNESS}, ${root}, 'cap.ts', ${OWNER}, 'WI-cap-' || n, ARRAY['work']
+      FROM generate_series(1, 51) AS n`;
+    const capped = await read({ path: 'cap.ts' });
+    expect(capped).toMatchObject({ status: 'unknown', symbolStatus: 'unknown', truncated: true });
+    expect(capped.fileEdits).toHaveLength(50); expect(capped.history[0]?.workItems).toHaveLength(50);
   });
   it('adds recorded provenance and an unanchored co-change through the actual claim adapter', async () => {
     const hash = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -80,8 +95,56 @@ describe('P013 invocation/session/work-item SQL join', () => {
       adapters: { coChange: append, whatChangedSincePlanning: append }, recordIssued: async () => true } } as unknown as TaskBriefDeps;
     const result = await enrichTaskBriefWithReuse(base, { workspaceId: WS, harness: HARNESS,
       workItem: { id: 'WI-recorded-edit', harness: HARNESS }, reuse: { owner: OWNER, invocation: 'claim-fixture', observe } }, deps, Date.now() + 6000);
-    expect(result.files).toEqual(base.files); expect(result.exclusions.join('\n')).toContain('WI-recorded-edit');
+    expect(result.files).toEqual(base.files); expect(result.exclusions.join('\n')).toContain('WI-done');
+    expect(result.exclusions.join('\n')).toContain('WI-released');
+    expect(result.exclusions.join('\n')).toContain('current identity unknown');
     expect(result.exclusions.join('\n')).toContain('Unanchored b.ts');
     expect(observe.mock.calls[0]?.[0].observations.map((row: { status: string }) => row.status)).toEqual(['issued', 'issued']);
+  });
+
+  it('answers within 500ms on a migrated 300k-row hot-file ledger and actually uses the symbol index', async () => {
+    // Most rows share the requested file; a repo/file index alone must still
+    // filter a realistic hot history. Neither planner settings nor test-only
+    // indexes may manufacture the production query plan.
+    await db.adminSql`INSERT INTO harness_shared.edit_attribution_ledger
+      (workspace_id, harness_slug, repo_root, file, agent_id, work_item_id, ts, symbols)
+      SELECT ${WS}, ${HARNESS}, ${root}, CASE WHEN n <= 250000 THEN 'hot.ts' ELSE 'noise-' || n || '.ts' END,
+        ${OWNER}, 'WI-noise', now() - n * interval '1 second', ARRAY['unrelated']
+      FROM generate_series(1, 300000) AS n`;
+    await db.adminSql`INSERT INTO harness_shared.edit_attribution_ledger
+      (workspace_id, harness_slug, repo_root, file, agent_id, work_item_id, ts, symbols)
+      VALUES (${WS}, ${HARNESS}, ${root}, 'hot.ts', ${OWNER}, 'WI-done', now() - interval '10 days', ARRAY['work']),
+        (${WS}, ${HARNESS}, ${root}, 'hot.ts', ${OWNER}, 'WI-released', now() - interval '10 days', ARRAY['work']),
+        (${WS}, ${HARNESS}, ${root}, 'hot.ts', ${OWNER}, NULL, now() - interval '10 days', NULL)`;
+    await db.adminSql`ANALYZE harness_shared.edit_attribution_ledger`;
+    const [{ count }] = await db.adminSql`SELECT count(*)::int AS count FROM harness_shared.edit_attribution_ledger`;
+    expect(count).toBeGreaterThanOrEqual(300000);
+    const captured: { query: string; params: unknown[] }[] = [];
+    const measuredSql = applyRawSerializerFixes(postgres(db.adminDsn, { max: 1, prepare: false, onnotice: () => {},
+      debug: (_connection, query, params) => {
+        if (/SELECT[\s\S]*FROM harness_shared.edit_attribution_ledger/.test(query)) captured.push({ query, params });
+      } }));
+    try {
+      await measuredSql`SELECT 1`; // connection establishment is outside the query budget
+      const start = performance.now();
+      const result = await readSymbolProvenance({ workspaceId: WS, harness: HARNESS, root, path: 'hot.ts', name: 'work', since }, measuredSql);
+      const elapsedMs = performance.now() - start;
+      expect(result.status, result.limitations.join('; ')).toBe('measured');
+      expect(result.history[0]!.workItems.sort()).toEqual(['WI-done', 'WI-released']);
+      expect(result.fileEdits).toHaveLength(3); expect(result.symbolStatus).toBe('unknown');
+      expect(elapsedMs).toBeLessThanOrEqual(500);
+      expect(captured).toHaveLength(1);
+      const [{ 'QUERY PLAN': plan }] = await db.adminSql.unsafe(
+        `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${captured[0]!.query}`, captured[0]!.params as never[]);
+      const indexNames: string[] = [];
+      const walk = (node: { 'Index Name'?: string; Plans?: typeof node[] }) => {
+        if (node['Index Name']) indexNames.push(node['Index Name']);
+        node.Plans?.forEach(walk);
+      };
+      walk(plan[0].Plan);
+      expect(indexNames.some(name => /symbol/.test(name)), JSON.stringify(plan)).toBe(true);
+      expect(plan[0]['Execution Time']).toBeLessThanOrEqual(500);
+      console.info('P001 ledger query guard', { rows: count, elapsedMs, executionMs: plan[0]['Execution Time'], indexNames });
+    } finally { await measuredSql.end({ timeout: 5 }); }
   });
 });

@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { boundChangeHistoryProviders, changeHistoryProviders, coChangeFromCommits, coChangeOverlap,
-  readCoChange, readSymbolProvenance, registerChangeHistoryProviders, symbolProvenance, type HistoryCommit, type ProvenanceEdit } from './change-history';
+  ledgerSymbolProvenance, readCoChange, readSymbolProvenance, registerChangeHistoryProviders, symbolProvenance,
+  type HistoryCommit, type ProvenanceEdit, type LedgerProvenanceEdit } from './change-history';
 import { composeReuseBrief, registeredReuseBriefProviders, type ReuseContribution } from './reuse-brief-providers';
 import graphQuery from '../agent-tools/gitnexus/query';
 
@@ -22,6 +23,47 @@ const edit: ProvenanceEdit = { invocation: 'invocation-7', at: '2026-10-10T12:00
 const assignment = { owner: 'su-editor', workItem: 'WI-responsible', start: '2026-10-09T00:00:00Z', end: '2026-10-11T00:00:00Z', complete: true };
 const provenance = (patch: Partial<Parameters<typeof symbolProvenance>[0]> = {}) => symbolProvenance({ root: '/fixture', path: 'a.ts',
   source, edits: [edit], assignments: [assignment], complete: true, ...patch });
+const ledgerEdit = (patch: Partial<LedgerProvenanceEdit> = {}): LedgerProvenanceEdit => ({
+  id: '1', at: END, owner: 'former-owner', session: 'ended-session', workItem: 'WI-done', symbols: ['work'], ...patch });
+
+describe('P001 edit-time ledger history', () => {
+  const read = (rows: LedgerProvenanceEdit[], patch: Partial<Parameters<typeof ledgerSymbolProvenance>[0]> = {}) =>
+    ledgerSymbolProvenance({ path: 'a.ts', source, rows, complete: true, ...patch });
+  it('deduplicates completed/released work items without asserting current function identity', () => {
+    const result = read([ledgerEdit(), ledgerEdit({ id: '2' }), ledgerEdit({ id: '3', workItem: 'WI-released' })]);
+    expect(result.history[0]).toMatchObject({ status: 'measured', workItems: ['WI-done', 'WI-released'], currentIdentity: 'unknown' });
+    expect(result.symbols[0]).toMatchObject({ status: 'unknown', workItem: null, recordedHistory: result.history[0] });
+  });
+  it('retains pre-capture and unattributed rows at file level, with unknown symbol attribution', () => {
+    const result = read([ledgerEdit({ symbols: null }), ledgerEdit({ id: '2', symbols: [], workItem: null })]);
+    expect(result.fileEdits).toHaveLength(2); expect(result.history).toEqual([]);
+    expect(result.symbolStatus).toBe('unknown'); expect(result.symbols[0]?.workItem).toBeNull();
+    expect(read([ledgerEdit({ workItem: null })]).history[0]).toMatchObject({ status: 'unknown', workItems: [] });
+    expect(read([ledgerEdit({ symbols: [] })]).symbolStatus).toBe('measured');
+  });
+  it('surfaces the 50-row cap and parser failure instead of measured absence', () => {
+    const capped = read(Array.from({ length: 51 }, (_, n) => ledgerEdit({ id: String(n) })));
+    expect(capped).toMatchObject({ status: 'unknown', truncated: true });
+    expect(capped.fileEdits).toHaveLength(50); expect(capped.history[0]?.status).toBe('unknown');
+    const broken = read([ledgerEdit()], { source: 'export function work( {' });
+    expect(broken).toMatchObject({ status: 'unknown', symbolStatus: 'unknown', symbols: [] });
+    expect(broken.fileEdits).toHaveLength(1); expect(broken.limitations.join(' ')).toContain('parse');
+  });
+  it('does not infer rename, move, overload or nested identity from present-day names', () => {
+    const renamed = read([ledgerEdit({ symbols: ['oldName'] })], { source: 'export function newName() {}' });
+    expect(renamed.history[0]?.symbol).toBe('oldName'); expect(renamed.symbols[0]?.recordedHistory).toBeUndefined();
+    const overloaded = read([ledgerEdit({ symbols: ['work', 'outer.inner'] })], {
+      source: 'function work(x: string): string; function work(x: string) { return x; } function outer() { function inner() {} }' });
+    expect(overloaded.history.every(row => row.currentIdentity === 'unknown')).toBe(true);
+    expect(overloaded.symbols.every(row => row.status === 'unknown')).toBe(true);
+    expect(read([], { name: 'work' }).history).toEqual([]); // A move has no evidence in this file.
+  });
+  it('preserves both recorded labels for a range split across functions without fabricating continuity', () => {
+    const result = read([ledgerEdit({ symbols: ['left', 'right'] })], { source: 'function left() {} function right() {}' });
+    expect(result.history.map(row => row.symbol)).toEqual(['left', 'right']);
+    expect(result.symbols.every(row => row.status === 'unknown')).toBe(true);
+  });
+});
 
 describe('P013 declared history and source provenance contracts', () => {
   it('counts distinct eligible first-parent commits with Jaccard and a three-shared floor', () => {

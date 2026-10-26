@@ -1,4 +1,4 @@
-/** P013/R9: bounded commit co-change and invocation-backed symbol provenance.
+/** P013/R9: bounded commit co-change and edit-time ledger provenance.
  * Commit authorship is intentionally never read. Counts concern eligible commits,
  * and Edit provenance requires a unique session and assignment at the edit instant.
  */
@@ -20,7 +20,7 @@ const run = promisify(execFile);
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 const DAY = 86_400_000;
 const COMMIT_CAP = 1000;
-const EDIT_CAP = 500;
+export const PROVENANCE_EDIT_CAP = 50;
 export const CHANGE_HISTORY_VERSION = 'history/first-parent-90d-v1';
 export { eligibleHistoryPath } from './history-path';
 export interface HistoryCommit {
@@ -141,6 +141,21 @@ export interface SymbolProvenance {
   status: 'measured' | 'unknown'; workItem: string | null;
   edits: { invocation: string; session: string; owner: string; workItem: string; at: string }[];
   reason: string;
+  /** Historical label evidence does not establish continuity with the current range. */
+  recordedHistory?: RecordedSymbolHistory;
+}
+export interface LedgerProvenanceEdit {
+  id: string; at: string; owner: string; session: string | null;
+  workItem: string | null; symbols: string[] | null;
+}
+export interface RecordedSymbolHistory {
+  symbol: string; status: 'measured' | 'unknown'; workItems: string[];
+  edits: LedgerProvenanceEdit[]; currentIdentity: 'unknown';
+}
+export interface SymbolProvenanceReport {
+  status: 'measured' | 'unknown'; symbols: SymbolProvenance[];
+  history: RecordedSymbolHistory[]; fileEdits: LedgerProvenanceEdit[];
+  truncated: boolean; symbolStatus: 'measured' | 'unknown'; limitations: string[];
 }
 const normalizedPath = (root: string, path: string) => {
   const rel = isAbsolute(path) ? relative(root, path) : path;
@@ -187,12 +202,40 @@ export function symbolProvenance(input: { root: string; path: string; source: st
   });
 }
 
-/** Read successful native Edit reports plus direct capability edits; scope every join. */
+/** Read labels as recorded, never reconstruct historical identity from today's AST. */
+export function ledgerSymbolProvenance(input: { path: string; source: string; name?: string;
+  rows: readonly LedgerProvenanceEdit[]; complete: boolean }): SymbolProvenanceReport {
+  const sf = ts.createSourceFile(input.path, input.source, ts.ScriptTarget.Latest, true,
+    input.path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  const health = measureCodeHealth(ts, sf, input.path);
+  const rows = input.rows.slice(0, PROVENANCE_EDIT_CAP);
+  const truncated = input.rows.length > PROVENANCE_EDIT_CAP || !input.complete;
+  const complete = !truncated && health.status === 'measured';
+  const labels = [...new Set(rows.flatMap(row => row.symbols ?? []))]
+    .filter(label => !input.name || label === input.name).sort();
+  const history: RecordedSymbolHistory[] = labels.map(symbol => {
+    const edits = rows.filter(row => row.symbols?.includes(symbol));
+    return { symbol, status: complete && edits.every(row => Boolean(row.workItem)) ? 'measured' : 'unknown',
+      workItems: [...new Set(edits.flatMap(row => row.workItem ? [row.workItem] : []))], edits, currentIdentity: 'unknown' };
+  });
+  const symbols = health.functions.filter(fn => !input.name || fn.name === input.name).map(fn => ({
+    path: input.path, symbol: fn.name, contentHash: fn.contentHash, start: fn.start, end: fn.end,
+    status: 'unknown' as const, workItem: null, edits: [],
+    recordedHistory: history.find(record => record.symbol === fn.name),
+    reason: 'Edit-time labels are historical evidence only; current blob/range continuity is unknown.' }));
+  return { status: complete ? 'measured' : 'unknown', symbols, history, fileEdits: rows, truncated,
+    symbolStatus: complete && rows.every(row => row.symbols !== null && Boolean(row.workItem)) ? 'measured' : 'unknown',
+    limitations: ['Work items and symbol labels were recorded at edit time, independently of current claims.',
+      'Labels do not prove current identity across rename, move, overload, nesting or later edits.',
+      'NULL symbol capture is unknown file-level evidence; [] means measured top-level only.',
+      ...(truncated ? ['Provenance is truncated at 50 edit rows; history is incomplete.'] : []),
+      ...(health.status !== 'measured' ? health.limitations : [])] };
+}
+
+/** Indexed, bounded ledger read; no invocation scan or current-holder join. */
 export async function readSymbolProvenance(input: { workspaceId: string; harness: string; root: string; path: string;
-  name?: string; since?: string }, sql: Sql = getOrgPg().sql): Promise<{ status: 'measured' | 'unknown'; symbols: SymbolProvenance[]; limitations: string[] }> {
+  name?: string; since?: string }, sql: Sql = getOrgPg().sql): Promise<SymbolProvenanceReport> {
   if (!input.workspaceId || !input.harness || !safe(input.path)) throw new Error('Exact workspace/harness/path required');
-  const limitations = ['Current source ranges only; overwritten edits and missing assignment intervals remain unknown.',
-    'Current assignment interval is corroborated from taken_at; historical worked_by_history lacks claim/release direction and is not guessed.'];
   try {
     const root = await realpath(input.root), file = await realpath(resolve(root, input.path));
     if (normalizedPath(root, file) !== input.path) throw new Error('Path escapes registered repository');
@@ -201,49 +244,20 @@ export async function readSymbolProvenance(input: { workspaceId: string; harness
     if (!Number.isFinite(Date.parse(since))) throw new Error('Invalid provenance window');
     const rows = await sql.begin(async tx => {
       await tx`SELECT set_config('statement_timeout', '500ms', true)`;
-      return tx<{ id: string; invoked_at: string; coord_owner_id: string | null; tool_name: string; args_json: Record<string, unknown>; status: string;
-        owners: string[] }[]>`
-        SELECT ti.id::text, ti.invoked_at, ti.coord_owner_id, ti.tool_name, ti.args_json, ti.status,
-          ARRAY(SELECT DISTINCT s.coord_owner_id FROM harness_shared.adv_sessions s
-            WHERE s.workspace_id = ti.workspace_id AND s.session_id = ti.args_json->>'session_id'
-              AND s.started_at <= ti.invoked_at AND (s.ended_at IS NULL OR s.ended_at >= ti.invoked_at)
-              AND s.coord_owner_id IS NOT NULL) AS owners
-        FROM harness_shared.tool_invocations ti
-        WHERE ti.workspace_id = ${input.workspaceId}
-          -- Native hooks can report another concrete harness through a
-          -- workspace-scoped transport. Match activity:report's resolved scope,
-          -- not just the dispatch context stamped on invocation telemetry.
-          AND (CASE WHEN ti.tool_name IN ('activity:report', 'activity_report')
-            AND NULLIF(btrim(ti.args_json->>'harness_slug'), '') IS NOT NULL
-            AND lower(btrim(ti.args_json->>'harness_slug')) NOT IN ('*', 'all')
-            THEN btrim(ti.args_json->>'harness_slug') ELSE ti.harness_slug END) = ${input.harness}
-          AND ti.invoked_at >= ${since}::timestamptz AND ti.status = 'ok'
-          AND (ti.tool_name IN ('Edit', 'Write', 'MultiEdit', 'capability:edit', 'capability:write', 'capability:multi_edit')
-            OR ti.tool_name IN ('activity:report', 'activity_report') AND ti.args_json->>'tool_name' IN ('Edit', 'Write', 'MultiEdit', 'apply_patch'))
-          AND (COALESCE(ti.args_json->'tool_input', ti.args_json)->>'file_path' = ANY(${[input.path, file]}::text[])
-            OR COALESCE(ti.args_json->'tool_input', ti.args_json)->>'path' = ANY(${[input.path, file]}::text[])
-            OR ti.args_json->>'tool_name' IN ('MultiEdit', 'apply_patch'))
-        ORDER BY ti.invoked_at DESC, ti.id DESC LIMIT ${EDIT_CAP + 1}`;
+      return tx<{ id: string; ts: string; agent_id: string; session_id: string | null;
+        work_item_id: string | null; symbols: string[] | null }[]>`
+        SELECT id::text, ts, agent_id, session_id, work_item_id, symbols
+        FROM harness_shared.edit_attribution_ledger
+        WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harness}
+          AND repo_root = ${root} AND file = ${input.path} AND ts >= ${since}::timestamptz
+          AND (${input.name ?? null}::text IS NULL OR symbols IS NULL OR symbols @> ${input.name ? [input.name] : []}::text[])
+        ORDER BY ts DESC, id DESC LIMIT ${PROVENANCE_EDIT_CAP + 1}`;
     });
-    const edits: ProvenanceEdit[] = rows.slice(0, EDIT_CAP).map(row => {
-      const report = row.tool_name === 'activity:report' || row.tool_name === 'activity_report';
-      const args = row.args_json ?? {};
-      return { invocation: row.id, at: new Date(row.invoked_at).toISOString(), owner: row.coord_owner_id,
-        session: typeof args.session_id === 'string' ? args.session_id : null, sessionOwners: row.owners,
-        tool: report ? String(args.tool_name) : row.tool_name, input: report ? args.tool_input : args,
-        status: report && args.status !== 'ok' ? 'unknown' : row.status };
-    });
-    const owners = [...new Set(edits.flatMap(e => e.owner ? [e.owner] : []))];
-    const assignments = owners.length ? await sql<{ feature_id: string; taken_by: string; taken_at: string }[]>`
-      SELECT feature_id, taken_by, taken_at FROM harness_shared.work_items
-      WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harness}
-        AND taken_by = ANY(${owners}::text[]) AND taken_at IS NOT NULL LIMIT 501` : [];
-    const complete = rows.length <= EDIT_CAP && assignments.length <= 500 && source === await readFile(file, 'utf8');
-    const symbols = symbolProvenance({ root, path: input.path, source, name: input.name, edits,
-      assignments: assignments.slice(0, 500).map(a => ({ workItem: a.feature_id, owner: a.taken_by,
-        start: new Date(a.taken_at).toISOString(), end: null, complete: true })), complete });
-    return { status: complete ? 'measured' : 'unknown', symbols, limitations };
-  } catch (error) { return { status: 'unknown', symbols: [], limitations: [...limitations,
+    return ledgerSymbolProvenance({ path: input.path, source, name: input.name,
+      rows: rows.map(row => ({ id: row.id, at: new Date(row.ts).toISOString(), owner: row.agent_id,
+        session: row.session_id, workItem: row.work_item_id, symbols: row.symbols })),
+      complete: source === await readFile(file, 'utf8') });
+  } catch (error) { return { status: 'unknown', symbols: [], history: [], fileEdits: [], truncated: false, symbolStatus: 'unknown', limitations: [
     error instanceof Error ? error.message : 'Provenance ledger unavailable'] }; }
 }
 
@@ -269,11 +283,14 @@ export function changeHistoryProviders(deps: {
         .map(p => `${ctx.surface === 'completion' ? 'Untouched' : 'Unanchored'} ${p.partner} (${p.shared}/${p.union};90d)`) : [] };
   } }, { id: 'provenance', read: async (ctx, signal) => {
     const rows = await deps.provenance(ctx, signal);
-    const measured = Boolean(ctx.sourceVersion) && rows.length > 0 && rows.every(row => row.status === 'measured');
+    const measured = Boolean(ctx.sourceVersion) && rows.length > 0
+      && rows.every(row => row.recordedHistory ? row.recordedHistory.status === 'measured' : row.status === 'measured');
     return { status: measured ? 'measured' : 'unknown', sourceVersion: measured ? ctx.sourceVersion : null,
       indexVersion: digest(JSON.stringify(rows)).slice(0, 12), citedPaths: rows.map(row => row.path),
-      lines: rows.filter(row => row.status === 'measured' && row.workItem).slice(0, 3)
-        .map(row => `${row.path}#${row.symbol}: ${row.workItem} (edit ${row.edits[0]!.invocation}; current bytes)`) };
+      lines: rows.flatMap(row => row.recordedHistory?.status === 'measured'
+        ? [`${row.path}#${row.symbol}: ${row.recordedHistory.workItems.join(', ')} (edit-time label; current identity unknown)`]
+        : row.status === 'measured' && row.workItem
+          ? [`${row.path}#${row.symbol}: ${row.workItem} (edit ${row.edits[0]!.invocation}; current bytes)`] : []).slice(0, 3) };
   } }];
 }
 
