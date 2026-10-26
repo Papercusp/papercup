@@ -33,6 +33,41 @@ function fixture() {
       params: { cwd: root, model: 'selected-model', approvalPolicy: 'on-request', sandbox: 'workspace-write' } } };
 }
 describe('tracked Codex history fork', () => {
+  it.each(['state_5.sqlite', 'thread_history_1.sqlite'])(
+    'refuses existing %s before seeding or cleaning another native runtime', async name => {
+      const f = fixture();
+      const before = Buffer.from('existing native index must not be opened or changed');
+      writeFileSync(join(f.childHome, name), before);
+      await expect(prepareCodexForkHistory(f.input)).rejects.toThrow('requires fresh child native indexes');
+      expect(readFileSync(join(f.childHome, name))).toEqual(before);
+      expect(readdirSync(f.childHome)).toEqual([name]);
+      expect(readFileSync(f.sourcePath, 'utf8')).toBe(f.history);
+    });
+  it('removes refused fork metadata and history while preserving unrelated native threads', async () => {
+    const f = fixture();
+    const state = join(f.childHome, 'native-state'); mkdirSync(state);
+    writeFileSync(join(f.childHome, 'config.toml'), `sqlite_home = ${JSON.stringify(state)}`);
+    const prepared = await prepareCodexForkHistory(f.input);
+    const metadata = new Database(join(state, 'state_99.sqlite'));
+    const history = new Database(join(state, 'thread_history_1.sqlite'));
+    try {
+      metadata.exec('CREATE TABLE threads(id TEXT PRIMARY KEY); CREATE TABLE thread_dynamic_tools(thread_id TEXT REFERENCES threads(id), name TEXT); CREATE TABLE thread_spawn_edges(parent_thread_id TEXT, child_thread_id TEXT)');
+      history.exec('CREATE TABLE thread_turns(thread_id TEXT, turn_id TEXT)');
+      for (const id of [PARENT, 'refused-child', 'unrelated']) {
+        metadata.prepare('INSERT INTO threads VALUES(?)').run(id);
+        metadata.prepare('INSERT INTO thread_dynamic_tools VALUES(?, ?)').run(id, 'tool');
+        metadata.prepare('INSERT INTO thread_spawn_edges VALUES(?, ?)').run(id, id);
+        history.prepare('INSERT INTO thread_turns VALUES(?, ?)').run(id, 'turn');
+      }
+      await prepared.cleanup('refused-child');
+      await prepared.cleanup('refused-child');
+      expect(metadata.prepare('SELECT * FROM threads').all()).toEqual([{ id: 'unrelated' }]);
+      expect(metadata.prepare('SELECT * FROM thread_dynamic_tools').all()).toEqual([{ thread_id: 'unrelated', name: 'tool' }]);
+      expect(metadata.prepare('SELECT * FROM thread_spawn_edges').all()).toEqual([{ parent_thread_id: 'unrelated', child_thread_id: 'unrelated' }]);
+      expect(history.prepare('SELECT * FROM thread_turns').all()).toEqual([{ thread_id: 'unrelated', turn_id: 'turn' }]);
+      expect(readFileSync(f.sourcePath, 'utf8')).toBe(f.history);
+    } finally { metadata.close(); history.close(); }
+  });
   it.each(['missing', 'cycle'] as const)('refuses %s ancestor history before creating a child seed', async kind => {
     const f = fixture();
     writeFileSync(f.sourcePath, JSON.stringify({ type: 'session_meta', payload: { id: PARENT,
@@ -92,7 +127,7 @@ describe('tracked Codex history fork', () => {
     const childDb = join(f.childHome, 'thread_history_1.sqlite'); writeFileSync(childDb, 'existing-child');
     await expect(prepareCodexForkHistory(f.input)).rejects.toThrow();
     expect(readFileSync(childDb, 'utf8')).toBe('existing-child');
-    expect(readdirSync(join(f.childHome, 'sessions', '2026', '10', '25'))).toEqual([]);
+    expect(readdirSync(f.childHome)).toEqual(['thread_history_1.sqlite']);
   });
   it('forks only through a completed turn and retains the frozen ancestor needed by paginated history', async () => {
     const f = fixture(); await expect(forkCodexNativeHistory(f.input)).resolves.toMatchObject({ thread: { id: 'child-thread' } });

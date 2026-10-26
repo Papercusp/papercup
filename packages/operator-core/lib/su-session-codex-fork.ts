@@ -1,7 +1,7 @@
 /** Native history is the only state copied into a new tracked Codex runtime.
  * Claims, callbacks, commands and wake registrations stay with the parent. */
 import { constants, createReadStream, existsSync, readFileSync } from 'node:fs';
-import { copyFile, lstat, mkdir, realpath, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readdir, realpath, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import Database from 'better-sqlite3';
@@ -27,7 +27,7 @@ export interface PreparedCodexForkHistory {
   sourceId: string;
   childHome: string;
   retain(): void;
-  cleanup(): Promise<void>;
+  cleanup(unregisteredChildId?: string): Promise<void>;
 }
 
 const HISTORY_TABLES = ['thread_turns', 'thread_items', 'thread_history_projection_state', 'thread_realtime_items'];
@@ -110,23 +110,54 @@ export async function prepareCodexForkHistory(input: HistoryInput): Promise<Prep
   const sourceState = await realpath(dirname(sourceDb));
   await mkdir(childState, { recursive: true });
   if (sourceState === await realpath(childState)) throw new Error('Codex fork requires independent native history storage');
+  // Refuse before creating seeds or entering their cleanup scope: existing
+  // native indexes belong to another runtime and must remain byte-identical.
+  if ((await readdir(childState)).some(name => /^(?:state_\d+|thread_history_1)\.sqlite(?:-(?:wal|shm))?$/.test(name))) {
+    throw new Error('Codex fork requires fresh child native indexes');
+  }
   // Snapshot the index first; the subsequently copied append-only rollouts must
   // include at least the bytes indexed by this consistent read transaction.
   const snapshot = existsSync(sourceDb) ? historySnapshot(sourceDb, history.map(row => row.id)) : null;
-  let seededDb = false, cleaned = false, retained = false;
+  let cleaned = false, retained = false;
   const seeds: string[] = [];
-  const cleanup = async () => {
+  const cleanup = async (unregisteredChildId?: string) => {
     if (cleaned || retained) return;
+    const ids = [...history.map(row => row.id), ...(unregisteredChildId ? [unregisteredChildId] : [])];
     try {
-      if (seededDb) {
+      if (existsSync(childDb)) {
         const db = new Database(childDb, { fileMustExist: true });
         try { db.transaction(() => {
           for (const name of HISTORY_TABLES) {
             if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)) {
-              for (const row of history) db.prepare(`DELETE FROM "${name}" WHERE thread_id = ?`).run(row.id);
+              for (const id of ids) db.prepare(`DELETE FROM "${name}" WHERE thread_id = ?`).run(id);
             }
           }
         })(); } finally { db.close(); }
+      }
+      // thread/read and thread/fork also register metadata outside the history
+      // database. The native writer must be closed before this cleanup runs.
+      // Remove only the failed fork's identities from the child's own storage;
+      // unrelated threads and the parent's databases are never opened for writes.
+      for (const name of (await readdir(childState)).filter(name => /^state_\d+\.sqlite$/.test(name))) {
+        const db = new Database(join(childState, name), { fileMustExist: true });
+        try {
+          db.pragma('foreign_keys = ON');
+          db.transaction(() => {
+            const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>;
+            const quote = (value: string) => `"${value.replaceAll('"', '""')}"`;
+            for (const table of tables.filter(table => table.name !== 'threads')) {
+              const columns = db.prepare(`PRAGMA table_info(${quote(table.name)})`).all() as Array<{ name: string }>;
+              const keys = columns.filter(column => ['thread_id', 'parent_thread_id', 'child_thread_id'].includes(column.name));
+              if (!keys.length) continue;
+              const remove = db.prepare(`DELETE FROM ${quote(table.name)} WHERE ${keys.map(key => `${quote(key.name)} = ?`).join(' OR ')}`);
+              for (const id of ids) remove.run(...keys.map(() => id));
+            }
+            if (tables.some(table => table.name === 'threads')) {
+              const remove = db.prepare('DELETE FROM threads WHERE id = ?');
+              for (const id of ids) remove.run(id);
+            }
+          })();
+        } finally { db.close(); }
       }
     } finally { for (const seed of seeds) await unlink(seed); cleaned = true; }
   };
@@ -140,7 +171,6 @@ export async function prepareCodexForkHistory(input: HistoryInput): Promise<Prep
     }
     if (snapshot) {
       await writeFile(childDb, snapshot, { flag: 'wx', mode: 0o600 });
-      seededDb = true;
     }
     return { sourceId: source.rolloutId, childHome, cleanup, retain: () => { retained = true; } };
   } catch (error) { await cleanup(); throw error; }

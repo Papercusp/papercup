@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stringify } from '@iarna/toml';
+import Database from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, expect, inject, it, vi } from 'vitest';
 import { acquireBaselineSchemaMutex, releaseBaselineSchemaMutex } from '@papercusp/test-config/baseline-schema-mutex';
 import type {} from '../../../libs/test-config/src/baseline-schema-global-setup';
@@ -127,6 +128,17 @@ it.each(['registered', 'stale-source', 'startup-failure'] as const)('registers n
       expect(attemptedNativeId).toBeTruthy();
       expect(await findCodexRolloutPathByUuid(attemptedNativeId!, { homeOverride: childHome })).toBeNull();
       expect(await findCodexRolloutPathByUuid(native, { homeOverride: childHome })).toBeNull();
+      // A removed rollout must not leave an addressable native thread or an
+      // indexed ancestor in the failed child's otherwise preserved home.
+      for (const file of ['state_5.sqlite', 'thread_history_1.sqlite']) {
+        const db = new Database(join(childHome, file), { readonly: true, fileMustExist: true });
+        try {
+          const table = file === 'state_5.sqlite' ? 'threads' : 'thread_turns';
+          const column = file === 'state_5.sqlite' ? 'id' : 'thread_id';
+          expect(db.prepare(`SELECT ${column} FROM ${table} WHERE ${column} IN (?, ?)`)
+            .all(native, attemptedNativeId), `${file} must not retain an unregistered fork`).toEqual([]);
+        } finally { db.close(); }
+      }
     } else {
       const fork = await result;
       const [child] = await h.sql`SELECT session_id, launch_spec FROM harness_shared.adv_sessions WHERE id = ${childId}`;

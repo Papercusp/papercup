@@ -71,6 +71,7 @@ export async function completeTrackedCodexFork(boot: BootstrapSuResult,
   const prepared = await prepareCodexForkHistory({ source: parent, childOwnerId: ownerId, childHome: boot.codexHome });
   let peer: SuStdioPeer | undefined;
   let unregisteredRollout: string | undefined;
+  let unregisteredChildId: string | undefined;
   try {
     const binary = resolveAgentBinarySync('codex') ?? 'codex';
     peer = await (deps.startPeer ?? startSuStdioPeer)({ binary, args: ['app-server'],
@@ -87,6 +88,7 @@ export async function completeTrackedCodexFork(boot: BootstrapSuResult,
     const nativeSessionId = String((result.thread as { id: string }).id);
     // forkCodexNativeHistory has verified this path belongs to the fresh child.
     unregisteredRollout = (result.thread as { path: string }).path;
+    unregisteredChildId = nativeSessionId;
     await peer.close(); await peer.done; peer = undefined;
     await registerTrackedCodexFork({ workspaceId: boot.workspaceId, childAdvSessionId: boot.sessionId,
       childOwnerId: ownerId, childNativeSessionId: nativeSessionId, source: nativeFork });
@@ -97,7 +99,7 @@ export async function completeTrackedCodexFork(boot: BootstrapSuResult,
     try { if (peer) { await peer.close(); await peer.done; } }
     finally {
       try { if (unregisteredRollout) await unlink(unregisteredRollout); }
-      finally { await prepared.cleanup(); }
+      finally { await prepared.cleanup(unregisteredChildId); }
     }
   }
 }
