@@ -26,6 +26,7 @@ vi.mock('./task-manager/control', () => ({ killTask: async (id: string) => { h.p
 import { recordAdvSession } from './adv-sessions';
 import { completeTrackedCodexFork, registerTrackedCodexFork } from './su-session-tracked-codex-fork';
 import { startSuStdioPeer, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
+import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 
 const workspace = `tracked-codex-fork-${randomUUID()}`;
@@ -54,7 +55,8 @@ async function row(owner: string, home: string, nativeId: string | null) {
   return Number(id);
 }
 
-it.each([false, true])('registers native child ancestry before success; stale source=%s refuses', async stale => {
+it.each(['registered', 'stale-source', 'startup-failure'] as const)('registers native child ancestry before success; scenario=%s', async scenario => {
+  const stale = scenario === 'stale-source', startupFailure = scenario === 'startup-failure';
   root = mkdtempSync(join(tmpdir(), 'tracked-codex-fork-'));
   const parentHome = join(root, 'parent'), childHome = join(root, 'child');
   mkdirSync(parentHome); mkdirSync(childHome);
@@ -94,7 +96,11 @@ it.each([false, true])('registers native child ancestry before success; stale so
     const methods: unknown[] = [];
     const result = completeTrackedCodexFork(boot, { advSessionId: parentId, nativeSessionId: native }, {
       startPeer: async options => {
-        const peer = await startSuStdioPeer(options); peers.push(peer);
+        // Exercise a real installed CLI process exiting before initialization,
+        // rather than throwing from a mocked native fork completer.
+        const peer = await startSuStdioPeer({ ...options,
+          ...(startupFailure ? { args: ['app-server', '--p008-invalid-startup-option'] } : {}) });
+        if (!startupFailure) peers.push(peer); // the failed peer is drained by the subject
         return { ...peer, request: async (frame, timeout) => {
           methods.push(frame.method); const result = await peer.request(frame, timeout);
           if (stale && frame.method === 'thread/fork') {
@@ -104,7 +110,15 @@ it.each([false, true])('registers native child ancestry before success; stale so
         } };
       },
     });
-    if (stale) {
+    if (startupFailure) {
+      await expect(result).rejects.toThrow(/Structured engine exited|unexpected argument/);
+      const [child] = await h.sql`SELECT session_id, launch_spec FROM harness_shared.adv_sessions WHERE id = ${childId}`;
+      expect(child.session_id).toBeNull(); expect(child.launch_spec).not.toHaveProperty('nativeFork');
+      const [after] = await h.sql`SELECT * FROM harness_shared.adv_sessions WHERE id = ${parentId}`;
+      expect(after).toEqual(before);
+      expect(await findCodexRolloutPathByUuid(native, { homeOverride: childHome })).toBeNull();
+      expect(methods).not.toContain('thread/fork');
+    } else if (stale) {
       await expect(result).rejects.toThrow('lineage registration refused');
       const [child] = await h.sql`SELECT session_id, launch_spec FROM harness_shared.adv_sessions WHERE id = ${childId}`;
       expect(child.session_id).toBeNull(); expect(child.launch_spec).not.toHaveProperty('nativeFork');
@@ -118,7 +132,7 @@ it.each([false, true])('registers native child ancestry before success; stale so
       await expect(registerTrackedCodexFork({ workspaceId: workspace, childAdvSessionId: childId,
         childOwnerId: 'su-child', childNativeSessionId: randomUUID(), source: fork.nativeFork })).rejects.toThrow('registration refused');
     }
-    expect(methods).toContain('thread/fork');
+    if (!startupFailure) expect(methods).toContain('thread/fork');
     expect(methods).not.toContain('turn/start'); expect(calls).toBe(1);
     expect(readFileSync(prompt, 'utf8')).toBe('Child identity only');
     expect(readFileSync(join(childHome, 'config.toml'), 'utf8')).toBe(config);
