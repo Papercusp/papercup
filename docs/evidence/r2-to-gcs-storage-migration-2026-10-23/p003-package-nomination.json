@@ -42,7 +42,7 @@
     "Run the maintained install, upgrade and exact rollback journey with the four nominated packages; bind current evidence at the required spec revision and plane."
   ],
   "limitations": [
-    "This receipt verifies two rollback files and their original size, digest, version and build identity; it does not certify signature trust, installation, upgrade, rollback execution, independent acceptance or shipment.",
+    "This receipt verifies two rollback files and their original size, digest, version and build identity. Signature trust is verified in the linked p003-baseline-signature-trust.json receipt; installation, upgrade, rollback execution, independent acceptance and shipment remain unverified.",
     "The older d234 pair was not selected because nearby Linux build provenance was not found in the inspected retained paths.",
     "The baseline predates the storage migration and cannot serve as the migration candidate.",
     "Original package bytes and provenance receipts were read without modification."
