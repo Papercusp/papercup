@@ -593,7 +593,11 @@
     "taskId": "0mvpgcjyt165nbg3ymk",
     "reviewer": "su-37068955-1083-4ce3-bdcc-4cd4615b4b57",
     "awaitId": 373488,
-    "staticCases": { "checked": 22, "computed": 3, "failures": [] },
+    "staticCases": {
+      "checked": 22,
+      "computed": 3,
+      "failures": []
+    },
     "applied": true,
     "approvalRef": "thread-post:1206761"
   },
@@ -616,10 +620,47 @@
     "first": "conv-request-046da7c9beabd389962c9a44b42b43d3fc4d8c6e9358999266bbce349e062dcf",
     "firstSourceOwner": "su-6432fc8d-1d1b-4c87-b2f1-b891d3d7b80b",
     "firstAnsweringOwner": "su-26b0d156-f842-4997-beeb-a8e208e4d2ff",
-    "second": null
+    "second": "conv-request-f3cdde62c6d7a88d6e3dce34596147fdea3a52121d734b27ebaf16a8079497ad",
+    "firstDisposition": {
+      "postId": 1206810,
+      "state": "closed_answered",
+      "critiquePost": 1206797,
+      "verdict": "corrections-required"
+    },
+    "secondDisposition": {
+      "postId": 1206809,
+      "state": "closed_cant_help",
+      "answers": 0,
+      "reason": "expired fresh-launch defect; replacement required"
+    }
   },
   "recoveryDisposition": {
     "WI-6554700010009934": "dropped by system:acceptance-drain at2026-10-26T16:06:24.182Z because parentconsult-backed-parking-2026-10-12 isarchived:true version67. Sourceacceptance-drain-sweep.ts terminal reconciliation confirmsarchived->dropped. Do notclaimunownedopen/resurrectorcallshipped."
   },
-  "next": "Full12criterionamendment COMMITTEDrev5approval1206761/D004; plan15. Activationaudit4 PASS. ExactqualitycardEI27061042666296110 independentlyauditPASS; vettingcardEI27061486486857950 independentlyauditPASS andrubricvettedcurrent5. plans:start nowrequires2fresh outside-lineage barcritique consults for current12BARset/16clauses. Firstrequested canonicalpolicy above; secondmustexclude itslineage. Closeonlyactualanswers; beforeproofbinding resolveanyfindings. Thenstart/proof/cards/grading/recovery. HistoricalarchivedparentWI9934droppedlegitimately; oldparked-agentparentpendingownerscope/nativeprohibitionstillopen. R11requiresfinalrelease; no LIVE_GATE_OPS."
+  "next": "Resolve canonical amendment receipt review-0bd84ebc3914022dfbf2d1860b0bbaff5624c3f91d1c4cc7fbdb6071c3b865ec, read exact outside-lineage approval then apply exact candidate critique-amendment-v2.json. Re-audit activation, re-vet/re-critique changed contract, quality audits, then proof binding/current-build independent acceptance and final-release evidence. No self-grading. Keep WI17914 owner's historical-scope/native prohibition pending, legitimate dropped WI9934 terminal, and no LIVE_GATE_OPS duplication.",
+  "launcherFix": {
+    "workItem": "WI-6554700010029547",
+    "state": "done",
+    "testRunIds": [
+      22239969,
+      22239970
+    ],
+    "passed": 27
+  },
+  "critiqueAmendment": {
+    "artifact": ".papercusp/evidence/plan-shipping-friction-repair-20261026/critique-amendment-v2.json",
+    "subjectPlanRevision": 21,
+    "subjectPlanHash": "6e23ff6fbef5fe2c58871140feea568d7f2c9cc5afc2ffe861d57879e35090eb",
+    "rubricCurrentRevision": 5,
+    "reviewReceipt": "review-0bd84ebc3914022dfbf2d1860b0bbaff5624c3f91d1c4cc7fbdb6071c3b865ec",
+    "status": "pending-outside-lineage-review",
+    "specCorrection": {
+      "specId": "shipping-pregrading-wrong-phase-regression",
+      "revision": 2,
+      "hash": "9ef5e5ac58485d566600a7476dc8eadadb5dca0abc41a3ff7eeef42e7d78ecfd",
+      "requiredEvidence": [
+        "tree"
+      ]
+    }
+  }
 }
