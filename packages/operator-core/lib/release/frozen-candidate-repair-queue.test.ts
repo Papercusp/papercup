@@ -35,6 +35,8 @@ import {
   summarizeFrozenRepairConvergence,
   buildFrozenRepairConvergenceGateHealth,
   parseFrozenRepairConvergence,
+  assessFrozenRepairConvergence,
+  FROZEN_REPAIR_PERSISTED_FAILURE_CAP,
   projectFrozenRepairConvergenceCell,
   projectFrozenRepairConvergenceScope,
   frozenRepairAdmissionHandoffBlock,
@@ -1874,6 +1876,96 @@ describe('P-013 / D-007 — convergence rounds + the owner-visible off switch', 
     expect(summary.admissionRounds).toBe(1);
     // One data point cannot establish a trend in either direction.
     expect(summary.converging).toBeNull();
+  });
+
+  // WI-6554700010029491: persisted failing sets are cut to FROZEN_REPAIR_PERSISTED_FAILURE_CAP,
+  // so a count AT the cap is a floor. Live 2026-10-26: rounds read 50/50/50 and the projection
+  // reported `shrinkTotal: 0, converging: false` while the real size was unknown.
+  const atCap = (prefix: string) =>
+    Array.from({ length: FROZEN_REPAIR_PERSISTED_FAILURE_CAP }, (_, i) => `lib/${prefix}${i}.test.ts`);
+
+  it('rounds pinned AT the persisted cap are "at least N", never a measured plateau', () => {
+    const cap = FROZEN_REPAIR_PERSISTED_FAILURE_CAP;
+    const queue = readyToVerify({
+      failingTests: atCap('now'),
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: cap, atMs: T0 },
+        { round: 2, head: C, failingCount: cap, atMs: T0 + 1_000 },
+        { round: 3, head: C, failingCount: cap, atMs: T0 + 2_000 },
+      ],
+    });
+    const summary = summarizeFrozenRepairConvergence(queue, T0 + 3_000);
+    expect(summary.converging).toBeNull();
+    expect(summary.shrinkTotal).toBeNull();
+    expect(summary.truncatedByLimit).toBe(true);
+    expect(summary.saturationCap).toBe(cap);
+    expect(summary.shrinkPerRound).toEqual([
+      { round: 1, failingCount: cap, delta: null, atLeast: true },
+      { round: 2, failingCount: cap, delta: null, atLeast: true },
+      { round: 3, failingCount: cap, delta: null, atLeast: true },
+    ]);
+    expect(assessFrozenRepairConvergence({
+      ...summary, candidate: C, repairHead: C, phase: 'ready-to-verify', observedAtMs: T0 + 3_000,
+    })).toBe('not-yet-knowable');
+  });
+
+  it('leaving the cap is a KNOWN shrink even though its size is unknown', () => {
+    const cap = FROZEN_REPAIR_PERSISTED_FAILURE_CAP;
+    const queue = readyToVerify({
+      failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: cap, atMs: T0 },
+        { round: 2, head: C, failingCount: 9, atMs: T0 + 1_000 },
+        { round: 3, head: C, failingCount: 2, atMs: T0 + 2_000 },
+      ],
+    });
+    const summary = summarizeFrozenRepairConvergence(queue, T0 + 3_000);
+    expect(summary.converging).toBe(true);
+    // The baseline is a floor, so the total shrink has no honest number.
+    expect(summary.shrinkTotal).toBeNull();
+    expect(summary.shrinkPerRound.map((entry) => entry.delta)).toEqual([null, null, -7]);
+    expect(summary.truncatedByLimit).toBe(true);
+  });
+
+  it('climbing INTO the cap is a known growth, so the cycle is not converging', () => {
+    const cap = FROZEN_REPAIR_PERSISTED_FAILURE_CAP;
+    const queue = readyToVerify({
+      failingTests: atCap('grew'),
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: 12, atMs: T0 },
+        { round: 2, head: C, failingCount: cap, atMs: T0 + 1_000 },
+      ],
+    });
+    const summary = summarizeFrozenRepairConvergence(queue, T0 + 2_000);
+    expect(summary.converging).toBe(false);
+    expect(summary.shrinkTotal).toBeNull();
+  });
+
+  it('an uncapped cycle reports truncatedByLimit:false, and the gate_health round-trip keeps the new fields', () => {
+    const cap = FROZEN_REPAIR_PERSISTED_FAILURE_CAP;
+    const uncapped = summarizeFrozenRepairConvergence(readyToVerify({
+      failingTests: ['lib/a.test.ts'],
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: 3, atMs: T0 },
+        { round: 2, head: C, failingCount: 1, atMs: T0 + 1_000 },
+      ],
+    }), T0 + 2_000);
+    expect(uncapped.truncatedByLimit).toBe(false);
+    const stored = buildFrozenRepairConvergenceGateHealth(readyToVerify({
+      failingTests: atCap('rt'),
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: cap, atMs: T0 },
+        { round: 2, head: C, failingCount: cap, atMs: T0 + 1_000 },
+      ],
+    }), T0 + 2_000);
+    const reread = parseFrozenRepairConvergence(JSON.parse(JSON.stringify(stored)));
+    expect(reread).not.toBeNull();
+    expect(reread!.truncatedByLimit).toBe(true);
+    expect(reread!.saturationCap).toBe(cap);
+    expect(reread!.converging).toBeNull();
+    expect(reread!.shrinkPerRound[1]).toEqual({ round: 2, failingCount: cap, delta: null, atLeast: true });
+    // A wrong type still rejects the whole blob rather than being coerced.
+    expect(parseFrozenRepairConvergence({ ...stored, truncatedByLimit: 'yes' })).toBeNull();
   });
 
   it('off switch: ON (the deployed default) opens a cycle on a first real red', () => {

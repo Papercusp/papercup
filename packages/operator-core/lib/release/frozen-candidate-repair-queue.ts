@@ -3794,15 +3794,31 @@ export interface FrozenRepairConvergenceSummary {
   failingNow: number;
   /** failingFirst - failingNow. Positive = shrinking. Null when there is no baseline. */
   shrinkTotal: number | null;
-  /** Per-round size and the delta from the previous round (negative = shrank). */
-  shrinkPerRound: readonly { round: number; failingCount: number; delta: number | null }[];
+  /**
+   * Per-round size and the delta from the previous round (negative = shrank). `atLeast: true`
+   * marks a round whose count sits AT the persisted-failure cap: the true size is "at least
+   * failingCount", so `delta` is null whenever either side of the step is capped.
+   */
+  shrinkPerRound: readonly { round: number; failingCount: number; delta: number | null; atLeast?: true }[];
   /**
    * True only when every recorded repair round strictly reduces the failing set. A plateau
    * requires diagnosis even after earlier improvement. Null with fewer than two rounds,
    * because "not yet knowable" and "not converging" are different answers and a reader that
-   * conflates them will call a healthy new cycle a treadmill.
+   * conflates them will call a healthy new cycle a treadmill. Also null when a step's
+   * direction cannot be known because both sides sit at the cap (WI-6554700010029491): three
+   * capped rounds reading "50, 50, 50" are "at least 50 each", not a measured plateau.
    */
   converging: boolean | null;
+  /**
+   * WI-6554700010029491: the bound every persisted failing set is cut to. Absent on records
+   * written before this field existed.
+   */
+  saturationCap?: number;
+  /**
+   * WI-6554700010029491: true when any round, or `failingNow`, sits at `saturationCap`, so the
+   * counts above are FLOORS, not totals. Absent on legacy records (read as unknown).
+   */
+  truncatedByLimit?: boolean;
 }
 
 export function summarizeFrozenRepairConvergence(
@@ -3810,15 +3826,41 @@ export function summarizeFrozenRepairConvergence(
   nowMs: number,
 ): FrozenRepairConvergenceSummary {
   const rounds = queue.convergenceRounds ?? [];
+  const cap = MAX_PERSISTED_FAILURES;
+  // WI-6554700010029491: every persisted failing set is cut to `cap`, so a count AT the cap is a
+  // floor ("at least cap"), never a total. Comparing two floors measures nothing; reading them
+  // as equal reported "50, 50, 50 — not converging" for a cycle whose real size was unknown.
+  const capped = (count: number): boolean => count >= cap;
+  /** Direction of a step: known decrease, known non-decrease, or unknowable (both capped). */
+  const direction = (prev: number, next: number): 'down' | 'not-down' | 'unknown' => {
+    if (capped(prev) && capped(next)) return 'unknown';
+    if (capped(prev)) return 'down'; // >= cap -> below cap
+    if (capped(next)) return 'not-down'; // below cap -> >= cap
+    return next < prev ? 'down' : 'not-down';
+  };
   const failingNow = queue.failingTests.length;
   const failingFirst = rounds.length > 0 ? (rounds[0] as FrozenRepairConvergenceRound).failingCount : null;
-  const shrinkPerRound = rounds.map((entry, index) => ({
-    round: entry.round,
-    failingCount: entry.failingCount,
-    delta: index === 0 ? null : entry.failingCount - (rounds[index - 1] as FrozenRepairConvergenceRound).failingCount,
-  }));
-  const monotonic = shrinkPerRound.every((entry) => entry.delta === null || entry.delta < 0);
-  const shrinkTotal = failingFirst === null ? null : failingFirst - failingNow;
+  const steps: ('down' | 'not-down' | 'unknown')[] = [];
+  const shrinkPerRound = rounds.map((entry, index) => {
+    const prev = index === 0 ? null : (rounds[index - 1] as FrozenRepairConvergenceRound).failingCount;
+    if (prev !== null) steps.push(direction(prev, entry.failingCount));
+    const exact = prev !== null && !capped(prev) && !capped(entry.failingCount);
+    return {
+      round: entry.round,
+      failingCount: entry.failingCount,
+      delta: exact ? entry.failingCount - (prev as number) : null,
+      ...(capped(entry.failingCount) ? { atLeast: true as const } : {}),
+    };
+  });
+  const shrinkTotal = failingFirst === null || capped(failingFirst) || capped(failingNow)
+    ? null
+    : failingFirst - failingNow;
+  const overall = failingFirst === null ? 'unknown' : direction(failingFirst, failingNow);
+  let converging: boolean | null;
+  if (rounds.length < 2) converging = null;
+  else if (steps.includes('not-down') || overall === 'not-down') converging = false;
+  else if (steps.includes('unknown') || overall === 'unknown') converging = null;
+  else converging = true;
   return {
     openedAtMs: queue.openedAtMs,
     ageMs: Math.max(0, nowMs - queue.openedAtMs),
@@ -3828,7 +3870,9 @@ export function summarizeFrozenRepairConvergence(
     failingNow,
     shrinkTotal,
     shrinkPerRound,
-    converging: rounds.length < 2 ? null : monotonic && (shrinkTotal ?? 0) > 0,
+    converging,
+    saturationCap: cap,
+    truncatedByLimit: capped(failingNow) || rounds.some((entry) => capped(entry.failingCount)),
   };
 }
 
@@ -3944,14 +3988,23 @@ export function parseFrozenRepairConvergence(raw: unknown): StoredFrozenRepairCo
     return null;
   }
   if (!Array.isArray(row.shrinkPerRound)) return null;
-  const shrinkPerRound: { round: number; failingCount: number; delta: number | null }[] = [];
+  const shrinkPerRound: { round: number; failingCount: number; delta: number | null; atLeast?: true }[] = [];
   for (const entry of row.shrinkPerRound) {
     if (!entry || typeof entry !== 'object') return null;
     const e = entry as Record<string, unknown>;
     if (typeof e.round !== 'number' || typeof e.failingCount !== 'number') return null;
     if (e.delta !== null && typeof e.delta !== 'number') return null;
-    shrinkPerRound.push({ round: e.round, failingCount: e.failingCount, delta: (e.delta as number | null) ?? null });
+    if (e.atLeast !== undefined && e.atLeast !== true) return null;
+    shrinkPerRound.push({
+      round: e.round,
+      failingCount: e.failingCount,
+      delta: (e.delta as number | null) ?? null,
+      ...(e.atLeast === true ? { atLeast: true as const } : {}),
+    });
   }
+  // WI-6554700010029491: optional on legacy records; a wrong TYPE still rejects the blob.
+  if (row.saturationCap !== undefined && typeof row.saturationCap !== 'number') return null;
+  if (row.truncatedByLimit !== undefined && typeof row.truncatedByLimit !== 'boolean') return null;
   // `converging` and `failingFirst` are DELIBERATELY tri-state (null = not yet knowable / no
   // baseline). `null` is a legitimate stored value for both, so neither can be required above
   // — but a wrong TYPE still rejects the whole blob rather than being coerced to null, which
@@ -3972,6 +4025,8 @@ export function parseFrozenRepairConvergence(raw: unknown): StoredFrozenRepairCo
     shrinkTotal: shrinkTotalRaw as number | null,
     shrinkPerRound,
     converging: convergingRaw as boolean | null,
+    ...(typeof row.saturationCap === 'number' ? { saturationCap: row.saturationCap } : {}),
+    ...(typeof row.truncatedByLimit === 'boolean' ? { truncatedByLimit: row.truncatedByLimit } : {}),
     candidate,
     repairHead,
     phase: phase as FrozenCandidateRepairPhase,
