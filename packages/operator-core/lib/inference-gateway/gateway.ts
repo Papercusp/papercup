@@ -1593,7 +1593,7 @@ export interface GatewayDeps {
    *  launch layer wires this to a LOUD escalation (severity 'blocker', meta.source 'credential-health',
    *  transition-only so it doesn't re-open every request) + a fleet broadcast. The streak resets on the
    *  next successful auth (a 2xx) for that account, which re-arms a fresh alert for a later episode. */
-  onCredentialDead?(info: { accountId: string; consecutive401s: number }): void;
+  onCredentialDead?(info: { accountId: string; consecutive401s: number; provider?: 'claude' | 'codex'; reason?: string }): void;
   /** Peer-uid gate for every connection (WI-10003621). The gateway binds 127.0.0.1 and has no
    *  caller auth, so on a hosted workspace host — where the customer account shares loopback —
    *  a non-service uid must be refused before any route (inference or `/admin/*`) runs. Returns
@@ -3363,6 +3363,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  fire the loud `onCredentialDead` side-channel ONCE per episode. RESET on the next successful auth (a 2xx
    *  for that account — see the 2xx success path), which re-arms the alert for a later episode. */
   const credential401Streak = new Map<string, number>();
+  /** WI-6554700010029300: CODEX credential death (OAuth `refresh_token_invalidated`, an unusable codex-cli
+   *  login) used to be LOG-ONLY — on 2026-10-26 the credits account sat dead for ~8h, silently shrinking the
+   *  Codex pool until the rest hit their 5h windows and the fleet died on 429s. It now rides the SAME loud
+   *  `onCredentialDead` escalation the Claude 401-streak path uses. Latched per account: fires once per
+   *  episode, re-armed by the account's next 2xx or after CODEX_CREDENTIAL_DEAD_REALERT_MS. */
+  const codexCredentialDeadAlertedAt = new Map<string, number>();
+  const CODEX_CREDENTIAL_DEAD_REALERT_MS = 6 * 60 * 60 * 1000;
+  const noteCodexCredentialDead = (accountId: string, reason: string): void => {
+    const now = Date.now();
+    const last = codexCredentialDeadAlertedAt.get(accountId);
+    if (last !== undefined && now - last < CODEX_CREDENTIAL_DEAD_REALERT_MS) return;
+    codexCredentialDeadAlertedAt.set(accountId, now);
+    try {
+      deps.onCredentialDead?.({ accountId, consecutive401s: 1, provider: 'codex', reason });
+    } catch {
+      /* fire-and-forget: the alert side-channel must never throw into the request path */
+    }
+  };
   /** WI-10003306: Codex (account, model) pairs the ChatGPT backend has refused. Selection routes
    *  around them per model; entries lapse on a TTL and clear on the next 2xx, so an account marked
    *  here is never removed from the pool and never needs a manual flip to come back. */
@@ -8851,6 +8869,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   `quarantining for ${Math.round(CODEX_CLI_AUTH_QUARANTINE_MS / 1000)}s; repair with \`codex login\` in its CODEX_HOME (${cli.home})`,
               );
             }
+            if (outcome.authClass) {
+              noteCodexCredentialDead(account, `codex-cli login unusable (repair with \`codex login\` in ${cli.home}): ${error.message.slice(0, 200)}`);
+            }
             if (outcome.nextAccountId) codexFailovers++;
           },
         },
@@ -9478,6 +9499,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                       ' rejected refresh credentials; ' +
                       disposition,
                   );
+                  noteCodexCredentialDead(account, `Codex OAuth token refresh rejected: ${error.message.slice(0, 240)}`);
                 }
                 log(
                   'error',
@@ -9501,6 +9523,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 providerAdmission.recordSuccess('codex');
                 lastEgressOkAt.set(account, Date.now());
                 ipTransportFailStreak.delete(response.metadata.egressKey);
+                codexCredentialDeadAlertedAt.delete(account);
               }
             },
           },

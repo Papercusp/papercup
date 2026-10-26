@@ -112,3 +112,72 @@ describe('gateway-local codex 429 (pacing shed) is a resumable stall, not a retr
     for (const block of sites) expect(block).toContain('codexLocalShedHeaders(');
   });
 });
+
+/**
+ * WI-6554700010029300 (second root cause) — the credits Codex account's refresh token was invalidated at
+ * 00:12Z and the gateway only LOGGED it (1000+ quarantines, no alert) for ~8h, silently shrinking the pool.
+ * A Codex credential death must fire the same loud `onCredentialDead` escalation the Claude path uses.
+ */
+describe('codex credential death is loud (onCredentialDead), not log-only', () => {
+  let gateway: ReturnType<typeof createInferenceGateway> | undefined;
+  const homes: string[] = [];
+  beforeEach(() => {
+    resetGovernorRegistry();
+    configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore());
+  });
+  afterEach(async () => {
+    await gateway?.close();
+    gateway = undefined;
+    await Promise.all(homes.splice(0).map(home => fs.rm(home, { recursive: true, force: true })));
+    vi.restoreAllMocks();
+    resetGatewayRequestOutcomeStore();
+  });
+
+  it('an OAuth refresh rejected with refresh_token_invalidated fires onCredentialDead once (latched)', async () => {
+    const home = await fs.mkdtemp(join(tmpdir(), 'codex-cred-dead-'));
+    homes.push(home);
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const token = `${encode({ alg: 'none' })}.${encode({ exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`;
+    await fs.writeFile(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+      access_token: token, refresh_token: 'fixture-refresh', account_id: 'account-a',
+    } }));
+    const fetchImpl = vi.fn(async (target: unknown) => String(target).includes('oauth/token')
+      ? new Response(JSON.stringify({ error: { code: 'refresh_token_invalidated', message: 'Your refresh token has been invalidated.' } }), { status: 401 })
+      : new Response(JSON.stringify({ error: { message: 'Unauthorized' } }), { status: 401 }));
+    const dead: Array<{ accountId: string; provider?: string; reason?: string }> = [];
+    gateway = createInferenceGateway({
+      accountId: 'account-a',
+      token: async () => 'claude-token',
+      codexCliAccounts: () => [{ accountId: 'account-a', home }],
+      codexOAuthProxy: true,
+      fetchImpl: fetchImpl as typeof fetch,
+      selfHeal: { enabled: false },
+      onCredentialDead: info => dead.push(info),
+    });
+    const port = await gateway.listen(0);
+    const send = () => fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', [ACCOUNT_HEADER]: 'account-a', [OWNER_HEADER]: 'su-cred-dead-owner' },
+      body: JSON.stringify({ model, input: 'Reply briefly.', max_tokens: 8, stream: false }),
+    }).then(r => r.text());
+
+    await send();
+    await send();
+
+    // Positive control: the refresh endpoint really was hit (we exercised the refresh-rejection path).
+    expect(fetchImpl.mock.calls.some(([target]) => String(target).includes('oauth/token'))).toBe(true);
+    expect(dead).toHaveLength(1);
+    expect(dead[0]).toMatchObject({ accountId: 'account-a', provider: 'codex' });
+    expect(dead[0].reason).toMatch(/refresh/i);
+  });
+
+  it('every codex credential-rejection log site also calls noteCodexCredentialDead (no log-only site)', () => {
+    const src = readFileSync(join(__dirname, 'gateway.ts'), 'utf8');
+    const markers = [' rejected refresh credentials; ', 'has an UNUSABLE CREDENTIAL'];
+    for (const marker of markers) {
+      const at = src.indexOf(marker);
+      expect(at, `marker ${marker} missing — update this guard`).toBeGreaterThan(0);
+      expect(src.slice(at, at + 900), `${marker} site must fire noteCodexCredentialDead`).toContain('noteCodexCredentialDead(');
+    }
+  });
+});

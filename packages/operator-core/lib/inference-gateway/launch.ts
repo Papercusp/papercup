@@ -378,14 +378,23 @@ function makeWindowProjector(
 function makeCredentialHealthAlert(
   ws: string | undefined,
   log: (level: 'info' | 'warn' | 'error', msg: string) => void,
-): (info: { accountId: string; consecutive401s: number }) => void {
+): (info: { accountId: string; consecutive401s: number; provider?: 'claude' | 'codex'; reason?: string }) => void {
   const identity = { ownerId: 'inference-gateway', ownerLabel: 'inference-gateway', source: 'static-client' as const, workspaceId: ws ?? null, userId: null };
-  return ({ accountId, consecutive401s }) => {
+  return ({ accountId, consecutive401s, provider, reason }) => {
     void (async () => {
-      const summary = `Inference credential for account '${accountId}' is DEAD — ${consecutive401s} consecutive 401s despite token refresh; spawns/evals on it will fail "produced no turn"`;
+      // WI-6554700010029300: Codex credential death (refresh_token_invalidated / unusable codex-cli
+      // login) is a single terminal rejection, not a 401 streak — word it so the owner knows the fix.
+      const summary =
+        provider === 'codex'
+          ? `Codex credential for account '${accountId}' is DEAD — the provider rejected its refresh/login; it is out of the Codex pool until re-authenticated`
+          : `Inference credential for account '${accountId}' is DEAD — ${consecutive401s} consecutive 401s despite token refresh; spawns/evals on it will fail "produced no turn"`;
       const body =
-        `The inference gateway dropped + refreshed account '${accountId}'s OAuth token after each 401, but the refresh keeps yielding the same invalid credential — so it is genuinely dead/expired (revoked, or its refresh token is bad), not merely stale-cached. ` +
-        `Re-authenticate or replace the credential (accounts:* / re-login) and the gateway's next successful 2xx for this account clears the alert state. Routing has already failed this account over to a healthy account where one exists.`;
+        provider === 'codex'
+          ? `The inference gateway's Codex lane got a terminal credential rejection for account '${accountId}'${reason ? ` (${reason})` : ''}. ` +
+            `The gateway quarantines it and fails over, but every rejected request is capacity the Codex pool silently loses — when the remaining accounts hit their windows, Codex sessions die with "exceeded retry limit, last status: 429". ` +
+            `Fix: re-run \`codex login\` for this account's CODEX_HOME (re-authenticate / replace the credential); the account's next successful 2xx re-arms this alert.`
+          : `The inference gateway dropped + refreshed account '${accountId}'s OAuth token after each 401, but the refresh keeps yielding the same invalid credential — so it is genuinely dead/expired (revoked, or its refresh token is bad), not merely stale-cached. ` +
+            `Re-authenticate or replace the credential (accounts:* / re-login) and the gateway's next successful 2xx for this account clears the alert state. Routing has already failed this account over to a healthy account where one exists.`;
       // Durable, transition-only escalation (idempotent per dead account).
       try {
         const { openEscalation, listEscalations } = await import('../agent-tools/coordination/escalations');
