@@ -216,7 +216,9 @@ describe('closeTask terminal event', () => {
       class: 'pty',
       launched_by: 'su-a',
     };
-    const firstSql = (async () => [row]) as unknown as Sql;
+    const firstSql = (async (strings: TemplateStringsArray) => strings.join('').includes('AS revision')
+      ? [{ ...row, state: 'exited', exit_code: 0, exit_reason: null, revision: 1 }]
+      : [row]) as unknown as Sql;
     const replaySql = (async () => []) as unknown as Sql;
 
     await expect(
@@ -232,6 +234,7 @@ describe('closeTask terminal event', () => {
       state: 'exited',
       exitCode: 0,
       exitReason: null,
+      revision: 1,
     });
 
     await expect(

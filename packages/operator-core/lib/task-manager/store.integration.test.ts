@@ -695,6 +695,7 @@ describe('P-012 terminal provenance writer', () => {
       state: 'killed',
       exitCode: 137,
       exitReason: 'oom-kill',
+      revision: 1,
     });
 
     const [stored] = await db.sql`
