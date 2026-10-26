@@ -13,7 +13,7 @@ export function resolveTarget(name?: string): Target;
 export function assertRemoteMatchesTarget(target: Target, remote: string): void;
 /**
  * R13: inspect the current public population and actual default-branch license bytes.
- * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Reuses the public export's canonical SUL, existing components' ELv2, and Apache text.
  * Unknown text, an API failure, incomplete pagination or a changed population refuses.
  * GitHub's license metadata is supplementary; it is never the license oracle.
  * @typedef {{ path: string, gitBlob: string, sha256: string, license: string | null, url: string }} PublicRepositoryLicense
@@ -2136,8 +2136,8 @@ export function exportSnapshot({ repoRoot, ref, out, target: targetName, license
     };
 }>;
 /**
- * The public target's LICENSE text. Refuses when missing or when it is not the Elastic
- * License 2.0: publishing source under no license, or the wrong one, is not recoverable
+ * The public target's LICENSE text. Refuses when missing or when it is not the canonical
+ * Sustainable Use License 1.0: publishing the wrong terms is not recoverable
  * once cloned.
  * @param {string} path
  */
@@ -2366,8 +2366,9 @@ export const PUBLIC_REPO: "Papercusp/papercusp-app";
 export const SOURCE_REPO: "Papercusp/papercup";
 export const DEFAULT_REMOTE: "https://github.com/Papercusp/papercusp-preview.git";
 export const DEFAULT_REF: "main";
-/** The public target's license (Elastic License 2.0, plan open-source-release-2026-09-29 D-003). */
+/** The public application's license (owner-approved SUL transition, 2026-10-26). */
 export const PUBLIC_LICENSE_PATH: string;
+export const PUBLIC_LICENSE_ID: "LicenseRef-Sustainable-Use-1.0";
 /**
  * Where an export is published (plan open-source-release-2026-09-29 P-002/P-003).
  * - preview: the private, invite-only evaluation snapshot. Replaced WHOLESALE by one
@@ -2426,7 +2427,7 @@ export const ALLOWLIST_PATH: string;
 export { main as runCli };
 /**
  * R13: inspect the current public population and actual default-branch license bytes.
- * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Reuses the public export's canonical SUL, existing components' ELv2, and Apache text.
  * Unknown text, an API failure, incomplete pagination or a changed population refuses.
  * GitHub's license metadata is supplementary; it is never the license oracle.
  */
@@ -2439,7 +2440,7 @@ export type PublicRepositoryLicense = {
 };
 /**
  * R13: inspect the current public population and actual default-branch license bytes.
- * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Reuses the public export's canonical SUL, existing components' ELv2, and Apache text.
  * Unknown text, an API failure, incomplete pagination or a changed population refuses.
  * GitHub's license metadata is supplementary; it is never the license oracle.
  */

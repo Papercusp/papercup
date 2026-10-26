@@ -31,7 +31,7 @@
 // npm: preview:export · preview:gate · preview:check · preview:push
 // Every command takes --target preview|public (default preview). The public target
 // (plan open-source-release-2026-09-29) publishes to Papercusp/papercusp-app under the
-// Elastic License 2.0, APPEND-ONLY; the preview is replaced wholesale. See TARGETS.
+// Sustainable Use License 1.0, APPEND-ONLY; the preview is replaced wholesale. See TARGETS.
 //
 // PAPERCUSP_RELEASE_OWNER_NAME (and _EMAIL) must be exported — read at run time, never
 // written anywhere — exactly as for a release cut: the scrub and the gate refuse
@@ -76,8 +76,9 @@ export const PUBLIC_REPO = 'Papercusp/papercusp-app';
 export const SOURCE_REPO = 'Papercusp/papercup';
 export const DEFAULT_REMOTE = `https://github.com/${PREVIEW_REPO}.git`;
 export const DEFAULT_REF = 'main';
-/** The public target's license (Elastic License 2.0, plan open-source-release-2026-09-29 D-003). */
+/** The public application's license (owner-approved SUL transition, 2026-10-26). */
 export const PUBLIC_LICENSE_PATH = join(ROOT, 'scripts', 'public-release', 'LICENSE');
+export const PUBLIC_LICENSE_ID = 'LicenseRef-Sustainable-Use-1.0';
 
 /**
  * Where an export is published (plan open-source-release-2026-09-29 P-002/P-003).
@@ -219,7 +220,7 @@ function githubPage(endpoint) {
 
 /**
  * R13: inspect the current public population and actual default-branch license bytes.
- * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Reuses the public export's canonical SUL, existing components' ELv2, and Apache text.
  * Unknown text, an API failure, incomplete pagination or a changed population refuses.
  * GitHub's license metadata is supplementary; it is never the license oracle.
  * @typedef {{ path: string, gitBlob: string, sha256: string, license: string | null, url: string }} PublicRepositoryLicense
@@ -232,7 +233,9 @@ export async function auditPublicRepositoryLicenses({ api = githubPage, licenseH
   const startedAt = new Date().toISOString();
   const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
   const reviewed = licenseHashes ?? {
-    [digest(readFileSync(PUBLIC_LICENSE_PATH))]: 'ELv2',
+    [digest(readFileSync(PUBLIC_LICENSE_PATH))]: PUBLIC_LICENSE_ID,
+    // Independently released components retain ELv2 and their previously granted rights.
+    [digest(readFileSync(join(ROOT, 'apps/operator-public/cupboard-actions/LICENSE')))]: 'ELv2',
     [digest(readFileSync(join(ROOT, 'libs/generic/cache/LICENSE')))]: 'Apache-2.0',
     // Existing SideStage-mobile MIT declaration, read and reviewed in the R13 census.
     '84ea0f54f720885e4e0a6d2e45baca5a7d6e30aa26db12eabbeda4b3b48c3ea7': 'MIT',
@@ -316,7 +319,10 @@ export async function auditPublicRepositoryLicenses({ api = githubPage, licenseH
         if (license && libraries.has(row.repo.toLowerCase()) && license !== 'Apache-2.0' && license !== 'MIT') {
           row.errors.push(`D-003 requires a permissive library license: ${file.path}`);
         }
-        if (license && (row.repo.toLowerCase() === PUBLIC_REPO.toLowerCase() || ['goals', 'cupboard-actions', 'blueprints', 'sidestage', 'scout-runtime', 'recipes', 'plans', 'scout-chat', 'drawer-stack', 'cart-drawer', 'data-fetch'].includes(row.repo.split('/')[1].toLowerCase())) && license !== 'ELv2') {
+        if (license && row.repo.toLowerCase() === PUBLIC_REPO.toLowerCase() && license !== PUBLIC_LICENSE_ID) {
+          row.errors.push(`Application release requires SUL 1.0: ${file.path}`);
+        }
+        if (license && ['goals', 'cupboard-actions', 'blueprints', 'sidestage', 'scout-runtime', 'recipes', 'plans', 'scout-chat', 'drawer-stack', 'cart-drawer', 'data-fetch'].includes(row.repo.split('/')[1].toLowerCase()) && license !== 'ELv2') {
           row.errors.push(`D-011/D-023 require ELv2: ${file.path}`);
         }
       }
@@ -2564,7 +2570,7 @@ export function noticeText(manifest) {
       '',
       `Copyright (c) ${manifest.year} Papercusp.`,
       '',
-      'Licensed under the Elastic License 2.0 (see LICENSE). Libraries that carry their own',
+      'Licensed under the Sustainable Use License 1.0 (see LICENSE). Components with their own',
       'license file or SPDX header (for example the permissively licensed libs/generic/*)',
       'are covered by that license instead.',
       '',
@@ -2663,8 +2669,10 @@ export async function readmeText(dir, manifest, releasesUrl) {
       '',
       'Papercusp is a desktop workspace where coding agents work alongside you, coordinated',
       'through shared plans, work items, locks and memory. Papercusp is source-available',
-      'under the Elastic License 2.0 (see LICENSE and NOTICE): you may read, run,',
-      'modify and self-host it, but not offer it to others as a hosted or managed service.',
+      'under the Sustainable Use License 1.0 (see LICENSE and NOTICE). You may use and modify',
+      'it for your own internal business purposes, non-commercial purposes or personal use.',
+      'You may distribute it or provide it to others only free of charge for non-commercial',
+      'purposes. Commercial embedding, redistribution or provision requires a separate license.',
       '',
       `- Exported from \`${manifest.source.repo}\` at \`${manifest.source.commit}\`, with`,
       `  ${manifest.submodules.length} submodule(s) flattened in at their pinned commits (MANIFEST.json).`,
@@ -2901,15 +2909,17 @@ export async function exportSnapshot({
 }
 
 /**
- * The public target's LICENSE text. Refuses when missing or when it is not the Elastic
- * License 2.0: publishing source under no license, or the wrong one, is not recoverable
+ * The public target's LICENSE text. Refuses when missing or when it is not the canonical
+ * Sustainable Use License 1.0: publishing the wrong terms is not recoverable
  * once cloned.
  * @param {string} path
  */
 export function readLicense(path) {
   if (!existsSync(path)) throw new PreviewError(`public target needs its LICENSE at ${path}`, 2);
   const text = readFileSync(path, 'utf8');
-  if (!/^Elastic License 2\.0/m.test(text)) throw new PreviewError(`${path} is not the Elastic License 2.0 text`, 2);
+  if (!/^## Sustainable Use License\n\nVersion 1\.0\n/.test(text) || text !== readFileSync(PUBLIC_LICENSE_PATH, 'utf8')) {
+    throw new PreviewError(`${path} is not the canonical Sustainable Use License 1.0 text`, 2);
+  }
   return text;
 }
 

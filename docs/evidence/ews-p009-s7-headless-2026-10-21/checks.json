@@ -21,9 +21,9 @@
    "passIn": "A,B"
   },
   "holder-await-edges": {
-   "pass": false,
+   "pass": true,
    "rule": "any",
-   "passIn": "-"
+   "passIn": "A"
   },
   "item-blocker-edges": {
    "pass": true,
@@ -31,9 +31,9 @@
    "passIn": "A,B"
   },
   "stale-edges": {
-   "pass": false,
+   "pass": true,
    "rule": "any",
-   "passIn": "-"
+   "passIn": "A"
   },
   "no-holder-as-blocker": {
    "pass": true,
@@ -46,19 +46,19 @@
    "passIn": "A,B"
   },
   "proving-label-on-done-key": {
-   "pass": false,
+   "pass": true,
    "rule": "any",
-   "passIn": "-"
+   "passIn": "A"
   },
   "broad-label": {
-   "pass": false,
+   "pass": true,
    "rule": "any",
-   "passIn": "-"
+   "passIn": "A"
   },
   "stale-event-node": {
-   "pass": false,
+   "pass": true,
    "rule": "any",
-   "passIn": "-"
+   "passIn": "A"
   }
  },
  "perView": {
@@ -67,14 +67,14 @@
    "subject-is-selection": true,
    "legend-holder-row": true,
    "legend-blocker-row": true,
-   "holder-await-edges": false,
+   "holder-await-edges": true,
    "item-blocker-edges": true,
-   "stale-edges": false,
+   "stale-edges": true,
    "no-holder-as-blocker": true,
    "no-blocker-as-holder": true,
-   "proving-label-on-done-key": false,
-   "broad-label": false,
-   "stale-event-node": false
+   "proving-label-on-done-key": true,
+   "broad-label": true,
+   "stale-event-node": true
   },
   "B": {
    "canvas": true,
