@@ -52,7 +52,7 @@ function fixture() {
 }
 
 /** Duplex boundary simulator; the actual inherited fd is exercised in the namespace suite. */
-function guest(mode: 'valid' | 'replay' | 'unplanned' | 'oversized' | 'incomplete' = 'valid') {
+function guest(mode: 'valid' | 'replay' | 'unplanned' | 'oversized' | 'incomplete' | 'failed' = 'valid') {
   const sent: Record<string, unknown>[] = [];
   let frames: Record<string, unknown>[] = [], cursor = 0;
   const stream = new Duplex({ read() {}, write(chunk, _encoding, done) {
@@ -68,6 +68,7 @@ function guest(mode: 'valid' | 'replay' | 'unplanned' | 'oversized' | 'incomplet
       if (mode === 'unplanned') frames[0]!.intentId = randomUUID();
       if (mode === 'incomplete') frames = [{ type: 'ready', seq: 1 }];
       if (mode === 'oversized') frames = [{ type: 'before', seq: 1, intentId: 'x'.repeat(20_000) }];
+      if (mode === 'failed') frames = [{ type: 'failed', seq: 1, stage: 'database', code: 'guest_migration_failed' }];
     }
     const frame = frames[cursor++];
     if (frame) queueMicrotask(() => stream.push(Buffer.from(JSON.stringify(frame) + '\n')));
@@ -125,6 +126,13 @@ describe('managed disposable runtime backend', () => {
     await expect(backend.provision(f)).rejects.toThrow('database unavailable');
     expect(f.beforeCreate).toHaveBeenCalledTimes(2);
     expect(g.sent).toHaveLength(2); // config, before ACK; created has no ACK
+    await backend.teardown(f.lease, new AbortController().signal);
+  });
+
+  it('preserves a bounded guest failure stage without accepting ready or product logs', async () => {
+    const f = fixture(), g = guest('failed'), backend = createLinuxRuntimeNamespaceBackend();
+    await expect(backend.provision(f)).rejects.toThrow('runtime_guest_database_guest_migration_failed');
+    expect(g.stream.destroyed).toBe(true); expect(f.record).toHaveBeenCalledTimes(1);
     await backend.teardown(f.lease, new AbortController().signal);
   });
 

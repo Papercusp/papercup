@@ -24,15 +24,20 @@ describe('native services in the sealed runtime namespace', () => {
         });
         const descriptors: ReadonlyArray<unknown> = child.stdio, control = descriptors[5] as Duplex;
         let stderr = '', buffer = '', creates = 0;
+        const frames: Array<Record<string, unknown>> = [];
         child.stderr!.on('data', chunk => { stderr += chunk; });
         control.on('error', () => {});
         control.on('data', chunk => {
           buffer += chunk;
-          const end = buffer.indexOf('\n');
-          if (end < 0) return;
-          const message = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
-          expect(message.type).toBe('before'); creates++;
-          control.write(JSON.stringify({ ok: false, seq: message.seq }) + '\n');
+          let end;
+          while ((end = buffer.indexOf('\n')) >= 0) {
+            const message = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
+            frames.push(message);
+            if (message.type === 'before') {
+              creates++;
+              control.write(JSON.stringify({ ok: false, seq: message.seq }) + '\n');
+            }
+          }
         });
         const done = new Promise<number | null>((resolve, reject) => {
           child.once('error', reject); child.once('close', resolve);
@@ -46,6 +51,8 @@ describe('native services in the sealed runtime namespace', () => {
         expect(await done, stderr).toBe(3);
         expect(stderr.trim()).toBe('RUNTIME_GUEST_REFUSED');
         expect(creates).toBe(kind === 'deny-create' ? 1 : 0);
+        expect(frames.map(frame => frame.type)).toEqual(kind === 'deny-create' ? ['before', 'failed'] : []);
+        if (kind === 'deny-create') expect(frames[1]).toMatchObject({ stage: 'workspace', code: 'control_authorization_refused' });
         control.destroy();
       } finally { await image.handle.close(); }
     }, 30_000);

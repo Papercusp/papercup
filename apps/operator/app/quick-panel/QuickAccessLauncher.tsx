@@ -43,7 +43,9 @@ export async function focusQuickAgent(agent: QuickAgent): Promise<void> {
     throw new Error('This popup is not connected to the local desktop Server');
   }
   await focusWindow({ sessionOwnerId: agent.ownerId, ownerLabel: quickAgentName(agent),
-    advSessionId: agent.advSessionId, windowId: agent.windowId, pid: agent.pid });
+    // A terminal server PID may be shared by several agent windows. Resolve
+    // the recorded window or exact launch identity instead of guessing by PID.
+    advSessionId: agent.advSessionId, windowId: agent.windowId });
 }
 
 function Person({ agent, onChat }: { agent: QuickAgent; onChat: (owner: string, label: string) => void }) {

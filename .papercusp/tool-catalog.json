@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 988,
+  "count": 989,
   "tools": [
     {
       "name": "ablation:report",
@@ -31430,7 +31430,7 @@
           "POST"
         ]
       },
-      "description": "Return the exact typed grading skeleton for a rubric. Optionally validate + canonicalize a complete ratings map, resolve registered instrument snapshots for the exact subject/window, bind positive release-gating ratings to the tested green SHA, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; acceptance, vetting links, terminal, and force remain emit-only metadata. Use scorecards:emit to file the validated result.",
+      "description": "Return a rubric grading skeleton or an explicit eligibility-only identity preflight. Optionally validate + canonicalize a complete ratings map, resolve registered instrument snapshots for the exact subject/window, bind positive release-gating ratings to the tested green SHA, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; acceptance, vetting links, terminal, and force remain emit-only metadata. Use scorecards:emit to file the validated result.",
       "capabilities": [
         "coord:read"
       ],
@@ -31457,9 +31457,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing. For an acceptance rubric it also returns `graderEligibility` — whether YOU may file the grading at all; read it BEFORE doing the grading work, not after. Pass the same `subject` and observation window to evaluate and emit so registered instruments measure the same run.",
+        "when": "Before grading/emitting a rubric scorecard, especially in GRADE mode. For reviewer identity preflight use { rubricRef, eligibilityOnly:true } yourself: it returns your graderEligibility and current rubric identity even when acceptance BAR proof is unready, without a grading skeleton or evidence validation. ok:true is not clearance; unknown, disqualified, author, or absent identity cannot grant canEmitGrading. Ordinary skeleton/ratings requests retain BAR readiness gates. Pass the same subject/window to ordinary evaluate and emit so instruments measure the same run.",
         "notWhen": "Reading scorecard history only — scorecards:list. Filing the validated scorecard — scorecards:emit.",
-        "chaining": "scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, subject, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the same subject/window, canonical ratings, and the returned rubricRevision, criteriaHash, and rubricMeaningRevision. Registered instruments execute on both calls; caller snapshots cannot assert platform provenance. `testedSha` is required when a releaseGating rubric has a pass-like rating."
+        "chaining": "Identity only: scorecards:evaluate { rubricRef, eligibilityOnly:true } with no grading/history inputs; then, if eligible and ready, use the ordinary grading flow. scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, subject, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the same subject/window, canonical ratings, and the returned rubricRevision, criteriaHash, and rubricMeaningRevision. Registered instruments execute on both calls; caller snapshots cannot assert platform provenance. `testedSha` is required when a releaseGating rubric has a pass-like rating."
       }
     },
     {
@@ -36876,6 +36876,44 @@
         "when": "A work-item reads as held by an orphan / stalled peer but work_items:release{force:true} refused (not_holder or force_unauthorized) — you have no authority to force-reclaim a LIVE holder's claim. This is the sanctioned next step instead of hand-rolling a ping-then-reclaim protocol.",
         "notWhen": "The holder is already dead/stale by presence, or you lead their fleet / hold queen authority — work_items:release{force:true} already succeeds in those cases, so don't wait out a deadline. A live peer genuinely progressing the item → coordinate directly (coord:send), not a reclaim request against active work.",
         "chaining": "work_items:release{force:true} refused → work_items:request_release → (holder releases/declines early, or the release-request-sweep fires the announced consequence at the deadline) → work_items:claim."
+      }
+    },
+    {
+      "name": "work_items:review-admission",
+      "http": {
+        "path": "/api/agent-tools/work_items/review-admission",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Request admission review on the exact original item while preserving custody and parks. Never assigns or wakes an executor.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "merge-resolver",
+        "content-fixer"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "An authenticated custodian or current same-fleet leader needs review without changing execution custody.",
+        "notWhen": "Assignment, claim release, reopening, policy overrides or executor pickup."
       }
     },
     {

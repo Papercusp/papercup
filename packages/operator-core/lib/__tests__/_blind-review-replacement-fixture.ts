@@ -51,6 +51,11 @@ export function replacementFixture(repoRoot: string, testFile: string) {
     if (query.includes('from harness_shared.agent_launch_idempotency')) return state.ledger ? [{ summary: copy(state.ledger) }] : [];
     throw new Error(`Unscripted replacement SQL: ${query}`);
   });
+  const originalQuery = queryMock.getMockImplementation()!;
+  queryMock.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    if (strings.join(' ').includes("to_regclass('harness_shared.blind_review_runtime_leases')")) return [{ name: null }];
+    return originalQuery(strings, ...values);
+  });
   const sql = Object.assign(queryMock, { json: (value: unknown) => value,
     begin: async (fn: (tx: unknown) => unknown): Promise<unknown> => fn(queryMock) });
   const input: BlindReviewReplacementInput = { workspaceId: 'ws-unit', harness: 'papercusp', slug: 'unit-review',

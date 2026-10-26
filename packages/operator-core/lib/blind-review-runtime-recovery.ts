@@ -1,21 +1,22 @@
 /** Cutoff hooks and bounded restart/expiry reconciliation for original custody. */
 import { getOrgPg } from '@papercusp/db-org';
-import { createCanonicalRuntimeCustodyStore } from './blind-review-runtime-authority';
-import { createLinuxRuntimeNamespaceBackend } from './blind-review-runtime-backend';
 import { runtimeReviewerIdentityFromLease, type createRuntimeCustodyStore, type RuntimeLease } from './blind-review-runtime-custody';
-import { releaseRuntimeNamespace, type RuntimeNamespaceBackend } from './blind-review-runtime-lifecycle';
+import type { RuntimeNamespaceBackend } from './blind-review-runtime-lifecycle';
 
 type Dependencies = { sql?: Sql; store?: ReturnType<typeof createRuntimeCustodyStore>; backend?: RuntimeNamespaceBackend };
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 async function installed(sql: Sql) {
   const [row] = await sql<Array<{ name: string | null }>>`
     SELECT to_regclass('harness_shared.blind_review_runtime_leases')::text AS name`;
-  return !!row?.name; // Rolling deployment: old schema has no runtime resources.
+  if (!row || !Object.hasOwn(row, 'name') || row.name !== null && typeof row.name !== 'string')
+    throw new Error('runtime_schema_observation_unknown');
+  return row.name !== null; // Rolling deployment: old schema has no runtime resources.
 }
 async function release(leases: RuntimeLease[], reason: string, deps: Dependencies) {
   if (!leases.length) return { cutoff: 0, released: 0, pending: 0 };
-  const store = deps.store ?? createCanonicalRuntimeCustodyStore(deps.sql);
-  const backend = deps.backend ?? createLinuxRuntimeNamespaceBackend();
+  const { releaseRuntimeNamespace } = await import('./blind-review-runtime-lifecycle');
+  const store = deps.store ?? (await import('./blind-review-runtime-authority')).createCanonicalRuntimeCustodyStore(deps.sql);
+  const backend = deps.backend ?? (await import('./blind-review-runtime-backend')).createLinuxRuntimeNamespaceBackend();
   let released = 0;
   for (const lease of leases) {
     const identity = runtimeReviewerIdentityFromLease(lease);
@@ -60,13 +61,18 @@ export async function retireRuntimeNamespacesForNativeEnd(input: {
 export async function reconcileRuntimeNamespaces(deps: Dependencies = {}) {
   const sql = deps.sql ?? getOrgPg().sql;
   if (!await installed(sql)) return { checked: 0, released: 0, pending: 0, failures: [] as string[] };
-  const store = deps.store ?? createCanonicalRuntimeCustodyStore(sql);
-  const backend = deps.backend ?? createLinuxRuntimeNamespaceBackend();
   const leases = await sql<RuntimeLease[]>`SELECT * FROM harness_shared.blind_review_runtime_leases
-    WHERE state IN ('allocating','ready','releasing') ORDER BY updated_at, id LIMIT 32`;
-  let released = 0, pending = 0;
+    WHERE state IN ('allocating','ready','releasing') ORDER BY reconciled_at NULLS FIRST, id LIMIT 8`;
+  if (!leases.length) return { checked: 0, released: 0, pending: 0, failures: [] as string[] };
+  const { releaseRuntimeNamespace } = await import('./blind-review-runtime-lifecycle');
+  const store = deps.store ?? (await import('./blind-review-runtime-authority')).createCanonicalRuntimeCustodyStore(sql);
+  const backend = deps.backend ?? (await import('./blind-review-runtime-backend')).createLinuxRuntimeNamespaceBackend();
+  let checked = 0, released = 0, pending = 0;
+  const started = Date.now();
   const failures: string[] = [];
   for (const original of leases) {
+    if (Date.now() - started > 20_000) break;
+    checked++;
     try {
       const identity = runtimeReviewerIdentityFromLease(original);
       const current = await store.reconciliationDisposition(identity, original.id);
@@ -88,7 +94,16 @@ export async function reconcileRuntimeNamespaces(deps: Dependencies = {}) {
     } catch {
       // Expose an accountable id without source, credentials, SQL or paths.
       failures.push(original.id); pending++;
+    } finally {
+      // Healthy/held/failed entries must rotate too. Otherwise a full first
+      // page of healthy runtimes can starve later expired custody forever.
+      try {
+        await sql`UPDATE harness_shared.blind_review_runtime_leases SET reconciled_at = clock_timestamp()
+          WHERE workspace_id = ${original.workspace_id} AND id = ${original.id}`;
+      } catch {
+        if (!failures.includes(original.id)) { failures.push(original.id); pending++; }
+      }
     }
   }
-  return { checked: leases.length, released, pending, failures };
+  return { checked, released, pending, failures };
 }

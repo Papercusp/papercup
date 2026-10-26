@@ -65,10 +65,27 @@ async function census(root: string, source: Source): Promise<VerifierSourceFile[
   return rows;
 }
 
-async function verifyInputs(root: string, source: Source, dependencies: Dependencies): Promise<void> {
+export class RuntimeBuildDependencyDrift extends Error {
+  readonly retainVerifierTree = true;
+  constructor(readonly stage: string, readonly changes: readonly string[]) {
+    super('broker_build_dependencies_changed');
+    this.name = 'RuntimeBuildDependencyDrift';
+  }
+}
+
+async function verifyInputs(root: string, source: Source, dependencies: Dependencies, stage = 'closure'): Promise<void> {
   await verifyVerifierSource(root, source, { runtimeArtifacts: true });
-  if (!isDeepStrictEqual(captureVerifierDependencies({ dest: root, receipt: source }), dependencies))
-    throw new Error('broker_build_dependencies_changed');
+  const current = captureVerifierDependencies({ dest: root, receipt: source });
+  if (!isDeepStrictEqual(current, dependencies)) {
+    const flatten = (receipt: Dependencies) => new Map(receipt.trees.flatMap(tree => tree.files.map(file =>
+      [tree.path + '/' + file.path, file] as const)));
+    const prior = flatten(dependencies), after = flatten(current);
+    const changes = [...new Set([...prior.keys(), ...after.keys()])].sort()
+      .filter(path => !isDeepStrictEqual(prior.get(path), after.get(path)));
+    // A refusal without its differing population used to discard the only
+    // evidence and force another whole native build just to diagnose it.
+    throw new RuntimeBuildDependencyDrift(stage, Object.freeze(changes.slice(0, 100)));
+  }
 }
 
 /** Re-census before copying; JSON-shaped or cross-build receipts cannot qualify outputs. */
@@ -120,20 +137,22 @@ export async function buildRuntimeGeneratedInputs(options: {
     await run(['apps/operator/scripts/setup-porcupine-runtime.sh', '--source',
       join(await realpath(options.repositoryRoot), 'apps/operator/public/porcupine/porcupine_params.pv')]);
     await run(['scripts/pc-heavy.sh', '--', 'npm', '--workspace', '@papercusp/operator-vite', 'run', 'prebuild']);
-    await verifyInputs(root, source, dependencies);
+    await verifyInputs(root, source, dependencies, 'prebuild');
     await run(['scripts/pc-heavy.sh', '--', 'npm', '--ignore-scripts', '--workspace', '@papercusp/operator-vite', 'run', 'build']);
     // The maintained singleflight wrapper owns its staged output variables and
     // publishes <VITE_BUILD_OUT_ROOT>/dist. Copy only that completed tree into
     // the measured closure; private markers and build logs stay outside it.
     await cp(join(work, 'spa-build/dist'), join(root, 'apps/operator/dist-verify/spa'),
       { recursive: true, force: false, errorOnExist: true });
+    await verifyInputs(root, source, dependencies, 'spa');
     await run(['apps/operator/bin/bundle-host.sh', 'bin/hono-host.ts',
       join(root, 'apps/operator/dist-verify/hono-host.mjs')]);
+    await verifyInputs(root, source, dependencies, 'host');
     if (options.nativeDesktop) await buildRuntimeDesktop({ root, work, sourceCommit: source.sourceCommit,
       env, signal, toolchain: options.nativeDesktop.toolchain });
     if (options.runtimeTools) await captureRuntimeTools(join(root, 'apps/operator/dist-verify/runtime'),
       options.runtimeTools, signal);
-    await verifyInputs(root, source, dependencies);
+    await verifyInputs(root, source, dependencies, 'runtime-tools');
     const files = (await census(root, source)).map(file => Object.freeze(file));
     const receipt = Object.freeze({ version: 1 as const, sourceReceiptSha256: sha(source),
       dependenciesSha256: sha(dependencies), files: Object.freeze(files) });

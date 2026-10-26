@@ -3841,6 +3841,8 @@ function applicableTerminalCompletion(snapshot: AdmissionMergeSnapshot): boolean
 }
 
 interface EndpointProtectionOptions {
+  /** Internal exact-subject review purpose, renewed transactionally; never merge authority. */
+  admissionReview?: boolean;
   requireImplementationReadiness?: boolean;
   reviewedEvidenceReady?: boolean;
   /**
@@ -3881,21 +3883,27 @@ function endpointProtection(
   const overdueClaimedReview = options.claimedReReviewAtMs !== undefined &&
     CLAIMED_REREVIEW_EXEMPT_ROLES.has(role) &&
     isOverdueClaimedReReview(snapshot, options.claimedReReviewAtMs);
+  const explicitReview = options.admissionReview === true &&
+    (role === 'promote' || role === 'hold' || role === 'reference') &&
+    admissionReviewCustodyEligible(snapshot);
   if (
     !terminalTwin &&
     snapshot.assignee &&
+    !explicitReview &&
     !overdueClaimedReview &&
     !(role === 'reference' && options.readOnlyClaimedComparison)
   ) {
     return { reason: 'claimed', detail: `${role} ${snapshot.id} is claimed by ${snapshot.assignee}` };
   }
   if (!terminalTwin && String(payload._claimHold) === 'true' &&
+      !explicitReview &&
       !(role === 'reference' && options.readOnlyAgentParkComparison && qualifiedAgentPark(snapshot))) {
     return { reason: 'claim-held', detail: `${role} ${snapshot.id} carries payload._claimHold` };
   }
   if (
     (snapshot.state === 'blocked' || snapshot.state === 'needs-human') &&
     !(snapshot.state === 'blocked' && overdueClaimedReview)
+    && !explicitReview
   ) {
     return { reason: 'blocked-state', detail: `${role} ${snapshot.id} is ${snapshot.state}` };
   }
@@ -3954,7 +3962,7 @@ function endpointProtection(
   // retain their protections.
   const blockers = activeExternalBlockers(snapshot.payload).filter((blocker) =>
     (!terminalTwin || blocker.kind === 'human' || blocker.capability !== 'live-dependency') &&
-    !(overdueClaimedReview && blocker.kind === 'runtime' && blocker.capability === 'live-dependency' &&
+    !((overdueClaimedReview || explicitReview) && blocker.kind === 'runtime' && blocker.capability === 'live-dependency' &&
       blocker.capabilitySource === 'explicit' &&
       (blocker.ref === ADMISSION_REVIEW_ALERT_KEY || blocker.ref === `${ADMISSION_REVIEW_ALERT_KEY}:${snapshot.id}`)),
   );
@@ -4186,6 +4194,36 @@ function qualifiedAgentPark(snapshot: AdmissionMergeSnapshot) {
     audit.atMs >= park.atMs && audit.atMs - park.atMs <= 60_000 && park.atMs >= snapshot.createdAtMs &&
     JSON.stringify(canonicalJsonValue(details.releaseContract ?? null)) ===
       JSON.stringify(canonicalJsonValue(park.payload.claim_hold_release ?? null));
+}
+
+/** Exact admission-only parks require the canonical hold audit and a complete
+ * release contract. A matching phrase in caller-controlled prose grants nothing. */
+function admissionReviewCustodyEligible(snapshot: AdmissionMergeSnapshot): boolean {
+  if (snapshot.origin !== 'local' || !['pending', 'unreviewed'].includes(snapshot.admission ?? '') ||
+      !['open', 'todo', 'failing', 'wip', 'in_progress', 'validating', 'blocked'].includes(snapshot.state)) return false;
+  const payload = recordValue(snapshot.payload);
+  if (Object.keys(payload).some(key => key.startsWith('held_open_')) || payload.needsOwnerAction === true) return false;
+  const exactBlocker = (blocker: ReturnType<typeof activeExternalBlockers>[number]) =>
+    blocker.kind === 'runtime' && blocker.capability === 'live-dependency' &&
+    blocker.capabilitySource === 'explicit' && blocker.ref === `${ADMISSION_REVIEW_ALERT_KEY}:${snapshot.id}`;
+  const blockers = activeExternalBlockers(snapshot.payload);
+  if (blockers.some(blocker => !exactBlocker(blocker))) return false;
+  if (String(payload._claimHold) !== 'true') return snapshot.state !== 'blocked';
+  if (snapshot.assignee || blockers.length !== 1 || !exactBlocker(blockers[0]!)) return false;
+  // Reuse canonical audit equality; its open-state restriction belongs to the
+  // older reference-only comparison. This distinct purpose also permits blocked.
+  if (!qualifiedAgentPark({ ...snapshot, state: 'open' })) return false;
+  const contract = recordValue(payload.claim_hold_release);
+  return ['condition', 'owner', 'trigger', 'evidence'].every(key =>
+    typeof contract[key] === 'string' && (contract[key] as string).trim().length > 0) &&
+    contract.owner === payload.claim_hold_by &&
+    contract.trigger === `work-item:claimable:${snapshot.id}` &&
+    !looksLikePolicyGate(String(contract.condition));
+}
+
+export function admissionReviewSubjectEligible(snapshot: AdmissionMergeSnapshot): boolean {
+  return admissionReviewCustodyEligible(snapshot) &&
+    endpointProtection(snapshot, 'promote', { admissionReview: true }) === null;
 }
 
 /** Independent of D-338: neither exception can compose with the other's protection. */
@@ -5060,6 +5098,11 @@ async function persistApprovedAdmissionMerge(
 }
 
 interface PersistAdmissionPlanInput {
+  reviewOnly?: {
+    itemId: string;
+    beforeWrite: (sql: OrgSql) => Promise<void>;
+    afterWrite: (sql: OrgSql) => Promise<void>;
+  };
   workspaceId: string;
   harnessSlug: string;
   runId: string;
@@ -5258,6 +5301,7 @@ async function persistAdmissionPlanInTransaction(
   const capturedById = new Map(input.snapshots.map((snapshot) => [snapshot.id, snapshot]));
   const reviewedReadyIds = new Set(input.reviewedReadyIds ?? []);
   const protectionOptions = (itemId: string): EndpointProtectionOptions => ({
+    admissionReview: input.reviewOnly?.itemId === itemId,
     requireImplementationReadiness: input.requireImplementationReadiness,
     reviewedEvidenceReady: reviewedReadyIds.has(itemId),
     claimedReReviewAtMs: input.nowMs,
@@ -5278,6 +5322,9 @@ async function persistAdmissionPlanInTransaction(
     ids: relevantIds,
     lockRows: true,
   });
+  // All endpoint rows are locked; renew the real WRITE policy and compare the
+  // signed request/custody before the first adjudication or admission write.
+  await input.reviewOnly?.beforeWrite(sql);
 
   const guardRefusals: AdmissionMergeGuardRefusal[] = [];
   const refusalKeys = new Set<string>();
@@ -5531,6 +5578,9 @@ async function persistAdmissionPlanInTransaction(
     actor,
     mergeSnapshots: liveById,
   });
+  if (input.reviewOnly && safePlan.dispositions.some(row => row.itemId === input.reviewOnly!.itemId)) {
+    await input.reviewOnly.afterWrite(sql);
+  }
 
   const postRows = relevantIds.length
     ? await sql<Array<{ feature_id: string; status: string | null; admission: string | null; payload: unknown }>>`
@@ -5838,6 +5888,7 @@ export async function applyReviewedAdmissionCleanup(
 }
 
 export async function runWorkItemAdmissionPromoter(opts: {
+  reviewOnly?: PersistAdmissionPlanInput['reviewOnly'];
   workspaceId: string;
   harnessSlug: string;
   llmCall: PromoterLlmCall;
@@ -5993,9 +6044,17 @@ export async function runWorkItemAdmissionPromoter(opts: {
     const deferredToModel = noModel
       ? fullPlan.dispositions.filter((disposition) => disposition.action === 'hold').length
       : 0;
-    const plan: PromoterPlan = noModel
+    const ordinaryPlan: PromoterPlan = noModel
       ? { ...fullPlan, dispositions: fullPlan.dispositions.filter((disposition) => disposition.action !== 'hold') }
       : fullPlan;
+    // Review cannot mutate twins, merge endpoints or links. A duplicate finding
+    // stays held for a later independently authorized workflow.
+    const plan: PromoterPlan = opts.reviewOnly ? {
+      dispositions: ordinaryPlan.dispositions.filter(row => row.itemId === opts.reviewOnly!.itemId).map(row =>
+        row.action === 'merge' ? { itemId: row.itemId, action: 'hold' as const,
+          reason: 'review-only purpose cannot merge endpoints' } : row),
+      adjudications: [], relatedPairs: [],
+    } : ordinaryPlan;
     await opts.beforePersist?.();
     const persisted = await persistAdmissionPlan(sql, {
       workspaceId: opts.workspaceId,
@@ -6007,10 +6066,11 @@ export async function runWorkItemAdmissionPromoter(opts: {
       plan,
       snapshots: [...snapshotsById.values()],
       mutationItemIds: targetItemIds,
+      reviewOnly: opts.reviewOnly,
       componentScreeningItemIds: targetItemIds === undefined && !noModel ? opts.componentScreeningItemIds : undefined,
     });
     const pendingIds = new Set(pending.filter((item) => item.admission === 'pending').map((item) => item.id));
-    await (opts.onNewlyAdmitted ?? announceNewlyAdmittedWorkItems)(
+    if (!opts.reviewOnly) await (opts.onNewlyAdmitted ?? announceNewlyAdmittedWorkItems)(
       persisted.promotedIds.filter((id) => pendingIds.has(id)).map((id) => ({ id, harness: opts.harnessSlug })),
     );
     const promoted = persisted.promotedIds.length;

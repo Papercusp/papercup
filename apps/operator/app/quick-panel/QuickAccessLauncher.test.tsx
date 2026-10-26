@@ -86,12 +86,27 @@ describe('Quick Access launcher', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(document.activeElement?.id).toBe('quick-access-preview');
   });
-  it('reads the report inside this popup and refuses stale report bodies', async () => {
+  it('reads the report inside this popup', async () => {
     mount();
     fireEvent.click(scope('Reports'));
     expect(await screen.findByText('Exact report body')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Read report' }));
     expect(await screen.findByRole('dialog', { name: 'Report' })).toBeTruthy();
+  });
+  it('refuses a stale body from a different report identity', async () => {
+    const normal = mocks.queries.getMockImplementation()!;
+    mocks.queries.mockImplementation((opts: { queryName: string }) =>
+      opts.queryName === 'reports.get'
+        ? { data: [{ ...report, report_id: 'previous-report', body_md: 'Private previous body' }], loading: false, error: null }
+        : normal(opts));
+    mount();
+    fireEvent.click(scope('Reports'));
+    expect(await screen.findByText('Report not found or unavailable.')).toBeTruthy();
+    expect(screen.queryByText('Private previous body')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Read report' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Report' });
+    expect(within(dialog).getByText('Report not found or unavailable.')).toBeTruthy();
+    expect(within(dialog).queryByText('Private previous body')).toBeNull();
   });
   it('shows partial-source errors and reports-disabled state instead of false empty success', async () => {
     mocks.reportsEnabled = false;
@@ -115,7 +130,14 @@ describe('Exact agent-window focus', () => {
   });
   it('resolves local launch records through the canonical focus action', async () => {
     await focusQuickAgent(agent);
-    expect(mocks.focus).toHaveBeenCalledWith(expect.objectContaining({ sessionOwnerId: 'su-precise', advSessionId: 42, windowId: 'window-42', pid: 99 }));
+    expect(mocks.focus).toHaveBeenCalledWith(expect.objectContaining({ sessionOwnerId: 'su-precise', advSessionId: 42, windowId: 'window-42' }));
+    expect(mocks.focus.mock.calls[0][0]).not.toHaveProperty('pid');
+  });
+  it('uses the launch identity when a shared terminal PID has no recorded window', async () => {
+    await focusQuickAgent({ ...agent, windowId: null });
+    expect(mocks.focus).toHaveBeenCalledWith(expect.objectContaining({ sessionOwnerId: 'su-precise', advSessionId: 42 }));
+    expect(mocks.focus.mock.calls[0][0]).not.toHaveProperty('pid');
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
   it('refuses browser, remote, ended and unrelated content-origin targets', async () => {
     mocks.isDesktop.mockReturnValue(false);

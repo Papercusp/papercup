@@ -213,6 +213,9 @@ async function admissionPromoterPass(
   const { runAdmissionRecoveries, readAuthorizedComponentScreening } = await import('../../work-item-admission-recovery');
   const completed = await completedOrdinaryResult(deps.sql, options, options.runId, true);
   if (completed) return completed;
+  const { runAdmissionReviews } = await import('../../work-item-admission-review');
+  const reviewed = await runAdmissionReviews(options, deps.sql, deps.llmCall);
+  if (reviewed) return reviewed;
   let ordinarySlot = options.targetItemIds === undefined ? await claimOrdinarySlot(deps.sql, options) : null;
   if (ordinarySlot?.completedRunIds?.includes(options.runId) && ordinarySlot.result) return ordinarySlot.result;
   const recoveryRuns: PromoterRunResult[] = [];

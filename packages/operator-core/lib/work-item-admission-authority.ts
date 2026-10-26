@@ -190,3 +190,41 @@ export async function authorizeAdmissionReplay(
     }
   }
 }
+
+/** Renew the actual review WRITE operation. Dispatch/claim/read permissions are
+ * deliberately irrelevant. The applied policy revision is an observation only;
+ * callers must renew it at the transactional persistence boundary. */
+export async function authorizeAdmissionReviewReplay(
+  sql: Sql, scope: AdmissionRecoveryScope,
+  request: { caller: string; requestId: string; purpose: 'admission-review'; authority: AdmissionRecoveryAuthority },
+): Promise<string> {
+  const ctx = await admissionReplayContext(sql, scope, request.caller, request.authority);
+  const { PROJECTED_DEPS } = await import('./projected-tool-deps');
+  await import('./agent-tools/work_items/review-admission');
+  const name = 'work_items:review-admission';
+  const tool = lookupByMcpName(name);
+  if (!tool || ctx.profile === 'power' && tool.profile === 'engineer') {
+    throw new AdmissionAuthorityRefused(`${name}: canonical operation unavailable for this profile`);
+  }
+  let revision: ReturnType<typeof appliedExecutionRevision> = null;
+  const verdict = await runWithWorkspaceIfConcrete(scope.workspaceId, () =>
+    preflightDispatchStack(tool, name, {
+      id: scope.workItemId, harness: scope.harnessSlug,
+      requestId: request.requestId, purpose: request.purpose,
+    }, ctx, {
+      ...PROJECTED_DEPS,
+      kernelEnforcement: async input => {
+        if (!PROJECTED_DEPS.kernelEnforcement) throw new AdmissionAuthorityUnavailable('review policy reader unavailable');
+        const decision = await PROJECTED_DEPS.kernelEnforcement(input);
+        if (input.phase === 'enforce') revision = appliedExecutionRevision(decision, 'enforce');
+        return decision;
+      },
+    }));
+  if (!verdict.allowed) {
+    const message = `${name}: ${verdict.error?.message ?? 'current policy denied'}`;
+    if (verdict.error?.meta?.kernelCode === 'policy-unavailable') throw new AdmissionAuthorityUnavailable(message);
+    throw new AdmissionAuthorityRefused(message);
+  }
+  if (!revision) throw new AdmissionAuthorityRefused(`${name}: current applied policy revision unavailable`);
+  return JSON.stringify(revision);
+}

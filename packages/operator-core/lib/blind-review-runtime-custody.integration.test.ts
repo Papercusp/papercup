@@ -166,6 +166,30 @@ describe('runtime cutoff hooks and restart recovery', () => {
     expect(row!.state).toBe('releasing'); expect(row!.revoked_at).not.toBeNull();
     expect(b.teardowns).toContain(lease.id);
   });
+
+  it('rotates healthy first-page entries so a later expired lease cannot be starved', async () => {
+    const leases: string[] = [];
+    for (let index = 0; index < 33; index++) {
+      const f = await fixture(), { lease } = await f.allocate();
+      const plan = await f.store.beginProvisioning(f.identity, lease.id);
+      for (const resource of plan.resources) await f.store.recordResource(f.identity, lease.id, resource.id, { private: 'fixture' });
+      await f.store.markReady(f.identity, lease.id); leases.push(lease.id);
+    }
+    const target = leases.at(-1)!;
+    await fx.admin`UPDATE harness_shared.blind_review_runtime_leases
+      SET expires_at = clock_timestamp() - interval '1 second' WHERE id = ${target}`;
+    const store = createRuntimeCustodyStore({ sql: fx.admin as never, checkAuthority: async () => true });
+    const b = recoveryBackend(); b.keepLive();
+    for (let round = 0; round < 8 && !b.teardowns.includes(target); round++) {
+      await reconcileRuntimeNamespaces({ sql: fx.admin as never, store, backend: b.backend });
+    }
+    // Absence is deliberately unknown, so the target remains releasing; the
+    // required outcome is that its cutoff/cleanup was reached despite 32 live
+    // healthy rows ahead of it, not a fabricated successful absence claim.
+    expect(b.teardowns).toContain(target);
+    const [row] = await fx.admin`SELECT state FROM harness_shared.blind_review_runtime_leases WHERE id = ${target}`;
+    expect(row!.state).toBe('releasing');
+  });
 });
 
 async function canonicalFixture() {
