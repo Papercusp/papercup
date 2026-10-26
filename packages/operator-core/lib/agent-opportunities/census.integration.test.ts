@@ -11,6 +11,7 @@ import { MONITORED_FAMILIES } from './pipeline';
 import { runSqlOpportunityCensus } from '../harness/routines/sql-read-census-action';
 import { buildScratchUri, safeScratchFilesystemPath } from '../scratch-uri';
 import { writeScratchReference } from '../scratch-reference';
+import { miningScopeId } from './privacy';
 let f: Awaited<ReturnType<typeof sqlMiningFixture>>, dir: string, oldRoot: string | undefined;
 beforeAll(async () => {
   f = await sqlMiningFixture();
@@ -18,6 +19,10 @@ beforeAll(async () => {
   oldRoot = process.env.PAPERCUSP_SCRATCH_ROOT; process.env.PAPERCUSP_SCRATCH_ROOT = dir;
   const migration = new URL('../../../../libs/papercusp/libs/db/sql/1583-sql-intent-monitored-family-runs.sql', import.meta.url);
   await f.db.adminSql.unsafe(readFileSync(existsSync(migration) ? migration : new URL(migration.href + '.DRAFT'), 'utf8'));
+  for (const name of ['1581-sql-intent-source-retention-boundary', '1582-sql-intent-retention-settlement-preserves-coverage']) {
+    const receipt = new URL(`../../../../libs/papercusp/libs/db/sql/${name}.sql`, import.meta.url);
+    if (!existsSync(receipt)) await f.db.adminSql.unsafe(readFileSync(new URL(receipt.href + '.DRAFT'), 'utf8'));
+  }
 }, 120_000);
 afterAll(async () => {
   if (oldRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
@@ -218,8 +223,8 @@ it('drains native activity pages while retaining earlier provider cells and expl
   const native = result.families.find(row => row.family === 'native-operation')!;
   expect(native).toMatchObject({ scanned: 2, coverage: 'UNKNOWN', diagnostics: { reviewEligible: false,
     sourceCoverage: { pages: 2, windowExhausted: true, complete: false, matrix: expect.arrayContaining([
-      { provider: 'codex', kind: 'browser', source: 'activity', status: 'truncated' },
-      { provider: 'claude', kind: 'browser', source: 'activity', status: 'truncated' },
+      { provider: 'codex', kind: 'browser', source: 'activity', status: 'measured' },
+      { provider: 'claude', kind: 'browser', source: 'activity', status: 'measured' },
       { provider: 'omp', kind: 'browser', source: 'activity', status: 'missing' },
       { provider: 'codex', kind: 'browser', source: 'transcript', status: 'missing' },
     ]) },
@@ -425,6 +430,22 @@ it('persists native candidate identities from bound provider transcripts and ret
     family: 'native-operation', runId: result.runId, candidateId: row!.diagnostics.candidates[0].id }, { locateTranscript });
   const allowed = await read();
   expect(allowed).toMatchObject({ metrics: { logicalDemand: 2, successful: 2 } });
+  // A trusted native capture receipt is a separate prerequisite from readable
+  // records. This test seam is NOT a production or deployed coverage receipt.
+  let continuity: 'complete' | 'gap' | 'unknown' = 'complete';
+  const deps = { locateTranscript: async () => path, readContinuity: async () => continuity };
+  const eligible = await runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }), deps);
+  const native = eligible.families.find(r => r.family === 'native-operation')!;
+  expect(native).toMatchObject({ coverage: 'UNKNOWN', diagnostics: { reviewEligible: false,
+    sourceCoverage: { incomplete: 0, windowExhausted: true },
+    candidates: [expect.objectContaining({ reviewEligible: false })] } });
+  expect((native.diagnostics.sourceCoverage as { matrix: { source: string; status: string }[] }).matrix
+    .filter(c => c.source === 'transcript' && c.status !== 'missing').every(c => c.status === 'measured')).toBe(true);
+  const eligibleRead = () => readProductionMonitoredCandidate({ ...opts, family: 'native-operation',
+    runId: eligible.runId, candidateId: row!.diagnostics.candidates[0].id }, deps);
+  expect(await eligibleRead()).toMatchObject({ reviewEligible: false });
+  continuity = 'gap'; expect(await eligibleRead()).toMatchObject({ reviewEligible: false });
+  continuity = 'complete'; expect(await eligibleRead()).toMatchObject({ reviewEligible: false });
   // A copy's deletion/change revokes the entire old aggregate, even when another
   // canonical activity copy remains. A fresh allowed read never uses an ACL cache.
   const original = readFileSync(path);
@@ -440,6 +461,10 @@ it('persists native candidate identities from bound provider transcripts and ret
   expect(await read()).toEqual(allowed);
   await rm(path);
   expect(await read()).toBeNull();
+  expect(await eligibleRead()).toBeNull();
+  const lost = await runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }), deps);
+  expect(lost.families.find(r => r.family === 'native-operation')).toMatchObject({ coverage: 'UNKNOWN',
+    diagnostics: { reviewEligible: false, sourceCoverage: { incomplete: 2 } } });
   const missing = await runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }),
     { locateTranscript: async () => path });
   const unknown = missing.families.find(r => r.family === 'native-operation')!;
@@ -447,4 +472,113 @@ it('persists native candidate identities from bound provider transcripts and ret
     candidates: [expect.objectContaining({ reviewEligible: false, metrics: { logicalDemand: 2, successful: 0, unknown: 2 } })] } });
   const evidence = (unknown.diagnostics.candidates as Array<{ sourceRefs: string[] }>)[0]!;
   expect(evidence.sourceRefs).toHaveLength(2);
+});
+
+it('R13-CONTRACT ledger continuity and current output completeness gate all three activity candidate families', async () => {
+  const ids: string[] = [];
+  for (const query of ['job queue', 'job status', 'job owner'])
+    ids.push(await ledgerEvidence('tools:find', { query }, { results: [] }, '2026-10-24T11:00:00Z'));
+  for (const episode of [0, 1]) {
+    const start = Date.parse('2026-10-24T12:00:00Z') + episode * 600_000;
+    const at = (offset: number) => new Date(start + offset * 1000).toISOString();
+    const uri = `papercusp://scratch/continuity-${episode}`;
+    ids.push(await ledgerEvidence('plans:get', { slug: 'private-recovery' }, { ok: true }, at(0), 'ok', { spillUri: uri }));
+    ids.push(await ledgerEvidence('capability:read', { uri }, { ok: true }, at(1)));
+    ids.push(await ledgerEvidence('docs:get', { slug: 'private-repair' }, { ok: false, error: 'invalid_args' }, at(10), 'error'));
+    ids.push(await ledgerEvidence('docs:get', { slug: 'private-repair', corrected: true }, { ok: true }, at(11)));
+  }
+  const opts = f.opts({ retainedFrom: undefined, rowBudget: 2, timeBudgetMs: 30_000 });
+  const run = () => runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }));
+  const families = ['search-reformulation', 'result-recovery', 'workaround-funnel'] as const;
+  // No oldest-row, policy or caller lookback inference can create a receipt.
+  const absent = await run();
+  for (const family of families) expect(absent.families.find(r => r.family === family)).toMatchObject({ coverage: 'UNKNOWN' });
+  await f.db.adminSql`INSERT INTO harness_shared.sql_intent_progress
+    (workspace_id,scope_id,harness_slug,retained_from) VALUES (${opts.workspaceId},
+      ${miningScopeId(opts.scope, opts.harnessSlug)},${opts.harnessSlug},'2026-10-01T00:00:00Z')`;
+  const complete = await run();
+  for (const family of families) {
+    const row = complete.families.find(r => r.family === family)!;
+    expect(row).toMatchObject({ coverage: 'measured', diagnostics: { reviewEligible: true,
+      continuity: { before: 'complete', after: 'complete' },
+      sourceCoverage: { incomplete: 0, pages: family === 'search-reformulation' ? 2 : 6 } } });
+    expect(row.diagnostics.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ reviewEligible: true })]));
+  }
+  const candidate = (complete.families.find(r => r.family === 'search-reformulation')!.diagnostics.candidates as { id: string }[])[0]!;
+  const read = () => readProductionMonitoredCandidate({ ...opts, family: 'search-reformulation',
+    runId: complete.runId, candidateId: candidate.id });
+  expect(await read()).toMatchObject({ reviewEligible: true });
+  const [source] = await f.db.adminSql`SELECT output_ref FROM harness_shared.tool_invocations WHERE id=${ids[0]!}::bigint`;
+  const path = safeScratchFilesystemPath(source!.output_ref), bytes = readFileSync(path);
+  await rm(path); expect(await read()).toBeNull();
+  const lost = await run();
+  expect(lost.families.find(r => r.family === 'search-reformulation')).toMatchObject({ coverage: 'UNKNOWN',
+    diagnostics: { reviewEligible: false, sourceCoverage: { incomplete: 1 } } });
+  await writeFile(path, bytes); expect(await read()).toMatchObject({ reviewEligible: true });
+  await f.db.adminSql`ALTER TABLE harness_shared.tool_invocations DISABLE TRIGGER sql_intent_retention_delete`;
+  try {
+    expect(await read()).toBeNull();
+    const uninstrumented = await run();
+    for (const family of families) expect(uninstrumented.families.find(r => r.family === family)).toMatchObject({ coverage: 'UNKNOWN' });
+  } finally { await f.db.adminSql`ALTER TABLE harness_shared.tool_invocations ENABLE ALWAYS TRIGGER sql_intent_retention_delete`; }
+  await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${ids.at(-1)!}::bigint`;
+  expect(await read()).toBeNull();
+  const gap = await run();
+  for (const family of families) expect(gap.families.find(r => r.family === family)).toMatchObject({ coverage: 'UNKNOWN',
+    diagnostics: { reviewEligible: false, continuity: { before: 'gap', after: 'gap' } } });
+});
+
+it('native eligibility needs the full provider/kind population and loses eligibility with one missing transcript', async () => {
+  const paths = new Map<string, string>();
+  // Cross a decimal-width boundary: ORDER BY the id::text projection would
+  // disagree with the numeric keyset predicate and silently omit whole cells.
+  let sourceId = 990;
+  for (const provider of ['codex', 'claude', 'omp'] as const) {
+    const session = randomUUID(), actor = `su-native-${provider}`, lines: unknown[] = [];
+    await f.db.adminSql`INSERT INTO harness_shared.adv_sessions (workspace_id,mode,coord_owner_id,agent,session_id)
+      VALUES ('sql-mining-test','console',${actor},${provider},${session})`;
+    for (const kind of ['shell', 'browser']) for (const i of [0, 1]) {
+      const callId = `${kind}-${i}`, at = '2026-10-24T12:00:00Z';
+      const tool = kind === 'browser' ? 'browser' : provider === 'codex' ? 'exec_command' : provider === 'claude' ? 'Bash' : 'bash';
+      const args = kind === 'browser' ? { action: 'click', selector: '#save' } : { command: 'rg private src' };
+      const body = kind === 'browser' ? { ok: true } : { exit_code: 0 };
+      await f.db.adminSql`INSERT INTO harness_shared.agent_activity
+        (id,workspace_id,harness_slug,owner_id,agent,session_id,kind,tool_name,phase,tool_use_id,detail,status,created_at)
+        VALUES (${sourceId++},'sql-mining-test','mining-test',${actor},${provider},${session},'tool',${tool},'pre',${callId},
+          ${JSON.stringify(args)}::jsonb,'ok',${at}::timestamptz)`;
+      if (provider === 'codex') lines.push(
+        { timestamp: at, type: 'response_item', payload: { type: 'function_call', name: tool, call_id: callId, arguments: JSON.stringify(args) } },
+        { timestamp: at, type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: JSON.stringify(body) } });
+      else if (provider === 'claude') lines.push(
+        { timestamp: at, type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: callId, name: tool, input: args }] } },
+        { timestamp: at, type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: callId, content: JSON.stringify(body) }] } });
+      else lines.push(
+        { timestamp: at, type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', id: callId, name: tool, arguments: args }] } },
+        { timestamp: at, type: 'message', message: { role: 'toolResult', toolCallId: callId, content: [{ type: 'text', text: JSON.stringify(body) }] } });
+    }
+    const path = join(dir, `${session}.jsonl`); paths.set(provider, path);
+    await writeFile(path, lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+  }
+  let continuity: 'complete' | 'gap' = 'complete';
+  const deps: NonNullable<Parameters<typeof runMonitoredCensus>[2]> = {
+    locateTranscript: async ({ provider }) => paths.get(provider) ?? null,
+    readContinuity: async ({ family }) => family === 'native-operation' ? continuity : 'unknown',
+  };
+  const opts = f.opts({ rowBudget: 2, timeBudgetMs: 30_000 });
+  const [population] = await f.db.adminSql`SELECT count(*)::int AS count FROM harness_shared.agent_activity`;
+  expect(population!.count).toBe(12);
+  const run = () => runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }), deps);
+  const complete = await run(), native = complete.families.find(r => r.family === 'native-operation')!;
+  expect(native).toMatchObject({ coverage: 'measured', diagnostics: { reviewEligible: true, sourceCoverage: { incomplete: 0, pages: 6 } } });
+  const candidates = native.diagnostics.candidates as { id: string; reviewEligible: boolean }[];
+  expect(candidates).toHaveLength(2); expect(candidates.every(c => c.reviewEligible)).toBe(true);
+  const read = () => readProductionMonitoredCandidate({ ...opts, family: 'native-operation',
+    runId: complete.runId, candidateId: candidates[0]!.id }, deps);
+  expect(await read()).toMatchObject({ reviewEligible: true });
+  continuity = 'gap'; expect(await read()).toBeNull(); continuity = 'complete';
+  const path = paths.get('omp')!, original = readFileSync(path);
+  await rm(path); expect(await read()).toBeNull();
+  expect((await run()).families.find(r => r.family === 'native-operation')).toMatchObject({ coverage: 'UNKNOWN',
+    diagnostics: { reviewEligible: false, sourceCoverage: { incomplete: 4 } } });
+  await writeFile(path, original); expect(await read()).toMatchObject({ reviewEligible: true });
 });

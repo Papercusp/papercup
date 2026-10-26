@@ -15,6 +15,18 @@ export const source = (id: string, over: Partial<SearchSource> = {}): SearchSour
 });
 const observe = (s: SearchSource, scoped = scope) => observeNativeOperation(s, scoped)!;
 
+it('native UNKNOWN observations retain exact output availability for current-source revision checks', () => {
+  const call = source('unknown-result');
+  const available = observe({ ...call, result: { ...call.result!, body: { unrecognized: true } } });
+  const missing = observe({ ...call, result: null });
+  expect(available.outcome).toBe('UNKNOWN');
+  expect(missing.outcome).toBe('UNKNOWN');
+  const { resultAvailable: before, ...retained } = available;
+  const { resultAvailable: after, ...lost } = missing;
+  expect(before).toBe(true); expect(after).toBe(false);
+  expect(retained).toEqual(lost);
+});
+
 it('R12-CONTRACT', () => {
   const shell = [source('one'), source('two')].map(s => observe(s));
   const browser = [source('click1', { tool: 'browser_click', args: { selector: '#save' } }),

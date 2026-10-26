@@ -191,7 +191,7 @@ export interface SearchCorpusOptions {
  */
 export async function fetchSearchReformulations(opts: SearchCorpusOptions): Promise<{
   observations: SearchObservation[]; next: SqlCorpusCursor | null;
-  coverage: { scanned: number; denied: number; status: 'unknown' | 'truncated'; providers: string[]; unmeasuredProviders: string[] };
+  coverage: { scanned: number; denied: number; incomplete: number; status: 'unknown' | 'truncated'; providers: string[]; unmeasuredProviders: string[] };
 }> {
   miningScopeId(opts.scope, opts.harnessSlug);
   const since = Date.parse(opts.since), until = Date.parse(opts.until);
@@ -228,6 +228,7 @@ export async function fetchSearchReformulations(opts: SearchCorpusOptions): Prom
       FROM harness_shared.tool_invocations WHERE workspace_id=${opts.workspaceId} AND harness_slug=${opts.harnessSlug}
         AND id=ANY(${[...permissions.keys()]}::bigint[])` : [];
   const byId = new Map(records.map(record => [record.id, record]));
+  let incomplete = permissions.size - records.length;
   const hydrate = async (row: { id: string; at: string }) => {
     const record = byId.get(row.id), permission = permissions.get(row.id);
     if (!permission) return;
@@ -244,13 +245,18 @@ export async function fetchSearchReformulations(opts: SearchCorpusOptions): Prom
       tool: record.tool_name, args: record.args_json, callId: `invocation:${row.id}`, identityAuthority: 'ledger',
       sourceComplete: object(record.args_json)._truncated !== true,
       result: output ? { ...output, status: record.status } : null }, opts.scope);
-    if (observation) observations.push(observation);
+    if (observation) {
+      observations.push(observation);
+      if (!observation.operationToken || !observation.resultAvailable || observation.truncated) incomplete++;
+    } else if (record.agent && record.call_origin === 'agent' && record.call_origin_source === 'declared'
+      && !nested && !['test', 'fixture', 'replay'].includes(record.role)
+      && object(record.args_json)._truncated === true) incomplete++;
   };
   for (let start = 0; start < page.length; start += 16) {
     await Promise.all(page.slice(start, start + 16).map(hydrate));
   }
   observations.sort((a, b) => a.at.localeCompare(b.at) || a.sourceToken.localeCompare(b.sourceToken));
   return { observations, next: rows.length > limit ? page[page.length - 1]! : null,
-    coverage: { scanned: page.length, denied: page.length - permissions.size, status: rows.length > limit || opts.after ? 'truncated' : 'unknown',
+    coverage: { scanned: page.length, denied: page.length - permissions.size, incomplete, status: rows.length > limit || opts.after ? 'truncated' : 'unknown',
       providers: ['ledger'], unmeasuredProviders: ['claude', 'codex', 'omp'] } };
 }

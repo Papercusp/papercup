@@ -13,7 +13,7 @@ import { productionOpportunityReaders } from './source-readers';
 import { fetchSearchReformulations, groupSearchReformulations } from './search-reformulation';
 import { fetchResultRecovery, rankResultRecovery } from './result-recovery';
 import { fetchWorkaroundFunnels, rankWorkarounds } from './workaround-funnel';
-import { fetchNativeOperations, groupNativeOperations } from './native-operation';
+import { fetchNativeOperations, groupNativeOperations, NATIVE_PROVIDERS, type NativeCoverage } from './native-operation';
 
 export interface FamilyMeasurement {
   family: MonitoredFamily; coverage: 'measured' | 'missing' | 'unsupported' | 'truncated' | 'UNKNOWN';
@@ -26,6 +26,9 @@ interface CandidateEvidence {
   id: string; sourceRefs: string[]; operationRefs: string[];
   metrics: Record<string, number>; reviewEligible: boolean;
 }
+const nativeProvidersMeasured = (matrix?: readonly { provider: string; kind: string; source: string; status: string }[]) => NATIVE_PROVIDERS.every(provider =>
+  (['shell', 'browser'] as const).every(kind => matrix?.some(c =>
+    c.provider === provider && c.kind === kind && c.source === 'transcript' && c.status === 'measured')));
 const candidateMetricKeys: Record<MonitoredFamily, readonly string[]> = {
   sql: ['successful', 'error', 'refused', 'unknown', 'verifiedAgents', 'activeDays'],
   'search-reformulation': ['logicalDemand', 'reformulations', 'fallbacks'],
@@ -135,6 +138,8 @@ export async function readProductionMonitoredCandidate(
         || Date.parse(window.until) - Date.parse(window.since) !== 7 * 86400_000
         || !revisions || typeof revisions !== 'object' || Array.isArray(revisions)
         || candidate.sourceRefs.some(token => typeof revisions[token] !== 'string' || !/^[a-f0-9]{64}$/.test(revisions[token] as string))) return false;
+      if (candidate.reviewEligible && await readers.readContinuity({ family: opts.family,
+        since: window.since, until: window.until }) !== 'complete') return false;
       const common = { ...opts, since: window.since, until: window.until,
         authorizeSource: readers.authorizeLedgerSource, readOutput: readers.readOutput };
       const pageSize = positive(opts.rowBudget, 250, 2000), rowCap = positive(opts.windowRowBudget, 20_000, 100_000);
@@ -148,6 +153,8 @@ export async function readProductionMonitoredCandidate(
             : opts.family === 'native-operation' ? await drain(p => fetchNativeOperations({ ...common, ...p,
               authorizeSource: readers.authorizeActivitySource, readTranscript: readers.readTranscript })) : null;
       if (!page || page.next || page.coverage.denied) return false;
+      if (candidate.reviewEligible && (page.coverage.incomplete !== 0 || opts.family === 'native-operation'
+        && !nativeProvidersMeasured('matrix' in page.coverage ? page.coverage.matrix : undefined))) return false;
       const current = observationRevisions(opts.scope, page.observations);
       return candidate.sourceRefs.every(token => current[token] !== undefined && current[token] === revisions[token]);
     } });
@@ -176,13 +183,13 @@ const positive = (value: number | undefined, fallback: number, max: number) =>
  * Exhausting the ledger window does not establish retention or provider completeness.
  * Check cancellation between pages so a timed-out family cannot keep scanning in the background.
  */
-async function drainWindow<T, C extends { scanned: number; denied: number }>(
+async function drainWindow<T, C extends { scanned: number; denied: number; incomplete?: number }>(
   fetch: (page: { after?: SqlCorpusCursor; limit: number }) => Promise<{
     observations: T[]; next: SqlCorpusCursor | null; coverage: C;
   }>, pageSize: number, rowCap: number, deadline: number, cancelled: () => boolean,
 ) {
   const observations: T[] = [], visited = new Set<string>();
-  let after: SqlCorpusCursor | undefined, scanned = 0, denied = 0, pages = 0;
+  let after: SqlCorpusCursor | undefined, scanned = 0, denied = 0, incomplete = 0, pages = 0;
   let lastCoverage: C;
   // Native cells carry the conservative strongest observed status across pages;
   // a later empty page must not erase evidence or a truncation from an earlier page.
@@ -198,6 +205,7 @@ async function drainWindow<T, C extends { scanned: number; denied: number }>(
       || page.coverage.denied > page.coverage.scanned) throw new Error('sql_mining_window_cap');
     observations.push(...page.observations);
     scanned += page.coverage.scanned; denied += page.coverage.denied; pages++; lastCoverage = page.coverage;
+    incomplete += page.coverage.incomplete ?? 0;
     if ('matrix' in page.coverage && Array.isArray(page.coverage.matrix)) {
       for (const cell of page.coverage.matrix) {
         const key = JSON.stringify([cell.provider, cell.kind, cell.source]), prior = matrix.get(key);
@@ -211,7 +219,7 @@ async function drainWindow<T, C extends { scanned: number; denied: number }>(
     }
     if (!page.next || scanned >= rowCap) return { observations, next: page.next,
       coverage: { ...lastCoverage, ...(matrix.size ? { matrix: [...matrix.values()] } : {}),
-        scanned, denied, pages, windowExhausted: !page.next,
+        scanned, denied, incomplete, pages, windowExhausted: !page.next,
         stop: page.next ? 'row-cap' as const : 'window-exhausted' as const } };
     after = page.next;
   }
@@ -249,7 +257,26 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
   const pageSize = positive(opts.rowBudget, 250, 2000), rowCap = positive(opts.windowRowBudget, 20_000, 100_000);
   const measure = async (family: MonitoredFamily, work: (deadline: number, cancelled: () => boolean) => Promise<FamilyMeasurement>): Promise<FamilyMeasurement> => {
     let cancelled = false;
-    try { return await boundedStage(() => work(Date.now() + budget, () => cancelled), budget); }
+    try { return await boundedStage(async () => {
+      const deadline = Date.now() + budget;
+      const continuity = () => readers.readContinuity({ family: family as Exclude<MonitoredFamily, 'sql'>,
+        since: common.since, until: common.until });
+      const before = family === 'sql' ? null : await continuity();
+      const row = await work(deadline, () => cancelled);
+      if (family === 'sql') return row;
+      const after = await continuity();
+      const source = row.diagnostics.sourceCoverage as { denied: number; incomplete: number; windowExhausted: boolean; matrix?: NativeCoverage[] };
+      const complete = before === 'complete' && after === 'complete' && source.windowExhausted
+        && source.denied === 0 && source.incomplete === 0 && row.diagnostics.collisions === 0
+        && (family !== 'native-operation' || nativeProvidersMeasured(source.matrix));
+      row.coverage = row.coverage === 'truncated' ? 'truncated' : complete ? 'measured' : 'UNKNOWN';
+      row.diagnostics.continuity = { before, after };
+      row.diagnostics.reviewEligible = complete;
+      for (const candidate of row.diagnostics.candidates as CandidateEvidence[]) {
+        candidate.reviewEligible = complete && (family !== 'native-operation' || candidate.metrics.unknown === 0);
+      }
+      return row;
+    }, budget); }
     catch (error) { return { family, coverage: 'UNKNOWN', scanned: 0, qualifying: 0,
       diagnostics: { stage: 'source', reason: miningFailureReason(error), reviewEligible: false, candidates: [] } }; }
     finally { cancelled = true; }

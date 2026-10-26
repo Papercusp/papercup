@@ -10,6 +10,8 @@ import { findSessionTranscript } from '../claude-sessions';
 import { findCodexRolloutPathByUuid, findOmpSessionPath } from '../session-transcript-resolvers';
 import { nativeTranscriptSources, type NativeCorpusOptions, type NativeProvider } from './native-operation';
 import type { SearchCorpusOptions } from './search-reformulation';
+import { readSqlIntentRetention } from '../bash-substitution/sql-intent-corpus';
+import type { MonitoredFamily } from './pipeline';
 
 type Client = ReturnType<typeof getOrgPg>['sql'];
 export interface OpportunityReaderOptions {
@@ -40,6 +42,11 @@ async function snapshot(path: string, cap: number): Promise<Buffer | null> {
 export function productionOpportunityReaders(opts: OpportunityReaderOptions, deps: {
   /** Tests use real bounded files while retaining the database identity and ACL checks. */
   locateTranscript?: (input: { provider: NativeProvider; sessionId: string; actor: string; advId: string }) => Promise<string | null>;
+  /** Trusted capture-receipt reader, never a public census argument or a policy
+   * lookback. A native receipt must cover the activity index AND provider capture
+   * for this exact scope/window. Absent instrumentation remains unknown. */
+  readContinuity?: (input: { workspaceId: string; harnessSlug: string; sourceBoundary: string;
+    family: Exclude<MonitoredFamily, 'sql'>; since: string; until: string }) => Promise<'complete' | 'gap' | 'unknown'>;
 } = {}) {
   const sql = opts.client ?? getOrgPg().sql;
   const scopeAllowed = () => opts.authorize({ workspaceId: opts.workspaceId,
@@ -110,5 +117,14 @@ export function productionOpportunityReaders(opts: OpportunityReaderOptions, dep
       return { sources, status: 'measured' };
     } catch { return null; }
   };
-  return { authorizeLedgerSource: ledger, authorizeActivitySource: activity, readOutput, readTranscript };
+  const readContinuity = async (window: { family: Exclude<MonitoredFamily, 'sql'>; since: string; until: string }) => {
+    if (!await scopeAllowed()) return 'unknown' as const;
+    if (deps.readContinuity) return deps.readContinuity({ workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug, sourceBoundary: opts.sourceBoundary, ...window });
+    // The SQL receipt tracks mutations to the entire scoped ledger, so the
+    // three ledger adapters reuse it. It proves nothing about native capture.
+    return window.family === 'native-operation' ? 'unknown' as const
+      : readSqlIntentRetention({ ...opts, ...window });
+  };
+  return { authorizeLedgerSource: ledger, authorizeActivitySource: activity, readOutput, readTranscript, readContinuity };
 }

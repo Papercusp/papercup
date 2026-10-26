@@ -96,7 +96,8 @@ it('R22-DEDUP', async () => {
   const first = await fetchNativeOperations(opts({ limit: 1 }));
   const second = await fetchNativeOperations(opts({ after: first.next!, limit: 2 }));
   expect(groupNativeOperations([...first.observations, ...second.observations]).chains[0]!.logicalDemand).toBe(2);
-  expect(first.coverage.matrix.filter(c => c.status === 'measured')).toEqual([]);
+  expect(first.coverage).toMatchObject({ pageLimited: true, complete: false });
+  expect(first.coverage.matrix).toContainEqual({ provider: 'codex', kind: 'shell', source: 'transcript', status: 'measured' });
 });
 
 it('R21-SHARED-ID-COLLISION R21-NAMESPACE-PROVIDER-MISMATCH R21-INTERLEAVED-SAME-ACTOR R21-EXACT-ID-CONTROL', async () => {

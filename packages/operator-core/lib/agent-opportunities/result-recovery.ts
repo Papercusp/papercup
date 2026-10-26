@@ -179,11 +179,11 @@ export type RecoveryCorpusOptions = Omit<SearchCorpusOptions, 'readOutput'> & { 
  * and caller-authorized exact output hydration; no new telemetry store or alarm.
  */
 export type RecoverySource = SearchSource & { metadata: unknown; durationMs?: number | null };
-export async function fetchOperationObservations<T extends { at: string; sourceToken: string }>(
+export async function fetchOperationObservations<T extends { at: string; sourceToken: string; operationToken: string | null; resultAvailable: boolean }>(
   opts: RecoveryCorpusOptions, observe: (source: RecoverySource, scope: SqlIntentScope) => T | null,
 ): Promise<{
   observations: T[]; next: SqlCorpusCursor | null;
-  coverage: { scanned: number; denied: number; status: 'unknown' | 'truncated'; unmeasuredProviders: string[] };
+  coverage: { scanned: number; denied: number; incomplete: number; status: 'unknown' | 'truncated'; unmeasuredProviders: string[] };
 }> {
   miningScopeId(opts.scope, opts.harnessSlug);
   const since = Date.parse(opts.since), until = Date.parse(opts.until);
@@ -214,6 +214,7 @@ export async function fetchOperationObservations<T extends { at: string; sourceT
     FROM harness_shared.tool_invocations WHERE workspace_id=${opts.workspaceId} AND harness_slug=${opts.harnessSlug}
       AND id=ANY(${allowed}::bigint[])` : [];
   const byId = new Map(records.map(row => [row.id, row])), observations: T[] = [];
+  let incomplete = allowed.length - records.length;
   for (let start = 0; start < page.length; start += 16) await Promise.all(page.slice(start, start + 16).map(async row => {
     const record = byId.get(row.id);
     if (!record) return;
@@ -227,11 +228,16 @@ export async function fetchOperationObservations<T extends { at: string; sourceT
       at: row.at, copyRef: `tool-invocation:${row.id}`, tool: record.tool_name, args: record.args_json,
       metadata: record.metadata_json, durationMs: record.duration_ms, callId: `invocation:${row.id}`, identityAuthority: 'ledger',
       sourceComplete: object(record.args_json)._truncated !== true, result: output ? { ...output, status: record.status } : null }, opts.scope);
-    if (observation) observations.push(observation);
+    if (observation) {
+      observations.push(observation);
+      if (!observation.operationToken || !observation.resultAvailable) incomplete++;
+    } else if (record.agent && record.call_origin === 'agent' && record.call_origin_source === 'declared'
+      && object(object(record.metadata_json).nestedDispatch).codeMode !== true
+      && !['test', 'fixture', 'replay'].includes(record.role) && object(record.args_json)._truncated === true) incomplete++;
   }));
   observations.sort((a, b) => a.at.localeCompare(b.at) || a.sourceToken.localeCompare(b.sourceToken));
   return { observations, next: rows.length > limit ? page[page.length - 1]! : null,
-    coverage: { scanned: page.length, denied: page.length - allowed.length, status: rows.length > limit || opts.after ? 'truncated' : 'unknown',
+    coverage: { scanned: page.length, denied: page.length - allowed.length, incomplete, status: rows.length > limit || opts.after ? 'truncated' : 'unknown',
       unmeasuredProviders: ['claude', 'codex', 'omp'] } };
 }
 

@@ -98,6 +98,7 @@ export interface NativeObservation {
   scopeToken: string; actorToken: string; provider: NativeProvider; namespaceToken: string;
   sourceToken: string; operationToken: string | null; fingerprint: string | null;
   kind: NativeKind | null; at: string; outcome: 'success' | 'error' | 'refused' | 'UNKNOWN';
+  resultAvailable: boolean;
   evidenceGaps: string[];
 }
 function resultBody(value: unknown): Obj {
@@ -132,7 +133,7 @@ export function observeNativeOperation(source: SearchSource, scope: SqlIntentSco
     sourceToken: hash(scope, 'source', [source.copyRef]),
     operationToken: canonical ? hash(scope, 'operation', [source.harnessSlug, source.provider, source.namespace, source.callId]) : null,
     fingerprint: semantic ? hash(scope, 'semantics', [source.harnessSlug, semantic.kind, stable(semantic.value)]) : null,
-    kind: semantic?.kind ?? null, at: source.at, outcome,
+    kind: semantic?.kind ?? null, at: source.at, outcome, resultAvailable: !!paired,
     evidenceGaps: [...(!source.sourceComplete ? ['truncated-source'] : !semantic ? ['unsupported-operation'] : []),
       ...(!canonical ? ['unverified-operation-identity'] : []), ...(outcome === 'UNKNOWN' ? ['unmeasured-outcome'] : [])],
   };
@@ -240,7 +241,7 @@ export async function fetchNativeOperations(opts: NativeCorpusOptions) {
     to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at
     FROM harness_shared.agent_activity WHERE workspace_id=${opts.workspaceId} AND harness_slug=${opts.harnessSlug}
     AND kind='tool' AND created_at >= ${opts.since}::timestamptz AND created_at < ${opts.until}::timestamptz
-    ${after} ORDER BY created_at,id LIMIT ${limit + 1}`;
+    ${after} ORDER BY created_at,agent_activity.id LIMIT ${limit + 1}`;
   const page = rows.slice(0, limit), allowed: string[] = [];
   for (let i = 0; i < page.length; i += 16) await Promise.all(page.slice(i, i + 16).map(async row => {
     try { if ((await boundedStage(() => opts.authorizeSource(row.id), 1000))?.sourceBoundary === opts.scope.sourceBoundary) allowed.push(row.id); }
@@ -252,6 +253,7 @@ export async function fetchNativeOperations(opts: NativeCorpusOptions) {
     harness_shared.is_agent_coord_owner_id(owner_id) AS verified FROM harness_shared.agent_activity
     WHERE workspace_id=${opts.workspaceId} AND harness_slug=${opts.harnessSlug} AND id=ANY(${allowed}::bigint[])` : [];
   const byId = new Map(records.map(r => [r.id, r])), observations: NativeObservation[] = [];
+  let incomplete = allowed.length - records.length;
   const coverage: NativeCoverage[] = NATIVE_PROVIDERS.flatMap(provider => (['shell', 'browser'] as const).flatMap(kind =>
     (['activity', 'transcript'] as const).map(source => ({ provider, kind, source, status: 'missing' as NativeCoverageStatus }))));
   const mark = (provider: NativeProvider, source: NativeCoverage['source'], kind: NativeKind | null, status: NativeCoverageStatus) => {
@@ -279,11 +281,12 @@ export async function fetchNativeOperations(opts: NativeCorpusOptions) {
     const kindHint: NativeKind | null = shellTools.has(record.tool_name.toLowerCase()) ? 'shell'
       : browserTools.has(record.tool_name.toLowerCase()) ? 'browser' : null;
     if (observed) { observations.push(observed); mark(provider, 'activity', observed.kind ?? kindHint, !complete ? 'truncated' : observed.kind ? 'measured' : 'unsupported'); }
-    if (!opts.readTranscript) continue;
+    let completeCopy = !!observed && observed.evidenceGaps.length === 0;
+    if (!opts.readTranscript) { if (kindHint && !completeCopy) incomplete++; continue; }
     try {
       const hydrated = await boundedStage(() => opts.readTranscript!({ id: row.id, provider, sessionId: record.session_id,
         actor: record.owner_id, callId: record.tool_use_id }), 1000);
-      if (!hydrated) continue;
+      if (!hydrated) { if (kindHint && !completeCopy) incomplete++; continue; }
       // Reader metadata cannot override identity, authority boundary or request ID.
       for (const transcript of hydrated.sources) {
         if (transcript.workspaceId !== opts.workspaceId || transcript.harnessSlug !== opts.harnessSlug
@@ -291,13 +294,18 @@ export async function fetchNativeOperations(opts: NativeCorpusOptions) {
           || transcript.namespace !== record.session_id || transcript.actor !== record.owner_id
           || !record.tool_use_id || transcript.callId !== record.tool_use_id) continue;
         const value = observeNativeOperation(transcript, opts.scope);
-        if (value) { observations.push(value); mark(provider, 'transcript', value.kind,
+        if (value) { observations.push(value);
+          completeCopy ||= hydrated.status === 'measured' && value.evidenceGaps.length === 0;
+          mark(provider, 'transcript', value.kind,
           hydrated.status === 'measured' && !transcript.sourceComplete ? 'truncated' : hydrated.status); }
       }
       if (!hydrated.sources.length) mark(provider, 'transcript', observed?.kind ?? kindHint, hydrated.status);
     } catch { /* Source/result unavailable: UNKNOWN; source recording is independent. */ }
+    if (kindHint && !completeCopy) incomplete++;
   }
-  if (rows.length > limit || opts.after) for (const cell of coverage) if (cell.status === 'measured') cell.status = 'truncated';
+  // Pagination limits the window, not the physical completeness of a provider
+  // record. Keep those distinct so a fully drained census can compose pages.
   return { observations, next: rows.length > limit ? page.at(-1)! : null,
-    coverage: { scanned: page.length, denied: page.length - allowed.length, matrix: coverage, complete: false as const } };
+    coverage: { scanned: page.length, denied: page.length - allowed.length, incomplete,
+      pageLimited: rows.length > limit || !!opts.after, matrix: coverage, complete: false as const } };
 }
