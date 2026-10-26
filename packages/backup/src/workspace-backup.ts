@@ -454,6 +454,16 @@ export class WorkspaceBackup {
     // inserted. Keep it in the local lifecycle from the first instruction so
     // an early INSERT/step failure still releases the transferred session.
     let migrationLock: BackupMigrationLock | undefined = opts?.migrationLock;
+    let migrationLockReleasedForGuard = false;
+    const acquireSnapshotMigrationLock = async () => {
+      const acquire = backupHost().acquireMigrationLock;
+      if (!acquire) return undefined;
+      const lock = await acquire(opts?.onMigrationLockWaiting
+        ? { onWaiting: opts.onMigrationLockWaiting }
+        : undefined);
+      if (!lock) throw new Error('migration rendezvous acquisition returned no lock');
+      return lock;
+    };
 
     const finalizeFailure = async (message: string): Promise<void> => {
       if (snapshotRowId === undefined || receiptFinalized) return;
@@ -555,11 +565,7 @@ export class WorkspaceBackup {
       // cross-process admission happened before scheduler state was consumed,
       // and this operation must keep the same session lock through completion.
       if (!migrationLock) {
-        migrationLock = await backupHost().acquireMigrationLock?.(
-          opts?.onMigrationLockWaiting
-            ? { onWaiting: opts.onMigrationLockWaiting }
-            : undefined,
-        );
+        migrationLock = await acquireSnapshotMigrationLock();
       }
       if (opts?.resumeSnapshotId !== undefined) {
         // The orphan sweep can terminalize a lost producer before its explicit
@@ -619,6 +625,29 @@ export class WorkspaceBackup {
             workspaceId: this.workspaceId,
             workspaceRoot: this.workspaceRoot,
             triggerReason: reason,
+          }, {
+            beforeGuardWait: async () => {
+              // The shared Kopia flock is the outer lock. Release the
+              // scheduler-probed advisory lock before waiting for it, or a
+              // host db-backup holding the flock can deadlock while it waits
+              // for the same migration rendezvous.
+              if (!backupHost().acquireMigrationLock) return;
+              migrationLockReleasedForGuard = true;
+              const held = migrationLock;
+              if (!held) return;
+              try {
+                await held.release();
+              } finally {
+                if (migrationLock === held) migrationLock = undefined;
+              }
+            },
+            onGuardReady: async () => {
+              if (!migrationLockReleasedForGuard || migrationLock) return;
+              // The guard owns the shared Kopia flock now. Reacquire the
+              // migration rendezvous before the hook rechecks host coverage
+              // and ACKs whether pg_dump should start.
+              migrationLock = await acquireSnapshotMigrationLock();
+            },
           }).then(async (result) => {
             await this.event(snapshotRowId!, 'hook_pg_dump', { ...result });
             return { ok: result.ok, error: result.error, deferred: result.deferred };
@@ -630,6 +659,14 @@ export class WorkspaceBackup {
               return { ok: false, error: String(err) };
             }),
       );
+      if (migrationLockReleasedForGuard && !migrationLock) {
+        // The guard can fail before READY (for example, its bounded flock
+        // wait expires). Reacquire without the shared flock before allowing
+        // the filesystem snapshot to proceed. This preserves the original
+        // snapshot/migration fence without blocking migrations on the guard.
+        migrationLock = await acquireSnapshotMigrationLock();
+      }
+      migrationLockReleasedForGuard = false;
       // Step runners can replay an older cached `undefined` result, or a
       // malformed value from an older host. Preserve that as unknown rather
       // than turning it into a false/true assertion.
