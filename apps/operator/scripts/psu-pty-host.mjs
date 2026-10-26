@@ -5478,6 +5478,10 @@ export function makeCarryRearmController({
   // every existing controller unit test unchanged; the real host wires
   // isCarryRespawnStale at construction (see carryRearm below).
   isStale = () => false,
+  // A wake `turn` is an inbox delivery guarded by turn provenance. Unlike a
+  // carry-respawn, an expired turn must settle before another safe-boundary
+  // wait because its final PTY write is no longer authorized.
+  getRearmExpiryReason = /** @type {(_msg: any) => string | null} */ ((_msg) => null),
   // Age may not expire a production continuation. Epoch supersession MUST:
   // an obsolete request must neither suppress wakes nor replace its successor.
   isSuperseded = (_msg) => false,
@@ -5773,9 +5777,22 @@ export function makeCarryRearmController({
           settle(key, { delivered: false, reason });
           return true;
         };
+        const dropExpired = (candidate) => {
+          const reason = getRearmExpiryReason(candidate);
+          if (!reason) return false;
+          emitEvent(droppedKind, {
+            ...extra, ...dropDiagnostics(), rearmed: true, reason,
+            observedMaxQuietMs, attempts: attemptsMade, ...terminalIds(),
+          });
+          settle(key, { delivered: false, reason });
+          return true;
+        };
         try {
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             attemptsMade = attempt + 1;
+            if (disposed) return;
+            const beforeLock = latest.get(key) ?? msg;
+            if (dropSuperseded(beforeLock) || dropExpired(beforeLock)) return;
             const release = await acquireInject();
             if (disposed) {
               release();
@@ -5792,11 +5809,12 @@ export function makeCarryRearmController({
               if (disposed) return;
               // Check BEFORE waiting on the successor's output. Otherwise an
               // obsolete retry can retain pending wake suppression indefinitely.
-              if (dropSuperseded(current)) return;
+              if (dropSuperseded(current) || dropExpired(current)) return;
               if (waitIdle) {
                 const idle = await waitIdle();
                 if (disposed) return;
-                if (dropSuperseded(latest.get(key) ?? current)) return;
+                const afterIdle = latest.get(key) ?? current;
+                if (dropSuperseded(afterIdle) || dropExpired(afterIdle)) return;
                 if (idle?.deferred) {
                   deferReason = idle.reason || 'owner-input-cap';
                   await yieldAfterDefer();
@@ -5806,7 +5824,8 @@ export function makeCarryRearmController({
               if (hasPendingOwnerInput()) {
                 const clear = waitForOwnerInputClear ? await waitForOwnerInputClear() : null;
                 if (disposed) return;
-                if (dropSuperseded(latest.get(key) ?? current)) return;
+                const afterOwnerInput = latest.get(key) ?? current;
+                if (dropSuperseded(afterOwnerInput) || dropExpired(afterOwnerInput)) return;
                 if (clear?.deferred || hasPendingOwnerInput()) {
                   deferReason = clear?.reason || 'owner-input-cap';
                   await yieldAfterDefer();
@@ -5820,6 +5839,8 @@ export function makeCarryRearmController({
               let atPrompt = null;
               wakeModePauseReason = await carryWakeModePauseReason(current);
               if (disposed) return;
+              const beforePrompt = latest.get(key) ?? current;
+              if (dropSuperseded(beforePrompt) || dropExpired(beforePrompt)) return;
               if (wakeModePauseReason) deferReason = wakeModePauseReason;
               if (!wakeModePauseReason) {
                 atPrompt = await waitAtPrompt(capMs, current);
@@ -5828,7 +5849,8 @@ export function makeCarryRearmController({
                 if (typeof atPrompt?.verifier === 'string' && atPrompt.verifier) {
                   verifierReason = atPrompt.verifier;
                 }
-                if (dropSuperseded(latest.get(key) ?? current)) return;
+                const afterPrompt = latest.get(key) ?? current;
+                if (dropSuperseded(afterPrompt) || dropExpired(afterPrompt)) return;
                 // The owner may have started composing during the prompt wait.
                 if (hasPendingOwnerInput()) {
                   // Re-enter through the composer wait AND a fresh prompt check.
@@ -5843,6 +5865,7 @@ export function makeCarryRearmController({
                 }
                 wakeModePauseReason = await carryWakeModePauseReason(latest.get(key) ?? current);
                 if (disposed) return;
+                if (dropExpired(latest.get(key) ?? current)) return;
                 if (wakeModePauseReason) deferReason = wakeModePauseReason;
               }
               if (!wakeModePauseReason) {
@@ -5857,6 +5880,7 @@ export function makeCarryRearmController({
                 // reading a stale `current` here would cut in the older carry
                 // even though a fresher one had already arrived.
                 const deliver = latest.get(key) ?? current;
+                if (dropExpired(deliver)) return;
                 // EI-18109211232286833: re-check staleness right before the cut —
                 // a lot of wall-clock may have passed across these waits, so a
                 // message fresh at schedule() time can cross the threshold.
@@ -14093,7 +14117,7 @@ export function hostThroughPty(o) {
   // for its whole lifetime (D-006), so it needs no owner-keyed map, only a
   // loop-instance-keyed (routineId) one.
   const staleFireGuard = makeStaleFireGuard();
-  const rejectWakeProvenance = (message, phase) => {
+  const wakeProvenanceRejection = (message) => {
     const freshness = checkWakeProvenanceAge(message);
     if (!freshness.checked || !freshness.expired) return null;
     const reason = message?.provenanceTimestampInvalid || freshness.ageMs == null
@@ -14101,6 +14125,12 @@ export function hostThroughPty(o) {
       : freshness.ageMs < 0
         ? 'future-timestamp'
         : 'expired';
+    return { freshness, reason, rejection: `provenance-${reason}` };
+  };
+  const rejectWakeProvenance = (message, phase) => {
+    const rejection = wakeProvenanceRejection(message);
+    if (!rejection) return null;
+    const { freshness, reason } = rejection;
     appendHostEvent(ownerId, 'wake-provenance-rejected', {
       phase,
       reason,
@@ -14113,7 +14143,7 @@ export function hostThroughPty(o) {
       ageMs: freshness.ageMs,
       maxAgeMs: WAKE_PROVENANCE_MAX_AGE_MS,
     });
-    return 'provenance-' + reason;
+    return rejection.rejection;
   };
   // EI-12754: one-shot deferred retry for busy-gate-refused carry-respawn
   // drills. The retry window defaults to 2× the live-inject cap (a busy turn
@@ -14295,6 +14325,13 @@ export function hostThroughPty(o) {
     // too, and must retire their pending wake suppression without another cut.
     isStale: (msg) =>
       isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs }),
+    // A turn wake is a single inbox delivery and must not outlive its signed
+    // provenance. Carry-respawn has a different MUST-DELIVER contract and is
+    // deliberately excluded from this expiry callback.
+    getRearmExpiryReason: (msg) => {
+      if (msg?.mode !== 'turn') return null;
+      return wakeProvenanceRejection(msg)?.rejection ?? null;
+    },
     isSuperseded: (msg) =>
       msg !== lastRespawnCarryRequest &&
       isCarryRespawnSuperseded(msg.receivedAtMs, lastRespawnAtMs),

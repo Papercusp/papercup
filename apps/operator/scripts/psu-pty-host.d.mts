@@ -2088,7 +2088,7 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExe
         started: boolean;
     }>;
 };
-export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, maxDrillAttempts, yieldAfterDefer, onSettlement, isStale, isSuperseded, isCancelled, readWakeMode, wakeModeRetryMs, nativeBindingRetryMs, waitWakeModeRetry, }: {
+export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, maxDrillAttempts, yieldAfterDefer, onSettlement, isStale, getRearmExpiryReason, isSuperseded, isCancelled, readWakeMode, wakeModeRetryMs, nativeBindingRetryMs, waitWakeModeRetry, }: {
     acquireInject: any;
     waitIdle?: (() => Promise<{
         deferred: boolean;
@@ -2109,6 +2109,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
     yieldAfterDefer?: (() => Promise<any>) | undefined;
     onSettlement?: ((_messages: any, _outcome: any) => void) | undefined;
     isStale?: (() => boolean) | undefined;
+    getRearmExpiryReason?: ((_msg: any) => string | null) | undefined;
     isSuperseded?: ((_msg: any) => boolean) | undefined;
     isCancelled?: ((_msg: any) => boolean) | undefined;
     readWakeMode?: (() => Promise<string>) | undefined;

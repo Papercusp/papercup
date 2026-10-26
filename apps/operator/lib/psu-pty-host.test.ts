@@ -1382,6 +1382,17 @@ describe('wake provenance TTL guard (EI-18126834395314388)', () => {
     expect(finalGuard).toBeLessThan(chunks);
     expect(chunks).toBeLessThan(byteWrite);
   });
+
+  it('limits rearm-expiry cleanup to turn wakes, leaving carry-respawn policy separate', () => {
+    const src = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+    const expiryCallback = src.indexOf('getRearmExpiryReason: (msg) => {');
+    const modeFence = src.indexOf("if (msg?.mode !== 'turn') return null;", expiryCallback);
+    const provenanceCheck = src.indexOf('wakeProvenanceRejection(msg)?.rejection ?? null;', modeFence);
+
+    expect(expiryCallback).toBeGreaterThan(-1);
+    expect(modeFence).toBeGreaterThan(expiryCallback);
+    expect(provenanceCheck).toBeGreaterThan(modeFence);
+  });
 });
 
 describe('isCarryRespawnStale (EI-18109211232286833 — age-based carry-respawn dead-man switch)', () => {
@@ -8595,6 +8606,50 @@ describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric r
       expect.objectContaining({ kind: 'wake-rearm-dropped', reason: 'exhausted', deliveryIds: ['d-2'] }),
     ]);
     expect(unjoined(h.events)).toEqual([]);
+  });
+
+  it('drops a turn re-arm that expires during a prompt wait before another safe-boundary wait', async () => {
+    let nowMs = 1_000_000;
+    const issuedAtMs = nowMs;
+    const events: Ev[] = [];
+    const waitAtPrompt = vi.fn(async () => {
+      nowMs = issuedAtMs + WAKE_PROVENANCE_MAX_AGE_MS + 1;
+      return { deferred: true };
+    });
+    const deliver = vi.fn(async () => ({ delivered: true }));
+    const controller = makeCarryRearmController({
+      acquireInject: async () => () => {},
+      waitAtPrompt,
+      recycle: async () => {},
+      performDelivery: deliver,
+      getRearmExpiryReason: (message) => {
+        const freshness = checkWakeProvenanceAge(message, { nowMs });
+        if (!freshness.checked || !freshness.expired) return null;
+        return freshness.ageMs != null && freshness.ageMs < 0
+          ? 'provenance-future-timestamp'
+          : freshness.ageMs == null ? 'provenance-invalid-timestamp' : 'provenance-expired';
+      },
+      emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
+      capMs: 10,
+    });
+
+    expect(controller.schedule({
+      mode: 'turn', data: 'wake', deliveryId: 'd-expired', provenanceIssuedAtMs: issuedAtMs,
+    })).toBe('queued');
+    for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
+
+    expect(waitAtPrompt).toHaveBeenCalledTimes(1);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(events.filter((event) => TERMINAL.has(event.kind))).toEqual([
+      expect.objectContaining({
+        kind: 'wake-rearm-dropped',
+        reason: 'provenance-expired',
+        attempts: 1,
+        deliveryIds: ['d-expired'],
+      }),
+    ]);
+    expect(unjoined(events)).toEqual([]);
+    expect(controller.pendingCount()).toBe(0);
   });
 
   it('keeps a loop delivery pending when a carry-respawn temporarily owns the next write', async () => {
