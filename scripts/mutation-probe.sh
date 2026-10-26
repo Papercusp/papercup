@@ -2171,6 +2171,16 @@ run_guard() {
         "$EXPECT" "${TARGET_MODE:-pre-mutation}" "$rc" "$phase"
       die "the $label run substituted committed source in a test-spawned child. This leg did not exercise the requested source bytes; neither caught nor survived is established. Keep the committed-source boundary and use a guard that directly exercises the subject."
     fi
+    # The private integration verifier freezes HEAD before starting its worker.
+    # That route can discard an overlay without a childSubstituted notice: the
+    # worker sees an already-clean snapshot. Refuse even a clean baseline here,
+    # since the same guard would silently discard the subsequent mutant.
+    if grep -Eq '^TEST_FILE_VERIFIER_SOURCE[[:space:]].*ref=[0-9a-f]{40}([[:space:]]|$)' "$output"; then
+      cat "$output"
+      printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=-1 guard_exit=%d verifier_source_refrozen=yes phase=%s\n' \
+        "$EXPECT" "${TARGET_MODE:-pre-mutation}" "$rc" "$phase"
+      die "the $label run froze committed verifier source; preservation of the requested mutation is unproved. Neither caught nor survived is established. Keep the verifier boundary and use a guard that directly exercises the subject."
+    fi
     # 124 is `timeout`'s own "I killed it" status; 137 is what it returns when
     # --kill-after had to escalate to SIGKILL (MEASURED 2026-09-20 — NOT 124, as
     # the coreutils docs read at a glance). 137 is AMBIGUOUS on its own: the
