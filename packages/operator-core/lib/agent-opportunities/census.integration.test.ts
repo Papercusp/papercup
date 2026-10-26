@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
 import { mineSqlCandidateSlice } from '../bash-substitution/sql-tool-candidates';
-import { readMonitoredCandidate, runMonitoredCensus } from './census';
+import { readMonitoredCandidate, readProductionMonitoredCandidate, runMonitoredCensus } from './census';
 import { MONITORED_FAMILIES } from './pipeline';
 import { runSqlOpportunityCensus } from '../harness/routines/sql-read-census-action';
 import { buildScratchUri, safeScratchFilesystemPath } from '../scratch-uri';
@@ -249,6 +249,69 @@ async function ledgerEvidence(tool: string, args: unknown, body: unknown, at: st
     status=${status},metadata_json=${JSON.stringify(metadata)}::jsonb,output_ref=${uri} WHERE id=${id}::bigint`;
   return id;
 }
+it('R23-DERIVED-ACL production search replay denies edits, deletion, revoked scope, missing bindings and incomplete scans', async () => {
+  const ids: string[] = [];
+  for (const query of ['job queue', 'job status', 'job owner']) {
+    const id = await f.seed(); ids.push(id);
+    await f.db.adminSql`UPDATE harness_shared.tool_invocations SET tool_name='tools:find',
+      args_json=${JSON.stringify({ query })}::jsonb WHERE id=${id}::bigint`;
+  }
+  const opts = f.opts({ rowBudget: 1, windowRowBudget: 10, timeBudgetMs: 30_000 });
+  const run = await runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }));
+  const candidateId = (run.families.find(r => r.family === 'search-reformulation')!.diagnostics.candidates as { id: string }[])[0]!.id;
+  const read = (over: Partial<typeof opts> = {}) => readProductionMonitoredCandidate({ ...opts, ...over,
+    runId: run.runId, family: 'search-reformulation', candidateId });
+  const allowed = await read();
+  expect(allowed).toMatchObject({ metrics: { logicalDemand: 3, reformulations: 2 }, reviewEligible: false });
+  expect(JSON.stringify(allowed)).not.toMatch(/job queue|job status|job owner|sourceRevisions|window/);
+  expect(await read({ authorize: async () => false })).toBeNull();
+  expect(await read({ windowRowBudget: 2 })).toBeNull();
+  expect(await read({ scope: { ...opts.scope, epoch: 'rotated' } })).toBeNull();
+  await f.db.adminSql`UPDATE harness_shared.tool_invocations SET args_json='{"query":"unrelated"}'::jsonb WHERE id=${ids[0]!}::bigint`;
+  expect(await read()).toBeNull();
+  await f.db.adminSql`UPDATE harness_shared.tool_invocations SET args_json='{"query":"job queue"}'::jsonb WHERE id=${ids[0]!}::bigint`;
+  expect(await read()).toEqual(allowed);
+  const [stored] = await f.db.adminSql`SELECT diagnostics FROM harness_shared.sql_intent_family_runs
+    WHERE run_id=${run.runId}::uuid AND family='search-reformulation'`;
+  await f.db.adminSql`UPDATE harness_shared.sql_intent_family_runs SET diagnostics=diagnostics-'sourceRevisions'
+    WHERE run_id=${run.runId}::uuid AND family='search-reformulation'`;
+  expect(await read()).toBeNull();
+  await f.db.adminSql`UPDATE harness_shared.sql_intent_family_runs SET diagnostics=${JSON.stringify(stored!.diagnostics)}::jsonb
+    WHERE run_id=${run.runId}::uuid AND family='search-reformulation'`;
+  await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${ids[1]!}::bigint`;
+  expect(await read()).toBeNull();
+});
+it('R23-DERIVED-ACL production recovery and workaround replay checks exact output copies and exposure sources', async () => {
+  const ids: string[] = [];
+  for (const episode of [0, 1]) {
+    const start = Date.parse('2026-10-24T12:00:00Z') + episode * 600_000;
+    const at = (offset: number) => new Date(start + offset * 1000).toISOString();
+    const uri = `papercusp://scratch/private-recovery-${episode}`;
+    ids.push(await ledgerEvidence('plans:get', { slug: 'private-recovery' }, { ok: true }, at(0), 'ok',
+      { spillUri: uri, returnedContextBytes: 6000, spilledBytes: 90000, spillFailed: false }));
+    ids.push(await ledgerEvidence('capability:read', { uri }, { ok: true }, at(1)));
+    ids.push(await ledgerEvidence('docs:get', { slug: 'private-repair' }, { ok: false, error: 'invalid_args' }, at(10), 'error'));
+    ids.push(await ledgerEvidence('docs:get', { slug: 'private-repair', corrected: true }, { ok: true }, at(11)));
+  }
+  const denominator = await ledgerEvidence('plans:get', { slug: 'private-small-result' }, { ok: true }, '2026-10-24T13:00:00Z');
+  const opts = f.opts({ rowBudget: 2, windowRowBudget: 20, timeBudgetMs: 30_000 });
+  const run = await runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }));
+  const read = (family: 'result-recovery' | 'workaround-funnel') => readProductionMonitoredCandidate({ ...opts,
+    family, runId: run.runId,
+    candidateId: (run.families.find(r => r.family === family)!.diagnostics.candidates as { id: string }[])[0]!.id });
+  expect(await read('result-recovery')).not.toBeNull();
+  expect(await read('workaround-funnel')).not.toBeNull();
+  const [source] = await f.db.adminSql`SELECT output_ref FROM harness_shared.tool_invocations WHERE id=${ids[0]!}::bigint`;
+  const path = safeScratchFilesystemPath(source!.output_ref);
+  const original = readFileSync(path);
+  await rm(path); expect(await read('result-recovery')).toBeNull();
+  await writeFile(path, original); expect(await read('result-recovery')).not.toBeNull();
+  await f.db.adminSql`DELETE FROM harness_shared.tool_invocations WHERE id=${denominator}::bigint`;
+  expect(await read('result-recovery')).toBeNull();
+  expect(await read('workaround-funnel')).not.toBeNull();
+  await f.db.adminSql`UPDATE harness_shared.tool_invocations SET status='error' WHERE id=${ids[3]!}::bigint`;
+  expect(await read('workaround-funnel')).toBeNull();
+});
 it('persists recovery and workaround candidate membership from exact real output sources without private semantics', async () => {
   for (const episode of [0, 1]) {
     const start = Date.parse('2026-10-24T12:00:00Z') + episode * 600_000;
@@ -339,7 +402,25 @@ it('persists native candidate identities from bound provider transcripts and ret
   expect(row!.diagnostics.candidates[0].sourceRefs).toHaveLength(4);
   expect(row!.diagnostics.candidates[0].operationRefs).toHaveLength(2);
   expect(JSON.stringify(row)).not.toMatch(/private-path|private-call|su-native-private|native.jsonl/);
+  const read = (locateTranscript = async () => path) => readProductionMonitoredCandidate({ ...opts,
+    family: 'native-operation', runId: result.runId, candidateId: row!.diagnostics.candidates[0].id }, { locateTranscript });
+  const allowed = await read();
+  expect(allowed).toMatchObject({ metrics: { logicalDemand: 2, successful: 2 } });
+  // A copy's deletion/change revokes the entire old aggregate, even when another
+  // canonical activity copy remains. A fresh allowed read never uses an ACL cache.
+  const original = readFileSync(path);
+  await writeFile(path, original.toString().replaceAll('private-path', 'changed-path'));
+  expect(await read()).toBeNull();
+  await writeFile(path, original); expect(await read()).toEqual(allowed);
+  expect(await read(async () => {
+    await f.db.adminSql`UPDATE harness_shared.agent_activity SET harness_slug='other-harness'
+      WHERE owner_id=${actor}`;
+    return path;
+  })).toBeNull();
+  await f.db.adminSql`UPDATE harness_shared.agent_activity SET harness_slug='mining-test' WHERE owner_id=${actor}`;
+  expect(await read()).toEqual(allowed);
   await rm(path);
+  expect(await read()).toBeNull();
   const missing = await runMonitoredCensus(opts, async () => ({ status: 'UNKNOWN', stage: 'source', rows: 0 }),
     { locateTranscript: async () => path });
   const unknown = missing.families.find(r => r.family === 'native-operation')!;

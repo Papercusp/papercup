@@ -5,6 +5,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getBuildInfo } from '../build-info';
 import type { SqlMiningOptions, SqlMiningResult } from '../bash-substitution/sql-tool-candidates';
 import type { SqlCorpusCursor, SqlDemandAggregate, SqlDemandObservation } from '../bash-substitution/sql-intent-corpus';
+import type { SqlIntentScope } from '../bash-substitution/sql-intent-fingerprint';
 import { rankSqlToolCandidates } from '../sql-tool-candidate-score';
 import { AGGREGATE_LIFETIME_DAYS, miningScopeId, sourcesCurrentlyReadable } from './privacy';
 import { boundedStage, miningFailureReason, MONITORED_FAMILIES, type MonitoredFamily } from './pipeline';
@@ -38,7 +39,11 @@ export interface MonitoredCandidateReadOptions extends SqlMiningOptions {
    * A token is a pointer, never a grant. Missing/unresolvable copies must return false.
    * The resolver must also authorize transcript copies, not just their activity index.
    */
-  authorizeSource: (sourceToken: string, family: MonitoredFamily) => Promise<boolean>;
+  authorizeSource?: (sourceToken: string, family: MonitoredFamily) => Promise<boolean>;
+  /** Batch equivalent for production reconstruction; called afresh on both ACL passes. */
+  authorizeCandidate?: (candidate: CandidateEvidence, context: {
+    sourceRevisions?: unknown; window?: unknown;
+  }) => Promise<boolean>;
 }
 /** Internal evidence lookup for review preparation. Never release family diagnostics,
  * scanned/denied counts or an unfiltered candidate list. No authorization is cached.
@@ -55,7 +60,7 @@ export async function readMonitoredCandidate(opts: MonitoredCandidateReadOptions
   try {
     return await boundedStage(async () => {
       if (!await scopeAllowed()) return null;
-      const load = () => sql<{ diagnostics: { candidates?: CandidateEvidence[] } }[]>`
+      const load = () => sql<{ diagnostics: { candidates?: CandidateEvidence[]; sourceRevisions?: unknown; window?: unknown } }[]>`
         SELECT f.diagnostics FROM harness_shared.sql_intent_family_runs f
         JOIN harness_shared.sql_intent_runs r USING (workspace_id,run_id)
         WHERE r.workspace_id=${opts.workspaceId} AND r.scope_id=${scopeId} AND r.harness_slug=${opts.harnessSlug}
@@ -73,7 +78,11 @@ export async function readMonitoredCandidate(opts: MonitoredCandidateReadOptions
         || Object.values(candidate.metrics).some(n => typeof n !== 'number' || !Number.isFinite(n) || n < 0)
         || typeof candidate.reviewEligible !== 'boolean'
         || candidateMetricKeys[opts.family].some(key => typeof candidate.metrics[key] !== 'number')) return null;
-      const allowed = () => sourcesCurrentlyReadable(candidate.sourceRefs, token => opts.authorizeSource(token, opts.family));
+      const allowed = () => opts.authorizeCandidate
+        ? opts.authorizeCandidate(candidate, row.diagnostics)
+        : opts.authorizeSource
+          ? sourcesCurrentlyReadable(candidate.sourceRefs, token => opts.authorizeSource!(token, opts.family))
+          : Promise.resolve(false);
       if (!await allowed()) return null;
       // DB and ACL lookups await IO. A later family replacement must not release
       // an older packet; revoke/delete during hydration denies the whole aggregate.
@@ -86,6 +95,59 @@ export async function readMonitoredCandidate(opts: MonitoredCandidateReadOptions
         reviewEligible: candidate.reviewEligible };
     }, budget);
   } catch { return null; }
+}
+/** Hash only the adapters' minimized observations, never raw source fields or secrets.
+ * Conflicting copies of a token cannot acquire a stable revision by last-write-wins.
+ */
+function observationRevisions(scope: SqlIntentScope, rows: readonly { sourceToken: string }[]) {
+  const revisions: Record<string, string> = {}, conflicts = new Set<string>();
+  for (const row of rows) {
+    const revision = createHmac('sha256', scope.key).update(JSON.stringify([
+      'monitored-source-revision-v1', scope.workspaceId, scope.sourceBoundary, scope.epoch, row,
+    ])).digest('hex');
+    if (revisions[row.sourceToken] && revisions[row.sourceToken] !== revision) conflicts.add(row.sourceToken);
+    revisions[row.sourceToken] = revision;
+  }
+  for (const token of conflicts) delete revisions[token];
+  return revisions;
+}
+
+/** Production activity evidence uses the same canonical readers as the census.
+ * Reconstruct the bounded original window on EACH authorization pass, including
+ * transcript copies. No token-to-source grant or source content is cached/stored.
+ * SQL keeps its existing readSqlCandidates/history revision rail.
+ */
+export async function readProductionMonitoredCandidate(
+  opts: Omit<MonitoredCandidateReadOptions, 'authorizeSource' | 'authorizeCandidate' | 'family'> & {
+    family: Exclude<MonitoredFamily, 'sql'>;
+  }, deps: Parameters<typeof productionOpportunityReaders>[1] = {},
+): Promise<CandidateEvidence | null> {
+  const readers = productionOpportunityReaders({ ...opts, sourceBoundary: opts.scope.sourceBoundary }, deps);
+  return readMonitoredCandidate({ ...opts, authorizeCandidate: async (candidate, context) => {
+    const window = context.window as { since?: string; until?: string } | null;
+    const revisions = context.sourceRevisions as Record<string, unknown> | null;
+    if (!window || typeof window.since !== 'string' || typeof window.until !== 'string'
+      || !Number.isFinite(Date.parse(window.since)) || !Number.isFinite(Date.parse(window.until))
+      || Date.parse(window.until) - Date.parse(window.since) !== 7 * 86400_000
+      || !revisions || typeof revisions !== 'object' || Array.isArray(revisions)
+      || candidate.sourceRefs.some(token => typeof revisions[token] !== 'string' || !/^[a-f0-9]{64}$/.test(revisions[token] as string))) return false;
+    const common = { ...opts, since: window.since, until: window.until,
+      authorizeSource: readers.authorizeLedgerSource, readOutput: readers.readOutput };
+    const deadline = Date.now() + positive(opts.timeBudgetMs, 5000, 30_000);
+    const pageSize = positive(opts.rowBudget, 250, 2000), rowCap = positive(opts.windowRowBudget, 20_000, 100_000);
+    const drain = <T, C extends { scanned: number; denied: number }>(fetch: (page: { after?: SqlCorpusCursor; limit: number }) =>
+      Promise<{ observations: T[]; next: SqlCorpusCursor | null; coverage: C }>) =>
+      drainWindow(fetch, pageSize, rowCap, deadline, () => false);
+    const page = opts.family === 'search-reformulation'
+      ? await drain(p => fetchSearchReformulations({ ...common, ...p }))
+      : opts.family === 'result-recovery' ? await drain(p => fetchResultRecovery({ ...common, ...p }))
+        : opts.family === 'workaround-funnel' ? await drain(p => fetchWorkaroundFunnels({ ...common, ...p }))
+          : opts.family === 'native-operation' ? await drain(p => fetchNativeOperations({ ...common, ...p,
+            authorizeSource: readers.authorizeActivitySource, readTranscript: readers.readTranscript })) : null;
+    if (!page || page.next || page.coverage.denied) return false;
+    const current = observationRevisions(opts.scope, page.observations);
+    return candidate.sourceRefs.every(token => current[token] !== undefined && current[token] === revisions[token]);
+  } });
 }
 function identityIndex(rows: readonly { sourceToken: string; operationToken: string | null }[]) {
   const bySource = new Map<string, Set<string>>(), byOperation = new Map<string, Set<string>>();
@@ -231,7 +293,8 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
       const chains = grouped.chains.filter(c => c.reformulations > 0 || c.fallbacks > 0);
       return { family: 'search-reformulation', coverage: page.next ? 'truncated' : 'UNKNOWN', scanned: page.coverage.scanned,
         qualifying: chains.length,
-        diagnostics: { sourceCoverage: page.coverage, collisions: grouped.collisions, reviewEligible: false,
+        diagnostics: { sourceCoverage: page.coverage, sourceRevisions: observationRevisions(opts.scope, page.observations),
+          collisions: grouped.collisions, reviewEligible: false,
           candidates: chains.map(c => candidate('search-reformulation', [c.scopeToken, c.id],
             identities(c.operations.map(o => o.sourceToken)),
             { logicalDemand: c.operations.length, reformulations: c.reformulations, fallbacks: c.fallbacks })) } };
@@ -247,6 +310,7 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
       }
       return { family: 'result-recovery', coverage: page.next ? 'truncated' : 'UNKNOWN', scanned: page.coverage.scanned,
         qualifying: grouped.rankings.length, diagnostics: { sourceCoverage: page.coverage,
+          sourceRevisions: observationRevisions(opts.scope, page.observations),
           collisions: grouped.collisions, evidenceGaps: grouped.evidenceGaps, reviewEligible: false,
           candidates: grouped.rankings.map(c => candidate('result-recovery', [c.scopeToken, c.tool],
             identities([...(exposureSources.get(JSON.stringify([c.scopeToken, c.tool])) ?? []),
@@ -259,6 +323,7 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
       const identities = identityIndex(page.observations);
       return { family: 'workaround-funnel', coverage: page.next ? 'truncated' : 'UNKNOWN', scanned: page.coverage.scanned,
         qualifying: grouped.rankings.length, diagnostics: { sourceCoverage: page.coverage,
+          sourceRevisions: observationRevisions(opts.scope, page.observations),
           collisions: grouped.collisions, evidenceGaps: grouped.evidenceGaps, reviewEligible: false,
           candidates: grouped.rankings.map(c => candidate('workaround-funnel', [c.scopeToken, c.tool, c.repair],
             identities(c.episodes.flatMap(e => e.operations.map(o => o.sourceToken))),
@@ -270,6 +335,7 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
       const grouped = groupNativeOperations(page.observations);
       return { family: 'native-operation', coverage: page.next ? 'truncated' : 'UNKNOWN', scanned: page.coverage.scanned,
         qualifying: grouped.chains.length, diagnostics: { sourceCoverage: page.coverage,
+          sourceRevisions: observationRevisions(opts.scope, page.observations),
           collisions: grouped.collisions, evidenceGaps: grouped.evidenceGaps, reviewEligible: false,
           candidates: grouped.chains.map(c => candidate('native-operation', [c.scopeToken, c.kind, c.id],
             { sourceRefs: c.sourceRefs, operationRefs: [...new Set(c.operationRefs)].sort() },
@@ -280,7 +346,7 @@ export async function runMonitoredCensus(opts: SqlMiningOptions & { routineId?: 
     for (const row of families) await tx`INSERT INTO harness_shared.sql_intent_family_runs
       (workspace_id,run_id,family,coverage,scanned,qualifying,diagnostics)
       VALUES (${opts.workspaceId},${runId}::uuid,${row.family},${row.coverage},${row.scanned},${row.qualifying},
-        ${JSON.stringify(row.diagnostics)}::jsonb)
+        ${JSON.stringify({ ...row.diagnostics, window: { since: common.since, until: common.until } })}::jsonb)
       ON CONFLICT (workspace_id,run_id,family) DO UPDATE SET coverage=EXCLUDED.coverage,
         scanned=EXCLUDED.scanned,qualifying=EXCLUDED.qualifying,diagnostics=EXCLUDED.diagnostics`;
     await tx`UPDATE harness_shared.sql_intent_runs SET finished_at=now()
