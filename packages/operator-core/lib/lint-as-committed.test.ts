@@ -1278,7 +1278,7 @@ setTimeout(() => { if (!fs.existsSync(${JSON.stringify(release)})) process.exit(
     snapshot(f.root, { 'probe.cjs': probe }, f.head);
     // This fixture exercises the runner under test, including an uncommitted
     // repair; the launcher's committed-source loader would substitute HEAD.
-    const childEnv = { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir };
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir };
     const committedLoader = `--import=${resolve(repoRoot, 'scripts/lib/committed-source-loader.mjs')}`;
     childEnv.NODE_OPTIONS = (childEnv.NODE_OPTIONS ?? '').split(/\s+/)
       .filter(option => option !== committedLoader).join(' ');
