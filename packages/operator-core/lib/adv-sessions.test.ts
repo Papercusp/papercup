@@ -15,6 +15,10 @@ const {
   workspaceAcquisitionErrors,
   acquireTimeouts,
   acquireRetries,
+  nativeRuntimeEndMock,
+  stopNativeLaunchMock,
+  releaseLeaseMock,
+  archiveSessionMock,
 } = vi.hoisted(() => {
   const sql = vi.fn<(strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>>(
     async () => [],
@@ -46,6 +50,10 @@ const {
     }>,
     acquireTimeouts: [] as Array<number | undefined>,
     acquireRetries: [] as Array<number | undefined>,
+    nativeRuntimeEndMock: vi.fn(async () => undefined),
+    stopNativeLaunchMock: vi.fn(async () => undefined),
+    releaseLeaseMock: vi.fn(async () => undefined),
+    archiveSessionMock: vi.fn(async () => undefined),
   };
 });
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -92,6 +100,18 @@ vi.mock('@papercusp/db-org', async (orig) => {
 vi.mock('./endpoint-route/routes/transport/pgbouncer-pool-sample.mjs', () => ({
   samplePgBouncerPools: samplePgBouncerPoolsMock,
 }));
+vi.mock('./blind-review-runtime-recovery', () => ({
+  retireRuntimeNamespacesForNativeEnd: nativeRuntimeEndMock,
+}));
+vi.mock('./blueprint/support-workflow-native-launch', () => ({
+  stopSupportOperationNativeLaunch: stopNativeLaunchMock,
+}));
+vi.mock('./session-end-lease-release-hook', () => ({
+  scheduleSessionEndLeaseRelease: releaseLeaseMock,
+}));
+vi.mock('./session-archive-hook', () => ({
+  scheduleArchiveForAdvSession: archiveSessionMock,
+}));
 
 import {
   isDeadTerminalLaunch,
@@ -110,6 +130,7 @@ import {
   readSuLaunchSpecByOwner,
   listResumableSessions,
   markAdvSessionShutdownAcceptedByOwner,
+  markAdvSessionEnded,
   reactivateAdvSessionByOwner,
   repairStaleAdvSessionTerminalMarkers,
   shutdownAcceptedOwnerIds,
@@ -140,6 +161,49 @@ beforeEach(() => {
   advSessionBeginMock.mockImplementation(async (fn: (tx: typeof advSessionRowsMock) => unknown) => fn(advSessionRowsMock));
   acquireTimeouts.length = 0;
   acquireRetries.length = 0;
+  nativeRuntimeEndMock.mockClear();
+  stopNativeLaunchMock.mockClear();
+  releaseLeaseMock.mockClear();
+  archiveSessionMock.mockClear();
+});
+
+describe('native end runtime cutoff', () => {
+  const expectedBinding = { coordOwnerId: 'reviewer-original', sessionId: 'native-original',
+    startedAt: '2026-10-26 18:00:00.123456+00', workspaceId: 'runtime-workspace' };
+
+  it('does not retire runtime resources when the terminal CAS rejects a stale observation', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([]);
+    await expect(markAdvSessionEnded(71, 0, 'self', { expectedBinding })).resolves.toBe(false);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(nativeRuntimeEndMock).not.toHaveBeenCalled();
+    expect(stopNativeLaunchMock).not.toHaveBeenCalled();
+    expect(releaseLeaseMock).not.toHaveBeenCalled();
+    expect(archiveSessionMock).not.toHaveBeenCalled();
+    const [strings, ...values] = advSessionRowsMock.mock.calls[0]!;
+    expect(strings.join('?')).toContain('AND ended_at IS NULL');
+    expect(strings.join('?')).toContain('AND started_at =');
+    expect(values).toContain(expectedBinding.sessionId);
+    expect(values).toContain(expectedBinding.startedAt);
+  });
+
+  it('cuts off only the exact native identity returned by the winning terminal write', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([{ id: 71, workspace_id: 'runtime-workspace',
+      session_id: 'native-original' }]);
+    await expect(markAdvSessionEnded(71, 0, 'self', { expectedBinding })).resolves.toBe(true);
+    await vi.waitFor(() => expect(nativeRuntimeEndMock).toHaveBeenCalledTimes(1));
+    expect(nativeRuntimeEndMock).toHaveBeenCalledWith({ workspaceId: 'runtime-workspace',
+      advSessionId: 71, nativeSessionId: 'native-original' });
+    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+    expect(stopNativeLaunchMock).toHaveBeenCalledWith(71);
+  });
+
+  it('never fabricates a runtime native identity for an unregistered ended session', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([{ id: 71, workspace_id: 'runtime-workspace', session_id: null }]);
+    await expect(markAdvSessionEnded(71, 1, 'self')).resolves.toBe(true);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(nativeRuntimeEndMock).not.toHaveBeenCalled();
+    expect(stopNativeLaunchMock).toHaveBeenCalledWith(71);
+  });
 });
 
 describe('exact binding reservation pin', () => {
