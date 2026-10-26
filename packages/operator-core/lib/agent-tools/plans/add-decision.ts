@@ -49,6 +49,7 @@ import {
   appendDecisionToBody,
   decisionIdsMissingFromLiveBody,
   normalizeAffects,
+  stripLeadingDecisionId,
 } from './decision-body';
 import { reevaluateBarReadinessOnScopeWrite, type BarReadinessResult } from './plan-scope-cascade';
 import { defaultBarReadinessDeps } from './plan-scope-cascade-deps';
@@ -237,7 +238,28 @@ function todayISO(): string {
 // module — which reads `VALID_PLAN_SLUG` from `./source` at module scope and
 // therefore collapses under every plans test that mocks `./source` with a bare
 // factory. Re-exported here so existing importers keep working.
-export { allocateNextDecisionId, appendDecisionToBody, normalizeAffects } from './decision-body';
+export { allocateNextDecisionId, appendDecisionToBody, normalizeAffects, stripLeadingDecisionId } from './decision-body';
+
+/**
+ * EI-27020408323515699: when the caller's title carried its own `D-NNN —` prefix, say
+ * that it was dropped and which id the decision ACTUALLY got. The mismatch case is the
+ * one that matters: a caller who guessed `D-004` and was allocated `D-005` would
+ * otherwise go on citing the wrong ruling. Null when no prefix was removed, so the
+ * common case keeps its exact prior result shape.
+ */
+export function titleIdPrefixAdvisory(
+  removed: string | null,
+  allocated: string,
+  ref: string | null,
+): { removed: string; allocated: string; note: string } | null {
+  if (!removed) return null;
+  const note =
+    removed === allocated
+      ? `Removed the leading ${removed} from title: the tool allocates the heading id, so pass the title text only.`
+      : `Your title began with ${removed}, but this decision was allocated ${allocated}; the ${removed} prefix ` +
+        `was removed from the heading. Cite ${ref ?? allocated}, not ${removed}.`;
+  return { removed, allocated, note };
+}
 
 /**
  * Retry-safety for a NON-idempotent append (EI-19383795443003151): an MCP
@@ -382,9 +404,13 @@ export async function addDecisionOne(
   // swap, non-destructive, idempotent) rather than refuse — same choice
   // facts:assert makes: the decision was still substantively authored and must
   // not be lost outright over a malformed closing tag.
+  // EI-27020408323515699: the id is allocated under the lock, so a caller-supplied
+  // `D-NNN —` title prefix is stripped HERE — before the retry-dedupe compares
+  // titles, before the lock intent and the plan-event `after` — not only at render.
+  const { title: unprefixedTitle, strippedId: titleIdPrefix } = stripLeadingDecisionId(rawIt.title);
   const it: NewDecision = {
     ...rawIt,
-    title: neutralizeToolCallTags(rawIt.title),
+    title: neutralizeToolCallTags(unprefixedTitle),
     body: promotionDecisionBody(neutralizeToolCallTags(rawIt.body),
       await validatePromotedFrom(rawIt.promotedFrom, ctx.workspaceId)),
   };
@@ -527,6 +553,7 @@ export async function addDecisionOne(
 
   // `result.value` is narrowed to the ok-variant by the guard above.
   const decisionId = result.value.decisionId;
+  const titlePrefix = titleIdPrefixAdvisory(titleIdPrefix, decisionId, planDecisionRef(it.slug, decisionId));
 
   // A retry-duplicate no-op: nothing was written, so nothing to ledger, event,
   // or propagate — just hand back the id the earlier (already-landed) call
@@ -539,6 +566,7 @@ export async function addDecisionOne(
       slug: it.slug,
       deduped: true,
       filePath: result.filePath,
+      ...(titlePrefix ? { titleIdPrefix: titlePrefix } : {}),
       ...(measurementAdvisory ? { measurementAdvisory } : {}),
       ...(citedRuleAdvisory ? { citedRuleAdvisory } : {}),
       ...provenance,
@@ -627,6 +655,7 @@ export async function addDecisionOne(
     ...(barReadiness && (barReadiness.state === 'blocked' || barReadiness.nowStamped || barReadiness.error)
       ? { barReadiness }
       : {}),
+    ...(titlePrefix ? { titleIdPrefix: titlePrefix } : {}),
     ...(measurementAdvisory ? { measurementAdvisory } : {}),
     ...(citedRuleAdvisory ? { citedRuleAdvisory } : {}),
     // WI-42142: advisory provenance fields — absent on the clean common case, so a
