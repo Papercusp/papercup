@@ -304,7 +304,27 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     });
     const { scaffoldHarnessSchema } = await import('./scaffold-harness-schema');
     await setupStep('scaffold-harness-schema', () => scaffoldHarnessSchema(harness));
-    const { app } = await setupStep('import-private-operator', () => import('../../../apps/operator/bin/host-app'));
+    // Mount the production MCP definitions and auth/workspace stack without
+    // importing every unrelated HTTP route. Warm the real operator catalogue
+    // before initialize: its cold import otherwise consumes the client's MCP
+    // handshake deadline (r199), whereas the full host app warmed it incidentally.
+    const app = await setupStep('mount-private-mcp', async () => {
+      const [{ Hono }, { registerRoute }, { default: transportRoutes }, { default: cardResponseRoute },
+        { createWorkspaceContextMiddleware }, { createLocalMachineOperatorTransport }] = await Promise.all([
+        import('hono'), import('./endpoint-route/define-route'), import('./endpoint-route/routes/transport'),
+        import('./endpoint-route/routes/operator/card-response'),
+        import('./workspace-context-middleware'), import('./workspace-host/local-machine-operator-transport'),
+      ]);
+      const app = new Hono().basePath('/api');
+      app.use('*', createWorkspaceContextMiddleware(createLocalMachineOperatorTransport()));
+      for (const route of transportRoutes) registerRoute(app, route);
+      registerRoute(app, cardResponseRoute);
+      return app;
+    });
+    await setupStep('warm-private-mcp-catalogue', async () => {
+      const { ensureOperatorToolsLoaded } = await import('./endpoint-route/routes/transport/_mcp-host');
+      await ensureOperatorToolsLoaded();
+    });
     server = createAdaptorServer({ fetch: app.fetch });
     await setupStep('listen-private-operator', () => new Promise<void>((done, reject) => {
       server!.once('error', reject);
@@ -333,6 +353,15 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     mcpUrl.search = new URLSearchParams({ superuser: '1', workspace: 'papercusp-workspace',
       tools: 'coord:whoami,tools:invoke' }).toString();
     try {
+      await setupStep('card-response-preflight', async () => {
+        const response = await fetch(`${origin}/api/operator/conversations/${randomUUID()}/card-response`, {
+          method: 'POST', headers: { ...entry.headers, 'content-type': 'application/json' }, body: '{}',
+        });
+        const body = await response.text();
+        expect(response.status, body).toBe(400);
+        expect(response.headers.get('content-type'), body).toContain('application/json');
+        expect(JSON.parse(body)).toMatchObject({ error: expect.stringContaining('correlationId, workspaceId, action required') });
+      });
       await setupStep('mcp-connect', () => client.connect(new StreamableHTTPClientTransport(mcpUrl, {
         requestInit: { headers: entry.headers },
       })));
@@ -623,7 +652,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
             method: 'POST', headers, body: JSON.stringify({ correlationId: event.card.correlationId,
               workspaceId, action: 'submit', payload: { picks: ['yes'] } }),
           });
-          expect(answered.status, JSON.stringify(await answered.json())).toBe(200);
+          expect(answered.status, await answered.text()).toBe(200);
         }
         if (event.type === 'error') {
           const rateLimit = confirmedProviderRateLimit(observedEvents);
