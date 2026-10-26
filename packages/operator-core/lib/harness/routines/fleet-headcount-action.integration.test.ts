@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   listExpiredRules: vi.fn(),
   lapseRule: vi.fn(),
   orgSql: vi.fn(),
+  getModes: vi.fn(),
   events: [] as string[],
   headcountEvents: [] as Record<string, unknown>[],
 }));
@@ -91,6 +92,12 @@ vi.mock('../../agent-tools/fleet/kill', () => ({
 vi.mock('../../goal-launch-settings', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../goal-launch-settings')>()),
   resolveGoalLaunch: (...args: unknown[]) => mocks.resolveGoalLaunch(...args),
+}));
+// The launcher-mode read (WI-6554700010029298) is stubbed at its own seam so it never
+// lands on `mocks.orgSql`, whose call count the plan-status cases assert on.
+vi.mock('../../modes/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../modes/store')>()),
+  getModes: (...args: unknown[]) => mocks.getModes(...args),
 }));
 vi.mock('../../modes/goal-context', () => ({
   resolveGoalContext: (...args: unknown[]) => mocks.resolveGoalContext(...args),
@@ -237,6 +244,7 @@ beforeEach(() => {
   });
   mocks.setHeadcountTarget.mockResolvedValue(undefined);
   mocks.orgSql.mockResolvedValue([]);
+  mocks.getModes.mockResolvedValue([]);
 });
 
 // WI-1457060. The governor reasoned only about member headcount and readiness, never
@@ -1026,5 +1034,71 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
     );
     expect(launchContext).toContain('draining your fleet claim-lane backlog');
     expect(launchContext).not.toContain('working plan `plan-a`');
+  });
+});
+
+// WI-6554700010029298. A governor top-up composed its psu command with no mode, so a
+// drain fleet's replacements all booted AUTO-only: Luna Max had 721 joiners in 7 days
+// and none held DRAIN, because DRAIN lived only on the founding leader's identity and
+// three later leaders never held it.
+describe('governor top-up launches the fleet mode (WI-6554700010029298)', () => {
+  const runTopUp = async (config: Record<string, unknown>) => {
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a',
+      leaderOwnerId: 'su-leader',
+      lastLaunchTransaction: null,
+    });
+    mocks.liveMemberIds.mockResolvedValue([]);
+    mocks.listTargets.mockResolvedValue([grantedTarget(config)]);
+    mocks.claimAttempt.mockResolvedValue({
+      workspaceId: 'ws',
+      fleetSlug: 'fleet-a',
+      target: 1,
+      config,
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+      claimedAt: 1,
+    });
+    mocks.orgSql.mockResolvedValue([{ status: 'active' }]);
+    mocks.verify.mockImplementation(async (args: { expectedOwnerIds: string[] }) =>
+      verifierResult(args.expectedOwnerIds[0]!, true));
+    await runFleetHeadcountGovernor({
+      installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+    });
+    const spawnArgs = mocks.spawnHeadless.mock.calls[0]?.[0];
+    expect(spawnArgs).toBeDefined();
+    return String(spawnArgs.envelope.greetingCmd);
+  };
+
+  it('launches --mode=drain from the recipe even when the current leader holds no DRAIN', async () => {
+    mocks.getModes.mockResolvedValue([{ mode: 'auto' }]);
+    const command = await runTopUp({ ...baseConfig, mode: 'drain' });
+    expect(command).toContain('--mode=drain');
+    // Member-shaped: the founding caller's subject and owner provenance never ride along.
+    expect(command).not.toContain('--mode-owner-directed');
+    expect(command).not.toContain('--mode-subject=');
+    expect(mocks.getModes).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the launching leader\'s live DRAIN row for a legacy recipe without a mode', async () => {
+    mocks.getModes.mockResolvedValue([{ mode: 'auto' }, { mode: 'drain', subject: 'leader mission', ownerDirected: true }]);
+    const command = await runTopUp({ ...baseConfig });
+    expect(mocks.getModes).toHaveBeenCalledWith('ws', 'su-leader');
+    expect(command).toContain('--mode=drain');
+    expect(command).not.toContain('--mode-owner-directed');
+    expect(command).not.toContain('leader mission');
+  });
+
+  it('launches no mode when neither the recipe nor the leader declares one', async () => {
+    mocks.getModes.mockResolvedValue([{ mode: 'auto' }]);
+    const command = await runTopUp({ ...baseConfig });
+    expect(command).not.toContain('--mode=');
+  });
+
+  it('still tops up, without a mode, when the leader mode read fails', async () => {
+    mocks.getModes.mockRejectedValue(new Error('pg down'));
+    const command = await runTopUp({ ...baseConfig });
+    expect(command).not.toContain('--mode=');
   });
 });

@@ -36,11 +36,14 @@ import {
   composeModelSpec,
   composeMemberLaunchContext,
   injectLaunchedByArg,
+  launchModeFromFleetRecipe,
   memberLaunchCommand,
   modelEffortFromSpec,
   verifyFreshLaunchStarted,
   type FreshLaunchExpectedAttestation,
+  type LaunchMode,
 } from '../../agent-launch-core';
+import { getModes } from '../../modes/store';
 import killTool from '../../agent-tools/fleet/kill';
 import { countedMemberSet, readFleetMemberSilence } from '../../agent-tools/fleet_registry/silent-member';
 import { resolveGoalLaunch } from '../../goal-launch-settings';
@@ -646,6 +649,39 @@ export function resolveFleetHeadcountProfile(
   config: FleetHeadcountConfig,
 ): FleetHeadcountConfig & { headless: boolean } {
   return { ...config, headless: config.headless ?? true };
+}
+
+/**
+ * WI-6554700010029298: the mode a governor top-up member launches in. Before this,
+ * a top-up passed no mode at all, so every replacement in a drain fleet booted
+ * AUTO-only (Luna Max: 721 joiners in 7 days, 0 with a DRAIN row). The recipe's
+ * declared mode wins; a legacy recipe without one falls back to the launching
+ * leader's live DRAIN row, the same caller-overlay rule launch-on-plan applies.
+ */
+export function resolveGovernorMemberLaunchMode(args: {
+  config: { mode?: unknown };
+  launcherModes: ReadonlyArray<{ mode?: unknown }>;
+}): LaunchMode | null {
+  const fromRecipe = launchModeFromFleetRecipe(args.config);
+  if (fromRecipe) return fromRecipe;
+  return args.launcherModes.some((row) => row?.mode === 'drain')
+    ? launchModeFromFleetRecipe({ mode: 'drain' })
+    : null;
+}
+
+/** Read the launcher's modes only when the recipe does not already decide; a mode
+ * read outage degrades to the recipe's answer instead of refusing the top-up. */
+async function readGovernorMemberLaunchMode(
+  workspaceId: string,
+  launcherOwnerId: string,
+  config: { mode?: unknown },
+): Promise<LaunchMode | null> {
+  if (launchModeFromFleetRecipe(config)) return resolveGovernorMemberLaunchMode({ config, launcherModes: [] });
+  try {
+    return resolveGovernorMemberLaunchMode({ config, launcherModes: await getModes(workspaceId, launcherOwnerId) });
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1393,6 +1429,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     } = resolveGovernorMemberLaunchProfile(goalLaunch.effective, config);
     const modelSpec = composeModelSpec(effectiveModel, effectiveEffort) ?? null;
     const newMemberIds = Array.from({ length: waveCount }, () => `su-${randomUUID()}`);
+    const memberLaunchMode = await readGovernorMemberLaunchMode(workspaceId, launcherOwnerId, config);
     const commands = newMemberIds.map((ownerId) => injectLaunchedByArg(memberLaunchCommand({
       fleetSlug,
       agent: effectiveAgent,
@@ -1400,6 +1437,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       headless: config.headless,
       ownerId,
       workspace: workspaceId,
+      launchMode: memberLaunchMode,
       // The goal's profile applies to a governor top-up exactly as it does to the
       // leader's own launches — otherwise a replaced member silently comes back
       // on a different model/account than the one the goal pinned.

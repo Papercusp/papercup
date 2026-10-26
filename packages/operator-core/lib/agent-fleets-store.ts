@@ -331,6 +331,14 @@ export interface FleetHeadcountConfig {
   compactionLimit?: number;
   carry?: 'warm' | 'cold';
   extraArgs?: string[];
+  /** The named launch mode the fleet's members are launched with (only `drain`
+   * today). DRAIN is a caller overlay: before this field it lived only on the
+   * founding leader's identity, so the first leader succession dropped it and every
+   * later launch, governor top-ups included, opened AUTO-only members
+   * (WI-6554700010029298: 721 Luna Max joiners in 7 days, 0 with DRAIN). Written on
+   * the fresh-recipe persist; read by launch-on-plan and the headcount governor
+   * through `launchModeFromFleetRecipe`. */
+  mode?: 'drain';
   /** P-005 / D-030 (unified-bug-pipeline-and-honest-queue-2026-10-05): the one
    * structured form of "do not top this fleet up". Before it, the rule lived in
    * plan prose, so a successor leader inherited it silently and a fleet ran with
@@ -738,6 +746,9 @@ export function normalizeFleetHeadcountConfig(raw: FleetHeadcountConfig | Record
     if (!normalized.ok) throw new Error(normalized.error);
     config.contextSize = normalized.contextSize;
   }
+  // A hand-forged or future mode value must not reach `--mode=` argv; only the
+  // recognized fleet mode survives a read.
+  if (config.mode !== undefined && config.mode !== 'drain') delete config.mode;
   return config as FleetHeadcountConfig;
 }
 

@@ -206,6 +206,17 @@ export function resolveLaunchMode(opts: {
   });
 }
 
+/**
+ * The member launch mode a fleet's persisted recipe declares (`config.mode`).
+ * Member-shaped on purpose: the founding caller's subject, instructions and
+ * owner-directed provenance are personal to that identity, so a recipe replay
+ * carries only the mode itself (WI-6554700010029298).
+ */
+export function launchModeFromFleetRecipe(config: { mode?: unknown } | null | undefined): LaunchMode | null {
+  if (!config || config.mode !== 'drain') return null;
+  return normalizeLaunchMode({ mode: 'drain' }, { fleetRole: 'member' });
+}
+
 /** A resume/fork target fully resolved to the exact session to act on. */
 export interface ResumeTarget {
   /**

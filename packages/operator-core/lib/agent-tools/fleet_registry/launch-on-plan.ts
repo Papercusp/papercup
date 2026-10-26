@@ -164,6 +164,7 @@ import {
   verifyFreshLaunchStarted,
   modelEffortFromSpec,
   resolveLaunchMode,
+  launchModeFromFleetRecipe,
   type FleetMemberDefaults,
   type FreshLaunchExpectedAttestation,
   type LaunchMode,
@@ -235,6 +236,24 @@ export function resolveFleetLaunchMode(opts: {
     modeRows: opts.modeRows,
     instructionsFact: instructions?.body,
   });
+}
+
+/**
+ * WI-6554700010029298: the launch overlay for one wave. The caller's own durable
+ * DRAIN row wins (it carries the caller's subject when the caller leads); a caller
+ * without one still launches the fleet's declared recipe mode, so a leader
+ * succession no longer drops a drain fleet's mode.
+ */
+export function resolveWaveLaunchMode(opts: {
+  callerMode: LaunchMode | null;
+  recipe: { mode?: unknown } | null | undefined;
+}): LaunchMode | null {
+  return opts.callerMode ?? launchModeFromFleetRecipe(opts.recipe);
+}
+
+/** The recipe field a fresh fleet persists so its mode outlives the founding caller. */
+export function recipeModeField(launchMode: LaunchMode | null): { mode?: 'drain' } {
+  return launchMode?.mode === 'drain' ? { mode: 'drain' } : {};
 }
 
 /** Read the caller's launch mode once per fleet launch; failures stay fail-soft
@@ -2572,7 +2591,13 @@ export default defineTool({
     // DRAIN is a durable caller overlay, not a fleet argument. Read the mode row and
     // its owner-scoped instruction fact once, then thread the bounded result through
     // every member/leader composer below so no launch path silently drops the mode.
-    const launchMode = await readCallerLaunchMode(workspaceId, ownerId);
+    // A successor leader, or any caller without the founding caller's DRAIN row,
+    // still launches the fleet's declared mode from its saved recipe
+    // (WI-6554700010029298).
+    const launchMode = resolveWaveLaunchMode({
+      callerMode: await readCallerLaunchMode(workspaceId, ownerId),
+      recipe: persistedHeadcountProfile?.config,
+    });
     // `agent` and `model` are COUPLED: a local/gateway model (ollama-cc/…ornith) only runs on
     // the omp backend. Infer omp from such a model when agent is unspecified, and reject an
     // explicit claude/codex pairing outright — otherwise psu launches that backend with an
@@ -4849,6 +4874,8 @@ export default defineTool({
         ...(args.extraArgs ? { extraArgs: [...args.extraArgs] } : {}),
         // R5: an explicit supervise grant/revoke rides the fresh-recipe persist.
         ...(args.supervise != null ? { supervise: args.supervise } : {}),
+        // The fleet's mode outlives the founding caller (WI-6554700010029298).
+        ...recipeModeField(launchMode),
       });
       try {
         await setFleetHeadcountTarget({ workspaceId, fleetSlug, target: count, config });
