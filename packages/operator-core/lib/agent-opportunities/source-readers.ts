@@ -108,7 +108,7 @@ export function productionOpportunityReaders(opts: OpportunityReaderOptions, dep
         const matching = [];
         const deadline = Date.now() + 1000;
         for (const binding of before) {
-          const read = await canonicalNativeRuntimeSources(binding, opts, deadline);
+          const read = await canonicalNativeRuntimeSources(binding, opts, deadline, input.sessionId);
           const sources = read.sources.filter(s => s.namespace === input.sessionId && s.callId === input.callId);
           if (sources.length) matching.push(sources);
         }

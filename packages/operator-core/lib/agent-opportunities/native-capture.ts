@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { getOrgPg } from '@papercusp/db-org';
 import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
-import { nativeTranscriptSources, NATIVE_PROVIDERS, type NativeProvider } from './native-operation';
+import { createNativeTranscriptReader, NATIVE_PROVIDERS, type NativeProvider } from './native-operation';
 import type { SearchSource } from './search-reformulation';
 
 type Client = ReturnType<typeof getOrgPg>['sql'];
@@ -24,11 +24,10 @@ const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(va
 const micros = (value: string) => BigInt(Date.parse(value)) * 1000n
   + BigInt(((/\.(\d+)/.exec(value)?.[1] ?? '').padEnd(6, '0').slice(3, 6)) || '0');
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-/** Internal source reader shared with hydration. Its paths are derived from the
- * authenticated runtime binding, including predecessors left by managed carries. */
-export async function canonicalNativeRuntimeSources(binding: Binding, context: {
-  workspaceId: string; harnessSlug: string; sourceBoundary: string;
-}, deadline = Date.now() + 1000) {
+/** Enrollment records source identities, not a claim that their content was
+ * captured. Never load historical transcript bodies just to start a prospective
+ * interval; the reconciler must validate them before certifying any coverage. */
+async function canonicalNativeRuntimeManifest(binding: Binding, deadline: number) {
   if (!/^\d+$/.test(binding.id) || !/^[\w-]+$/.test(binding.owner)
     || !NATIVE_PROVIDERS.includes(binding.provider)) throw new Error('native_capture_binding');
   const root = binding.provider === 'codex' ? join(codexHomeForSessionKey(binding.id), 'sessions')
@@ -37,7 +36,7 @@ export async function canonicalNativeRuntimeSources(binding: Binding, context: {
   if (await realpath(root) !== resolve(root)) throw new Error('native_capture_source_kind');
   const pattern = new RegExp(binding.provider === 'codex' ? `^rollout-.*-(${uuid})\\.jsonl$`
     : binding.provider === 'claude' ? `^(${uuid})\\.jsonl$` : '^.*_([A-Za-z0-9_-]{6,})\\.jsonl$', 'i');
-  let entries = 0, bytesRead = 0;
+  let entries = 0;
   const files: { path: string; sessionId: string; stamp: string }[] = [];
   const walk = async (dir: string, depth: number): Promise<void> => {
     if (Date.now() >= deadline || depth > 4 || (await lstat(dir)).isSymbolicLink()) throw new Error('native_capture_bound');
@@ -59,61 +58,90 @@ export async function canonicalNativeRuntimeSources(binding: Binding, context: {
   await walk(root, 0);
   if (!files.length || files.length > 1000 || new Set(files.map(f => f.sessionId)).size !== files.length)
     throw new Error('native_capture_population');
+  return { files, identities: files.map(file => digest([binding.id, binding.owner, binding.provider, file.sessionId])) };
+}
+
+/** Internal source reader shared with hydration. Paths come only from the
+ * authenticated runtime. Bounded IO buffers replace a whole-file allocation;
+ * provider parser state and line identities survive buffer boundaries. */
+export async function canonicalNativeRuntimeSources(binding: Binding, context: {
+  workspaceId: string; harnessSlug: string; sourceBoundary: string;
+}, deadline = Date.now() + 1000, sessionId?: string) {
+  const { files, identities } = await canonicalNativeRuntimeManifest(binding, deadline);
+  const selected = sessionId ? files.filter(file => file.sessionId === sessionId) : files;
+  if (!selected.length) throw new Error('native_capture_identity');
   const sources: SearchSource[] = [], stamps: string[] = [];
-  for (const file of files) {
+  let retainedBytes = 0;
+  for (const file of selected) {
     const handle = await open(file.path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const before = await handle.stat({ bigint: true });
       const stamp = [before.dev, before.ino, before.size, before.mtimeNs, before.ctimeNs].join(':');
-      bytesRead += Number(before.size);
-      if (stamp !== file.stamp || bytesRead > 32 * 1024 * 1024 || Date.now() >= deadline) throw new Error('native_capture_bound');
-      const buffer = Buffer.alloc(Number(before.size) + 1);
-      let length = 0;
-      while (length < buffer.length) {
-        if (Date.now() >= deadline) throw new Error('native_capture_bound');
-        const read = await handle.read(buffer, length, buffer.length - length, length);
-        if (!read.bytesRead) break;
-        length += read.bytesRead;
-      }
-      const bytes = buffer.subarray(0, length);
-      const after = await handle.stat({ bigint: true });
-      if (stamp !== [after.dev, after.ino, after.size, after.mtimeNs, after.ctimeNs].join(':')
-        || BigInt(bytes.length) !== before.size || bytes.at(-1) !== 10) throw new Error('native_capture_changed');
-      const text = bytes.toString('utf8');
-      if (!Buffer.from(text).equals(bytes)) throw new Error('native_capture_encoding');
-      const lines = text.trimEnd().split('\n');
-      // The maintained parser's bounded contract is preserved. No partial file
-      // becomes a successful receipt, including an oversized historical source.
-      if (lines.length > 4000 || lines.some(line => line.length > 256_000)) throw new Error('native_capture_bound');
-      const records = lines.map(line => JSON.parse(line) as Record<string, unknown>);
-      if (records.some(r => !r || typeof r !== 'object' || Array.isArray(r))) throw new Error('native_capture_encoding');
-      if (binding.provider === 'codex' && (records[0]?.type !== 'session_meta'
-        || (records[0]?.payload as { id?: string })?.id !== file.sessionId)) throw new Error('native_capture_identity');
-      if (binding.provider === 'omp' && (records[0]?.type !== 'session' || records[0]?.id !== file.sessionId))
-        throw new Error('native_capture_identity');
-      if (binding.provider === 'claude' && (!records.some(r => r.sessionId === file.sessionId)
-        || records.some(r => r.sessionId != null && r.sessionId !== file.sessionId))) throw new Error('native_capture_identity');
-      const parsed = nativeTranscriptSources(lines, { ...context, authorizationScope: context.sourceBoundary,
+      if (stamp !== file.stamp || !before.isFile() || Date.now() >= deadline) throw new Error('native_capture_bound');
+      const parser = createNativeTranscriptReader({ ...context, authorizationScope: context.sourceBoundary,
         actor: binding.owner, verifiedAgent: true, origin: 'agent', provider: binding.provider,
         sessionId: file.sessionId, complete: true });
-      const expected = records.reduce((n, record) => {
-        const payload = record.payload as { type?: string } | undefined;
-        const message = record.message as { content?: { type?: string }[] } | undefined;
-        return n + (binding.provider === 'codex'
-          ? Number(record.type === 'response_item' && ['function_call', 'custom_tool_call'].includes(payload?.type ?? ''))
-          : Array.isArray(message?.content) ? message.content.filter(b => b.type === (binding.provider === 'claude' ? 'tool_use' : 'toolCall')).length : 0);
-      }, 0);
+      const hash = createHash('sha256'), buffer = Buffer.alloc(64 * 1024);
+      let length = 0, pending = Buffer.alloc(0), lineIndex = 0, identity = false, expected = 0;
+      for (;;) {
+        if (Date.now() >= deadline) throw new Error('native_capture_bound');
+        const read = await handle.read(buffer, 0, buffer.length, length);
+        if (!read.bytesRead) break;
+        length += read.bytesRead;
+        const bytes = buffer.subarray(0, read.bytesRead);
+        hash.update(bytes);
+        // A multibyte UTF-8 code point may straddle an IO buffer. Decode only
+        // complete records, and keep at most one bounded unfinished record.
+        const chunk = pending.length ? Buffer.concat([pending, bytes]) : bytes;
+        let start = 0;
+        for (;;) {
+          const end = chunk.indexOf(10, start);
+          if (end < 0) break;
+          const recordBytes = chunk.subarray(start, end), line = recordBytes.toString('utf8');
+          if (line.length > 256_000) throw new Error('native_capture_bound');
+          if (!Buffer.from(line).equals(recordBytes)) throw new Error('native_capture_encoding');
+          const record = JSON.parse(line) as Record<string, unknown>;
+          if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('native_capture_encoding');
+          if (lineIndex++ === 0 && binding.provider !== 'claude') {
+            if (binding.provider === 'codex' ? record.type !== 'session_meta'
+              || (record.payload as { id?: string })?.id !== file.sessionId
+              : record.type !== 'session' || record.id !== file.sessionId) throw new Error('native_capture_identity');
+            identity = true;
+          }
+          if (binding.provider === 'claude') {
+            if (record.sessionId != null && record.sessionId !== file.sessionId) throw new Error('native_capture_identity');
+            if (record.sessionId === file.sessionId) identity = true;
+          }
+          const payload = record.payload as { type?: string } | undefined;
+          const message = record.message as { content?: { type?: string }[] } | undefined;
+          expected += binding.provider === 'codex'
+            ? Number(record.type === 'response_item' && ['function_call', 'custom_tool_call', 'tool_search_call'].includes(payload?.type ?? ''))
+            : Array.isArray(message?.content) ? message.content.filter(b => b.type === (binding.provider === 'claude' ? 'tool_use' : 'toolCall')).length : 0;
+          parser.push(line);
+          start = end + 1;
+        }
+        pending = Buffer.from(chunk.subarray(start));
+        // Four UTF-8 bytes per code point is a byte bound, not permission to
+        // bypass the maintained 256000-character record contract.
+        if (pending.length > 4 * 256_000) throw new Error('native_capture_bound');
+      }
+      const after = await handle.stat({ bigint: true });
+      if (stamp !== [after.dev, after.ino, after.size, after.mtimeNs, after.ctimeNs].join(':')
+        || BigInt(length) !== before.size || pending.length) throw new Error('native_capture_changed');
+      if (!identity) throw new Error('native_capture_identity');
+      const parsed = parser.sources();
+      retainedBytes += parser.retainedBytes();
+      if (retainedBytes > 32 * 1024 * 1024 || sources.length + parsed.length > 2000)
+        throw new Error('native_capture_bound');
       if (expected !== parsed.length) throw new Error('native_capture_parser_gap');
       sources.push(...parsed);
-      stamps.push(digest([file.sessionId, stamp, createHash('sha256').update(bytes).digest('hex')]));
+      stamps.push(digest([file.sessionId, stamp, hash.digest('hex')]));
     } finally { await handle.close(); }
   }
   // Re-census detects a deleted/added predecessor and any source rewrite during IO.
-  const previous = JSON.stringify(files); files.length = 0; entries = 0;
-  await walk(root, 0);
-  if (JSON.stringify(files) !== previous) throw new Error('native_capture_changed');
-  return { sources, fingerprint: digest(stamps), identities: files.map(file =>
-    digest([binding.id, binding.owner, binding.provider, file.sessionId])) };
+  const current = await canonicalNativeRuntimeManifest(binding, deadline);
+  if (JSON.stringify(current.files) !== JSON.stringify(files)) throw new Error('native_capture_changed');
+  return { sources, fingerprint: digest(stamps), identities };
 }
 
 /** A fresh canonical-source reconciliation, not a cached callback attestation.
@@ -195,7 +223,7 @@ export async function reconcileNativeCapture(opts: NativeCaptureOptions): Promis
         if (Date.now() >= deadline - 100) break;
         try {
           const binding = remaining[index]!;
-          const read = await canonicalNativeRuntimeSources(binding, opts, deadline - 100);
+          const read = await canonicalNativeRuntimeManifest(binding, deadline - 100);
           manifest[digest([binding.id, binding.owner, binding.provider])] = read.identities;
         } catch { break; } // Retain earlier progress, but never skip a failed root.
       }

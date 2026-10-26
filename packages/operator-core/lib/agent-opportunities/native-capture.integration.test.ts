@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { sqlMiningFixture } from '../../test/_sql-mining-fixture';
-import { reconcileNativeCapture } from './native-capture';
+import { canonicalNativeRuntimeSources, reconcileNativeCapture } from './native-capture';
 import { productionOpportunityReaders } from './source-readers';
 import type { NativeProvider } from './native-operation';
 import { readProductionMonitoredCandidate, runMonitoredCensus } from './census';
@@ -249,4 +249,72 @@ it('R13-NATIVE prepares known roots without treating unattributed runtimes as ou
   await f.db.adminSql`DELETE FROM harness_shared.adv_sessions WHERE id=${runtime!.id}::bigint`;
   expect(await read()).toBeNull();
   expect(await reconcileNativeCapture(options())).toBe('gap');
+});
+
+it.each(['codex', 'claude', 'omp'] as const)(
+  'R13-NATIVE streams %s records across buffers while preserving distant result pairing and source line identities', async provider => {
+    const s = await seed(provider);
+    const path = s.paths[0]!, records = (await readFile(path, 'utf8')).trimEnd().split('\n');
+    const padding = JSON.stringify({ type: 'metadata', note: 'multibyte-✓-🦉'.repeat(50) });
+    await writeFile(path, [records[0], records[1], ...Array<string>(4500).fill(padding), records[2]].join('\n') + '\n');
+    await installed();
+    expect(await reconcileNativeCapture(options())).toBe('complete');
+    const rows = await f.db.adminSql`SELECT id::text,session_id,tool_use_id FROM harness_shared.agent_activity`;
+    expect(rows).toHaveLength(2);
+    const row = rows.find(r => r.session_id === s.predecessor)!;
+    const reader = productionOpportunityReaders({ ...options(), authorize: async () => true });
+    const hydrated = await reader.readTranscript({ id: row.id, actor: s.owner, provider,
+      sessionId: s.predecessor, callId: row.tool_use_id });
+    expect(hydrated?.sources).toHaveLength(1);
+    expect(hydrated!.sources[0]).toMatchObject({ copyRef: `transcript:${provider}:${s.predecessor}:1`,
+      result: { body: { exit_code: 0 }, complete: true } });
+    // A trailing partial record remains unavailable after a successful stream.
+    await writeFile(path, (await readFile(path)).subarray(0, (await readFile(path)).length - 1));
+    expect(await reconcileNativeCapture(options())).toBe('unknown');
+  });
+
+it('R13-NATIVE enrolls large source identities prospectively and streams metadata without a whole-file allocation', async () => {
+  const s = await seed();
+  const records = (await readFile(s.paths[0]!, 'utf8')).trimEnd().split('\n');
+  const padding = JSON.stringify({ type: 'metadata', note: 'a'.repeat(32 * 1024) });
+  const large = [records[0], records[1], ...Array<string>(1025).fill(padding), records[2]].join('\n') + '\n';
+  expect(Buffer.byteLength(large)).toBeGreaterThan(32 * 1024 * 1024);
+  await writeFile(s.paths[0]!, large);
+  // Baseline enrollment attests no content or historical interval.
+  expect(await reconcileNativeCapture(options())).toBe('gap');
+  const [row] = await f.db.adminSql`SELECT native_capture_receipt AS receipt FROM harness_shared.sql_intent_progress
+    WHERE workspace_id=${workspaceId} AND scope_id LIKE 'native:%'`;
+  expect(row!.receipt).toMatchObject({ baseline: true, sources: 2 });
+  expect(JSON.stringify(row)).not.toMatch(/private-source|session-|su-|jsonl/);
+  // A direct source-read verifies the streaming mechanism independently of the
+  // production one-second deadline, which is deliberately unchanged.
+  const read = await canonicalNativeRuntimeSources({ id: s.advId, owner: s.owner, provider: s.provider, harness: harnessSlug },
+    options(), Date.now() + 30_000);
+  expect(read.sources).toHaveLength(2);
+  expect(read.sources.every(source => source.result?.complete)).toBe(true);
+  await expect(canonicalNativeRuntimeSources({ id: s.advId, owner: s.owner, provider: s.provider, harness: harnessSlug },
+    options(), Date.now() - 1)).rejects.toThrow('native_capture_bound');
+  // Malformed unrelated content cannot satisfy continuity, but does not force a
+  // single-source hydration read to parse every historical transcript again.
+  await writeFile(s.paths[1]!, 'not-json\n');
+  const target = await canonicalNativeRuntimeSources({ id: s.advId, owner: s.owner, provider: s.provider, harness: harnessSlug },
+    options(), Date.now() + 30_000, s.predecessor);
+  expect(target.sources).toHaveLength(1);
+  expect(await reconcileNativeCapture(options())).toBe('unknown');
+}, 120_000);
+
+it('R13-NATIVE counts Codex discovery calls recognized by the maintained provider parser', async () => {
+  const s = await seed(), timestamp = new Date(f.now - 100).toISOString();
+  const records = (await readFile(s.paths[0]!, 'utf8')).trimEnd().split('\n');
+  records.push(JSON.stringify({ type: 'response_item', timestamp,
+    payload: { type: 'tool_search_call', call_id: 'discovery-call', query: 'find tool' } }),
+  JSON.stringify({ type: 'response_item', timestamp,
+    payload: { type: 'tool_search_output', call_id: 'discovery-call', tools: [{ name: 'exec_command' }] } }));
+  await writeFile(s.paths[0]!, records.join('\n') + '\n');
+  await installed();
+  expect(await reconcileNativeCapture(options())).toBe('complete');
+  const rows = await f.db.adminSql`SELECT tool_use_id,tool_name FROM harness_shared.agent_activity
+    WHERE workspace_id=${workspaceId} AND harness_slug=${harnessSlug}`;
+  expect(rows).toHaveLength(3);
+  expect(rows).toContainEqual({ tool_use_id: 'discovery-call', tool_name: 'tool_search_call' });
 });

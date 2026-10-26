@@ -187,17 +187,35 @@ export type NativeTranscriptContext = Pick<SearchSource, 'workspaceId' | 'harnes
  * the maintained provider parsers; the OMP wire carries result IDs on message. */
 export function nativeTranscriptSources(lines: readonly string[], context: NativeTranscriptContext): SearchSource[] {
   if (!context.sessionId || lines.length > 4000 || lines.some(l => l.length > 256_000)) throw new Error('invalid_native_transcript');
+  const reader = createNativeTranscriptReader(context);
+  lines.forEach(line => reader.push(line));
+  return reader.sources();
+}
+
+/** Stateful provider parsing across IO chunks. Only one bounded record is fed at
+ * a time; request/result pairing and source line identities span those chunks. */
+export function createNativeTranscriptReader(context: NativeTranscriptContext) {
+  if (!context.sessionId) throw new Error('invalid_native_transcript');
   const parser = context.provider === 'codex' ? createCodexTimelineParser()
     : context.provider === 'omp' ? createOmpTimelineParser() : createAgentTimelineParser();
   const calls: SearchSource[] = [], results = new Map<string, NonNullable<SearchSource['result']>[]>();
-  lines.forEach((line, index) => {
+  let index = 0, retainedBytes = 0;
+  return { push(line: string) {
+    if (line.length > 256_000) throw new Error('invalid_native_transcript');
+    const lineIndex = index++;
     let wire: Obj;
     try { wire = object(JSON.parse(line)); } catch { return; }
     const message = object(wire.message);
-    for (const entry of parser.parseLine(line)) {
+    const entries = parser.parseLine(line);
+    if (entries.some(entry => entry.kind === 'tool_use' || entry.kind === 'tool_result')) {
+      retainedBytes += Buffer.byteLength(line);
+      if (retainedBytes > 32 * 1024 * 1024) throw new Error('invalid_native_transcript');
+    }
+    for (const entry of entries) {
       const id = entry.toolId || (entry.kind === 'tool_result' ? text(message.toolCallId) : '');
+      if (entry.kind === 'tool_use' && calls.length >= 2000) throw new Error('invalid_native_transcript');
       if (entry.kind === 'tool_use') calls.push({ ...context, namespace: context.sessionId,
-        at: entry.ts ?? '', copyRef: `transcript:${context.provider}:${context.sessionId}:${index}`,
+        at: entry.ts ?? '', copyRef: `transcript:${context.provider}:${context.sessionId}:${lineIndex}`,
         tool: entry.toolName ?? '', args: entry.toolInput, callId: id || null, identityAuthority: id ? 'provider' : 'unknown',
         result: null, sourceComplete: context.complete });
       if (entry.kind === 'tool_result' && id) {
@@ -210,12 +228,13 @@ export function nativeTranscriptSources(lines: readonly string[], context: Nativ
           complete: context.complete, status: failed ? 'error' : 'ok', body }); results.set(id, list);
       }
     }
-  });
-  return calls.map(call => {
-    const matches = results.get(call.callId ?? '') ?? [];
-    // Replayed identical results are fine; incompatible same-ID results are not.
-    return { ...call, result: matches.length && new Set(matches.map(stable)).size === 1 ? matches[0]! : null };
-  });
+  }, retainedBytes: () => retainedBytes, sources(): SearchSource[] {
+    return calls.map(call => {
+      const matches = results.get(call.callId ?? '') ?? [];
+      // Replayed identical results are fine; incompatible same-ID results are not.
+      return { ...call, result: matches.length && new Set(matches.map(stable)).size === 1 ? matches[0]! : null };
+    });
+  } };
 }
 
 export interface NativeCoverage { provider: NativeProvider; kind: NativeKind; source: 'activity' | 'transcript'; status: NativeCoverageStatus }
