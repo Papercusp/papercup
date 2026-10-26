@@ -345,6 +345,17 @@ function hasDependentArtifact(workRoot, marker) {
       && entry.path !== workRoot && !entry.path.startsWith(workRoot + sep) && existsSync(entry.path));
 }
 
+/** Dispose a command's own extracted tree unless a consumer retained it. */
+export function cleanupCommittedWorkRoot(workRoot, keep = false) {
+  if (keep) return false;
+  let marker = null;
+  try { marker = JSON.parse(readFileSync(join(workRoot, OWNER_MARKER), 'utf8')); }
+  catch { /* Missing or invalid metadata establishes no dependent artifact. */ }
+  if (hasDependentArtifact(workRoot, marker)) return false;
+  rmSync(workRoot, { recursive: true, force: true });
+  return true;
+}
+
 /**
  * Decide one tree's fate. Pure: the caller supplies liveness facts.
  * - `inUse`: some live process has its cwd inside the tree (e.g. a testing:run on the
@@ -1234,13 +1245,7 @@ async function main() {
   // Exit and sweep share the dependent-artifact rule: retention may be added by
   // a consumer while the command is running, after args.keep was established.
   // SIGKILL is left to the next run's sweep.
-  const cleanupWorkRoot = () => {
-    if (args.keep) return;
-    let marker = null;
-    try { marker = JSON.parse(readFileSync(join(workRoot, OWNER_MARKER), 'utf8')); }
-    catch { /* Missing or invalid metadata establishes no dependent artifact. */ }
-    if (!hasDependentArtifact(workRoot, marker)) rmSync(workRoot, { recursive: true, force: true });
-  };
+  const cleanupWorkRoot = () => cleanupCommittedWorkRoot(workRoot, args.keep);
   const bail = (code) => {
     cleanupWorkRoot();
     process.exit(code);

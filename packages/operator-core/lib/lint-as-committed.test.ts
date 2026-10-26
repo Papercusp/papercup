@@ -1714,6 +1714,55 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     }
   });
 
+  it('exit cleanup waits for a competing retention writer before deciding to delete', async () => {
+    const { withFsMutex } = await import('../../../scripts/lib/fs-mutex.mjs');
+    const root = mkdtempSync(join(tmpdir(), 'lac-exit-retention-'));
+    const source = join(root, 'source');
+    const artifact = join(root, 'artifact');
+    mkdirSync(join(source, '.git'), { recursive: true });
+    mkdirSync(artifact);
+    const sha = 'a'.repeat(40);
+    const marker = join(source, OWNER_MARKER);
+    writeFileSync(marker, JSON.stringify({ sha, keep: false }));
+    let releaseWriter!: () => void;
+    let writerEntered!: () => void;
+    const release = new Promise<void>(done => { releaseWriter = done; });
+    const entered = new Promise<void>(done => { writerEntered = done; });
+    const mutexName = 'committed-source-retention-' + createHash('sha256').update(realpathSync(source)).digest('hex').slice(0, 24);
+    const writer = withFsMutex(mutexName, async () => {
+      writerEntered();
+      await release;
+      writeFileSync(marker, JSON.stringify({ sha, keep: true, retainedFor: [{ path: artifact, sha }] }));
+    });
+    let cleanup: Promise<boolean> | undefined;
+    try {
+      await entered;
+      cleanup = Promise.resolve().then(() => mod.cleanupCommittedWorkRoot(source));
+      // Give cleanup a turn while the real cross-process mutex is still held.
+      await new Promise(done => setTimeout(done, 50));
+      expect(existsSync(source)).toBe(true);
+      releaseWriter();
+      await writer;
+      expect(await cleanup).toBe(false);
+      expect(existsSync(source)).toBe(true);
+      rmSync(artifact, { recursive: true });
+      expect(await mod.cleanupCommittedWorkRoot(source)).toBe(true);
+      expect(existsSync(source)).toBe(false);
+    } finally {
+      releaseWriter();
+      await Promise.allSettled([writer, ...(cleanup ? [cleanup] : [])]);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('exit cleanup preserves an explicitly kept tree without an artifact hold', async () => {
+    const source = mkdtempSync(join(tmpdir(), 'lac-exit-keep-'));
+    try {
+      expect(await mod.cleanupCommittedWorkRoot(source, true)).toBe(false);
+      expect(existsSync(source)).toBe(true);
+    } finally { rmSync(source, { recursive: true, force: true }); }
+  });
+
   it('preflights commit identity and imports before registering a dependent artifact', async () => {
     const root = mkdtempSync(join(tmpdir(), 'lac-preflight-'));
     try {
