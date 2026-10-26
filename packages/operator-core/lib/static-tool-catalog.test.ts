@@ -22,6 +22,54 @@ function liveMcpNames(): Set<string> {
 }
 
 describe('static tool catalog derivation', () => {
+  it('resolves an imported string identity through an aliased re-export', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'static-string-identity-'));
+    const write = (path: string, text: string) => {
+      const fullPath = resolve(root, path);
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, text);
+    };
+    try {
+      write('package.json', JSON.stringify({ workspaces: [] }));
+      write(PRODUCTION_TOOL_REGISTRY_ENTRYPOINT,
+        "import { publicName as identity } from './names';\ndefineTool({ name: identity });\n");
+      write('packages/operator-core/lib/agent-tools/names.ts',
+        "export { TOOL as publicName } from './identity';\n");
+      write('packages/operator-core/lib/agent-tools/identity.ts',
+        "export const TOOL = 'fixture:continue' as const;\nexport const UNUSED = 'fixture:unused';\n");
+      expect([...buildBuiltinToolCatalog(root)]).toEqual(['fixture:continue']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['...definition', 'fixture:read'],
+    ["name: 'fixture:overridden', ...definition", 'fixture:read'],
+    ["...definition, name: 'fixture:override'", 'fixture:override'],
+  ])('resolves an imported definition spread in assignment order: %s', (properties, expected) => {
+    const root = mkdtempSync(resolve(tmpdir(), 'static-definition-spread-'));
+    const write = (path: string, text: string) => {
+      const fullPath = resolve(root, path);
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, text);
+    };
+    try {
+      write('package.json', JSON.stringify({ workspaces: [] }));
+      write(PRODUCTION_TOOL_REGISTRY_ENTRYPOINT,
+        "import { shared as definition } from './definitions';\n"
+        + `defineTool({ ${properties}, agentRoles: [] });\n`);
+      write('packages/operator-core/lib/agent-tools/definitions.ts',
+        "export { readDefinition as shared } from './read-handler';\n");
+      write('packages/operator-core/lib/agent-tools/read-handler.ts',
+        "export const readDefinition = { name: 'fixture:read', description: 'Reader' } as const;\n"
+        + "export const unregistered = { name: 'fixture:unregistered' };\n");
+      expect([...buildBuiltinToolCatalog(root)]).toEqual([expected]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('resolves extensionless dotted module names and still refuses a missing dotted module', () => {
     const root = mkdtempSync(resolve(tmpdir(), 'static-dotted-module-'));
     const write = (path: string, text: string) => {

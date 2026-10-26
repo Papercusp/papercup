@@ -2216,6 +2216,144 @@ describe('evaluateScorecard', () => {
   });
 });
 
+describe('eligibility-only acceptance preflight (EI-27075741789891557)', () => {
+  const args = { rubricRef: 'acceptance-rubric', eligibilityOnly: true };
+
+  beforeEach(() => {
+    getRubricM.mockResolvedValue({
+      ...BAR_ACCEPTANCE_RUBRIC,
+      revision: 8,
+      criteriaHash: 'criteria:identity-only',
+      barContract: { ...BAR_ACCEPTANCE_RUBRIC.barContract!, meaningRevision: 3 },
+    });
+    readRubricPlanRevisionM.mockResolvedValue({ ok: true, revision: 8 });
+    readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue({
+      satisfied: false,
+      message: 'acceptance BAR snapshot is stale and product proof is missing',
+    });
+  });
+
+  it('answers eligible identity before an unready BAR without returning grading data', async () => {
+    expect(scorecardEvaluateArgs.safeParse(args).success).toBe(true);
+    const result = await evaluateScorecard(args, { id: 'su-independent', workspaceId: 'ws' });
+
+    expect(result).toMatchObject({
+      ok: true,
+      eligibilityOnly: true,
+      rubricRef: 'acceptance-rubric',
+      rubricRevision: 8,
+      criteriaHash: 'criteria:identity-only',
+      rubricMeaningRevision: 3,
+      graderEligibility: { role: 'independent-grader', canEmitGrading: true, blocksEmit: false },
+    });
+    for (const key of ['skeleton', 'latest', 'canonicalRatings', 'instrumentContract', 'releaseGateBinding']) {
+      expect(result).not.toHaveProperty(key);
+    }
+    expect(readAndEvaluateAcceptanceBarLifecycleM).not.toHaveBeenCalled();
+    expect(listM).not.toHaveBeenCalledWith(expect.objectContaining({ rubricRef: 'acceptance-rubric' }));
+    expect(deferredSpendM).not.toHaveBeenCalled();
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('projects eligibility-only through the real tool dispatch using the caller identity', async () => {
+    planImplementersM.mockResolvedValue(['su-principal']);
+    const projected = lookupByMcpName('scorecards:evaluate');
+    expect(projected).toBeDefined();
+    const dispatched = await dispatchProjectedTool(projected!, 'scorecards:evaluate', args, {
+      log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+      workspaceId: 'ws', runId: 'eligibility-only-preflight-test', isSuperuser: true,
+      uiClientId: 'su-principal', role: 'su',
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp', requestedFormat: 'json', tx: {},
+    }, {});
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(readJsonResult(dispatched.result!)).toMatchObject({
+      ok: true, eligibilityOnly: true, rubricRevision: 8, criteriaHash: 'criteria:identity-only',
+      graderEligibility: {
+        role: 'disqualified', canEmitGrading: false, principalImplementers: ['su-principal'],
+        refusal: { code: 'grader_in_implementer_lineage' },
+      },
+    });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).not.toHaveBeenCalled();
+  });
+
+  it('keeps an implementer-lineage caller disqualified despite an unready BAR', async () => {
+    lineageRelatedM.mockImplementation(async (author, candidate) =>
+      author === candidate || (author === 'su-implementer' && candidate === 'su-relative'));
+
+    await expect(evaluateScorecard(args, { id: 'su-relative', workspaceId: 'ws' })).resolves.toMatchObject({
+      ok: true,
+      graderEligibility: {
+        role: 'disqualified', canEmitGrading: false, blocksEmit: true,
+        refusal: { code: 'grader_in_implementer_lineage' },
+      },
+    });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).not.toHaveBeenCalled();
+  });
+
+  it('does not grant the acceptance author independent-grader clearance', async () => {
+    await expect(evaluateScorecard(args, { id: 'su-implementer', workspaceId: 'ws' })).resolves.toMatchObject({
+      ok: true,
+      graderEligibility: { role: 'acceptance-author', canEmitGrading: false },
+    });
+  });
+
+  it('reports unresolved identity as unknown without granting clearance', async () => {
+    readRubricPlanRevisionM.mockRejectedValue(new Error('identity revision unavailable'));
+
+    await expect(evaluateScorecard(args, { id: 'su-independent', workspaceId: 'ws' })).resolves.toMatchObject({
+      ok: true,
+      graderEligibility: { role: 'unknown', canEmitGrading: false, advice: expect.stringContaining('NOT a clearance') },
+    });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).not.toHaveBeenCalled();
+  });
+
+  it('keeps a retired rubric disqualified', async () => {
+    getRubricM.mockResolvedValue({ ...BAR_ACCEPTANCE_RUBRIC, status: 'retired' });
+
+    await expect(evaluateScorecard(args, { id: 'su-independent', workspaceId: 'ws' })).resolves.toMatchObject({
+      ok: true,
+      graderEligibility: {
+        role: 'disqualified', canEmitGrading: false,
+        refusal: { code: 'retired_acceptance_rubric' },
+      },
+    });
+  });
+
+  it('does not guess eligibility when the caller identity is absent', async () => {
+    await expect(evaluateScorecard(args)).resolves.toMatchObject({ ok: true, graderEligibility: null });
+  });
+
+  it.each([
+    { name: 'skeleton', ratings: undefined },
+    { name: 'empty ratings', ratings: {} },
+    { name: 'ratings', ratings: RATINGS },
+  ])('retains the BAR readiness refusal for ordinary $name requests', async ({ ratings }) => {
+    await expect(evaluateScorecard(
+      { rubricRef: args.rubricRef, ratings }, { id: 'su-independent', workspaceId: 'ws' },
+    )).resolves.toMatchObject({ ok: false, code: 'acceptance_bar_contract_not_ready' });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).toHaveBeenCalled();
+  });
+
+  it.each([
+    { sourceHive: 'grader-hive' },
+    { ratings: {} },
+    { subject: { ref: 'subject' } },
+    { instrumentSnapshots: {} },
+    { testedSha: 'a'.repeat(40) },
+    { current: [] },
+    { pendingDeliveryBarKeys: ['R-1'] },
+  ])('refuses grading or history inputs rather than silently ignoring them: %j', async (gradingInput) => {
+    await expect(evaluateScorecard({ ...args, ...gradingInput }, { id: 'su-independent' })).resolves.toMatchObject({
+      ok: false, code: 'eligibility_only_input_invalid',
+    });
+    expect(getRubricM).not.toHaveBeenCalled();
+    expect(readAndEvaluateAcceptanceBarLifecycleM).not.toHaveBeenCalled();
+    expect(captureM).not.toHaveBeenCalled();
+  });
+});
+
 describe('acceptance-grader eligibility is answerable BEFORE the grading work (EI-21974075442192005)', () => {
   // The rails are pure identity facts, so the only thing that made them expensive
   // was WHERE they were reachable: a launched reviewer completed a full independent

@@ -114,6 +114,9 @@ export const HOLD_REGISTRY: readonly HoldRegistryEntry[] = [
   entry('claim-floor', 'origin', 'structural', lane('the origin node of the federated row'), DAY),
   entry('claim-floor', 'already-taken', 'transient', lane('the current holder (release or completion)'), QUARTER_HOUR),
   entry('claim-floor', 'admission-pending', 'transient', routine('work-items admission promoter'), 10 * MIN),
+  // EI-26988974367709614: the live promoter held a fail-open row; it lifts the hold when it
+  // promotes or merges the row on a later tick (two ticks = one hour).
+  entry('claim-floor', 'admission-hold', 'transient', routine('work-items admission promoter (promote/merge lifts the hold)'), HOUR),
   entry('claim-floor', 'agent-review', 'transient', AGENT_REVIEW_LANE, HOUR),
   entry('claim-floor', 'watchdog-recovery-window', 'transient', routine('watchdog auto-close (six complete ran ticks)'), HOUR),
   entry('claim-floor', 'blocked-dep', 'transient', lane('the holder of the blocking work-item'), HOUR),

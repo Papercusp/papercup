@@ -5,6 +5,7 @@ import {
   IDLE_DISPATCH_RETRY_LIMIT,
   decideIdleQueueAction,
   dispatchIdleQueueFixer,
+  idleQueueFixerDispatch,
   parseEpisode,
   runIdleQueueActuatorPass,
   evaluateIdleQueueActuatorWindow,
@@ -16,6 +17,7 @@ import {
 } from './idle-repair-queue-actuator';
 import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
 import { createFrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
+import { buildCandidateSnapshot, candidateSnapshotMatchesDispatch } from './candidate-snapshot';
 
 const MIN = 60_000;
 const OPENED = Date.parse('2026-10-08T00:00:00Z');
@@ -171,6 +173,59 @@ describe('idle repair-queue fixer handoff', () => {
       ok: false,
       detail: 'dispatcher returned no spawn; reservation released',
     });
+  });
+});
+
+describe('idle rung dispatch targets the repair head (WI-6554700010029686)', () => {
+  const frozenCandidate = 'a'.repeat(40);
+  const repairHead = 'c'.repeat(40);
+  // A queue that has admitted a fix: its repair head has moved off the immutable pin.
+  const admitted = {
+    ...createFrozenCandidateRepairQueue({
+      candidate: frozenCandidate, base: 'b'.repeat(40), failingTests: ['lib/red.test.ts'], nowMs: OPENED,
+    }),
+    repairHead,
+    phase: 'awaiting-fixer' as const,
+  };
+
+  it('hands the dispatcher the repair head, the queue failures and the queue row', async () => {
+    const calls: unknown[][] = [];
+    const dispatch = idleQueueFixerDispatch('target', async (...args) => {
+      calls.push(args);
+      return null;
+    });
+    await dispatch(admitted, () => {});
+    expect(calls).toHaveLength(1);
+    expect(calls[0].slice(0, 5)).toEqual(['target', repairHead, ['lib/red.test.ts'], admitted, undefined]);
+  });
+
+  it('builds a dispatch the real snapshot matcher accepts once the repair head has moved', async () => {
+    const snapshot = buildCandidateSnapshot(
+      {
+        candidate: repairHead,
+        failingTests: ['lib/red.test.ts'],
+        repairQueue: { candidate: frozenCandidate, repairHead, phase: 'awaiting-fixer' },
+      },
+      OPENED,
+    );
+    expect(snapshot).not.toBeNull();
+    const verdicts: boolean[] = [];
+    const dispatch = idleQueueFixerDispatch('target', async (_target, candidate, failingTests, repairQueue) => {
+      verdicts.push(candidateSnapshotMatchesDispatch(snapshot, { candidate, failingTests, repairQueue, nowMs: OPENED + MIN }));
+      return null;
+    });
+    await dispatch(admitted, () => {});
+    expect(verdicts).toEqual([true]);
+    // The pre-fix argument, the immutable pin, is refused by construction: the
+    // snapshot-mismatch the idle rung hit on every attempt on 2026-10-26.
+    expect(
+      candidateSnapshotMatchesDispatch(snapshot, {
+        candidate: frozenCandidate,
+        failingTests: admitted.failingTests,
+        repairQueue: admitted,
+        nowMs: OPENED + MIN,
+      }),
+    ).toBe(false);
   });
 });
 

@@ -74,7 +74,7 @@ describe('readVettingWorkItemCritique (WI-41477)', () => {
     })).resolves.toEqual({ exists: true, critiquePosts: 1, critics: ['su-reviewer'] });
   });
 
-  it('leaves the current acceptance rubric unvetted until independent review text exists', async () => {
+  it('accepts an independent status-only comment under the content-blind vetting contract', async () => {
     const rubric = { rubricId: 'acceptance-plan', revision: 4, criteriaHash: 'current-hash',
       workspaceId: 'ws-test', createdBy: 'su-author', proposedBy: 'su-author' } as Rubric;
     const posts = [{ author_id: 'release-request-sweep', body: 'Release request EXPIRED unanswered.' }];
@@ -85,7 +85,7 @@ describe('readVettingWorkItemCritique (WI-41477)', () => {
       request: 'Vet acceptance-plan revision 4 criteriaHash current-hash', createdAt: '2026-10-23T08:00:00Z' }] };
     expect(await readCurrentAcceptanceRubricCritique(rubric, 4, deps)).toBeNull();
 
-    posts.push({ author_id: 'su-reviewer', body: 'R4 requires an independent runner deadline detector.' });
+    posts.push({ author_id: 'su-reviewer', body: 'PICKUP: I will review this after my current task.' });
     expect(await readCurrentAcceptanceRubricCritique(rubric, 4, deps))
       .toMatchObject({ workItemId: 'WI-review', critics: ['su-reviewer'], criteriaHash: 'current-hash' });
   });

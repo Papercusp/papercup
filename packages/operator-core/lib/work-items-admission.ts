@@ -505,6 +505,79 @@ export function admittedWhereSqlWi(sql: OrgSql) {
 }
 
 /**
+ * EI-26988974367709614 — the ONE admission ACTIONABILITY contract, shared by ordinary
+ * self-select ({@link admissionHoldExclusionSql}, a claim floor beside `ok_admission`) and
+ * by the work-item resume packet (`agent-tools/work_items/resume.ts`). Before this the two
+ * disagreed: {@link admittedWhereSql} served every non-pending row, including a fail-open
+ * `unreviewed` row the promoter had since HELD, while resume told whoever claimed it not to
+ * act. Measured on Luna Max 2026-10-26: 380 open held rows; members claimed them, were told
+ * not to act, released, and the next member re-claimed them (WI-6554700010029608).
+ *
+ * The two payload facts, and what each means for an implementation worker:
+ *
+ * - `payload.admissionHold` (any value but null/false): the LIVE promoter judged the row and
+ *   chose not to promote it — a protected twin it cannot judge yet (`deferred: twin …`), a
+ *   claimed canonical (`claimed re-review`), a recurrence-identity guard, or an ambiguous
+ *   duplicate. NOT actionable: working it risks duplicating the twin's work. The promoter
+ *   lifts the hold when it promotes or merges the row, so the row returns to the queue on its
+ *   own. The fail-open rationale above ("a dead promoter must never starve the queue") does
+ *   not cover a hold: a hold is a verdict from a promoter that is alive.
+ * - `payload.admissionReview.state = 'pending'` WITHOUT a hold: the plain fail-open case — a
+ *   post-hoc duplicate review that runs alongside the work. Actionable by design (the
+ *   `'unreviewed'` doc above); the caller is only cautioned that a later merge verdict ends it.
+ *
+ * Claim-by-id stays open, as for every self-select floor: the floor removes held rows from
+ * opportunistic pulls, and the resume packet tells a named claimant why not to act.
+ */
+export function isAdmissionHoldActive(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const hold = (payload as Record<string, unknown>).admissionHold;
+  return hold !== null && hold !== undefined && hold !== false;
+}
+
+export type AdmissionActionability =
+  | { actionable: true; caution: string | null }
+  | { actionable: false; reason: string };
+
+/** JS form of the contract above, for an already-loaded row. */
+export function admissionActionability(payload: unknown): AdmissionActionability {
+  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown> : {};
+  const review = record.admissionReview && typeof record.admissionReview === 'object'
+    && !Array.isArray(record.admissionReview)
+    ? record.admissionReview as Record<string, unknown> : {};
+  const pendingReview = review.state === 'pending';
+  if (isAdmissionHoldActive(record)) {
+    return {
+      actionable: false,
+      reason: pendingReview
+        ? 'A live admission review is pending and an admission hold remains; do not follow the stored checkpoint action.'
+        : 'A live admission hold remains; do not follow the stored checkpoint action.',
+    };
+  }
+  return pendingReview
+    ? {
+      actionable: true,
+      caution: 'A post-hoc duplicate review is pending on this fail-open row; work may proceed, ' +
+        'but stop if the promoter merges it into a canonical item.',
+    }
+    : { actionable: true, caution: null };
+}
+
+/**
+ * SQL twin of {@link isAdmissionHoldActive}, as a self-select floor: TRUE iff the row carries
+ * NO active admission hold. A NULL payload or a missing/JSON-null/false hold passes, matching
+ * the JS twin value-for-value. `payloadCol` is a closed literal union, never caller input.
+ */
+export function admissionHoldExclusionSql(
+  sql: OrgSql,
+  payloadCol: 'wi.payload' | 'payload' | 'ei.payload' | 'target.payload' = 'wi.payload',
+) {
+  return sql`COALESCE(COALESCE(${sql.unsafe(payloadCol)}, '{}'::jsonb) -> 'admissionHold', 'null'::jsonb)
+    IN ('null'::jsonb, 'false'::jsonb)`;
+}
+
+/**
  * EI-25209690807142935 / EI-26282407214531658 — the rows the INDEPENDENT fail-open runner
  * (`runAdmissionFailOpen`) never admits, however old they get, in the order a refusal names
  * them. Each is unresolved duplicate work that only adjudication clears:

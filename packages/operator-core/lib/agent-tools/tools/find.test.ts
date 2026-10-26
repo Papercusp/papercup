@@ -252,11 +252,21 @@ describe('tools:find tool registration', () => {
     expect(withHint.hits.map((h) => h.tool)).toEqual(withoutHint.hits.map((h) => h.tool));
   });
 
-  it('binds returned schemas to the serving generation and explains the tools:invoke check', async () => {
+  it('keeps current discovery compatible with a legacy tools:invoke schema while retaining the transport fence', async () => {
     const out = await callHandler({ query: 'coord:inbox', limit: 1 });
 
     expect(out.servingGeneration).toBe('serving-generation-v1:test');
-    expect(out.howToCall).toContain('pass it unchanged as `servingGeneration` to tools:invoke');
+    const legacyInvokeArgs = z.object({
+      name: z.string(),
+      args: z.record(z.string(), z.unknown()).optional(),
+    }).strict();
+    const legacyCall = { name: 'coord:inbox', args: { limit: 1 } };
+    expect(legacyInvokeArgs.safeParse(legacyCall).success).toBe(true);
+    expect(legacyInvokeArgs.safeParse({ ...legacyCall, servingGeneration: out.servingGeneration }).success).toBe(false);
+    expect(out.howToCall).toContain('Use tools:invoke');
+    expect(out.howToCall).toContain('legacy callable schemas may reject it');
+    expect(out.howToCall).toContain('papercusp/servingGeneration');
+    expect(out.howToCall).not.toContain('pass it unchanged as `servingGeneration` to tools:invoke');
     expect(servingGenerationMocks.read).toHaveBeenCalledWith({
       toolRegistryRevision: out.registry.revision,
     });

@@ -340,6 +340,32 @@ export interface IdleQueueFixerHandoffDeps {
   ) => Promise<FrozenCandidateRepairQueue | null>;
 }
 
+/** The slice of `dispatchReleaseFixer`'s signature the idle rung calls (injected for tests). */
+export type FrozenRepairFixerDispatcher<T, R> = (
+  target: T,
+  candidate: string,
+  failingTests: string[],
+  repairQueue: FrozenCandidateRepairQueue,
+  checkpointEvidence: undefined,
+  deps: { onSkip: (skip: ReleaseFixerDispatchSkip) => void },
+) => Promise<R>;
+
+/**
+ * Build the idle rung's `dispatch` handoff. A frozen-repair dispatch targets the queue's
+ * mutable REPAIR HEAD, never its immutable candidate pin: `candidateSnapshotMatchesDispatch`
+ * refuses any candidate other than `queue.repairHead`, and green-checkpoint's own frozen
+ * dispatcher passes `queue.repairHead`. Passing `queue.candidate` made every idle-rung dispatch
+ * skip as `snapshot-mismatch` once a fix had been admitted (WI-6554700010029686: five skips
+ * handed 8c03b5dcd156 while the repair head was 327e4d1d, 2026-10-26).
+ */
+export function idleQueueFixerDispatch<T, R>(
+  target: T,
+  dispatch: FrozenRepairFixerDispatcher<T, R>,
+): (reserved: FrozenCandidateRepairQueue, onSkip: (skip: ReleaseFixerDispatchSkip) => void) => Promise<R> {
+  return (reserved, onSkip) =>
+    dispatch(target, reserved.repairHead, reserved.failingTests, reserved, undefined, { onSkip });
+}
+
 /**
  * The idle rung may report success only after the durable queue row names the spawned fixer.
  * The reservation closes the read/launch/write race; finalization binds the launch receipt to
@@ -850,8 +876,7 @@ export async function checkIdleRepairQueue(
         const target = { installSlug, workspaceId };
         return dispatchIdleQueueFixer(q, {
           reserve: (current) => reserveFrozenCandidateRepairFixer(target, current),
-          dispatch: (reserved, onSkip) =>
-            dispatchReleaseFixer(target, reserved.candidate, reserved.failingTests, reserved, undefined, { onSkip }),
+          dispatch: idleQueueFixerDispatch(target, dispatchReleaseFixer),
           finalize: (reserved, fired) => finalizeFrozenCandidateRepairFixer(target, reserved, fired),
         });
       },

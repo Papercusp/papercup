@@ -98,6 +98,7 @@ import {
 import { resolveIssuesScopeWorkspace } from '../issues-engineer';
 import {
   admittedWhereSqlWi,
+  admissionHoldExclusionSql,
   isIssueLocallyClaimableWhereSql,
   liveGateOpsSelfSelectExclusionSql,
   stopTheLineExclusionSql,
@@ -1050,6 +1051,10 @@ export const ISSUE_CLAIM_FLOORS = [
   { ok: 'ok_claim_hold', bucket: 'claim_hold', field: 'claimHold' },
   // Queued/held admission recovery reserves the original item for its requested target.
   { ok: 'ok_admission_recovery', bucket: 'admission_recovery', field: 'admissionRecovery' },
+  // EI-26988974367709614: the live promoter HELD this fail-open row (protected twin, claimed
+  // canonical, recurrence guard). Resume forbids acting on it, so self-select must not serve
+  // it; the promoter lifts the hold on promote/merge. Claim-by-id stays open.
+  { ok: 'ok_admission_hold', bucket: 'admission_hold', field: 'admissionHold' },
   // Strict owner capability: credential, physical device, or external-service action.
   { ok: 'ok_needs_owner_action', bucket: 'needs_owner_action', field: 'needsOwnerAction' },
   { ok: 'ok_agent_review', bucket: 'agent_review', field: 'agentReview' },
@@ -1487,6 +1492,7 @@ export function issueClaimCandidateSubquery(
       (wi.taken_by IS NULL OR wi.taken_by = '')                         AS ok_untaken,
       (${claimHoldExclusionSql(sql)})                                   AS ok_claim_hold,
       (${admissionRecoveryExclusionSql(sql)})                           AS ok_admission_recovery,
+      (${admissionHoldExclusionSql(sql)})                               AS ok_admission_hold,
       (${needsOwnerActionExclusionSql(sql)})                             AS ok_needs_owner_action,
       (${intakeStageClaimFloorSql(sql)})                            AS ok_agent_review,
       (${observationLaneExclusionSql(sql)})                             AS ok_observation,

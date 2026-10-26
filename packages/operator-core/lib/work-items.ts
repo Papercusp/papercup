@@ -98,6 +98,8 @@ import {
   STOP_THE_LINE_RED_HOURS,
   stopTheLineExclusionSql,
   redInflowRepairItemSql,
+  admissionHoldExclusionSql,
+  isAdmissionHoldActive,
 } from './work-items-admission';
 import {
   WorkItemIdAmbiguousError,
@@ -1458,6 +1460,7 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
                  -- assignee) — mirrors issueAdmissibleWhereSql's own list-context shape.
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${admissionRecoveryExclusionSql(sql, 'payload')}
+                 AND ${admissionHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
                  AND ${intakeStageClaimFloorSql(sql, 'payload')}
                )`
@@ -1597,6 +1600,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
                  -- denominator not).
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${admissionRecoveryExclusionSql(sql, 'payload')}
+                 AND ${admissionHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
                  AND ${intakeStageClaimFloorSql(sql, 'payload')}
                )`
@@ -1724,6 +1728,7 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
                  AND ${admittedWhereSql(sql)}
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${admissionRecoveryExclusionSql(sql, 'payload')}
+                 AND ${admissionHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
                  AND ${intakeStageClaimFloorSql(sql, 'payload')}
                )`
@@ -6163,6 +6168,7 @@ export async function claimWorkItem(
          -- park even though ordinary named claims may intentionally bypass that floor.
          AND ${agentReviewAdmission ? claimHoldExclusionSql(sql, 'target.payload') : sql`TRUE`}
          AND ${agentReviewAdmission ? admissionRecoveryExclusionSql(sql, 'target.payload') : sql`TRUE`}
+         AND ${agentReviewAdmission ? admissionHoldExclusionSql(sql, 'target.payload') : sql`TRUE`}
          AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
            payload: 'target.payload', id: 'target.feature_id', harness: 'target.harness_slug',
          })}
@@ -6696,6 +6702,8 @@ export function featureClaimFloorPredicatesSql(sql: OrgSql, opts: ClaimFloorsOpt
     claimState: sql`(CASE WHEN status = 'todo' THEN 'open' ELSE status END) = ANY(${states}::text[])`,
     claimHold: sql`COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'`,
     admissionRecovery: admissionRecoveryExclusionSql(sql, 'payload'),
+    // EI-26988974367709614: a row the live admission promoter HELD is not actionable.
+    admissionHold: admissionHoldExclusionSql(sql, 'payload'),
     intakeStage: intakeStageClaimFloorSql(sql, 'payload'),
     // Canary instruments remain excluded only at self-select, not placement.
     canary: sql`COALESCE(payload, '{}'::jsonb) ->> 'canary' IS DISTINCT FROM 'true'`,
@@ -7460,6 +7468,15 @@ export function admissionRecoveryExclusionSql(
 export function isClaimHoldParked(payload: unknown): boolean {
   if (!payload || typeof payload !== 'object') return false;
   return String((payload as Record<string, unknown>)._claimHold) === 'true';
+}
+
+/**
+ * JS twin of the `admission-hold` self-select floor for claimable-event guards
+ * (EI-26988974367709614). Exposed here, beside {@link isAdmissionRecoveryReserved}, because
+ * work-items-events.ts reaches the admission module only through this file (import cycle).
+ */
+export function isAdmissionHoldReserved(payload: unknown): boolean {
+  return isAdmissionHoldActive(payload);
 }
 
 /** JS twin of {@link admissionRecoveryExclusionSql} for claimable-event guards. */
@@ -8903,6 +8920,8 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- WI-2797: a claim-held item is likewise pending-but-gated — same floor the claim applies.
          AND ${claimHoldExclusionSql(sql)}
          AND ${admissionRecoveryExclusionSql(sql)}
+         -- EI-26988974367709614: a promoter-held fail-open row — same floor the claim applies.
+         AND ${admissionHoldExclusionSql(sql)}
          -- D-005: an observation-lane row is not work-queue material — same floor the claim applies.
          AND ${observationLaneExclusionSql(sql)}
          AND ${needsOwnerActionExclusionSql(sql)}
@@ -9030,6 +9049,10 @@ export const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'agent-review':
     'payload.agentReview is pending/revision-requested, or payload.implementationReadiness is enrolled without a ready verdict — reserved to review/validation until approved',
   'external-blocker': 'payload.externalBlockers contains an active typed capability dependency',
+  'admission-hold':
+    'payload.admissionHold is set — the live admission promoter held this fail-open row (protected twin, claimed ' +
+    'canonical, or recurrence guard) and resume forbids acting on it; the promoter lifts it on promote/merge ' +
+    '(EI-26988974367709614). Still claimable by id.',
   'claim-hold':
     'payload._claimHold = true — deliberately held (WI-2797). TWO provenance conventions, both must be checked before ' +
     'assuming a row is unattributed: `held_open_by`/`held_open_reason` (a liveness-bound LEASE, work_items:hold_open) or ' +
@@ -9118,6 +9141,7 @@ export function issueClaimBarFloorColumnsSql(
     (${externalBlockersExclusionSql(sql)})                                 AS ok_external_blocker,
     (${claimHoldExclusionSql(sql)})                                        AS ok_claim_hold,
     (${admissionRecoveryExclusionSql(sql)})                               AS ok_admission_recovery,
+    (${admissionHoldExclusionSql(sql)})                                   AS ok_admission_hold,
     (${reservedPlanLaneExclusionSql(sql, assignee, 'wi.payload', {
       claimantFleetSlug,
       claimSpecReferencesFleet,
@@ -9200,6 +9224,7 @@ export async function explainIssueClaimFloors(
       ok_agent_review: boolean;
       ok_external_blocker: boolean;
       ok_claim_hold: boolean;
+      ok_admission_hold: boolean;
       ok_plan_lane: boolean;
       ok_federation: boolean;
       ok_loop_noise: boolean;
@@ -9254,6 +9279,7 @@ export async function explainIssueClaimFloors(
       ['agent-review', r.ok_agent_review],
       ['external-blocker', r.ok_external_blocker],
       ['claim-hold', r.ok_claim_hold],
+      ['admission-hold', r.ok_admission_hold],
       ['plan-lane-reserved', r.ok_plan_lane],
       ['federation-detector', r.ok_federation],
       ['loop-noise', r.ok_loop_noise],
@@ -9703,6 +9729,9 @@ export async function claimNextIssueWorkItem(
           -- opportunistically-claim) — still directly claimable by id.
           AND ${claimHoldExclusionSql(tx)}
           AND ${admissionRecoveryExclusionSql(tx)}
+          -- EI-26988974367709614: never self-select a row the live admission promoter HELD;
+          -- resume forbids acting on it. The promoter lifts the hold on promote/merge.
+          AND ${admissionHoldExclusionSql(tx)}
           -- D-005: never self-select a lane:'observation' scorecard/reflection — by design it
           -- "never enters the work queue" (only the Observations pane + Scout digest read it).
           AND ${observationLaneExclusionSql(tx)}

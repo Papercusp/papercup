@@ -69,6 +69,10 @@ async function authorize(sql: Sql, scope: AdmissionRecoveryScope, request: Revie
         item.assignee && item.assignee !== rows[0]!.agent_id) {
       throw new AdmissionAuthorityRefused('current membership and review placement disagree');
     }
+    const contract = (item.payload as Record<string, unknown>).claim_hold_release as { owner?: unknown } | undefined;
+    if (contract && contract.owner !== request.caller) {
+      throw new AdmissionAuthorityRefused('park release owner is not the current reviewing fleet leader');
+    }
   }
   const revision = await authorizeAdmissionReviewReplay(sql, scope, request);
   return { item, revision };
@@ -115,7 +119,7 @@ export async function requestAdmissionReview(
     const renewed = await authorize(tx, scope, request);
     if (renewed.revision !== initial.revision) throw new AdmissionAuthorityRefused('review policy changed');
     await tx`UPDATE harness_shared.work_items SET payload =
-      jsonb_set(COALESCE(payload, '{}'::jsonb), '{_admissionReviewRequest}', ${JSON.stringify(request)}::jsonb)
+      jsonb_set(COALESCE(payload, '{}'::jsonb), '{_admissionReviewRequest}', ${tx.typed(JSON.stringify(request), 25)}::jsonb)
       WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
         AND feature_id = ${scope.workItemId}`;
   });
@@ -132,14 +136,17 @@ export async function runAdmissionReviews(
      WHERE workspace_id = ${options.workspaceId} AND harness_slug = ${options.harnessSlug}
        AND admission IN ('pending', 'unreviewed')
        AND payload ? '_admissionReviewRequest'
-       AND COALESCE(payload #>> '{_admissionReviewReceipt,requestId}', '') <>
-           payload #>> '{_admissionReviewRequest,requestId}'
+       AND (jsonb_typeof(payload->'_admissionReviewRequest') IS DISTINCT FROM 'object'
+         OR payload #>> '{_admissionReviewRequest,requestId}' IS NULL
+         OR (payload #>> '{_admissionReviewReceipt,requestId}') IS DISTINCT FROM
+           payload #>> '{_admissionReviewRequest,requestId}')
        AND (${options.targetItemIds === undefined} OR feature_id = ANY(${[...(options.targetItemIds ?? [])]}::text[]))
      ORDER BY feature_id LIMIT 20`;
   for (const row of rows) {
     const scope = { workspaceId: options.workspaceId, harnessSlug: options.harnessSlug, workItemId: row.feature_id };
     const parsed = requestSchema.safeParse(row.request);
-    if (!parsed.success) continue;
+    if (!parsed.success) throw new AdmissionAuthorityRefused(`malformed admission review request: ${
+      parsed.error.issues.map(issue => issue.path.join('.')).join(', ')}`);
     const request = parsed.data;
     try {
       await verify(sql, scope, request);
@@ -160,9 +167,9 @@ export async function runAdmissionReviews(
           },
           afterWrite: async tx => {
             await tx`UPDATE harness_shared.work_items SET payload = jsonb_set(payload,
-              '{_admissionReviewReceipt}', ${JSON.stringify({ requestId: request.requestId,
+              '{_admissionReviewReceipt}', ${tx.typed(JSON.stringify({ requestId: request.requestId,
                 purpose: request.purpose, runId: `${options.runId}:review:${request.requestId}`,
-                pickupConfirmed: false })}::jsonb)
+                pickupConfirmed: false }), 25)}::jsonb)
               WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
                 AND feature_id = ${scope.workItemId}`;
           },

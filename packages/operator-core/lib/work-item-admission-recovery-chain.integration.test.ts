@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
   wake: vi.fn(), model: vi.fn(), claim: vi.fn(), dispatches: vi.fn(),
   denyPickupClaim: false,
   kernelDenied: false, kernelUnavailable: false, suToken: 'test-only-original-bearer-not-a-real-credential',
+  policyRevision: 'current',
 }));
 vi.mock('./superuser-token', async (orig) => ({
   ...await orig<typeof import('./superuser-token')>(), readSuperuserToken: () => h.suToken,
@@ -65,7 +66,8 @@ vi.mock('./projected-tool-deps', () => ({
       ? { decision: 'deny', code: 'policy-unavailable', reason: 'session authority reader unavailable' }
       : h.revoked || h.kernelDenied
         ? { decision: 'deny', code: 'revoked', reason: 'target authority revoked' }
-        : { decision: 'allow' },
+        : { decision: 'allow', applied: true, revisionSource: 'applied',
+          executionRevision: { specificationRevision: 'a'.repeat(64), stateRevision: h.policyRevision } },
     checkCapabilityEnvelope: async ({ toolName }: { toolName: string }) =>
       h.denyPickupClaim && toolName === 'work_items:claim'
         ? { decision: 'deny', reason: 'current target claim confinement' } : null,
@@ -120,10 +122,13 @@ const { planItemLaneBlockReason, planItemLiveClaimReason } = await import('./sch
 await import('./agent-tools/work_items/get');
 await import('./agent-tools/work_items/claim');
 await import('./agent-tools/work_items/pickup');
+await import('./agent-tools/work_items/review-admission');
 const { inProcessCall } = await import('./agent-tools/_compound-dispatch');
 const { synthesizeDispatchPrincipal } = await import('./endpoint-route/routes/transport/role-principal-caps');
 const { resolveAgentIdentity } = await import('./agent-tools/coordination/identity');
 const { admissionCredentialDigest, admissionReplayContext } = await import('./work-item-admission-authority');
+const { requestAdmissionReview } = await import('./work-item-admission-review');
+const { appendFleetMembershipEvent } = await import('./fleet-membership-store');
 const originalContext = {
   workspaceId: 'default', harnessSlug: 'original-harness', profile: 'engineer' as const,
   runId: 'original-run', spawnId: 'original-spawn', parentSpawnId: 'original-parent',
@@ -165,6 +170,10 @@ beforeAll(async () => {
         SELECT value = ANY(ARRAY['done','dropped','deprecated','passed','failed','resolved','closed']::text[])
       $$;
     CREATE TABLE harness_shared.operator_secrets(name text PRIMARY KEY, value_b64 text);
+    CREATE TABLE harness_shared.audit_log (
+      id text PRIMARY KEY, ts bigint NOT NULL, workspace_id text NOT NULL,
+      actor text NOT NULL, action text NOT NULL, subject text NOT NULL, details jsonb
+    );
     CREATE TABLE harness_shared.system_principals (
       workspace_id text, name text, capabilities jsonb, PRIMARY KEY (workspace_id, name)
     );
@@ -212,6 +221,7 @@ beforeEach(async () => {
   h.denyPickupClaim = false;
   h.kernelDenied = false;
   h.kernelUnavailable = false;
+  h.policyRevision = 'current';
   h.suToken = 'test-only-original-bearer-not-a-real-credential';
   h.dispatches.mockReset();
   h.model.mockReset().mockRejectedValue(new Error('unexpected external model call'));
@@ -219,7 +229,8 @@ beforeEach(async () => {
   h.claim.mockReset().mockImplementation(wi.claimWorkItem);
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.dedup_edges,
     harness_shared.dedup_adjudications, harness_shared.admission_runs, harness_shared.routines,
-    harness_shared.system_principals`;
+    harness_shared.system_principals, harness_shared.fleet_assignment, harness_shared.fleet_membership_events,
+    harness_shared.audit_log`;
   await db.sql`INSERT INTO harness_shared.system_principals VALUES
     ('default', 'reviewer', '["coord:write","work_items:read","work_items:write"]')`;
   await db.sql`INSERT INTO harness_shared.routines
@@ -294,7 +305,7 @@ describe('original authority context fidelity', () => {
       // than replacing the scheduler, slot writes, or screening composition.
       const wireSql = postgres(db.url, {
         max: 2, prepare: false, onnotice: () => {},
-        types: { timestamptz: { to: 1184, from: [1184], serialize: String, parse: (value) => value } },
+        types: { timestamptz: { to: 1184, from: [1184], serialize: String, parse: (value: string) => value } },
       });
       try {
         const [clock] = await wireSql`SELECT now() AS now`;
@@ -635,6 +646,269 @@ async function row(id: string) {
       AND harness_slug = ${scope.harnessSlug} AND feature_id = ${id}`;
   return r!;
 }
+
+const reviewLeader = 'su-11111111-1111-4111-8111-111111111111';
+function reviewAuthority() {
+  return { kind: 'signed-spawn' as const, role: 'reviewer', expiresAtSec: 0,
+    context: originalContext, credentialSha256: admissionCredentialDigest(Buffer.alloc(32, 42)) };
+}
+async function placeReview(id: string) {
+  for (const [ownerId, fleetRole] of [[reviewLeader, 'leader'], [reviewerOwnerId, 'member']]) {
+    await appendFleetMembershipEvent({ workspaceId: scope.workspaceId, ownerId: ownerId!,
+      fleetSlug: 'review-fleet', fleetRole: fleetRole! }, db.sql);
+  }
+  await db.sql`INSERT INTO harness_shared.fleet_assignment
+    (workspace_id, harness_slug, work_item_id, fleet_slug, agent_id, claim_active)
+    VALUES ('default', 'papercusp', ${id}, 'review-fleet', ${reviewerOwnerId}, true)`;
+}
+function review(id: string, caller = reviewerOwnerId) {
+  return requestAdmissionReview({ ...scope, workItemId: id }, { caller, authority: reviewAuthority() }, db.sql);
+}
+async function claimOriginal(id: string) {
+  await db.sql`UPDATE harness_shared.work_items SET taken_by = ${reviewerOwnerId}, status = 'wip'
+    WHERE feature_id = ${id}`;
+}
+function distinctPair(a: string, b: string) {
+  return { text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+    json: { judgements: [{ pairKey: [a, b].sort().join('::'), verdict: 'distinct', reason: 'Independent fixes' }] } };
+}
+
+async function parkForReview(id: string) {
+  const parker = 'su-60edb7f2-8b60-4e26-8146-dd81a0033bba';
+  const at = new Date().toISOString();
+  const releaseContract = {
+    owner: reviewLeader, trigger: 'work-item:done:EI-26925756106103124',
+    condition: `Canonical ${id} admissionReview is reviewed and admissionHold is absent; fleet leader reopens the original GitNexus lane after verifying that condition.`,
+    evidence: 'a live resolver or producer registration can still satisfy the condition', reachability: 'reachable',
+  };
+  const reason = 'Canonical admission review must finish before repair executes';
+  const patch = {
+    _claimHold: true, _ei: { source: 'su', created_by: 'su-respawn-5d5addf964d9c7aca0012b9866cf572d' },
+    claim_hold_by: parker, claim_hold_reason: reason, claim_hold_at: at, claim_hold_release: releaseContract,
+    externalBlockers: [{ ref: `admission-review:${id}`, kind: 'runtime', status: 'active',
+      capability: 'live-dependency', capabilitySource: 'explicit',
+      summary: reason, evidence: 'canonical pending review', nextVerb: 'work_items:get',
+      createdAt: at, updatedAt: at, createdBy: parker }],
+    admissionReview: { state: 'pending', retryAttempts: 0, lastRetryAt: null },
+  };
+  await db.sql`UPDATE harness_shared.work_items SET status = 'blocked', taken_by = NULL, admission = 'unreviewed',
+    payload = payload || ${db.sql.typed(JSON.stringify(patch), 25)}::jsonb WHERE feature_id = ${id}`;
+  await db.sql`INSERT INTO harness_shared.audit_log (id, ts, workspace_id, actor, action, subject, details)
+    VALUES (${id + '-park'}, ${Date.parse(at)}, ${scope.workspaceId}, ${parker}, 'work_items:claim_hold:set', ${id},
+      ${db.sql.typed(JSON.stringify({ mode: 'claim_hold', by: parker, reason, releaseContract }), 25)}::jsonb)`;
+  await placeReview(id);
+}
+
+describe('authenticated admission-only review composition (EI-270226)', () => {
+  it('reviews another executor custody with canonical fleet authority without claiming or waking', async () => {
+    const original = await create('Held original review');
+    await claimOriginal(original.id);
+    await placeReview(original.id);
+    const before = await row(original.id);
+    const queued = await review(original.id, reviewLeader);
+    expect(queued).toMatchObject({ queued: true, pickupConfirmed: false });
+    expect((await db.sql`SELECT jsonb_typeof(payload->'_admissionReviewRequest') AS type
+      FROM harness_shared.work_items WHERE feature_id = ${original.id}`)[0]!.type).toBe('object');
+    expect((await row(original.id)).payload._admissionReviewRequest).toMatchObject({ requestId: queued.requestId });
+    expect(await tick()).toMatchObject({ promoted: 1, merged: 0 });
+    const after = await row(original.id);
+    expect(after).toMatchObject({ taken_by: before.taken_by, status: before.status, admission: 'admitted',
+      payload: { _admissionReviewReceipt: { requestId: queued.requestId, pickupConfirmed: false } } });
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it('reviews the audited original blocked park with distinct creator, parker and leader without releasing it', async () => {
+    const original = await create('Original GitNexus admission-only park');
+    await request(original.id);
+    await parkForReview(original.id);
+    const before = await row(original.id);
+    await review(original.id, reviewLeader);
+    expect(await tick()).toMatchObject({ promoted: 1, merged: 0 });
+    const after = await row(original.id);
+    expect(after).toMatchObject({ status: 'blocked', taken_by: null, admission: 'admitted' });
+    for (const key of ['_claimHold', '_ei', 'claim_hold_by', 'claim_hold_reason', 'claim_hold_at',
+      'claim_hold_release', 'externalBlockers', '_admissionRecovery']) {
+      expect(after.payload[key]).toEqual(before.payload[key]);
+    }
+    expect(after.payload._admissionReviewReceipt).toMatchObject({ pickupConfirmed: false });
+    expect(after.payload.admissionReview).toMatchObject({ state: 'reviewed', retryAttempts: 1 });
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it.each(['human', 'policy', 'unknown', 'mixed', 'malformed', 'unaudited', 'wrong-audit', 'unknown-trigger', 'self-trigger', 'owner'] as const)(
+    'refuses an audited park with %s protection without changing its bytes', async kind => {
+      const original = await create();
+      await parkForReview(original.id);
+      const payload = (await row(original.id)).payload;
+      if (kind === 'human') payload.externalBlockers[0].kind = 'human';
+      if (kind === 'policy') payload.claim_hold_reason = 'policy-tier: D-020 requires owner approval';
+      if (kind === 'unknown') delete payload.externalBlockers[0].capabilitySource;
+      if (kind === 'mixed') payload.externalBlockers.push({ ...payload.externalBlockers[0], ref: 'other-runtime-dependency' });
+      if (kind === 'malformed') delete payload.externalBlockers[0].updatedAt;
+      if (kind === 'unknown-trigger') payload.claim_hold_release.trigger = `work-item:claimable:${original.id}`;
+      if (kind === 'self-trigger') payload.claim_hold_release.trigger = `work-item:done:${original.id}`;
+      if (kind === 'owner') payload.claim_hold_release.owner = 'su-22222222-2222-4222-8222-222222222222';
+      await db.sql`UPDATE harness_shared.work_items SET payload = ${db.sql.typed(JSON.stringify(payload), 25)}::jsonb
+        WHERE feature_id = ${original.id}`;
+      // Keep audit equality for semantic contract refusals; don't let another
+      // mismatched field accidentally satisfy the negative test.
+      if (['policy', 'unknown-trigger', 'self-trigger', 'owner'].includes(kind)) {
+        await db.sql`UPDATE harness_shared.audit_log SET details = ${db.sql.typed(JSON.stringify({
+          mode: 'claim_hold', by: payload.claim_hold_by, reason: payload.claim_hold_reason,
+          releaseContract: payload.claim_hold_release,
+        }), 25)}::jsonb WHERE subject = ${original.id}`;
+      }
+      if (kind === 'unaudited') await db.sql`DELETE FROM harness_shared.audit_log WHERE subject = ${original.id}`;
+      if (kind === 'wrong-audit') await db.sql`UPDATE harness_shared.audit_log SET actor = 'human' WHERE subject = ${original.id}`;
+      const before = await row(original.id);
+      await expect(review(original.id, reviewLeader)).rejects.toThrow();
+      expect(await row(original.id)).toEqual(before);
+      expect(h.model).not.toHaveBeenCalled();
+      expect(h.claim).not.toHaveBeenCalled();
+      expect(h.wake).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuses malformed persisted requests instead of silently falling through to recovery', async () => {
+    const original = await create();
+    await claimOriginal(original.id);
+    await review(original.id);
+    await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload,
+      '{_admissionReviewRequest}', ${db.sql.typed(JSON.stringify('malformed'), 25)}::jsonb)
+      WHERE feature_id = ${original.id}`;
+    const before = await row(original.id);
+    await expect(tick()).rejects.toThrow('malformed admission review request');
+    expect(await row(original.id)).toEqual(before);
+    expect(h.model).not.toHaveBeenCalled();
+  });
+
+  it('enforces the actual review write policy independently of dispatch and claim permissions', async () => {
+    const original = await create();
+    await claimOriginal(original.id);
+    h.kernelDenied = true;
+    const before = await row(original.id);
+    await expect(review(original.id)).rejects.toThrow('revoked');
+    expect(await row(original.id)).toEqual(before);
+    h.kernelDenied = false;
+    await review(original.id);
+    h.kernelDenied = true;
+    await expect(tick()).rejects.toThrow('revoked');
+    expect((await row(original.id)).admission).toBe('pending');
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it.each(['custody', 'request', 'policy', 'denied'] as const)(
+    'refuses %s drift during model latency before persistence', async drift => {
+      const original = await create('Latency review subject');
+      const twin = await create(original.title);
+      await claimOriginal(original.id);
+      await review(original.id);
+      h.model.mockImplementationOnce(async () => {
+        if (drift === 'custody') await db.sql`UPDATE harness_shared.work_items
+          SET taken_by = 'other-executor' WHERE feature_id = ${original.id}`;
+        if (drift === 'request') await db.sql`UPDATE harness_shared.work_items
+          SET payload = jsonb_set(payload, '{_admissionReviewRequest,requestId}',
+            '"99999999-9999-4999-8999-999999999999"'::jsonb) WHERE feature_id = ${original.id}`;
+        if (drift === 'policy') h.policyRevision = 'changed';
+        if (drift === 'denied') h.kernelDenied = true;
+        return distinctPair(original.id, twin.id);
+      });
+      await expect(tick()).rejects.toThrow();
+      expect(await row(original.id)).toMatchObject({ admission: 'pending' });
+      expect((await row(original.id)).payload).not.toHaveProperty('_admissionReviewReceipt');
+      expect((await row(twin.id)).admission).toBe('pending');
+      expect(h.model).toHaveBeenCalledTimes(1);
+      expect(h.claim).not.toHaveBeenCalled();
+      expect(h.wake).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['foreign', 'expired', 'revoked', 'tampered'] as const)(
+    'refuses %s review authority without admission or custody writes', async invalid => {
+      const original = await create();
+      await claimOriginal(original.id);
+      const authority = reviewAuthority();
+      if (invalid === 'foreign') authority.context = { ...originalContext, workspaceId: 'other' };
+      if (invalid === 'expired') authority.expiresAtSec = 1;
+      if (invalid === 'revoked') authority.credentialSha256 = '0'.repeat(64);
+      if (invalid !== 'tampered') {
+        await expect(requestAdmissionReview({ ...scope, workItemId: original.id },
+          { caller: reviewerOwnerId, authority }, db.sql)).rejects.toThrow();
+      } else {
+        await review(original.id);
+        await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload,
+          '{_admissionReviewRequest,signature}', ${db.sql.typed(JSON.stringify('0'.repeat(64)), 25)}::jsonb)
+          WHERE feature_id = ${original.id}`;
+        await expect(tick()).rejects.toThrow('signature');
+      }
+      expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: reviewerOwnerId, status: 'wip' });
+      expect(h.model).not.toHaveBeenCalled();
+    },
+  );
+
+  it('holds a duplicate subject without mutating its outside-scope twin or merge links', async () => {
+    const original = await create('Review duplicate original');
+    const twin = await create(original.title);
+    await claimOriginal(original.id);
+    const twinBefore = await row(twin.id);
+    await review(original.id);
+    const [a, b] = [original.id, twin.id].sort();
+    h.model.mockResolvedValue({ text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+      json: { judgements: [{ pairKey: `${a}::${b}`, verdict: 'r-finding-merge',
+        reason: 'Same fix' }] } });
+    expect(await tick()).toMatchObject({ promoted: 0, merged: 0, held: 1 });
+    expect(await row(twin.id)).toEqual(twinBefore);
+    expect(await db.sql`SELECT * FROM harness_shared.dedup_edges`).toEqual([]);
+    expect(await db.sql`SELECT * FROM harness_shared.dedup_adjudications`).toEqual([]);
+    expect((await row(original.id)).taken_by).toBe(reviewerOwnerId);
+  });
+
+  it('refuses reference drift during judging without recording a successful review', async () => {
+    const original = await create('Reference drift review');
+    const twin = await create(original.title);
+    await claimOriginal(original.id);
+    await review(original.id);
+    h.model.mockImplementationOnce(async () => {
+      await db.sql`UPDATE harness_shared.work_items SET title = 'changed during judging', updated_ts = updated_ts + 1
+        WHERE feature_id = ${twin.id}`;
+      return distinctPair(original.id, twin.id);
+    });
+    expect(await tick()).toMatchObject({ promoted: 0, merged: 0, held: 1 });
+    expect((await row(original.id)).admission).toBe('pending');
+    expect((await row(original.id)).payload).not.toHaveProperty('_admissionReviewReceipt');
+    expect((await row(twin.id)).admission).toBe('pending');
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it('preserves immutable recovery and requires separate eligible handoff then target-owned pickup', async () => {
+    const original = await create('Original recovery preserved through review');
+    await request(original.id);
+    await claimOriginal(original.id);
+    const saved = (await row(original.id)).payload._admissionRecovery;
+    await review(original.id);
+    await tick();
+    expect((await row(original.id)).payload._admissionRecovery).toEqual(saved);
+    expect(h.wake).not.toHaveBeenCalled();
+    // A distinct custody transition is required; review is never that transition.
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL, status = 'open'
+      WHERE feature_id = ${original.id}`;
+    await tick();
+    expect((await row(original.id)).payload._admissionRecovery).toMatchObject({
+      requestId: saved.requestId, state: 'delivered', pickupConfirmed: false });
+    expect(h.wake).toHaveBeenCalledTimes(1);
+    expect(await pickup(original.id)).toMatchObject({ ok: true, claimed: true });
+    expect(await row(original.id)).toMatchObject({ taken_by: reviewerOwnerId });
+    expect(h.dispatches.mock.calls.map(([name]) => name)).toEqual([
+      'work_items:pickup', 'work_items:get', 'work_items:claim',
+    ]);
+    // Delivery's immutable receipt does not mutate into a pickup attestation.
+    expect((await row(original.id)).payload._admissionRecovery).toMatchObject({ pickupConfirmed: false });
+  });
+});
 /** A separate target-owned call. Context represents the authenticated transport
  * boundary, NOT presence.agentRole and NOT the original requester's privilege.
  * Capabilities are loaded from fresh PG by the real transport principal resolver.
