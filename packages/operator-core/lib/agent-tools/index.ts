@@ -1168,6 +1168,7 @@ import './work_items/claim';
 // COMPOUND work-pickup (code-execution B-CX-1B): get(detail)+claim(+declare-intent) in
 // one round-trip — the #1 measured agent flow; also closes the get→claim race.
 import './work_items/pickup';
+import './work_items/review-admission';
 import './work_items/release';
 // The "announced consequence" rail (WI-5974): request a live peer release a work-item
 // with an explicit deadline + consequence, instead of a bare force-release refusal with
