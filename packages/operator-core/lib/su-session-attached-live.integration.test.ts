@@ -8,7 +8,6 @@
 // production seam is imported. These fake children must never look like fleet sessions.
 import { hermeticEnv } from '../../../apps/operator/vitest-shims/psu-pty-temp-dir';
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
-import { crc32, deflateSync } from 'node:zlib';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -33,6 +32,7 @@ import { approvalCardText } from './su-session-approval-display';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
 import { SU_EXEC_COMBINATIONS, SU_EXEC_SCENARIOS, SU_EXEC_REQUEST_SCENARIOS, SU_EXEC_PTY_CONTROLS, suExecScenariosFor, suExecQualificationPopulation,
   suExecQualificationDefects } from './__fixtures__/su-execution-parity';
+import { clockwisePngColors, imageSha256, quadrantPng, retainImageInput, type ImageColor } from './__fixtures__/su-image-qualification';
 
 /**
  * Exercise the actual host -> discovery -> socket -> PTY child boundary that
@@ -383,29 +383,21 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       }
       // Randomize the arrangement only in the bitmap; neither the prompt nor
       // a filename contains the answer. This requires actual visual inference.
-      const palette = [{ name: 'red', rgb: [255, 0, 0] }, { name: 'blue', rgb: [0, 0, 255] },
-        { name: 'green', rgb: [0, 200, 0] }, { name: 'yellow', rgb: [255, 255, 0] }];
+      const palette: ImageColor[] = ['red', 'blue', 'green', 'yellow'];
       for (let i = palette.length - 1; i > 0; i--) { const j = randomInt(i + 1); [palette[i], palette[j]] = [palette[j], palette[i]]; }
-      const width = 256, pixels = Buffer.alloc((1 + width * 3) * width);
-      for (let y = 0; y < width; y++) for (let x = 0; x < width; x++) {
-        const quadrant = y < width / 2 ? (x < width / 2 ? 0 : 1) : (x < width / 2 ? 3 : 2);
-        const offset = y * (1 + width * 3) + 1 + x * 3;
-        palette[quadrant].rgb.forEach((value, channel) => { pixels[offset + channel] = value; });
-      }
-      const chunk = (name: string, bytes: Buffer) => {
-        const size = Buffer.alloc(4), checksum = Buffer.alloc(4), type = Buffer.from(name);
-        size.writeUInt32BE(bytes.length); checksum.writeUInt32BE(crc32(Buffer.concat([type, bytes])));
-        return Buffer.concat([size, type, bytes, checksum]);
-      };
-      const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width); ihdr.writeUInt32BE(width, 4); ihdr[8] = 8; ihdr[9] = 2;
-      const image = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk('IHDR', ihdr),
-        chunk('IDAT', deflateSync(pixels)), chunk('IEND', Buffer.alloc(0))]).toString('base64');
+      const png = quadrantPng(palette), image = png.toString('base64');
+      expect(clockwisePngColors(png), 'independent PNG calibration before native delivery').toEqual(palette);
       const command = { schema: SU_SESSION_SCHEMA, protocolVersion: SU_SESSION_PROTOCOL_VERSION, type: 'owner_turn',
         commandId: `image-${randomUUID()}`, turnId: `image-turn-${randomUUID()}`, issuedAt: new Date().toISOString(),
         target: host.descriptor().identity, model,
         content: 'Read the attached image. Reply only with the four quadrant colors clockwise starting at top left, comma separated. Do not use tools or change anything.',
         input: [{ type: 'image', mediaType: 'image/png', data: image }],
       };
+      const evidenceRoot = process.env.PAPERCUSP_SU_IMAGE_EVIDENCE_DIR ?? join(tmpdir(), 'papercusp-su-image-evidence');
+      mkdirSync(evidenceRoot, { recursive: true, mode: 0o700 });
+      const evidence = mkdtempSync(join(evidenceRoot, `${backend}-`));
+      retainImageInput(evidence, command, png);
+      console.info('SU_EXEC_P006_NATIVE_IMAGE_EVIDENCE', JSON.stringify({ backend, evidence, imageSha256: imageSha256(png) }));
       const route = suSessionRoutes.find(route => route.method === 'POST')!;
       const post = () => route.handler(new Request('http://localhost/commands', { method: 'POST', headers, body: JSON.stringify(command) }), context);
       const accepted = await post(); expect(accepted.status, JSON.stringify(await accepted.json())).toBe(202);
@@ -436,14 +428,39 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
           } finally { clearTimeout(timer!); }
         }
       } finally { await stream.return?.(); }
+      const result = { backend, model, answer, expectedColors: palette, imageSha256: imageSha256(png),
+        descriptor: host.descriptor(), nativeInput: 'not-inspected' };
+      writeFileSync(join(evidence, 'result.json'), JSON.stringify(result, null, 2) + '\n', { mode: 0o600 });
+      if (backend === 'claude') {
+        const { findSessionTranscript } = await import('./claude-sessions');
+        const { readClaudeTranscriptSnapshotLines } = await import('./su-session-claude-adapter');
+        const descriptor = host.descriptor(), extension = descriptor.backendExtension;
+        const path = await findSessionTranscript(descriptor.identity.nativeSessionId, { owner: descriptor.identity.ownerId,
+          roots: extension.backend === 'claude' && extension.configDir ? [join(extension.configDir, 'projects')] : [] });
+        if (path) for await (const line of readClaudeTranscriptSnapshotLines(path)) {
+          const row = JSON.parse(line);
+          if (row.type !== 'user' || !Array.isArray(row.message?.content)
+            || !row.message.content.some((part: { type?: string; text?: string }) => part.type === 'text' && part.text === command.content)) continue;
+          writeFileSync(join(evidence, 'native-user-message.json'), JSON.stringify(row.message, null, 2) + '\n', { mode: 0o600 });
+          const nativeImages = row.message.content.filter((part: { type?: string }) => part.type === 'image');
+          result.nativeInput = 'retained';
+          writeFileSync(join(evidence, 'result.json'), JSON.stringify(result, null, 2) + '\n', { mode: 0o600 });
+          expect(nativeImages).toHaveLength(1);
+          const nativePng = Buffer.from(nativeImages[0].source.data, 'base64');
+          expect(imageSha256(nativePng), 'native Claude transcript image must match submitted PNG').toBe(imageSha256(png));
+          expect(clockwisePngColors(nativePng)).toEqual(palette);
+          break;
+        }
+        expect(result.nativeInput, `Native input missing; retained evidence: ${evidence}`).toBe('retained');
+      }
       console.info('SU_EXEC_P006_NATIVE_IMAGE_OBSERVED', JSON.stringify({ backend, model, answer,
-        expectedColors: palette.map(color => color.name), lifecycle: host.descriptor().lifecycle }));
-      expect(answer.match(/\b(?:red|blue|green|yellow)\b/g), answer).toEqual(palette.map(color => color.name));
+        expectedColors: palette, lifecycle: host.descriptor().lifecycle, evidence }));
+      expect(answer.match(/\b(?:red|blue|green|yellow)\b/g), `${answer}; retained evidence: ${evidence}`).toEqual(palette);
       // A reconnect/retry reads the existing durable receipt. It never drops
       // the image or sends this already delivered command a second time.
       const reconnected = await post(); expect(await reconnected.json()).toMatchObject({ ok: true, replayed: true });
       console.info('SU_EXEC_P006_NATIVE_IMAGE', JSON.stringify({ backend, model, ownerId: host.descriptor().identity.ownerId,
-        nativeSessionId: host.descriptor().identity.nativeSessionId, expectedColors: palette.map(color => color.name), answer,
+        nativeSessionId: host.descriptor().identity.nativeSessionId, expectedColors: palette, answer,
         persistedImage: true, reconnectReplayed: true }));
     } finally {
       host ??= getRegisteredSuSessionHost(key);

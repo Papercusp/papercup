@@ -13187,6 +13187,22 @@ async function selectCheckpointFreshCandidate(
   return { candidate, tip: candidateBeforeQuietCut, quietCutApplied, freezeCut };
 }
 
+/**
+ * WI-6554700010029556: publish `gate_health.inFlightCandidate`, first asking whether the marker
+ * about to be replaced is a dead run's residue (our own write destroys that evidence). Shared by
+ * the candidate-FINAL publish and the repair-head verification publish, so both keep the same
+ * report-then-record order.
+ */
+async function publishInFlightCandidateMarker(
+  deps: CheckpointDeps,
+  diagnosticOnly: boolean,
+  info: Parameters<NonNullable<CheckpointDeps["recordInFlightCandidate"]>>[0],
+): Promise<void> {
+  const abandonedNote = diagnosticOnly ? null : await deps.reportAbandonedInFlightCandidate?.();
+  if (abandonedNote) deps.log(abandonedNote);
+  await deps.recordInFlightCandidate?.(info);
+}
+
 async function runGreenCheckpointInner(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
@@ -14378,6 +14394,25 @@ async function runGreenCheckpointInner(
       // `materializing` marker described the whole multi-hour run (measured 2026-10-26).
       writeCheckpointRunPhase(phaseLockDir, "suite", { activity: "repair-head-verification" });
       deps.reportProgress?.("phase:suite");
+      // WI-6554700010029556 (step 4): the same gap held for `gate_health.inFlightCandidate`. Its
+      // candidate-FINAL publish below is reached by a repair-head run only when the selective
+      // verification is green; a red re-queues and returns from this block. So a whole repair-
+      // verification pass (hours on a 50-leg signature) left the marker null, and every "which sha
+      // is the gate judging?" reader saw no run at all (measured 2026-10-26). Publish the repair
+      // head now. The later publish re-stamps it if the head proceeds to the full gate, and the
+      // CLI seam clears it on every exit.
+      await publishInFlightCandidateMarker(deps, diagnosticOnly, {
+        candidate,
+        candidateSource,
+        base: lastReady ?? null,
+        selectedAtMs: Date.now(),
+        quietCutApplied: false,
+        tipAtSelection: null,
+        refireDepth: opts.totalRefires ?? opts.refireAttempts ?? 0,
+        pid: process.pid,
+        ...(deps.routineId ? { routineId: deps.routineId } : {}),
+        ...(deps.routineFireWorkflowId ? { routineFireWorkflowId: deps.routineFireWorkflowId } : {}),
+      });
       let verification = await verifyRepairHead(verifyDeps, repairQueue);
       deps.log(`repair head ${candidate.slice(0, 8)}: ${verification.summary}`);
       // P-005 (green-gate-zero-wait-convergence-2026-09-08, R-5, D-001): a red whose signature
@@ -14913,11 +14948,7 @@ async function runGreenCheckpointInner(
   // only instant that question can be asked — our own write destroys the evidence. A loss detected
   // here is announced into the transcript AND persisted to `gate_health.lastLostRun`, so "a run
   // died judging that sha" stops being indistinguishable from "a run is judging that sha".
-  const abandonedNote = diagnosticOnly
-    ? null
-    : await deps.reportAbandonedInFlightCandidate?.();
-  if (abandonedNote) deps.log(abandonedNote);
-  await deps.recordInFlightCandidate?.({
+  await publishInFlightCandidateMarker(deps, diagnosticOnly, {
     candidate,
     candidateSource,
     base: lastReady ?? null,
@@ -19368,6 +19399,24 @@ async function validatePreparedCheckpointSelection(
       liveDependencyGenerationToken(root, generation.identity, generation.token) !== generation.token ||
       await checkpointDependencyInputFingerprint(cfg, record.candidate, exec) !== generation.inputFingerprint)
     throw new Error("prepared dependency generation root, token or input identity is invalid");
+}
+
+/**
+ * WI-6554700010010801: the candidate the CLI hands runGreenCheckpoint after its preflight.
+ *
+ * `--candidate` (release-checkpoint-launch.ts transports an exact sha) is the preflight's
+ * selection INPUT. Queue and known-good policy may legitimately resolve a different candidate,
+ * and the preflight commits that one as the prepared selection. Forwarding the raw input made
+ * the runner's entry guard ("prepared selection candidate changed") refuse every such run as a
+ * crash, though the runner judges `preparedSelection.candidate` regardless. The guard exists to
+ * refuse a candidate changed AFTER preparation (a refire); the input to preparation is not one.
+ * Without an explicit `--candidate` the runner's selection behaviour is unchanged (undefined).
+ */
+export function checkpointRunnerCandidate(
+  candidateArg: string | undefined,
+  preparedSelection: Pick<PreparedCheckpointSelectionRecord, "candidate"> | undefined,
+): string | undefined {
+  return candidateArg && preparedSelection ? preparedSelection.candidate : candidateArg;
 }
 
 async function readCheckpointSelectionQueue(deps: CheckpointDeps): Promise<FrozenCandidateRepairQueue | null> {
@@ -27107,7 +27156,7 @@ if (require.main === module) {
       runGreenCheckpoint(cfg, checkpointDeps, {
         preparedSelection,
         runStartedAtMs: processStartedAtMs,
-        candidate: candidateArg,
+        candidate: checkpointRunnerCandidate(candidateArg, preparedSelection),
         candidateHint: prewarmedDependencyGeneration.candidate,
         candidateSource,
         ...(diagnostic ? { diagnostic } : {}),

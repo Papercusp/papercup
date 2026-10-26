@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   beginCheckpointPreflight,
+  checkpointRunnerCandidate,
   ensureCheckpointDependencyGeneration,
   runCmd,
   runGreenCheckpoint,
@@ -129,6 +130,40 @@ describe("prepared frozen candidate selection", () => {
     expect(f.setupTree).not.toHaveBeenCalled();
     expect(f.runGreen).not.toHaveBeenCalled();
   }, 180_000);
+
+  // WI-6554700010010801: release-checkpoint-launch.ts transports an exact `--candidate <sha>`.
+  // The CLI forwarded that raw INPUT to the runner after the preflight resolved a different
+  // prepared candidate, so the entry guard crashed the run ("prepared selection candidate
+  // changed") — 7 crashed gate runs on 2026-10-25/26, each recording the frozen candidate.
+  it.each(["frozen-repair-queue", "tip"] as const)(
+    "the CLI runner options judge the prepared candidate when preflight overrides an explicit --candidate (%s)",
+    async (candidateSource) => {
+      const f = await fixture();
+      const before = structuredClone(f.queue);
+      const candidateArg = f.repairHead;
+      const prepared = await f.prepare({ candidate: candidateArg, candidateSource });
+      // Precondition: this case only proves anything while the preflight overrides the input.
+      expect(prepared.candidate).not.toBe(candidateArg);
+      expect(prepared.preparedSelection?.candidate).toBe(prepared.candidate);
+      expect(checkpointRunnerCandidate(candidateArg, prepared.preparedSelection)).toBe(prepared.candidate);
+      // No explicit --candidate keeps the runner's own selection path untouched.
+      expect(checkpointRunnerCandidate(undefined, prepared.preparedSelection)).toBeUndefined();
+      const result = await runGreenCheckpoint(f.cfg, f.deps, {
+        noPush: true, candidateSource, preparedSelection: prepared.preparedSelection,
+        candidate: checkpointRunnerCandidate(candidateArg, prepared.preparedSelection),
+      });
+      expect(result).toMatchObject({ candidate: prepared.candidate, green: null, reason: "disk-headroom",
+        summary: "fixture reached post-selection boundary" });
+      expect(f.queue).toEqual(before);
+      expect(f.setupTree).not.toHaveBeenCalled();
+      expect(f.runGreen).not.toHaveBeenCalled();
+      // The raw input is exactly what crashed before the fix: the guard itself is unchanged.
+      await expect(runGreenCheckpoint(f.cfg, f.deps, {
+        noPush: true, candidateSource, preparedSelection: prepared.preparedSelection, candidate: candidateArg,
+      })).rejects.toThrow("prepared selection candidate changed");
+    },
+    180_000,
+  );
 
   it("selects the original when no caller supplied a candidate", async () => {
     const f = await fixture();

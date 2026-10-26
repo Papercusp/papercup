@@ -3451,6 +3451,68 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(await revParse(repo, "ready")).toBe(ready);
   });
 
+  it("WI-6554700010029556: a repair-head run publishes the in-flight marker BEFORE verification, so a red re-queue still named the sha it judged", async () => {
+    // Measured 2026-10-26: `gate_health.inFlightCandidate` was null for the whole of a multi-hour
+    // repair-verification pass. Its only publish sat at candidate-FINAL time, which a red
+    // selective verification never reaches. FALSIFIER: on that code `published` stays empty.
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const repaired = await commit("b", "fixed", "isolated repair");
+    await git(repo, [
+      "update-ref",
+      `refs/papercusp/frozen/${frozen}`,
+      repaired,
+    ]);
+    await git(repo, ["reset", "--hard", ready]);
+    const stagingTip = await commit("b", "different", "canonical staging tip");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: repaired,
+      affectedTestProofGroup: "initial-proof-run",
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: ["@papercusp/web", "lib/broken.test.ts"],
+      signature: [],
+    };
+    const { deps, calls } = stubDeps(true);
+    const published: Array<Parameters<NonNullable<CheckpointDeps["recordInFlightCandidate"]>>[0]> = [];
+    deps.recordInFlightCandidate = async (info) => {
+      calls.push("recordInFlightCandidate");
+      published.push(info);
+    };
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.resolveTip = async () => stagingTip;
+    deps.runTestsAtRef = async () => {
+      calls.push("runTestsAtRef");
+      return { pass: false, summary: "file failure still reproduces" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({ reason: "repair-in-progress", repairHead: repaired });
+    expect(published).toHaveLength(1);
+    expect(published[0]).toMatchObject({
+      candidate: repaired,
+      base: ready,
+      quietCutApplied: false,
+      tipAtSelection: null,
+      pid: process.pid,
+    });
+    expect(calls.indexOf("recordInFlightCandidate")).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("recordInFlightCandidate")).toBeLessThan(calls.indexOf("runTestsAtRef"));
+  });
+
   it("P-007/D-004: promotes the frozen repair head itself, in ONE full gate, without joining the moving tip", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
