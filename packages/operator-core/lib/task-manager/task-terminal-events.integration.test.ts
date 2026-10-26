@@ -170,6 +170,44 @@ describe('task terminal awaited-event bridge (real PG)', () => {
     expect(emitted).toHaveBeenCalledWith(expect.objectContaining({ taskId, state: 'exited', exitCode: 9, exitReason: 'late-runner-log' }));
   });
 
+  it('retains the newer acknowledged tuple when an older recovery emission finishes last', async () => {
+    const taskId = 'terminal-older-emission-finishes-last';
+    const eventKey = taskTerminalEventKey(taskId);
+    await insertTask(taskId);
+    await taskStore.closeTask(taskId, { state: 'ended_unobserved' }, undefined, {
+      emitTerminal: async () => false,
+    });
+    let releaseOlder!: () => void;
+    let olderStarted!: () => void;
+    const olderBlocked = new Promise<void>(resolve => { olderStarted = resolve; });
+    const olderReleased = new Promise<void>(resolve => { releaseOlder = resolve; });
+    const recovering = taskStore.recoverPendingTaskTerminalEvents(h.ws, undefined, async event => {
+      if (event.taskId === taskId && event.state === 'ended_unobserved') {
+        olderStarted();
+        await olderReleased;
+      }
+      return emitTaskTerminalEvent(event);
+    });
+    try {
+      await olderBlocked;
+      await expect(taskStore.closeTask(taskId, {
+        state: 'exited', exitCode: 9, exitReason: 'definitive-runner-log',
+      })).resolves.toBe(true);
+      expect(await eventStore.getKeyFireLatch(eventKey)).toMatchObject({
+        lastPayload: { state: 'exited', exitCode: 9, exitReason: 'definitive-runner-log' },
+      });
+      expect(await h.sql`SELECT detail -> 'terminalEventPending' AS pending
+        FROM harness_shared.task_ledger WHERE task_id = ${taskId}`).toEqual([{ pending: false }]);
+    } finally {
+      releaseOlder();
+      await recovering;
+    }
+    expect(await eventStore.getKeyFireLatch(eventKey)).toMatchObject({
+      lastPayload: { state: 'exited', exitCode: 9, exitReason: 'definitive-runner-log' },
+    });
+    await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws)).resolves.toBe(0);
+  });
+
   it('fires and queues exactly one event after the first authoritative terminal update', async () => {
     const taskId = 'task-terminal-integration';
     const eventKey = taskTerminalEventKey(taskId);
