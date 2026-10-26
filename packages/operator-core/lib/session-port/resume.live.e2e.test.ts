@@ -126,8 +126,8 @@ function assertMatrixCapacity(provider: 'claude' | 'codex', report: Record<strin
   }
 }
 
-function maintainedCanonicalTree(env: Pick<NodeJS.ProcessEnv,
-  'PAPERCUSP_CANONICAL_TREE' | 'PAPERCUSP_INTEGRATION_ROOT'>) {
+function maintainedCanonicalTree(env: Partial<Pick<NodeJS.ProcessEnv,
+  'PAPERCUSP_CANONICAL_TREE' | 'PAPERCUSP_INTEGRATION_ROOT'>>) {
   const canonical = env.PAPERCUSP_CANONICAL_TREE || env.PAPERCUSP_INTEGRATION_ROOT;
   if (!canonical) throw new Error('The final matrix requires the maintained canonical tree selector');
   return resolve(canonical);
