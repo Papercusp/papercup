@@ -23,6 +23,7 @@ import { reapArchiveCensusProducer, maintenanceDatabaseCensusDeclarations } from
 import { listTasks } from '../packages/operator-core/lib/task-manager/store';
 import { historicalHostedProfileCensusProducer, historicalPlaywrightStateCensusProducer, recoverHistoricalCensusWriterEvidence, type HostedProfileWriterEvidence, type IndexedCensusWriterEvidence, type PlaywrightStateWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
 import { papercuspRoot, papercuspRootForWorkspace } from '../packages/operator-core/lib/papercusp-root';
+import { checkpointLogDirFromEnv } from '../packages/operator-core/lib/release/checkpoint-log-dir';
 
 /** Reuse the setup writer's exact ownership rules across workspace homes. */
 export async function readWorkspaceSetupHomes(
@@ -121,8 +122,7 @@ const planTemplateStore = await planTemplateStoreCensusProducer();
 const hostCatalogs = args.includes('--host-catalogs');
 const credentials = await accountCredentialCensusProducer(hostCatalogs
   ? await readWorkspaceCensusAccounts(readRegistry().workspaces) : []);
-const { releaseConfig } = await import('../apps/operator/lib/release/release-config.ts');
-const checkpointLogDir = options.checkpointLogDir ?? releaseConfig().checkpointLogDir;
+const checkpointLogDir = options.checkpointLogDir ?? checkpointLogDirFromEnv();
 const producers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affectedCache.roots, ...credentials.roots, ...sidefiles.roots, ...setupHomes.roots, ...templateStore.roots, ...workspaceTemplateStores.roots, ...planTemplateStore.roots,
   { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...affectedCache.declarations, ...credentials.declarations, ...sidefiles.declarations, ...setupHomes.declarations, ...templateStore.declarations, ...workspaceTemplateStores.declarations, ...planTemplateStore.declarations, {
   kind: 'path', root: 'checkpoint-logs-parent', name: basename(checkpointLogDir), classification: 'state',
