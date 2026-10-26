@@ -12,6 +12,7 @@ const {
   dedicatedPoolCalls,
   samplePgBouncerPoolsMock,
   workspaceCalls,
+  workspaceAcquisitionErrors,
   acquireTimeouts,
   acquireRetries,
 } = vi.hoisted(() => {
@@ -32,6 +33,7 @@ const {
     dedicatedSessionEndMock: dedicatedEnd,
     dedicatedPoolCalls: [] as Array<{ label: string; options?: { max?: number; sessionAffinity?: boolean } }>,
     samplePgBouncerPoolsMock: vi.fn(async () => ({ ok: true })),
+    workspaceAcquisitionErrors: [] as unknown[],
     workspaceCalls: [] as Array<{
       workspaceId: string;
       options?: {
@@ -73,6 +75,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
       },
     ) => {
       workspaceCalls.push({ workspaceId, options });
+      const acquisitionError = workspaceAcquisitionErrors.shift();
+      if (acquisitionError !== undefined) throw acquisitionError;
       return fn(appSessionRowsMock);
     }) as typeof actual.withWorkspace,
     retryOnRetryableDbDeadline: ((...args: Parameters<typeof actual.retryOnRetryableDbDeadline>) => {
@@ -122,6 +126,7 @@ beforeEach(() => {
   appSessionRowsMock.mockReset();
   appSessionRowsMock.mockResolvedValue([]);
   workspaceCalls.length = 0;
+  workspaceAcquisitionErrors.length = 0;
   dedicatedSessionRowsMock.mockReset();
   dedicatedSessionRowsMock.mockResolvedValue([]);
   dedicatedSessionBeginMock.mockReset();
@@ -334,6 +339,55 @@ describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', ()
     });
     expect(appAdvSessionTableReads()).toHaveLength(1);
     expect(advSessionTableReads()).toHaveLength(0);
+  });
+
+  it('uses the isolated direct pool after a measured workspace app-pool acquisition deadline', async () => {
+    const timeout = new DbCallDeadlineError('withWorkspace:acquire(app)', 7_500, 7_500, 'org-app');
+    Object.defineProperty(timeout, 'retryable', { value: true });
+    workspaceAcquisitionErrors.push(timeout);
+    dedicatedSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const template = args[0];
+      const query = Array.isArray(template) ? template.join(' ') : String(template ?? '');
+      return query.includes('FROM harness_shared.adv_sessions')
+        ? [{ id: 541, session_id: nativeId, active: true }]
+        : [];
+    });
+
+    await expect(classifyOwnerNativeSession({
+      ownerId,
+      sessionId: nativeId,
+      workspaceId: 'ws-app-acquire-fallback',
+    })).resolves.toEqual({ binding: 'bound', boundSessionId: nativeId, advSessionId: 541 });
+
+    expect(workspaceCalls).toHaveLength(1);
+    expect(workspaceCalls[0]).toMatchObject({
+      workspaceId: 'ws-app-acquire-fallback',
+      options: { readOnly: true, acquireTimeoutMs: 7_500, acquireRetries: 0 },
+    });
+    expect(appAdvSessionTableReads()).toHaveLength(0);
+    expect(advSessionTableReads()).toHaveLength(0);
+    expect(dedicatedSessionBeginMock).toHaveBeenCalledTimes(1);
+    expect(dedicatedPoolCalls).toEqual([{
+      label: 'native-session-verifier-fallback',
+      options: { max: 1, sessionAffinity: true },
+    }]);
+    expect(dedicatedSessionEndMock).toHaveBeenCalledWith({ timeout: 5 });
+  });
+
+  it('keeps workspace query failures fail-closed without using the isolated pool', async () => {
+    const queryFailure = new DbCallDeadlineError('withWorkspace:query(app)', 7_500, 7_500, 'org-app');
+    appSessionRowsMock.mockRejectedValue(queryFailure);
+
+    await expect(classifyOwnerNativeSession({
+      ownerId,
+      sessionId: nativeId,
+      workspaceId: 'ws-app-query-failure',
+    })).rejects.toBe(queryFailure);
+
+    expect(dedicatedPoolCalls).toHaveLength(0);
+    expect(dedicatedSessionBeginMock).not.toHaveBeenCalled();
+    expect((queryFailure as DbCallDeadlineError & { nativeSessionVerificationPhase?: string })
+      .nativeSessionVerificationPhase).toBe('owner_candidate_rows_lookup');
   });
 
   it('captures relative verifier transaction and lookup timings without changing its acquire budget', async () => {

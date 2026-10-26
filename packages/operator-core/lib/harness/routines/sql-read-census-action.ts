@@ -32,7 +32,7 @@ import { getDbEncryptionKey } from '../../db-encryption';
 import { mineSqlCandidateSlice, purgeSqlCandidateData, readSqlCandidates, type SqlMiningDeps, type SqlMiningOptions,
   type SqlMiningResult } from '../../bash-substitution/sql-tool-candidates';
 import { rankSqlToolCandidates, SQL_DEMAND_SCORE_VERSION } from '../../sql-tool-candidate-score';
-import { submitSqlCandidateReview } from '../../sql-tool-candidate-review';
+import { submitSqlCandidateReview, submitMonitoredCandidateReview } from '../../sql-tool-candidate-review';
 import { recordSqlCandidateFeedback } from '../../sql-tool-candidate-feedback';
 import type { SqlRepairMeasurement } from '../../bash-substitution/sql-census';
 import { miningFailureReason } from '../../agent-opportunities/pipeline';
@@ -299,6 +299,7 @@ export async function runSqlReadCensus(
 /** Same production cadence; source dispatch has no dependency on this background path. */
 export interface SqlIntentCensusDeps extends SqlMiningDeps {
   review?: typeof submitSqlCandidateReview;
+  monitoredReview?: typeof submitMonitoredCandidateReview;
   feedback?: typeof recordSqlCandidateFeedback;
   /** Trusted exposure/coverage adapter; absence is explicitly UNKNOWN in the ledger. */
   repairMeasurement?: (review: Awaited<ReturnType<typeof submitSqlCandidateReview>>) => Promise<SqlRepairMeasurement | null>;
@@ -327,7 +328,40 @@ export async function runSqlOpportunityCensus(opts: Parameters<typeof censusMini
     const monitored = await runMonitoredCensus({ ...miningOpts, routineId: opts.routineId, workflowId: opts.workflowId },
       async () => { sqlResult = await sqlWork!; return sqlResult; });
     sqlResult = await sqlWork;
-    return { sql: sqlResult, monitored };
+    // The existing reservation/intake workflow owns all families. Diagnostics
+    // choose a bounded batch; only a fresh canonical evidence read admits it.
+    const candidates = monitored.families.filter(f => f.family !== 'sql').flatMap(f =>
+      (f.diagnostics.candidates as Array<{ id: string; reviewEligible: boolean }> ?? [])
+        .filter(c => c.reviewEligible).map(c => ({ family: f.family as Exclude<typeof f.family, 'sql'>, id: c.id })))
+      .sort((a, b) => a.family.localeCompare(b.family) || a.id.localeCompare(b.id));
+    const selected = candidates.slice(0, SQL_CENSUS_REVIEW_LIMIT);
+    const reviews = [];
+    for (const candidate of selected) {
+      try {
+        const review = await (deps.monitoredReview ?? submitMonitoredCandidateReview)({ ...miningOpts,
+          runId: monitored.runId, family: candidate.family, candidateId: candidate.id,
+          submittedBy: 'system:sql-read-census', contractRef: 'monitored-review-demand-v1' }, { client: opts.client });
+        reviews.push({ family: candidate.family, candidateId: candidate.id, ...review });
+      } catch (error) {
+        reviews.push({ family: candidate.family, candidateId: candidate.id, status: 'UNKNOWN' as const,
+          stage: 'review' as const, reason: miningFailureReason(error) });
+      }
+    }
+    // Retain review-stage failures with the same normalized family run. These
+    // are opaque links/statuses; fresh evidence reads still guard every intake.
+    const client = opts.client ?? getOrgPg().sql;
+    const reviewFields = new Set(['family', 'candidateId', 'lifecycleId', 'editionId', 'workItemId', 'status', 'stage', 'reason']);
+    for (const family of new Set(selected.map(c => c.family))) {
+      // Current ownership is read from the canonical review item on demand;
+      // never retain an actor identity in the minimized 120-day family rows.
+      const links = reviews.filter(r => r.family === family).map(r => Object.fromEntries(
+        Object.entries(r).filter(([key]) => reviewFields.has(key))));
+      await client`UPDATE harness_shared.sql_intent_family_runs
+        SET diagnostics=jsonb_set(diagnostics,'{reviewIntake}',${JSON.stringify(links)}::jsonb)
+        WHERE workspace_id=${opts.workspaceId} AND run_id=${monitored.runId}::uuid AND family=${family}`;
+    }
+    return { sql: sqlResult, monitored, monitoredReviewIntake: {
+      selected: selected.length, outsideBatch: candidates.length - selected.length, reviews } };
   } catch (error) {
     if (sqlWork) sqlResult = await sqlWork;
     return { sql: sqlResult, monitored: null, reason: miningFailureReason(error) };

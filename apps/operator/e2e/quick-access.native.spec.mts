@@ -42,11 +42,13 @@ test('Quick Access opens as an independent native launcher with reports and exac
     await wait('!!document.querySelector("[aria-label=\\"Quick Access launcher\\"]")');
   }
   try {
-    await expect.poll(async () => {
-      const { stdout } = await exec('xdotool', ['search', '--onlyvisible', '--pid', String(terminal.pid)], { env: displayEnv });
-      return stdout.trim();
-    }).not.toBe('');
-    const windowId = (await exec('xdotool', ['search', '--onlyvisible', '--pid', String(terminal.pid)], { env: displayEnv })).stdout.trim().split('\n')[0];
+    // xdotool exits 1 before the new X window is mapped; --sync waits for it
+    // instead of rejecting the first expect.poll callback before it can retry.
+    const { stdout: fixtureWindows } = await exec('xdotool',
+      ['search', '--sync', '--onlyvisible', '--pid', String(terminal.pid)],
+      { env: displayEnv, timeout: 15_000 });
+    const windowId = fixtureWindows.trim().split('\n')[0];
+    expect(windowId).toMatch(/^\d+$/);
     await insertNativeCollectionPlan(sql, { workspaceId: workspace, harness: 'papercusp', slug: 'native-quick-access', title: 'Native launcher plan', status: 'active' });
     await sql.unsafe('INSERT INTO harness_shared.coord_presence (workspace_id,owner_id,owner_label,source,host,pid,intent,heartbeat_at,last_active_at) VALUES ($1,$2,$3,$4,$5,$6,$7,now(),now())',
       [workspace, owner, 'Native launcher agent', 'isolated-native-assertion', hostname(), process.pid, 'Native launcher verification']);

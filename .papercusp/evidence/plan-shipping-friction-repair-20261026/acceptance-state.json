@@ -17,15 +17,17 @@
     "red": 22131848
   },
   "applied": {
-    "rubricRevision": 7,
-    "criteriaHash": "79a51971bf9f894c33e1990d0d900b0f1f31e48ba9fa0ece7fcfb4d32e7347d0",
+    "rubricRevision": 8,
+    "criteriaHash": "4fa7f565ea353cb9dc0396a520b97f5ded8dd83cc25ec0ca02284497bd102902",
     "barSetHash": "c642a20d2942f1ac420f184941381ff1b1841caf6c61fdf8528a1db0e4860a7e",
     "atomicApproval": "thread-post:1206471",
     "wordingApproval": "thread-post:1206604",
-    "activationAuditSeq": 6,
-    "subjectPlanRevision": 29,
-    "subjectPlanHash": "9e4b56992020bbca08c4a918b3a3f63f66ec07f06fd1f5930a3b0ae40cacd4e8",
-    "approvalRef": "thread-post:1206976"
+    "activationAuditSeq": 7,
+    "subjectPlanRevision": 37,
+    "subjectPlanHash": "5b16985f3c2a32f66b7e47a16b104b5bf2ddbbe5c2bb385965120b398dda9c2c",
+    "approvalRef": "thread-post:1206976",
+    "methodAmendmentReceipt": "shipping-friction-method-verdict-field-20261026-v1",
+    "methodAmendmentProof": "/tmp/shipping-method8-status.json"
   },
   "pendingFalsifierReview": {
     "args": {
@@ -603,11 +605,13 @@
     "approvalRef": "thread-post:1206761"
   },
   "quality": {
-    "specSetHash": "fe2fbde6dfa34d5f924a81836629bc0fe9b5c64ce4f1a5c3f81774396b64f595",
+    "specSetHash": "afe38ceb239194c697474be61f1a97ab9777700d921b81f3e01329d40625f1e4",
     "evaluation": "pass",
-    "card": "EI-27071679549470860",
+    "card": "EI-27073456592254656",
     "gradingAuditState": "pending",
-    "note": "Canonical automatic independent grading audit requested by scorecard emit; no manual auditor recruitment."
+    "clauseCount": 17,
+    "draftExcluded": 0,
+    "readback": "/tmp/shipping-quality8.json"
   },
   "vettingRev5": {
     "sameConsultLateDisposition": "thread-post:1206780",
@@ -620,12 +624,12 @@
     "required": 2,
     "policy": "bar-critique",
     "originTaskRef": "plan-shipping-friction-repair-2026-10-26",
-    "rubricRevision": 7,
-    "specSetHash": "fe2fbde6dfa34d5f924a81836629bc0fe9b5c64ce4f1a5c3f81774396b64f595",
+    "rubricRevision": 8,
+    "specSetHash": "afe38ceb239194c697474be61f1a97ab9777700d921b81f3e01329d40625f1e4",
     "first": "conv-request-b51d7527456453e3ed97341da45ec2d33e8717d8ad68735623c4e3588a87de47",
     "firstSourceOwner": "su-1d1eb8d6-c987-4ede-a7d2-6587afea6058",
-    "firstState": "routing; not proof of launch",
-    "second": null,
+    "firstState": "active; fullreview3actualgaps allcorrectedD013; requesterfollowup1207066 awaits narrow correction verification",
+    "second": "conv-request-da0975201b09804a49f372f7dc546e4796a6dddf92084bb1afe116a527e13800",
     "next": "Read current first critique routing; obtain distinct second lineage, close only after actual answers/dispositions. Revision6 reviews remain history.",
     "firstAnsweringOwner": "su-e84a3579-7df4-40f8-b9ae-b142096aa748",
     "firstDisposition": {
@@ -633,9 +637,9 @@
       "closePost": 1206922,
       "verdict": "corrections-required"
     },
-    "secondSourceOwner": "su-84f3db20-3284-4c03-91a7-3562fa4cc698",
-    "secondAnsweringOwner": "su-b84ae44b-309d-494e-a271-dc6f42be9bbf",
-    "secondState": "closed_answered",
+    "secondSourceOwner": "su-1b0c84f6-97f5-438b-a724-163e8c5b8c65",
+    "secondAnsweringOwner": "su-aa06cf74-3f9e-49ce-ac08-1576b0bcfa01",
+    "secondState": "active; full final post1207040 sufficient for start onrev7; no full17clause read by thiscritic. Preserve explicit limitation; get current narrowfix acknowledgement or disposition after first fullreview settles.",
     "secondDisposition": {
       "actualPost": 1206931,
       "closePost": 1206960,
@@ -666,7 +670,8 @@
         "closePost": 1206960,
         "verdict": "corrections-required-on-v3"
       }
-    }
+    },
+    "firstActualPost": 1207046
   },
   "recoveryDisposition": {
     "WI-6554700010009934": "dropped by system:acceptance-drain at2026-10-26T16:06:24.182Z because parentconsult-backed-parking-2026-10-12 isarchived:true version67. Sourceacceptance-drain-sweep.ts terminal reconciliation confirmsarchived->dropped. Do notclaimunownedopen/resurrectorcallshipped.",
@@ -679,7 +684,7 @@
       "followup": "EI-27067865027037909"
     }
   },
-  "next": "Rubric7 applied after approval1206976; all13methods/checks and37unique casebindings read back. Audit6 current plan29; specqualityPASS/cardEI27071679549470860 automatic independent audit pending. First currentbar critique b51d routing. Recover fullsource proof69 receipt; imported-source drift12 means currentness OPEN despite653PASS. Continue secondcurrentcritique/meta-vetting, operational R4/R5, current proof binding and final R11 release; no LIVE_GATE_OPS.",
+  "next": "Next atomic unit: reconcile canonical subject/rubric revision mismatch under verified containing staging553 runtime, then actual fullcritic narrow-fix reply/currentmeta8 via originalrouted6cf on WI29600. Audit7/plan37 and quality17allcurrentPASS/cardEI27073456592254656 exist. Preserve69run653PASS37cases as exactcommitted source, examine canonical asCommitted fingerprint path before any newrun/bind. RuntimeR5 witness6containsTRUE saved; R4 gateholdercurrentidentityUNKNOWN; R11releaseOPEN. Aftercurrentvetting bind/certify/independentacceptance andfinalrelease, no selfgrade/noLIVEGATEparallel. Allfilelocksreleasedafterstatewrite; noexec handlesrunning.",
   "launcherFix": {
     "workItem": "WI-6554700010029547",
     "state": "done",
@@ -739,6 +744,17 @@
       "subjectPlanRevision": 22,
       "subjectPlanHash": "8eba9b67b63093692e0fccf4680b13aa07142d9765fe0f3a33a64cd3437a350f",
       "approvalRef": "thread-post:1206838"
+    },
+    {
+      "rubricRevision": 7,
+      "criteriaHash": "79a51971bf9f894c33e1990d0d900b0f1f31e48ba9fa0ece7fcfb4d32e7347d0",
+      "barSetHash": "c642a20d2942f1ac420f184941381ff1b1841caf6c61fdf8528a1db0e4860a7e",
+      "atomicApproval": "thread-post:1206471",
+      "wordingApproval": "thread-post:1206604",
+      "activationAuditSeq": 6,
+      "subjectPlanRevision": 29,
+      "subjectPlanHash": "9e4b56992020bbca08c4a918b3a3f63f66ec07f06fd1f5930a3b0ae40cacd4e8",
+      "approvalRef": "thread-post:1206976"
     }
   ],
   "historicalBarCritiques": [
@@ -769,6 +785,13 @@
       "card": "EI-27061042666296110",
       "gradingAudit": "EI-27061584067760971",
       "gradingAuditState": "passed"
+    },
+    {
+      "specSetHash": "fe2fbde6dfa34d5f924a81836629bc0fe9b5c64ce4f1a5c3f81774396b64f595",
+      "evaluation": "pass",
+      "card": "EI-27071679549470860",
+      "gradingAuditState": "pending",
+      "note": "Canonical automatic independent grading audit requested by scorecard emit; no manual auditor recruitment."
     }
   ],
   "currentRegressionPreparation": {
@@ -1006,11 +1029,71 @@
       "clauseCount": 16,
       "cardEmitted": false,
       "activationAuditCurrent": false
+    },
+    "currentFixes": {
+      "decision": "D-013",
+      "R13": "AUTO-BAR-R-13-P-003 active revision2; exactsourceBar7/meaninghash preserved",
+      "P002": "shipping-pregrading-wrong-phase-regression active revision5; acceptanceRef originalowner turn",
+      "R4": "plan37 acceptance.evidenceRuntime staging-operator readback",
+      "R5R11": "method-only canonical satisfied:true, no skipped/forced/unavailable acceptance; rubric8/barSet unchanged",
+      "readback": "/tmp/shipping-corrected-contract-readback.json",
+      "quality": {
+        "specSetHash": "afe38ceb239194c697474be61f1a97ab9777700d921b81f3e01329d40625f1e4",
+        "evaluation": "pass",
+        "card": "EI-27073456592254656",
+        "gradingAuditState": "pending",
+        "clauseCount": 17,
+        "draftExcluded": 0,
+        "readback": "/tmp/shipping-quality8.json"
+      }
     }
   },
   "commitHop": {
     "observedCommit": "69d65a470984ac49f56e52d0a0632173db9254ee",
     "changedTestPathsClean": true,
     "manualGitSync": "No successful manual fire: direct3170 request-only, direct3271 native-session verifier unavailable, explicit direct3170 target mismatch; background routine independently committed. No native auth bypass; no gate/deploy operations."
-  }
+  },
+  "runtimeWitness": {
+    "path": ".papercusp/evidence/plan-shipping-friction-repair-20261026/runtime-witness7.json",
+    "r4": "named5 read on actual3170 build e3d8713b02 invocation44885577; production plan-scoped carry0 verified with positivecontrol. Current live-gate dependency identity still unknown; preserve dependency.",
+    "r5": "all6paths containsChangeTRUE onstaging e3d8713b02; plans:get44886587 gives correct rubric-vetting pregrading repair",
+    "r11": "open"
+  },
+  "currentMetaVetting": {
+    "failed": "conv-request-041d2061ae506c1c6d33a121e8a9b99a163e268081d3299c9130b05a403eb5bf",
+    "failedAnswerer": "su-6cf8c51c-f1a5-4427-9d47-f19385011d34",
+    "outcome": "closed_cant_help1207039 after host context-death and no actual answer",
+    "ownedBug": "EI-27072698430126176",
+    "replacement": "conv-request-48d3582331fcb2d1d9b0e80d8df9d1f5f4fe4855cae449ef5e99a4848b6d2c00",
+    "replacementState": "expired/cascade exhausted, no reviewer engaged; canonical pullableWI-6554700010029600",
+    "lateReport": {
+      "id": "rpt_423dcd3d-6920-48ae-9e93-47097c94f9bd",
+      "sha256": "8dfab551f4f617f4c3a809ec67eeb52294175b8f3b1b1405856707a8ed82e5d5",
+      "path": "/reports?sel=rpt_423dcd3d-6920-48ae-9e93-47097c94f9bd",
+      "readback": "/tmp/shipping-late-meta-report.json",
+      "verdict": "rev7 attestable as-is:5healthy/1platformdegraded; currentrev8 narrow update requested to original routedcritic6cf on canonicalWI29600",
+      "followupFeature": "EI-27073524152306188"
+    },
+    "correction": "Context-death signal was real but inferred permanent inability was too strong; actualsameowner deliveredlate report. EI270726checkpoint corrected, no claim underlyingbugfixed.",
+    "recoveryAction": "coord-send-b1aac701bfc91767027183611c455459d9a5ddbd09b6d1123f9e4c2d1f51d13f acknowledgedlatework; subsequentdirected action requests current8 judgment via existingWI29600 (no newgrader/fanout)."
+  },
+  "durableEvidence": {
+    "census": "artifacts:load slugpapercusp rel_pathevidence/plan-shipping-friction-repair-20261026/coverage-census-v4.json",
+    "proof69": "artifacts:load same slug rel_pathevidence/plan-shipping-friction-repair-20261026/committed69-receipt.json",
+    "readback": "both exactReadback:true via separate code:run; D012 corrects premature combined-read claim and units",
+    "decisions": [
+      "D-011",
+      "D-012"
+    ]
+  },
+  "startBlocker": {
+    "activationAudit": 7,
+    "code": "plan_inputs_not_ready/bar_snapshot_rubric_revision_mismatch",
+    "evidence": "/tmp/shipping-activation7.json",
+    "diagnostic": "/tmp/shipping-revision-sync-runtime.json",
+    "runtime": "staging553fd55f1a containsChangeTRUE for with-plan-lock.ts marker synchronizeAcceptanceBarSubjectRevision",
+    "sourceRead": "with-plan-lock.ts1248; acceptance-bar-amendment.ts106+ synchronizer only catches neutral fingerprints; R4 runtime restoration was a source change, not neutral",
+    "next": "Read actual current plan/rubric subject revision pins and canonical seed/amend mechanism; catch up atomically with no meaning change, then verify. Do not treat marker as absent or redeploy blindly."
+  },
+  "sourceCurrentnessDiscovery": "Canonical bind-spec-evidence.ts595-629 measureBindingForStore explicitly measures clean asCommitted runs at the original executed commit (D001b), never liveHEAD. Read bind-from-test-run and spec-evidence-store freshness next before deciding whether replay is needed; known12import drift remains OPEN, never silently latestHEAD pin or shrink closure."
 }
