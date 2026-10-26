@@ -216,6 +216,7 @@ import {
   roleLaunchArgs,
   suLaunchArgs,
   resolveOmpInjectHookPath,
+  resolveOmpCoordExtPath,
   kickoffPositionalArgs,
   routeFreshKickoff,
   finalizeFreshSuArgs,
@@ -19878,6 +19879,24 @@ describe("omp context-injection hook wiring (omp-context-injection-parity-2026-0
     // A box that never ran the installer has no hook file. Passing --hook at a
     // missing path would make every omp launch fail; absent is the safe state.
     expect(resolveOmpInjectHookPath("omp", home)).toBeUndefined();
+  });
+
+  it("resolves the coordination extension from host home when PAPERCUSP_HOME is scoped", () => {
+    const priorPapercuspHome = process.env.PAPERCUSP_HOME;
+    const scopedHome = mkdtempSync(join(tmpdir(), "psu-omp-coord-scoped-"));
+    try {
+      process.env.PAPERCUSP_HOME = scopedHome;
+      mkdirSync(join(home, ".papercusp"), { recursive: true });
+      const installed = join(home, ".papercusp", "papercusp-coord.ts");
+      writeFileSync(installed, "export default () => {};");
+
+      expect(resolveOmpCoordExtPath("omp", home)).toBe(installed);
+      expect(resolveOmpCoordExtPath("claude", home)).toBeUndefined();
+    } finally {
+      if (priorPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = priorPapercuspHome;
+      rmSync(scopedHome, { recursive: true, force: true });
+    }
   });
 
   it("is omp-only: claude and codex never get --hook", () => {

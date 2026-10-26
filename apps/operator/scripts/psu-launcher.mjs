@@ -3039,6 +3039,16 @@ export function resolveOmpInjectHookPath(agent, home = homedir()) {
 }
 
 /**
+ * Resolve the host-user-installed OMP coordination extension, not a workspace
+ * `PAPERCUSP_HOME` data root. install-standalone-mcp.sh writes this stable path.
+ */
+export function resolveOmpCoordExtPath(agent, home = homedir()) {
+  if (agent !== "omp") return undefined;
+  const extension = join(home, ".papercusp", "papercusp-coord.ts");
+  return existsSync(extension) ? extension : undefined;
+}
+
+/**
  * @param {any} session
  * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv, codexMcpUrl?: string | null, claudeSettings?: ClaudeLaunchSettings, capabilityPolicy?: Partial<import('../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js').CapabilityPolicyRequest> }} [opts]
  */
@@ -14847,9 +14857,7 @@ async function launchResume(
     }
     // omp re-loads the coordination extension per invocation; claude/codex don't
     // use -e. Stable path, only added when actually installed.
-    const coordExt = papercuspPath("papercusp-coord.ts");
-    const coordExtPath =
-      session.agent === "omp" && existsSync(coordExt) ? coordExt : undefined;
+    const coordExtPath = resolveOmpCoordExtPath(session.agent);
     const injectHookPath = resolveOmpInjectHookPath(session.agent);
 
     // Identity + workspace scope survive the resume (see resumeEnvFor) — except a
@@ -18057,9 +18065,7 @@ async function roleFlow(args, role, rolesMeta) {
   // omp role sessions load the coordination extension (lock enforcement + coord +
   // the activity-bridge port) via -e, the same stable module the su omp launch +
   // resume use. claude/codex role hooks are user-level / baked into the codex home.
-  const roleCoordExt = papercuspPath("papercusp-coord.ts");
-  const roleCoordExtPath =
-    res.agent === "omp" && existsSync(roleCoordExt) ? roleCoordExt : undefined;
+  const roleCoordExtPath = resolveOmpCoordExtPath(res.agent);
   const requestedRoleModel = requestedRoleModelFromBootstrap(res, args.model);
   const roleModel =
     res.agent === "omp"

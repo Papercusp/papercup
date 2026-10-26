@@ -729,6 +729,11 @@ export function resumeKickoffText(args: any, env?: NodeJS.ProcessEnv): any;
  */
 export function resolveOmpInjectHookPath(agent: any, home?: string): string | undefined;
 /**
+ * Resolve the host-user-installed OMP coordination extension, not a workspace
+ * `PAPERCUSP_HOME` data root. install-standalone-mcp.sh writes this stable path.
+ */
+export function resolveOmpCoordExtPath(agent: any, home?: string): string | undefined;
+/**
  * @param {any} session
  * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv, codexMcpUrl?: string | null, claudeSettings?: ClaudeLaunchSettings, capabilityPolicy?: Partial<import('../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js').CapabilityPolicyRequest> }} [opts]
  */
