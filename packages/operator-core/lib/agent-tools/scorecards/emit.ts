@@ -711,20 +711,20 @@ const scorecardEmitBaseShape = {
       'Audit launch pin: codex/gpt-6.1-sol/xhigh, account auto; same strict profile as repair. Author/authority unchanged.',
     ),
     interactionReviewerHandle: OperationHandleSchema.optional()
-      .describe('CRM review operation receipt. Resolves the actual terminal reviewer independently of the submitting app caller.'),
+      .describe('CRM review receipt; identifies the terminal reviewer independently of the app caller.'),
     rubricRevision: z.number().int().positive().nullable().optional()
-      .describe('Expected reviewed rubric revision; null pins an unversioned snapshot. Refuse if it changed before filing.'),
+      .describe('Reviewed rubric revision; null pins unversioned; refuse on change.'),
     criteriaHash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional()
-      .describe('Expected reviewed criterion fingerprint; null pins an unavailable hash. Refuse if it changed before filing.'),
+      .describe('Reviewed criterion fingerprint; null pins unavailable. Refuse on change.'),
     rubricMeaningRevision: z.number().int().nonnegative().nullable().optional()
-      .describe('Expected reviewed acceptance meaning epoch; null pins its absence. Refuse if it changed before filing.'),
+      .describe('Reviewed acceptance meaning epoch; null means absent. Refuse on change.'),
     sourceHive: z
       .string()
       .min(1)
       .max(120)
       .optional()
       .describe(
-        "Producing/grader hive; defaults to caller hive. For cross-hive grading put the subject plan's hive in targetHive.",
+        "Producing/grader hive; defaults to caller. Cross-hive grading sets targetHive to the subject plan hive.",
       ),
     targetHive: z
       .string()
@@ -732,14 +732,14 @@ const scorecardEmitBaseShape = {
       .max(120)
       .optional()
       .describe(
-        "Subject plan/repository hive; directs deterministic checks to that tree. Independent of sourceHive.",
+        "Subject plan/repository hive for deterministic checks; independent of sourceHive.",
       ),
     harness: z
       .string()
       .min(1)
       .max(120)
       .optional()
-      .describe("Subject plan's harness, as in every plans tool: sets targetHive. Refused if it disagrees with targetHive."),
+      .describe("Subject harness; sets targetHive. Refused if it differs."),
     title: z.string().min(1).max(240).optional(),
     body: z.string().max(8000).optional(),
     ratings: z
@@ -764,7 +764,7 @@ const scorecardEmitBaseShape = {
       .strict()
       .optional()
       .describe(
-        "Author verdict after independent grading; always carries complete ratings (supplied or acceptanceOf). Independent graders omit. accept-pending-delivery requires ONLY unreachable live/deployed proof remaining; preserves proof/blocker obligation.",
+        "Author verdict after independent grading; requires complete ratings (supplied or acceptanceOf). Independent graders omit. accept-pending-delivery means only unreachable live/deployed proof remains; preserves its proof/blocker obligation.",
       ),
     acceptanceOf: z
       .string()
@@ -772,7 +772,7 @@ const scorecardEmitBaseShape = {
       .min(1)
       .optional()
       .describe(
-        "With acceptance: exact independent card; server checks independence/completeness/current revision and adopts its ratings verbatim with provenance. Omitted: first qualifying card.",
+        "With acceptance, adopt this exact independent card after checking independence, completeness and revision; ratings keep provenance. Omit to use first qualifying card.",
       ),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
     fromLedger: z
@@ -814,7 +814,7 @@ const scorecardEmitBaseShape = {
       .strict()
       .optional()
       .describe(
-        "Pending audit: exact dispatchReservation key/reservedAt from brief; bad lease refuses. Omit only legacy unreserved or settled-audit corrections.",
+        "Pending audit lease from the brief; invalid lease refuses. Omit only for unreserved legacy or settled-audit corrections.",
       ),
     vettingUnanswered: z
       .boolean()
@@ -836,7 +836,7 @@ const scorecardEmitBaseShape = {
       .max(120)
       .optional()
       .describe(
-        "Corrected card id. Changed evidence auto-supersedes own latest current terminal card on same subject/rubric; other corrections explicit.",
+        "Corrected card id. Changed evidence auto-supersedes your latest current terminal card for the same subject/rubric; specify other corrections.",
       ),
     baselineRef: z.string().min(1).max(120).optional().describe(
       'Audited pre-repair baseline, preserved for comparable re-grade with same target/pinned rubric; never replaced.',
@@ -845,7 +845,7 @@ const scorecardEmitBaseShape = {
       .boolean()
       .optional()
       .describe(
-        "Subject terminated. Otherwise any violatable-class rating is PROVISIONAL and excluded from rubrics:trend. Finalize with terminal:true and supersedes pointing to interim.",
+        "Subject ended. Otherwise violatable ratings are provisional and excluded from rubrics:trend. Finalize with terminal:true and supersedes the interim.",
       ),
     force: z
       .boolean()
