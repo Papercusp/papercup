@@ -22,6 +22,7 @@ import {
   egressIdentityOf,
   type AccountPoolAvailability,
   type AccountBindingTerms,
+  type AccountPlanReading,
   type EdgeThrottleSnapshotEntry,
 } from '../../fleet/capacity-dispatch';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -300,6 +301,15 @@ export async function readProviderAvailability(
     }
     for (const [id, v] of nextSnapshot) lastEdgeThrottleSnapshot.set(`${snapshotPrefix}${id}`, v);
 
+    // WI-6554700010029550: the tier explains capacity the counts cannot (a Pro→Plus downgrade walls
+    // sooner with no other change). Every account of the provider, override-excluded included —
+    // the tier is a fact about the account, not about whether we may route to it.
+    const accountPlans = rows.map((r): AccountPlanReading => ({
+      id: r.id,
+      planType: r.rate.planType ?? null,
+      planObservedAt: r.rate.planObservedAt ?? null,
+    }));
+
     return {
       provider,
       total: rows.length,
@@ -374,6 +384,7 @@ export async function readProviderAvailability(
       // no other change. Both conditions mean the same thing to a caller: this row's available/usageWalled
       // verdict rests on data that is not a live measurement, so both belong in the one caveat.
       blindCount: rows.filter((r) => r.lastProbeFailedAt != null || r.readingStatus !== 'fresh').length,
+      ...(accountPlans.some((p) => p.planType != null) ? { accountPlans } : {}),
     };
   } catch {
     return undefined;
@@ -460,6 +471,17 @@ async function readCapacityForProvider(
         sustainedlyLimitedAccounts: accountAvailability.sustainedlyLimitedCount ?? null,
         overrideExcludedAccounts: accountAvailability.overrideExcludedCount ?? null,
         blindAccounts: accountAvailability.blindCount ?? null,
+        // WI-6554700010029550: per-account subscription tier, so a low-headroom read shows WHICH
+        // accounts are on a smaller plan. Absent for a provider that reports no tier.
+        ...(accountAvailability.accountPlans
+          ? {
+              plans: accountAvailability.accountPlans.map((p) => ({
+                id: p.id,
+                planType: p.planType,
+                observedAt: p.planObservedAt != null ? new Date(p.planObservedAt).toISOString() : null,
+              })),
+            }
+          : {}),
       }
     : null;
   // P-004 — THE CANONICAL VERDICT. `poolExhausted`/`verdict` above say THAT the lane is
