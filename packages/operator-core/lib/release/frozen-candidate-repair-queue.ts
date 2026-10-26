@@ -4217,6 +4217,15 @@ export function projectFrozenRepairConvergenceCell(
  *
  * A queue that has GIVEN UP is deliberately NOT exempt: `blocked`/`blockedReason` means no repair
  * is advancing, so the red stops being anybody's working signature and the ordinary rules apply.
+ *
+ * The pinned sha is PHASE-DEPENDENT, mirroring what {@link decideFrozenCandidateRepairQueue} puts
+ * under the gate: `ready-to-test` judges the immutable `candidate` (and `awaiting-fixer` keeps the
+ * red computed on it), while `ready-to-verify`/`ready-to-promote` judge the movable `repairHead`.
+ * EI-27020811282666044: comparing against `repairHead` alone re-created the D-004 livelock. An
+ * admission onto a `ready-to-test` queue keeps that phase on purpose (see
+ * {@link markFrozenRepairAdmitted}) so the candidate's own red can seed the signature, but once the
+ * head had moved this predicate called that red a fossil. Measured on candidate 8c03b5dc: two
+ * consecutive ~2h15m runs were withheld and no signature was ever published.
  */
 export function isJudgingPinnedActiveRepair(input: {
   candidate: string;
@@ -4236,8 +4245,12 @@ export function isJudgingPinnedActiveRepair(input: {
     | null;
 }): boolean {
   const { candidate, repairQueue } = input;
-  if (repairQueue == null || repairQueue.repairHead !== candidate) return false;
-  if (repairQueue.phase === 'blocked') return false;
+  if (repairQueue == null || repairQueue.phase === 'blocked') return false;
+  const pinnedSha =
+    repairQueue.phase === 'ready-to-test' || repairQueue.phase === 'awaiting-fixer'
+      ? repairQueue.candidate
+      : repairQueue.repairHead;
+  if (pinnedSha !== candidate) return false;
   return repairQueue.blockedReason == null;
 }
 
