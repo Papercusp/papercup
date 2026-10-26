@@ -3501,6 +3501,7 @@ export async function main(
       return import('../libs/test-config/src/admin-test-runs-reporter.ts');
     },
     runGovernedTestProcessImpl = runGovernedTestProcess,
+    createRouterProofCustodyImpl = createRouterProofCustody,
     runCapturedTestProcessImpl = runCapturedTestProcess,
     runVitestListImpl = runVitestList,
     restrictedHoldPreflightImpl = runRestrictedHoldPreflight,
@@ -3742,7 +3743,7 @@ export async function main(
   const receiptChildEnv = receiptFile
     ? { ...process.env, PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile }
     : process.env;
-  if (!dry) proofCustody = createRouterProofCustody(groups, receiptChildEnv, repoRoot);
+  if (!dry) proofCustody = createRouterProofCustodyImpl(groups, receiptChildEnv, repoRoot);
   // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
   // must never abandon the OTHER groups a multi-workspace request spans (see aggregateGroupResults
   // doc for the full incident). Each iteration always records its outcome and moves on; the final
@@ -4557,6 +4558,15 @@ export async function main(
       );
       return TEST_FILE_EXIT_NOT_MEASURED;
     }
+  }
+  // Custody settlement is part of the measured result. Finish before emitting
+  // its terminal marker, and consume it once even if settlement throws.
+  const settledCustody = proofCustody;
+  proofCustody = null;
+  try { settledCustody?.finish(); }
+  catch (error) {
+    summary.anyFinalizationError = true;
+    console.error(`TEST_FILE_FINALIZATION_ERROR phase=native-proof-custody detail=${JSON.stringify(String(error?.stack ?? error))}`);
   }
   const status = summary.anyFailed ? 'failed' : 'passed';
   const skippedField =
