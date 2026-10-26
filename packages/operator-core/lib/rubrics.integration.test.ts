@@ -380,6 +380,18 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
     expect(await rubrics.getRubric('broken-r')).toBeNull();
     expect(await rubrics.listRubrics({})).toEqual([]);
   });
+
+  it('strict acceptance lookup distinguishes an unreadable existing rubric from absence', async () => {
+    await insertRubricPlan('unreadable-acceptance', { data: {
+      kind: 'acceptance', subjectPlan: 'unreadable-subject', subjectHarnessSlug: 'papercusp',
+      characteristic: 'unreadable-subject', criteria: [], ratingScale: [],
+    } });
+    await expect(rubrics.getAcceptanceRubricsForPlan('unreadable-subject', { strict: true }))
+      .rejects.toThrow('could not be decoded');
+    await expect(rubrics.getAcceptanceRubricsForPlan('absent-subject', { strict: true }))
+      .resolves.toEqual([]);
+    await expect(rubrics.getAcceptanceRubricsForPlan('unreadable-subject')).resolves.toEqual([]);
+  });
 });
 
 describe('rubric refs are workspace-unique — a slug held by two harnesses refuses (WI-6554700010008395)', () => {

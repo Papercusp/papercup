@@ -1579,9 +1579,24 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     };
   }
 
-  const rubrics = await getAcceptanceRubricsForPlan(planSlug, {
-    ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
-  });
+  let rubrics: Awaited<ReturnType<typeof getAcceptanceRubricsForPlan>>;
+  try {
+    rubrics = await getAcceptanceRubricsForPlan(planSlug, {
+      ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
+      strict: true,
+    });
+  } catch (error) {
+    refuse({
+      satisfied: false,
+      code: 'acceptance_rubric_revision_unreadable',
+      message: `plan '${planSlug}' cannot verify its acceptance rubric: ` +
+        `${error instanceof Error ? error.message : String(error)}. ` +
+        'This read cannot establish that the rubric is missing. Check the serving runtime and read the existing ' +
+        'contract with rubrics:get before repairing it; a newer contract may require a compatible current build. ' +
+        'Pre-release verification uses the current-build route; final shipment still requires the declared delivery evidence.',
+    });
+    return collectedRefusal();
+  }
   // Rubric existence/uniqueness: every later check needs exactly ONE rubric, so collect
   // mode records the refusal and stops here with everything gathered so far.
   if (rubrics.length === 0) {

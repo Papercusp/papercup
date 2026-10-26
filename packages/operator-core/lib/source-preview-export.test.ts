@@ -2318,6 +2318,54 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect(readFileSync(join(prepared.root, '.verifier-source.json'))).toEqual(originalReceipt);
   });
 
+  it('bg-r1-compiler-resolver-metadata-transient-restored refuses publication after real resolution used changed package metadata then restored it', async () => {
+    const { prepared } = await compilerCandidate();
+    const metadata = join(prepared.root, 'node_modules/fixture-dependency/package.json');
+    const original = readFileSync(metadata);
+    write(prepared.root, 'node_modules/fixture-dependency/alternate.js', 'export default 99;\n');
+    const dependencies = captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source });
+    const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
+    const { build } = await import('esbuild');
+    let substituted = false, restored = false;
+    const result = await build({ absWorkingDir: prepared.root, entryPoints: [inputs[0]!], bundle: true,
+      format: 'esm', platform: 'node', write: false, logLevel: 'silent',
+      plugins: [custody.plugin, { name: 'independent-transient-resolver-metadata', setup(builder) {
+        builder.onResolve({ filter: /^fixture-dependency$/ }, () => {
+          writeFileSync(metadata, '{"name":"fixture-dependency","main":"alternate.js"}');
+          substituted = true;
+          return undefined;
+        });
+        builder.onEnd(() => { writeFileSync(metadata, original); restored = true; });
+      } }] });
+    const imported = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0]!.contents).toString('base64'));
+    expect({ substituted, restored, dep: imported.dep }).toEqual({ substituted: true, restored: true, dep: 99 });
+    expect(readFileSync(metadata)).toEqual(original);
+    expect(verifyBgVerifierSource(prepared, 'before-publication')).toBe(prepared);
+    expect(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source })).toEqual(dependencies);
+    expect(() => custody.verifyBeforePublication())
+      .toThrow('BG compiler original input identity changed: node_modules/fixture-dependency/package.json');
+  });
+
+  for (const local of ['package.json', 'node_modules/fixture-dependency/package.json']) {
+    it(`bg-r1-compiler-metadata-identical-rewrite refuses original metadata rewritten with identical bytes: ${local}`, async () => {
+      const { prepared, dependencies } = await compilerCandidate();
+      const target = join(prepared.root, local), original = readFileSync(target);
+      const custody = createBgVerifierCompilerCustody({ prepared, dependencies });
+      const { build } = await import('esbuild');
+      const result = await build({ absWorkingDir: prepared.root, entryPoints: [inputs[0]!], bundle: true,
+        format: 'esm', platform: 'node', write: false, logLevel: 'silent',
+        plugins: [custody.plugin, { name: 'independent-identical-metadata-rewrite', setup(builder) {
+          builder.onEnd(() => { writeFileSync(target, original); });
+        } }] });
+      const imported = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0]!.contents).toString('base64'));
+      expect(imported.dep).toBe(41);
+      expect(verifyBgVerifierSource(prepared, 'before-publication')).toBe(prepared);
+      expect(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source })).toEqual(dependencies);
+      expect(() => custody.verifyBeforePublication())
+        .toThrow(`BG compiler original input identity changed: ${local}`);
+    });
+  }
+
   it.each(['stdin', 'virtual'] as const)('refuses %s compiler content that could bypass the frozen file census', async kind => {
     const { prepared, dependencies } = await compilerCandidate();
     const custody = createBgVerifierCompilerCustody({ prepared, dependencies });

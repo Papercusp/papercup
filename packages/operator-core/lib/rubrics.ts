@@ -1704,7 +1704,12 @@ export async function getAcceptanceRubricsForPlan(
          AND ${subjectScope}
        ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
        ${limit == null ? sql`` : sql`LIMIT ${limit}`}`;
-    return (await mapRubricPlanRows(rows)).filter((r) => r.kind === 'acceptance' && r.subjectPlan === planSlug &&
+    const mapped = await mapRubricPlanRows(rows);
+    if (options.strict && mapped.length !== rows.length) {
+      throw new Error(`Acceptance rubric for plan '${planSlug}' exists but could not be decoded by this runtime. ` +
+        'Check serving-build compatibility and the stored contract before changing the rubric.');
+    }
+    return mapped.filter((r) => r.kind === 'acceptance' && r.subjectPlan === planSlug &&
       (!options.harnessSlug || !r.subjectHarnessSlug || r.subjectHarnessSlug === options.harnessSlug));
   } catch (error) {
     if (options.strict) throw error;

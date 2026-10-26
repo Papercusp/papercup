@@ -388,7 +388,7 @@ describe('evaluatePlanAcceptanceGate', () => {
     expect(await evaluatePlanAcceptanceGate('same-slug', { harnessSlug: 'b' })).toMatchObject({
       satisfied: false, code: 'acceptance_rubric_missing',
     });
-    expect(mockRubrics).toHaveBeenCalledWith('same-slug', { harnessSlug: 'b' });
+    expect(mockRubrics).toHaveBeenCalledWith('same-slug', { harnessSlug: 'b', strict: true });
     expect(mockBarLifecycle).toHaveBeenCalledWith('same-slug', 'ship', expect.objectContaining({ harnessSlug: 'b' }));
   });
 
@@ -1125,6 +1125,17 @@ describe('evaluatePlanAcceptanceGate', () => {
     expect(v.message).toContain("rubrics:propose { kind:'acceptance'");
     expect(v.message).toContain('some-plan-2026-08-11');
     expect(v.message).toContain('plan-class-investigation');
+  });
+
+  it('an unreadable acceptance rubric refuses without prescribing a replacement', async () => {
+    mockRubrics.mockRejectedValueOnce(new Error('present rubric cannot be decoded by this build'));
+    const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(result).toMatchObject({ satisfied: false, code: 'acceptance_rubric_revision_unreadable' });
+    expect(mockRubrics).toHaveBeenCalledWith('some-plan-2026-08-11', expect.objectContaining({ strict: true }));
+    expect(result.message).toContain('cannot establish that the rubric is missing');
+    expect(result.message).not.toContain('rubrics:propose');
+    expect(result.repairAction?.kind).toBe('diagnostic');
+    expect(mockScorecards).not.toHaveBeenCalled();
   });
 
   it('multiple active acceptance rubrics → fails closed before grading either one', async () => {

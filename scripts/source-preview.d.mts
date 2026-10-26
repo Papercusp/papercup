@@ -206,8 +206,11 @@ export function verifyBgVerifierSource(prepared: BgVerifierPreparation, boundary
 /** Bind esbuild's actual onLoad result to the original source/dependency census.
  * Endpoint fences alone miss an A-to-B-to-A rewrite. Hash the buffer returned
  * to esbuild, and retain that same buffer as its contents; never reopen it after
- * validation. Resolution metadata, invocation/toolchain identity and runtime
- * external imports still require their separate qualification boundaries.
+ * validation. Retain original file identities across the whole compile interval
+ * as well: resolver metadata can select different original-censused bytes while
+ * restoring its content before endpoint hashes run. Absent resolver inputs,
+ * invocation/toolchain identity and runtime external imports still require
+ * their separate qualification boundaries.
  * @param {{ prepared: BgVerifierPreparation,
  *   dependencies: ReturnType<typeof captureVerifierDependencies> }} options
  */

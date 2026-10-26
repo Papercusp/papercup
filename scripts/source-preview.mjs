@@ -993,8 +993,11 @@ export function verifyBgVerifierSource(prepared, boundary) {
 /** Bind esbuild's actual onLoad result to the original source/dependency census.
  * Endpoint fences alone miss an A-to-B-to-A rewrite. Hash the buffer returned
  * to esbuild, and retain that same buffer as its contents; never reopen it after
- * validation. Resolution metadata, invocation/toolchain identity and runtime
- * external imports still require their separate qualification boundaries.
+ * validation. Retain original file identities across the whole compile interval
+ * as well: resolver metadata can select different original-censused bytes while
+ * restoring its content before endpoint hashes run. Absent resolver inputs,
+ * invocation/toolchain identity and runtime external imports still require
+ * their separate qualification boundaries.
  * @param {{ prepared: BgVerifierPreparation,
  *   dependencies: ReturnType<typeof captureVerifierDependencies> }} options
  */
@@ -1010,6 +1013,15 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }) {
     assert.ok(!files.has(path), `BG compiler duplicate input: ${path}`);
     files.set(path, { ...row, path });
   }
+  /** @param {string} local */
+  const inputIdentity = local => {
+    const path = join(prepared.root, local);
+    const stat = lstatSync(path, { bigint: true });
+    return { physical: realpathSync(path), dev: stat.dev, ino: stat.ino,
+      mode: stat.mode, nlink: stat.nlink, size: stat.size,
+      mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs };
+  };
+  const originalIdentities = new Map([...files.keys()].map(local => [local, inputIdentity(local)]));
   /** @type {Map<string, { path: string, realpath: string, sha256: string }>} */
   const consumed = new Map();
   // This plugin must precede any other onLoad provider. It fails closed for
@@ -1053,6 +1065,8 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }) {
       verifyBgVerifierSource(prepared, 'before-publication');
       assert.deepEqual(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source }), original,
         'BG compiler dependency census changed');
+      for (const [local, expected] of originalIdentities)
+        assert.deepEqual(inputIdentity(local), expected, `BG compiler original input identity changed: ${local}`);
       assert.ok(consumed.size > 0, 'BG compiler consumed input proof is UNKNOWN');
       return freezeBgExpectation([...consumed.values()].sort((a, b) => a.path.localeCompare(b.path)));
     } };
