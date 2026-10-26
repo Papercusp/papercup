@@ -310,7 +310,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .boolean()
       .optional()
       .describe(
-        'Preview without applying. Prefer requestReview:{workItemId} to post approval and start review in one call; manual reviewPreviewPost remains supported.',
+        'Preview only. requestReview:{workItemId} posts approval and starts review in one call; reviewPreviewPost remains supported.',
       ),
     reviewPreviewPost: z
       .string()
@@ -331,14 +331,14 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
         'dryRun only: the server posts preview.approval on this work-item and opens the routed review in the same call.',
       ),
     reviewEvidencePost: z.string().trim().regex(/^thread-post:[1-9][0-9]*$/).optional().describe(
-      'dryRun with retained reviewPreviewPost only: your later non-empty local verification-evidence post on that same thread. After an ended reviewer objection, requests an independent re-review of the unchanged preview; retries with this evidence reuse its review.',
+      'dryRun + retained reviewPreviewPost only: later non-empty local verification evidence on that thread. After an ended reviewer objection, requests an independent re-review of the unchanged preview; retries reuse that review.',
     ),
     reviewerModel: z.object({
       agent: z.enum(['claude', 'codex', 'omp']),
       model: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/),
       effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
     }).strict().optional().describe(
-      'Routed-review backend/model and optional effort; required with reviewPreviewPost. The pair must match a workspace expert-model allowlist entry. Unavailable choices return a structured refusal and are never substituted.',
+      'Review backend/model and optional effort; required with reviewPreviewPost. Must match the workspace expert-model allowlist; unavailable pairs are refused, never substituted.',
     ),
     criteria: z
       .array(amendmentCriterionSchema)
@@ -352,7 +352,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .object({ key: z.string().min(1), evidencePlane: z.enum(['tree', 'deployed', 'live']) })
       .optional()
       .describe(
-        'change one acceptance criterion structural evidence plane through the canonical BAR amendment transaction',
+        "Set a criterion's evidence plane through the BAR amendment transaction.",
       ),
     criterion: z
       .object({
@@ -374,13 +374,13 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       })
       .optional()
       .describe(
-        "Set one grading class (P-008); upgrade-only. Marking 'violatable' tightens grading and preserves status/ratifier; downgrades require rubrics:propose with classDowngradeReason.",
+        "P-008 class update; upgrade-only. 'violatable' tightens grading and preserves status/ratifier; downgrades use rubrics:propose with classDowngradeReason.",
       ),
     methodRef: z
       .string()
       .max(200)
       .optional()
-      .describe('set/replace the agent-insights runbook slug for the rubric-level method'),
+      .describe('Set the agent-insights runbook slug for the rubric method.'),
     classRef: z
       .string()
       .trim()
@@ -388,7 +388,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .max(120)
       .optional()
       .describe(
-        'Bind a missing class or repeat it while preserving BARs/criteria. With a non-empty reason, general/investigation may strengthen to a coding class; prior class and compositions are retained. Other replacements are refused.',
+        'Bind a missing class or repeat it, preserving BARs/criteria. With a reason, general/investigation may strengthen to coding; prior class/compositions remain. Other replacements are refused.',
       ),
     composes: z
       .array(z.string().trim().min(1))

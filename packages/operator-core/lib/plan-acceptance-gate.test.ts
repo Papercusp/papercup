@@ -268,6 +268,40 @@ beforeEach(() => {
 describe('grading-recruitment unfinished-item exception', () => {
   const unfinished = [{ itemId: 'P-011' }];
 
+  async function gateWithUnfinishedTail(audited: boolean) {
+    const audits = await import('./plan-audits');
+    const statuses = vi.spyOn(audits, 'getPlanItemStatuses').mockResolvedValue([
+      { itemId: 'P-011', status: 'todo', itemText: 'acceptance paperwork', deliverable: null },
+    ]);
+    const effective = vi.spyOn(audits, 'getEffectiveItemAudits').mockResolvedValue(
+      (audited ? [{ entry: { itemId: 'P-011', verdict: 'not-code' } }] : []) as Awaited<ReturnType<typeof audits.getEffectiveItemAudits>>,
+    );
+    mockFlag.mockImplementation(async (flag) =>
+      flag === FLAGS.PLAN_ITEM_COMPLETION_GATE || flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE);
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockScorecards.mockResolvedValue([]);
+    try {
+      return await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { gradingRecruitment: true });
+    } finally {
+      statuses.mockRestore();
+      effective.mockRestore();
+    }
+  }
+
+  it('reaches the independent grading request for an audited not-code unfinished tail', async () => {
+    expect(await gateWithUnfinishedTail(true)).toMatchObject({
+      satisfied: false, code: 'acceptance_ungraded',
+    });
+    expect(mockScorecards).toHaveBeenCalled();
+  });
+
+  it('blocks the independent grading request for an unaudited unfinished tail', async () => {
+    expect(await gateWithUnfinishedTail(false)).toMatchObject({
+      satisfied: false, code: 'plan_items_unfinished',
+    });
+    expect(mockScorecards).not.toHaveBeenCalled();
+  });
+
   it('admits an unfinished tail only when every item is effectively audited not-code', () => {
     expect(
       unfinishedItemsAreAuditedNonCode(unfinished, [

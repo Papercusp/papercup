@@ -141,7 +141,7 @@ const instrumentDeclarationSchema = z
   })
   .passthrough()
   .describe(
-    'Operational: committed {path,testPath} or {none:true,reason}.',
+    'Committed {path,testPath} or {none:true,reason}.',
   );
 const bindingDetailsSchema = z.preprocess((value) => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
@@ -219,17 +219,17 @@ export const bindingSchema = z
     fixtureFingerprint: fingerprint.nullable().optional(),
     rubricFingerprint: fingerprint.nullable().optional(),
     environmentFingerprint: fingerprint.nullable().optional().describe(
-      "Live runtime/environment; except validated ledger-only proof with no runtimeUnits.",
+      "Live environment; validated ledger-only proof may omit runtimeUnits.",
     ),
     coverageEvidenceRef: z.number().int().positive().nullable().optional(),
     testRunId: z.number().int().positive().nullable().optional(),
     measurement: evidenceMeasurementSchema
       .optional()
       .describe(
-        "Fresh file/row hashes; reopen stales.",
+        "File/row hashes; changes stale.",
       ),
     details: bindingDetailsSchema.optional().describe(
-      "details.evidencePlane (fallback adequacy.evidencePlane); live needs environmentFingerprint. Nest adequacy.",
+      "Nest adequacy; evidencePlane falls back to adequacy.evidencePlane; live needs environmentFingerprint.",
     ),
     observedAt: z.string().datetime({ offset: true }).optional(),
     verifiesBindingId: z
@@ -239,7 +239,7 @@ export const bindingSchema = z
       .nullable()
       .optional()
       .describe(
-        "Independent live binding; matching fingerprints.",
+        "Independent live binding; same fingerprints.",
       ),
   })
   .refine((b) => (b.evidenceKind === 'independent-verification') === (b.verifiesBindingId != null), {
@@ -402,7 +402,7 @@ type ResolvedBinding =
 
 const argsSchema = refineEvenWithShapeIssues(
   z.object({
-    harness: harnessArg.describe('Harness; inferred when scoped. all=unscoped.'),
+    harness: harnessArg.describe('Inferred when scoped; all=unscoped.'),
     slug: z
       .string()
       .min(1)

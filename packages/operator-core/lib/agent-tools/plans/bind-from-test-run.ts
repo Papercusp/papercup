@@ -171,17 +171,17 @@ export const testRunBindingSchema = z
       .describe("Overrides imports + mutant subject."),
     sourceGlobs: repoFilesEvidenceMeasurementSchema.shape.sourceGlobs,
     treeInstrumentKey: repoFilesEvidenceMeasurementSchema.shape.treeInstrumentKey.describe(
-      'Committed-tree census instrument.',
+      'Committed census instrument.',
     ),
     fixturePaths: repoFilesEvidenceMeasurementSchema.shape.fixturePaths.describe(
-      'First calibration: paths/globs, including inline fixtures. Test infrastructure auto-included; declare rest.',
+      'First bind: declare fixture paths/globs incl. inline fixtures; infrastructure is auto-included.',
     ),
     fixtureGlobs: repoFilesEvidenceMeasurementSchema.shape.fixtureGlobs,
     fixtureRootHarnessSlug: repoFilesEvidenceMeasurementSchema.shape.fixtureRootHarnessSlug,
     completedRuntime: repoFilesEvidenceMeasurementSchema.shape.completedRuntime,
     canonicalTestPath: repoFilesEvidenceMeasurementSchema.shape.testPaths.unwrap().element
       .optional()
-      .describe('Copy-out/cargo: repo-relative test.'),
+      .describe('Copy-out/cargo repo-relative test.'),
     details: z.record(z.string(), z.unknown()).optional(),
     reaimJustification: z
       .object({

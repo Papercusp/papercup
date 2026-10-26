@@ -48,6 +48,7 @@ it('SU-EXEC R-7 acceptance contract', async () => {
     'registers native child ancestry before success; scenario=registered',
     'registers native child ancestry before success; scenario=stale-source',
     'registers native child ancestry before success; scenario=startup-failure',
+    'registers native child ancestry before success; scenario=bootstrap-failure',
     'codex native fork leaves pending question, queued input and accepted wake exclusively with parent',
     'transfers complete paginated history across homes and preserves parent isolation',
     'transfers incomplete paginated history across homes and preserves parent isolation',

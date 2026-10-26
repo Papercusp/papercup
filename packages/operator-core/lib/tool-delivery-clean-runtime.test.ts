@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { buildSync } from 'esbuild';
 import { validateToolDeliveryCleanBlocks, validateToolDeliveryCleanBoundary, toolDeliveryModuleFile, installToolDeliveryModuleGuard,
   toolDeliveryMandatorySources, validateToolDeliveryCleanCensus, toolDeliveryBlockLedgerIdentity, validateToolDeliveryBlockLedgerIdentity,
   toolDeliveryIgnoredCensus,
@@ -19,7 +21,45 @@ import { assertCleanCohortAuthority, assertCleanCohortCatalogDefinitions, assert
   claimCleanCohort, parseCleanCohortArgs } from './llm-testing/tool-delivery-clean-cohort.mjs';
 
 const cleanup: string[] = [];
-afterEach(() => cleanup.splice(0).forEach(path => rmSync(path, { recursive: true, force: true })));
+afterEach(() => {
+  vi.unstubAllGlobals();
+  cleanup.splice(0).forEach(path => rmSync(path, { recursive: true, force: true }));
+});
+
+describe('tool-delivery module guard runtime boundary', () => {
+  const interpreters = [{ executable: process.execPath, name: 'node' },
+    ...(process.env.PAPERCUSP_RUNTIME_TEST_BUN
+      ? [{ executable: process.env.PAPERCUSP_RUNTIME_TEST_BUN, name: 'bun' }] : [])];
+
+  it.each(interpreters)('imports validators under $name while reserving hook enforcement for Node', ({ executable, name }) => {
+    const root = mkdtempSync(join(tmpdir(), 'tool-delivery-interpreter-')); cleanup.push(root);
+    const runner = join(root, 'runtime.mjs');
+    const subject = fileURLToPath(new URL('./tool-delivery-clean-runtime.ts', import.meta.url));
+    buildSync({ stdin: { resolveDir: root, loader: 'ts', contents: `
+import { installToolDeliveryModuleGuard, toolDeliveryModuleFile } from ${JSON.stringify(subject)};
+const result = { name: process.versions.bun ? 'bun' : 'node', executable: process.execPath,
+  builtin: toolDeliveryModuleFile(process.argv[2], 'node:fs') };
+try {
+  const guard = installToolDeliveryModuleGuard(process.argv[2]);
+  guard.deregister();
+  result.guard = 'installed';
+} catch (error) { result.guard = 'refused'; result.reason = error.message; }
+process.stdout.write(JSON.stringify(result));
+` }, outfile: runner, bundle: true, packages: 'external', platform: 'node', format: 'esm', logLevel: 'silent' });
+    const observed = JSON.parse(execFileSync(executable, [runner, root], {
+      env: {}, encoding: 'utf8', timeout: 15_000,
+    }));
+    expect(realpathSync(observed.executable)).toBe(realpathSync(executable));
+    expect(observed).toMatchObject({ name, builtin: null, guard: name === 'node' ? 'installed' : 'refused' });
+    if (name === 'bun') expect(observed.reason).toContain('requires Node with synchronous module hooks');
+  }, 30_000);
+
+  it('refuses Bun even if its compatibility module exposes a hook-shaped function', () => {
+    vi.stubGlobal('process', { ...process, versions: { ...process.versions, bun: 'compatibility-fixture' } });
+    expect(() => installToolDeliveryModuleGuard('/must-not-be-read')).toThrow(
+      'requires Node with synchronous module hooks');
+  });
+});
 function fixture() {
   const root = '/synthetic-retained-checkout';
   const pin: ToolDeliveryCleanPin = { sourceRoot: root, cwd: root, commit: 'a'.repeat(40), porcelain: '',

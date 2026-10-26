@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
-import { registerHooks } from 'node:module';
+import * as nodeModule from 'node:module';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
@@ -107,13 +107,20 @@ export function toolDeliveryModuleFile(sourceRoot: string, url: string): string 
 export function installToolDeliveryModuleGuard(sourceRoot: string, controllerRoot?: string): {
   urls: Set<string>; controllerUrls: Set<string>; deregister(): void;
 } {
+  // The registry also imports the pure receipt validators under Bun. Its
+  // node:module compatibility surface cannot enforce this Node resolve hook;
+  // keep the clean cohort in its retained Node controller rather than allowing
+  // a successful import (or a future no-op compatibility API) to imply custody.
+  if (process.versions.bun || typeof nodeModule.registerHooks !== 'function') {
+    throw new Error('Tool-delivery module guard requires Node with synchronous module hooks; use the retained Node controller.');
+  }
   const urls = new Set<string>();
   const controllerUrls = new Set<string>();
   const source = realpathSync(sourceRoot);
   const controller = controllerRoot === undefined ? undefined : realpathSync(controllerRoot);
   if (controller && (isWithin(source, controller) || isWithin(controller, source)))
     throw new Error('Captured source and measurement controller roots must be disjoint.');
-  const hooks = registerHooks({
+  const hooks = nodeModule.registerHooks({
     resolve(specifier, context, nextResolve) {
       const result = nextResolve(specifier, context);
       try {

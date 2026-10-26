@@ -1737,10 +1737,14 @@ export function ompDefaultModelAdvisory(home?: string): string | null;
  * overriding it there would strand the original's locks/awaits/presence, which is
  * the exact regression the fresh-random-SID resume caused.
  */
+/**
+ * @param {any} session
+ * @param {{ mintSid?: () => string, fork?: boolean, ownerId?: string | null }} [options]
+ */
 export function resumeEnvFor(session: any, { mintSid, fork, ownerId }?: {
-    mintSid?: (() => string) | undefined;
-    fork?: boolean | undefined;
-    ownerId?: null | undefined;
+    mintSid?: () => string;
+    fork?: boolean;
+    ownerId?: string | null;
 }): {
     PAPERCUSP_ADV_SESSION_ID?: string | undefined;
     PAPERCUSP_HARNESS_SLUG?: any;
