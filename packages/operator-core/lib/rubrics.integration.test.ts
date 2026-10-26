@@ -2438,8 +2438,17 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const [after] = await db.adminSql<{ now_note: Record<string, unknown>; now_state: string; now_next: string }[]>`
       SELECT now_note, now_state, now_next FROM harness_shared.harness_plans
        WHERE workspace_id = ${seeded.workspaceId} AND harness_slug = 'papercusp' AND plan_slug = ${seeded.subject}`;
-    expect(after!.now_note).toMatchObject({ state: '—', next: '—', source: 'set-now' });
-    expect(after!.now_note.state).not.toContain('bar_snapshot_cohort_incomplete');
+    // Authoring METHODs repairs the old seed failures, but it does not vet the
+    // amended criteria. The refresh must replace obsolete advice with the current
+    // blocker rather than clear a contract that still needs independent vetting.
+    expect(after!.now_note).toMatchObject({ source: 'set-now' });
+    expect(after!.now_note.state).toContain('BAR READINESS BLOCKED');
+    expect(after!.now_note.state).toContain('bar_snapshot_vetting_missing');
+    for (const obsoleteCode of ['bar_snapshot_cohort_incomplete', 'bar_snapshot_rubric_missing', 'bar_snapshot_bar_set_empty']) {
+      expect(after!.now_note.state).not.toContain(obsoleteCode);
+    }
+    expect(after!.now_note.next).toContain('Vet the current acceptance-rubric criteria');
+    expect(after!.now_note.next).not.toContain('repair seed');
     expect(after!.now_state).toBe(after!.now_note.state);
     expect(after!.now_next).toBe(after!.now_note.next);
   });
@@ -3780,10 +3789,25 @@ describe('template_data persistence boundary — the set-template-data door', ()
 
     const snapshots = await import('./acceptance-bar-contract-snapshot');
     const originalRead = snapshots.readAcceptanceBarContractSnapshot;
-    const reader = vi.spyOn(snapshots, 'readAcceptanceBarContractSnapshot').mockImplementationOnce(async (...args) => {
+    const phases: string[] = [];
+    const snapshotPhases: Array<string | undefined> = [];
+    const snapshotLockAvailability: boolean[][] = [];
+    const reader = vi.spyOn(snapshots, 'readAcceptanceBarContractSnapshot').mockImplementation(async (...args) => {
+      const phase = phases.at(-1);
+      snapshotPhases.push(phase);
+      snapshotLockAvailability.push(await db.adminSql.begin(async (tx) => {
+        const availability: boolean[] = [];
+        for (const slug of [seeded.rubricSlug, seeded.subject]) {
+          const [row] = await tx<{ available: boolean }[]>`SELECT pg_try_advisory_xact_lock(
+            hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}),
+            hashtext(${planAdvisoryLockKey(seeded.workspaceId, 'papercusp', slug)})) AS available`;
+          availability.push(row!.available);
+        }
+        return availability;
+      }));
       try {
         const snapshot = await originalRead(...args);
-        await db.adminSql`SELECT pg_sleep(2)`;
+        if (phase === 'acceptance-contract-snapshot') await db.adminSql`SELECT pg_sleep(2)`;
         return snapshot;
       } finally {
         // With preparation outside the transaction the subsequent write uses
@@ -3793,8 +3817,14 @@ describe('template_data persistence boundary — the set-template-data door', ()
     });
     h.shortIdleTimeoutMs = 1000;
     try {
-      const after = (await rubrics.amendRubric({ ...amendment, approvalRef }))!;
-      expect(reader).toHaveBeenCalledOnce();
+      const after = (await rubrics.amendRubric({ ...amendment, approvalRef,
+        onPhase: (phase) => phases.push(phase),
+      }))!;
+      // The second read refreshes Now after the amendment commits. Both reads
+      // must stay outside the guarded transaction and its two advisory locks.
+      expect(reader).toHaveBeenCalledTimes(2);
+      expect(snapshotPhases).toEqual(['acceptance-contract-snapshot', 'acceptance-now-readiness-refresh']);
+      expect(snapshotLockAvailability).toEqual([[true, true], [true, true]]);
       expect(after.revision).toBe(seeded.rubric.revision! + 1);
       expect(after.criteria[0]!.method).toBe(amendment.criterion.text);
       const [subject] = await db.adminSql<{ version: number }[]>`SELECT version
