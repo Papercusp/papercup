@@ -2508,8 +2508,15 @@ describe('deferred scratch quota recovery', () => {
     });
     const write = vi.fn(async () => {});
     try {
+      // The refusal must NAME the run eviction could not reclaim (WI-6554700010029261): a bare
+      // "used N > quota" left a 16 GB read-only run blocking every spill with "cause unknown".
       await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(target, 'fresh-result'),
-        bytes: 64 }, write)).rejects.toMatchObject({ code: 'SCRATCH_QUOTA_EXCEEDED' });
+        bytes: 64 }, write)).rejects.toMatchObject({
+        code: 'SCRATCH_QUOTA_EXCEEDED',
+        message: expect.stringContaining(`largest unreclaimable run: ${blocked} (`),
+      });
+      await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(target, 'fresh-result'),
+        bytes: 64 }, write)).rejects.toMatchObject({ message: expect.stringContaining(`bytes, ${code})`) });
       expect(write).not.toHaveBeenCalled();
       expect(existsSync(blocked)).toBe(true);
       expect(scratchUsageBytes('ws-Q')).toBe(WORKSPACE_QUOTA_BYTES + markerBytes('ws-Q'));

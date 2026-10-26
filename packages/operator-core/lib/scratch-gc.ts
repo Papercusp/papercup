@@ -1042,6 +1042,13 @@ interface ScratchUsageEntry {
   runBytesValid: boolean;
   /** Last observed/persisted shared-state revision; gates reuse of this process's run index. */
   sharedUpdatedAt: number | null;
+  /**
+   * The largest run the last quota eviction pass could NOT reclaim (read-only/immutable: EACCES,
+   * EPERM, EROFS). Eviction deliberately never chmods such a run, so its bytes stay charged and the
+   * quota can stay exceeded indefinitely. The refusal names it so the blocker is attributable
+   * instead of "cause unknown" (WI-6554700010029261: one 16 GB read-only run held 3.3x quota).
+   */
+  largestUnreclaimable: { path: string; bytes: number; code: string; observedAt: number } | null;
 }
 
 /** Per-process cached usage per workspace (WI-10004513). Pinned so a split module record can't
@@ -1060,7 +1067,7 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
       recovering: null, maintenanceEpoch: 0, writes: new Map(),
       writeGeneration: 0, refreshDeferred: false, runBytesByPath: new Map(),
       runMtimeByPath: new Map(), runBytesValid: false,
-      sharedUpdatedAt: null,
+      sharedUpdatedAt: null, largestUnreclaimable: null,
     };
     usageState.byWorkspace.set(workspaceId, entry);
   } else {
@@ -1273,6 +1280,8 @@ async function evictWorkspaceQuotaLocked(
       }
     }
     runs.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    // Re-derived on every eviction pass so it names only a blocker that still exists.
+    entry.largestUnreclaimable = null;
     for (const run of runs) {
       if (used <= targetBytes()) break;
       if (diagnostics) diagnostics.runsConsidered += 1;
@@ -1352,6 +1361,7 @@ async function evictWorkspaceQuotaLocked(
             continue;
           }
           if (code !== 'EACCES' && code !== 'EPERM' && code !== 'EROFS') throw error;
+          noteUnreclaimableRun(entry, run.dir, bytesInRun, code);
           if (diagnostics) {
             diagnostics.deletePreflightSkips += 1;
             diagnostics.lastDeletePreflightErrorCode = code;
@@ -1378,6 +1388,7 @@ async function evictWorkspaceQuotaLocked(
         // recursive removal may have deleted only part of the run, never all of it.
         // The final reservation still refuses if the remaining candidates cannot
         // restore quota. Do not chmod immutable evidence or bypass retention pins.
+        noteUnreclaimableRun(entry, run.dir, bytesInRun, code);
         if (diagnostics) {
           diagnostics.deleteErrors += 1;
           diagnostics.lastDeleteErrorCode = code;
@@ -1787,6 +1798,19 @@ export function _resetScratchUsageForTests(): void {
  * lands (just after boot) the total starts at 0, so only the single-write cap applies — the daily
  * runScratchGc quota eviction still bounds the tree.
  */
+function noteUnreclaimableRun(entry: ScratchUsageEntry, path: string, bytes: number, code: string): void {
+  if (entry.largestUnreclaimable && entry.largestUnreclaimable.bytes >= bytes) return;
+  entry.largestUnreclaimable = { path, bytes, code, observedAt: Date.now() };
+}
+
+/** Refusal suffix naming the largest run eviction could not reclaim, or '' when none was seen. */
+function unreclaimableRunSuffix(entry: ScratchUsageEntry): string {
+  const blocker = entry.largestUnreclaimable;
+  if (!blocker) return '';
+  return `; largest unreclaimable run: ${blocker.path} (${blocker.bytes} bytes, ${blocker.code}). ` +
+    'Eviction never chmods or deletes a read-only run, so its owner must relocate or remove it';
+}
+
 export function reserveScratchSpace(opts: {
   workspaceId: string;
   bytes: number;
@@ -1809,7 +1833,8 @@ export function reserveScratchSpace(opts: {
   if (used + opts.bytes > WORKSPACE_QUOTA_BYTES) {
     if (refreshDue) void refreshScratchUsage(opts.workspaceId).catch(() => {});
     throw new ScratchQuotaError(
-      `scratch reservation: workspace ${opts.workspaceId} used ${used} + ${opts.bytes} > quota ${WORKSPACE_QUOTA_BYTES}`,
+      `scratch reservation: workspace ${opts.workspaceId} used ${used} + ${opts.bytes} > quota ${WORKSPACE_QUOTA_BYTES}` +
+        unreclaimableRunSuffix(entry),
     );
   }
   entry.bytes = used + opts.bytes;
