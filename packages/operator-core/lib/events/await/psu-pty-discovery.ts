@@ -281,6 +281,34 @@ export function hostSupports(host: PsuPtyHost | null | undefined, cap: string): 
   return Array.isArray(host?.caps) && host!.caps!.includes(cap);
 }
 
+/**
+ * EI-27053660657887116: can a nonce-bound pending carry (EI-267764,
+ * `pending-carry-fence-v1`) actually BIND to this host? Advertising the cap is not
+ * enough. The host admits a bound carry-respawn only when every identity field of
+ * psu-carry-fence.mjs `carryFenceIdentityMatches` is non-empty on BOTH sides, and
+ * the host's native session id comes from `resolveRespawnNativeId`, which
+ * psu-launcher.mjs wires for codex only. So every Claude host advertised the cap
+ * with a permanently-null native id and refused EVERY bound carry as
+ * `stale-carry-target` — `session:request-compaction` failed on every Claude psu
+ * session. An unbindable host still admits an UNBOUND carry (no `carryNonce`)
+ * until a fence has been acknowledged, which on such a host never happens; callers
+ * send the bound form only when this is true. Mirrors the host's `text()` check so
+ * a value the host would reject is never offered as a fence identity.
+ */
+export function hostCarryFenceBindable(host: PsuPtyHost | null | undefined): boolean {
+  if (!host || !hostSupports(host, 'pending-carry-fence-v1')) return false;
+  const text = (value: unknown): boolean =>
+    typeof value === 'string' && value.trim() === value && value.length > 0 && value.length <= 200;
+  const positiveInt = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) > 0;
+  return (
+    text(host.nativeSessionId) &&
+    text(host.hostCodeVersion) &&
+    text(host.advSessionId == null ? '' : String(host.advSessionId)) &&
+    positiveInt(host.startedAt) &&
+    positiveInt(host.childGeneration)
+  );
+}
+
 /** Shared with psu-pty-host.mjs sanitizeKey — MUST match byte-for-byte. */
 export function sanitizeKey(ownerId: string): string {
   return String(ownerId || 'unknown')
