@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ToolResult, UnifiedToolContext } from '@papercusp/tooldef';
-import { runDurableCode } from './durable-run';
+import { DURABLE_RUN_FOLLOW_UP, runDurableCode } from './durable-run';
 import { inspectOrchestration } from '../orchestration/inspect';
 import { runOrchestration, type ServerScriptRunDeps } from '../orchestration/run';
 import { MAX_ORCHESTRATION_SCRIPT_CHARS, orchestrationScriptSourceSchema } from '../orchestration/public-contract';
@@ -33,6 +33,8 @@ describe('code:run durable adapter uses the existing orchestration lifecycle', (
     const result = payload(await runDurableCode({ script, execution, inputs: { answer: 42 }, work_item_id: 'WI-1' }, ctx, deps));
     expect(result.state, JSON.stringify(result)).toBe('complete');
     expect(JSON.parse(result.summary)).toEqual({ durableRun: { workflowId, status: 'admitted' } });
+    // The admission reply is where a compact-tier caller learns the follow-up doors.
+    expect(result.next).toBe(DURABLE_RUN_FOLLOW_UP);
     expect(startDurable).toHaveBeenCalledTimes(1);
     expect(startDurable).toHaveBeenCalledWith(expect.objectContaining({
       script, inputs: { answer: 42 }, timeoutSec: 180, link: { workItemId: 'WI-1' },
@@ -57,49 +59,52 @@ describe('code:run durable adapter uses the existing orchestration lifecycle', (
     expect(startDurable).not.toHaveBeenCalled();
   });
 
-  it('reads the same terminal output without starting another workflow', async () => {
-    const status = { workflowId, status: 'SUCCESS', outcome: { status: 'succeeded', summary: { answer: 42 }, steps: [] }, steps: [] };
-    const durableStatus = vi.fn().mockResolvedValue(status);
-    const run = vi.fn();
-    const result = payload(await runDurableCode({ durableRun: { workflowId } }, ctx, {
-      inspect: (args, caller) => inspectOrchestration(args, caller, { durableStatus }), run,
-    }));
-    expect(result).toEqual({ ok: true, durableRun: status });
-    expect(durableStatus).toHaveBeenCalledExactlyOnceWith(workflowId);
-    expect(run).not.toHaveBeenCalled();
+  it('does not duplicate the orchestration read/control selectors on code:run', () => {
+    // WI-6554700010029562: these selectors cost ~600 B of every seeded catalog while
+    // orchestrate:inspect / orchestrate:run already own them.
+    expect(Object.keys(codeRunTool.args.shape)).not.toContain('durableRun');
+    expect(Object.keys(codeRunTool.args.shape)).not.toContain('durableControl');
+    expect(DURABLE_RUN_FOLLOW_UP).toContain('orchestrate:inspect { durableRun:');
+    expect(DURABLE_RUN_FOLLOW_UP).toContain('orchestrate:run { durableControl:');
   });
 
-  it('refuses foreign-workspace reads and cancellation before touching DBOS', async () => {
+  it('the named follow-up read door returns the terminal output without starting another workflow', async () => {
+    const status = { workflowId, status: 'SUCCESS', outcome: { status: 'succeeded', summary: { answer: 42 }, steps: [] }, steps: [] };
+    const durableStatus = vi.fn().mockResolvedValue(status);
+    const result = await inspectOrchestration({ durableRun: { workflowId } }, ctx, { durableStatus });
+    expect((result as ToolResult & { data?: unknown }).data).toEqual({ ok: true, durableRun: status });
+    expect(durableStatus).toHaveBeenCalledExactlyOnceWith(workflowId);
+  });
+
+  it('the named follow-up doors refuse foreign-workspace reads and cancellation before touching DBOS', async () => {
     const foreign = 'orchestrate-durable:other:run';
     const durableStatus = vi.fn();
     const durableControl = vi.fn();
-    const deps = { inspect: (args: Parameters<typeof inspectOrchestration>[0], caller: UnifiedToolContext) =>
-      inspectOrchestration(args, caller, { durableStatus }),
-    run: (args: Parameters<typeof runOrchestration>[0], caller: UnifiedToolContext) =>
-      runOrchestration(args, caller, { durableControl }) };
-    const read = payload(await runDurableCode({ durableRun: { workflowId: foreign } }, ctx, deps));
-    const cancel = payload(await runDurableCode({ durableControl: { workflowId: foreign, action: 'cancel' } }, ctx, deps));
-    expect(read).toMatchObject({ ok: false, error: { code: 'capability_denied' } });
+    const read = await inspectOrchestration({ durableRun: { workflowId: foreign } }, ctx, { durableStatus });
+    const cancel = payload(await runOrchestration({ durableControl: { workflowId: foreign, action: 'cancel' } }, ctx, { durableControl }));
+    expect((read as ToolResult & { data?: unknown }).data).toMatchObject({ ok: false, error: { code: 'capability_denied' } });
     expect(cancel).toMatchObject({ state: 'error', error: { code: 'capability_denied' } });
     expect(durableStatus).not.toHaveBeenCalled();
     expect(durableControl).not.toHaveBeenCalled();
   });
 
-  it('cancels the existing workflow without executing source', async () => {
+  it('the named follow-up control door cancels the existing workflow without executing source', async () => {
     const durableControl = vi.fn().mockResolvedValue(undefined);
-    const result = payload(await runDurableCode({ durableControl: { workflowId, action: 'cancel' } }, ctx, {
-      inspect: inspectOrchestration,
-      run: (args, caller) => runOrchestration(args, caller, { durableControl }),
-    }));
+    const result = payload(await runOrchestration({ durableControl: { workflowId, action: 'cancel' } }, ctx, { durableControl }));
     expect(result.state).toBe('complete');
     expect(durableControl).toHaveBeenCalledExactlyOnceWith({ workflowId, action: 'cancel' });
   });
 
-  it('rejects ambiguous selectors and foreground-only options without any adapter calls', async () => {
+  it('rejects incomplete requests and foreground-only options without any adapter calls', async () => {
     const inspect = vi.fn(); const run = vi.fn();
-    for (const extra of [{ kernel: {} }, { dryRun: true }, { timeoutSec: 10 }, { durableRun: { workflowId } }]) {
-      expect(payload(await runDurableCode({ script: 'return 1;', execution, ...extra }, ctx, { inspect, run })))
-        .toMatchObject({ ok: false, executed: false, error: 'durable_execution_args_invalid' });
+    const requests = [
+      ...[{ kernel: {} }, { dryRun: true }, { timeoutSec: 10 }].map(extra => ({ script: 'return 1;', execution, ...extra })),
+      { execution }, { script: 'return 1;' },
+    ];
+    for (const request of requests) {
+      const result = payload(await runDurableCode(request, ctx, { inspect, run }));
+      expect(result).toMatchObject({ ok: false, executed: false, error: 'durable_execution_args_invalid' });
+      expect(result.message).toContain(DURABLE_RUN_FOLLOW_UP);
     }
     expect(inspect).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
   });

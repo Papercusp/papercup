@@ -66,12 +66,8 @@ import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { readIdentity } from '../locks/identity';
 import { getTxPool } from '../locks/su-lock-store';
 import { openManagedKernel, controlManagedKernel, runManagedKernelScript } from './kernel-owner';
-import {
-  MAX_ORCHESTRATION_SCRIPT_CHARS,
-  durableOrchestrationRunSchema,
-  durableOrchestrationControlSchema,
-} from '../orchestration/public-contract';
-import { runDurableCode } from './durable-run';
+import { MAX_ORCHESTRATION_SCRIPT_CHARS } from '../orchestration/public-contract';
+import { DURABLE_RUN_FOLLOW_UP, runDurableCode } from './durable-run';
 
 export type CodeRunCaptureMode = 'auto' | 'never';
 
@@ -293,13 +289,10 @@ export default defineTool({
     }).strict().optional().describe(
       'Run once through the existing durable orchestration runtime. Returns durableRun.workflowId immediately; ' +
       'execution.timeoutSec is the independent execution deadline (default 3600s). ' +
-      'Read status and terminal output with code:run { durableRun:{workflowId} }; ' +
-      'cancel with durableControl:{workflowId,action:"cancel"}. Use tools.runtime.sleep for checkpointed waits. ' +
+      `${DURABLE_RUN_FOLLOW_UP} Use tools.runtime.sleep for checkpointed waits. ` +
       'Current authority is checked on every tool step; unsafe replay/nondeterminism is refused before admission. ' +
       'Cannot combine with a kernel, foreground timeoutSec, or dryRun.',
     ),
-    durableRun: durableOrchestrationRunSchema.optional().describe('Read an existing durable run; omit script and execution.'),
-    durableControl: durableOrchestrationControlSchema.optional().describe('Cancel or signal an existing durable run; omit script and execution.'),
     kernel: z.object({
       op: z.enum(['open', 'run', 'status', 'close']),
       id: z.string().uuid().optional(),
@@ -356,11 +349,11 @@ export default defineTool({
       .max(FOREGROUND_TIMEOUT_CEILING_MS / 1000)
       .optional()
       .describe(
-        `Foreground wall-clock budget: default ${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s, maximum ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s (transport cap ~55s). For longer work use execution:{lifecycle:"background",durability:"durable",timeoutSec:120}; recover the same run via durableRun.`,
+        `Foreground wall-clock budget: default ${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s, maximum ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s (transport cap ~55s). For longer work use execution:{lifecycle:"background",durability:"durable",timeoutSec:120}; read it later with orchestrate:inspect { durableRun }.`,
       ),
   }),
   async handler(args, ctx) {
-    if (args.execution || args.durableRun || args.durableControl) return runDurableCode(args, ctx);
+    if (args.execution) return runDurableCode(args, ctx);
     const runStartedAtMs = Date.now();
     // Keep the whole foreground handler below the transport ceiling, including all best-effort
     // host-side work after the orchestration worker returns. The worker's own timeout is only one
@@ -385,7 +378,10 @@ export default defineTool({
         catch (error) { return kernelReply({ ok: false, error: String(error), executed: false }); }
       }
     }
-    if (!args.script) return kernelReply({ ok: false, error: 'script_required', executed: false });
+    if (!args.script) {
+      return kernelReply({ ok: false, error: 'script_required', executed: false,
+        hint: `Pass script. To read or cancel a durable run: ${DURABLE_RUN_FOLLOW_UP}` });
+    }
     const script = args.script;
     // The proof is about this exact validated request body. Compute it at the
     // server boundary; neither the script nor a caller-supplied result field
