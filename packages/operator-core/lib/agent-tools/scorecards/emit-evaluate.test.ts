@@ -1786,6 +1786,71 @@ describe('evaluateScorecard', () => {
       unknownReason: 'not-assessed' as const, nextEvidenceAction: 'After approval and publication, download into a fresh HOME and run the installed journey.' },
   };
 
+  it('returns the evaluated rubric identity and refuses an emit after that definition changes', async () => {
+    const reviewedRubric = {
+      ...RUBRIC,
+      revision: 7,
+      criteriaHash: 'a'.repeat(64),
+      barContract: { meaningRevision: 3 },
+    } as Rubric;
+    getRubricM.mockResolvedValue(reviewedRubric);
+
+    const skeleton = await evaluateScorecard({ rubricRef: 'test-rubric' });
+    expect(skeleton).toMatchObject({
+      ok: true,
+      rubricRevision: 7,
+      criteriaHash: 'a'.repeat(64),
+      rubricMeaningRevision: 3,
+    });
+
+    const evaluated = await evaluateScorecard({ rubricRef: 'test-rubric', ratings: RATINGS });
+    expect(evaluated).toMatchObject({
+      ok: true,
+      rubricRevision: 7,
+      criteriaHash: 'a'.repeat(64),
+      rubricMeaningRevision: 3,
+    });
+    if (!evaluated.ok) throw new Error('test rubric should evaluate successfully');
+
+    getRubricM.mockResolvedValue({
+      ...reviewedRubric,
+      revision: 8,
+      criteriaHash: 'b'.repeat(64),
+      barContract: { meaningRevision: 4 },
+    } as Rubric);
+    getRubricPlanRevisionM.mockResolvedValue(8);
+    getRubricCriteriaHashM.mockResolvedValue('b'.repeat(64));
+
+    const emitted = await emitScorecard(scorecardEmitArgs.parse({
+      rubricRef: 'test-rubric',
+      ratings: RATINGS,
+      rubricRevision: evaluated.rubricRevision,
+      criteriaHash: evaluated.criteriaHash,
+      rubricMeaningRevision: evaluated.rubricMeaningRevision,
+    }), { createdBy: 'su-grader' });
+
+    expect(emitted).toMatchObject({ ok: false, code: 'scorecard_rubric_identity_mismatch' });
+    expect(captureM).not.toHaveBeenCalled();
+
+    getRubricM.mockResolvedValue(reviewedRubric);
+    getRubricPlanRevisionM.mockResolvedValue(7);
+    getRubricCriteriaHashM.mockResolvedValue('a'.repeat(64));
+    getRubricM.mockResolvedValueOnce(reviewedRubric);
+    getRubricM.mockResolvedValueOnce({
+      ...reviewedRubric,
+      barContract: { meaningRevision: 4 },
+    } as Rubric);
+    const changedDuringEmit = await emitScorecard(scorecardEmitArgs.parse({
+      rubricRef: 'test-rubric',
+      ratings: RATINGS,
+      rubricRevision: evaluated.rubricRevision,
+      criteriaHash: evaluated.criteriaHash,
+      rubricMeaningRevision: evaluated.rubricMeaningRevision,
+    }), { createdBy: 'su-grader' });
+    expect(changedDuringEmit).toMatchObject({ ok: false, code: 'scorecard_rubric_identity_mismatch' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
   it('preflights and files an independent unknown review for an explicitly pending manual delivery BAR', async () => {
     getRubricM.mockResolvedValue(deliveryRubric());
     listM.mockResolvedValue([vettingCard(['su-critic'])]);

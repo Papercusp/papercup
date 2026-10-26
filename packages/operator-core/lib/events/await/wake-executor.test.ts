@@ -6122,6 +6122,97 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     expect(msg.data).toContain('## Next action\nresume');
   });
 
+  /**
+   * WI-6554700010029492 — the cold decision is RECORDED where loop:status can show it.
+   * Before this a cold-armed fire that stayed warm (here: D-005, a human typing) was
+   * delivered as a plain inject with its reason thrown away, indistinguishable from a
+   * reset that was attempted and failed.
+   */
+  it('WI-6554700010029492: a cold-armed fire that stays WARM records WHY on its routine', async () => {
+    const recordColdDecisionFn = vi.fn(async () => {});
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle(),
+        payload: { carry: 'cold', wakeCount: 3, harness: 'papercusp', routineId: 'routine-cold-1' },
+      }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        coldAutoEnabled: vi.fn(async () => true),
+        activeInteractiveExchange: vi.fn(() => true),
+        getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
+        recordColdDecisionFn,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(recordColdDecisionFn).toHaveBeenCalledTimes(1);
+    expect(recordColdDecisionFn).toHaveBeenCalledWith({
+      routineId: 'routine-cold-1',
+      record: expect.objectContaining({
+        cold: false,
+        mode: null,
+        wakeCount: 3,
+        reason: expect.stringContaining('D-005'),
+      }),
+    });
+  });
+
+  it('WI-6554700010029492: a fire that DOES go cold records the mode it took', async () => {
+    const recordColdDecisionFn = vi.fn(async () => {});
+    await executeWake(
+      work({
+        wakeHandle: advHandle(),
+        payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp', routineId: 'routine-cold-2' },
+      }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: vi.fn(async () => true) as never,
+        coldAutoEnabled: vi.fn(async () => true),
+        getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
+        recordColdDecisionFn,
+      }),
+    );
+    expect(recordColdDecisionFn).toHaveBeenCalledWith({
+      routineId: 'routine-cold-2',
+      record: expect.objectContaining({ cold: true, mode: 'reset', wakeCount: 1 }),
+    });
+  });
+
+  it('WI-6554700010029492 CONTROL: a plain WARM loop fire never pays the write', async () => {
+    const recordColdDecisionFn = vi.fn(async () => {});
+    await executeWake(
+      work({ wakeHandle: advHandle(), payload: { wakeCount: 2, harness: 'papercusp', routineId: 'routine-warm' } }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: vi.fn(async () => true) as never,
+        coldAutoEnabled: vi.fn(async () => false),
+        recordColdDecisionFn,
+      }),
+    );
+    expect(recordColdDecisionFn).not.toHaveBeenCalled();
+  });
+
+  it('WI-6554700010029492: a FAILING decision write never costs the wake', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle(),
+        payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp', routineId: 'routine-cold-3' },
+      }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        coldAutoEnabled: vi.fn(async () => true),
+        getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
+        recordColdDecisionFn: vi.fn(async () => {
+          throw new Error('pg unavailable');
+        }),
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+  });
+
   it('the degrade-to-inbox body is NEVER tagged (coord messages carry native provenance)', async () => {
     const sendCoordMessage = vi.fn(async () => ({}) as never);
     const { tag } = spyTagger();

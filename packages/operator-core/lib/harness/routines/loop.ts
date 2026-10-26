@@ -1005,6 +1005,11 @@ export async function transferLoopOwnership(
 export interface LoopStatus {
   /** Durable native execution recovery verdict from the existing routine metadata. */
   executionRecovery?: import('./loop-execution-recovery').ExecutionRecoveryState;
+  /** WI-6554700010029492: the wake executor's last cold-wake disposition for this loop
+   *  (`metadata.lastColdDecision`) — cold mode taken, or WHY a cold-eligible fire stayed warm
+   *  (D-005 human presence, master gate off, no carry-note, resolution threw). Absent until a
+   *  cold-eligible fire has been decided. */
+  lastColdDecision?: import('../../su-cold-loop').LoopColdDecisionRecord;
   name: string;
   ownerId: string;
   harnessSlug: string;
@@ -2167,6 +2172,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastWakeCreatedAt: r.last_wake_created_at ? new Date(r.last_wake_created_at).toISOString() : null,
     lastWakeError: r.last_wake_error ?? null,
     ...(r.metadata?.executionRecovery ? { executionRecovery: r.metadata.executionRecovery } : {}),
+    ...(r.metadata?.lastColdDecision ? { lastColdDecision: r.metadata.lastColdDecision } : {}),
     lastTurnAt: r.last_turn_at ? new Date(r.last_turn_at).toISOString() : null,
     lastLoopTurnAt: r.last_loop_turn_at ? new Date(r.last_loop_turn_at).toISOString() : null,
     lastSuppressedWakeLoopTurnAt: r.last_suppressed_wake_loop_turn_at

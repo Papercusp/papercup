@@ -712,10 +712,12 @@ const scorecardEmitBaseShape = {
     ),
     interactionReviewerHandle: OperationHandleSchema.optional()
       .describe('CRM review operation receipt. Resolves the actual terminal reviewer independently of the submitting app caller.'),
-    rubricRevision: z.number().int().positive().optional()
-      .describe('Expected reviewed rubric revision; refuse if the instrument changed before filing.'),
-    criteriaHash: z.string().regex(/^[a-f0-9]{64}$/).optional()
-      .describe('Expected reviewed criterion fingerprint; refuse if it changed before filing.'),
+    rubricRevision: z.number().int().positive().nullable().optional()
+      .describe('Expected reviewed rubric revision; null pins an unversioned snapshot. Refuse if it changed before filing.'),
+    criteriaHash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional()
+      .describe('Expected reviewed criterion fingerprint; null pins an unavailable hash. Refuse if it changed before filing.'),
+    rubricMeaningRevision: z.number().int().nonnegative().nullable().optional()
+      .describe('Expected reviewed acceptance meaning epoch; null pins its absence. Refuse if it changed before filing.'),
     sourceHive: z
       .string()
       .min(1)
@@ -1849,10 +1851,12 @@ export async function emitScorecard(
   if (args.subject === undefined && rubric.kind === 'acceptance' && rubric.subjectPlan) {
     args = { ...args, subject: { kind: 'plan', ref: rubric.subjectPlan } };
   }
-  if ((args.rubricRevision !== undefined && args.rubricRevision !== rubric.revision) ||
-      (args.criteriaHash !== undefined && args.criteriaHash !== rubric.criteriaHash)) {
+  if ((args.rubricRevision !== undefined && args.rubricRevision !== (rubric.revision ?? null)) ||
+      (args.criteriaHash !== undefined && args.criteriaHash !== (rubric.criteriaHash ?? null)) ||
+      (args.rubricMeaningRevision !== undefined &&
+        args.rubricMeaningRevision !== (rubric.barContract?.meaningRevision ?? null))) {
     return { ok: false as const, code: 'scorecard_rubric_identity_mismatch',
-      error: 'The reviewed rubric revision or criterion fingerprint changed; re-review before filing.' };
+      error: 'The reviewed rubric revision, criterion fingerprint, or meaning epoch changed; re-review before filing.' };
   }
   // CRM grades the task that PRODUCED the call/email, never its reviewer task.
   // Enforce this at the canonical writer too: an app-side parse gate alone can
@@ -1864,7 +1868,8 @@ export async function emitScorecard(
         error: 'CRM interaction grading requires an independently ratified active rubric.' };
     }
     if (args.subject?.kind !== 'work-item' || !/^WI-\d+$/.test(args.subject.ref) || !input.workspaceId ||
-        args.rubricRevision === undefined || args.criteriaHash === undefined) {
+        args.rubricRevision === undefined || args.rubricRevision === null ||
+        args.criteriaHash === undefined || args.criteriaHash === null) {
       return { ok: false as const, code: 'interaction_producer_required',
         error: 'CRM interaction grading requires a producing work-item subject, concrete workspace, and reviewed rubric revision/hash.' };
     }
@@ -2051,12 +2056,13 @@ export async function emitScorecard(
     // bump (which fires on ANY propose, typo included, and says nothing about
     // WHAT changed). Same fail-open/unrecorded-on-failure contract as rubricRevision.
     const criteriaHash = rubricEvidenceIdentity.criteriaHash;
+    const rubricMeaningRevision = rubricEvidenceIdentity.meaningRevision;
     if ((args.rubricRevision !== undefined && args.rubricRevision !== rubricRevision) ||
-        (args.criteriaHash !== undefined && args.criteriaHash !== criteriaHash)) {
+        (args.criteriaHash !== undefined && args.criteriaHash !== criteriaHash) ||
+        (args.rubricMeaningRevision !== undefined && args.rubricMeaningRevision !== rubricMeaningRevision)) {
       return { ok: false as const, code: 'scorecard_rubric_identity_mismatch',
         error: 'The rubric identity could not be pinned to the reviewed instrument; no scorecard was filed.' };
     }
-    const rubricMeaningRevision = rubricEvidenceIdentity.meaningRevision;
     // A rubric named as the SUBJECT is distinct from the meta-rubric used to
     // score it. Pin both identities so later subject edits can invalidate this
     // attestation without mistaking the meta-rubric revision for the subject's.

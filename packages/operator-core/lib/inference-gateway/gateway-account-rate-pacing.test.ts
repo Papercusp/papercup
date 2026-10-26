@@ -337,39 +337,6 @@ describe('production gateway account-governor wiring', () => {
     expect(gateway.stats().requestStages!.outcomes.shed).toBe(1);
   });
 
-  it('rides out a pacing pause instead of shedding when no other account can serve (WI-6554700010029423)', async () => {
-    // The only other account is walled, so aborting the wait would rotate onto an unserviceable
-    // account and shed a gateway-local 429. The waiter must keep its place and be served once the
-    // short pause clears — the pre-9a9fa87645 behaviour.
-    governorForBackend('codex', model, undefined, 'account-b').penalize({ resetAt: Date.now() + 60_000 });
-    const affected = governorForBackend('codex', model, undefined, 'account-a');
-    affected.state.lastAcquireAt = Date.now();
-    const originalAcquire = affected.acquire.bind(affected);
-    let entered!: () => void;
-    const waiting = new Promise<void>(resolve => { entered = resolve; });
-    const acquire = vi.spyOn(affected, 'acquire').mockImplementationOnce(async (...args) => {
-      const pending = originalAcquire(...args);
-      entered();
-      return pending;
-    });
-    const routed: string[] = [];
-    gateway = createInferenceGateway({ accountId: 'account-a', token: async () => 'claude-token',
-      codexPool: accounts(), smoothRpm: true, maxQueueWaitMs: 5_000, selfHeal: { enabled: false },
-      fetchImpl: (async (_url, init) => {
-        routed.push(new Headers(init?.headers).get('authorization') ?? '');
-        return response();
-      }) as typeof fetch,
-    });
-    const pending = send();
-    await waiting;
-    affected.penalize({ resetAt: Date.now() + 300 });
-    const result = await pending;
-    expect(result.status, result.body).toBe(200);
-    expect(acquire.mock.calls[0]![1]!.signal!.aborted).toBe(false);
-    expect(routed).toEqual(['Bearer token-account-a']);
-    expect(gateway.stats().requestStages!.outcomes.shed ?? 0).toBe(0);
-  });
-
   it.each(['oauth', 'cli'] as const)('uses the same shared governor on the production %s transport', async transport => {
     const home = await fs.mkdtemp(join(tmpdir(), 'account-pacing-'));
     homes.push(home);

@@ -1802,6 +1802,28 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
     },
   );
 
+  it('WI-6554700010029492: surfaces the recorded cold-wake decision (metadata.lastColdDecision)', async () => {
+    const lastColdDecision = {
+      at: '2026-10-26T15:02:00.000Z',
+      cold: false,
+      mode: null,
+      reason: 'active interactive exchange (recent human input) — stays warm (D-005)',
+      wakeCount: 7,
+      deliveryId: '123',
+    };
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({ fire_count: 7, metadata: { lastColdDecision } }) as unknown as Sql,
+    });
+    expect(out.get('su-x')!.lastColdDecision).toEqual(lastColdDecision);
+  });
+
+  it('WI-6554700010029492 CONTROL: no recorded decision ⇒ the field is absent, not null', async () => {
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({ fire_count: 1, metadata: {} }) as unknown as Sql,
+    });
+    expect(out.get('su-x')!).not.toHaveProperty('lastColdDecision');
+  });
+
   it('does not let a running marker from before the latest fire mask the no-loop-turn verdict', async () => {
     const now = Date.now();
     const out = await getLoopStatuses(['su-x'], {

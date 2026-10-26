@@ -151,12 +151,14 @@ import {
 } from './psu-pty-discovery';
 import { decideQuotaWakeRecovery, recentAuthRecoveryCount } from './host-recovery-eligibility';
 import {
+  coldDecisionRecord,
   decideColdWake,
   readColdLoopMarker,
   renderColdWakeInjection,
   COLD_NOTE_POST_TURN_FLOOR_MS,
   type ColdLoopMarker,
   type ColdWakeDecision,
+  type LoopColdDecisionRecord,
 } from '../../su-cold-loop';
 import { recordColdNoHostParkAndMaybeEscalate } from './cold-nohost-park-guard';
 import {
@@ -3368,6 +3370,12 @@ export interface ExecuteWakeDeps {
    *  session resolves to (no bridged TTY ⇒ no keystroke timestamp), so the cold-loop
    *  lifecycle is untouched. engine.ts wires the real activeInteractiveExchangeForWake. */
   activeInteractiveExchange?: (host: { bridgeTty?: boolean | null; lastInputAt?: number | null }) => boolean | Promise<boolean>;
+  /** WI-6554700010029492: persist a cold-eligible loop fire's {@link LoopColdDecisionRecord}
+   *  onto its routine row so loop:status can say WHY a cold fire stayed warm (or which cold
+   *  mode it took). Injected for tests; the default merges `metadata.lastColdDecision` via
+   *  getOrgPg (unmockable in a unit test, per WI-6860 — hence the seam). Observability
+   *  only: a failure is swallowed and never costs the wake. */
+  recordColdDecisionFn?: (ref: { routineId: string; record: LoopColdDecisionRecord }) => Promise<void>;
   /** Read an su AUTO loop's carry-note — the P-006 cold-start anchor a RESET-CONTEXT /
    *  RECYCLE reconstructs from. Injected for tests; defaults to the real
    *  getLoopCarryNote (carry-note.ts). */
@@ -3730,6 +3738,10 @@ async function injectPsuHostWake(
   };
 
   let decision: ColdWakeDecision = { cold: false, reason: 'warm (cold fork not engaged)' };
+  // WI-6554700010029492: true once this fire was ELIGIBLE to go cold (explicitly cold-armed,
+  // or P-021 class-default cold) — the only fires whose decision is worth recording. A plain
+  // warm loop never pays the write.
+  let coldEligible = false;
   // EI-18224278118395857: the carry-note's absolute write instant, threaded into
   // renderColdWakeInjection so a cold successor can detect a note that went stale in
   // the fire→busy-gate-flush gap (see that function's `updatedAtMs` doc). null when
@@ -3758,6 +3770,7 @@ async function injectPsuHostWake(
         ? await (deps.activeInteractiveExchange ?? (() => false))(host)
         : false;
       if (marker.carry === 'cold' || classDefaultCold) {
+        coldEligible = true;
         // Only pay the carry-note read when the master gate is actually on (P-006's
         // anchor is moot if cold-auto is disabled). A test-injected getLoopCarryNoteFn
         // seam is note-only (no meta stamp); the production read uses the META variant
@@ -3802,6 +3815,30 @@ async function injectPsuHostWake(
   } catch {
     // Any resolution failure ⇒ warm (never let the cold path drop a wake).
     decision = { cold: false, reason: 'cold resolution threw — warm fallback' };
+  }
+  // The explicit opt-in is eligible even when resolution threw before the fork was reached.
+  if (loopMarker?.carry === 'cold') coldEligible = true;
+  if (coldEligible && loopMarker?.routineId) {
+    try {
+      const record = coldDecisionRecord(decision, {
+        at: new Date(),
+        wakeCount: loopMarker.wakeCount ?? null,
+        deliveryId: d.id ?? null,
+      });
+      const write =
+        deps.recordColdDecisionFn ??
+        (async (ref: { routineId: string; record: LoopColdDecisionRecord }) => {
+          const { getOrgPg } = await import('@papercusp/db-org');
+          const { sql } = getOrgPg();
+          await sql`
+            UPDATE harness_shared.routines
+               SET metadata = COALESCE(metadata, '{}'::jsonb) || ${sql.json({ lastColdDecision: { ...ref.record } })}
+             WHERE id = ${ref.routineId}`;
+        });
+      await write({ routineId: loopMarker.routineId, record });
+    } catch {
+      /* observability only — never cost the wake */
+    }
   }
 
   if (decision.cold) {

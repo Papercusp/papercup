@@ -3116,18 +3116,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const account = deps.codexPool?.entries?.().find(a => a.accountId === accountId) ??
         codexCliPool?.entries?.().find(a => a.accountId === accountId) ??
         codexCliHealthEntries().find(a => a.accountId === accountId);
-      const routeUnavailable = governor.state.pausedUntil > at ||
-        (account !== undefined && accountHealthKey(account, at, governor) === Infinity);
-      // WI-6554700010029423 (regression from 9a9fa87645): abort ONLY when another account can
-      // actually serve. Aborting hands the request to selectFailover, which rotates to the best
-      // remaining account; when every other account is walled or paused that rotation lands on an
-      // unserviceable account and the request is SHED as a gateway-local 429 seconds before this
-      // account's pacing / burn-throttle pause clears. Before 9a9fa87645 the waiter rode out a
-      // soft pause (allowSoftPaused) and was served late, never refused: Codex 429s went from
-      // 0/day (10-21..10-24) to 14,057 on 10-26 while the only unwalled account (Pro plan, weekly
-      // window 22% used) was being burn-throttled. With no alternative, keep waiting —
-      // maxQueueWaitMs still bounds the wait and sheds honestly if the pause outlasts it.
-      if (routeUnavailable && codexAlternativeServiceable(accountId, at)) unavailable.abort();
+      if (governor.state.pausedUntil > at || account && accountHealthKey(account, at, governor) === Infinity) {
+        unavailable.abort();
+      }
     };
     // The route was picked before auth/queueing. A live pause must cancel
     // every waiter on that account, including requests behind the head waiter,
@@ -4241,15 +4232,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
       egressPool,
       token: async () => '',
     }));
-  /** True when some Codex account OTHER than `accountId`, in the same pool that holds it, is
-   *  serviceable right now by the picker's own health key, i.e. aborting a paced waiter on
-   *  `accountId` has somewhere better to go (WI-6554700010029423). */
-  const codexAlternativeServiceable = (accountId: string, at: number): boolean => {
-    const pools = [deps.codexPool?.entries?.(), codexCliPool?.entries?.(), codexCliHealthEntries()];
-    const entries = pools.find((pool) => pool?.some((account) => account.accountId === accountId)) ??
-      pools.find((pool) => (pool?.length ?? 0) > 0) ?? [];
-    return entries.some((account) => account.accountId !== accountId && accountHealthKey(account, at) < Infinity);
-  };
   // P-002 floor: a contraction never takes a lane below its count of healthy accounts.
   // The same serviceability readers `/stats` publishes, so the floor and the reported
   // healthy count cannot disagree.

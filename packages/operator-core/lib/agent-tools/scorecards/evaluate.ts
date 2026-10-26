@@ -280,6 +280,15 @@ export async function evaluateScorecard(
     return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
   }
   const { rubric } = await resolveLiveAcceptanceRubric(rubricRead.rubric, caller?.workspaceId);
+  // Keep the exact definition that produced the skeleton/validated ratings
+  // attached to the result. scorecards:emit compares this pin again at the
+  // persistence boundary so an intervening rubric edit cannot be relabeled as
+  // the definition that the grader actually saw.
+  const rubricIdentity = {
+    rubricRevision: rubric.revision ?? null,
+    criteriaHash: rubric.criteriaHash ?? null,
+    rubricMeaningRevision: rubric.barContract?.meaningRevision ?? null,
+  };
   const pendingRefusal = pendingDeliveryReviewRefusal(rubric, args.pendingDeliveryBarKeys,
     args.ratings && Object.keys(args.ratings).length > 0 ? args.ratings : undefined);
   if (pendingRefusal) return { ok: false as const, code: 'pending_delivery_review_invalid', error: pendingRefusal };
@@ -335,6 +344,7 @@ export async function evaluateScorecard(
   if (!args.ratings || Object.keys(args.ratings).length === 0) {
     return {
       ok: true as const,
+      ...rubricIdentity,
       graderEligibility,
       rubric: {
         rubricRef: rubric.rubricId,
@@ -468,6 +478,7 @@ export async function evaluateScorecard(
       });
     return {
       ok: true as const,
+      ...rubricIdentity,
       graderEligibility,
       rubric: {
         rubricRef: rubric.rubricId,
@@ -528,9 +539,9 @@ export default defineTool({
       'Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing. For an acceptance rubric it also returns `graderEligibility` — whether YOU may file the grading at all; read it BEFORE doing the grading work, not after. Pass the same `subject` and observation window to evaluate and emit so registered instruments measure the same run.',
     notWhen: 'Reading scorecard history only — scorecards:list. Filing the validated scorecard — scorecards:emit.',
     chaining:
-      'scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, subject, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the same subject/window and canonical ratings. Registered instruments execute on both calls; caller snapshots cannot assert platform provenance. `testedSha` is required when a releaseGating rubric has a pass-like rating.',
+      'scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, subject, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the same subject/window, canonical ratings, and the returned rubricRevision, criteriaHash, and rubricMeaningRevision. Registered instruments execute on both calls; caller snapshots cannot assert platform provenance. `testedSha` is required when a releaseGating rubric has a pass-like rating.',
     returns:
-      'Top level: { ok, code, skeleton, rubric, graderEligibility, latest, canonicalRatings, evidenceFingerprint, instrumentContract, releaseGateBinding, changed, delta, error }. `skeleton` is an ARRAY of criterion rows — NOT an object keyed by criterion, so index it positionally or by `.key`; each row carries key, title, instrumentKey, check and allowedRatings beside the null rating/evidence you fill in. `rubric` summarises the rubric incl. criteriaCount; `graderEligibility` is null unless the rubric is kind acceptance and then includes the acceptance-author `implementer` plus `principalImplementers` from its subject plan; a positive releaseGating evaluation returns a bound `releaseGateBinding` or refuses with code `stale_pass_blocked` and the current gate reason/failing tests. `latest` is the newest ScorecardRow or null, and its `ratings`, `gradedGeneration` and `generationFreshness` are nested OBJECTS rather than scalars — `generationFreshness` only when the row carries a `gradedGeneration` — so a flat/CSV projection over a row fails on them. Generation freshness can be `fresh`, `stale`, `unknown`, or `not-applicable`; the last means a complete matched replay recipe proves its selected evidence has no runtime-environment fingerprints. Missing/incomplete recipes and runtime-bound evidence remain tied to the live bg-host generation. `canonicalRatings`, `evidenceFingerprint`, `instrumentContract`, `changed` and `delta.changedCriteria` appear only when you pass `ratings`.',
+      'Top level: { ok, code, rubricRevision, criteriaHash, rubricMeaningRevision, skeleton, rubric, graderEligibility, latest, canonicalRatings, evidenceFingerprint, instrumentContract, releaseGateBinding, changed, delta, error }. `rubricRevision`, `criteriaHash`, and `rubricMeaningRevision` are the exact definition identity used by this evaluation (null means that identity component was unavailable); pass all three unchanged to `scorecards:emit` to refuse a rubric edit between review and filing. `skeleton` is an ARRAY of criterion rows — NOT an object keyed by criterion, so index it positionally or by `.key`; each row carries key, title, instrumentKey, check and allowedRatings beside the null rating/evidence you fill in. `rubric` summarises the rubric incl. criteriaCount; `graderEligibility` is null unless the rubric is kind acceptance and then includes the acceptance-author `implementer` plus `principalImplementers` from its subject plan; a positive releaseGating evaluation returns a bound `releaseGateBinding` or refuses with code `stale_pass_blocked` and the current gate reason/failing tests. `latest` is the newest ScorecardRow or null, and its `ratings`, `gradedGeneration` and `generationFreshness` are nested OBJECTS rather than scalars — `generationFreshness` only when the row carries a `gradedGeneration` — so a flat/CSV projection over a row fails on them. Generation freshness can be `fresh`, `stale`, `unknown`, or `not-applicable`; the last means a complete matched replay recipe proves its selected evidence has no runtime-environment fingerprints. Missing/incomplete recipes and runtime-bound evidence remain tied to the live bg-host generation. `canonicalRatings`, `evidenceFingerprint`, `instrumentContract`, `changed` and `delta.changedCriteria` appear only when you pass `ratings`.',
     seeAlso: ['scorecards:emit', 'scorecards:list', 'rubrics:get'],
   },
   // EI-21228209276284649: this is a correctness payload, not a browseable list.
@@ -561,6 +572,9 @@ export default defineTool({
       ok: z.boolean().optional(),
       code: z.string().optional(),
       error: z.string().optional(),
+      rubricRevision: z.number().int().positive().nullable().optional(),
+      criteriaHash: z.string().nullable().optional(),
+      rubricMeaningRevision: z.number().int().nonnegative().nullable().optional(),
       graderEligibility: z.record(z.string(), z.unknown()).nullable().optional(),
       rubric: z.record(z.string(), z.unknown()).optional(),
       skeleton: z.array(z.unknown()).optional(),
