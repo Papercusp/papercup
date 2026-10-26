@@ -1095,5 +1095,56 @@
     "sourceRead": "with-plan-lock.ts1248; acceptance-bar-amendment.ts106+ synchronizer only catches neutral fingerprints; R4 runtime restoration was a source change, not neutral",
     "next": "Read actual current plan/rubric subject revision pins and canonical seed/amend mechanism; catch up atomically with no meaning change, then verify. Do not treat marker as absent or redeploy blindly."
   },
-  "sourceCurrentnessDiscovery": "Canonical bind-spec-evidence.ts595-629 measureBindingForStore explicitly measures clean asCommitted runs at the original executed commit (D001b), never liveHEAD. Read bind-from-test-run and spec-evidence-store freshness next before deciding whether replay is needed; known12import drift remains OPEN, never silently latestHEAD pin or shrink closure."
+  "sourceCurrentnessDiscovery": "Canonical bind-spec-evidence.ts595-629 measures clean asCommitted runs at the original executed commit, never liveHEAD. spec-evidence-store-committed-freshness.test.ts confirms later committed closure changes still read stale; dirty uncommitted peer edits alone do not. Original69 remains immutable history with measured12import drift; current836 run is new evidence, not a latestHEAD relabel. Full captured-import comparison after new run is still required.",
+  "continuation20261026T2035": {
+    "route": "approved AUTO/self; no implementation fanout; no LIVE_GATE_OPS",
+    "runtimeRoute": "All acceptance operations MUST use ptool --url=http://127.0.0.1:3170 explicitly. Default native MCP reached release d740fc3802, which cannot project rubric8. Staging553fd55f1a projects it. Do not rediscover/redeploy the same known skew.",
+    "pins": "Fresh staging read showed rubric8 barContract.subjectPlanRevision37 already matches plan37; no new amendment needed. Successful plans:start later preserved contract and brought plan to ready/version40 after promotion and D015.",
+    "metaVetting": {
+      "reviewItem": "WI-6554700010029600",
+      "critic": "su-6cf8c51c-f1a5-4427-9d47-f19385011d34",
+      "state": "done; actual current8 comment/completion read",
+      "verdict": "rev8attestable; threeD013corrections independently verified, originalrev7report preserved; no fullspecquality/runtime inference from limited methoddiff",
+      "recovery": "Supported resume refused because exact reviewer process was already live. A required coord wake reached it; actual current8 reply/completion verifies pickup. Do not kill/fork/relaunch it.",
+      "canonicalRecognition": "After actual current8 review, appended requested current8 scope/hash to existing WI body, preserving full original7 request. Fresh rubrics:get then returned vetted/satisfied:true/reasoncurrent, workItemIdWI29600, critic6cf. No legacy scorecard or selfgrade needed. D015 records timing."
+    },
+    "barCritiques": {
+      "first": "b51d actual final1207110; reviewer closed_answered1207111 after full17clause/all13BAR live correction check",
+      "second": "da097 actual current8 delta after requester1207103; requester closed_answered1207116, preserving explicit unreadR7..R13/method/spec limitation",
+      "gate": "plans:start passed current barCritique and current specQuality hashafe38ceb; do not open replacement reviews"
+    },
+    "admission": {
+      "result": "plans:start nowok:true, admissionready, current specQuality satisfied; all4items promoted, operationalstartedaxisretired",
+      "decision": "D-015",
+      "repair": "Initial start promoted P004 then refused duplicatecoverageP002: originalEI26780389938506704 and canonicalWI29270 both stampedP002. Kept canonicalWI soleimplementation row; canonicalwork_items:update cleared only sourceEI plan_item and set parentWI29270. All original checkpoints/evidence and openbug status preserved.",
+      "P004": "newlypromoted WI-6554700010029611 feature blocked byP001/P002/P003, assigneenull. Read before own work; no forceclaim/reassignment attempted. Positive R12 evidence attached through canonical binder."
+    },
+    "currentRegression": {
+      "sha": "8361237bd65531b14a1ffdb2d413d25c6d065b9d",
+      "log": "/tmp/shipping-friction-current.log",
+      "sourceMaps": ["/tmp/shipping-friction-current.sources.json", "/tmp/shipping-friction-current.sources.1.json"],
+      "passed": 653,
+      "failed": 0,
+      "skipped": 0,
+      "files": "requested9/executed9/matched9; clean immutableclone; final wrapper exit0 observed in durable log",
+      "ledger": {
+        "rubrics.integration.test.ts": 22258884,
+        "acceptance-carry.integration.test.ts": 22258883,
+        "set-plan-status-repair.test.ts": 22258865,
+        "plan-drain-rule.test.ts": 22258864,
+        "acceptance-bar-contract-snapshot.test.ts": 22258863,
+        "plan-acceptance-gate.test.ts": 22258862,
+        "acceptance-bar-lifecycle-evaluator.test.ts": 22258861,
+        "acceptance-drain-filing.test.ts": 22258860,
+        "acceptance-seat-succession.test.ts": 22258859
+      },
+      "ledgerScope": "original harnessnull/workspacepapercusp; guarded fromTestRun adoption succeeds. Do not rerun foroutput. Next fresh command should set PAPERCUSP_TEST_RUN_HARNESS=papercusp explicitly.",
+      "nativeCustody": "partial, directory/home/marsh-office/.papercusp/test-artifacts/testing-run/native-router-XGpv2l manifest a268d9f7285d23a94a8465de30944509896a9e1ce76c05bddd2ec60e88ed6345.native-proof.json; never call fullcustody",
+      "bindings": "26 positive exactcurrentclause/checkcasebindings allcreated successfully IDs71417..71442. Earlier R2trial71416 also exists, no mutant. Source refs remain executed836, not currentHEAD. Binding/currentness readback and exactcase/source comparison still required.",
+      "process": "fresh shell67456 was polled only this continuation; final completion is durable inlog. Successor must NOT write_stdin carriedhandle."
+    },
+    "adequacyNext": "Measured plans:evaluate-spec-test-adequacy R2 afterpositive71416 returns mechanical-test-adequacy fail: named passingfilepresent, NO caughtmutationprobe. Current maintained evaluator requires all named tests passing/current plus >=1 caught original mutation-probe from a named test with verified calibration linkage. See mechanical-test-adequacy.ts79-220. Binder flags falsifiable:true cannot replace probe. No probes launched yet. Use maintained scripts/mutation-probe.sh copy-out/overlay, clean committed materialization via lint:as-committed --materialize-only --ref=836... (implieskeep), never mutate sharedtree. Review script instructions/descriptor/real failedcases; preserve every contract and no historical/native replay. At least statusrepair/drain/lifecycle/plan-drain/seat/carry/gate namedtest coverage required across BARs; choose real semanticmutants. Future passedbindings already map exactcases; no need rerun9positive suite foroutput.",
+    "remaining": "Finish current captured-import driftcomparison and durable currentreceipt; caughtmutation/calibration proof, exactcurrentness/adequacycertification; R4live accountableowner/recoverywitness (historical/native/archived restrictions retained), R5staging/satisfiedreadiness, pendingfinalR11release; completionaudit, canonicalindependentacceptance and authorverdict. Never claim all accepted or shipped yet.",
+    "next": "Continue mutation proof/operational evidence from this checkpoint. Reconcile live schemas/state once, no redundantorient with complete recovery. Update authoritative top-level next from this newer continuation record; old next/startBlocker are historical. All locks released after state write."
+  }
 }
