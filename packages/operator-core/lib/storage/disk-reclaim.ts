@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import type { ChildProcess } from 'node:child_process';
 import type { ManagedSpawnResult } from '../task-manager/managed-spawn';
@@ -1784,6 +1784,28 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
   return observed;
 }
 
+/** The scheduled handoff reads protection at invocation time, after any FIFO
+ * reacquisition refreshed it. The owner receives a predicate, never a mutex bypass. */
+export function createWorkspaceHostCutRetentionDelegate(input: {
+  repoRoot: string;
+  protection: () => { pins: readonly RetentionPinProtection[];
+    isPinned: import('../../../../scripts/lib/retention-pins.mjs').RetentionPinPredicate } | undefined;
+  loadOwner?: () => Promise<Pick<typeof import('../../../../apps/operator/lib/release/workspace-host-release-cut-cli'),
+    'reclaimWorkspaceHostCutIntermediatesWithProtection'>>;
+}): ReclaimDelegate {
+  return { classId: 'workspace-host-cut-intermediates', run: async (dryRun, _onPhase, notAfterMs) => {
+    const protection = input.protection();
+    if (!protection || notAfterMs === undefined || !Number.isFinite(notAfterMs)) {
+      throw new Error('workspace-host retention protection not admitted');
+    }
+    const owner = await (input.loadOwner?.() ?? import(pathToFileURL(join(input.repoRoot,
+      'apps/operator/lib/release/workspace-host-release-cut-cli.ts')).href));
+    const detail = await owner.reclaimWorkspaceHostCutIntermediatesWithProtection({ repoRoot: input.repoRoot,
+      dryRun, notAfterMs, pins: protection.pins }, protection.isPinned);
+    return { ok: detail.ok, detail };
+  } };
+}
+
 /** Runtime delegates preserve the owning program's leases and its original receipts. */
 export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 'dryRun' | 'runBudgetMs'> = {}): Promise<DiskReclaimReceipt> {
   const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -1796,6 +1818,8 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     undefined, undefined, { requireScan: true });
   let isPinnedPath: (path: string) => boolean = () => { throw new Error('retention protection has not been read'); };
   let renewedPins: RetentionPinProtection[] = [];
+  let workspaceHostProtection: import('../../../../scripts/lib/retention-pins.mjs').RetentionPinPredicate | undefined;
+  let workspaceHostPins: RetentionPinProtection[] = [];
   const readProtection = async ({ renewEvidence }: { renewEvidence: boolean }) => {
     const dir = defaultRetentionDir();
     // Renewal maintains finite leases for already-open evidence. Repeating its
@@ -1832,10 +1856,21 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     if (errors.length) throw new Error(`retention leases unreadable: ${errors.join('; ')}`);
     const { pinProtection } = await import('../../../../scripts/lib/retention-pins.mjs');
     isPinnedPath = pinProtection(pins);
+    workspaceHostPins = pins;
+    const leaseProtection = pinProtection(leaseRead.leases.filter(lease => isLeaseLive(lease, Date.now())).map(lease => ({
+      paths: lease.paths, expiresAt: lease.expiresNs === 0n ? '+275760-09-13T00:00:00.000Z'
+        : new Date(Number(lease.expiresNs / 1_000_000n)).toISOString(),
+    })));
+    workspaceHostProtection = Object.assign((path: string) => isPinnedPath(path) || leaseProtection(path), {
+      // Legacy release leases protect effects but never authorize agent-pin overage.
+      coversPath: (isPinnedPath as import('../../../../scripts/lib/retention-pins.mjs').RetentionPinPredicate).coversPath,
+    });
     return { paths: leaseRead.leases.filter((lease) => isLeaseLive(lease, Date.now())).flatMap((lease) => lease.paths), pins };
   };
   const require = createRequire(import.meta.url);
   const delegates: ReclaimDelegate[] = [
+    createWorkspaceHostCutRetentionDelegate({ repoRoot, protection: () => workspaceHostProtection
+      ? { pins: workspaceHostPins, isPinned: workspaceHostProtection } : undefined }),
     { classId: 'sidecar-failed-stages', run: async (dryRun) => {
       const owner = require(join(repoRoot, 'papercusp-desktop/bin/lib/sidecar-stage-state.js')) as {
         pruneFailedStagesWithProtection: (options: { all: boolean; dryRun: boolean }, env: NodeJS.ProcessEnv,

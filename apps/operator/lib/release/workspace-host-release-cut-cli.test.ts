@@ -1,12 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { projectByocReleaseMilestones } from '@papercusp/operator-core/lib/byoc-release-carry';
+import { readProcessIdentity } from '@papercusp/operator-core/lib/process-identity';
+import { inspectRetentionTrees } from '@papercusp/operator-core/lib/storage/disk-consumer-census';
 import type { TaskReleaseJournal } from '@papercusp/operator-core/lib/task-manager/store';
 import {
   OPERATION_ID,
@@ -19,6 +21,8 @@ import {
 } from '@papercusp/operator-core/lib/workspace-host/release-stage-receipt';
 
 import { assertReleaseTaskIdentity, type ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal.mjs';
+import { pinProtection, withRetentionPinProtection } from '../../../../scripts/lib/retention-pins.mjs';
+import { WORKSPACE_HOST_EVIDENCE_FILES, WORKSPACE_HOST_PUBLISHED_SIGNING_KEY_NAME } from './workspace-host-publication-manifest-cli';
 import {
   acquireWorkDirLock,
   DISK_PREFLIGHT_REFUSAL_EXIT_CODE,
@@ -37,6 +41,7 @@ import {
   parseWorkspaceHostReleaseCutArgs,
   planWorkspaceHostCutIntermediates,
   pruneWorkspaceHostCutIntermediates,
+  reclaimWorkspaceHostCutIntermediatesWithProtection,
   removeReleaseSourceWorktree,
   runWorkspaceHostReleaseCut,
   runWorkspaceHostReleaseCutCli,
@@ -591,7 +596,7 @@ describe('workspace-host cut ownership admission', () => {
     const attempts = await Promise.allSettled([acquireWorkDirLock(lock), acquireWorkDirLock(lock)]);
     kill.mockRestore();
     expect(attempts.filter(result => result.status === 'fulfilled')).toHaveLength(1);
-    expect(readFileSync(lock, 'utf8')).toBe(`${process.pid}\n`);
+    expect(readFileSync(lock, 'utf8')).toBe(`${process.pid}\n${readProcessIdentity(process.pid)}\n`);
     for (const result of attempts) if (result.status === 'fulfilled') await result.value();
   });
 
@@ -602,6 +607,34 @@ describe('workspace-host cut ownership admission', () => {
     await expect(acquireWorkDirLock(join(alias, 'release-cut.lock'))).rejects.toThrow('another cut');
     await release();
     expect(existsSync(join(alias, 'release-cut.lock'))).toBe(false);
+  });
+
+  it.each(['linux:aaaa:2', 'linux:bbbb:1'])('replaces a reused PID or prior-boot identity %s without killing its unrelated process', async current => {
+    const lock = join(workDir, 'release-cut.lock');
+    writeFileSync(lock, '123456\nlinux:aaaa:1\n');
+    const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    const release = await acquireWorkDirLock(lock, pid => pid === process.pid ? 'linux:cccc:3' : current);
+    expect(readFileSync(lock, 'utf8')).toBe(`${process.pid}\nlinux:cccc:3\n`);
+    expect(kill).toHaveBeenCalledWith(123456, 0);
+    expect(kill.mock.calls.filter(([pid]) => pid === 123456)).toEqual([[123456, 0]]);
+    expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+    await release();
+  });
+
+  it.each(['linux:aaaa:1', null])('keeps a matching or unreadable live kernel identity %s', async current => {
+    const lock = join(workDir, 'release-cut.lock');
+    const owner = '123456\nlinux:aaaa:1\n';
+    writeFileSync(lock, owner);
+    vi.spyOn(process, 'kill').mockReturnValue(true);
+    await expect(acquireWorkDirLock(lock, pid => pid === process.pid ? 'linux:cccc:3' : current))
+      .rejects.toThrow(current ? 'another cut' : 'unverifiable cut process identity');
+    expect(readFileSync(lock, 'utf8')).toBe(owner);
+  });
+
+  it('refuses to publish an unmeasured process identity', async () => {
+    const lock = join(workDir, 'release-cut.lock');
+    await expect(acquireWorkDirLock(lock, () => null)).rejects.toThrow('unverifiable cut process identity');
+    expect(existsSync(lock)).toBe(false);
   });
 
   it('does not let a repeated release remove a later admission in the same process', async () => {
@@ -679,6 +712,23 @@ describe('workspace-host writer intermediate retention planning', () => {
     expect(result.caps[0]).toMatchObject({ beforeBytes: 100, overByBytes: 0 });
   });
 
+  it('unions repeated allocations within an atomic group and across retained evidence', () => {
+    const link = { dev: 1, ino: 99, bytes: 20, paths: [join(workDir, 'source/shared'), join(workDir, 'source.ready.json'), join(workDir, 'publication/shared')] };
+    const result = plan(['source', 'source.ready.json', 'publication'].map(name => ({ ...entry(name, 20, 1), hardlinks: [link] })), 25);
+    expect(result.intermediates).toEqual([]);
+    expect(result.caps[0]).toMatchObject({ beforeBytes: 20, overByBytes: 0 });
+  });
+
+  it.each(['source', 'source.ready.json'])('counts a complete retained boundary on %s and protects its whole atomic group', name => {
+    const result = plan([], 100, { census: { entries: [entry(name === 'source' ? 'source.ready.json' : 'source', 1, 90),
+      entry('sidecar', 30, 80), entry('publication', 10, 90)],
+    retained: [{ path: join(workDir, name), reason: 'symlink boundary', entry: entry(name, 90, 90) }],
+    retainedRecentTrees: 0, inspectedNodes: 10 } });
+    expect(result.intermediates).toEqual(['sidecar']);
+    expect(result.retainedPaths).toContain(join(workDir, 'source'));
+    expect(result.caps[0]).toMatchObject({ beforeBytes: 131, pinnedBytes: 0, pinnedOverageBytes: 0 });
+  });
+
   it('reports retained over-cap bytes without evicting the publication to make the cap appear satisfied', () => {
     const result = plan([entry('publication', 200, 90), entry('source', 20, 1)]);
     expect(result.intermediates).toEqual(['source']);
@@ -705,6 +755,176 @@ describe('workspace-host writer intermediate retention planning', () => {
     ('rejects an unverifiable pin snapshot %j', pin => {
       expect(() => plan([entry('source', 110, 80)], 100, { pins: [pin] })).toThrow('pin snapshot');
     });
+});
+
+describe('scheduled workspace-host writer retention admission', () => {
+  beforeEach(() => {
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(workDir, 'pins'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(workDir, 'mutex'));
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  function fixture() {
+    const dir = join(workDir, '.papercusp/wh-release-complete');
+    mkdirSync(join(dir, 'sidecar'), { recursive: true });
+    mkdirSync(join(dir, 'extracted'));
+    mkdirSync(join(dir, 'publication/evidence'), { recursive: true });
+    writeFileSync(join(dir, 'sidecar/payload'), 'rebuildable');
+    writeFileSync(join(dir, 'sidecar.ready.json'), '{}');
+    writeFileSync(join(dir, 'extracted/payload'), 'rebuildable');
+    const result = buildResult('request');
+    const hash = (name: string) => {
+      writeFileSync(join(dir, 'publication', name), name);
+      return createHash('sha256').update(name).digest('hex');
+    };
+    result.bundle = { sha256: hash('server.tgz'), bytes: Buffer.byteLength('server.tgz') };
+    result.signature = { sha256: hash('server.tgz.minisig'), bytes: Buffer.byteLength('server.tgz.minisig') };
+    result.signingKeySha256 = hash(WORKSPACE_HOST_PUBLISHED_SIGNING_KEY_NAME);
+    result.evidence = { sbomSha256: hash(WORKSPACE_HOST_EVIDENCE_FILES.sbom), vulnerabilitiesSha256: hash(WORKSPACE_HOST_EVIDENCE_FILES.vulnerabilities),
+      summarySha256: hash('evidence/summary.json'), secretScanSha256: hash(WORKSPACE_HOST_EVIDENCE_FILES.secretScan) };
+    writeFileSync(join(dir, 'release-cut.json'), JSON.stringify({ schemaVersion: 1, taskId: TASK_ID,
+      operationId: OPERATION_ID, sourceSha: SHA, version: VERSION }));
+    writeFileSync(join(dir, 'build-result.json'), JSON.stringify(result));
+    const scanHolders = vi.fn(async () => ({ complete: true, byPath: new Map<string, string[]>() }));
+    const inspectTrees = vi.fn(async () => ({
+      entries: readdirSync(dir).map((name, index) => ({ path: join(dir, name), dev: 1, ino: index + 1,
+        bytes: name === 'sidecar' || name === 'extracted' ? 60 : name === 'publication' ? 10 : 1,
+        newestWriteMs: Date.now() - (name === 'extracted' ? 1 : 2) * 3_600_000 })),
+      retained: [], inspectedNodes: 20, retainedRecentTrees: 0, pinnedBytes: 0,
+    }));
+    const input = { repoRoot: workDir, home: workDir, dryRun: false, notAfterMs: Date.now() + 60_000, pins: [], maxBytes: 100 };
+    const run = (overrides: Partial<Parameters<typeof reclaimWorkspaceHostCutIntermediatesWithProtection>[2]> = {}) =>
+      withRetentionPinProtection(protect => reclaimWorkspaceHostCutIntermediatesWithProtection(input, protect,
+        { inspectTrees, scanHolders, ...overrides }));
+    return { dir, input, run, inspectTrees, scanHolders };
+  }
+
+  it('reuses the held pin mutex, validates completed build bytes and measures the cap after native effects', async () => {
+    const f = fixture();
+    const result = await f.run();
+    expect(result).toMatchObject({ ok: true, cuts: [{ status: 'reclaimed', selected: ['sidecar'],
+      removed: [join(f.dir, 'sidecar.ready.json'), join(f.dir, 'sidecar')],
+      caps: [{ beforeBytes: 134, afterBytes: 73, overByBytes: 0 }] }] });
+    expect(f.inspectTrees).toHaveBeenCalledTimes(2);
+    expect(f.scanHolders).toHaveBeenCalledWith([f.dir]);
+    for (const kept of ['extracted/payload', 'release-cut.json', 'build-result.json', 'publication/server.tgz']) {
+      expect(existsSync(join(f.dir, kept)), kept).toBe(true);
+    }
+    expect(existsSync(join(f.dir, 'release-cut.lock'))).toBe(false);
+  });
+
+  it('refuses a completed-build marker whose publication bytes no longer match', async () => {
+    const f = fixture();
+    writeFileSync(join(f.dir, 'publication/server.tgz'), 'corrupted');
+    expect(await f.run()).toMatchObject({ ok: false, cuts: [{ status: 'failed', reason: expect.stringContaining('does not match') }] });
+    expect(f.scanHolders).not.toHaveBeenCalled();
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+    expect(existsSync(join(f.dir, 'release-cut.lock'))).toBe(false);
+  });
+
+  it.each(['operationId', 'sourceSha', 'version'])('retains a work dir with mismatched writer %s', async key => {
+    const f = fixture();
+    const stateFile = join(f.dir, 'release-cut.json');
+    writeFileSync(stateFile, JSON.stringify({ ...JSON.parse(readFileSync(stateFile, 'utf8')), [key]: 'other' }));
+    expect(await f.run()).toMatchObject({ ok: false, cuts: [{ reason: 'cut state does not identify this completed build' }] });
+    expect(f.inspectTrees).not.toHaveBeenCalled();
+    expect(existsSync(join(f.dir, 'sidecar'))).toBe(true);
+  });
+
+  it('does not take a live writer lock or release that writer admission', async () => {
+    const f = fixture();
+    const lock = join(f.dir, 'release-cut.lock');
+    const release = await acquireWorkDirLock(lock);
+    try {
+      expect(await f.run()).toMatchObject({ ok: false, cuts: [{ reason: expect.stringContaining('another cut') }] });
+      expect(readFileSync(lock, 'utf8')).toBe(`${process.pid}\n${readProcessIdentity(process.pid)}\n`);
+      expect(f.inspectTrees).not.toHaveBeenCalled();
+    } finally { await release(); }
+  });
+
+  it.each([false, true])('retains intermediates when holder evidence is incomplete or occupied (%s)', async occupied => {
+    const f = fixture();
+    const result = await f.run({ scanHolders: async () => ({ complete: occupied,
+      byPath: new Map(occupied ? [[f.dir, ['123']]] : []) }) });
+    expect(result.cuts[0]).toMatchObject(occupied ? { status: 'retained', reason: 'live workspace-host holders' }
+      : { status: 'failed', reason: 'workspace-host holder scan incomplete' });
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+  });
+
+  it('refuses a partial census before build verification or effects', async () => {
+    const f = fixture(); const verifyBuild = vi.fn();
+    const census = await f.inspectTrees();
+    expect(await f.run({ inspectTrees: async () => ({ ...census, error: 'partial' }), verifyBuild }))
+      .toMatchObject({ ok: false, cuts: [{ reason: expect.stringContaining('complete, unfiltered census') }] });
+    expect(verifyBuild).not.toHaveBeenCalled();
+    expect(existsSync(join(f.dir, 'sidecar'))).toBe(true);
+  });
+
+  it('accepts a real complete native census with a retained symlink group and still plans its clean sibling', async () => {
+    const f = fixture(); f.input.dryRun = true;
+    symlinkSync(join(f.dir, 'extracted/payload'), join(f.dir, 'sidecar/tool-link'));
+    const result = await f.run({ inspectTrees: (root, options) => inspectRetentionTrees(root,
+      { ...options, sudo: null, requirePrivilege: false }) });
+    expect(result).toMatchObject({ ok: true, cuts: [{ status: 'planned' }] });
+    expect(result.cuts[0]?.selected).toContain('extracted');
+    expect(result.cuts[0]?.selected).not.toContain('sidecar');
+    expect(result.cuts[0]?.retainedPaths).toContain(join(f.dir, 'sidecar'));
+    expect(result.cuts[0]?.caps?.[0]?.beforeBytes).toBeGreaterThan(100);
+    expect(existsSync(join(f.dir, 'sidecar/tool-link'))).toBe(true);
+  });
+
+  it('refuses a selected intermediate alias before deleting its ready marker', async () => {
+    const f = fixture();
+    rmSync(join(f.dir, 'sidecar'), { recursive: true });
+    symlinkSync(join(f.dir, 'extracted'), join(f.dir, 'sidecar'));
+    expect(await f.run()).toMatchObject({ ok: false, cuts: [{ reason: 'intermediate is an alias' }] });
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+    expect(existsSync(join(f.dir, 'extracted/payload'))).toBe(true);
+  });
+
+  it('retains named-only and aliased directories without treating their names as writer proof', async () => {
+    const f = fixture();
+    mkdirSync(join(workDir, '.papercusp/wh-release-unknown'));
+    symlinkSync(f.dir, join(workDir, '.papercusp/wh-release-alias'));
+    const result = await f.run();
+    expect(result.cuts.find(cut => cut.workDir.endsWith('unknown'))).toMatchObject({ status: 'retained', reason: 'no completed writer state' });
+    expect(result.cuts.find(cut => cut.workDir.endsWith('alias'))).toMatchObject({ status: 'retained', reason: 'unqualified directory or alias' });
+  });
+
+  it('plans dry runs without deleting the selected marker or tree', async () => {
+    const f = fixture(); f.input.dryRun = true;
+    expect(await f.run()).toMatchObject({ ok: true, cuts: [{ status: 'planned', selected: ['sidecar'] }] });
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+    expect(existsSync(join(f.dir, 'sidecar/payload'))).toBe(true);
+    expect(f.inspectTrees).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a protected atomic group while admitting its unpinned sibling', async () => {
+    const f = fixture();
+    const pins = [{ paths: [join(f.dir, 'sidecar.ready.json')], expiresAt: new Date(Date.now() + 60_000).toISOString() }];
+    const result = await withRetentionPinProtection(() => reclaimWorkspaceHostCutIntermediatesWithProtection(
+      { ...f.input, pins }, pinProtection(pins), { inspectTrees: f.inspectTrees, scanHolders: f.scanHolders }));
+    expect(result).toMatchObject({ ok: true, cuts: [{ selected: ['extracted'], removed: [join(f.dir, 'extracted')] }] });
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+    expect(existsSync(join(f.dir, 'sidecar/payload'))).toBe(true);
+  });
+
+  it('reports retained unpinned overage after effects instead of claiming the cap was met', async () => {
+    const f = fixture(); const census = f.inspectTrees;
+    const result = await f.run({ inspectTrees: async () => {
+      const value = await census();
+      return { ...value, entries: value.entries.map(entry => entry.path.endsWith('/publication') ? { ...entry, bytes: 200 } : entry) };
+    } });
+    expect(result).toMatchObject({ ok: false, cuts: [{ status: 'failed',
+      reason: 'workspace-host cap remains exceeded by retained unpinned bytes', caps: [{ afterBytes: 203, overByBytes: 103 }] }] });
+    expect(existsSync(join(f.dir, 'publication/server.tgz'))).toBe(true);
+  });
+
+  it('does not start a census after the admission deadline', async () => {
+    const f = fixture(); f.input.notAfterMs = Date.now() - 1;
+    expect(await f.run()).toMatchObject({ ok: false, cuts: [{ reason: 'workspace-host retention deadline exceeded' }] });
+    expect(f.inspectTrees).not.toHaveBeenCalled();
+  });
 });
 
 describe('pruneWorkspaceHostCutIntermediates on a real worktree (WI-10003700)', () => {
@@ -805,6 +1025,12 @@ describe('pruneWorkspaceHostCutIntermediates on a real worktree (WI-10003700)', 
     expect(await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir, intermediates: [] })).toEqual([]);
     expect(existsSync(join(dir, 'sidecar.ready.json'))).toBe(true);
     expect(worktrees(repo)).toHaveLength(2);
+  });
+
+  it('preserves the cap planner order across atomic groups', async () => {
+    const dir = cutDir();
+    expect(await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir, intermediates: ['extracted', 'sidecar'] }))
+      .toEqual([join(dir, 'extracted'), join(dir, 'sidecar.ready.json'), join(dir, 'sidecar')]);
   });
 
   it.each(['publication', 'sidecar.ready.json', '../source', '/tmp/source'])('rejects unowned or non-atomic selection %s before any removal', async child => {

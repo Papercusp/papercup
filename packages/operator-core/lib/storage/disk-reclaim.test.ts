@@ -5,6 +5,8 @@ import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { compilePolicy, RETENTION_POLICY, retentionRootSizeCap, type RetentionClass } from './retention-policy';
 import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, policyRoots, prioritizeRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
+import { createWorkspaceHostCutRetentionDelegate } from './disk-reclaim';
+import { pinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
@@ -26,6 +28,42 @@ const policy: RetentionClass[] = [
 ];
 const compiled = compilePolicy(policy, '/home/test');
 const entry = (path: string, classId: string, ageHours: number): RetentionEntry => ({ path, root: path.slice(0, path.lastIndexOf('/')), classId, newestWriteMs: now - ageHours * HOUR, bytes: 100, dev: 1, ino: 1 });
+
+describe('workspace-host native owner scheduling', () => {
+  it('passes the current admission snapshot and deadline to the existing native owner', async () => {
+    let pins = [{ paths: ['/cut/sidecar'], expiresAt: '2099-01-01T00:00:00.000Z' }];
+    let isPinned = pinProtection(pins, Date.now(), path => path);
+    const reclaim = vi.fn(async (_input: unknown, _protection: unknown) => ({ ok: true, cuts: [] }));
+    const delegate = createWorkspaceHostCutRetentionDelegate({ repoRoot: '/repo',
+      protection: () => ({ pins, isPinned }), loadOwner: async () => ({ reclaimWorkspaceHostCutIntermediatesWithProtection: reclaim }) });
+    expect(delegate.classId).toBe('workspace-host-cut-intermediates');
+    expect(await delegate.run(true, undefined, 1234)).toEqual({ ok: true, detail: { ok: true, cuts: [] } });
+    expect(reclaim).toHaveBeenLastCalledWith({ repoRoot: '/repo', dryRun: true, notAfterMs: 1234, pins }, isPinned);
+    const previous = isPinned;
+    pins = [{ paths: ['/cut/extracted'], expiresAt: '2099-01-01T00:00:00.000Z' }];
+    isPinned = pinProtection(pins, Date.now(), path => path);
+    await delegate.run(false, undefined, 5678);
+    expect(reclaim).toHaveBeenLastCalledWith({ repoRoot: '/repo', dryRun: false, notAfterMs: 5678, pins }, isPinned);
+    expect(reclaim.mock.calls[0]?.[1]).toBe(previous);
+  });
+
+  it.each(['protection', 'deadline'])('refuses missing %s before loading or invoking the writer', async missing => {
+    const loadOwner = vi.fn();
+    const delegate = createWorkspaceHostCutRetentionDelegate({ repoRoot: '/repo', loadOwner,
+      protection: () => missing === 'protection' ? undefined : { pins: [], isPinned: pinProtection([]) } });
+    await expect(delegate.run(false, undefined, missing === 'deadline' ? undefined : 1234))
+      .rejects.toThrow('not admitted');
+    expect(loadOwner).not.toHaveBeenCalled();
+  });
+
+  it('preserves an owning writer failure as an incomplete delegate result', async () => {
+    const detail = { ok: false, cuts: [{ workDir: '/cut', status: 'failed' as const, reason: 'retained overage' }] };
+    const delegate = createWorkspaceHostCutRetentionDelegate({ repoRoot: '/repo',
+      protection: () => ({ pins: [], isPinned: pinProtection([]) }),
+      loadOwner: async () => ({ reclaimWorkspaceHostCutIntermediatesWithProtection: async () => detail }) });
+    expect(await delegate.run(false, undefined, 1234)).toEqual({ ok: false, detail });
+  });
+});
 
 describe('per-root allocated-byte caps', () => {
   const capped = () => compilePolicy(policy.map((cls) => cls.id === 'scratch' ? { ...cls, maxBytes: 100 } : cls), '/home/test');
