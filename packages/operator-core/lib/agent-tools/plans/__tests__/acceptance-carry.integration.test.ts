@@ -14,6 +14,8 @@ import { fireBuiltinReactionAction } from '../../../events/builtin-actions';
 import { ensureAcceptanceDrainCarryInTransaction, ensureAcceptanceDrainFiling } from '../acceptance-drain-filing';
 import { applyPlanDrainTransition } from '../plan-drain-transition';
 import { withPlanLock } from '../with-plan-lock';
+import { releaseAllWorkItemLeasesForOwner } from '../../../work-item-lease-release';
+import { runWithWorkspace } from '../../../workspace-als';
 import {
   cleanupPlans,
   registerHarnessProject,
@@ -232,6 +234,44 @@ describe('P-025 transactional acceptance carry', () => {
          AND payload->>'acceptanceDrainPlan' = ${`${workspaceId}/${HARNESS}/${slug}`}
     `;
     expect(rows).toEqual([{ taken_by: 'driver-a' }]);
+  }, 60_000);
+
+  it('makes an ended executor carry claimable and assigns a successor without disturbing a live carry', async () => {
+    const endedPlan = PLAN('ended-executor');
+    const livePlan = PLAN('live-executor');
+    const endedOwner = `su-carry-ended-${Math.random().toString(36).slice(2, 10)}`;
+    const liveOwner = `su-carry-live-${Math.random().toString(36).slice(2, 10)}`;
+    await registerHarnessProject(admin, workspaceId, HARNESS);
+    for (const slug of [endedPlan, livePlan]) {
+      await seedPlan(admin, workspaceId, HARNESS, slug, body(slug));
+    }
+    const carry = (slug: string, owner: string) => admin.begin((tx) =>
+      ensureAcceptanceDrainCarryInTransaction(tx, {
+        workspaceId, harnessSlug: HARNESS, planSlug: slug, accountableOwnerId: owner,
+      }));
+    const ended = await carry(endedPlan, endedOwner);
+    const live = await carry(livePlan, liveOwner);
+    const readHolders = () => admin<{ feature_id: string; taken_by: string | null }[]>`
+      SELECT feature_id, taken_by FROM harness_shared.work_items
+      WHERE workspace_id=${workspaceId} AND harness_slug=${HARNESS}
+        AND feature_id=ANY(${[ended.id!, live.id!]}::text[])
+      ORDER BY feature_id`;
+
+    // This is the canonical lease-release path invoked by a true SessionEnd;
+    // no direct UPDATE simulates the release or launders a live owner's claim.
+    const released = await runWithWorkspace(workspaceId, () => releaseAllWorkItemLeasesForOwner(endedOwner));
+    expect(released.releasedIds).toContain(ended.id);
+    expect(await readHolders()).toEqual(expect.arrayContaining([
+      { feature_id: ended.id, taken_by: null },
+      { feature_id: live.id, taken_by: liveOwner },
+    ]));
+    const successor = await carry(endedPlan, 'su-carry-successor');
+    await carry(livePlan, 'su-carry-successor');
+    expect(successor).toMatchObject({ outcome: 'already-open', id: ended.id });
+    expect(await readHolders()).toEqual(expect.arrayContaining([
+      { feature_id: ended.id, taken_by: 'su-carry-successor' },
+      { feature_id: live.id, taken_by: liveOwner },
+    ]));
   }, 60_000);
 
   it('mints no carry for a template instance (a scheduled run plan) — WI-6554700010010577', async () => {

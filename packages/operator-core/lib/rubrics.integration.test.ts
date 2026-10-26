@@ -392,6 +392,31 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
       .resolves.toEqual([]);
     await expect(rubrics.getAcceptanceRubricsForPlan('unreadable-subject')).resolves.toEqual([]);
   });
+
+  it('strict acceptance lookup reports a forward-schema contract as unreadable rather than missing', async () => {
+    const data = {
+      ...rubricData,
+      kind: 'acceptance', subjectPlan: 'forward-schema-subject', subjectHarnessSlug: 'papercusp',
+      barSetHash: 'a'.repeat(64),
+      barContract: {
+        schemaVersion: 1, adoptionEpoch: 1, cohort: 'post-epoch', subjectPlanRevision: 1,
+        seededAt: '2026-10-26T00:00:00.000Z', seededBy: 'newer-writer',
+      },
+    };
+    await insertRubricPlan('forward-schema-acceptance', { data });
+    // Establish a readable control, then vary only the known contract version.
+    await expect(rubrics.getAcceptanceRubricsForPlan(data.subjectPlan, { strict: true }))
+      .resolves.toEqual([expect.objectContaining({ rubricId: 'forward-schema-acceptance' })]);
+    await db.adminSql`UPDATE harness_shared.harness_plans
+      SET template_data = jsonb_set(template_data, '{barContract,schemaVersion}', '2'::jsonb)
+      WHERE workspace_id=${activeWorkspaceId()} AND harness_slug='papercusp'
+        AND plan_slug='forward-schema-acceptance'`;
+    await expect(rubrics.getAcceptanceRubricsForPlan(data.subjectPlan, { strict: true }))
+      .rejects.toThrow('could not be decoded');
+    await expect(rubrics.getAcceptanceRubricsForPlan(data.subjectPlan)).resolves.toEqual([]);
+    await expect(rubrics.getAcceptanceRubricsForPlan('absent-forward-schema-subject', { strict: true }))
+      .resolves.toEqual([]);
+  });
 });
 
 describe('rubric refs are workspace-unique — a slug held by two harnesses refuses (WI-6554700010008395)', () => {
