@@ -411,6 +411,78 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     expect(feedback).not.toHaveBeenCalled();
   });
 
+  it('retires a consult from an older reservation epoch and dedupes the current epoch', async () => {
+    const issueId = 'EI-stale-reservation-epoch-' + randomBytes(5).toString('hex');
+    const reservationKey = 'grading-audit:' + issueId;
+    const priorReservedAt = '2026-08-15T23:45:00.000Z';
+    const currentReservedAt = SOURCE_AUDIT_RESERVED_AT;
+    const conversationId = 'conv-stale-reservation-epoch-' + randomBytes(5).toString('hex');
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question, routing, outcome)
+      VALUES (
+        ${WS}, ${conversationId}, 'audit-requester', 'prior-epoch-auditor', 'awaiting_responder',
+        'stale reservation epoch regression',
+        ${rootSql.json({
+          cascade: { flavor: 'grading-integrity', reservationKey, reservationReservedAt: priorReservedAt, issueId },
+        } as never)}, NULL
+      )`;
+
+    const fixture = makeDeps(routeOf([cand('fresh-epoch-auditor')]));
+    const feedback = vi.fn(async (
+      req: GetFeedbackRequest,
+      _identity: unknown,
+      options: {
+        harnessSlug?: string | null;
+        filterRoute?: (route: RouteResult) => Promise<RouteResult>;
+      } = {},
+    ) =>
+      getFeedbackCore(req, {
+        ...fixture.deps,
+        route: async (params) => {
+          const routed = await fixture.deps.route(params);
+          return options.filterRoute ? options.filterRoute(routed) : routed;
+        },
+      }),
+    );
+    const input = {
+      card: { issueId, createdBy: 'source-author' } as ScorecardRow,
+      reservationKey,
+      reservationReservedAt: currentReservedAt,
+      brief: 'Audit the current reservation epoch',
+      ctx: { workspaceId: WS, uiClientId: 'current-epoch-requester', isSuperuser: true },
+    };
+    const routeDeps = {
+      getSql: () => rootSql,
+      feedback,
+      confirmReservation: async () => true,
+      resolveParties: async (ids: readonly (string | null | undefined)[]) => new Map(
+        ids.filter((id): id is string => Boolean(id)).map((id) => [id, id]),
+      ),
+      resolveResponderLiveness: async () => ({ sessionState: 'live' as const }),
+    };
+
+    const first = await routeSourceGradingAudit(input, routeDeps);
+    if (first.state !== 'routed') throw new Error('expected current epoch to route, got ' + first.state);
+    expect(feedback).toHaveBeenCalledOnce();
+
+    const oldRow = await stateRow(conversationId);
+    expect(oldRow.state).toBe('expired');
+    expect(oldRow.outcome).toMatchObject({
+      dispatch: 'stale-reservation-epoch',
+      priorReservedAt,
+      currentReservedAt,
+    });
+    expect((await stateRow(first.conversationId)).routing).toMatchObject({
+      cascade: { reservationKey, reservationReservedAt: currentReservedAt },
+    });
+
+    const replay = await routeSourceGradingAudit(input, routeDeps);
+    if (replay.state !== 'deduped') throw new Error('expected same-epoch replay to dedupe, got ' + replay.state);
+    expect(replay.conversationId).toBe(first.conversationId);
+    expect(feedback).toHaveBeenCalledOnce();
+  });
+
   it.each(['ended', 'recorded'] as const)(
     'falls back in the initial reservation epoch when the newly routed responder is already %s',
     async (sessionState) => {
