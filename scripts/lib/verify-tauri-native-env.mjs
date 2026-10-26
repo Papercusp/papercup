@@ -13,6 +13,24 @@ import { verifierTaskBudget } from './verify-tauri-deadline.mjs';
 // PostgreSQL init/start/stop/start, and portal setup precede the native rig.
 // They must not spend the rig's own launch clock.
 const nativeTypecheckTimeoutMs = 15_000 + 120_000 + 10_000 + 5_000;
+// Completed-runtime certification checks these subjects and calibration inputs
+// against the original verifier receipt. A caller's repair-only input list must
+// not replace this population: a successful native run would be uncertifiable.
+const desktopPortalNativeInputs = Object.freeze([
+  'apps/operator-vite/desktop-portal-candidate.ts',
+  'apps/operator-vite/desktop-portal-plugin.ts',
+  'apps/operator/bin/desktop-portal-host.ts',
+  'apps/operator/bin/desktop-portal-lifecycle.ts',
+  'papercusp-desktop/src-tauri/src/env_switch.rs',
+  'papercusp-desktop/src-tauri/src/main.rs',
+  'apps/operator/bin/desktop-portal-native.test.ts',
+  'apps/operator/bin/desktop-portal-persistence.test.ts',
+  'apps/operator/vitest.e2e.config.ts',
+  'packages/operator-core/lib/testing-native-runtime.ts',
+  'scripts/lib/verify-tauri-native-env.mjs',
+  'scripts/test-files.mjs',
+  'scripts/verify-tauri-headless.sh',
+]);
 /** @param {NodeJS.ProcessEnv} [env] */
 export function desktopPortalNativeTimingForEnv(env = process.env) {
   const budget = verifierTaskBudget({ env: {
@@ -142,13 +160,13 @@ export function nativeVerifierEnv(env, launch) {
     }
     child.PAPERCUSP_REPO_DIR = donor;
     child.VERIFY_TAURI_SOURCE_REF = sourceRef;
-    if (!child.VERIFY_TAURI_SOURCE_INPUTS && !child.VERIFY_TAURI_SOURCE_INPUTS_FILE) {
-      child.VERIFY_TAURI_SOURCE_INPUTS = [
-        'apps/operator/bin/desktop-portal-native.test.ts',
-        'apps/operator/bin/desktop-portal-persistence.test.ts',
-        'scripts/lib/verify-tauri-native-env.mjs',
-      ].join(',');
-    }
+    // source-preview validates both channels against the selected commit before
+    // copying or booting. Preserve custom paths and an inputs-file selector,
+    // while always qualifying the product dependencies in the same receipt.
+    child.VERIFY_TAURI_SOURCE_INPUTS = [...new Set([
+      ...(child.VERIFY_TAURI_SOURCE_INPUTS ?? '').split(',').map(path => path.trim()).filter(Boolean),
+      ...desktopPortalNativeInputs,
+    ])].join(',');
   }
   if (launch?.timeoutMs !== undefined) {
     if (!Number.isSafeInteger(launch.timeoutMs) || launch.timeoutMs <= 0) {
