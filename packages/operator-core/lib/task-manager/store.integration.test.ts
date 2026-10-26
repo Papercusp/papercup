@@ -799,6 +799,36 @@ describe('P-012 terminal provenance writer', () => {
     expect(emitTerminal).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves a known invocation when delayed terminal evidence omits its identity', async () => {
+    const row = await liveTask('missinginvocation');
+    const effects = { emitTerminal: vi.fn(async () => {}), onTerminalPersisted: vi.fn() };
+    await store.closeTask(row.taskId, { state: 'ended_unobserved', terminalProvenance: terminal(row.scopeUnit!, {
+      invocationId: 'retained-invocation', activeState: 'inactive', serviceResult: null,
+      execMainCode: null, execMainStatus: null,
+    }) }, undefined, effects);
+    const endedAt = (await store.getTask(row.taskId))!.endedAt;
+    expect(await store.closeTask(row.taskId, { state: 'exited', exitCode: 0,
+      terminalProvenance: terminal(row.scopeUnit!, { invocationId: null, activeState: 'inactive',
+        serviceResult: 'success', execMainCode: 1, execMainStatus: 0 }) }, undefined, effects)).toBe(true);
+    expect(await store.getTask(row.taskId)).toMatchObject({ state: 'exited', exitCode: 0, endedAt,
+      terminalProvenance: { invocationId: 'retained-invocation' } });
+    expect(effects.onTerminalPersisted).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['unobserved', 'runner-log'])('receipts only accepted terminal writes in a mixed %s batch', async (path) => {
+    const tasks = await Promise.all(['acceptedreceipt', 'refusedreceipt'].map((id) => liveTask(id)));
+    const receipts: string[] = [];
+    const effects = (taskId: string) => ({ emitTerminal: vi.fn(async () => {}),
+      onTerminalPersisted: () => receipts.push(taskId) });
+    const verdicts = tasks.map((row, index) => ({ taskId: row.taskId, state: 'exited' as const,
+      exitCode: 2, reason: 'released', terminalProvenance: terminal(index ? 'pc-wrong.service' : row.scopeUnit!) }));
+    expect(await (path === 'unobserved'
+      ? store.markEndedUnobserved(verdicts, undefined, effects)
+      : store.markRecoveredFromJobLog(verdicts, undefined, effects))).toBe(1);
+    expect(receipts).toEqual([tasks[0].taskId]);
+    expect((await store.getTask(tasks[1].taskId))?.state).toBe('running');
+  });
+
   it('preserves observed exits and rejects active or mismatched recovery evidence', async () => {
     const row = await liveTask('latecontrols');
     const effects = { emitTerminal: vi.fn(async () => {}) };

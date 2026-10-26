@@ -16,6 +16,7 @@ const store = vi.hoisted(() => ({
   cleared: [] as string[][],
   touchGate: null as null | (() => Promise<void>),
   closeGate: null as null | (() => Promise<void>),
+  refused: new Set<string>(),
 }));
 
 vi.mock('./store', () => ({
@@ -31,18 +32,22 @@ vi.mock('./store', () => ({
     store.stranded.push(...v);
     return v.length;
   },
-  markEndedUnobserved: async (v: { taskId: string; reason: string; terminalProvenance?: unknown }[]) => {
+  markEndedUnobserved: async (v: { taskId: string; reason: string; terminalProvenance?: unknown }[],
+    _inject?: unknown, effectsForTask?: (taskId: string) => { onTerminalPersisted?: () => void }) => {
     store.endedUnobserved.push(...v);
-    return v.length;
+    const accepted = v.filter((row) => !store.refused.has(row.taskId));
+    for (const row of accepted) effectsForTask?.(row.taskId).onTerminalPersisted?.();
+    return accepted.length;
   },
   markRecoveredFromJobLog: async (v: { taskId: string; state: string; exitCode: number | null; reason: string }[],
-    _inject?: unknown, effectsForTask?: (taskId: string) => { stage?: (name: string) => void }) => {
+    _inject?: unknown, effectsForTask?: (taskId: string) => { stage?: (name: string) => void; onTerminalPersisted?: () => void }) => {
     store.recovered.push(...v);
     for (const row of v) {
       effectsForTask?.(row.taskId).stage?.('task-close-update');
       await store.closeGate?.();
+      if (!store.refused.has(row.taskId)) effectsForTask?.(row.taskId).onTerminalPersisted?.();
     }
-    return v.length;
+    return v.filter((row) => !store.refused.has(row.taskId)).length;
   },
   upsertUnaccounted: async (g: { taskId: string; metrics?: unknown }[]) => {
     store.upserted.push(...g);
@@ -182,6 +187,7 @@ beforeEach(() => {
   store.cleared.length = 0;
   store.touchGate = null;
   store.closeGate = null;
+  store.refused.clear();
   resetNotifyDebounce();
 });
 
@@ -593,6 +599,26 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
       terminalProvenance: terminal,
     });
     expect(resetFailedTaskUnit).toHaveBeenCalledWith(terminal);
+  });
+
+  it.each(['unobserved', 'runner-log'])('retains refused units in a mixed %s settlement batch', async (path) => {
+    const tasks = ['accepted777', 'refused777'].map((taskId) => row({ taskId,
+      scopeUnit: `pc-${taskId}.service`, logPath: `/logs/${taskId}.log` }));
+    const terminals = tasks.map((task) => ({
+      capturedAt: '2026-10-26T01:00:00.000Z', scopeUnit: task.scopeUnit!, cgroupPath: null,
+      invocationId: `invocation-${task.taskId}`, loadState: 'loaded', activeState: 'failed',
+      serviceResult: 'exit-code', execMainCode: path === 'runner-log' ? null : 1,
+      execMainStatus: path === 'runner-log' ? null : 2, memoryMaxBytes: null,
+      peakMemoryBytes: null, peakMemorySource: 'unknown' as const,
+    }));
+    store.refused.add(tasks[1].taskId);
+    const resetFailedTaskUnit = vi.fn(async () => true);
+    const out = await reconcileTick({ listLive: async () => tasks, scan: () => scanResult([]), fs: memFs({}),
+      inspectTaskUnitTerminals: async () => new Map(terminals.map((terminal) => [terminal.scopeUnit, terminal])),
+      readJobLogTerminal: () => path === 'runner-log' ? { status: 'completed', exitCode: 0 } : null,
+      resetFailedTaskUnit });
+    expect(out.endedUnobservedCount + out.recoveredFromJobLogCount).toBe(1);
+    expect(resetFailedTaskUnit.mock.calls).toEqual([[terminals[0]]]);
   });
 
   // WI-10004208 — a SUCCESSFUL transient service is garbage-collected at once, so
