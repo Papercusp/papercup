@@ -69,6 +69,85 @@ export function nextHeadcountBackoff(currentMs: number): number {
   return Math.min(15 * 60_000, Math.max(60_000, Math.max(0, currentMs) * 2));
 }
 
+/**
+ * WI-6554700010029299: consecutive governor waves in which EVERY member died at boot
+ * with the SAME failure fingerprint before the governor holds relaunching. A
+ * deterministic boot refusal (on 10-24/25 it was psu's account-route check) makes
+ * every replacement die the same way. The 15-minute backoff cap alone kept minting
+ * up to FLEET_HEADCOUNT_BULK_WAVE_SIZE dead members per wave, about 232 over two
+ * days in nonp2p-bug-drain-luna-max-0930.
+ */
+export const FLEET_HEADCOUNT_BOOT_FAILURE_STREAK = 3;
+/** How long the governor waits once that streak is reached. One probe wave runs after it. */
+export const FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS = 6 * 60 * 60_000;
+
+/**
+ * PURE. A stable fingerprint for a boot-death failure reason, or null when the
+ * reason is not a boot death. The boot-death text comes from console-spawn
+ * ("… agent command died at boot (exit N) … log tail: …"). The fingerprint is the
+ * last substantive line of that log tail, lowercased, with digit runs normalized,
+ * so session ids and ports do not split one cause into many.
+ */
+export function bootFailureFingerprint(reason: string | null | undefined): string | null {
+  if (!reason || !/died at boot/i.test(reason)) return null;
+  // eslint-disable-next-line no-control-regex
+  const clean = reason.replace(/\u001b\][^\u0007]*\u0007/g, '').replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');
+  const tailAt = clean.toLowerCase().lastIndexOf('log tail:');
+  const lines = (tailAt >= 0 ? clean.slice(tailAt + 'log tail:'.length) : '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('[papercusp]'));
+  const basis = lines.length > 0
+    ? lines[lines.length - 1]
+    : (clean.match(/died at boot \(exit [^)]*\)/i)?.[0] ?? 'died at boot');
+  return basis.toLowerCase().replace(/\d+/g, '#').replace(/\s+/g, ' ').slice(0, 160);
+}
+
+/**
+ * PURE. The fingerprint of a wave in which every requested member failed with one
+ * boot-death cause, or null when any member did not fail that way (a mixed or
+ * partial wave says nothing deterministic about the launch path).
+ */
+export function bootFailureWaveFingerprint(
+  failed: ReadonlyArray<{ ownerId: string; reason: string }>,
+  requestedOwnerIds: readonly string[],
+): string | null {
+  if (requestedOwnerIds.length === 0) return null;
+  let fingerprint: string | null = null;
+  for (const ownerId of requestedOwnerIds) {
+    const prints = failed
+      .filter((entry) => entry.ownerId === ownerId)
+      .map((entry) => bootFailureFingerprint(entry.reason))
+      .filter((print): print is string => print != null);
+    if (prints.length === 0) return null;
+    if (fingerprint == null) fingerprint = prints[0];
+    if (!prints.includes(fingerprint)) return null;
+  }
+  return fingerprint;
+}
+
+/**
+ * PURE. The trailing run of identical `boot-failure` waves in governor history.
+ * Only `boot-failure` / `boot-ok` events count. Ticks that launch nothing (wait,
+ * observe, terminal) neither extend nor break the run. A `boot-ok` wave or a
+ * different fingerprint ends it.
+ */
+export function bootFailureStreak(
+  history: ReadonlyArray<{ action: string; reason: string }>,
+): { fingerprint: string; count: number } | null {
+  let fingerprint: string | null = null;
+  let count = 0;
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const event = history[i];
+    if (event.action === 'boot-ok') break;
+    if (event.action !== 'boot-failure') continue;
+    if (fingerprint == null) fingerprint = event.reason;
+    else if (event.reason !== fingerprint) break;
+    count += 1;
+  }
+  return fingerprint == null ? null : { fingerprint, count };
+}
+
 export function resolveProductiveCapacityFloor(target: number, configured?: number): number {
   const boundedTarget = Math.max(1, Math.floor(target));
   const raw = Number.isFinite(configured) ? Math.floor(configured as number) : 1;
@@ -1559,6 +1638,31 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       launchTransaction.state = 'partial';
     }
 
+    // WI-6554700010029299: record this wave's boot outcome in governor history, which
+    // later transactions carry forward. A deterministic boot refusal is then recognised
+    // across ticks instead of being retried every 15 minutes indefinitely.
+    const governorState = ensureGovernorState(launchTransaction);
+    const waveBootFailure = bootFailureWaveFingerprint(launchTransaction.failed, newMemberIds);
+    if (waveBootFailure != null) {
+      appendGovernorHistory(governorState, {
+        at: Date.now(),
+        action: 'boot-failure',
+        transactionId: launchTransaction.transactionId,
+        reason: waveBootFailure,
+      });
+    } else if (newMemberIds.some((ownerId) => verified.has(ownerId))) {
+      appendGovernorHistory(governorState, {
+        at: Date.now(),
+        action: 'boot-ok',
+        transactionId: launchTransaction.transactionId,
+        reason: 'wave verified at least one member',
+      });
+    }
+    const bootStreak = waveBootFailure != null ? bootFailureStreak(governorState.history) : null;
+    const bootFailureHold = bootStreak != null && bootStreak.count >= FLEET_HEADCOUNT_BOOT_FAILURE_STREAK
+      ? bootStreak
+      : null;
+
     let rosterError: string | null = null;
     try {
       liveMemberIds = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch'))
@@ -1615,12 +1719,38 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         reason: capacitySnapshot.wall,
       },
     });
-    await recordFleetHeadcountAttempt({
-      workspaceId,
-      fleetSlug,
-      succeeded: terminalVerdict.outcome === 'productive',
-      ...(terminalVerdict.outcome === 'productive' ? {} : { error: terminalVerdict.reason }),
-    });
+    const productive = terminalVerdict.outcome === 'productive';
+    if (!productive && bootFailureHold) {
+      const holdReason = `boot-failure hold: the last ${bootFailureHold.count} governor waves all died at boot with `
+        + `'${bootFailureHold.fingerprint}'; relaunch held for ${Math.round(FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS / 3_600_000)}h `
+        + '(one probe wave after the hold). Fix the boot refusal, then a verified wave clears this.';
+      await emitFleetHeadcountEvent({
+        workspaceId,
+        fleetSlug,
+        kind: 'refusal',
+        summary: `fleet ${fleetSlug}: ${holdReason}`,
+        payload: {
+          reason: 'boot-failure-hold',
+          fingerprint: bootFailureHold.fingerprint,
+          consecutiveWaves: bootFailureHold.count,
+          holdMs: FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS,
+        },
+      });
+      await recordFleetHeadcountAttempt({
+        workspaceId,
+        fleetSlug,
+        succeeded: false,
+        error: holdReason,
+        holdMs: FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS,
+      });
+    } else {
+      await recordFleetHeadcountAttempt({
+        workspaceId,
+        fleetSlug,
+        succeeded: productive,
+        ...(productive ? {} : { error: terminalVerdict.reason }),
+      });
+    }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     if (claimedLaunchSlotAt != null && !spawnAttempted) {

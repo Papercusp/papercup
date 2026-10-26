@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { FleetHeadcountTarget, FleetLaunchTransaction } from '../../agent-fleets-store';
 import {
   assessFleetHeadcountGovernor,
+  bootFailureFingerprint,
+  bootFailureStreak,
+  bootFailureWaveFingerprint,
+  FLEET_HEADCOUNT_BOOT_FAILURE_STREAK,
   computeHeadcountDeficit,
   FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT,
   FLEET_HEADCOUNT_BULK_WAVE_SIZE,
@@ -740,5 +744,54 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       action: 'spawn',
       reason: 'productive-capacity floor is not yet evidenced; open one canary only',
     });
+  });
+});
+
+describe('deterministic boot-failure hold (WI-6554700010029299)', () => {
+  // The exact boot-death shape console-spawn recorded for nonp2p-bug-drain-luna-max-0930
+  // on 10-25, including the OSC title sequences the psu banner emits.
+  const bootDeath = (session: number) =>
+    'headless member launched but its agent command died at boot (exit 1) — the shell stays open holding a DEAD session, '
+    + 'so this never surfaced as a process exit (EI-19311623077693508) — log tail: '
+    + '\u001b]0;SH: fleet · governor member 1/1 (claim-spec)\u0007papercusp superuser launcher (psu): launcher\n'
+    + `psu: codex (su)  ·  no plan  ·  session ${session}\n`
+    + 'psu: fleet — joined fleet nonp2p-bug-drain-luna-max-0930 as member.\n'
+    + 'psu: SU launch account route differs from its resolved bootstrap\n\n'
+    + '[papercusp] initial terminal command exited with status 1; headless launch exiting.';
+
+  it('fingerprints a boot death by its last substantive log line, independent of session ids', () => {
+    expect(bootFailureFingerprint(bootDeath(52595))).toBe('psu: su launch account route differs from its resolved bootstrap');
+    expect(bootFailureFingerprint(bootDeath(52595))).toBe(bootFailureFingerprint(bootDeath(61234)));
+    expect(bootFailureFingerprint('headless member launched but its agent command died at boot (exit 2)'))
+      .toBe('died at boot (exit #)');
+    // Not a boot death: transient spawn errors must never trip the hold.
+    expect(bootFailureFingerprint('spawn ENOENT')).toBeNull();
+    expect(bootFailureFingerprint(null)).toBeNull();
+  });
+
+  it('a wave counts only when EVERY requested member died at boot with one cause', () => {
+    const failed = [
+      { ownerId: 'a', reason: bootDeath(1) },
+      { ownerId: 'b', reason: bootDeath(2) },
+    ];
+    expect(bootFailureWaveFingerprint(failed, ['a', 'b'])).toBe('psu: su launch account route differs from its resolved bootstrap');
+    // One member opened fine, so the wave is mixed and says nothing deterministic.
+    expect(bootFailureWaveFingerprint(failed, ['a', 'b', 'c'])).toBeNull();
+    expect(bootFailureWaveFingerprint([{ ownerId: 'a', reason: 'spawn ENOENT' }], ['a'])).toBeNull();
+    expect(bootFailureWaveFingerprint([], [])).toBeNull();
+  });
+
+  it('counts the trailing run of identical boot-failure waves; boot-ok or a new cause ends it', () => {
+    const fp = 'psu: su launch account route differs from its resolved bootstrap';
+    const bf = (reason = fp) => ({ action: 'boot-failure', reason });
+    const noise = { action: 'terminal', reason: 'failed/spawn: 1/1 headless governor spawn(s) failed' };
+    expect(bootFailureStreak([bf(), noise, bf(), { action: 'retry', reason: 'x' }, bf()]))
+      .toEqual({ fingerprint: fp, count: 3 });
+    expect(bootFailureStreak([bf(), bf(), { action: 'boot-ok', reason: 'ok' }, bf()]))
+      .toEqual({ fingerprint: fp, count: 1 });
+    expect(bootFailureStreak([bf('other cause'), bf(), bf()])).toEqual({ fingerprint: fp, count: 2 });
+    expect(bootFailureStreak([noise])).toBeNull();
+    // The hold threshold is reachable by exactly this run length.
+    expect(bootFailureStreak([bf(), bf(), bf()])!.count).toBeGreaterThanOrEqual(FLEET_HEADCOUNT_BOOT_FAILURE_STREAK);
   });
 });

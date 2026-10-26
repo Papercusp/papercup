@@ -111,7 +111,7 @@ vi.mock('./system-actions', () => ({
   registerSystemAction: vi.fn(),
 }));
 
-import { runFleetHeadcountGovernor } from './fleet-headcount-action';
+import { FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS, runFleetHeadcountGovernor } from './fleet-headcount-action';
 
 const readyAttestation = (ownerId: string, ready: boolean) => ({
   version: 1 as const,
@@ -551,6 +551,81 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
         kind: 'refill-clamped', requested: 3, allowance: 1, residualShortfall: 2,
       }),
     ]));
+  });
+
+  // WI-6554700010029299: a deterministic psu boot refusal made every replacement die
+  // at boot, and the 15-minute backoff cap let the governor mint dead members forever.
+  describe('deterministic boot-failure hold (WI-6554700010029299)', () => {
+    const FP = 'psu: su launch account route differs from its resolved bootstrap';
+    const bootDeath = 'headless member launched but its agent command died at boot (exit 1) — log tail: '
+      + 'psu: fleet — joined fleet fleet-a as member.\npsu: SU launch account route differs from its resolved bootstrap\n'
+      + '[papercusp] initial terminal command exited with status 1; headless launch exiting.';
+    const priorWithBootFailures = (count: number) => ({
+      version: 1 as const,
+      transactionId: 'tx-boot',
+      launcherOwnerId: 'su-leader',
+      state: 'verified' as const,
+      requestedAt: 1,
+      updatedAt: 1,
+      requestedMemberIds: ['su-a'],
+      openedMemberIds: ['su-a'],
+      verifiedMemberIds: ['su-a'],
+      unconfirmedMemberIds: [],
+      workerReadyMemberIds: ['su-a'],
+      workerAttestations: [readyAttestation('su-a', true)],
+      failed: [],
+      waves: [{ index: 0, ownerIds: ['su-a'], state: 'verified' as const }],
+      recovery: { retryOwnerIds: [], nextAction: 'observe' },
+      governor: {
+        version: 1 as const,
+        probeOwnerIds: ['su-a'],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: Array.from({ length: count }, (_, i) => ({ at: 100 + i, action: 'boot-failure' as const, reason: FP })),
+        terminalVerdict: null,
+      },
+    });
+    const runWithPrior = async (priorBootFailures: number) => {
+      mocks.claimAttempt.mockResolvedValue({
+        workspaceId: 'ws', fleetSlug: 'fleet-a', target: 2,
+        config: { ...baseConfig, productiveCapacityFloor: 1 },
+        nextAttemptAt: null, backoffMs: 900_000, lastError: null, claimedAt: 1,
+      });
+      mocks.getFleet.mockResolvedValue({
+        fleetSlug: 'fleet-a', leaderOwnerId: 'su-leader', lastLaunchTransaction: priorWithBootFailures(priorBootFailures),
+      });
+      mocks.liveMemberIds.mockResolvedValue(['su-a']);
+      mocks.spawnHeadless.mockImplementation(async () => ({ status: 'error', error: bootDeath }));
+      await runFleetHeadcountGovernor({
+        installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+      });
+    };
+
+    it('the third identical all-dead wave holds relaunch for hours and says why', async () => {
+      await runWithPrior(2);
+      expect(mocks.spawnHeadless).toHaveBeenCalled();
+      expect(mocks.recordAttempt).toHaveBeenLastCalledWith(expect.objectContaining({
+        succeeded: false,
+        holdMs: FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS,
+        error: expect.stringContaining(FP),
+      }));
+      const persisted = mocks.setTransaction.mock.calls.at(-1)?.[0].transaction;
+      expect(persisted.governor.history.filter((e: { action: string }) => e.action === 'boot-failure')).toHaveLength(3);
+      expect(mocks.headcountEvents).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'refusal', reason: 'boot-failure-hold', fingerprint: FP, consecutiveWaves: 3 }),
+      ]));
+    });
+
+    it('control: a second identical wave stays on the ordinary backoff', async () => {
+      await runWithPrior(1);
+      expect(mocks.spawnHeadless).toHaveBeenCalled();
+      const last = mocks.recordAttempt.mock.calls.at(-1)?.[0];
+      expect(last).toMatchObject({ succeeded: false });
+      expect(last.holdMs).toBeUndefined();
+      expect(mocks.headcountEvents).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ reason: 'boot-failure-hold' }),
+      ]));
+    });
   });
 
   it('refuses a zero-capacity refill before claiming a launch slot or pruning', async () => {

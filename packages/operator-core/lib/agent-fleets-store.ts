@@ -112,7 +112,13 @@ export interface FleetLaunchCapacitySnapshot {
 
 export interface FleetLaunchGovernorEvent {
   at: number;
-  action: 'observe' | 'retry' | 'prune' | 'spawn' | 'respawn' | 'terminal';
+  /**
+   * `boot-failure` / `boot-ok` mark a governor wave whose members all died at boot
+   * with one failure fingerprint (reason = the fingerprint), or a wave that verified
+   * at least one member. They drive the deterministic-boot-failure hold
+   * (WI-6554700010029299) and are carried across transactions with the rest of history.
+   */
+  action: 'observe' | 'retry' | 'prune' | 'spawn' | 'respawn' | 'terminal' | 'boot-failure' | 'boot-ok';
   reason: string;
   transactionId?: string;
   ownerId?: string;
@@ -1819,11 +1825,19 @@ export async function recordFleetHeadcountAttempt(opts: {
   fleetSlug: string;
   succeeded: boolean;
   error?: string | null;
+  /**
+   * Failure only: the next attempt waits at least this long, even when the
+   * exponential backoff (capped at 15 min) would retry sooner. The governor sets it
+   * when the same boot failure keeps repeating (WI-6554700010029299), so a
+   * deterministic launch refusal stops minting a dead member every 15 minutes.
+   */
+  holdMs?: number;
   now?: number;
   sql?: Sql;
 }): Promise<void> {
   const s = pg(opts.sql);
   const now = opts.now ?? Date.now();
+  const holdMs = Math.max(0, Math.floor(opts.holdMs ?? 0));
   if (opts.succeeded) {
     await s.unsafe(
       `UPDATE harness_shared.agent_fleets
@@ -1838,10 +1852,10 @@ export async function recordFleetHeadcountAttempt(opts: {
     `UPDATE harness_shared.agent_fleets
         SET headcount_backoff_ms = LEAST(${HEADCOUNT_MAX_BACKOFF_MS},
               GREATEST(${HEADCOUNT_INITIAL_BACKOFF_MS}, headcount_backoff_ms * 2)),
-            headcount_next_attempt_at = $3 + LEAST(${HEADCOUNT_MAX_BACKOFF_MS},
-              GREATEST(${HEADCOUNT_INITIAL_BACKOFF_MS}, headcount_backoff_ms * 2)),
+            headcount_next_attempt_at = $3 + GREATEST($5::bigint, LEAST(${HEADCOUNT_MAX_BACKOFF_MS},
+              GREATEST(${HEADCOUNT_INITIAL_BACKOFF_MS}, headcount_backoff_ms * 2))),
             headcount_last_error = $4, updated_at = $3
       WHERE workspace_id = $1 AND fleet_slug = $2`,
-    [opts.workspaceId, opts.fleetSlug, now, (opts.error ?? 'top-up failed').slice(0, 500)],
+    [opts.workspaceId, opts.fleetSlug, now, (opts.error ?? 'top-up failed').slice(0, 500), holdMs],
   );
 }
