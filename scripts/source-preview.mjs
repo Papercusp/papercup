@@ -1372,10 +1372,54 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }) {
       temporary: row.temporary.replaceAll('@BG_PID@', String(ownerPid)) })) });
 }
 
+/** Expand directory copies from the retained source census, before a caller
+ * freezes its transaction. Never discover membership from a mutable directory
+ * walk. `sql` matches the maintained builder's immediate *.sql copy; recursive
+ * includes every censused descendant and refuses links instead of following them.
+ * @param {{ prepared: BgVerifierPreparation,
+ *   trees: { source: string, final: string, selection: 'recursive' | 'sql' }[] }} args
+ */
+export function expandBgVerifierAssetTrees({ prepared, trees }) {
+  verifyBgVerifierSource(prepared, 'before-build');
+  const safe = path => typeof path === 'string' && path && !isAbsolute(path)
+    && !path.includes('\\') && !path.includes('\0') && !path.includes('@BG_PID@')
+    && path.split('/').every(part => part && part !== '.' && part !== '..');
+  assert.ok(Array.isArray(trees) && trees.length > 0, 'BG asset tree population is empty');
+  const assets = [];
+  for (const tree of trees) {
+    assert.ok(safe(tree.source) && safe(tree.final) && ['recursive', 'sql'].includes(tree.selection),
+      'BG asset tree selection is invalid');
+    const source = join(prepared.root, tree.source);
+    assert.ok(lstatSync(source).isDirectory() && realpathSync(source) === source,
+      'BG asset tree source must be physical and regular');
+    const prefix = `${tree.source}/`;
+    const files = prepared.source.files.filter(row => row.path.startsWith(prefix))
+      .filter(row => tree.selection === 'recursive'
+        || (!row.path.slice(prefix.length).includes('/') && !row.path.slice(prefix.length).startsWith('.')
+          && row.path.endsWith('.sql')))
+      .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    assert.ok(files.length > 0, 'BG asset tree has no original source members');
+    for (const file of files) {
+      assert.equal(file.kind, 'file', 'BG asset tree member must be a regular file');
+      assert.equal(realpathSync(join(prepared.root, file.path)), join(prepared.root, file.path),
+        'BG asset tree member must be physical');
+      const final = `${tree.final}/${file.path.slice(prefix.length)}`;
+      assert.ok(safe(final), 'BG asset tree output membership is invalid');
+      assets.push({ source: file.path, temporary: `${final}.new.@BG_PID@`, final });
+    }
+  }
+  const finals = assets.map(row => row.final);
+  assert.equal(new Set(finals).size, finals.length, 'BG asset tree output duplicated');
+  assert.ok(!finals.some(path => finals.some(other => other !== path && other.startsWith(`${path}/`))),
+    'BG asset tree file overlaps directory');
+  return freezeBgExpectation(assets);
+}
+
 /** Copy only the original transaction's source-censused ancillary files. The
  * very buffer checked against the original digest is written exclusively into
  * the owned stage; no hardlink, ambient directory tree or later read supplies
- * its bytes. Directory/production recipe selection remains the caller's job.
+ * its bytes. Callers may expand retained directories with
+ * expandBgVerifierAssetTrees before preparing the original transaction.
  * @param {ReturnType<typeof beginBgVerifierBuildTransaction>} binding
  */
 export function stageBgVerifierAssetCopies(binding) {

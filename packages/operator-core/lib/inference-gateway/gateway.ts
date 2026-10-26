@@ -4265,6 +4265,42 @@ export function createInferenceGateway(deps: GatewayDeps) {
     Number.isFinite(poolRecoveryAt) && poolRecoveryAt > at
       ? Math.max(poolRecoveryAt, at + 30_000)
       : Math.max(failedResetAt ?? 0, at + 30_000);
+  /** WI-6554700010029300: the ONE terminal shape for a gateway-LOCAL codex 429 — the pacing shed
+   *  (`admission-timeout` / `account-unavailable`), i.e. "no account in the pool can take this turn".
+   *  That is the same verdict as an unrescued UPSTREAM 429, so it must carry the same three things the
+   *  upstream path carries: (1) a retry-after taken from the POOL horizon and capped at
+   *  BEE_RETRY_AFTER_CAP_S — never a literal `1`, which the codex CLI burns through in seconds
+   *  ("exceeded retry limit, last status: 429"); (2) the retries-exhausted + pool-recovery headers;
+   *  (3) recordStall, so the stall-waker resumes the session when capacity returns. Commit 9a9fa87645
+   *  (2026-10-25) added the local path with `retry-after: 1` and no stall, which stranded ~80 Codex
+   *  sessions on 2026-10-26 when the pool walled. Every local codex 429 MUST go through here —
+   *  gateway-codex-local-shed.test.ts pins both the behaviour and the absence of a bypass. */
+  const codexLocalShedHeaders = (input: {
+    source: AccountPool | null | undefined;
+    ownerId: string | undefined;
+    accountId: string;
+    hardPin: boolean;
+    attempts: number;
+  }): Record<string, string> => {
+    const now = Date.now();
+    const poolRecoveryAt = codexPoolRecoveryAt(input.source, now, { accountId: input.accountId, resetAt: 0 }, input.hardPin);
+    if (input.ownerId) recordStall(input.ownerId, input.accountId, codexStallSoonestAt(poolRecoveryAt, null, now));
+    const shaped = shapeTerminalThrottle({
+      attempts: Math.max(1, input.attempts),
+      retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
+      retryAfter: {
+        resetAt: Number.isFinite(poolRecoveryAt) && poolRecoveryAt > now ? poolRecoveryAt : null,
+        fallbackSec: LOADSHED_RETRY_AFTER_SEC,
+        capS: BEE_RETRY_AFTER_CAP_S,
+      },
+      now,
+    });
+    return {
+      ...shaped.headers,
+      [POOL_RECOVERY_AT_HEADER]: describePoolRecovery(poolRecoveryAt, now),
+      [ROUTED_ACCOUNT_HEADER]: input.accountId,
+    };
+  };
   /** STORE↔POOL RECONCILIATION (codex-auto-route-all-walled-fail-fast-2026-09-05 P-008; owner 2026-09-05:
    *  "auto routing should look at the same system that knows which accounts are available"). The pool's
    *  in-memory park and the durable availability store (operator_account_pool, refreshed into
@@ -9870,7 +9906,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (failure.code === 'admission-timeout' || failure.code === 'account-unavailable') {
           sendJson(res, 429, { type: 'error', error: {
             type: 'rate_limit_error', message: failure.message,
-          }, gateway: true }, { 'retry-after': '1', [ROUTED_ACCOUNT_HEADER]: lastAccountId });
+          }, gateway: true }, codexLocalShedHeaders({
+            source: codexCliPool, ownerId: routing.ownerId, accountId: lastAccountId,
+            hardPin: routing.hardPin, attempts: attemptsSeen,
+          }));
           return;
         }
         if (failure.code === 'upstream-error' && failure.status === 503) {
@@ -10872,7 +10911,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           markRequestShed(req);
           sendJson(res, 429, { type: 'error', error: {
             type: 'rate_limit_error', message: failure.message,
-          }, gateway: true }, { 'retry-after': '1', [ROUTED_ACCOUNT_HEADER]: lastAccountId });
+          }, gateway: true }, codexLocalShedHeaders({
+            source: bearerPool, ownerId: wantOwner, accountId: lastAccountId,
+            hardPin, attempts: attemptsSeen,
+          }));
           return;
         }
         if (failure.code === 'upstream-error' && failure.status === 503) {

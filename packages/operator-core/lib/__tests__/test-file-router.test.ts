@@ -52,6 +52,7 @@ import {
   canonicalMatch,
   classifyGovernedAdmissionFailure,
   collectionAttributionMarker,
+  createRouterProofCustody,
   discoverTestRoute,
   discoverVitestRoute,
   evaluateMatch,
@@ -110,6 +111,63 @@ import {
 } from '../../../../scripts/test-files.mjs';
 import { workspaceTestInvocation } from '../../../../scripts/workspace-test.mjs';
 import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
+import { verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
+
+describe('router native custody population (P002)', () => {
+  let root: string;
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'router-native-custody-')); });
+  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+  function setup() {
+    const producer = join(root, 'producer'), packets = join(root, 'packets');
+    mkdirSync(producer);
+    const groups = [0, 1].map(index => ({ cwd: producer, runner: 'vitest',
+      routes: [{ absolute: join(producer, `file-${index}.test.ts`) }] }));
+    const out = join(producer, 'out.json');
+    const session = createRouterProofCustody(groups, { PAPERCUSP_TEST_ARTIFACT_DIR: packets,
+      PAPERCUSP_WORKSPACE_ID: 'custody-workspace', PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+      PAPERCUSP_TEST_RUN_GROUP: 'router-fixture', PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'custody-workspace',
+      PC_EXECUTED_SOURCE_MAP_OUT: out }, root);
+    return { producer, session };
+  }
+  function produce(session: ReturnType<typeof createRouterProofCustody>, id: string) {
+    const group = session.expected.find(row => row.id === id);
+    writeFileSync(group.out, '{"rows":[],"diagnostics":[]}');
+    for (const suffix of ['.modules', '.native-processes', '.processes']) mkdirSync(group.out + suffix);
+    session.declare(id, session.childEvidence(id));
+    session.observe(id, { status: 1, signal: null, rawStreams: {
+      complete: true, stdout: Buffer.from([0, 255, 10]), stderr: Buffer.from([254, 0, 10]),
+    } }, 'npx', ['vitest', 'run', ...group.selected]);
+  }
+  it('retains primary/detail identity and raw failed-child streams after temporary output removal', () => {
+    const { producer, session } = setup();
+    const detail = session.detail('group-0', 0, 'file-0.test.ts', join(producer, 'detail.json'));
+    for (const id of ['group-0', 'group-1', detail]) produce(session, id);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = session.finish();
+      expect(result.status).toBe('complete');
+      const contract = { identity: session.identity, expected: structuredClone(session.expected) };
+      rmSync(producer, { recursive: true });
+      const read = verifyNativeProofPacket(session.directory, result.locator, contract);
+      expect(read.manifest.expected.map(group => group.attempt)).toEqual(['primary', 'primary', 'detail']);
+      const stdout = read.manifest.groups[0].auxiliary.find(row => row.role === 'stdout')!.artifact!;
+      expect(readFileSync(join(session.directory, 'objects', stdout.ref))).toEqual(Buffer.from([0, 255, 10]));
+      expect(read.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
+    } finally { log.mockRestore(); }
+  });
+  it('retains an expected group which never started instead of shrinking the population', () => {
+    const { session } = setup();
+    produce(session, 'group-0');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = session.finish();
+      expect(result.status).toBe('partial');
+      expect(result.manifest.groups.map(group => group.id)).toEqual(['group-0', 'group-1']);
+      expect(result.manifest.gaps).toContain('group-population-mismatch');
+      expect(JSON.parse(readFileSync(join(session.directory, 'expected.json'), 'utf8')).expected).toHaveLength(2);
+    } finally { log.mockRestore(); }
+  });
+});
 
 // Tests of main() are harness-scoped even when a caller invokes test:file without
 // the optional scope env. Otherwise its unscoped-run warning trips fail-on-console

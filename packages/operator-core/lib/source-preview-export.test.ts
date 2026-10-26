@@ -38,6 +38,7 @@ import {
   prepareBgVerifierBuildContexts,
   prepareBgVerifierBuildTransaction,
   beginBgVerifierBuildTransaction,
+  expandBgVerifierAssetTrees,
   stageBgVerifierAssetCopies,
   qualifyBgVerifierBuildOutputSet,
   verifyBgVerifierBuildOutputSet,
@@ -45,6 +46,7 @@ import {
   verifyBgVerifierLogicalOutputSet,
   publishBgVerifierLogicalOutputSet,
   verifyBgVerifierPublication,
+  runBgVerifierBuildRecipe,
   verifyBgVerifierBuildRecord,
   compileBgVerifierInvocation,
   qualifyBgVerifierOutput,
@@ -2615,6 +2617,82 @@ describe('BG inherited manifest and original source boundaries', () => {
       { source: 'libs/papercusp/libs/db/sql/001-init.sql', final: 'sql/001-init.sql' },
     ].map(row => ({ ...row, temporary: `${row.final}.new.@BG_PID@` }));
   }
+
+  async function assetTreeCandidate(link = false) {
+    const c = candidate();
+    write(c.fixture.repo, 'asset-tree/base/blueprint.yaml', 'name: base\n');
+    write(c.fixture.repo, 'asset-tree/base/prompts/with space.md', 'original prompt\n');
+    write(c.fixture.repo, 'asset-sql/001-init.sql', 'select 1;\n');
+    write(c.fixture.repo, 'asset-sql/.hidden.sql', 'excluded by the maintained shell glob\n');
+    write(c.fixture.repo, 'asset-sql/nested/002-hidden.sql', 'select 2;\n');
+    write(c.fixture.repo, 'asset-sql/README.md', 'not a migration\n');
+    if (link) symlinkSync('base/blueprint.yaml', join(c.fixture.repo, 'asset-tree/linked.yaml'));
+    git(c.fixture.repo, ['add', '-A']);
+    git(c.fixture.repo, ['commit', '-qm', 'original ancillary directory population']);
+    c.options.ref = git(c.fixture.repo, ['rev-parse', 'HEAD']);
+    return prepareBgVerifierSource(c.options);
+  }
+
+  it('BG asset tree expansion retains recursive source members and immediate SQL selection in stable order', async () => {
+    const prepared = await assetTreeCandidate();
+    const assets = expandBgVerifierAssetTrees({ prepared, trees: [
+      { source: 'asset-tree', final: 'blueprints', selection: 'recursive' },
+      { source: 'asset-sql', final: 'sql', selection: 'sql' },
+    ] });
+    expect(assets).toEqual([
+      { source: 'asset-tree/base/blueprint.yaml', final: 'blueprints/base/blueprint.yaml',
+        temporary: 'blueprints/base/blueprint.yaml.new.@BG_PID@' },
+      { source: 'asset-tree/base/prompts/with space.md', final: 'blueprints/base/prompts/with space.md',
+        temporary: 'blueprints/base/prompts/with space.md.new.@BG_PID@' },
+      { source: 'asset-sql/001-init.sql', final: 'sql/001-init.sql', temporary: 'sql/001-init.sql.new.@BG_PID@' },
+    ]);
+    expect(Object.isFrozen(assets)).toBe(true);
+    expect(Object.isFrozen(assets[0])).toBe(true);
+  });
+
+  it.each(['escape', 'token', 'unknown-selection', 'empty', 'file', 'duplicate', 'overlap', 'uncensused', 'drift'] as const)(
+    'BG asset tree expansion refuses %s population before transaction effects', async defect => {
+      const prepared = await assetTreeCandidate();
+      const trees = [{ source: 'asset-tree', final: 'blueprints', selection: 'recursive' as 'recursive' | 'sql' }];
+      if (defect === 'escape') trees[0]!.source = '../asset-tree';
+      if (defect === 'token') trees[0]!.final = 'blueprints/@BG_PID@';
+      if (defect === 'unknown-selection') trees[0]!.selection = 'glob' as never;
+      if (defect === 'empty') trees[0]!.selection = 'sql';
+      if (defect === 'file') trees[0]!.source = 'asset-tree/base/blueprint.yaml';
+      if (defect === 'duplicate') trees.push({ ...trees[0]! });
+      if (defect === 'overlap') trees.push({ source: 'asset-sql', final: 'blueprints/base/blueprint.yaml', selection: 'sql' });
+      if (defect === 'uncensused') {
+        write(prepared.root, 'uncensused/foreign.txt', 'foreign');
+        trees[0]!.source = 'uncensused';
+      }
+      if (defect === 'drift') write(prepared.root, 'asset-tree/base/blueprint.yaml', 'changed');
+      expect(() => expandBgVerifierAssetTrees({ prepared, trees })).toThrow();
+      expect(existsSync(join(prepared.root, 'apps/operator/dist-verify/owned-build'))).toBe(false);
+    });
+
+  it('BG asset tree expansion refuses a committed link in the selected directory', async () => {
+    const prepared = await assetTreeCandidate(true);
+    expect(() => expandBgVerifierAssetTrees({ prepared, trees: [
+      { source: 'asset-tree', final: 'blueprints', selection: 'recursive' },
+    ] })).toThrow('BG asset tree member must be a regular file');
+  });
+
+  it('BG asset tree expansion publishes its retained directory population with real compiler outputs', async () => {
+    const fixture = await transactionCandidate();
+    fixture.args.assets = expandBgVerifierAssetTrees({ prepared: fixture.prepared, trees: [
+      { source: 'docs', final: 'blueprints', selection: 'recursive' },
+      { source: 'libs/papercusp/libs/db/sql', final: 'sql', selection: 'sql' },
+    ] });
+    const transaction = prepareBgVerifierBuildTransaction(fixture.args);
+    const publication = await runBgVerifierBuildRecipe({ transaction, ownerPid: process.pid });
+    expect(publication.logical.files).toHaveLength(fixture.args.outputs.length + fixture.args.assets.length);
+    for (const asset of fixture.args.assets) {
+      const source = join(fixture.prepared.root, asset.source), copied = join(fixture.stage, asset.final);
+      expect(readFileSync(copied)).toEqual(readFileSync(source));
+      expect(statSync(copied).ino).not.toBe(statSync(source).ino);
+    }
+    expect(verifyBgVerifierPublication(publication, publication)).toBe(publication);
+  });
 
   it('BG ancillary asset custody publishes the original source bytes beside compiled main and worker outputs', async () => {
     const fixture = await transactionRecipe(args => { args.assets = ancillaryAssets(); });

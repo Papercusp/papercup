@@ -836,10 +836,30 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
         final: string;
     }[];
 };
+/** Expand directory copies from the retained source census, before a caller
+ * freezes its transaction. Never discover membership from a mutable directory
+ * walk. `sql` matches the maintained builder's immediate *.sql copy; recursive
+ * includes every censused descendant and refuses links instead of following them.
+ * @param {{ prepared: BgVerifierPreparation,
+ *   trees: { source: string, final: string, selection: 'recursive' | 'sql' }[] }} args
+ */
+export function expandBgVerifierAssetTrees({ prepared, trees }: {
+    prepared: BgVerifierPreparation;
+    trees: {
+        source: string;
+        final: string;
+        selection: "recursive" | "sql";
+    }[];
+}): {
+    source: string;
+    temporary: string;
+    final: string;
+}[];
 /** Copy only the original transaction's source-censused ancillary files. The
  * very buffer checked against the original digest is written exclusively into
  * the owned stage; no hardlink, ambient directory tree or later read supplies
- * its bytes. Directory/production recipe selection remains the caller's job.
+ * its bytes. Callers may expand retained directories with
+ * expandBgVerifierAssetTrees before preparing the original transaction.
  * @param {ReturnType<typeof beginBgVerifierBuildTransaction>} binding
  */
 export function stageBgVerifierAssetCopies(binding: ReturnType<typeof beginBgVerifierBuildTransaction>): void;
