@@ -661,8 +661,44 @@ describe('completed isolated runtime certification', () => {
       if (failure === 'incomplete-verifier') state.verifier.verdict = 'fail';
       if (failure === 'outside-lifecycle') Object.assign(state.verifier, { endedAt: at(39) });
       await state.save();
-      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+      const original = JSON.stringify(state.row);
+      const evidence = await read();
+      expect(evidence.currentness.dimensions.environment).toBe('unknown');
+      if (failure === 'missing-witness') expect(evidence.serverMeasurement).toMatchObject({
+        completedRuntimeRefusal: { category: 'runtime-witness-missing-or-unstable' },
+      });
+      if (failure === 'unqualified-source') expect(evidence.serverMeasurement).toMatchObject({
+        completedRuntimeRefusal: { category: 'unqualified-source', paths: ['src/feature.ts'], pathCount: 1, omittedPathCount: 0 },
+      });
+      expect(JSON.stringify(state.row)).toBe(original);
     });
+  it('bounds missing-input diagnostics while preserving the full refused population count', async () => {
+    const state = await setupDirectVerifier();
+    const fixture = await mkdtemp(join(tmpdir(), 'bounded-runtime-refusal-'));
+    try {
+      await cp(root, fixture, { recursive: true });
+      const paths = Array.from({ length: 25 }, (_, index) => `src/extra-${String(index).padStart(2, '0')}.ts`);
+      for (const path of paths) await writeFile(join(fixture, path), 'export const qualified = true;');
+      execFileSync('git', ['-C', fixture, 'add', '.']);
+      execFileSync('git', ['-C', fixture, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-qm', 'extra verifier inputs']);
+      const fixtureCommit = execFileSync('git', ['-C', fixture, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      state.execution.commitSha = fixtureCommit;
+      state.row.test_run_commit_sha = fixtureCommit;
+      state.receipt.sourceCommit = fixtureCommit;
+      state.basis.sourcePaths = ['src/feature.ts', ...paths];
+      const measured = await measureRepoFilesEvidenceDetailedAtRoot(fixture, state.basis);
+      state.receipt.files = measured.files;
+      state.receipt.testedInputs = measured.files.filter(file => file.dimension === 'test');
+      await state.save();
+      let refusal: unknown;
+      expect(await measureCompletedTestRuntime(state.row as any, state.basis, measured.files,
+        { workspaceId: 'workspace-test', harnessSlug: 'papercusp' }, fixture, { onRefusal: value => { refusal = value; } }))
+        .toBeNull();
+      expect(refusal).toMatchObject({ category: 'unqualified-source', pathCount: 26, omittedPathCount: 6,
+        paths: paths.slice(0, 20) });
+    } finally { await rm(fixture, { recursive: true, force: true }); }
+  });
   it('rejects changed current source bytes against the original direct-verifier Git objects', async () => {
     const state = await setupDirectVerifier();
     await writeFile(join(root, 'src/feature.ts'), 'changed source');

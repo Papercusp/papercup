@@ -3898,14 +3898,35 @@ function completedNativeMutationCalibration(row: EvidenceRow,
   return Number.isFinite(before) && before <= after && after <= mutantBefore ? baseline : null;
 }
 
+export interface CompletedRuntimeRefusal {
+  category: 'selector-mismatch' | 'execution-ineligible' | 'runtime-witness-missing-or-unstable'
+    | 'invalid-test-interval' | 'unproven-case-selection' | 'retained-evidence-ineligible'
+    | 'lifecycle-mismatch' | 'source-population-mismatch' | 'source-receipt-mismatch'
+    | 'unqualified-source' | 'source-drift' | 'retained-evidence-unavailable';
+  paths?: string[];
+  pathCount?: number;
+  omittedPathCount?: number;
+}
+
 export async function measureCompletedTestRuntime(
   row: EvidenceRow,
   recipe: RepoFilesEvidenceMeasurement,
   currentFiles: readonly MeasuredRepoFile[],
   scope: { workspaceId: string; harnessSlug: string },
   root: string,
-  options: { onStaticGuidanceEquivalence?: (value: StaticGuidanceSourceEquivalence) => void } = {},
+  options: {
+    onStaticGuidanceEquivalence?: (value: StaticGuidanceSourceEquivalence) => void;
+    onRefusal?: (value: CompletedRuntimeRefusal) => void;
+  } = {},
 ): Promise<string | null> {
+  const refuse = (category: CompletedRuntimeRefusal['category'], paths?: string[]): null => {
+    const unique = paths ? [...new Set(paths)].sort() : undefined;
+    options.onRefusal?.({ category, ...(unique ? {
+      paths: unique.slice(0, 20).map(path => path.slice(0, 240)),
+      pathCount: unique.length, omittedPathCount: Math.max(0, unique.length - 20),
+    } : {}) });
+    return null;
+  };
   const selector = recipe.completedRuntime;
   if (selector?.kind === 'isolated-integration') return measureCompletedIntegrationRuntime(row, recipe, currentFiles, scope, root);
   const directVerifier = selector?.kind === 'verification-harness'
@@ -3917,7 +3938,7 @@ export async function measureCompletedTestRuntime(
   // journey; shared staging receipts cannot acquire that provenance later.
   if (directVerifier && (selector.journeyRunId !== selector.verifierRunId
     || recipe.runtimeUnits?.length !== 1
-    || !/^verify-tauri-headless:[1-9]\d*$/.test(recipe.runtimeUnits[0]))) return null;
+    || !/^verify-tauri-headless:[1-9]\d*$/.test(recipe.runtimeUnits[0]))) return refuse('selector-mismatch');
   const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
   const witness = stableRecordedRuntimeEnvironment(
     execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter);
@@ -3953,7 +3974,8 @@ export async function measureCompletedTestRuntime(
     || execution.commitSha !== row.test_run_commit_sha || !witness
     || JSON.stringify([...witness.units].sort()) !== JSON.stringify([...recipe.runtimeUnits].sort())
     || !recipe.testPaths?.includes(execution.filePath)
-    || recipe.rootHarnessSlug || recipe.fixtureRootHarnessSlug) return null;
+    || recipe.rootHarnessSlug || recipe.fixtureRootHarnessSlug)
+    return refuse(!witness ? 'runtime-witness-missing-or-unstable' : 'execution-ineligible');
   const instant = (value: unknown): number =>
     value instanceof Date || typeof value === 'string' ? new Date(value).getTime() : NaN;
   const before = instant(execution.runtimeEnvironmentBefore!.observedAt);
@@ -3961,11 +3983,11 @@ export async function measureCompletedTestRuntime(
   const start = instant(row.test_run_started_at);
   const end = instant(row.test_run_finished_at);
   if (![before, after, start, end].every(Number.isFinite)
-    || before > start || start > end || end > after) return null;
+    || before > start || start > end || end > after) return refuse('invalid-test-interval');
   // Focused native runs collect excluded cases as skips. The complete case
   // ledger must prove they were outside the selector and every selected case passed.
   if (directVerifier && execution.skipped !== 0
-    && !await hasLedgerProvenPassingSelection(row, execution, scope.workspaceId)) return null;
+    && !await hasLedgerProvenPassingSelection(row, execution, scope.workspaceId)) return refuse('unproven-case-selection');
   if (selector.kind === 'llm-in-process') {
     try {
       // The original recorder measured these kernel pins while the process was
@@ -4013,7 +4035,7 @@ export async function measureCompletedTestRuntime(
       || !Array.isArray(receipt.files) || !Array.isArray(receipt.testedInputs)
       || !receipt.testedInputs.some((file: any) => file.path === execution.filePath)
       || (!verifierSourceJourney && (manifest?.result !== 'pass' || !Array.isArray(manifest.sourceFingerprints)
-        || manifest.sourceFingerprints.length === 0))) return null;
+        || manifest.sourceFingerprints.length === 0))) return refuse('retained-evidence-ineligible');
     const phase = (name: string) => {
       const matches = verifier.phases.filter((entry: any) => entry.phase === name);
       return matches.length === 1 ? matches[0] : null;
@@ -4021,7 +4043,7 @@ export async function measureCompletedTestRuntime(
     const prepare = phase('prepare'), boot = phase('boot'), assertions = phase('assert');
     if (mutationCalibration && (!boot || !assertions
       || instant(boot.endedAt) > instant(mutationCalibration.runtimeEnvironmentBefore!.observedAt)
-      || instant(assertions.startedAt) > instant(mutationCalibration.runtimeEnvironmentBefore!.observedAt))) return null;
+      || instant(assertions.startedAt) > instant(mutationCalibration.runtimeEnvironmentBefore!.observedAt))) return refuse('lifecycle-mismatch');
     // Reporter intervals derive from measured duration and can round before
     // the harness writes its completion receipt. The original paired runtime
     // observations bracket the actual test lifetime; use those exact bounds
@@ -4030,10 +4052,10 @@ export async function measureCompletedTestRuntime(
     if (!prepare || !boot || !assertions
       || !(instant(prepare.endedAt) <= instant(boot.startedAt)
         && instant(boot.endedAt) <= before && instant(assertions.startedAt) <= before
-        && instant(assertions.endedAt) >= after)) return null;
+        && instant(assertions.endedAt) >= after)) return refuse('lifecycle-mismatch');
     if (directVerifier) {
       if (!(instant(verifier.startedAt) <= instant(prepare.startedAt)
-        && instant(assertions.endedAt) <= instant(verifier.endedAt))) return null;
+        && instant(assertions.endedAt) <= instant(verifier.endedAt))) return refuse('lifecycle-mismatch');
     } else if (operatorE2e) {
       // This driver wraps preparation, boot, assertions and teardown. Its
       // interval encloses the verifier, while the original paired observations
@@ -4048,8 +4070,8 @@ export async function measureCompletedTestRuntime(
           && instant(verifier.startedAt) <= instant(prepare.startedAt)
           && instant(assertions.endedAt) <= instant(verifier.endedAt)
           && instant(verifier.endedAt) <= instant(suite[0].endedAt)
-          && instant(suite[0].endedAt) <= journeyEnd)) return null;
-    } else if (!(before <= journeyStart && journeyStart <= journeyEnd && journeyEnd <= after)) return null;
+          && instant(suite[0].endedAt) <= journeyEnd)) return refuse('lifecycle-mismatch');
+    } else if (!(before <= journeyStart && journeyStart <= journeyEnd && journeyEnd <= after)) return refuse('lifecycle-mismatch');
     // A retained JSON receipt alone is not code identity. Read the immutable Git
     // objects too, then compare each current source/test/fixture byte measurement.
     const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);
@@ -4058,15 +4080,21 @@ export async function measureCompletedTestRuntime(
     const journeyFiles = new Map((verifierSourceJourney ? receipt.testedInputs : manifest.sourceFingerprints)
       .map((file: any) => [file.path, file.sha256]));
     const guidanceChanged: string[] = [];
-    if (currentFiles.length === 0 || currentFiles.length !== recorded.files.length) return null;
+    if (currentFiles.length === 0 || currentFiles.length !== recorded.files.length) return refuse('source-population-mismatch');
+    const unqualifiedPaths = currentFiles.filter(file => {
+      const original = recordedFiles.get(`${file.dimension}:${file.path}`);
+      return original && (verifierSourceJourney || file.dimension === 'source' && !file.path.startsWith('scripts/'))
+        && journeyFiles.get(file.path) !== original.sha256;
+    }).map(file => file.path);
     for (const file of currentFiles) {
       const original = recordedFiles.get(`${file.dimension}:${file.path}`);
-      if (!original || receiptFiles.get(file.path) !== original.sha256
-        || ((verifierSourceJourney || file.dimension === 'source' && !file.path.startsWith('scripts/'))
-          && journeyFiles.get(file.path) !== original.sha256)) return null;
+      if (!original || receiptFiles.get(file.path) !== original.sha256)
+        return refuse('source-receipt-mismatch', [file.path]);
+      if ((verifierSourceJourney || file.dimension === 'source' && !file.path.startsWith('scripts/'))
+        && journeyFiles.get(file.path) !== original.sha256) return refuse('unqualified-source', unqualifiedPaths);
       if (file.sha256 !== original.sha256 && !(file.dimension === 'source'
         && selector.guidanceOnlySourcePaths?.includes(file.path)
-        && await onlyStaticToolGuidanceChanged(root, original, file))) return null;
+        && await onlyStaticToolGuidanceChanged(root, original, file))) return refuse('source-drift', [file.path]);
       if (file.sha256 !== original.sha256) guidanceChanged.push(file.path);
     }
     if (guidanceChanged.length && recorded.sourceFingerprint === row.source_fingerprint) {
@@ -4075,7 +4103,7 @@ export async function measureCompletedTestRuntime(
         measuredFingerprint: repoFileSetFingerprint(currentFiles.filter(file => file.dimension === 'source')) });
     }
     return witness.fingerprint;
-  } catch { return null; }
+  } catch { return refuse('retained-evidence-unavailable'); }
 }
 
 function isolatedIntegrationFingerprint(receipts: NonNullable<ReturnType<typeof parseTestRunExecutionDetails>>['isolatedRuntimeReceipts']): string {
@@ -4561,6 +4589,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         let files: MeasuredRepoFile[] | null = null;
         let measuredAtCommit: string | null = null;
         let sourceEquivalence: StaticGuidanceSourceEquivalence | undefined;
+        let completedRuntimeRefusal: CompletedRuntimeRefusal | undefined;
         if (recipe.kind === 'work-items') {
           // Ledger state has no checkout to resolve: the digest is recomputed from the rows.
           measured = await measureWorkItemsEvidenceForScope(
@@ -4700,7 +4729,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
               scope.workspaceId, scope.harnessSlug, recipe.nativeInstrumentKey) } : {}),
             ...(recipe.runtimeUnits ? { environmentFingerprint: completedRecipe
               ? await measureCompletedTestRuntime(row, completedRecipe, detailed.files, scope, measurementRoot,
-                { onStaticGuidanceEquivalence: value => { sourceEquivalence = value; } })
+                { onStaticGuidanceEquivalence: value => { sourceEquivalence = value; },
+                  onRefusal: value => { completedRuntimeRefusal = value; } })
               : await measureRuntimeEnvironment(
                 await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)), recipe.runtimeUnits,
                 { memo: remoteRuntimeIdentities }) } : {}),
@@ -4713,6 +4743,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           files,
           measuredAtCommit,
           sourceEquivalence,
+          completedRuntimeRefusal,
           current: {
             planSlug: row.plan_slug,
             specId: row.spec_id,
@@ -4969,6 +5000,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                     // working-tree (non-git root) or ledger measurement.
                     ...(measured.measuredAtCommit ? { measuredAtCommit: measured.measuredAtCommit } : {}),
                     current: measured.current,
+                    ...(measured.completedRuntimeRefusal ? { completedRuntimeRefusal: measured.completedRuntimeRefusal } : {}),
                     ...(movement
                       ? movement.pinned
                         ? { pinned: true, movedPaths: movement.moved }
