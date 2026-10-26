@@ -21,6 +21,7 @@
 # Usage:
 #   apps/operator/bin/bundle-host.sh [entry] [outfile] [development|release]
 #   apps/operator/bin/bundle-host.sh --bg-transaction <original.json> <sha256> <entry> <outfile> <profile> --binding-preflight-only
+#   apps/operator/bin/bundle-host.sh --bg-transaction <original.json> <sha256> <entry> <outfile> <profile> --publish-qualified-output-only
 #     entry    default bin/hono-host.ts   (relative to apps/operator)
 #     outfile  default dist-host/hono-host.mjs
 #     profile  default development (source comments); release compacts whitespace
@@ -95,15 +96,21 @@ HELPER_DIR="$OPERATOR_DIR/bin"
 # logs or output writes. Its independently supplied digest nominates ORIGINAL
 # authority; neither observed compiler argv nor an inherited context can do so.
 if [[ "${1:-}" == --bg-transaction ]]; then
-  # Whole-set qualification/publication is a separate boundary. Until it is
-  # connected, this entrypoint permits only the effect-bounded binding preflight.
-  if [[ "$#" != 7 || "${7:-}" != --binding-preflight-only ]]; then
-    echo 'BG recipe requires --bg-transaction <original.json> <sha256> <entry> <outfile> <profile> --binding-preflight-only' >&2
+  # Both modes stay inside the caller-owned generation. Publishing a qualified
+  # output receipt does not select a service pointer or activate a runtime.
+  if [[ "$#" != 7 || ( "${7:-}" != --binding-preflight-only && "${7:-}" != --publish-qualified-output-only ) ]]; then
+    echo 'BG recipe requires --bg-transaction <original.json> <sha256> <entry> <outfile> <profile> (--binding-preflight-only|--publish-qualified-output-only)' >&2
     exit 78
   fi
   if [[ -n "${NODE_OPTIONS:-}" || -n "${NODE_PATH:-}" ]]; then
     echo 'BG recipe ambient Node resolution is forbidden' >&2
     exit 78
+  fi
+  if [[ "$7" == --publish-qualified-output-only ]]; then
+    node "$REPO_ROOT/scripts/source-preview.mjs" bg-build-run \
+      --context "$2" --sha256 "$3" --pid "$$" --entry "$4" --outfile "$5" --profile "$6" \
+      --builder "${BASH_SOURCE[0]}" --repo "$REPO_ROOT"
+    exit $?
   fi
   BUNDLE_HOST_BG_BUILD_CONTEXT="$(node "$REPO_ROOT/scripts/source-preview.mjs" bg-build-begin \
     --context "$2" --sha256 "$3" --pid "$$" --entry "$4" --outfile "$5" --profile "$6" \
