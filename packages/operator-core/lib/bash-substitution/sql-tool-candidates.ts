@@ -154,8 +154,14 @@ export interface SqlCandidateSnapshot {
 }
 export async function readSqlCandidates(opts: SqlCandidateReadOptions): Promise<SqlCandidateSnapshot[]> {
   const sql = opts.client ?? getOrgPg().sql, scopeId = miningScopeId(opts.scope, opts.harnessSlug);
-  if (opts.scope.workspaceId !== opts.workspaceId || !await opts.authorize({ workspaceId: opts.workspaceId,
-    harnessSlug: opts.harnessSlug, sourceBoundary: opts.scope.sourceBoundary })) return [];
+  const scopeReadable = () => opts.authorize({ workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug, sourceBoundary: opts.scope.sourceBoundary });
+  const sourceReadable = async (id: string) => {
+    const [source] = await sql`SELECT 1 FROM harness_shared.tool_invocations WHERE id=${id}::bigint
+      AND workspace_id=${opts.workspaceId} AND harness_slug=${opts.harnessSlug}`;
+    return !!source && await opts.authorizeSource(id);
+  };
+  if (opts.scope.workspaceId !== opts.workspaceId || !await scopeReadable()) return [];
   const now = opts.now ?? Date.now();
   const rows = await sql<{ ran_on: string; summary: SqlDemandAggregate; source_ids: string[]; source_tokens: string[] }[]>`
     SELECT ran_on::text,summary,source_ids::text[],source_tokens FROM harness_shared.sql_intent_history
@@ -165,11 +171,7 @@ export async function readSqlCandidates(opts: SqlCandidateReadOptions): Promise<
     ORDER BY ran_on DESC LIMIT 120`;
   const result: SqlCandidateSnapshot[] = [];
   for (const row of rows) {
-    if (!await sourcesCurrentlyReadable(row.source_ids, async id => {
-      const [source] = await sql`SELECT 1 FROM harness_shared.tool_invocations WHERE id=${id}::bigint
-        AND workspace_id=${opts.workspaceId} AND harness_slug=${opts.harnessSlug}`;
-      return !!source && await opts.authorizeSource(id);
-    })) continue;
+    if (!await sourcesCurrentlyReadable(row.source_ids, sourceReadable)) continue;
     const examples = await sql<{ example: unknown; expires_at: Date }[]>`SELECT example,expires_at
       FROM harness_shared.sql_intent_examples WHERE workspace_id=${opts.workspaceId} AND scope_id=${scopeId}
         AND source_token=ANY(${row.source_tokens}::text[])
@@ -177,6 +179,10 @@ export async function readSqlCandidates(opts: SqlCandidateReadOptions): Promise<
     result.push({ ranOn: row.ran_on, summary: row.summary, sourceIds: [...new Set(row.source_ids)],
       examples: examples.filter(e => exampleReadable(e.expires_at, now)).map(e => e.example) });
   }
+  // Hydration and later snapshots await IO after the initial grant. Recheck the
+  // entire released population so revocation/deletion cannot release stale data.
+  if (!await sourcesCurrentlyReadable(result.flatMap(row => row.sourceIds), sourceReadable)
+    || !await scopeReadable()) return [];
   return result;
 }
 /** Same census cadence; the read rail denies expiry even when cleanup fails. */
