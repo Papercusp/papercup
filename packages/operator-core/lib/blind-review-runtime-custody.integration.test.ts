@@ -13,6 +13,8 @@ import { consumeRuntimeSourceImage } from './blind-review-source-custody';
 import { provisionRuntimeNamespace, releaseRuntimeNamespace,
   type RuntimeNamespaceBackend } from './blind-review-runtime-lifecycle';
 import { assertRuntimeSeed } from './blind-review-runtime-seed';
+import { reconcileRuntimeNamespaces, retireRuntimeNamespacesForBinding,
+  retireRuntimeNamespacesForNativeEnd } from './blind-review-runtime-recovery';
 import { _endLongLivedAdminPoolForTests } from './long-lived-admin-pool';
 import { createRuntimeCustodyStore, RUNTIME_RESOURCE_KINDS, runtimeCustodyFingerprint,
   type RuntimeReviewerIdentity, type RuntimeSourceAdmission } from './blind-review-runtime-custody';
@@ -73,6 +75,98 @@ async function fixture() {
   };
   return { identity, source, store, makeStore, reserve, allocate, deny: () => { allowed = false; } };
 }
+
+function recoveryBackend() {
+  const teardowns: string[] = [];
+  let absent = true;
+  const backend: RuntimeNamespaceBackend = {
+    async provision() { throw new Error('recovery_must_not_provision'); },
+    async teardown(lease) {
+      const [cutoff] = await fx.admin`SELECT state, revoked_at FROM harness_shared.blind_review_runtime_leases
+        WHERE id = ${lease.id}`;
+      expect(cutoff!.state).toBe('releasing'); expect(cutoff!.revoked_at).not.toBeNull();
+      teardowns.push(lease.id);
+    },
+    async inspect(_lease, resources) {
+      return { creatorStopped: true, scopeAbsent: absent,
+        absentIntentIds: absent ? resources.map(r => r.id) : [], checkedKinds: [...RUNTIME_RESOURCE_KINDS] };
+    },
+  };
+  return { backend, teardowns, keepLive: () => { absent = false; } };
+}
+
+describe('runtime cutoff hooks and restart recovery', () => {
+  it('commits a posted binding cutoff before teardown and can recover unrecorded resource intents', async () => {
+    const f = await fixture(), { lease } = await f.allocate(), b = recoveryBackend();
+    const plan = await f.store.beginProvisioning(f.identity, lease.id);
+    expect(plan.resources.every(r => r.identity === null)).toBe(true);
+    const result = await retireRuntimeNamespacesForBinding({ workspaceId: f.identity.workspaceId,
+      bindingId: f.identity.bindingId, reason: 'review-posted' }, { sql: fx.admin as never, store: f.store, backend: b.backend });
+    expect(result).toMatchObject({ cutoff: 1, released: 1, pending: 0 });
+    expect(b.teardowns).toEqual([lease.id]);
+    await expect(f.store.checkProvisioning(f.identity, lease.id)).rejects.toThrow('allocation_not_active');
+  });
+
+  it('requires the exact original native identity and never retires a successor from a stale end', async () => {
+    const f = await fixture(), { lease } = await f.allocate(), b = recoveryBackend();
+    const [binding] = await fx.admin`SELECT adv_session_id FROM harness_shared.plan_blind_review_sessions
+      WHERE id = ${f.identity.bindingId}`;
+    const deps = { sql: fx.admin as never, store: f.store, backend: b.backend };
+    expect(await retireRuntimeNamespacesForNativeEnd({ workspaceId: f.identity.workspaceId,
+      advSessionId: Number(binding!.adv_session_id), nativeSessionId: 'foreign-or-successor' }, deps))
+      .toMatchObject({ cutoff: 0, released: 0 });
+    await f.store.checkProvisioning(f.identity, lease.id);
+    expect(await retireRuntimeNamespacesForNativeEnd({ workspaceId: f.identity.workspaceId,
+      advSessionId: Number(binding!.adv_session_id), nativeSessionId: f.identity.nativeSessionId }, deps))
+      .toMatchObject({ cutoff: 1, released: 1 });
+  });
+
+  it('cuts off expired authority while a live creator owns the lifecycle lock, then reaps after it fences', async () => {
+    const f = await fixture(), { lease } = await f.allocate(), b = recoveryBackend();
+    await f.store.beginProvisioning(f.identity, lease.id);
+    const entered = deferred<void>(), finish = deferred<void>();
+    const held = f.store.withLifecycle(f.identity, lease.id, async () => { entered.resolve(); await finish.promise; });
+    await entered.promise;
+    try {
+      await fx.admin`UPDATE harness_shared.blind_review_runtime_leases SET expires_at = clock_timestamp() - interval '1 second'
+        WHERE id = ${lease.id}`;
+      await reconcileRuntimeNamespaces({ sql: fx.admin as never, store: f.store, backend: b.backend });
+      const [row] = await fx.admin`SELECT state, revoked_at FROM harness_shared.blind_review_runtime_leases WHERE id = ${lease.id}`;
+      expect(row!.state).toBe('releasing'); expect(row!.revoked_at).not.toBeNull();
+      expect(b.teardowns).not.toContain(lease.id);
+    } finally { finish.resolve(); await held; }
+    await reconcileRuntimeNamespaces({ sql: fx.admin as never, store: f.store, backend: b.backend });
+    expect(b.teardowns).toContain(lease.id);
+  });
+
+  it('preserves an authorized active creator and reaps its interrupted allocation after the lock is gone', async () => {
+    const f = await fixture(), { lease } = await f.allocate(), b = recoveryBackend();
+    await f.store.beginProvisioning(f.identity, lease.id);
+    await fx.admin`UPDATE harness_shared.blind_review_runtime_leases SET updated_at = clock_timestamp() - interval '1 minute'
+      WHERE id = ${lease.id}`;
+    const entered = deferred<void>(), finish = deferred<void>();
+    const held = f.store.withLifecycle(f.identity, lease.id, async () => { entered.resolve(); await finish.promise; });
+    await entered.promise;
+    try {
+      await reconcileRuntimeNamespaces({ sql: fx.admin as never, store: f.store, backend: b.backend });
+      await f.store.checkProvisioning(f.identity, lease.id);
+      expect(b.teardowns).not.toContain(lease.id);
+    } finally { finish.resolve(); await held; }
+    await reconcileRuntimeNamespaces({ sql: fx.admin as never, store: f.store, backend: b.backend });
+    expect(b.teardowns).toContain(lease.id);
+    const [row] = await fx.admin`SELECT state FROM harness_shared.blind_review_runtime_leases WHERE id = ${lease.id}`;
+    expect(row!.state).toBe('released');
+  });
+
+  it('rechecks canonical authority and keeps unknown absence in releasing', async () => {
+    const f = await fixture(), { lease } = await f.allocate(), b = recoveryBackend(); b.keepLive(); f.deny();
+    const result = await reconcileRuntimeNamespaces({ sql: fx.admin as never, store: f.store, backend: b.backend });
+    expect(result.pending).toBeGreaterThan(0);
+    const [row] = await fx.admin`SELECT state, revoked_at FROM harness_shared.blind_review_runtime_leases WHERE id = ${lease.id}`;
+    expect(row!.state).toBe('releasing'); expect(row!.revoked_at).not.toBeNull();
+    expect(b.teardowns).toContain(lease.id);
+  });
+});
 
 async function canonicalFixture() {
   const f = await fixture();

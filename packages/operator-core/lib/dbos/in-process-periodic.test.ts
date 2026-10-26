@@ -291,6 +291,13 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     );
   });
 
+  it('runs runtime recovery on host startup and every 30s, including pressure, with no cluster-worker duplicate', () => {
+    const recovery = byName.get('blind-review-runtime-reaper')!;
+    expect(recovery).toMatchObject({ intervalMs: 30_000, fireOnArm: true, shed: false, classification: 'timeout-reaper' });
+    expect(checkRunsInThisProcess(recovery, true)).toBe(true);
+    expect(checkRunsInThisProcess(recovery, false)).toBe(false);
+  });
+
   it('preserves each check cadence (no frequency cuts — the row-cost is already gone)', () => {
     expect(byName.get('dbos-history-ceiling')!).toMatchObject({ intervalMs: 30_000, fireOnArm: true, classification: 'must-sample' });
     expect(byName.get('dbos-history-ceiling')!.shed).not.toBe(true);

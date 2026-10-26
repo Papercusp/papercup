@@ -14,9 +14,11 @@ const sqlMock = vi.hoisted(() => {
   return mock;
 });
 const readConfinementMock = vi.hoisted(() => vi.fn());
+const retireRuntimeMock = vi.hoisted(() => vi.fn(async (_input: unknown, _deps: unknown) => ({ cutoff: 0, released: 0, pending: 0 })));
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlMock }) }));
 vi.mock('./pg-read-query', () => ({ boundedPgReadTxn: vi.fn() }));
+vi.mock('./blind-review-runtime-recovery', () => ({ retireRuntimeNamespacesForBinding: retireRuntimeMock }));
 vi.mock('./capability-envelope/session-confinement-store', () => ({
   readSessionConfinement: (...args: unknown[]) => readConfinementMock(...args),
 }));
@@ -150,6 +152,7 @@ function configureSql() {
 }
 
 beforeEach(() => {
+  retireRuntimeMock.mockClear();
   state.adv = {
     id: 42,
     workspace_id: 'ws-1',
@@ -228,6 +231,10 @@ describe('typed blind-review session bindings', () => {
       activationAuditSeq: 4, reviewerOwnerId: 'su-reviewer', reviewId: 91 })).toBe(true);
     expect(await recordBlindReviewSessionPost({ workspaceId: 'ws-1', planSlug: 'reviewed-plan',
       activationAuditSeq: 4, reviewerOwnerId: 'su-reviewer', reviewId: 92 })).toBe(false);
+    expect(retireRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(retireRuntimeMock).toHaveBeenCalledWith({ workspaceId: 'ws-1',
+      bindingId: lease.binding.id, reason: 'review-posted' }, { sql: sqlMock });
+    expect(sqlMock.mock.invocationCallOrder.some(order => order < retireRuntimeMock.mock.invocationCallOrder[0]!)).toBe(true);
     const posted = await findBlindReviewSessionBinding({ workspaceId: 'ws-1', planSlug: 'reviewed-plan', activationAuditSeq: 4 });
     expect(posted).toMatchObject({ status: 'posted', reviewId: 91, resumeLeaseId: null });
     expect(await releaseBlindReviewSessionResume(lease.binding.id, lease.leaseId)).toBe(false);
