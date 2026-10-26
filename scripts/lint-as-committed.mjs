@@ -346,14 +346,24 @@ function hasDependentArtifact(workRoot, marker) {
 }
 
 /** Dispose a command's own extracted tree unless a consumer retained it. */
-export function cleanupCommittedWorkRoot(workRoot, keep = false) {
+export async function cleanupCommittedWorkRoot(workRoot, keep = false) {
   if (keep) return false;
-  let marker = null;
-  try { marker = JSON.parse(readFileSync(join(workRoot, OWNER_MARKER), 'utf8')); }
-  catch { /* Missing or invalid metadata establishes no dependent artifact. */ }
-  if (hasDependentArtifact(workRoot, marker)) return false;
-  rmSync(workRoot, { recursive: true, force: true });
-  return true;
+  let root;
+  try { root = realpathSync(workRoot); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+  return withFsMutex(committedSourceRetentionMutexName(root), async () => {
+    // A consumer can register a hold while this command is finishing. Share
+    // its lock through the last marker read and unlink, just like the sweeper.
+    let marker = null;
+    try { marker = JSON.parse(readFileSync(join(root, OWNER_MARKER), 'utf8')); }
+    catch { /* Missing or invalid metadata establishes no dependent artifact. */ }
+    if (hasDependentArtifact(root, marker)) return false;
+    rmSync(root, { recursive: true, force: true });
+    return true;
+  });
 }
 
 /**
@@ -1246,12 +1256,12 @@ async function main() {
   // a consumer while the command is running, after args.keep was established.
   // SIGKILL is left to the next run's sweep.
   const cleanupWorkRoot = () => cleanupCommittedWorkRoot(workRoot, args.keep);
-  const bail = (code) => {
-    cleanupWorkRoot();
+  const bail = async (code) => {
+    await cleanupWorkRoot();
     process.exit(code);
   };
   for (const [signal, number] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) {
-    process.once(signal, () => bail(128 + number));
+    process.once(signal, () => { void bail(128 + number); });
   }
 
   try {
@@ -1265,7 +1275,7 @@ async function main() {
     });
     if (clone.status !== 0) {
       console.error(`lint-as-committed: failed to clone ${repoRoot}:\n${clone.stderr || clone.stdout}`);
-      bail(2);
+      await bail(2);
     }
     const checkout = spawnSync('git', ['-c', 'advice.detachedHead=false', 'checkout', '--detach', '--quiet', sha], {
       cwd: workRoot,
@@ -1273,7 +1283,7 @@ async function main() {
     });
     if (checkout.status !== 0) {
       console.error(`lint-as-committed: failed to check out ${short}:\n${checkout.stderr || checkout.stdout}`);
-      bail(2);
+      await bail(2);
     }
     try {
       writeFileSync(join(workRoot, OWNER_MARKER), JSON.stringify({ pid: process.pid, keep: args.keep, createdAtMs: Date.now(), sha, sourceRepoRoot: repoRoot }));
@@ -1328,7 +1338,7 @@ async function main() {
             `\n  (This tool never fetches submodules over the network — that would either fail with no\n` +
             `   credentials or hang. Check out the submodule(s) locally first.)`,
         );
-        bail(2);
+        await bail(2);
       }
 
       for (const sub of submodules) {
@@ -1343,7 +1353,7 @@ async function main() {
           pin = git(['rev-parse', `${sha}:${sub.path}`], repoRoot);
         } catch (err) {
           console.error(`lint-as-committed: cannot resolve the pinned commit for submodule ${sub.path} at ${short}: ${err.message}`);
-          bail(2);
+          await bail(2);
         }
 
         const subLocal = join(repoRoot, sub.path);
@@ -1353,7 +1363,7 @@ async function main() {
         });
         if (subClone.status !== 0) {
           console.error(`lint-as-committed: failed to clone submodule ${sub.path} from its local checkout:\n${subClone.stderr || subClone.stdout}`);
-          bail(2);
+          await bail(2);
         }
         const subCheckout = spawnSync('git', ['-c', 'advice.detachedHead=false', 'checkout', '--detach', '--quiet', pin], {
           cwd: subWork,
@@ -1363,7 +1373,7 @@ async function main() {
           console.error(
             `lint-as-committed: failed to check out submodule ${sub.path} at its pinned commit ${pin.slice(0, 10)}:\n${subCheckout.stderr || subCheckout.stdout}`,
           );
-          bail(2);
+          await bail(2);
         }
         // A standalone clone has the bytes but does not enroll the submodule in its
         // parent's recursive Git enumeration. Whole-tree guards would silently omit
@@ -1473,7 +1483,7 @@ async function main() {
       refScripts = JSON.parse(readFileSync(join(workRoot, workspaceManifestPath(args.workspace)), 'utf8')).scripts ?? {};
     } catch (err) {
       console.error(`lint-as-committed: cannot read package.json at ${short}: ${err.message}`);
-      bail(2);
+      await bail(2);
     }
 
     const childEnvironment = lintAsCommittedChildEnv(process.env, repoRoot);
@@ -1570,7 +1580,7 @@ async function main() {
     }
   } finally {
     if (args.keep) console.log(`\n  --keep: extracted tree left at ${workRoot} (swept after ${KEEP_TTL_MS / 3600_000}h or earlier above ${MAX_IDLE_KEPT_TREES} idle kept trees; in-use trees and dependent artifacts are retained)`);
-    else cleanupWorkRoot();
+    else await cleanupWorkRoot();
   }
 
   const { exitCode, failedCount, lines } = summarize(results);
