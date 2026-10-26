@@ -368,9 +368,11 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     }
   }
   const observeStage = deps.stage;
-  const effectsForTask = observeStage
-    ? (taskId: string) => ({ stage: (name: string) => observeStage(name, taskId) })
-    : undefined;
+  const persistedTerminals = new Set<string>();
+  const effectsForTask = (taskId: string) => ({
+    ...(observeStage ? { stage: (name: string) => observeStage(name, taskId) } : {}),
+    onTerminalPersisted: () => { persistedTerminals.add(taskId); },
+  });
   if (!degraded || endedToPersist.length > 0) {
     // Clean before terminal persistence; failure must remain eligible next tick.
     for (const verdict of [...strandedToPersist, ...endedToPersist]) {
@@ -418,16 +420,16 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     deps.stage?.('reconcile-recover-log');
     recoveredFromJobLogCount = await markRecoveredFromJobLog(recovered, undefined, effectsForTask);
     // The failed unit was deliberately retained at spawn so its Result/exit
-    // status/MemoryPeak could reach the ledger. Release it only after the writer
-    // returns; a failed persistence throws before this point and leaves the unit
-    // available for the next reconciler tick.
+    // status/MemoryPeak could reach the ledger. A batch count cannot identify
+    // refused closes: release only units with their own accepted-write receipt.
+    // A throw or refused write leaves the unit available for the next tick.
     const resetFailure = deps.resetFailedTaskUnit ?? resetFailedTaskUnit;
     for (const verdict of endedWithTerminal) {
       // `endedWithTerminal` is a union: a bare StrandedVerdict for units with no
       // terminal record, or that verdict widened with `terminalProvenance`. Narrow
       // with `in` before reading it — the runtime condition is unchanged, since the
       // property is present exactly when the spread above added it.
-      if ('terminalProvenance' in verdict && verdict.terminalProvenance) {
+      if (persistedTerminals.has(verdict.taskId) && 'terminalProvenance' in verdict && verdict.terminalProvenance) {
         deps.stage?.('reconcile-reset-unit', verdict.taskId);
         await resetFailure(verdict.terminalProvenance);
       }

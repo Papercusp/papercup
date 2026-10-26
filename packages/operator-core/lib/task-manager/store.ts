@@ -341,6 +341,8 @@ export interface CloseTaskInput {
 export interface CloseTaskEffects {
   /** Reuse managedSpawn's tracer to distinguish awaited terminal-close phases. */
   stage?: (name: string) => void;
+  /** Receipt for an accepted terminal UPDATE, before best-effort event delivery. */
+  onTerminalPersisted?: () => void;
   /** Cleanup must succeed before the terminal row loses its retry path. */
   cleanupVerifierDirectories?: typeof cleanupEndedVerifierDirectories;
   /** Test seam; production uses the awaited-event bridge. */
@@ -382,6 +384,7 @@ export function classifyTerminalClose(
   const memoryMaxBytes = captured.memoryMaxBytes ?? row?.memoryMaxBytes ?? null;
   const terminal: TaskTerminalProvenance = {
     ...captured,
+    invocationId: captured.invocationId ?? row?.terminalProvenance?.invocationId ?? null,
     scopeUnit: row?.scopeUnit ?? captured.scopeUnit,
     cgroupPath: captured.cgroupPath ?? row?.cgroupPath ?? null,
     memoryMaxBytes,
@@ -520,6 +523,7 @@ export async function closeTask(
   effects.stage?.('task-close-update-complete');
   const closed = rows[0];
   if (!closed) return false;
+  effects.onTerminalPersisted?.();
   // expensive-verification-loops P-001: a slow work-item attempt gets its outcome and
   // failure fingerprint stamped on the row. Fail-soft and fire-and-forget; it returns
   // before any I/O for a row with no work item or under the slow threshold.
