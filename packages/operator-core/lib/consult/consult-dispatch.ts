@@ -465,6 +465,102 @@ export function resolveConsultBackendAvailability(
   };
 }
 
+/** The gateway `/stats` fields the psu launcher refuses a Codex auto-route launch on. */
+export interface CodexGatewayPoolStats {
+  codexHealthyAccounts?: unknown;
+  codexTotalAccounts?: unknown;
+  codexEarliestRecoveryAt?: unknown;
+  codexUnserviceableCause?: unknown;
+}
+
+export interface CodexGatewayLaunchRefusal {
+  failureReason: 'account-walled' | 'account-routing-unavailable';
+  routeReason: string;
+  recoveryAt: number | null;
+}
+
+/**
+ * Would the psu launcher REFUSE a Codex auto-route launch on these gateway stats?
+ *
+ * The local account-pool view (`anyAccountAvailable`) cannot see the gateway's own
+ * exclusions (credential quarantine, upstream reachability, other routing
+ * restrictions), so it read "headroom" while every launched convert died at boot
+ * with "REFUSING TO LAUNCH — Codex auto-route has no serviceable accounts"
+ * (WI-6554700010029514). This answers from the SAME snapshot the launcher refuses
+ * on, so the router skips a rank the launcher would refuse instead of burning a
+ * spawn and recording an avoidable launch failure. It mirrors only the launcher's
+ * `refuse` outcomes of `codexAutoPoolVerdict` (warn/proceed both launch); the parity
+ * test pins it to that function so the two predicates cannot drift again.
+ */
+export function codexGatewayLaunchRefusal(
+  stats: CodexGatewayPoolStats | null | undefined,
+  now: number,
+): CodexGatewayLaunchRefusal | null {
+  if (!stats || typeof stats !== 'object') return null;
+  const healthy = stats.codexHealthyAccounts;
+  const total = stats.codexTotalAccounts;
+  const hasRecovery = Object.prototype.hasOwnProperty.call(stats, 'codexEarliestRecoveryAt');
+  const raw = stats.codexEarliestRecoveryAt;
+  // Speak only from the complete stats contract, exactly as the launcher does:
+  // an incomplete or legacy snapshot is unknown, never a wall.
+  if (healthy !== 0 || typeof total !== 'number' || !Number.isInteger(total) || total <= 0 || !hasRecovery ||
+      (raw !== null && (typeof raw !== 'number' || !Number.isFinite(raw)))) return null;
+  const count = '0 of ' + total;
+  if (stats.codexUnserviceableCause === 'upstream-unreachable') {
+    return {
+      failureReason: 'account-routing-unavailable',
+      routeReason: 'codex gateway reports fresh upstream transport failures across accounts (' + count + ' serviceable)',
+      recoveryAt: null,
+    };
+  }
+  const recovery = typeof raw === 'number' ? raw : null;
+  if (stats.codexUnserviceableCause === 'temporary-cooldown') return null;
+  // A recovery horizon already in the past is a possibly-stale snapshot: the launcher launches.
+  if (recovery !== null && recovery <= now) return null;
+  return {
+    failureReason: 'account-walled',
+    routeReason: 'codex gateway reports no serviceable accounts (' + count + ')' +
+      (recovery !== null ? '; earliest recovery ' + new Date(recovery).toISOString() : ''),
+    recoveryAt: recovery,
+  };
+}
+
+/** Read the live gateway's `/stats`; undefined (fail-open, like the launcher) on any failure. */
+export async function readCodexGatewayPoolStats(fetchImpl: typeof fetch = fetch): Promise<CodexGatewayPoolStats | undefined> {
+  const base = 'http://127.0.0.1:' + (Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788);
+  try {
+    const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(1_000) : undefined;
+    const res = await fetchImpl(base + '/stats', signal ? { signal } : undefined);
+    if (!res.ok) return undefined;
+    const body = await res.json() as unknown;
+    return body && typeof body === 'object' ? body as CodexGatewayPoolStats : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Narrow an available Codex auto-route verdict by the gateway's own launch refusal.
+ * Pure over its inputs so the production probe and its tests share one decision.
+ */
+export function applyCodexGatewayRefusal(
+  verdict: BackendAvailability,
+  provider: 'claude' | 'codex',
+  stats: CodexGatewayPoolStats | null | undefined,
+  now: number,
+): BackendAvailability {
+  if (provider !== 'codex' || !verdict.available || verdict.accountRoute !== 'auto') return verdict;
+  const refusal = codexGatewayLaunchRefusal(stats, now);
+  if (!refusal) return verdict;
+  return {
+    available: false,
+    accountRoute: 'auto',
+    failureReason: refusal.failureReason,
+    routeReason: refusal.routeReason,
+    detail: refusal.routeReason + '; automatic launch was not attempted because the launcher would refuse it',
+  };
+}
+
 /** Injectable seams — unit tests pass fakes; production omits (real impls). */
 export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   captureNativeBoundary?: typeof captureNativeConsultBoundary;
@@ -1112,11 +1208,17 @@ async function defaultProbeBackendAvailable(
       });
     }
     const pool = poolForProvider(await loadAccountPool(workspaceId), provider);
-    return resolveConsultBackendAvailability(provider, {
+    const verdict = resolveConsultBackendAvailability(provider, {
       gatewayOn: true,
       poolAccountCount: pool.accounts.length,
       poolHasHeadroom: pool.accounts.length > 0 ? anyAccountAvailable(pool, Date.now()) : null,
     });
+    // The local pool view cannot see gateway-side exclusions; ask the gateway the
+    // same question the launcher will (WI-6554700010029514).
+    if (provider === 'codex' && verdict.available && verdict.accountRoute === 'auto') {
+      return applyCodexGatewayRefusal(verdict, provider, await readCodexGatewayPoolStats(), Date.now());
+    }
+    return verdict;
   } catch (e) {
     return {
       available: false,
