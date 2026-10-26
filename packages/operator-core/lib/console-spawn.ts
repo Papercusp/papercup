@@ -2810,7 +2810,14 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
       // would tell the psu it is running inside the OPERATOR's multiplexer pane,
       // which it is not. pui and `psu --brain` both drive zellij, so that is a
       // live wrong-answer, not a hypothetical one.
-      env: normalizeHeadlessAgentTerm(scrubTerminalContextEnv({ ...agentInheritedOperatorEnv(process.env), ...launchEnv })),
+      env: normalizeHeadlessAgentTerm(scrubTerminalContextEnv({
+        ...agentInheritedOperatorEnv(process.env),
+        ...launchEnv,
+        // The child bootstrap can use this exact enrollment id if the CLI exits
+        // before its native session identity is recorded. Only send it when the
+        // ledger row is owner-stamped, so the exact binder can prove the join.
+        ...(coordOwnerId ? { PAPERCUSP_AGENT_TASK_ID: enrolment.taskId } : {}),
+      })),
     });
     // Keep a second, persistent observer before the bounded boot probes remove
     // their own listeners. The consult reviver consumes this promise to turn a

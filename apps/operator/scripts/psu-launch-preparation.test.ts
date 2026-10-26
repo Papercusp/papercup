@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { contextTrimmingEnv, launchFreshSu, prepareSuLaunch, prepareSuLaunchEnvironment } from './psu-launcher.mjs';
+import { contextTrimmingEnv, launchFreshSu, main, prepareSuLaunch, prepareSuLaunchEnvironment } from './psu-launcher.mjs';
 
 const dir = mkdtempSync(join(tmpdir(), 'su-launch-preparation-'));
 writeFileSync(join(dir, 'settings.json'), JSON.stringify({ effortLevel: 'max' }));
@@ -24,6 +24,47 @@ function bootstrap(agent: 'claude' | 'codex'): {
 }
 
 describe('effective SU launch preparation', () => {
+  it.each([
+    { headless: true, agentTaskId: '0123456789abcdefghj', expected: '0123456789abcdefghj' },
+    { headless: true, agentTaskId: undefined, expected: undefined },
+    { headless: true, agentTaskId: 'bad/id', expected: undefined },
+    { headless: false, agentTaskId: '0123456789abcdefghj', expected: undefined },
+  ])('fresh launch forwards only its explicit headless task correlation: %j', async ({ headless, agentTaskId, expected }) => {
+    const stoppedAtBootstrap = new Error('bootstrap request captured; do not spawn');
+    const api = vi.fn(async () => { throw stoppedAtBootstrap; });
+    await expect(launchFreshSu({ agent: 'claude', workspace: 'chosen-workspace' }, {
+      headless, account: 'chosen-account', picker: false, noKickoff: true,
+    }, { agentTaskId, apiImpl: api, preflightCodexAutoPoolImpl: async () => true }))
+      .rejects.toBe(stoppedAtBootstrap);
+    expect(api).toHaveBeenCalledOnce();
+    const [path, request] = api.mock.calls[0] as unknown as [string, { body: string }];
+    expect(path).toBe('/api/agent-mcp/console/bootstrap-su');
+    const body = JSON.parse(request.body);
+    if (expected) expect(body.agent_task_id).toBe(expected);
+    else expect(body).not.toHaveProperty('agent_task_id');
+  });
+
+  it('consumes inherited task correlation before any connection controller can spawn a child', async () => {
+    const savedArgv = process.argv;
+    const savedExitCode = process.exitCode;
+    vi.stubEnv('PAPERCUSP_AGENT_TASK_ID', '0123456789abcdefghj');
+    vi.stubEnv('PAPERCUSP_PSU_REEXEC_COUNT', '0');
+    process.argv = ['node', 'psu'];
+    const controller = vi.fn(async () => {
+      expect(process.env.PAPERCUSP_AGENT_TASK_ID).toBeUndefined();
+      return { handled: true, exitCode: 0 };
+    });
+    try {
+      await main({ connectionFrontController: controller });
+      expect(controller).toHaveBeenCalledOnce();
+      expect(process.env.PAPERCUSP_AGENT_TASK_ID).toBeUndefined();
+    } finally {
+      process.argv = savedArgv;
+      process.exitCode = savedExitCode;
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each(['claude', 'codex'] as const)('%s PTY production launcher consumes the canonical prepared configuration', async agent => {
     const home = mkdtempSync(join(tmpdir(), 'su-prepared-consumer-'));
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});

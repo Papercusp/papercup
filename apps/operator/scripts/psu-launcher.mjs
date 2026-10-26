@@ -15463,6 +15463,7 @@ export function freshSuBootstrapBody(
     brain = false,
     bootstrapIdempotencyKey = null,
     mcpBaseUrl = launcherOperatorTarget().url,
+    agentTaskId = null,
   } = {},
 ) {
   bootstrapIdempotencyKey ||= args.bootstrapIdempotencyKey || null;
@@ -15499,6 +15500,11 @@ export function freshSuBootstrapBody(
       : {}),
     // WI-1343: the literal psu invocation → adv_sessions.launch_argv (traceability).
     launch_argv: psuLaunchArgvRecord(selections, effectiveArgs, { brain }),
+    // A headless launcher's parent has the exact task row id. Forward it so
+    // bootstrap can safely bind that one row even if the CLI already exited.
+    ...(args.headless && typeof agentTaskId === "string" && /^[0-9a-z]{19}$/.test(agentTaskId)
+      ? { agent_task_id: agentTaskId }
+      : {}),
     // headless-fleet-launch-and-carry-knob: the launch argv is an audit record;
     // bootstrap also needs the resolved carry value to seed the member's loop.
     ...(args.headless ? { headless: true } : {}),
@@ -18721,6 +18727,10 @@ export async function main({
   // even the connection front controller: a remote-profile lookup or transport
   // bootstrap must not become an accidental prerequisite during an outage.
   const rawArgv = process.argv.slice(2);
+  const inheritedAgentTaskId = process.env.PAPERCUSP_AGENT_TASK_ID || null;
+  // This is a one-hop correlation value for bootstrap. Do not pass the task
+  // ledger id through to the model CLI or its child processes.
+  delete process.env.PAPERCUSP_AGENT_TASK_ID;
   if (rawArgv.includes("--terminal-check") && parseArgs(rawArgv).terminalCheck) {
     process.stdout.write(await runTerminalCheck());
     return;
@@ -19015,7 +19025,7 @@ export async function main({
   // 2026-07-06). Aborts the launch if the user declines / it doesn't land.
   if (!(await ensureBackendInstalled(selections.agent))) process.exit(1);
 
-  await launchFreshSu(selections, args);
+  await launchFreshSu(selections, args, { agentTaskId: inheritedAgentTaskId });
 }
 
 /**
@@ -19091,6 +19101,7 @@ export async function launchFreshSu(selections, args, {
   apiImpl = api,
   runLaunchPreflightImpl = runLaunchPreflight,
   runWrapperImpl = runWrapper,
+  agentTaskId = null,
 } = {}) {
   args = inheritFreshCodexConfiguredModel(selections.agent, args);
   if (
@@ -19125,6 +19136,7 @@ export async function launchFreshSu(selections, args, {
       freshSuBootstrapBody(selections, args, {
         brain,
         bootstrapIdempotencyKey,
+        agentTaskId,
       }),
     ),
     // Only the key-bearing bootstrap request is replay-safe. api() strips this

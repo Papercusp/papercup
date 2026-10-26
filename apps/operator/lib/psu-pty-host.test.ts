@@ -1148,7 +1148,10 @@ describe('EI-16685 pending inbox-wake cancellation', () => {
     });
 
     const source = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
-    expect(source).toMatch(/caps:\s*\[[^\]]*'delivery-cancel'/);
+    // The caps array may contain a nested conditional spread
+    // (`...(x ? ['pending-carry-fence-v1'] : [])`), so allow one level of
+    // inner brackets instead of stopping at the first `]`.
+    expect(source).toMatch(/caps:\s*\[(?:[^[\]]|\[[^\]]*\])*'delivery-cancel'/);
     expect(source).toContain("if (msg.mode === 'delivery-cancel')");
   });
 

@@ -14,6 +14,12 @@ const publicBytes = publicKey.export({ format: 'der', type: 'spki' }).subarray(-
 const updaterKey = Buffer.from(`untrusted comment: minisign public key\n${Buffer.concat([Buffer.from('Ed'), keyId, publicBytes]).toString('base64')}\n`).toString('base64');
 const signature = Buffer.from(`untrusted comment: signature\n${Buffer.concat([Buffer.from('ED'), keyId,
   sign(null, createHash('blake2b512').update(payload).digest(), privateKey)]).toString('base64')}\n`).toString('base64');
+const trustedComment = 'timestamp:1793000000\tfile:replacement.tar.gz';
+const artifactSignature = Buffer.from(signature, 'base64').toString('utf8').split('\n')[1]!;
+const globalSignature = sign(null, Buffer.concat([
+  Buffer.from(artifactSignature, 'base64').subarray(10), Buffer.from(trustedComment),
+]), privateKey).toString('base64');
+const fullSignature = Buffer.from(`untrusted comment: signature\n${artifactSignature}\ntrusted comment: ${trustedComment}\n${globalSignature}\n`).toString('base64');
 let root: string;
 let configPath: string;
 beforeEach(async () => {
@@ -60,6 +66,32 @@ describe('explicit recovery from an immutable retired release host', () => {
   it('rejects same-size changed bytes under a genuine old signature and cleans the partial download', async () => {
     const changed = Buffer.from(payload); changed[0] = changed[0]! ^ 1;
     await expect(recoverRelease(options(host(candidate(), changed)))).rejects.toThrow('signature verification failed');
+    expect((await readdir(root)).filter(name => name.startsWith('papercusp-recovery-'))).toEqual([]);
+    expect(await readFile(join(root, 'existing-user-data'), 'utf8')).toBe('keep this workspace');
+  });
+
+  it('accepts a replacement with an intact trusted comment and global signature', async () => {
+    const manifest = candidate({ platforms: { 'linux-x86_64': {
+      url: `${newBase}/replacement.tar.gz`, signature: fullSignature,
+    } } });
+    const result = await recoverRelease(options(host(manifest)));
+    expect(await readFile(result.artifactPath)).toEqual(payload);
+    expect(result.receipt).toMatchObject({ signatureVerified: true, installationPerformed: false,
+      userDataModified: false, disposition: 'verified-replacement-staged' });
+    expect(await readFile(join(root, 'existing-user-data'), 'utf8')).toBe('keep this workspace');
+  });
+
+  it.each(['trusted comment', 'global signature'])('rejects changed %s even when the artifact signature is valid', async part => {
+    const changedGlobal = Buffer.from(globalSignature, 'base64');
+    changedGlobal[0] = changedGlobal[0]! ^ 1;
+    const decoded = Buffer.from(fullSignature, 'base64').toString('utf8');
+    const changed = part === 'trusted comment'
+      ? decoded.replace(trustedComment, `${trustedComment} `)
+      : decoded.replace(globalSignature, changedGlobal.toString('base64'));
+    const manifest = candidate({ platforms: { 'linux-x86_64': {
+      url: `${newBase}/replacement.tar.gz`, signature: Buffer.from(changed).toString('base64'),
+    } } });
+    await expect(recoverRelease(options(host(manifest)))).rejects.toThrow('signature verification failed');
     expect((await readdir(root)).filter(name => name.startsWith('papercusp-recovery-'))).toEqual([]);
     expect(await readFile(join(root, 'existing-user-data'), 'utf8')).toBe('keep this workspace');
   });

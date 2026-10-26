@@ -130,22 +130,37 @@ export async function bindKnownAgentSessionTasks(input: {
   workspaceId: string;
   coordOwnerId: string;
   sessionId: string | null;
+  initialTaskId?: string;
   source: 'bootstrap' | 'session-port' | 'respawn';
 }): Promise<string[]> {
   if (!input.sessionId) return [];
-  try {
-    return await bindLiveAgentSessionTasksToNativeSession({
-      workspaceId: input.workspaceId,
-      coordOwnerId: input.coordOwnerId,
-      sessionId: input.sessionId,
-    });
-  } catch (error) {
+  const bound = new Set<string>();
+  const base = {
+    workspaceId: input.workspaceId,
+    coordOwnerId: input.coordOwnerId,
+    sessionId: input.sessionId,
+  };
+  const logFailure = (error: unknown): void => {
     const detail = (error instanceof Error ? error.message : String(error)).slice(0, 300);
     console.warn(
       `[bootstrap-su] ${input.source} task/session bind failed for ${input.coordOwnerId.slice(0, 120)}: ${detail}`,
     );
-    return [];
+  };
+  if (input.initialTaskId) {
+    try {
+      for (const taskId of await bindLiveAgentSessionTasksToNativeSession({ ...base, initialTaskId: input.initialTaskId })) {
+        bound.add(taskId);
+      }
+    } catch (error) {
+      logFailure(error);
+    }
   }
+  try {
+    for (const taskId of await bindLiveAgentSessionTasksToNativeSession(base)) bound.add(taskId);
+  } catch (error) {
+    logFailure(error);
+  }
+  return [...bound];
 }
 
 export interface BootstrapSuResult {
@@ -1680,6 +1695,8 @@ export const bootstrapSu = defineTool({
       /** Explicit windowless/unattended posture. Older launcher builds are
        *  recognized from launch_argv's exact --headless discriminator. */
       headless?: boolean | null;
+      /** Exact owner-stamped task row created by spawnHeadless for this CLI. */
+      agent_task_id?: string | null;
       /** launch-path-argv-reconstruction (WI-1343): the literal `psu …` argv the
        *  launcher built, recorded on adv_sessions.launch_argv so a killed batch is
        *  reconstructible. Validated + capped server-side (normalizeLaunchArgv);
@@ -1737,6 +1754,11 @@ export const bootstrapSu = defineTool({
         { status: 'error', error: `agent must be one of claude|omp|codex (got ${String(body.agent).slice(0, 24)})` },
         400,
       );
+    }
+    if (body.agent_task_id != null && (
+      body.headless !== true || typeof body.agent_task_id !== 'string' || !/^[0-9a-z]{19}$/.test(body.agent_task_id)
+    )) {
+      return jsonRes({ status: 'error', error: 'agent_task_id requires a valid headless task id' }, 400);
     }
     const agent: SuAgent = body.agent;
     if (body.native_fork_source !== undefined && (agent !== 'codex'
@@ -2661,6 +2683,7 @@ export const bootstrapSu = defineTool({
         workspaceId: workspace,
         coordOwnerId: sid,
         sessionId: nativeSessionId,
+        initialTaskId: body.agent_task_id ?? undefined,
         source: 'bootstrap',
       });
     }
@@ -3254,6 +3277,7 @@ export const bootstrapSu = defineTool({
         workspaceId: workspace,
         coordOwnerId: sid,
         sessionId: nativeSessionId,
+        initialTaskId: body.agent_task_id ?? undefined,
         source: 'session-port',
       });
         const summary = sessionPortContext.row.metadata.summary as SessionPortContractSummary;

@@ -41,7 +41,7 @@ const FIXTURES: Array<[string, CodexGatewayPoolStats | null | undefined]> = [
 
 // The fixtures deliberately carry malformed and legacy snapshots, exactly as a live
 // /stats read can return them; the launcher's static type only names the good shape.
-type LauncherStats = Parameters<typeof codexAutoPoolVerdict>[0]['stats'];
+type LauncherStats = NonNullable<Parameters<typeof codexAutoPoolVerdict>[0]>['stats'];
 const asLauncherStats = (stats: unknown): LauncherStats => stats as LauncherStats;
 
 describe('codexGatewayLaunchRefusal parity with the psu launcher', () => {

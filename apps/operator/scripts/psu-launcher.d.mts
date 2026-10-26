@@ -4046,10 +4046,11 @@ export function assertFleetJoined(requestedFleet: any, res: any): void;
 export function psuLaunchArgvRecord(selections: any, args: any, { brain }?: {
     brain?: boolean | undefined;
 }): string[];
-export function freshSuBootstrapBody(selections: any, args: any, { brain, bootstrapIdempotencyKey, mcpBaseUrl, }?: {
+export function freshSuBootstrapBody(selections: any, args: any, { brain, bootstrapIdempotencyKey, mcpBaseUrl, agentTaskId, }?: {
     brain?: boolean | undefined;
     bootstrapIdempotencyKey?: null | undefined;
     mcpBaseUrl?: any;
+    agentTaskId?: null | undefined;
 }): {
     session_port_protocol?: any;
     session_port_transform_version?: any;
@@ -4082,6 +4083,7 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain, bootst
     auto?: boolean | undefined;
     carry?: any;
     headless?: boolean | undefined;
+    agent_task_id?: undefined;
     launch_argv: string[];
     bootstrap_idempotency_key?: undefined;
     mcp_base_url?: any;
@@ -4750,12 +4752,13 @@ export function setupReminderLines(stage: any): string[] | null;
  * preflight refusal into an exception so launchSessionPort can finalize the
  * already-prepared row before the process exits. */
 export function sessionPortLaunchAbortError(args: any, failure: any, stage: any): Error | null;
-export function launchFreshSu(selections: any, args: any, { brain, preflightCodexAutoPoolImpl, apiImpl, runLaunchPreflightImpl, runWrapperImpl, }?: {
+export function launchFreshSu(selections: any, args: any, { brain, preflightCodexAutoPoolImpl, apiImpl, runLaunchPreflightImpl, runWrapperImpl, agentTaskId, }?: {
     brain?: boolean | undefined;
     preflightCodexAutoPoolImpl?: typeof preflightCodexAutoPool | undefined;
     apiImpl?: typeof api | undefined;
     runLaunchPreflightImpl?: typeof runLaunchPreflight | undefined;
     runWrapperImpl?: typeof runWrapper | undefined;
+    agentTaskId?: null | undefined;
 }): Promise<void>;
 export const AGENTS: string[];
 /** The caller/origin marker used when PUI invokes the real PSU picker. */

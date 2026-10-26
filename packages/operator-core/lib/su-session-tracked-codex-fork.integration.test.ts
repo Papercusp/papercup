@@ -15,21 +15,86 @@ import type {} from '../../../libs/test-config/src/baseline-schema-global-setup'
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql,
-  homes: new Map<string, string>(), processes: new Map<string, ChildProcess>() }));
+  homes: new Map<string, string>(), processes: new Map<string, ChildProcess>(),
+  config: '', parentPid: null as number | null, failBootstrapPeer: false,
+  releases: [] as Array<{ ended: boolean; exited: boolean }> }));
 vi.mock('@papercusp/db-org', async original => ({ ...await original<object>(), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('@papercusp/orchestrator/session-launch-dirs', async original => ({ ...await original<object>(),
   codexHomeForSessionKey: (id: number) => h.homes.get(String(id))! }));
 vi.mock('./task-manager/managed-spawn', () => ({ managedSpawn: async (bin: string, args: string[], _spec: unknown,
   options: { spawnOptions: object }) => {
+  if (h.failBootstrapPeer) {
+    h.failBootstrapPeer = false;
+    args = [...args, '--p008-invalid-bootstrap-option'];
+  }
   const child = spawn(bin, args, options.spawnOptions), taskId = randomUUID(); h.processes.set(taskId, child); return { child, taskId };
 } }));
 vi.mock('./task-manager/control', () => ({ killTask: async (id: string) => { h.processes.get(id)?.kill('SIGKILL'); return { ok: true }; } }));
+// Keep environmental prompt/account/presence leaves hermetic. The HTTP bootstrap
+// handler, launch ledger, session writes, fork completer and installed CLI are real.
+vi.mock('./auth/require-principal', async original => ({ ...await original<object>(), requirePrincipal: async () => {} }));
+vi.mock('./workspace-registry', async original => ({ ...await original<object>(),
+  activeWorkspaceId: () => workspace, isKnownWorkspace: (id: string) => id === workspace }));
+vi.mock('./console-launcher', () => ({ buildConsoleEnvelope: async () => ({
+  cwd: root, env: {}, mcpJsonContents: '', greetingCmd: '', needsSuperuserBootstrap: false, mode: 'shell',
+}) }));
+vi.mock('./role-launch-spec', async original => ({ ...await original<object>(),
+  buildLaunchSpec: async () => ({ kind: 'su', role: 'su', runId: 'fixture', spawnId: 'fixture',
+    harnessSlug: null, featureId: null, cwd: root, promptText: 'Child identity only',
+    promptFile: join(root, 'identity.md'), mcpUrl: 'http://127.0.0.1:1', mcpJsonContents: '{}', stack: [] }),
+  compileLaunchSpecificationArtifact: async (input: { promptText: string; stateRevision: string }) => ({
+    promptText: input.promptText, stack: [], specificationArtifact: {},
+    specificationRevision: 'a'.repeat(64), stateRevision: input.stateRevision,
+    compositionSource: 'compatibility', resourceArtifacts: [],
+  }), resolveLaunchIdentityModelDefault: async () => null,
+}));
+vi.mock('./role-codex-home', async original => ({ ...await original<object>(),
+  writeSuCodexHomeAsync: async (options: { sessionKey: number; promptText: string }) => {
+    const home = join(root, `bootstrap-${options.sessionKey}`);
+    mkdirSync(home); h.homes.set(String(options.sessionKey), home);
+    writeFileSync(join(home, 'config.toml'), h.config);
+    writeFileSync(join(home, 'AGENTS.md'), options.promptText);
+    return { codexHome: home, sqliteHome: home, agentsPath: join(home, 'AGENTS.md'), configPath: join(home, 'config.toml') };
+  },
+}));
+vi.mock('./capability-envelope/session-confinement-port', async original => ({
+  ...await original<object>(), sessionAllowsAmbientContext: async () => false,
+}));
+vi.mock('./agent-tools/coordination/presence', async original => ({
+  ...await original<object>(), writePresence: async () => {}, getPresence: async () => null,
+}));
+vi.mock('./agent-tools/coordination/control-anchor', async original => ({
+  ...await original<object>(), requestSessionIdentityActivation: async () => ({ generation: 1 }),
+}));
+vi.mock('./events/await/inbox-wake-arm', () => ({ armInboxWake: async () => ({ awaitId: 1 }) }));
+vi.mock('./modes/store', async original => ({ ...await original<object>(),
+  reconcileImpliedModes: async () => [], getModes: async () => [],
+}));
+vi.mock('./agent-tools/coordination/wake-mode', async original => ({ ...await original<object>(),
+  resolveWakeMode: async () => 'manual', ensureLaunchedWakeAuto: async () => null,
+}));
+vi.mock('./deployment/account-pool-store', async original => ({ ...await original<object>(), readDefaultAccountId: async () => undefined }));
+vi.mock('./session-archive-hook', () => ({ scheduleArchiveForAdvSession: () => {} }));
+vi.mock('./session-end-lease-release-hook', () => ({ scheduleSessionEndLeaseRelease: () => {} }));
+vi.mock('./agent-launch-core', async original => {
+  const actual = await original<typeof import('./agent-launch-core')>();
+  return { ...actual, releaseAgentLaunchClaim: async (input: Parameters<typeof actual.releaseAgentLaunchClaim>[0]) => {
+    const rows = await h.sql`SELECT ended_at FROM harness_shared.adv_sessions
+      WHERE workspace_id = ${workspace} AND coord_owner_id = 'su-bootstrap-child' ORDER BY id`;
+    const children = [...h.processes.values()].filter(child => child.pid !== h.parentPid);
+    h.releases.push({ ended: rows.length > 0 && rows.every(row => row.ended_at !== null),
+      exited: children.length > 0 && children.every(child => child.exitCode !== null || child.signalCode !== null) });
+    return actual.releaseAgentLaunchClaim(input);
+  } };
+});
 
 import { recordAdvSession } from './adv-sessions';
 import { completeTrackedCodexFork, registerTrackedCodexFork } from './su-session-tracked-codex-fork';
 import { startSuStdioPeer, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
 import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
+import bootstrapRoutes from './endpoint-route/routes/agent-mcp/bootstrap-su';
+import type { RouteContext } from './endpoint-route/define-route';
 
 const workspace = `tracked-codex-fork-${randomUUID()}`;
 let mutex: postgres.Sql, root: string;
@@ -42,6 +107,8 @@ afterEach(async () => {
   for (const p of peers.splice(0)) { await p.close(); await p.done; }
   expect([...h.processes.values()].every(p => p.exitCode !== null || p.signalCode !== null)).toBe(true);
   h.processes.clear(); h.homes.clear();
+  h.releases.length = 0; h.failBootstrapPeer = false;
+  await h.sql`DELETE FROM harness_shared.agent_launch_idempotency WHERE workspace_id = ${workspace}`;
   await h.sql`DELETE FROM harness_shared.adv_sessions WHERE workspace_id = ${workspace}`;
   if (root) rmSync(root, { recursive: true, force: true });
 });
@@ -57,7 +124,7 @@ async function row(owner: string, home: string, nativeId: string | null) {
   return Number(id);
 }
 
-it.each(['registered', 'stale-source', 'startup-failure'] as const)('registers native child ancestry before success; scenario=%s', async scenario => {
+it.each(['registered', 'stale-source', 'startup-failure', 'bootstrap-failure'] as const)('registers native child ancestry before success; scenario=%s', async scenario => {
   const stale = scenario === 'stale-source', startupFailure = scenario === 'startup-failure';
   root = mkdtempSync(join(tmpdir(), 'tracked-codex-fork-'));
   const parentHome = join(root, 'parent'), childHome = join(root, 'child');
@@ -79,6 +146,7 @@ it.each(['registered', 'stale-source', 'startup-failure'] as const)('registers n
     features: { apps: false, shell_tool: false }, web_search: 'disabled',
     tui: { screen_reader_detection_done: true } });
   for (const home of [parentHome, childHome]) writeFileSync(join(home, 'config.toml'), config);
+  h.config = config;
   const prompt = join(childHome, 'AGENTS.md'); writeFileSync(prompt, 'Child identity only');
   try {
     const events: RpcFrame[] = [];
@@ -86,14 +154,52 @@ it.each(['registered', 'stale-source', 'startup-failure'] as const)('registers n
       env: { PATH: process.env.PATH, CODEX_HOME: parentHome }, workspaceId: workspace, ownerId: 'su-parent',
       spec: { class: 'test', title: 'Parent fork fixture', launchedBy: 'vitest', argv: ['codex', 'app-server'] },
       onMessage: frame => events.push(frame) }); peers.push(parent);
+    h.parentPid = parent.pid();
     await parent.request({ method: 'initialize', params: { clientInfo: { name: 'fork_test', version: '1' } } });
     parent.send({ method: 'initialized', params: {} });
     const start = await parent.request({ method: 'thread/start', params: { cwd: root, approvalPolicy: 'never', sandbox: 'read-only' } });
     const native = String((start.thread as RpcFrame).id);
     await parent.request({ method: 'turn/start', params: { threadId: native, input: [{ type: 'text', text: 'PARENT_VISIBLE_HISTORY' }] } });
     await vi.waitFor(() => expect(events.some(f => f.method === 'turn/completed')).toBe(true), { timeout: 20_000 });
-    const parentId = await row('su-parent', parentHome, native), childId = await row('su-child', childHome, null);
+    const parentId = await row('su-parent', parentHome, native);
     const [before] = await h.sql`SELECT * FROM harness_shared.adv_sessions WHERE id = ${parentId}`;
+    if (scenario === 'bootstrap-failure') {
+      const route = bootstrapRoutes.find(route => route.method === 'POST' && route.path === '/agent-mcp/console/bootstrap-su')!;
+      const input = { agent: 'codex', account: 'default', cwd: root, owner_id: 'su-bootstrap-child',
+        native_fork_source: { advSessionId: parentId, nativeSessionId: native },
+        bootstrap_idempotency_key: `native-bootstrap-${randomUUID()}` };
+      const call = () => route.handler(new Request('http://localhost/api/agent-mcp/console/bootstrap-su', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
+      }), { principal: null, input: undefined, params: {}, log: () => {},
+        signal: new AbortController().signal } satisfies RouteContext);
+      h.failBootstrapPeer = true;
+      await expect(call()).rejects.toThrow(/Structured engine exited|unexpected argument/);
+      const [failed] = await h.sql`SELECT * FROM harness_shared.adv_sessions
+        WHERE workspace_id = ${workspace} AND coord_owner_id = 'su-bootstrap-child'`;
+      expect(failed.ended_at).not.toBeNull(); expect(failed.session_id).toBeNull();
+      expect(failed.launch_spec).not.toHaveProperty('nativeFork');
+      expect(h.releases).toEqual([{ ended: true, exited: true }]);
+      // The parent's app-server is intentionally still alive. Only the failed
+      // child must have exited before releasing the actual replay claim.
+      const children = [...h.processes.values()].filter(child => child.pid !== h.parentPid);
+      expect(children.length).toBeGreaterThan(0);
+      expect(children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true);
+      expect(await findCodexRolloutPathByUuid(native, { homeOverride: h.homes.get(String(failed.id))! })).toBeNull();
+      expect(await h.sql`SELECT * FROM harness_shared.agent_launch_idempotency WHERE workspace_id = ${workspace}`).toEqual([]);
+      const replay = await call();
+      expect(replay.status, await replay.clone().text()).toBe(200);
+      const receipt = await replay.json();
+      expect(receipt.status).toBe('ok'); expect(receipt.sessionId).not.toBe(Number(failed.id));
+      const [child] = await h.sql`SELECT * FROM harness_shared.adv_sessions WHERE id = ${receipt.sessionId}`;
+      expect(child.session_id).toBe(receipt.nativeSessionId);
+      expect(child.launch_spec.nativeFork).toEqual({ advSessionId: parentId, ownerId: 'su-parent', nativeSessionId: native });
+      const [claim] = await h.sql`SELECT summary FROM harness_shared.agent_launch_idempotency WHERE workspace_id = ${workspace}`;
+      expect(claim.summary.sessionId).toBe(receipt.sessionId);
+      const [after] = await h.sql`SELECT * FROM harness_shared.adv_sessions WHERE id = ${parentId}`;
+      expect(after).toEqual(before); expect(calls).toBe(1);
+      return;
+    }
+    const childId = await row('su-child', childHome, null);
     const boot = { status: 'ok', agent: 'codex', sessionId: childId, nativeSessionId: null,
       codexHome: childHome, cwd: root, workspaceId: workspace, promptFile: prompt, model: 'gpt-6.1-sol:xhigh',
       harnessSlug: null, planSlug: null, specificationRevision: 'fixture', stateRevision: 'fixture',

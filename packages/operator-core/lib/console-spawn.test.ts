@@ -687,6 +687,7 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     spawnMock.mockImplementation(() => fakeChild());
     const result = await spawnHeadless({
       envelope,
+      coordOwnerId: 'su-headless-owner',
       beforeSpawn,
       installBoundary: async () => {
         installReady = true;
@@ -699,6 +700,9 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(result.status).toBe('ok');
     expect(beforeSpawn).toHaveBeenCalledOnce();
     expect(spawnMock).toHaveBeenCalledOnce();
+    expect(spawnMock.mock.calls[0]?.[2]).toMatchObject({
+      env: { PAPERCUSP_AGENT_TASK_ID: 'task1234' },
+    });
     expect(taskEnrolment.complete).toHaveBeenCalledOnce();
     // The real lease is idempotent: boot completion and finally both release it.
     expect(release).toHaveBeenCalled();

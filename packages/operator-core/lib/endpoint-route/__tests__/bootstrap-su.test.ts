@@ -200,6 +200,11 @@ const recordSessionPortBootstrapReceiptMock = vi.fn(async (_input: unknown) => u
 const failSessionPortTargetReservationMock = vi.fn(async (_input: unknown) => true);
 const readSessionPortArtifactMock = vi.fn(async (_port: unknown) => SESSION_PORT_ARTIFACT.seed);
 const recordSessionPortTelemetryMock = vi.fn(async (_event: unknown) => true);
+const bindAgentTasksMock = vi.hoisted(() => vi.fn(async (_input: unknown) => [] as string[]));
+
+vi.mock('../../task-manager/store', () => ({
+  bindLiveAgentSessionTasksToNativeSession: (...args: unknown[]) => bindAgentTasksMock(...args),
+}));
 
 vi.mock('../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -629,6 +634,29 @@ async function callPost(body: unknown): Promise<Response> {
   });
   return post.handler(req, CTX);
 }
+
+describe('bootstrap headless task/session binding', () => {
+  it('forwards the exact enrolled task id to the owner-scoped binder', async () => {
+    const taskId = '0123456789abcdefghj';
+    const response = await callPost({
+      agent: 'claude', harness_slug: 'papercup', headless: true,
+      owner_id: 'su-headless-owner', agent_task_id: taskId,
+    });
+    expect(response.status).toBe(200);
+    expect(bindAgentTasksMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'default', coordOwnerId: 'su-headless-owner', initialTaskId: taskId,
+    }));
+  });
+
+  it('rejects malformed or non-headless task ids before recording a session', async () => {
+    const response = await callPost({
+      agent: 'claude', harness_slug: 'papercup', headless: true,
+      agent_task_id: 'bad/id',
+    });
+    expect(response.status).toBe(400);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+});
 
 async function callGet(query = ''): Promise<Response> {
   const get = (await routesOf()).find((r) => r.method === 'GET' && (r as any).path?.endsWith('/options'))!;
