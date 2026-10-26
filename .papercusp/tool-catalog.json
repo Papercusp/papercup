@@ -31459,7 +31459,7 @@
       "guidance": {
         "when": "Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing. For an acceptance rubric it also returns `graderEligibility` — whether YOU may file the grading at all; read it BEFORE doing the grading work, not after. Pass the same `subject` and observation window to evaluate and emit so registered instruments measure the same run.",
         "notWhen": "Reading scorecard history only — scorecards:list. Filing the validated scorecard — scorecards:emit.",
-        "chaining": "scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, subject, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the same subject/window and canonical ratings. Registered instruments execute on both calls; caller snapshots cannot assert platform provenance. `testedSha` is required when a releaseGating rubric has a pass-like rating."
+        "chaining": "scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, subject, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the same subject/window, canonical ratings, and the returned rubricRevision, criteriaHash, and rubricMeaningRevision. Registered instruments execute on both calls; caller snapshots cannot assert platform provenance. `testedSha` is required when a releaseGating rubric has a pass-like rating."
       }
     },
     {
