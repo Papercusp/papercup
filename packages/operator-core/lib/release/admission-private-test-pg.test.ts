@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { tmpdirNeedsOverride } from '@papercusp/test-config/tmpdir-guard';
 import { startAdmissionTestEnvironment as startEnvironment } from './admission-private-test-pg';
 const ledger = 'postgres://ledger@127.0.0.1:5432/test_runs';
 const startAdmissionTestEnvironment: typeof startEnvironment = (root, options) => {
@@ -12,7 +13,7 @@ const startAdmissionTestEnvironment: typeof startEnvironment = (root, options) =
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-function fixture(options: { invalidPort?: boolean; cleanupFails?: boolean; noReceipt?: boolean; pgDies?: boolean; sharedTmp?: boolean } = {}) {
+function fixture(options: { invalidPort?: boolean; cleanupFails?: boolean; noReceipt?: boolean; pgDies?: boolean; sharedTmp?: boolean; guardTmp?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'admission-pg-lease-'));
   roots.push(root);
   mkdirSync(join(root, 'scripts'));
@@ -20,6 +21,7 @@ function fixture(options: { invalidPort?: boolean; cleanupFails?: boolean; noRec
   writeFileSync(join(root, 'scripts/with-test-pg.mjs'), `
     import { spawn } from 'node:child_process';
     import { writeFileSync } from 'node:fs';
+    ${options.guardTmp ? `const { ensurePapercuspTmpdir } = await import(${JSON.stringify(new URL('../../../../libs/test-config/src/tmpdir-guard.ts', import.meta.url).href)}); ensurePapercuspTmpdir();` : ''}
     writeFileSync('fixture-tmp', process.env.TMPDIR);
     console.log('bootstrap progress');
     const child = spawn(process.argv[3], process.argv.slice(4), { stdio: 'inherit', env: {
@@ -34,6 +36,25 @@ function fixture(options: { invalidPort?: boolean; cleanupFails?: boolean; noRec
 }
 
 describe('R6 private test PostgreSQL lifetime', () => {
+  it('keeps its production scratch default accepted by the pinned launcher guard', async () => {
+    const root = fixture({ guardTmp: true });
+    const pg = await startEnvironment(root, { testRunsDbUrl: ledger, timeoutMs: 10_000 });
+    try {
+      const scratch = readFileSync(join(root, 'fixture-tmp'), 'utf8');
+      expect(scratch).toContain('/papercusp-admission-test-environments/pg-');
+      expect(tmpdirNeedsOverride(scratch)).toBe(false);
+      pg.assertRunning();
+    } finally { await pg.stop(); }
+    expect(existsSync(readFileSync(join(root, 'fixture-tmp'), 'utf8'))).toBe(false);
+  });
+
+  it('refuses an incompatible explicit scratch root before bootstrapping PostgreSQL', async () => {
+    const root = fixture();
+    await expect(startEnvironment(root, { testRunsDbUrl: ledger, scratchRoot: root }))
+      .rejects.toThrow('owned scratch would be relocated');
+    expect(existsSync(join(root, 'fixture-tmp'))).toBe(false);
+  });
+
   it('keeps control DB pins untouched, consumes the private receipt, and awaits owned cleanup', async () => {
     const root = fixture();
     const parentEnv = { ...process.env, DATABASE_URL: 'postgres://live@127.0.0.1:5432/control',

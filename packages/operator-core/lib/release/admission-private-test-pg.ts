@@ -1,13 +1,13 @@
 /** Keep the queue worker on its control database; only test children receive this fixture. */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom, tmpdirNeedsOverride } from '@papercusp/test-config/tmpdir-guard';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { processGroupLifetime } from '../fleet/process-group-lifetime';
 
-export const ADMISSION_TEST_ENVIRONMENT = 'pinned-private-pg-test-mode-v3';
+export const ADMISSION_TEST_ENVIRONMENT = 'pinned-private-pg-test-mode-v4';
 const CLEARED_DATABASE_PINS = ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'];
 
 export interface AdmissionTestEnvironment {
@@ -53,9 +53,24 @@ export async function startAdmissionTestEnvironment(root: string, options: {
   for (const key of CLEARED_DATABASE_PINS) delete env[key];
   // Frozen wrappers allocate PG beneath TMPDIR. Keep that directory outside
   // shared age-only test sweeps and the checkpoint tree recreated per group.
-  const scratchRoot = options.scratchRoot ?? papercuspPath('admission-test-environments');
+  let scratchRoot = options.scratchRoot;
+  if (!scratchRoot) {
+    const scratchEnv = { ...env, TMPDIR: undefined };
+    const maintainedTmp = ensurePapercuspTmpdir(scratchEnv);
+    if (!maintainedTmp || tmpdirNeedsOverride(maintainedTmp) ||
+        !tmpdirHasCriticalHeadroom(maintainedTmp, scratchEnv)) {
+      throw new Error('private-PG admission has no compatible temporary volume');
+    }
+    // A product HOME can have a repository ancestor, which the pinned launcher
+    // rejects. Use the maintained volume, beside its age-swept test namespace.
+    scratchRoot = join(dirname(realpathSync(maintainedTmp)), 'papercusp-admission-test-environments');
+  }
   mkdirSync(scratchRoot, { recursive: true, mode: 0o700 });
   const fixtureTmp = mkdtempSync(join(scratchRoot, 'pg-'));
+  if (tmpdirNeedsOverride(fixtureTmp) || !tmpdirHasCriticalHeadroom(fixtureTmp, env)) {
+    rmSync(fixtureTmp, { recursive: true, force: true });
+    throw new Error('private-PG admission owned scratch would be relocated by the pinned launcher');
+  }
   env.TMPDIR = env.TMP = env.TEMP = fixtureTmp;
   const child: ChildProcessWithoutNullStreams = spawn(process.execPath,
     [wrapper, '--', process.execPath, '-e', childCode],
