@@ -5661,7 +5661,12 @@ export function registerMcpHost(server: McpServer): void {
                         runsConsidered: 0,
                         fallbackRunSizes: 0,
                         deletionMs: 0,
+                        deletePreflightMs: 0,
+                        pinProtectionMs: 0,
+                        rmAsyncMs: 0,
                         deleteAttempts: 0,
+                        deletePreflightSkips: 0,
+                        lastDeletePreflightErrorCode: null,
                         deleteErrors: 0,
                         lastDeleteErrorCode: null,
                         runsDeleted: 0,
@@ -5683,12 +5688,19 @@ export function registerMcpHost(server: McpServer): void {
                         'runsConsidered',
                         'fallbackRunSizes',
                         'deletionMs',
+                        'deletePreflightMs',
+                        'pinProtectionMs',
+                        'rmAsyncMs',
                         'deleteAttempts',
+                        'deletePreflightSkips',
                         'deleteErrors',
                         'runsDeleted',
                         'deletedBytes',
                       ] as const) {
                         recoveryTotal[field] += recovery[field];
+                      }
+                      if (recovery.lastDeletePreflightErrorCode != null) {
+                        recoveryTotal.lastDeletePreflightErrorCode = recovery.lastDeletePreflightErrorCode;
                       }
                       if (recovery.maxOperationMs > recoveryTotal.maxOperationMs) {
                         recoveryTotal.maxOperationMs = recovery.maxOperationMs;

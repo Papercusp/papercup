@@ -64,6 +64,7 @@ import {
   scratchUsageBytes,
   _setScratchUsageForTests,
   _resetScratchUsageForTests,
+  _settleScratchMaintenanceForTests,
   WORKSPACE_QUOTA_BYTES,
   SCRATCH_GC_CRONTAB,
   SCRATCH_GC_SWEEP_PERIOD_MS,
@@ -107,7 +108,10 @@ beforeEach(() => {
   _resetScratchUsageForTests();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Drain chained fire-and-forget refreshes while this test's env still points at its sandbox;
+  // a straggler that outlives the reset would otherwise evict runs in the next test's sandbox.
+  await _settleScratchMaintenanceForTests();
   _resetScratchUsageForTests();
   if (prevScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
   else process.env.PAPERCUSP_SCRATCH_ROOT = prevScratchRoot;
@@ -494,7 +498,8 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
   beforeEach(() => {
     _resetScratchUsageForTests();
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await _settleScratchMaintenanceForTests();
     _resetScratchUsageForTests();
   });
 
@@ -2428,10 +2433,13 @@ describe('deferred scratch quota recovery', () => {
   });
 
   it('accounts for a quota candidate that disappears before retention-lock admission', async () => {
+    // The vanished candidate's 2 GiB is credited, but 7 GiB - 2 GiB is still over target, so
+    // recovery must continue to the next FIFO candidate. (With a 2 GiB target run, crediting the
+    // vanished run alone restores quota — that stop-at-target case is the next test.)
     const missing = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 20_000);
     const reclaimable = makeSparseRun('ws-Q', UUID(2), 2 * 1024 ** 3, 10_000);
-    const target = makeSparseRun('ws-Q', UUID(3), 2 * 1024 ** 3);
-    _setScratchUsageForTests('ws-Q', 6 * 1024 ** 3 + markerBytes('ws-Q'));
+    const target = makeSparseRun('ws-Q', UUID(3), 3 * 1024 ** 3);
+    _setScratchUsageForTests('ws-Q', 7 * 1024 ** 3 + markerBytes('ws-Q'));
 
     const access = vi.mocked(accessAsync);
     const originalAccess = access.getMockImplementation()!;
@@ -2453,7 +2461,7 @@ describe('deferred scratch quota recovery', () => {
       expect(existsSync(missing)).toBe(false);
       expect(existsSync(reclaimable)).toBe(false);
       expect(readFileSync(filePath)).toHaveLength(64);
-      expect(scratchUsageBytes('ws-Q')).toBe(2 * 1024 ** 3 + markerBytes('ws-Q') + 64);
+      expect(scratchUsageBytes('ws-Q')).toBe(3 * 1024 ** 3 + markerBytes('ws-Q') + 64);
       expect(timings.at(-1)?.quotaRecoveryDiagnostics).toMatchObject({
         deletePreflightSkips: 1,
         lastDeletePreflightErrorCode: 'ENOENT',
@@ -2463,6 +2471,48 @@ describe('deferred scratch quota recovery', () => {
         deletePreflightMs: expect.any(Number),
         pinProtectionMs: expect.any(Number),
         rmAsyncMs: expect.any(Number),
+      });
+      await refreshScratchUsage('ws-Q');
+    } finally {
+      access.mockImplementation(originalAccess);
+    }
+  });
+
+  it('stops after crediting a vanished quota candidate when that alone restores quota', async () => {
+    // FIFO recovery evicts only down to target: once the vanished run's stale bytes are credited
+    // (6 GiB - 2 GiB is under target) a later reclaimable run must NOT be deleted as well.
+    const missing = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 20_000);
+    const reclaimable = makeSparseRun('ws-Q', UUID(2), 2 * 1024 ** 3, 10_000);
+    const target = makeSparseRun('ws-Q', UUID(3), 2 * 1024 ** 3);
+    _setScratchUsageForTests('ws-Q', 6 * 1024 ** 3 + markerBytes('ws-Q'));
+
+    const access = vi.mocked(accessAsync);
+    const originalAccess = access.getMockImplementation()!;
+    const remove = vi.mocked(rmAsync);
+    const originalRemove = remove.getMockImplementation()!;
+    const timings: ScratchWriteTimings[] = [];
+    const filePath = join(target, 'fresh-result');
+    access.mockImplementation(async (...args) => {
+      if (String(args[0]) === missing) {
+        await originalRemove(missing, { recursive: true, force: true });
+        throw Object.assign(new Error('quota candidate disappeared'), { code: 'ENOENT' });
+      }
+      return originalAccess(...args);
+    });
+    try {
+      await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 64,
+        onTiming: (row) => timings.push(row) }, () => writeFile(filePath, Buffer.alloc(64)));
+      expect(existsSync(missing)).toBe(false);
+      expect(existsSync(reclaimable)).toBe(true);
+      expect(readFileSync(filePath)).toHaveLength(64);
+      expect(scratchUsageBytes('ws-Q')).toBe(4 * 1024 ** 3 + markerBytes('ws-Q') + 64);
+      expect(timings.at(-1)?.quotaRecoveryDiagnostics).toMatchObject({
+        deleteAttempts: 1,
+        deletePreflightSkips: 1,
+        lastDeletePreflightErrorCode: 'ENOENT',
+        deleteErrors: 0,
+        runsDeleted: 0,
+        deletedBytes: 0,
       });
       await refreshScratchUsage('ws-Q');
     } finally {

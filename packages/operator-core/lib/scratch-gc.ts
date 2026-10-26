@@ -1773,6 +1773,31 @@ export function _setScratchUsageForTests(
 }
 
 /** Test-only: forget every cached usage total. */
+/**
+ * Test-only: wait (bounded) for every in-flight usage refresh / quota recovery to settle.
+ * A refresh's `finally` can chain a fire-and-forget follow-up refresh, so awaiting the last
+ * `refreshScratchUsage` call does not prove the workspace is quiescent. Such a straggler resolves
+ * its scratch root from the environment when it runs, and can evict runs in the NEXT test's
+ * sandbox. Re-reads the entries each round because a settling refresh can start another.
+ */
+export async function _settleScratchMaintenanceForTests(timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pending = [...usageState.byWorkspace.values()]
+      .flatMap((entry) => [entry.refreshing, entry.recovering])
+      .filter((task): task is Promise<void> => Boolean(task));
+    if (pending.length === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.allSettled(pending),
+      new Promise<void>((resolveWait) => {
+        timer = setTimeout(resolveWait, Math.max(0, deadline - Date.now()));
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export function _resetScratchUsageForTests(): void {
   usageState.byWorkspace.clear();
   for (const path of usageState.sharedStatePaths) {
@@ -2372,8 +2397,12 @@ export async function writeWithScratchQuota(
                 subphases[key] = (subphases[key] ?? 0) + elapsedMs;
               }
             }
+            // Emit a clearing progress row only when a waiting owner was actually reported.
+            // An uncontended admission must not add a progress row: callers read the first
+            // timing row as the settled result and count progress rows per 5s interval.
+            const reportedWaitOwner = recoveryDataMutexWaitOwner !== undefined;
             recoveryDataMutexWaitOwner = undefined;
-            emitActiveRecoveryProgress?.();
+            if (reportedWaitOwner) emitActiveRecoveryProgress?.();
           });
           await withScratchWorkspaceMutex(opts.workspaceId, 'quota-recovery-state', async () => {
             await writeSharedScratchQuotaState(
