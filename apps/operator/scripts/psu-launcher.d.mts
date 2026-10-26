@@ -602,8 +602,12 @@ export function prepareSuLaunchEnvironment(envelopeEnv: NodeJS.ProcessEnv, inher
  * envelope format + JSONL row shape in lockstep. Fail-soft: any error returns
  * the untagged text (the turn then classifies owner/unverified — visible, and
  * never a broken launch). No-sid launches (interactive, untracked) stay untagged.
+ * @param {{ routineId: string, wakeCount: number } | null} [loopFire]
  */
-export function tagKickoffProvenance(text: any, sid: any, env?: NodeJS.ProcessEnv, nowMs?: number, origin?: string): any;
+export function tagKickoffProvenance(text: any, sid: any, env?: NodeJS.ProcessEnv, nowMs?: number, origin?: string, loopFire?: {
+    routineId: string;
+    wakeCount: number;
+} | null): any;
 export function kickoffPositionalArgs(res: any, args: any): any[];
 /**
  * The free-form first-turn text for a launch, with the SPAWN-SAFE env fallback:

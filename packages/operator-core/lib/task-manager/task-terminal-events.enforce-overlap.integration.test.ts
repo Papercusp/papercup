@@ -146,6 +146,7 @@ describe('task terminal enforcement-provider overlap (real PG)', () => {
       `).toEqual([{
         fire_count: 1,
         last_payload: {
+          terminalEventRevision: 1,
           taskId, state: 'killed', exitCode: 137, exitReason: 'oom-kill',
           taskClass: 'bash-job', harness: 'papercusp', launchedBy: 'test-enforce-overlap-owner',
         },

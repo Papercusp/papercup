@@ -203,6 +203,8 @@ function emitterIdentity(source: string | undefined, workspaceId: string): Agent
 }
 
 export interface EmitAwaitedEventOpts {
+  /** Internal durable task-outbox fence, checked before any event fan-out. */
+  taskTerminal?: import('./store').TaskTerminalFence;
   /** Exact event key, e.g. `lock:grant:<ticket>` / `plan-run:finished:<id>`. */
   key: string;
   /** Carried on wake deliveries + the notify message body. */
@@ -340,8 +342,6 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   const ws = opts.workspaceId ?? activeWorkspaceId();
   // Both code- and agent-emitted fires use this seam; declarations never call it.
   const { emitSystemEvent } = await import('../engine');
-  emitSystemEvent({ tool: 'event:' + opts.key, args: { key: opts.key, payload: opts.payload },
-    workspaceId: ws, harnessSlug: opts.harnessSlug, cause: opts.cause });
 
   // EI-13705: record the fire on the UNCONDITIONAL per-key latch BEFORE claiming
   // await rows. The bridge can start an event between an awaiter's pre-registration
@@ -365,11 +365,17 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   // subscribers; undefined (latch failed / stub) ⇒ the separate read below.
   let latchedSubscribers: LatchedEventSubscriber[] | undefined;
   const subscriberScope = eventKeySubscriberScope();
+  const superseded = (): EmitResult => ({
+    ok: true, key: opts.key, latchRecorded: false, woken: 0,
+    notified: [], msgId: null, waiters: 0,
+  });
   try {
     const latch = await recordKeyFire({
       eventKey: opts.key, firedBy: opts.source ?? null, payload: opts.payload,
       subscribersFrom: subscriberScope,
+      ...(opts.taskTerminal ? { taskTerminal: opts.taskTerminal } : {}),
     });
+    if (opts.taskTerminal && (!latch || latch.superseded)) return superseded();
     if (latch && latch.announcementPending === false) announcementPending = false;
     if (latch && latch.provingWaiterPending === false) provingWaiterPending = false;
     if (latch) {
@@ -401,7 +407,12 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
     const detail = (e as { detail?: unknown } | null)?.detail;
     log(`key-fire latch record failed for ${opts.key}: ${e instanceof Error ? e.message : e}`
       + (typeof detail === 'string' && detail ? ` | ${detail.replace(/\s+/g, ' ')}` : ''));
+    // A fenced outbox must retain its retry path when the authority is unknown.
+    if (opts.taskTerminal) return superseded();
   }
+
+  emitSystemEvent({ tool: 'event:' + opts.key, args: { key: opts.key, payload: opts.payload },
+    workspaceId: ws, harnessSlug: opts.harnessSlug, cause: opts.cause });
 
   // pui-agent-context-cockpit P-026: reuse the activity ledger + its existing
   // SSE transport as the fleet transition tape. This pure-filtered append only
@@ -423,6 +434,7 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
     reason: 'event',
     payload: opts.payload,
     source: opts.source,
+    ...(opts.taskTerminal ? { taskTerminal: opts.taskTerminal } : {}),
   });
   // composable-event-awaits-2026-07-11: a fired row tagged with node_id is a composed-await LEAF.
   // It does NOT wake/notify its subscriber directly — its (already atomic, exactly-once) claim

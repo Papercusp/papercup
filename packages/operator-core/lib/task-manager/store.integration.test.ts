@@ -846,11 +846,14 @@ describe('P-012 terminal provenance writer', () => {
     expect(await store.getTask(row.taskId)).toMatchObject({ state: 'exited', exitCode: 4 });
   });
 
-  it('does not overwrite a racing observed exit or changed scope after the recovery read', async () => {
+  it('does not receipt or emit a SQL-refused racing close after the recovery read', async () => {
     for (const change of ['observed', 'scope', 'invocation']) {
       const row = await liveTask(`racing${change}`);
       await store.closeTask(row.taskId, { state: 'ended_unobserved' }, undefined, { emitTerminal: async () => {} });
-      const effects: CloseTaskEffects = { emitTerminal: vi.fn(async () => {}), stage: (stage) => {
+      const [before] = await db.sql`SELECT detail -> 'terminalEventRevision' AS revision,
+        detail -> 'terminalEventPending' AS pending FROM harness_shared.task_ledger WHERE task_id = ${row.taskId}`;
+      let closeUpdates = 0;
+      const effects: CloseTaskEffects = { emitTerminal: vi.fn(async () => {}), onTerminalPersisted: vi.fn(), stage: (stage) => {
         if (stage === 'task-close-update') updates.push(change === 'observed'
           ? db.sql`UPDATE harness_shared.task_ledger SET state = 'exited', exit_code = 9 WHERE task_id = ${row.taskId}`
           : change === 'scope'
@@ -862,13 +865,19 @@ describe('P-012 terminal provenance writer', () => {
       const sql = ((parts: TemplateStringsArray, ...values: unknown[]) => {
         const query = parts.join('?');
         if (query.includes('UPDATE harness_shared.task_ledger')) return (async () => {
+          closeUpdates++;
           await Promise.all(updates);
           return db.sql(parts, ...values as never[]);
         })();
         return db.sql(parts, ...values as never[]);
       }) as typeof db.sql;
       expect(await store.closeTask(row.taskId, { state: 'exited', exitCode: 0 }, sql, effects)).toBe(false);
+      expect(closeUpdates).toBe(1);
+      expect(effects.onTerminalPersisted).not.toHaveBeenCalled();
       expect(effects.emitTerminal).not.toHaveBeenCalled();
+      expect(await db.sql`SELECT detail -> 'terminalEventRevision' AS revision,
+        detail -> 'terminalEventPending' AS pending FROM harness_shared.task_ledger WHERE task_id = ${row.taskId}`)
+        .toEqual([before]);
     }
   });
 });

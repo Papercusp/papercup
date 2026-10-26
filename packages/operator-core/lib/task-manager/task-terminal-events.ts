@@ -20,6 +20,8 @@ export interface TaskTerminalEventInput {
   state: Extract<TaskState, 'exited' | 'killed' | 'timed_out' | 'stranded' | 'ended_unobserved'>;
   exitCode: number | null;
   exitReason: string | null;
+  /** Durable outbox generation; absent only for legacy direct bridge callers. */
+  revision?: number;
 }
 
 export type TaskTerminalEventEmitter = (event: TaskTerminalEventInput) => boolean | void | Promise<boolean | void>;
@@ -45,6 +47,7 @@ export async function emitTaskTerminalEvent(
     taskClass: event.taskClass,
     harness: event.harnessSlug,
     launchedBy: event.launchedBy,
+    ...(event.revision == null ? {} : { terminalEventRevision: event.revision }),
   };
   try {
     const emit = deps.emit ?? (await import('../events/await/engine')).emitAwaitedEvent;
@@ -54,6 +57,9 @@ export async function emitTaskTerminalEvent(
       payload,
       source: 'task-manager',
       workspaceId: event.workspaceId,
+      ...(event.revision == null ? {} : {
+        taskTerminal: { taskId: event.taskId, workspaceId: event.workspaceId, revision: event.revision },
+      }),
     });
     return (result as { latchRecorded?: boolean } | null)?.latchRecorded !== false;
   } catch (error: unknown) {

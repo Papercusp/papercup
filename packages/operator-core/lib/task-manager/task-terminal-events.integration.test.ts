@@ -7,7 +7,7 @@
  * the cross-module persistence boundary and first-terminal exactly-once rule.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type postgres from 'postgres';
+import postgres from 'postgres';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 
@@ -181,12 +181,14 @@ describe('task terminal awaited-event bridge (real PG)', () => {
     let olderStarted!: () => void;
     const olderBlocked = new Promise<void>(resolve => { olderStarted = resolve; });
     const olderReleased = new Promise<void>(resolve => { releaseOlder = resolve; });
+    let olderResult: boolean | undefined;
     const recovering = taskStore.recoverPendingTaskTerminalEvents(h.ws, undefined, async event => {
       if (event.taskId === taskId && event.state === 'ended_unobserved') {
         olderStarted();
         await olderReleased;
       }
-      return emitTaskTerminalEvent(event);
+      olderResult = await emitTaskTerminalEvent(event);
+      return olderResult;
     });
     try {
       await olderBlocked;
@@ -198,14 +200,131 @@ describe('task terminal awaited-event bridge (real PG)', () => {
       });
       expect(await h.sql`SELECT detail -> 'terminalEventPending' AS pending
         FROM harness_shared.task_ledger WHERE task_id = ${taskId}`).toEqual([{ pending: false }]);
+      // A stale resumed emitter must not consume a waiter registered after the
+      // newer acknowledgement, including one with a payload filter.
+      await eventStore.registerAwait({ subscriberId: 'su-newer-ack-waiter', eventKey, policy: 'wake',
+        payloadFilter: { state: 'ended_unobserved' } });
     } finally {
       releaseOlder();
       await recovering;
     }
     expect(await eventStore.getKeyFireLatch(eventKey)).toMatchObject({
       lastPayload: { state: 'exited', exitCode: 9, exitReason: 'definitive-runner-log' },
+      fireCount: 1,
     });
+    expect(olderResult).toBe(false);
+    expect(await h.sql`SELECT fired_at FROM harness_shared.event_awaits
+      WHERE subscriber_id = 'su-newer-ack-waiter' AND event_key = ${eventKey}`)
+      .toEqual([{ fired_at: null }]);
     await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws)).resolves.toBe(0);
+  });
+
+  it('does not claim new waiters when an accepted older latch resumes after a newer acknowledgement', async () => {
+    const taskId = 'terminal-accepted-latch-resumes-last';
+    const eventKey = taskTerminalEventKey(taskId);
+    await insertTask(taskId);
+    await taskStore.closeTask(taskId, { state: 'ended_unobserved' }, undefined, { emitTerminal: async () => false });
+    let releaseOlder!: () => void;
+    let olderLatched!: () => void;
+    const latched = new Promise<void>(resolve => { olderLatched = resolve; });
+    const released = new Promise<void>(resolve => { releaseOlder = resolve; });
+    const shared = h.sql;
+    let blockFirstLatch = true;
+    h.sql = new Proxy(shared, {
+      apply(target, thisArg, args) {
+        const query = Reflect.apply(target, thisArg, args);
+        if (blockFirstLatch && args[0].join('').includes('WITH current_terminal AS MATERIALIZED')) {
+          blockFirstLatch = false;
+          return query.then(async (rows: unknown) => {
+            olderLatched();
+            await released;
+            return rows;
+          });
+        }
+        return query;
+      },
+    });
+    const recovering = taskStore.recoverPendingTaskTerminalEvents(h.ws);
+    try {
+      await latched;
+      await taskStore.closeTask(taskId, { state: 'exited', exitCode: 4, exitReason: 'newer-after-latch' });
+      for (const [subscriberId, key, payloadFilter] of [
+        ['su-post-latch-unfiltered', eventKey, undefined],
+        ['su-post-latch-filtered', eventKey, { state: 'ended_unobserved' }],
+        ['su-post-latch-pattern', 'task:terminal:*', { taskId, state: 'ended_unobserved' }],
+      ] as const) {
+        await eventStore.registerAwait({ subscriberId, eventKey: key, policy: 'wake', payloadFilter });
+      }
+    } finally {
+      releaseOlder();
+      await recovering;
+      h.sql = shared;
+    }
+    expect(await eventStore.getKeyFireLatch(eventKey)).toMatchObject({
+      lastPayload: { state: 'exited', exitCode: 4, terminalEventRevision: 2 }, fireCount: 2,
+    });
+    expect(await h.sql`SELECT fired_at FROM harness_shared.event_awaits
+      WHERE subscriber_id LIKE 'su-post-latch-%' ORDER BY subscriber_id`)
+      .toEqual([{ fired_at: null }, { fired_at: null }, { fired_at: null }]);
+    expect(await h.sql`SELECT detail -> 'terminalEventPending' AS pending
+      FROM harness_shared.task_ledger WHERE task_id = ${taskId}`).toEqual([{ pending: false }]);
+    await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws)).resolves.toBe(0);
+  });
+
+  it('rereads a newer terminal value after the recovery candidate snapshot', async () => {
+    const taskId = 'terminal-stale-candidate-snapshot';
+    await insertTask(taskId);
+    await taskStore.closeTask(taskId, { state: 'ended_unobserved' }, undefined, { emitTerminal: async () => false });
+    const snapshotSql = ((parts: TemplateStringsArray, ...values: unknown[]) => {
+      const query = h.sql(parts, ...values as never[]);
+      if (!parts.join('').includes('LIMIT 100')) return query;
+      return query.then(async rows => {
+        await taskStore.closeTask(taskId, { state: 'exited', exitCode: 6, exitReason: 'newer-canonical' },
+          undefined, { emitTerminal: async () => false });
+        return rows;
+      });
+    }) as unknown as postgres.Sql;
+    const emitted = vi.fn(async () => true);
+    await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws, snapshotSql, emitted)).resolves.toBe(1);
+    expect(emitted).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      taskId, state: 'exited', exitCode: 6, exitReason: 'newer-canonical', revision: 2,
+    }));
+  });
+
+  it('rejects stale generations before the first latch or waiter claim, then retries the latest', async () => {
+    const taskId = 'terminal-stale-before-first-latch';
+    const eventKey = taskTerminalEventKey(taskId);
+    await insertTask(taskId);
+    let stale: Parameters<typeof emitTaskTerminalEvent>[0] | undefined;
+    await taskStore.closeTask(taskId, { state: 'ended_unobserved' }, undefined, {
+      emitTerminal: async event => { stale = event; return false; },
+    });
+    await taskStore.closeTask(taskId, { state: 'exited', exitCode: 3 }, undefined, { emitTerminal: async () => false });
+    await eventStore.registerAwait({ subscriberId: 'su-stale-generation-waiter', eventKey, policy: 'wake' });
+    await expect(emitTaskTerminalEvent(stale!)).resolves.toBe(false);
+    expect(await eventStore.getKeyFireLatch(eventKey)).toBeNull();
+    expect(await h.sql`SELECT fired_at FROM harness_shared.event_awaits
+      WHERE subscriber_id = 'su-stale-generation-waiter' AND event_key = ${eventKey}`)
+      .toEqual([{ fired_at: null }]);
+    await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws)).resolves.toBe(1);
+    expect((await waitForEmission(eventKey)).delivery.payload).toMatchObject({ state: 'exited', exitCode: 3 });
+  });
+
+  it('delivers through the engine with one shared pool connection', async () => {
+    const taskId = 'terminal-single-connection';
+    const shared = h.sql;
+    const single = postgres(db.adminDsn, { max: 1, prepare: false });
+    try {
+      h.sql = single;
+      await insertTask(taskId);
+      await expect(taskStore.closeTask(taskId, { state: 'exited', exitCode: 0 })).resolves.toBe(true);
+      expect(await eventStore.getKeyFireLatch(taskTerminalEventKey(taskId))).toMatchObject({
+        lastPayload: { taskId, state: 'exited', terminalEventRevision: 1 },
+      });
+    } finally {
+      h.sql = shared;
+      await single.end({ timeout: 5 });
+    }
   });
 
   it('fires and queues exactly one event after the first authoritative terminal update', async () => {

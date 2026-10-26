@@ -816,6 +816,27 @@ describe('internal launch context provenance', () => {
     expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
     expect(spawnedEnv(spawnHeadlessMock).PAPERCUSP_INTERNAL_KICKOFF_ORIGIN).toBe('loop-fire');
   });
+
+  it('threads typed loop-fire identity only through the internal handler context', async () => {
+    const loopFire = { routineId: 'loop-internal', wakeCount: 7 };
+    const res = await launchAgent.handler(
+      { brief: 'Continue the loop', harness: 'papercusp', headless: true },
+      { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su',
+        [INTERNAL_LOOP_FIRE_ORIGIN]: { origin: 'loop-fire', loopFire } } as never,
+    );
+    expect(isError(res)).toBe(false);
+    expect(JSON.parse(spawnedEnv(spawnHeadlessMock).PAPERCUSP_INTERNAL_KICKOFF_ORIGIN)).toEqual({ origin: 'loop-fire', loopFire });
+  });
+
+  it('does not forward malformed private loop identity', async () => {
+    const res = await launchAgent.handler(
+      { brief: 'Continue the loop', harness: 'papercusp', headless: true },
+      { workspaceId: 'ws-test', role: 'su',
+        [INTERNAL_LOOP_FIRE_ORIGIN]: { origin: 'loop-fire', loopFire: { routineId: 'loop', wakeCount: 0 } } } as never,
+    );
+    expect(isError(res)).toBe(false);
+    expect(spawnedEnv(spawnHeadlessMock).PAPERCUSP_INTERNAL_KICKOFF_ORIGIN).toBe('loop-fire');
+  });
 });
 
 describe('GOAL admission receipt (EI-25166050736574344)', () => {
@@ -2594,10 +2615,18 @@ describe('resume + fork (D-004/D-007)', () => {
         resolveResumeTargetMock.mockResolvedValue(source);
         resolveSessionStatesMock.mockResolvedValue(new Map([[source.ownerId, { sessionState: 'live', pid: null, host: null }]]));
         listSuccessorTasksMock.mockResolvedValue([task]);
-        acquireAdvSessionResumeMock.mockImplementation(async () => ({
-          acquired: true, replayed: acquireAdvSessionResumeMock.mock.calls.length > 1,
-          leaseExpiresAt: new Date(Date.now() + 300_000).toISOString(),
-        }));
+        acquireAdvSessionResumeMock.mockImplementation(async (...args: unknown[]) => {
+          // This branch reserves before its terminal CAS. Match the writer's
+          // ended-only refusal so accidentally requiring terminal row evidence
+          // cannot make the successful task-custody tests pass through a stub.
+          if ((args[6] as { requireTerminal?: boolean } | undefined)?.requireTerminal) {
+            return { acquired: false, status: 'live' };
+          }
+          return {
+            acquired: true, replayed: acquireAdvSessionResumeMock.mock.calls.length > 1,
+            leaseExpiresAt: new Date(Date.now() + 300_000).toISOString(),
+          };
+        });
       });
 
       it('uses the exact scoped native-task reader despite unavailable presence process details', async () => {

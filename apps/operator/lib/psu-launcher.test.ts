@@ -842,7 +842,37 @@ describe("tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
     expect(rows.map((row) => row.origin)).toEqual(["loop-fire", "fleet-kickoff"]);
   });
 
-  it("pins the launcher mirror to the canonical turn-provenance contract", async () => {
+  it("preserves typed loop identity for one private successor kickoff", () => {
+    const loopFire = { routineId: "loop-su-kick-typed", wakeCount: 7 };
+    const env = {
+      ...envFor(), PAPERCUSP_SID: "su-loop-kick-typed",
+      PAPERCUSP_INTERNAL_KICKOFF_ORIGIN: JSON.stringify({ origin: "loop-fire", loopFire }),
+    };
+    const first = routeFreshKickoff("codex", { kickoffPrompt: "Continue the loop." }, { picker: false }, env);
+    expect(first.managedKickoff).toMatch(/^⟦turn-origin:loop-fire nonce:/);
+    expect(env).not.toHaveProperty("PAPERCUSP_INTERNAL_KICKOFF_ORIGIN");
+    routeFreshKickoff("codex", { kickoffPrompt: "Ordinary work." }, { picker: false }, env);
+    const rows = readFileSync(join(provDir, "su-loop-kick-typed.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(rows[0]).toMatchObject({ origin: "loop-fire", loopFire });
+    expect(rows[1]).toMatchObject({ origin: "fleet-kickoff" });
+    expect(rows[1]).not.toHaveProperty("loopFire");
+  });
+
+  it.each([
+    null, { routineId: "", wakeCount: 1 }, { routineId: "loop", wakeCount: 0 },
+    { routineId: "loop", wakeCount: 1.5 }, { routineId: "loop", wakeCount: "7" },
+  ])("does not qualify malformed private loop identity %j", (loopFire) => {
+    const env = {
+      ...envFor(), PAPERCUSP_SID: "su-loop-kick-invalid",
+      PAPERCUSP_INTERNAL_KICKOFF_ORIGIN: JSON.stringify({ origin: "loop-fire", loopFire }),
+    };
+    const result = routeFreshKickoff("codex", { kickoffPrompt: "Continue." }, { picker: false }, env);
+    expect(result.managedKickoff).toMatch(/^⟦turn-origin:loop-fire nonce:/);
+    const row = JSON.parse(readFileSync(join(provDir, "su-loop-kick-invalid.jsonl"), "utf8").trim());
+    expect(row).not.toHaveProperty("loopFire");
+  });
+
+  it.each(["fleet-kickoff", "loop-fire"])("pins the launcher mirror to the canonical %s contract", async (origin) => {
     const sid = "su/kickoff .. id";
     const text = " Begin: advance this plan.\r\n";
     const nowMs = 1_760_000_000_000;
@@ -851,16 +881,19 @@ describe("tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
     try {
       const canonical = await tagTurnForInjection({
         sid,
-        origin: "fleet-kickoff",
+        origin,
         text,
         dir: canonicalDir,
         nowMs,
+        ...(origin === "loop-fire" ? { loopFire: { routineId: "loop-mirror", wakeCount: 9 } } : {}),
       });
       const mirror = tagKickoffProvenance(
         text,
         sid,
         { ...envFor(), PAPERCUSP_TURN_PROVENANCE_DIR: mirrorDir },
         nowMs,
+        origin,
+        origin === "loop-fire" ? { routineId: "loop-mirror", wakeCount: 9 } : null,
       );
       const canonicalPath = ledgerPathForSid(sid, canonicalDir);
       const mirrorPath = join(mirrorDir, basename(canonicalPath));

@@ -2762,6 +2762,7 @@ export function prepareSuLaunchEnvironment(envelopeEnv, inheritedEnv = process.e
  * envelope format + JSONL row shape in lockstep. Fail-soft: any error returns
  * the untagged text (the turn then classifies owner/unverified — visible, and
  * never a broken launch). No-sid launches (interactive, untracked) stay untagged.
+ * @param {{ routineId: string, wakeCount: number } | null} [loopFire]
  */
 export function tagKickoffProvenance(
   text,
@@ -2769,10 +2770,18 @@ export function tagKickoffProvenance(
   env = process.env,
   nowMs = Date.now(),
   origin = "fleet-kickoff",
+  loopFire = null,
 ) {
   try {
     if (!text || !sid) return text;
     const kickoffOrigin = origin === "loop-fire" ? "loop-fire" : "fleet-kickoff";
+    // Only the private loop-successor path supplies this identity. Legacy or
+    // malformed hints retain their origin but cannot qualify a loop fire.
+    const identity = kickoffOrigin === "loop-fire" &&
+      typeof loopFire?.routineId === "string" && loopFire.routineId.trim() &&
+      Number.isInteger(loopFire.wakeCount) && loopFire.wakeCount > 0
+      ? { routineId: loopFire.routineId, wakeCount: loopFire.wakeCount }
+      : null;
     const nonce = randomBytes(8).toString("hex");
     const sha256 = createHash("sha256")
       .update(String(text).replace(/\r\n?/g, "\n").trim(), "utf8")
@@ -2797,6 +2806,7 @@ export function tagKickoffProvenance(
         origin: kickoffOrigin,
         sha256,
         ts: nowMs,
+        ...(identity ? { loopFire: identity } : {}),
       }) + "\n",
       { flag: "a" },
     );
@@ -2811,7 +2821,14 @@ export function tagKickoffProvenance(
 function consumeInternalKickoffOrigin(env = process.env) {
   const requested = env?.PAPERCUSP_INTERNAL_KICKOFF_ORIGIN;
   if (env) delete env.PAPERCUSP_INTERNAL_KICKOFF_ORIGIN;
-  return requested === "loop-fire" ? "loop-fire" : "fleet-kickoff";
+  if (requested === "loop-fire") return { origin: "loop-fire", loopFire: null };
+  try {
+    const hint = JSON.parse(requested ?? "null");
+    if (hint?.origin === "loop-fire") {
+      return { origin: "loop-fire", loopFire: hint.loopFire ?? null };
+    }
+  } catch { /* an invalid private hint never gains loop identity */ }
+  return { origin: "fleet-kickoff", loopFire: null };
 }
 
 export function kickoffPositionalArgs(res, args) {
@@ -2877,7 +2894,7 @@ export function scriptedOmpSetupEnv(backend, args, env = process.env) {
  * ledger write performed by tagKickoffProvenance.
  */
 export function routeFreshKickoff(backend, res, args, env = process.env) {
-  const kickoffOrigin = consumeInternalKickoffOrigin(env);
+  const kickoff = consumeInternalKickoffOrigin(env);
   // The bootstrap response is the source of truth for the child environment.
   // Keep the provenance write on that same envelope: a launcher can be started
   // under one workspace while bootstrap selects another, and runWrapper exports
@@ -2894,7 +2911,7 @@ export function routeFreshKickoff(backend, res, args, env = process.env) {
 
   const sidForTag = launchEnv.PAPERCUSP_SID || null;
   const tagged = kickoffArgs.map((text) =>
-    tagKickoffProvenance(text, sidForTag, launchEnv, Date.now(), kickoffOrigin),
+    tagKickoffProvenance(text, sidForTag, launchEnv, Date.now(), kickoff.origin, kickoff.loopFire),
   );
   return {
     positionalArgs: [],

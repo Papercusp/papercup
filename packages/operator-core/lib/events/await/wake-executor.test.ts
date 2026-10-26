@@ -6354,6 +6354,7 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
           subscriberId: 'su-abc', workspaceId: 'ws', harness: 'papercusp', deliveryId: expect.any(Number),
           wakeText: `⟦tagged:loop-fire:2⟧\n${tagCalls[1]?.text}`,
           turnOrigin: 'loop-fire',
+          loopFire: { routineId: 'loop-su-abc', wakeCount: 7 },
         }));
         expect(tagCalls).toHaveLength(2);
         expect(tagCalls[1]?.nowMs).toBe(nowMs + staleDelayMs);

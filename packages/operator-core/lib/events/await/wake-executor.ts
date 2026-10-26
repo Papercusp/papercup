@@ -3333,6 +3333,7 @@ export interface ExecuteWakeDeps {
     carry?: 'cold';
     /** Preserve the enrolled origin only for a loop-fire successor kickoff. */
     turnOrigin?: 'loop-fire';
+    loopFire?: { routineId: string; wakeCount: number };
   }) => Promise<boolean>;
   /** P-013 part A (review-system-rework-reduction-2026-09-23, RSR-P-013-A): decide whether a
    *  dead Claude session's resume must be RE-HOMED because its account is walled. Injected
@@ -5208,6 +5209,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       const launchSuccessor = deps.launchColdFreshSuccessor ?? (async (input: {
         subscriberId: string; workspaceId: string; harness: string | null;
         wakeText: string; deliveryId: number; carry?: 'cold'; turnOrigin?: 'loop-fire';
+        loopFire?: { routineId: string; wakeCount: number };
       }) => {
         const { default: launchTool, INTERNAL_LOOP_FIRE_ORIGIN } =
           await import('../../agent-tools/capability/launch-agent');
@@ -5216,7 +5218,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           harnessSlug: input.harness,
           role: 'su',
           ...(input.turnOrigin === 'loop-fire'
-            ? { [INTERNAL_LOOP_FIRE_ORIGIN]: 'loop-fire' as const }
+            ? { [INTERNAL_LOOP_FIRE_ORIGIN]: {
+                origin: 'loop-fire' as const, loopFire: input.loopFire,
+              } }
             : {}),
         };
         const result = await launchTool.handler({
@@ -5236,6 +5240,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // beyond the ledger TTL. Re-tag the same delivery-time text at this final
       // launch boundary so the successor opens with a live ledger row.
       const successorText = await tagWakeText(sessionDelivery, untaggedText, tagTurn);
+      const successorLoopFire = readLoopDeliveryMarker(sessionDelivery.payload);
       const successorStarted = await launchSuccessor({
         subscriberId: d.subscriberId,
         workspaceId: fresh?.workspaceId ?? sessionDelivery.workspaceId,
@@ -5244,6 +5249,10 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         deliveryId: d.id,
         ...(coldWakeNeedsHost ? { carry: 'cold' as const } : {}),
         ...(successorText.origin === 'loop-fire' ? { turnOrigin: 'loop-fire' as const } : {}),
+        ...(successorText.origin === 'loop-fire' && successorLoopFire?.routineId &&
+          Number.isInteger(successorLoopFire.wakeCount) && (successorLoopFire.wakeCount ?? 0) > 0
+          ? { loopFire: { routineId: successorLoopFire.routineId, wakeCount: successorLoopFire.wakeCount! } }
+          : {}),
       }).catch((error) => {
         console.warn(`[wake-executor] cold fresh successor failed for ${d.subscriberId}: ${String(error)}`);
         return false;

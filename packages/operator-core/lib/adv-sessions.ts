@@ -1307,13 +1307,14 @@ export type AdvSessionResumeReservation =
   | { status: 'retired'; acquired: false }
   | { status: 'missing'; acquired: false };
 
-/** Optional strict pin for an ended-only identity transition. Ordinary resume
- * keeps its existing recovery policy; takeover cannot use stale-active recovery
- * or reconcile a different incarnation under the same textual owner id. */
+/** Pin the exact incarnation while holding the reservation row lock. A caller
+ * reconciling an independently verified terminal task may reserve before its
+ * terminal CAS; ended-only takeovers additionally require terminal row evidence.
+ * Neither form relaxes the existing lease or liveness policy. */
 export interface AdvSessionResumePin {
   workspaceId: string;
   binding: AdvSessionExpectedBinding;
-  requireTerminal: true;
+  requireTerminal?: true;
 }
 
 /** Fence every registration for an owner before terminating its process. Pending

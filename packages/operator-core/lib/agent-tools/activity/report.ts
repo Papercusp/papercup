@@ -19,7 +19,8 @@
  *
  * `owner_id` is the worker's coordination identity (PAPERCUSP_SID, the same id baked
  * into its MCP `?client=`) — passed explicitly because the hook is the source of
- * truth for it. Falls back to the request's client/principal when omitted.
+ * truth for it. It must match an attributable caller; transport-only ingestion
+ * retains its explicit owner. Falls back to the request's client/principal when omitted.
  */
 
 import { z } from 'zod';
@@ -42,7 +43,7 @@ import {
   reanchorAdvSessionNativeId,
   reanchorAdvSessionNativeIdByOwner,
 } from '../../adv-sessions';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { isTransportOnlyIdentity, resolveAgentIdentity } from '../coordination/identity';
 import { fileLockCoordinationDomain, lockDomainForProjectDir } from '../locks/coordination-domain';
 import { releaseAllOwnedLocks } from '../locks/release-all-owned';
 import { buildActivityHookBundle } from './hook-bundle';
@@ -235,6 +236,16 @@ export default defineTool({
       (ctx.isSuperuser ? 'system:operator' : `agent:${ctx.role ?? 'unknown'}`);
     if (!owner) {
       return { isError: true, content: [{ type: 'text', text: 'owner_required: pass the worker owner id (PAPERCUSP_SID).' }] };
+    }
+
+    // A worker may report itself, but cannot renew another owner's leases or
+    // trigger its lifecycle effects by presenting that owner's id. Native-session
+    // classification below only checks the presented owner, after telemetry.
+    // Keep the legacy explicit-owner path for transport-only hook ingestion.
+    let callerOwner: string | undefined;
+    try { callerOwner = resolveAgentIdentity(ctx).ownerId; } catch { /* No attributable caller. */ }
+    if (callerOwner && !isTransportOnlyIdentity(callerOwner) && callerOwner !== owner) {
+      return { isError: true, content: [{ type: 'text', text: 'owner_mismatch: activity owner must match the attributed caller.' }] };
     }
 
     // WI-10001513: this request is the ONLY thing that crosses the process boundary

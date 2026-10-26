@@ -964,10 +964,24 @@ export default defineTool({
     // from the public zod schema, so ordinary fresh-launch behavior does not
     // change and callers cannot smuggle an unaudited recovery carry.
     let savedLaunchCarry = (args as typeof args & { __savedLaunchCarry?: 'warm' | 'cold' }).__savedLaunchCarry;
-    const internalKickoffOrigin =
-      (ctx as typeof ctx & { [INTERNAL_LOOP_FIRE_ORIGIN]?: 'loop-fire' })[INTERNAL_LOOP_FIRE_ORIGIN] === 'loop-fire'
-        ? 'loop-fire'
-        : null;
+    const internalKickoff = (ctx as typeof ctx & {
+      [INTERNAL_LOOP_FIRE_ORIGIN]?: 'loop-fire' | {
+        origin: 'loop-fire'; loopFire?: { routineId: string; wakeCount: number };
+      };
+    })[INTERNAL_LOOP_FIRE_ORIGIN];
+    const internalLoopFire = typeof internalKickoff === 'object' && internalKickoff?.origin === 'loop-fire'
+      ? internalKickoff.loopFire : null;
+    // Extend the existing private hint, rather than accepting fire identity as
+    // public launch arguments or inferring it from quoted kickoff text.
+    const internalKickoffOrigin = internalKickoff === 'loop-fire' ||
+      (typeof internalKickoff === 'object' && internalKickoff?.origin === 'loop-fire')
+      ? (typeof internalLoopFire?.routineId === 'string' && internalLoopFire.routineId.trim() &&
+          Number.isInteger(internalLoopFire.wakeCount) && internalLoopFire.wakeCount > 0
+        ? JSON.stringify({ origin: 'loop-fire', loopFire: {
+            routineId: internalLoopFire.routineId, wakeCount: internalLoopFire.wakeCount,
+          } })
+        : 'loop-fire')
+      : null;
     const gradingAuditTaskDetail = (ctx as typeof ctx & {
       [INTERNAL_GRADING_AUDIT_TASK_DETAIL]?: GradingAuditTaskDetail;
     })[INTERNAL_GRADING_AUDIT_TASK_DETAIL];

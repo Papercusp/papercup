@@ -110,6 +110,7 @@ import {
   repairStaleAdvSessionTerminalMarkers,
   shutdownAcceptedOwnerIds,
   toIsoTimestamp,
+  type AdvSessionResumePin,
   type AdvSessionRow,
 } from './adv-sessions';
 
@@ -134,6 +135,37 @@ beforeEach(() => {
   advSessionBeginMock.mockImplementation(async (fn: (tx: typeof advSessionRowsMock) => unknown) => fn(advSessionRowsMock));
   acquireTimeouts.length = 0;
   acquireRetries.length = 0;
+});
+
+describe('exact binding reservation pin', () => {
+  const pin: AdvSessionResumePin = { workspaceId: 'workspace-a',
+    binding: { coordOwnerId: 'su-task-target', sessionId: 'native-task-target', startedAt: '2026-10-23 20:00:00.123456-04' } };
+  const row = () => ({ agent: 'codex', ended_at: null, ended_by: null, retired_at: null,
+    started_at: new Date(0), binding_started_at: pin.binding.startedAt,
+    workspace_id: pin.workspaceId, coord_owner_id: pin.binding.coordOwnerId, session_id: pin.binding.sessionId,
+    omp_thread_id: null, resume_claim_key: null, resume_claimed_at: null });
+
+  it('reserves the matching stale task incarnation without inventing terminal evidence', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([row()]).mockResolvedValueOnce([{ lease_expires_at: new Date(Date.now() + 120_000) }]);
+    expect(await acquireAdvSessionResume(42, 'task-key', 120, 1, undefined, false, pin))
+      .toMatchObject({ status: 'acquired', acquired: true, replayed: false });
+    const update = (advSessionRowsMock.mock.calls[1][0] as readonly string[]).join(' ');
+    expect(update).not.toMatch(/ended_at\s*=/);
+  });
+
+  it('still refuses a recent unended incarnation without liveness evidence', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([{ ...row(), started_at: new Date() }]);
+    expect(await acquireAdvSessionResume(42, 'task-key', 120, 300, undefined, false, pin))
+      .toEqual({ status: 'live', acquired: false });
+    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('still refuses a changed binding before reserving a task incarnation', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([{ ...row(), session_id: 'later-native' }]);
+    expect(await acquireAdvSessionResume(42, 'task-key', 120, 1, undefined, false, pin))
+      .toEqual({ status: 'binding-changed', acquired: false });
+    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('ended-only takeover reservation pin', () => {

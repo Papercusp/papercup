@@ -507,7 +507,10 @@ export async function closeTask(
              ELSE detail || jsonb_build_object(
                'terminalProvenance', ${terminalJson}::text::jsonb
              )
-           END) || jsonb_build_object('terminalEventPending', true),
+           END) || jsonb_build_object(
+             'terminalEventPending', true,
+             'terminalEventRevision', COALESCE((detail ->> 'terminalEventRevision')::bigint, 0) + 1
+           ),
            ended_at = COALESCE(ended_at, now()),
            last_seen_at = now(),
            updated_at = now()
@@ -574,8 +577,28 @@ async function deliverTaskTerminalEvent(
   emit: TaskTerminalEventEmitter = emitTaskTerminalEvent,
 ): Promise<boolean> {
   try {
-    if (await emit(event) === false) return false;
     const sql = sqlOf(inject);
+    // Recovery's candidate list (and closeTask's UPDATE receipt) can already be
+    // stale. Read the latest outbox value without holding a connection over emit.
+    const [current] = await sql`
+      SELECT task_id, workspace_id, harness_slug, class, launched_by, state,
+             exit_code, exit_reason,
+             COALESCE((detail ->> 'terminalEventRevision')::bigint, 0) AS revision
+        FROM harness_shared.task_ledger
+       WHERE task_id = ${event.taskId} AND workspace_id = ${event.workspaceId}
+         AND ended_at IS NOT NULL
+         AND state IN ('exited', 'killed', 'timed_out', 'stranded', 'ended_unobserved')
+         AND detail -> 'terminalEventPending' IS DISTINCT FROM 'false'::jsonb
+    `;
+    if (!current) return false;
+    event = {
+      taskId: current.task_id, workspaceId: current.workspace_id,
+      harnessSlug: current.harness_slug, taskClass: current.class,
+      launchedBy: current.launched_by, state: current.state,
+      exitCode: current.exit_code, exitReason: current.exit_reason,
+      revision: Number(current.revision),
+    };
+    if (await emit(event) === false) return false;
     // An unobserved close can be upgraded while this emit is in flight. Never
     // acknowledge that newer tuple with an older delivery's receipt.
     await sql`
@@ -585,6 +608,7 @@ async function deliverTaskTerminalEvent(
          AND state = ${event.state}
          AND exit_code IS NOT DISTINCT FROM ${event.exitCode}
          AND exit_reason IS NOT DISTINCT FROM ${event.exitReason}
+         AND COALESCE((detail ->> 'terminalEventRevision')::bigint, 0) = ${event.revision!}
     `;
     return true;
   } catch (error) {
