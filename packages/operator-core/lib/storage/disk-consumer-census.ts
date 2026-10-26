@@ -1210,7 +1210,15 @@ export async function censusOneDevice(
     );
     const attributionMs = Date.now() - attributionStarted;
     const finishedAt = now();
-    const complete = !du.timedOut && !du.error && du.summary.rootBytes !== null && du.deniedCount === 0 && ownFilesNotes.length === 0;
+    // A root summary can exist even when du emitted only partial output before failing.
+    // Only a confirmed successful child exit can certify the walk as complete.
+    const complete =
+      du.exitCode === 0 &&
+      !du.timedOut &&
+      !du.error &&
+      du.summary.rootBytes !== null &&
+      du.deniedCount === 0 &&
+      ownFilesNotes.length === 0;
     const notes = [
       du.privileged ? 'du walked as root (sudo -n)' : 'du walked unprivileged (sudo -n unavailable)',
       censusPhaseNote(walkMs, attributionMs, du.summary.ownFiles.length),
@@ -1218,6 +1226,9 @@ export async function censusOneDevice(
       ...ownFilesNotes,
       usageNote,
       du.timedOut ? 'du timed out; sizes are lower bounds' : null,
+      !du.timedOut && du.exitCode !== 0
+        ? `du exited ${du.exitCode === null ? 'without an exit status' : `with status ${du.exitCode}`}; sizes are lower bounds`
+        : null,
       du.error ? `du failed: ${du.error}` : null,
       du.summary.rootBytes === null ? 'du returned no root record; sizes are lower bounds' : null,
       du.deniedCount > 0 ? `${du.deniedCount} unreadable path(s), e.g. ${du.deniedSample.slice(0, 5).join(', ')}` : null,

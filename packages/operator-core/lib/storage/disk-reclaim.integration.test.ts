@@ -929,6 +929,40 @@ describe('retention on a real fixture tree', () => {
     expect(await stat(held)).toBeTruthy();
   });
 
+  it('subtracts a capped entry that disappears before removal so its stale bytes drive no further eviction', async () => {
+    // EI-26925507003255681: the census may list a child removed since it was measured.
+    // Once it is gone it no longer occupies the cap; counting it would evict a survivor.
+    const { root, options } = await setup();
+    const paths = ['a-old', 'b-middle', 'c-new'].map((name) => join(root, name));
+    for (const [index, path] of paths.entries()) { await writeFile(path, Buffer.alloc(4096)); await utimes(path, 1, index + 1); }
+    const census = await inspectRetentionTrees(root, { retainAfterMs: 0, includeRecent: true });
+    expect(census.error).toBeUndefined();
+    const ordered = [...census.entries].sort((a, b) => a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path));
+    expect(ordered).toHaveLength(3);
+    const gone = ordered[0]!;
+    const beforeBytes = ordered.reduce((sum, entry) => sum + entry.bytes, 0);
+    // Removing the vanished entry alone meets the cap. Without the subtraction the
+    // cap would still read as exceeded and the next-oldest survivor would be removed.
+    const maxBytes = beforeBytes - gone.bytes;
+    const intents: string[] = [];
+    const receipt = await runDiskReclaimOnce({ ...options, nowMs: Date.now(), inspectTrees: inspectRetentionTrees,
+      policy: options.policy.map((cls) => ({ ...cls, maxBytes, keep: { kind: 'max-age' as const, maxAgeHours: 24 } })),
+      record: async (phase, detail) => {
+        if (phase !== 'remove-intent') return;
+        const path = (detail as { path: string }).path;
+        intents.push(path);
+        // A concurrent remover wins the race between the census and this effect.
+        if (path === gone.path) await rm(path);
+      } });
+    expect(receipt.errors).toEqual([]); expect(receipt.complete).toBe(true);
+    expect(receipt.entries).toContainEqual(expect.objectContaining({ path: gone.path, bytes: gone.bytes,
+      status: 'changed', reason: 'disappeared before removal' }));
+    expect(receipt.caps?.[0]).toMatchObject({ beforeBytes, afterBytes: beforeBytes - gone.bytes, overByBytes: 0 });
+    expect(intents).toEqual([gone.path]);
+    expect(receipt.entries.filter((entry) => entry.status === 'removed')).toEqual([]);
+    for (const survivor of ordered.slice(1)) expect((await stat(survivor.path)).size).toBe(4096);
+  });
+
   it('counts a live pin in the cap receipt and reports its exempt overage', async () => {
     const { root, options } = await setup(); const pin = join(root, 'pinned'), disposable = join(root, 'disposable');
     await writeFile(pin, Buffer.alloc(8192)); await writeFile(disposable, Buffer.alloc(4096));
