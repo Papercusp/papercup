@@ -453,9 +453,15 @@ describe('immutablePrecheckPopulation with an ordinary admission (P-007)', () =>
     const { population } = result;
     expect(population.admittedTestFiles).toEqual([]);
     expect(population.files).toEqual(['pkg-b/src/util.test.ts', 'pkg-a/lib/alias.test.ts', 'pkg-a/lib/core.test.ts', 'pkg-b/src/uses-a.test.ts']);
-    const verdict = evaluateFixPrecheck(population, { ran: true, commit, results: population.files.map((path) => ({
-      path, status: path === 'pkg-a/lib/core.test.ts' ? 'fail' : 'pass',
-    })) });
-    expect(verdict).toMatchObject({ ok: false, code: 'admission-imports-red', importedRed: ['pkg-a/lib/core.test.ts'], newlyRedLegs: ['@t/a'] });
+    const run = { ran: true as const, commit, results: population.files.map((path) => ({
+      path, status: (path === 'pkg-a/lib/core.test.ts' ? 'fail' : 'pass') as 'pass' | 'fail',
+    })) };
+    // measured-wide-repair-admission-2026-10-24#D-004 ruling 1: "newly" red needs a MEASURED green
+    // at the previous head; without the paired baseline the guarded red is unpaired, never blamed.
+    const previousHead = { commit: 'b'.repeat(40), results: [{ path: 'pkg-a/lib/core.test.ts', status: 'pass' as const }] };
+    expect(evaluateFixPrecheck(population, run, { previousHead }))
+      .toMatchObject({ ok: false, code: 'admission-imports-red', importedRed: ['pkg-a/lib/core.test.ts'], newlyRedLegs: ['@t/a'] });
+    expect(evaluateFixPrecheck(population, run))
+      .toMatchObject({ ok: false, code: 'admission-precheck-unavailable', importedRed: [], baselineMissing: ['pkg-a/lib/core.test.ts'] });
   });
 });

@@ -209,9 +209,12 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     const baseline: string[] = [];
     const outcome = await runAdmissionPrecheckWorker({ ...input, taskId: 'replacement-task' }, { ...deps, createRunner: options => async run => {
       (options.precheckRootSuffix ? baseline : resumed).push(...run.files);
-      return { ran: true, commit: run.commit, results: run.files.map(path => ({ path, status: 'pass' as const })) };
+      // The resume never re-measures the retained file; only the labelled EI-27083585698781986
+      // confirmation re-run reaches it, and there it reproduces — a real red, still attributed.
+      return { ran: true, commit: run.commit, results: run.files.map(path =>
+        ({ path, status: !options.precheckRootSuffix && path === originalFiles[1] ? status : 'pass' as const })) };
     } });
-    expect(resumed).toEqual(originalFiles.slice(40));
+    expect(resumed).toEqual(status === 'fail' ? [...originalFiles.slice(40), originalFiles[1]] : originalFiles.slice(40));
     // D-004: only a retained FAIL is paired with a previous-head measurement; it passed there.
     expect(baseline).toEqual(status === 'fail' ? [originalFiles[1]] : []);
     expect(persisted.admissionPrecheck!.files).toEqual(originalFiles);
@@ -542,6 +545,83 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
         results: [{ path: 'ws-a/file-3.test.ts', status: 'fail' }, { path: 'ws-a/file-41.test.ts', status: 'fail' }] });
       expect(persisted.admissionPrecheck).toMatchObject({ status: 'passed',
         verdict: { ok: true, carriedRed: ['ws-a/file-3.test.ts', 'ws-a/file-41.test.ts'] } });
+    });
+  });
+
+  describe('EI-27083585698781986: one isolated confirmation re-run before a guarded red is attributed', () => {
+    const files = ['lib/red.test.ts', 'ws-a/near.test.ts', 'ws-a/other.test.ts'];
+    const radius = { status: 'measured' as const, reason: 'ok', guarded: ['ws-a/near.test.ts', 'ws-a/other.test.ts'],
+      reportOnly: [], legs: { 'ws-a/near.test.ts': '@t/a', 'ws-a/other.test.ts': '@t/a' } };
+    type Status = 'pass' | 'fail' | 'unmeasured';
+    /**
+     * An exec stub: `flaky` files FAIL their first N readings at the built commit 'c…' and pass after;
+     * `red` files always fail there. The repair head 'b…' is green throughout.
+     */
+    const settle = async (precheck: FrozenRepairAdmissionPrecheck, opts: { flaky?: Record<string, number>; red?: string[] }) => {
+      let persisted = queue(precheck);
+      const calls: Array<{ suffix: string | undefined; commit: string; files: string[]; expectedTree?: string }> = [];
+      const readings = new Map<string, number>();
+      await runAdmissionPrecheckWorker(input, {
+        getTask: async () => ({ state: 'running', confined: true }),
+        readQueue: async () => ({ status: 'value', queue: persisted }),
+        transition: async (_target, update) => { persisted = update(persisted); },
+        createRunner: options => async run => {
+          calls.push({ suffix: options.precheckRootSuffix, commit: run.commit, files: [...run.files],
+            ...(run.expectedTree ? { expectedTree: run.expectedTree } : {}) });
+          const results = run.files.map(path => {
+            if (run.commit !== 'c'.repeat(40)) return { path, status: 'pass' as Status };
+            const seen = readings.get(path) ?? 0;
+            readings.set(path, seen + 1);
+            const failing = opts.red?.includes(path) || seen < (opts.flaky?.[path] ?? 0);
+            return { path, status: (failing ? 'fail' : 'pass') as Status };
+          });
+          for (const result of results) await run.onFileResult?.(result);
+          return { ran: true, commit: run.commit, results };
+        },
+        now: () => 30,
+      });
+      return { persisted, calls };
+    };
+
+    it('a red that fails ONCE then passes its re-run at the SAME built commit is an advisory flake, and the admission publishes', async () => {
+      const { persisted, calls } = await settle(operation({ files, totalCount: files.length, radius }), { flaky: { 'ws-a/near.test.ts': 1 } });
+      expect(calls).toEqual([
+        { suffix: undefined, commit: 'c'.repeat(40), files },
+        { suffix: '-previous-head', commit: 'b'.repeat(40), files: ['ws-a/near.test.ts'] },
+        // The confirmation re-run: the main tree, the built commit, only the would-be-attributed file.
+        { suffix: undefined, commit: 'c'.repeat(40), files: ['ws-a/near.test.ts'] },
+      ]);
+      expect(persisted.admissionPrecheck).toMatchObject({ status: 'passed', verdict: { ok: true, fixes: ['lib/red.test.ts'],
+        flakyAtBuiltCommit: ['ws-a/near.test.ts'],
+        confirmation: { commit: 'c'.repeat(40), results: [{ path: 'ws-a/near.test.ts', status: 'pass' }] } } });
+    });
+
+    it('a red that fails its re-run too is attributed: admission-imports-red', async () => {
+      const { persisted, calls } = await settle(operation({ files, totalCount: files.length, radius }), { red: ['ws-a/near.test.ts'] });
+      expect(calls.at(-1)).toEqual({ suffix: undefined, commit: 'c'.repeat(40), files: ['ws-a/near.test.ts'] });
+      expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', verdict: { ok: false, code: 'admission-imports-red',
+        importedRed: ['ws-a/near.test.ts'], confirmation: { results: [{ path: 'ws-a/near.test.ts', status: 'fail' }] } } });
+      expect(persisted.admissionPrecheck?.verdict).not.toHaveProperty('flakyAtBuiltCommit');
+    });
+
+    it('no attributable red ⇒ no confirmation re-run', async () => {
+      const { calls, persisted } = await settle(operation({ files, totalCount: files.length, radius }), {});
+      expect(calls.map(call => call.suffix)).toEqual([undefined]);
+      expect(persisted.admissionPrecheck?.verdict).not.toHaveProperty('confirmation');
+    });
+
+    it('bounded mode re-runs at the expected built tree and persists the confirmation beside the aggregate', async () => {
+      const wideFiles = ['lib/red.test.ts', ...Array.from({ length: 44 }, (_, i) => `ws-a/file-${i}.test.ts`)];
+      const wideRadius = { status: 'measured' as const, reason: 'ok', guarded: wideFiles.slice(1), reportOnly: [], legs: {} };
+      const { persisted, calls } = await settle(operation({ files: wideFiles, totalCount: wideFiles.length, radius: wideRadius }),
+        { flaky: { 'ws-a/file-3.test.ts': 1 }, red: ['ws-a/file-41.test.ts'] });
+      const confirmationCall = calls.at(-1)!;
+      expect(confirmationCall).toMatchObject({ suffix: undefined, commit: 'c'.repeat(40), files: ['ws-a/file-3.test.ts', 'ws-a/file-41.test.ts'] });
+      expect(confirmationCall.expectedTree).toBe(persisted.admissionPrecheck?.builtTree);
+      expect(persisted.admissionPrecheck?.measurement?.confirmation).toEqual({ commit: 'c'.repeat(40),
+        results: [{ path: 'ws-a/file-3.test.ts', status: 'pass' }, { path: 'ws-a/file-41.test.ts', status: 'fail' }] });
+      expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', verdict: { ok: false, code: 'admission-imports-red',
+        importedRed: ['ws-a/file-41.test.ts'], flakyAtBuiltCommit: ['ws-a/file-3.test.ts'] } });
     });
   });
 

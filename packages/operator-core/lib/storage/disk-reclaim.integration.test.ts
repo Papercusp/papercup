@@ -1790,6 +1790,8 @@ describe('retention on a real fixture tree', () => {
     const peerRelease = new Promise<void>(resolve => { releasePeer = resolve; });
     let reacquisitionQueued!: () => void;
     const reacquiring = new Promise<void>(resolve => { reacquisitionQueued = resolve; });
+    let peerWaitObserved!: () => void;
+    const peerWait = new Promise<void>(resolve => { peerWaitObserved = resolve; });
     let clock = Date.now(), peerEntered = false, failedWait = false, requests = 0;
     const phases: string[] = [];
     const waitFor = async <T>(pending: Promise<T>, phase: string): Promise<T> => {
@@ -1806,7 +1808,12 @@ describe('retention on a real fixture tree', () => {
       if (phase === 'mutex-request') requests++;
       // Advance only after admission has captured its start time. A second
       // waiting notice cannot drive a frozen clock: it is itself time-throttled.
-      if (phase === 'mutex-waiting' && requests === 3) reacquisitionQueued();
+      if (phase === 'mutex-waiting' && requests === 3) {
+        // Advance before withFsMutex resumes its deadline check; doing this in
+        // the peer's async continuation races that check under load.
+        clock += 2_000;
+        reacquisitionQueued();
+      }
     };
     let persisted: DiskReclaimReceipt | undefined;
     const reclaim = runDiskReclaimOnce({ ...scoped, runBudgetMs: 1_000,
@@ -1820,8 +1827,8 @@ describe('retention on a real fixture tree', () => {
       peer = withFsMutex('papercusp-disk-retention', async () => {
         peerEntered = true;
         await reacquiring;
-        clock += 2_000;
         failedWait = true;
+        peerWaitObserved();
         await peerRelease;
       },
         { timeoutMs: 5_000, retryMs: 5, onWaiting: queued });
@@ -1832,6 +1839,7 @@ describe('retention on a real fixture tree', () => {
         clock++;
       } finally { finish(); }
       const receipt = await waitFor(reclaim, 'failed reacquisition receipt');
+      await waitFor(peerWait, 'peer retained the lock during failed reacquisition');
       expect(failedWait).toBe(true);
       expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
       expect(receipt.errors.join('; ')).toContain('waiting for fs-mutex');
@@ -2410,6 +2418,7 @@ describe('retention on a real fixture tree', () => {
         sample: async () => [{ path: '/', totalBytes: 500 * gib, freeBytes: 99 * gib, freePct: 0.198, totalInodes: 0, freeInodes: 0, freeInodesPct: 0 }],
         emitToast: async () => {}, attributeUsage: async () => ({ entries: [], truncated: false }),
         escalate: async (input) => { notifications.push(input); }, recentlyEscalated: async () => false,
+        readMissingMounts: async () => null, resolve: async () => false,
         broadcast: async () => true,
       });
       expect(alarm.escalated).toBe(true);

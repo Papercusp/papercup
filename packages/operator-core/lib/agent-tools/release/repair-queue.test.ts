@@ -1481,8 +1481,10 @@ describe('release:repair-queue', () => {
         persisted = update(persisted); return { status: 'written', queue: persisted, fresh: persisted, retries: 0 };
       });
       mocks.getTask.mockImplementation(async taskId => ({ state: taskId === 'dead-task' ? 'failed' : 'running', confined: true }));
+      // The retained red reproduces at the built commit (EI-27083585698781986 confirmation re-run).
       const runner = vi.fn(async ({ commit, files }: { commit: string; files: string[] }) => ({ ran: true as const,
-        commit, results: files.map(path => ({ path, status: 'pass' as const })) }));
+        commit, results: files.map(path => ({ path,
+          status: (commit === fixture.operation.builtCommit && path === fixture.files[1] ? 'fail' : 'pass') as 'pass' | 'fail' })) }));
       mocks.precheckFactory.mockReturnValue(runner);
       const started = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true, retryPrecheck: true } as never, { role: 'su' } as never));
       expect(started.precheckOperation).toMatchObject({ operationId: fixture.operation.operationId,
@@ -1490,7 +1492,10 @@ describe('release:repair-queue', () => {
       expect(started.precheckOperation.runnerTaskId).not.toBe('dead-task');
       await drainDetached();
       const atBuilt = runner.mock.calls.filter(([run]) => run.commit === fixture.operation.builtCommit);
-      expect(atBuilt.flatMap(([run]) => run.files)).toEqual(fixture.files.slice(40));
+      // The resume measures only the pending files; the retained red is reached ONLY by the
+      // labelled confirmation re-run, never re-measured into the aggregate.
+      expect(atBuilt.flatMap(([run]) => run.files)).toEqual([...fixture.files.slice(40), fixture.files[1]]);
+      expect(atBuilt.at(-1)![0].files).toEqual([fixture.files[1]]);
       // measured-wide-repair-admission-2026-10-24#D-004: the retained red is paired with ONE
       // previous-head measurement (it passed there), so imports-red rests on a measured baseline.
       const atPrevious = runner.mock.calls.filter(([run]) => run.commit !== fixture.operation.builtCommit);

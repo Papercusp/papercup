@@ -436,6 +436,33 @@ export function preparedCheckpointQueueMatches(
   return isDeepStrictEqual(parseFrozenCandidateRepairQueue(queue), parseFrozenCandidateRepairQueue(initial));
 }
 
+/**
+ * WI-6554700010010801: an attempt's write-once `preparedSelection` is reusable only while it
+ * names the attempt's own `candidate`. A joined scheduled fire attaches its runner on the
+ * stored candidate, and then `beginPreparedCheckpointPreflight` recovers the stored selection
+ * and hands the writer ITS candidate. The post-preflight reservation refresh then refuses the
+ * difference (`candidate-mismatch:pre-suite-retarget-runner-already-attached`), so every
+ * joined fire crashes before the writer can act. Measured on papercusp 2026-10-26 23:25Z:
+ * attempt 1c4273b1 stored candidate 8c03b5dc after a pre-suite `repair-in-progress`
+ * settlement, but kept the selection an earlier physical run had committed for 327e4d1d.
+ *
+ * A transition that moves the candidate therefore voids a selection made for the old one.
+ * The next physical run plans and commits afresh. Only the recovery path reads the stored
+ * record (a running writer uses the copy it was handed), so voiding it cannot strand a run.
+ */
+export function voidPreparedSelectionForMovedCandidate(
+  transaction: CheckpointQualificationTransaction,
+): CheckpointQualificationTransaction {
+  const selection = transaction.preparedSelection;
+  const candidate = transaction.candidate?.trim();
+  if (!selection || !candidate || selection.candidate === candidate) return transaction;
+  const { preparedSelection: _voided, ...rest } = transaction;
+  return {
+    ...rest,
+    evidenceRefs: uniqueStrings([...transaction.evidenceRefs, `prepared-selection-voided:${selection.candidate}`]),
+  };
+}
+
 /** Read the existing qualification authority; absence is distinct from unreadability. */
 export async function readPreparedCheckpointSelection(
   target: GateVerdictTarget,
@@ -2417,8 +2444,10 @@ async function mutateStoredQualification(
       }
       // Keep async probes under this row lock. Moving the probe outside the mutation would let
       // it describe one runner while the following decision acts on a replacement.
-      const transition = await change(current, rowContext);
-      if (transition.status !== 'updated') return transition;
+      const changed = await change(current, rowContext);
+      if (changed.status !== 'updated') return changed;
+      // One choke point for every candidate-moving transition (settlement, retarget, reserve).
+      const transition = { ...changed, transaction: voidPreparedSelectionForMovedCandidate(changed.transaction) };
       const persistTerminalEvent = async (): Promise<void> => {
         if (options.historicalRecovery && current && transition.transaction.previousAttemptId === current.attemptId) {
           await appendPipelineEvent({

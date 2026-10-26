@@ -190,7 +190,9 @@ export async function withGovernedExecution<T>(
     signal.addEventListener('abort', onAbort, { once: true });
   }
   try {
-    execution = await beginGovernedExecution(request, { owner: input.owner, leaseTtlMs: input.leaseTtlMs }, deps);
+    execution = await beginGovernedExecution(request, {
+      owner: input.owner, leaseTtlMs: input.leaseTtlMs, onAdmissionPhase: input.onAdmissionPhase,
+    }, deps);
     // If the caller aborted while admission/lease acquisition was in flight,
     // the pre-begin cancel may have found no row yet. Re-issue cancellation
     // against the now-materialized execution before starting work.
@@ -249,6 +251,8 @@ export interface GovernedOperationInput<T = unknown> {
   readonly metadata?: Readonly<Record<string, AdmissionMetadataValue>>;
   readonly idempotencyKey?: string;
   readonly leaseTtlMs?: number;
+  /** Observation-only timings, including time before the operation can start. */
+  readonly onAdmissionPhase?: GovernedExecutionInput<T>['onAdmissionPhase'];
   /** Cancel the durable receipt when the caller abandons this operation. */
   readonly signal?: AbortSignal;
   /**
@@ -285,6 +289,7 @@ export function runGovernedOperation<T>(
   const executionInput = {
     owner: input.owner,
     leaseTtlMs: input.leaseTtlMs,
+    onAdmissionPhase: input.onAdmissionPhase,
     ...(input.signal ? { signal: input.signal } : {}),
     ...(input.settle ? { settle: input.settle } : {}),
     ...(input.measureActualDemand ? { measureActualDemand: input.measureActualDemand } : {}),

@@ -26,6 +26,7 @@ import {
   recoverQualificationHistoricalPreSuiteError,
   settleQualificationTransaction,
   waitQualificationTransaction,
+  voidPreparedSelectionForMovedCandidate,
   type HistoricalPreSuiteRecoveryInput,
 } from './checkpoint-qualification-transaction';
 import { GREEN_CHECKPOINT_RESULT_MARKER } from './checkpoint-log-tags';
@@ -122,6 +123,25 @@ describe('prepared selection authority shape', () => {
     const transaction = { ...begin(), preparedSelection: prepared() };
     expect(parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(transaction))))
       .toEqual(transaction);
+  });
+
+  it('voids a selection made for a candidate the attempt no longer names (WI-6554700010010801)', () => {
+    const moved = { ...begin(), candidate: 'frozen-candidate', preparedSelection: prepared() };
+    const voided = voidPreparedSelectionForMovedCandidate(moved);
+    expect(voided).not.toHaveProperty('preparedSelection');
+    expect(voided.candidate).toBe('frozen-candidate');
+    expect(voided.evidenceRefs).toContain('prepared-selection-voided:candidate-1');
+    // The voided record round-trips: the next physical run reads "no selection" and plans afresh.
+    expect(parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(voided)))).toEqual(voided);
+  });
+
+  it('leaves a matching selection, an unset candidate, or no selection untouched', () => {
+    const matching = { ...begin(), preparedSelection: prepared() };
+    expect(voidPreparedSelectionForMovedCandidate(matching)).toBe(matching);
+    const unset = { ...begin(), candidate: null, preparedSelection: prepared() };
+    expect(voidPreparedSelectionForMovedCandidate(unset)).toBe(unset);
+    const none = begin();
+    expect(voidPreparedSelectionForMovedCandidate(none)).toBe(none);
   });
 
   it.each([

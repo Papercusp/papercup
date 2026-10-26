@@ -3712,6 +3712,101 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(await revParse(repo, "ready")).toBe(ready);
   });
 
+  it("WI-6554700010029683: a red repair head whose dispatch is refused names the dispatcher's reason in the run summary", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const repaired = await commit("b", "3", "first forward repair");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 1,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: repaired,
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: ["@papercusp/operator-vite"],
+      signature: postSuiteSignature(repaired),
+    };
+    const dispatchedHeads: string[] = [];
+    const { deps } = stubDeps(false, ["lib/still-broken.test.ts"]);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.dispatchFrozenRepairFixer = async (next, _evidence, onSkip) => {
+      dispatchedHeads.push(next.repairHead);
+      onSkip?.({
+        code: "snapshot-mismatch",
+        reason: "release-fixer candidate snapshot changed before launch",
+        retryable: true,
+      });
+      return null;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(dispatchedHeads).toEqual([repaired]);
+    // Before the fix the note read only "dispatch returned no spawn and will retry".
+    expect(result.summary).toContain(
+      "dispatch returned no spawn (dispatcher refused: snapshot-mismatch — " +
+        "release-fixer candidate snapshot changed before launch) and will retry",
+    );
+  });
+
+  it("WI-6554700010029683: re-dispatching after a dead fixer names a non-retryable refusal in the summary", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      affectedTestProofGroup: "initial-proof-run",
+      attempts: 1,
+      openedAtMs: now - 60_000,
+      updatedAtMs: now - 30_000,
+      fixerSpawnId: "dead-fixer",
+      failingTests: ["lib/still-broken.test.ts"],
+      signature: [],
+    };
+    const { deps, calls } = stubDeps(false, ["lib/still-broken.test.ts"]);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    let dispatches = 0;
+    deps.dispatchFrozenRepairFixer = async (_next, _evidence, onSkip) => {
+      dispatches += 1;
+      onSkip?.({
+        code: "stale-candidate",
+        reason: "candidate no longer matches the frozen lineage",
+        retryable: false,
+      });
+      return null;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(dispatches).toBe(1);
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(0);
+    expect(result).toMatchObject({ advanced: false, reason: "repair-in-progress" });
+    expect(result.summary).toBe(
+      `frozen repair fixer dispatch did not return a spawn for ${frozen.slice(0, 8)}` +
+        " (dispatcher refused: stale-candidate — candidate no longer matches the frozen lineage;" +
+        " another dispatch cannot help until the verdict or head changes);" +
+        " queue remains unassigned for retry",
+    );
+  });
+
   it("persists automation exhaustion as blocked and never selects a newer staging tip", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);

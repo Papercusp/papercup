@@ -20,7 +20,9 @@ import {
   evaluateFixPrecheck,
   precheckPopulation,
   previousHeadBaselineFiles,
+  confirmationRerunFiles,
   ADMISSION_PRECHECK_MAX_FILES,
+  type FixPrecheckConfirmation,
   type FixPrecheckFileResult,
   type FixPrecheckPopulation,
   type FixPrecheckPreviousHead,
@@ -290,6 +292,55 @@ export async function measurePreviousHeadBaseline(input: {
   return { commit, results };
 }
 
+/**
+ * EI-27083585698781986: the CONFIRMATION RE-RUN. Re-measure ONCE, at the SAME built commit and by
+ * the same per-file runner (each file its own test process), every guarded file the ratchet would
+ * otherwise attribute: red at the built commit, measured green at the previous head. A pass there
+ * marks a flake at the built commit (advisory); a second fail — or no reading — keeps the red.
+ *
+ * Returns undefined when nothing needs confirming. A re-run that cannot complete returns what it
+ * measured plus a `detail`; an unconfirmed file then keeps its measured red. Never throws.
+ */
+export async function measureConfirmationRerun(input: {
+  population: FixPrecheckPopulation;
+  results: readonly FixPrecheckFileResult[];
+  previousHead: FixPrecheckPreviousHead | undefined;
+  builtCommit: string;
+  expectedTree?: string;
+  runner: FixPrecheckRunner;
+  deadlineAtMs: number;
+  now?: () => number;
+  onProgress?: (file: string) => Promise<void> | void;
+}): Promise<FixPrecheckConfirmation | undefined> {
+  const files = confirmationRerunFiles(input.population, input.results, input.previousHead);
+  if (!files.length) return undefined;
+  const now = input.now ?? Date.now;
+  const commit = input.builtCommit;
+  const results: FixPrecheckFileResult[] = [];
+  const partial = (detail: string): FixPrecheckConfirmation => ({ commit, results, detail });
+  for (let start = 0; start < files.length; start += ADMISSION_PRECHECK_MAX_FILES) {
+    if (now() >= input.deadlineAtMs) return partial('the bounded pre-check deadline expired before the confirmation re-run completed');
+    const group = files.slice(start, start + ADMISSION_PRECHECK_MAX_FILES);
+    let run: FixPrecheckRunResult;
+    try {
+      run = await input.runner({
+        commit,
+        ...(input.expectedTree ? { expectedTree: input.expectedTree } : {}),
+        files: group,
+        ...(input.onProgress ? { onProgress: async (progress: FixPrecheckProgress) => { await input.onProgress!(progress.currentFile); } } : {}),
+      });
+    } catch (error) {
+      return partial(`the confirmation re-run runner failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!run.ran) return partial(`the confirmation re-run did not run (${run.reason}): ${run.detail}`);
+    if (run.commit !== commit) return partial('the confirmation re-run measured a different commit');
+    try { validateAdmissionPrecheckResults(group, run.results, true); }
+    catch (error) { return partial(`the confirmation re-run returned an invalid measurement: ${String(error)}`); }
+    results.push(...run.results);
+  }
+  return { commit, results };
+}
+
 async function runBoundedAdmissionPrecheck(
   input: AdmissionPrecheckWorkerInput,
   queue: FrozenCandidateRepairQueue,
@@ -408,10 +459,35 @@ async function runBoundedAdmissionPrecheck(
           ...(previousHead.detail ? { detail: previousHead.detail } : {}) } } } };
       });
     }
+    // EI-27083585698781986: confirm each would-be-attributed guarded red with ONE re-run at the SAME
+    // built commit while the operation's test environment is still up, and persist it beside the
+    // baseline so a re-judged wide measurement sees the same confirmation.
+    const confirmation = await measureConfirmationRerun({
+      population, results: ordered, previousHead, builtCommit: operation.builtCommit, expectedTree: operation.builtTree,
+      runner, deadlineAtMs: operation.expiresAtMs, now,
+      onProgress: async file => {
+        await deps.transition(input.queueTarget, fresh => {
+          assertFresh(fresh);
+          return admissionPrecheckProgressTransition(fresh, input.operationId, { currentFile: file,
+            completedCount: operation.files.length, totalCount: operation.files.length, heartbeatAtMs: now() });
+        });
+      },
+    });
+    if (confirmation) {
+      await deps.transition(input.queueTarget, fresh => {
+        const current = assertFresh(fresh);
+        const prior = current.measurement;
+        if (!prior || prior.identity !== identity || !isDeepStrictEqual(prior.results, completed))
+          throw new Error('persisted measurement moved while recording the confirmation re-run');
+        return { ...fresh, admissionPrecheck: { ...current, measurement: { ...prior, confirmation: {
+          commit: confirmation.commit, results: [...confirmation.results],
+          ...(confirmation.detail ? { detail: confirmation.detail } : {}) } } } };
+      });
+    }
     if (now() >= operation.expiresAtMs) return unavailable('bounded pre-check deadline expired before settlement');
     await finalize();
     const verdict = evaluateFixPrecheck(population, { ran: true, commit: operation.builtCommit, results: ordered },
-      { actor: operation.actor, ...(previousHead ? { previousHead } : {}) });
+      { actor: operation.actor, ...(previousHead ? { previousHead } : {}), ...(confirmation ? { confirmation } : {}) });
     await deps.transition(input.queueTarget, fresh => {
       assertFresh(fresh);
       return admissionPrecheckSettlementTransition(fresh, input.operationId, verdict, now());
@@ -518,10 +594,24 @@ export async function runAdmissionPrecheckWorker(
         },
       })
     : undefined;
+  // EI-27083585698781986: one confirmation re-run at the SAME built commit, before the test
+  // environment stops, for every guarded red the ratchet would otherwise attribute.
+  const confirmation = run.ran
+    ? await measureConfirmationRerun({
+        population, results: run.results, previousHead, builtCommit: operation.builtCommit, runner,
+        deadlineAtMs: operation.expiresAtMs, ...(deps.now ? { now: deps.now } : {}),
+        onProgress: async file => {
+          await deps.transition(input.queueTarget, fresh => admissionPrecheckProgressTransition(fresh, input.operationId, {
+            currentFile: file, completedCount: operation.files.length, totalCount: operation.files.length,
+            heartbeatAtMs: (deps.now ?? Date.now)() }));
+        },
+      })
+    : undefined;
   // Cleanup is evidence too: an unverified stop must never leave a passed marker.
   await finalize();
   // P-006: the admission ratchet routes an imports-red refusal to the admitting actor.
-  const verdict = evaluateFixPrecheck(population, run, { actor: operation.actor ?? null, ...(previousHead ? { previousHead } : {}) });
+  const verdict = evaluateFixPrecheck(population, run, { actor: operation.actor ?? null,
+    ...(previousHead ? { previousHead } : {}), ...(confirmation ? { confirmation } : {}) });
   const settledAtMs = (deps.now ?? Date.now)();
   await deps.transition(input.queueTarget, (fresh) =>
     admissionPrecheckSettlementTransition(fresh, input.operationId, verdict, settledAtMs));

@@ -123,6 +123,29 @@ describe('governed execution lifecycle', () => {
     expect(d.current()).toMatchObject({ state: 'cancelled' });
   });
 
+  it('reports a pending admission through the execution wrapper before starting work', async () => {
+    const d = deps();
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const enqueue = d.store.enqueue.bind(d.store);
+    vi.spyOn(d.store, 'enqueue').mockImplementation(async (...args) => {
+      await blocked;
+      return enqueue(...args);
+    });
+    const phases: string[] = [];
+    const run = vi.fn(async () => 'done');
+    const pending = withGovernedExecution(
+      { idempotencyKey: 'wrapper-admission', admissionClass: 'process' },
+      { owner: 'child', onAdmissionPhase: ({ phase, state }) => { phases.push(`${phase}:${state}`); } }, d, run,
+    );
+    expect(phases).toEqual(['enqueue:pending']);
+    expect(run).not.toHaveBeenCalled();
+    release();
+    expect(await pending).toBe('done');
+    expect(phases).toContain('mark-running:fulfilled');
+    expect(d.current()).toMatchObject({ state: 'completed' });
+  });
+
   it('retains the durable lease through detached release failures and retries exact measured demand', async () => {
     vi.useFakeTimers();
     const warning = vi.spyOn(console, 'error').mockImplementation(() => {});

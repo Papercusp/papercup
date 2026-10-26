@@ -216,6 +216,52 @@ export function previousHeadBaselineFiles(
   return (population.radius?.guarded ?? []).filter((p) => failing.has(p));
 }
 
+/**
+ * EI-27083585698781986: the CONFIRMATION RE-RUN. Each guarded file that failed at the built
+ * commit but PASSED (measured) at the previous head is re-run ONCE at the SAME built commit
+ * before the ratchet may attribute it to the admission. One timing flake (measured: psu-launcher
+ * `--help` spawnSync ETIMEDOUT under load, then 3/3 green at the same commit) otherwise costs a
+ * whole multi-hour pre-check cycle or forces a skipPrecheck override. `detail` records why the
+ * re-run could not complete; files it did not measure keep their measured red.
+ */
+export interface FixPrecheckConfirmation {
+  commit: string;
+  results: readonly FixPrecheckFileResult[];
+  detail?: string;
+}
+
+/**
+ * The guarded files that need a confirmation re-run: red at the built commit, MEASURED green at
+ * the previous head, and not signature files (those were red at the previous head by definition).
+ * Without a paired baseline nothing is attributable, so nothing needs confirming.
+ */
+export function confirmationRerunFiles(
+  population: FixPrecheckPopulation,
+  results: readonly FixPrecheckFileResult[],
+  previousHead: FixPrecheckPreviousHead | undefined,
+): string[] {
+  if (!previousHead) return [];
+  const passedBefore = new Set(previousHead.results.filter((r) => r.status === 'pass').map((r) => normalize(r.path)));
+  const signature = new Set(population.signatureTestFiles);
+  return previousHeadBaselineFiles(population, results).filter((p) => passedBefore.has(p) && !signature.has(p));
+}
+
+/**
+ * The confirmed-flaky subset: candidates whose confirmation re-run at the SAME built commit
+ * PASSED. A re-run that failed again, or went unmeasured, leaves the measured red standing.
+ */
+export function flakyAtBuiltCommitFiles(
+  population: FixPrecheckPopulation,
+  results: readonly FixPrecheckFileResult[],
+  previousHead: FixPrecheckPreviousHead | undefined,
+  confirmation: FixPrecheckConfirmation | undefined,
+  builtCommit: string,
+): string[] {
+  if (!confirmation || confirmation.commit !== builtCommit) return [];
+  const passedOnRerun = new Set(confirmation.results.filter((r) => r.status === 'pass').map((r) => normalize(r.path)));
+  return confirmationRerunFiles(population, results, previousHead).filter((p) => passedOnRerun.has(p));
+}
+
 export type FixPrecheckBusyReason = 'checkpoint-tree-busy';
 
 export type FixPrecheckRunResult =
@@ -267,10 +313,23 @@ export type FixPrecheckVerdict =
       fixes: string[];
       /** P-007: report-only radius files (their leg was already red) that fail; never a refusal. */
       reportOnlyRed?: string[];
+      /**
+       * Report-only radius files that went unmeasured. They are reported but never refuse: a report-only
+       * file cannot refuse even when measured red (green-main-cycle-time-2026-10-08#D-036 point 3).
+       */
+      reportOnlyUnmeasured?: string[];
       /** D-004: guarded files red at BOTH heads (measured) — carried by the lineage, never attributed. */
       carriedRed?: string[];
       /** D-004: the paired baseline this verdict was judged against, when one was measured. */
       previousHead?: FixPrecheckPreviousHead;
+      /**
+       * EI-27083585698781986: guarded files that failed once at the built commit, passed at the
+       * previous head AND passed their confirmation re-run at the built commit. Advisory: a flake,
+       * never attributed to the admission (they stay listed in `failing` as raw evidence).
+       */
+      flakyAtBuiltCommit?: string[];
+      /** EI-27083585698781986: the confirmation re-run this verdict was judged against. */
+      confirmation?: FixPrecheckConfirmation;
     }
   | { ok: true; ran: false; reason: 'nothing-to-run'; population: FixPrecheckPopulation }
   | {
@@ -306,6 +365,8 @@ export type FixPrecheckVerdict =
       alsoImportsRed: boolean;
       /** P-007: report-only radius files (their leg was already red) that fail; never a refusal. */
       reportOnlyRed?: string[];
+      /** Report-only radius files that went unmeasured; reported, never a refusal (D-036 point 3). */
+      reportOnlyUnmeasured?: string[];
       /** P-007: the previously green legs the imported reds belong to, when known. */
       newlyRedLegs?: string[];
       /**
@@ -322,6 +383,10 @@ export type FixPrecheckVerdict =
       carriedRed?: string[];
       /** D-004: the paired baseline this verdict was judged against, when one was measured. */
       previousHead?: FixPrecheckPreviousHead;
+      /** EI-27083585698781986: confirmed flakes at the built commit — advisory, never attributed. */
+      flakyAtBuiltCommit?: string[];
+      /** EI-27083585698781986: the confirmation re-run this verdict was judged against. */
+      confirmation?: FixPrecheckConfirmation;
     };
 
 /**
@@ -336,6 +401,8 @@ export function evaluateFixPrecheck(
     actor?: string | null;
     /** D-004 ruling 1: the measured paired baseline for guarded files red at the built commit. */
     previousHead?: FixPrecheckPreviousHead;
+    /** EI-27083585698781986: the confirmation re-run of would-be-attributed guarded reds. */
+    confirmation?: FixPrecheckConfirmation;
   } = {},
 ): FixPrecheckVerdict {
   if (population.files.length === 0) return { ok: true, ran: false, reason: 'nothing-to-run', population };
@@ -374,27 +441,46 @@ export function evaluateFixPrecheck(
     guardedRadius: guarded,
     ...(previous ? { measured: Object.fromEntries(previous.results.map((r) => [r.path, r.status] as const)) } : {}),
   });
+  // EI-27083585698781986: a guarded red that passed at the previous head and passed its confirmation
+  // re-run at the SAME built commit is a flake there — the ratchet reads it as passing, and it is
+  // reported as advisory `flakyAtBuiltCommit`. Its first failing reading stays in `failing`.
+  const confirmation = opts.confirmation;
+  const flakyAtBuiltCommit = flakyAtBuiltCommitFiles(population, results, previous, confirmation, run.commit);
+  const flaky = new Set(flakyAtBuiltCommit);
   const ratchet = evaluateAdmissionRatchet({
     admission: { actor: opts.actor ?? null, commit: run.commit },
     radius: [...population.admittedTestFiles, ...guarded],
     previousHead: before,
-    postAdmission: Object.fromEntries(results.map((r) => [r.path, r.status] as const)),
+    postAdmission: Object.fromEntries(results.map((r) => [r.path, flaky.has(r.path) ? 'pass' : r.status] as const)),
   });
   const importedRed = ratchet.verdict === 'reject' ? ratchet.newFailures.map((f) => f.test) : [];
-  const guardedFailing = guarded.filter((p) => failing.includes(p));
+  const guardedFailing = guarded.filter((p) => failing.includes(p) && !flaky.has(p));
   const carriedRed = guardedFailing.filter((p) => before[p] === 'fail');
   const baselineMissing = guardedFailing.filter((p) => before[p] === 'unmeasured');
+  const confirmationFindings = {
+    ...(flakyAtBuiltCommit.length ? { flakyAtBuiltCommit } : {}),
+    ...(confirmation ? { confirmation } : {}),
+  };
   const baselineFindings = {
     ...(baselineMissing.length ? { baselineMissing } : {}),
     ...(carriedRed.length ? { carriedRed } : {}),
     ...(previous ? { previousHead: previous } : {}),
+    ...confirmationFindings,
   };
   const ratchetFinding = ratchet.verdict === 'reject'
     ? { ratchet: { newFailures: ratchet.newFailures, routeTo: ratchet.routeTo } }
     : {};
   const reportOnlyRed = (population.radius?.reportOnly ?? []).filter((p) => failing.includes(p));
+  // A report-only radius file cannot refuse even when measured red (green-main-cycle-time-2026-10-08
+  // #D-036 point 3), so its MISSING measurement cannot change the verdict either. It is reported, and
+  // only signature, admitted and guarded files that went unmeasured make the pre-check unavailable.
+  const reportOnlySet = new Set(population.radius?.reportOnly ?? []);
+  const reportOnlyUnmeasured = unmeasured.filter((p) => reportOnlySet.has(p));
+  const blockingUnmeasured = unmeasured.filter((p) => !reportOnlySet.has(p));
   const newlyRedLegs = [...new Set(importedRed.map((p) => population.radius?.legs[p]).filter((leg): leg is string => !!leg))].sort();
-  const radiusFindings = population.radius ? { reportOnlyRed, newlyRedLegs } : {};
+  const radiusFindings = population.radius
+    ? { reportOnlyRed, newlyRedLegs, ...(reportOnlyUnmeasured.length ? { reportOnlyUnmeasured } : {}) }
+    : {};
   const importedList = importedRed.map((p) => withLeg(population, p)).join(', ');
   const legNote = newlyRedLegs.length ? `; previously green leg(s) turned red: ${newlyRedLegs.join(', ')}` : '';
   const doesNotFix = population.canProveDoesNotFix && fixes.length === 0;
@@ -417,12 +503,12 @@ export function evaluateFixPrecheck(
       ...baselineFindings,
     };
   }
-  if (unmeasured.length > 0) {
+  if (blockingUnmeasured.length > 0) {
     return {
       ok: false,
       ...base,
       code: 'admission-precheck-unavailable',
-      detail: `${unmeasured.length} admission pre-check file(s) were not measured: ${unmeasured.join(', ')}; ` +
+      detail: `${blockingUnmeasured.length} admission pre-check file(s) were not measured: ${blockingUnmeasured.join(', ')}; ` +
         'missing assertion evidence cannot establish that an admission fixes nothing or has no imported reds',
       importedRed,
       alsoImportsRed: importsRed,
@@ -491,8 +577,10 @@ export function evaluateFixPrecheck(
     ...base,
     fixes,
     ...(population.radius ? { reportOnlyRed } : {}),
+    ...(reportOnlyUnmeasured.length ? { reportOnlyUnmeasured } : {}),
     ...(carriedRed.length ? { carriedRed } : {}),
     ...(previous ? { previousHead: previous } : {}),
+    ...confirmationFindings,
   };
 }
 

@@ -522,6 +522,11 @@ export interface FrozenRepairAdmissionPrecheck {
      * the door re-evaluates a passed wide measurement against the SAME baseline, never an implied one.
      */
     previousHead?: { commit: string; results: FixPrecheckFileResult[]; detail?: string };
+    /**
+     * EI-27083585698781986: the confirmation re-run — guarded reds that passed at `repairHead`,
+     * re-measured once at `builtCommit`. Persisted so a re-judged wide measurement sees the same flakes.
+     */
+    confirmation?: { commit: string; results: FixPrecheckFileResult[]; detail?: string };
   };
 }
 
@@ -2147,18 +2152,31 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     };
     const results = parseResults(value.results);
     if (!results) return undefined;
-    // D-004: the paired baseline answers for a subset of the same immutable population.
+    // D-004: the paired baseline answers for a subset of the same immutable population; the
+    // EI-27083585698781986 confirmation re-run has the same shape at the built commit.
+    const parseSubset = (raw: unknown): { commit: string; results: FixPrecheckFileResult[]; detail?: string } | null => {
+      const prior = raw as Record<string, unknown> | null;
+      if (!prior || typeof prior !== 'object' || Array.isArray(prior) || !nonBlank(prior.commit) ||
+          (prior.detail !== undefined && typeof prior.detail !== 'string')) return null;
+      const priorResults = parseResults(prior.results);
+      if (!priorResults) return null;
+      return { commit: prior.commit as string, results: priorResults,
+        ...(typeof prior.detail === 'string' ? { detail: prior.detail } : {}) };
+    };
     let previousHead: { commit: string; results: FixPrecheckFileResult[]; detail?: string } | undefined;
     if (value.previousHead !== undefined) {
-      const prior = value.previousHead as Record<string, unknown> | null;
-      if (!prior || typeof prior !== 'object' || Array.isArray(prior) || !nonBlank(prior.commit) ||
-          (prior.detail !== undefined && typeof prior.detail !== 'string')) return undefined;
-      const priorResults = parseResults(prior.results);
-      if (!priorResults) return undefined;
-      previousHead = { commit: prior.commit as string, results: priorResults,
-        ...(typeof prior.detail === 'string' ? { detail: prior.detail } : {}) };
+      const parsed = parseSubset(value.previousHead);
+      if (!parsed) return undefined;
+      previousHead = parsed;
     }
-    measurement = { schemaVersion: 1, identity: value.identity, results, ...(previousHead ? { previousHead } : {}) };
+    let confirmation: { commit: string; results: FixPrecheckFileResult[]; detail?: string } | undefined;
+    if (value.confirmation !== undefined) {
+      const parsed = parseSubset(value.confirmation);
+      if (!parsed) return undefined;
+      confirmation = parsed;
+    }
+    measurement = { schemaVersion: 1, identity: value.identity, results, ...(previousHead ? { previousHead } : {}),
+      ...(confirmation ? { confirmation } : {}) };
   }
   const verdict = row.verdict;
   if (row.status === 'running' && verdict !== undefined) return undefined;

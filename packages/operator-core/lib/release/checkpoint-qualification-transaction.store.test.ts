@@ -27,6 +27,8 @@ import {
   recoverStoredQualificationHistoricalPreSuiteError,
   settleQualificationTransaction,
   waitQualificationTransaction,
+  waitStoredQualification,
+  type PreparedCheckpointSelectionRecord,
 } from './checkpoint-qualification-transaction';
 import { GREEN_CHECKPOINT_RESULT_MARKER } from './checkpoint-log-tags';
 import {
@@ -1071,5 +1073,50 @@ describe('reserveStoredQualificationRunner pre-suite retarget (WI-10005957)', ()
     expect(retargetPreSuiteAttemptToOwningRepairHead(current, { ...attach, started: false }, queue)).toBe(current);
     const aligned = wedgedAttempt({ candidate: 'repair-1' });
     expect(retargetPreSuiteAttemptToOwningRepairHead(aligned, attach, queue)).toBe(aligned);
+  });
+});
+
+describe('a stored settlement that moves the attempt candidate voids the old prepared selection (WI-6554700010010801)', () => {
+  const selectionFor = (candidate: string): PreparedCheckpointSelectionRecord => ({
+    schemaVersion: 1, attemptId: 'attempt-1', integrationRoot: '/integration', checkpointRoot: '/checkpoint',
+    candidate, tip: 'tip-1', base: 'base-1', candidateSource: 'frozen-repair-queue', quietCutApplied: false,
+    freezeCut: null, carry: null, queue: null,
+    generation: { candidate, identity: 'generation-1', token: 'v3:token',
+      inputFingerprint: '1'.repeat(64), reused: true, root: '/generations' },
+  });
+  // The measured papercusp state before the 23:25Z crash: a physical run committed the repair
+  // head's selection, then ended pre-suite with the queue's frozen candidate as its result.
+  const running = () => ({
+    ...reserveQualificationRunner(beginQualificationTransaction(null, {
+      attemptId: 'attempt-1', candidate: 'repair-head-1', nowMs: 100,
+    }).transaction, { attemptId: 'attempt-1', candidate: 'repair-head-1', runnerId: 'runner-1',
+      runId: 'run-1', pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 }).transaction,
+    preparedSelection: selectionFor('repair-head-1'),
+  });
+  const writtenTransaction = (statements: Array<{ text: string; values: unknown[] }>) => {
+    const update = statements.find(value => value.text.includes('UPDATE harness_shared.routines'))!;
+    const json = update.values.find((value): value is string => typeof value === 'string' && value.includes('"attemptId"'))!;
+    return JSON.parse(json) as Record<string, unknown> & { candidate: string; evidenceRefs: string[] };
+  };
+
+  it('drops the selection when the pre-suite result names a different candidate', async () => {
+    const { statements } = transactionHarness({ qualificationTransaction: running() });
+    expect(await waitStoredQualification(target, { attemptId: 'attempt-1', reason: 'repair-in-progress',
+      candidate: 'frozen-candidate-1', repairHead: 'repair-head-1', runId: 'run-1', nowMs: 300 }))
+      .toMatchObject({ status: 'updated' });
+    const written = writtenTransaction(statements);
+    expect(written.candidate).toBe('frozen-candidate-1');
+    // A later joined fire attaches on 'frozen-candidate-1'; recovering the old selection would hand
+    // the writer 'repair-head-1' and the post-preflight refresh would refuse the attached runner.
+    expect(written).not.toHaveProperty('preparedSelection');
+    expect(written.evidenceRefs).toContain('prepared-selection-voided:repair-head-1');
+  });
+
+  it('keeps the selection when the candidate is unchanged, so a restarted writer still recovers it', async () => {
+    const { statements } = transactionHarness({ qualificationTransaction: running() });
+    expect(await waitStoredQualification(target, { attemptId: 'attempt-1', reason: 'repair-in-progress',
+      candidate: 'repair-head-1', repairHead: 'repair-head-1', runId: 'run-1', nowMs: 300 }))
+      .toMatchObject({ status: 'updated' });
+    expect(writtenTransaction(statements).preparedSelection).toEqual(selectionFor('repair-head-1'));
   });
 });

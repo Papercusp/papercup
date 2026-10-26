@@ -184,6 +184,7 @@ import {
 } from "@papercusp/operator-core/lib/release/upstream-inherited-legs";
 import { routineFireIdentityFromEnv } from "@papercusp/operator-core/lib/release/in-flight-candidate";
 import type { WriteFrozenCandidateRepairQueueOptions } from "@papercusp/operator-core/lib/harness/routines/release-actions";
+import type { ReleaseFixerDispatchSkip } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import type { FleetLogsGcResult } from "@papercusp/operator-core/lib/fleet-logs-gc";
 import type { SnapCacheOutcome } from "@papercusp/operator-core/lib/storage/snap-cache-retention";
 import {
@@ -1680,6 +1681,12 @@ export interface CheckpointDeps {
   dispatchFrozenRepairFixer?(
     queue: FrozenCandidateRepairQueue,
     checkpointEvidence?: CheckpointEvidence,
+    /**
+     * WI-6554700010029683: receives the dispatcher's typed refusal when it returns no spawn
+     * (`dispatchReleaseFixer`'s scope / stale-candidate / snapshot-mismatch / … guards), so
+     * the gate can say WHY instead of only "did not return a spawn".
+     */
+    onSkip?: (skip: ReleaseFixerDispatchSkip) => void,
   ): Promise<{ spawnId: string | null; runId: string | null } | null>;
   /**
    * WI-10003213: TRUE when the queue's current red measured no failing test — the exact
@@ -11618,6 +11625,19 @@ export function frozenRepairCapacityHoldSummary(
 }
 
 /**
+ * WI-6554700010029683: the one phrasing for WHY a frozen-repair dispatch returned no spawn.
+ * Before this, the gate logged only "did not return a spawn", so a dispatcher refusing every
+ * tick (snapshot-mismatch, stale-candidate, …) was indistinguishable from a broken launcher
+ * and the cause had to be dug out of the idle actuator's escalations instead. Empty when the
+ * dispatcher reported nothing (a dependency that returned null without a refusal).
+ */
+export function frozenRepairNoSpawnDetail(skip: ReleaseFixerDispatchSkip | null | undefined): string {
+  if (!skip) return "";
+  const retry = skip.retryable ? "" : "; another dispatch cannot help until the verdict or head changes";
+  return ` (dispatcher refused: ${skip.code} — ${skip.reason}${retry})`;
+}
+
+/**
  * D-005 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the ONE escalation body
  * for a held frozen candidate, whatever exhausted it. It has to be actionable from the
  * escalation alone: the gate will not move on its own, the fix path is an ADMISSION onto the
@@ -13364,6 +13384,9 @@ async function runGreenCheckpointInner(
      *  "another checkpoint owns the window", and reporting a capacity wall under it
      *  would log a confidently wrong cause. */
     capacityHold: { summary: string; retryAtMs: number | null } | null;
+    /** WI-6554700010029683: the dispatcher's typed refusal when `fired` carries no spawn;
+     *  absent on every path that never reached the dispatcher. */
+    dispatchSkip?: ReleaseFixerDispatchSkip | null;
   }> => {
     // WI-606293: refuse BEFORE reserving the dispatch window, so a walled pool costs
     // neither a repair attempt nor a reservation other checkpoints are queued behind.
@@ -13472,10 +13495,16 @@ async function runGreenCheckpointInner(
 
     let fired: FrozenRepairDispatchResult | null = null;
     let dispatchError: unknown = null;
+    // A holder, not a `let`: the callback assigns it inside the awaited call, which control-flow
+    // narrowing cannot see.
+    const skipBox: { skip: ReleaseFixerDispatchSkip | null } = { skip: null };
     try {
       await renewalChain;
       if (!reservationLost) {
-        fired = (await deps.dispatchFrozenRepairFixer?.(dispatchQueue, checkpointEvidence)) ?? null;
+        fired =
+          (await deps.dispatchFrozenRepairFixer?.(dispatchQueue, checkpointEvidence, (skip) => {
+            skipBox.skip = skip;
+          })) ?? null;
       }
     } catch (error) {
       dispatchError = error;
@@ -13537,6 +13566,7 @@ async function runGreenCheckpointInner(
       fired,
       reservationBlocked: false,
       capacityHold: null,
+      dispatchSkip: fired?.spawnId ? null : skipBox.skip,
     };
   };
 
@@ -14304,7 +14334,7 @@ async function runGreenCheckpointInner(
         const fired = dispatch.fired;
         const summary = fired?.spawnId
           ? `frozen repair fixer ${fired.spawnId} dispatched for ${repairQueue.repairHead.slice(0, 8)} (attempt ${repairQueue.attempts}); no suite run`
-          : `frozen repair fixer dispatch did not return a spawn for ${repairQueue.repairHead.slice(0, 8)}; queue remains unassigned for retry`;
+          : `frozen repair fixer dispatch did not return a spawn for ${repairQueue.repairHead.slice(0, 8)}${frozenRepairNoSpawnDetail(dispatch.dispatchSkip)}; queue remains unassigned for retry`;
         deps.log(summary);
         return withRepairIdentity({
           advanced: false,
@@ -16241,6 +16271,7 @@ async function runGreenCheckpointInner(
         repairQueue.phase === "awaiting-fixer"
       ) {
         let fired: FrozenRepairDispatchResult | null = null;
+        let dispatchSkip: ReleaseFixerDispatchSkip | null | undefined = null;
         if (hasFrozenRepairDispatchReservation) {
           // Reserve the durable candidate row before the external fixer launch. The candidate
           // is normally already present from the pre-suite write; allowCreateIfAbsent keeps the
@@ -16293,6 +16324,7 @@ async function runGreenCheckpointInner(
           }
           repairQueue = dispatch.queue ?? repairQueue;
           fired = dispatch.fired;
+          dispatchSkip = dispatch.dispatchSkip;
         } else {
           // Compatibility path for direct/older callers that do not expose the CAS hooks.
           await deps.writeFrozenRepairQueue(repairQueue, {
@@ -16301,6 +16333,7 @@ async function runGreenCheckpointInner(
           const dispatch = await dispatchFrozenRepair(repairQueue, false, checkpointEvidence);
           repairQueue = dispatch.queue ?? repairQueue;
           fired = dispatch.fired;
+          dispatchSkip = dispatch.dispatchSkip;
         }
         // WI-479091 — DO NOT return a terminal result here.
         //
@@ -16330,7 +16363,7 @@ async function runGreenCheckpointInner(
         repairFixerDispatchedThisPass = true;
         repairDispatchNote =
           `\n\nFrozen-candidate repair queue: ${repairQueue.candidate.slice(0, 8)} stays fixed; ` +
-          `${fired?.spawnId ? `fixer ${fired.spawnId} dispatched` : "dispatch returned no spawn and will retry"} ` +
+          `${fired?.spawnId ? `fixer ${fired.spawnId} dispatched` : `dispatch returned no spawn${frozenRepairNoSpawnDetail(dispatchSkip)} and will retry`} ` +
           `from head ${repairQueue.repairHead.slice(0, 8)}.`;
         deps.log(
           `stable-candidate queue ${repairQueue.candidate.slice(0, 8)} red persisted and fixer dispatch resolved; ` +
@@ -23401,15 +23434,19 @@ export function realCheckpointDeps(
           async dispatchFrozenRepairFixer(
             queue: FrozenCandidateRepairQueue,
             checkpointEvidence?: CheckpointEvidence,
+            onSkip?: (skip: ReleaseFixerDispatchSkip) => void,
           ) {
             const { dispatchReleaseFixer } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+            // WI-6554700010029683: forward onSkip so a refused dispatch reports its typed
+            // reason into the gate summary, matching the idle actuator's wiring.
             return dispatchReleaseFixer(
               repairTarget,
               queue.repairHead,
               queue.failingTests,
               queue,
               checkpointEvidence,
+              { onSkip },
             );
           },
           // WI-10007408: the fixer LIVENESS probe and the dead-fixer CLASSIFIER, deleted by
